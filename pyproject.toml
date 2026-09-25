@@ -137,14 +137,20 @@ trap 'rm -rf "$out"' EXIT
 for app in apps/*/server.mojo; do
   name=$(basename "$(dirname "$app")")
   echo "building $name"
-  extra=""
-  # datastar_todo persists in SQLite; only IT carries libsqlite3 on its link
-  # line — the other apps must not grow the dependency by riding along.
-  [ "$name" = "datastar_todo" ] && extra="-Xlinker -lsqlite3"
   mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
-    -I packages/m0-wsgi/ -I packages/m0-sqlite/ -I apps/ $extra "$app" -o "$out/$name" || exit 1
+    -I packages/m0-wsgi/ -I packages/m0-sqlite/ -I apps/ "$app" -o "$out/$name" || exit 1
 done
-echo "all apps built"
+# datastar_todo persists in SQLite, and m0-sqlite opens libsqlite3 at run
+# time (SPEC O17): no binary in this repo may carry it on its link line. The
+# app is the one consumer, so its binary is where a link dependency would
+# reappear -- an `external_call["sqlite3_..."]` put back anywhere in the
+# package would show here as a NEEDED entry or a load command.
+if [ "$(uname)" = "Darwin" ]; then
+  otool -L "$out/datastar_todo" | grep -q sqlite && { echo "build-apps: datastar_todo links libsqlite3; m0-sqlite must open it at run time"; exit 1; }
+else
+  readelf -d "$out/datastar_todo" | grep -q sqlite && { echo "build-apps: datastar_todo links libsqlite3; m0-sqlite must open it at run time"; exit 1; }
+fi
+echo "all apps built; datastar_todo links no libsqlite3"
 """
 
 # NOTE ON src BINDING: every package's sources live in a directory named
@@ -966,25 +972,26 @@ shell = "python3 scripts/vtab_layout.py"
 help = "Move each vtab.mojo layout constant and insist verify_layout.c rejects it"
 shell = "python3 scripts/vtab_layout.py --sabotage"
 
-# Built and run, not `mojo run`. The JIT resolves symbols only from libraries
-# already loaded into its process: on macOS libsqlite3 is in the dyld shared
-# cache so `mojo run` happens to work, but on Linux it fails with
-# "JIT session error: Symbols not found: [sqlite3_open_v2, ...]". Linking
-# explicitly works identically on both, so both do it.
-# Linux also needs the library present at link time: libsqlite3-dev.
-#
 # verify-vtab-layout runs first: if the struct offsets are wrong, the vtab
 # tests below fail in confusing ways or pass by luck, and the offsets are the
 # more fundamental claim.
 [tool.poe.tasks.test-sqlite]
-help = "Test m0-sqlite (links libsqlite3; Linux needs libsqlite3-dev)"
+help = "Test m0-sqlite (opens the system libsqlite3 at run time; the layout check needs sqlite3.h)"
 sequence = [
   { ref = "verify-vtab-layout" },
   { ref = "test-sqlite-mojo" },
 ]
 
+# `mojo run`, since 2026-09-25: the package opens libsqlite3 at run time
+# (SPEC O17), so the JIT resolves nothing from the process image and the
+# tests run on Linux as they always did on macOS -- the shape `m0 test`
+# takes, and the reason the loader exists. The one exception is
+# test_file.mojo, which forks twelve process pairs: built and run it takes
+# 388 s on this container's four cores, under the JIT 529 s, the fork of a
+# compiler-sized process costing the rest. Built, then, for its measured
+# cost and nothing else; nothing links libsqlite3 either way.
 [tool.poe.tasks.test-sqlite-mojo]
-help = "Run m0-sqlite's Mojo tests (prefer test-sqlite, which checks offsets first)"
+help = "Run m0-sqlite's Mojo tests under mojo run (prefer test-sqlite, which checks offsets first)"
 shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
@@ -1002,8 +1009,12 @@ trap 'rm -rf "$out"' EXIT
 # (CLAUDE.md's `mojo build ... && /tmp/t`) wants the variable too.
 for f in packages/m0-sqlite/test/test_*.mojo; do
   name=$(basename "$f" .mojo)
-  mojo build -I packages/m0-sqlite -Xlinker -lsqlite3 "$f" -o "$out/$name" || exit 1
-  OS_ACTIVITY_MODE=disable "$out/$name" || exit 1
+  if [ "$name" = "test_file" ]; then
+    mojo build -I packages/m0-sqlite "$f" -o "$out/$name" || exit 1
+    OS_ACTIVITY_MODE=disable "$out/$name" || exit 1
+  else
+    OS_ACTIVITY_MODE=disable mojo run -I packages/m0-sqlite "$f" || exit 1
+  fi
 done
 """
 
@@ -1168,16 +1179,13 @@ help = "An app conformance to a .mojoc trait compiles, whatever the source direc
 cmd = "python3 scripts/mojoc_trait_check.py"
 deps = ["build-core", "build-http"]
 
-# Built and run, not `mojo run`: the app links libsqlite3, and the JIT only
-# resolves symbols from libraries already in its process — works on macOS via
-# the dyld shared cache, fails on Linux. Same reason as test-sqlite.
 [tool.poe.tasks.serve-todo]
 help = "Run the Datastar todo demo on :8080 (M0_PORT, M0_DB to change)"
 shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
-  -I packages/m0-sqlite/ -I apps/ -Xlinker -lsqlite3 \
+  -I packages/m0-sqlite/ -I apps/ \
   apps/datastar_todo/server.mojo -o "$out/todo" || exit 1
 "$out/todo"
 """
@@ -4822,6 +4830,10 @@ code=$(curl -s -o "$boom" -w '%{http_code}' $B/boom)
 [ "$code" = "500" ] || fail "/boom answered $code, want 500"
 grep -q 'Internal Server Error' "$boom" || fail "/boom's body was not the application's own 500"
 rm -f "$boom"
+# The executor logs the exception when the request's task finishes, which is
+# AFTER its response was answered (L22), so a grep that races the log write
+# missed it on a slow runner while the line was on its way. Wait, bounded.
+for _ in $(seq 1 50); do grep -q 'fasthtml-demo kaboom' fasthtml.log && break; sleep 0.1; done
 grep -q 'fasthtml-demo kaboom' fasthtml.log || fail "/boom's error never reached the log"
 grep -q 'Traceback (most recent call last)' fasthtml.log || fail "/boom's error was logged without its traceback"
 
@@ -4898,6 +4910,9 @@ curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
 # client's messages (L20); a raising socket closes with 1011 (L24) and its
 # traceback reaches the log (L23).
 M0_PORT=8099 python3 apps/fastapi_demo/chat_probe.py || fail 'the FastAPI chat probe failed'
+# Logged when the socket's task finishes, after the close the probe saw:
+# wait for the line, bounded, as smoke-fasthtml does for /boom.
+for _ in $(seq 1 50); do grep -q 'fastapi-demo ws kaboom' fastapi.log && break; sleep 0.1; done
 grep -q 'fastapi-demo ws kaboom' fastapi.log || fail "the raising socket's error never reached the log"
 grep -q 'Traceback (most recent call last)' fastapi.log || fail 'an application error was logged without its traceback'
 curl -s --fail $B/ > /dev/null || fail 'server died after the chat probe'
@@ -7611,7 +7626,7 @@ shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
-  -I packages/m0-sqlite/ -I apps/ -Xlinker -lsqlite3 \
+  -I packages/m0-sqlite/ -I apps/ \
   apps/datastar_todo/server.mojo -o "$out/todo" || exit 1
 # playwright is not a dependency of this project; `--with` borrows it for
 # one process, and the Chromium it drives comes from the ms-playwright
@@ -8311,7 +8326,7 @@ shell = """
 out=$(mktemp -d)
 trap 'kill $pid 2>/dev/null; pkill -KILL -f "$out/" 2>/dev/null; rm -rf "$out"' EXIT
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
-  -I packages/m0-sqlite/ -I apps/ -Xlinker -lsqlite3 \
+  -I packages/m0-sqlite/ -I apps/ \
   apps/datastar_todo/server.mojo -o "$out/todo" || exit 1
 
 M0_DB="$out/todos.db" "$out/todo" > todo.log 2>&1 &
@@ -9164,11 +9179,11 @@ cmd = "mojo packages/m0-core/run_benchmarks.mojo"
 # Built and run rather than `mojo run`, for the same libsqlite3 linking reason
 # as test-sqlite above. Not part of test-all — neither is bench-core.
 [tool.poe.tasks.bench-sqlite]
-help = "Benchmark m0-sqlite read-out (links libsqlite3)"
+help = "Benchmark m0-sqlite read-out (opens libsqlite3 at run time)"
 shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
-mojo build -I packages/m0-sqlite -Xlinker -lsqlite3 \
+mojo build -I packages/m0-sqlite \
   packages/m0-sqlite/bench_sqlite.mojo -o "$out/bench_sqlite" || exit 1
 "$out/bench_sqlite"
 """

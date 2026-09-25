@@ -47,10 +47,9 @@ numbering its frame. It is the gate's knob, as `M0_SIM_ON_LOOP` is
 `sim_loop`'s: the race the lock closes lasts microseconds, so without a
 wider window no run can show that the lock is what closes it.
 
-Because this app links libsqlite3, it is built and run, never `mojo run`:
-the JIT resolves symbols only from libraries already in its process, which
-happens to work on macOS and fails on Linux. `poe serve-todo` does the right
-thing.
+m0-sqlite opens libsqlite3 at run time (SPEC O17), so this binary links
+nothing for it and `build-apps` insists it does not; `poe serve-todo` builds
+and runs it, and `mojo run` would serve as well.
 
 Run it:  uv run poe serve-todo
 """

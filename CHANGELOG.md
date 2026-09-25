@@ -22,6 +22,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
   request, both platforms, against `max-core` synced by the new `max`
   dependency group in that step alone; `sabotage-host --only parallel`
   removes the check and must be caught on the served prefork.
+- **`m0-sqlite` opens libsqlite3 at run time** (SPEC O17, O18; D49). The
+  package reached SQLite through `external_call`, which put the library on
+  the link line of every binary that used it: `-Xlinker -lsqlite3` and
+  `libsqlite3-dev` on Linux, and `mojo run` of any test that touched a
+  database failing there with `Symbols not found`. `Connection` now opens
+  the library through `SqliteLib` (`src/lib.mojo`, `m0-postgres`'s shape
+  and its three rules: handle and pointers in one struct, every entry point
+  behind a method, the image pinned `RTLD_NODELETE`), from `M0_LIBSQLITE3`
+  or a search path, refusing one below 3.20.0, built without threads, or
+  missing a symbol, each an error naming what it found. `Statement` holds a
+  copy of the entry points it calls and outlives every handle of the
+  library; the virtual-table callbacks reach it through the module buffer
+  SQLite already owns. Nothing in the tree links libsqlite3 any more —
+  `build-apps` fails if `datastar_todo`'s binary names it — and six of the
+  package's seven test files run under `mojo run`. `test_lib.mojo` is the
+  gate; docs/notes/sqlite-at-run-time.md records the round.
 
 ### Changed
 

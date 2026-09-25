@@ -13,7 +13,7 @@ Usage:  uv run poe bench-sqlite
 """
 
 from std.collections.span import Span
-from std.ffi import external_call, c_int
+from std.ffi import c_int
 from std.memory import Pointer
 from std.time import perf_counter_ns
 
@@ -29,15 +29,11 @@ comptime REPS: Int = 5
 
 def _column_blob_byteloop(stmt: Statement, index: Int) -> List[UInt8]:
     """`column_blob` as it was written before the memcpy rewrite."""
-    var n = Int(
-        external_call["sqlite3_column_bytes", c_int](stmt._handle, c_int(index))
-    )
+    var n = stmt._lib.column_bytes(stmt._handle, index)
     var out = List[UInt8](capacity=n if n > 0 else 1)
     if n <= 0:
         return out^
-    var p = external_call["sqlite3_column_blob", CharPtr](
-        stmt._handle, c_int(index)
-    )
+    var p = stmt._lib.column_blob(stmt._handle, index)
     for i in range(n):
         out.append(p[unsafe_offset=i])
     return out^
@@ -58,14 +54,8 @@ def _column_bytes_span(
     `docs/SQLITE_PERFORMANCE.md` records instead of shipping it.
     """
     stmt._check_column(index)
-    var p = external_call["sqlite3_column_blob", CharPtr](
-        stmt._handle, c_int(index)
-    )
-    var n = Int(
-        external_call["sqlite3_column_bytes", c_int](
-            stmt._handle, c_int(index)
-        )
-    )
+    var p = stmt._lib.column_blob(stmt._handle, index)
+    var n = stmt._lib.column_bytes(stmt._handle, index)
     if n <= 0:
         return Span[Byte, origin_of(stmt)]()
     return Span[Byte, origin_of(stmt)](
