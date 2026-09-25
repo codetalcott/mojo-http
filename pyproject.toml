@@ -7697,6 +7697,23 @@ start 8351 serve
 serve=$(python3 scripts/blobs_probe.py serve 8351) || fail "serve: $serve"
 echo "serve: $serve"
 
+# --- HEAD is its GET's (N38) ----------------------------------------------
+# A read view and a loop route answer HEAD with their GET's status, length
+# and type and no body, and the stream's ends at its head (L27) without a
+# viewer left behind. Before N38 all three were 405.
+for p in / /health; do
+  python3 scripts/head_probe.py --port 8351 --twin $p --then /health \
+    || fail "HEAD $p is not its GET's head (N38)"
+done
+viewers() { curl -s http://127.0.0.1:8351/stats | grep -o '"viewers":[0-9]*' | cut -d: -f2; }
+before=$(viewers)
+[ -n "$before" ] || fail "/stats carried no viewer count"
+python3 scripts/head_probe.py --port 8351 --hold /events --then /health \
+  || fail "a HEAD to /events did not end at its head (N38, L27)"
+after=$(viewers)
+[ "$after" = "$before" ] || fail "a HEAD to /events left a viewer behind ($before, then $after)"
+echo "head: / and /health are their GET's heads; /events ended at its head, viewers $before then $after"
+
 # --- a drain with a stream held: the server ends it, and exits 0 in bound --
 python3 scripts/blobs_probe.py hold 8351 "$out/holding" > "$out/hold.out" 2>&1 &
 hold=$!
@@ -8587,7 +8604,7 @@ grep -q '"status":404' problem.json || fail 'the problem body did not carry the 
 # The router distinguishes 405 from 404, and says what IS allowed.
 code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -X PATCH http://localhost:8091/notes/1)
 [ "$code" = "405" ] || fail "expected 405 for PATCH on a GET/PUT/DELETE route, got $code"
-grep -qi '^allow: GET, PUT, DELETE, OPTIONS' headers.txt || fail '405 carried no Allow header'
+grep -qi '^allow: GET, HEAD, PUT, DELETE, OPTIONS' headers.txt || fail '405 carried no Allow header'
 # And a method the route does not take must not reach any view: the
 # handler-id dispatch chain this app used to carry ended in a bare
 # `return self._delete(...)`, so a route registered without its own arm
@@ -9023,7 +9040,7 @@ grep -q 'json' frag.html && fail 'a refused body still created a note'
 # a note's route does not take must not touch the note.
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -D headers.txt -X DELETE $B/notes)
 [ "$code" = "405" ] || fail "expected 405 for DELETE on the collection, got $code"
-grep -qi '^allow: GET, POST, OPTIONS' headers.txt || fail '405 carried no or a wrong Allow header'
+grep -qi '^allow: GET, HEAD, POST, OPTIONS' headers.txt || fail '405 carried no or a wrong Allow header'
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X PATCH $B/notes/1)
 [ "$code" = "405" ] || fail "expected 405 for PATCH on a note, got $code"
 code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)

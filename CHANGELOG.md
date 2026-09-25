@@ -32,6 +32,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
   supervisor. The host page, the deploy page and the scaffold's `AGENTS.md`
   say so. Nothing changes for an application that sets neither.
 
+### Fixed
+
+- **A route that takes GET answers HEAD** (SPEC N38). The view table
+  matched methods exactly, so every `Views` route answered HEAD 405 with
+  `Allow: GET, OPTIONS`, `/health` included, where RFC 9110 has a server
+  that supports GET support HEAD; an uptime check that sends one reads the
+  application as down. `unotes`, the application-layer soak, found it on
+  its own deploy. `Router.match` now answers a HEAD that no route registers
+  for its path with the route a GET would reach, in both tables and on the
+  loop, and the server needed nothing: it already dropped a HEAD's body and
+  kept the GET's `Content-Length`. A route registered for HEAD itself still
+  wins over its table's GET, and a path with no GET is still a 405 for HEAD. `Allow` names HEAD
+  beside GET, so a 405's and a preflight's header changes: `GET, POST,
+  OPTIONS` is now `GET, HEAD, POST, OPTIONS`. `test_views.mojo` and
+  `test_router.mojo` hold the rule, and `smoke-blobs` sends HEAD to a read
+  view, a loop route and the stream on the wire (`head_probe.py --twin`,
+  new beside `--hold`).
+
 ## [1.6.0] — 2026-09-24
 
 The request an application sees is now the one its client sent, and the
