@@ -96,7 +96,7 @@ from m0_wsgi import (
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, mojo_lanes, has_wsgi_mount, asgi_mount_names,
     hold_lanes, is_compiled_mount, has_python_mount,
-    compiled_mount_threads_needed, wsgi_lanes_unserved, pool_is_default,
+    compiled_mount_threads_needed, wsgi_lanes_unserved, pool_is_default, parallel_runtime_forked,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     use_loop_inversion,
     asgi_free_threading_refusal,
@@ -702,26 +702,6 @@ def _pg_listen_forked_on_macos(opts: ServeOptions) -> Bool:
     )
 
 
-def _parallel_runtime_forked(opts: ServeOptions, linked: Bool) -> Bool:
-    """Whether this configuration would run MAX's parallel runtime in a
-    forked child, which never returns from a `parallelize` (SPEC E33).
-
-    One predicate for `main` and `--doctor`, in `_pg_listen_forked_on_macos`'s
-    shape and for its reason: "forked" is `main`'s own `supervised` --
-    `--workers N` above 1, or `--reload`, which supervises even one worker
-    -- and `--spawn-workers` is the escape, because the worker execs and
-    the runtime starts fresh in the new image (measured in
-    docs/notes/threads-first-for-m0-apps.md: `parallelize` hangs in any
-    forked child and works after fork-then-exec). `linked` arrives from the
-    caller so both gather the fact once, through
-    `m0_http.parallel_runtime_linked`, the function the Mojo host reads.
-
-    Both platforms: the fork rule this rests on is the runtime's, not the
-    kernel's.
-    """
-    return linked and (opts.workers > 1 or opts.reload) and not opts.spawn_workers
-
-
 comptime _DOCTOR_PROBE = """
 import sys, platform
 
@@ -833,11 +813,12 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
             String("--realtime is on and M0_GRANT_KEY is set"),
         )
     # The same predicate `main` refuses by, at the same point in its order
-    # (SPEC E33). The fact is the binary's, so a doctor run on the shipped
+    # (SPEC E33; `parallel_runtime_forked` lives in cli.mojo so test_cli can
+    # pin its table). The fact is the binary's, so a doctor run on the shipped
     # m0serve -- which links no MAX -- always passes this one.
     var linked = parallel_runtime_linked()
     report.add_bool(String("topology"), String("parallel_runtime"), linked)
-    if _parallel_runtime_forked(opts, linked):
+    if parallel_runtime_forked(opts, linked):
         report.fail_check(
             String("workers-vs-parallel-runtime"),
             String(_PARALLEL_RUNTIME_FORKED),
@@ -1305,7 +1286,7 @@ def main() raises:
     # A Mojo mount that links MAX's parallel runtime cannot be served from
     # a forked worker (SPEC E33): refused here, before the bind and the
     # fork, by the same predicate `--doctor` asks at the same point.
-    if _parallel_runtime_forked(opts, parallel_runtime_linked()):
+    if parallel_runtime_forked(opts, parallel_runtime_linked()):
         _fail(_PARALLEL_RUNTIME_FORKED, EXIT_USAGE)
         return
 

@@ -59,7 +59,7 @@ The refusal is a fact about the image, not a rule about the flag.
 
 Refuse and name the flag; do not switch to spawning when the image links
 the runtime. The alternative was considered and is cheap to build —
-`_parallel_runtime_forked` already knows the answer — and it is not
+`parallel_runtime_forked` already knows the answer — and it is not
 built, for three reasons. The worker mode is the operator's contract: a
 spawned worker is one more process start per worker and an image that
 re-reads its environment at exec, which is visible in a deploy's timing
@@ -91,7 +91,9 @@ the middle of the smoke. `M0SERVE_INCLUDE=apps` is what resolves
 `host_parallel.compute` from the mount — one job, two hosts, so the two
 refusals are measured against one binary shape. And the fact moved out
 of `host.mojo` into `m0_http.parallel_runtime`, so the host's
-`host_checks` and m0serve's `_parallel_runtime_forked` read one function;
+`host_checks` and m0serve's `parallel_runtime_forked` read one function
+(the predicate lives in `cli.mojo`, and `test_cli.mojo` pins its truth
+table with the fact supplied by hand, in a binary that links nothing);
 `host.mojo` imports it, `test_host_flags.mojo` imports it from there, and
 `sabotage-host --only parallel` still passes against the moved fact.
 

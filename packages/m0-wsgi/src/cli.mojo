@@ -779,6 +779,26 @@ def pool_is_default(opts: ServeOptions) -> Bool:
     return not opts.blocking_threads_set and mounts_need_threads(opts)
 
 
+def parallel_runtime_forked(opts: ServeOptions, linked: Bool) -> Bool:
+    """Whether this configuration would run MAX's parallel runtime in a
+    forked child, which never returns from a `parallelize` (SPEC E33).
+
+    One predicate for `main` and `--doctor`, in `_pg_listen_forked_on_macos`'s
+    shape and for its reason: "forked" is `main`'s own `supervised` --
+    `--workers N` above 1, or `--reload`, which supervises even one worker
+    -- and `--spawn-workers` is the escape, because the worker execs and
+    the runtime starts fresh in the new image (measured in
+    docs/notes/m0serve-and-the-runtime-a-fork-cannot-carry.md: a forked
+    worker answers `/par/ser` and never `/par/par`, and both exec'd
+    workers answer it). `linked` arrives from the caller so both gather
+    the fact once, through `m0_http.parallel_runtime_linked`, the function
+    the Mojo host reads -- and so `test_cli.mojo` can supply it by hand in
+    a binary that links nothing. Both platforms: the fork rule this rests
+    on is the runtime's, not the kernel's.
+    """
+    return linked and (opts.workers > 1 or opts.reload) and not opts.spawn_workers
+
+
 def compiled_mount_threads_needed(opts: ServeOptions) -> Int:
     """The fewest `--blocking-threads` that leave no compiled mount unserved.
 

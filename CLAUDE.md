@@ -304,9 +304,10 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     `libAsyncRTMojoBindings`, and `--workers N` above 1 or `--reload`
     (a supervisor over even one worker, forked) exits 2 before the bind
     naming `--spawn-workers`, `--doctor` failing the same check
-    (`workers-vs-parallel-runtime`; `_parallel_runtime_forked` is the one
-    predicate both read, in `_pg_listen_forked_on_macos`'s shape; SPEC
-    E33, D51, `smoke-serve-parallel-runtime`). The fact is
+    (`workers-vs-parallel-runtime`; `parallel_runtime_forked` in `cli.mojo`
+    is the one predicate both read, in `_pg_listen_forked_on_macos`'s
+    shape, its truth table pinned by `test_cli.mojo`; SPEC E33, D51,
+    `smoke-serve-parallel-runtime`). The fact is
     `m0_http.parallel_runtime_linked`, the function the Mojo host reads
     for E32, so the shipped `bin/m0serve` passes the check unlinked.
     Measured with the refusal removed: `/par/ser` answered from the
