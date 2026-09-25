@@ -179,9 +179,15 @@ RULES = [
      "        elements=render_live(step, heights, viewers),\n",
      '        elements=render_live(step, heights, viewers).replace(\'id="live"\', \'id="other"\'),\n',
      "differing patch-elements frame(s)", WIRE),
-    ("live: the kick count is not kept across a restart", "live", T + "live/src/views.mojo",
+    ("live: the kick view does not count in the database", "live", T + "live/src/views.mojo",
      "    st.store.add_kick()\n    st.board.add(B_KICKS, 1)\n",
      "    st.board.add(B_KICKS, 1)\n",
+     "after one kick /stats says", WIRE),
+    # The store counts and then forgets: only the restart can see it, which
+    # is what the scaffold's own smoke.sh holds.
+    ("live: the kick count is not kept across a restart", "live", T + "live/src/server.mojo",
+     "                KickStore.open_file(db_path()),\n",
+     "                KickStore.in_memory(),\n",
      "after a restart /stats does not carry the kick", WIRE),
     ("live: a kick is not counted", "live", T + "live/src/views.mojo",
      "    st.board.add(B_KICKS, 1)\n",

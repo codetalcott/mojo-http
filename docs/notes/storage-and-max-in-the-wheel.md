@@ -57,8 +57,10 @@ written in the request that changes it, where the 204 the client sees is a
 committed row, and a producer that polls is the wrong owner for it.
 
 `smoke.sh` restarts the server on the same file and polls `/stats` for the
-kick; `smoke-scaffold` runs that script, and `sabotage-scaffold` reverts
-the view's write and expects the restart to come back empty. The template's own
+kick; `smoke-scaffold` runs that script, and `sabotage-scaffold` holds
+both halves: the view's write reverted is caught at the wire's first
+`/stats`, which reads the database, and the file swapped for an in-memory
+store — counted, then forgotten — is caught only by the restart. The template's own
 test opens the store in memory (`open()` wants a file it can put in WAL
 mode) and runs under `uv run m0 test` with nothing linked, on both
 platforms, which is the first thing this round wanted.
