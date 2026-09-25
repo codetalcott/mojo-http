@@ -160,7 +160,9 @@ def run(work, whl, port):
     uv = shutil.which("uv")
     env = clean_env(UV_FIND_LINKS=str(whl.parent))
     python = os.path.realpath(sys.executable)
-    sh([uv, "tool", "run", "--offline", "--python", python, "--from", str(whl),
+    # `--refresh-package m0`, for the reason m0_scaffold_smoke.check_new gives:
+    # a rebuilt wheel under one version is otherwise served from uv's cache.
+    sh([uv, "tool", "run", "--offline", "--refresh-package", "m0", "--python", python, "--from", str(whl),
         "m0", "new", "corner-dev"], work, env, "uvx m0 new")
     project = work / "corner-dev"
     sh(["uv", "sync", "--refresh-package", "m0"], project, env, "uv sync")

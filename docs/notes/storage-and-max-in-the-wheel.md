@@ -91,6 +91,23 @@ belongs (a producer's step, a heavy view rarely busy twice), that a binary
 linking it is served as threads and refused as forked workers (E32), and
 that the release build bundles its runtime.
 
+## What building it turned up
+
+**`uvx --from WHEEL` runs the m0 it cached, not the wheel it was handed.**
+The first run of `sabotage-scaffold`'s new rule — the `__M0_MAX_VERSION__`
+substitution reverted in `new.py`, the wheel rebuilt, `m0 new` run through
+`uvx --offline --from dist/m0/…whl` — was MISSED: the written
+`pyproject.toml` carried the version, substituted. uv keys a tool
+environment by the wheel's name and version, and every smoke's wheel is
+rebuilt under the one version `0.3.0+tree`, so on a machine that had run
+the smoke before, `uvx` served the m0 it built the first time. Measured
+with a marker printed from `new.py`: absent through a plain `uvx`, present
+through `uvx --refresh-package m0` and through `--no-cache`. The venv half
+of the smokes already carried `uv sync --refresh-package m0` for the same
+hazard; the three `uvx` sites (the scaffold, image and dev smokes) now
+carry `--refresh-package m0` too, and the rule is caught. CI's fresh runner
+never saw it, which is the shape of a gate that passes with the bug live.
+
 ## What follows
 
 An application outside the tree on `live`'s store, deployed with a volume,
