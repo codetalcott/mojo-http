@@ -52,7 +52,7 @@ Everything else is opt-in:
 | flag | use it when | notes |
 |---|---|---|
 | `--workers N` | you want N processes on a multi-core host | prefork; a supervisor respawns crashes and drains on SIGTERM |
-| `--spawn-workers` | a worker uses Core ML, Objective-C or anything else a forked child cannot | each worker execs the binary afresh after the fork; same supervisor, one extra process start per worker |
+| `--spawn-workers` | a worker uses Core ML, Objective-C, MAX's parallel runtime (a Mojo mount that calls `parallelize`: `--workers N` and `--reload` refuse it otherwise, exit 2) or anything else a forked child cannot | each worker execs the binary afresh after the fork; same supervisor, one extra process start per worker |
 | `--blocking-threads N` | you want more or fewer handler threads per loop | more threads overlap only work that releases the GIL — a database driver, a codec, numpy — never pure Python ([which yours is](WSGI_VS_ASGI.md)); `0` turns the pool off; for ASGI, `N>0` selects the buffered path instead of the executor |
 | `--realtime` | sync views hold SSE streams or WebSockets with `M0-Hold` | WSGI only; the [Quickstart](../QUICKSTART.md) is the contract. Keeps the default pool: a view holds its stream from a pool thread and the loop keeps every held connection, so one slow view stalls nothing. Through 1.4.0 the flag turned the pool off, so every view ran on the loop; `--blocking-threads 0` is that shape by name |
 | `--mount PREFIX=SPEC` | several applications in one process | repeatable; each mount detects its own protocol and runs in its own mode, longest prefix wins |

@@ -16,9 +16,9 @@ from lightbug_http.http import HTTPRequest, HTTPResponse, OK
 from m0_host.flags import HostFlags, host_usage, parse_host_flags
 from m0_host.host import (
     AppHandler, HostContext, host_checks, host_refusal, host_report,
-    parallel_runtime_linked,
 )
 from m0_http.config import AppConfig
+from m0_http.parallel_runtime import parallel_runtime_linked
 from m0_http.multiworker import EX_CONFIG
 
 

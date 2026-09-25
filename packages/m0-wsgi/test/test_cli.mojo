@@ -34,6 +34,7 @@ from src.cli import (
     wsgi_lanes_unserved,
     mounts_need_threads,
     pool_is_default,
+    parallel_runtime_forked,
     DEFAULT_PORT,
     M0SERVE_VERSION,
     MAX_AUTO_BLOCKING_THREADS,
@@ -1080,6 +1081,33 @@ def test_served_names_every_mount() raises:
 def test_served_falls_back_to_the_positional_spec() raises:
     var opts = _parse([String("djangoproj.wsgi")])
     assert_equal(opts.served(), String("djangoproj.wsgi:application"))
+
+
+def test_parallel_runtime_forked_truth_table() raises:
+    """The m0serve refusal of a forked worker beside MAX's parallel
+    runtime, with the fact supplied by hand (SPEC E33): linked, and a
+    supervisor that forks -- `--workers` above 1 or `--reload` -- and no
+    `--spawn-workers`. A binary that links nothing hands in False and
+    every shape passes."""
+    var opts = _seed()
+    # One process serves it, linked or not.
+    assert_false(parallel_runtime_forked(opts, True))
+    assert_false(parallel_runtime_forked(opts, False))
+    # Two forked workers: refused only where the runtime is in the image.
+    opts.workers = 2
+    assert_true(parallel_runtime_forked(opts, True))
+    assert_false(parallel_runtime_forked(opts, False))
+    # Spawned workers exec and start the runtime fresh.
+    opts.spawn_workers = True
+    assert_false(parallel_runtime_forked(opts, True))
+    # --reload supervises even one worker, forked; spawn is its escape too.
+    opts.spawn_workers = False
+    opts.workers = 1
+    opts.reload = True
+    assert_true(parallel_runtime_forked(opts, True))
+    assert_false(parallel_runtime_forked(opts, False))
+    opts.spawn_workers = True
+    assert_false(parallel_runtime_forked(opts, True))
 
 
 def main() raises:

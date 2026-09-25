@@ -81,6 +81,7 @@ from m0_http import (
     threads_conflict,
 )
 from m0_http.config import AppConfig
+from m0_http.parallel_runtime import parallel_runtime_linked
 from m0_http.prefork import (
     bind_accept_share,
     prefork_accept_share,
@@ -95,7 +96,7 @@ from m0_wsgi import (
     AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, mojo_lanes, has_wsgi_mount, asgi_mount_names,
     hold_lanes, is_compiled_mount, has_python_mount,
-    compiled_mount_threads_needed, wsgi_lanes_unserved, pool_is_default,
+    compiled_mount_threads_needed, wsgi_lanes_unserved, pool_is_default, parallel_runtime_forked,
     effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
     use_loop_inversion,
     asgi_free_threading_refusal,
@@ -390,6 +391,18 @@ def _wsgi_lanes_unserved_message(unserved: Int, blocking_threads: Int) -> String
     )
 
 
+comptime _PARALLEL_RUNTIME_FORKED = (
+    "a forked worker cannot serve MAX's parallel runtime: --workers N forks"
+    " one, and so does --reload, which supervises even a single worker, and"
+    " this binary links libAsyncRTMojoBindings -- what"
+    " max.algorithm.parallelize needs -- whose worker threads a fork() does"
+    " not copy, so a parallelize in a forked worker never returns. Use"
+    " --spawn-workers (the worker forks, then execs this binary, and the"
+    " runtime starts fresh in it), or --workers 1 without --reload"
+)
+comptime _PARALLEL_RUNTIME_FIX = (
+    "--spawn-workers, or --workers 1 without --reload"
+)
 comptime _PG_LISTEN_NEEDS_REALTIME = (
     "--pg-listen needs --realtime: the flag is what creates the broadcast bus"
     " and the subscriber registries, and a listener with nothing to publish"
@@ -798,6 +811,29 @@ def _doctor_conflicts(mut report: Report, opts: ServeOptions):
         report.pass_check(
             String("hold-mount"),
             String("--realtime is on and M0_GRANT_KEY is set"),
+        )
+    # The same predicate `main` refuses by, at the same point in its order
+    # (SPEC E33; `parallel_runtime_forked` lives in cli.mojo so test_cli can
+    # pin its table). The fact is the binary's, so a doctor run on the shipped
+    # m0serve -- which links no MAX -- always passes this one.
+    var linked = parallel_runtime_linked()
+    report.add_bool(String("topology"), String("parallel_runtime"), linked)
+    if parallel_runtime_forked(opts, linked):
+        report.fail_check(
+            String("workers-vs-parallel-runtime"),
+            String(_PARALLEL_RUNTIME_FORKED),
+            String(_PARALLEL_RUNTIME_FIX),
+            EXIT_USAGE,
+        )
+    else:
+        report.pass_check(
+            String("workers-vs-parallel-runtime"),
+            String("MAX's parallel runtime is linked; ")
+            + (String("spawned workers exec and start it fresh")
+               if opts.spawn_workers and (opts.workers > 1 or opts.reload)
+               else String("one process serves it"))
+            if linked
+            else String("MAX's parallel runtime is not linked"),
         )
 
 
@@ -1245,6 +1281,13 @@ def main() raises:
     var mount_refusal = _mount_refusal(opts)
     if mount_refusal:
         _fail(mount_refusal.value().message, EXIT_USAGE)
+        return
+
+    # A Mojo mount that links MAX's parallel runtime cannot be served from
+    # a forked worker (SPEC E33): refused here, before the bind and the
+    # fork, by the same predicate `--doctor` asks at the same point.
+    if parallel_runtime_forked(opts, parallel_runtime_linked()):
+        _fail(_PARALLEL_RUNTIME_FORKED, EXIT_USAGE)
         return
 
     # Bind before forking; every worker accepts from this one socket.

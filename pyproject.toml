@@ -9,15 +9,17 @@ license = "MIT"
 
 # `mojo` brings the whole toolchain: mojo, mojo-lsp-server, mojo-lldb, mblack.
 # MAX is deliberately not a dependency — nothing in packages/ imports it, and
-# the one app that does (apps/host_parallel, SPEC E32) is built by the smoke
-# that syncs the `max` group below, never by build-apps.
+# the two apps that do (apps/host_parallel, SPEC E32, and the m0serve mount
+# apps/serve_parallel, E33 -- one `compute.mojo` between them) are built by
+# the smokes that sync the `max` group below, never by build-apps.
 dependencies = [
     "mojo==1.1.0",
 ]
 
 [dependency-groups]
-# MAX's Mojo packages, for `smoke-parallel-runtime` alone: `max.algorithm`
-# is where `parallelize` lives since Mojo 1.0. Synced only by that step
+# MAX's Mojo packages, for `smoke-parallel-runtime` and
+# `smoke-serve-parallel-runtime` alone: `max.algorithm` is where
+# `parallelize` lives since Mojo 1.0. Synced only by those two steps
 # (`uv sync --group max`), never by a plain `uv run`, so the default venv
 # stays the toolchain the nightly canary swaps. `max-core` pins
 # `mojo-compiler==` its own release's, so this pin moves WITH the mojo pin
@@ -7979,7 +7981,7 @@ cleanup() {
   rm -rf "$out"
 }
 trap cleanup EXIT
-mojo build -I packages/m0-core/ -I packages/m0-http/ \
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
   apps/host_parallel/probe.mojo -o "$out/host_parallel" \
   || { echo "smoke-parallel-runtime: the build failed -- MAX's Mojo packages must sit beside the toolchain: uv sync --group max, then uv run --group max poe smoke-parallel-runtime"; exit 1; }
 python3 scripts/parallel_runtime_probe.py "$out/host_parallel" 8960 > "$out/probe.out" 2> "$out/probe.err" \
@@ -7991,6 +7993,43 @@ python3 scripts/emit.py parallel_view_us "$par" --unit us --task smoke-parallel-
 python3 scripts/emit.py serial_view_us "$ser" --unit us --task smoke-parallel-runtime
 echo "smoke-parallel-runtime OK"
 python3 scripts/emit.py --covers E32 --task smoke-parallel-runtime
+"""
+
+# The same runtime linked into m0serve by a Mojo mount (SPEC E33). m0serve's
+# worker model is prefork, so the refusal is m0serve's own: `--workers N`
+# and `--reload` (which supervises even one worker, forked) exit 2 before
+# the bind, by the server and the doctor alike, and `--spawn-workers` is
+# the escape -- the worker execs, and the runtime starts fresh in the new
+# image -- measured here as two exec'd workers each answering a
+# parallelize. The mount replaces the demo mount (M0SERVE_MOUNT_DIR, N14)
+# and reaches `host_parallel.compute` through M0SERVE_INCLUDE=apps; the
+# shipped bin/m0serve, which links no MAX, is the control: it passes the
+# check at two workers, so the refusal is a fact about the image and not
+# a rule about the flag. `poe build-serve` is called bare, not through
+# `uv run`: a plain `uv run` re-syncs the venv without the `max` group,
+# which would take the runtime away in the middle of this smoke.
+[tool.poe.tasks.smoke-serve-parallel-runtime]
+help = "m0serve with MAX's parallel runtime linked by a Mojo mount: --workers N and --reload are refused with 2 before the bind, by the server and the doctor alike; --spawn-workers serves parallelize from two exec'd workers; the shipped binary passes the check unlinked (SPEC E33; needs `uv sync --group max`)"
+deps = ["build-serve"]
+shell = """
+out=$(mktemp -d)
+cleanup() {
+  pkill -KILL -f "$out/" 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+M0SERVE_MOUNT_DIR=apps/serve_parallel/mount M0SERVE_INCLUDE=apps M0SERVE_OUT="$out/m0serve-par" \
+  poe build-serve \
+  || { echo "smoke-serve-parallel-runtime: the build failed -- MAX's Mojo packages must sit beside the toolchain: uv sync --group max, then uv run --group max poe smoke-serve-parallel-runtime"; exit 1; }
+python3 scripts/serve_parallel_probe.py "$out/m0serve-par" bin/m0serve 8970 > "$out/probe.out" 2> "$out/probe.err" \
+  || { cat "$out/probe.out" "$out/probe.err"; exit 1; }
+cat "$out/probe.out"
+par=$(grep '^par_us ' "$out/probe.out" | cut -d' ' -f2)
+ser=$(grep '^ser_us ' "$out/probe.out" | cut -d' ' -f2)
+python3 scripts/emit.py serve_parallel_view_us "$par" --unit us --task smoke-serve-parallel-runtime
+python3 scripts/emit.py serve_serial_view_us "$ser" --unit us --task smoke-serve-parallel-runtime
+echo "smoke-serve-parallel-runtime OK"
+python3 scripts/emit.py --covers E33 --task smoke-serve-parallel-runtime
 """
 
 # Each Mojo host rule, broken on purpose (SPEC E21-E32, N18, N19):

@@ -76,7 +76,10 @@ dies is replaced. The worker that wins an accept hands the connection to
 the least-loaded sibling, so keep-alive load spreads. Refused when the
 binary links MAX's parallel runtime (`libAsyncRTMojoBindings`, what
 `max.algorithm.parallelize` needs): `fork()` copies the calling thread
-alone, and a `parallelize` in a forked worker never returns.
+alone, and a `parallelize` in a forked worker never returns. On macOS a
+binary built beside an installed `max-core` links that runtime whether
+or not it imports MAX, so there the refusal covers every build in a MAX
+venv ([known issues](ROADMAP.md#known-issues)).
 
 <!-- observed: docs/notes/loops-on-threads.md, from bench/results/host-modes-20260918T201017Z.json (macOS, M4, four loops) and its Linux aarch64 twin -->
 Measured against each other, threads and workers are level on throughput
