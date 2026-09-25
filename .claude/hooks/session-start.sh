@@ -7,7 +7,8 @@
 #   * The Linux system packages. README's "Building on Linux needs three
 #     system packages" names them: a C compiler (`mojo build` shells out for
 #     linking), `patchelf` (binaries record a $ORIGIN DT_RUNPATH so they find
-#     the Mojo runtime beside themselves) and `libsqlite3-dev` for m0-sqlite.
+#     the Mojo runtime beside themselves) and `libsqlite3-dev` for the C
+#     layout guard's `sqlite3.h` (m0-sqlite itself opens the library at run time).
 #     Without patchelf, `poe build-serve` -- the LAST step of `test-all` --
 #     aborts the whole sequence after everything else has passed, saying
 #     "on Linux it is a build requirement for this artifact, not an optional
@@ -54,7 +55,7 @@ if [ "$(uname -s)" = "Linux" ]; then
           && DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y -qq $missing); then
       echo "session-start: WARNING -- could not install$missing." >&2
       echo "session-start: without patchelf, \`poe build-serve\` fails at the END of" >&2
-      echo "session-start: test-all; without libsqlite3-dev, test-sqlite fails to link." >&2
+      echo "session-start: test-all; without libsqlite3-dev, verify-vtab-layout has no sqlite3.h." >&2
     fi
   else
     echo "session-start: build-essential, patchelf and libsqlite3-dev already present"

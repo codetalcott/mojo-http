@@ -197,9 +197,9 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | `m0-http` | Router, content negotiation, ETag, response cache, SSE, WebSockets, auth, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies and CSRF | 880 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 93 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 158 |
-| `m0-sqlite` | SQLite bindings — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 117 |
+| `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 124 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 75 |
-| **Total** | | **1422** |
+| **Total** | | **1429** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -758,12 +758,17 @@ some network filesystems — rather than quietly falling back to a rollback
 journal and delivering none of the concurrency it advertises. Use
 `open_memory()` for an in-memory database.
 
-**Linking.** Tests build to a binary with `-Xlinker -lsqlite3` rather than using
-`mojo run`. The JIT resolves symbols only from libraries already in its process:
-on macOS libsqlite3 lives in the dyld shared cache so `mojo run` happens to
-work, but on Linux it fails with `JIT session error: Symbols not found:
-[sqlite3_open_v2, ...]`. Linking explicitly behaves the same on both. Linux also
-needs `libsqlite3-dev` present at link time; CI installs it.
+**Loading.** libsqlite3 is opened at run time, not linked: nothing in this
+repo carries it on a link line, so a binary that never opens a database needs
+no library present, and `mojo run` works for every test on both platforms
+(the JIT resolves symbols only from libraries already in its process, which
+used to fail on Linux with `Symbols not found: [sqlite3_open_v2, ...]`).
+`Connection` opens it from `M0_LIBSQLITE3`, else a search path that tries the
+bare name and then the places a package manager puts one; an absent library is
+one error naming every path tried, and one below 3.20.0, built without
+threads, or missing an entry point is refused naming what it found. Linux
+needs the runtime library (`libsqlite3-0` on Debian and Ubuntu); the `-dev`
+package is only for the C layout guard's `sqlite3.h`.
 
 **Bulk arrays.** `m0_array(?)` is an opt-in virtual table that streams a Mojo
 `List` into SQL without copying it, so N rows insert in one `sqlite3_step`
@@ -872,7 +877,7 @@ is silently a different number.
 - HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
 - Linux `x86_64` and `aarch64` (`epoll`), macOS `arm64` (`kqueue`). Architectures matter here: Modular ships no Intel Mac toolchain, so macOS `x86_64` is not buildable at all. See the install table above.
 - Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
-- Building on Linux needs three system packages: a C compiler (`mojo build` shells out for linking), `patchelf` (the binaries record a `$ORIGIN` `DT_RUNPATH` so they find the Mojo runtime beside themselves), and `libsqlite3-dev` for `m0-sqlite`. `build-essential libsqlite3-dev patchelf` covers it. None are needed on macOS.
+- Building on Linux needs two system packages: a C compiler (`mojo build` shells out for linking) and `patchelf` (the binaries record a `$ORIGIN` `DT_RUNPATH` so they find the Mojo runtime beside themselves). `build-essential patchelf` covers it; `m0-sqlite` opens the runtime `libsqlite3` at run time, and `verify-vtab-layout` alone wants `libsqlite3-dev` for its header. None are needed on macOS.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
 - The served contract is stable from 1.0: `m0serve`'s flags and environment variables, the `M0-Hold`/`M0-Channel` headers, and `m0pub.publish()`. A minor release does not break them; everything else — the Mojo APIs, the package layout, the fork's internals — is still free to move.
 - **SSE fan-out is single-process by default.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry. The `BroadcastBus` lifts this when wired in: created before the fork (one datagram channel per worker, alongside a `SharedAtomics` slot that keeps event ids unique across workers), it carries every broadcast to every worker's subscribers — `apps/datastar_counter` is the reference wiring, asserted by `poe smoke-counter`. Cross-worker ordering is best-effort: two workers broadcasting concurrently can reach a subscriber in either order, and the redelivery filter keeps the newer id.
@@ -885,7 +890,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1422 unit tests, then compiles every example
+uv run poe test-all         # 1429 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

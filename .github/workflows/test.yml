@@ -57,9 +57,10 @@ jobs:
         run: |
           uv run poe check-milestones
           uv run poe milestones
-      # m0-sqlite links libsqlite3. macOS resolves it from the dyld shared
-      # cache with no setup; Linux needs the development package present at
-      # link time, or the build fails with "cannot find -lsqlite3".
+      # m0-sqlite opens libsqlite3 at run time (SPEC O17), so nothing links
+      # it; the development package is for `verify-vtab-layout`, which
+      # compiles a C file against sqlite3.h. The library itself is on every
+      # runner already.
       - name: Install libsqlite3 (Linux)
         if: runner.os == 'Linux'
         # Normally ~6 s. Observed hanging for 63 min against an unreachable

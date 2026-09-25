@@ -92,7 +92,7 @@ So if carray ever becomes available, the data is in the right shape; the blocker
 is availability, not representation.
 
 `sqlite3_bind_pointer` does resolve, so the pointer-passing machinery carray
-depends on is present. If a future toolchain links a libsqlite3 built with
+depends on is present. If a host's libsqlite3 were built with
 `SQLITE_ENABLE_CARRAY`, wiring it up would be a small change.
 
 ## The portable substitute: json_each
@@ -243,7 +243,7 @@ deliberately, item by item:
 
 | technique | status here |
 |-----------|-------------|
-| reach the unbound C API | **no analog** — libsqlite3 is on the link line, `external_call` already reaches all of it; `carray()` is absent from the *library binary*, which no loader trick fixes |
+| reach the unbound C API | **no analog** — every entry point the package uses is loaded from libsqlite3 by name at run time (`lib.mojo`, since 2026-09-25); `carray()` is absent from the *library binary*, which no loader trick fixes |
 | replace interpreted work with C calls | **no analog** — there is no interpreter boundary |
 | batch N calls into one (`PyDict_Copy`) | **no analog** — SQLite has no bulk row API (`sqlite3_step` is per row; already recorded at the SoA readers) |
 | eliminate copies on the hot path | **already applied** — `column_blob` memcpy (13–20x), `column_blob_into` reuse, `m0_array` borrow-by-shape (3.4x) |
@@ -377,7 +377,8 @@ layout guard is `uv run poe verify-vtab-layout`, and `uv run poe
 sabotage-vtab` proves it can fail.
 
 The origin finding is four programs of a dozen lines, built with
-`mojo build -I packages/m0-sqlite -Xlinker -lsqlite3`. The shape that must
+`mojo build -I packages/m0-sqlite` (with `-Xlinker -lsqlite3` at the time;
+the library has been opened at run time since 2026-09-25). The shape that must
 NOT build for a borrowed span to be safe, and does:
 
 ```mojo

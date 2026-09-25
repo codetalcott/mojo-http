@@ -12,7 +12,6 @@ model in `m0-http` implies. Do not share a `Connection` across threads.
 library's compiled default is (macOS ships `THREADSAFE=2`, multi-thread).
 """
 
-from std.ffi import external_call, c_int
 from std.memory import Pointer, stack_allocation
 from std.time import perf_counter_ns, sleep
 
@@ -27,12 +26,10 @@ from .ffi import (
     c_string,
     describe,
     describe_in,
-    libversion,
-    libversion_number,
-    db_errmsg,
     check_c_int_length,
     error_code,
 )
+from .lib import SqliteLib, as_cstr, open_library, str_cstr
 from .stmt import Statement
 from .vtab import _register, SQLITE_MIN_VTAB_VERSION
 
@@ -85,25 +82,33 @@ def _tail_is_blank(sql: String, start: Int) -> Bool:
 
 
 struct Connection(Movable):
-    """An open database. Closed automatically when it goes out of scope."""
+    """An open database. Closed automatically when it goes out of scope.
+
+    Holds the library table it was opened through (`lib.mojo`): every call
+    this connection makes goes through it, and every `Statement` it prepares
+    takes a copy of the entry points it needs, so the statement outlives the
+    connection and its handle alike.
+    """
 
     var _handle: Int
+    var _lib: SqliteLib
 
     def __init__(out self, path: String, flags: Int) raises:
         """Open a database with explicit flags.
 
         Prefer `open`, `open_readonly` or `open_memory` unless you need control
-        over the flag set.
+        over the flag set. The library is opened first (`open_library`), so a
+        missing libsqlite3 is one error naming every path tried, before any
+        database is touched.
         """
+        self._handle = 0
+        self._lib = open_library()
         var pp = stack_allocation[1, Int]()
         pp[unsafe_offset=0] = 0
         # Must outlive the call — sqlite3_open_v2 takes no length. See c_string.
         var cpath = c_string(path)
-        var rc = Int(
-            external_call["sqlite3_open_v2", c_int](
-                cpath.unsafe_ptr(), pp, c_int(flags), Int(0)
-            )
-        )
+        var rc = self._lib.open_v2(as_cstr(cpath), Int(pp), flags, 0)
+        _ = cpath
         self._handle = pp[unsafe_offset=0]
         if rc != SQLITE_OK:
             # Read the message before closing: the handle is what carries it.
@@ -112,13 +117,19 @@ struct Connection(Movable):
                 detail = self.errmsg()
                 # close_v2 everywhere: statements outliving their connection is
                 # a property this package relies on, and only close_v2 has it.
-                _ = external_call["sqlite3_close_v2", c_int](self._handle)
+                _ = self._lib.close_v2(self._handle)
                 self._handle = 0
-            raise Error(describe_in("open_v2", rc, detail, path))
+            raise Error(
+                describe_in("open_v2", rc, detail, path, self._lib.errstr(rc))
+            )
 
     def __deinit__(deinit self):
         if self._handle != 0:
-            _ = external_call["sqlite3_close_v2", c_int](self._handle)
+            _ = self._lib.close_v2(self._handle)
+
+    def library_path(self) -> String:
+        """Which libsqlite3 this connection opened."""
+        return self._lib.path
 
     # --- Statements --------------------------------------------------------
 
@@ -131,13 +142,12 @@ struct Connection(Movable):
         without noticing.
         """
         var csql = c_string(sql)  # sqlite3_exec takes no length argument
-        var rc = Int(
-            external_call["sqlite3_exec", c_int](
-                self._handle, csql.unsafe_ptr(), Int(0), Int(0), Int(0)
-            )
-        )
+        var rc = self._lib.exec(self._handle, as_cstr(csql))
+        _ = csql
         if rc != SQLITE_OK:
-            raise Error(describe_in("exec", rc, self.errmsg(), sql))
+            raise Error(
+                describe_in("exec", rc, self.errmsg(), sql, self._lib.errstr(rc))
+            )
 
     def prepare(self, sql: String) raises -> Statement:
         """Compile exactly one statement.
@@ -161,18 +171,14 @@ struct Connection(Movable):
         var ptail = stack_allocation[1, Int]()
         ptail[unsafe_offset=0] = 0
         check_c_int_length("prepare_v2", len(sql.as_bytes()))
-        var base = sql.unsafe_ptr()
-        var rc = Int(
-            external_call["sqlite3_prepare_v2", c_int](
-                self._handle,
-                base,
-                c_int(len(sql.as_bytes())),
-                pstmt,
-                ptail,
-            )
+        var base = Int(sql.unsafe_ptr())
+        var rc = self._lib.prepare_v2(
+            self._handle, str_cstr(sql), len(sql.as_bytes()), Int(pstmt), Int(ptail)
         )
         if rc != SQLITE_OK:
-            raise Error(describe_in("prepare_v2", rc, self.errmsg(), sql))
+            raise Error(
+                describe_in("prepare_v2", rc, self.errmsg(), sql, self._lib.errstr(rc))
+            )
 
         var handle = pstmt[unsafe_offset=0]
         if handle == 0:
@@ -182,18 +188,18 @@ struct Connection(Movable):
             )
 
         var tail = ptail[unsafe_offset=0]
-        if tail != 0 and not _tail_is_blank(sql, tail - Int(base)):
+        if tail != 0 and not _tail_is_blank(sql, tail - base):
             # Finalize before raising: this path owns the handle and no
             # Statement has been constructed to release it.
-            _ = external_call["sqlite3_finalize", c_int](handle)
+            _ = self._lib.finalize(handle)
             raise Error(
                 "sqlite3_prepare_v2 left "
-                + String(len(sql.as_bytes()) - (tail - Int(base)))
+                + String(len(sql.as_bytes()) - (tail - base))
                 + " bytes uncompiled — prepare() takes one statement, use"
                 " execute() for a script [" + sql + "]"
             )
 
-        return Statement(handle)
+        return Statement(handle, self._lib.stmt_lib())
 
     # --- Transactions ------------------------------------------------------
     #
@@ -221,21 +227,17 @@ struct Connection(Movable):
 
     def in_transaction(self) -> Bool:
         """Whether a transaction is currently open."""
-        return (
-            Int(external_call["sqlite3_get_autocommit", c_int](self._handle)) == 0
-        )
+        return self._lib.get_autocommit(self._handle) == 0
 
     # --- Introspection -----------------------------------------------------
 
     def last_insert_rowid(self) -> Int:
         """Rowid of the most recent successful INSERT on this connection."""
-        return Int(
-            external_call["sqlite3_last_insert_rowid", Int64](self._handle)
-        )
+        return self._lib.last_insert_rowid(self._handle)
 
     def changes(self) -> Int:
         """Rows modified by the most recent INSERT, UPDATE or DELETE."""
-        return Int(external_call["sqlite3_changes", c_int](self._handle))
+        return self._lib.changes(self._handle)
 
     def total_changes(self) -> Int:
         """Rows modified since this connection was opened.
@@ -246,11 +248,11 @@ struct Connection(Movable):
         which would raise the floor for the whole package rather than just for
         `m0_array`; not worth it for a counter. Treat this as advisory.
         """
-        return Int(external_call["sqlite3_total_changes", c_int](self._handle))
+        return self._lib.total_changes(self._handle)
 
     def errmsg(self) -> String:
         """Text of the most recent error on this connection."""
-        return db_errmsg(self._handle)
+        return self._lib.errmsg(self._handle)
 
     def query_scalar(self, sql: String) raises -> String:
         """Run a one-row, one-column query and return the value as text.
@@ -293,13 +295,11 @@ struct Connection(Movable):
         to a write — SQLite must return SQLITE_BUSY there rather than wait,
         because waiting could not preserve what the transaction already read.
         """
-        var rc = Int(
-            external_call["sqlite3_busy_timeout", c_int](
-                self._handle, c_int(milliseconds)
-            )
-        )
+        var rc = self._lib.busy_timeout(self._handle, milliseconds)
         if rc != SQLITE_OK:
-            raise Error(describe("busy_timeout", rc, self.errmsg()))
+            raise Error(
+                describe("busy_timeout", rc, self.errmsg(), self._lib.errstr(rc))
+            )
 
     def register_array_module(mut self) raises:
         """Make `m0_array(?)` available on this connection.
@@ -316,27 +316,24 @@ struct Connection(Movable):
         `Statement.*_over` helpers; see the note above them for why.
 
         Raises on SQLite older than 3.26.0. `sqlite3_bind_pointer` arrived in
-        3.20.0, but the planner's side of the contract — SQLITE_CONSTRAINT
-        from xBestIndex meaning "reject this plan", which `m0_array` uses to
-        refuse a scan without its array — is only honoured from 3.26.0, and on
-        the versions between, that refusal fails legitimate queries. A
-        pre-3.20 build would already be a hard failure — a missing symbol at
-        link time on Linux, at load time on macOS — but an unresolved symbol
-        names neither the feature that wanted it nor the version that would
-        provide it, so it is worth saying plainly here.
+        3.20.0, which is the library floor `open_library` checks, but the
+        planner's side of the contract — SQLITE_CONSTRAINT from xBestIndex
+        meaning "reject this plan", which `m0_array` uses to refuse a scan
+        without its array — is only honoured from 3.26.0, and on the versions
+        between, that refusal fails legitimate queries.
         """
-        var have = libversion_number()
+        var have = self._lib.libversion_number()
         if have < SQLITE_MIN_VTAB_VERSION:
             raise Error(
                 "m0_array needs SQLite 3.26.0 or newer (sqlite3_bind_pointer"
-                " and the SQLITE_CONSTRAINT xBestIndex contract), but this"
-                " build links "
-                + libversion()
+                " and the SQLITE_CONSTRAINT xBestIndex contract), but the"
+                " library at " + self._lib.path + " is "
+                + self._lib.libversion()
                 + " ("
                 + String(have)
                 + ")"
             )
-        _register(self._handle)
+        _register(self._lib, self._handle)
 
     def close(mut self) raises:
         """Close early. Idempotent; `__deinit__` also closes.
@@ -347,11 +344,11 @@ struct Connection(Movable):
         """
         if self._handle == 0:
             return
-        var rc = Int(external_call["sqlite3_close_v2", c_int](self._handle))
+        var rc = self._lib.close_v2(self._handle)
         self._handle = 0
         if rc != SQLITE_OK:
             # No errmsg(): the handle this would ask is the one just closed.
-            raise Error(describe("close_v2", rc, String("")))
+            raise Error(describe("close_v2", rc, String(""), self._lib.errstr(rc)))
 
 
 # --- Constructors ----------------------------------------------------------

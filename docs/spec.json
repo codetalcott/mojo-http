@@ -2200,6 +2200,22 @@
       "capability": "A `Result` outlives the `Connection` that produced it: Mojo destroys a connection at its last use, so `var rows = db.query(...)` with no later mention of `db` finishes the connection on that line, and every read and the final `PQclear` still answer \u2014 because libpq, once opened, is pinned for the life of the process, and a result holds the entry points it calls by value rather than through its connection's address",
       "status": "verified",
       "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 measured before the fix as a segmentation fault on the first read, three runs out of three, in both shapes the test holds: a connection whose last mention is the query, and a result returned out of the helper that opened its connection. Each half of the fix is necessary on its own: pinned but still reading through the address, the read faults in `Result.text`; unpinned but holding the pointers by value, it faults too, and `test_lib.mojo` asserts that half without a server by calling a copied table after its `PgLib` is gone"
+    },
+    {
+      "id": "O17",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "libsqlite3 is opened at run time rather than linked, so no binary in this repo carries a libsqlite3 dependency on its link line \u2014 `mojo run` works on Linux as it does on macOS, which is the shape `m0 test` takes, and `m0 build` needs no flag for it \u2014 and an absent library is one error naming every path tried, `M0_LIBSQLITE3` naming the file outright; a library that opens and is not libsqlite3, or one older than 3.20.0, is refused naming the first symbol it lacks, never aborted on; a library built with `SQLITE_THREADSAFE=0` is refused, since the package opens one connection per thread; and every entry point is checked before it is loaded, in one place, taking its name from the declaration it loads",
+      "status": "verified",
+      "evidence": "`test_lib.mojo:test_the_library_opens_and_meets_the_floor` (every PR) \u2014 the search path, the floor and the thread-safety flag; `test_a_symbol_the_library_lacks_is_an_error_naming_it`, `test_a_path_that_is_not_a_library_is_an_error_naming_it` (through `M0_LIBSQLITE3` too, which is what a `Connection` sees) and `test_a_library_that_is_not_libsqlite3_is_refused_by_symbol` beside it. `build-apps` (inside `poe test-all`) builds `apps/datastar_todo`, the package's one consumer, and fails if its binary names libsqlite3 in a `NEEDED` entry or a load command, which is where an `external_call` put back anywhere in the package would reappear"
+    },
+    {
+      "id": "O18",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "A `Statement` outlives every handle the library was opened through, not only the `Connection` that prepared it (O2): each connection holds its own library table (`SqliteLib`, the handle and its entry points in one struct) and each statement a COPY of the entry points it calls (`StmtLib`), which is sound only because the library is pinned for the life of the process \u2014 re-opened `RTLD_NODELETE` at construction, so no `dlclose` unmaps it; the virtual-table callbacks hold a copy the same way, in the buffer SQLite owns, which is how a callback invoked from C reaches the library without a global",
+      "status": "verified",
+      "evidence": "`test_lib.mojo:test_a_statement_outlives_every_handle_of_the_library` (every PR) \u2014 the connection is closed and dropped, the only handle with it, and the statement then steps and reads through its copies. The sabotage is the pin removed from `SqliteLib.__init__`: measured 2026-09-25 on Linux, where nothing else has the library mapped, the same test then dies of a segmentation fault at its first `step` rather than failing (docs/notes/sqlite-at-run-time.md)"
     }
   ]
 }

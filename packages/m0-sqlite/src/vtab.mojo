@@ -22,6 +22,15 @@ needs none of this.
 needed, and Mojo can supply C-callable function pointers, so the module is
 built here and registered in-process on a live connection.
 
+**The callbacks reach the library without a global.** SQLite calls them from
+C with no way to hand them a Mojo table, and the library is opened at run
+time (`lib.mojo`), so the seven entry points they need travel in the buffer
+SQLite already owns: `VtabLib.store` writes them as words after the
+`sqlite3_module` (`A_LIB`), the same buffer is the `pAux` every `xConnect`
+receives, `xConnect` keeps that address in the vtab's extra word (`V_AUX`),
+and a cursor reaches it through its vtab (`C_VTAB`). Copies, sound because
+the library is pinned for the life of the process.
+
 Three things about the implementation are deliberate:
 
   - **The C structs are flat word buffers, not Mojo structs.** Same reasoning as
@@ -55,10 +64,11 @@ Borrow safety is not this file's job; see `Statement.execute_over` and
 array and are shaped so the borrow cannot outlive the data.
 """
 
-from std.ffi import external_call, c_int
+from std.ffi import c_int
 from std.memory import Pointer
 
 from .ffi import SQLITE_OK, SQLITE_NOMEM, SQLITE_CONSTRAINT, c_string
+from .lib import FreeFn, SqliteLib, StmtLib, VtabLib, as_cstr
 
 # --- Constraint operators (xBestIndex input, not a result code) -------------
 comptime SQLITE_INDEX_CONSTRAINT_EQ: Int = 2
@@ -100,8 +110,17 @@ comptime M_COLUMN: Int = 11
 comptime M_ROWID: Int = 12
 comptime M_SLOTS: Int = 25
 
+# --- The module buffer's tail: ours, past what SQLite reads -----------------
+# `iVersion` bounds SQLite to the first M_SLOTS words; the seven library
+# entry points the callbacks call sit after them (`VtabLib.store`), and
+# the buffer is A_WORDS long. Mojo's own layout, not SQLite's.
+comptime A_LIB: Int = 25
+comptime A_WORDS: Int = 32
+
 # --- sqlite3_vtab: {pModule, nRef, zErrMsg}; xConnect allocates this many --
+# Word 3 is ours: the pAux address, which is where the entry points are.
 comptime V_WORDS: Int = 4
+comptime V_AUX: Int = 3
 
 # --- The spec header, allocated per bind and freed by SQLite ----------------
 # Passing {data, count, kind} through one pointer keeps the SQL down to a
@@ -155,27 +174,45 @@ def _words(addr: Int) -> WordPtr:
 # --- Module callbacks --------------------------------------------------------
 
 
+def _lib_of_aux(p_aux: Int) -> VtabLib:
+    """The entry points `_build_module` stored after the module."""
+    return VtabLib.load(p_aux + A_LIB * 8)
+
+
+def _lib_of_vtab(p_vtab: Int) -> VtabLib:
+    """The same, through the pAux address `_x_connect` kept in the vtab."""
+    return _lib_of_aux(_words(p_vtab)[unsafe_offset=V_AUX])
+
+
+def _lib_of_cursor(p_cursor: Int) -> VtabLib:
+    """The same, through the cursor's vtab."""
+    return _lib_of_vtab(_words(p_cursor)[unsafe_offset=C_VTAB])
+
+
 def _x_connect(
     db: Int, p_aux: Int, argc: c_int, argv: Int, pp_vtab: Int, pz_err: Int
 ) abi("C") -> c_int:
-    var rc = Int(
-        external_call["sqlite3_declare_vtab", c_int](db, ARRAY_DECL.ptr())
-    )
+    var lib = _lib_of_aux(p_aux)
+    var decl = c_string(ARRAY_DECL)
+    var rc = lib.declare_vtab(db, as_cstr(decl))
+    _ = decl
     if rc != SQLITE_OK:
         return c_int(rc)
-    # sqlite3_vtab is {pModule, nRef, zErrMsg}; V_WORDS zeroed words cover it.
-    var p = Int(external_call["sqlite3_malloc64", Int](Int64(V_WORDS * 8)))
+    # sqlite3_vtab is {pModule, nRef, zErrMsg}; V_WORDS zeroed words cover it,
+    # and the fourth is ours: where the entry points are.
+    var p = lib.malloc64(V_WORDS * 8)
     if p == 0:
         return c_int(SQLITE_NOMEM)
     var w = _words(p)
     for i in range(V_WORDS):
         w[unsafe_offset=i] = 0
+    w[unsafe_offset=V_AUX] = p_aux
     _words(pp_vtab)[unsafe_offset=0] = p
     return c_int(SQLITE_OK)
 
 
 def _x_disconnect(p_vtab: Int) abi("C") -> c_int:
-    external_call["sqlite3_free", NoneType](p_vtab)
+    _lib_of_vtab(p_vtab).free(p_vtab)
     return c_int(SQLITE_OK)
 
 
@@ -233,7 +270,7 @@ def _x_best_index(p_vtab: Int, p_info: Int) abi("C") -> c_int:
 
 
 def _x_open(p_vtab: Int, pp_cursor: Int) abi("C") -> c_int:
-    var p = Int(external_call["sqlite3_malloc64", Int](Int64(C_WORDS * 8)))
+    var p = _lib_of_vtab(p_vtab).malloc64(C_WORDS * 8)
     if p == 0:
         return c_int(SQLITE_NOMEM)
     var w = _words(p)
@@ -245,7 +282,7 @@ def _x_open(p_vtab: Int, pp_cursor: Int) abi("C") -> c_int:
 
 
 def _x_close(p_cursor: Int) abi("C") -> c_int:
-    external_call["sqlite3_free", NoneType](p_cursor)
+    _lib_of_cursor(p_cursor).free(p_cursor)
     return c_int(SQLITE_OK)
 
 
@@ -263,11 +300,11 @@ def _x_filter(
 
     # NULL unless this value was set by bind_pointer with a matching tag, so a
     # stray integer parameter cannot be reinterpreted as an address.
-    var spec = Int(
-        external_call["sqlite3_value_pointer", Int](
-            _words(argv)[unsafe_offset=0], ARRAY_TAG.ptr()
-        )
+    var tag = c_string(ARRAY_TAG)
+    var spec = _lib_of_cursor(p_cursor).value_pointer(
+        _words(argv)[unsafe_offset=0], as_cstr(tag)
     )
+    _ = tag
     if spec == 0:
         return c_int(SQLITE_OK)
 
@@ -295,18 +332,19 @@ def _x_eof(p_cursor: Int) abi("C") -> c_int:
 
 def _x_column(p_cursor: Int, ctx: Int, col: c_int) abi("C") -> c_int:
     var cur = _words(p_cursor)
+    var lib = _lib_of_cursor(p_cursor)
     if Int(col) != 0:
-        external_call["sqlite3_result_null", NoneType](ctx)
+        lib.result_null(ctx)
         return c_int(SQLITE_OK)
 
     var i = cur[unsafe_offset=C_INDEX]
     var base = cur[unsafe_offset=C_DATA]
     if cur[unsafe_offset=C_KIND] == KIND_FLOAT:
         var f = F64Ptr(unsafe_from_address=base)[unsafe_offset=i]
-        external_call["sqlite3_result_double", NoneType](ctx, f)
+        lib.result_double(ctx, f)
     else:
         var v = _words(base)[unsafe_offset=i]
-        external_call["sqlite3_result_int64", NoneType](ctx, Int64(v))
+        lib.result_int64(ctx, v)
     return c_int(SQLITE_OK)
 
 
@@ -318,21 +356,26 @@ def _x_rowid(p_cursor: Int, p_rowid: Int) abi("C") -> c_int:
 # --- Registration ------------------------------------------------------------
 
 
-def _build_module() raises -> Int:
-    """Allocate and fill the sqlite3_module. Returns its address.
+def _build_module(lib: SqliteLib) raises -> Int:
+    """Allocate and fill the sqlite3_module, and the entry points after it.
+    Returns its address.
 
     SQLite-allocated rather than a Mojo `List` so its lifetime can be handed to
     SQLite: the same address is passed as `pAux` with `sqlite3_free` as the
     destructor, so it is released when the module is dropped at connection
     close. A Mojo-owned buffer would have to outlive the `Connection`, which is
     exactly the kind of bookkeeping this package should not be asking for.
+    The seven entry points the callbacks call ride in the same buffer, past
+    the words SQLite reads (`A_LIB`), which is how a callback invoked from C
+    finds the library without a global.
     """
-    var m = Int(external_call["sqlite3_malloc64", Int](Int64(M_SLOTS * 8)))
+    var m = lib.malloc64(A_WORDS * 8)
     if m == 0:
         raise Error("sqlite3_malloc64 failed for the vtab module")
     var w = _words(m)
-    for i in range(M_SLOTS):
+    for i in range(A_WORDS):
         w[unsafe_offset=i] = 0
+    lib.vtab_lib().store(m + A_LIB * 8)
 
     # iVersion=1: bounds SQLite's reads to the first 19 slots.
     w[unsafe_offset=M_VERSION] = 1
@@ -372,26 +415,16 @@ def _build_module() raises -> Int:
     return m
 
 
-comptime FreeFn = def (Int) thin abi("C") -> None
-
-
-def _free_shim(p: Int) abi("C") -> None:
-    """Destructor handed to SQLite for buffers it should own."""
-    external_call["sqlite3_free", NoneType](p)
-
-
-def _register(db_handle: Int) raises:
+def _register(lib: SqliteLib, db_handle: Int) raises:
     """Register `m0_array` on a connection. See `Connection.register_array_module`."""
-    var m = _build_module()
+    var m = _build_module(lib)
     var name = c_string(ARRAY_NAME)
-    var destroy: FreeFn = _free_shim
-    # pAux is the module buffer itself, with a free destructor, so SQLite owns
-    # the allocation from here and releases it when the module is dropped.
-    var rc = Int(
-        external_call["sqlite3_create_module_v2", c_int](
-            db_handle, name.unsafe_ptr(), m, m, destroy
-        )
-    )
+    # pAux is the module buffer itself, with sqlite3_free itself — the
+    # library's own pointer, not a Mojo shim — as the destructor, so SQLite
+    # owns the allocation from here and releases it when the module is
+    # dropped.
+    var rc = lib.create_module_v2(db_handle, as_cstr(name), m, m, lib.free_fn())
+    _ = name
     if rc != SQLITE_OK:
         # No free here: create_module_v2 invokes the destructor on failure too
         # (documented in sqlite3.h), and pAux is the module buffer itself, so
@@ -403,7 +436,7 @@ def _register(db_handle: Int) raises:
 
 
 def _bind_spec(
-    stmt_handle: Int, param: Int, data: Int, count: Int, kind: Int
+    lib: StmtLib, stmt_handle: Int, param: Int, data: Int, count: Int, kind: Int
 ) raises:
     """Bind a {data, count, kind} header to `param` as a tagged pointer.
 
@@ -411,7 +444,7 @@ def _bind_spec(
     no Mojo-side lifetime. The array it points at is the dangerous part — that
     is what the `*_over` helpers exist to keep alive.
     """
-    var p = Int(external_call["sqlite3_malloc64", Int](Int64(S_WORDS * 8)))
+    var p = lib.malloc64(S_WORDS * 8)
     if p == 0:
         raise Error("sqlite3_malloc64 failed for an array spec")
     var w = _words(p)
@@ -419,12 +452,9 @@ def _bind_spec(
     w[unsafe_offset=S_COUNT] = count
     w[unsafe_offset=S_KIND] = kind
 
-    var destroy: FreeFn = _free_shim
-    var rc = Int(
-        external_call["sqlite3_bind_pointer", c_int](
-            stmt_handle, c_int(param), p, ARRAY_TAG.ptr(), destroy
-        )
-    )
+    var tag = c_string(ARRAY_TAG)
+    var rc = lib.bind_pointer(stmt_handle, param, p, as_cstr(tag), lib.free_fn())
+    _ = tag
     if rc != SQLITE_OK:
         # No free here: bind_pointer runs the destructor even when the bind
         # fails — measured on 3.51.0 for both SQLITE_RANGE and SQLITE_MISUSE,

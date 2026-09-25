@@ -11,7 +11,6 @@ reads across directly.
 """
 
 from std.collections.span import Span
-from std.ffi import external_call, c_int
 from std.memory import Pointer, unsafe_memcpy
 
 from .vtab import KIND_INT, KIND_FLOAT, _bind_spec
@@ -24,25 +23,31 @@ from .ffi import (
     SQLITE_NULL,
     cstr_to_string,
     cstr_len,
-    errstr,
     describe,
-    stmt_errmsg,
     check_c_int_length,
 )
+from .lib import StmtLib, as_cstr, str_cstr
 
 
 struct Statement(Movable):
-    """A compiled SQL statement. Finalized automatically when it goes out of scope."""
+    """A compiled SQL statement. Finalized automatically when it goes out of scope.
+
+    Carries its own copy of the entry points it calls (`StmtLib`), cut from
+    the connection's table at `prepare`: the library is pinned for the life
+    of the process, so the statement keeps working after the connection —
+    and the handle that loaded the library — are gone (O2).
+    """
 
     var _handle: Int
+    var _lib: StmtLib
 
-    def __init__(out self, handle: Int) raises:
+    def __init__(out self, handle: Int, lib: StmtLib) raises:
         """Take ownership of a `sqlite3_stmt*` carried as an opaque address.
 
         Refuses a NULL handle. `Connection.prepare` already rejects the case
         SQLite produces one — text that compiles to no statement — but this
-        constructor is public and takes a bare `Int`, so `Statement(0)` was
-        reachable and its first `step` would call `sqlite3_step(NULL)`.
+        constructor is public and takes a bare `Int`, so `Statement(0, lib)`
+        was reachable and its first `step` would call `sqlite3_step(NULL)`.
         """
         if handle == 0:
             raise Error(
@@ -50,34 +55,21 @@ struct Statement(Movable):
                 " only be built from a handle sqlite3_prepare_v2 produced"
             )
         self._handle = handle
+        self._lib = lib
 
     def __deinit__(deinit self):
         if self._handle != 0:
-            _ = external_call["sqlite3_finalize", c_int](self._handle)
+            _ = self._lib.finalize(self._handle)
 
     # --- Binding (1-based, as SQLite defines it) ---------------------------
 
     def bind_int(mut self, index: Int, value: Int) raises:
         """Bind a 64-bit integer."""
-        self._check(
-            Int(
-                external_call["sqlite3_bind_int64", c_int](
-                    self._handle, c_int(index), Int64(value)
-                )
-            ),
-            "bind_int",
-        )
+        self._check(self._lib.bind_int64(self._handle, index, value), "bind_int")
 
     def bind_float(mut self, index: Int, value: Float64) raises:
         """Bind a double."""
-        self._check(
-            Int(
-                external_call["sqlite3_bind_double", c_int](
-                    self._handle, c_int(index), value
-                )
-            ),
-            "bind_float",
-        )
+        self._check(self._lib.bind_double(self._handle, index, value), "bind_float")
 
     def bind_text(mut self, index: Int, value: String) raises:
         """Bind text.
@@ -88,45 +80,24 @@ struct Statement(Movable):
         """
         var bytes = value.as_bytes()
         check_c_int_length("bind_text", len(bytes))
-        self._check(
-            Int(
-                external_call["sqlite3_bind_text", c_int](
-                    self._handle,
-                    c_int(index),
-                    value.unsafe_ptr(),
-                    c_int(len(bytes)),
-                    Int(SQLITE_TRANSIENT),
-                )
-            ),
-            "bind_text",
+        var rc = self._lib.bind_text(
+            self._handle, index, str_cstr(value), len(bytes), SQLITE_TRANSIENT
         )
+        _ = value
+        self._check(rc, "bind_text")
 
     def bind_blob(mut self, index: Int, value: List[UInt8]) raises:
         """Bind an arbitrary byte string. SQLite copies it immediately."""
         check_c_int_length("bind_blob", len(value))
-        self._check(
-            Int(
-                external_call["sqlite3_bind_blob", c_int](
-                    self._handle,
-                    c_int(index),
-                    value.unsafe_ptr(),
-                    c_int(len(value)),
-                    Int(SQLITE_TRANSIENT),
-                )
-            ),
-            "bind_blob",
+        var rc = self._lib.bind_blob(
+            self._handle, index, as_cstr(value), len(value), SQLITE_TRANSIENT
         )
+        _ = value
+        self._check(rc, "bind_blob")
 
     def bind_null(mut self, index: Int) raises:
         """Bind SQL NULL."""
-        self._check(
-            Int(
-                external_call["sqlite3_bind_null", c_int](
-                    self._handle, c_int(index)
-                )
-            ),
-            "bind_null",
-        )
+        self._check(self._lib.bind_null(self._handle, index), "bind_null")
 
     # --- Execution ---------------------------------------------------------
 
@@ -139,12 +110,16 @@ struct Statement(Movable):
         A failed step leaves the statement resettable, not poisoned: call
         `reset` and the statement is ready for new bindings.
         """
-        var rc = Int(external_call["sqlite3_step", c_int](self._handle))
+        var rc = self._lib.step(self._handle)
         if rc == SQLITE_ROW:
             return True
         if rc == SQLITE_DONE:
             return False
-        raise Error(describe("step", rc, stmt_errmsg(self._handle, rc)))
+        raise Error(
+            describe(
+                "step", rc, self._lib.stmt_errmsg(self._handle, rc), self._lib.errstr(rc)
+            )
+        )
 
     def reset(mut self) raises:
         """Rewind for reuse. Bindings survive; use `clear_bindings` to drop them.
@@ -155,20 +130,17 @@ struct Statement(Movable):
         failed `step` — reset, rebind, retry — is impossible without catching a
         second, stale copy of the error `step` already raised.
         """
-        _ = external_call["sqlite3_reset", c_int](self._handle)
+        _ = self._lib.reset(self._handle)
 
     def clear_bindings(mut self) raises:
         """Reset every bound parameter to NULL."""
-        self._check(
-            Int(external_call["sqlite3_clear_bindings", c_int](self._handle)),
-            "clear_bindings",
-        )
+        self._check(self._lib.clear_bindings(self._handle), "clear_bindings")
 
     # --- Reading the current row (0-based, as SQLite defines it) -----------
 
     def column_count(self) -> Int:
         """Number of columns in the result set."""
-        return Int(external_call["sqlite3_column_count", c_int](self._handle))
+        return self._lib.column_count(self._handle)
 
     def _check_column(self, index: Int) raises:
         """Reject an index outside the result set.
@@ -207,11 +179,7 @@ struct Statement(Movable):
     def column_type(self, index: Int) raises -> Int:
         """One of SQLITE_INTEGER / FLOAT / TEXT / BLOB / NULL."""
         self._check_column(index)
-        return Int(
-            external_call["sqlite3_column_type", c_int](
-                self._handle, c_int(index)
-            )
-        )
+        return self._lib.column_type(self._handle, index)
 
     def is_null(self, index: Int) raises -> Bool:
         """Whether the column holds SQL NULL.
@@ -226,18 +194,12 @@ struct Statement(Movable):
     def column_int(self, index: Int) raises -> Int:
         """Read as a 64-bit integer. Returns 0 for NULL — see `is_null`."""
         self._check_column(index)
-        return Int(
-            external_call["sqlite3_column_int64", Int64](
-                self._handle, c_int(index)
-            )
-        )
+        return self._lib.column_int64(self._handle, index)
 
     def column_float(self, index: Int) raises -> Float64:
         """Read as a double. Returns 0.0 for NULL — see `is_null`."""
         self._check_column(index)
-        return external_call["sqlite3_column_double", Float64](
-            self._handle, c_int(index)
-        )
+        return self._lib.column_double(self._handle, index)
 
     def column_text(self, index: Int) raises -> String:
         """Read as text. Returns "" for NULL — see `is_null`.
@@ -262,14 +224,8 @@ struct Statement(Movable):
         TEXT column too, handing the UTF-8 bytes into a reused buffer.
         """
         self._check_column(index)
-        var p = external_call["sqlite3_column_text", CharPtr](
-            self._handle, c_int(index)
-        )
-        var n = Int(
-            external_call["sqlite3_column_bytes", c_int](
-                self._handle, c_int(index)
-            )
-        )
+        var p = self._lib.column_text(self._handle, index)
+        var n = self._lib.column_bytes(self._handle, index)
         if n <= 0:
             return String("")
         return cstr_to_string(p, n)
@@ -287,14 +243,8 @@ struct Statement(Movable):
         describe that format rather than the one stored.
         """
         self._check_column(index)
-        var p = external_call["sqlite3_column_blob", CharPtr](
-            self._handle, c_int(index)
-        )
-        var n = Int(
-            external_call["sqlite3_column_bytes", c_int](
-                self._handle, c_int(index)
-            )
-        )
+        var p = self._lib.column_blob(self._handle, index)
+        var n = self._lib.column_bytes(self._handle, index)
         if n <= 0:
             return List[UInt8]()
         var out = List[UInt8](unsafe_uninit_length=n)
@@ -330,14 +280,8 @@ struct Statement(Movable):
         # Pointer before length, as in `column_blob` — SQLite documents that
         # order, because fetching the pointer is what forces the value into the
         # requested format.
-        var p = external_call["sqlite3_column_blob", CharPtr](
-            self._handle, c_int(index)
-        )
-        var n = Int(
-            external_call["sqlite3_column_bytes", c_int](
-                self._handle, c_int(index)
-            )
-        )
+        var p = self._lib.column_blob(self._handle, index)
+        var n = self._lib.column_bytes(self._handle, index)
         if n <= 0:
             buf.resize(0, 0)
             return 0
@@ -351,9 +295,7 @@ struct Statement(Movable):
     def column_name(self, index: Int) raises -> String:
         """Declared name of a result column."""
         self._check_column(index)
-        var p = external_call["sqlite3_column_name", CharPtr](
-            self._handle, c_int(index)
-        )
+        var p = self._lib.column_name(self._handle, index)
         return cstr_to_string(p, cstr_len(p))
 
     # --- Bulk read-out (SoA) ----------------------------------------------
@@ -363,8 +305,8 @@ struct Statement(Movable):
     # 4.29ms for the equivalent `while step():` loop over 100k rows — i.e. no
     # win, slightly negative, which is what you would expect. SQLite has no bulk
     # column API (`sqlite3_step` is per row, `sqlite3_column_*` is per cell) and
-    # `external_call` is a direct call, so there is no per-row boundary cost for
-    # a loop up here to save.
+    # a call through the loaded table is a direct call, so there is no per-row
+    # boundary cost for a loop up here to save.
     #
     # What they are for is the output shape: a caller-owned `List` per column,
     # sized once up front, which is what a SIMD pass over the results wants and
@@ -497,7 +439,7 @@ struct Statement(Movable):
         result set.
         """
         self.reset()
-        _bind_spec(self._handle, param, Int(data.unsafe_ptr()), len(data), KIND_INT)
+        _bind_spec(self._lib, self._handle, param, Int(data.unsafe_ptr()), len(data), KIND_INT)
         var rows = 0
         try:
             while self.step():
@@ -511,7 +453,7 @@ struct Statement(Movable):
         mut self, param: Int, data: Int, count: Int, kind: Int
     ) raises:
         self.reset()
-        _bind_spec(self._handle, param, data, count, kind)
+        _bind_spec(self._lib, self._handle, param, data, count, kind)
         try:
             while self.step():
                 pass
@@ -527,7 +469,7 @@ struct Statement(Movable):
         error, which `step` has already raised, and re-raising it here would
         replace the real error with an echo of it on the way out of `finally`.
         """
-        _ = external_call["sqlite3_reset", c_int](self._handle)
+        _ = self._lib.reset(self._handle)
         self.bind_null(param)
 
     # --- Lifetime ----------------------------------------------------------
@@ -546,9 +488,13 @@ struct Statement(Movable):
         """
         if self._handle == 0:
             return
-        _ = external_call["sqlite3_finalize", c_int](self._handle)
+        _ = self._lib.finalize(self._handle)
         self._handle = 0
 
     def _check(self, rc: Int, what: String) raises:
         if rc != SQLITE_OK:
-            raise Error(describe(what, rc, stmt_errmsg(self._handle, rc)))
+            raise Error(
+                describe(
+                    what, rc, self._lib.stmt_errmsg(self._handle, rc), self._lib.errstr(rc)
+                )
+            )
