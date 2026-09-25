@@ -61,23 +61,29 @@ exit 78 and its message. It is not retried.
 
 ## Execution modes
 
-One loop in one process is the default.
+One loop in one process is the default, and on one vCPU it is the whole
+answer ([Deploy](MOJO_DEPLOY.md)).
+
+**`M0_THREADS=N`** runs N loops on N threads of one process, and is the
+way to more than one core. Nothing is forked, so a runtime that cannot
+survive a fork works — MAX's parallel runtime, Core ML, CoreFoundation —
+and the loops share an address space. There is no supervisor: a loop that
+dies takes the process, and the platform restarts it. Refused beside
+`M0_WORKERS` above 1.
 
 **`M0_WORKERS=N`** forks N processes that share the listener. A worker that
 dies is replaced. The worker that wins an accept hands the connection to
-the least-loaded sibling, so keep-alive load spreads.
-
-**`M0_THREADS=N`** runs N loops on N threads of one process. Nothing is
-forked, so a runtime that cannot survive a fork (Core ML, CoreFoundation)
-works, and the loops share an address space. There is no supervisor: a loop
-that dies takes the process. It is refused beside `M0_WORKERS` above 1.
+the least-loaded sibling, so keep-alive load spreads. Refused when the
+binary links MAX's parallel runtime (`libAsyncRTMojoBindings`, what
+`max.algorithm.parallelize` needs): `fork()` copies the calling thread
+alone, and a `parallelize` in a forked worker never returns.
 
 <!-- observed: docs/notes/loops-on-threads.md, from bench/results/host-modes-20260918T201017Z.json (macOS, M4, four loops) and its Linux aarch64 twin -->
 Measured against each other, threads and workers are level on throughput
 (0.95x to 1.03x) and on the tail, and threads use a fifth to a third less
-memory. Reach for workers first; use threads for one of the reasons above.
-`ctx.worker` and `ctx.workers` count either, so an application runs under
-both unchanged.
+memory. Workers are for an application that links no MAX and wants a
+supervisor. `ctx.worker` and `ctx.workers` count either, so an application
+runs under both unchanged.
 
 **`M0_BLOCKING_THREADS=N`** puts N handler threads behind each loop, and
 composes with either mode. The loop keeps accepting and parsing while a slow
@@ -131,6 +137,7 @@ parentheses. The checks, in the order the host applies them:
 | `threads-vs-application` | `M0_THREADS` is above the application's `max_threads()` |
 | `spawn-workers` | `M0_SPAWN_WORKERS` is set: the host forks without exec |
 | `spawned-marker` | `M0_WORKER_SPAWNED` is inherited from an m0serve worker |
+| `workers-vs-parallel-runtime` | `M0_WORKERS` is above 1 and the binary links MAX's parallel runtime |
 
 A count is refused the same way whether it came from a flag or a variable.
 

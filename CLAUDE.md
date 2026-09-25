@@ -1504,8 +1504,16 @@ pieces, and the language fact each rests on:
   state that lives in one handler refuses loops without being asked;
   there is no supervisor, so a loop that dies takes the process; nothing
   was forked, so `main` returns. Measured at parity with prefork on
-  throughput and tail, 20–35 % less RSS, so prefork stays the documented
-  way to N and threads are the option), and refuses `M0_SPAWN_WORKERS`,
+  throughput and tail, 20–35 % less RSS; threads are the documented way
+  to N for an m0 application since 2026-09-25 (D48, superseding D35's
+  "prefork first"), because MAX's parallel runtime does not survive a
+  fork: `M0_WORKERS>1` in a binary that links `libAsyncRTMojoBindings`
+  is refused with 78 (`workers-vs-parallel-runtime`, the last entry of
+  `host_checks`, SPEC E32, `smoke-parallel-runtime`; the fact is read
+  off the loaded images, `RTLD_NOLOAD` on Linux and dyld's list on
+  macOS), since a `parallelize` in a forked worker never returns — the
+  request hung, its loop with it, and SIGTERM did not end the process;
+  docs/notes/threads-first-for-m0-apps.md), and refuses `M0_SPAWN_WORKERS`,
   and `M0_WORKERS>1` beside `M0_THREADS>1`, with 78. **It has a command
   line and a doctor** (`m0_host/flags.mojo`, SPEC E30–E31, D37, `smoke-host-doctor`;
   docs/notes/flags-and-a-doctor-for-the-host.md): `serve` lays the flags

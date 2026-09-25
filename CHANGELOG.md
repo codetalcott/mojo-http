@@ -26,6 +26,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `build-apps` fails if `datastar_todo`'s binary names it — and six of the
   package's seven test files run under `mojo run`. `test_lib.mojo` is the
   gate; docs/notes/sqlite-at-run-time.md records the round.
+- **The Mojo host refuses forked workers when MAX's parallel runtime is
+  linked** (SPEC E32, DECISIONS D48). `M0_WORKERS` above 1 in a binary that
+  carries `libAsyncRTMojoBindings` — what `max.algorithm.parallelize`
+  needs — exits 78 before the bind, naming `--threads (M0_THREADS)`, and
+  `--doctor` reports the check (`workers-vs-parallel-runtime`). Measured
+  before: a `parallelize` in a forked worker never returned, and the
+  request that hung took its worker's loop and the shutdown with it, because
+  `fork()` copies the calling thread alone and the runtime's workers are
+  started before `main`. `smoke-parallel-runtime` gates it on every pull
+  request, both platforms, against `max-core` synced by the new `max`
+  dependency group in that step alone; `sabotage-host --only parallel`
+  removes the check and must be caught on the served prefork.
+
+### Changed
+
+- **Loops on threads are the documented way to more than one core for an
+  m0 application** (D48, superseding D35's "prefork first"): `M0_THREADS`
+  across cores, a handler pool for the views that compute, one loop on one
+  vCPU, and prefork kept for an application that links no MAX and wants a
+  supervisor. The host page, the deploy page and the scaffold's `AGENTS.md`
+  say so. Nothing changes for an application that sets neither.
 
 ### Fixed
 
