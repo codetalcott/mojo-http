@@ -1,0 +1,55 @@
+soak: transcripts at http://127.0.0.1:8501 for 150s
+  baseline: /tmp/soak/transcripts-gunicorn.json (http://127.0.0.1:8411)
+  populations: burst(4) stream(2) bulk(1) abandon(1) ws(1)
+  churn: sigterm every 60s
+  [  5.1s] rss=118752kB fds=86 threads=13 conns=9 verified=1324 failures=0
+  [ 10.1s] rss=120576kB fds=86 threads=13 conns=9 verified=2619 failures=0
+  [ 15.2s] rss=121568kB fds=83 threads=13 conns=9 verified=4005 failures=0
+  [ 20.2s] rss=122352kB fds=88 threads=13 conns=8 verified=5378 failures=0
+  [ 25.3s] rss=122992kB fds=84 threads=13 conns=9 verified=6728 failures=0
+  [ 30.3s] rss=123584kB fds=86 threads=13 conns=8 verified=8097 failures=0
+  [ 35.4s] rss=124112kB fds=86 threads=13 conns=9 verified=9458 failures=0
+  [ 40.4s] rss=125072kB fds=87 threads=13 conns=9 verified=10837 failures=0
+  [ 45.5s] rss=125360kB fds=83 threads=13 conns=8 verified=12211 failures=0
+  [ 50.5s] rss=125680kB fds=89 threads=13 conns=9 verified=13588 failures=0
+  [ 55.6s] rss=125888kB fds=87 threads=13 conns=7 verified=14950 failures=0
+  churn: SIGTERM -> exit 0 in 0.13s
+  [ 65.8s] rss=119392kB fds=81 threads=13 conns=9 verified=17499 failures=0
+  [ 70.8s] rss=120720kB fds=84 threads=13 conns=9 verified=18879 failures=0
+  [ 75.9s] rss=121600kB fds=87 threads=13 conns=9 verified=20244 failures=0
+  [ 80.9s] rss=122288kB fds=88 threads=13 conns=9 verified=21627 failures=0
+  [ 86.0s] rss=122960kB fds=85 threads=13 conns=8 verified=22982 failures=0
+  [ 91.0s] rss=123840kB fds=89 threads=13 conns=9 verified=24330 failures=0
+  [ 96.1s] rss=124272kB fds=86 threads=13 conns=8 verified=25690 failures=0
+  [101.1s] rss=124704kB fds=85 threads=13 conns=8 verified=27061 failures=0
+  [106.2s] rss=125472kB fds=86 threads=13 conns=9 verified=28407 failures=0
+  [111.2s] rss=125680kB fds=84 threads=13 conns=9 verified=29779 failures=0
+  [116.3s] rss=125952kB fds=84 threads=13 conns=9 verified=31120 failures=0
+  churn: SIGTERM -> exit 0 in 0.14s
+  [126.5s] rss=119056kB fds=86 threads=13 conns=9 verified=33671 failures=0
+  [131.5s] rss=120368kB fds=89 threads=13 conns=9 verified=35070 failures=0
+  [136.6s] rss=121888kB fds=84 threads=13 conns=9 verified=36443 failures=0
+  [141.7s] rss=122704kB fds=83 threads=13 conns=8 verified=37831 failures=0
+  [146.7s] rss=123440kB fds=86 threads=13 conns=8 verified=39214 failures=0
+  [150.1s] rss=123824kB fds=85 threads=13 conns=9 verified=40111 failures=0
+
+--- transcripts ---
+  abandon_fin            420
+  abandon_rst            420
+  burst_reconnects       8
+  burst_requests         36379
+  churn_drain_ms_max     138
+  churn_restarts         2
+  churn_tolerated        8843
+  churn_window_ms_max    710
+  recycle_requests       837
+  slow_requests          4631
+  status_only            4631
+  stream_reads           2901
+  verified               40117
+  rss 119056kB -> 123824kB (grew 4768kB, epoch 3)
+  fds 86 -> 85 (max 89)
+  threads 13 -> 13 (max 13)
+  active connections 9 -> 9 (max 9)
+  free slots 1015 -> 1015 (min 1015)
+soak ok: transcripts
