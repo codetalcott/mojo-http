@@ -14,7 +14,10 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
 from m0_host.flags import HostFlags, host_usage, parse_host_flags
-from m0_host.host import AppHandler, HostContext, host_checks, host_refusal, host_report
+from m0_host.host import (
+    AppHandler, HostContext, host_checks, host_refusal, host_report,
+    parallel_runtime_linked,
+)
 from m0_http.config import AppConfig
 from m0_http.multiworker import EX_CONFIG
 
@@ -198,10 +201,12 @@ def test_a_count_that_cannot_be_served_is_a_refusal_not_a_usage_error() raises:
 
 
 def test_prefork_is_refused_when_the_parallel_runtime_is_linked() raises:
-    """The verdict with the fact supplied: this test binary links no MAX,
-    so `host_checks` gathers "not linked" for itself, and the refusal is
-    proven by handing it "linked" (SPEC E32's smoke proves the gathered
-    fact, on a binary that links it)."""
+    """The verdict with the fact supplied, and the gathered fact only
+    checked for consistency: under `mojo run` this test runs inside the
+    compiler's process, which maps the runtime once MAX is installed
+    beside the toolchain, so what `host_checks` gathers here depends on
+    the venv and not on this source (SPEC E32's smoke proves the gathered
+    fact on a binary that links it)."""
     var two = _parse("--workers", "2").config.copy()
     var refused = host_refusal(two, parallel_runtime=True)
     assert_true(Bool(refused), "M0_WORKERS=2 beside the parallel runtime was served")
@@ -210,15 +215,17 @@ def test_prefork_is_refused_when_the_parallel_runtime_is_linked() raises:
     assert_false(Bool(host_refusal(two, parallel_runtime=False)))
     assert_false(Bool(host_refusal(_parse("--threads", "2").config, parallel_runtime=True)))
     assert_false(Bool(host_refusal(_parse("--workers", "1").config, parallel_runtime=True)))
-    # Gathered for itself: nothing here links MAX, so the check passes and
-    # says so. The check is present either way, which is what --doctor lists.
+    # Gathered for itself: the verdict must follow the fact this process
+    # reads, whichever way the venv makes it read. The check is present
+    # either way, which is what --doctor lists.
+    var linked = parallel_runtime_linked()
     var checks = host_checks(two)
     var found = False
     for i in range(len(checks)):
         if checks[i].name == "workers-vs-parallel-runtime":
             found = True
-            assert_true(checks[i].ok, "a binary without MAX was refused prefork")
-            assert_true("not linked" in checks[i].detail)
+            assert_equal(checks[i].ok, not linked)
+            assert_true(("not linked" in checks[i].detail) == (not linked))
     assert_true(found, "workers-vs-parallel-runtime is not among host_checks")
 
 
@@ -288,12 +295,14 @@ def test_the_checks_are_whole_and_in_the_order_serve_refuses() raises:
 
 def test_the_doctor_leaves_with_the_servers_code() raises:
     """0 where `serve` would bind, 78 where it would refuse -- from the same
-    checks -- and the application's own limit is part of it.
+    checks -- and the application's own limit is part of it. The parallel
+    runtime's fact is pinned to "not linked", since under `mojo run` the
+    process may map it whatever this source imports.
 
     covers: E31
     """
     var ok = _parse("--workers", "2", "--blocking-threads", "3")
-    var served = host_report[Plain](ok, ok.config.server_config())
+    var served = host_report[Plain](ok, ok.config.server_config(), parallel_runtime=False)
     assert_equal(served.exit_code(), 0)
     assert_true(served.ok())
     var text = served.render()
@@ -314,12 +323,12 @@ def test_the_doctor_leaves_with_the_servers_code() raises:
     assert_true('"max_workers":1' in why, why)
 
     var threads = _parse("--threads", "4")
-    var t = host_report[Plain](threads, threads.config.server_config()).render()
+    var t = host_report[Plain](threads, threads.config.server_config(), parallel_runtime=False).render()
     assert_true('"mode":"threads"' in t, t)
     assert_true('"loops":4' in t, t)
     var one = _parse()
     assert_true(
-        '"mode":"single"' in host_report[Plain](one, one.config.server_config()).render()
+        '"mode":"single"' in host_report[Plain](one, one.config.server_config(), parallel_runtime=False).render()
     )
 
 

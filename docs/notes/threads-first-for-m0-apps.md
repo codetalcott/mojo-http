@@ -98,8 +98,13 @@ a handle for an image already mapped, matched by soname, and maps nothing
 otherwise; probed here, it is true in the binary that links the runtime
 and false in one that does not. macOS spells `RTLD_NOLOAD` as another bit
 and matches a bare name less predictably, so that branch walks dyld's
-image list by leaf name. The unit test supplies the fact by hand, since
-the test binary links no MAX; the smoke proves the gathered one.
+image list by leaf name. It is a fact about the process, which is the
+point for a built binary and a trap under `mojo run`: there the program
+runs inside the compiler's process, which maps the runtime once MAX is
+installed beside the toolchain, so a JIT'd test reads "linked" whatever
+its source imports (measured both ways). The unit tests therefore pin the
+fact where a verdict is asserted and check the gathered one only for
+consistency; the smoke proves it on a binary that links MAX.
 
 ## What is gated
 

@@ -817,6 +817,14 @@ def parallel_runtime_linked() -> Bool:
     is already mapped, matched by soname, and maps nothing for one that is
     not. macOS: dyld's own image list, walked by leaf name, because its
     `RTLD_NOLOAD` is another bit and matches a bare name less predictably.
+
+    A fact about the PROCESS, which is the point for a built binary and a
+    trap under `mojo run`: there the program runs inside the compiler's
+    process, which maps the runtime once MAX is installed beside the
+    toolchain, so a JIT'd test reads "linked" whether or not its source
+    imports MAX (measured: True under `mojo run` with `max-core` synced,
+    False for the same source built and run). The tests pin the fact
+    rather than assume the venv.
     """
     comptime if CompilationTarget.is_macos():
         var count = Int(external_call["_dyld_image_count", UInt32]())
@@ -991,7 +999,9 @@ def host_refusal(
 
 
 def host_report[H: AppHandler](
-    flags: HostFlags, server_config: ServerConfig
+    flags: HostFlags,
+    server_config: ServerConfig,
+    parallel_runtime: Optional[Bool] = None,
 ) -> Report:
     """`--doctor`: the configuration `serve` would run, and whether it would.
 
@@ -1005,7 +1015,8 @@ def host_report[H: AppHandler](
     cannot be built, is reported by the run. The application's own
     configuration is not rendered either; its checks run in its `main`
     before `serve` and so fire under `--doctor` exactly as they do without.
-    `M0_API_KEY` is never printed.
+    `M0_API_KEY` is never printed. `parallel_runtime` is `host_checks`'
+    own optional, for the test that pins the fact.
     """
     ref config = flags.config
     var report = Report(String(DOCTOR_FORMAT), String("m0_host"))
@@ -1072,7 +1083,9 @@ def host_report[H: AppHandler](
     report.add_int("application", "max_threads", H.max_threads())
     report.add_int("application", "page_slots", H.page_slots(loops if loops > 0 else 1))
 
-    var checks = host_checks(config, H.max_workers(), H.max_threads())
+    var checks = host_checks(
+        config, H.max_workers(), H.max_threads(), parallel_runtime
+    )
     for i in range(len(checks)):
         if checks[i].ok:
             report.pass_check(checks[i].name, checks[i].detail)
