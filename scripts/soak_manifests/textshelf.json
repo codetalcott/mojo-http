@@ -89,8 +89,8 @@
     {
       "path": "/static/css/components.css",
       "class": "stream",
-      "bytes": 125113,
-      "comment": "the 124 KB WhiteNoise file the 2026-08-31 re-soak's keep-alive-cap defect truncated"
+      "bytes": 121037,
+      "comment": "the WhiteNoise file the 2026-08-31 re-soak's keep-alive-cap defect truncated (124 KB then; 121,037 bytes at textshelf 1ef2bfa, re-pinned 2026-09-24)"
     },
     {
       "path": "/static/css/bootstrap.min.css",

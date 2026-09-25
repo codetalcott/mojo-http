@@ -1,7 +1,7 @@
 # Exercising the server against real applications
 
-**A record. Last run 2026-09-13**, against m0serve 1.3.0 on the release
-branch at `8c43979`, all four applications, six rows, in the newest section
+**A record. Last run 2026-09-24**, against m0serve 1.6.0 on the release
+branch at `9b051fd`, all four applications, six rows, in the newest section
 below. The full pass it re-runs was **2026-09-01 and
 2026-09-02**, against 0.16.0 (`bin/m0serve` from the tree at `c823198`),
 macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
@@ -271,6 +271,62 @@ renews through the view when a grant expires — the browser side of that,
 gate yet. The application layer's own soak is unchanged and still NOT MET
 below: this is the server holding for textshelf, not textshelf on `Views`
 and `Fragment`.
+
+## Re-soak — 2026-09-24, against 1.6.0 on the release branch at `9b051fd`, all four applications
+
+**The staleness rule again.** At 1.6.0 the 1.3.0 pass is three minors
+behind a limit of two. Between the two passes the request path these
+applications take did change: a parsed request now carries only the
+headers its client sent, so a GET reaches Django with no `CONTENT_LENGTH`
+(L25); the ASGI executor's slot, disconnect and background-task rules
+moved for Starlette's sake (L20–L28), and textshelf and color-separation
+run on it; every descriptor the server creates is close-on-exec (G16); and
+a raw `@` in a target is data (A22). So this pass asks the old question of
+a server whose request path shifted, not merely grew.
+
+Fresh clones under `/tmp/soak/` (the 2026-09-13 checkouts had not
+survived): transcripts at `00dcb7a`, color-separation at `65c5445` with
+its gitignored `output/` source copied in, textshelf at `1ef2bfa`
+against its scratch database `textshelf_soak`, bakerydemo at `c8f8255`
+with the `asgi.py` this record added in 2026-09. Every reference capture
+was re-recorded first. One manifest pin moved with an application rather
+than the server: textshelf's `components.css` is 121,037 bytes at
+`1ef2bfa`, where the manifest had 125,113, and WhiteNoise under daphne
+serves exactly the new size. `bin/m0serve` reports `m0serve 1.6.0`;
+CPython 3.13.6 (3.12.11 for color-separation and bakerydemo, which pin
+it), macOS 27 on an M4. Raw driver outputs and the scripts that drove it
+are in `bench/soak/2026-09-24/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 40,117 | 0 | SIGTERM ×2, drains 138 ms max (window 710 ms) | 119.1 → 123.8 MB | 86 → 85 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions, 316 logins | 180 | 21,424 | 0 | SIGTERM ×2, drains 202 ms max (window 1189 ms) | 180.6 → 188.2 MB | 84 → 85 / 13 → 13 |
+| color-separation | WSGI, pool 8, 310 uploads | 120 | 42,163 | 0 | SIGTERM ×1, drains 139 ms max (window 901 ms) | 1.02 → 1.34 GB (finding 6) | 149 → 147 / 17 → 19 |
+| color-separation | ASGI executor vs uvicorn, 231 uploads | 90 | 17,702 | 0 | — | 1.09 → 1.50 GB (finding 6) | 130 → 129 / 25 → 31 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 72,458 | 0 | SIGTERM ×1, drains 85 ms max (window 860 ms) | 180.8 → 187.8 MB | 116 → 92 / 16 → 16 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 22,753 | 0 | — | 495.9 → 196.3 MB (the startup transient) | 103 → 101 / 13 → 13 |
+
+**216,617 responses verified byte for byte, zero failures**, and every
+row ends with its active connections and free slots where they began.
+transcripts verified a third more than on 2026-09-13 in the same 150 s
+(40,117 against 29,989). The rows otherwise read as that pass did:
+color-separation's two rows carry the application's own RSS (finding 6),
+its ASGI row's threads climb as asgiref's pool fills (25 → 31, max 36),
+and textshelf's WSGI row shows the startup transient falling away.
+
+**Nothing new was found on the wire.** The run found three problems in the
+pre-release tooling and none in the server:
+
+- `sabotage-blobs` reported a rule no gate guards. Its anchor still
+  matched an import line that the host's command line had changed
+  (`cda3cd0`), and it now matches the new one.
+- The browser gates failed at launch. The Playwright that `uv run --with`
+  resolved wanted a Chromium the cache lacked, and
+  `playwright install chromium` fixed it.
+- The first `bench-linux-conclusions` and `autobahn` runs came back
+  contaminated, one with its spreads up to 23 % and the other with a thin
+  section, while the host was busy. Both were discarded and rerun with the
+  machine quiet.
 
 ## Re-soak — 2026-09-13, against 1.3.0 on the release branch at `8c43979`, all four applications
 
