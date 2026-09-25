@@ -267,7 +267,7 @@ def test_allow_header_lists_registered_methods() raises:
     r.add("GET", "/notes/:id", 1)
     r.add("PUT", "/notes/:id", 2)
     r.add("DELETE", "/notes/:id", 3)
-    assert_equal(r.allow_header("/notes/7"), "GET, PUT, DELETE, OPTIONS")
+    assert_equal(r.allow_header("/notes/7"), "GET, HEAD, PUT, DELETE, OPTIONS")
 
 
 def test_allow_header_includes_methods_nobody_enumerated() raises:
@@ -278,7 +278,7 @@ def test_allow_header_includes_methods_nobody_enumerated() raises:
     var r = Router()
     r.add("GET", "/notes/:id", 1)
     r.add("PATCH", "/notes/:id", 2)
-    assert_equal(r.allow_header("/notes/7"), "GET, PATCH, OPTIONS")
+    assert_equal(r.allow_header("/notes/7"), "GET, HEAD, PATCH, OPTIONS")
 
 
 def test_allow_header_on_an_unrouted_path_is_options_only() raises:
@@ -294,7 +294,7 @@ def test_allow_header_ignores_paths_that_do_not_match() raises:
     r.add("GET", "/notes", 1)
     r.add("POST", "/notes", 2)
     r.add("DELETE", "/notes/:id", 3)
-    assert_equal(r.allow_header("/notes"), "GET, POST, OPTIONS")
+    assert_equal(r.allow_header("/notes"), "GET, HEAD, POST, OPTIONS")
     assert_equal(r.allow_header("/notes/7"), "DELETE, OPTIONS")
 
 
@@ -303,7 +303,7 @@ def test_allow_header_does_not_repeat_a_method() raises:
     var r = Router()
     r.add("GET", "/notes/:id", 1)
     r.add("GET", "/notes/:slug", 2)
-    assert_equal(r.allow_header("/notes/7"), "GET, OPTIONS")
+    assert_equal(r.allow_header("/notes/7"), "GET, HEAD, OPTIONS")
 
 
 def test_allow_header_agrees_with_match() raises:
@@ -313,12 +313,53 @@ def test_allow_header_agrees_with_match() raises:
     r.add("POST", "/a/:x/b", 2)
     var allow = r.allow_header("/a/1/b")
     assert_true("GET" in allow)
+    assert_true("HEAD" in allow)
     assert_true("POST" in allow)
     assert_true(r.match("GET", "/a/1/b").matched)
+    assert_true(r.match("HEAD", "/a/1/b").matched)
     assert_true(r.match("POST", "/a/1/b").matched)
     # a method absent from Allow must be a 405, not a match
     assert_false("DELETE" in allow)
     assert_true(r.match("DELETE", "/a/1/b").method_not_allowed)
+
+
+def test_head_takes_the_route_a_get_would_reach() raises:
+    """A server that answers GET answers HEAD (RFC 9110 §9.1): a HEAD with no
+    route of its own takes the route its GET would, parameters and all. A
+    path with no GET is still a 405 for it, and an unknown path a 404."""
+    var r = Router()
+    r.add("GET", "/notes/new", 1)
+    r.add("GET", "/notes/:id", 2)
+    r.add("POST", "/notes", 3)
+    var m = r.match("HEAD", "/notes/7")
+    assert_true(m.matched)
+    assert_equal(m.handler_id, 2)
+    assert_equal(len(m.params), 1)
+    assert_equal(m.params[0], "7")
+    # The route GET reaches, in registration order, not merely a GET route.
+    assert_equal(r.match("HEAD", "/notes/new").handler_id, 1)
+    var post_only = r.match("HEAD", "/notes")
+    assert_false(post_only.matched)
+    assert_true(post_only.method_not_allowed)
+    var nowhere = r.match("HEAD", "/nope")
+    assert_false(nowhere.matched)
+    assert_false(nowhere.method_not_allowed)
+
+
+def test_a_head_route_of_its_own_wins_whatever_the_order() raises:
+    """An explicit HEAD route is the application's answer, registered before
+    its GET or after it, and `Allow` names HEAD once either way."""
+    var before = Router()
+    before.add("HEAD", "/x", 1)
+    before.add("GET", "/x", 2)
+    assert_equal(before.match("HEAD", "/x").handler_id, 1)
+    assert_equal(before.match("GET", "/x").handler_id, 2)
+    assert_equal(before.allow_header("/x"), "HEAD, GET, OPTIONS")
+    var after = Router()
+    after.add("GET", "/x", 2)
+    after.add("HEAD", "/x", 1)
+    assert_equal(after.match("HEAD", "/x").handler_id, 1)
+    assert_equal(after.allow_header("/x"), "GET, HEAD, OPTIONS")
 
 
 def test_method_of_reads_back_the_registration() raises:

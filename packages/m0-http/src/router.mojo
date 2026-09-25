@@ -44,6 +44,7 @@ the result matches — the property that keeps the two directions honest.
 
 comptime _SLASH = UInt8(47)  # '/'
 comptime _COLON = UInt8(58)  # ':'
+comptime _GET = StaticString("GET")
 
 
 @always_inline
@@ -249,9 +250,10 @@ struct Router:
 
         Read off the routing table rather than probed with a hardcoded method
         list, so a route added in a method nobody enumerated is still
-        announced. `OPTIONS` is appended because the server answers preflight
-        itself; a path with no routes at all gets `OPTIONS` alone rather than
-        an empty header.
+        announced. `HEAD` follows `GET`, because `match` answers it there.
+        `OPTIONS` is appended because the server answers preflight itself; a
+        path with no routes at all gets `OPTIONS` alone rather than an empty
+        header.
         """
         var pb = path.as_bytes()
         var req_count = Self._count_segments(pb)
@@ -267,6 +269,8 @@ struct Router:
             if allow.byte_length() > 0:
                 allow += ", "
             allow += m
+            if m == "GET" and not _list_contains(allow, "HEAD"):
+                allow += ", HEAD"
         if allow.byte_length() > 0:
             allow += ", OPTIONS"
         else:
@@ -319,12 +323,21 @@ struct Router:
 
         Distinguishes 404 (no path match) from 405 (path matched, wrong
         method).
+
+        A HEAD that no route registers for the path is answered by the route
+        a GET would reach: HEAD is GET without the content (RFC 9110
+        §9.3.2), and a server that answers GET answers HEAD (§9.1). The
+        server drops the body and keeps the GET's `Content-Length`. A route
+        registered for HEAD itself still wins, whatever order the two were
+        added in, and a path with no GET is a 405 for HEAD as before.
         """
         var pb = path.as_bytes()
-        var n = len(pb)
         var req_count = Self._count_segments(pb)
         var mb = method.as_bytes()
         var path_matched = False
+        # Only a HEAD looks for a GET twin, so no other request pays for it.
+        var head = method == "HEAD"
+        var get_twin = -1
 
         for r in range(len(self._r_handler)):
             # The cheap rejection (a differing segment count) is inside
@@ -332,25 +345,16 @@ struct Router:
             if not self._path_matches(r, pb, req_count):
                 continue
 
-            var base = Int(self._r_seg_start[r])
             if not self._method_eq(r, mb):
                 path_matched = True
+                if head and get_twin < 0 and self._method_eq(r, _GET.as_bytes()):
+                    get_twin = r
                 continue
 
-            # Only now does anything allocate, and only one String per
-            # captured parameter. Walking the path a second time is cheaper
-            # than having recorded every boundary for routes that missed.
-            var params = List[String](capacity=Int(self._r_param_count[r]))
-            var cpos = 0
-            for j in range(req_count):
-                while cpos < n and pb[cpos] == _SLASH:
-                    cpos += 1
-                var start = cpos
-                while cpos < n and pb[cpos] != _SLASH:
-                    cpos += 1
-                if self._seg_is_param[base + j]:
-                    params.append(String(unsafe_from_utf8=pb[start:cpos]))
-            return MatchResult(Int(self._r_handler[r]), params^)
+            return self._captured(r, pb, req_count)
+
+        if get_twin >= 0:
+            return self._captured(get_twin, pb, req_count)
 
         if path_matched:
             var r = MatchResult()
@@ -358,6 +362,25 @@ struct Router:
             return r^
 
         return MatchResult()
+
+    def _captured(self, r: Int, pb: Span[Byte, _], req_count: Int) -> MatchResult:
+        """Route `r`'s match for this path, its parameters captured."""
+        # Only now does anything allocate, and only one String per captured
+        # parameter. Walking the path a second time is cheaper than having
+        # recorded every boundary for routes that missed.
+        var n = len(pb)
+        var base = Int(self._r_seg_start[r])
+        var params = List[String](capacity=Int(self._r_param_count[r]))
+        var cpos = 0
+        for j in range(req_count):
+            while cpos < n and pb[cpos] == _SLASH:
+                cpos += 1
+            var start = cpos
+            while cpos < n and pb[cpos] != _SLASH:
+                cpos += 1
+            if self._seg_is_param[base + j]:
+                params.append(String(unsafe_from_utf8=pb[start:cpos]))
+        return MatchResult(Int(self._r_handler[r]), params^)
 
 
 def url_for(pattern: String, *params: String) raises -> String:

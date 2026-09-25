@@ -66,6 +66,17 @@ specific reason to care: shared mutable state across serving threads is a
 measured 0.7x cliff (docs/notes/wsgi-vs-asgi-history.md §5), so which
 views mutate is a question the deployment shape actually asks.
 
+## A GET route answers HEAD
+
+RFC 9110 has a server that answers GET answer HEAD (§9.1), and
+`Router.match` does it for both tables: a HEAD that no route registers for
+its path reaches the view a GET would, and the server drops the body and
+keeps the GET's `Content-Length`. It is the GET's view, a writing one
+included, as in Flask and Starlette; a stream a HEAD opens ends at its head
+and leaves no subscriber (L27). A route registered for HEAD itself wins over
+its own table's GET, the loop table being asked first for HEAD as for every
+method, and `Allow` names HEAD beside GET.
+
 ## A table knows where it is mounted
 
 `Views[S](Mount("/native"))` registers every pattern under the prefix, so
@@ -403,6 +414,7 @@ struct Views[S: Movable]:
         Answers 405 with the `Allow` header RFC 9110 requires (loop routes
         included), `OPTIONS` on any registered path with 204 and that same
         `Allow`, and 404 through `set_not_found`'s view when one was given.
+        A HEAD with no route of its own reaches its GET's view (`Router.match`).
         Every path returns a response; there is no fallthrough to guess
         about.
         """
