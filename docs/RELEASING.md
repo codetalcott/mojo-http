@@ -508,6 +508,23 @@ NOT run (no docker daemon that day), so the published wheel's path through
 scaffolded app's deploy. Step 6: 8 blocks passed against the published
 package.
 
+`m0 0.2.0`: tag `m0-v0.2.0` at `5a683eb`, 2026-09-25, cut beside m0serve
+1.6.0 and pushed first, so that the site the `v1.6.0` release deploys never
+names an `m0` the index lacks.
+- Step 1: `sabotage-m0-wheel` 22 of 22, `sabotage-scaffold` 50 of 50.
+- Step 3: the local wheel was `m0-0.2.0-py3-none-any.whl`, 504,587 bytes,
+  and a scaffold from it pinned `m0==0.2.0`.
+- Step 4: `build` green ("m0 0.2.0, cut from 5a683eb…", 504,587 bytes,
+  equal to the local wheel), and `publish-pypi` green after approval.
+- Step 5 on macOS arm64: the scaffold pinned `m0==0.2.0`, and `uv.lock`
+  named it from pypi.org. The first build printed no warning, and
+  `smoke.sh` passed.
+- **`m0 image` ran, which closes 0.1.0's open item.** The builder's
+  `uv sync --frozen` fetched mojo 1.1.0 and `m0==0.2.0` from the index.
+  The image was built in 32 s: 102 MB, 2.97 MB of it the app, and no
+  interpreter.
+- Step 6: 8 blocks passed against the published package.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
