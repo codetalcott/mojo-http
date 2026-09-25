@@ -1084,11 +1084,11 @@ def test_served_falls_back_to_the_positional_spec() raises:
 
 
 def test_parallel_runtime_forked_truth_table() raises:
-    """m0serve's refusal of a forked worker beside MAX's parallel runtime,
-    with the fact supplied by hand (SPEC E33): linked, and a supervisor
-    that forks -- `--workers` above 1 or `--reload` -- and no
-    `--spawn-workers`. The shipped binary links nothing, so `linked` is
-    False there and every shape passes."""
+    """The m0serve refusal of a forked worker beside MAX's parallel
+    runtime, with the fact supplied by hand (SPEC E33): linked, and a
+    supervisor that forks -- `--workers` above 1 or `--reload` -- and no
+    `--spawn-workers`. A binary that links nothing hands in False and
+    every shape passes."""
     var opts = _seed()
     # One process serves it, linked or not.
     assert_false(parallel_runtime_forked(opts, True))
