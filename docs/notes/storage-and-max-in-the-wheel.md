@@ -105,8 +105,15 @@ with a marker printed from `new.py`: absent through a plain `uvx`, present
 through `uvx --refresh-package m0` and through `--no-cache`. The venv half
 of the smokes already carried `uv sync --refresh-package m0` for the same
 hazard; the three `uvx` sites (the scaffold, image and dev smokes) now
-carry `--refresh-package m0` too, and the rule is caught. CI's fresh runner
-never saw it, which is the shape of a gate that passes with the bug live.
+carry `--no-cache`, and the rule is caught. `--no-cache` and not
+`--refresh-package`, because CI's uv (0.12.19) refuses the latter beside
+`--offline` — `the argument '--offline' cannot be used with '--refresh'`,
+the first CI run of this branch — while the container's 0.8.17 accepted
+the pair, and offline is the point of that step. Measured on both: 0.8.17
+serves the stale environment through a plain `uvx` and 0.12.19 does not
+(it noticed the rebuilt wheel), and `--offline --no-cache` runs the wheel
+handed to it on either. CI's fresh runner never saw the stale cache, which
+is the shape of a gate that passes with the bug live.
 
 ## What follows
 

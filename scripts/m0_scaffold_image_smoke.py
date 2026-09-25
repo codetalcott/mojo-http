@@ -193,9 +193,9 @@ def run(work, whl, port, tags):
     name = "corner-image"
 
     phase("new")
-    # `--refresh-package m0`, for the reason m0_scaffold_smoke.check_new gives:
-    # a rebuilt wheel under one version is otherwise served from uv's cache.
-    sh([uv, "tool", "run", "--offline", "--refresh-package", "m0", "--python", python, "--from", str(whl),
+    # `--no-cache`, for the reason m0_scaffold_smoke.check_new gives: a
+    # rebuilt wheel under one version is otherwise served from uv's cache.
+    sh([uv, "tool", "run", "--offline", "--no-cache", "--python", python, "--from", str(whl),
         "m0", "new", name], work, env, "uvx m0 new")
     project = work / name
     (project / ".wheels").mkdir()

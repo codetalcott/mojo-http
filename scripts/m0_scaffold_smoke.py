@@ -9,8 +9,8 @@ application. This does, per template, as a user would:
 
   new       `uvx --offline --from <wheel> m0 new NAME`: no network, and no
             toolchain anywhere -- PATH holds uv's directory and the system's
-            alone; `--refresh-package m0`, or uv serves the m0 it cached
-            under this wheel's version rather than the wheel under test. The written tree EQUALS this script's own spelling of the
+            alone; `--no-cache`, or uv serves the m0 it cached under this
+            wheel's version rather than the wheel under test. The written tree EQUALS this script's own spelling of the
             manifest (`new.py` has the recipe's; the two must agree), holds
             both exact pins and no `__M0_` token, and smoke.sh is executable
   again     `m0 new` onto what it just wrote is exit 2, its sentence whole,
@@ -140,14 +140,16 @@ def check_new(work, whl, template, name, pin, m0v):
     # and cannot download another. A Python is not a toolchain; the base
     # interpreter under this script's own venv has no mojo beside it.
     python = os.path.realpath(sys.executable)
-    # `--refresh-package m0`: uv caches a tool environment by the wheel's
-    # name and version, and this wheel is rebuilt under ONE version, so on a
-    # machine that ran this before a plain `uvx` runs the m0 it cached and
-    # not the wheel under test. MEASURED: a `new.py` rule reverted, the wheel
+    # `--no-cache`: uv caches a tool environment by the wheel's name and
+    # version, and this wheel is rebuilt under ONE version, so on a machine
+    # that ran this before a plain `uvx` runs the m0 it cached and not the
+    # wheel under test. MEASURED: a `new.py` rule reverted, the wheel
     # rebuilt, the smoke green -- sabotage-scaffold's "MAX pin token" rule
     # was missed that way. CI's fresh runner never sees it, which is exactly
-    # how a stale gate passes. The venv half has `--refresh-package` below.
-    new = [uv, "tool", "run", "--offline", "--refresh-package", "m0", "--python", python,
+    # how a stale gate passes. Not `--refresh-package`: CI's uv refuses that
+    # beside `--offline` ("cannot be used with --refresh"), and offline is
+    # the point. The venv half has `uv sync --refresh-package` below.
+    new = [uv, "tool", "run", "--offline", "--no-cache", "--python", python,
            "--from", str(whl), "m0", "new"]
 
     done = sh(new + ["Not_A_Name", "--template", template], work, bare, "m0 new Not_A_Name", code=2)
