@@ -8,12 +8,23 @@ readme = "README.md"
 license = "MIT"
 
 # `mojo` brings the whole toolchain: mojo, mojo-lsp-server, mojo-lldb, mblack.
-# MAX is deliberately not a dependency — nothing in packages/ or apps/ imports it.
+# MAX is deliberately not a dependency — nothing in packages/ imports it, and
+# the one app that does (apps/host_parallel, SPEC E32) is built by the smoke
+# that syncs the `max` group below, never by build-apps.
 dependencies = [
     "mojo==1.1.0",
 ]
 
 [dependency-groups]
+# MAX's Mojo packages, for `smoke-parallel-runtime` alone: `max.algorithm`
+# is where `parallelize` lives since Mojo 1.0. Synced only by that step
+# (`uv sync --group max`), never by a plain `uv run`, so the default venv
+# stays the toolchain the nightly canary swaps. `max-core` pins
+# `mojo-compiler==` its own release's, so this pin moves WITH the mojo pin
+# above: a bump of one without the other does not resolve.
+max = [
+    "max-core==26.6.0",
+]
 dev = [
     "django>=5.2.17",
     # smoke-fastapi's framework. In dev rather than left to the developer
@@ -7913,13 +7924,49 @@ python3 scripts/emit.py --covers E30 --task smoke-host-doctor
 python3 scripts/emit.py --covers E31 --task smoke-host-doctor
 """
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E31, N18, N19):
+# The Mojo host with MAX's parallel runtime linked (SPEC E32). The app
+# imports `max.algorithm`, so it builds only where MAX's Mojo packages sit
+# beside the toolchain: the `max` dependency group, synced by this smoke's
+# CI step and by nobody else (`uv sync --group max`, then
+# `uv run --group max poe smoke-parallel-runtime`). A venv without it fails
+# at the build, naming the fix, rather than passing having built nothing.
+# `build-apps` never sees the app: its entry file is `probe.mojo`, not
+# `server.mojo`, for exactly that reason. The probe never asks a forked
+# worker for /par -- that request hung for good before the refusal -- and
+# every wait it makes is bounded, so a refusal that stopped refusing fails
+# in seconds on the served prefork.
+[tool.poe.tasks.smoke-parallel-runtime]
+help = "The Mojo host with MAX's parallel runtime linked: parallelize answers from one loop, from loops on threads and from a pool thread, and M0_WORKERS above 1 is refused with 78 before the bind, by the server and the doctor alike (SPEC E32; needs `uv sync --group max`)"
+shell = """
+out=$(mktemp -d)
+cleanup() {
+  pkill -KILL -f "$out/" 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ \
+  apps/host_parallel/probe.mojo -o "$out/host_parallel" \
+  || { echo "smoke-parallel-runtime: the build failed -- MAX's Mojo packages must sit beside the toolchain: uv sync --group max, then uv run --group max poe smoke-parallel-runtime"; exit 1; }
+python3 scripts/parallel_runtime_probe.py "$out/host_parallel" 8960 > "$out/probe.out" 2> "$out/probe.err" \
+  || { cat "$out/probe.out" "$out/probe.err"; exit 1; }
+cat "$out/probe.out"
+par=$(grep '^par_us ' "$out/probe.out" | cut -d' ' -f2)
+ser=$(grep '^ser_us ' "$out/probe.out" | cut -d' ' -f2)
+python3 scripts/emit.py parallel_view_us "$par" --unit us --task smoke-parallel-runtime
+python3 scripts/emit.py serial_view_us "$ser" --unit us --task smoke-parallel-runtime
+echo "smoke-parallel-runtime OK"
+python3 scripts/emit.py --covers E32 --task smoke-parallel-runtime
+"""
+
+# Each Mojo host rule, broken on purpose (SPEC E21-E32, N18, N19):
 # twenty-three against smoke-host, seven against smoke-host-threads, two
 # against smoke-fragment-notes, six against test_host.mojo, six against test_prefork.mojo (the pre-fork
 # pieces both hosts share), one against test_respawn.mojo (the supervisor
 # ending the siblings on a refusal), one against test_views.mojo (the
 # placement flag), and the command line's twelve: seven against
-# smoke-host-doctor and five against test_host_flags.mojo. Pre-release:
+# smoke-host-doctor and five against test_host_flags.mojo -- plus one
+# against smoke-parallel-runtime, which needs the `max` group synced
+# (`--only parallel`). Pre-release:
 # fifty-eight runs, over an hour; `--only doctor` is about five minutes;
 # `--only threads` is about six minutes, and `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
 # about one each.

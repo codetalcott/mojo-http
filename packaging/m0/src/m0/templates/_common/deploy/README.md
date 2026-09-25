@@ -34,4 +34,5 @@ fly scale count 1 -a __M0_APP__
 - `scale count 1`: the first deploy creates two machines. State held in
   the process is one machine's; see the comment in `fly.toml`.
 - One loop. On one shared vCPU a second worker or thread cannot run beside
-  the first, so `M0_WORKERS`/`M0_THREADS` stay unset.
+  the first, so `M0_WORKERS`/`M0_THREADS` stay unset. On more than one
+  vCPU, set `M0_THREADS` to the count.

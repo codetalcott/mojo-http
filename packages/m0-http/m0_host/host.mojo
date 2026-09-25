@@ -167,6 +167,7 @@ pool thread (`set_hold_notify`) is not, and a Mojo application that wants a
 held stream opens it on the loop.
 """
 
+from std.ffi import OwnedDLHandle, external_call
 from std.memory import Pointer
 from std.os import getenv
 from std.sys.info import CompilationTarget
@@ -756,8 +757,90 @@ struct HostCheck(Copyable, Movable):
         self.fix = fix^
 
 
+comptime PARALLEL_RUNTIME_IMAGE = "libAsyncRTMojoBindings"
+"""The image MAX's parallel runtime lives in, without its extension.
+
+`max.algorithm.parallelize` links it (`NEEDED` on Linux, an install name on
+macOS); a binary that imports nothing from MAX does not carry it. That
+makes the image the fact `host_checks` asks about: not "does the
+application call `parallelize`", which nothing outside the application
+can know, but "could it", which the loaded images answer.
+"""
+
+# glibc's: the Linux branch of `parallel_runtime_linked` alone reads them.
+# macOS spells RTLD_NOLOAD as 0x10, which is why that branch walks dyld's
+# image list instead of asking `dlopen`.
+comptime _RTLD_LAZY = 1
+comptime _RTLD_NOLOAD = 4
+
+
+def _image_name(addr: Int) -> String:
+    """A String from the NUL-terminated path dyld owns; "" for NULL."""
+    if addr == 0:
+        return String("")
+    var p = Pointer[UInt8, MutUntrackedOrigin](unsafe_from_address=addr)
+    var n = 0
+    while p[unsafe_offset=n] != 0:
+        n += 1
+    if n == 0:
+        return String("")
+    return String(unsafe_from_utf8=Span(unsafe_ptr=p, length=n))
+
+
+def _names_image(path: String, image: String) -> Bool:
+    """Whether `path`'s last segment is `image` plus an extension --
+    `.../libAsyncRTMojoBindings.dylib` -- and not a look-alike."""
+    var bytes = path.as_bytes()
+    var start = 0
+    for i in range(len(bytes)):
+        if bytes[i] == UInt8(ord("/")):
+            start = i + 1
+    var leaf = String(unsafe_from_utf8=bytes[start:])
+    return leaf.startswith(image + ".")
+
+
+def parallel_runtime_linked() -> Bool:
+    """Whether this process image carries MAX's parallel runtime.
+
+    The fact behind `workers-vs-parallel-runtime`: `fork()` copies the
+    calling thread alone, and the runtime's worker threads are started
+    before `main`, so a forked worker inherits the runtime's bookkeeping
+    and none of its workers -- a `parallelize` there never returns.
+    Measured in every shape, a parent that never called it included, and
+    a request that hung took its worker's loop and the shutdown with it
+    (docs/notes/threads-first-for-m0-apps.md). Asked of the loaded
+    images, never by calling anything of MAX's: this package imports
+    nothing from it, and an application that links it is refused prefork
+    before the bind rather than served into a hang.
+
+    Linux: `dlopen` with `RTLD_NOLOAD` answers a handle for an image that
+    is already mapped, matched by soname, and maps nothing for one that is
+    not. macOS: dyld's own image list, walked by leaf name, because its
+    `RTLD_NOLOAD` is another bit and matches a bare name less predictably.
+    """
+    comptime if CompilationTarget.is_macos():
+        var count = Int(external_call["_dyld_image_count", UInt32]())
+        for i in range(count):
+            var addr = external_call["_dyld_get_image_name", Int](UInt32(i))
+            if _names_image(_image_name(addr), PARALLEL_RUNTIME_IMAGE):
+                return True
+        return False
+    else:
+        try:
+            var handle = OwnedDLHandle(
+                String(PARALLEL_RUNTIME_IMAGE, ".so"), _RTLD_LAZY | _RTLD_NOLOAD
+            )
+            _ = handle^
+            return True
+        except:
+            return False
+
+
 def host_checks(
-    config: AppConfig, max_workers: Int = 0, max_threads: Int = 0
+    config: AppConfig,
+    max_workers: Int = 0,
+    max_threads: Int = 0,
+    parallel_runtime: Optional[Bool] = None,
 ) -> List[HostCheck]:
     """Every rule the host refuses a configuration by, in the order `serve`
     applies them, each evaluated.
@@ -770,6 +853,11 @@ def host_checks(
     application cannot keep one state across; ignoring either would serve a
     configuration other than the one written down. Whether the number came
     from a flag or a variable is not asked: both are named.
+
+    `parallel_runtime` is the one fact a caller may supply instead of
+    letting this gather it (`parallel_runtime_linked`): the unit test links
+    no MAX and still has to see the refusal, and the smoke that links it
+    (SPEC E32) is where the gathered fact is proven.
     """
     var out = List[HostCheck]()
     if config.workers < 1:
@@ -852,15 +940,50 @@ def host_checks(
         ))
     else:
         out.append(HostCheck("spawned-marker", "not an exec'd m0serve worker"))
+    var linked: Bool
+    if parallel_runtime:
+        linked = parallel_runtime.value()
+    else:
+        linked = parallel_runtime_linked()
+    if config.workers > 1 and linked:
+        # A forked worker holds the runtime's bookkeeping and none of its
+        # threads: `parallelize` there never returns, and it took the
+        # worker's loop and the shutdown with it when measured. Loops on
+        # threads share the one runtime; refuse the fork before the bind.
+        out.append(HostCheck(
+            "workers-vs-parallel-runtime",
+            String(
+                "M0_WORKERS=", config.workers, ", but this binary links MAX's"
+                " parallel runtime (", PARALLEL_RUNTIME_IMAGE, "), whose worker"
+                " threads a fork() does not copy: a parallelize in a forked"
+                " worker never returns",
+            ),
+            String(
+                "set --threads (M0_THREADS) to ", config.workers,
+                " and leave --workers (M0_WORKERS) at 1: loops on threads"
+                " share the one runtime",
+            ),
+        ))
+    else:
+        out.append(HostCheck(
+            "workers-vs-parallel-runtime",
+            String("MAX's parallel runtime is linked; one process serves it")
+            if linked
+            else String("MAX's parallel runtime is not linked"),
+        ))
     return out^
 
 
 def host_refusal(
-    config: AppConfig, max_workers: Int = 0, max_threads: Int = 0
+    config: AppConfig,
+    max_workers: Int = 0,
+    max_threads: Int = 0,
+    parallel_runtime: Optional[Bool] = None,
 ) -> Optional[String]:
     """Why the host will not serve `config`, or None: the first of
-    `host_checks` that failed, with its fix."""
-    var checks = host_checks(config, max_workers, max_threads)
+    `host_checks` that failed, with its fix. `parallel_runtime` is
+    `host_checks`' own optional, for the test that supplies the fact."""
+    var checks = host_checks(config, max_workers, max_threads, parallel_runtime)
     for i in range(len(checks)):
         if not checks[i].ok:
             return String(checks[i].detail, " (", checks[i].fix, ")")

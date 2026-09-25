@@ -695,6 +695,19 @@ jobs:
       # subscriber as one patch-elements frame.
       - name: Smoke test the Datastar todo demo
         run: uv run poe smoke-todo
+      # MAX's parallel runtime, linked by an app that uses
+      # `max.algorithm.parallelize`: the host serves it from one loop, from
+      # loops on threads and from a pool thread, and refuses M0_WORKERS
+      # above 1 with 78 before the bind -- a forked worker inherits the
+      # runtime's bookkeeping and none of its threads, and a parallelize
+      # there never returned (SPEC E32, DECISIONS D48). The `max` dependency
+      # group is synced here and nowhere else; the next plain `uv run` puts
+      # the venv back. Last among the smokes so that the sync's churn
+      # touches nothing after it.
+      - name: Smoke test the Mojo host with MAX's parallel runtime
+        run: |
+          uv sync --group max
+          uv run --group max poe smoke-parallel-runtime
       # The measurements, rendered into the run's own summary page and kept as
       # an artifact. Until now every one of these numbers went to a job log
       # that expires, so "did it pass" was answerable and "is it drifting

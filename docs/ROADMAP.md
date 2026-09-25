@@ -215,6 +215,7 @@ The engineering record: long-form, dated, kept as written.
 - [The page shell becomes a trait — 2026-09-18](notes/the-page-shell-becomes-a-trait.md)
 - [A vocabulary an application defines — 2026-09-18](notes/a-vocabulary-an-application-defines.md)
 - [Loops on threads — 2026-09-18](notes/loops-on-threads.md)
+- [Threads first for m0 applications — 2026-09-25](notes/threads-first-for-m0-apps.md)
 - [The demo in its own image — 2026-09-18](notes/the-demo-in-its-own-image.md)
 - [Flags and a doctor for the host — 2026-09-19](notes/flags-and-a-doctor-for-the-host.md)
 - [The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20](notes/the-m0-wheel.md)

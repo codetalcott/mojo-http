@@ -141,7 +141,10 @@ Flag > environment > default; `bin/server --doctor` prints the result.
 `M0_BLOCKING_THREADS` (handler threads per loop), `M0_SPAWN_WORKERS`
 (refused), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`, `M0_APP_TICK_MS`,
 `M0_MAX_KEEPALIVE_REQUESTS`, `M0_QOS`. A count that cannot be
-served is a 78 whichever way it arrived.
+served is a 78 whichever way it arrived. More than one core is
+`M0_THREADS=N`; `M0_WORKERS` forks, and is refused when the binary links
+MAX's parallel runtime (`max.algorithm.parallelize`), whose threads a
+fork does not copy.
 
 ## Probing a running server
 
