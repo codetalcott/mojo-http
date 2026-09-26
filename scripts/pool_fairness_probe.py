@@ -50,7 +50,7 @@ known to starve.
 Latency is still printed, and recorded in CI; it is not the verdict.
 
 usage: pool_fairness_probe.py PORT [--expect-convoy | --expect-starvation]
-                              [--seconds N] [--conns N]
+                              [--seconds N] [--conns N] [--busy-ms MS]
 """
 import http.client
 import sys
@@ -63,11 +63,14 @@ EXPECT_CONVOY = "--expect-convoy" in sys.argv
 EXPECT_STARVATION = "--expect-starvation" in sys.argv
 SECONDS = 8.0
 CONNS = 16
+BUSY_MS = "0.3"
 for i, a in enumerate(sys.argv):
     if a == "--seconds":
         SECONDS = float(sys.argv[i + 1])
     if a == "--conns":
         CONNS = int(sys.argv[i + 1])
+    if a == "--busy-ms":
+        BUSY_MS = sys.argv[i + 1]
 
 # The verdict, in later answers rather than milliseconds. At this load the
 # pool answers about 2.5k requests a second on a 4-vCPU KVM guest, so
@@ -130,7 +133,7 @@ def hammer(seconds, conns):
         while time.time() < stop:
             t0 = time.perf_counter()
             try:
-                conn.request("GET", "/busy?ms=0.3")
+                conn.request("GET", "/busy?ms=" + BUSY_MS)
                 body = conn.getresponse().read()
                 if not body.startswith(b"busy"):
                     errors[i] += 1
