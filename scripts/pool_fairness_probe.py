@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pool threads must acquire the GIL in job order, or a CPU-bound view convoys.
+"""Pool threads must take the GIL in job order, or a CPU-bound view convoys.
 
 The loop thread holds no thread state while it serves (docs/notes/
 detached-loop.md), which took the per-pass GIL acquisition that used to
@@ -13,21 +13,37 @@ in `blocking_pool.mojo` (`_yield_turn`) is what stands in its place, and
 this is its gate.
 
 Sixteen keep-alive connections hammer `/busy?ms=0.3` -- a view that spins
-with the GIL held -- for a few seconds and the latency distribution is
-the verdict. Two arms, because a probe that cannot see the failure proves
-nothing: the default run must hold a single-digit-millisecond p99, and the
-same run with `M0_POOL_TURN=0` on the server (`--expect-convoy`) must show
-the convoy. Pre-release rather than CI: a shared 3-core runner puts its own
-scheduling into a p99 (docs/RELEASING.md).
+with the GIL held -- for a few seconds, and the verdict is ORDER. A request
+is PASSED OVER when a request sent after it is answered first: the pool
+served someone else while it waited. The ring hands jobs out in the order
+they were queued, so in a fair pool a request is passed over only while its
+thread waits its turn for the GIL, by a few dozen later answers and rarely a
+hundred. A starved or convoyed waiter is passed over by hundreds. A fair run
+lets at most LONG_WAITS_ALLOWED requests be passed over by more than
+LONG_WAIT later answers, and none by more than MOST_PASSED_OVER.
 
-A third arm, `--expect-starvation`, is the keep rule's: inside its slice a
-thread takes the jobs already queued without dropping the GIL, and with
-`M0_POOL_TURN_KEEP=0` it drops it between every job again, each drop
-waking a parked waiter that finds the GIL re-taken and waits once more
-behind the others -- two threads ping-ponging while two starve. That run
-must fail the fair bounds. It is asserted on Linux, where it was found
-(docs/notes/a-slice-keeps-the-gil.md): 14 of 14 runs over the fair max on
-a 4-vCPU VM, 335 ms the least, where the rule holds 13-21 ms.
+The probe judged latency first -- a p99 under 25 ms and a max under a
+quarter second -- and that is too close to the machine for a gate on every
+pull request. Measured on 4-vCPU Linux: a fair run's max reached 247 ms
+once in 68 runs, where 21-97 ms is usual, and the old shapes' figures sat
+near the same bounds from the other side (the keep rule off: p99 26-34 ms,
+max 120-609; the turn off: max 554-2237). A pause of the whole process
+delays every connection at once, which is what a max cannot tell from a
+starved waiter, and it passes nobody over: with the server stopped for
+300 ms twice inside the window, five runs of five were in order (at most one
+long wait) where the old verdict failed all five on a 315-320 ms max.
+
+Three arms, because a probe that cannot see the failure proves nothing: the
+default run must be in order, the same run with `M0_POOL_TURN=0` on the
+server (`--expect-convoy`) must not be, and neither must `--expect-starvation`,
+the keep rule's arm: inside its slice a thread takes the jobs already queued
+without dropping the GIL, and with `M0_POOL_TURN_KEEP=0` it drops it between
+every job again, each drop waking a parked waiter that finds the GIL
+re-taken and waits once more behind the others -- two threads ping-ponging
+while two starve. That arm is asserted on Linux, where it was found
+(docs/notes/a-slice-keeps-the-gil.md).
+
+Latency is still printed, and recorded in CI; it is not the verdict.
 
 usage: pool_fairness_probe.py PORT [--expect-convoy | --expect-starvation]
                               [--seconds N] [--conns N]
@@ -49,16 +65,20 @@ for i, a in enumerate(sys.argv):
     if a == "--conns":
         CONNS = int(sys.argv[i + 1])
 
-# What a fair pool holds and what a convoy shows, with an order of magnitude
-# between them so the machine's own hiccups land in neither. The convoy's
-# signature at this load is the MAX, not the p99: sixteen connections, one
-# starved at a time (measured 4.2 s with the turn disabled, 17 ms with it),
-# so the negative arm asks for either a p99 or a max the fair arm never
-# approaches.
-FAIR_P99_MS = 25.0
-FAIR_MAX_MS = 250.0
-CONVOY_P99_MS = 50.0
-CONVOY_MAX_MS = 500.0
+# The verdict, in later answers rather than milliseconds. At this load the
+# pool answers about 2.5k requests a second on 4-vCPU Linux, so LONG_WAIT is
+# about 40 ms of the pool serving others while one request waits, and
+# MOST_PASSED_OVER about 0.4 s. Measured there: fair runs, 0 or 1 request a
+# run over LONG_WAIT and the most passed over by 30-107 (23 runs); the keep
+# rule off, 88-171 requests a run over it (16 runs of 12 s), the most by
+# 336-1115; the turn off, 75-142 (8 runs of 8 s), the most by 2442-3901. The
+# allowance is for what the keep rule does not prevent: a waiter can still
+# lose its place to its own 5 ms timeout. MOST_PASSED_OVER is for a regime
+# with few starvations and long ones, which the 2026-09-26 finding showed
+# first (a max of 575-735 ms at a p99 of 8.6-16.6).
+LONG_WAIT = 100
+LONG_WAITS_ALLOWED = 5
+MOST_PASSED_OVER = 1000
 
 # Which phase is running, for the crash handler below: a traceback names the
 # CALL that raised (an http.client method every phase shares) and never the
@@ -94,8 +114,9 @@ def wait_healthy(deadline=30.0):
 
 
 def hammer(seconds, conns):
+    """(latencies in ms, sorted; (sent, answered) per request; errors)."""
     stop = time.time() + seconds
-    samples = [[] for _ in range(conns)]
+    spans = [[] for _ in range(conns)]
     errors = [0] * conns
 
     def worker(i):
@@ -112,7 +133,7 @@ def hammer(seconds, conns):
                 conn.close()
                 conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=30)
                 continue
-            samples[i].append((time.perf_counter() - t0) * 1000.0)
+            spans[i].append((t0, time.perf_counter()))
         conn.close()
 
     threads = [threading.Thread(target=worker, args=(i,)) for i in range(conns)]
@@ -120,8 +141,35 @@ def hammer(seconds, conns):
         t.start()
     for t in threads:
         t.join()
-    flat = sorted(x for s in samples for x in s)
-    return flat, sum(errors)
+    flat = [s for per in spans for s in per]
+    return sorted((b - a) * 1000.0 for a, b in flat), flat, sum(errors)
+
+
+def passed_over(spans):
+    """For each request, how many requests SENT after it were ANSWERED first.
+
+    A Fenwick tree over answer order, visited from the last request sent to
+    the first: at each step the tree holds exactly the requests sent later,
+    so the prefix below this request's answer rank counts the ones answered
+    before it. n log n, where comparing every pair is 10^9 at this load.
+    """
+    n = len(spans)
+    rank = [0] * n
+    for r, k in enumerate(sorted(range(n), key=lambda k: spans[k][1])):
+        rank[k] = r + 1
+    tree = [0] * (n + 1)
+    out = []
+    for k in sorted(range(n), key=lambda k: spans[k][0], reverse=True):
+        r, c = rank[k] - 1, 0
+        while r > 0:
+            c += tree[r]
+            r -= r & -r
+        out.append(c)
+        r = rank[k]
+        while r <= n:
+            tree[r] += 1
+            r += r & -r
+    return out
 
 
 def pct(sorted_ms, p):
@@ -142,38 +190,48 @@ def main():
     else:
         arm = "turn on"
     phase(arm + " hammer")
-    lat, errors = hammer(SECONDS, CONNS)
+    lat, spans, errors = hammer(SECONDS, CONNS)
+    phase(arm + " verdict")
     n = len(lat)
     p50, p99, mx = pct(lat, 0.50), pct(lat, 0.99), (lat[-1] if lat else float("nan"))
-    print("pool_fairness_probe: %s: n=%d errors=%d p50=%.2fms p99=%.2fms max=%.2fms"
-          % (arm, n, errors, p50, p99, mx))
+    over = passed_over(spans)
+    long_waits = sum(1 for x in over if x > LONG_WAIT)
+    most = max(over) if over else 0
+    in_order = long_waits <= LONG_WAITS_ALLOWED and most <= MOST_PASSED_OVER
+    print("pool_fairness_probe: %s: n=%d errors=%d p50=%.2fms p99=%.2fms max=%.2fms; "
+          "passed over by more than %d later answers: %d requests (a fair run: at most %d), "
+          "the most: %d (at most %d)"
+          % (arm, n, errors, p50, p99, mx, LONG_WAIT, long_waits, LONG_WAITS_ALLOWED,
+             most, MOST_PASSED_OVER))
+    # One figure a line, for the task's recorder (scripts/emit.py).
+    print("p99_ms %.2f" % p99)
+    print("max_ms %.2f" % mx)
+    print("long_waits %d" % long_waits)
+    print("long_waits_bound %d" % LONG_WAITS_ALLOWED)
+    print("most_passed_over %d" % most)
+    print("most_passed_over_bound %d" % MOST_PASSED_OVER)
     if n < CONNS * 10:
-        print("pool_fairness_probe: FAIL: too few samples (%d) to judge a tail" % n)
+        print("pool_fairness_probe: FAIL: too few samples (%d) to judge an order" % n)
         return 1
     if errors:
         print("pool_fairness_probe: FAIL: %d errors" % errors)
         return 1
-    if EXPECT_CONVOY:
-        if p99 < CONVOY_P99_MS and mx < CONVOY_MAX_MS:
-            print("pool_fairness_probe: FAIL: with the turn disabled the p99 stayed at %.2f ms and "
-                  "the max at %.2f ms (< %.0f / %.0f ms) -- the probe cannot see the convoy it exists to catch"
-                  % (p99, mx, CONVOY_P99_MS, CONVOY_MAX_MS))
+    if EXPECT_CONVOY or EXPECT_STARVATION:
+        what = "the convoy it exists to catch" if EXPECT_CONVOY else "the starvation the keep rule prevents"
+        if in_order:
+            print("pool_fairness_probe: FAIL: with %s disabled the pool still answered in order "
+                  "(%d requests passed over by more than %d, the most by %d) -- the probe cannot "
+                  "see %s" % ("the turn" if EXPECT_CONVOY else "the keep rule", long_waits,
+                               LONG_WAIT, most, what))
             return 1
-        print("pool_fairness_probe: PASS: the convoy is visible without the turn")
+        print("pool_fairness_probe: PASS: %s is visible" % ("the convoy" if EXPECT_CONVOY else "the starvation"))
         return 0
-    if EXPECT_STARVATION:
-        if p99 <= FAIR_P99_MS and mx <= FAIR_MAX_MS:
-            print("pool_fairness_probe: FAIL: with the keep rule off the p99 stayed at %.2f ms and "
-                  "the max at %.2f ms (<= %.0f / %.0f ms) -- the probe cannot see the starvation "
-                  "the rule prevents" % (p99, mx, FAIR_P99_MS, FAIR_MAX_MS))
-            return 1
-        print("pool_fairness_probe: PASS: a waiter starves without the keep rule")
-        return 0
-    if p99 > FAIR_P99_MS or mx > FAIR_MAX_MS:
-        print("pool_fairness_probe: FAIL: p99 %.2f ms / max %.2f ms exceeds %.0f / %.0f ms -- "
-              "pool threads are not acquiring the GIL in job order" % (p99, mx, FAIR_P99_MS, FAIR_MAX_MS))
+    if not in_order:
+        print("pool_fairness_probe: FAIL: %d requests passed over by more than %d later answers "
+              "(at most %d), the most by %d (at most %d) -- pool threads are not taking the GIL "
+              "in job order" % (long_waits, LONG_WAIT, LONG_WAITS_ALLOWED, most, MOST_PASSED_OVER))
         return 1
-    print("pool_fairness_probe: PASS: fair under a CPU-bound view")
+    print("pool_fairness_probe: PASS: in job order under a CPU-bound view")
     return 0
 
 

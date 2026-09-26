@@ -366,6 +366,47 @@ jobs:
           path: ci-results.jsonl
           if-no-files-found: ignore
 
+  # E11/E34: the handler pool's GIL hand-off, timed. Four pool threads
+  # under a CPU-bound view at sixteen connections must hold a fair tail,
+  # the barrier disabled must convoy, and the keep rule disabled must
+  # starve a waiter -- the arm that proves the probe sees what the rule
+  # prevents, asserted on Linux, where the starvation was found
+  # (docs/notes/a-slice-keeps-the-gil.md). A job of its own rather than a
+  # step in `smoke-gateway`: it is Linux-only, the spec checker rightly
+  # rejects a cited step carrying an `if:`, and a timing probe wants a
+  # runner with nothing else running on it. The pid1 shape: job-level
+  # runs-on, no step-level condition on the cited step. macOS stays the
+  # reference Mac's, before a release (docs/RELEASING.md).
+  pool-fairness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: pool-fairness
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install Linux build dependencies
+        timeout-minutes: 3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+      - run: uv run poe build-all
+      - name: Probe the handler pool's GIL hand-off for fairness
+        run: uv run poe probe-pool-fairness
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-pool-fairness
+          path: ci-results.jsonl
+          if-no-files-found: ignore
+
   # E13/E14/M18: what only an Apple Silicon runner can check -- the
   # performance-core count against sysctl, the --qos knob, and the native
   # build flavor naming its host. The smoke matrix's macOS leg could host
