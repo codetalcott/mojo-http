@@ -44,7 +44,7 @@ from std.python import Python
 from std.time import perf_counter_ns
 
 from lightbug_http.offload import (
-    OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP,
+    OffloadPool, PoolJob, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP, JOB_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
 )
 from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
@@ -67,6 +67,20 @@ comptime BLK_THREAD_ID = 10
 """Block slot holding the id `OffloadPool.register_thread` gave this
 thread (-1: it parks on the lane socket). Written by `_pool_body` before
 `_pool_serve` runs."""
+
+comptime BLK_KEPT = 11
+"""Block slot the thread leaves its count of jobs taken inside its slice
+without dropping the GIL in (`try_next_job`), as it leaves. `kept` sums
+them."""
+
+comptime _TURN_WAITERS = 0
+comptime _TURN_ATTACHES = 8
+comptime _TURN_KEEP = 16
+"""The turn block's words, by byte offset: threads parked in
+`PyEval_RestoreThread`, attaches completed, and 1 when a thread takes the
+jobs already queued inside its slice without dropping the GIL (0 under
+`M0_POOL_TURN_KEEP=0`)."""
+comptime _TURN_BYTES = 24
 
 comptime WS_JOB_BUFFER = 65546
 """Bytes a pool thread's receive buffer holds.
@@ -131,12 +145,14 @@ struct BlockingPool(Movable):
     """Threads `stop_and_join` gave up waiting for: still inside the
     application when its budget ran out, left running and unjoined."""
     var turn_addr: Int
-    """The pool's turn counters (docs/notes/detached-loop.md): two atomics,
-    threads parked in `PyEval_RestoreThread` and attaches completed. A
-    thread that drops the GIL while another is parked on it yields until
-    that one has acquired (`_yield_turn`), so the hand-off goes to the
-    thread that waited rather than back to the one that just ran. 0 for a
-    pool of one, and under `M0_POOL_TURN=0` (the probe's negative arm)."""
+    """The pool's turn block (docs/notes/detached-loop.md): two atomics,
+    threads parked in `PyEval_RestoreThread` and attaches completed, and the
+    keep word (`_TURN_KEEP`). A thread that drops the GIL while another is
+    parked on it yields until that one has acquired (`_yield_turn`), so the
+    hand-off goes to the thread that waited rather than back to the one
+    that just ran; inside its slice it does not drop the GIL at all while a
+    job is queued (docs/notes/a-slice-keeps-the-gil.md). 0 for a pool of
+    one, and under `M0_POOL_TURN=0` (the probe's negative arm)."""
 
     def __init__(out self, count: Int):
         self.count = count
@@ -189,9 +205,19 @@ struct BlockingPool(Movable):
         # next taker woke from the kernel) or no order at all (N-1 tokens,
         # once some threads were asleep inside views). One thread needs none.
         if self.count > 1 and getenv("M0_POOL_TURN", "") != "0":
-            self.turn_addr = external_call["malloc", Int, Int](16)
-            Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=self.turn_addr)[] = 0
-            Pointer[Int64, MutUntrackedOrigin](unsafe_from_address=self.turn_addr + 8)[] = 0
+            self.turn_addr = external_call["malloc", Int, Int](_TURN_BYTES)
+            Pointer[Int64, MutUntrackedOrigin](
+                unsafe_from_address=self.turn_addr + _TURN_WAITERS
+            )[] = 0
+            Pointer[Int64, MutUntrackedOrigin](
+                unsafe_from_address=self.turn_addr + _TURN_ATTACHES
+            )[] = 0
+            # `M0_POOL_TURN_KEEP=0` drops the GIL between every job again,
+            # the barrier's shape through 1.5: the A/B knob, and the
+            # fairness probe's Linux arm that must show the starvation.
+            Pointer[Int64, MutUntrackedOrigin](
+                unsafe_from_address=self.turn_addr + _TURN_KEEP
+            )[] = 0 if getenv("M0_POOL_TURN_KEEP", "") == "0" else 1
         for i in range(self.count):
             var lane = -1 if len(lanes) == 0 else lanes[i % len(lanes)]
             self._lanes.append(lane)
@@ -214,6 +240,15 @@ struct BlockingPool(Movable):
         for i in range(self.count):
             self._set.spawn(i, body_addr)
         self._started = True
+
+    def kept(self) -> Int:
+        """Jobs the threads took inside their slices without dropping the
+        GIL (`try_next_job`), summed from what each left as it did. Read it
+        after `stop_and_join`: a thread still serving has written nothing."""
+        var total = 0
+        for i in range(self.count):
+            total += self._set.block(i).get(BLK_KEPT)
+        return total
 
     def stop_and_join(mut self, mut pool: OffloadPool, timeout_ns: Int = -1) raises -> Int:
         """Poison the queue with one pill per thread, then join. Returns the
@@ -326,6 +361,10 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
 
     # When this thread's current run of the GIL began (the hand-off slice).
     var streak_start = perf_counter_ns()
+    # Whether this thread takes the jobs already queued inside its slice
+    # without dropping the GIL (below), and how many it has.
+    var keep = turn_addr != 0 and shared_load(turn_addr + _TURN_KEEP) != 0
+    var kept = 0
 
     # `M0_POOL_DEBUG`: where a job's time goes on this thread, as three
     # histograms printed when the thread leaves -- the wait on the ring
@@ -340,37 +379,59 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     var jobs = 0
 
     while True:
-        # Detached across the block. This is where the thread spends its life,
-        # and holding a thread state through it would stall every other
-        # thread's stop-the-world.
-        # The snapshot before the drop, the yield after it: once this thread
-        # has held its run for a slice, and another pool thread is parked
-        # waiting for the GIL this drop releases, stay off it until that
-        # thread has acquired. Then park as a waiter around the re-attach so
-        # the next thread to drop sees us. A slice rather than every job:
-        # a hand-off is a thread switch plus a condvar wake, which on a
-        # 200 us view was 15 % of throughput when paid per job and is
-        # ~3 % per millisecond; no waiter waits more than the slice.
+        # Inside its slice, a job already queued is taken WITHOUT dropping
+        # the GIL (`try_next_job` never waits). A drop there bought nothing
+        # -- this thread re-took the GIL before anyone it woke was scheduled
+        # -- and cost a waiter its place: each drop signals CPython's
+        # condition variable, the woken waiter finds the GIL taken again and
+        # waits once more BEHIND the others, and the slice's hand-off went to
+        # whichever thread had just held it. Two threads ping-ponged while
+        # two starved, 0.3-1.6 s at a time on 4-vCPU Linux under a
+        # CPU-bound view (docs/notes/a-slice-keeps-the-gil.md).
         var now = perf_counter_ns()
-        var attaches_before = shared_load(turn_addr + 8) if turn_addr != 0 else 0
-        var ts = cpy.PyEval_SaveThread()
-        var yielded = False
-        if turn_addr != 0 and now - streak_start >= TURN_SLICE_NS:
-            yielded = _yield_turn(turn_addr, attaches_before)
-        var job = pool.next_job(lane if lane > 0 else 0, buf, thread_id)
-        if turn_addr != 0:
-            _ = shared_fetch_add(turn_addr, 1)
-        var t_attach = perf_counter_ns()
-        cpy.PyEval_RestoreThread(ts)
-        var t_held = perf_counter_ns()
-        if turn_addr != 0:
-            _ = shared_fetch_add(turn_addr, -1)
-            _ = shared_fetch_add(turn_addr + 8, 1)
-            # A new run starts when this thread gave the GIL away, or had to
-            # wait for it: a thread that queued a millisecond for its turn
-            # must not be over its slice the moment it gets one.
-            if yielded or t_held - t_attach >= TURN_WAITED_NS:
-                streak_start = t_held
+        var job = _no_job()
+        var t_attach = now
+        var t_held = now
+        if keep and now - streak_start < TURN_SLICE_NS:
+            job = pool.try_next_job(lane if lane > 0 else 0, buf, thread_id)
+            if job.kind != JOB_NONE:
+                kept += 1
+                t_attach = perf_counter_ns()
+                t_held = t_attach
+        if job.kind == JOB_NONE:
+            # Detached across the block. This is where the thread spends its
+            # life, and holding a thread state through it would stall every
+            # other thread's stop-the-world.
+            # The snapshot before the drop, the yield after it: once this
+            # thread has held its run for a slice, and another pool thread is
+            # parked waiting for the GIL this drop releases, stay off it until
+            # that thread has acquired. Then park as a waiter around the
+            # re-attach so the next thread to drop sees us. A slice rather
+            # than every job: a hand-off is a thread switch plus a condvar
+            # wake, which on a 200 us view was 15 % of throughput when paid
+            # per job and is ~3 % per millisecond; no waiter waits more than
+            # the slice.
+            var attaches_before = (
+                shared_load(turn_addr + _TURN_ATTACHES) if turn_addr != 0 else 0
+            )
+            var ts = cpy.PyEval_SaveThread()
+            var yielded = False
+            if turn_addr != 0 and now - streak_start >= TURN_SLICE_NS:
+                yielded = _yield_turn(turn_addr, attaches_before)
+            job = pool.next_job(lane if lane > 0 else 0, buf, thread_id)
+            if turn_addr != 0:
+                _ = shared_fetch_add(turn_addr + _TURN_WAITERS, 1)
+            t_attach = perf_counter_ns()
+            cpy.PyEval_RestoreThread(ts)
+            t_held = perf_counter_ns()
+            if turn_addr != 0:
+                _ = shared_fetch_add(turn_addr + _TURN_WAITERS, -1)
+                _ = shared_fetch_add(turn_addr + _TURN_ATTACHES, 1)
+                # A new run starts when this thread gave the GIL away, or had
+                # to wait for it: a thread that queued a millisecond for its
+                # turn must not be over its slice the moment it gets one.
+                if yielded or t_held - t_attach >= TURN_WAITED_NS:
+                    streak_start = t_held
         if job.kind == JOB_STOP:
             break
 
@@ -467,12 +528,14 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
     if debug:
         print(
             "pool thread[" + String(index) + "] lane " + String(lane)
-            + ": jobs " + String(jobs)
+            + ": jobs " + String(jobs) + " (kept " + String(kept) + ")"
             + " | " + _hist_line("ring-wait", h_ring)
             + " | " + _hist_line("gil-wait", h_gil)
             + " | " + _hist_line("service", h_service),
             flush=True,
         )
+
+    block.set(BLK_KEPT, kept)
 
     # After the poison pill, before the handler's destructors: the one
     # point where this thread is attached, idle, and still owns its app.
@@ -576,20 +639,25 @@ inside CPython, where these counters cannot see -- costs a bounded spin,
 not a stall."""
 
 
+def _no_job() -> PoolJob:
+    """No job yet: what the loop starts each round with."""
+    return PoolJob(JOB_NONE, -1, 0, 0, 0, 0, 0)
+
+
 def _yield_turn(addr: Int, attaches_before: Int) -> Bool:
     """The hand-off barrier: after dropping the GIL, if another pool thread
     is parked waiting for it, yield until an attach completes. Returns
     whether there was a waiter to yield to.
 
-    `addr` holds the waiter count, `addr + 8` the attach count. A parked
+    `addr` is the turn block (`_TURN_WAITERS`, `_TURN_ATTACHES`). A parked
     waiter is already inside `PyEval_RestoreThread`, so the GIL never sits
     free while it wakes; the yield only keeps THIS thread from winning the
     race back. No syscall on the common path (no waiter: return at once).
     """
-    if shared_load(addr) <= 0:
+    if shared_load(addr + _TURN_WAITERS) <= 0:
         return False
     var deadline = perf_counter_ns() + TURN_YIELD_NS
-    while shared_load(addr + 8) == attaches_before:
+    while shared_load(addr + _TURN_ATTACHES) == attaches_before:
         _ = external_call["sched_yield", c_int]()
         if perf_counter_ns() > deadline:
             return True

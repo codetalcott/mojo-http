@@ -5842,7 +5842,7 @@ help = "Break each decoder invariant and insist the fuzzer reports it"
 shell = "python3 scripts/fuzz_sabotage.py"
 
 [tool.poe.tasks.probe-pool-fairness]
-help = "PRE-RELEASE: pool threads take the GIL in job order under a CPU-bound view; the turn disabled must convoy (not in CI)"
+help = "PRE-RELEASE: pool threads take the GIL in job order under a CPU-bound view; the turn disabled must convoy, and on Linux the keep rule disabled must starve a waiter (not in CI)"
 deps = ["build-serve"]
 shell = """
 srv=bin/m0serve
@@ -5860,6 +5860,17 @@ kill $pid; wait $pid 2>/dev/null
 M0_POOL_TURN=0 "$srv" $SPEC --port $port --blocking-threads 4 > fairness.log 2>&1 & pid=$!
 python3 scripts/pool_fairness_probe.py $port --expect-convoy \
   || fail 'without the turn the tail did NOT convoy: the probe cannot see the failure it guards'
+# The keep rule (docs/notes/a-slice-keeps-the-gil.md): inside its slice a
+# thread takes the jobs already queued without dropping the GIL. With it off
+# a waiter starves on Linux -- 14 of 14 runs over the fair max on a 4-vCPU
+# VM, 335 ms the least -- so that arm is asserted there, and not on macOS,
+# where the old shape measured fair (17 ms), as accept-batch's is.
+if [ "$(uname)" = Linux ]; then
+  kill $pid; wait $pid 2>/dev/null
+  M0_POOL_TURN_KEEP=0 "$srv" $SPEC --port $port --blocking-threads 4 > fairness.log 2>&1 & pid=$!
+  python3 scripts/pool_fairness_probe.py $port --expect-starvation --seconds 12 \
+    || fail 'with M0_POOL_TURN_KEEP=0 no waiter starved: the probe cannot see what the keep rule prevents'
+fi
 """
 
 [tool.poe.tasks.probe-pool]
