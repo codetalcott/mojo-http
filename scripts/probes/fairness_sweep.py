@@ -11,8 +11,10 @@ parked waiter has to LOSE -- to the thread that just dropped the GIL and
 takes it straight back -- so it belongs to the machine as much as to the
 code, and a shape that starves one machine may not starve another.
 
-This sweeps shapes and runs both arms of each: the keep rule on, which
-must stay in order, and off, which a useful shape must put out of order.
+This sweeps shapes and runs two arms of each: the rules as shipped, which
+must stay in order, and the keep rule off, which a useful shape must put
+out of order; `--convoy` adds the turn off (SPEC E11's arm), for a shape
+meant to carry the whole probe.
 The levers are the pool's threads, the probe's connections, the view's
 length, the CPUs the server may run on (`taskset`; the client gets the
 rest) and busy loops beside it. Each run is `scripts/pool_fairness_probe.py`
@@ -20,15 +22,19 @@ against a fresh `bin/m0serve`, its figures read from the probe's
 machine lines; the probe's own verdict is not the sweep's, so its exit
 status is ignored.
 
-    python3 scripts/probes/fairness_sweep.py                  # every shape, 2 rounds
-    python3 scripts/probes/fairness_sweep.py --shapes base,cpu1 --rounds 3
-    python3 scripts/probes/fairness_sweep.py --list
+    uv run python scripts/probes/fairness_sweep.py            # every shape, 2 rounds
+    uv run python scripts/probes/fairness_sweep.py --shapes base,t5 --rounds 3
+    uv run python scripts/probes/fairness_sweep.py --list
+
+`uv run`, because the server takes the interpreter on PATH: outside the
+venv it serves on the system's, and the machine line says which it was.
 
 One JSON line per run on stdout, then a table per shape: the long waits
 (requests passed over by more than 100 later answers) and the most
 passed over, for each arm, across rounds. A shape is USEFUL when every
-keep-off run is out of order and every keep-on run in order, by the
-probe's own bounds (at most 5 long waits, none past 1000).
+run of the rules as shipped is in order and every run of the other arms
+out of order, by the probe's own bounds (at most 5 long waits, none past
+1000).
 """
 import json
 import os
@@ -68,6 +74,16 @@ SHAPES = {
     "t5-b0.45":  dict(threads=5, conns=20, busy="0.45"),
     "c8":        dict(threads=4, conns=8, busy="0.3"),
     "c32":       dict(threads=4, conns=32, busy="0.3"),
+    # The third, from what the first two showed: with the keep rule off each
+    # drop inside a slice rotates the waiters by one, so who starves is
+    # decided by the jobs a slice holds (k) against the waiters (threads -
+    # 1), and a 0.3 ms view puts k on the 3/4 boundary, where each machine's
+    # own overhead picks the side. A view near 0.65 ms is k = 2 anywhere.
+    "t3-b0.55":  dict(threads=3, conns=16, busy="0.55"),
+    "t3-b0.65":  dict(threads=3, conns=16, busy="0.65"),
+    "t3-b0.75":  dict(threads=3, conns=16, busy="0.75"),
+    "t5-b0.65":  dict(threads=5, conns=20, busy="0.65"),
+    "b0.65":     dict(threads=4, conns=16, busy="0.65"),
 }
 
 LONG_WAITS_ALLOWED = 5
@@ -87,7 +103,22 @@ def complement(cpus):
     return ",".join(rest) if rest else None
 
 
-def machine():
+def server_python(binary):
+    """The interpreter the SERVER embeds, from its own doctor.
+
+    The binary resolves libpython from the python3 on PATH, so a sweep
+    started outside the venv serves on the system's interpreter, whatever
+    this script runs on: the first sweeps here ran 3.11 where CI runs 3.13.
+    """
+    try:
+        out = subprocess.run([binary, "--doctor"], cwd=REPO, capture_output=True,
+                             text=True, timeout=60).stdout
+        return json.loads(out.strip().splitlines()[-1])["python"]["version"]
+    except (OSError, ValueError, KeyError, IndexError, subprocess.SubprocessError):
+        return "unknown"
+
+
+def machine(binary):
     model = ""
     try:
         with open("/proc/cpuinfo") as f:
@@ -98,14 +129,21 @@ def machine():
     except OSError:
         model = platform.processor()
     return {"cpus": os.cpu_count(), "cpu": model, "kernel": platform.release(),
-            "system": platform.system(), "python": platform.python_version()}
+            "system": platform.system(), "python": server_python(binary)}
 
 
-def run_arm(binary, port, shape, keep, seconds):
+# The arms: the rules as shipped, which must answer in order; the keep rule
+# off, which a useful shape must put out of order; with --convoy, the turn
+# off as well (SPEC E11's arm), for a shape meant to carry the whole probe.
+ARMS = [("on", {}), ("keep off", {"M0_POOL_TURN_KEEP": "0"})]
+CONVOY_ARM = ("turn off", {"M0_POOL_TURN": "0"})
+
+
+def run_arm(binary, port, shape, knobs, seconds):
     env = dict(os.environ)
-    env.pop("M0_POOL_TURN_KEEP", None)
-    if not keep:
-        env["M0_POOL_TURN_KEEP"] = "0"
+    for name in ("M0_POOL_TURN", "M0_POOL_TURN_KEEP"):
+        env.pop(name, None)
+    env.update(knobs)
     srv = [binary, "bareapp.wsgi:application", "--app-dir", "apps/wsgi_bare",
            "--port", str(port), "--blocking-threads", str(shape["threads"])]
     cli = [sys.executable, PROBE, str(port), "--conns", str(shape["conns"]),
@@ -176,33 +214,47 @@ def main():
             print("fairness_sweep: unknown shape %r (--list)" % name)
             return 2
     tag = arg("--tag", "")
-    host = machine()
+    arms = ARMS + ([CONVOY_ARM] if "--convoy" in sys.argv else [])
+    host = machine(binary)
     print(json.dumps({"machine": host, "tag": tag}), flush=True)
     results = {}
     for rnd in range(1, rounds + 1):
         for name in names:
-            for keep in (True, False):
-                fig = run_arm(binary, port, SHAPES[name], keep, seconds)
-                fig.update({"shape": name, "keep": keep, "round": rnd, "tag": tag})
-                results.setdefault((name, keep), []).append(fig)
+            for arm, knobs in arms:
+                fig = run_arm(binary, port, SHAPES[name], knobs, seconds)
+                fig.update({"shape": name, "arm": arm, "round": rnd, "tag": tag})
+                results.setdefault((name, arm), []).append(fig)
                 print(json.dumps(fig), flush=True)
     print()
-    print("machine: %(cpu)s, %(cpus)s CPUs, %(system)s %(kernel)s, Python %(python)s" % host)
+    print("machine: %(cpu)s, %(cpus)s CPUs, %(system)s %(kernel)s, the server on Python %(python)s" % host)
     print()
-    print("| shape | keep on: long waits | most | in order | keep off: long waits | most | out of order | useful |")
-    print("|---|---|---|---|---|---|---|---|")
+    # A request's share of the GIL, from the rules-on arm: the pool runs one
+    # view at a time, so the window over the answers is the time each took,
+    # overhead included -- and the 1 ms slice holds ceil(1 / that) of them.
+    head = "| shape | ms a request | on: long waits | most | in order |"
+    rule = "|---|---|---|---|---|"
+    for arm, _ in arms[1:]:
+        head += " %s: long waits | most | out of order |" % arm
+        rule += "---|---|---|"
+    print(head + " useful |")
+    print(rule + "---|")
     for name in names:
-        on, off = results[(name, True)], results[(name, False)]
+        on = results[(name, "on")]
         on_ok = sum(1 for f in on if in_order(f))
-        off_ok = sum(1 for f in off if f["long_waits"] is not None and not in_order(f))
-        useful = on_ok == len(on) and off_ok == len(off)
-        print("| %s | %s | %s | %d/%d | %s | %s | %d/%d | %s |" % (
-            name, span(f["long_waits"] for f in on), span(f["most_passed_over"] for f in on),
-            on_ok, len(on), span(f["long_waits"] for f in off),
-            span(f["most_passed_over"] for f in off), off_ok, len(off),
-            "YES" if useful else "no"))
+        useful = on_ok == len(on)
+        per = [seconds * 1000.0 / f["n"] for f in on if f["n"]]
+        row = "| %s | %s | %s | %s | %d/%d |" % (
+            name, span(round(x, 3) for x in per), span(f["long_waits"] for f in on),
+            span(f["most_passed_over"] for f in on), on_ok, len(on))
+        for arm, _ in arms[1:]:
+            off = results[(name, arm)]
+            off_ok = sum(1 for f in off if f["long_waits"] is not None and not in_order(f))
+            useful = useful and off_ok == len(off)
+            row += " %s | %s | %d/%d |" % (
+                span(f["long_waits"] for f in off), span(f["most_passed_over"] for f in off),
+                off_ok, len(off))
+        print(row + " %s |" % ("YES" if useful else "no"))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())
