@@ -9,6 +9,7 @@ from. None is a CI gate; two are pre-release gates through `poe`.
 | `hold_race_probe.py` | forty SSE holds opened one at a time while three clients keep the loop busy; every one must register | `poe stress-pool` |
 | `herd.c` | CPU per datagram round trip with W receivers blocked on one `SOCK_DGRAM` pair (macOS wakes all W, Linux the oldest; docs/notes/elastic-pool.md) | `poe probe-herd` |
 | `handoff_pingpong.c` | one loop-to-worker handoff by primitive: datagram pair, datagram pair with a `kevent` park, condvar, spin (docs/notes/pool-ring-handoff.md) | `cc -O2 -o /tmp/pp scripts/probes/handoff_pingpong.c && /tmp/pp` |
+| `fairness_sweep.py` | `pool_fairness_probe.py`'s arms across loads -- threads, connections, the view's length, CPUs, busy loops beside the server -- with a request's share of the GIL per load: the instrument that chose the probe's load (docs/notes/fairness-judged-by-order.md) | `uv run python scripts/probes/fairness_sweep.py --list` |
 | `bench_threads.py` | one server under `wrk` with per-thread CPU by `ps -M` and an optional `xctrace` profile; one JSON line per run | see its docstring |
 | `bench_arms.py` | alternates pool arms (zero-config, eager, bt1, …, granian) under `bench_threads.py` | see its docstring |
 | `bench_slow.py` | the fast route's tail with N slow Django views in flight, one fresh server per arm and round, arms alternated; arms carry env overrides and alternative binaries | see its docstring |

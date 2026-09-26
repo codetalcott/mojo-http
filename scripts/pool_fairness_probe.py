@@ -12,45 +12,53 @@ of a second, against 1.4 ms with the loop attached. The hand-off barrier
 in `blocking_pool.mojo` (`_yield_turn`) is what stands in its place, and
 this is its gate.
 
-Sixteen keep-alive connections hammer `/busy?ms=0.3` -- a view that spins
-with the GIL held -- for a few seconds, and the verdict is ORDER. A request
-is PASSED OVER when a request sent after it is answered first: the pool
-served someone else while it waited. The ring hands jobs out in the order
-they were queued, so in a fair pool a request is passed over only while its
-thread waits its turn for the GIL, by a few dozen later answers and rarely a
-hundred. A starved or convoyed waiter is passed over by hundreds. A fair run
-lets at most LONG_WAITS_ALLOWED requests be passed over by more than
-LONG_WAIT later answers, and none by more than MOST_PASSED_OVER.
+Twenty keep-alive connections hammer `/busy?ms=0.65` -- a view that spins
+with the GIL held -- against five pool threads (the task starts the server)
+for a few seconds, and the verdict is ORDER. A request is PASSED OVER when a
+request sent after it is answered first: the pool served someone else while
+it waited. The ring hands jobs out in the order they were queued, so in a
+fair pool a request is passed over only while its thread waits its turn for
+the GIL, by a few dozen later answers and rarely a hundred. A starved or
+convoyed waiter is passed over by hundreds. A fair run lets at most
+LONG_WAITS_ALLOWED requests be passed over by more than LONG_WAIT later
+answers, and none by more than MOST_PASSED_OVER.
 
 The probe judged latency first -- a p99 under 25 ms and a max under a
 quarter second -- and that is too close to the machine for a gate on every
-pull request. Measured on a 4-vCPU KVM guest: a fair run's max reached 247 ms
-once in 68 runs, where 21-97 ms is usual, and the old shapes' figures sat
-near the same bounds from the other side (the keep rule off: p99 26-34 ms,
-max 120-609; the turn off: max 554-2237). A pause of the whole process
-delays every connection at once, which is what a max cannot tell from a
-starved waiter, and it passes nobody over: with the server stopped for
-300 ms twice inside the window, five runs of five were in order (at most one
-long wait) where the old verdict failed all five on a 315-320 ms max.
+pull request. Measured on a 4-vCPU KVM guest at the first load (four
+threads, sixteen connections, a 0.3 ms view): a fair run's max reached
+247 ms once in 68 runs, where 21-97 ms is usual, and the old shapes' figures
+sat near the same bounds from the other side (the keep rule off: p99
+26-34 ms, max 120-609; the turn off: max 554-2237). A pause of the whole
+process delays every connection at once, which is what a max cannot tell
+from a starved waiter, and it passes nobody over: with the server stopped
+for 300 ms twice inside the window, five runs of five were in order (at
+most one long wait) where the old verdict failed all five on a 315-320 ms
+max.
 
 Negative arms, because a probe that cannot see the failure proves nothing:
-the default run must be in order, and the same run with `M0_POOL_TURN=0` on
-the server (`--expect-convoy`) must not be. `--expect-starvation` is the
-keep rule's arm: inside its slice a thread takes the jobs already queued
-without dropping the GIL, and with `M0_POOL_TURN_KEEP=0` it drops it between
-every job again, each drop waking a parked waiter that finds the GIL
-re-taken and waits once more behind the others -- two threads ping-ponging
-while two starve (docs/notes/a-slice-keeps-the-gil.md). That starvation is
-the machine's as much as the pool's: the 4-vCPU KVM guest that found it
-shows it every run, while GitHub's Linux runner answered the same shape in
-order (0 requests over LONG_WAIT, the most passed over 63) and so did the
-reference Mac. The arm is asserted only where it is asked for, on a machine
-known to starve.
+the default run must be in order, and the same run must not be with
+`M0_POOL_TURN=0` on the server (`--expect-convoy`), the barrier's arm, or
+with `M0_POOL_TURN_KEEP=0` (`--expect-starvation`), the keep rule's: inside
+its slice a thread takes the jobs already queued without dropping the GIL,
+and with the rule off it drops it between every job again, each drop waking
+the longest waiter, which finds the GIL re-taken and queues again behind the
+others (docs/notes/a-slice-keeps-the-gil.md). Whether that starves anyone
+depends on how many jobs a 1 ms slice holds against how many threads wait,
+and the load is chosen for it (docs/notes/fairness-judged-by-order.md): a
+request's share of the GIL is 0.67-0.70 ms on GitHub's runners and 0.8 ms
+on the KVM guest, two jobs a slice on every machine measured, and with four
+threads waiting two of them starve. The first load's 0.3 ms view sat on
+the boundary between three jobs a slice and four, and each machine's own
+overhead decided whether it starved.
 
 Latency is still printed, and recorded in CI; it is not the verdict.
 
 usage: pool_fairness_probe.py PORT [--expect-convoy | --expect-starvation]
-                              [--seconds N] [--conns N]
+                              [--seconds N] [--conns N] [--busy-ms MS]
+
+The defaults are the gate's load; the sweep that chose it passes the rest
+(scripts/probes/fairness_sweep.py).
 """
 import http.client
 import sys
@@ -62,26 +70,30 @@ PORT = int(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-")
 EXPECT_CONVOY = "--expect-convoy" in sys.argv
 EXPECT_STARVATION = "--expect-starvation" in sys.argv
 SECONDS = 8.0
-CONNS = 16
+CONNS = 20
+BUSY_MS = "0.65"
 for i, a in enumerate(sys.argv):
     if a == "--seconds":
         SECONDS = float(sys.argv[i + 1])
     if a == "--conns":
         CONNS = int(sys.argv[i + 1])
+    if a == "--busy-ms":
+        BUSY_MS = sys.argv[i + 1]
 
 # The verdict, in later answers rather than milliseconds. At this load the
-# pool answers about 2.5k requests a second on a 4-vCPU KVM guest, so
-# LONG_WAIT is about 40 ms of the pool serving others while one request
-# waits, and MOST_PASSED_OVER about 0.4 s. Measured there: fair runs, 0 or 1
-# request a run over LONG_WAIT and the most passed over by 30-107 (23 runs);
-# the keep rule off, 88-171 requests a run over it (16 runs of 12 s), the
-# most by 336-1115; the turn off, 75-142 (8 runs of 8 s), the most by
-# 2442-3901. GitHub's Linux runner, its first run: fair 0 (the most 15), the
-# turn off 42 (the most 6297). The allowance is for what the keep rule does
-# not prevent: a waiter can still lose its place to its own 5 ms timeout.
-# MOST_PASSED_OVER is for a regime with few starvations and long ones, which
-# the 2026-09-26 finding showed first (a max of 575-735 ms at a p99 of
-# 8.6-16.6), and the runner's convoy is one: 42 long waits, one of 2 s.
+# pool answers about 1,450 requests a second on GitHub's runner and 1,250 on
+# a 4-vCPU KVM guest, so LONG_WAIT is 70-80 ms of the pool serving others
+# while one request waits, and MOST_PASSED_OVER 0.7-0.8 s. Measured on
+# twenty runners of five CPU types, 50 runs an arm: fair, no request over
+# LONG_WAIT and the most passed over by 10-22; the keep rule off, 29-93
+# requests a run over it, the most by 992-6105; the turn off, 7-116, the
+# most by 2596-17892. On the KVM guest: fair 0, the most 46-68; the keep
+# rule off 73-100; the turn off 17-32. The allowance is for what the keep
+# rule does not prevent: a waiter can still lose its place to its own 5 ms
+# timeout. MOST_PASSED_OVER is for a regime with few starvations and long
+# ones, which the 2026-09-26 finding showed first (a max of 575-735 ms at a
+# p99 of 8.6-16.6) and the turn off shows on the runner: 7 long waits in
+# its quietest run, one of them passed over by 11905.
 LONG_WAIT = 100
 LONG_WAITS_ALLOWED = 5
 MOST_PASSED_OVER = 1000
@@ -130,7 +142,7 @@ def hammer(seconds, conns):
         while time.time() < stop:
             t0 = time.perf_counter()
             try:
-                conn.request("GET", "/busy?ms=0.3")
+                conn.request("GET", "/busy?ms=" + BUSY_MS)
                 body = conn.getresponse().read()
                 if not body.startswith(b"busy"):
                     errors[i] += 1
@@ -210,6 +222,10 @@ def main():
           % (arm, n, errors, p50, p99, mx, LONG_WAIT, long_waits, LONG_WAITS_ALLOWED,
              most, MOST_PASSED_OVER))
     # One figure a line, for the task's recorder (scripts/emit.py).
+    # ms_per_request is a request's share of the GIL -- the pool runs one view
+    # at a time -- and what the keep arm rests on: under 1 ms, a 1 ms slice
+    # holds two of them (the view's own spin keeps it over 0.5 on any machine).
+    print("ms_per_request %.3f" % (SECONDS * 1000.0 / n if n else float("nan")))
     print("p99_ms %.2f" % p99)
     print("max_ms %.2f" % mx)
     print("long_waits %d" % long_waits)

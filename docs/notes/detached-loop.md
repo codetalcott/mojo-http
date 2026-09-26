@@ -140,7 +140,8 @@ starved for up to 1.6 s. A thread inside its slice now takes a queued job
 without dropping the GIL at all (SPEC E34); the finding, the mechanism and
 the measurements are docs/notes/a-slice-keeps-the-gil.md. The probe has run
 on every pull request on Linux since, judged by job order rather than by
-the p99 above: docs/notes/fairness-judged-by-order.md.
+the p99 above, and at five threads and a 0.65 ms view, a load where the
+keep rule's arm starves every runner: docs/notes/fairness-judged-by-order.md.
 
 ## What this did not change
 

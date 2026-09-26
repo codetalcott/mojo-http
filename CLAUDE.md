@@ -644,10 +644,17 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       at a time on 4-vCPU Linux, which the pre-release run first took for
       a VM's noise. Never pop the next job by dropping and re-taking the
       GIL on a pool thread. `M0_POOL_TURN_KEEP=0` is the A/B knob, and the
-      probe's keep arm (`M0_FAIRNESS_EXPECT_STARVATION=1`), which must
-      starve a waiter — asserted only on a machine where that shape starves,
-      the 4-vCPU KVM guest that found it, because GitHub's runner and the
-      reference Mac answer it in order and CI cannot see it.
+      probe's keep arm, which must starve a waiter, on every pull request.
+      The probe's load is chosen for that arm: with the rule off, each drop
+      inside a slice sends the waiter it woke to the back, so who starves
+      depends on how many jobs a 1 ms slice holds against how many threads
+      wait. A 0.65 ms view against five threads starves two of them on every
+      machine measured, where the first load's 0.3 ms view sat on the
+      boundary between three jobs and four, and each machine's own overhead
+      decided whether it starved (docs/notes/fairness-judged-by-order.md).
+      Change the view or the thread count only with that count in hand; the
+      fair arm records a request's share of the GIL against the window's
+      1 ms edge.
     - **Jobs and completions ride in-memory rings; the socketpairs carry
       only wakes and payloads** (`lightbug_http/ring.mojo`; the protocol
       is `offload.mojo`'s module docstring; the measurement is

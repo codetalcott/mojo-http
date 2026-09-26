@@ -1,10 +1,9 @@
 # A slice keeps the GIL: the hand-off went back to the thread that had just held it — shipped 2026-09-26
 
 > A design note from the engineering record. SPEC E34, and E11's probe;
-> the gates are `test_blocking_pool.mojo`'s keep test and `test_offload.mojo`'s
-> `try_next_job` tests on every pull request, and `probe-pool-fairness`'s
-> keep arm before a release, on a machine where the old shape starves
-> (GitHub's runner does not:
+> the gates are `test_blocking_pool.mojo`'s keep test, `test_offload.mojo`'s
+> `try_next_job` tests and `probe-pool-fairness`'s keep arm, all on every
+> pull request (the arm at a load that starves every runner measured:
 > [fairness-judged-by-order](fairness-judged-by-order.md)); the mechanism
 > is `OffloadPool.try_next_job` in
 > `packages/m0-http/lightbug_http/offload.mojo` and the keep branch of
@@ -51,6 +50,12 @@ and the other two starve until noise breaks it. CPython's own remedy does
 not reach them either: a waiter asks the holder to drop only when its
 5 ms wait saw no switch, and a switch happened every millisecond — between
 the other two.
+
+The count decides it. A machine that fits four of these jobs in a slice
+makes three drops against three waiters, the queue turns full circle, and
+nobody starves. That is why GitHub's faster runners answered this shape in
+order where this VM and the AMD EPYC 7763 runners did not
+([fairness-judged-by-order](fairness-judged-by-order.md)).
 
 The reference Mac measured the fair arm at 17 ms on the same code, and
 the probe had only run there before this. Why macOS does not show it was
@@ -114,14 +119,15 @@ the p99 from 6.1–7.3 ms to 4.3–4.8. Fewer drops is less work.
   thread of its own, so a version that waits fails inside a second
   instead of hanging the suite; the pill, on a thread's own channel and on
   the lane socket.
-- `probe-pool-fairness` (pre-release): the fair arm as before, and on
-  Linux a third arm with the rule off (`--expect-starvation`), which must
-  fail the fair bounds — the arm that proves the probe sees what the rule
-  prevents. Not on macOS, where the old shape measured fair. The same day
-  the probe went on every pull request, judged by order rather than these
-  bounds, and this arm became opt-in: GitHub's Linux runner answers the old
-  shape in order too
-  ([fairness-judged-by-order](fairness-judged-by-order.md)).
+- `probe-pool-fairness` (every pull request, on Linux): a third arm with
+  the rule off (`--expect-starvation`) must be out of order, which proves
+  the probe sees what the rule prevents. It began as a pre-release run
+  judged by latency. The same day the probe went on every pull request
+  judged by order, with this arm opt-in, because GitHub's runner answered
+  the old shape in order. The next pull request found why and moved the
+  probe to a load where the rule off starves every runner measured
+  ([fairness-judged-by-order](fairness-judged-by-order.md)). Not yet run
+  on macOS, where the old shape measured fair.
 - Sabotaged by hand, one at a time, each caught by its own test: the keep
   branch never taken; the knob ignored; `try_next_job` waiting; and
   `try_next_job` ignoring the pill.
@@ -135,8 +141,3 @@ the p99 from 6.1–7.3 ms to 4.3–4.8. Fewer drops is less work.
   designs were measured and rejected before (docs/notes/detached-loop.md),
   and a ticket would need the same care about leaving the GIL idle while
   the next taker wakes.
-- The probe in CI. Done the same day, with the verdict changed from
-  latency to order so a shared runner's pauses cannot fail it; but the
-  runner does not starve in the old shape, so this rule's arm stays a
-  pre-release run on a machine that does:
-  [fairness-judged-by-order](fairness-judged-by-order.md).

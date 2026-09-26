@@ -92,22 +92,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   supervisor. The host page, the deploy page and the scaffold's `AGENTS.md`
   say so. Nothing changes for an application that sets neither.
 - **The handler pool's fairness probe runs on every pull request on Linux,
-  and judges job order rather than latency** (SPEC E11;
+  and judges job order rather than latency** (SPEC E11, E34;
   docs/notes/fairness-judged-by-order.md). `probe-pool-fairness` was
   pre-release; it now runs in test.yml's `pool-fairness` job, with the
   reference Mac keeping the macOS run. Its latency bounds were too close
   to the machine for that: on a 4-vCPU KVM guest a fair run's max reached
   247 ms against 250, and the old shapes broke the bounds by as little as
   4 %. The verdict is now the number of requests passed over by more than
-  100 later ones, at most 5 a run and none by more than 1000: fair runs
-  show 0 or 1, the barrier off 75–142 (GitHub's runner: 0 and 42). A pause
-  of the whole process passes nobody over, so two 300 ms stops of the
-  server, which failed the latency verdict five times in five, pass it.
-  The keep rule's arm (E34) is opt-in, `M0_FAIRNESS_EXPECT_STARVATION=1`:
-  its old shape starves the KVM guest that found it (88–171) and not
-  GitHub's runner (0, the most passed over 63), so CI cannot see E34's
-  starvation and the arm stays a pre-release run on a machine that shows
-  it. Each arm's figures are recorded with the job's measurements.
+  100 later ones, at most 5 a run and none by more than 1000. A pause of
+  the whole process passes nobody over, so two 300 ms stops of the server,
+  which failed the latency verdict five times in five, pass it. The keep
+  rule's arm (E34) runs too, at a load chosen for it: five threads, twenty
+  connections, a 0.65 ms view. With the rule off, who starves depends on
+  how many jobs a 1 ms slice holds against how many threads wait. The first
+  load's 0.3 ms view sat on the boundary between three jobs and four, and
+  starved every AMD EPYC 7763 runner and no Intel Xeon or AMD EPYC 9V45
+  one. The new view is two jobs a slice on every machine measured. On
+  twenty runners of five CPU types, fair runs show no long waits, the
+  barrier off 7–116 a run and the keep rule off 29–93.
+  `M0_FAIRNESS_EXPECT_STARVATION=0` skips the keep arm. Each arm's figures
+  are recorded with the job's measurements, with a request's share of the
+  GIL against the 1 ms edge the keep arm needs.
 
 ### Fixed
 
