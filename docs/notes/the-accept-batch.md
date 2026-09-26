@@ -101,6 +101,13 @@ is a request. Sixteen keeps the second short while making the extra passes
 a flood costs cheap: an extra pass is a zero-timeout wait and a pass whose
 stream sweep is skipped when nothing streams.
 
+Measured on the same box (4 vCPUs, `wrk` sharing them, two threads and 64
+connections for 8 s against `/fast` with `func` on the loop), the batch
+costs nothing measurable. With `Connection: close`, so every request is an
+accept: 50.5k, 50.1k and 46.3k requests a second with the batch, 51.8k,
+47.1k and 47.2k with `M0_ACCEPT_BATCH=0`, inside the spread either way
+shows between runs. Kept alive: 85.3k and 84.7k against 84.4k and 83.4k.
+
 A time budget — accept until the pass has spent a millisecond — adapts
 better to the admission's cost, and was not chosen: a count is what the
 probe can hold the loop to, and a clock read per accept buys nothing a
@@ -116,6 +123,13 @@ which a wait that blocked between owed batches (a second per batch, the
 loop's idle timeout) would miss by seconds. On Linux the same probe with
 `M0_ACCEPT_BATCH=0` must show at least two thirds of the burst, so the
 probe is known to see the drain it guards against.
+
+Sabotaged by hand before landing, one rule at a time against the probe as
+committed, each caught by its own check: no cap (`/fast` 1233 ms beyond the
+blocker, against 240), nothing owed (31 of 120 answered, the rest stranded
+behind the listener), a wait that blocks while a batch is owed (the burst
+answered in 7784 ms against 1800 of work), and the batch taken where the
+listen event falls in the pass (481 ms).
 
 Not asserted on macOS: kqueue's depth bounds its drain to what was queued,
 and with accepts taken after the pass's other events, the knob alone does
