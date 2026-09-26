@@ -1,9 +1,11 @@
 # TEMPORARY, removed before its pull request merges: the search for a load
 # that makes the keep rule's old shape starve a waiter on GitHub's runner
 # (docs/notes/fairness-judged-by-order.md, "GitHub's runner does not
-# starve"). Three jobs are three runners, because the starvation is the
-# machine's as much as the code's; each runs every shape in
-# scripts/probes/fairness_sweep.py, both arms, twice.
+# starve"). The first sweep found the probe's own load starving on all
+# three runners it landed on (AMD EPYC 7763), where #397's one keep-arm run
+# did not; this runs the TASK itself, keep arm on, three times on each of
+# six runners, and names each runner's CPU, to tell a machine difference
+# from a difference in how the task drives the arms.
 name: Fairness sweep
 
 on:
@@ -12,13 +14,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  sweep:
+  task:
     strategy:
       fail-fast: false
       matrix:
-        runner: [a, b, c]
+        runner: [a, b, c, d, e, f]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -28,9 +30,14 @@ jobs:
         timeout-minutes: 3
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       - run: uv run poe build-all
-      - run: uv run poe build-serve
-      - name: Sweep every shape, both arms
-        run: uv run python scripts/probes/fairness_sweep.py --rounds 2 --seconds 10 --tag ${{ matrix.runner }} | tee sweep.txt
-      - name: Summary
-        if: always()
-        run: sed -n '/^machine:/,$p' sweep.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Which machine
+        run: |
+          lscpu | grep -E 'Model name|^CPU\(s\)|Hypervisor' || true
+          uname -r
+      - name: The probe as CI runs it, keep arm on, three times
+        run: |
+          for i in 1 2 3; do
+            echo "=== run $i"
+            M0_FAIRNESS_EXPECT_STARVATION=1 uv run poe probe-pool-fairness > run.log 2>&1; echo "rc=$?"
+            grep -E '^pool_fairness_probe: (turn|keep)|probe-pool-fairness OK|still answered' run.log || tail -20 run.log
+          done
