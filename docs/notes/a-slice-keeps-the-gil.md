@@ -3,7 +3,9 @@
 > A design note from the engineering record. SPEC E34, and E11's probe;
 > the gates are `test_blocking_pool.mojo`'s keep test and `test_offload.mojo`'s
 > `try_next_job` tests on every pull request, and `probe-pool-fairness`'s
-> Linux arm before a release; the mechanism is `OffloadPool.try_next_job` in
+> Linux arm, on every pull request since the same day
+> ([fairness-judged-by-order](fairness-judged-by-order.md)); the mechanism
+> is `OffloadPool.try_next_job` in
 > `packages/m0-http/lightbug_http/offload.mojo` and the keep branch of
 > `_pool_serve` in `packages/m0-wsgi/src/blocking_pool.mojo`.
 
@@ -111,10 +113,13 @@ the p99 from 6.1–7.3 ms to 4.3–4.8. Fewer drops is less work.
   thread of its own, so a version that waits fails inside a second
   instead of hanging the suite; the pill, on a thread's own channel and on
   the lane socket.
-- `probe-pool-fairness` (pre-release): the fair arm as before, and on
-  Linux a third arm with the rule off (`--expect-starvation`), which must
-  fail the fair bounds — the arm that proves the probe sees what the rule
-  prevents. Not on macOS, where the old shape measured fair.
+- `probe-pool-fairness` (pre-release when this shipped, on every pull
+  request since, and judged by order rather than these bounds:
+  [fairness-judged-by-order](fairness-judged-by-order.md)): the fair arm
+  as before, and on Linux a third arm with the rule off
+  (`--expect-starvation`), which must fail the fair bounds — the arm that
+  proves the probe sees what the rule prevents. Not on macOS, where the
+  old shape measured fair.
 - Sabotaged by hand, one at a time, each caught by its own test: the keep
   branch never taken; the knob ignored; `try_next_job` waiting; and
   `try_next_job` ignoring the pill.
@@ -128,6 +133,6 @@ the p99 from 6.1–7.3 ms to 4.3–4.8. Fewer drops is less work.
   designs were measured and rejected before (docs/notes/detached-loop.md),
   and a ticket would need the same care about leaving the GIL idle while
   the next taker wakes.
-- The probe in CI. Its first Linux run found this, and a Linux leg would
-  catch its return on every pull request, at the price of a 250 ms bound
-  on a shared runner's scheduling. Not decided here.
+- The probe in CI. Done the same day, with the verdict changed from
+  latency to order so a shared runner's pauses cannot fail it:
+  [fairness-judged-by-order](fairness-judged-by-order.md).
