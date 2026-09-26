@@ -110,6 +110,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Linux required to show the old starvation. Found by the 2026-09-26
   pre-release run.
 
+- **A `--blocking-threads` thread no longer starves waiting for the GIL
+  under a CPU-bound view** (SPEC E34). Inside its hand-off slice a pool
+  thread took the GIL back after every job, dropping it only to pop the
+  next; each drop woke a parked thread that found the GIL taken again and
+  waited once more behind the others, so the slice's hand-off went back
+  to the thread that had just held it. Two threads alternated while two
+  starved: on 4-vCPU Linux the fairness probe's max was 335–1637 ms in 14
+  runs of 14, and with `wrk` the p99 itself 394–515 ms. A thread inside
+  its slice now takes a job already queued without dropping the GIL
+  (`OffloadPool.try_next_job`, which never waits): the max is 12.9–20.6
+  ms, the `wrk` p99 9.3–12.7 ms at the same throughput, and the trivial
+  route serves up to 28 % more at 256 connections. `M0_POOL_TURN_KEEP=0`
+  restores the old shape (an A/B knob), and `probe-pool-fairness` runs it
+  on Linux as a third arm that must starve a waiter. Found by the
+  2026-09-26 pre-release run, which recorded it as a VM's outlier; a
+  recorder beside the probe showed the machine never stalled.
+
 - **A WebSocket lingering for the peer's Close reply is no longer pinged.**
   After the application's Close the loop waits for the peer's (RFC 6455
   §5.5.1) — and the stream heartbeat kept treating the slot as a live

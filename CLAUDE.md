@@ -629,7 +629,17 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       paid per job. A view that blocks holds nothing; a pool of one has no
       barrier. `poe probe-pool-fairness`
       (pre-release, SPEC E11) is the gate, and `M0_POOL_TURN=0` is its
-      negative arm.
+      negative arm. **And inside its slice a thread does not drop the GIL
+      at all while a job is queued** (`OffloadPool.try_next_job`, which
+      never waits, so it may be called attached; SPEC E34,
+      docs/notes/a-slice-keeps-the-gil.md): each drop between jobs woke a
+      parked waiter that found the GIL re-taken and queued again BEHIND
+      the others, so the slice's hand-off went back to the thread that had
+      just held it — two threads alternating while two starved, 0.3–1.6 s
+      at a time on 4-vCPU Linux, which the pre-release run first took for
+      a VM's noise. Never pop the next job by dropping and re-taking the
+      GIL on a pool thread. `M0_POOL_TURN_KEEP=0` is the A/B knob, and the
+      probe's Linux arm, which must starve a waiter.
     - **Jobs and completions ride in-memory rings; the socketpairs carry
       only wakes and payloads** (`lightbug_http/ring.mojo`; the protocol
       is `offload.mojo`'s module docstring; the measurement is
@@ -2230,7 +2240,9 @@ Properties of the design, not defects to fix in passing:
   (`0` turns accept sharing off under `--workers N`; an A/B knob, not a
   flag), `M0_ACCEPT_BATCH` (new connections one pass admits, default 16;
   `0` takes the whole backlog in one pass as the loop used to; the same
-  kind of knob), `M0_POOL_RING` (`0` puts the `--blocking-threads` handoff back
+  kind of knob), `M0_POOL_TURN_KEEP` (`0` drops the GIL between every job
+  of a pool thread's slice again, the shape that starved a waiter; the
+  same kind of knob), `M0_POOL_RING` (`0` puts the `--blocking-threads` handoff back
   on datagrams; the same kind of knob), `M0_POOL_ELASTIC` (`0` restores
   the eager pool wakes — every idle thread spinning, every push into a
   parked lane poking it; the same kind of knob) and `M0_POOL_WAKE_AGE_US`

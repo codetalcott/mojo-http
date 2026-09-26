@@ -479,7 +479,15 @@
       "category": "E. Process and worker model",
       "capability": "The event loop holds no thread state while it serves; a pool thread that drops the GIL hands it to the thread parked waiting for it",
       "status": "verified",
-      "evidence": "`probe-pool-fairness` (pre-release) \u2014 four pool threads under a CPU-bound view at sixteen connections must hold a single-digit-millisecond fast-route p99 and a max under a quarter second, and the same run with the barrier disabled must show the convoy (a max of seconds), which is what proves the probe can see the failure it guards. The throughput half of the change is the detached-loop A/B in docs/notes/detached-loop.md"
+      "evidence": "`probe-pool-fairness` (pre-release) \u2014 four pool threads under a CPU-bound view at sixteen connections must hold a single-digit-millisecond fast-route p99 and a max under a quarter second, and the same run with the barrier disabled must show the convoy (a max of seconds), which is what proves the probe can see the failure it guards. On Linux a third arm runs with E34's rule off and must starve a waiter past those bounds: before the rule the fair arm itself failed there 14 of 14 runs (max 335\u20131637 ms on a 4-vCPU VM, found by the 2026-09-26 pre-release run), 12.9\u201320.6 ms with it. The throughput half of the change is the detached-loop A/B in docs/notes/detached-loop.md"
+    },
+    {
+      "id": "E34",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "Inside its hand-off slice a pool thread takes a job already queued on its lane without dropping the GIL (`OffloadPool.try_next_job`: `next_job`'s pill check, socket poll and ring pop, never its spin or park), so the only drops a slice makes are its hand-off and the view's own. Each drop between jobs used to wake a parked waiter that found the GIL taken again and queued behind the others, so the slice's hand-off went back to the thread that had just held it: two threads alternating while two starved, 0.3\u20131.6 s at a time on 4-vCPU Linux under a CPU-bound view. Only with the barrier on (a pool of one and `M0_POOL_TURN=0` are unchanged); `M0_POOL_TURN_KEEP=0` drops the GIL between every job again (an A/B knob)",
+      "status": "verified",
+      "evidence": "`test_blocking_pool.mojo:test_a_slice_takes_the_jobs_queued_behind_it_without_dropping_the_gil` (every PR) \u2014 64 jobs through four threads whose views hold the GIL, every thread awake: all answered, some taken inside a slice, none under the knob (on a free-threaded interpreter, where nothing waits for a GIL, only the answers). Beside it in `test_offload.mojo`: `test_try_next_job_takes_what_is_queued`, `test_try_next_job_answers_an_empty_lane_at_once` (on a thread of its own, so a version that waits fails inside a second rather than hanging the suite) and `test_try_next_job_answers_the_pill`. The fairness itself is E11's probe, whose Linux arm runs with the knob. Each rule sabotaged by hand and caught by its own test. The design and the measurements: [a-slice-keeps-the-gil](notes/a-slice-keeps-the-gil.md)"
     },
     {
       "id": "E9",

@@ -2061,6 +2061,46 @@ struct OffloadPool(Movable):
 
     # --- pool side -------------------------------------------------------
 
+    def try_next_job(mut self, lane: Int, mut buf: List[UInt8], thread: Int = -1) -> PoolJob:
+        """What `next_job` would return without waiting, or `JOB_NONE`.
+
+        `next_job`'s pill check, its socket poll on the lane's cadence and
+        one ring pop -- never its spin, its park or any other wait -- so a
+        thread may call it while it holds the GIL. A WSGI pool thread takes
+        the next job this way inside its hand-off slice
+        (`m0_wsgi.blocking_pool`): dropping the GIL only to pop signals a
+        parked waiter that then finds it taken again and re-queues behind
+        the others, and the slice's hand-off goes to the wrong thread
+        (docs/notes/a-slice-keeps-the-gil.md). Without rings, one
+        non-blocking `recv`. A job it returns is the caller's exactly as
+        `next_job`'s would be, and `JOB_NONE` means "wait in `next_job`".
+        """
+        var fd = FileDescriptor(self.submit_read_fd(lane))
+        var cap = len(buf)
+        var ring = self._ring_for(lane)
+        if not ring.enabled():
+            return self._recv_datagram(lane, fd, cap, buf, MSG_DONTWAIT)
+        var own = thread if thread >= 0 and thread < self.thread_cap else -1
+        if own >= 0 and atomic_at(self._rec(own) + _TR_PILL)[].load() != 0:
+            return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+        var poll = atomic_at(self._poll_addr(lane))
+        var now = perf_counter_ns()
+        if now - Int(poll[].load()) >= POOL_DGRAM_POLL_NS:
+            poll[].store(Int64(now))
+            if own >= 0:
+                var mine = self._recv_own(own, buf, MSG_DONTWAIT)
+                if mine == _OWN_PILL or mine == _OWN_DEAD:
+                    return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
+            var polled = self._recv_datagram(lane, fd, cap, buf, MSG_DONTWAIT)
+            if polled.kind != JOB_NONE:
+                return polled^
+        var slot = 0
+        if ring.pop(slot):
+            if not self.elastic:
+                self._chain_wake(lane, ring)
+            return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
+        return _none_job()
+
     def next_job(mut self, lane: Int, mut buf: List[UInt8], thread: Int = -1) -> PoolJob:
         """Block until there is something for `lane`; decode it into `buf`.
 

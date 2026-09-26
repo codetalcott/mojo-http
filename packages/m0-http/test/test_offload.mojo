@@ -17,7 +17,7 @@ from lightbug_http.http.request import HTTPRequest
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import recv
 from lightbug_http.offload import (
-    JOB_STOP, JOB_REQUEST,
+    JOB_STOP, JOB_REQUEST, JOB_NONE,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
@@ -999,6 +999,107 @@ def test_ring_off_is_the_datagram_handoff() raises:
     assert_equal(done[0], 1)
     pool.stop(1)
     assert_equal(_next_slot(pool), -1)
+
+
+def _pool(ring_off: Bool) raises -> OffloadPool:
+    """A pool on the ring, or on the datagram hand-off (`M0_POOL_RING=0`)."""
+    if ring_off:
+        _ = setenv("M0_POOL_RING", "0", True)
+    var pool = OffloadPool(8)
+    _ = setenv("M0_POOL_RING", "", True)
+    return pool^
+
+
+def test_try_next_job_takes_what_is_queued() raises:
+    """`try_next_job` is `next_job` without the wait -- what a pool thread
+    calls holding the GIL inside its hand-off slice (`m0_wsgi.blocking_pool`,
+    docs/notes/a-slice-keeps-the-gil.md): the jobs already queued, in
+    order. On the ring and on the datagram hand-off. The empty lane is the
+    next test's, on a thread of its own: asked here, a version that waits
+    would hang the suite rather than fail it."""
+    for ring_off in range(2):
+        var pool = _pool(ring_off == 1)
+        var buf = _job_buffer()
+        pool.park_request(3, _request("/a"))
+        assert_true(pool.submit(3))
+        pool.park_request(5, _request("/b"))
+        assert_true(pool.submit(5))
+        var first = pool.try_next_job(0, buf)
+        assert_equal(first.kind, JOB_REQUEST)
+        assert_equal(first.slot, 3)
+        var second = pool.try_next_job(0, buf)
+        assert_equal(second.kind, JOB_REQUEST)
+        assert_equal(second.slot, 5)
+        _ = pool.take_request(3)
+        _ = pool.take_request(5)
+
+
+comptime _BLK_KIND = 12
+"""Block slot `_try_once` leaves the kind it was answered in."""
+
+
+def _try_once(arg: Int) -> Int:
+    """One `try_next_job` against an empty lane, on a thread of its own."""
+    var block = ThreadBlock(arg)
+    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+        unsafe_from_address=block.get(BLK_USER)
+    )[]
+    var buf = _job_buffer()
+    block.set(_BLK_KIND, pool.try_next_job(0, buf).kind)
+    block.set(BLK_STATUS, STATUS_OK)
+    return 0
+
+
+def test_try_next_job_answers_an_empty_lane_at_once() raises:
+    """The contract the keep rule rests on: its caller HOLDS the GIL, so an
+    empty lane is answered at once, never spun on or parked in -- a park
+    there would hold the GIL through a sleep with no timeout. Called on a
+    thread of its own so that a version that waits fails inside a second
+    instead of hanging the suite, and is released with a job and a pill."""
+    for ring_off in range(2):
+        var pool = _pool(ring_off == 1)
+        var threads = ThreadSet(1)
+        var body = _try_once
+        var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
+        threads.block(0).set(BLK_USER, pool.addr())
+        threads.spawn(0, body_addr)
+        var left = threads.join_within(1_000_000_000)
+        if left != 0:
+            pool.park_request(1, _request("/x"))
+            _ = pool.submit(1)
+            pool.stop(1)
+            threads.join_all()
+        assert_equal(left, 0)
+        assert_equal(threads.block(0).get(_BLK_KIND), JOB_NONE)
+
+
+def _stop_within(mut pool: OffloadPool, thread: Int) raises -> Bool:
+    """Whether `try_next_job` answers the pill within 100 ms of polling."""
+    var buf = _job_buffer()
+    var deadline = perf_counter_ns() + 100_000_000
+    while perf_counter_ns() < deadline:
+        if pool.try_next_job(0, buf, thread).kind == JOB_STOP:
+            return True
+        sleep(0.00005)
+    return False
+
+
+def test_try_next_job_answers_the_pill() raises:
+    """A thread taking jobs inside its slice still leaves on its pill: on
+    its own channel for a registered thread, on the lane socket for the
+    rest, each read on the socket poll's cadence (`POOL_DGRAM_POLL_NS`)."""
+    var pool = OffloadPool(8)
+    if not pool.ring_active():
+        return
+    pool.reserve_threads(1)
+    var tid = pool.register_thread(0)
+    pool.stop(1)
+    assert_true(_stop_within(pool, tid))
+    pool.unregister_thread(tid, 0)
+
+    var bare = OffloadPool(8)
+    bare.stop(1)
+    assert_true(_stop_within(bare, -1))
 
 
 comptime _PARK_ROUNDS = 200

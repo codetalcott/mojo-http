@@ -20,7 +20,17 @@ same run with `M0_POOL_TURN=0` on the server (`--expect-convoy`) must show
 the convoy. Pre-release rather than CI: a shared 3-core runner puts its own
 scheduling into a p99 (docs/RELEASING.md).
 
-usage: pool_fairness_probe.py PORT [--expect-convoy] [--seconds N] [--conns N]
+A third arm, `--expect-starvation`, is the keep rule's: inside its slice a
+thread takes the jobs already queued without dropping the GIL, and with
+`M0_POOL_TURN_KEEP=0` it drops it between every job again, each drop
+waking a parked waiter that finds the GIL re-taken and waits once more
+behind the others -- two threads ping-ponging while two starve. That run
+must fail the fair bounds. It is asserted on Linux, where it was found
+(docs/notes/a-slice-keeps-the-gil.md): 14 of 14 runs over the fair max on
+a 4-vCPU VM, 335 ms the least, where the rule holds 13-21 ms.
+
+usage: pool_fairness_probe.py PORT [--expect-convoy | --expect-starvation]
+                              [--seconds N] [--conns N]
 """
 import http.client
 import sys
@@ -30,6 +40,7 @@ import traceback
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 8080
 EXPECT_CONVOY = "--expect-convoy" in sys.argv
+EXPECT_STARVATION = "--expect-starvation" in sys.argv
 SECONDS = 8.0
 CONNS = 16
 for i, a in enumerate(sys.argv):
@@ -124,12 +135,18 @@ def main():
     wait_healthy()
     phase("warm-up")
     hammer(1.0, CONNS)
-    phase("convoy-expected hammer" if EXPECT_CONVOY else "fair hammer")
+    if EXPECT_CONVOY:
+        arm = "turn OFF (expect convoy)"
+    elif EXPECT_STARVATION:
+        arm = "keep OFF (expect starvation)"
+    else:
+        arm = "turn on"
+    phase(arm + " hammer")
     lat, errors = hammer(SECONDS, CONNS)
     n = len(lat)
     p50, p99, mx = pct(lat, 0.50), pct(lat, 0.99), (lat[-1] if lat else float("nan"))
     print("pool_fairness_probe: %s: n=%d errors=%d p50=%.2fms p99=%.2fms max=%.2fms"
-          % ("turn OFF (expect convoy)" if EXPECT_CONVOY else "turn on", n, errors, p50, p99, mx))
+          % (arm, n, errors, p50, p99, mx))
     if n < CONNS * 10:
         print("pool_fairness_probe: FAIL: too few samples (%d) to judge a tail" % n)
         return 1
@@ -143,6 +160,14 @@ def main():
                   % (p99, mx, CONVOY_P99_MS, CONVOY_MAX_MS))
             return 1
         print("pool_fairness_probe: PASS: the convoy is visible without the turn")
+        return 0
+    if EXPECT_STARVATION:
+        if p99 <= FAIR_P99_MS and mx <= FAIR_MAX_MS:
+            print("pool_fairness_probe: FAIL: with the keep rule off the p99 stayed at %.2f ms and "
+                  "the max at %.2f ms (<= %.0f / %.0f ms) -- the probe cannot see the starvation "
+                  "the rule prevents" % (p99, mx, FAIR_P99_MS, FAIR_MAX_MS))
+            return 1
+        print("pool_fairness_probe: PASS: a waiter starves without the keep rule")
         return 0
     if p99 > FAIR_P99_MS or mx > FAIR_MAX_MS:
         print("pool_fairness_probe: FAIL: p99 %.2f ms / max %.2f ms exceeds %.0f / %.0f ms -- "
