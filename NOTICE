@@ -688,6 +688,22 @@ lightbug_http
         already queued); the loop lingers for the peer's reply as after its
         own Close (SPEC I26).
 
+      - event_loop.mojo (2026-09-26): a pass admits at most
+        `ACCEPT_BATCH` (16) new connections, off the listener or off a
+        sibling's accept-share channel, and only AFTER the events of the
+        connections it already holds (SPEC C8). What a batch leaves is owed
+        (`LoopState.accept_owed`, `handoffs_owed`) and taken by the next
+        pass, whose wait does not block; owed only when the batch stopped
+        the drain, never on EMFILE. `_accept_batch` is the old accept loop
+        with a budget, `_admit_handoffs` takes one too, `_shutdown_begin`
+        still admits every hand-off and clears both flags, and
+        `run_pass_once` takes owed batches inside its callback up to
+        `max_connections` accepts. `M0_ACCEPT_BATCH` overrides the batch,
+        0 restoring the drain to EAGAIN -- on epoll, which reports no
+        backlog depth, a drain to `max_connections` that held a loop-only
+        server's established connections behind every queued request
+        (docs/notes/the-accept-batch.md).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
