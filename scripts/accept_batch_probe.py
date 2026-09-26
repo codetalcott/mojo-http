@@ -11,21 +11,25 @@ a keep-alive connection that is already established sends `/fast`. When the
 blocker is answered the loop has the backlog and the keep-alive's request
 waiting at once.
 
-Every bound is in what one queued request COSTS on this box, measured first
-(`cost`), and every time counts from the blocker's own answer: a runner's
-timers oversleep, and a bound in nominal milliseconds judged the runner
-instead of the loop -- CI's first macOS run answered all 120 queued 10 ms
-requests, `/fast` inside its bound, and failed on a burst that took 7 s.
+No bound is in nominal milliseconds, because a runner's timers oversleep:
+CI's first macOS run answered all 120 queued 10 ms requests, `/fast` inside
+its bound, and failed on a burst that took 7 s. `/fast`'s bound is in what
+one queued request COSTS on this box, measured first (`cost`), and every
+time counts from the blocker's own answer. The burst is judged by its
+widest GAP, not its length: a later macOS run measured a request at
+17.3 ms and then served the burst at 49 ms a request, so a bound on the
+burst's total judged the runner's timers again, while no two of its answers
+were more than 100 ms apart.
 
   arm       the default batch (ACCEPT_BATCH, read from event_loop.mojo so the
             bound follows the constant): `/fast` answered within one and a
             half batches' cost of the blocker -- the loop served the
             connection it held before the next batch, not after the backlog
-            -- and every burst connection answered, the last inside the
-            burst's cost plus slack: what a batch leaves is taken by the next
-            pass, neither stranded behind the edge-triggered listener nor left
-            to a wait that blocks (a second a batch, and the widest gap
-            between two answers says so)
+            -- and every burst connection answered with no two answers more
+            than GAP_MS apart: what a batch leaves is taken by the next pass,
+            neither stranded behind the edge-triggered listener nor left to a
+            wait that blocks, which runs to the loop's one-second timeout
+            (1012 ms measured) where the widest honest gap is one request
   negative  Linux only, `M0_ACCEPT_BATCH=0`: the old drain, which must show
             the starvation -- `/fast` behind at least two thirds of the
             burst's cost -- or the arm above proves nothing. On macOS kqueue
@@ -34,7 +38,7 @@ requests, `/fast` inside its bound, and failed on a burst that took 7 s.
             order, so there it is not asserted.
 
 The measurements are in docs/notes/the-accept-batch.md. Prints `beyond_ms N`,
-`bound_ms N`, `burst_ms N` and `cost_ms N` for the recorder.
+`bound_ms N`, `burst_ms N`, `gap_ms N` and `cost_ms N` for the recorder.
 """
 
 from __future__ import annotations
@@ -54,6 +58,11 @@ import traceback
 K = 120          # under the listen backlog of 128, so all of it queues at once
 EACH_MS = 10     # what each queued request asks for; its COST is measured
 BLOCK_MS = 600
+# The widest gap two burst answers may have between them: half the loop's
+# one-second wait (`run_event_loop`'s `_wait_for_events(..., 1000)`), which a
+# wait that blocks between owed batches runs to. The widest honest gap is one
+# request: 11 ms on Linux, 54-100 ms on the macOS runner.
+GAP_MS = 500
 LOOP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packages",
                     "m0-http", "lightbug_http", "event_loop.mojo")
 
@@ -248,9 +257,10 @@ def main() -> None:
         fail("/fast waited %.0f ms after the blocker, over one and a half batches (%d requests "
              "at %.1f ms, %.0f ms): the loop took new connections before the one it already "
              "held" % (r["beyond"], batch, each, bound))
-    if r["burst"] > 1.25 * whole + 3000:
-        fail("the burst took %.0f ms after the blocker, against %.0f ms of work (widest gap "
-             "%.0f ms): an owed batch waited on a wait that blocks" % (r["burst"], whole, r["gap"]))
+    if r["gap"] > GAP_MS:
+        fail("%.0f ms passed between two burst answers, over %d (the burst took %.0f ms after "
+             "the blocker, %.0f ms of work): an owed batch waited on a wait that blocks"
+             % (r["gap"], GAP_MS, r["burst"], whole))
 
     if platform.system() == "Linux":
         phase("negative arm: start the server")
@@ -272,6 +282,7 @@ def main() -> None:
     print("beyond_ms %.0f" % r["beyond"])
     print("bound_ms %.0f" % bound)
     print("burst_ms %.0f" % r["burst"])
+    print("gap_ms %.0f" % r["gap"])
     print("cost_ms %.1f" % each)
 
 
