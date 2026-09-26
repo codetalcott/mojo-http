@@ -3,9 +3,10 @@
 # (docs/notes/fairness-judged-by-order.md, "GitHub's runner does not
 # starve"). The first sweep found the probe's own load starving on all
 # three runners it landed on (AMD EPYC 7763), where #397's one keep-arm run
-# did not; this runs the TASK itself, keep arm on, three times on each of
-# six runners, and names each runner's CPU, to tell a machine difference
-# from a difference in how the task drives the arms.
+# did not. The second pass ran the TASK on six runners and two of them,
+# newer Intel Xeons, failed its keep arm: GitHub's pool mixes CPUs. This
+# third pass sweeps shapes around the base load on eight runners, each
+# naming its CPU, to find one that starves the Intel runners too.
 name: Fairness sweep
 
 on:
@@ -14,13 +15,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  task:
+  sweep:
     strategy:
       fail-fast: false
       matrix:
-        runner: [a, b, c, d, e, f]
+        runner: [a, b, c, d, e, f, g, h]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -30,19 +31,9 @@ jobs:
         timeout-minutes: 3
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       - run: uv run poe build-all
-      - name: Which machine
-        run: |
-          lscpu | grep -E 'Model name|^CPU\(s\)|Hypervisor' || true
-          uname -r
-      # set +e: the task exits 1 at the first arm that fails, and the arms'
-      # figures are the data here, failing or not.
-      - name: The probe as CI runs it, keep arm on, three times
-        run: |
-          set +e
-          for i in 1 2 3; do
-            echo "=== run $i"
-            M0_FAIRNESS_EXPECT_STARVATION=1 uv run poe probe-pool-fairness > run.log 2>&1
-            echo "rc=$?"
-            grep -E '^pool_fairness_probe: (turn|keep)|probe-pool-fairness OK|still answered|FAIL' run.log || tail -20 run.log
-          done
-          exit 0
+      - run: uv run poe build-serve
+      - name: Sweep the shapes around the base load, both arms
+        run: uv run python scripts/probes/fairness_sweep.py --shapes base,b0.15,b0.2,b0.45,b0.6,t3,t5,t6,t3-b0.2,t5-b0.45,c8,c32 --rounds 1 --seconds 8 --tag ${{ matrix.runner }} | tee sweep.txt
+      - name: Summary
+        if: always()
+        run: sed -n '/^machine:/,$p' sweep.txt >> "$GITHUB_STEP_SUMMARY"

@@ -55,6 +55,19 @@ SHAPES = {
     "hog4":      dict(threads=4, conns=16, busy="0.3", hogs=4),
     "hog8":      dict(threads=4, conns=16, busy="0.3", hogs=8),
     "cpu2-hog2": dict(threads=4, conns=16, busy="0.3", cpus="0,1", hogs=2, hog_cpus="0,1"),
+    # The second sweep, around the base shape: the view's length (jobs per
+    # 1 ms slice), the waiters (threads) and the queue behind them.
+    "b0.15":     dict(threads=4, conns=16, busy="0.15"),
+    "b0.2":      dict(threads=4, conns=16, busy="0.2"),
+    "b0.45":     dict(threads=4, conns=16, busy="0.45"),
+    "b0.6":      dict(threads=4, conns=16, busy="0.6"),
+    "t3":        dict(threads=3, conns=16, busy="0.3"),
+    "t5":        dict(threads=5, conns=20, busy="0.3"),
+    "t6":        dict(threads=6, conns=24, busy="0.3"),
+    "t3-b0.2":   dict(threads=3, conns=16, busy="0.2"),
+    "t5-b0.45":  dict(threads=5, conns=20, busy="0.45"),
+    "c8":        dict(threads=4, conns=8, busy="0.3"),
+    "c32":       dict(threads=4, conns=32, busy="0.3"),
 }
 
 LONG_WAITS_ALLOWED = 5
