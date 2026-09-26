@@ -1925,6 +1925,30 @@ Properties of the design, not defects to fix in passing:
   check. `M0_ACCEPT_SHARE=0` is the A/B knob; the gate is
   `smoke-accept-spread` on both CI legs, with the knob-off negative arm on
   macOS only, because Linux's bare race sometimes lands within 2:1.
+- **A pass admits one batch of new connections, AFTER the events of the
+  ones it already holds** (`ACCEPT_BATCH`, 16; SPEC C8,
+  docs/notes/the-accept-batch.md). Admitting is the connection's eager
+  read, and on a loop that runs `func` itself that is the whole request,
+  so the old drain to EAGAIN — the only bound epoll gives, which reports
+  no backlog depth, so up to `max_connections` and through arrivals during
+  it — held a keep-alive request behind every queued connection (625 ms
+  behind 120 queued 5 ms requests; 79 ms after). Three rules come with it,
+  because both listeners are edge-triggered and no edge announces the same
+  backlog twice: what a batch leaves is OWED (`LoopState.accept_owed`, and
+  `handoffs_owed` for the accept-share channel, batched the same way) and
+  taken by the next pass even with no event; the wait does not block while
+  anything is owed (`_wait_for_events`); and the flags are cleared where
+  the listener closes, since the drain must neither accept on a dead
+  descriptor nor spin for it. Owed only when the BATCH stopped the drain:
+  a kqueue budget of the reported depth that runs out leaves nothing its
+  next edge will not announce, and an error accepting harder will not cure
+  (EMFILE) is never owed, or the loop would retry it every pass without
+  blocking. The inversion runs a pass only on readiness, so
+  `run_pass_once` takes owed batches inside its callback, up to
+  `max_connections` accepts' worth — the old bound, because under a flood
+  the backlog never empties and the callback must return for the
+  application's tasks to run. `M0_ACCEPT_BATCH=0` is the A/B knob;
+  `smoke-accept-batch` is the gate on both legs, its negative arm on Linux.
 - **Graceful shutdown is opt-in, and armed after the fork.**
   `install_shutdown_signals()` returns the fd to pass as `shutdown_read_fd`;
   its handler writes one byte to that pipe and nothing else. Dispositions and
@@ -2204,7 +2228,9 @@ Properties of the design, not defects to fix in passing:
   worker threads at user-initiated QoS, so they stay on performance cores
   under contention; accepted and ignored elsewhere), `M0_ACCEPT_SHARE`
   (`0` turns accept sharing off under `--workers N`; an A/B knob, not a
-  flag), `M0_POOL_RING` (`0` puts the `--blocking-threads` handoff back
+  flag), `M0_ACCEPT_BATCH` (new connections one pass admits, default 16;
+  `0` takes the whole backlog in one pass as the loop used to; the same
+  kind of knob), `M0_POOL_RING` (`0` puts the `--blocking-threads` handoff back
   on datagrams; the same kind of knob), `M0_POOL_ELASTIC` (`0` restores
   the eager pool wakes — every idle thread spinning, every push into a
   parked lane poking it; the same kind of knob) and `M0_POOL_WAKE_AGE_US`

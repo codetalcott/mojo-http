@@ -3017,6 +3017,42 @@ echo "smoke-accept-spread: the doctor reports accept_sharing"
 python3 scripts/emit.py --covers E16 --task smoke-accept-spread
 """
 
+# SPEC C8. A burst of new connections does not hold the loop away from the
+# connections it already serves: one pass admits at most ACCEPT_BATCH of
+# them (event_loop.mojo), AFTER the events of the connections it holds,
+# and carries what the batch leaves to the next pass, whose wait does not
+# block. Measured before (Linux): a keep-alive /fast waited 625 ms behind
+# 120 queued 5 ms requests, epoll's drain running to EAGAIN. The app is
+# apps/pool_spike with func on the loop, because that is where admitting a
+# connection costs its whole request. The negative arm, M0_ACCEPT_BATCH=0
+# (the old drain), is asserted on Linux, where the defect was; the probe's
+# docstring says why not on macOS.
+[tool.poe.tasks.smoke-accept-batch]
+help = "A burst of new connections does not hold the loop away from the ones it serves: a keep-alive /fast behind 120 queued requests waits at most a batch and a half of their measured cost, every queued connection is answered with no two answers half a second apart, and on Linux M0_ACCEPT_BATCH=0 shows the old drain (SPEC C8)"
+shell = """
+out=$(mktemp -d)
+cleanup() {
+  pkill -KILL -f "$out/" 2>/dev/null
+  rm -rf "$out"
+}
+trap cleanup EXIT
+mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$out/pool_spike" || exit 1
+python3 scripts/accept_batch_probe.py "$out/pool_spike" 8651 > "$out/probe.out" 2>&1 \
+  || { cat "$out/probe.out"; exit 1; }
+cat "$out/probe.out"
+beyond=$(grep '^beyond_ms ' "$out/probe.out" | cut -d' ' -f2)
+bound=$(grep '^bound_ms ' "$out/probe.out" | cut -d' ' -f2)
+burst=$(grep '^burst_ms ' "$out/probe.out" | cut -d' ' -f2)
+gap=$(grep '^gap_ms ' "$out/probe.out" | cut -d' ' -f2)
+cost=$(grep '^cost_ms ' "$out/probe.out" | cut -d' ' -f2)
+python3 scripts/emit.py accept_batch.fast_after_blocker_ms "$beyond" --unit ms --limit "$bound" --task smoke-accept-batch
+python3 scripts/emit.py accept_batch.burst_after_blocker_ms "$burst" --unit ms --task smoke-accept-batch
+python3 scripts/emit.py accept_batch.widest_gap_ms "$gap" --unit ms --limit 500 --task smoke-accept-batch
+python3 scripts/emit.py accept_batch.request_cost_ms "$cost" --unit ms --task smoke-accept-batch
+echo "smoke-accept-batch OK"
+python3 scripts/emit.py --covers C8 --task smoke-accept-batch
+"""
+
 [tool.poe.tasks.smoke-doctor]
 help = "--doctor reports valid JSON and exits with the code the server itself would use"
 deps = ["build-serve"]
