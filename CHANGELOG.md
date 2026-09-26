@@ -144,7 +144,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   fact (`parallel_runtime=False`), the one gathered verdict follows it,
   and the E21 refusal must be the application's own. The ROADMAP Known
   issue on MAX beside the toolchain now covers `mojo run` on Linux, where
-  a host application `mojo run` above one worker also exits 78.
+  a host application `mojo run` above one worker also exits 78. With its
+  baseline green the whole run reached its rules again, and one anchor
+  the E32 work had moved (the doctor's `host_checks` call) is re-pointed:
+  59 of 59 caught.
 
 ## [1.6.0] — 2026-09-24
 

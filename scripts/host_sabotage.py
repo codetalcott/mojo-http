@@ -457,8 +457,10 @@ SABOTAGES = [
         "the doctor ignores what the application declares",
         DOCTOR,
         HOST,
-        "    var checks = host_checks(config, H.max_workers(), H.max_threads())\n",
-        "    var checks = host_checks(config)\n",
+        "    var checks = host_checks(\n"
+        "        config, H.max_workers(), H.max_threads(), parallel_runtime\n"
+        "    )\n",
+        "    var checks = host_checks(config, parallel_runtime=parallel_runtime)\n",
     ),
     (
         "the doctor always exits 0",
