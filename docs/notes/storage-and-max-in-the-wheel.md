@@ -60,7 +60,20 @@ committed row, and a producer that polls is the wrong owner for it.
 kick; `smoke-scaffold` runs that script, and `sabotage-scaffold` holds
 both halves: the view's write reverted is caught at the wire's first
 `/stats`, which reads the database, and the file swapped for an in-memory
-store — counted, then forgotten — is caught only by the restart. The template's own
+store — counted, then forgotten — is caught only by the restart.
+
+The move left the board's word with nothing on the wire watching it.
+`sabotage-scaffold`'s older kick rule drops `st.board.add(B_KICKS, 1)`
+and expected the wire's `/stats` to notice, which it did while `/stats`
+read the word; reading the database, it cannot, and the 2026-09-26
+pre-release run reported the rule MISSED with the whole scaffold green.
+The word's one consumer is the wave, so the wire now watches the wave: it
+keeps its stream open across the kick and requires a later frame whose
+lowest bar stands above the highest bar the wave drew before it. Unkicked,
+a bar never passes 20 plus the sine's full swing of 30; the step that
+applies a kick adds 40 to every bar, so the frame that shows it clears
+every frame before it outright, and with the word dropped no frame ever
+does. The template's own
 test opens the store in memory (`open()` wants a file it can put in WAL
 mode) and runs under `uv run m0 test` with nothing linked, on both
 platforms, which is the first thing this round wanted.

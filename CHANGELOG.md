@@ -126,6 +126,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
   view, a loop route and the stream on the wire (`head_probe.py --twin`,
   new beside `--hold`).
 
+- **The `live` scaffold's kick is gated where it moves the wave** (SPEC
+  N27, N40). Since the kick count moved into SQLite, `/stats` reads the
+  database and the board's word drives only the wave, so a kick view that
+  dropped the word passed `smoke-scaffold` whole: `sabotage-scaffold`'s
+  rule for it was MISSED on the 2026-09-26 pre-release run. The wire phase
+  now keeps its stream open across the kick and requires a later frame
+  whose lowest bar stands above the highest bar the wave drew before it;
+  the rule, renamed "a kick never reaches the wave", is caught there. The
+  template's `smoke.sh` no longer says the producer keeps the count.
+
+- **`test_host.mojo` holds beside an installed `max-core`.** Under `mojo
+  run` a test runs inside the compiler's process, which maps MAX's
+  parallel runtime once `max-core` is synced, so E32's refusal answered
+  two of its prefork verdicts, and `sabotage-host`'s baseline failed in
+  the one venv its `parallel` arm needs. Those verdicts now supply the
+  fact (`parallel_runtime=False`), the one gathered verdict follows it,
+  and the E21 refusal must be the application's own. The ROADMAP Known
+  issue on MAX beside the toolchain now covers `mojo run` on Linux, where
+  a host application `mojo run` above one worker also exits 78. With its
+  baseline green the whole run reached its rules again, and one anchor
+  the E32 work had moved (the doctor's `host_checks` call) is re-pointed:
+  59 of 59 caught.
+
 ## [1.6.0] — 2026-09-24
 
 The request an application sees is now the one its client sent, and the

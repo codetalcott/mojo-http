@@ -57,8 +57,8 @@ curl -s --max-time 5 "$BASE/stats" >smoke.body
 grep -q '"kicks":1,' smoke.body || fail "the kick was not counted: $(cat smoke.body)"
 grep -q '"refused":0,' smoke.body || fail "the bus refused a frame: $(cat smoke.body)"
 
-# The kick survives a restart: the producer keeps the count in SQLite and
-# seeds the board from it at its first step.
+# The kick survives a restart: the kick view counted it in SQLite inside
+# its own request, and /stats reads it back from the file.
 kill "$PID"
 wait "$PID" 2>/dev/null
 PID=""

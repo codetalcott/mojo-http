@@ -320,7 +320,14 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     four with it; Linux three either way), so there every binary reads
     as linked and both refusals fire for a MAX-free one — a ROADMAP
     Known issue; the gate's control reads the file's load commands and
-    holds the doctor to them rather than assuming.
+    holds the doctor to them rather than assuming. `mojo run` is the same
+    trap on Linux (measured 2026-09-26): the program runs inside the
+    compiler's process, which maps the runtime once `max-core` is synced,
+    so a JIT'd program reads as linked whatever it imports. A test that
+    asks the host a question about workers therefore supplies the fact
+    (`parallel_runtime=`) or follows it, never assumes it —
+    `test_host.mojo` assumed it and failed with the group synced — and a
+    smoke that `mojo run`s a host app at two workers exits 78 there.
   - **Threaded (`M0_THREADS`, free-threaded CPython only; `m0_wsgi.threaded`).**
     N event loops on N pthreads, one interpreter. The main thread initializes
     the interpreter and imports the app BEFORE spawning, then
@@ -1574,7 +1581,9 @@ pieces, and the language fact each rests on:
   from several workers holds a lock from the change until the frame is
   numbered and published, or a stale render can take the newer id
   (`datastar_todo`, SPEC N17). Run `poe sabotage-host` after
-  touching `host.mojo`: its anchors are exact source lines.
+  touching `host.mojo`: its anchors are exact source lines. The whole run
+  wants the `max` group (`uv run --group max poe sabotage-host`), which
+  its `parallel` arm builds against; every other gate holds either way.
 - **`Views[S]`** (`m0-http/src/views.mojo`): a view is a free function
   `(req, params, state) raises -> HTTPResponse`; `add_read` hands the state
   borrowed, `add_write` hands it `mut` (`poe sabotage-views` compiles the
