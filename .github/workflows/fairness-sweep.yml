@@ -1,12 +1,11 @@
 # TEMPORARY, removed before its pull request merges: the search for a load
 # that makes the keep rule's old shape starve a waiter on GitHub's runner
-# (docs/notes/fairness-judged-by-order.md, "GitHub's runner does not
-# starve"). Three passes so far: the probe's own load starves every AMD
-# EPYC 7763 runner and none of the others (Intel Xeon 8370C, 8573C,
-# 6973P-C; AMD EPYC 9V45, 9V74), and the shapes around it split the
-# machines along one line -- how many jobs a 1 ms slice holds, which a
-# 0.3 ms view leaves on the 3/4 boundary. This fourth pass runs views near
-# 0.65 ms, two jobs a slice on any of them, with the convoy arm too.
+# (docs/notes/fairness-judged-by-order.md). Four passes found it: with the
+# keep rule off, who starves is decided by how many jobs a 1 ms slice holds
+# against the threads waiting, and a 0.65 ms view against five threads
+# starved every runner of five CPU types. This fifth pass runs the TASK as
+# CI now does -- that load, all three arms, the keep arm on by default --
+# three times on each of ten runners, naming each runner's CPU.
 name: Fairness sweep
 
 on:
@@ -15,13 +14,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  sweep:
+  task:
     strategy:
       fail-fast: false
       matrix:
         runner: [a, b, c, d, e, f, g, h, i, j]
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -31,9 +30,19 @@ jobs:
         timeout-minutes: 3
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       - run: uv run poe build-all
-      - run: uv run poe build-serve
-      - name: Sweep two-job slices, every arm
-        run: uv run python scripts/probes/fairness_sweep.py --shapes t3-b0.65,t5-b0.65,t3-b0.55,t3-b0.75,b0.65,base --convoy --rounds 2 --seconds 12 --tag ${{ matrix.runner }} | tee sweep.txt
-      - name: Summary
-        if: always()
-        run: sed -n '/^machine:/,$p' sweep.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Which machine
+        run: |
+          lscpu | grep -E 'Model name|^CPU\(s\)|Hypervisor' || true
+          uname -r
+      # set +e: the task exits 1 at the first arm that fails, and the arms'
+      # figures are the data here, failing or not.
+      - name: The probe as CI runs it, three times
+        run: |
+          set +e
+          for i in 1 2 3; do
+            echo "=== run $i"
+            uv run poe probe-pool-fairness > run.log 2>&1
+            echo "rc=$?"
+            grep -E '^pool_fairness_probe: (turn|keep)|probe-pool-fairness OK|still answered|FAIL' run.log || tail -20 run.log
+          done
+          exit 0

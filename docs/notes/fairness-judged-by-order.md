@@ -17,9 +17,11 @@ Linux-only, and the spec checker refuses a cited step that carries an
 wants a runner with nothing else running on it. The reference Mac keeps the
 macOS run before a release.
 
-The runner catches the barrier's convoy (E11) and not the starvation that
-motivated the move (E34): its first run answered the old shape in order
-("GitHub's runner does not starve", below).
+At its first load the runner caught the barrier's convoy (E11) and not the
+starvation that motivated the move (E34): it answered the keep rule's old
+shape in order ("GitHub's runner did not starve the first load", below).
+The load it runs now starves every runner measured ("A load that starves
+every runner").
 
 ## The latency verdict was too close to the machine
 
@@ -28,7 +30,8 @@ max under a quarter second. The negative arms had to break those bounds: the
 turn disabled with a p99 over 50 ms or a max over 500, the keep rule
 disabled by breaking the fair bounds. Before putting the probe on every pull
 request, every arm was run again and again on a 4-vCPU Linux VM (a KVM
-guest, Intel Xeon at 2.1 GHz):
+guest, Intel Xeon at 2.1 GHz), at the first load: four pool threads,
+sixteen connections, a 0.3 ms view:
 
 | arm | runs | p99 | max |
 |---|---|---|---|
@@ -61,11 +64,12 @@ client: for every request, how many requests sent after it were answered
 before it. It is a Fenwick tree over answer order, visited from the last
 request sent to the first, so thirty thousand requests take well under a
 second. A fair run lets at most five requests be passed over by more than a
-hundred later answers, and none by more than a thousand. At the probe's
-load the pool answers about 2.5k requests a second, so a hundred later
-answers is about 40 ms of the pool serving others while one request waits.
+hundred later answers, and none by more than a thousand. At the first load
+the pool answered about 2.5k requests a second, so a hundred later answers
+was about 40 ms of the pool serving others while one request waits; at the
+current one it answers 1.2-1.5k, and a hundred is 70-80 ms.
 
-Measured on the same VM with the verdict as committed:
+Measured on the same VM with the verdict as committed, at the first load:
 
 | arm | runs | requests passed over by more than 100 | the most passed over |
 |---|---|---|---|
@@ -93,7 +97,7 @@ all five.
   fair arm's p99 and max, so a drift shows up with its headroom before it
   turns into a failure.
 
-## GitHub's runner does not starve
+## GitHub's runner did not starve the first load
 
 The pull request's first CI run failed the keep rule's arm, and the
 failure was the runner's answer, not noise:
@@ -104,31 +108,115 @@ failure was the runner's answer, not noise:
 | the turn off | 75–142, the most 2442–3901 | 42, the most 6297 (max 2036 ms) |
 | the keep rule off | 88–171, the most 336–1115 | 0, the most 63 (p99 12.6 ms, max 26.9 ms) |
 
-The runner answered the keep rule's old shape in order, as the reference
-Mac did. E34's starvation needs a machine as well as the old code: a
-parked waiter has to lose the race to the thread that just dropped the GIL,
-and how long a woken thread takes to run is the hypervisor's. So the arm
-is asserted only where it is asked for (`M0_FAIRNESS_EXPECT_STARVATION=1`),
-on a machine known to starve: the KVM guest that found it, before a
-release (docs/RELEASING.md). CI runs the fair and convoy arms, and cannot
-see E34's starvation.
+The pull request shipped with the arm opt-in, a pre-release run on the KVM
+guest, and the search for a load that starves the runner went on in the
+next one.
+
+## A load that starves every runner
+
+GitHub's runners are not one machine. Five passes of a sweep put the probe
+on 33 of them, and the first load's keep arm split them by CPU:
+
+- every run on an AMD EPYC 7763 starved (42 of 42);
+- every run on an Intel Xeon (Platinum 8370C and 8573C, 6973P-C) or an AMD
+  EPYC 9V45 answered in order (14 of 14);
+- the AMD EPYC 9V74 went both ways (4 and 4).
+
+The KVM guest starved as well. The split has one cause, and it is
+arithmetic rather than noise.
+
+With the keep rule off, a thread drops the GIL between the jobs of its 1 ms
+slice. Each drop wakes the longest waiter, which finds the GIL taken again
+and queues behind the others, so each drop moves the queue round by one. At
+the slice's end the hand-off wakes whoever the rotation left at the front.
+A slice of k jobs makes k − 1 such drops, and with w threads waiting:
+
+- if k − 1 is a multiple of w, the queue turns full circle, the hand-off
+  goes round, and nobody starves;
+- if k − 1 is one short of a multiple, the front is the thread that held
+  the GIL before this one: two threads alternate and the rest starve, as
+  [a-slice-keeps-the-gil](a-slice-keeps-the-gil.md) traced on the guest;
+- in between, some threads cycle and some starve.
+
+A starved thread is woken on every slice and loses the race each time, so
+it waits until it wins one, which took up to four seconds on the runners.
+How many jobs a slice holds is set by a request's share of the GIL: the
+view plus the machine's own per-request cost. The sweep reads the share
+off the fair arm as the run's length over its answers, since the pool runs
+one view at a time.
+
+| machine | a request's share, first load | jobs a slice | four threads (three waiting), the rule off |
+|---|---|---|---|
+| the KVM guest | 0.43 ms | 3: two drops | two alternate, two starve |
+| AMD EPYC 7763 | 0.335–0.341 ms | 3 | two alternate, two starve |
+| Intel Xeon 8370C, 8573C, 6973P-C; AMD EPYC 9V45 | 0.315–0.332 ms | 4: three drops | full circle, in order |
+| AMD EPYC 9V74 | 0.325–0.334 ms | 3 or 4 | in order 4 times, starved 4 |
+
+A 0.3 ms view put a slice on the boundary between three jobs and four, at
+a third of a millisecond, and each machine's overhead picked the side. The
+same count accounts for the other loads the sweeps tried, wherever the
+share sat clear of a boundary. At 0.3 ms, three threads or five starved the
+runners and not the guest, and at 0.45 ms four threads did the same: the
+guest's slice holds one job fewer than theirs at both.
+
+**The load now: five threads, twenty connections, a 0.65 ms view.** A
+request's share is 0.67–0.70 ms on the runners and 0.80–0.84 ms on the
+guest. That is two jobs a slice on all of them, one drop per slice against
+four waiters, so two threads starve. Any share between 0.5 and 1 ms gives
+two jobs, and the view spins on the clock, so no machine can bring the
+share under 0.65 ms. Only a machine spending more than 0.35 ms of its own
+on a request would leave the window, about twice the slowest measured.
+The fair arm records the share in the job's measurements with 1 ms as its
+limit, so a drift toward the edge shows as headroom before it shows as a
+failure.
+
+The fourth pass ran ten runners of five CPU types (AMD EPYC 7763, 9V74,
+9V45; Intel Xeon 6973P-C, 8573C), two 12 s runs of each arm on each. The
+guest ran five of the fair and keep arms, three of the turn's and two of
+the control:
+
+| arm | ten runners (20 runs) | the KVM guest |
+|---|---|---|
+| fair | 0 long waits, the most 10–22 | 0, the most 46–68 |
+| the turn off | 12–116, the most 2596–17892 | 17–32, the most 4943–10789 |
+| the keep rule off | 29–81, the most 1232–6105 | 73–100, the most 656–1071 |
+| the keep rule off, four threads (the control) | 0, the most 7–19 | 0, the most 15–19 |
+
+The control is the arithmetic's own negative arm. At the same 0.65 ms, four
+threads are three waiters and one drop a slice, a rotation that reaches
+every thread. The arithmetic says they stay in order with the rule off,
+and they did, on every runner and on the guest. Three threads and views of 0.55 and
+0.75 ms starved everywhere too. Five threads won on margin: the rule off
+leaves at least 29 requests passed over by more than a hundred, where three
+threads left as few as 6.
+
+With the keep rule on there are no drops inside a slice, the hand-off goes
+round whatever the count, and the order no longer depends on the machine.
+That is what the rule is for, and the arm now shows it on every pull
+request. The instrument is `scripts/probes/fairness_sweep.py`.
 
 ## What the gate proves, and what it cannot
 
-- **Every pull request, on Linux.**
+- **Every pull request, on Linux, at one load.**
   - The fair arm is in job order.
   - The turn disabled is not, which proves the probe sees E11's convoy.
-- **E34 only where it is asked for.** The keep rule disabled is out of
-  order on the KVM guest that found it and in order on GitHub's runner and
-  the reference Mac. On a pull request, E34 is `test_blocking_pool.mojo`'s:
-  the rule runs, jobs are kept. The starvation it prevents is checked before
-  a release, on a machine that shows it.
+  - The keep rule disabled is not, which proves it sees E34's starvation.
+    `M0_FAIRNESS_EXPECT_STARVATION=0` skips this arm, for a machine that
+    answers it in order. None is known.
+- **The keep arm rests on arithmetic, and the arithmetic has an edge.** A
+  machine whose per-request cost put a request's share over 1 ms would hold
+  one job a slice. It would make no drops, and the arm would answer in
+  order. The share is recorded on every run for that reason.
 - **The thresholds are counts, and counts scale with throughput.** A much
   faster runner answers more requests per millisecond of waiting. The
   measurements record the fair arm's figures beside their limits for that
   reason.
-- **Not macOS.** The fair and convoy arms under the order verdict have not
-  yet been run on the reference Mac; that is its next run's.
+- **Not macOS.** The order verdict has not been run on the reference Mac,
+  and neither has this load. macOS's condition variable is not glibc's, and
+  whether the rotation above happens there was not measured. The Mac's next
+  pre-release run is the first. If its keep arm answers in order, that is a
+  finding about macOS: record it, and run the other two arms with the arm
+  skipped.
 - **Not what the order costs.** A pool that serialized every request fairly
   would pass. Throughput and isolation are other gates' business:
   `smoke-blocking-threads`, and the detached-loop A/B.
@@ -138,7 +226,3 @@ see E34's starvation.
 - **A per-thread view.** The client sees requests, not threads. The pool's own
   histograms (`M0_POOL_DEBUG=1`) name the thread that waited, and a failure
   here is where to turn them on.
-- **A load that starves on the runner.** Four threads, sixteen connections
-  and a 0.3 ms view starve the KVM guest and not the runner. Whether another
-  shape would starve both was not measured; one that did would put E34's
-  arm on every pull request.
