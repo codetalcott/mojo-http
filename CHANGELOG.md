@@ -126,6 +126,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   view, a loop route and the stream on the wire (`head_probe.py --twin`,
   new beside `--hold`).
 
+- **`test_host.mojo` holds beside an installed `max-core`.** Under `mojo
+  run` a test runs inside the compiler's process, which maps MAX's
+  parallel runtime once `max-core` is synced, so E32's refusal answered
+  two of its prefork verdicts, and `sabotage-host`'s baseline failed in
+  the one venv its `parallel` arm needs. Those verdicts now supply the
+  fact (`parallel_runtime=False`), the one gathered verdict follows it,
+  and the E21 refusal must be the application's own. The ROADMAP Known
+  issue on MAX beside the toolchain now covers `mojo run` on Linux, where
+  a host application `mojo run` above one worker also exits 78.
+
 ## [1.6.0] — 2026-09-24
 
 The request an application sees is now the one its client sent, and the

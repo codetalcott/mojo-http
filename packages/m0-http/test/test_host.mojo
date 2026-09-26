@@ -36,6 +36,7 @@ from m0_http.config import AppConfig
 from m0_http.mojo_pool import MojoPool, PoolContext
 from m0_http.views import Views
 from m0_http.multiworker import SharedAtomics, shared_fetch_add, shared_load
+from m0_http.parallel_runtime import PARALLEL_RUNTIME_IMAGE, parallel_runtime_linked
 from m0_http.threads import STATUS_NEVER_RAN, STATUS_OK, STATUS_RAISED
 
 comptime P_PERIOD_NS = 0
@@ -421,16 +422,23 @@ def test_a_views_app_answers_for_its_state() raises:
 def test_the_host_refuses_more_workers_than_the_app_serves() raises:
     """An application whose state is per process is not served twice.
 
+    MAX's parallel runtime is SUPPLIED as absent: under `mojo run` this
+    test runs inside the compiler's process, which maps the runtime once
+    `max-core` sits beside the toolchain, and E32 then refuses every count
+    above one whatever this source imports (parallel_runtime.mojo).
+
     covers: E21
     """
     _ = setenv("M0_WORKERS", "2", True)
     var config = AppConfig()
     _ = unsetenv("M0_WORKERS")
-    var why = host_refusal(config, 1)
+    var why = host_refusal(config, 1, parallel_runtime=False)
     assert_true(Bool(why), "two workers were served for a one-process app")
     assert_true("M0_WORKERS=2" in why.value(), "the refusal does not name M0_WORKERS")
-    assert_false(Bool(host_refusal(config, 2)))
-    assert_false(Bool(host_refusal(config, 0)))
+    # The application's refusal: E32's names M0_WORKERS=2 as well.
+    assert_true("at most 1 process" in why.value(), "the refusal is not the application's")
+    assert_false(Bool(host_refusal(config, 2, parallel_runtime=False)))
+    assert_false(Bool(host_refusal(config, 0, parallel_runtime=False)))
     assert_false(Bool(host_refusal(AppConfig(), 1)))
 
 
@@ -471,10 +479,12 @@ def test_workers_and_threads_are_one_or_the_other() raises:
 
 
 def _refusal_for(name: String, value: String) raises -> Optional[String]:
+    """`host_refusal` for one variable, MAX's parallel runtime supplied as
+    absent: every verdict read through here is about the variable."""
     _ = setenv(name, value, True)
     var config = AppConfig()
     _ = unsetenv(name)
-    return host_refusal(config)
+    return host_refusal(config, parallel_runtime=False)
 
 
 def test_the_host_refuses_what_it_does_not_serve() raises:
@@ -500,10 +510,24 @@ def test_the_host_refuses_what_it_does_not_serve() raises:
 def test_the_host_serves_what_it_does() raises:
     """What the host does serve is not refused, the pool lane included.
 
+    Prefork is served with the parallel runtime absent. Gathered, the
+    verdict follows the fact this process reads rather than assuming it:
+    under `mojo run` beside `max-core` the runtime is mapped and E32
+    refuses, naming it.
+
     covers: E26
     """
     assert_false(Bool(host_refusal(AppConfig())))
     assert_false(Bool(_refusal_for("M0_WORKERS", "4")))
+    _ = setenv("M0_WORKERS", "4", True)
+    var four = AppConfig()
+    _ = unsetenv("M0_WORKERS")
+    var gathered = host_refusal(four)
+    if parallel_runtime_linked():
+        assert_true(Bool(gathered), "prefork was served beside the parallel runtime")
+        assert_true(PARALLEL_RUNTIME_IMAGE in gathered.value(), "the refusal is not E32's")
+    else:
+        assert_false(Bool(gathered), "prefork was refused with no parallel runtime")
     # Present at their defaults is not a request for the other mode.
     assert_false(Bool(_refusal_for("M0_THREADS", "1")))
     # Loops on threads are served (D35), where Phases 2 and 3 refused them.

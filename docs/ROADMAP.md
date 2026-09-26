@@ -102,24 +102,43 @@ somebody else's Django projects inside the pull request that trips it.
 
   **Closed by:** none — outside the server's own behaviour.
 
-- **On macOS, a build made beside an installed MAX carries the parallel
-  runtime.** `mojo build` there links `libAsyncRTMojoBindings` into every
-  binary once `max-core` sits beside the compiler, whether or not the
-  source imports `max.algorithm`; on Linux it links it only where named.
+- **Beside an installed MAX, the parallel runtime is loaded where nothing
+  names it: in every macOS build, and under `mojo run` on Linux too.**
+  `mojo build` on macOS links `libAsyncRTMojoBindings` into every binary
+  once `max-core` sits beside the compiler, whether or not the source
+  imports `max.algorithm`; on Linux it links it only where named.
   Measured on CI (2026-09-25): the same demo-mount `bin/m0serve` bundled
   three runtime files in the MAX-free `apple-silicon` job and four after
-  `uv sync --group max`. The refusals of E32 (the Mojo host, `M0_WORKERS`
-  above 1) and E33 (m0serve, `--workers N` and `--reload`) read the loaded
-  images, so on such a machine they fire for a binary that never calls
-  `parallelize`. `M0_THREADS` serves the host's case and `--spawn-workers`
-  m0serve's; the shipped `m0serve` wheel is built without MAX and is not
-  affected.
+  `uv sync --group max`. `mojo run` builds no binary: the program runs
+  inside the compiler's process, which maps the runtime once `max-core` is
+  installed, so there `parallel_runtime_linked()` answers true for any
+  source — measured on Linux on 2026-09-26, where the same source built
+  answers false (macOS's builds read as linked already). The refusals of
+  E32 (the Mojo host, `M0_WORKERS` above 1) and E33 (m0serve, `--workers
+  N` and `--reload`) read the loaded images, so on such a machine they
+  fire for a binary, or a `mojo run`, that never calls `parallelize`.
+  `M0_THREADS` serves the host's case and `--spawn-workers` m0serve's; the
+  shipped `m0serve` wheel is built without MAX and is not affected.
+
+  What a contributor with the `max` group synced meets: every `mojo run`
+  of a host application above one worker exits 78 — `smoke-shutdown`,
+  `smoke-counter` and `smoke-sim-loop` each start one at two workers, and
+  pass with the group unsynced, as CI runs them (it syncs the group for
+  its two MAX steps alone). The unit tests do not depend on the venv:
+  `test_host.mojo` and `test_host_flags.mojo` supply the fact wherever a
+  verdict is about something else, and follow it where they gather it —
+  `test_host.mojo` assumed it absent until the 2026-09-26 pre-release run,
+  where `sabotage-host`'s baseline failed on two tests with the group that
+  its `parallel` arm needs.
 
   **Closed by:** none — a toolchain that links the runtime only where it
-  is named, or a fact that can tell a loaded runtime from a used one,
-  retires it. `smoke-serve-parallel-runtime`'s control phase reads the
-  binary's own load commands, so the day the link disappears its macOS
-  line changes from "refused at two workers" to "passes".
+  is named and a `mojo run` that maps it only for a program that imports
+  it, or a fact that can tell a loaded runtime from a used one, retires
+  it. `smoke-serve-parallel-runtime`'s control phase reads the binary's
+  own load commands, so the day the link disappears its macOS line changes
+  from "refused at two workers" to "passes"; the `mojo run` half is
+  re-tested by syncing the group and `mojo run`ning a program that prints
+  `parallel_runtime_linked()`.
 
 ## Planned
 

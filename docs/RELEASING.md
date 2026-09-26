@@ -215,8 +215,8 @@ kernel's fourteen against its unit tests. Each rule rebuilds the app and
 reruns its gate, about six minutes in all (`--only unit` runs the
 kernel's fourteen in about fifteen seconds).
 
-**And `uv run poe sabotage-host`** (SPEC E21–E31, N18, N19) — breaks each
-of fifty-eight rules in `m0_host/host.mojo`, `m0_host/flags.mojo`,
+**And `uv run --group max poe sabotage-host`** (SPEC E21–E32, N18, N19) —
+breaks each of fifty-nine rules in `m0_host/host.mojo`, `m0_host/flags.mojo`,
 `src/prefork.mojo`, `accept_share.mojo`, `multiworker.mojo` and
 `views.mojo` and requires a
 gate to fail for every one: twenty-three against `smoke-host`, seven
@@ -224,9 +224,15 @@ against `smoke-host-threads` (the loops on threads; `--only threads`, about
 six minutes), two against `smoke-fragment-notes` (the `ViewsApp` adapter's
 worker and loop limits), six against `test_host.mojo`, six against
 `test_prefork.mojo` (the pre-fork pieces both hosts share), one each
-against `test_respawn.mojo` and `test_views.mojo`, and the command line's
+against `test_respawn.mojo` and `test_views.mojo`, the command line's
 twelve: seven against `smoke-host-doctor` (`--only doctor`, about five
-minutes) and five against `test_host_flags.mojo` (`--only flags`). A sabotage that does not compile is reported as BROKEN
+minutes) and five against `test_host_flags.mojo` (`--only flags`), and one
+against `smoke-parallel-runtime` (`--only parallel`), which builds against
+MAX — the reason for `--group max`. Every other gate holds in that venv
+too: the unit tests supply the parallel runtime's fact rather than read
+the one `mojo run` gives them beside MAX (ROADMAP Known issues), which
+until 2026-09-26 failed `test_host.mojo`'s baseline there. A sabotage that
+does not compile is reported as BROKEN
 and counted as a miss, not a catch. Pre-release because each rule reruns
 the whole smoke, about fifteen minutes; `--only unit` is about a minute.
 
