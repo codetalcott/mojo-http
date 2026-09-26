@@ -94,6 +94,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A WebSocket lingering for the peer's Close reply is no longer pinged.**
+  After the application's Close the loop waits for the peer's (RFC 6455
+  §5.5.1) — and the stream heartbeat kept treating the slot as a live
+  socket, so a ping went out during that wait. A peer that had read our
+  Close, answered it and was waiting for the FIN read `0x89 0x02 "hb"`
+  instead. Nothing follows a Close (§1.4), so the heartbeat now skips a
+  slot whose `closing` is set; the linger's own bound still finds a peer
+  that never replies. Found by `stress-asgi` in 3 rounds of 30 under CPU
+  hogs, which widen the window between the Close going out and the reply
+  being read — CI's `smoke-asgi` runs the same probe without hogs and never
+  saw it. `ws_probe.py` now gates it deterministically (SPEC L29): its
+  quiet-linger phase holds the Close reply for three heartbeat periods and
+  requires silence, then a FIN; and its close-order phase names a frame it
+  reads after the handshake by opcode, where it used to report the RST
+  that had not happened.
+
 - **A route that takes GET answers HEAD** (SPEC N38). The view table
   matched methods exactly, so every `Views` route answered HEAD 405 with
   `Allow: GET, OPTIONS`, `/health` included, where RFC 9110 has a server
