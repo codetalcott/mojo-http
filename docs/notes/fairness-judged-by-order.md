@@ -1,6 +1,6 @@
 # The fairness probe judges order, on every pull request — shipped 2026-09-26
 
-> A design note from the engineering record. SPEC E11, and E34's Linux arm;
+> A design note from the engineering record. SPEC E11, and E34's keep arm;
 > the gate is `Probe the handler pool's GIL hand-off for fairness`, the one
 > step of test.yml's `pool-fairness` job; the probe is
 > `scripts/pool_fairness_probe.py`, run by `poe probe-pool-fairness`.
@@ -10,13 +10,16 @@
 `probe-pool-fairness` was a pre-release probe. Its first run on Linux found
 a starvation the reference Mac had never shown
 ([a-slice-keeps-the-gil](a-slice-keeps-the-gil.md)), and a pre-release
-probe would catch that starvation's return only when the next release was
-cut. It now runs on every pull request on GitHub's Linux runner, which has
-the 4 vCPUs of the box that found it, in a job of its own: Linux-only, and
-the spec checker refuses a cited step that carries an `if:`, so it cannot be
-a step of the smoke matrix. A timing probe also wants a runner with nothing
-else running on it. The reference Mac keeps the macOS run before a
-release.
+probe would catch a regression only when the next release was cut. It now
+runs on every pull request on GitHub's Linux runner, in a job of its own:
+Linux-only, and the spec checker refuses a cited step that carries an
+`if:`, so it cannot be a step of the smoke matrix. A timing probe also
+wants a runner with nothing else running on it. The reference Mac keeps the
+macOS run before a release.
+
+The runner catches the barrier's convoy (E11) and not the starvation that
+motivated the move (E34): its first run answered the old shape in order
+("GitHub's runner does not starve", below).
 
 ## The latency verdict was too close to the machine
 
@@ -24,7 +27,8 @@ The probe judged latency. The fair arm had to hold a p99 under 25 ms and a
 max under a quarter second. The negative arms had to break those bounds: the
 turn disabled with a p99 over 50 ms or a max over 500, the keep rule
 disabled by breaking the fair bounds. Before putting the probe on every pull
-request, every arm was run again and again on a 4-vCPU Linux VM:
+request, every arm was run again and again on a 4-vCPU Linux VM (a KVM
+guest, Intel Xeon at 2.1 GHz):
 
 | arm | runs | p99 | max |
 |---|---|---|---|
@@ -89,20 +93,42 @@ all five.
   fair arm's p99 and max, so a drift shows up with its headroom before it
   turns into a failure.
 
+## GitHub's runner does not starve
+
+The pull request's first CI run failed the keep rule's arm, and the
+failure was the runner's answer, not noise:
+
+| arm | the VM above | GitHub's Linux runner, first run |
+|---|---|---|
+| fair | 0 or 1 long waits, the most 30–107 | 0, the most 15 (p99 8.4 ms, max 10.9 ms) |
+| the turn off | 75–142, the most 2442–3901 | 42, the most 6297 (max 2036 ms) |
+| the keep rule off | 88–171, the most 336–1115 | 0, the most 63 (p99 12.6 ms, max 26.9 ms) |
+
+The runner answered the keep rule's old shape in order, as the reference
+Mac did. E34's starvation needs a machine as well as the old code: a
+parked waiter has to lose the race to the thread that just dropped the GIL,
+and how long a woken thread takes to run is the hypervisor's. So the arm
+is asserted only where it is asked for (`M0_FAIRNESS_EXPECT_STARVATION=1`),
+on a machine known to starve: the KVM guest that found it, before a
+release (docs/RELEASING.md). CI runs the fair and convoy arms, and cannot
+see E34's starvation.
+
 ## What the gate proves, and what it cannot
 
 - **Every pull request, on Linux.**
   - The fair arm is in job order.
   - The turn disabled is not, which proves the probe sees E11's convoy.
-  - The keep rule disabled is not, which proves it sees E34's starvation.
+- **E34 only where it is asked for.** The keep rule disabled is out of
+  order on the KVM guest that found it and in order on GitHub's runner and
+  the reference Mac. On a pull request, E34 is `test_blocking_pool.mojo`'s:
+  the rule runs, jobs are kept. The starvation it prevents is checked before
+  a release, on a machine that shows it.
 - **The thresholds are counts, and counts scale with throughput.** A much
   faster runner answers more requests per millisecond of waiting. The
   measurements record the fair arm's figures beside their limits for that
   reason.
-- **Not macOS.** The keep rule's arm is not asserted there, because the old
-  shape measured fair on the reference Mac. The fair and convoy arms under
-  the order verdict have not yet been run there; that is the next
-  reference-Mac run's.
+- **Not macOS.** The fair and convoy arms under the order verdict have not
+  yet been run on the reference Mac; that is its next run's.
 - **Not what the order costs.** A pool that serialized every request fairly
   would pass. Throughput and isolation are other gates' business:
   `smoke-blocking-threads`, and the detached-loop A/B.
@@ -112,3 +138,7 @@ all five.
 - **A per-thread view.** The client sees requests, not threads. The pool's own
   histograms (`M0_POOL_DEBUG=1`) name the thread that waited, and a failure
   here is where to turn them on.
+- **A load that starves on the runner.** Four threads, sixteen connections
+  and a 0.3 ms view starve the KVM guest and not the runner. Whether another
+  shape would starve both was not measured; one that did would put E34's
+  arm on every pull request.

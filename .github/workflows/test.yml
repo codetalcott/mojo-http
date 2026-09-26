@@ -366,17 +366,18 @@ jobs:
           path: ci-results.jsonl
           if-no-files-found: ignore
 
-  # E11/E34: the handler pool's GIL hand-off, timed. Four pool threads
-  # under a CPU-bound view at sixteen connections must hold a fair tail,
-  # the barrier disabled must convoy, and the keep rule disabled must
-  # starve a waiter -- the arm that proves the probe sees what the rule
-  # prevents, asserted on Linux, where the starvation was found
-  # (docs/notes/a-slice-keeps-the-gil.md). A job of its own rather than a
-  # step in `smoke-gateway`: it is Linux-only, the spec checker rightly
-  # rejects a cited step carrying an `if:`, and a timing probe wants a
-  # runner with nothing else running on it. The pid1 shape: job-level
-  # runs-on, no step-level condition on the cited step. macOS stays the
-  # reference Mac's, before a release (docs/RELEASING.md).
+  # E11: the handler pool's GIL hand-off, judged by job order. Four pool
+  # threads under a CPU-bound view at sixteen connections must answer in
+  # order, and the barrier disabled must convoy. E34's keep arm is NOT
+  # run here: this runner answers the keep rule's old shape in order (its
+  # first run: 0 requests passed over, where the 4-vCPU KVM guest that
+  # found the starvation shows 88-171), so it is a pre-release run on a
+  # machine that starves (docs/notes/fairness-judged-by-order.md). A job
+  # of its own rather than a step in `smoke-gateway`: it is Linux-only,
+  # the spec checker rightly rejects a cited step carrying an `if:`, and a
+  # timing probe wants a runner with nothing else running on it. The pid1
+  # shape: job-level runs-on, no step-level condition on the cited step.
+  # macOS stays the reference Mac's, before a release (docs/RELEASING.md).
   pool-fairness:
     runs-on: ubuntu-latest
     timeout-minutes: 20

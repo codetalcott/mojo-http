@@ -24,7 +24,7 @@ LONG_WAIT later answers, and none by more than MOST_PASSED_OVER.
 
 The probe judged latency first -- a p99 under 25 ms and a max under a
 quarter second -- and that is too close to the machine for a gate on every
-pull request. Measured on 4-vCPU Linux: a fair run's max reached 247 ms
+pull request. Measured on a 4-vCPU KVM guest: a fair run's max reached 247 ms
 once in 68 runs, where 21-97 ms is usual, and the old shapes' figures sat
 near the same bounds from the other side (the keep rule off: p99 26-34 ms,
 max 120-609; the turn off: max 554-2237). A pause of the whole process
@@ -33,15 +33,19 @@ starved waiter, and it passes nobody over: with the server stopped for
 300 ms twice inside the window, five runs of five were in order (at most one
 long wait) where the old verdict failed all five on a 315-320 ms max.
 
-Three arms, because a probe that cannot see the failure proves nothing: the
-default run must be in order, the same run with `M0_POOL_TURN=0` on the
-server (`--expect-convoy`) must not be, and neither must `--expect-starvation`,
-the keep rule's arm: inside its slice a thread takes the jobs already queued
+Negative arms, because a probe that cannot see the failure proves nothing:
+the default run must be in order, and the same run with `M0_POOL_TURN=0` on
+the server (`--expect-convoy`) must not be. `--expect-starvation` is the
+keep rule's arm: inside its slice a thread takes the jobs already queued
 without dropping the GIL, and with `M0_POOL_TURN_KEEP=0` it drops it between
 every job again, each drop waking a parked waiter that finds the GIL
 re-taken and waits once more behind the others -- two threads ping-ponging
-while two starve. That arm is asserted on Linux, where it was found
-(docs/notes/a-slice-keeps-the-gil.md).
+while two starve (docs/notes/a-slice-keeps-the-gil.md). That starvation is
+the machine's as much as the pool's: the 4-vCPU KVM guest that found it
+shows it every run, while GitHub's Linux runner answered the same shape in
+order (0 requests over LONG_WAIT, the most passed over 63) and so did the
+reference Mac. The arm is asserted only where it is asked for, on a machine
+known to starve.
 
 Latency is still printed, and recorded in CI; it is not the verdict.
 
@@ -66,16 +70,18 @@ for i, a in enumerate(sys.argv):
         CONNS = int(sys.argv[i + 1])
 
 # The verdict, in later answers rather than milliseconds. At this load the
-# pool answers about 2.5k requests a second on 4-vCPU Linux, so LONG_WAIT is
-# about 40 ms of the pool serving others while one request waits, and
-# MOST_PASSED_OVER about 0.4 s. Measured there: fair runs, 0 or 1 request a
-# run over LONG_WAIT and the most passed over by 30-107 (23 runs); the keep
-# rule off, 88-171 requests a run over it (16 runs of 12 s), the most by
-# 336-1115; the turn off, 75-142 (8 runs of 8 s), the most by 2442-3901. The
-# allowance is for what the keep rule does not prevent: a waiter can still
-# lose its place to its own 5 ms timeout. MOST_PASSED_OVER is for a regime
-# with few starvations and long ones, which the 2026-09-26 finding showed
-# first (a max of 575-735 ms at a p99 of 8.6-16.6).
+# pool answers about 2.5k requests a second on a 4-vCPU KVM guest, so
+# LONG_WAIT is about 40 ms of the pool serving others while one request
+# waits, and MOST_PASSED_OVER about 0.4 s. Measured there: fair runs, 0 or 1
+# request a run over LONG_WAIT and the most passed over by 30-107 (23 runs);
+# the keep rule off, 88-171 requests a run over it (16 runs of 12 s), the
+# most by 336-1115; the turn off, 75-142 (8 runs of 8 s), the most by
+# 2442-3901. GitHub's Linux runner, its first run: fair 0 (the most 15), the
+# turn off 42 (the most 6297). The allowance is for what the keep rule does
+# not prevent: a waiter can still lose its place to its own 5 ms timeout.
+# MOST_PASSED_OVER is for a regime with few starvations and long ones, which
+# the 2026-09-26 finding showed first (a max of 575-735 ms at a p99 of
+# 8.6-16.6), and the runner's convoy is one: 42 long waits, one of 2 s.
 LONG_WAIT = 100
 LONG_WAITS_ALLOWED = 5
 MOST_PASSED_OVER = 1000

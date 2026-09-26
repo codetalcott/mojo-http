@@ -644,7 +644,10 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       at a time on 4-vCPU Linux, which the pre-release run first took for
       a VM's noise. Never pop the next job by dropping and re-taking the
       GIL on a pool thread. `M0_POOL_TURN_KEEP=0` is the A/B knob, and the
-      probe's Linux arm, which must starve a waiter.
+      probe's keep arm (`M0_FAIRNESS_EXPECT_STARVATION=1`), which must
+      starve a waiter — asserted only on a machine where that shape starves,
+      the 4-vCPU KVM guest that found it, because GitHub's runner and the
+      reference Mac answer it in order and CI cannot see it.
     - **Jobs and completions ride in-memory rings; the socketpairs carry
       only wakes and payloads** (`lightbug_http/ring.mojo`; the protocol
       is `offload.mojo`'s module docstring; the measurement is

@@ -52,15 +52,22 @@ CPU-bound view. CI runs it on Linux on every pull request, in the
 connections against `/busy` must be answered in job order, at most five
 requests passed over by more than a hundred sent after them, and the same
 run with the barrier disabled (`M0_POOL_TURN=0`) must not be, because the
-negative arm is what proves the probe can see the failure. The keep rule's
-arm (`M0_POOL_TURN_KEEP=0`, SPEC E34) runs on Linux only: the 2026-09-26
-run on a 4-vCPU VM was the probe's first there, and its fair arm failed on
-a starvation the reference Mac never showed
-(docs/notes/a-slice-keeps-the-gil.md). The order verdict has not yet been
-run on the Mac, so the next run there is its first
-(docs/notes/fairness-judged-by-order.md). A fair arm out of order is a
-finding, not the machine's noise: a pause of the whole process passes
+negative arm is what proves the probe can see the failure. The order
+verdict has not yet been run on the Mac, so the next run there is its
+first (docs/notes/fairness-judged-by-order.md). A fair arm out of order is
+a finding, not the machine's noise: a pause of the whole process passes
 nobody over.
+
+**And the probe's keep arm on a Linux VM that starves**:
+`M0_FAIRNESS_EXPECT_STARVATION=1 uv run poe probe-pool-fairness` (SPEC
+E34). With the keep rule off (`M0_POOL_TURN_KEEP=0`) a waiter starves, and
+the run must show it, or the probe cannot see what the rule prevents. The
+starvation is the machine's as much as the code's: the 4-vCPU KVM guest of
+the 2026-09-26 run shows it every run (88–171 requests passed over by more
+than a hundred), while GitHub's runner and the reference Mac answer that
+shape in order, so CI cannot run this arm
+(docs/notes/a-slice-keeps-the-gil.md). If the VM at hand answers it in
+order too, the arm has not run: say so rather than count it.
 
 **And `uv run poe test-postgres-server` on a Mac with a local PostgreSQL**
 (SPEC O9-O15). CI runs these on Linux every pull request, in a job with a
