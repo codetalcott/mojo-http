@@ -366,6 +366,48 @@ jobs:
           path: ci-results.jsonl
           if-no-files-found: ignore
 
+  # E11: the handler pool's GIL hand-off, judged by job order. Four pool
+  # threads under a CPU-bound view at sixteen connections must answer in
+  # order, and the barrier disabled must convoy. E34's keep arm is NOT
+  # run here: this runner answers the keep rule's old shape in order (its
+  # first run: 0 requests passed over, where the 4-vCPU KVM guest that
+  # found the starvation shows 88-171), so it is a pre-release run on a
+  # machine that starves (docs/notes/fairness-judged-by-order.md). A job
+  # of its own rather than a step in `smoke-gateway`: it is Linux-only,
+  # the spec checker rightly rejects a cited step carrying an `if:`, and a
+  # timing probe wants a runner with nothing else running on it. The pid1
+  # shape: job-level runs-on, no step-level condition on the cited step.
+  # macOS stays the reference Mac's, before a release (docs/RELEASING.md).
+  pool-fairness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: pool-fairness
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+      - name: Install Linux build dependencies
+        timeout-minutes: 3
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+      - run: uv run poe build-all
+      - name: Probe the handler pool's GIL hand-off for fairness
+        run: uv run poe probe-pool-fairness
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-pool-fairness
+          path: ci-results.jsonl
+          if-no-files-found: ignore
+
   # E13/E14/M18: what only an Apple Silicon runner can check -- the
   # performance-core count against sysctl, the --qos knob, and the native
   # build flavor naming its host. The smoke matrix's macOS leg could host

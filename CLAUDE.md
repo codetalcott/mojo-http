@@ -627,9 +627,14 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       some threads were asleep inside views. A slice, not every job: a
       hand-off is a thread switch, 15 % of a 200 µs view's throughput when
       paid per job. A view that blocks holds nothing; a pool of one has no
-      barrier. `poe probe-pool-fairness`
-      (pre-release, SPEC E11) is the gate, and `M0_POOL_TURN=0` is its
-      negative arm. **And inside its slice a thread does not drop the GIL
+      barrier. `poe probe-pool-fairness` (SPEC E11) is the gate, on every
+      pull request on Linux in the `pool-fairness` job and on the reference
+      Mac before a release, and `M0_POOL_TURN=0` is its negative arm. It
+      judges ORDER, requests passed over by later ones, never latency: a
+      pause of the whole process delays every connection at once and passes
+      nobody over, and the latency bounds it judged first sat near both a
+      fair run's max and the old shapes' figures
+      (docs/notes/fairness-judged-by-order.md). **And inside its slice a thread does not drop the GIL
       at all while a job is queued** (`OffloadPool.try_next_job`, which
       never waits, so it may be called attached; SPEC E34,
       docs/notes/a-slice-keeps-the-gil.md): each drop between jobs woke a
@@ -639,7 +644,10 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       at a time on 4-vCPU Linux, which the pre-release run first took for
       a VM's noise. Never pop the next job by dropping and re-taking the
       GIL on a pool thread. `M0_POOL_TURN_KEEP=0` is the A/B knob, and the
-      probe's Linux arm, which must starve a waiter.
+      probe's keep arm (`M0_FAIRNESS_EXPECT_STARVATION=1`), which must
+      starve a waiter — asserted only on a machine where that shape starves,
+      the 4-vCPU KVM guest that found it, because GitHub's runner and the
+      reference Mac answer it in order and CI cannot see it.
     - **Jobs and completions ride in-memory rings; the socketpairs carry
       only wakes and payloads** (`lightbug_http/ring.mojo`; the protocol
       is `offload.mojo`'s module docstring; the measurement is

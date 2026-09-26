@@ -5842,35 +5842,54 @@ help = "Break each decoder invariant and insist the fuzzer reports it"
 shell = "python3 scripts/fuzz_sabotage.py"
 
 [tool.poe.tasks.probe-pool-fairness]
-help = "PRE-RELEASE: pool threads take the GIL in job order under a CPU-bound view; the turn disabled must convoy, and on Linux the keep rule disabled must starve a waiter (not in CI)"
+help = "Pool threads answer a CPU-bound view in job order, judged by requests passed over so a pause of the whole process cannot fail it, and the turn disabled must convoy; with M0_FAIRNESS_EXPECT_STARVATION=1 the keep rule disabled must starve a waiter too (SPEC E11, E34; every PR on the Linux runner, the pool-fairness job; the reference Mac, and the keep arm on a VM that starves, before a release)"
 deps = ["build-serve"]
 shell = """
 srv=bin/m0serve
 SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare"
 port=${M0_FAIRNESS_PORT:-8197}
-cleanup() { kill $pid 2>/dev/null; rm -f fairness.log; }
+out=$(mktemp)
+cleanup() { kill $pid 2>/dev/null; rm -f fairness.log "$out"; }
 trap cleanup EXIT
 fail() { echo "$1"; if [ -f fairness.log ]; then echo '=== fairness.log ==='; cat fairness.log; fi; exit 1; }
+# A figure from the probe's last run; each arm's are recorded before its
+# verdict, so a failing run keeps its number.
+val() { sed -n "s/^$1 //p" "$out"; }
 # The loop holds no thread state (docs/notes/detached-loop.md), so the pool's
-# hand-off barrier is what keeps four threads from convoying on the GIL. Both
-# arms, because a probe that cannot see the failure proves nothing.
+# hand-off barrier is what keeps four threads from convoying on the GIL. The
+# verdict is job order, which a pause of the whole process cannot disturb
+# (docs/notes/fairness-judged-by-order.md); every arm but the first must be
+# out of order, because a probe that cannot see the failure proves nothing.
 "$srv" $SPEC --port $port --blocking-threads 4 > fairness.log 2>&1 & pid=$!
-python3 scripts/pool_fairness_probe.py $port || fail 'with the turn: the fast-route tail convoyed'
+python3 scripts/pool_fairness_probe.py $port > "$out" 2>&1; rc=$?; cat "$out"
+python3 scripts/emit.py pool_fairness.fair_long_waits "$(val long_waits)" --limit "$(val long_waits_bound)" --task probe-pool-fairness
+python3 scripts/emit.py pool_fairness.fair_most_passed_over "$(val most_passed_over)" --limit "$(val most_passed_over_bound)" --task probe-pool-fairness
+python3 scripts/emit.py pool_fairness.fair_p99_ms "$(val p99_ms)" --unit ms --task probe-pool-fairness
+python3 scripts/emit.py pool_fairness.fair_max_ms "$(val max_ms)" --unit ms --task probe-pool-fairness
+[ $rc -eq 0 ] || fail 'with the turn: requests were passed over out of job order'
 kill $pid; wait $pid 2>/dev/null
 M0_POOL_TURN=0 "$srv" $SPEC --port $port --blocking-threads 4 > fairness.log 2>&1 & pid=$!
-python3 scripts/pool_fairness_probe.py $port --expect-convoy \
-  || fail 'without the turn the tail did NOT convoy: the probe cannot see the failure it guards'
+python3 scripts/pool_fairness_probe.py $port --expect-convoy > "$out" 2>&1; rc=$?; cat "$out"
+python3 scripts/emit.py pool_fairness.convoy_long_waits "$(val long_waits)" --task probe-pool-fairness
+[ $rc -eq 0 ] || fail 'without the turn the pool still answered in order: the probe cannot see the failure it guards'
 # The keep rule (docs/notes/a-slice-keeps-the-gil.md): inside its slice a
 # thread takes the jobs already queued without dropping the GIL. With it off
-# a waiter starves on Linux -- 14 of 14 runs over the fair max on a 4-vCPU
-# VM, 335 ms the least -- so that arm is asserted there, and not on macOS,
-# where the old shape measured fair (17 ms), as accept-batch's is.
-if [ "$(uname)" = Linux ]; then
+# a waiter starves on the 4-vCPU KVM guest that found it -- 88-171 requests a
+# run passed over by more than a hundred later answers, where a fair run has
+# 0 or 1 -- and on nothing else measured: GitHub's Linux runner answered that
+# shape in order (0, the most passed over 63), as the reference Mac did (a
+# 17 ms max). So the arm is asserted only where it is asked for, on a machine
+# known to starve (docs/notes/fairness-judged-by-order.md), and CI does not.
+if [ "${M0_FAIRNESS_EXPECT_STARVATION:-0}" = 1 ]; then
   kill $pid; wait $pid 2>/dev/null
   M0_POOL_TURN_KEEP=0 "$srv" $SPEC --port $port --blocking-threads 4 > fairness.log 2>&1 & pid=$!
-  python3 scripts/pool_fairness_probe.py $port --expect-starvation --seconds 12 \
-    || fail 'with M0_POOL_TURN_KEEP=0 no waiter starved: the probe cannot see what the keep rule prevents'
+  python3 scripts/pool_fairness_probe.py $port --expect-starvation --seconds 12 > "$out" 2>&1; rc=$?; cat "$out"
+  python3 scripts/emit.py pool_fairness.starve_long_waits "$(val long_waits)" --task probe-pool-fairness
+  [ $rc -eq 0 ] || fail 'with M0_POOL_TURN_KEEP=0 the pool still answered in order: the probe cannot see what the keep rule prevents'
+  python3 scripts/emit.py --covers E34 --task probe-pool-fairness
 fi
+echo "probe-pool-fairness OK"
+python3 scripts/emit.py --covers E11 --task probe-pool-fairness
 """
 
 [tool.poe.tasks.probe-pool]

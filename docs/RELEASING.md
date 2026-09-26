@@ -43,22 +43,31 @@ the final column is the deliberate saturation boundary — more blockers
 than threads — where the pooled row is EXPECTED to collapse too. The
 deterministic halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
 
-**And `uv run poe probe-pool-fairness`** (SPEC E11): the loop thread holds
-no thread state while it serves (docs/notes/detached-loop.md), so the
-pool's hand-off barrier is the only thing keeping four handler threads
-from convoying on the GIL under a CPU-bound view. Sixteen connections
-against `/busy` must hold a single-digit-millisecond p99 and a max under a
-quarter second, and the same run with the barrier disabled
-(`M0_POOL_TURN=0`) must show the convoy — a max of seconds — because the
-negative arm is what proves the probe can see the failure. Pre-release for
-the reason above: a p99 from a shared runner is the runner's. On Linux a
-third arm runs with the keep rule off (`M0_POOL_TURN_KEEP=0`, SPEC E34) and
-must starve a waiter past the fair bounds. That arm is why the probe is
-worth a Linux run too: the 2026-09-26 run on a 4-vCPU VM was its first,
-and its fair arm failed there on a starvation the reference Mac never
-showed (docs/notes/a-slice-keeps-the-gil.md). A fair-arm max over the
-bound on Linux is a finding, not a VM's noise, until a recorder beside
-the run says otherwise.
+**And `uv run poe probe-pool-fairness` on the reference Mac** (SPEC E11):
+the loop thread holds no thread state while it serves
+(docs/notes/detached-loop.md), so the pool's hand-off barrier is the only
+thing keeping four handler threads from convoying on the GIL under a
+CPU-bound view. CI runs it on Linux on every pull request, in the
+`pool-fairness` job; the Mac is the arm CI does not have. Sixteen
+connections against `/busy` must be answered in job order, at most five
+requests passed over by more than a hundred sent after them, and the same
+run with the barrier disabled (`M0_POOL_TURN=0`) must not be, because the
+negative arm is what proves the probe can see the failure. The order
+verdict has not yet been run on the Mac, so the next run there is its
+first (docs/notes/fairness-judged-by-order.md). A fair arm out of order is
+a finding, not the machine's noise: a pause of the whole process passes
+nobody over.
+
+**And the probe's keep arm on a Linux VM that starves**:
+`M0_FAIRNESS_EXPECT_STARVATION=1 uv run poe probe-pool-fairness` (SPEC
+E34). With the keep rule off (`M0_POOL_TURN_KEEP=0`) a waiter starves, and
+the run must show it, or the probe cannot see what the rule prevents. The
+starvation is the machine's as much as the code's: the 4-vCPU KVM guest of
+the 2026-09-26 run shows it every run (88–171 requests passed over by more
+than a hundred), while GitHub's runner and the reference Mac answer that
+shape in order, so CI cannot run this arm
+(docs/notes/a-slice-keeps-the-gil.md). If the VM at hand answers it in
+order too, the arm has not run: say so rather than count it.
 
 **And `uv run poe test-postgres-server` on a Mac with a local PostgreSQL**
 (SPEC O9-O15). CI runs these on Linux every pull request, in a job with a
