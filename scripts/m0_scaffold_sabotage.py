@@ -189,10 +189,13 @@ RULES = [
      "                KickStore.open_file(db_path()),\n",
      "                KickStore.in_memory(),\n",
      "after a restart /stats does not carry the kick", WIRE),
-    ("live: a kick is not counted", "live", T + "live/src/views.mojo",
+    # The board's word no longer counts anything /stats shows -- the database
+    # does -- so only the wave can see it go: MISSED against /stats on the
+    # 2026-09-26 pre-release run, until the wire watched a frame after the kick.
+    ("live: a kick never reaches the wave", "live", T + "live/src/views.mojo",
      "    st.board.add(B_KICKS, 1)\n",
      "",
-     "after one kick /stats says", WIRE),
+     "no frame lifted the wave", WIRE),
     ("live: Datastar floats", "live", T + "live/src/pages.mojo",
      "datastar@v1.0.4/bundles", "datastar@main/bundles",
      "lacks the fragment or the pinned Datastar tag", WIRE),

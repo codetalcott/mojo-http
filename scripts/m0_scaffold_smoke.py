@@ -29,7 +29,9 @@ application. This does, per template, as a user would:
             a missing item a 404 fragment; delete.
             live: the document holds the fragment and the pinned Datastar
             tag; two DIFFERING datastar-patch-elements frames for the root id
-            inside five seconds; a kick counted; nothing refused by the bus
+            inside five seconds; a kick, posted with that stream open, lifts
+            every bar of a later frame above the highest bar before it; the
+            kick counted; nothing refused by the bus
   doctor    `uv run m0 doctor --json`: green, the host's report inside it
   smoke.sh  the scaffold's own gate is green, on another port
 
@@ -42,6 +44,7 @@ label no index serves, and the scaffold pins it exactly.
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -259,32 +262,64 @@ def wire_views(port):
     print("wire[views]: document, fragment, Vary, 422 fragment with an alert, create, 404, delete")
 
 
+def live_frames(stream, enough, seconds=5):
+    """The #live patch-elements frames an open /events stream delivers, in
+    order, until `enough(frames)` or `seconds` pass. A stream that ends or
+    goes quiet for the socket's timeout ends the read, not the smoke: the
+    caller's assertion names what was missing."""
+    frames, event, deadline = [], None, time.time() + seconds
+    while time.time() < deadline and not enough(frames):
+        try:
+            raw = stream.readline()
+        except TimeoutError:
+            break
+        if not raw:
+            break
+        line = raw.decode().rstrip("\n")
+        if line.startswith("event: "):
+            event = line[7:]
+        elif line.startswith('data: elements <section id="live"') and event == "datastar-patch-elements":
+            frames.append(line)
+    return frames
+
+
+def heights(frame):
+    """The bars of one #live frame: the percentages their styles carry."""
+    return [int(h) for h in re.findall(r"height:(\d+)%", frame)]
+
+
 def wire_live(port):
     status, _, _, body = request(port, "GET", "/")
     if status != 200 or '<section id="live"' not in body or DATASTAR_TAG not in body:
         fail("GET / lacks the fragment or the pinned Datastar tag: %s" % body[:300])
 
-    frames, deadline = [], time.time() + 5
+    # ONE stream, open across the kick: the producer steps only while
+    # somebody watches, and the frame a kick lifts is one a viewer receives.
     with urllib.request.urlopen("http://127.0.0.1:%d/events" % port, timeout=5) as stream:
-        event = None
-        while time.time() < deadline and len(set(frames)) < 2:
-            line = stream.readline().decode().rstrip("\n")
-            if line.startswith("event: "):
-                event = line[7:]
-            elif line.startswith("data: elements ") and event == "datastar-patch-elements":
-                if line.startswith('data: elements <section id="live"'):
-                    frames.append(line)
-    if len(set(frames)) < 2:
-        fail("%d differing patch-elements frame(s) for #live inside five seconds" % len(set(frames)))
+        frames = live_frames(stream, lambda fs: len(set(fs)) >= 2)
+        if len(set(frames)) < 2:
+            fail("%d differing patch-elements frame(s) for #live inside five seconds" % len(set(frames)))
+        # Nothing has kicked this server yet: the highest bar the wave alone drew.
+        top = max(max(heights(f), default=0) for f in frames)
 
-    status, _, _, _ = request(port, "POST", "/kick", {"Datastar-Request": "true"}, b"{}")
-    if status != 204:
-        fail("POST /kick answered %d" % status)
+        status, _, _, _ = request(port, "POST", "/kick", {"Datastar-Request": "true"}, b"{}")
+        if status != 204:
+            fail("POST /kick answered %d" % status)
+        # The board's word is the kick's only way to the producer -- /stats
+        # counts it from the database -- and the step that applies it lifts
+        # EVERY bar: that frame's lowest stands above the highest before it.
+        after = live_frames(stream, lambda fs: bool(fs) and min(heights(fs[-1]), default=0) > top)
+        if not after or min(heights(after[-1]), default=0) <= top:
+            fail("no frame lifted the wave inside five seconds of the kick: %d frame(s), the lowest "
+                 "bar of each at or below %d%%, the highest before it" % (len(after), top))
+        lifted = heights(after[-1])
+
     stats = json.loads(request(port, "GET", "/stats")[3])
     if stats["kicks"] != 1 or stats["refused"] != 0 or stats["steps"] < 2:
         fail("after one kick /stats says %s" % stats)
-    print("wire[live]: the fragment at first paint, %d differing frames, a kick counted, 0 refused"
-          % len(set(frames)))
+    print("wire[live]: the fragment at first paint, %d differing frames, a kick lifting every bar "
+          "to %d-%d%% where the wave alone drew at most %d%%, counted, 0 refused"
+          % (len(set(frames)), min(lifted), max(lifted), top))
 
 
 WIRE = {"views": wire_views, "live": wire_live}

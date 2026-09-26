@@ -126,6 +126,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   view, a loop route and the stream on the wire (`head_probe.py --twin`,
   new beside `--hold`).
 
+- **The `live` scaffold's kick is gated where it moves the wave** (SPEC
+  N27, N40). Since the kick count moved into SQLite, `/stats` reads the
+  database and the board's word drives only the wave, so a kick view that
+  dropped the word passed `smoke-scaffold` whole: `sabotage-scaffold`'s
+  rule for it was MISSED on the 2026-09-26 pre-release run. The wire phase
+  now keeps its stream open across the kick and requires a later frame
+  whose lowest bar stands above the highest bar the wave drew before it;
+  the rule, renamed "a kick never reaches the wave", is caught there. The
+  template's `smoke.sh` no longer says the producer keeps the count.
+
 - **`test_host.mojo` holds beside an installed `max-core`.** Under `mojo
   run` a test runs inside the compiler's process, which maps MAX's
   parallel runtime once `max-core` is synced, so E32's refusal answered
