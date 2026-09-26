@@ -94,6 +94,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A burst of new connections no longer holds the event loop away from
+  the connections it already serves** (SPEC C8). A pass admits at most 16
+  new connections (`ACCEPT_BATCH`), off the listener or off a sibling's
+  accept-share channel, AFTER it has served the events of the connections
+  it holds; what a batch leaves is taken by the next pass, whose wait does
+  not block. The loop used to drain the listener to EAGAIN — on Linux,
+  where epoll reports no backlog depth, through connections that arrived
+  during the drain, up to `max_connections` — and admitting a connection
+  runs its eager read, which on a loop that serves `func` itself is the
+  whole request: a keep-alive `/fast` waited 625 ms behind 120 queued 5 ms
+  requests, and waits 79 ms now, the rest of one batch. `M0_ACCEPT_BATCH`
+  overrides the batch, 0 taking the whole backlog as before (an A/B
+  knob). `smoke-accept-batch` gates it on both legs, its knob-off arm on
+  Linux required to show the old starvation. Found by the 2026-09-26
+  pre-release run.
+
 - **A WebSocket lingering for the peer's Close reply is no longer pinged.**
   After the application's Close the loop waits for the peer's (RFC 6455
   §5.5.1) — and the stream heartbeat kept treating the slot as a live

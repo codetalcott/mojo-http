@@ -84,7 +84,35 @@ comptime REJECT_LINGER_NS: Int = 5_000_000_000
 # Reads per readiness event while lingering -- 64 of the 4 KB staging
 # buffer -- so one fast uploader cannot hold the loop for a whole upload.
 comptime LINGER_READS_PER_EVENT = 64
+# Connections one pass admits, from the listener or from a sibling's
+# accept-share channel, AFTER it has served the events of the connections
+# it already holds. Admitting runs the connection's eager read, and on a
+# loop that calls `func` itself that read is the whole request, so a
+# drain to EAGAIN held every established connection behind every new one:
+# a keep-alive /fast waited 625 ms behind 120 queued 5 ms requests (Linux,
+# where epoll reports no backlog depth and the drain also took what
+# arrived DURING it, up to `max_connections`). What a pass leaves is owed
+# to the next (`LoopState.accept_owed`), whose wait does not block: both
+# listeners are edge-triggered, and nothing announces the same backlog
+# twice. `M0_ACCEPT_BATCH` overrides it; 0 takes the whole backlog in one
+# pass as the loop used to, an A/B knob.
+comptime ACCEPT_BATCH = 16
 comptime UNUSED: Int = -1
+
+
+def _accept_batch_from_env() -> Int:
+    """`M0_ACCEPT_BATCH`, else `ACCEPT_BATCH`. 0 is the unbounded drain;
+    anything unreadable or negative is the default."""
+    var raw = getenv("M0_ACCEPT_BATCH", "")
+    if raw.byte_length() == 0:
+        return ACCEPT_BATCH
+    try:
+        var n = Int(raw)
+        if n >= 0:
+            return n
+    except:
+        pass
+    return ACCEPT_BATCH
 
 
 def prepare_loop[B: EventLoopBackend](
@@ -313,10 +341,14 @@ def _wait_for_events[B: EventLoopBackend](
     `POOL_WAKE_AGE_NS` — so while any job is pending the wait is bounded
     to `POOL_WAKE_WAIT_MS`, or an idle loop would sleep its full second
     on top of a slow view. Rings empty, the timeout is the caller's.
+
+    A batch left owed (`ACCEPT_BATCH`) makes the wait non-blocking: the
+    listener and the hand-off channel are edge-triggered, so what is still
+    queued there will not wake it.
     """
+    var timeout = 0 if st.owes_accepts() else timeout_ms
     if not st.offload.ring_active():
-        return backend.wait(timeout_ms)
-    var timeout = timeout_ms
+        return backend.wait(timeout)
     var capped = False
     if timeout > POOL_WAKE_WAIT_MS and st.offload.jobs_pending():
         timeout = POOL_WAKE_WAIT_MS
@@ -383,6 +415,13 @@ struct LoopState(Movable):
     var stop_addr: Int
     """A caller's word to stamp when the drain begins, or 0. See
     `run_event_loop`."""
+    var accept_batch: Int
+    """Connections admitted per pass (`ACCEPT_BATCH`); 0 is unbounded."""
+    var accept_owed: Bool
+    """The last pass stopped accepting at its batch, so the backlog may
+    still hold connections no edge will announce again."""
+    var handoffs_owed: Bool
+    """The same for the accept-share channel."""
 
     def __init__(
         out self,
@@ -444,6 +483,13 @@ struct LoopState(Movable):
         self.peer_bus_fd = peer_bus_fd
         self.accept_share = accept_share^
         self.stop_addr = 0
+        self.accept_batch = _accept_batch_from_env()
+        self.accept_owed = False
+        self.handoffs_owed = False
+
+    def owes_accepts(self) -> Bool:
+        """A batch was left in the backlog or the hand-off channel."""
+        return self.accept_owed or self.handoffs_owed
 
 
 def _run_pass[T: HTTPService, B: EventLoopBackend](
@@ -485,7 +531,15 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     ref bus_read_fd = st.bus_read_fd
     ref peer_bus_fd = st.peer_bus_fd
     ref accept_share = st.accept_share
+    ref accept_batch = st.accept_batch
+    ref accept_owed = st.accept_owed
+    ref handoffs_owed = st.handoffs_owed
     var should_shutdown = False
+    # New connections are taken AFTER the events of the ones already held
+    # (the batch below the event loop), so these only record the doors.
+    var listen_ready = False
+    var listen_pending = 0
+    var handoffs_ready = False
 
     # Accept sharing: siblings read this worker's state off the shared
     # page to decide whether to hand it a connection. Inside a pass it is
@@ -541,13 +595,10 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
         # Each datagram carries an open descriptor and its peer address;
         # admitting one is exactly the accept path minus the accept.
         if accept_share.active() and _ident == accept_share.read_fd():
-            _admit_handoffs(
-                backend, accept_share, handler, config, server_address,
-                tcp_keep_alive, slot_fds, slot_response, slot_send_offset,
-                slot_header_start, fd_to_slot, provision_pool, active_count,
-                metrics, slot_sse, slot_ws, slot_ws_state, slot_read_armed,
-                slot_idle_deadline, date_cache_sec, date_cache, offload,
-            )
+            # Admitted below the event loop, one batch like the
+            # listener's: each admission is an eager read, and a sibling
+            # can hand over a whole backlog at once.
+            handoffs_ready = True
             continue
 
         # --- `--blocking-threads` completion channel ---
@@ -577,62 +628,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             # would strand the rest in the backlog until some later
             # connection happened to trigger a fresh edge. When the depth
             # is unknown, drain until accept() raises EAGAIN instead — the
-            # listen socket is non-blocking (set above) and the loop below
-            # breaks on the first failed accept.
-            var pending = backend.event_data(i)
-            var accept_budget = pending if pending > 0 else max_conns
-            for _accept_idx in range(accept_budget):
-                var new_fd: FileDescriptor
-                var peer_host: String
-                var peer_port: Int
-                try:
-                    var accepted = accept_with_peer(listen_fd)
-                    new_fd = accepted[0]
-                    peer_host = accepted[1]
-                    peer_port = accepted[2]
-                except accept_err:
-                    # EAGAIN: backlog drained — this readiness event is done.
-                    if accept_err.isa[AcceptEAGAINError]():
-                        break
-                    # ECONNABORTED (the client gave up while queued) and
-                    # EINTR are per-attempt transients. They MUST NOT end
-                    # the drain: the listen socket is edge-triggered on
-                    # both backends, so connections left in the backlog
-                    # here are owed no new readiness edge until some later
-                    # connection arrives — under bursty load that strands
-                    # live clients behind a dead one.
-                    if accept_err.isa[AcceptECONNABORTEDError]() or accept_err.isa[AcceptEINTRError]():
-                        continue
-                    # Anything else (EMFILE, ENFILE, ...) won't be cured
-                    # by accepting harder; stop and let the loop breathe.
-                    break
-
-                # Accept sharing: a sibling with fewer connections takes
-                # this one. `pick` answers this worker when no sibling is
-                # lighter (or all are busy or gone), and a send that fails
-                # keeps the connection here -- nothing is ever dropped.
-                if accept_share.active():
-                    var target = accept_share.pick(active_count, perf_counter_ns())
-                    if (
-                        target != accept_share.worker
-                        and accept_share.send(target, new_fd.value, peer_host, peer_port)
-                    ):
-                        # The receiver holds its own reference now.
-                        try:
-                            close(new_fd)
-                        except:
-                            pass
-                        continue
-
-                _admit_connection(
-                    backend, new_fd.value, peer_host^, peer_port, handler,
-                    config, server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset,
-                    slot_header_start, fd_to_slot, provision_pool,
-                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                    slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache, offload,
-                )
+            # listen socket is non-blocking (set above) and `_accept_batch`
+            # stops at the first failed accept.
+            #
+            # The accepting itself is below the event loop, after every
+            # other event of this pass (ACCEPT_BATCH).
+            listen_ready = True
+            listen_pending = backend.event_data(i)
             continue
 
         # --- Timer events ---
@@ -1340,6 +1342,44 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         slot_sse, slot_ws, slot_ws_state,
                     )
 
+    # New connections, after every event of the connections already held
+    # (ACCEPT_BATCH): at most one batch per door per pass, whether this
+    # pass saw the door's edge or a previous batch left some owed. Not
+    # once the shutdown pipe has fired -- the listener is about to close.
+    if not should_shutdown:
+        if listen_ready or accept_owed:
+            # kqueue's depth bounds the drain it reports; epoll reports
+            # none, so without a batch the drain runs to EAGAIN, bounded
+            # only by `max_connections`.
+            var accept_budget = max_conns
+            if listen_ready and listen_pending > 0:
+                accept_budget = listen_pending
+            var capped = accept_batch > 0 and accept_budget > accept_batch
+            if capped:
+                accept_budget = accept_batch
+            var ran_out = _accept_batch(
+                backend, listen_fd, accept_budget, accept_share, handler,
+                config, server_address, tcp_keep_alive,
+                slot_fds, slot_response, slot_send_offset,
+                slot_header_start, fd_to_slot, provision_pool,
+                active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                slot_read_armed, slot_idle_deadline,
+                date_cache_sec, date_cache, offload,
+            )
+            # Owed only when the BATCH stopped it: a kqueue budget of the
+            # reported depth that ran out left nothing the next edge will
+            # not announce.
+            accept_owed = capped and ran_out
+        if handoffs_ready or handoffs_owed:
+            handoffs_owed = _admit_handoffs(
+                backend, accept_share, handler, config, server_address,
+                tcp_keep_alive, slot_fds, slot_response, slot_send_offset,
+                slot_header_start, fd_to_slot, provision_pool, active_count,
+                metrics, slot_sse, slot_ws, slot_ws_state, slot_read_armed,
+                slot_idle_deadline, date_cache_sec, date_cache, offload,
+                accept_batch,
+            )
+
     # And once more after the events: what the pool threads finished
     # while this pass ran gets answered now, before the outbox drain
     # below (a streaming head completed here has its first chunks swept
@@ -1959,17 +1999,23 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
     mut date_cache_sec: Int64,
     mut date_cache: String,
     mut offload: OffloadLoopState,
-) raises:
-    """Admit every connection waiting on this worker's accept-share channel.
+    budget: Int = 0,
+) raises -> Bool:
+    """Admit the connections waiting on this worker's accept-share channel:
+    up to `budget` of them, or every one when `budget` is 0.
 
-    Edge-triggered like the bus, so the channel is drained to EAGAIN.
+    Edge-triggered like the bus, so without a budget the channel is drained
+    to EAGAIN. True when the budget ran out first: the rest is owed, and no
+    edge will announce it (`ACCEPT_BATCH`).
     """
-    while True:
+    var taken = 0
+    while budget == 0 or taken < budget:
         var host = String("")
         var port = 0
         var fd = accept_share.receive(host, port)
         if fd < 0:
-            break
+            return False
+        taken += 1
         _admit_connection(
             backend, fd, host^, port, handler,
             config, server_address, tcp_keep_alive,
@@ -1979,6 +2025,96 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
             slot_read_armed, slot_idle_deadline,
             date_cache_sec, date_cache, offload,
         )
+    return True
+
+
+def _accept_batch[T: HTTPService, B: EventLoopBackend](
+    mut backend: B,
+    listen_fd: FileDescriptor,
+    budget: Int,
+    mut accept_share: AcceptShare,
+    mut handler: T,
+    config: ServerConfig,
+    server_address: String,
+    tcp_keep_alive: Bool,
+    mut slot_fds: List[Int],
+    mut slot_response: List[Bytes],
+    mut slot_send_offset: List[Int],
+    mut slot_header_start: List[Int],
+    mut fd_to_slot: List[Int],
+    mut provision_pool: ProvisionPool,
+    mut active_count: Int,
+    mut metrics: ServerMetrics,
+    mut slot_sse: List[Bool],
+    mut slot_ws: List[Bool],
+    mut slot_ws_state: List[WSState],
+    mut slot_read_armed: List[Bool],
+    mut slot_idle_deadline: List[Int],
+    mut date_cache_sec: Int64,
+    mut date_cache: String,
+    mut offload: OffloadLoopState,
+) raises -> Bool:
+    """Accept up to `budget` connections off the listener and admit each,
+    or pass it to a lighter sibling. True when the budget ran out before
+    the backlog did -- the caller decides whether that leaves any owed.
+
+    An error that accepting harder will not cure (EMFILE, ENFILE, ...) is
+    False, not owed: carried over, it would be retried every pass with a
+    wait that no longer blocks.
+    """
+    for _ in range(budget):
+        var new_fd: FileDescriptor
+        var peer_host: String
+        var peer_port: Int
+        try:
+            var accepted = accept_with_peer(listen_fd)
+            new_fd = accepted[0]
+            peer_host = accepted[1]
+            peer_port = accepted[2]
+        except accept_err:
+            # EAGAIN: backlog drained — this readiness event is done.
+            if accept_err.isa[AcceptEAGAINError]():
+                return False
+            # ECONNABORTED (the client gave up while queued) and
+            # EINTR are per-attempt transients. They MUST NOT end
+            # the drain: the listen socket is edge-triggered on
+            # both backends, so connections left in the backlog
+            # here are owed no new readiness edge until some later
+            # connection arrives — under bursty load that strands
+            # live clients behind a dead one.
+            if accept_err.isa[AcceptECONNABORTEDError]() or accept_err.isa[AcceptEINTRError]():
+                continue
+            # Anything else (EMFILE, ENFILE, ...) won't be cured
+            # by accepting harder; stop and let the loop breathe.
+            return False
+
+        # Accept sharing: a sibling with fewer connections takes
+        # this one. `pick` answers this worker when no sibling is
+        # lighter (or all are busy or gone), and a send that fails
+        # keeps the connection here -- nothing is ever dropped.
+        if accept_share.active():
+            var target = accept_share.pick(active_count, perf_counter_ns())
+            if (
+                target != accept_share.worker
+                and accept_share.send(target, new_fd.value, peer_host, peer_port)
+            ):
+                # The receiver holds its own reference now.
+                try:
+                    close(new_fd)
+                except:
+                    pass
+                continue
+
+        _admit_connection(
+            backend, new_fd.value, peer_host^, peer_port, handler,
+            config, server_address, tcp_keep_alive,
+            slot_fds, slot_response, slot_send_offset,
+            slot_header_start, fd_to_slot, provision_pool,
+            active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+            slot_read_armed, slot_idle_deadline,
+            date_cache_sec, date_cache, offload,
+        )
+    return True
 
 
 comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
@@ -2033,7 +2169,8 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
     # answers it rather than the kernel closing it unread at exit.
     if accept_share.active():
         accept_share.leave()
-        _admit_handoffs(
+        # Every one, not a batch: the drain answers what was handed over.
+        _ = _admit_handoffs(
             backend, accept_share, handler, config, server_address,
             tcp_keep_alive, slot_fds, slot_response, slot_send_offset,
             slot_header_start, fd_to_slot, provision_pool, active_count,
@@ -2046,6 +2183,11 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
         close(listen_fd)
     except:
         pass
+    # Nothing is owed from a listener that is gone: the drain's passes
+    # must neither accept on the closed descriptor nor wait without
+    # blocking for it.
+    st.accept_owed = False
+    st.handoffs_owed = False
 
 
     # Tell every streaming client we're going: an SSE close comment,
@@ -3284,9 +3426,22 @@ def run_pass_once[T: HTTPService, B: EventLoopBackend](
     from an asyncio readiness callback on the backend's own fd, and from a
     1 Hz timer for the sweeps that assume a wake per second. Returns True
     when the shutdown pipe fired.
+
+    A batch left owed (`ACCEPT_BATCH`) produces no readiness on that fd,
+    so it is taken here, a pass at a time: each pass still serves the
+    events of the connections already held before its batch. At most
+    `max_connections` accepts' worth of passes, the bound one drain had
+    before batches: under a flood the backlog never empties, and this
+    callback must return for the application's tasks to run.
     """
     var n_events = backend.wait(0)
-    return _run_pass(handler, backend, st, n_events)
+    var stop = _run_pass(handler, backend, st, n_events)
+    var extra = st.max_conns // st.accept_batch if st.accept_batch > 0 else 0
+    while not stop and st.owes_accepts() and extra > 0:
+        extra -= 1
+        n_events = backend.wait(0)
+        stop = _run_pass(handler, backend, st, n_events)
+    return stop
 
 
 comptime BODY_FD_DONE = 1
