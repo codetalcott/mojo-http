@@ -49,6 +49,7 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 
 K = 120          # under the listen backlog of 128, so all of it queues at once
 EACH_MS = 10     # what each queued request asks for; its COST is measured
@@ -57,8 +58,27 @@ LOOP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packages"
                     "m0-http", "lightbug_http", "event_loop.mojo")
 
 
+# Which phase is running, for the crash handler below: a traceback names the
+# CALL that raised (a socket helper every phase shares) and never the PHASE
+# being proven. scripts/phase_stamp_check.py holds every probe to it.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("smoke-accept-batch: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
+
+
+sys.excepthook = _stamped
+
+
 def fail(msg: str) -> None:
-    print("smoke-accept-batch: " + msg, file=sys.stderr)
+    print("smoke-accept-batch: %s: %s" % (PHASE, msg), file=sys.stderr)
     sys.exit(1)
 
 
@@ -206,9 +226,12 @@ def main() -> None:
     binary, port = sys.argv[1], int(sys.argv[2])
     batch = accept_batch()
 
+    phase("arm: start the server")
     proc = start(binary, port, None)
     try:
+        phase("arm: measure what one request costs")
         each = cost(port)
+        phase("arm: the burst behind the blocker")
         r = one_round(port)
     finally:
         stop(proc)
@@ -230,9 +253,12 @@ def main() -> None:
              "%.0f ms): an owed batch waited on a wait that blocks" % (r["burst"], whole, r["gap"]))
 
     if platform.system() == "Linux":
+        phase("negative arm: start the server")
         proc = start(binary, port + 1, "0")
         try:
+            phase("negative arm: measure what one request costs")
             neg_each = cost(port + 1)
+            phase("negative arm: the burst behind the blocker")
             n = one_round(port + 1)
         finally:
             stop(proc)
