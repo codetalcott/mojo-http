@@ -45,11 +45,18 @@ left of the blocker:
 The first row is the whole burst, 120 × 5 ms. The last is the knob that
 restores the drain, and it reproduces the first: the probe sees the defect.
 
-The gate runs the same shape with 10 ms requests, so a noisy runner's
-scheduling is small beside a batch: `/fast` 154 ms beyond the blocker
-against a bound of one and a half batches (240 ms), the knob-off arm
-1231 ms against a floor of two thirds of the burst (800 ms), and the
-burst answered whole 1775 ms after it queued.
+The gate runs the same shape with 10 ms requests, and states its bounds in
+what one of them COSTS on the box, measured first, with every time counted
+from the blocker's own answer rather than from its nominal 600 ms. Its
+first version bounded nominal milliseconds, and CI's first macOS run failed
+it on the runner rather than the loop: all 120 answered, `/fast` inside its
+bound, and the burst 7039 ms against 1.8 s of nominal work, as a runner
+whose timers oversleep every `usleep` produces. Here (Linux, 4 vCPUs) a
+request costs 10.6–10.7 ms; `/fast` is answered 153–154 ms after the
+blocker, against one and a half batches (about 256 ms); the burst's last
+answer 1227 ms after it, against 1.25 of its cost plus 3 s; the widest gap
+between two answers 11 ms; and the knob-off arm 1225 ms, against a floor of
+two thirds of the burst (about 850 ms).
 
 The second row is why the batch runs where it does. The blocker is itself
 admitted inside a listen batch, and that batch goes on to take 15 more of
@@ -115,21 +122,23 @@ smaller count does not.
 
 ## What the gate proves, and what it cannot
 
-The probe holds three things on both legs: `/fast` answered within one and
-a half batches beyond the blocker (the batch, deferred); all 120 burst
-connections answered, a batch stranded behind the edge-triggered listener
-timing out instead; and the last of them inside the work plus two seconds,
-which a wait that blocked between owed batches (a second per batch, the
-loop's idle timeout) would miss by seconds. On Linux the same probe with
+The probe holds three things on both legs, each in the measured cost of a
+request: `/fast` answered within one and a half batches of the blocker's
+answer (the batch, deferred); all 120 burst connections answered, a batch
+stranded behind the edge-triggered listener timing out instead; and the
+last of them inside 1.25 of the burst's cost plus three seconds, which a
+wait that blocked between owed batches (a second per batch, the loop's
+idle timeout) misses by seconds — and the widest gap between two answers,
+printed beside it, says which it was. On Linux the same probe with
 `M0_ACCEPT_BATCH=0` must show at least two thirds of the burst, so the
 probe is known to see the drain it guards against.
 
 Sabotaged by hand before landing, one rule at a time against the probe as
-committed, each caught by its own check: no cap (`/fast` 1233 ms beyond the
-blocker, against 240), nothing owed (31 of 120 answered, the rest stranded
+committed, each caught by its own check: no cap (`/fast` 1225 ms after the
+blocker, against 258), nothing owed (31 of 120 answered, the rest stranded
 behind the listener), a wait that blocks while a batch is owed (the burst
-answered in 7784 ms against 1800 of work), and the batch taken where the
-listen event falls in the pass (481 ms).
+7237 ms after the blocker against 1295 of work, its widest gap 1012 ms),
+and the batch taken where the listen event falls in the pass (480 ms).
 
 Not asserted on macOS: kqueue's depth bounds its drain to what was queued,
 and with accepts taken after the pass's other events, the knob alone does

@@ -3028,7 +3028,7 @@ python3 scripts/emit.py --covers E16 --task smoke-accept-spread
 # (the old drain), is asserted on Linux, where the defect was; the probe's
 # docstring says why not on macOS.
 [tool.poe.tasks.smoke-accept-batch]
-help = "A burst of new connections does not hold the loop away from the ones it serves: a keep-alive /fast behind 120 queued 10 ms requests waits at most a batch and a half, every queued connection is answered, and on Linux M0_ACCEPT_BATCH=0 shows the old drain (SPEC C8)"
+help = "A burst of new connections does not hold the loop away from the ones it serves: a keep-alive /fast behind 120 queued requests waits at most a batch and a half of their measured cost, every queued connection is answered, and on Linux M0_ACCEPT_BATCH=0 shows the old drain (SPEC C8)"
 shell = """
 out=$(mktemp -d)
 cleanup() {
@@ -3041,9 +3041,12 @@ python3 scripts/accept_batch_probe.py "$out/pool_spike" 8651 > "$out/probe.out" 
   || { cat "$out/probe.out"; exit 1; }
 cat "$out/probe.out"
 beyond=$(grep '^beyond_ms ' "$out/probe.out" | cut -d' ' -f2)
+bound=$(grep '^bound_ms ' "$out/probe.out" | cut -d' ' -f2)
 burst=$(grep '^burst_ms ' "$out/probe.out" | cut -d' ' -f2)
-python3 scripts/emit.py accept_batch.fast_beyond_ms "$beyond" --unit ms --limit 240 --task smoke-accept-batch
-python3 scripts/emit.py accept_batch.burst_ms "$burst" --unit ms --task smoke-accept-batch
+cost=$(grep '^cost_ms ' "$out/probe.out" | cut -d' ' -f2)
+python3 scripts/emit.py accept_batch.fast_after_blocker_ms "$beyond" --unit ms --limit "$bound" --task smoke-accept-batch
+python3 scripts/emit.py accept_batch.burst_after_blocker_ms "$burst" --unit ms --task smoke-accept-batch
+python3 scripts/emit.py accept_batch.request_cost_ms "$cost" --unit ms --task smoke-accept-batch
 echo "smoke-accept-batch OK"
 python3 scripts/emit.py --covers C8 --task smoke-accept-batch
 """

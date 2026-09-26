@@ -8,25 +8,33 @@ BINARY is `apps/pool_spike`, run with `func` on the loop. One
 `/slow?ms=BLOCK` request parks the loop in usleep; while it sleeps, K
 connections queue in the listen backlog, each carrying `/slow?ms=EACH`; then
 a keep-alive connection that is already established sends `/fast`. When the
-loop wakes, the backlog and the keep-alive's request are both waiting.
+blocker is answered the loop has the backlog and the keep-alive's request
+waiting at once.
+
+Every bound is in what one queued request COSTS on this box, measured first
+(`cost`), and every time counts from the blocker's own answer: a runner's
+timers oversleep, and a bound in nominal milliseconds judged the runner
+instead of the loop -- CI's first macOS run answered all 120 queued 10 ms
+requests, `/fast` inside its bound, and failed on a burst that took 7 s.
 
   arm       the default batch (ACCEPT_BATCH, read from event_loop.mojo so the
             bound follows the constant): `/fast` answered within one and a
-            half batches of EACH beyond what was left of the blocker -- the
-            loop served the connection it held before the next batch, and
-            before the backlog -- and every burst connection answered, the
-            last inside the work plus slack: what a batch leaves is taken by
-            the next pass, neither stranded behind the edge-triggered
-            listener nor left to a wait that blocks
+            half batches' cost of the blocker -- the loop served the
+            connection it held before the next batch, not after the backlog
+            -- and every burst connection answered, the last inside the
+            burst's cost plus slack: what a batch leaves is taken by the next
+            pass, neither stranded behind the edge-triggered listener nor left
+            to a wait that blocks (a second a batch, and the widest gap
+            between two answers says so)
   negative  Linux only, `M0_ACCEPT_BATCH=0`: the old drain, which must show
-            the starvation -- `/fast` behind at least two thirds of K*EACH --
-            or the arm above proves nothing. On macOS kqueue reports the
-            backlog's depth, and with accepts taken after a pass's other
-            events the knob alone does not recreate the old order, so there
-            it is not asserted.
+            the starvation -- `/fast` behind at least two thirds of the
+            burst's cost -- or the arm above proves nothing. On macOS kqueue
+            reports the backlog's depth, and with accepts taken after a
+            pass's other events the knob alone does not recreate the old
+            order, so there it is not asserted.
 
-The measurements are in docs/notes/the-accept-batch.md. Prints `beyond_ms N`
-and `burst_ms N` for the recorder.
+The measurements are in docs/notes/the-accept-batch.md. Prints `beyond_ms N`,
+`bound_ms N`, `burst_ms N` and `cost_ms N` for the recorder.
 """
 
 from __future__ import annotations
@@ -39,10 +47,11 @@ import socket
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 K = 120          # under the listen backlog of 128, so all of it queues at once
-EACH_MS = 10     # long enough that scheduler noise is small beside a batch
+EACH_MS = 10     # what each queued request asks for; its COST is measured
 BLOCK_MS = 600
 LOOP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packages",
                     "m0-http", "lightbug_http", "event_loop.mojo")
@@ -99,16 +108,44 @@ def stop(proc: subprocess.Popen) -> None:
         proc.wait()
 
 
-def one_round(port: int) -> tuple[float, float, int]:
-    """(ms `/fast` waited beyond the blocker's remainder, ms from the burst
-    being queued to its last answer, burst connections answered)."""
+def cost(port: int) -> float:
+    """What one `/slow?ms=EACH` costs this server on this box, in ms: the
+    median of five, one at a time, with nothing else in flight."""
+    samples = []
+    for _ in range(5):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+        t0 = time.monotonic()
+        c.request("GET", "/slow?ms=%d" % EACH_MS)
+        c.getresponse().read()
+        samples.append((time.monotonic() - t0) * 1000)
+        c.close()
+    samples.sort()
+    return samples[len(samples) // 2]
+
+
+def one_round(port: int) -> dict:
+    """One blocker, one burst, one `/fast`. Times in ms from the blocker's
+    answer: `beyond` to `/fast`'s, `burst` to the last burst answer, `gap`
+    the widest silence between two burst answers."""
     keep = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     keep.request("GET", "/fast")
     keep.getresponse().read()           # established, and kept alive
 
     blocker = socket.create_connection(("127.0.0.1", port))
+    blocker.settimeout(60)
     blocker.sendall(b"GET /slow?ms=%d HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" % BLOCK_MS)
     t_block = time.monotonic()
+    answered: list[float] = []
+
+    def blocker_answer() -> None:
+        try:
+            if blocker.recv(1):
+                answered.append(time.monotonic())
+        except OSError:
+            pass
+
+    watcher = threading.Thread(target=blocker_answer, daemon=True)
+    watcher.start()
     time.sleep(0.05)                    # the loop takes it and parks in usleep
 
     burst = []
@@ -117,22 +154,24 @@ def one_round(port: int) -> tuple[float, float, int]:
         s.sendall(b"GET /slow?ms=%d HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" % EACH_MS)
         burst.append(s)
     t_sent = time.monotonic()
-    if (t_sent - t_block) * 1000 > BLOCK_MS * 0.8:
+    if answered or (t_sent - t_block) * 1000 > BLOCK_MS * 0.8:
         fail("queueing the burst took %.0f ms of the blocker's %d: this runner is too slow "
              "for the shape the probe needs" % ((t_sent - t_block) * 1000, BLOCK_MS))
 
     keep.request("GET", "/fast")
     keep.getresponse().read()
     t_fast = time.monotonic()
-    block_left = max(0.0, BLOCK_MS / 1000 - (t_sent - t_block))
-    beyond_ms = ((t_fast - t_sent) - block_left) * 1000
+    watcher.join(timeout=30)
+    if not answered:
+        fail("the blocker was never answered")
+    t_blocker = answered[0]
 
     # Every burst connection answered: one stranded behind the listener, or
     # behind a wait that blocks while a batch is owed, times out here. One
     # deadline for all of them, or a hundred stranded sockets would each
     # wait out a timeout of their own.
-    served = 0
-    deadline = t_sent + (BLOCK_MS + K * EACH_MS) / 1000 + 10
+    done = []
+    deadline = t_sent + 60
     for s in burst:
         s.settimeout(max(0.05, deadline - time.monotonic()))
         data = b""
@@ -145,55 +184,69 @@ def one_round(port: int) -> tuple[float, float, int]:
         except OSError:
             pass
         if data.startswith(b"HTTP/1.1 200"):
-            served += 1
+            done.append(time.monotonic())
         s.close()
-    burst_ms = (time.monotonic() - t_sent) * 1000
     blocker.close()
     keep.close()
-    return beyond_ms, burst_ms, served
+    # Read in the order they were queued, which is the order they are served,
+    # so a gap between two reads is a silence of the server's -- except before
+    # the first, which is the probe waiting on `/fast`, and is left out.
+    gaps = [b - a for a, b in zip(done, done[1:])]
+    return {
+        "beyond": (t_fast - t_blocker) * 1000,
+        "burst": ((done[-1] if done else time.monotonic()) - t_blocker) * 1000,
+        "gap": max(gaps) * 1000 if gaps else 0.0,
+        "served": len(done),
+    }
 
 
 def main() -> None:
     if len(sys.argv) != 3:
         fail("usage: accept_batch_probe.py BINARY PORT")
     binary, port = sys.argv[1], int(sys.argv[2])
-    whole = K * EACH_MS
     batch = accept_batch()
-    bound = 1.5 * batch * EACH_MS
 
     proc = start(binary, port, None)
     try:
-        beyond, burst_ms, served = one_round(port)
+        each = cost(port)
+        r = one_round(port)
     finally:
         stop(proc)
-    print("arm: /fast %.0f ms beyond the blocker's remainder behind %d queued %d ms requests "
-          "(K*EACH = %d ms); burst answered %d/%d, the last %.0f ms after it queued"
-          % (beyond, K, EACH_MS, whole, served, K, burst_ms))
-    if served != K:
-        fail("%d of %d burst connections were answered: what a batch left was stranded" % (served, K))
-    if beyond > bound:
-        fail("/fast waited %.0f ms beyond the blocker, over one and a half batches (%d of %d "
-             "ms requests, %.0f ms): the loop took new connections before the one it already "
-             "held" % (beyond, batch, EACH_MS, bound))
-    if burst_ms > BLOCK_MS + whole + 2000:
-        fail("the burst took %.0f ms to answer, against %d ms of work: an owed batch waited "
-             "on a wait that blocks" % (burst_ms, BLOCK_MS + whole))
+    whole = K * each
+    bound = 1.5 * batch * each
+    print("arm: /slow?ms=%d costs %.1f ms here; /fast %.0f ms after the blocker's answer, behind "
+          "%d queued (%.0f ms of them); burst answered %d/%d, the last %.0f ms after the blocker, "
+          "the widest gap %.0f ms"
+          % (EACH_MS, each, r["beyond"], K, whole, r["served"], K, r["burst"], r["gap"]))
+    if r["served"] != K:
+        fail("%d of %d burst connections were answered: what a batch left was stranded"
+             % (r["served"], K))
+    if r["beyond"] > bound:
+        fail("/fast waited %.0f ms after the blocker, over one and a half batches (%d requests "
+             "at %.1f ms, %.0f ms): the loop took new connections before the one it already "
+             "held" % (r["beyond"], batch, each, bound))
+    if r["burst"] > 1.25 * whole + 3000:
+        fail("the burst took %.0f ms after the blocker, against %.0f ms of work (widest gap "
+             "%.0f ms): an owed batch waited on a wait that blocks" % (r["burst"], whole, r["gap"]))
 
     if platform.system() == "Linux":
         proc = start(binary, port + 1, "0")
         try:
-            neg, neg_burst, neg_served = one_round(port + 1)
+            neg_each = cost(port + 1)
+            n = one_round(port + 1)
         finally:
             stop(proc)
-        print("negative arm (M0_ACCEPT_BATCH=0): /fast %.0f ms beyond the blocker; burst answered %d/%d"
-              % (neg, neg_served, K))
-        if neg < whole * 2 / 3:
-            fail("with M0_ACCEPT_BATCH=0 /fast waited only %.0f ms beyond the blocker, under two "
-                 "thirds of the burst's %d ms: the probe no longer sees the drain it guards "
-                 "against" % (neg, whole))
+        print("negative arm (M0_ACCEPT_BATCH=0): /slow?ms=%d costs %.1f ms; /fast %.0f ms after "
+              "the blocker; burst answered %d/%d" % (EACH_MS, neg_each, n["beyond"], n["served"], K))
+        if n["beyond"] < K * neg_each * 2 / 3:
+            fail("with M0_ACCEPT_BATCH=0 /fast waited only %.0f ms after the blocker, under two "
+                 "thirds of the burst's %.0f ms: the probe no longer sees the drain it guards "
+                 "against" % (n["beyond"], K * neg_each))
 
-    print("beyond_ms %.0f" % beyond)
-    print("burst_ms %.0f" % burst_ms)
+    print("beyond_ms %.0f" % r["beyond"])
+    print("bound_ms %.0f" % bound)
+    print("burst_ms %.0f" % r["burst"])
+    print("cost_ms %.1f" % each)
 
 
 if __name__ == "__main__":
