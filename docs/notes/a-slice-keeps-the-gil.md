@@ -58,8 +58,10 @@ order where this VM and the AMD EPYC 7763 runners did not
 ([fairness-judged-by-order](fairness-judged-by-order.md)).
 
 The reference Mac measured the fair arm at 17 ms on the same code, and
-the probe had only run there before this. Why macOS does not show it was
-not measured.
+the probe had only run there before this. Why macOS did not show it at
+that load was not measured. At the probe's current load it does
+([fairness-judged-by-order](fairness-judged-by-order.md), "The reference
+Mac").
 
 ## The rule
 
@@ -126,8 +128,9 @@ the p99 from 6.1–7.3 ms to 4.3–4.8. Fewer drops is less work.
   judged by order, with this arm opt-in, because GitHub's runner answered
   the old shape in order. The next pull request found why and moved the
   probe to a load where the rule off starves every runner measured
-  ([fairness-judged-by-order](fairness-judged-by-order.md)). Not yet run
-  on macOS, where the old shape measured fair.
+  ([fairness-judged-by-order](fairness-judged-by-order.md)). On macOS the
+  old shape measured fair at the first load and starved at this one, in
+  the reference Mac's first run.
 - Sabotaged by hand, one at a time, each caught by its own test: the keep
   branch never taken; the knob ignored; `try_next_job` waiting; and
   `try_next_job` ignoring the pill.

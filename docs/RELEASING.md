@@ -53,15 +53,16 @@ connections against `/busy` must be answered in job order, at most five
 requests passed over by more than a hundred sent after them. The same run
 must not be with the barrier disabled (`M0_POOL_TURN=0`) or the keep rule
 disabled (`M0_POOL_TURN_KEEP=0`), because the negative arms are what prove
-the probe can see the failures. Neither the order verdict nor this load has
-run on the Mac, so the next run there is their first
-(docs/notes/fairness-judged-by-order.md). A fair arm out of order is a
-finding, not the machine's noise: a pause of the whole process passes
-nobody over. A keep arm in order is a finding of another kind. The load
-starves every Linux machine measured by an arithmetic that rests on how
-glibc's condition variable queues its waiters, and whether macOS's queues
-them the same way was not measured. Record it, and run the other two arms
-with `M0_FAIRNESS_EXPECT_STARVATION=0`.
+the probe can see the failures. The first Mac run (2026-09-26, an M4)
+passed all three inside the runners' ranges: no long waits fair, 15 with
+the barrier off and 34 with the keep rule off, at a request's share of
+0.661 ms (docs/notes/fairness-judged-by-order.md, "The reference Mac"). A
+fair arm out of order is a finding, not the machine's noise: a pause of
+the whole process passes nobody over. A keep arm in order is a finding of
+another kind. The load starves every machine measured, the Mac included,
+by an arithmetic that rests on how glibc's condition variable queues its
+waiters, and how macOS's queues them was not traced. Record it, and run
+the other two arms with `M0_FAIRNESS_EXPECT_STARVATION=0`.
 
 **And `uv run poe test-postgres-server` on a Mac with a local PostgreSQL**
 (SPEC O9-O15). CI runs these on Linux every pull request, in a job with a

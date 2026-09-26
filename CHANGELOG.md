@@ -109,7 +109,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   starved every AMD EPYC 7763 runner and no Intel Xeon or AMD EPYC 9V45
   one. The new view is two jobs a slice on every machine measured. On
   twenty runners of five CPU types, fair runs show no long waits, the
-  barrier off 7–116 a run and the keep rule off 29–93.
+  barrier off 7–116 a run and the keep rule off 29–93. The reference
+  Mac's first run, on an M4, agrees: none, 15 and 34.
   `M0_FAIRNESS_EXPECT_STARVATION=0` skips the keep arm. Each arm's figures
   are recorded with the job's measurements, with a request's share of the
   GIL against the 1 ms edge the keep arm needs.

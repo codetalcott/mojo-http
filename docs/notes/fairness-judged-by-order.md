@@ -206,6 +206,30 @@ round whatever the count, and the order no longer depends on the machine.
 That is what the rule is for, and the arm now shows it on every pull
 request. The instrument is `scripts/probes/fairness_sweep.py`.
 
+## The reference Mac
+
+The order verdict and this load first ran on the Mac on 2026-09-26:
+`poe probe-pool-fairness` as committed at 42f407b, one run of each arm, on
+an Apple M4 (four performance cores, six efficiency) under macOS 27.0 with
+CPython 3.13.6, another application busy on one core before the run and
+after it. All three arms passed, each inside the runners' range:
+
+| arm | twenty runners, 50 runs an arm | the reference Mac, one run |
+|---|---|---|
+| fair | 0 long waits, the most 10–22 | 0, the most 12 (p99 16.1 ms, max 25.7 ms) |
+| the turn off | 7–116, the most 2596–17892 | 15, the most 9535 (max 6322 ms) |
+| the keep rule off (12 s) | 29–93, the most 992–6105 | 34, the most 5445 (max 3635 ms) |
+
+A request's share of the GIL was 0.661 ms, about 1.5k requests a second:
+two jobs a slice, as on every Linux machine measured, and the keep rule off
+starved as the arithmetic predicts. That is the outcome, not the
+mechanism. The rotation rests on a woken waiter queueing again behind the
+rest, which is how glibc's condition variable behaves, and macOS's was not
+traced (`M0_POOL_DEBUG=1` names the thread that waited). Nor did the
+four-thread control run there. It is the arm that would tell the same
+queue from a different one that also happens to starve a waiter at five
+threads.
+
 ## What the gate proves, and what it cannot
 
 - **Every pull request, on Linux, at one load.**
@@ -222,12 +246,11 @@ request. The instrument is `scripts/probes/fairness_sweep.py`.
   faster runner answers more requests per millisecond of waiting. The
   measurements record the fair arm's figures beside their limits for that
   reason.
-- **Not macOS.** The order verdict has not been run on the reference Mac,
-  and neither has this load. macOS's condition variable is not glibc's, and
-  whether the rotation above happens there was not measured. The Mac's next
-  pre-release run is the first. If its keep arm answers in order, that is a
-  finding about macOS: record it, and run the other two arms with the arm
-  skipped.
+- **Not macOS, except before a release.** CI runs the probe on Linux
+  alone, and the reference Mac runs it before a release. Its first run
+  agreed with the runners ("The reference Mac", above). If a Mac's keep
+  arm ever answers in order, that is a finding about macOS: record it, and
+  run the other two arms with the arm skipped.
 - **Not what the order costs.** A pool that serialized every request fairly
   would pass. Throughput and isolation are other gates' business:
   `smoke-blocking-threads`, and the detached-loop A/B.
