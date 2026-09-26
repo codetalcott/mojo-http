@@ -34,10 +34,15 @@ jobs:
         run: |
           lscpu | grep -E 'Model name|^CPU\(s\)|Hypervisor' || true
           uname -r
+      # set +e: the task exits 1 at the first arm that fails, and the arms'
+      # figures are the data here, failing or not.
       - name: The probe as CI runs it, keep arm on, three times
         run: |
+          set +e
           for i in 1 2 3; do
             echo "=== run $i"
-            M0_FAIRNESS_EXPECT_STARVATION=1 uv run poe probe-pool-fairness > run.log 2>&1; echo "rc=$?"
-            grep -E '^pool_fairness_probe: (turn|keep)|probe-pool-fairness OK|still answered' run.log || tail -20 run.log
+            M0_FAIRNESS_EXPECT_STARVATION=1 uv run poe probe-pool-fairness > run.log 2>&1
+            echo "rc=$?"
+            grep -E '^pool_fairness_probe: (turn|keep)|probe-pool-fairness OK|still answered|FAIL' run.log || tail -20 run.log
           done
+          exit 0
