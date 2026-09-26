@@ -3,13 +3,13 @@
 
 The keep rule (SPEC E34; docs/notes/a-slice-keeps-the-gil.md) stops a pool
 thread dropping the GIL between the jobs of its slice. With it off
-(`M0_POOL_TURN_KEEP=0`) a parked waiter starves on the 4-vCPU KVM guest
-that found it, every run, and on GitHub's Linux runner it did not: the
-same probe answered that shape in order there
-(docs/notes/fairness-judged-by-order.md). The starvation is a race the
-parked waiter has to LOSE -- to the thread that just dropped the GIL and
-takes it straight back -- so it belongs to the machine as much as to the
-code, and a shape that starves one machine may not starve another.
+(`M0_POOL_TURN_KEEP=0`) each drop sends the waiter it woke to the back of
+the queue, and whether that starves anyone depends on how many jobs a 1 ms
+slice holds against how many threads wait: on a request's share of the
+GIL, the view plus the machine's own cost. This is the instrument that
+found it. The probe's first load starved some of GitHub's runners and not
+others, and the load the probe runs now starves all of them
+(docs/notes/fairness-judged-by-order.md).
 
 This sweeps shapes and runs two arms of each: the rules as shipped, which
 must stay in order, and the keep rule off, which a useful shape must put

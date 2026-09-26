@@ -5882,9 +5882,9 @@ python3 scripts/emit.py pool_fairness.convoy_long_waits "$(val long_waits)" --ta
 # thread takes the jobs already queued without dropping the GIL. With it off
 # each drop between jobs sends the waiter it woke to the back of the queue,
 # and at this load two of the four waiters starve on every machine measured:
-# 29-81 requests a run passed over by more than a hundred later answers on
-# ten GitHub runners of five CPU types, 73-100 on a 4-vCPU KVM guest, where
-# a fair run has none. M0_FAIRNESS_EXPECT_STARVATION=0 skips the arm, for a
+# 29-93 requests a run passed over by more than a hundred later answers on
+# twenty GitHub runners of five CPU types, 73-100 on a 4-vCPU KVM guest,
+# where a fair run has none. M0_FAIRNESS_EXPECT_STARVATION=0 skips the arm, for a
 # machine that answers it in order; none is known.
 if [ "${M0_FAIRNESS_EXPECT_STARVATION:-1}" != 0 ]; then
   kill $pid; wait $pid 2>/dev/null

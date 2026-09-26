@@ -49,8 +49,8 @@ and the load is chosen for it (docs/notes/fairness-judged-by-order.md): a
 request's share of the GIL is 0.67-0.70 ms on GitHub's runners and 0.8 ms
 on the KVM guest, two jobs a slice on every machine measured, and with four
 threads waiting two of them starve. The first load's 0.3 ms view sat on
-the boundary between three jobs a slice and four, and starved only the
-machines whose overhead put it at three.
+the boundary between three jobs a slice and four, and each machine's own
+overhead decided whether it starved.
 
 Latency is still printed, and recorded in CI; it is not the verdict.
 
@@ -83,17 +83,17 @@ for i, a in enumerate(sys.argv):
 # The verdict, in later answers rather than milliseconds. At this load the
 # pool answers about 1,450 requests a second on GitHub's runner and 1,250 on
 # a 4-vCPU KVM guest, so LONG_WAIT is 70-80 ms of the pool serving others
-# while one request waits, and MOST_PASSED_OVER 0.7-0.8 s. Measured on ten
-# runners of five CPU types, 20 runs an arm: fair, no request over LONG_WAIT
-# and the most passed over by 10-22; the keep rule off, 29-81 requests a run
-# over it, the most by 1232-6105; the turn off, 12-116, the most by
-# 2596-17892. On the KVM guest: fair 0, the most 46-68; the keep rule off
-# 73-100; the turn off 17-32. The allowance is for what the keep rule does
-# not prevent: a waiter can still lose its place to its own 5 ms timeout.
-# MOST_PASSED_OVER is for a regime with few starvations and long ones, which
-# the 2026-09-26 finding showed first (a max of 575-735 ms at a p99 of
-# 8.6-16.6) and the turn off shows on the runner: 12 long waits in its
-# quietest run, the most passed over by thousands.
+# while one request waits, and MOST_PASSED_OVER 0.7-0.8 s. Measured on
+# twenty runners of five CPU types, 50 runs an arm: fair, no request over
+# LONG_WAIT and the most passed over by 10-22; the keep rule off, 29-93
+# requests a run over it, the most by 992-6105; the turn off, 7-116, the
+# most by 2596-17892. On the KVM guest: fair 0, the most 46-68; the keep
+# rule off 73-100; the turn off 17-32. The allowance is for what the keep
+# rule does not prevent: a waiter can still lose its place to its own 5 ms
+# timeout. MOST_PASSED_OVER is for a regime with few starvations and long
+# ones, which the 2026-09-26 finding showed first (a max of 575-735 ms at a
+# p99 of 8.6-16.6) and the turn off shows on the runner: 7 long waits in
+# its quietest run, one of them passed over by 11905.
 LONG_WAIT = 100
 LONG_WAITS_ALLOWED = 5
 MOST_PASSED_OVER = 1000

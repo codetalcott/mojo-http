@@ -278,9 +278,11 @@ def busy(environ, start_response):
 
     The shape that convoys a pool of threads on a GIL build -- a view that
     never releases the GIL until it returns -- which `probe-pool-fairness`
-    drives at sixteen connections against four pool threads. `/slow` cannot
-    stand in for it: `time.sleep` releases the GIL, and a sleeping thread
-    contends with nobody.
+    drives for 0.65 ms at twenty connections against five pool threads.
+    It spins on the clock, so a request takes that long on any machine,
+    which the probe's load relies on. `/slow` cannot stand in for it:
+    `time.sleep` releases the GIL, and a sleeping thread contends with
+    nobody.
     """
     qs = parse_qs(environ.get("QUERY_STRING", ""))
     ms = float(qs.get("ms", ["0.3"])[0])

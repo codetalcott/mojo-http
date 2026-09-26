@@ -148,16 +148,19 @@ one view at a time.
 | machine | a request's share, first load | jobs a slice | four threads (three waiting), the rule off |
 |---|---|---|---|
 | the KVM guest | 0.43 ms | 3: two drops | two alternate, two starve |
-| AMD EPYC 7763 | 0.335–0.341 ms | 3 | two alternate, two starve |
 | Intel Xeon 8370C, 8573C, 6973P-C; AMD EPYC 9V45 | 0.315–0.332 ms | 4: three drops | full circle, in order |
-| AMD EPYC 9V74 | 0.325–0.334 ms | 3 or 4 | in order 4 times, starved 4 |
+| AMD EPYC 9V74 | 0.325–0.334 ms | on the edge | in order 4 times, starved 4 |
+| AMD EPYC 7763 | 0.335–0.341 ms | on the edge | starved every time |
 
 A 0.3 ms view put a slice on the boundary between three jobs and four, at
-a third of a millisecond, and each machine's overhead picked the side. The
-same count accounts for the other loads the sweeps tried, wherever the
-share sat clear of a boundary. At 0.3 ms, three threads or five starved the
-runners and not the guest, and at 0.45 ms four threads did the same: the
-guest's slice holds one job fewer than theirs at both.
+a third of a millisecond, and each machine's overhead decided where it
+fell. A machine within a few percent of the edge fits three jobs in some
+slices and four in others, and a rotation that varies from slice to slice
+never makes the full turn. The 7763, just past the edge, starved at three,
+four and five threads alike. Clear of the edge, the count accounts for the
+other loads the sweeps tried. At 0.3 ms, three threads or five starved the
+runners and not the guest, and at 0.45 ms four threads did the same. At
+both, the guest's slice holds one job fewer than the runners' do.
 
 **The load now: five threads, twenty connections, a 0.65 ms view.** A
 request's share is 0.67–0.70 ms on the runners and 0.80–0.84 ms on the
@@ -181,6 +184,14 @@ the control:
 | the turn off | 12–116, the most 2596–17892 | 17–32, the most 4943–10789 |
 | the keep rule off | 29–81, the most 1232–6105 | 73–100, the most 656–1071 |
 | the keep rule off, four threads (the control) | 0, the most 7–19 | 0, the most 15–19 |
+
+Then the task itself ran as CI runs it, three times on each of ten more
+runners: eight AMD EPYC 7763, an Intel Xeon 8573C and a 6973P-C. All 30
+runs passed:
+
+- fair: no long waits, the most passed over 10–20;
+- the turn off: 7–31 long waits, the most passed over 4424–11905;
+- the keep rule off: 33–93 long waits.
 
 The control is the arithmetic's own negative arm. At the same 0.65 ms, four
 threads are three waiters and one drop a slice, a rotation that reaches
