@@ -51,7 +51,14 @@ against `/busy` must hold a single-digit-millisecond p99 and a max under a
 quarter second, and the same run with the barrier disabled
 (`M0_POOL_TURN=0`) must show the convoy — a max of seconds — because the
 negative arm is what proves the probe can see the failure. Pre-release for
-the reason above: a p99 from a shared runner is the runner's.
+the reason above: a p99 from a shared runner is the runner's. On Linux a
+third arm runs with the keep rule off (`M0_POOL_TURN_KEEP=0`, SPEC E34) and
+must starve a waiter past the fair bounds. That arm is why the probe is
+worth a Linux run too: the 2026-09-26 run on a 4-vCPU VM was its first,
+and its fair arm failed there on a starvation the reference Mac never
+showed (docs/notes/a-slice-keeps-the-gil.md). A fair-arm max over the
+bound on Linux is a finding, not a VM's noise, until a recorder beside
+the run says otherwise.
 
 **And `uv run poe test-postgres-server` on a Mac with a local PostgreSQL**
 (SPEC O9-O15). CI runs these on Linux every pull request, in a job with a

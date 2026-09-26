@@ -131,6 +131,15 @@ threads must hold a single-digit-millisecond p99, and the same run with
 `M0_POOL_TURN=0` must convoy, or the probe cannot see the failure it exists
 to catch.
 
+"No waiter's extra wait exceeds the slice" held only on the machine it was
+measured on. On 4-vCPU Linux (2026-09-26) the slice's own drops — the GIL
+released after every job only to pop the next, and taken straight back —
+each woke a waiter that lost its place, and the hand-off went back to the
+thread that had just held the GIL: two threads alternated while two
+starved for up to 1.6 s. A thread inside its slice now takes a queued job
+without dropping the GIL at all (SPEC E34); the finding, the mechanism and
+the measurements are docs/notes/a-slice-keeps-the-gil.md.
+
 ## What this did not change
 
 - The inline prefork shape and `--threads` (free-threaded, no GIL to

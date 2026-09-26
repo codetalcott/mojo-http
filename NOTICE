@@ -704,6 +704,16 @@ lightbug_http
         server's established connections behind every queued request
         (docs/notes/the-accept-batch.md).
 
+      - offload.mojo (2026-09-26): `OffloadPool.try_next_job`, what
+        `next_job` would return without waiting -- its pill check, its
+        socket poll on the lane's cadence and one ring pop, never its spin
+        or its park (one non-blocking `recv` without rings) -- so a pool
+        thread can take a job while it holds the GIL. m0_wsgi's pool takes
+        the jobs queued inside its hand-off slice this way (SPEC E34):
+        dropping the GIL only to pop woke a parked waiter that lost its
+        place, and two threads alternated while two starved
+        (docs/notes/a-slice-keeps-the-gil.md).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
