@@ -322,7 +322,14 @@ def main():
             else:
                 send_frame(conn, 0x8, body[:2])
                 conn.settimeout(10)
-                result = "FIN" if conn.recv(1024) == b"" else "trailing bytes"
+                tail = conn.recv(1024)
+                if tail == b"":
+                    result = "FIN"
+                else:
+                    # Named by opcode: the one seen was 0x9, the heartbeat
+                    # ping, sent to a slot that was lingering for this very
+                    # reply (stress-asgi, 3 rounds of 30 under CPU hogs).
+                    result = "a 0x%x frame after the Close exchange" % (tail[0] & 0x0F)
             conn.close()
         except ConnectionResetError:
             # The finding: our close reply was answered with a reset.
@@ -343,11 +350,47 @@ def main():
             "%dx %s" % (outcomes.count(o), o) for o in sorted(set(outcomes))
         )
         fail(
-            "close order: %d of %d closes ended in a clean FIN (%s) -- the "
-            "server is closing before the peer's Close reply, and the RST "
-            "that answers the reply discards the close frame with it"
+            "close order: %d of %d closes ended in a clean FIN (%s) -- an RST "
+            "is the server closing before the peer's Close reply, and the "
+            "reset that answers the reply discards the close frame with it; "
+            "a frame is the server still sending after its own Close"
             % (clean, CLOSE_CONNS, summary)
         )
+
+    # --- the quiet linger: nothing follows this side's Close ------------
+    # RFC 6455 §1.4: after sending a Close "a peer does not send any
+    # further data". The stream heartbeat used to ping a slot lingering
+    # for the peer's reply, and under CPU hogs the 300 ms beat landed
+    # inside the window between the Close going out and the reply being
+    # read: the phase above read 0x89 0x02 "hb" where it expected the FIN,
+    # in 3 rounds of 30 (`poe stress-asgi`). Deterministic here because the
+    # reply is what the ping raced, and a reply held for a second -- three
+    # heartbeat periods, inside the two-second linger -- loses that race
+    # every time on the old server: three pings, where silence is required.
+    phase("the quiet linger: nothing follows the server's Close")
+    conn = handshake("/ws", "a slow-to-reply connection")
+    send_frame(conn, 0x1, b"bye")
+    op, body = read_data_frame(conn)
+    if op != 0x8:
+        fail("quiet linger: expected the app's Close, got op=0x%x" % op)
+    conn.settimeout(1.0)
+    try:
+        early = conn.recv(1024)
+    except socket.timeout:
+        early = None
+    if early == b"":
+        fail("quiet linger: the server closed before our Close reply (the linger is two seconds)")
+    if early is not None:
+        fail(
+            "quiet linger: a 0x%x frame arrived after the server's Close and "
+            "before our reply -- nothing may follow a Close (RFC 6455 §1.4)"
+            % (early[0] & 0x0F)
+        )
+    send_frame(conn, 0x8, body[:2])
+    conn.settimeout(10)
+    if conn.recv(1024) != b"":
+        fail("quiet linger: bytes after our Close reply where the FIN was due")
+    conn.close()
 
     phase("the abrupt disconnect")
     # Second connection: vanish abruptly after the 101, no close

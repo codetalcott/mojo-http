@@ -6566,6 +6566,7 @@ python3 scripts/emit.py --covers L27 --task smoke-asgi
 python3 scripts/emit.py --covers L25 --task smoke-asgi
 python3 scripts/emit.py --covers L26 --task smoke-asgi
 python3 scripts/emit.py --covers L28 --task smoke-asgi
+python3 scripts/emit.py --covers L29 --task smoke-asgi
 python3 scripts/emit.py --covers I26 --task smoke-asgi
 """
 

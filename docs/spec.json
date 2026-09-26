@@ -1570,6 +1570,14 @@
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `scripts/ws_close_probe.py` closes with 1001, with no code, and with no Close at all, and reads back what the application heard, on the pump and inverted alike. It was 1006 for all three, where uvicorn passes the client's. A Close, or a last message, sent in the same instant as the hang-up reaches the application too: the loop used to close a socket at EOF before reading what it had buffered, and a raw client that closed that way was heard as 1006 and lost its last message. Under `M0_INVERTED=1` the direct disconnect call drains the submit channel first, or it overtook that message"
     },
     {
+      "id": "L29",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "Nothing follows this side's Close: a socket lingering for the peer's reply is skipped by the heartbeat, so the reply is met by a FIN and never by a ping (RFC 6455 \u00a71.4, \u00a75.5.1)",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` holds its Close reply for a second, three heartbeat periods inside the two-second linger, and requires silence and then a FIN; on the server before the fix three pings arrive in that second. Found by `stress-asgi` (pre-release): the 300 ms heartbeat landed inside the window between the Close going out and the reply being read, which CPU hogs widen, in 3 rounds of 30, and the close-order phase read `0x89 0x02 \"hb\"` where it expected the FIN -- reported, until the probe learned to name a frame, as the RST it was not"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",

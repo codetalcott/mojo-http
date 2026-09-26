@@ -2132,11 +2132,20 @@ Properties of the design, not defects to fix in passing:
   again on every pass while a slot lingers (`sse_is_streaming` stays false
   once the app's close unsubscribed it), and `_after_send` runs again for
   every send that completes while `should_close` and `closing` are both
-  set — a heartbeat ping's, at the top of the list. Re-stamping there
+  set — a heartbeat ping's, at the top of the list, until the heartbeat
+  learned to skip a lingering slot. Re-stamping there
   pushed the deadline two seconds into the future about once a second, so
   the sweep never overtook it and a peer that received Close and never
   answered held its slot for the life of the process — the exact leak the
-  gating on `idle_timeout > 0` says it exists to avoid. Every site now
+  gating on `idle_timeout > 0` says it exists to avoid. **And nothing
+  follows this side's Close** (RFC 6455 §1.4): the heartbeat handler skips
+  a slot whose `closing` is set, because a ping sent during the linger
+  raced the peer's Close reply and a client that had answered our Close
+  read `0x89 0x02 "hb"` where it expected the FIN — `stress-asgi` found it
+  in 3 rounds of 30 under CPU hogs, which widen the window between the
+  Close going out and the reply being read; `ws_probe.py`'s quiet-linger
+  phase holds its reply for three heartbeat periods and requires silence,
+  then a FIN (SPEC L29). Every site now
   writes the deadline only `if slot_idle_deadline == 0`, which is a
   reliable test because `_finish_response`'s 101 branch zeroes it. The
   guard is `poe smoke-idle-timeout` (SPEC L16), which asserts BOTH bounds:

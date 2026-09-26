@@ -690,6 +690,19 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 # keeps it alive through an idle proxy.
                 if not hb_is_ws and offload.slot_channel_stream(hb_slot):
                     continue
+                if hb_is_ws and slot_ws_state[hb_slot].closing:
+                    # This side has sent its Close and is lingering for the
+                    # peer's (RFC 6455 §5.5.1). Nothing follows a Close --
+                    # §1.4: after sending one "a peer does not send any
+                    # further data" -- and a ping here raced the peer's own
+                    # reply: a client that read our Close, answered it and
+                    # waited for the FIN read 0x89 0x02 "hb" instead, in
+                    # 3 rounds of 30 under CPU hogs (`stress-asgi`; the
+                    # 300 ms beat landed inside the window between the Close
+                    # going out and the reply being read, which the hogs
+                    # widen). The heartbeat's other job, finding a dead
+                    # peer, is the linger's own bound on this slot.
+                    continue
                 var hb_idle_kind = ConnectionState.STREAMING_WS if hb_is_ws else ConnectionState.STREAMING_SSE
                 if provision_pool.provisions[hb_slot].state.kind != hb_idle_kind:
                     # Mid-send of a real event; skip this beat, keep the next.
@@ -3675,8 +3688,9 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
             )
             # Arm once, for the same reason: `should_close` and `closing`
             # both stay set while the slot lingers, so a later send that
-            # completes here -- a heartbeat ping's, at the top of the list --
-            # would push the deadline out again.
+            # completes here would push the deadline out again. (It used to
+            # be a heartbeat ping's, once a second; the heartbeat now skips
+            # a lingering slot, and this stays the bound either way.)
             if slot_idle_deadline[slot] == 0:
                 slot_idle_deadline[slot] = (
                     perf_counter_ns() + WS_CLOSE_LINGER_NS
