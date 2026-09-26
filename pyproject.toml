@@ -7455,7 +7455,7 @@ deps = ["build-core", "build-http", "build-datastar", "build-sqlite"]
 # (a scaffold's sync cannot resolve offline from a locked sync's cache,
 # measured); `m0` itself is `0.1.0+tree`, which no index can serve.
 [tool.poe.tasks.smoke-scaffold]
-help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor, the wire (a 422 fragment; two differing Datastar frames), the scaffold's own smoke.sh (live: the kick count back after a restart)"
+help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor, the wire (a 422 fragment; two differing Datastar frames, and a kick lifting every bar of a later one), the scaffold's own smoke.sh (live: the kick count back after a restart)"
 deps = ["build-m0-wheel"]
 shell = """
 python3 scripts/m0_scaffold_smoke.py dist/m0 8951 || exit 1
@@ -8041,12 +8041,15 @@ python3 scripts/emit.py --covers E33 --task smoke-serve-parallel-runtime
 # placement flag), and the command line's twelve: seven against
 # smoke-host-doctor and five against test_host_flags.mojo -- plus one
 # against smoke-parallel-runtime, which needs the `max` group synced
-# (`--only parallel`). Pre-release:
-# fifty-eight runs, over an hour; `--only doctor` is about five minutes;
+# (`--only parallel`), so the whole run is `uv run --group max poe
+# sabotage-host`: every other gate holds beside MAX too, the unit tests
+# supplying the parallel runtime's fact rather than reading the one `mojo
+# run` gives them there (ROADMAP Known issues). Pre-release:
+# fifty-nine runs, over an hour; `--only doctor` is about five minutes;
 # `--only threads` is about six minutes, and `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
 # about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_prefork, test_respawn, test_views or smoke-host-doctor fails for every one (SPEC E21-E31, N19)"
+help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_prefork, test_respawn, test_views, smoke-host-doctor or smoke-parallel-runtime fails for every one (SPEC E21-E32, N19; run it as `uv run --group max poe sabotage-host`)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC
