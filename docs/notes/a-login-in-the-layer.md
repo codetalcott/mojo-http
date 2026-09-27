@@ -36,7 +36,10 @@ failed on later: a user name the cookie cannot carry (at start, rather
 than at the first sign-in), a TTL above 400 days (no browser keeps a
 cookie longer, and an expiry past the format's twelve digits raised inside
 the login view), a previous key shorter than the current one, and a cookie
-name that is not a token.
+name that is not a token. The separate-session review found one more:
+`PREFIX_SECURE` read anything but `1` as off, so `true` behind HTTPS sent
+the session cookie without `Secure` and said nothing. It is `1` or `0`
+now, and anything else is refused by name.
 
 Two changes of shape, each for a reason:
 

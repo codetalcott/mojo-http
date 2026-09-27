@@ -128,8 +128,10 @@ def test_the_configuration_fails_closed_naming_the_variable() raises:
     """Every refusal names what to set, and nothing is served on a guess:
     no key, a key shorter than the hash, no password, a previous key
     shorter than the current must be, a TTL that is not 1 second to 400
-    days, a user name the cookie cannot carry. The cookie name and the
-    default TTL are the application's own, refused the same way.
+    days, a `SECURE` that is neither `1` nor `0` (`true` read as off would
+    send the cookie without `Secure`), a user name the cookie cannot carry.
+    The cookie name and the default TTL are the application's own, refused
+    the same way.
 
     covers: N43
     """
@@ -144,6 +146,9 @@ def test_the_configuration_fails_closed_naming_the_variable() raises:
     for ttl in ["0", "-5", "an hour", "34560001", "99999999999999999999"]:
         _env(ttl=ttl)
         assert_true("APP_TTL must be a number of seconds from 1 to" in _refusal(), ttl)
+    for secure in ["true", "yes", "on", "TRUE", "2"]:
+        _env(secure=secure)
+        assert_true("APP_SECURE must be 1" in _refusal(), secure)
     _env(user="two words")
     assert_true("APP_USER is not a name a session can carry" in _refusal(), _refusal())
     _env()
@@ -170,6 +175,9 @@ def test_the_configuration_reads_what_it_was_given() raises:
     assert_equal(bare.ttl, Int64(LOGIN_TTL_DEFAULT))
     assert_false(bare.secure)
     assert_equal(len(bare.keys), 1)
+    _env(secure="0")
+    assert_false(Login.from_env("APP", COOKIE).secure)
+    _env()
     var own = Login.from_env("APP", COOKIE, default_user="notes", default_ttl=43200)
     assert_equal(own.user, "notes")
     assert_equal(own.ttl, Int64(43200))

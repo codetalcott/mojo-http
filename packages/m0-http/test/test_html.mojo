@@ -606,9 +606,9 @@ def test_a_vocabulary_names_its_own_verbs() raises:
 def test_a_swap_sends_a_request_header_in_both_tiers() raises:
     """`header=` is the swap plus `hx-headers`, from the builder and the
     expression tier alike, byte for byte, written after the swap and after
-    a push. It is the attribute `apps/fragment_notes` types by hand for a
-    DELETE's CSRF token, htmx 4 sending that verb's fields in the query
-    string. The name and the value are JSON strings and `attr` escapes the
+    a push. It is how `apps/fragment_notes`' delete form carries its CSRF
+    token, htmx 4 sending a DELETE's fields in the query string, and the
+    bytes that app typed by hand before the layer could spell them. The name and the value are JSON strings and `attr` escapes the
     whole; without `header` nothing about headers is written.
 
     covers: N44

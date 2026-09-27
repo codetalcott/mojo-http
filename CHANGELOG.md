@@ -106,7 +106,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `m0_http.login` is the glue `apps/fragment_notes` wrote by hand and the
   soak application copied with its names changed:
   - `Login.from_env(PREFIX, cookie)` refuses an incomplete configuration by
-    name.
+    name. `PREFIX_SECURE` is `1` or `0`, and any other value is refused
+    rather than read as off, so `M0_NOTES_SECURE=true` now stops
+    `fragment_notes` at startup where it used to drop `Secure`
+    silently.
   - `sign_in(user, password)` is the credential check and the session in
     one call.
   - `session_of` and `sign_out` read and end a session.

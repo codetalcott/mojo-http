@@ -9,10 +9,10 @@ the same way both times:
 
 - `Login.from_env(prefix, cookie)` reads the configuration. `PREFIX_KEY`
   (at least `LOGIN_KEY_MIN` bytes) and `PREFIX_PASSWORD` are required;
-  `PREFIX_KEY_PREV`, `PREFIX_USER`, `PREFIX_TTL` and `PREFIX_SECURE` are
-  optional. It fails closed: anything it cannot serve raises, naming the
-  variable, and a host `make` turns that into exit 78 before anything is
-  served.
+  `PREFIX_KEY_PREV`, `PREFIX_USER`, `PREFIX_TTL` and `PREFIX_SECURE`
+  (`1` or `0`) are optional. It fails closed: anything it cannot serve
+  raises, naming the variable, and a host `make` turns that into exit 78
+  before anything is served.
 - `sign_in(user, password)` is a session for the one user, or None: the
   credential check and the session are one call. What it returns is the
   session a page rendered behind it reads (`.session`, the CSRF token
@@ -188,6 +188,15 @@ struct Login(Movable):
                     " (400 days, the longest a browser keeps a cookie)",
                 ))
             ttl = Int64(parsed)
+        # `1` or `0`, and nothing else: `true` read as off would send the
+        # session cookie without `Secure` behind HTTPS and say nothing.
+        var secure_env = String(prefix, "_SECURE")
+        var secure = getenv(secure_env, "")
+        if secure != "" and secure != "0" and secure != "1":
+            raise Error(String(
+                secure_env, " must be 1 (the deployment is HTTPS, so the cookie ",
+                "carries Secure) or 0, and '", secure, "' is neither",
+            ))
         var user = getenv(String(prefix, "_USER"), "")
         if user.byte_length() == 0:
             user = default_user
@@ -198,9 +207,7 @@ struct Login(Movable):
                 prefix, "_USER is not a name a session can carry: 1 to 64 of ",
                 "letters, digits and _-:@",
             ))
-        return Self(
-            user^, password, keys^, ttl, getenv(String(prefix, "_SECURE"), "") == "1", cookie^
-        )
+        return Self(user^, password, keys^, ttl, secure == "1", cookie^)
 
     def accepts(self, user: String, password: String) -> Bool:
         """Whether these are the one user's credentials. Both compares are

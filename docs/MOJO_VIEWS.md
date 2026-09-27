@@ -217,8 +217,8 @@ if refused:
 
 - `Login.from_env(PREFIX, cookie)` reads `PREFIX_KEY` (`LOGIN_KEY_MIN`
   bytes at least; `openssl rand -hex 32` makes one) and `PREFIX_PASSWORD`, with `PREFIX_KEY_PREV`, `PREFIX_USER`,
-  `PREFIX_TTL` and `PREFIX_SECURE` optional, and raises naming what is
-  missing. Read it in `main` before `serve` and exit 78 on the error, so
+  `PREFIX_TTL` and `PREFIX_SECURE` (`1` or `0`) optional, and raises
+  naming what is missing or malformed. Read it in `main` before `serve` and exit 78 on the error, so
   `--doctor` refuses what the run would.
 - `sign_in(user, password)` is the credential check and the session in one
   call: None for the wrong pair, else `.session` (the subject and CSRF

@@ -375,9 +375,10 @@ struct Htmx(Vocabulary):
 
     htmx 4 makes an app want a request HEADER: a `delete`'s fields ride
     the query string there, hard-coded, so a CSRF token on one travels as
-    a header. `request_header` spells it (`hx-headers` on the element);
-    `apps/fragment_notes` still writes the attribute by hand, as it did
-    before the layer could (D38, retired).
+    a header. `request_header` spells it (`hx-headers` on the element),
+    which is how `apps/fragment_notes`' delete form carries its token, the
+    attribute that app typed by hand before the layer could (D38,
+    retired).
     """
 
     @staticmethod
