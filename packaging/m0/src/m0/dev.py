@@ -19,9 +19,11 @@ What is watched is a stdlib mtime poll of `src/` and `pyproject.toml` --
 no watcher dependency (D40). Edits that land during a build are seen by the
 next poll, since the snapshot is taken BEFORE the build starts.
 
-Ctrl-C (and SIGTERM) stop the server by pid and exit 0. A server that exits
-on its own -- a refused configuration, a crash -- is reported with its code
-and m0 dev stays up: the next edit builds and starts again.
+Ctrl-C (and SIGTERM) stop the server by pid and exit 0. A second Ctrl-C
+while it drains ends it at once with SIGKILL, said, and still exits 0. A
+server that exits on its own -- a refused configuration, a crash -- is
+reported with its code and m0 dev stays up: the next edit builds and starts
+again.
 """
 
 import os
@@ -99,6 +101,20 @@ def _raise_stop(signum, frame):
     raise _Stop()
 
 
+def finish(server, wait=STOP_SECONDS):
+    """`stop`, on the way out. Interrupted again while the server drains --
+    a second Ctrl-C -- it is ended at once and said, where the interrupt
+    used to escape as a traceback and `run`'s `finally` SIGKILLed it
+    unannounced."""
+    try:
+        stop(server, wait)
+    except (KeyboardInterrupt, _Stop):
+        if server is not None and server.poll() is None:
+            server.kill()
+            server.wait()
+            say(f"pid {server.pid} sent SIGKILL: interrupted again while it drained")
+
+
 def run(args):
     project = args.project
     failed = checks.preflight(project)
@@ -133,7 +149,7 @@ def run(args):
             stop(server)
             server = start(project, args.host_args)
     except (KeyboardInterrupt, _Stop):
-        stop(server)
+        finish(server)
         return 0
     finally:
         signal.signal(signal.SIGTERM, previous)

@@ -40,7 +40,10 @@ one home; `0.x` until the layer soak). Rules:
   looks for no other name, and a `cc` that cannot link fails after the
   whole compile. `m0 test` skips it: `mojo run` links nothing.
 - **Builds rename into place** (`bin/.server.next` → `bin/server`); never
-  `-o` onto a binary that may be running.
+  `-o` onto a binary that may be running. **One build of a project at a
+  time**: a build holds `bin/.build.lock` (`flock`, dropped with its
+  process) for its whole length, since every build stages at the same
+  paths.
 - **`m0 new` writes from REAL files** (`src/m0/templates/`, SPEC N27–N29,
   D44; docs/notes/the-scaffold.md): two sessionless templates, `views`
   (htmx 4) and `live` (a producer and Datastar frames, its kick count kept

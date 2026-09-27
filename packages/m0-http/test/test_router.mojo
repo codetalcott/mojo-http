@@ -432,6 +432,32 @@ def test_url_for_refuses_an_empty_value() raises:
     assert_true(raised)
 
 
+def test_url_for_refuses_a_dot_segment() raises:
+    """`url_for("/notes/:id/delete", "..")` gave `/notes/../delete`, which
+    a browser resolves to `/delete` before it sends anything: the reverse
+    of one route naming another, the empty value's failure one step
+    removed. `.` is unreserved and the URL standard reads `%2e` as a dot,
+    so no encoding saves it; a value that merely holds dots still
+    reverses."""
+    for bad in [String("."), String("..")]:
+        var raised = False
+        try:
+            _ = url_for("/notes/:id/delete", bad)
+        except:
+            raised = True
+        assert_true(raised, String("url_for accepted ", bad))
+        raised = False
+        try:
+            _ = Mount("/native").url_for("/notes/:id", bad)
+        except:
+            raised = True
+        assert_true(raised, String("Mount.url_for accepted ", bad))
+    assert_equal(url_for("/n/:id", "..."), "/n/...")
+    assert_equal(url_for("/n/:id", ".a"), "/n/.a")
+    assert_equal(url_for("/n/:id", "a.."), "/n/a..")
+    assert_equal(url_for("/n/:id", "%2e%2e"), "/n/%252e%252e")
+
+
 def test_url_for_encodes_a_parameter_to_one_segment() raises:
     """A value with a slash or a space cannot add a segment or break the
     path; unreserved characters pass through, everything else is `%XX`."""

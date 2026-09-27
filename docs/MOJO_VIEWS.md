@@ -156,7 +156,10 @@ var url = url_for(ITEM, String(id))
 ```
 
 A misspelled constant is a compile error. `url_for` percent-encodes each
-value and raises when the count of values is not the pattern's.
+value and raises when the count of values is not the pattern's, when a
+value is empty, and when one is `.` or `..`: each would reverse to another
+route, the last two because a browser resolves a dot segment before it
+sends the request.
 
 A query string is `Query`, which encodes names and values the same way:
 
@@ -180,7 +183,9 @@ both, so a table moved under a prefix keeps its links.
 
 `m0_http.session` is a signed cookie and nothing else:
 `v1.<kid>.<exp>.<subject>.<tag>`, HMAC-SHA256 over the rest.
-`issue_session` signs one, `verify_session` refuses in the order malformed,
+`issue_session` signs one, its expiry in Unix seconds (a timestamp in
+milliseconds raises rather than issuing a cookie that never verifies),
+`verify_session` refuses in the order malformed,
 unknown key, bad signature, expired, and `session_cookie_line` builds the
 `Set-Cookie`. `csrf_token` is a MAC over the session's own tag, so it needs
 no storage. Keys rotate through a ring: a session ends at its expiry, or

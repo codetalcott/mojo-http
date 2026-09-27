@@ -157,7 +157,8 @@ def check_new(work, whl, template, name, pin, m0v):
 
     done = sh(new + ["Not_A_Name", "--template", template], work, bare, "m0 new Not_A_Name", code=2)
     want = ("m0 new: 'Not_A_Name' is not a usable name (lowercase letters, digits and "
-            "hyphens, starting with a letter, at most 40)")
+            "hyphens, starting with a letter and ending with a letter or digit, "
+            "at most 40)")
     if done.stderr.strip().splitlines()[-1] != want:
         fail("an unusable name said:\n  %s\nwant:\n  %s" % (done.stderr.strip(), want))
     if (work / "Not_A_Name").exists():

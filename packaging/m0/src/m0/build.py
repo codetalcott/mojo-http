@@ -7,6 +7,13 @@ Two rules here are load-bearing:
   running executable is ETXTBSY on Linux and a killed process on macOS; a
   rename replaces the directory entry and leaves the running inode alone.
   A build that fails leaves the old binary exactly where it was.
+- **One build of a project at a time.** Every build writes the same
+  staging path (`bin/.server.next`, `.dist.next`), so two at once -- `m0
+  dev` rebuilding while `./smoke.sh` runs `m0 build` -- could rename each
+  other's half-written output into place, or find it gone. A build holds
+  `bin/.build.lock` (`flock`) for its whole length and a second one waits,
+  saying so; the kernel drops the lock with its process, so a killed build
+  leaves nothing to clear.
 - **`--release` never compiles for the machine that builds.** `mojo build`
   defaults `--target-cpu` to the host, so the artifact works where it was
   made and dies with SIGILL anywhere older. The baseline table is
@@ -21,6 +28,7 @@ unedited and run as subprocesses; `bundle_artifact.py` finds the runtime
 under `./.venv`, which is where `uv run m0 build` has it.
 """
 
+import contextlib
 import os
 import platform
 import shutil
@@ -48,6 +56,27 @@ def _mojo_build(project, out, target_cpu, extra_env=None):
     return subprocess.run(cmd, cwd=project, env=env).returncode
 
 
+@contextlib.contextmanager
+def one_at_a_time(project):
+    """Hold the project's build lock, waiting (and saying so) for a build
+    that holds it. `fcntl` is imported here, not at the top: `cli` imports
+    this module for every command, and on Windows -- refused by the
+    platform check, which has to be reached to say so -- it does not
+    exist."""
+    import fcntl
+
+    lock_path = project / paths.BUILD_LOCK
+    lock_path.parent.mkdir(exist_ok=True)
+    with open(lock_path, "a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print("m0: another build of this project is running; waiting for it",
+                  file=sys.stderr, flush=True)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
 def _tool(project, name, *args):
     script = paths.tools_dir() / name
     return subprocess.run([sys.executable, str(script), *args], cwd=project).returncode
@@ -65,17 +94,23 @@ def run(args):
 
 def build(project, target_cpu=None):
     """The development build, past preflight: `m0 build`'s and `m0 dev`'s."""
-    nxt = project / paths.BINARY_NEXT
-    nxt.parent.mkdir(exist_ok=True)
-    if _mojo_build(project, paths.BINARY_NEXT, target_cpu) != 0:
-        nxt.unlink(missing_ok=True)
-        return 1
-    os.replace(nxt, project / paths.BINARY)
+    with one_at_a_time(project):
+        nxt = project / paths.BINARY_NEXT
+        nxt.parent.mkdir(exist_ok=True)
+        if _mojo_build(project, paths.BINARY_NEXT, target_cpu) != 0:
+            nxt.unlink(missing_ok=True)
+            return 1
+        os.replace(nxt, project / paths.BINARY)
     print(f"built {paths.BINARY}")
     return 0
 
 
 def _release(project, target_cpu):
+    with one_at_a_time(project):
+        return _release_locked(project, target_cpu)
+
+
+def _release_locked(project, target_cpu):
     final = project / paths.RELEASE_DIR
     stage = project / ".dist.next"
     shutil.rmtree(stage, ignore_errors=True)

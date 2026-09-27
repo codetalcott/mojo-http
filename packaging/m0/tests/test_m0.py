@@ -20,6 +20,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 from m0 import build, checks, cli, dev, doctor, image, new, paths
@@ -151,6 +152,121 @@ class Doctor(unittest.TestCase):
         self.assertEqual(json.dumps(bad.as_json()),
                          '{"name": "b", "ok": false, "detail": "d", "fix": "f", "exit": 78}')
 
+    def _project(self, tmp, server):
+        project = Path(tmp)
+        (project / "src").mkdir()
+        (project / "bin").mkdir()
+        (project / paths.BINARY).write_text(server)
+        return project
+
+    def test_a_binary_that_serves_instead_of_answering_is_stopped_with_its_children(self):
+        """An application whose `main` never reaches `serve` ignores
+        `--doctor` and serves: the doctor used to wait on it for ever. It is
+        ended at `APP_SECONDS` with everything it forked, and the verdict is
+        exit 1, the tool m0 ran failing, in one line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._project(
+                tmp, "#!/bin/sh\nsleep 60 &\necho $! > forked\nsleep 60\n")
+            (project / paths.BINARY).chmod(0o755)
+            saved = doctor.APP_SECONDS
+            doctor.APP_SECONDS = 0.5
+            t0 = time.time()
+            try:
+                app, error = doctor._run_app(project, [])
+            finally:
+                doctor.APP_SECONDS = saved
+            self.assertLess(time.time() - t0, 10)
+            self.assertIsNone(app)
+            self.assertEqual(error.exit, 1)
+            self.assertEqual(
+                error.sentence(),
+                "m0: bin/server --doctor did not finish within 0.5 s and was stopped "
+                "(a main that reaches m0_host's serve answers at once; m0 build)",
+            )
+            self.assertEqual(doctor.exit_code([], app, error), 1)
+            forked = (project / "forked").read_text().strip()
+            for _ in range(40):
+                gone = subprocess.run(["ps", "-o", "stat=", "-p", forked],
+                                      capture_output=True, text=True)
+                if gone.returncode != 0 or gone.stdout.strip().startswith("Z"):
+                    break
+                time.sleep(0.05)
+            else:
+                self.fail(f"the binary's child {forked} outlived the doctor")
+
+    def test_a_binary_that_cannot_be_run_is_said_not_raised(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._project(tmp, "not a program")
+            app, error = doctor._run_app(project, [])
+            self.assertIsNone(app)
+            self.assertEqual(error.exit, 1)
+            self.assertTrue(
+                error.sentence().startswith("m0: bin/server could not be run: "),
+                error.sentence())
+
+    def test_staleness_skips_an_editors_lock_file(self):
+        """`.#views.mojo` is a symlink to nothing: stat-ing it raised, and
+        the doctor ended in a traceback while the file was open."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._project(tmp, "built")
+            binary = project / paths.BINARY
+            source = project / "src" / "views.mojo"
+            source.write_text("def f(): pass")
+            os.utime(source, (1000, 1000))
+            os.symlink("user@host.1234:1700000000", project / "src" / ".#views.mojo")
+            self.assertFalse(doctor._stale(project, binary))
+            os.utime(source, (binary.stat().st_mtime + 10,) * 2)
+            self.assertTrue(doctor._stale(project, binary))
+
+
+class Build(unittest.TestCase):
+    def test_a_second_build_waits_for_the_first_and_says_so(self):
+        """Every build stages at the same paths, so two at once could rename
+        each other's half-written output into place."""
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            order = []
+
+            def second():
+                with build.one_at_a_time(project):
+                    order.append("second")
+
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                with build.one_at_a_time(project):
+                    order.append("first")
+                    waiter = threading.Thread(target=second)
+                    waiter.start()
+                    time.sleep(0.3)
+                    order.append("first done")
+                waiter.join(5)
+            self.assertEqual(order, ["first", "first done", "second"])
+            self.assertIn("m0: another build of this project is running; waiting for it",
+                          err.getvalue())
+
+    def test_a_killed_build_leaves_no_lock_behind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = Path(tmp)
+            (project / "bin").mkdir()
+            holder = subprocess.Popen(
+                [sys.executable, "-c",
+                 "import fcntl, sys, time\n"
+                 "f = open(sys.argv[1], 'a')\n"
+                 "fcntl.flock(f, fcntl.LOCK_EX)\n"
+                 "print('held', flush=True)\n"
+                 "time.sleep(60)\n",
+                 str(project / paths.BUILD_LOCK)],
+                stdout=subprocess.PIPE)
+            holder.stdout.readline()
+            holder.kill()
+            holder.wait()
+            holder.stdout.close()
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                with build.one_at_a_time(project):
+                    pass
+            self.assertEqual(err.getvalue(), "")
+
 
 class CommandLine(unittest.TestCase):
     def _exit(self, argv):
@@ -270,6 +386,34 @@ class Dev(unittest.TestCase):
         self.assertIn(f"pid {child.pid} did not exit within 0.5 s of SIGTERM; sent SIGKILL",
                       err.getvalue())
 
+    def test_a_second_interrupt_during_the_drain_kills_and_says_so(self):
+        """A second Ctrl-C while the server drains used to escape as a
+        traceback, with `run`'s `finally` SIGKILLing the server unannounced."""
+        child = self._child(
+            "import signal, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "print('up', flush=True)\n"
+            "time.sleep(60)\n")
+
+        def interrupt(signum, frame):
+            raise KeyboardInterrupt
+
+        previous = signal.signal(signal.SIGALRM, interrupt)
+        err = io.StringIO()
+        t0 = time.time()
+        try:
+            signal.setitimer(signal.ITIMER_REAL, 0.3)
+            with contextlib.redirect_stderr(err):
+                dev.finish(child, wait=5)
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertLess(time.time() - t0, 3)
+        self.assertEqual(child.poll(), -signal.SIGKILL)
+        self.assertIn(f"pid {child.pid} sent SIGKILL: interrupted again while it drained",
+                      err.getvalue())
+        child.stdout.close()
+
     def test_the_wait_is_the_drain_plus_one(self):
         self.assertEqual(dev.STOP_SECONDS, 6.0)
 
@@ -288,13 +432,14 @@ class New(unittest.TestCase):
 
     def test_a_name_that_cannot_be_three_things_at_once_is_2(self):
         with tempfile.TemporaryDirectory() as tmp:
-            for bad in ("Shop", "9lives", "my_app", "x.y", "a" * 41, "caf\u00e9"):
+            for bad in ("Shop", "9lives", "my_app", "x.y", "a" * 41, "caf\u00e9", "shop-", "a-"):
                 code, _, err = self._new([os.path.join(tmp, bad)])
                 self.assertEqual(code, 2, bad)
                 self.assertEqual(
                     err,
                     f"m0 new: '{bad}' is not a usable name (lowercase letters, "
-                    "digits and hyphens, starting with a letter, at most 40)\n",
+                    "digits and hyphens, starting with a letter and ending with a "
+                    "letter or digit, at most 40)\n",
                 )
                 self.assertFalse(os.path.exists(os.path.join(tmp, bad)))
 

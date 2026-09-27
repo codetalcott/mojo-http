@@ -26,6 +26,7 @@ PACKAGE = Path(__file__).resolve().parent
 ENTRY = Path("src") / "server.mojo"
 BINARY = Path("bin") / "server"
 BINARY_NEXT = Path("bin") / ".server.next"
+BUILD_LOCK = Path("bin") / ".build.lock"
 RELEASE_DIR = Path("dist")
 
 

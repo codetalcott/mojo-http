@@ -12,25 +12,77 @@ and is refused by name rather than half-read.
 Exit: the first failed check's code, else the application's own, else 0.
 No build is not a failure -- a missing binary is not a misconfiguration --
 and a stale one (any `src/**/*.mojo` newer than it) is reported, never
-failed.
+failed. A binary that cannot be run, or does not finish within
+`APP_SECONDS`, is the tool m0 ran failing: exit 1, said in one line, and
+every process it started ended. The host's doctor stops before the bind,
+so the bound is for a binary that SERVES instead of answering -- one whose
+`main` never reaches `serve`.
 
 `--json` prints one object as the last line of stdout, the host's own rule.
 `"m0":"1"` is its format number; the release is `versions.m0`.
 """
 
 import json
+import os
 import platform
+import signal
 import subprocess
 
 from m0 import checks, paths
 
 FORMAT = "1"
 HOST_FORMAT = "1"
+APP_SECONDS = 30
 
 
 def _stale(project, binary):
+    """Whether a source is newer than `binary`. A hidden file or directory
+    is skipped, as `m0 dev`'s poll skips it: an editor's lock file
+    (`.#views.mojo`) is a symlink to nothing, and not a source."""
     built = binary.stat().st_mtime
-    return any(p.stat().st_mtime > built for p in (project / "src").rglob("*.mojo"))
+    src = project / "src"
+    for path in src.rglob("*.mojo"):
+        if any(part.startswith(".") for part in path.relative_to(src).parts):
+            continue
+        try:
+            if path.stat().st_mtime > built:
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _failed(detail, fix):
+    """The application's binary could not answer: the tool m0 ran failed,
+    which is exit 1 where a refusal is 78."""
+    result = checks.Result("app", False, detail, fix)
+    result.exit = 1
+    return result
+
+
+def _run_doctor(argv, cwd, seconds):
+    """`argv` to completion: `(exit, stdout, stderr)`. In a session of its
+    own, so a binary still running at `seconds` -- or when this process is
+    interrupted -- is ended with every process it forked, then waited for
+    and its pipes closed; `TimeoutExpired` is raised after that."""
+    with subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",
+        start_new_session=True,
+    ) as child:
+        try:
+            out, err = child.communicate(timeout=seconds)
+        except BaseException:
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except OSError:
+                pass
+            raise
+    return child.returncode, out, err
 
 
 def host_report(stdout):
@@ -66,21 +118,29 @@ def _run_app(project, host_args):
     binary = project / paths.BINARY
     if not binary.is_file():
         return None, None
-    done = subprocess.run(
-        [str(binary), *host_args, "--doctor"],
-        cwd=project,
-        capture_output=True,
-        text=True,
-    )
-    report, error = host_report(done.stdout)
-    lines = done.stdout.splitlines()
+    try:
+        code, stdout, stderr = _run_doctor(
+            [str(binary), *host_args, "--doctor"], project, APP_SECONDS
+        )
+    except subprocess.TimeoutExpired:
+        return None, _failed(
+            f"{paths.BINARY} --doctor did not finish within {APP_SECONDS} s and was "
+            "stopped",
+            "a main that reaches m0_host's serve answers at once; m0 build",
+        )
+    except OSError as e:
+        return None, _failed(
+            f"{paths.BINARY} could not be run: {e.strerror or e}", "m0 build"
+        )
+    report, error = host_report(stdout)
+    lines = stdout.splitlines()
     # What the run said besides the report: a banner, or an app's own
     # refusal, which is all there is when it printed no report.
     if report is not None or error is not None:
         lines = [l for l in lines if l.strip()][:-1]
-    output = "\n".join(lines + done.stderr.splitlines())
+    output = "\n".join(lines + stderr.splitlines())
     app = {
-        "exit": done.returncode,
+        "exit": code,
         "stale": _stale(project, binary),
         "report": report,
         "output": output,

@@ -15,6 +15,7 @@ from std.testing import assert_equal, assert_false, assert_not_equal, assert_tru
 
 from src.grant import GrantKeys, verify_grant
 from src.session import (
+    SESSION_EXP_MAX,
     SessionKeys,
     SessionVerdict,
     csrf_token,
@@ -203,6 +204,25 @@ def test_a_negative_expiry_is_refused_at_issue() raises:
     except:
         caught = True
     assert_true(caught, "a negative expiry was issued")
+
+
+def test_an_expiry_the_verifier_cannot_read_is_refused_at_issue() raises:
+    """The verifier reads at most `SESSION_EXP_DIGITS` digits of expiry and
+    the issuer signed any non-negative one, so an expiry given in
+    milliseconds by mistake issued a cookie that read back as `malformed`
+    on every request: a login that could never succeed, reported as a
+    forgery. The largest expiry the verifier reads still round-trips."""
+    var keys = _keys()
+    var last = issue_session(keys, String("notes"), SESSION_EXP_MAX)
+    var v = verify_session(Span(last.as_bytes()), keys, Int64(NOW))
+    assert_true(v.ok, v.reason)
+    for bad in [SESSION_EXP_MAX + 1, Int64(NOW) * 1000]:
+        var caught = False
+        try:
+            _ = issue_session(keys, String("notes"), bad)
+        except:
+            caught = True
+        assert_true(caught, String("an expiry of ", bad, " was issued"))
 
 
 def test_neither_format_verifies_as_the_other_under_one_key() raises:
