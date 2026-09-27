@@ -49,7 +49,7 @@ refused by `m0 doctor`, with no fix to offer.
 | `m0 build` | `src/server.mojo` to `bin/server`; with the release option, a relocatable `dist/` |
 | `m0 test` | runs `test/test_*.mojo`; links nothing |
 | `m0 dev` | builds, serves, rebuilds on save; swaps only after a build succeeds |
-| `m0 doctor` | the toolchain's checks, then the binary's resolved configuration |
+| `m0 doctor` | the toolchain's checks, the binary's resolved configuration, and which files `m0 new` wrote differ from what this `m0` writes |
 | `m0 image` | the deploy image, then what it measured of itself |
 | `m0 include` | where the framework's source is installed |
 

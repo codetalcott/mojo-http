@@ -260,6 +260,7 @@ The engineering record: long-form, dated, kept as written.
 - [The scaffold: two templates that compile where they lie — 2026-09-20](notes/the-scaffold.md)
 - [`m0 dev`, `m0 image`, and a release nobody has run — 2026-09-20](notes/dev-image-and-a-release.md)
 - [The Mojo stack's pages, and a front door CI walks through — 2026-09-20](notes/the-mojo-stack-pages.md)
+- [The scaffold's upgrade path — 2026-09-27](notes/the-scaffold-upgrade-path.md)
 - [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
 - [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
 - [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)

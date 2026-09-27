@@ -66,8 +66,15 @@ def installed_mojo():
         return None
 
 
-def _pin_fix(gated):
-    return f"uv add --dev 'mojo=={gated[0]}'"
+def _pin_fix(gated, max_installed=None, gated_max=None):
+    """The `uv add` that moves the toolchain to the gated pair. With a
+    `max-core` installed it names that pin too: `max-core` pins its
+    `mojo-compiler` exactly, as `mojo` does, so moving `mojo` alone past it
+    is a resolver conflict, not an upgrade."""
+    fix = f"uv add --dev 'mojo=={gated[0]}'"
+    if max_installed is not None and gated_max:
+        fix += f" 'max-core=={gated_max[0]}'"
+    return fix
 
 
 def installed_max():
@@ -162,7 +169,7 @@ def check_mojo_installed(project):
 # --- mojo-gated -------------------------------------------------------------
 
 
-def gated_verdict(m0, installed, gated):
+def gated_verdict(m0, installed, gated, max_installed=None, gated_max=None):
     if installed is None:
         # Only the doctor gets here (preflight stopped a check earlier), and
         # it must not print the check above a second time under this name.
@@ -180,14 +187,16 @@ def gated_verdict(m0, installed, gated):
             False,
             f"m0 {m0} is gated on mojo {gated[0]} and this environment "
             f"has mojo {installed}",
-            _pin_fix(gated),
+            _pin_fix(gated, max_installed, gated_max),
         )
     return Result("mojo-gated", True, f"mojo {installed}")
 
 
 def check_mojo_gated(project):
+    info = paths.build_info()
     return gated_verdict(
-        m0_version(), installed_mojo(), paths.build_info()["gated_mojo"]
+        m0_version(), installed_mojo(), info["gated_mojo"],
+        installed_max(), info["gated_max"],
     )
 
 

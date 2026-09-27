@@ -27,7 +27,7 @@ uv run m0 include                 # where the framework's source is: read it
 | `m0 new NAME [--template views\|live]` | Writes an application into `./NAME`: `src/`, `test/`, a `pyproject.toml` pinning `mojo` and `m0` exactly, `AGENTS.md`, `smoke.sh`, `deploy/`. `views` (the default) is a server-rendered list swapped by htmx 4; `live` is a producer pushing state to every tab over SSE, with Datastar. Exit 2 for a name that is not lowercase letters, digits and hyphens, a letter first and a letter or digit last, or a target that is not empty. |
 | `m0 build [--release] [--target-cpu CPU]` | Compiles `src/server.mojo` and renames the result onto `bin/server`, so a running server is never written over. One build of a project at a time: a second waits for the first, saying so. `--release` compiles for the platform's baseline CPU, relocates the binary and bundles the Mojo runtime beside it in `dist/` — the directory an image's runtime stage copies. |
 | `m0 test [FILE...]` | `mojo run` per file, serial, output untouched. Needs no C compiler. A run with no test files is refused, not passed. |
-| `m0 doctor [--json] [-- HOST_ARGS]` | Every check, then `bin/server HOST_ARGS --doctor` with your environment. Exits with the first failed check's code, else the application's. A binary that cannot be run, or has not answered within 30 s, is exit 1, and everything it started is ended. |
+| `m0 doctor [--json] [-- HOST_ARGS]` | Every check, then `bin/server HOST_ARGS --doctor` with your environment. Exits with the first failed check's code, else the application's. A binary that cannot be run, or has not answered within 30 s, is exit 1, and everything it started is ended. Last, it names the files `m0 new` wrote that differ from what this m0 writes: reported, never failed, never rewritten. |
 | `m0 dev [-- HOST_ARGS]` | Builds and serves `bin/server HOST_ARGS`, then polls `src/` and `pyproject.toml` (stdlib, no watcher). On a change it builds WHILE the old server serves; a failed build leaves it serving; a good one sends it SIGTERM, waits for the pid to exit (6 s, then SIGKILL, named), and starts the new binary. Ctrl-C stops the server and exits 0; a second Ctrl-C while it drains ends it with SIGKILL, named. |
 | `m0 image [--tag T] [--target-cpu CPU] [-- DOCKER_ARGS]` | `docker build -f deploy/Dockerfile -t T DOCKER_ARGS .` from the project root (T defaults to the directory's name), then the image's `/app/about.json` as the last line of stdout. Needs docker and no toolchain. Docker missing or failing is exit 1, its output untouched. It does not deploy. |
 | `m0 include` | Prints the include root. |
@@ -41,6 +41,13 @@ m0 runs the `mojo` installed in **its own environment** — never the one on
 There is no override: every gate in the repository ran on that one compiler.
 MAX is optional and held the same way: `max-core`, if installed, must be
 the version the host was gated beside (`m0 doctor`'s `max-gated`).
+
+**Upgrading.** `uv add --dev 'm0==X'`, then `uv run m0 doctor`: its
+`mojo-gated` line names the one `uv add` that moves `mojo` — and `max-core`,
+when installed, since it pins its compiler exactly — to the pair X was
+gated on, and its `scaffold` line names the files `m0 new` wrote that X
+writes differently. m0 never rewrites a project's files; `uv run m0 new
+/tmp/NAME` writes X's to compare.
 
 `m0` is versioned apart from the repository it is cut from, and stays `0.x`
 until an application outside that repository has soaked on it.
