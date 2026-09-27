@@ -1637,7 +1637,22 @@ def check_ci_measurements_are_collected():
 # are not this rule's: a historical `/tmp/soak/` is a description of where
 # a checkout was, not a citation of the record.
 CITATION_ROOTS = (".claude/",)
-PROSE = ("README.md", "CLAUDE.md", "CHANGELOG.md")   # plus every docs/**/*.md
+PROSE = ("README.md", "CLAUDE.md", "CHANGELOG.md")
+# CLAUDE.md's package-scoped rules live in each package's AGENTS.md, and a
+# rule that moved there must stay under the checks it was under.
+PROSE_GLOBS = ("docs/**/*.md", "packages/*/AGENTS.md", "packaging/*/AGENTS.md")
+
+
+def prose_docs():
+    """{path: text} for every page the prose rules read."""
+    docs = {}
+    for rel in PROSE:
+        if (REPO / rel).exists():
+            docs[rel] = (REPO / rel).read_text()
+    for pattern in PROSE_GLOBS:
+        for path in sorted(REPO.glob(pattern)):
+            docs[str(path.relative_to(REPO))] = path.read_text()
+    return docs
 
 
 def untracked_citations(docs, tracked):
@@ -1726,13 +1741,7 @@ def check_row_statuses_in_prose():
 
     rows, _ = spec_sheet.analyse(spec_sheet.read_sources())
     statuses = {r["id"]: r["status"] for r in rows}
-    docs = {}
-    for rel in PROSE:
-        if (REPO / rel).exists():
-            docs[rel] = (REPO / rel).read_text()
-    for path in sorted((REPO / "docs").rglob("*.md")):
-        docs[str(path.relative_to(REPO))] = path.read_text()
-    for msg in stale_row_statuses(docs, statuses):
+    for msg in stale_row_statuses(prose_docs(), statuses):
         fail(msg)
 
 
@@ -1744,13 +1753,7 @@ def check_docs_cite_tracked_paths():
         return fail("check_docs_cite_tracked_paths: `git ls-files` failed, so "
                     "tracked paths cannot be told from untracked ones")
     tracked = set(filter(None, r.stdout.split("\n")))
-    docs = {}
-    for rel in PROSE:
-        if (REPO / rel).exists():
-            docs[rel] = (REPO / rel).read_text()
-    for path in sorted((REPO / "docs").rglob("*.md")):
-        docs[str(path.relative_to(REPO))] = path.read_text()
-    for msg in untracked_citations(docs, tracked):
+    for msg in untracked_citations(prose_docs(), tracked):
         fail(msg)
 
 
