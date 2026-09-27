@@ -1118,13 +1118,33 @@ def test_a_socket_whose_app_raises_closes_with_1011(h):
 def test_a_disconnect_that_escapes_the_app_is_not_an_error(h):
     """The client left and the app let ClientDisconnected escape: the
     connection is over, which uvicorn does not log either. Nothing is
-    sent to it."""
+    sent to it once the shim has read the disconnect.
+
+    Judged from the READ, not from the moment the tag is written. The app
+    ticks every 5 ms, and a tick whose timer fires in the last pass of the
+    first settle() leaves its task step queued when that run stops; the
+    next run takes it before the disconnect's reader, so the socket is
+    sent one tick the shim could not yet know was unwanted. Judged from
+    the write, that was a failure in 2 of 300 local runs and on one macOS
+    CI run. `dispatch` records each event as the shim emits it, so the
+    index taken where `_exec_on_disconnect` runs splits the events at the
+    read exactly."""
+    read_at = []
+    on_disconnect = h.ns["_exec_on_disconnect"]
+
+    def recording(slot, code=0):
+        if slot == 0 and not read_at:
+            read_at.append(len(h.events))
+        return on_disconnect(slot, code)
+
+    # The submit reader calls it by its global name, looked up per call.
+    h.ns["_exec_on_disconnect"] = recording
     h.job(0, "wsescape")
     h.settle()
-    mark = len(h.events)
     h.disconnect(0)
     h.settle(passes=120)
-    after = [e[0] for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
+    assert read_at, "the shim never read the disconnect"
+    after = [e[0] for e in h.events[read_at[0]:] if len(e) > 1 and e[1] == 0]
     assert "stream_note" not in after, (
         "a client's departure was logged as an application error: %r"
         % (after,))
