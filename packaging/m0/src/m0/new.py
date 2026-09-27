@@ -26,7 +26,11 @@ from m0 import checks, paths
 
 TEMPLATES = ("views", "live")
 
-NAME = re.compile(r"[a-z][a-z0-9-]*\Z")
+# A letter first and a letter or digit last: a trailing hyphen is no
+# PEP 508 project name, no image reference and no DNS label (the deploy's
+# hostname), and `uv sync` was the first thing to say so, as a TOML parse
+# error.
+NAME = re.compile(r"[a-z](?:[a-z0-9-]*[a-z0-9])?\Z")
 NAME_MAX = 40
 
 # Written for every template, from `templates/_common/`. A leading `dot-`
@@ -105,7 +109,8 @@ def run(args):
     if not NAME.match(app) or len(app) > NAME_MAX:
         return _usage(
             f"'{app}' is not a usable name (lowercase letters, digits and "
-            f"hyphens, starting with a letter, at most {NAME_MAX})"
+            f"hyphens, starting with a letter and ending with a letter or digit, "
+            f"at most {NAME_MAX})"
         )
     shown = args.name if os.path.isabs(args.name) else f"./{args.name}"
     if target.exists() and (not target.is_dir() or any(target.iterdir())):

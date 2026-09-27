@@ -61,6 +61,12 @@ comptime SESSION_KID_CHARS = 8
 comptime SESSION_SIG_CHARS = 43
 """Length of the tag field: base64url of 32 bytes without padding."""
 comptime SESSION_SUBJECT_MAX = 64
+comptime SESSION_EXP_DIGITS = 12
+"""The most digits of expiry `verify_session` reads: Unix seconds to the
+year 33658, so an expiry past it is a timestamp in another unit --
+milliseconds, most often -- and `issue_session` refuses it."""
+comptime SESSION_EXP_MAX = Int64(999999999999)
+"""The largest expiry `SESSION_EXP_DIGITS` digits hold."""
 comptime CSRF_MESSAGE_PREFIX = "m0csrf1."
 """Domain separation: a CSRF token is a MAC over a message no session
 cookie's signed part can be, so neither can be replayed as the other."""
@@ -187,15 +193,20 @@ def issue_session(keys: SessionKeys, subject: String, exp: Int64) raises -> Stri
         The cookie VALUE, for `session_cookie_line`.
 
     Raises:
-        If the ring is empty, the expiry is negative, or the subject is
-        empty, too long, or holds a byte the format cannot carry — each of
-        which would otherwise produce a cookie that reads back as
-        `malformed`.
+        If the ring is empty, the expiry is negative or longer than
+        `SESSION_EXP_DIGITS` digits, or the subject is empty, too long, or
+        holds a byte the format cannot carry — each of which would
+        otherwise produce a cookie that reads back as `malformed`.
     """
     if len(keys) == 0:
         raise Error("issue_session: no key")
     if exp < 0:
         raise Error("issue_session: negative expiry")
+    if exp > SESSION_EXP_MAX:
+        raise Error(
+            "issue_session: expiry ", exp, " is past ", SESSION_EXP_MAX,
+            ", which is Unix seconds, not milliseconds"
+        )
     var bytes = subject.as_bytes()
     if len(bytes) == 0 or len(bytes) > SESSION_SUBJECT_MAX:
         raise Error("issue_session: subject length")
@@ -250,7 +261,7 @@ def verify_session(
         return session_refused(String("malformed"))
     if len(kid) != SESSION_KID_CHARS:
         return session_refused(String("malformed"))
-    if len(exp_field) < 1 or len(exp_field) > 12:
+    if len(exp_field) < 1 or len(exp_field) > SESSION_EXP_DIGITS:
         return session_refused(String("malformed"))
     var exp = Int64(0)
     for b in exp_field:

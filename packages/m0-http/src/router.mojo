@@ -44,6 +44,7 @@ the result matches — the property that keeps the two directions honest.
 
 comptime _SLASH = UInt8(47)  # '/'
 comptime _COLON = UInt8(58)  # ':'
+comptime _DOT = UInt8(46)  # '.'
 comptime _GET = StaticString("GET")
 
 
@@ -389,10 +390,14 @@ def url_for(pattern: String, *params: String) raises -> String:
     Each parameter is percent-encoded (RFC 3986 unreserved characters are
     kept, every other byte is `%XX`), so a value containing `/` or a space
     stays one segment. Raises if the count of parameters differs from the
-    pattern's captures, and if a parameter is EMPTY: an empty capture
-    would emit `/notes/`, which `match` collapses to the parent route, so
-    the reverse of one route would silently name another. Both are
-    programming errors whose silent form is a wrong link.
+    pattern's captures, if a parameter is EMPTY, and if one is a DOT
+    SEGMENT, `.` or `..`. An empty capture would emit `/notes/`, which
+    `match` collapses to the parent route, so the reverse of one route
+    would silently name another; a dot segment names another before the
+    request is sent, since a browser resolves `/notes/../delete` to
+    `/delete` (RFC 3986 §5.2.4). Encoding cannot save one: `.` is
+    unreserved, and the URL standard reads `%2e` as a dot too. All three
+    are errors whose silent form is a wrong link.
 
     A `/` in a value reaches the view as `%2F`, not `/`: `URI.parse` keeps
     an encoded slash distinct from a separator by design (see `unquote`),
@@ -431,6 +436,12 @@ def reverse(pattern: String, params: List[String]) raises -> String:
                 raise Error(
                     'url_for("', pattern, '"): parameter ', next, " is empty, "
                     "which would reverse to a different route"
+                )
+            if _is_dot_segment(params[next]):
+                raise Error(
+                    'url_for("', pattern, '"): parameter ', next, ' is "',
+                    params[next], '", a dot segment, which a browser '
+                    "resolves to a different route"
                 )
             _percent_encode_into(out, params[next])
             next += 1
@@ -557,6 +568,14 @@ struct Query(Movable):
         if self._pairs.byte_length() == 0:
             return path
         return String(path, "?", self._pairs)
+
+
+def _is_dot_segment(s: String) -> Bool:
+    """Whether `s` is `.` or `..`, a segment URL resolution removes."""
+    var b = s.as_bytes()
+    if len(b) == 1:
+        return b[0] == _DOT
+    return len(b) == 2 and b[0] == _DOT and b[1] == _DOT
 
 
 def _percent_encode_into(mut out: String, s: String):

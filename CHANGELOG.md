@@ -205,6 +205,47 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the E32 work had moved (the doctor's `host_checks` call) is re-pointed:
   59 of 59 caught.
 
+- **`url_for` refuses a dot segment** (SPEC N5). A parameter of `.` or
+  `..` reversed to `/notes/.` or `/notes/../delete`, which a browser
+  resolves to another route before it sends the request: the empty
+  value's failure, which `url_for` already refused, one step removed, and
+  one no encoding avoids, `.` being unreserved and `%2e` read as a dot by
+  the URL standard. `url_for` and `Mount.url_for` raise for it as they do
+  for an empty value. Every application in `apps/` reverses numeric ids.
+
+- **`issue_session` refuses an expiry `verify_session` cannot read.** The
+  verifier reads at most twelve digits of expiry (`SESSION_EXP_DIGITS`),
+  and the issuer signed any non-negative one, so an expiry given in
+  milliseconds issued a cookie that read back as `malformed` on every
+  request: a login that could never succeed, reported as a forgery. It
+  raises now, as its docstring said it did.
+
+- **Five `m0` command-line defects**, reaching users with the next `m0`
+  release:
+  - `m0 new foo-` was accepted, and `uv sync` then failed on the project
+    name. A name ends with a letter or digit (SPEC N27); exit 2 as before.
+  - `m0 doctor` ran `bin/server --doctor` with no bound, so a binary whose
+    `main` never reaches `serve` served instead of answering and the doctor
+    waited for ever, and one that could not be run ended in a traceback.
+    The run is bounded at 30 s, in a session of its own so everything it
+    started is ended, and either failure is one line and exit 1.
+  - `m0 doctor`'s staleness check stat-ed every `src/**/*.mojo`, and an
+    editor's lock file (`.#views.mojo`, a symlink to nothing) raised.
+    Hidden files are skipped, as `m0 dev`'s poll skips them.
+  - Two builds of one project at once (`m0 dev` rebuilding while
+    `./smoke.sh` runs `m0 build`) staged at the same path and could rename
+    each other's half-written binary into place. A build holds
+    `bin/.build.lock` for its length, and a second waits, saying so.
+  - A second Ctrl-C while `m0 dev`'s server drained escaped as a
+    traceback, and the server was SIGKILLed unannounced. It is ended at
+    once and named, and `m0 dev` exits 0.
+
+  `test_m0.py` holds each, and each was reverted to show its test fails.
+  `sabotage-scaffold`'s two Ctrl-C rules are re-pointed at the new handler
+  line, and its "an interpreter, and the Dockerfile's own measurement
+  refuses it" rule, whose anchor stopped matching when 0.3.0 put the
+  runtime libraries after `ARG BASE`, at `RUN useradd`.
+
 ## [1.6.0] — 2026-09-24
 
 The request an application sees is now the one its client sent, and the
