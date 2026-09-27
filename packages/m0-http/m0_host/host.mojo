@@ -336,7 +336,9 @@ trait AppHandler(HTTPService, Movable, Deinitable):
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
-        """Build this worker's handler. Called once, in the worker."""
+        """Build a handler: once per worker, after the fork (per loop under
+        `M0_THREADS`), and again for each pool thread under
+        `M0_BLOCKING_THREADS`, which `ctx.thread` names."""
         ...
 
     @staticmethod
@@ -382,12 +384,13 @@ trait ViewState(Movable, Deinitable):
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
-        """Build this worker's state. Called once, in the worker."""
+        """Build a state, wherever `ViewsApp.make` builds a handler: once
+        per worker or loop, and again for each pool thread."""
         ...
 
     @staticmethod
     def urls() raises -> Views[Self]:
-        """The table. Built once per worker, beside the state."""
+        """The table, built beside each state."""
         ...
 
     @staticmethod
@@ -558,7 +561,9 @@ trait Producer(Movable, Deinitable):
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
-        """Build the producer, ON its own thread. Called once."""
+        """Build the producer, on the thread that starts it and before the
+        listen, so a raise is the same 78 as a handler's (D30). Called
+        once."""
         ...
 
     @staticmethod

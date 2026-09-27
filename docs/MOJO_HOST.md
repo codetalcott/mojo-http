@@ -34,7 +34,8 @@ different copies.
 
 **`ViewsApp[S]`** is the `AppHandler` for an application that is a
 [views table](MOJO_VIEWS.md). `S: ViewState` has `make(ctx)` and `urls()`,
-and the same three optional methods. Both scaffolds use it.
+and the same three optional methods. The `views` scaffold uses it; `live`,
+whose handler also owns the stream hooks, is an `AppHandler` of its own.
 
 **`P: Producer`** is work on a cadence, off the event loop: `make(ctx)`, and
 `step(mut self, mut out: Publisher) -> Int`, which returns the nanoseconds
@@ -128,8 +129,10 @@ applies the flags itself.
 | 2 | a command line that cannot be read: an unknown flag, a value that is not a number |
 | 78 | a configuration that was read and will not be served |
 
-Every 78 is one line on stderr: what was found, then the fix in
-parentheses. The checks, in the order the host applies them:
+Every 78 is said on stdout, on lines that open with `host:`: a check's
+refusal is one line, what was found and then the fix in parentheses, and a
+`make` that raises is refused with its own error. The checks, in the order
+the host applies them:
 
 | check | refused when |
 |---|---|
@@ -162,10 +165,10 @@ arguments, because `serve` and the doctor read the same list of checks.
 SIGTERM and SIGINT drain: in-flight requests finish, held streams are
 closed from the server, and the process exits 0. The drain, the handler
 pool's join and the producer's join share one five-second bound. A thread
-still running after it is named on stderr and the process exits anyway, so
+still running after it is named on stdout and the process exits anyway, so
 `docker stop` never waits for SIGKILL. The binary runs correctly as PID 1.
 
-The capability rows are E21 to E31 in [Capabilities](SPEC.md). The design is
+The capability rows are E21 to E32 in [Capabilities](SPEC.md). The design is
 recorded in [the Mojo host](notes/the-mojo-host.md),
 [loops on threads](notes/loops-on-threads.md) and
 [flags and a doctor for the host](notes/flags-and-a-doctor-for-the-host.md).

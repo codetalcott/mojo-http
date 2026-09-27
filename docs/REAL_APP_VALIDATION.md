@@ -981,18 +981,31 @@ Django.
 
 ## The application layer
 
-**Not yet run.** No application outside `apps/` runs on `Views` or
-`Fragment` ([SPEC](SPEC.md) section N); the layer is proven by its demos,
-and `poe milestones` says so until a record lands here. The first candidate
-is textshelf's SSE hold views on a Mojo mount: the mechanism is built and
-gated (N11, [the note](notes/hold-from-a-mojo-mount.md)), and what the
-path still needs is the authorization each of those views performs before
-naming its channel — a session and a membership check — carried to the
-mount as a grant it can verify, which is the HMAC the login row also
-needs.
+**Under way, not yet recorded.** The soak's application is
+[`unotes`](https://github.com/codetalcott/unotes), a reader over a private
+notes corpus written outside this repository on the documented path:
+`m0 new` from `m0` 0.1.0 as published, `Views` and `Fragment[Htmx]`, a
+login on `m0_http.session`, deployed as an image to Fly.io. Its
+`SOAK_LOG.md` is the running record, and its findings are rows here
+already: `Query` (N36), `push=True` (N37), HEAD answered by GET (N38),
+SQLite opened at run time (O17, O18, N39, N40), and the scaffold's login
+guidance. By its own account it has run a synthetic soak (`scripts/soak.py`
+against a local two-worker build, every response compared with the same
+binary's answer alone, through SIGTERM restarts and abandoning clients) and
+owes the use window: the deployed instance in real use, including a phone
+that sleeps and reconnects, and a deploy while a reader is mid-session.
+Until a record lands here, `poe milestones` reports the soak NOT MET.
 
-A record here opens the way the server's does — `**Last run <date>**,
-against m0serve X.Y.Z` — names the application and the path it moved onto
-the layer, and carries the same table: requests verified byte for byte
-against a reference, failures, churn, RSS. The milestone reads the version
-from that line and applies the server soak's staleness rule to it.
+textshelf, first named here, is not the soak: its streams moved onto the
+built-in hold mount in production on 2026-09-12 (above), and it writes no
+Mojo.
+
+A record here opens with ONE line that `poe milestones` reads, the way the
+server's does:
+
+`**Last run DATE**, against m0-http X.Y.Z` — on a single line; the version is the framework the application was built from, `versions.framework` in `m0 doctor --json`, not the `m0` wheel's own number, which the reader does not accept.
+
+It then names the application and the path it moved onto the layer, and
+carries the server soak's table: requests verified byte for byte against a
+reference, failures, churn, RSS. The milestone applies the server soak's
+staleness rule to that version.

@@ -7475,9 +7475,9 @@ python3 scripts/emit.py --covers I22 --task smoke-wheel
 # The `m0` wheel: the framework's SOURCE and the CLI that builds against it,
 # from packaging/m0/ (its own [build-system], for the reason m0serve's has
 # one). Pure Python and built in seconds, so unlike build-wheel it depends on
-# no compiled artifact. M0_WHEEL_LOCAL=tree stamps the version `0.1.0+tree`:
-# an exact pin on THIS wheel can then never be satisfied by a published
-# 0.1.0, because an index cannot serve a local version. A release build
+# no compiled artifact. M0_WHEEL_LOCAL=tree stamps the version `<version>+tree`:
+# an exact pin on THIS wheel can then never be satisfied by the published
+# `<version>`, because an index cannot serve a local version. A release build
 # (not this task) leaves the variable unset.
 # ---------------------------------------------------------------------------
 
@@ -7525,7 +7525,7 @@ deps = ["build-core", "build-http", "build-datastar", "build-sqlite"]
 # then the user's literal `uv run m0 build` against the tree's wheel, per
 # template, on the wire. The sync resolves ONLINE with every wheel cached
 # (a scaffold's sync cannot resolve offline from a locked sync's cache,
-# measured); `m0` itself is `0.1.0+tree`, which no index can serve.
+# measured); `m0` itself is `<version>+tree`, which no index can serve.
 [tool.poe.tasks.smoke-scaffold]
 help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor, the wire (a 422 fragment; two differing Datastar frames, and a kick lifting every bar of a later one), the scaffold's own smoke.sh (live: the kick count back after a restart)"
 deps = ["build-m0-wheel"]
@@ -7552,7 +7552,7 @@ python3 scripts/emit.py --covers N30 --task smoke-scaffold-dev
 # `uv run m0 image`, then the image probed from outside. Linux only in CI
 # (the pid1 job, beside smoke-blobs-image, for its reason: GitHub's macOS
 # runners have no docker), where it is the first x86-64 build of the
-# scaffold's image. The script's docstring says how `0.1.0+tree` reaches
+# scaffold's image. The script's docstring says how `<version>+tree` reaches
 # `uv sync --frozen` in the builder without the Dockerfile changing.
 [tool.poe.tasks.smoke-scaffold-image]
 help = "uv run m0 image on a scaffolded app: the Dockerfile as written and --frozen, about.json (python false, the baseline CPU), PID 1, the views wire through a published port, docker stop exit 0"
