@@ -7,7 +7,7 @@
 # in scripts/check_docs.py holds the root to that.
 #
 # Wheels only, no sdist. What this wheel carries is mapped out of the
-# repository around it by hatch_build.py (`git ls-files` over five source
+# repository around it by hatch_build.py (`git ls-files` over seven source
 # trees), so an sdist could not build without the repo it was cut from.
 [build-system]
 requires = ["hatchling>=1.25"]

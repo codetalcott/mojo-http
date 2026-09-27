@@ -38,7 +38,7 @@ application. This does, per template, as a user would:
 Resolution is online by design (the handoff's §10.2 measured that a
 scaffold's `uv sync` cannot resolve offline from a cache a locked sync
 left), with every wheel already cached by the job's own sync. `m0` itself
-can never come from the index: the tree's wheel is `0.1.0+tree`, a local
+can never come from the index: the tree's wheel is `<version>+tree`, a local
 label no index serves, and the scaffold pins it exactly.
 """
 
@@ -206,7 +206,7 @@ def check_new(work, whl, template, name, pin, m0v):
 def check_installed_is_the_wheel(project, whl):
     """Every file the wheel carries under m0/ is what the venv holds.
 
-    The wheel under test is rebuilt under ONE version, `0.1.0+tree`, and a
+    The wheel under test is rebuilt under ONE version, `<version>+tree`, and a
     resolver that has met that version before may hand back the one it
     cached. The application's own files come from `m0 new`, through a path,
     so a stale framework underneath them shows nowhere: this gate once
@@ -336,7 +336,7 @@ def run_template(work, whl, template, port, pin, m0v, servers):
 
     phase("build [%s]" % template)
     # The gate's own step, not the user's: only a gate rebuilds a wheel under
-    # one version, and uv then serves the `0.1.0+tree` it cached (measured:
+    # one version, and uv then serves the `<version>+tree` it cached (measured:
     # a reverted layer fix passed). A published version is immutable.
     t0 = time.time()
     sh(["uv", "sync", "--refresh-package", "m0"], project, env, "uv sync")

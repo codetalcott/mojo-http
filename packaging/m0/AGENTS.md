@@ -79,8 +79,9 @@ one home; `0.x` until the layer soak). Rules:
   the gate edit the Dockerfile; a change users need goes in the template.
   `about.json`'s `cpu` is read from the image because a cached layer
   prints nothing.
-- **`release-m0.yml` has run ONCE** (N32; `m0-v0.1.0`, 2026-09-21, green
-  first time — no gate exercises it, only a tag does) — tags `m0-v*`, environment
+- **`release-m0.yml` runs on a tag and nothing else** (N32; `m0-v0.1.0`
+  on 2026-09-21 and `m0-v0.2.0` on 2026-09-25, each green first time,
+  docs/RELEASING.md recording every run — no gate exercises it) — tags `m0-v*`, environment
   `pypi-m0`, `M0_WHEEL_LOCAL` unset and never through `poe
   build-m0-wheel`. `m0_release_problems` in `check_docs.py` holds its
   rules; docs/RELEASING.md has the order. Push no `m0-v*` tag casually.
@@ -101,7 +102,7 @@ one home; `0.x` until the layer soak). Rules:
   `observed:` block. A scaffold's first build must print no `warning:`
   (N34) — `check-templates` cannot see one that only the SUBSTITUTED name
   causes.
-- `poe build-m0-wheel` stamps `0.1.0+tree` (`M0_WHEEL_LOCAL`) so an exact
+- `poe build-m0-wheel` stamps `<version>+tree` (`M0_WHEEL_LOCAL`) so an exact
   pin on the smoke's wheel can never resolve to a published one. Run
   `poe sabotage-m0-wheel` after touching `packaging/m0/`: its anchors are
   exact source lines, and its arm rules run with the unit phase OFF so the

@@ -6,7 +6,7 @@ wheel carries does not have that stability yet. So nothing here reads the
 root; the tree the wheel was cut from is recorded in `_build_info.json`
 instead.
 
-`M0_WHEEL_LOCAL=tree` appends a PEP 440 local label (`0.1.0+tree`). The
+`M0_WHEEL_LOCAL=tree` appends a PEP 440 local label (`<version>+tree`). The
 smokes build with it so that an exact pin on the result can never be
 satisfied by a PUBLISHED wheel of the same number -- an index cannot serve a
 local version.

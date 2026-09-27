@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Where the project is against beta and 1.0, computed rather than remembered.
 
-`docs/SPEC.md` already tracks 149 capabilities and is already machine-checked
+`docs/SPEC.md` already tracks every capability and is already machine-checked
 -- but it says what IS, never what must BECOME true, so "what is left?" was
 not a question anything could answer. It was answered by whoever remembered,
 which is the gap this file closes.
 
 **Milestones are derived from row STATUS, not annotated per row.** Adding a
-milestone column would mean editing 149 rows and keeping them right for ever;
+milestone column would mean editing every row and keeping them right for ever;
 the two definitions below need no new data at all:
 
     beta   every row is `verified`, `planned` or `out of scope`
@@ -248,7 +248,7 @@ def report():
     ls = _layer_soak_version()
     if ls is None:
         layer_soak_met = False
-        print("  soak: no application outside apps/ has run on the layer "
+        print("  soak: no soak of an application on the layer is recorded "
               "— NOT MET")
     elif cur:
         layer_soak_met = _lag(cur, ls) <= REAL_APP_MAX_MINOR_LAG

@@ -7,7 +7,7 @@ byte for byte, `uv sync --frozen` and all -- by the user's own command, and
 the image is then asked from outside what the scaffold's pages claim of it.
 
 **How the tree's wheel gets in.** A published m0 needs nothing: the lock
-names the index. The wheel under test is `0.1.0+tree`, which no index
+names the index. The wheel under test is `<version>+tree`, which no index
 serves, so:
 
 - the wheel is copied to `.wheels/` in the project and the HOST's sync runs
@@ -20,7 +20,7 @@ serves, so:
   `/src/.wheels`, handed to `docker build` as a named context that REPLACES
   `python:3.13-slim` -- through `m0 image`'s pass-through after `--`.
 
-The layer cache is uv's cache hazard again (a rebuilt `0.1.0+tree` under one
+The layer cache is uv's cache hazard again (a rebuilt `<version>+tree` under one
 name): the base image's digest changes with the wheel, which invalidates
 every layer after `FROM`, and `builder` below does not take that on trust.
 

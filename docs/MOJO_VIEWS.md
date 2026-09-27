@@ -3,8 +3,9 @@
 The application layer of `m0_http`: a table of views over one state, HTML
 fragments that name their own swap target, one view answering both a page
 and a fragment, URLs built from the routes, and signed sessions. The
-`views` scaffold uses all of it in three files; the examples below are from
-it.
+`views` scaffold uses the table, fragments and the page-or-fragment answer
+in three files, and the examples start from it; it has no login, so
+sessions point at `apps/fragment_notes`.
 
 ## Views
 
