@@ -11,7 +11,8 @@ type parameter and in nothing an app writes.
 from std.testing import TestSuite, assert_equal, assert_true
 
 from src.html import (
-    Datastar, Fragment, Html, Htmx, Vocabulary, attr, el, flag, text, void,
+    Datastar, Fragment, Html, Htmx, RequestHeader, Vocabulary, attr, el, flag,
+    text, void,
 )
 
 
@@ -600,6 +601,121 @@ def test_a_vocabulary_names_its_own_verbs() raises:
         assert_true(String(e).find("delete, query") < 0)
     assert_true(raised)
     _ = ds^.finish()
+
+
+def test_a_swap_sends_a_request_header_in_both_tiers() raises:
+    """`header=` is the swap plus `hx-headers`, from the builder and the
+    expression tier alike, byte for byte, written after the swap and after
+    a push. It is how `apps/fragment_notes`' delete form carries its CSRF
+    token, htmx 4 sending a DELETE's fields in the query string, and the
+    bytes that app typed by hand before the layer could spell them. The name and the value are JSON strings and `attr` escapes the
+    whole; without `header` nothing about headers is written.
+
+    covers: N44
+    """
+    var f = Fragment[Htmx]("notes")
+    f.open("form")
+    f.attr("class", "delete")
+    f.swap("delete", "/notes/7", header=RequestHeader("X-CSRF-Token", "tok"))
+    f.close("form")
+    var built = f^.finish()
+    var want = String(
+        '<form class="delete" hx-delete="/notes/7" hx-target="#notes"',
+        ' hx-swap="outerHTML"',
+        ' hx-headers="{&quot;X-CSRF-Token&quot;:&quot;tok&quot;}"></form>',
+    )
+    assert_true(built.find(want) >= 0, built)
+    assert_true(built.find(attr("hx-headers", '{"X-CSRF-Token":"tok"}')) >= 0)
+    var g = Fragment[Htmx]("notes")
+    assert_equal(
+        g.el("form", "delete", "/notes/7", attr("class", "delete"),
+             header=RequestHeader("X-CSRF-Token", "tok")),
+        want,
+    )
+    assert_equal(
+        g.el("a", "get", "/notes/7", "", push=True, header=RequestHeader("X-A", "1")),
+        String(
+            '<a hx-get="/notes/7" hx-target="#notes" hx-swap="outerHTML"',
+            ' hx-push-url="true" hx-headers="{&quot;X-A&quot;:&quot;1&quot;}"></a>',
+        ),
+    )
+    var odd = g.el("button", "post", "/x", "", header=RequestHeader("X-Note", 'say "hi" \\ bye'))
+    assert_true(
+        odd.find('hx-headers="{&quot;X-Note&quot;:&quot;say \\&quot;hi\\&quot; \\\\ bye&quot;}"') >= 0,
+        odd,
+    )
+    assert_true(g.el("form", "delete", "/notes/7", "").find("hx-headers") < 0)
+    var h = Html()
+    h.open("button")
+    h.swap[Htmx]("delete", "/notes/7", "#notes", header=RequestHeader("X-CSRF-Token", "tok"))
+    h.close("button")
+    assert_true(h^.finish().find(attr("hx-headers", '{"X-CSRF-Token":"tok"}')) >= 0)
+    _ = g^.finish()
+
+
+def _header_refusal(name: String, value: String) raises -> String:
+    var f = Fragment[Htmx]("n")
+    var raised = String("")
+    try:
+        _ = f.el("button", "delete", "/n/1", "", header=RequestHeader(name, value))
+    except e:
+        raised = String(e)
+    _ = f^.finish()
+    return raised
+
+
+def test_a_request_header_no_client_would_send_is_refused() raises:
+    """The LAYER checks a header before a vocabulary spells it: a name that
+    is not an RFC 9110 token, a value holding a control byte -- a line
+    break is a header of the page's choosing -- and a value that is not
+    ASCII, which a browser would send as Latin-1 rather than the UTF-8 it
+    was written in, are refused. A tab is allowed, as the grammar allows.
+
+    covers: N44
+    """
+    assert_true("has no name" in _header_refusal("", "v"))
+    assert_true("a header name is" in _header_refusal("X CSRF", "v"))
+    assert_true("a header name is" in _header_refusal("X-CSRF:", "v"))
+    assert_true("control byte" in _header_refusal("X-Ok", "a\r\nX-Evil: 1"))
+    assert_true("control byte" in _header_refusal("X-Ok", String("a", chr(0), "b")))
+    assert_true("control byte" in _header_refusal("X-Ok", String("a", chr(127), "b")))
+    assert_true("not ASCII" in _header_refusal("X-Ok", "café"))
+    assert_equal(_header_refusal("X-Ok", "a\tb"), "")
+    assert_equal(_header_refusal("X-Ok", "!#$%&'*+-.^_`|~ ok"), "")
+
+
+def test_a_vocabulary_with_no_spelling_for_a_header_refuses_one() raises:
+    """`request_header` has a default, so a conformance written before it
+    existed still compiles, and the default raises: a swap asked to send a
+    header it cannot spell is refused rather than rendered without one,
+    which would fail the server's check only when someone clicked."""
+    var f = Fragment[Bare]("notes")
+    var raised = String("")
+    try:
+        _ = f.el("form", "delete", "/notes/1", "", header=RequestHeader("X-CSRF-Token", "t"))
+    except e:
+        raised = String(e)
+    assert_true("cannot send a request header" in raised, raised)
+    _ = f^.finish()
+
+
+def test_datastar_refuses_a_request_header() raises:
+    """Datastar sends a header from an option inside the action expression,
+    which `swap` writes whole, and the layer writes no second spelling of
+    the action: the header is refused, naming where the token goes instead.
+    The same swap without `header` is unchanged.
+
+    covers: N44
+    """
+    var f = Fragment[Datastar]("notes")
+    var raised = String("")
+    try:
+        _ = f.el("button", "delete", "/notes/1", "", header=RequestHeader("X-CSRF-Token", "t"))
+    except e:
+        raised = String(e)
+    assert_true("carry the token in a form field" in raised, raised)
+    assert_true(f.el("button", "delete", "/notes/1", "").find("@delete(") >= 0)
+    _ = f^.finish()
 
 
 def main() raises:

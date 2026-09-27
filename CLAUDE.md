@@ -55,14 +55,14 @@ m0-postgres (zero deps)   PostgreSQL bindings over libpq — a SIBLING too
 ```
 
 **Zero upward imports.** `m0-core` depends on nothing. `m0-http` reaches into
-it from six files: `wyhash64` and `format_hash64` in `etag.mojo`,
-`escape_json_string` in `health.mojo` and `reply.mojo`,
-`escape_json_string_into` in `log.mojo`, `escape_html_into` in
+it from nine files: `wyhash64` and `format_hash64` in `etag.mojo`,
+`escape_json_string` in `health.mojo`, `reply.mojo`, `doctor.mojo` and
+`html.mojo`, `escape_json_string_into` in `log.mojo`, `escape_html_into` in
 `html.mojo`, and the cryptography — `HmacSha256`, `sha256`, `hex_digest`,
-`constant_time_equal` — in `grant.mojo` and `session.mojo`. That list is
-an inventory, not the constraint: the constraint is the direction
-(m0-http importing m0-core is downward) and that no libpython reaches the
-link line. `m0-datastar` splits deliberately: `consts.mojo` and
+`constant_time_equal` — in `grant.mojo`, `session.mojo` and `login.mojo`.
+That list is an inventory, not the constraint: the constraint is the
+direction (m0-http importing m0-core is downward) and that no libpython
+reaches the link line. `m0-datastar` splits deliberately: `consts.mojo` and
 `sse.mojo` import nothing outside themselves so the wire format is usable
 without the framework — do not add an `m0_http` import to either — while
 `stream.mojo` and `signals.mojo` are the server glue and may. Where
@@ -725,8 +725,9 @@ pieces, and the language fact each rests on:
   D6 retired: the same three per-element attributes, which explicit
   inheritance leaves intact, plus `query`, the sixth verb. htmx 4 sends a
   DELETE's fields in the QUERY STRING with no setting to change it, so a
-  CSRF token on one is a header — `hx-headers`, which the app writes by
-  hand, D38 — and it swaps every 4xx, so an error a person may see is
+  CSRF token on one is a header — `hx-headers`, which
+  `header=csrf_header(token)` on the swap writes (SPEC N44; D38 retired)
+  — and it swaps every 4xx, so an error a person may see is
   answered as a fragment), the event picked from the OPEN element by htmx's own
   default-trigger rule (a form submits with `__prevent` and
   `{contentType: 'form'}`, a field changes, an `a`/`button` clicks with
@@ -853,6 +854,21 @@ pieces, and the language fact each rests on:
   the app supplies the identity (D25). `apps/fragment_notes` is the
   worked application; the note is
   `docs/notes/a-login-on-the-notes-app.md`.
+- **`login.mojo`** (SPEC N43, D53): the glue over `session.mojo` that
+  `fragment_notes` wrote by hand and the soak application copied with its
+  names changed — `Login.from_env(PREFIX, cookie)` refusing an incomplete
+  configuration by name, `sign_in(user, password)` the credential check
+  and the session in ONE call (`.session` for the page behind it,
+  `set_cookie(resp)` after, because a swap-login renders that page before
+  the response exists), `session_of`, `sign_out`, `refuse_signed_out`
+  (303 to a navigation, 401 with the form to a swap), `csrf_refusal`
+  (header before field, never the query, closed on a refused session),
+  `csrf_input`/`csrf_header` and `no_store`. `m0 new --template auth` is
+  the application written on it (N45), and `fragment_notes` runs on it:
+  the gates that held its hand-written copy hold the module now —
+  `smoke-fragment-notes` on the wire, against sessions a CPython issuer
+  signed, and `sabotage-notes-login`, whose CSRF arms revert `login.mojo`
+  itself and one of whose arms removes the header `html.mojo` writes.
 - **`form(req)`** (`form.mojo`): `Optional` — None unless the content
   type is the form's, compared whole, so "not a form" cannot be read as an
   empty one and the check cannot be forgotten — holding an ordered

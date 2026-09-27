@@ -1137,13 +1137,14 @@ bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
-# The app refuses to start without a signing key and a password, so the
-# dev runner supplies obviously-fake ones and lets the environment win.
-# Set M0_NOTES_KEY and M0_NOTES_PASSWORD to run it as anything but a demo.
+# The app refuses to start without a signing key of at least 32 bytes and
+# a password (m0_http.login), so the dev runner supplies obviously-fake
+# ones and lets the environment win. Set M0_NOTES_KEY and
+# M0_NOTES_PASSWORD to run it as anything but a demo.
 [tool.poe.tasks.serve-fragment-notes]
 help = "Run the fragment notes example (the notes resource as an htmx app, behind a login) on :8080"
 shell = """
-M0_NOTES_KEY=${M0_NOTES_KEY:-dev-only-not-a-secret} \
+M0_NOTES_KEY=${M0_NOTES_KEY:-dev-only-not-a-secret-0123456789abcdef} \
 M0_NOTES_PASSWORD=${M0_NOTES_PASSWORD:-notes} \
 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo
 """
@@ -7527,7 +7528,7 @@ deps = ["build-core", "build-http", "build-datastar", "build-sqlite"]
 # (a scaffold's sync cannot resolve offline from a locked sync's cache,
 # measured); `m0` itself is `<version>+tree`, which no index can serve.
 [tool.poe.tasks.smoke-scaffold]
-help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor (the scaffold matching itself, an edit named), the wire (a 422 fragment; two differing Datastar frames, and a kick lifting every bar of a later one), the scaffold's own smoke.sh (live: the kick count back after a restart)"
+help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor (the scaffold matching itself, an edit named), the wire (a 422 fragment; two differing Datastar frames, and a kick lifting every bar of a later one; a login, a CSRF token on every write and the DELETE's in a header), the scaffold's own smoke.sh (live: the kick count back after a restart)"
 deps = ["build-m0-wheel"]
 shell = """
 python3 scripts/m0_scaffold_smoke.py dist/m0 8951 || exit 1
@@ -7536,6 +7537,7 @@ python3 scripts/emit.py --covers N29 --task smoke-scaffold
 python3 scripts/emit.py --covers N34 --task smoke-scaffold
 python3 scripts/emit.py --covers N40 --task smoke-scaffold
 python3 scripts/emit.py --covers N42 --task smoke-scaffold
+python3 scripts/emit.py --covers N45 --task smoke-scaffold
 """
 
 # SPEC N30. `uv run m0 dev` on a scaffolded app: build-then-swap, asked of a
@@ -9287,6 +9289,8 @@ python3 scripts/emit.py --covers N13 --task smoke-fragment-notes
 python3 scripts/emit.py --covers G14 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N18 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N37 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N43 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N44 --task smoke-fragment-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------

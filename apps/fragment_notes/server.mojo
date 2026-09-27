@@ -17,8 +17,8 @@ of those lifts, and the smoke has not changed:
 - **the fragment names itself.** `Frag("notes")` writes `id="notes"`
   once — `NOTES_ID`, given to both renderers — and `f.swap("post", NOTES)`
   on the form generates the `hx-target` from that same id. Nothing in this
-  file types `#notes`, and nothing in it types a swap's `hx-` attributes
-  either (the one `hx-` it does type is `hx-headers`, below):
+  file types `#notes`, and nothing in it types an `hx-` attribute at all,
+  the DELETE's `hx-headers` included (`header=csrf_header(csrf)`):
   `Frag` is `Fragment[Htmx]`, named once below, and that one line is what
   this app knows about its frontend library.
 - **the view returns one thing.** `page_or_fragment` reads
@@ -40,10 +40,16 @@ of those lifts, and the smoke has not changed:
   is refused rather than read as a field named after itself, and the
   check cannot be forgotten.
 - **the guard is an early return.** There is no middleware (D3): a view
-  that needs a session calls `_session(req, store)` on its first line and
-  returns `_refuse(req, store, verdict)` when it is not ok. A write view
-  adds one more line, `_csrf_refusal`. Nothing is registered twice and
+  that needs a session calls `store.login.session_of(req)` on its first
+  line and returns `_refuse(req, verdict)` when it is not ok. A write view
+  adds one more line, `csrf_refusal`. Nothing is registered twice and
   nothing wraps a view, because a capturing closure is not `thin`.
+- **the login is the layer's.** The configuration, the credential check,
+  the guard's two answers, the CSRF check and the token's two spellings
+  were written here by hand, copied with the names changed by the first
+  application outside this repository, and then lifted into
+  `m0_http.login` (D53). The smoke, `sabotage-notes-login` and the
+  browser run that held the hand-written copy hold the module now.
 - **an element is an expression.** `render_list` is `el(...)` nested the
   way its markup nests, `text(...)` at every hole that carries data and
   `f.el(...)` for an element that swaps the fragment; `render_note` is the
@@ -58,9 +64,10 @@ The notes are private. One user, named and authenticated by
 this app neither stores nor looks up: `v1.<kid>.<exp>.<subject>.<tag>`,
 the tag an HMAC-SHA256 over the rest under `M0_NOTES_KEY`, checked in
 constant time against the host clock (`m0_http.session`). Every write
-carries a CSRF token derived from that tag, as a hidden field. The server
-refuses to start without a key and a password: a demo that silently ran
-open would be worse than one that did not run.
+carries a CSRF token derived from that tag: a POST as a hidden field, the
+DELETE as an `X-CSRF-Token` header (`m0_http.login`). The server refuses
+to start without a key of at least 32 bytes and a password: a demo that
+silently ran open would be worse than one that did not run.
 
 What the app promises on the wire, and the gate asserts:
 
@@ -89,11 +96,11 @@ form where the list was — which is why that 401 carries a fragment of the
 same id. Under htmx 2.0.4 it showed nothing until a reload.
 
 The attribute vocabulary is htmx 4 (`hx-*`), pinned to one CDN version;
-`Htmx.swap` in m0-http is the only place a swap is spelled, and `Frag`
-below is the only place this app names it. `hx-headers` is the one
-attribute written here by hand (`_csrf_header`): the layer spells swaps,
-not request headers, and one app is not evidence of what a header helper
-should look like (DECISIONS D38).
+`Htmx` in m0-http is the only place a swap, or the request header one
+sends, is spelled, and `Frag` below is the only place this app names it.
+The DELETE's `hx-headers` was the one attribute this file typed by hand
+until a second application needed one and the layer could spell it
+(`header=`, SPEC N44; DECISIONS D38, retired).
 
 The store is in-memory, parallel lists, one process — see `notes_api`. It
 runs on the Mojo host as `ViewsApp[NoteStore]`, and `NoteStore` says it
@@ -103,39 +110,34 @@ serves from one process (`max_workers`), so `M0_WORKERS=2` is refused with
 Run it:  uv run poe serve-fragment-notes
 """
 
-from std.os import getenv
-
 from lightbug_http import HTTPRequest, HTTPResponse
-from lightbug_http.header import HeaderKey
 from lightbug_http.c.process import process_exit
-from lightbug_http.http.date import unix_now
 from m0_host.host import HostContext, ViewState, ViewsApp, serve
 from m0_host.flags import host_config
 
-from m0_core import constant_time_equal, sha256
-
 from m0_http import reply
 from m0_http import (
-    Form,
     Fragment,
     Html,
     Htmx,
+    Login,
     SessionKeys,
     SessionVerdict,
     Views,
     attr,
+    csrf_header,
+    csrf_input,
+    csrf_refusal,
     el,
     flag,
     form,
-    issue_session,
+    no_store,
     PageShell,
     page_or_fragment,
-    session_cookie_line,
-    session_refused,
+    refuse_signed_out,
     text,
     url_for,
     vary_on_fragment_headers,
-    verify_session,
     void,
     wants_fragment,
 )
@@ -176,115 +178,33 @@ comptime Frag = Fragment[Htmx]
 #
 # The format, its verifier and the CSRF derivation were written here
 # first, under the wire gate, and lifted into `m0_http.session` once it
-# was green — the smoke did not move. What stays is this app's POLICY:
-# who the user is, what the cookie is called, how long a session lasts,
-# which views are private and what a refusal looks like. None of that
-# generalises, and all of it is four screens above the views that read it.
+# was green; the rest of the glue followed into `m0_http.login` once a
+# second application had copied it (D53), and the smoke did not move
+# either time. What stays is this app's POLICY: who the user is, what the
+# cookie is called, how long a session lasts, which views are private and
+# what a refusal looks like. None of that generalises.
 
 comptime LOGIN = "/login"
 comptime LOGOUT = "/logout"
 
 comptime SESSION_COOKIE = "m0_notes_session"
 comptime SESSION_TTL_DEFAULT = 3600
-comptime CSRF_FIELD = "csrf"
-comptime CSRF_HEADER = "x-csrf-token"
-"""Where a DELETE carries the token (`X-CSRF-Token`). Lowercase, as
-`Headers` stores every name."""
+comptime LOGIN_ENV = "M0_NOTES"
+"""The configuration's prefix: `M0_NOTES_KEY` and `M0_NOTES_PASSWORD`,
+and optionally `M0_NOTES_KEY_PREV`, `M0_NOTES_USER`, `M0_NOTES_TTL` and
+`M0_NOTES_SECURE`."""
 
-comptime KEY_ENV = "M0_NOTES_KEY"
-comptime PREV_KEY_ENV = "M0_NOTES_KEY_PREV"
-comptime PASSWORD_ENV = "M0_NOTES_PASSWORD"
-comptime USER_ENV = "M0_NOTES_USER"
-comptime TTL_ENV = "M0_NOTES_TTL"
-comptime SECURE_ENV = "M0_NOTES_SECURE"
+
+def notes_login() raises -> Login:
+    """The one user and what signs their session: `notes` and an hour
+    unless the environment says otherwise, or an error naming the variable
+    that cannot be served."""
+    return Login.from_env(
+        LOGIN_ENV, SESSION_COOKIE, default_user="notes", default_ttl=SESSION_TTL_DEFAULT
+    )
 
 
 # --- state --------------------------------------------------------------------
-
-
-struct NotesAuth(Movable):
-    """The one user, and what a session of theirs is signed with.
-
-    No user table: a demo with a login needs an identity, not a directory.
-    The password is compared as a SHA-256 digest so the compare is over
-    two fixed-length byte strings — `constant_time_equal` reads all of
-    both whatever the first mismatch, which a compare of raw passwords of
-    different lengths cannot. It is NOT a password hash: there is no salt
-    and no work factor, because there is nothing at rest to steal — the
-    secret lives in the environment of the process that checks it (D24).
-    """
-
-    var user: String
-    var password_digest: List[UInt8]
-    var keys: SessionKeys
-    var ttl: Int64
-    var secure: Bool
-
-    def __init__(
-        out self,
-        var user: String,
-        password: String,
-        var keys: SessionKeys,
-        ttl: Int64,
-        secure: Bool,
-    ):
-        self.user = user^
-        self.password_digest = sha256(Span(password.as_bytes()))
-        self.keys = keys^
-        self.ttl = ttl
-        self.secure = secure
-
-    def __init__(out self, *, deinit move: Self):
-        self.user = move.user^
-        self.password_digest = move.password_digest^
-        self.keys = move.keys^
-        self.ttl = move.ttl
-        self.secure = move.secure
-
-    def accepts(self, user: String, password: String) -> Bool:
-        """Whether these credentials are the one user's. Both compares are
-        over digests, so neither the password nor the user name leaks its
-        length or its first differing byte."""
-        var want_user = sha256(Span(self.user.as_bytes()))
-        var have_user = sha256(Span(user.as_bytes()))
-        var have_pass = sha256(Span(password.as_bytes()))
-        var user_ok = constant_time_equal(Span(want_user), Span(have_user))
-        var pass_ok = constant_time_equal(Span(self.password_digest), Span(have_pass))
-        return user_ok and pass_ok
-
-    @staticmethod
-    def from_env() raises -> Self:
-        """The configuration, or an error naming the variable that is missing.
-
-        Fail closed, the way a hold mount refuses to start without
-        `M0_GRANT_KEY`: a notes app that quietly served everyone because a
-        deployment forgot a variable is worse than one that did not start.
-        """
-        var key = getenv(KEY_ENV, "")
-        if key.byte_length() == 0:
-            raise Error(String(KEY_ENV, " is not set: it signs the session cookie"))
-        var password = getenv(PASSWORD_ENV, "")
-        if password.byte_length() == 0:
-            raise Error(String(PASSWORD_ENV, " is not set: it is the one user's password"))
-        var keys = SessionKeys()
-        keys.add(Span(key.as_bytes()))
-        var previous = getenv(PREV_KEY_ENV, "")
-        if previous.byte_length() > 0:
-            keys.add(Span(previous.as_bytes()))
-        var ttl = Int64(SESSION_TTL_DEFAULT)
-        var ttl_env = getenv(TTL_ENV, "")
-        if ttl_env.byte_length() > 0:
-            var parsed = reply.param_int(ttl_env)
-            if parsed <= 0:
-                raise Error(String(TTL_ENV, " must be a positive number of seconds"))
-            ttl = Int64(parsed)
-        return Self(
-            getenv(USER_ENV, "notes"),
-            password,
-            keys^,
-            ttl,
-            getenv(SECURE_ENV, "") == "1",
-        )
 
 
 struct NoteStore(ViewState):
@@ -296,19 +216,19 @@ struct NoteStore(ViewState):
     var bodies: List[String]
     var tags: List[List[String]]
     var next_id: Int
-    var auth: NotesAuth
+    var login: Login
 
-    def __init__(out self, var auth: NotesAuth):
+    def __init__(out self, var login: Login):
         self.ids = List[Int]()
         self.titles = List[String]()
         self.bodies = List[String]()
         self.tags = List[List[String]]()
         self.next_id = 1
-        self.auth = auth^
+        self.login = login^
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
-        return NoteStore(NotesAuth.from_env())
+        return NoteStore(notes_login())
 
     @staticmethod
     def urls() raises -> Views[Self]:
@@ -367,7 +287,8 @@ struct Site(PageShell):
         them — rode the body rather than the query string. htmx 4 has no
         such setting: `/GET|DELETE/.test(method)` is in the source, so a
         DELETE's fields go in the URL whatever the page says, and the
-        token left the form for a header instead (`_csrf_header`).
+        token left the form for a header instead
+        (`header=csrf_header(csrf)` in `render_list`).
         """
         var h = Html(1024)
         h.raw("<!doctype html>\n")
@@ -408,32 +329,6 @@ struct Site(PageShell):
         h.close("html")
         h.raw("\n")
         return h^.finish()
-
-
-def _csrf_input(csrf: String) raises -> String:
-    """The token as a hidden field. Written once: a write the renderer
-    forgets to carry it on is a write the server answers 403, so the
-    spelling belongs in one place."""
-    return void(
-        "input",
-        attr("type", "hidden") + attr("name", CSRF_FIELD) + attr("value", csrf),
-    )
-
-
-def _csrf_header(csrf: String) raises -> String:
-    """The token as a request header, for the write that has no body.
-
-    htmx 4 sends a DELETE's parameters in the query string and offers no
-    setting to change that, and a token in a URL is a token in the access
-    log, the `Referer` and the browser history. So the delete form holds
-    NO hidden field — a field there is a field in the URL — and carries
-    `hx-headers` instead, which htmx reads from the element itself
-    (inheritance is explicit in htmx 4, so it goes on each form rather
-    than once on the list). The value is JSON; a token is 43 base64url
-    characters, none of which JSON escapes, and `attr` escapes the quotes
-    around it for the HTML context.
-    """
-    return attr("hx-headers", String('{"X-CSRF-Token":"', csrf, '"}'))
 
 
 def render_login(error: String) raises -> String:
@@ -480,7 +375,7 @@ def render_list(store: NoteStore, subject: String, csrf: String) raises -> Strin
     for tag in ["work", "home", "later"]:
         boxes += el("label", "", void("input", attr("type", "checkbox") + attr("name", "tag") + attr("value", tag)), text(String(" ", tag))) + " "
     f.raw(f.el("form", "post", NOTES, "",
-        _csrf_input(csrf),
+        csrf_input(csrf),
         void("input", attr("name", "title") + attr("placeholder", "title") + flag("required")),
         el("textarea", attr("name", "body") + attr("placeholder", "body")),
         el("div", "", boxes),
@@ -497,8 +392,9 @@ def render_list(store: NoteStore, subject: String, csrf: String) raises -> Strin
             # the address bar and the note can be reloaded and linked to.
             f.el("a", "get", url, attr("href", url), text(store.titles[i]), push=True),
             tags, " ",
-            f.el("form", "delete", url, attr("class", "delete") + _csrf_header(csrf),
+            f.el("form", "delete", url, attr("class", "delete"),
                 el("button", "", "&times;"),
+                header=csrf_header(csrf),
             ),
         )
     f.raw(el("ul", "", items))
@@ -509,7 +405,7 @@ def render_list(store: NoteStore, subject: String, csrf: String) raises -> Strin
     f.raw(el("div", attr("class", "who"),
         text(String("signed in as ", subject)), " ",
         el("form", attr("class", "session") + attr("method", "post") + attr("action", LOGOUT),
-            _csrf_input(csrf),
+            csrf_input(csrf),
             el("button", "", "Sign out"),
         ),
     ))
@@ -550,106 +446,13 @@ def render_note(store: NoteStore, i: Int) raises -> String:
 # --- views ---------------------------------------------------------------------
 
 
-def _session(req: HTTPRequest, store: NoteStore) -> SessionVerdict:
-    """The request's session, or the reason it has none."""
-    var raw = req.cookies.get(SESSION_COOKIE)
-    if not raw:
-        return session_refused(String("no cookie"))
-    return verify_session(
-        Span(raw.value().as_bytes()), store.auth.keys, unix_now()
-    )
-
-
-def _private(var resp: HTTPResponse) -> HTTPResponse:
-    """`Cache-Control: no-store` on an answer the session decided.
-
-    Every response below `_session` was chosen by the cookie — the list
-    with its token, the 303 to the login page, the 401 fragment — and
-    `Vary` names only the fragment headers. A shared cache in front would
-    otherwise hand the anonymous redirect to a signed-in user, or a
-    rendered token to anyone. `no-store` rather than `Vary: Cookie`,
-    because a private page is not one to keep at all.
-    """
-    resp.headers[HeaderKey.CACHE_CONTROL] = "no-store"
-    return resp^
-
-
 def _refuse(req: HTTPRequest, verdict: SessionVerdict) raises -> HTTPResponse:
-    """What a request with no usable session gets: the login form.
-
-    A navigation is sent there with a 303, which is what a browser
-    address bar needs. A swap gets 401 carrying the same form as a bare
-    fragment, because a redirect a swap follows would put the login page
-    inside the element the list was in with no way back.
-    """
-    if wants_fragment(req):
-        return _private(page_or_fragment(
-            req,
-            render_login(String("signed out (", verdict.reason, ")")),
-            Site("sign in"),
-            401,
-            String("Unauthorized"),
-        ))
-    return _private(vary_on_fragment_headers(reply.redirect(303, LOGIN)))
-
-
-def _token_matches(verdict: SessionVerdict, got: String) -> Bool:
-    return constant_time_equal(
-        Span(verdict.csrf.as_bytes()), Span(got.as_bytes())
-    )
-
-
-def _csrf_refusal(
-    req: HTTPRequest,
-    body: Optional[Form],
-    verdict: SessionVerdict,
-    instance: String,
-) -> Optional[HTTPResponse]:
-    """403 unless the request carries THIS session's token — in the
-    `X-CSRF-Token` header, or in the body. Never the query string: nothing
-    here reads it, so a token that reached the URL is a 403 rather than a
-    quiet acceptance.
-
-    Two places because htmx 4 leaves a DELETE no body to carry a field
-    in; a header is the stronger of the two, since a cross-origin page
-    cannot set one without a preflight this server never answers.
-
-    The guard, in the shape D3 leaves for one: an early return, not a
-    decorator. It takes `form(req)` rather than a `Form` so a view that
-    has no other use for the body can pass the parse straight through;
-    `create`, which reads the form afterwards, checks the content type
-    first and answers 400 there, which tells a forger only what its own
-    request declared. `SameSite=Lax` already keeps the cookie off a
-    cross-site write, so what this catches is the same-site forgery:
-    another tab, another session's token, a form replayed after a
-    re-login.
-
-    Fails closed on a verdict that is not ok: a refused session carries an
-    empty token, and two empty strings compare equal, so without this
-    line a write view that forgot its session guard would accept `csrf=`
-    from anyone. Every write checks the session first; this is the layer
-    under that one.
-    """
-    if not verdict.ok:
-        return reply.problem(
-            403, String("Forbidden"), String("no session to hold a token"), instance
-        )
-    var sent = req.headers.get(CSRF_HEADER)
-    if sent:
-        # A header that is present decides: a wrong one is not rescued by
-        # a field, so a request cannot offer two tokens and pass on either.
-        if _token_matches(verdict, sent.value()):
-            return None
-    elif body:
-        var got = body.value().get(CSRF_FIELD)
-        if got:
-            if _token_matches(verdict, got.value()):
-                return None
-    return reply.problem(
-        403,
-        String("Forbidden"),
-        String("the request did not carry this session's CSRF token"),
-        instance,
+    """What a request with no usable session gets: a 303 to the login page
+    for a navigation, and for a swap the login form as a 401 fragment, so
+    it lands where the list was (`refuse_signed_out`). What this app adds
+    is the form, saying why."""
+    return refuse_signed_out(
+        req, LOGIN, render_login(String("signed out (", verdict.reason, ")"))
     )
 
 
@@ -679,7 +482,8 @@ def login(
             LOGIN,
         )
     var f = maybe.take()
-    if not store.auth.accepts(f.first("user"), f.first("password")):
+    var started = store.login.sign_in(f.first("user"), f.first("password"))
+    if not started:
         return page_or_fragment(
             req,
             render_login(String("wrong user or password")),
@@ -687,33 +491,28 @@ def login(
             401,
             String("Unauthorized"),
         )
-    var value = issue_session(
-        store.auth.keys, store.auth.user, unix_now() + store.auth.ttl
-    )
-    var session = verify_session(Span(value.as_bytes()), store.auth.keys, unix_now())
+    var signed = started.take()
     var resp: HTTPResponse
     if wants_fragment(req):
         resp = page_or_fragment(
-            req, render_list(store, session.subject, session.csrf), Site("notes")
+            req,
+            render_list(store, signed.session.subject, signed.session.csrf),
+            Site("notes"),
         )
     else:
         resp = vary_on_fragment_headers(reply.redirect(303, NOTES))
-    resp.cookies.add_raw(
-        session_cookie_line(
-            SESSION_COOKIE, value, store.auth.ttl, store.auth.secure
-        )
-    )
-    return _private(resp^)
+    signed.set_cookie(resp)
+    return no_store(resp^)
 
 
 def logout(
     req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
     """POST /logout — expires the cookie. A write, so it carries the token."""
-    var session = _session(req, store)
+    var session = store.login.session_of(req)
     if not session.ok:
         return _refuse(req, session)
-    var refused = _csrf_refusal(req, form(req), session, LOGOUT)
+    var refused = csrf_refusal(req, form(req), session, LOGOUT)
     if refused:
         return refused.take()
     var resp: HTTPResponse
@@ -721,20 +520,18 @@ def logout(
         resp = page_or_fragment(req, render_login(String("")), Site("sign in"))
     else:
         resp = vary_on_fragment_headers(reply.redirect(303, LOGIN))
-    resp.cookies.add_raw(
-        session_cookie_line(SESSION_COOKIE, String(""), Int64(0), store.auth.secure)
-    )
-    return _private(resp^)
+    store.login.sign_out(resp)
+    return no_store(resp^)
 
 
 def index(
     req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
     """GET /notes — the list."""
-    var session = _session(req, store)
+    var session = store.login.session_of(req)
     if not session.ok:
         return _refuse(req, session)
-    return _private(page_or_fragment(
+    return no_store(page_or_fragment(
         req, render_list(store, session.subject, session.csrf), Site("notes")
     ))
 
@@ -743,7 +540,7 @@ def create(
     req: HTTPRequest, params: List[String], mut store: NoteStore
 ) raises -> HTTPResponse:
     """POST /notes — a urlencoded form; answers the list."""
-    var session = _session(req, store)
+    var session = store.login.session_of(req)
     if not session.ok:
         return _refuse(req, session)
     var maybe = form(req)
@@ -753,7 +550,7 @@ def create(
             "the request body must be application/x-www-form-urlencoded",
             NOTES,
         )
-    var refused = _csrf_refusal(req, maybe, session, NOTES)
+    var refused = csrf_refusal(req, maybe, session, NOTES)
     if refused:
         return refused.take()
     var f = maybe.take()
@@ -763,7 +560,7 @@ def create(
             400, "Invalid Note", 'the form must carry a non-empty "title"', NOTES
         )
     store.add(title, f.first("body"), f.all("tag"))
-    return _private(page_or_fragment(
+    return no_store(page_or_fragment(
         req, render_list(store, session.subject, session.csrf), Site("notes")
     ))
 
@@ -772,13 +569,13 @@ def detail(
     req: HTTPRequest, params: List[String], store: NoteStore
 ) raises -> HTTPResponse:
     """GET /notes/:id — one note."""
-    var session = _session(req, store)
+    var session = store.login.session_of(req)
     if not session.ok:
         return _refuse(req, session)
     var i = _index_of(store, params[0])
     if i < 0:
         return reply.problem(404, "Not Found", "no note with this id", req.uri.path)
-    return _private(
+    return no_store(
         page_or_fragment(req, render_note(store, i), Site(store.titles[i]))
     )
 
@@ -793,17 +590,17 @@ def delete(
     its form's fields in the query string, which is why that form has no
     fields. A token in the query is never read, so it is a 403.
     """
-    var session = _session(req, store)
+    var session = store.login.session_of(req)
     if not session.ok:
         return _refuse(req, session)
-    var refused = _csrf_refusal(req, form(req), session, req.uri.path)
+    var refused = csrf_refusal(req, form(req), session, req.uri.path)
     if refused:
         return refused.take()
     var i = _index_of(store, params[0])
     if i < 0:
         return reply.problem(404, "Not Found", "no note with this id", req.uri.path)
     store.remove(i)
-    return _private(page_or_fragment(
+    return no_store(page_or_fragment(
         req, render_list(store, session.subject, session.csrf), Site("notes")
     ))
 
@@ -853,25 +650,25 @@ def note_urls() raises -> Views[NoteStore]:
     return v^
 
 
-def _auth_or_exit() raises -> NotesAuth:
+def _login_or_exit() raises -> Login:
     """The configuration, or a refusal to start naming what is missing."""
     try:
-        return NotesAuth.from_env()
+        return notes_login()
     except e:
         print(String("fragment_notes: ", String(e)), flush=True)
         process_exit(78)
-    return NotesAuth(String(""), String(""), SessionKeys(), Int64(0), False)
+    return Login(String(""), String(""), SessionKeys(), Int64(0), False, String(""))
 
 
 def main() raises:
     # With the command line applied, so the address printed below is the
     # one `serve` binds under `--port` (`m0_host.flags`).
     var config = host_config()
-    var auth = _auth_or_exit()
+    var login = _login_or_exit()
     print(
         String(
             "Fragment notes on ", config.base_url,
-            " — one user (", auth.user, "), sessions for ", auth.ttl, "s",
+            " — one user (", login.user, "), sessions for ", login.ttl, "s",
         )
     )
     serve[ViewsApp[NoteStore]](config)

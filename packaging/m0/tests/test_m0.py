@@ -357,7 +357,7 @@ class CommandLine(unittest.TestCase):
                      ["image", "--push"], ["image", "--deploy"], ["image", "x"],
                      ["deploy"], ["watch"],
                      ["new", "x", "--ui", "htmx"],
-                     ["new", "x", "--template", "auth"], ["new", "x", "--live"],
+                     ["new", "x", "--template", "chat"], ["new", "x", "--live"],
                      ["build", "-o", "x"], ["build", "--rel"],
                      ["build", "--", "x"], ["include", "--", "x"],
                      ["test", "--", "x"], []):
@@ -564,7 +564,7 @@ class New(unittest.TestCase):
             for name in names:
                 self.assertTrue((root / template / name).is_file(), (template, name))
 
-    def test_both_templates_write_their_manifest_and_leave_no_token(self):
+    def test_every_template_writes_its_manifest_and_leaves_no_token(self):
         for template in new.TEMPLATES:
             with tempfile.TemporaryDirectory() as tmp:
                 target = Path(tmp) / "corner-shop"
@@ -578,6 +578,9 @@ class New(unittest.TestCase):
                     self.assertNotIn("__M0_", (target / path).read_text(), path)
                 self.assertTrue(os.access(target / "smoke.sh", os.X_OK))
                 self.assertIn("uv sync", out)
+                # `auth` refuses to start without its two variables, so the
+                # next commands say how to set them; the others need none.
+                self.assertEqual("APP_KEY" in out, template == "auth", template)
                 pins = (target / "pyproject.toml").read_text()
                 self.assertIn(f'"m0=={checks.m0_version()}"', pins)
                 self.assertIn(f'"mojo=={paths.build_info()["gated_mojo"][0]}"', pins)

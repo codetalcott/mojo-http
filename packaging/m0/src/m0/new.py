@@ -1,4 +1,4 @@
-"""`m0 new NAME [--template views|live]`: write an application.
+"""`m0 new NAME [--template views|live|auth]`: write an application.
 
 Needs no toolchain and no network, which is what lets it run as `uvx m0 new`
 before anything is installed: it copies files this wheel carries and
@@ -24,7 +24,7 @@ from pathlib import Path
 
 from m0 import checks, paths
 
-TEMPLATES = ("views", "live")
+TEMPLATES = ("views", "live", "auth")
 
 # A letter first and a letter or digit last: a trailing hyphen is no
 # PEP 508 project name, no image reference and no DNS label (the deploy's
@@ -67,6 +67,13 @@ MANIFEST = {
         "src/wave.mojo",
         "test/test_live.mojo",
     ),
+    "auth": (
+        "smoke.sh",
+        "src/pages.mojo",
+        "src/server.mojo",
+        "src/views.mojo",
+        "test/test_auth.mojo",
+    ),
 }
 
 EXECUTABLE = ("smoke.sh",)
@@ -75,6 +82,14 @@ EXECUTABLE = ("smoke.sh",)
 # list (`checks.CHECKS`) by name; the other three describe an environment
 # `uv sync` has not made yet.
 EARLY_CHECKS = ("platform", "c-compiler")
+
+# What a template needs in the environment before its binary will serve,
+# printed with the next commands: `auth` refuses to start without them
+# (exit 78, naming the variable), and the first minute should not be spent
+# reading that refusal.
+ENV_HINT = {
+    "auth": "export APP_KEY=\"$(openssl rand -hex 32)\" APP_PASSWORD='choose one'",
+}
 
 
 def target_path(relative):
@@ -146,6 +161,8 @@ def run(args):
     print()
     print(f"    cd {args.name}")
     print("    uv sync")
+    if args.template in ENV_HINT:
+        print("    " + ENV_HINT[args.template])
     print("    uv run m0 build && bin/server --port 8080")
     print()
     print("AGENTS.md is the page to read first; `uv run m0 test` is the fast loop.")

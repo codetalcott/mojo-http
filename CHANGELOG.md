@@ -101,6 +101,49 @@ in a minor release: `m0serve`'s flags and environment variables, the
   an edited Dockerfile is named), and `sabotage-scaffold` removes the
   naming.
 
+- **A login in the layer, and a scaffold template written on it** (SPEC
+  N43–N45, D53; D38 and D44 retired; docs/notes/a-login-in-the-layer.md).
+  `m0_http.login` is the glue `apps/fragment_notes` wrote by hand and the
+  soak application copied with its names changed:
+  - `Login.from_env(PREFIX, cookie)` refuses an incomplete configuration by
+    name. `PREFIX_SECURE` is `1` or `0`, and any other value is refused
+    rather than read as off, so `M0_NOTES_SECURE=true` now stops
+    `fragment_notes` at startup where it used to drop `Secure`
+    silently.
+  - `sign_in(user, password)` is the credential check and the session in
+    one call.
+  - `session_of` and `sign_out` read and end a session.
+  - `refuse_signed_out` answers a navigation with a 303 and a swap with a
+    401 carrying the form.
+  - `csrf_refusal` reads the header before the field, never the query
+    string, and refuses everything when there is no session.
+  - `csrf_input`, `csrf_header` and `no_store`.
+
+  A swap now sends a request header with `header=RequestHeader(...)`:
+  `hx-headers` for `Htmx`, refused by `Datastar` and by the trait's default.
+  That is how a DELETE carries its CSRF token under htmx 4, which sends a
+  DELETE's fields in the query string.
+
+  `m0 new NAME --template auth` writes the `views` list behind the login:
+  - Every write carries the token.
+  - The login and the logout are plain forms.
+  - `main` refuses a missing `APP_KEY` or `APP_PASSWORD` with exit 78
+    before `serve`, so the doctor refuses it too.
+  - `m0 new` prints the `export` that sets both variables.
+
+  `smoke-scaffold` holds the template on the wire, and `sabotage-scaffold`
+  reverts each of its rules. `test_login.mojo` and `test_html.mojo` hold the
+  module and the header, each rule shown failing with its behaviour
+  reverted. The scaffold's `AGENTS.md` now names the module where it named
+  the notes app's source, so `m0 doctor` reports that file as changed in a
+  project written by an earlier `m0`.
+
+  `apps/fragment_notes` runs on the module, and `smoke-fragment-notes`
+  passes unchanged. Its key must now be at least 32 bytes, and
+  `serve-fragment-notes`' development default is lengthened to match.
+  `sabotage-notes-login`'s CSRF arms now revert `login.mojo` itself, and a
+  new arm removes the layer's `request_header` call.
+
 ### Changed
 
 - **Loops on threads are the documented way to more than one core for an

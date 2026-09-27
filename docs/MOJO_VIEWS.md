@@ -4,8 +4,8 @@ The application layer of `m0_http`: a table of views over one state, HTML
 fragments that name their own swap target, one view answering both a page
 and a fragment, URLs built from the routes, and signed sessions. The
 `views` scaffold uses the table, fragments and the page-or-fragment answer
-in three files, and the examples start from it; it has no login, so
-sessions point at `apps/fragment_notes`.
+in three files, and the examples start from it; the `auth` scaffold is the
+same list behind a login, on `m0_http.login`.
 
 ## Views
 
@@ -108,15 +108,19 @@ for htmx 4. Its verbs are `get`, `post`, `put`, `patch`, `delete` and
 `query`. Two htmx 4 behaviours shape an application: every 4xx answer is
 swapped, so an error a person may see is a fragment with the right status
 (`page_or_fragment(..., status=422)`); and a DELETE's fields travel in the
-query string, so a CSRF token on one goes in a header.
+query string, so a CSRF token on one goes in a header:
+`f.el("button", "delete", url, ..., header=csrf_header(token))` writes
+`hx-headers` beside the swap. The layer refuses a header name that is not a
+token, and a value holding a control byte or a byte outside ASCII.
 
 **`Fragment[Datastar]`** emits `data-on:EVENT="@verb('url')"` with no
 target: Datastar morphs a `text/html` answer into the element whose id it
 carries. The event follows the element, a form submitting, a field
 changing, anything else clicking. The URL sits inside a JavaScript string,
 so one carrying `'`, `\`, CR or LF is refused; `url_for` encodes them.
-Moving an application between the two is the type parameter and the script
-tag.
+A request header is refused too: Datastar spells one inside the action,
+so a Datastar write carries its CSRF token in a field. Otherwise, moving an
+application between the two is the type parameter and the script tag.
 
 **Your own.** `Vocabulary` is a trait an application may conform to:
 `swap` writes the attributes, `h.open_kind()` says which element is open,
@@ -193,7 +197,43 @@ no storage. Keys rotate through a ring: a session ends at its expiry, or
 when its key leaves the ring.
 
 There is no session store and no password hashing; the application supplies
-the identity. `apps/fragment_notes` in the repository is the worked login.
+the identity.
+
+### A login
+
+`m0_http.login` is one user behind that cookie, the glue two applications
+wrote the same way by hand:
+
+```mojo
+var login = Login.from_env("APP", "shop-session")   # APP_KEY, APP_PASSWORD
+
+var session = st.login.session_of(req)                # a view's first lines
+if not session.ok:
+    return refuse_signed_out(req, LOGIN, render_login(""))
+var refused = csrf_refusal(req, form(req), session, url)   # and a write's
+if refused:
+    return refused.take()
+```
+
+- `Login.from_env(PREFIX, cookie)` reads `PREFIX_KEY` (`LOGIN_KEY_MIN`
+  bytes at least; `openssl rand -hex 32` makes one) and `PREFIX_PASSWORD`, with `PREFIX_KEY_PREV`, `PREFIX_USER`,
+  `PREFIX_TTL` and `PREFIX_SECURE` (`1` or `0`) optional, and raises
+  naming what is missing or malformed. Read it in `main` before `serve` and exit 78 on the error, so
+  `--doctor` refuses what the run would.
+- `sign_in(user, password)` is the credential check and the session in one
+  call: None for the wrong pair, else `.session` (the subject and CSRF
+  token a page renders) and `set_cookie(resp)`. `sign_out(resp)` expires
+  the cookie.
+- `refuse_signed_out` answers a navigation with a 303 to the login page and
+  a swap with a 401 carrying the form.
+- `csrf_refusal` answers 403 unless a write carries this session's token:
+  the `X-CSRF-Token` header, else the form's `csrf` field, never the query
+  string. `csrf_input(token)` and `csrf_header(token)` write the two.
+- `no_store(resp)` marks an answer the session chose as not cacheable.
+
+`m0 new NAME --template auth` writes an application on it, and
+`apps/fragment_notes` in the repository, the login it was lifted from,
+runs on it.
 
 `m0_http.grant` verifies a signed, expiring permission to open one stream
 channel, bound to a session cookie. It is how a Python application behind

@@ -45,7 +45,7 @@ refused by `m0 doctor`, with no fix to offer.
 
 | command | does |
 |---|---|
-| `m0 new NAME` | writes a project from the `views` or `live` template; needs no toolchain |
+| `m0 new NAME` | writes a project from the `views`, `live` or `auth` template; needs no toolchain |
 | `m0 build` | `src/server.mojo` to `bin/server`; with the release option, a relocatable `dist/` |
 | `m0 test` | runs `test/test_*.mojo`; links nothing |
 | `m0 dev` | builds, serves, rebuilds on save; swaps only after a build succeeds |

@@ -988,8 +988,9 @@ notes corpus written outside this repository on the documented path:
 login on `m0_http.session`, deployed as an image to Fly.io. Its
 `SOAK_LOG.md` is the running record, and its findings are rows here
 already: `Query` (N36), `push=True` (N37), HEAD answered by GET (N38),
-SQLite opened at run time (O17, O18, N39, N40), and the scaffold's login
-guidance. By its own account it has run a synthetic soak (`scripts/soak.py`
+SQLite opened at run time (O17, O18, N39, N40), the scaffold's login
+guidance, and the login module and `auth` template that its login, the
+second one written by hand, was the trigger for (N43–N45). By its own account it has run a synthetic soak (`scripts/soak.py`
 against a local two-worker build, every response compared with the same
 binary's answer alone, through SIGTERM restarts and abandoning clients) and
 owes the use window: the deployed instance in real use, including a phone

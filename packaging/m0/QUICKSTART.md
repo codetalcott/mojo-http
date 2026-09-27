@@ -35,8 +35,10 @@ shop/
   AGENTS.md          the rules that are not obvious from the code
 ```
 
-`--template live` writes the other template: a producer thread that pushes
-its whole state to every open tab over Server-Sent Events, with Datastar.
+`--template live` writes another: a producer thread that pushes its whole
+state to every open tab over Server-Sent Events, with Datastar. `--template
+auth` writes the `views` list behind a login, a CSRF token on every write,
+and prints the two variables it will not start without.
 
 ## 2. Build and serve
 
