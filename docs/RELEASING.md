@@ -559,7 +559,11 @@ names an `m0` the index lacks.
 ### Each release
 
 1. Everything the gates below hold is green on `main`: `Tests` for the
-   commit to be tagged, then locally `uv run poe sabotage-m0-wheel` and
+   commit to be tagged — the build job refuses the tag otherwise, reading
+   the latest run on that commit or, for a merge commit, on the pull
+   request head it merges (a merge the `automerge` label makes starts no
+   workflow, so it has no run of its own; a commit that changes docs alone
+   gets none either, so tag the commit that carries the code) — then locally `uv run poe sabotage-m0-wheel` and
    `uv run poe sabotage-scaffold`, read for MISSED and NOT APPLICABLE at
    the head.
 2. `__version__` in `packaging/m0/src/m0/__init__.py` is the version to
@@ -575,7 +579,8 @@ names an `m0` the index lacks.
    release exists.
 4. `git tag m0-vX.Y.Z <sha> && git push origin m0-vX.Y.Z`. Approve the
    `pypi-m0` deployment when the `build` job is green and you have read
-   its "cut from" line.
+   its "cut from" line and its "Tests passed on" line. If it says `Tests`
+   is still running, re-run the job once it has passed; the tag stays.
 5. After the upload: in an empty directory, `uvx m0 new probe && cd probe
    && uv sync && uv run m0 build && ./smoke.sh`, then `uv run m0 image` if
    docker is up — the published-wheel path through `uv sync --frozen` in
