@@ -8,7 +8,57 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.7.0] — 2026-09-27
+
+MAX's parallel runtime does not survive a fork, so the Mojo host and
+m0serve now refuse a forked worker in a binary that links it and name the
+mode that serves it, and loops on threads are the documented way to more
+than one core. m0serve's refusal reaches only a Mojo mount built against
+MAX; the published wheel is built without it, so the served contract is
+unchanged. `m0-sqlite` opens libsqlite3 at run time, and no binary in the
+tree links it. Two defects the last pre-release run found are fixed: a
+burst of new connections held the loop away from the connections it was
+serving, and a pool thread starved for the GIL under a CPU-bound view. The
+`m0` wheel ships as `m0 0.3.0`, with a login in the layer, an `auth`
+scaffold template written on it, the storage packages, and a doctor that
+names what an upgrade changed.
+
 ### Added
+
+- **`m0 0.3.0`: this release's framework, for applications built with
+  `m0`.** What changed since `m0 0.2.0` for someone writing an
+  application:
+  - New: `m0 new NAME --template auth`, a `views` list behind a login, and
+    `m0_http.login`, the module it is written on (N43–N45, below). A swap
+    sends a request header with `header=RequestHeader(...)`, written as
+    `hx-headers` by `Htmx` and refused by `Datastar`. That is how a DELETE
+    carries its CSRF token under htmx 4, and `csrf_header` builds that
+    header.
+  - `m0_sqlite` and `m0_postgres` ship in the wheel and link nothing
+    (N39). The `live` template keeps its kick count in SQLite, and its
+    image installs `libsqlite3-0` (N40). `max-core` is a pinned companion,
+    and `m0 doctor`'s new `max-gated` check refuses any other version
+    (N41).
+  - The upgrade path: nothing rewrites a project's files, so `m0 doctor`
+    now names each scaffold file that differs from what the running `m0`
+    writes, reported and never failed (N42). Between 0.2.0 and 0.3.0 six
+    of the ten files every template writes changed, the Dockerfile among
+    them, whose 0.2.0 form installs no `libsqlite3`. With `max-core`
+    installed, `mojo-gated`'s fix is one `uv add` that moves both pins.
+  - `M0_WORKERS` above 1 in a binary that links MAX's parallel runtime
+    exits 78; `M0_THREADS` serves it (E32, D48). On macOS a build beside
+    an installed `max-core` links the runtime whether or not the source
+    imports it (ROADMAP Known issues).
+  - A route that takes GET answers HEAD, and `Allow` names HEAD beside
+    GET (N38). `url_for` refuses a `.` or `..` parameter (N5).
+    `issue_session` refuses an expiry `verify_session` cannot read, such
+    as one in milliseconds. `Login.from_env` refuses a key under 32 bytes
+    and a `PREFIX_SECURE` other than `1` or `0`.
+  - The command line: `m0 new` refuses a name that ends in `-`; `m0
+    doctor` bounds its run of the binary at 30 s and skips an editor's
+    hidden lock files; two builds of one project wait for each other
+    rather than race; and a second Ctrl-C in `m0 dev` ends the draining
+    server by name and exits 0 (under Fixed).
 
 - **m0serve refuses a forked worker when MAX's parallel runtime is
   linked** (SPEC E33, DECISIONS D51). A Mojo mount that imports
@@ -46,7 +96,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   started before `main`. `smoke-parallel-runtime` gates it on every pull
   request, both platforms, against `max-core` synced by the new `max`
   dependency group in that step alone; `sabotage-host --only parallel`
-  removes the check and must be caught on the served prefork.
+  removes the check and must be caught on the served prefork. The host's
+  unit tests supply the fact wherever a verdict is about something else,
+  so `test_host.mojo` holds with the `max` group synced, where `mojo run`
+  maps the runtime into the compiler's process.
 - **`m0-sqlite` opens libsqlite3 at run time** (SPEC O17, O18; D49). The
   package reached SQLite through `external_call`, which put the library on
   the link line of every binary that used it: `-Xlinker -lsqlite3` and
@@ -63,16 +116,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `build-apps` fails if `datastar_todo`'s binary names it — and six of the
   package's seven test files run under `mojo run`. `test_lib.mojo` is the
   gate; docs/notes/sqlite-at-run-time.md records the round.
-- **`m0 0.3.0`: the storage packages ride in the wheel, the `live` scaffold
-  keeps its kick count in SQLite, and MAX is a pinned companion** (SPEC
+- **The storage packages ride in the `m0` wheel, the `live` scaffold keeps
+  its kick count in SQLite, and MAX is a pinned companion** (SPEC
   N39–N41; D50; docs/notes/storage-and-max-in-the-wheel.md). `m0_sqlite`
   and `m0_postgres` are two more source trees under `m0/_mojo/`, usable
   with no link flag because both open their library at run time; the
   wheel smoke opens SQLite through the installed tree under `m0 test`.
   `live`'s handler opens a `store.mojo` in `make` (once per worker, loop
   or pool thread, after the fork) and the kick view counts in it inside
-  its own request, so `smoke.sh` restarts the server and finds the kick;
-  the scaffold's image installs
+  its own request, so `smoke.sh` restarts the server and finds the kick.
+  `/stats` reads the database and the board's word drives only the wave,
+  so `smoke-scaffold` keeps its stream open across the kick and requires a
+  later frame whose lowest bar stands above the highest the wave drew
+  before it; `sabotage-scaffold`'s "a kick never reaches the wave" is
+  caught there. The scaffold's image installs
   `libsqlite3-0` (`RUNTIME_LIBS`, `libpq5` by one build argument), records
   it in `about.json`, and points `M0_DB` under `/app/data` for a volume.
   `gated_max` is read from the root's `max` group beside `gated_mojo`, and
@@ -257,29 +314,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   view, a loop route and the stream on the wire (`head_probe.py --twin`,
   new beside `--hold`).
 
-- **The `live` scaffold's kick is gated where it moves the wave** (SPEC
-  N27, N40). Since the kick count moved into SQLite, `/stats` reads the
-  database and the board's word drives only the wave, so a kick view that
-  dropped the word passed `smoke-scaffold` whole: `sabotage-scaffold`'s
-  rule for it was MISSED on the 2026-09-26 pre-release run. The wire phase
-  now keeps its stream open across the kick and requires a later frame
-  whose lowest bar stands above the highest bar the wave drew before it;
-  the rule, renamed "a kick never reaches the wave", is caught there. The
-  template's `smoke.sh` no longer says the producer keeps the count.
-
-- **`test_host.mojo` holds beside an installed `max-core`.** Under `mojo
-  run` a test runs inside the compiler's process, which maps MAX's
-  parallel runtime once `max-core` is synced, so E32's refusal answered
-  two of its prefork verdicts, and `sabotage-host`'s baseline failed in
-  the one venv its `parallel` arm needs. Those verdicts now supply the
-  fact (`parallel_runtime=False`), the one gathered verdict follows it,
-  and the E21 refusal must be the application's own. The ROADMAP Known
-  issue on MAX beside the toolchain now covers `mojo run` on Linux, where
-  a host application `mojo run` above one worker also exits 78. With its
-  baseline green the whole run reached its rules again, and one anchor
-  the E32 work had moved (the doctor's `host_checks` call) is re-pointed:
-  59 of 59 caught.
-
 - **`url_for` refuses a dot segment** (SPEC N5). A parameter of `.` or
   `..` reversed to `/notes/.` or `/notes/../delete`, which a browser
   resolves to another route before it sends the request: the empty
@@ -295,8 +329,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   request: a login that could never succeed, reported as a forgery. It
   raises now, as its docstring said it did.
 
-- **Five `m0` command-line defects**, reaching users with the next `m0`
-  release:
+- **Five `m0` command-line defects**, reaching users with `m0 0.3.0`:
   - `m0 new foo-` was accepted, and `uv sync` then failed on the project
     name. A name ends with a letter or digit (SPEC N27); exit 2 as before.
   - `m0 doctor` ran `bin/server --doctor` with no bound, so a binary whose
@@ -316,10 +349,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
     once and named, and `m0 dev` exits 0.
 
   `test_m0.py` holds each, and each was reverted to show its test fails.
-  `sabotage-scaffold`'s two Ctrl-C rules are re-pointed at the new handler
-  line, and its "an interpreter, and the Dockerfile's own measurement
-  refuses it" rule, whose anchor stopped matching when 0.3.0 put the
-  runtime libraries after `ARG BASE`, at `RUN useradd`.
 
 ## [1.6.0] — 2026-09-24
 
@@ -5737,6 +5766,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.7.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.7.0
 [1.6.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.6.0
 [1.5.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.5.0
 [1.4.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.4.0
