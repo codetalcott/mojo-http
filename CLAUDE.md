@@ -864,8 +864,11 @@ pieces, and the language fact each rests on:
   (303 to a navigation, 401 with the form to a swap), `csrf_refusal`
   (header before field, never the query, closed on a refused session),
   `csrf_input`/`csrf_header` and `no_store`. `m0 new --template auth` is
-  the application written on it (N45); `fragment_notes` keeps its own
-  copy, which three gates hold byte for byte.
+  the application written on it (N45), and `fragment_notes` runs on it:
+  the gates that held its hand-written copy hold the module now —
+  `smoke-fragment-notes` on the wire, against sessions a CPython issuer
+  signed, and `sabotage-notes-login`, whose CSRF arms revert `login.mojo`
+  itself and one of whose arms removes the header `html.mojo` writes.
 - **`form(req)`** (`form.mojo`): `Optional` — None unless the content
   type is the form's, compared whole, so "not a form" cannot be read as an
   empty one and the check cannot be forgotten — holding an ordered

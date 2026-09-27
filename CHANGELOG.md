@@ -135,6 +135,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the notes app's source, so `m0 doctor` reports that file as changed in a
   project written by an earlier `m0`.
 
+  `apps/fragment_notes` runs on the module, and `smoke-fragment-notes`
+  passes unchanged. Its key must now be at least 32 bytes, and
+  `serve-fragment-notes`' development default is lengthened to match.
+  `sabotage-notes-login`'s CSRF arms now revert `login.mojo` itself, and a
+  new arm removes the layer's `request_header` call.
+
 ### Changed
 
 - **Loops on threads are the documented way to more than one core for an

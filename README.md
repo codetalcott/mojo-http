@@ -263,8 +263,11 @@ store, and `session_cookie_line` builds the `Set-Cookie` for
 is no middleware to hang a guard on, so a private view opens with one —
 an early return. The app takes one user from `M0_NOTES_USER` and
 `M0_NOTES_PASSWORD`, signs with `M0_NOTES_KEY`, and refuses to start
-without a key or a password; the design is
-[a-login-on-the-notes-app](docs/notes/a-login-on-the-notes-app.md).
+without a password or a key of at least 32 bytes; the design is
+[a-login-on-the-notes-app](docs/notes/a-login-on-the-notes-app.md). The
+glue it wrote by hand is `m0_http.login` now, which it runs on and which
+`m0 new --template auth` writes an application on
+([a-login-in-the-layer](docs/notes/a-login-in-the-layer.md)).
 
 ## Datastar
 

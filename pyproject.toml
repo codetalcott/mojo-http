@@ -1137,13 +1137,14 @@ bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
-# The app refuses to start without a signing key and a password, so the
-# dev runner supplies obviously-fake ones and lets the environment win.
-# Set M0_NOTES_KEY and M0_NOTES_PASSWORD to run it as anything but a demo.
+# The app refuses to start without a signing key of at least 32 bytes and
+# a password (m0_http.login), so the dev runner supplies obviously-fake
+# ones and lets the environment win. Set M0_NOTES_KEY and
+# M0_NOTES_PASSWORD to run it as anything but a demo.
 [tool.poe.tasks.serve-fragment-notes]
 help = "Run the fragment notes example (the notes resource as an htmx app, behind a login) on :8080"
 shell = """
-M0_NOTES_KEY=${M0_NOTES_KEY:-dev-only-not-a-secret} \
+M0_NOTES_KEY=${M0_NOTES_KEY:-dev-only-not-a-secret-0123456789abcdef} \
 M0_NOTES_PASSWORD=${M0_NOTES_PASSWORD:-notes} \
 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo
 """
@@ -9288,6 +9289,8 @@ python3 scripts/emit.py --covers N13 --task smoke-fragment-notes
 python3 scripts/emit.py --covers G14 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N18 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N37 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N43 --task smoke-fragment-notes
+python3 scripts/emit.py --covers N44 --task smoke-fragment-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------

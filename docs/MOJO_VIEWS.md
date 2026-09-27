@@ -231,8 +231,9 @@ if refused:
   string. `csrf_input(token)` and `csrf_header(token)` write the two.
 - `no_store(resp)` marks an answer the session chose as not cacheable.
 
-`m0 new NAME --template auth` writes an application on it.
-`apps/fragment_notes` in the repository is the login it was lifted from.
+`m0 new NAME --template auth` writes an application on it, and
+`apps/fragment_notes` in the repository, the login it was lifted from,
+runs on it.
 
 `m0_http.grant` verifies a signed, expiring permission to open one stream
 channel, bound to a session cookie. It is how a Python application behind

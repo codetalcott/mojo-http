@@ -21,8 +21,13 @@ in the query string), a header that is present deciding, and
 `page_or_fragment` taking `HX-Request-Type` at its word in both directions
 with `Vary` naming it.
 
-Rebuilds `m0-http` whenever `session.mojo` or `fragment.mojo` has moved
-since the last build
+Since `apps/fragment_notes` moved onto `m0_http.login` (2026-09-27, D53),
+the CSRF rules live in the layer's `login.mojo`, and the delete form's
+header is `html.mojo`'s to spell: those arms revert the LAYER, which is
+what makes this gate evidence for the module and not only for the app.
+
+Rebuilds `m0-http` whenever `session.mojo`, `fragment.mojo`, `login.mojo`
+or `html.mojo` has moved since the last build
 -- on the sabotage AND on the restore. The app resolves `m0_http` through
 the `.mojoc`, so an edit there is not in the app until `build-http` runs;
 running the gate against a stale artifact tests a tree nobody has, in
@@ -44,7 +49,12 @@ from pathlib import Path
 
 SESSION = Path("packages/m0-http/src/session.mojo")
 FRAGMENT = Path("packages/m0-http/src/fragment.mojo")
+LOGIN = Path("packages/m0-http/src/login.mojo")
+HTML = Path("packages/m0-http/src/html.mojo")
 APP = Path("apps/fragment_notes/server.mojo")
+LAYER = (SESSION, FRAGMENT, LOGIN, HTML)
+"""The layer files an arm may edit: `m0_http` is rebuilt whenever any of
+them differs from what the last build read."""
 
 # (label, path, old, new)
 SABOTAGES = [
@@ -72,7 +82,7 @@ SABOTAGES = [
     ),
     (
         "the CSRF guard always passes",
-        APP,
+        LOGIN,
         """    var sent = req.headers.get(CSRF_HEADER)
     if sent:""",
         """    var sent = req.headers.get(CSRF_HEADER)
@@ -82,7 +92,7 @@ SABOTAGES = [
     ),
     (
         "a wrong token header is rescued by a right field beside it",
-        APP,
+        LOGIN,
         """    elif body:
         var got = body.value().get(CSRF_FIELD)""",
         """    if body:
@@ -90,7 +100,7 @@ SABOTAGES = [
     ),
     (
         "the token header is never compared",
-        APP,
+        LOGIN,
         """        if _token_matches(verdict, sent.value()):
             return None""",
         """        return None""",
@@ -98,17 +108,26 @@ SABOTAGES = [
     (
         "the delete form holds the token as a FIELD, which htmx 4 puts in the URL",
         APP,
-        """attr("class", "delete") + _csrf_header(csrf),
-""",
-        """attr("class", "delete") + _csrf_header(csrf),
-                _csrf_input(csrf),
-""",
+        """attr("class", "delete"),
+                el("button", "", "&times;"),""",
+        """attr("class", "delete"),
+                csrf_input(csrf),
+                el("button", "", "&times;"),""",
     ),
     (
         "the delete form carries no hx-headers",
         APP,
-        """attr("class", "delete") + _csrf_header(csrf),""",
-        """attr("class", "delete"),""",
+        """                header=csrf_header(csrf),
+""",
+        "",
+    ),
+    (
+        "the layer never writes the request header a swap was given",
+        HTML,
+        """    if header:
+        V.request_header(h, header.value())
+""",
+        "",
     ),
     (
         "the shell loads the htmx the layer is no longer gated against",
@@ -143,11 +162,11 @@ SABOTAGES = [
         "a private view forgets to ask for a session",
         APP,
         '''    """GET /notes — the list."""
-    var session = _session(req, store)
+    var session = store.login.session_of(req)
     if not session.ok:
         return _refuse(req, session)''',
         '''    """GET /notes — the list."""
-    var session = _session(req, store)
+    var session = store.login.session_of(req)
     if False:
         return _refuse(req, session)''',
     ),
@@ -158,26 +177,26 @@ SABOTAGES.append(
     (
         "a write view forgets to ask for a session",
         APP,
-        '''    var session = _session(req, store)
+        '''    var session = store.login.session_of(req)
     if not session.ok:
         return _refuse(req, session)
-    var refused = _csrf_refusal(req, form(req), session, req.uri.path)''',
-        '''    var session = _session(req, store)
+    var refused = csrf_refusal(req, form(req), session, req.uri.path)''',
+        '''    var session = store.login.session_of(req)
     if False:
         return _refuse(req, session)
-    var refused = _csrf_refusal(req, form(req), session, req.uri.path)''',
+    var refused = csrf_refusal(req, form(req), session, req.uri.path)''',
     ),
 )
 """The sixth arm: `delete` without its guard. Caught by the unauthenticated
 DELETE arm as a 403 where a 303 was owed -- a 403 and not a 200, because
-`_csrf_refusal` fails closed on a verdict that is not ok. That second
+`csrf_refusal` fails closed on a verdict that is not ok. That second
 layer is not sabotaged on its own: with every session guard in place it
 is unreachable, which is what a layer under another one means."""
 
 
 # What `m0_http.mojoc` was last built from. The app resolves `m0_http`
 # through that file, so the gate tests the tree only while this matches
-# `session.mojo` and `fragment.mojo` on disk -- and it stops matching on the RESTORE as well as
+# the LAYER files on disk -- and it stops matching on the RESTORE as well as
 # on the sabotage. Rebuilding only when a sabotage is applied left the
 # previous one's session.mojo in the artifact for every app-side arm after
 # it, and two of them then failed on the wrong assertion while reporting
@@ -189,7 +208,7 @@ _built_session = None
 def sync_build() -> bool:
     """Rebuild `m0-http` if a package source has moved since the last build."""
     global _built_session
-    have = SESSION.read_text() + FRAGMENT.read_text()
+    have = "".join(p.read_text() for p in LAYER)
     if have == _built_session:
         return True
     p = subprocess.run(["uv", "run", "poe", "build-http"],
@@ -225,7 +244,7 @@ def _detail(out: str) -> str:
 
 
 def main() -> int:
-    originals = {p: p.read_text() for p in (SESSION, FRAGMENT, APP)}
+    originals = {p: p.read_text() for p in (*LAYER, APP)}
     tmp = Path(tempfile.mkdtemp())
     for p, text in originals.items():
         (tmp / p.name).write_text(text)

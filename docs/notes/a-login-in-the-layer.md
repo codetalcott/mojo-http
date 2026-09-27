@@ -83,13 +83,42 @@ configuration refused only in `make` passes the doctor and then fails the
 run. `m0 new` prints the `export` that sets both variables, so the first
 thing a new project does is not read that refusal.
 
+## The reference moves onto it
+
+The first draft of this change left `apps/fragment_notes` on its
+hand-written glue, on the grounds that moving it proved nothing new. Both
+halves of that were wrong.
+
+The layer's process is that the reference application is refactored onto
+each new piece under the gate that already holds it. A second copy of
+security glue in one repository is also the trap this codebase names: a
+fix to one copy is not a fix to the other.
+
+And the move does prove something. `smoke-fragment-notes` checks the login
+against sessions and forgeries that a CPython issuer signed
+(`scripts/notes_session.py`), and `browser-notes-login` submits the delete
+form from Chromium under htmx 4.0.0. Before the move, both gates checked
+the application's copy. After it, they check `m0_http.login` and the
+layer's `hx-headers`.
+
+The wire did not move: `smoke-fragment-notes` passed unchanged. Two things
+did:
+
+- The key must be at least 32 bytes, the module's rule, and
+  `serve-fragment-notes`' development default is lengthened to meet it.
+  The smoke's own key was exactly 32 bytes already.
+- `hx-headers` comes after the swap's attributes on the delete form rather
+  than before them, because the layer writes it after the swap. The smoke
+  finds the form by its class and the attribute anywhere in it.
+
+`sabotage-notes-login`'s three CSRF arms now revert `login.mojo` rather
+than the application. A new arm removes the `request_header` call from
+`html.mojo`, and the smoke catches it. The harness rebuilds `m0_http` when
+either file moves.
+
 ## What was not changed
 
-- `apps/fragment_notes` keeps its hand-written glue. It is the worked
-  example the module was lifted from, and three gates hold its bytes
-  (`smoke-fragment-notes`, `sabotage-notes-login`, `browser-notes-login`).
-  Moving it onto the module would be a refactor with nothing new to prove.
-  `unotes` can move when it wants to.
+- `unotes` keeps its copy until it moves, which is its own decision.
 - There is no session store, no password KDF and no second user: D24 and
   D25 stand, and D53's retiring condition is where either would come back.
 - `views` and `live` stay sessionless. Their AGENTS.md section now names
