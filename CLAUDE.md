@@ -694,7 +694,11 @@ pieces, and the language fact each rests on:
   (`datastar_todo`, SPEC N17). Run `poe sabotage-host` after
   touching `host.mojo`: its anchors are exact source lines. The whole run
   wants the `max` group (`uv run --group max poe sabotage-host`), which
-  its `parallel` arm builds against; every other gate holds either way.
+  its `parallel` arm builds against; on Linux every other gate holds
+  either way. On macOS they do not, because a build beside `max-core` links
+  the runtime into every binary and E32 refuses the prefork baselines, so
+  run `--skip parallel` in the default venv and then `--only parallel`
+  under `--group max`.
 - **`Views[S]`** (`m0-http/src/views.mojo`): a view is a free function
   `(req, params, state) raises -> HTTPResponse`; `add_read` hands the state
   borrowed, `add_write` hands it `mut` (`poe sabotage-views` compiles the

@@ -53,6 +53,14 @@ tell, so it is not claimed as a guarded rule.
     uv run poe sabotage-host --only parallel       the refusal of prefork beside
                                                    MAX's parallel runtime (SPEC E32;
                                                    needs `uv sync --group max`)
+    uv run poe sabotage-host --skip parallel       every rule but one GATE's
+
+On macOS the whole run cannot share one venv: a build beside `max-core` links
+the parallel runtime into every binary (ROADMAP Known issues), so E32 refuses
+the prefork baselines there with 78, the doctor's first. Run `--skip parallel`
+in the default venv, then `--only parallel` under `uv run --group max`. On
+Linux a build links the runtime only where the source names it, and the one
+`uv run --group max poe sabotage-host` holds whole.
 """
 
 from __future__ import annotations
@@ -685,7 +693,13 @@ def why(out: str) -> str:
 def main() -> int:
     sys.stdout.reconfigure(line_buffering=True)
     only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else ""
-    chosen = [e for e in SABOTAGES if only in e[0] or only == e[1]]
+    # A gate's name, never a label substring: the parallel rule's label says
+    # "prefork", so a substring would skip rules that are not the gate's.
+    skip = sys.argv[sys.argv.index("--skip") + 1] if "--skip" in sys.argv else ""
+    if skip and skip not in GATES:
+        print(f"--skip takes a gate's name, one of {sorted(GATES)}; not {skip!r}")
+        return 1
+    chosen = [e for e in SABOTAGES if (only in e[0] or only == e[1]) and e[1] != skip]
     if not chosen:
         print(f"no sabotage label contains {only!r}")
         return 1
@@ -747,7 +761,10 @@ def main() -> int:
             print(f"  - {m}")
         return 1
     print(f"all {len(chosen)} rules are guarded"
-          + ("" if len(chosen) == len(SABOTAGES) else f" (of {len(SABOTAGES)}; --only {only!r})"))
+          + ("" if len(chosen) == len(SABOTAGES) else
+             f" (of {len(SABOTAGES)}; " + ", ".join(
+                 ([f"--only {only!r}"] if only else []) + ([f"--skip {skip!r}"] if skip else [])
+             ) + ")"))
     return 0
 
 

@@ -240,10 +240,18 @@ against `test_respawn.mojo` and `test_views.mojo`, the command line's
 twelve: seven against `smoke-host-doctor` (`--only doctor`, about five
 minutes) and five against `test_host_flags.mojo` (`--only flags`), and one
 against `smoke-parallel-runtime` (`--only parallel`), which builds against
-MAX — the reason for `--group max`. Every other gate holds in that venv
-too: the unit tests supply the parallel runtime's fact rather than read
-the one `mojo run` gives them beside MAX (ROADMAP Known issues), which
-until 2026-09-26 failed `test_host.mojo`'s baseline there. A sabotage that
+MAX — the reason for `--group max`. On Linux every other gate holds in
+that venv too: the unit tests supply the parallel runtime's fact rather
+than read the one `mojo run` gives them beside MAX (ROADMAP Known issues),
+which until 2026-09-26 failed `test_host.mojo`'s baseline there. **On the
+reference Mac the run splits in two.** A macOS build beside `max-core`
+links the runtime into every binary, so E32 refuses the prefork baselines
+with 78; the 1.7.0 run failed at the doctor's baseline that way before
+any rule ran. There, run `uv run poe sabotage-host --skip parallel` (58
+rules, about thirty minutes) and then `uv run --group max poe
+sabotage-host --only parallel`, and follow both with a plain `uv sync`,
+which takes `max-core` back out; a build made while it is installed reads
+as linked. A sabotage that
 does not compile is reported as BROKEN
 and counted as a miss, not a catch. Pre-release because each rule reruns
 the whole smoke, about fifteen minutes; `--only unit` is about a minute.
