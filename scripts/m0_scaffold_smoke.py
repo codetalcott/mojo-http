@@ -32,7 +32,8 @@ application. This does, per template, as a user would:
             inside five seconds; a kick, posted with that stream open, lifts
             every bar of a later frame above the highest bar before it; the
             kick counted; nothing refused by the bus
-  doctor    `uv run m0 doctor --json`: green, the host's report inside it
+  doctor    `uv run m0 doctor --json`: green, the host's report inside it;
+            the scaffold it wrote matches, and an edited Dockerfile is named
   smoke.sh  the scaffold's own gate is green, on another port
 
 Resolution is online by design (the handoff's §10.2 measured that a
@@ -412,7 +413,21 @@ def serve_and_probe(project, env, template, name, port, pin, m0v, servers):
         fail("m0 doctor --json is not green with the host's report inside:\n" + done.stdout[-1500:])
     if report["versions"]["m0"] != m0v or report["versions"]["mojo"] != pin:
         fail("m0 doctor names %s" % report["versions"])
-    print("doctor[%s]: green, the host's report inside" % template)
+    # The upgrade path (D52): nothing rewrites a project's files, so the
+    # doctor names the scaffold's own that differ from what this m0 writes.
+    # A fresh scaffold differs in none; an edit is named and left alone.
+    if report["scaffold"]["differ"] or "deploy/Dockerfile" not in report["scaffold"]["present"]:
+        fail("a fresh scaffold does not match itself: %r" % report["scaffold"])
+    dockerfile = project / "deploy" / "Dockerfile"
+    written = dockerfile.read_text()
+    dockerfile.write_text(written + "\n# the application's own\n")
+    done = sh(["uv", "run", "m0", "doctor", "--json"], project, env, "uv run m0 doctor --json")
+    drift = json.loads(done.stdout.strip().splitlines()[-1])["scaffold"]
+    dockerfile.write_text(written)
+    if drift["differ"] != ["deploy/Dockerfile"]:
+        fail("the doctor does not name an edited deploy/Dockerfile: %r" % drift)
+    print("doctor[%s]: green, the host's report inside; the scaffold matches, an edit named"
+          % template)
 
     phase("smoke.sh [%s]" % template)
     done = sh(["./smoke.sh", str(port + 10)], project, env, "the scaffold's own smoke.sh")

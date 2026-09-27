@@ -83,6 +83,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the release recipe on the MAX-linked probe and serves from the bundle,
   `libAsyncRTMojoBindings` beside it.
 
+- **An `m0` upgrade says what the scaffold it came from lacks, and moves the
+  toolchain in one command** (SPEC N42, D52;
+  docs/notes/the-scaffold-upgrade-path.md). Nothing rewrites a project's
+  files, so a newer `m0` left everything `m0 new` wrote as the older one
+  wrote it: between 0.2.0 and 0.3.0 six of the ten files every template
+  writes changed, the Dockerfile among them, whose 0.2.0 form installs no
+  `libsqlite3` for `m0_sqlite` to open. `m0 doctor` now compares the
+  scaffold's own files (all but the README and `pyproject.toml`) with what
+  the running `m0` writes for the project's name, and names those that
+  differ: reported, never failed, since a difference is as often the
+  application's own edit. With `max-core` installed, `mojo-gated`'s fix is
+  one `uv add` of both pins: `max-core` and `mojo` each pin
+  `mojo-compiler` exactly, so moving `mojo` alone could not resolve. The
+  scaffold's `AGENTS.md` and the wheel's README say how to upgrade.
+  `smoke-scaffold` holds it per template (a fresh scaffold names nothing;
+  an edited Dockerfile is named), and `sabotage-scaffold` removes the
+  naming.
+
 ### Changed
 
 - **Loops on threads are the documented way to more than one core for an

@@ -14,7 +14,7 @@ Always `uv run m0 …` (the project's own venv; `uvx` is for `m0 new` alone).
 | `uv run m0 test` | runs `test/test_*.mojo`; no link, no server | 2–4 s |
 | `uv run m0 build` | compiles `src/server.mojo` to `bin/server` | 10–13 s after an edit |
 | `uv run m0 dev` | builds, serves, and rebuilds when `src/` or `pyproject.toml` changes; the old server keeps serving until a build SUCCEEDS, so a syntax error costs a compiler message and not the page; `-- --port 8080` goes to the binary | a build per save |
-| `uv run m0 doctor` | every toolchain check, then the binary's resolved configuration; `--json` for a machine | < 1 s |
+| `uv run m0 doctor` | every toolchain check, then the binary's resolved configuration, then which of the files `m0 new` wrote differ from what this `m0` writes; `--json` for a machine | < 1 s |
 | `uv run m0 build --release` | a relocatable `dist/` for the baseline CPU | a build, plus the bundling |
 | `uv run m0 image` | `docker build -f deploy/Dockerfile`, then the image's own `about.json`; needs docker and a committed `uv.lock`, and no local toolchain | minutes the first time |
 | `./smoke.sh` | build, serve on its own port, probe the wire, stop | a build, plus a second |
@@ -199,6 +199,18 @@ the probe, not from the last command of a pipe. `smoke.sh` does all four.
 - `uv run m0 build --release` bundles its runtime library
   (`libAsyncRTMojoBindings`) beside the binary with the rest, so the image
   needs nothing more.
+
+## Upgrading m0
+
+Take the newer `m0` (`uv add --dev 'm0==X'`), then run `uv run m0 doctor`.
+Its `mojo-gated` line names the ONE `uv add` that moves the rest of the
+toolchain — `mojo`, and `max-core` beside it when it is installed, since
+`max-core` pins its own compiler exactly and moving `mojo` alone cannot
+resolve. Nothing rewrites this project's files: the doctor's `scaffold`
+line names those `m0 new` wrote — the deploy files, the ignore files, the
+workflow, this page — that differ from what the new `m0` writes, whether
+you edited them or an older `m0` wrote them. `uv run m0 new /tmp/NAME`
+writes the new ones beside yours; carry over what you want by hand.
 
 ## Not built, on purpose
 

@@ -2138,6 +2138,14 @@
       "evidence": "`Smoke test the m0 wheel` (every PR) \u2014 `gated_max` against the root's group; a stub `max-core` 9.9.9 beside the REAL mojo, so `mojo-gated` passes and the sentence is `max-gated`'s alone, from `m0 build`, `m0 test` and the doctor; the plain doctor saying MAX is optional when none is installed; the release recipe's bundling of the runtime is E32's gate, where MAX is installed"
     },
     {
+      "id": "N42",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "An upgrade never rewrites a project's files, and says what the scaffold it came from lacks: `m0 doctor` compares the files `m0 new` writes that stay the scaffold's \u2014 every one but the README and `pyproject.toml`, which are the application's from its first edit \u2014 with what the RUNNING `m0` writes for the project's name (its `pyproject.toml`'s, so a moved project keeps it), and names those that differ, reported and never failed, since a difference is an application's edit as often as an older `m0`'s file; a file the application removed is not compared. And the toolchain moves in one command: with `max-core` installed, `mojo-gated`'s fix is `uv add --dev` of BOTH pins, because `max-core` pins its `mojo-compiler` exactly, as `mojo` does, and moving `mojo` alone past it cannot resolve (D52)",
+      "status": "verified",
+      "evidence": "`Smoke test the m0 scaffold` (every PR) \u2014 per template, the written project's `uv run m0 doctor --json` names no difference, then names `deploy/Dockerfile` alone once a line is appended to it; `sabotage-scaffold` (pre-release) removes the naming and must be caught there. The unit forms are `test_m0.py`'s `Scaffold` class (an edit named and left in place, a removed file and the README not compared, a moved project still matching) and `Pair.test_beside_max_the_fix_moves_both_pins`, whose sentence was checked against PyPI's metadata: `max-core` 26.6.0 and `mojo` 1.1.0 each require `mojo-compiler==1.1.0`"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",

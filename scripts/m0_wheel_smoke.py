@@ -508,7 +508,8 @@ def run(work, whl, pin, max_pin, m0v, port, servers):
     done = real.m0("doctor", "--json", env=APP_ENV)
     expect(done, 0, "m0 doctor --json")
     doc = json.loads(done.stdout.strip().splitlines()[-1])
-    if list(doc) != ["m0", "ok", "exit", "versions", "paths", "checks", "app"] or doc["m0"] != "1":
+    if list(doc) != ["m0", "ok", "exit", "versions", "paths", "checks", "app", "scaffold"] \
+            or doc["m0"] != "1":
         fail("the report's shape is %r" % list(doc))
     if not doc["app"]["stale"]:
         fail("src/ is newer than bin/server and the doctor does not say stale")

@@ -18,6 +18,16 @@ every process it started ended. The host's doctor stops before the bind,
 so the bound is for a binary that SERVES instead of answering -- one whose
 `main` never reaches `serve`.
 
+Last, the files `m0 new` wrote that are still the scaffold's -- the
+deploy files, the ignore files, the workflow, AGENTS.md and CLAUDE.md, but
+not the README or pyproject.toml, which are the application's from the
+first edit -- are compared with what THIS m0 writes for the project's
+name. A difference is reported, never failed: it is an application's own
+edit as often as an older m0's file, and only the application can tell
+which. It is how an upgrade learns what the scaffold it came from lacks
+(0.3.0's Dockerfile installs the libsqlite3 that 0.2.0's did not), because
+nothing rewrites a project's files (docs/DECISIONS.md D52).
+
 `--json` prints one object as the last line of stdout, the host's own rule.
 `"m0":"1"` is its format number; the release is `versions.m0`.
 """
@@ -25,14 +35,59 @@ so the bound is for a binary that SERVES instead of answering -- one whose
 import json
 import os
 import platform
+import re
 import signal
 import subprocess
 
-from m0 import checks, paths
+from m0 import checks, new, paths
 
 FORMAT = "1"
 HOST_FORMAT = "1"
 APP_SECONDS = 30
+
+# What `m0 new` writes that stays the scaffold's; the README and the
+# pyproject are the application's from its first edit.
+SCAFFOLD_FILES = tuple(n for n in new.COMMON if n not in ("README.md", "pyproject.toml"))
+
+
+def _app_name(project):
+    """The name `m0 new` substituted: `[project].name`, else the directory's."""
+    try:
+        text = (project / "pyproject.toml").read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        text = ""
+    found = re.search(r'(?m)^name\s*=\s*"([^"]+)"', text)
+    return found.group(1) if found else project.resolve().name
+
+
+def scaffold_drift(project):
+    """`(present, differ)`: the scaffold's files this project has, and those
+    of them that are not what this m0 writes for its name, as the project
+    spells their paths. A file that is absent is the application's choice
+    and is neither."""
+    root = paths.PACKAGE / "templates" / "_common"
+    info = paths.build_info()
+    app = _app_name(project)
+    present, differ = [], []
+    for name in SCAFFOLD_FILES:
+        target = new.target_path(name)
+        try:
+            have = (project / target).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            have = None
+        except OSError:
+            continue
+        try:
+            template = (root / name).read_text(encoding="utf-8")
+        except OSError:
+            continue  # a broken install; `m0 new` names that, not the doctor
+        want = new.render(
+            template, app, checks.m0_version(), info["gated_mojo"][0], info["gated_max"][0]
+        )
+        present.append(str(target))
+        if have != want:
+            differ.append(str(target))
+    return present, differ
 
 
 def _stale(project, binary):
@@ -165,6 +220,7 @@ def run(args):
     app, app_error = _run_app(project, args.host_args)
     code = exit_code(results, app, app_error)
     info = paths.build_info()
+    present, differ = scaffold_drift(project)
 
     if args.json:
         listed = [r.as_json() for r in results]
@@ -192,6 +248,7 @@ def run(args):
             },
             "checks": listed,
             "app": app,
+            "scaffold": {"present": present, "differ": differ},
         }
         print(json.dumps(doc))
         return code
@@ -208,6 +265,16 @@ def run(args):
         print(f"     app: no {paths.BINARY} yet (m0 build)")
     else:
         _print_app(app)
+    m0 = checks.m0_version()
+    if differ:
+        verb = "differs" if len(differ) == 1 else "differ"
+        print(
+            f"     scaffold: {', '.join(differ)} {verb} from what m0 {m0} writes "
+            f"(an edit, or an older m0's file; `uv run m0 new /tmp/{_app_name(project)}` "
+            "writes this m0's to compare)"
+        )
+    elif present:
+        print(f"ok   scaffold: the files m0 new wrote match m0 {m0}")
     return code
 
 

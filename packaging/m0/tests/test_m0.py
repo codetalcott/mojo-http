@@ -88,6 +88,20 @@ class Pair(unittest.TestCase):
         self.assertFalse(checks.gated_verdict("0.1.0", "1.1.0.post1", ["1.1.0"]).ok)
         self.assertTrue(checks.gated_verdict("0.1.0", "1.1.0", ["1.1.0"]).ok)
 
+    def test_beside_max_the_fix_moves_both_pins(self):
+        """`max-core` pins its `mojo-compiler` exactly, as `mojo` does
+        (max-core 26.6.0 and mojo 1.1.0 both require mojo-compiler==1.1.0),
+        so with one installed, `uv add` of the new `mojo` alone cannot
+        resolve: the one command that upgrades names both."""
+        got = checks.gated_verdict("0.4.0", "1.1.0", ["1.2.0"], "26.6.0", ["26.7.0"])
+        self.assertEqual(
+            got.sentence(),
+            "m0: m0 0.4.0 is gated on mojo 1.2.0 and this environment has "
+            "mojo 1.1.0 (uv add --dev 'mojo==1.2.0' 'max-core==26.7.0')",
+        )
+        got = checks.gated_verdict("0.4.0", "1.1.0", ["1.2.0"], None, ["26.7.0"])
+        self.assertEqual(got.fix, "uv add --dev 'mojo==1.2.0'")
+
     def test_a_foreign_prefix_is_asked_before_anything_else(self):
         got = checks.installed_verdict("/x", True, False, "1.1.0", True, ["1.1.0"])
         self.assertEqual(
@@ -217,6 +231,61 @@ class Doctor(unittest.TestCase):
             self.assertFalse(doctor._stale(project, binary))
             os.utime(source, (binary.stat().st_mtime + 10,) * 2)
             self.assertTrue(doctor._stale(project, binary))
+
+
+class Scaffold(unittest.TestCase):
+    def _new(self, target):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.main(["new", str(target)]), 0)
+
+    def test_a_fresh_scaffold_matches_and_an_edit_is_named_not_rewritten(self):
+        """The upgrade path: nothing rewrites a project's files, so the
+        doctor says which of the scaffold's own differ from what this m0
+        writes. A file the application removed, and its README and
+        pyproject, are not compared."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "corner-shop"
+            self._new(target)
+            present, differ = doctor.scaffold_drift(target)
+            self.assertEqual(differ, [])
+            self.assertIn("deploy/Dockerfile", present)
+            self.assertIn(".github/workflows/test.yml", present)
+            self.assertNotIn("README.md", present)
+            self.assertNotIn("pyproject.toml", present)
+
+            dockerfile = target / "deploy" / "Dockerfile"
+            edited = dockerfile.read_text() + "\n# the application's own\n"
+            dockerfile.write_text(edited)
+            (target / "deploy" / "fly.toml").unlink()
+            (target / "README.md").write_text("mine")
+            present, differ = doctor.scaffold_drift(target)
+            self.assertEqual(differ, ["deploy/Dockerfile"])
+            self.assertNotIn("deploy/fly.toml", present)
+            self.assertEqual(dockerfile.read_text(), edited)
+
+            out = io.StringIO()
+            old = os.getcwd()
+            os.chdir(target)
+            try:
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+                    cli.main(["doctor"])
+            finally:
+                os.chdir(old)
+            self.assertIn(
+                f"     scaffold: deploy/Dockerfile differs from what m0 {checks.m0_version()} "
+                "writes (an edit, or an older m0's file; `uv run m0 new /tmp/corner-shop` "
+                "writes this m0's to compare)",
+                out.getvalue(),
+            )
+
+    def test_the_name_is_the_projects_not_the_directorys(self):
+        """A project moved to another directory keeps the name `m0 new` wrote
+        into its files, which is the one its pyproject names."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "corner-shop"
+            self._new(target)
+            moved = target.rename(Path(tmp) / "elsewhere")
+            self.assertEqual(doctor.scaffold_drift(moved)[1], [])
 
 
 class Build(unittest.TestCase):
