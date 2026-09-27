@@ -82,30 +82,45 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   script tag. A Datastar URL sits inside a JavaScript string: build it with
   `url_for`, which encodes; a URL carrying `'`, `\`, CR or LF is refused.
 
-## When a login arrives
+## A login
 
-Both scaffolds are sessionless, so no write carries a token. The day a
-session cookie exists, **every write needs a CSRF token**: a POST's as a
-hidden field; a DELETE's as an `X-CSRF-Token` header from a hand-written
-`hx-headers` attribute (htmx 4 puts a DELETE's fields in the query string,
-and a token in a URL is a token in every log) — the ONE `hx-` attribute
-typed by hand. `m0_http.session` has the signed cookie and `csrf_token`.
-The worked example is not installed with the framework: it is
-`apps/fragment_notes/server.mojo` at
-https://github.com/codetalcott/mojo-http — read its renderer as well as
-its views.
+`--template auth` has one: the list behind a signed session, every write
+carrying a CSRF token. `m0_http.login` is the glue it is written on, and
+what a `views` or `live` application adds the day it needs one.
 
+- `Login.from_env("APP", "NAME-session")` reads `APP_KEY` (at least 32
+  bytes) and `APP_PASSWORD`, and raises naming what is missing. Read it in
+  `main` BEFORE `serve` and exit 78 on the error, so `--doctor` refuses
+  what the run would; read it again in `make`.
+- A view behind it opens with two lines: `var session =
+  st.login.session_of(req)`, then, without one, `return
+  refuse_signed_out(req, LOGIN, render_login(...))` -- a 303 for a
+  navigation, a 401 carrying the form for a swap.
+- **Every write needs the session's CSRF token**, checked on the view's
+  next line by `csrf_refusal(req, form(req), session, url)`: a POST carries
+  it as a hidden field (`csrf_input(token)`), a DELETE as a header
+  (`header=csrf_header(token)` on its swap), because htmx 4 puts a DELETE's
+  fields in the query string and a token in a URL is a token in every log.
+  `Fragment[Datastar]` refuses a header: a Datastar write carries its token
+  in a field.
 - **Login and logout are PLAIN forms** (`el("form", attr("method", "post")
   + attr("action", url))`), answered with a 303 — never `f.el("form", …)`.
   A swap changes the fragment and not the address bar, so signing in
   leaves the application under `/login` and signing out leaves the login
-  form under whatever was open.
+  form under whatever was open. `sign_in(user, password)` is the
+  credential check and the session in one call.
+- Every answer the session chose is `no_store(...)`: `Vary` names the
+  fragment headers, not the cookie, and a cache in front would otherwise
+  hand one visitor's page to another.
 - **A hand-built request parses no `Cookie` header**; only the server's
   parser fills `req.cookies`. A test of a view behind a session fills the
-  jar itself: `var jar = RequestCookieJar()` (from
-  `lightbug_http.cookie.request_cookie_jar`), `jar.add_pairs("name=value")`,
-  then `HTTPRequest(uri, headers=…, cookies=jar^)`. Without it every such
-  test is answered as signed out.
+  jar itself: `var jar = RequestCookieJar()` (from `lightbug_http.cookie`),
+  `jar.add_pairs("name=value")`, then `HTTPRequest(uri, headers=…,
+  cookies=jar^)`. Without it every such test is answered as signed out.
+  The `auth` template's test signs in through the table and does this.
+- One user, its secret in the environment: no user table, no password
+  hashing, no session store. A session ends at its expiry, or when its key
+  leaves the ring (`APP_KEY_PREV` keeps the old key through a rotation).
 
 ## Streaming (SSE)
 

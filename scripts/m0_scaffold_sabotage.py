@@ -170,6 +170,53 @@ RULES = [
      '[ "$code" = 422 ] ||', '[ "$code" = 400 ] ||',
      "the scaffold's own smoke.sh exited 1, not 0", WIRE),
 
+    # --- auth, on the wire ----------------------------------------------------
+    ("new: the auth template's variables are not printed", "auth", M0 + "new.py",
+     "        print(\"    \" + ENV_HINT[args.template])\n",
+     "        pass\n",
+     "did not print the next command 'export APP_KEY", NEW),
+    ("new: the app's name opens the entry file's docstring bare [auth]", "auth",
+     T + "auth/src/server.mojo",
+     '"""`__M0_APP__` — a list behind a login',
+     '"""__M0_APP__ — a list behind a login',
+     "the first build of a fresh auth scaffold warns", NEW),
+    ("auth: a write is not checked for its token", "auth", T + "auth/src/views.mojo",
+     "    var refused = csrf_refusal(req, maybe, session, ITEMS)\n",
+     "    var refused = Optional[HTTPResponse](None)\n",
+     "POST /items without the token answered 200, not 403", WIRE),
+    ("auth: the delete button carries no token", "auth", T + "auth/src/pages.mojo",
+     '            f.el("button", "delete", url, attr("aria-label", "delete"), "&times;",\n'
+     "                 header=csrf_header(csrf)),\n",
+     '            f.el("button", "delete", url, attr("aria-label", "delete"), "&times;"),\n',
+     "the delete button does not carry the token as hx-headers", WIRE),
+    ("auth: the list is cacheable", "auth", T + "auth/src/views.mojo",
+     "    return no_store(page_or_fragment(\n        req,\n"
+     "        render_list(items.ids, items.titles, session.subject, session.csrf, error),\n",
+     "    return (page_or_fragment(\n        req,\n"
+     "        render_list(items.ids, items.titles, session.subject, session.csrf, error),\n",
+     "the signed-in list is cacheable", WIRE),
+    # The branch deleted, not `if False:`, which the compiler warns about.
+    ("layer: a signed-out swap is redirected", "auth", "packages/m0-http/src/login.mojo",
+     "    if wants_fragment(req):\n        var resp = html(login_form)\n"
+     "        resp.status_code = 401\n        resp.status_text = reason_phrase(401)\n"
+     "        return no_store(vary_on_fragment_headers(resp^))\n",
+     "",
+     "a signed-out swap is not a 401 carrying the login form", WIRE),
+    # Still a call that raises: a `try` around one that cannot is a warning,
+    # and N34's no-warning check would fail first -- MISSED (failed elsewhere).
+    ("auth: the configuration is read only in make", "auth", T + "auth/src/server.mojo",
+     "        _ = login_from_env()\n",
+     "        _ = Items.urls()\n",
+     "without APP_PASSWORD exited 0, not 78", WIRE),
+    ("auth: the template's own test is what goes red", "auth", T + "auth/src/views.mojo",
+     "    var refused = csrf_refusal(req, maybe, session, ITEMS)\n",
+     "    var refused = Optional[HTTPResponse](None)\n",
+     "uv run m0 test exited 1, not 0", TEST),
+    ("auth: smoke.sh's status is read", "auth", T + "auth/smoke.sh",
+     '[ "$code" = 403 ] || fail "POST /items without the token',
+     '[ "$code" = 200 ] || fail "POST /items without the token',
+     "the scaffold's own smoke.sh exited 1, not 0", WIRE),
+
     # --- live, on the wire ----------------------------------------------------
     ("live: the state never steps", "live", T + "live/src/server.mojo",
      "        self.wave.advance(kicks - self.kicks_seen)\n",

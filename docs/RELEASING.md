@@ -258,7 +258,7 @@ smoke, a minute or two apiece; `--only LABEL` runs one. Nothing here
 publishes the wheel; "Releasing m0" below does.
 
 **And `uv run poe sabotage-scaffold`** (SPEC N27, N29) — breaks each rule of
-`m0 new` and its two templates from the template side, rebuilds the wheel,
+`m0 new` and its templates from the template side, rebuilds the wheel,
 and requires `smoke-scaffold` to fail for that template AND to say the
 expected thing; its `dev:` rules run `smoke-scaffold-dev` (N30) and its
 `image:` rules `smoke-scaffold-image` (N31, docker needed — and nothing

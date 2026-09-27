@@ -45,8 +45,11 @@ one home; `0.x` until the layer soak). Rules:
   process) for its whole length, since every build stages at the same
   paths.
 - **`m0 new` writes from REAL files** (`src/m0/templates/`, SPEC N27–N29,
-  D44; docs/notes/the-scaffold.md): two sessionless templates, `views`
-  (htmx 4) and `live` (a producer and Datastar frames, its kick count kept
+  N45, D53; docs/notes/the-scaffold.md): three templates, `views`
+  (htmx 4), `auth` (the `views` list behind `m0_http.login`, its `main`
+  reading `APP_KEY` and `APP_PASSWORD` BEFORE `serve` so the doctor
+  refuses what the run would; `new.py`'s `ENV_HINT` prints their
+  `export`) and `live` (a producer and Datastar frames, its kick count kept
   in SQLite by a store the handler opens in `make` — once per worker, loop
   or pool thread, after the fork — and counted inside the kick's own
   request, so it is a committed row when the 204 is answered; a producer
@@ -55,7 +58,7 @@ one home; `0.x` until the layer soak). Rules:
   `--template`. A template compiles UNSUBSTITUTED — the app's name only
   inside string literals, TOML and Markdown, as `__M0_APP__` — which is
   what lets substitution be `str.replace`; `poe check-templates` (in
-  `test-all`) builds both in place against the tree, so a layer change
+  `test-all`) builds each in place against the tree, so a layer change
   that breaks one fails in its own pull request. A new template file goes
   in `new.py`'s manifest AND in `scripts/m0_scaffold_smoke.py`'s second
   spelling; dot-files are stored as `dot-x`. `_common/AGENTS.md` is the

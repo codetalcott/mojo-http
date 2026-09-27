@@ -104,7 +104,7 @@ fly scale count 1 -a NAME
   not exist fails. Without it the `live` scaffold's kick count, and
   anything else under `/app/data`, starts empty on every deploy.
 
-The health check is `GET /health`, which both scaffolds answer on the event
+The health check is `GET /health`, which every scaffold answers on the event
 loop.
 
 ## Behind a proxy

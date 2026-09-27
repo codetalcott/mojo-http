@@ -93,6 +93,7 @@ into `libm0core`.
 """
 
 from m0_core.html_escape import escape_html_into
+from m0_core.json_escape import escape_json_string
 
 comptime _LT = UInt8(60)  # '<'
 comptime _GT = UInt8(62)  # '>'
@@ -179,9 +180,75 @@ def _verb_is_in(verb: String, verbs: String) -> Bool:
     return False
 
 
+struct RequestHeader(Copyable, Movable):
+    """A header a swap sends with its request: `csrf_header(token)` in
+    `m0_http.login` is the one the layer names, and an application may
+    make its own.
+
+    For the write that carries no body. htmx 4 sends a DELETE's fields in
+    the query string, with no setting to change it, so a CSRF token on one
+    travels as a header or not at all -- a token in a URL is a token in the
+    access log, the `Referer` and the history (DECISIONS D38, retired).
+    """
+
+    var name: String
+    var value: String
+
+    def __init__(out self, var name: String, var value: String):
+        self.name = name^
+        self.value = value^
+
+
+def _is_tchar(b: UInt8) -> Bool:
+    """RFC 9110 §5.6.2's `tchar`: what a header name is made of."""
+    if (b >= UInt8(ord("a")) and b <= UInt8(ord("z"))) or (
+        b >= UInt8(ord("A")) and b <= UInt8(ord("Z"))
+    ) or (b >= UInt8(ord("0")) and b <= UInt8(ord("9"))):
+        return True
+    for c in "!#$%&'*+-.^_`|~".as_bytes():
+        if b == c:
+            return True
+    return False
+
+
+def _check_request_header(header: RequestHeader) raises:
+    """Refuse a header no client would send as written: a name that is not
+    a token, a value holding a control byte (a line break would end it),
+    or a value that is not ASCII -- a browser sends a header value as
+    Latin-1, so UTF-8 written here would arrive as other bytes."""
+    var name = header.name.as_bytes()
+    if len(name) == 0:
+        raise Error("swap(..., header=...): the header has no name")
+    for b in name:
+        if not _is_tchar(b):
+            raise Error(
+                'swap(..., header=RequestHeader("', header.name, '", ...)): a '
+                "header name is letters, digits and !#$%&'*+-.^_`|~ alone"
+            )
+    for b in header.value.as_bytes():
+        if (b < 0x20 and b != 0x09) or b == 0x7F:
+            raise Error(
+                'swap(..., header=RequestHeader("', header.name, '", ...)): the '
+                "value holds a control byte, which would end the header"
+            )
+        if b >= 0x80:
+            raise Error(
+                'swap(..., header=RequestHeader("', header.name, '", ...)): the '
+                "value is not ASCII, and a browser sends a header as Latin-1, "
+                "not as the UTF-8 it was written in"
+            )
+
+
 def _swap[
     V: Vocabulary
-](mut h: Html, verb: String, url: String, target: String, push: Bool = False) raises:
+](
+    mut h: Html,
+    verb: String,
+    url: String,
+    target: String,
+    push: Bool = False,
+    header: Optional[RequestHeader] = None,
+) raises:
     """Every swap goes through here: refuse a verb `V` does not take, then
     let `V` spell it. `hx-psot` is a silent attribute in htmx and
     `@psot(...)` a runtime error in Datastar, and a typo is the mistake
@@ -192,7 +259,11 @@ def _swap[
     check of the layer's too: only a `get` is pushed. A pushed URL is one
     the browser GETs on reload, from a bookmark and on a history restore,
     so pushing a `post`'s is writing an address that answers 405, or
-    worse, one that answers."""
+    worse, one that answers.
+
+    `header` is a request header the swap sends (`RequestHeader`), checked
+    by the layer -- a name that is a token, a value of ASCII with no
+    control byte -- before the vocabulary spells it."""
     if push and verb != "get":
         raise Error(
             'swap("', verb, '", "', url, '", push=True): only a get is pushed — a '
@@ -204,9 +275,13 @@ def _swap[
             'swap("', verb, '", ...): the verb must be one of ',
             verbs.replace(" ", ", "),
         )
+    if header:
+        _check_request_header(header.value())
     V.swap(h, verb, url, target)
     if push:
         V.push_url(h)
+    if header:
+        V.request_header(h, header.value())
 
 
 def _check_action_url(url: String) raises:
@@ -270,6 +345,15 @@ trait Vocabulary:
         and did not."""
         raise Error("swap(..., push=True): this vocabulary cannot push a URL")
 
+    @staticmethod
+    def request_header(mut h: Html, header: RequestHeader) raises:
+        """Make the swap just written send `header` with its request.
+        Called after `swap` (and `push_url`), on the same open element.
+        The default REFUSES, as `push_url`'s does: a vocabulary with no
+        spelling raises rather than render a swap that sends nothing, and
+        fails the server's check only when someone clicks."""
+        raise Error("swap(..., header=...): this vocabulary cannot send a request header")
+
 
 comptime HTMX_VERBS = "get post put patch delete query"
 """The `#verbs` of htmx 4, in its order: the five, and `query`."""
@@ -289,10 +373,11 @@ struct Htmx(Vocabulary):
     rest on click) and cancels the default for forms, submit buttons and
     anchors, so nothing about the element needs spelling here.
 
-    What this cannot spell is a request HEADER, and htmx 4 makes an app
-    want one: a `delete`'s fields ride the query string there, hard-coded,
-    so a CSRF token on one travels as a header (`hx-headers` on the
-    element; `apps/fragment_notes` writes it by hand, D38).
+    htmx 4 makes an app want a request HEADER: a `delete`'s fields ride
+    the query string there, hard-coded, so a CSRF token on one travels as
+    a header. `request_header` spells it (`hx-headers` on the element);
+    `apps/fragment_notes` still writes the attribute by hand, as it did
+    before the layer could (D38, retired).
     """
 
     @staticmethod
@@ -312,6 +397,18 @@ struct Htmx(Vocabulary):
         `HX-Request-Type: full`, which `page_or_fragment` answers as a
         document (SPEC N22)."""
         h.attr("hx-push-url", "true")
+
+    @staticmethod
+    def request_header(mut h: Html, header: RequestHeader) raises:
+        """`hx-headers='{"NAME":"VALUE"}'`, which htmx reads from the element
+        itself (inheritance is explicit in htmx 4, so it goes on each
+        element rather than once on a parent). The name and the value are
+        written as JSON strings, and `attr` escapes the whole for HTML."""
+        h.attr(
+            "hx-headers",
+            String("{", escape_json_string(header.name), ":",
+                   escape_json_string(header.value), "}"),
+        )
 
 
 struct Datastar(Vocabulary):
@@ -376,6 +473,20 @@ struct Datastar(Vocabulary):
             "swap(..., push=True): Datastar has no history handling, so a pushed "
             "URL could not be gone back to — use a plain link for a view that "
             "needs an address"
+        )
+
+    @staticmethod
+    def request_header(mut h: Html, header: RequestHeader) raises:
+        """Refused. Datastar sends a header from an option INSIDE the
+        action expression (`@delete('/x', {headers: {...}})`), which `swap`
+        writes whole and this call cannot reach, so the spelling would be
+        a second one of the action. No application on the layer has asked
+        for one; a Datastar write carries its token in the signal store or
+        a form field instead."""
+        raise Error(
+            "swap(..., header=...): Datastar sends a header from inside the "
+            "action, which this layer does not write — carry the token in a "
+            "form field"
         )
 
 
@@ -465,7 +576,12 @@ struct Html(Movable):
         self._buf.extend(rendered.as_bytes())
 
     def swap[V: Vocabulary](
-        mut self, verb: String, url: String, target: String, push: Bool = False
+        mut self,
+        verb: String,
+        url: String,
+        target: String,
+        push: Bool = False,
+        header: Optional[RequestHeader] = None,
     ) raises:
         """The attributes that make the open element fetch `url` with `verb`
         and replace the element `target` selects with the answer, in `V`'s
@@ -474,9 +590,10 @@ struct Html(Movable):
         `target` is a selector (`#notes`); `Fragment.swap` supplies its own,
         and this form is for an element rendered OUTSIDE the fragment it
         swaps — a page-level link — which takes `frag.selector()`.
-        `push=True` also moves the address bar to `url` (a `get` only).
+        `push=True` also moves the address bar to `url` (a `get` only), and
+        `header` is a request header the swap sends (`RequestHeader`).
         """
-        _swap[V](self, verb, url, target, push)
+        _swap[V](self, verb, url, target, push, header)
 
     def text(mut self, s: String):
         """`s` as text content, escaped."""
@@ -554,18 +671,27 @@ struct Fragment[V: Vocabulary](Movable):
         """`#id`: what an attribute that targets this fragment says."""
         return String("#", self.id)
 
-    def swap(mut self, verb: String, url: String, push: Bool = False) raises:
+    def swap(
+        mut self,
+        verb: String,
+        url: String,
+        push: Bool = False,
+        header: Optional[RequestHeader] = None,
+    ) raises:
         """Make the open element fetch `url` with `verb` and replace THIS
         fragment with the answer. Generated from the fragment's own id, in
         `V`'s spelling. `push=True` also moves the address bar to `url`, so
         the view the swap arrives at can be reloaded and linked to: a `get`
         only, and only in a vocabulary that can (`Htmx`; `Datastar`
-        refuses)."""
-        _swap[Self.V](self.html, verb, url, self.selector(), push)
+        refuses). `header` is a request header the swap sends -- the CSRF
+        token on a write with no body (`csrf_header` in `m0_http.login`);
+        `Htmx` spells it, `Datastar` refuses."""
+        _swap[Self.V](self.html, verb, url, self.selector(), push, header)
 
     def el(
         self, tag: String, verb: String, url: String, attrs: String, *children: String,
         push: Bool = False,
+        header: Optional[RequestHeader] = None,
     ) raises -> String:
         """`swap` in the expression tier: a whole `<tag>` that fetches `url`
         with `verb` and replaces this fragment, as a string, with `attrs`
@@ -576,11 +702,11 @@ struct Fragment[V: Vocabulary](Movable):
         given here because the vocabulary reads it — a Datastar form
         submits where a button clicks — and giving it once, to the
         element that is being made, is what keeps it from being spelled
-        twice. `push=True` is `swap`'s: the address bar follows the swap."""
+        twice. `push=True` and `header` are `swap`'s."""
         var h = Html(128)
         h.open(tag)
         h.raw_attrs(attrs)
-        _swap[Self.V](h, verb, url, self.selector(), push)
+        _swap[Self.V](h, verb, url, self.selector(), push, header)
         for c in children:
             h.raw(c)
         h.close(tag)

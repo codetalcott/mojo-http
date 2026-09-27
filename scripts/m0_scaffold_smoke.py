@@ -31,9 +31,20 @@ application. This does, per template, as a user would:
             tag; two DIFFERING datastar-patch-elements frames for the root id
             inside five seconds; a kick, posted with that stream open, lifts
             every bar of a later frame above the highest bar before it; the
-            kick counted; nothing refused by the bus
+            kick counted; nothing refused by the bus.
+            auth: signed out, a navigation is a 303 to /login and a swap a
+            401 carrying the form, neither cacheable; the wrong password a
+            401 with an alert and no cookie; the right one a 303 setting an
+            HttpOnly, SameSite=Lax session; then the list, a write without
+            the token a 403 and with it the item escaped, its delete button
+            carrying the token as `hx-headers`; the empty title's 422
+            fragment; a DELETE with the token in its URL a 403, in the
+            header a 200; sign-out a 303 expiring the cookie. No redirect
+            is followed anywhere: a 3xx is an answer to read
   doctor    `uv run m0 doctor --json`: green, the host's report inside it;
-            the scaffold it wrote matches, and an edited Dockerfile is named
+            the scaffold it wrote matches, and an edited Dockerfile is named.
+            auth: without APP_PASSWORD the doctor is exit 78 naming it, the
+            application's own refusal reaching the doctor before `serve`
   smoke.sh  the scaffold's own gate is green, on another port
 
 Resolution is online by design (the handoff's §10.2 measured that a
@@ -53,6 +64,7 @@ import tempfile
 import time
 import tomllib
 import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -69,18 +81,29 @@ COMMON = [
 WRITES = {
     "views": COMMON + ["src/pages.mojo", "src/server.mojo", "src/views.mojo",
                        "test/test_views.mojo"],
+    "auth": COMMON + ["src/pages.mojo", "src/server.mojo", "src/views.mojo",
+                      "test/test_auth.mojo"],
     "live": COMMON + ["src/board.mojo", "src/pages.mojo", "src/server.mojo",
                       "src/store.mojo", "src/views.mojo", "src/wave.mojo",
                       "test/test_live.mojo"],
 }
-TEST_FILE = {"views": "test/test_views.mojo", "live": "test/test_live.mojo"}
+TEST_FILE = {"views": "test/test_views.mojo", "live": "test/test_live.mojo",
+             "auth": "test/test_auth.mojo"}
+
+# What a template's server needs in its environment to serve at all; `auth`
+# refuses to start without both (exit 78, naming the variable).
+AUTH_PASSWORD = "smoke scaffold"
+SERVE_ENV = {"auth": {"APP_KEY": "scaffold-smoke-key-0123456789abcdef0123456789",
+                      "APP_PASSWORD": AUTH_PASSWORD}}
+AUTH_HINT = "export APP_KEY=\"$(openssl rand -hex 32)\" APP_PASSWORD='choose one'"
 
 HTMX_TAG = '<script src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"></script>'
 DATASTAR_TAG = ('<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/'
                 'datastar@v1.0.4/bundles/datastar.js"></script>')
 VARY = "HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request, HX-Request-Type"
 PARTIAL = {"HX-Request-Type": "partial"}
-FORM = dict(PARTIAL, **{"Content-Type": "application/x-www-form-urlencoded"})
+PLAIN_FORM = {"Content-Type": "application/x-www-form-urlencoded"}
+FORM = dict(PARTIAL, **PLAIN_FORM)
 
 RED_TEST = '''
 
@@ -115,12 +138,21 @@ def sh(argv, cwd, env, what, code=0, timeout=1200):
     return done
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 def request(port, method, path, headers=None, body=None):
-    """(status, reason, headers, body) -- a 4xx is an answer here, not an error."""
+    """(status, reason, headers, body) -- a 4xx is an answer here, not an
+    error, and a 3xx is an answer, not an address to follow."""
     req = urllib.request.Request("http://127.0.0.1:%d%s" % (port, path), data=body,
                                  headers=headers or {}, method=method)
     try:
-        with urllib.request.urlopen(req, timeout=5) as r:
+        with _OPENER.open(req, timeout=5) as r:
             return r.status, r.reason, r.headers, r.read().decode()
     except urllib.error.HTTPError as e:
         return e.code, e.reason, e.headers, e.read().decode()
@@ -167,7 +199,10 @@ def check_new(work, whl, template, name, pin, m0v):
 
     done = sh(new + [name, "--template", template], work, bare, "uvx --offline m0 new")
     project = work / name
-    for line in ("cd " + name, "uv sync", "uv run m0 build && bin/server --port 8080"):
+    lines = ["cd " + name, "uv sync", "uv run m0 build && bin/server --port 8080"]
+    if template == "auth":
+        lines.insert(2, AUTH_HINT)
+    for line in lines:
         if line not in done.stdout:
             fail("m0 new did not print the next command %r:\n%s" % (line, done.stdout))
 
@@ -324,7 +359,83 @@ def wire_live(port):
           % (len(set(frames)), min(lifted), max(lifted), top))
 
 
-WIRE = {"views": wire_views, "live": wire_live}
+def wire_auth(port):
+    status, _, headers, _ = request(port, "GET", "/items")
+    if (status, headers.get("Location")) != (303, "/login"):
+        fail("a signed-out GET /items answered %d to %r, not a 303 to /login"
+             % (status, headers.get("Location")))
+    if headers.get("Cache-Control") != "no-store":
+        fail("the signed-out redirect is cacheable: Cache-Control %r" % headers.get("Cache-Control"))
+    status, reason, headers, body = request(port, "GET", "/items", PARTIAL)
+    if (status, reason) != (401, "Unauthorized") or not body.startswith('<section id="items"') \
+            or 'action="/login"' not in body:
+        fail("a signed-out swap is not a 401 carrying the login form: %d %s %s"
+             % (status, reason, body[:300]))
+    if headers.get("Cache-Control") != "no-store" or headers.get("Vary") != VARY:
+        fail("the signed-out 401 says Cache-Control %r, Vary %r"
+             % (headers.get("Cache-Control"), headers.get("Vary")))
+
+    status, _, _, body = request(port, "GET", "/login")
+    if status != 200 or HTMX_TAG not in body or 'type="password"' not in body:
+        fail("GET /login is not a document with the pinned htmx 4 tag and the form: %s" % body[:300])
+    status, _, headers, body = request(port, "POST", "/login", PLAIN_FORM,
+                                       b"user=admin&password=wrong")
+    if status != 401 or 'role="alert"' not in body or headers.get("Set-Cookie"):
+        fail("the wrong password answered %d, cookie %r: %s"
+             % (status, headers.get("Set-Cookie"), body[:300]))
+    status, _, headers, _ = request(port, "POST", "/login", PLAIN_FORM,
+                                    ("user=admin&password=%s"
+                                     % urllib.parse.quote_plus(AUTH_PASSWORD)).encode())
+    cookie = headers.get("Set-Cookie", "")
+    if (status, headers.get("Location")) != (303, "/items"):
+        fail("signing in answered %d to %r, not a 303 to /items" % (status, headers.get("Location")))
+    if not cookie.startswith("corner-auth-session=v1.") or "; HttpOnly; SameSite=Lax;" not in cookie:
+        fail("signing in set %r" % cookie)
+    jar = {"Cookie": cookie.split(";", 1)[0]}
+
+    status, _, headers, body = request(port, "GET", "/items", jar)
+    found = re.search(r'name="csrf" value="([^"]+)"', body)
+    if status != 200 or not body.startswith("<!doctype html>") or not found:
+        fail("GET /items signed in is not a document carrying a token: %d %s" % (status, body[:300]))
+    if headers.get("Cache-Control") != "no-store":
+        fail("the signed-in list is cacheable: Cache-Control %r" % headers.get("Cache-Control"))
+    token = found.group(1)
+    signed = dict(FORM, **jar)
+    status, _, _, _ = request(port, "POST", "/items", signed, b"title=milk")
+    if status != 403:
+        fail("POST /items without the token answered %d, not 403" % status)
+    status, _, _, body = request(port, "POST", "/items", signed,
+                                 ("title=milk+%%3Cb%%3E&csrf=%s" % token).encode())
+    if status != 200 or "milk &lt;b&gt;" not in body or 'hx-delete="/items/1"' not in body:
+        fail("create did not answer the list with the item escaped: %s" % body[:400])
+    carried = 'hx-headers="{&quot;X-CSRF-Token&quot;:&quot;%s&quot;}"' % token
+    if carried not in body:
+        fail("the delete button does not carry the token as hx-headers: %s" % body[:600])
+    status, reason, _, body = request(port, "POST", "/items", signed,
+                                      ("title=&csrf=%s" % token).encode())
+    if (status, reason) != (422, "Unprocessable Content") or 'role="alert"' not in body:
+        fail("an empty title answered %d %s: %s" % (status, reason, body[:300]))
+
+    status, _, _, _ = request(port, "DELETE", "/items/1?csrf=" + token, dict(PARTIAL, **jar))
+    if status != 403:
+        fail("a DELETE with the token in its URL answered %d, not 403" % status)
+    status, _, _, body = request(port, "DELETE", "/items/1",
+                                 dict(PARTIAL, **jar, **{"X-CSRF-Token": token}))
+    if status != 200 or "milk" in body:
+        fail("DELETE /items/1 with the token in its header: %d %s" % (status, body[:300]))
+
+    status, _, headers, _ = request(port, "POST", "/logout", dict(PLAIN_FORM, **jar),
+                                    ("csrf=%s" % token).encode())
+    if (status, headers.get("Location")) != (303, "/login") \
+            or "Max-Age=0" not in headers.get("Set-Cookie", ""):
+        fail("signing out answered %d to %r, cookie %r"
+             % (status, headers.get("Location"), headers.get("Set-Cookie")))
+    print("wire[auth]: signed out 303 or 401 form, a wrong password refused, a session set; "
+          "403 without the token, create, hx-headers, 422, a token in the URL refused, "
+          "delete, sign-out")
+
+
+WIRE = {"views": wire_views, "live": wire_live, "auth": wire_auth}
 
 
 # --- one template ------------------------------------------------------------
@@ -390,9 +501,10 @@ def check_test(project, env, template):
 
 def serve_and_probe(project, env, template, name, port, pin, m0v, servers):
     phase("wire [%s]" % template)
+    serve_env = dict(env, **SERVE_ENV.get(template, {}))
     server = subprocess.Popen([str(project / "bin" / "server"), "--port", str(port)],
-                              cwd=project, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                              text=True)
+                              cwd=project, env=serve_env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
     servers.append(server)
     if not healthy(port):
         server.kill()
@@ -407,7 +519,17 @@ def serve_and_probe(project, env, template, name, port, pin, m0v, servers):
         fail("the server's banner does not carry the application's name:\n" + banner[:500])
 
     phase("doctor [%s]" % template)
-    done = sh(["uv", "run", "m0", "doctor", "--json"], project, env, "uv run m0 doctor --json")
+    if template == "auth":
+        # The application's own configuration is checked in its `main`,
+        # BEFORE `serve`, so the doctor -- which reaches no `make` -- refuses
+        # it as the run would, naming the variable.
+        bare = {k: v for k, v in serve_env.items() if k != "APP_PASSWORD"}
+        done = sh(["uv", "run", "m0", "doctor", "--json"], project, bare,
+                  "uv run m0 doctor --json without APP_PASSWORD", code=78)
+        refused = json.loads(done.stdout.strip().splitlines()[-1])
+        if refused["ok"] or "APP_PASSWORD" not in (refused["app"] or {}).get("output", ""):
+            fail("without APP_PASSWORD the doctor said:\n" + done.stdout[-1500:])
+    done = sh(["uv", "run", "m0", "doctor", "--json"], project, serve_env, "uv run m0 doctor --json")
     report = json.loads(done.stdout.strip().splitlines()[-1])
     if not report["ok"] or report["app"] is None or report["app"]["report"].get("m0_host") != "1":
         fail("m0 doctor --json is not green with the host's report inside:\n" + done.stdout[-1500:])
@@ -421,7 +543,7 @@ def serve_and_probe(project, env, template, name, port, pin, m0v, servers):
     dockerfile = project / "deploy" / "Dockerfile"
     written = dockerfile.read_text()
     dockerfile.write_text(written + "\n# the application's own\n")
-    done = sh(["uv", "run", "m0", "doctor", "--json"], project, env, "uv run m0 doctor --json")
+    done = sh(["uv", "run", "m0", "doctor", "--json"], project, serve_env, "uv run m0 doctor --json")
     drift = json.loads(done.stdout.strip().splitlines()[-1])["scaffold"]
     dockerfile.write_text(written)
     if drift["differ"] != ["deploy/Dockerfile"]:

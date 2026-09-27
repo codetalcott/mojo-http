@@ -43,7 +43,9 @@ def _parser():
     # value, never by a flag per feature (docs/DECISIONS.md D44).
     p.add_argument("--template", choices=new.TEMPLATES, default="views",
                    help="views: a server-rendered list swapped by htmx 4 (default); "
-                   "live: a producer pushing state to every tab over SSE, with Datastar")
+                   "live: a producer pushing state to every tab over SSE, with Datastar; "
+                   "auth: the views list behind a login, with a signed session and "
+                   "a CSRF token on every write")
     p.set_defaults(run=new.run)
 
     p = sub.add_parser(
