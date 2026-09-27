@@ -240,10 +240,18 @@ against `test_respawn.mojo` and `test_views.mojo`, the command line's
 twelve: seven against `smoke-host-doctor` (`--only doctor`, about five
 minutes) and five against `test_host_flags.mojo` (`--only flags`), and one
 against `smoke-parallel-runtime` (`--only parallel`), which builds against
-MAX — the reason for `--group max`. Every other gate holds in that venv
-too: the unit tests supply the parallel runtime's fact rather than read
-the one `mojo run` gives them beside MAX (ROADMAP Known issues), which
-until 2026-09-26 failed `test_host.mojo`'s baseline there. A sabotage that
+MAX — the reason for `--group max`. On Linux every other gate holds in
+that venv too: the unit tests supply the parallel runtime's fact rather
+than read the one `mojo run` gives them beside MAX (ROADMAP Known issues),
+which until 2026-09-26 failed `test_host.mojo`'s baseline there. **On the
+reference Mac the run splits in two.** A macOS build beside `max-core`
+links the runtime into every binary, so E32 refuses the prefork baselines
+with 78; the 1.7.0 run failed at the doctor's baseline that way before
+any rule ran. There, run `uv run poe sabotage-host --skip parallel` (58
+rules, about thirty minutes) and then `uv run --group max poe
+sabotage-host --only parallel`, and follow both with a plain `uv sync`,
+which takes `max-core` back out; a build made while it is installed reads
+as linked. A sabotage that
 does not compile is reported as BROKEN
 and counted as a miss, not a catch. Pre-release because each rule reruns
 the whole smoke, about fifteen minutes; `--only unit` is about a minute.
@@ -540,6 +548,28 @@ names an `m0` the index lacks.
 - **`m0 image` ran, which closes 0.1.0's open item.** The builder's
   `uv sync --frozen` fetched mojo 1.1.0 and `m0==0.2.0` from the index.
   The image was built in 32 s: 102 MB, 2.97 MB of it the app, and no
+  interpreter.
+- Step 6: 8 blocks passed against the published package.
+
+`m0 0.3.0`: tag `m0-v0.3.0` at `1946db3`, 2026-09-27, cut beside m0serve
+1.7.0 and pushed first, as 0.2.0 was.
+- Step 1: `sabotage-m0-wheel` 25 of 25, `sabotage-scaffold` 64 of 64. The
+  scaffold run took 96 minutes, most of it image rules downloading the
+  toolchain cold.
+- Step 3: the local wheel was `m0-0.3.0-py3-none-any.whl`, 619,679 bytes,
+  from a clean tree. A `views` scaffold and an `auth` scaffold from it both
+  pinned `m0==0.3.0`.
+- Step 4: `build` green at the first attempt ("m0 0.3.0, cut from
+  1946db3…", 619,679 bytes, equal to the local wheel), and `publish-pypi`
+  green after approval. The merge was made by hand, so "Tests passed on"
+  named the merge commit's own run rather than the pull request head's.
+- Step 5 on macOS arm64: the scaffold pinned `m0==0.3.0`, and `uv.lock`
+  named it from pypi.org. The first build took 13.5 s and printed no
+  warning, `smoke.sh` passed, and every `m0 doctor` check passed —
+  `max-gated` with no MAX installed, and `scaffold` naming no file.
+- `m0 image` built in 550 s from a cold cache. The builder's `uv sync
+  --frozen` installed `m0==0.3.0` and mojo 1.1.0 from the index. The image
+  is 103.6 MB, 2.97 MB of it the app, with `libsqlite3-0` installed and no
   interpreter.
 - Step 6: 8 blocks passed against the published package.
 
