@@ -1174,6 +1174,11 @@ def m0_release_problems(text, release_text):
       `poe build-m0-wheel`, which defaults it to `tree`; and a wheel whose
       version carries a `+` is refused by name before the upload;
     - the tag must equal the wheel's version;
+    - `Tests` must have passed on what is released: the build job asks the
+      runs API for the tagged commit (and, for a merge commit, the pull
+      request head it merges -- a merge the `automerge` label makes starts
+      no workflow of its own) and passes on a completed success alone;
+    - the wheel records one `gated_max` pin, as it records one `gated_mojo`;
     - `id-token: write` appears once, in a job bound to the `pypi-m0`
       environment -- never `pypi`, whose deployment policy admits m0serve's
       refs and is m0serve's publisher tuple;
@@ -1203,6 +1208,15 @@ def m0_release_problems(text, release_text):
         problems.append(f"{M0_RELEASE} no longer refuses a wheel whose version carries a local label")
     if '[ "m0-v$version" = "$GITHUB_REF_NAME" ]' not in text:
         problems.append(f"{M0_RELEASE} no longer requires the tag to equal the wheel's version")
+    if "actions/workflows/test.yml/runs?head_sha=" not in text \
+            or '"completed success "*)' not in text:
+        problems.append(
+            f"{M0_RELEASE} no longer refuses a release `Tests` has not passed: the "
+            "build job asks the runs API for the tagged commit and passes on a "
+            "completed success alone"
+        )
+    if 'if len(info["gated_max"]) != 1:' not in text:
+        problems.append(f"{M0_RELEASE} no longer requires the wheel to record one gated_max pin")
     if text.count("id-token: write") != 1:
         problems.append(f"{M0_RELEASE} must grant `id-token: write` exactly once, to the publishing job")
     environments = re.findall(r"^\s*environment:\s*(\S+)\s*$", text, re.M)
@@ -1243,6 +1257,13 @@ def _m0_release_cases():
          real.replace("*+*)", "*~*)"), release, True),
         ("release-m0: the tag no longer compared with the version",
          real.replace('[ "m0-v$version" = "$GITHUB_REF_NAME" ]', "true"), release, True),
+        ("release-m0: the Tests gate asks about a branch, not the commit",
+         real.replace("actions/workflows/test.yml/runs?head_sha=", "actions/workflows/test.yml/runs?branch="),
+         release, True),
+        ("release-m0: the Tests gate passes a run that did not succeed",
+         real.replace('"completed success "*)', '"completed "*)'), release, True),
+        ("release-m0: gated_max no longer counted",
+         real.replace('if len(info["gated_max"]) != 1:', "if False:"), release, True),
         ("release-m0: published from m0serve's environment",
          real.replace("environment: pypi-m0", "environment: pypi"), release, True),
         ("release-m0: the token granted to the whole workflow",

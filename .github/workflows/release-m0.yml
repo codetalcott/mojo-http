@@ -16,11 +16,21 @@
 # that do not apply to a release a person cuts by hand.
 #
 # The tag is the claim; the jobs check it against the tree before anything
-# is uploaded: the tag's version is `__version__`, the wheel carries NO
+# is uploaded. First that `Tests` passed on what is being released: on the
+# tagged commit itself, or -- when the tag names a merge commit -- on the
+# pull request head it merged (its second parent). The second arm is not a
+# convenience: a merge the `automerge` label makes is pushed with the
+# workflow token, which starts no workflow, so such a commit never has a
+# `Tests` run of its own (m0-v0.1.0's did not). What it cannot see is a
+# `main` that moved between that run and the merge, which label-automerge
+# accepts the same way. Then: the tag's version is `__version__`, the wheel
+# carries NO
 # local label (`M0_WHEEL_LOCAL` is what every smoke builds with, and a
 # `0.1.0+tree` cannot be uploaded anyway -- PyPI refuses local versions),
-# the wheel was cut from exactly this commit with a clean tree, and a
-# scaffold written by the built wheel pins that same version.
+# the wheel was cut from exactly this commit with a clean tree, the
+# toolchain pins it records are one `mojo` and one `max-core`, and a
+# scaffold written by the built wheel pins that same version and names that
+# MAX.
 #
 # Additive: the automerge workflows key on the workflow named "Tests".
 name: Release m0
@@ -37,7 +47,44 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # `actions: read` is the runs API the Tests gate asks; without it the
+    # call is refused and the job fails, never passes.
+    permissions:
+      contents: read
+      actions: read
     steps:
+      - name: Refuse a release Tests has not passed
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          latest_tests() {
+            gh api "repos/$GITHUB_REPOSITORY/actions/workflows/test.yml/runs?head_sha=$1&per_page=1" \
+              --jq '.workflow_runs[0] // empty | "\(.status) \(.conclusion) \(.event) \(.html_url)"'
+          }
+          verdict=$(latest_tests "$GITHUB_SHA")
+          what="$GITHUB_SHA"
+          if [ -z "$verdict" ]; then
+            parents=$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_SHA" --jq '[.parents[].sha] | join(" ")')
+            set -- $parents
+            if [ "$#" -eq 2 ]; then
+              verdict=$(latest_tests "$2")
+              what="$2 (the pull request head that $GITHUB_SHA merges)"
+            fi
+          fi
+          case "$verdict" in
+            "completed success "*)
+              echo "Tests passed on $what: ${verdict##* }" ;;
+            "")
+              echo "::error::no Tests run on $GITHUB_SHA, or on a pull request it merges: a change to docs alone gets none (test.yml's paths-ignore); tag the commit that carries the release's code"
+              exit 1 ;;
+            completed\ *)
+              echo "::error::Tests did not pass on $what: $verdict"
+              exit 1 ;;
+            *)
+              echo "::error::Tests is still running on $what ($verdict); re-run this job once it has passed"
+              exit 1 ;;
+          esac
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
       # UNSET, not empty-by-accident: hatch_version.py appends a local label
@@ -80,6 +127,8 @@ jobs:
               problems.append("cut from a dirty tree")
           if len(info["gated_mojo"]) != 1:
               problems.append(f"gated_mojo is {info['gated_mojo']}")
+          if len(info["gated_max"]) != 1:
+              problems.append(f"gated_max is {info['gated_max']}")
           if "Requires-Dist" in meta:
               problems.append("the wheel declares a dependency (D39)")
           for p in problems:
@@ -99,6 +148,8 @@ jobs:
           uvx --from "$GITHUB_WORKSPACE"/dist/m0/*.whl m0 new probe
           grep -F "\"m0==$version\"" probe/pyproject.toml
           grep -F '"mojo==' probe/pyproject.toml
+          max=$(python3 -c 'import json, sys, zipfile; print(json.loads(zipfile.ZipFile(sys.argv[1]).read("m0/_build_info.json"))["gated_max"][0])' "$GITHUB_WORKSPACE"/dist/m0/*.whl)
+          grep -F "max-core==$max" probe/pyproject.toml
       - uses: actions/upload-artifact@v7
         with:
           name: m0-wheel

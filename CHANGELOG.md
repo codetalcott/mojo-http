@@ -115,6 +115,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   are recorded with the job's measurements, with a request's share of the
   GIL against the 1 ms edge the keep arm needs.
 
+- **`release-m0.yml` refuses a release `Tests` has not passed, and a wheel
+  that does not record one `max-core` pin** (SPEC N32). The build job
+  asks the runs API for the latest `Tests` run on the tagged commit, or,
+  for a merge commit, on the pull request head it merges: a merge the
+  `automerge` label makes is pushed with the workflow token, which starts
+  no workflow, so such a commit has no run of its own (`m0-v0.1.0`'s did
+  not). A run still going, failed or cancelled, or none at all (a change
+  to docs alone gets none) refuses the tag by name. The wheel's
+  `_build_info.json` must hold one `gated_max` pin, as it holds one
+  `gated_mojo`, and the scaffold the job writes must name that MAX. Checked
+  against both published tags, which pass, and a docs-only merge, a
+  cancelled run and a running one, which do not. `m0_release_problems`
+  holds both rules; its selftest reverts thirteen.
+
 ### Fixed
 
 - **A burst of new connections no longer holds the event loop away from
