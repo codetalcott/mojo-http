@@ -2,6 +2,7 @@ from std.sys.info import CompilationTarget
 from std.time import sleep
 
 from lightbug_http.address import HostPort, NetworkType, ParseError, TCPAddr, parse_address
+from lightbug_http.c.process import ignore_sigpipe
 from lightbug_http.c.socket_error import (
     AcceptError,
     BindEADDRINUSEError,
@@ -258,6 +259,13 @@ struct ListenConfig:
     ](self, address: StringSpan) raises ListenerError -> NoTLSListener[network]:
         """Create a TCP listener on the specified address.
 
+        The process becomes a server here, so SIGPIPE is ignored first
+        (`ignore_sigpipe`, SPEC A25). Both hosts bind before they fork or
+        start a thread, so the ignore reaches every process and thread they
+        run: a supervisor, which never enters the event loop, and whatever an
+        application runs before its loop does -- a handler's or a producer's
+        `make`, the producer's first steps, a pool.
+
         Parameters:
             network: The network type (tcp4 or tcp6).
 
@@ -270,6 +278,7 @@ struct ListenConfig:
         Raises:
             ListenerError: If address parsing, socket creation, bind, or listen fails.
         """
+        ignore_sigpipe()
         var local: HostPort
         try:
             local = parse_address[network](address)

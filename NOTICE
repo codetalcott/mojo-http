@@ -872,6 +872,25 @@ lightbug_http
         is a `HandoffPost` parameter of `send_with`, so a test can take the
         receiver's turn inside the hand-off.
 
+      - connection.mojo, c/process.mojo (2026-09-28): `ListenConfig.listen`
+        calls `ignore_sigpipe` first (SPEC A25). Both hosts bind before
+        they fork or start a thread, so the ignore reaches what the loop's
+        own call cannot: a supervisor, which never enters the loop (m0serve's
+        under `--workers` or `--reload`, the Mojo host's under `M0_WORKERS`;
+        `kill -PIPE` ended either with 141 and orphaned its workers), and
+        what a Mojo host application runs before its loop, its `make`, its
+        producer and its pool threads.
+
+      - c/fdpass.mojo (2026-09-28): `recv_fd`'s `MSG_CTRUNC` check, which
+        tested control truncation on neither platform. Linux's `MSG_CTRUNC`
+        is 0x08; the 0x20 tested is its `MSG_TRUNC`. macOS's `struct msghdr`
+        is 48 bytes, not 56, and `msg_flags` is the high half of the sixth
+        word, so the seventh, which the check read, was never written. The
+        bit is now per platform and the flags are read where each kernel
+        writes them. A refused message closes every descriptor that reached
+        its control buffer, since the kernel installs them on receipt. A
+        payload cut short keeps its descriptor.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

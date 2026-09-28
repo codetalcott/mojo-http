@@ -27,7 +27,7 @@ refused 409 -- it would subscribe a pool thread's registry, which nothing
 drains (`mojo_pool.mojo`) -- so `/events` opens on the loop and
 `/events-from-func` keeps the refused shape for the gate to pin.
 
-Nine knobs, all for the gate:
+Ten knobs, all for the gate:
 
     M0_HOSTCHECK_PERIOD_MS   the beat's period (default 100)
     M0_HOSTCHECK_STEP_MS     how long each beat sleeps before it publishes
@@ -46,6 +46,11 @@ Nine knobs, all for the gate:
                              the producer's `make` raises the same way; at
                              two workers only worker 0 builds one, and the
                              supervisor must end worker 1 with it
+    M0_HOSTCHECK_PRODUCER_PIPE=1
+                             the producer's `make` writes to a pipe whose
+                             reader has gone, before the host enters its
+                             loop: the kernel raises SIGPIPE, which must
+                             already be ignored (SPEC A25)
     M0_HOSTCHECK_POOL_MAKE_RAISES=1
                              the handler's `make` raises on a POOL thread
                              alone (`ctx.thread >= 0`): the host must
@@ -66,10 +71,12 @@ its numbering below what the stream has seen.
 Run it:  uv run poe serve-host-check
 """
 
+from std.ffi import get_errno
 from std.os import getenv
 from std.time import perf_counter_ns, sleep
 
 from lightbug_http import OK, HTTPRequest, HTTPResponse
+from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.process import getpid, process_exit
 from m0_host.flags import host_config
 from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
@@ -104,6 +111,25 @@ def _env_ms(name: String, default: Int) -> Int:
     return result
 
 
+def _write_to_a_closed_pipe() raises:
+    """`M0_HOSTCHECK_PRODUCER_PIPE`: one write to a pipe whose reader has gone.
+
+    The kernel raises SIGPIPE on it, and the signal's default action ends the
+    process. Ignored, the write fails with `EPIPE` instead, and the line
+    printed here says so: a server that survives this proves nothing unless
+    the write was made.
+    """
+    var p = create_shutdown_pipe()
+    close_fd(p[0])
+    p[1].notify()
+    var err = get_errno()
+    close_fd(p[1].fd)
+    if err == err.EPIPE:
+        print("host_check: the producer's make wrote to a closed pipe: EPIPE", flush=True)
+    else:
+        print("host_check: the producer's make wrote to a closed pipe: no EPIPE", flush=True)
+
+
 struct Beat(Producer):
     """One numbered beat per period, to every worker."""
 
@@ -120,6 +146,8 @@ struct Beat(Producer):
     def make(ctx: HostContext) raises -> Self:
         if getenv("M0_HOSTCHECK_PRODUCER_RAISES", "") == "1":
             raise Error("M0_HOSTCHECK_PRODUCER_RAISES: the producer refuses to be built")
+        if getenv("M0_HOSTCHECK_PRODUCER_PIPE", "") == "1":
+            _write_to_a_closed_pipe()
         return Beat(
             _env_ms("M0_HOSTCHECK_PERIOD_MS", 100), _env_ms("M0_HOSTCHECK_STEP_MS", 0)
         )

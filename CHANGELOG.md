@@ -321,6 +321,39 @@ in a minor release: `m0serve`'s flags and environment variables, the
   back, then ends the harness by that signal. Each task takes `--only` and
   `--skip`, and `sabotage-keepalive` now checks its unsabotaged probe
   first.
+- **A supervisor, and what an application runs before its loop, survive
+  SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
+  which a supervisor never enters: m0serve's under `--workers` or
+  `--reload`, and the Mojo host's under `M0_WORKERS`. `kill -PIPE` ended
+  either with status 141 and left its workers serving, orphaned (measured
+  on macOS). m0serve's supervisor forks before any Python call, so
+  CPython's own ignore never reached it. A Mojo host application's `make`,
+  producer and pool threads also run before the loop, so a write there to
+  a peer that had gone ended the server before it served (one worker, or
+  `M0_THREADS`), or killed worker 0 on every respawn (`M0_WORKERS`). The
+  listener now ignores SIGPIPE first: both hosts bind before they fork or
+  start a thread, so every process and thread they run inherits it.
+  `smoke-host` sends the supervisor `kill -PIPE` and has a producer's
+  `make` write to a closed pipe; `smoke-spawn-workers` sends m0serve's
+  supervisor `kill -PIPE`.
+
+- **A malformed accept-sharing hand-off no longer leaks its connection**
+  (SPEC E16). `recv_fd` refuses a message whose control data was cut
+  short, and its check never saw one. Linux's `MSG_CTRUNC` is 0x08, and
+  the 0x20 it tested there is `MSG_TRUNC`, set when the payload is cut
+  short. macOS's `struct msghdr` is 48 bytes, not the 56 assumed, so its
+  flags were read from a word the kernel never writes. A refused message
+  also closed nothing, though the kernel installs each passed descriptor
+  as the message arrives. So on Linux a hand-off whose payload was cut
+  short lost its connection, left open for the life of the worker with
+  its client waiting, and on both platforms a message carrying extra
+  descriptors was taken in part, the rest left open. Neither shape comes
+  from the server's own `send_fd`, which passes one descriptor and a
+  payload that fits. The flags are now read where each kernel writes
+  them, a truncated control message is refused with every descriptor it
+  delivered closed, and a payload cut short keeps its descriptor.
+  `test_accept_share.mojo` sends both shapes and checks that nothing is
+  left open.
 
 ## [1.7.0] — 2026-09-27
 
