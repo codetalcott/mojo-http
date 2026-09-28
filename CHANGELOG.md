@@ -122,6 +122,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
   job was added, rendered with a flag `emit.py` does not have, while the
   check counted the other jobs' renders as its.
 
+- **A sabotage that does not compile is a miss, never a catch** (SPEC
+  F17). `sabotage-pool`, `sabotage-trailers` and `sabotage-keepalive`
+  counted any failure of their gate as the rule being guarded, so a
+  sabotage that only broke the build passed as proof; `sabotage-fuzz` and
+  `sabotage-outbox-cap` skipped one and still reported every rule guarded.
+  All five now run on `scripts/sabotage_lib.py`. A catch needs the gate to
+  have run: the `mojo` driver's last line names the phase that failed, and
+  a timeout or a crash that prints nothing is settled by building the
+  sabotaged source alone. An anchor must match exactly once
+  (`sabotage-outbox-cap`'s give-up anchor matched twice and is
+  re-pointed). A rule this platform cannot observe is reported `SKIPPED`
+  and never counted as guarded. Ctrl-C or SIGTERM mid-run puts every file
+  back, then ends the harness by that signal. Each task takes `--only` and
+  `--skip`, and `sabotage-keepalive` now checks its unsabotaged probe
+  first.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and
