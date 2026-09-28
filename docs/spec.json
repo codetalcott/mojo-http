@@ -178,6 +178,14 @@
       "evidence": "`test_uri_userinfo.mojo:test_an_at_in_a_request_query_keeps_the_path_and_query` (every PR) \u2014 `URI.parse` skipped to the first `@` anywhere after the scheme, so `GET /echo?x=a@b` reached the application as `/` with an empty query and a POST to `/save?x=a@b` ran the root's POST handler, on every server shape; the outbound client, which dials the parsed host, connected to whatever followed an `@` in a query. Browsers and htmx encode `@`, which kept it to typed and hand-built URLs; a Flask app compared against Werkzeug found it. Its neighbours hold the path form (`/users/@alice?page=2`), the client's host, and a real userinfo still skipped, and `Conformance test the WSGI bridge` sends a GET and a POST carrying the raw byte to a live server and requires the path, the query and the method back. The `://` half of the same search is `test_uri_scheme.mojo`"
     },
     {
+      "id": "A23",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "Request body timeout, `--body-timeout`: a body still short at the deadline is refused (408 on a connection's first request) and closed, and a body that arrived whole leaves no timer behind",
+      "status": "verified",
+      "evidence": "`Smoke test the request body timeout` (every PR) \u2014 at a 2 s timeout, with `--blocking-threads 2`: a keep-alive connection outlives the timeout after a POST whose body came with its headers; a request out on a pool thread when the old timer would have fired keeps its slot, and eight connections opened behind it read only their own answers; headers and half a body, then silence, is answered 408 and closed at the deadline; and two arms stop the server so a read and an expiring timer share one wait, where each half of the fix is the only thing standing. The timer was armed for every body above the decode of what came with the headers, so a small POST left it running: 30 s later it closed the connection, and under the handler pool released a slot a pool thread still held, whose answer the next connection then read (review B1)"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

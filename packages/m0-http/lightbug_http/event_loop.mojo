@@ -755,6 +755,27 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             if slot == UNUSED:
                 continue
 
+            # A body timer ends a body that stopped arriving, and nothing
+            # else. It closed its slot unasked -- a keep-alive connection
+            # idle between requests, or one whose request was out on a pool
+            # thread, whose provision `_close_slot` then RELEASED: the next
+            # connection took the slot and was sent the pool thread's
+            # response (B1). The arm below the decode in
+            # `_handle_read_headers` leaves no timer behind a body that is
+            # complete, but an expiry already in this batch outlives any
+            # delete: the body's last bytes and the timer can land in one
+            # `wait`, the read first, and the pass that completes the body
+            # then reaches the timer. Retired rather than skipped, because
+            # epoll's timerfd is level-triggered and an unread expiry is
+            # reported by every wait after it.
+            if timer_ident < TIMER_IDLE and (
+                provision_pool.provisions[slot].state.kind
+                != ConnectionState.READING_BODY
+                or offload.offloaded[slot]
+            ):
+                backend.try_delete_timer(timer_ident)
+                continue
+
             # Phase 1d: idle timeout is expected client behaviour — close cleanly.
             # Only send 408 for header/body timeouts on the first request.
             if timer_ident < TIMER_IDLE and provision_pool.provisions[slot].keepalive_count == 0:
@@ -2611,9 +2632,6 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             )
             provision_pool.provisions[slot].state = ConnectionState.reading_body(effective_length)
 
-            if config.body_read_timeout > 0:
-                backend.try_add_timer(UInt(fd_val) + TIMER_BODY, config.body_read_timeout * 1000)
-
             # Phase 1b: decode whatever of the body arrived with the headers,
             # through the CONNECTION's decoder — the same one the
             # READING_BODY branch resumes. A throwaway decoder here would
@@ -2700,6 +2718,27 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     slot_sse, slot_ws, slot_ws_state,
                     slot_read_armed, slot_idle_deadline,
                     date_cache_sec, date_cache, offload,
+                )
+
+            # The body timer, for a body still OWED. It was armed above the
+            # decode, so a body that arrived whole with its headers --
+            # completed just above, where nothing deleted it -- left it
+            # running, and `body_read_timeout` later it closed the
+            # connection, whatever it was doing by then (B1; the timer
+            # handler's guard is the other half). Armed here instead, once
+            # what came with the headers has been taken: `_process_request`
+            # never leaves the slot READING_BODY, so the state says whether a
+            # body is still owed, and a small POST costs no timer at all.
+            # The READING_BODY branch of `_run_pass` deletes it at the end
+            # of a body that arrives later.
+            if (
+                config.body_read_timeout > 0
+                and slot_fds[slot] != UNUSED
+                and provision_pool.provisions[slot].state.kind
+                == ConnectionState.READING_BODY
+            ):
+                backend.try_add_timer(
+                    UInt(fd_val) + TIMER_BODY, config.body_read_timeout * 1000
                 )
         else:
             provision_pool.provisions[slot].request_end = header_end_offset
