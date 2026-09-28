@@ -579,10 +579,10 @@ nothing and schedules nothing writes none of them.
 
 Adding a method **with a default** is now a non-breaking change; adding one
 **without** a default still breaks every implementer at once — every app
-under `apps/`, the five demo services inside `service.mojo`, `WSGIHandler`,
-and the example in README.md — so give a new hook a default unless there is
-a reason not to. The guard is `packages/m0-http/test/test_service.mojo`,
-whose `MinimalService` implements `func` and nothing else: reverting any
+under `apps/`, `WSGIHandler`, and the example in README.md — so give a new
+hook a default unless there is a reason not to. The guard is
+`packages/m0-http/test/test_service.mojo`, whose `MinimalService`
+implements `func` and nothing else: reverting any
 default in the trait to `...` makes that file fail to compile, which is
 checked by sabotaging all eight.
 

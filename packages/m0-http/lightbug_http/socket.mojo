@@ -7,7 +7,6 @@ from lightbug_http.address import (
     Addr,
     NetworkType,
     TCPAddr,
-    UDPAddr,
     binary_ip_to_string,
     binary_port_to_int,
     get_ip_address,
@@ -26,10 +25,8 @@ from lightbug_http.c.socket import (
     connect,
     getpeername,
     getsockname,
-    getsockopt,
     listen,
     recv,
-    recvfrom,
     send,
     setsockopt,
     shutdown,
@@ -46,7 +43,6 @@ from lightbug_http.c.socket_error import (
     ConnectError,
     GetpeernameError,
     GetsocknameError,
-    GetsockoptError,
     ListenError,
     RecvError,
     RecvfromError,
@@ -369,7 +365,7 @@ struct Socket[
 
     Parameters:
         address: The type of address the socket uses.
-        sock_type: The type of socket (e.g., SOCK_STREAM for TCP, SOCK_DGRAM for UDP).
+        sock_type: The type of socket (SOCK_STREAM for TCP).
         address_family: The address family (e.g., AF_INET for IPv4, AF_INET6 for IPv6).
 
     Args:
@@ -584,20 +580,6 @@ struct Socket[
             UInt16(binary_port_to_int(peer_sockaddr_in.sin_port)),
         )
 
-    def get_socket_option(self, option_name: SocketOption) raises GetsockoptError -> Int:
-        """Return the value of the given socket option.
-
-        Args:
-            option_name: The socket option to get.
-
-        Returns:
-            The value of the given socket option.
-
-        Raises:
-            GetsockoptError: If getting the socket option fails.
-        """
-        return getsockopt(self.fd, Int32(SOL_SOCKET), option_name.value)
-
     def set_socket_option(self, option_name: SocketOption, var option_value: Int = 1) raises SetsockoptError:
         """Return the value of the given socket option.
 
@@ -686,73 +668,6 @@ struct Socket[
         """
         return self._receive(buffer)
 
-    def _receive_from(self, mut buffer: Bytes) raises -> Tuple[UInt, String, UInt16]:
-        """Receive data from the socket into the buffer.
-
-        Args:
-            buffer: The buffer to read data into.
-
-        Returns:
-            Tuple of (bytes received, remote host, remote port).
-
-        Raises:
-            RecvfromError: If reading data from the socket fails.
-            EOF: If 0 bytes are received.
-        """
-        var remote_address = SocketAddress()
-        var bytes_received: UInt
-        var size = len(buffer)
-        bytes_received = recvfrom(
-            self.fd,
-            Span(buffer)[size:],
-            UInt(buffer.capacity() - len(buffer)),
-            0,
-            remote_address,
-        )
-        buffer._len += Int(bytes_received)
-
-        if bytes_received == 0:
-            raise Error("EOF")
-
-        ref peer_sockaddr_in = remote_address.as_sockaddr_in()
-        var ip_str = binary_ip_to_string[Self.address_family](peer_sockaddr_in.sin_addr.s_addr)
-        return (
-            bytes_received,
-            ip_str,
-            UInt16(binary_port_to_int(peer_sockaddr_in.sin_port)),
-        )
-
-    def receive_from(self, size: Int = default_buffer_size) raises -> Tuple[List[Byte], String, UInt16]:
-        """Receive data from the socket into the buffer dest.
-
-        Args:
-            size: The size of the buffer to receive data into.
-
-        Returns:
-            The number of bytes read, the remote address, and an error if one occurred.
-
-        Raises:
-            RecvfromError: If reading data from the socket fails.
-            EOF: If 0 bytes are received.
-        """
-        var buffer = Bytes(capacity=size)
-        var received = self._receive_from(buffer)
-        return buffer^, received[1], received[2]
-
-    def receive_from(self, mut dest: List[Byte]) raises -> Tuple[UInt, String, UInt16]:
-        """Receive data from the socket into the buffer dest.
-
-        Args:
-            dest: The buffer to read data into.
-
-        Returns:
-            The number of bytes read, the remote address, and an error if one occurred.
-
-        Raises:
-            Error: If reading data from the socket fails.
-        """
-        return self._receive_from(dest)
-
     def shutdown(mut self) raises ShutdownEINVALError -> None:
         """Shut down the socket. The remote end will receive no more data (after queued data is flushed)."""
         try:
@@ -786,10 +701,6 @@ struct Socket[
                     raise close_err.get[CloseENOSPCError]()
 
         self._closed = True
-
-    def get_timeout(self) raises GetsockoptError -> Int:
-        """Return the timeout value for the socket."""
-        return self.get_socket_option(SocketOption.SO_RCVTIMEO)
 
     def set_timeout(self, seconds: Int) raises SetsockoptError:
         """Set the receive timeout for the socket.
@@ -827,12 +738,6 @@ struct Socket[
                 )
 
 
-comptime UDPSocket[address: Addr] = Socket[
-    address=address,
-    sock_type = SocketType.SOCK_DGRAM,
-    address_family = AddressFamily.AF_INET,
-]
-comptime UDP4Socket = UDPSocket[UDPAddr[NetworkType.udp4]]
 comptime TCPSocket[address: Addr] = Socket[
     address=address,
     sock_type = SocketType.SOCK_STREAM,

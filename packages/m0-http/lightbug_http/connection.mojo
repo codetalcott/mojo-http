@@ -1,22 +1,19 @@
 from std.sys.info import CompilationTarget
 from std.time import sleep
 
-from lightbug_http.address import HostPort, NetworkType, ParseError, TCPAddr, UDPAddr, parse_address
-from lightbug_http.c.address import AddressFamily
+from lightbug_http.address import HostPort, NetworkType, ParseError, TCPAddr, parse_address
 from lightbug_http.c.socket_error import (
     AcceptError,
     BindEADDRINUSEError,
     BindError,
     GetpeernameError,
     RecvError,
-    RecvfromError,
     SendError,
     SetsockoptError,
     ShutdownEINVALError,
 )
 from lightbug_http.c.socket_error import SocketError as CSocketError
 from lightbug_http.io.bytes import Bytes
-from lightbug_http.io.sync import Duration
 from lightbug_http.socket import (
     EOF,
     FatalCloseError,
@@ -26,10 +23,7 @@ from lightbug_http.socket import (
     SocketConnectError,
     SocketOption,
     SocketRecvError,
-    SocketRecvfromError,
-    SocketType,
     TCPSocket,
-    UDPSocket,
 )
 from lightbug_http.utils.error import CustomError
 from std.utils import Variant
@@ -37,8 +31,6 @@ from std.utils import Variant
 
 comptime default_buffer_size = 4096
 """The default buffer size for reading and writing data."""
-comptime default_tcp_keep_alive = Duration(15 * 1000 * 1000 * 1000)  # 15 seconds
-"""The default TCP keep-alive duration."""
 
 
 @fieldwise_init
@@ -225,7 +217,6 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp4](Movable):
 
 
 struct ListenConfig:
-    var _keep_alive: Duration
     var max_bind_retries: Int
     """Maximum number of bind() attempts on an address IN USE before its
     EADDRINUSE is raised (Phase 4c).
@@ -254,12 +245,10 @@ struct ListenConfig:
 
     def __init__(
         out self,
-        keep_alive: Duration = default_tcp_keep_alive,
         max_bind_retries: Int = 30,
         reuse_port: Bool = False,
         quiet: Bool = False,
     ):
-        self._keep_alive = keep_alive
         self.max_bind_retries = max_bind_retries
         self.reuse_port = reuse_port
         self.quiet = quiet
@@ -367,14 +356,6 @@ struct ListenConfig:
 
 
 @fieldwise_init
-struct RequestBodyState(Copyable):
-    """State for reading request body."""
-
-    var content_length: Int
-    var bytes_read: Int
-
-
-@fieldwise_init
 struct ConnectionState(Copyable):
     """
     State machine for connection processing.
@@ -402,39 +383,40 @@ struct ConnectionState(Copyable):
     comptime LINGERING = 7
 
     var kind: Int
-    var body_state: RequestBodyState
 
     @staticmethod
     def reading_headers() -> Self:
-        return ConnectionState(Self.READING_HEADERS, RequestBodyState(0, 0))
+        return ConnectionState(Self.READING_HEADERS)
 
     @staticmethod
     def reading_body(content_length: Int) -> Self:
-        return ConnectionState(Self.READING_BODY, RequestBodyState(content_length, 0))
+        """`content_length` is not kept here: the provision's `BodyReadState`
+        holds the body's length and progress, and is what the loop reads."""
+        return ConnectionState(Self.READING_BODY)
 
     @staticmethod
     def processing() -> Self:
-        return ConnectionState(Self.PROCESSING, RequestBodyState(0, 0))
+        return ConnectionState(Self.PROCESSING)
 
     @staticmethod
     def responding() -> Self:
-        return ConnectionState(Self.RESPONDING, RequestBodyState(0, 0))
+        return ConnectionState(Self.RESPONDING)
 
     @staticmethod
     def closed() -> Self:
-        return ConnectionState(Self.CLOSED, RequestBodyState(0, 0))
+        return ConnectionState(Self.CLOSED)
 
     @staticmethod
     def streaming_sse() -> Self:
-        return ConnectionState(Self.STREAMING_SSE, RequestBodyState(0, 0))
+        return ConnectionState(Self.STREAMING_SSE)
 
     @staticmethod
     def streaming_ws() -> Self:
-        return ConnectionState(Self.STREAMING_WS, RequestBodyState(0, 0))
+        return ConnectionState(Self.STREAMING_WS)
 
     @staticmethod
     def lingering() -> Self:
-        return ConnectionState(Self.LINGERING, RequestBodyState(0, 0))
+        return ConnectionState(Self.LINGERING)
 
 
 struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
@@ -519,84 +501,6 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
 
     def remote_addr(self) -> TCPAddr[Self.network]:
         return self.socket.remote_address
-
-
-struct UDPConnection[
-    network: NetworkType = NetworkType.udp4,
-    address_family: AddressFamily = AddressFamily.AF_INET,
-](Movable):
-    comptime _sock_type = Socket[
-        sock_type = SocketType.SOCK_DGRAM,
-        address = UDPAddr[Self.network],
-        address_family = Self.address_family,
-    ]
-    var socket: Self._sock_type
-
-    def __init__(out self, var socket: Self._sock_type):
-        self.socket = socket^
-
-    def read_from(mut self, size: Int = default_buffer_size) raises -> Tuple[Bytes, String, UInt16]:
-        """Reads data from the underlying file descriptor.
-
-        Args:
-            size: The size of the buffer to read data into.
-
-        Returns:
-            The number of bytes read, or an error if one occurred.
-
-        Raises:
-            SocketRecvfromError: If an error occurred while reading data.
-        """
-
-        return self.socket.receive_from(size)
-
-    def read_from(mut self, mut dest: Bytes) raises -> Tuple[UInt, String, UInt16]:
-        """Reads data from the underlying file descriptor.
-
-        Args:
-            dest: The buffer to read data into.
-
-        Returns:
-            The number of bytes read, or an error if one occurred.
-
-        Raises:
-            SocketRecvfromError: If an error occurred while reading data.
-        """
-
-        return self.socket.receive_from(dest)
-
-    def close(mut self) raises FatalCloseError:
-        """Close the UDP connection.
-
-        Raises:
-            FatalCloseError: If close fails (excludes EBADF).
-        """
-        self.socket.close()
-
-    def shutdown(mut self) raises ShutdownEINVALError:
-        """Shutdown the UDP connection.
-
-        Raises:
-            ShutdownEINVALError: If shutdown fails.
-        """
-        self.socket.shutdown()
-
-    def teardown(deinit self) raises FatalCloseError:
-        """Teardown the connection on destruction.
-
-        Raises:
-            FatalCloseError: If close fails during teardown.
-        """
-        self.socket^.teardown()
-
-    def is_closed(self) -> Bool:
-        return self.socket._closed
-
-    # fn local_addr(self) -> ref [self.socket.local_address] UDPAddr[network]:
-    #     return self.socket.local_address
-
-    # fn remote_addr(self) -> ref [self.socket.remote_address] UDPAddr[network]:
-    #     return self.socket.remote_address
 
 
 @fieldwise_init
