@@ -1482,15 +1482,32 @@ echo "smoke-early-413 OK"
 python3 scripts/emit.py --covers A20 --task smoke-early-413
 """
 
+# SPEC A13 has two halves, and this runs both. A request bigger than one
+# read is answered: the read that fills the buffer re-registers, because on
+# epoll nothing else announces the rest. And on Linux a keep-alive request
+# of ordinary size re-registers NOTHING: re-registering after every read put
+# an epoll_ctl ADD, refused EEXIST, and its MOD on every request (review
+# record R2; 4004 calls for 2000 requests). `strace` counts them, so the
+# ubuntu leg installs it; macOS has no unprivileged syscall counter, and
+# kqueue's level trigger never needed the re-registration anyway.
 [tool.poe.tasks.smoke-large-request]
-help = "A request bigger than one read must be answered, not stalled"
+help = "A request bigger than one read must be answered, not stalled; on Linux, under strace, a keep-alive request costs no epoll_ctl"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > lr.log 2>&1 &
+out=$(mktemp -d)
+trap 'kill $pid 2>/dev/null; rm -rf "$out"' EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo -o "$out/hello" || exit 1
+"$out/hello" > "$out/lr.log" 2>&1 &
 pid=$!
-trap 'kill $pid 2>/dev/null; rm -f lr.log' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
-  || { echo '=== lr.log ==='; cat lr.log; exit 1; }
-python3 scripts/large_request_probe.py 8080 || { echo '=== lr.log ==='; cat lr.log; exit 1; }
+  || { echo '=== lr.log ==='; cat "$out/lr.log"; exit 1; }
+python3 scripts/large_request_probe.py 8080 || { echo '=== lr.log ==='; cat "$out/lr.log"; exit 1; }
+if [ "$(uname)" = Linux ]; then
+  python3 scripts/epoll_rearm_probe.py "$out/hello" > "$out/rearm.out" 2>&1 \
+    || { cat "$out/rearm.out"; exit 1; }
+  cat "$out/rearm.out"
+  per=$(grep '^epoll_ctl_per_request ' "$out/rearm.out" | cut -d' ' -f2)
+  python3 scripts/emit.py large_request.epoll_ctl_per_request "$per" --unit calls --limit 0.5 --task smoke-large-request
+fi
 echo "smoke-large-request OK"
 python3 scripts/emit.py --covers A13 --task smoke-large-request
 """

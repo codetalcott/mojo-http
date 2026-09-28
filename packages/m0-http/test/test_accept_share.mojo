@@ -15,6 +15,7 @@ from std.time import perf_counter_ns
 from lightbug_http.accept_share import (
     AcceptShare, accept_share_slots, ACCEPT_SHARE_FIRST_WORKER_SLOT,
     ACCEPT_SHARE_WORKER_STRIDE, ACCEPT_SHARE_BUSY_NS, STATE_LEFT,
+    HandoffPost,
 )
 from lightbug_http.c.fdpass import send_fd, recv_fd, FDPASS_MAX_PAYLOAD
 from lightbug_http.c.kqueue import set_nonblocking
@@ -145,6 +146,78 @@ def test_a_connection_passes_between_two_workers_with_its_peer() raises:
     assert_equal(page.load(_word_slot(1, 1)), 7)
     assert_equal(w1.receive(host, port), -1)
     close(FileDescriptor(fd))
+    close(FileDescriptor(conn[1]))
+
+
+struct _ReceiverWinsTheGap(HandoffPost):
+    """The interleaving review record R5 names, forced: the sibling takes the
+    datagram, admits the connection and ends its pass -- retiring it from
+    `pending` -- before the sender runs one more instruction. Two real
+    processes do this only when the sender is preempted right after its
+    `sendmsg`, which the wake of the receiver it just sent to invites."""
+
+    var receiver: AcceptShare
+    var admitted: Int
+    var pending_seen: Int
+    """`pending` of the receiver as the datagram was queued: what a sibling's
+    `pick` read at that moment."""
+
+    def __init__(out self, receiver: AcceptShare):
+        self.receiver = receiver.copy()
+        self.admitted = -1
+        self.pending_seen = -1
+
+    def post(mut self, channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
+        if not send_fd(channel, fd, payload):
+            return False
+        self.pending_seen = self.receiver.load_of(self.receiver.worker)
+        var host = String("")
+        var port = 0
+        self.admitted = self.receiver.receive(host, port)
+        self.receiver.pass_end(1)
+        return True
+
+
+struct _Refused(HandoffPost):
+    """A send the kernel refused: nothing was queued."""
+
+    def __init__(out self):
+        pass
+
+    def post(mut self, channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
+        return False
+
+
+def test_a_receiver_that_retires_inside_the_handoff_leaves_nothing_pending() raises:
+    """`pending` is raised before the datagram exists, so the receiver can
+    never retire a connection the count does not hold yet. Raised after the
+    `sendmsg`, the retire found nothing, `pass_end` clamped the count at 0,
+    and the late increment left it one high for good: `pick` read that
+    worker as busier than it was from then on (review record R5).
+    """
+    var page = SharedAtomics(accept_share_slots(2))
+    var share = AcceptShare(2)
+    var w0 = share.copy()
+    w0.bind(0, page.addr(0))
+    var w1 = share.copy()
+    w1.bind(1, page.addr(0))
+    var conn = _nonblocking_pair()
+    var race = _ReceiverWinsTheGap(w1)
+    assert_true(w0.send_with(race, 1, conn[0], "10.1.2.3", 4321))
+    assert_true(race.admitted >= 0, "the receiver took the connection inside the hand-off")
+    assert_equal(page.load(_word_slot(1, 2)), 0, "pending[1] once the one connection sent was admitted and retired")
+    assert_equal(w0.load_of(1), 1, "worker 1's load is its one admitted connection")
+    # Counted while in flight, too: a count raised after the datagram is
+    # low until then, and without `pass_end`'s clamp it went negative.
+    assert_equal(race.pending_seen, 1, "the connection was counted before its datagram was queued")
+    assert_equal(w0.handoffs_out, 1)
+    # A send that queued nothing takes its count back.
+    var refused = _Refused()
+    assert_false(w0.send_with(refused, 1, conn[0], "10.1.2.3", 4321))
+    assert_equal(page.load(_word_slot(1, 2)), 0, "pending[1] after a refused send")
+    assert_equal(w0.handoffs_out, 1)
+    close(FileDescriptor(race.admitted))
+    close(FileDescriptor(conn[0]))
     close(FileDescriptor(conn[1]))
 
 
