@@ -40,7 +40,7 @@ from .environ import (
     cgi_name_utf8,
 )
 from .response import build_response, split_status
-from .app import WSGIApp, detect_protocol, prepend_to_path
+from .app import WSGIApp, detect_protocol, prepend_to_path, resolve_app
 from .handler import WSGIHandler
 from .threaded import (
     ThreadedServer,
