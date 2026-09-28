@@ -39,6 +39,7 @@ import socket
 import struct
 import sys
 import time
+import traceback
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8141
@@ -51,6 +52,25 @@ RELEASE = 3.0
 # How long a stalled response is left before the reset, so the server has
 # filled both socket buffers and parked on its write registration.
 STALL = 1.0
+
+# Which phase is running, for the crash handler below. Every shape reads the
+# count through the same scrape connection, so a traceback out of `active()`
+# names the same line whichever shape was being built or released.
+# apps/asgi_bare/ws_probe.py carries the original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("peer_reset_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
 
 failures = []
 
@@ -156,6 +176,7 @@ def idle():
     return sock
 
 
+phase("the baseline: the scrape's own slot and no other")
 base, _ = settle(1, 10.0)
 if base != 1:
     print("peer_reset_probe: FAIL: the server holds %d slots before the first "
@@ -170,6 +191,7 @@ for kind in ("memory", "file", "idle"):
         "file": "a reset while a file response waits on its write (sendfile)",
         "idle": "a reset on an idle keep-alive connection",
     }[kind]
+    phase(where + ", the connection held")
     before = active()
     try:
         sock = idle() if kind == "idle" else stalled(kind)
@@ -184,6 +206,7 @@ for kind in ("memory", "file", "idle"):
         reset(sock)
         settle(before, RELEASE)
         continue
+    phase(where + ", the release after the RST")
     reset(sock)
     left, took = settle(before, RELEASE)
     if left != before:

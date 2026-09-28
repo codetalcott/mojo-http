@@ -772,6 +772,17 @@ lightbug_http
         lane's wake words are one line of the 8192-byte wake block, and
         `note_thread` wrote a 127th lane's past its end.
 
+      - c/process.mojo, event_loop.mojo, server.mojo (2026-09-28): the
+        server ignores SIGPIPE (SPEC A25). `ignore_sigpipe` sets it to
+        `SIG_IGN` through the existing signal(2) declaration, beside new
+        `SIGPIPE`, `SIG_DFL` and `SIG_IGN` constants, and
+        `run_event_loop` and the blocking `Server.serve` call it before
+        their first send. A built Mojo binary kept the signal's default
+        action, so a send to a client that had reset ended the process
+        where the write sites already handle the `EPIPE` it now returns.
+        No `MSG_NOSIGNAL` or `SO_NOSIGPIPE`: the process-wide ignore also
+        covers `sendfile` and writes to pipes, where neither applies.
+
       - c/epoll_backend.mojo (2026-09-28): `event_flags` reports EPOLLERR
         as EV_EOF, the way kqueue reports a socket error, where it was
         EV_ERROR, which the event loop skips as kqueue's failed

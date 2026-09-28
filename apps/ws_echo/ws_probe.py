@@ -259,8 +259,11 @@ def send_behind(data):
     def run():
         try:
             flood.sendall(data)
-        except OSError as exc:
-            print("ws_probe: the ping burst could not all be sent: %r" % exc)
+        # `err`, not `exc`: phase_stamp_check takes an OSError clause bound
+        # to `exc` for the probe's crash handler, and this is a sender
+        # thread's -- so named, it hid a removed excepthook from the check.
+        except OSError as err:
+            print("ws_probe: the ping burst could not all be sent: %r" % err)
 
     threading.Thread(target=run, daemon=True).start()
 

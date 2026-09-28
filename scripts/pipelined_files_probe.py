@@ -28,6 +28,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1])
@@ -42,12 +43,32 @@ STALL = 1.0
 CHUNK = 8192
 PAUSE = 0.0001
 
+# Which phase is running, for the crash handler below. Every read goes
+# through `more()`, so a traceback out of it names the same line whether
+# the head or the body was being read.
+# apps/asgi_bare/ws_probe.py carries the original of this comment.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("pipelined_files_probe: FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
+
 
 def fail(msg):
-    print("pipelined_files_probe: FAIL: " + msg)
+    print("pipelined_files_probe: FAIL: %s: %s" % (PHASE, msg))
     sys.exit(1)
 
 
+phase("the connection")
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 # A small window, so the buffers fill early and stay full.
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
@@ -58,10 +79,13 @@ request = ("GET %s HTTP/1.1\r\nHost: x\r\n\r\n" % PATH).encode()
 def writer():
     try:
         sock.sendall(request * COUNT)
-    except OSError as exc:
-        print("pipelined_files_probe: the requests could not all be sent: %r" % exc)
+    # `err`, not `exc`: phase_stamp_check takes an OSError clause bound to
+    # `exc` for the probe's crash handler, and this is the writer thread's.
+    except OSError as err:
+        print("pipelined_files_probe: the requests could not all be sent: %r" % err)
 
 
+phase("the pipelined requests, sent while nothing is read")
 threading.Thread(target=writer, daemon=True).start()
 time.sleep(STALL)
 sock.settimeout(10)
@@ -85,6 +109,7 @@ def more():
     buf += part
 
 
+phase("the responses, read more slowly than the server answers")
 while got < COUNT:
     while b"\r\n\r\n" not in buf:
         more()
