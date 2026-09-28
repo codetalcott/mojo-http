@@ -734,6 +734,16 @@ lightbug_http
         what a Mojo host application runs before its loop, its `make`, its
         producer and its pool threads.
 
+      - c/fdpass.mojo (2026-09-28): `recv_fd`'s `MSG_CTRUNC` check, which
+        tested control truncation on neither platform. Linux's `MSG_CTRUNC`
+        is 0x08; the 0x20 tested is its `MSG_TRUNC`. macOS's `struct msghdr`
+        is 48 bytes, not 56, and `msg_flags` is the high half of the sixth
+        word, so the seventh, which the check read, was never written. The
+        bit is now per platform and the flags are read where each kernel
+        writes them. A refused message closes every descriptor that reached
+        its control buffer, since the kernel installs them on receipt. A
+        payload cut short keeps its descriptor.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

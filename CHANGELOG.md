@@ -84,6 +84,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `make` write to a closed pipe; `smoke-spawn-workers` sends m0serve's
   supervisor `kill -PIPE`.
 
+- **A malformed accept-sharing hand-off no longer leaks its connection**
+  (SPEC E16). `recv_fd` refuses a message whose control data was cut
+  short, and its check never saw one. Linux's `MSG_CTRUNC` is 0x08, and
+  the 0x20 it tested there is `MSG_TRUNC`, set when the payload is cut
+  short. macOS's `struct msghdr` is 48 bytes, not the 56 assumed, so its
+  flags were read from a word the kernel never writes. A refused message
+  also closed nothing, though the kernel installs each passed descriptor
+  as the message arrives. So on Linux a hand-off whose payload was cut
+  short lost its connection, left open for the life of the worker with
+  its client waiting, and on both platforms a message carrying extra
+  descriptors was taken in part, the rest left open. Neither shape comes
+  from the server's own `send_fd`, which passes one descriptor and a
+  payload that fits. The flags are now read where each kernel writes
+  them, a truncated control message is refused with every descriptor it
+  delivered closed, and a payload cut short keeps its descriptor.
+  `test_accept_share.mojo` sends both shapes and checks that nothing is
+  left open.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

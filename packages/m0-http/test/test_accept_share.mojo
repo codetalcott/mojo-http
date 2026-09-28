@@ -9,6 +9,9 @@ fork. The fork half — two real workers splitting a burst — is
 `poe smoke-accept-spread` against the real server on both platforms.
 """
 
+from std.ffi import c_int, external_call, get_errno
+from std.memory.alloc import unsafe_alloc
+from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from std.time import perf_counter_ns
 
@@ -16,9 +19,12 @@ from lightbug_http.accept_share import (
     AcceptShare, accept_share_slots, ACCEPT_SHARE_FIRST_WORKER_SLOT,
     ACCEPT_SHARE_WORKER_STRIDE, ACCEPT_SHARE_BUSY_NS, STATE_LEFT,
 )
-from lightbug_http.c.fdpass import send_fd, recv_fd, FDPASS_MAX_PAYLOAD
+from lightbug_http.c.fdpass import (
+    send_fd, recv_fd, FDPASS_MAX_PAYLOAD,
+    _CMSG_HDR, _SCM_RIGHTS, _SOL_SOCKET, _msghdr, _sendmsg, _store_u32,
+)
 from lightbug_http.c.kqueue import set_nonblocking
-from lightbug_http.c.socket import send, recv, close, setsockopt, SocketOption, SOL_SOCKET
+from lightbug_http.c.socket import iovec_t, send, recv, close, setsockopt, SocketOption, SOL_SOCKET
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.c.platform import MSG_DONTWAIT
 
@@ -38,6 +44,76 @@ def _nonblocking_pair() raises -> Tuple[Int, Int]:
     set_nonblocking(FileDescriptor(pair[0]))
     set_nonblocking(FileDescriptor(pair[1]))
     return pair
+
+
+def _stream_pair() raises -> Tuple[Int, Int]:
+    """An `AF_UNIX` `SOCK_STREAM` pair, standing in for an accepted connection
+    where the test must tell a closed descriptor from a leaked one: once the
+    last reference to one end is closed, in any process, the other end reads
+    EOF (`_peer_gone`). A datagram pair has no EOF, so it cannot tell."""
+    var fds = unsafe_alloc[c_int](count=2)
+    var rc = external_call[
+        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
+    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
+    if rc != 0:
+        var errno = get_errno()
+        fds.unsafe_free()
+        raise Error("socketpair() failed, errno: ", errno)
+    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
+    fds.unsafe_free()
+    set_nonblocking(FileDescriptor(pair[0]))
+    set_nonblocking(FileDescriptor(pair[1]))
+    return pair
+
+
+def _peer_gone(fd: Int) -> Bool:
+    """Whether every reference to `fd`'s peer is closed: EOF, where a peer
+    still open anywhere -- a descriptor installed and never closed -- answers
+    EAGAIN."""
+    var buf = List[UInt8](capacity=1)
+    buf.append(0)
+    try:
+        return Int(recv(FileDescriptor(fd), Span(buf), UInt(1), MSG_DONTWAIT)) == 0
+    except:
+        return False
+
+
+def _send_raw(channel: Int, data_len: Int, fds: List[Int]) -> Bool:
+    """One `sendmsg` of `data_len` bytes and every descriptor in `fds` in a
+    single `SCM_RIGHTS` message: the shapes `send_fd` never sends -- a
+    payload past its cap, more than one descriptor -- which are the ones that
+    reach `recv_fd`'s truncation paths."""
+    var data = List[UInt8](capacity=data_len)
+    for _ in range(data_len):
+        data.append(UInt8(ord("x")))
+    var used = _CMSG_HDR + 4 * len(fds)
+    var align = 8
+    comptime if CompilationTarget.is_macos():
+        align = 4
+    var space = (used + align - 1) // align * align
+    var control = List[UInt8](capacity=space)
+    for _ in range(space):
+        control.append(0)
+    _store_u32(control, 0, UInt32(used))
+    comptime if CompilationTarget.is_macos():
+        _store_u32(control, 4, UInt32(_SOL_SOCKET))
+        _store_u32(control, 8, UInt32(_SCM_RIGHTS))
+    else:
+        _store_u32(control, 8, UInt32(_SOL_SOCKET))
+        _store_u32(control, 12, UInt32(_SCM_RIGHTS))
+    for i in range(len(fds)):
+        _store_u32(control, _CMSG_HDR + 4 * i, UInt32(fds[i]))
+    var iov = iovec_t(UInt(Int(data.unsafe_ptr())), UInt(data_len))
+    var iov_ptr = Pointer(to=iov)
+    var hdr = _msghdr(
+        0, 0, UInt64(Pointer(to=iov_ptr).unsafe_bitcast[Int]()[]), 1,
+        UInt64(Int(control.unsafe_ptr())), UInt64(space), 0,
+    )
+    var rc = _sendmsg(c_int(channel), Pointer(to=hdr), MSG_DONTWAIT)
+    _ = iov
+    _ = data
+    _ = control
+    return Int(rc) >= 0
 
 
 def test_a_descriptor_crosses_a_socketpair_with_its_payload() raises:
@@ -97,6 +173,80 @@ def test_a_datagram_without_a_descriptor_is_not_a_connection() raises:
     _ = send(FileDescriptor(channel[1]), Span(msg), UInt(len(msg)), 0)
     var payload = List[UInt8]()
     assert_equal(recv_fd(channel[0], payload), -1)
+    close(FileDescriptor(channel[0]))
+    close(FileDescriptor(channel[1]))
+
+
+def test_a_payload_cut_short_still_hands_over_its_descriptor() raises:
+    """A datagram longer than `FDPASS_MAX_PAYLOAD` arrives with `MSG_TRUNC`
+    set: its tail is dropped, its descriptor is not, and the kernel has
+    installed that descriptor already. Linux's `MSG_TRUNC` is 0x20, the value
+    `recv_fd` once tested as `MSG_CTRUNC` on both platforms, so there it
+    refused the descriptor and left it open for the life of the process: a
+    connection whose client waited on it forever. On macOS `recv_fd` read
+    the flags from a word the kernel never writes (fdpass's docstring), so
+    this passed there before the fix too; it tells the two apart on Linux,
+    which CI runs.
+    """
+    var channel = _nonblocking_pair()
+    var conn = _stream_pair()
+    var fds = List[Int]()
+    fds.append(conn[0])
+    assert_true(_send_raw(channel[1], FDPASS_MAX_PAYLOAD + 1, fds), "sendmsg failed")
+    close(FileDescriptor(conn[0]))  # the kernel's in-flight reference holds it
+    var payload = List[UInt8]()
+    var got = recv_fd(channel[0], payload)
+    assert_true(got >= 0, "a payload cut short cost its descriptor")
+    assert_equal(len(payload), FDPASS_MAX_PAYLOAD)
+    close(FileDescriptor(got))
+    assert_true(_peer_gone(conn[1]), "a reference to the passed descriptor is still open")
+    close(FileDescriptor(conn[1]))
+    close(FileDescriptor(channel[0]))
+    close(FileDescriptor(channel[1]))
+
+
+def test_a_control_message_cut_short_is_refused_and_leaks_nothing() raises:
+    """Three descriptors in one message, into `recv_fd`'s control buffer,
+    which has room for one on macOS and two on Linux: the kernel sets
+    `MSG_CTRUNC`, and `recv_fd` refuses the message, `send_fd` passing
+    exactly one. The kernel installed every descriptor that reached the
+    buffer when the message was received, so the refusal must close each of
+    them, or each is a connection left open for the life of the process.
+
+    What did not fit differs by kernel. Linux releases it. macOS installs it
+    too, with its number lost (measured), where no code can close it. So the
+    assertion is on what reached the buffer: the first descriptor on both,
+    and on Linux the second, with the third checked as released.
+
+    Before the fix both platforms returned the first descriptor instead,
+    missing the truncation for different reasons. On Linux `MSG_CTRUNC` is
+    0x08, and the 0x20 tested is Linux's `MSG_TRUNC`. On macOS the bit was
+    right but read from a word the kernel never writes: its `struct msghdr`
+    is 48 bytes, `msg_flags` the high half of the sixth word. And a refusal
+    closed nothing, so each descriptor it refused stayed open.
+    """
+    var channel = _nonblocking_pair()
+    var a = _stream_pair()
+    var b = _stream_pair()
+    var c = _stream_pair()
+    var fds = List[Int]()
+    fds.append(a[0])
+    fds.append(b[0])
+    fds.append(c[0])
+    assert_true(_send_raw(channel[1], 1, fds), "sendmsg failed")
+    close(FileDescriptor(a[0]))
+    close(FileDescriptor(b[0]))
+    close(FileDescriptor(c[0]))
+    var payload = List[UInt8]()
+    var got = recv_fd(channel[0], payload)
+    assert_true(got == -1, "a message whose control data was cut short was not refused")
+    assert_true(_peer_gone(a[1]), "the refused message's first descriptor was left open")
+    comptime if not CompilationTarget.is_macos():
+        assert_true(_peer_gone(b[1]), "the refused message's second descriptor was left open")
+        assert_true(_peer_gone(c[1]), "the descriptor that did not fit was not released")
+    close(FileDescriptor(a[1]))
+    close(FileDescriptor(b[1]))
+    close(FileDescriptor(c[1]))
     close(FileDescriptor(channel[0]))
     close(FileDescriptor(channel[1]))
 
