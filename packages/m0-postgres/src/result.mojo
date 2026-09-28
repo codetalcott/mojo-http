@@ -159,26 +159,23 @@ struct Result(Movable):
         self._check(row, col)
         return self._pq.getisnull(self._handle, row, col) != 0
 
-    def raw(self, row: Int, col: Int) raises -> Span[UInt8, MutUntrackedOrigin]:
+    def raw(self, row: Int, col: Int) raises -> Span[UInt8, origin_of(self)]:
         """The cell's bytes, exactly as the server sent them.
 
-        Valid while this `Result` lives, and no longer: the bytes belong to
-        the `PGresult` and `PQclear` frees them.
+        The bytes belong to the `PGresult`, and `PQclear` frees them, so the
+        span borrows this `Result`: the compiler keeps the result alive for
+        as long as the span is used. Untracked, as it was, `var s =
+        rows.raw(0, 0)` with no later mention of `rows` cleared the result
+        on that line, and `s` read the next query's value.
         """
         self._check(row, col)
         var addr = self._pq.getvalue(self._handle, row, col)
         var n = self._pq.getlength(self._handle, row, col)
         if addr == 0 or n <= 0:
-            return Span[UInt8, MutUntrackedOrigin](
-                unsafe_ptr=Pointer[UInt8, MutUntrackedOrigin](
-                    unsafe_from_address=Int(self._handle)
-                ),
-                length=0,
-            )
-        return Span[UInt8, MutUntrackedOrigin](
-            unsafe_ptr=Pointer[UInt8, MutUntrackedOrigin](
-                unsafe_from_address=addr
-            ),
+            addr = self._handle
+            n = 0
+        return Span[UInt8, origin_of(self)](
+            unsafe_ptr=Pointer[UInt8, origin_of(self)](unsafe_from_address=addr),
             length=n,
         )
 

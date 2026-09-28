@@ -73,6 +73,8 @@ from std.python._cpython import ExternalFunction
 from std.sys import CompilationTarget
 from std.os import getenv
 
+from .sqlstate import CHARACTER_NOT_IN_REPERTOIRE
+
 
 comptime CStr = Pointer[UInt8, ImmutAnyOrigin]
 """A `const char *` argument: typed, so the buffer outlives the call."""
@@ -889,6 +891,38 @@ def c_string(s: String) -> List[UInt8]:
         out.append(b)
     out.append(0)
     return out^
+
+
+def refuse_nul(text: Span[UInt8, _], what: String) raises:
+    """Raise if `text` holds a NUL byte, naming `what` and where, never the text.
+
+    libpq reads what it takes without a length as a C string, so a NUL ends
+    it there and nothing reports the rest was dropped: `SELECT 1`, a NUL
+    and `; DROP TABLE t` runs `SELECT 1`, and a TEXT-format parameter is
+    read with `strlen` whatever length it is handed. `PQescapeIdentifier`
+    takes a length and stops at a NUL all the same. The state is the one
+    the server gives a NUL inside text, so an application reads one answer
+    wherever the NUL was caught. The text is not quoted: a connection
+    string carries a password.
+    """
+    for i in range(len(text)):
+        if text[i] == 0:
+            raise Error(
+                what + " carries a NUL byte at byte " + String(i)
+                + ", and libpq, reading it as a C string, would end it there:"
+                + " refused rather than sent cut short (sqlstate="
+                + CHARACTER_NOT_IN_REPERTOIRE + ")"
+            )
+
+
+def c_text(s: String, what: String) raises -> List[UInt8]:
+    """`c_string`, for text that must arrive whole or not at all.
+
+    Every string this package hands libpq without a length goes through
+    here: SQL, a statement name, a name to quote, a connection string.
+    """
+    refuse_nul(s.as_bytes(), what)
+    return c_string(s)
 
 
 def as_cstr(ref buf: List[UInt8]) -> CStr:

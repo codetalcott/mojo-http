@@ -230,6 +230,31 @@ def test_defaults_are_added_to_a_uri_as_query_parameters() raises:
     assert_equal(question_marks, 1)
 
 
+def test_a_uri_ending_in_a_separator_is_not_given_a_second() raises:
+    """`postgres://db/app?` and `...?sslmode=require&` have theirs already.
+
+    A second made `??connect_timeout=5`, which libpq reads as a keyword
+    named `?connect_timeout`, and `&&`, an empty keyword; it refused both
+    before connecting, with a message about encoding a password.
+
+    covers: O7
+    """
+    var q = with_defaults("postgres://db/app?")
+    assert_true(q.startswith("postgres://db/app?connect_timeout="), q)
+    assert_false("??" in q, q)
+    assert_true(has_keyword(q, "client_encoding"))
+
+    var amp = with_defaults("postgres://db/app?sslmode=require&")
+    assert_true("?sslmode=require&connect_timeout=" in amp, amp)
+    assert_false("&&" in amp, amp)
+    assert_true(has_keyword(amp, "options"))
+
+    # And the read-only form, which extends the same string.
+    var ro = read_only("postgres://db/app?")
+    assert_false("??" in ro, ro)
+    assert_true("default_transaction_read_only" in ro, ro)
+
+
 def test_a_uri_that_already_has_a_query_keeps_it() raises:
     """The caller's own keywords survive the merge.
 

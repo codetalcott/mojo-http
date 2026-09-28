@@ -57,6 +57,47 @@ in a minor release: `m0serve`'s flags and environment variables, the
   requested address`). The Mojo host and every other `ListenConfig` caller
   get the same rule. `smoke-serve` gates it with an address that is not on
   the machine. Found in review.
+- **An `INSERT ... SELECT` from `m0_array` no longer inserts nothing**
+  (SPEC O4). Since 1.7.0 (and `m0 0.3.0`) the pointer-type tag bound with
+  an array was a buffer freed as the bind returned. SQLite keeps that
+  pointer and compares against it when the statement steps, so once the
+  freed block was reused the scan found no array: the statement inserted
+  0 rows and raised nothing. The public helpers step straight after
+  binding, and the scan's own copy of the tag usually took the freed block
+  back and wrote the same bytes into it, which hid it from every test; any
+  allocation in between that took the block emptied the scan. The tag is
+  the literal's static storage again, at the bind and at the lookup.
+  `test_vtab.mojo` now fills the heap between the bind and the step: 0 of
+  100 rows arrived in 30 runs of 30 on the 1.7.0 code.
+
+- **A NUL inside a `text()` parameter is refused instead of matching the
+  value cut short at it** (SPEC O10). libpq reads a text-format parameter
+  with `strlen`, whatever length it is handed, so `admin`, a NUL and `x`
+  was bound as `admin` and matched the `admin` row. `Params.text` now sends
+  binary, framed by its length, and Postgres refuses the NUL with SQLSTATE
+  22021 (`CHARACTER_NOT_IN_REPERTOIRE`, now exported). What libpq takes
+  only as a C string is refused before the call, under the same state:
+  SQL text, a statement name, a name `quote_identifier` quotes, a
+  connection string, and `Params.literal`, which stays text so the server
+  can type it and so now raises. Where a statement was prepared with
+  `OID_UNKNOWN` and the server typed that position as something other
+  than text, give it `literal()`, not `text()`: a binary value is read in
+  that type's binary form.
+
+- **`Result.raw` keeps its result alive while its bytes are read** (SPEC
+  O16). The span it returned had an untracked origin, so a result whose
+  last mention was the `raw` call was cleared on that line, and the span
+  read freed memory: measured as the next query's value. The span now
+  borrows the result, and the compiler keeps the result until the span's
+  last use. No caller changes.
+
+- **A connection URL ending in `?` or `&` connects** (SPEC O7). `open`
+  and `open_readonly` add their defaults as query parameters, and they
+  added a second separator to a URL that already ended in one: `...?`
+  became `...??connect_timeout=5`, which libpq reads as a keyword named
+  `?connect_timeout`, and `...&` became `...&&`, an empty keyword. libpq
+  refused both before connecting, with a message about percent-encoding a
+  password.
 
 ## [1.7.0] — 2026-09-27
 
