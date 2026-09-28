@@ -33,8 +33,17 @@ works" from "the server hangs up on everyone":
   - a WebSocket peer that never answers Close is reclaimed at the linger,
     and no earlier -- closing before a reply could arrive is the v0.15.1 bug
   - a WebSocket peer that does answer Close is closed at once
+  - an upload begun just before the previous response's deadline completes:
+    the deadline governs idleness, and a request's first bytes end it (B2;
+    phase 2's requests each reset the deadline, so it could not see this)
+  - a response its client stops reading is reaped after the timeout with no
+    send progress (nginx's `send_timeout`), and one its client reads slowly
+    but steadily arrives whole -- in memory and from a file, which refresh
+    the deadline on separate paths
 
 usage: idle_timeout_probe.py PORT IDLE_TIMEOUT_SECONDS
+  against apps/asgi_bare with `--max-body 32m` and `--static /files=DIR`,
+  DIR holding `big.bin` (16 MiB); see `poe smoke-idle-timeout`
 """
 
 import base64
@@ -42,6 +51,7 @@ import os
 import socket
 import struct
 import sys
+import threading
 import time
 import traceback
 
@@ -291,6 +301,178 @@ if sock is not None:
         else:
             print("  answering WebSocket peer closed after %.2fs" % took)
     sock.close()
+
+
+# --- 5-7. the deadline governs idleness, not a request in flight (B2) --------
+# The keep-alive deadline a response sets used to stand until it passed,
+# whatever the connection was doing by then: an upload begun late in the
+# window was cut at the PREVIOUS response's deadline (reproduced: begun 7 s
+# into a 10 s timeout, closed at 10.2 s, mid-body). A request's first bytes
+# now clear it, and the send deadline takes over while a response is owed:
+# `--idle-timeout` with no send progress, refreshed by every send that moves
+# bytes. Nothing bounded a response its client stopped reading before --
+# m0serve zeroes the deadline of every request it hands to a pool thread or
+# an executor -- so 6 is new. Each shape runs twice, a response in memory
+# (POST /echo) and a file (`--static`, sendfile), because the two refresh
+# on separate paths. Concurrent, so the five cost what the longest does.
+BIG = 16 * 1024 * 1024  # past both socket buffers on either kernel
+FILE_PATH = "/files/big.bin"  # the smoke's --static file, BIG bytes of "m0"
+# A client that takes a response slowly but steadily: this much per read,
+# this often, is ~2.5 MB/s -- often enough that each read frees the Linux
+# send buffer's writable third well inside the deadline.
+SLOW_READ = 256 * 1024
+SLOW_EVERY = 0.1
+
+
+def fail_in(where, msg):
+    failures.append("%s: %s" % (where, msg))
+
+
+def bounded_rcvbuf(size):
+    """A client socket whose receive window cannot grow to hide a stall."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, size)
+    sock.settimeout(15)
+    sock.connect((HOST, PORT))
+    return sock
+
+
+def big_request(kind):
+    """The request, and the body length its answer carries."""
+    if kind == "memory":
+        body = b"m0" * (BIG // 2)
+        return (b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n"
+                % len(body)) + body, len(body)
+    return ("GET %s HTTP/1.1\r\nHost: x\r\n\r\n" % FILE_PATH).encode(), BIG
+
+
+def drain(sock, want, budget, every=0.0, chunk=1 << 20):
+    """Read `want` bytes of body after the head: (body bytes, eof seen)."""
+    sock.settimeout(budget)
+    buf = b""
+    end = time.monotonic() + budget
+    while b"\r\n\r\n" not in buf:
+        part = sock.recv(chunk)
+        if not part:
+            return 0, True
+        buf += part
+    got = len(buf.split(b"\r\n\r\n", 1)[1])
+    while got < want and time.monotonic() < end:
+        if every:
+            time.sleep(every)
+        try:
+            part = sock.recv(chunk)
+        except socket.timeout:
+            break
+        except ConnectionResetError:
+            return got, True
+        if not part:
+            return got, True
+        got += len(part)
+    return got, False
+
+
+def late_upload():
+    where = "an upload begun just before the previous response's idle deadline"
+    sock = socket.create_connection((HOST, PORT), timeout=15)
+    if get(sock) is None:
+        fail_in(where, "the first request was not answered")
+        sock.close()
+        return
+    answered = time.monotonic()
+    pieces = int((SWEEP_SLACK + 1.0) / 0.25)
+    body = b"u" * (1024 * pieces)
+    time.sleep(IDLE - 0.5)
+    try:
+        sock.sendall(b"POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: %d"
+                     b"\r\n\r\n" % len(body))
+        for i in range(pieces):
+            time.sleep(0.25)
+            sock.sendall(body[i * 1024:(i + 1) * 1024])
+        got = drain(sock, len(body), 10)[0]
+    except (BrokenPipeError, ConnectionResetError):
+        got = 0
+    took = time.monotonic() - answered
+    if got != len(body):
+        fail_in(where, "cut after %.2fs, %d of %d bytes echoed -- the "
+                "previous response's %.0fs deadline closed a request in "
+                "progress (B2)" % (took, got, len(body), IDLE))
+    else:
+        print("  an upload begun %.1fs into a %.0fs idle window was answered "
+              "at %.2fs" % (IDLE - 0.5, IDLE, took))
+    sock.close()
+
+
+def stalled_reader(kind):
+    where = "a client that stops reading a large response (%s)" % kind
+    sock = bounded_rcvbuf(64 * 1024)
+    request, want = big_request(kind)
+    sock.sendall(request)
+    time.sleep(IDLE + SWEEP_SLACK + 1.0)
+    try:
+        got, eof = drain(sock, want, 10)
+    except OSError as exc:
+        got, eof = -1, True
+        fail_in(where, "reading after the stall raised %r" % exc)
+    if got == want:
+        fail_in(where, "all %d bytes arrived after %.1fs unread -- nothing "
+                "reaped a response its client stopped reading"
+                % (want, IDLE + SWEEP_SLACK + 1.0))
+    elif not eof:
+        fail_in(where, "%d of %d bytes and no close" % (got, want))
+    else:
+        print("  a response left unread was reaped (%s: %d of %d bytes "
+              "reached the client)" % (kind, got, want))
+    sock.close()
+
+
+def slow_reader(kind):
+    where = "a client that reads a large response slowly (%s)" % kind
+    sock = bounded_rcvbuf(2 * SLOW_READ)
+    request, want = big_request(kind)
+    sock.sendall(request)
+    # Unread for less than the deadline first: a server that reaped at
+    # once, or on a clock of its own, fails here.
+    time.sleep(IDLE - 1.0)
+    start = time.monotonic()
+    try:
+        got, eof = drain(sock, want, 60, every=SLOW_EVERY, chunk=SLOW_READ)
+    except OSError:
+        got, eof = -1, True
+    took = time.monotonic() - start
+    if got != want:
+        fail_in(where, "%d of %d bytes after %.2fs%s -- a client still "
+                "taking the response was cut, so the send deadline is not "
+                "refreshed by progress" % (got, want, took,
+                                           ", then EOF" if eof else ""))
+    elif took < IDLE + SWEEP_SLACK:
+        fail_in(where, "read whole in %.2fs, inside the %.0fs deadline plus "
+                "the sweep, so this phase proved nothing -- lower SLOW_READ"
+                % (took, IDLE))
+    else:
+        print("  a response read slowly for %.1fs arrived whole (%s)"
+              % (took, kind))
+    sock.close()
+
+
+def guarded(fn, *args):
+    """A phase on its own thread, whose crash still fails the probe."""
+    try:
+        fn(*args)
+    except Exception as exc:  # recorded, never lost with the thread
+        traceback.print_exc()
+        fail_in(fn.__name__ + repr(args), "raised %r" % (exc,))
+
+
+phase("the send deadline, and a request that starts late (5-7)")
+workers = [threading.Thread(target=guarded, args=(late_upload,))]
+for kind in ("memory", "file"):
+    workers.append(threading.Thread(target=guarded, args=(stalled_reader, kind)))
+    workers.append(threading.Thread(target=guarded, args=(slow_reader, kind)))
+for w in workers:
+    w.start()
+for w in workers:
+    w.join()
 
 if failures:
     for f in failures:

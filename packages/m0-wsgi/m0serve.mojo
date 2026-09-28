@@ -1179,6 +1179,9 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     report.add_int(
         String("server"), String("idle_timeout"), opts.idle_timeout
     )
+    report.add_int(
+        String("server"), String("body_timeout"), opts.body_timeout
+    )
     var statics = String("[")
     for i in range(len(opts.static_prefixes)):
         if i > 0:

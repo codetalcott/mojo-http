@@ -31,7 +31,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Idle connection timeout, `--idle-timeout`",
       "status": "verified",
-      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 an answered keep-alive connection left quiet is closed at the deadline and no earlier, and one kept busy across it is not"
+      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 an answered keep-alive connection left quiet is closed at the deadline and no earlier, one kept busy across it is not, and an upload begun just before the deadline completes: a request's first bytes end it. It used to stand until it passed, and cut a request that started late in the window mid-body (review B2); the busy phase resets it with every request, so it could not see that"
     },
     {
       "id": "A5",
@@ -176,6 +176,22 @@
       "capability": "An unencoded `@` in a request target's path or query is data: the request reaches its own route with its query, whatever its method, and only an `@` inside a URL's authority, before its first `/`, `?` or `#` (RFC 3986 \u00a73.2), ends a userinfo",
       "status": "verified",
       "evidence": "`test_uri_userinfo.mojo:test_an_at_in_a_request_query_keeps_the_path_and_query` (every PR) \u2014 `URI.parse` skipped to the first `@` anywhere after the scheme, so `GET /echo?x=a@b` reached the application as `/` with an empty query and a POST to `/save?x=a@b` ran the root's POST handler, on every server shape; the outbound client, which dials the parsed host, connected to whatever followed an `@` in a query. Browsers and htmx encode `@`, which kept it to typed and hand-built URLs; a Flask app compared against Werkzeug found it. Its neighbours hold the path form (`/users/@alice?page=2`), the client's host, and a real userinfo still skipped, and `Conformance test the WSGI bridge` sends a GET and a POST carrying the raw byte to a live server and requires the path, the query and the method back. The `://` half of the same search is `test_uri_scheme.mojo`"
+    },
+    {
+      "id": "A23",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "Request body timeout, `--body-timeout`: a body still short at the deadline is refused (408 on a connection's first request) and closed, and a body that arrived whole leaves no timer behind",
+      "status": "verified",
+      "evidence": "`Smoke test the request body timeout` (every PR) \u2014 at a 2 s timeout, with `--blocking-threads 2`: a keep-alive connection outlives the timeout after a POST whose body came with its headers; a request out on a pool thread when the old timer would have fired keeps its slot, and eight connections opened behind it read only their own answers; headers and half a body, then silence, is answered 408 and closed at the deadline; and two arms stop the server so a read and an expiring timer share one wait, where each half of the fix is the only thing standing. The timer was armed for every body above the decode of what came with the headers, so a small POST left it running: 30 s later it closed the connection, and under the handler pool released a slot a pool thread still held, whose answer the next connection then read (review B1)"
+    },
+    {
+      "id": "A24",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A response its client stops reading is reaped after `--idle-timeout` with no send progress (nginx's `send_timeout`), and one read slowly but steadily is not",
+      "status": "verified",
+      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 a client that stops reading a 16 MiB response is closed, and one that takes it in slow reads for longer than the timeout gets every byte, for a response in memory and for a `--static` file sent with `sendfile`, which refresh the deadline on separate paths. Nothing bounded such a client before: m0serve zeroes the deadline of a request it hands to a pool thread or an executor, so a client that asked for a large response and never read it held its slot for good"
     },
     {
       "id": "B1",
