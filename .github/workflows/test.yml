@@ -107,6 +107,14 @@ jobs:
         run: |
           python3 scripts/emit.py --selftest
           python3 scripts/emit.py --covers F11 --task emit-selftest
+      # The sabotage harnesses below judge every rule through this library,
+      # and a regression in it reports a rule guarded rather than failing: a
+      # build error read as a catch (B15), a skip summarised as guarded, a
+      # tree left sabotaged by Ctrl-C. Canned files, stdlib only, seconds.
+      - name: Self-test the sabotage library
+        run: |
+          python3 scripts/sabotage_lib.py --selftest
+          python3 scripts/emit.py --covers F17 --task sabotage-lib-selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
       # The Mojo pool's guards, proven able to fail: each rule in
