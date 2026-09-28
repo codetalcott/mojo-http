@@ -1693,55 +1693,117 @@ def check_ci_measurements_are_collected():
     passes locally, and is never actually run by CI -- so it is checked here
     rather than trusted, in the same both-ways shape as check_smoke_coverage.
 
-    Three ways it can lapse, all silent:
+    Three ways it can lapse, all silent, and the first two are asked of
+    each JOB (B16):
 
-    - the tasks emit but the workflow sets no `M0_RESULTS`, so every write is
-      skipped;
-    - the workflow collects but never uploads or renders, so the file dies
-      with the runner;
+    - a job runs tasks that record but sets no `M0_RESULTS`, so every write
+      is skipped;
+    - a job collects but never renders into its run summary or uploads its
+      own `ci-results-*` artifact, so the file dies with the runner;
     - the recorder's own selftest stops running, so a regression that drops
       records is invisible (the reason `warning_ratchet.py --selftest` and
       `binfmt.py --selftest` are CI steps and not a convention).
+
+    Per job, because each job's file is its own: the postgres job rendered
+    with `emit.py --render`, a flag emit.py does not have, from d23c945 on,
+    so its summary was empty -- and this check, which then read test.yml
+    whole, took six other jobs' `--summary` lines as that job's.
     """
-    emitters = sorted(set(re.findall(
-        r"^(?!#).*python3 scripts/emit\.py (?!--)([a-z0-9_.]+)",
-        (REPO / "pyproject.toml").read_text(), re.M)))
-    workflow = (REPO / ".github" / "workflows" / "test.yml").read_text()
+    for problem in measurement_problems(
+            *_texts("pyproject.toml", ".github/workflows/test.yml"), _recorders()):
+        fail(problem)
 
-    if not emitters:
-        if "scripts/emit.py --summary" in workflow:
-            fail(
+
+def _recorders():
+    """The scripts that record measurements from Python (`from emit import emit`)."""
+    return sorted(
+        f"scripts/{p.name}" for p in (REPO / "scripts").glob("*.py")
+        if p.name != "emit.py"
+        and re.search(r"^\s*(?:from emit import|import emit\b)", p.read_text(), re.M))
+
+
+# A recording call: `scripts/emit.py METRIC VALUE ...`. `--covers` (a
+# coverage declaration), `--summary` and `--selftest` are not measurements.
+_RECORDS = re.compile(r"\bscripts/emit\.py[ \t]+(?!-)\S")
+_RENDERS = re.compile(
+    r"\bscripts/emit\.py --summary\b[^\n]*>>[ \t]*\"?\$\{?GITHUB_STEP_SUMMARY\b")
+
+
+def measurement_problems(pyproject, workflow, recorders=()):
+    """check_ci_measurements_are_collected, as a function of its texts.
+
+    `recorders` are the scripts that record from Python (`from emit import
+    emit`), so a task that runs one records though its body never names
+    emit.py -- the pid1 job's probes do exactly that. Tasks and the workflow
+    are read through spec_sheet's readers, so a comment answers nothing.
+    """
+    import spec_sheet
+
+    try:
+        table = spec_sheet.poe_tasks(pyproject)
+    except ValueError as e:
+        return [str(e)]
+
+    def records(text):
+        return bool(_RECORDS.search(text)) or any(r in text for r in recorders)
+
+    recording = {n for n, (body, _refs) in table.items() if records(body)}
+    code = spec_sheet.strip_comment_lines(workflow)
+    problems = []
+    if not recording:
+        if "scripts/emit.py --summary" in code:
+            problems.append(
                 "test.yml renders CI measurements but no poe task records any "
-                "— the summary will always be empty"
-            )
-        return
+                "— the summary will always be empty")
+        return problems
 
-    if not re.search(r"^\s+M0_RESULTS:", workflow, re.M):
-        fail(
-            f"{len(emitters)} poe task measurement(s) call `scripts/emit.py` "
-            f"({', '.join(emitters[:3])}...), but test.yml sets no M0_RESULTS. "
-            "emit.py is a deliberate no-op without it, so every one of those "
-            "calls would run, exit 0 and record nothing — with no failure and "
-            "an identical job log, because the tasks still echo the number."
-        )
-    if "scripts/emit.py --summary" not in workflow:
-        fail(
-            "test.yml collects CI measurements but never renders them — "
-            "add the `--summary` step, or the file is written and never read"
-        )
-    if not re.search(r"name: ci-results-", workflow):
-        fail(
-            "test.yml records CI measurements but uploads no `ci-results-*` "
-            "artifact, so they die with the runner and no run can be compared "
-            "against the next"
-        )
-    if "scripts/emit.py --selftest" not in workflow:
-        fail(
+    for job, text in spec_sheet.workflow_jobs(workflow).items():
+        ran = spec_sheet.reachable_tasks(table, *re.findall(r"poe ([a-z0-9-]+)", text))
+        why = sorted(ran & recording)
+        if records(text):
+            why.append("its own `run:` lines")
+        env = re.search(r"^\s+M0_RESULTS:[ \t]*(\S.*?)[ \t]*$", text, re.M)
+        if not env:
+            if why:
+                problems.append(
+                    f"test.yml job `{job}` records measurements "
+                    f"({', '.join(why[:3])}{', ...' if len(why) > 3 else ''}) "
+                    "but sets no M0_RESULTS. emit.py is a deliberate no-op "
+                    "without it, so every one of those calls would run, exit 0 "
+                    "and record nothing — with no failure and an identical job "
+                    "log, because the tasks still echo the number.")
+            continue
+        if not _RENDERS.search(text):
+            problems.append(
+                f"test.yml job `{job}` collects measurements (it sets "
+                "M0_RESULTS) but never renders them: no `scripts/emit.py "
+                "--summary` into $GITHUB_STEP_SUMMARY in that job, so its run "
+                "summary is empty. Each job renders its own file; another "
+                "job's render does not cover it.")
+        target = env.group(1).strip("'\"").rsplit("/", 1)[-1]
+        uploads = [
+            step for _name, _cond, step in spec_sheet.job_steps(text)
+            if re.search(r"^\s*(?:- )?uses:[ \t]*actions/upload-artifact@", step, re.M)
+            and re.search(r"^\s+name:[ \t]*ci-results-", step, re.M)
+        ]
+        if not uploads:
+            problems.append(
+                f"test.yml job `{job}` collects measurements but uploads no "
+                "`ci-results-*` artifact, so they die with the runner and no "
+                "run can be compared against the next")
+        elif not any(re.search(r"^\s+(?:path:[ \t]*)?\S*" + re.escape(target) + r"\b",
+                               step, re.M) for step in uploads):
+            problems.append(
+                f"test.yml job `{job}` uploads a `ci-results-*` artifact, but "
+                f"not `{target}`, the file its M0_RESULTS names — with "
+                "`if-no-files-found: ignore` that uploads nothing, silently")
+    if "scripts/emit.py --selftest" not in code:
+        problems.append(
             "scripts/emit.py --selftest is not run by test.yml. A silent "
             "regression in the recorder drops measurements rather than "
             "failing, exactly like the warning parser and the binary parser "
-            "whose selftests are CI steps for this reason."
-        )
+            "whose selftests are CI steps for this reason.")
+    return problems
 
 
 # Prose may cite a path under these roots only if git tracks it. `.claude/`
@@ -2249,6 +2311,45 @@ def _dependabot_gate_cases():
     ]
 
 
+def _in_job(workflow, job, edit):
+    """`workflow` with `edit` applied to one job's raw text only; None if no such job."""
+    head = re.search(r"^  " + re.escape(job) + r":[ \t]*$", workflow, re.M)
+    if not head:
+        return None
+    nxt = re.compile(r"^  [A-Za-z_][A-Za-z0-9_-]*:[ \t]*$", re.M).search(workflow, head.end())
+    end = nxt.start() if nxt else len(workflow)
+    return workflow[:head.start()] + edit(workflow[head.start():end]) + workflow[end:]
+
+
+# One lapse in ONE job, applied to each job that collects in turn. Each leaves
+# the other jobs' lines in the file, which is the shape a whole-file reading
+# cannot see (B16) -- the loop below asserts that too.
+_JOB_LAPSES = [
+    ("its render misspelled `--render`, as the postgres job's was (B16)",
+     lambda t: t.replace("emit.py --summary", "emit.py --render", 1)),
+    ("its render commented out",
+     lambda t: re.sub(r"^([ \t]*)(python3 scripts/emit\.py --summary)", r"\1# \2", t, flags=re.M)),
+    ("its upload commented out",
+     lambda t: re.sub(r"^([ \t]*)(uses: actions/upload-artifact@\S+\n[ \t]+with:\n[ \t]+name: ci-results-)",
+                      r"\1# \2", t, flags=re.M)),
+    ("its upload naming another file",
+     lambda t: t.replace("path: ci-results.jsonl", "path: results.jsonl")),
+]
+
+# A job that records must collect. By name, because which jobs record is the
+# fact under test: smoke-gateway's smokes call emit.py in their bodies, while
+# pid1's record from Python probes (`from emit import emit`) and name no
+# emit.py call at all -- a text scan of task bodies alone misses those.
+_ENV_LAPSES = ["smoke-gateway", "pid1"]
+
+
+def _whole_file_blind(workflow):
+    """Would the old whole-file reading of test.yml pass this text? (B16)"""
+    return (bool(re.search(r"^\s+M0_RESULTS:", workflow, re.M))
+            and "scripts/emit.py --summary" in workflow
+            and bool(re.search(r"name: ci-results-", workflow)))
+
+
 def _smoke_only_in_a_comment(workflow):
     """(workflow, smoke): one step's smoke left only in a comment, the step
     running `echo` instead -- a smoke run by no other step, found by count
@@ -2634,6 +2735,45 @@ def selftest():
         good = any(task in g for g in got)
         print(f"  {'caught' if good else 'MISSED'}          {label} ({task})"
               + ("" if good else f" -- got {got}"))
+        ok &= good
+    # Measurements, per job (B16): each lapse applied to each collecting job
+    # alone must name that job, in a text the whole-file reading passed.
+    import spec_sheet
+    recorders = _recorders()
+    got = measurement_problems(real_toml, real_wf, recorders)
+    print(f"  {'caught' if not got else 'MISSED'}          (control: every job's measurements as committed)"
+          + ("" if not got else f" -- got {got}"))
+    ok &= not got
+    collecting = [job for job, text in spec_sheet.workflow_jobs(real_wf).items()
+                  if re.search(r"^\s+M0_RESULTS:", text, re.M)]
+    if not collecting:
+        print("  MISSED          no job in test.yml collects measurements, so no lapse was tried")
+        ok = False
+    for label, edit in _JOB_LAPSES:
+        missed = []
+        for job in collecting:
+            text = _in_job(real_wf, job, edit)
+            if text is None or text == real_wf:
+                missed.append(f"{job} (NOT APPLICABLE)")
+            elif not _whole_file_blind(text):
+                missed.append(f"{job} (a whole-file reading sees it: not a per-job case)")
+            elif not any(f"job `{job}`" in g for g in measurement_problems(real_toml, text, recorders)):
+                missed.append(job)
+        good = not missed
+        print(f"  {'caught' if good else 'MISSED'}          a job with {label}, "
+              f"{len(collecting) - len(missed)} of {len(collecting)} collecting jobs"
+              + ("" if good else " -- missed in " + ", ".join(missed)))
+        ok &= good
+    for job in _ENV_LAPSES:
+        label = f"the {job} job sets no M0_RESULTS while the others do"
+        text = _in_job(real_wf, job, lambda t: re.sub(r"^[ \t]+M0_RESULTS:.*\n", "", t, flags=re.M))
+        if text is None or text == real_wf:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, no such job or line")
+            ok = False
+            continue
+        got = measurement_problems(real_toml, text, recorders)
+        good = _whole_file_blind(text) and any(f"job `{job}`" in g for g in got)
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
     # The required context: the three edits that hang every pull request
     # rather than failing one, and deletion.
