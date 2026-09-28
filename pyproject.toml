@@ -8328,7 +8328,7 @@ python3 scripts/emit.py --covers E33 --task smoke-serve-parallel-runtime
 # `--only threads` is about six minutes, and `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
 # about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_prefork, test_respawn, test_views, smoke-host-doctor or smoke-parallel-runtime fails for every one (SPEC E21-E32, N19; run it as `uv run --group max poe sabotage-host` on Linux; on macOS, `--skip parallel` here, then `--only parallel` under `--group max`)"
+help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_cmdline, test_prefork, test_respawn, test_views, smoke-host-doctor or smoke-parallel-runtime fails for every one (SPEC E21-E32, N19; run it as `uv run --group max poe sabotage-host` on Linux; on macOS, `--skip parallel` here, then `--only parallel` under `--group max`)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC

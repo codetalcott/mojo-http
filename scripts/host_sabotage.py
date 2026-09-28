@@ -9,8 +9,10 @@ it), `test_host.mojo` for what only a thread-level test can see precisely
 (a producer that catches up still publishes), `test_prefork.mojo` for
 the pre-fork pieces both hosts share (`m0_http.prefork`; a src edit the
 apps would only see after a `.mojoc` rebuild, which a test run of `src.*`
-does not need), or `test_respawn.mojo` for the supervisor's part of the
-host's contract (a refusal ending the siblings, in `multiworker.mojo`).
+does not need), `test_cmdline.mojo` for the command-line reader both hosts
+share (`m0_http.cmdline`, the same arrangement), or `test_respawn.mojo` for
+the supervisor's part of the host's contract (a refusal ending the
+siblings, in `multiworker.mojo`).
 The fork is resolved from source by the smokes, and the unit gates
 compile `src.*` directly, so nothing needs rebuilding -- with one
 exception: a rule against `src/` gated on a SMOKE would need `build-http`
@@ -50,6 +52,7 @@ tell, so it is not claimed as a guarded rule.
     uv run poe sabotage-host --only threads        the loops-on-threads rules (SPEC E27-E29)
     uv run poe sabotage-host --only doctor         the command line on the wire (SPEC E30, E31)
     uv run poe sabotage-host --only flags          the parser's rules
+    uv run poe sabotage-host --only cmdline        the reader m0serve shares
     uv run poe sabotage-host --only parallel       the refusal of prefork beside
                                                    MAX's parallel runtime (SPEC E32;
                                                    needs `uv sync --group max`)
@@ -88,6 +91,7 @@ VIEWS = "views"
 THREADS = "threads"
 DOCTOR = "doctor"
 FLAGS = "flags"
+CMDLINE = "cmdline"
 PARALLEL = "parallel"
 
 HOST = Path("packages/m0-http/m0_host/host.mojo")
@@ -95,6 +99,7 @@ EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
 VIEWS_SRC = Path("packages/m0-http/src/views.mojo")
 HOST_CHECK = Path("apps/host_check/server.mojo")
 FLAGS_SRC = Path("packages/m0-http/m0_host/flags.mojo")
+CMDLINE_SRC = Path("packages/m0-http/src/cmdline.mojo")
 PREFORK_SRC = Path("packages/m0-http/src/prefork.mojo")
 ACCEPT_SHARE_SRC = Path("packages/m0-http/lightbug_http/accept_share.mojo")
 MULTIWORKER_SRC = Path("packages/m0-http/src/multiworker.mojo")
@@ -514,10 +519,10 @@ SABOTAGES = [
     ),
     (
         "an unknown flag is ignored",
-        FLAGS,
-        FLAGS_SRC,
-        '                raise Error("unknown option " + name)\n',
-        "                pass\n",
+        CMDLINE,
+        CMDLINE_SRC,
+        '        raise Error("unknown option " + name)\n',
+        "        pass\n",
     ),
     (
         "a flag does not mark its count as chosen",
@@ -544,8 +549,8 @@ SABOTAGES = [
         "--threads 0 is a usage error for the flag and a refusal for the variable",
         FLAGS,
         FLAGS_SRC,
-        '        config.threads = _parse_int(value, "--threads")\n',
-        '        config.threads = _parse_int(value, "--threads")\n        if config.threads < 1:\n            raise Error("--threads must be at least 1")\n',
+        '        config.threads = parse_int(value, "--threads")\n',
+        '        config.threads = parse_int(value, "--threads")\n        if config.threads < 1:\n            raise Error("--threads must be at least 1")\n',
     ),
     (
         "prefork is refused when MAX's parallel runtime is linked",
@@ -640,6 +645,19 @@ def run_parallel() -> tuple[bool, str]:
     return (p.returncode == 0 and "smoke-parallel-runtime OK" in out), out
 
 
+def run_cmdline() -> tuple[bool, str]:
+    """The shared reader's own test, compiled from `src/`: the host resolves
+    `m0_http.cmdline` through the `.mojoc`, so `test_host_flags.mojo` would
+    not see an edit there until `build-http` ran."""
+    p = subprocess.run(
+        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
+         "packages/m0-http/test/test_cmdline.mojo"],
+        capture_output=True, text=True, timeout=600,
+    )
+    out = p.stdout + p.stderr
+    return (p.returncode == 0 and " 0 failed" in out), out
+
+
 def run_flags() -> tuple[bool, str]:
     p = subprocess.run(
         [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
@@ -653,7 +671,8 @@ def run_flags() -> tuple[bool, str]:
 GATES = {
     SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork,
     RESPAWN: run_respawn, VIEWS: run_views, THREADS: run_threads,
-    DOCTOR: run_doctor, FLAGS: run_flags, PARALLEL: run_parallel,
+    DOCTOR: run_doctor, FLAGS: run_flags, CMDLINE: run_cmdline,
+    PARALLEL: run_parallel,
 }
 
 
