@@ -109,6 +109,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   good. A response read slowly but steadily is not affected. Separately, a
   handler pool refuses a 127th mount's lane rather than writing past the
   end of its wake block.
+- **The docs gate is one list, and CI's coverage checks no longer take a
+  comment for a gate.** The required `Docs` check and `poe check-docs` now
+  run one script, `scripts/docs_gate.sh` (about 5 s): each used to skip
+  checks the other ran, and neither ran the milestone rot gates, which a
+  pull request touching only `docs/` could break unseen. The checks that
+  every smoke and test task runs in CI, and that each SPEC row's gate
+  declares its coverage, counted a task, a `--covers` declaration or a dev
+  dependency named only in a comment in `test.yml` or `pyproject.toml`; they
+  now read both files as they run. Each CI job must also render and upload
+  its own measurements: the postgres job's summary had been empty since the
+  job was added, rendered with a flag `emit.py` does not have, while the
+  check counted the other jobs' renders as its.
 
 ## [1.7.0] — 2026-09-27
 

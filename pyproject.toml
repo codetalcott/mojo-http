@@ -819,35 +819,19 @@ python3 scripts/warning_ratchet.py "$log" $flag
 # The doc-fact ratchet: prose numbers with a machine source of truth are
 # checked against it (warning counts vs the baseline JSON, smoke tasks vs
 # the workflow that must run them, the generated bench table vs the newest
-# committed artifact). Runs in CI. See scripts/check_docs.py for why each
-# fact is on the list and why historical numbers deliberately are not.
+# committed artifact). See scripts/check_docs.py for why each fact is on the
+# list and why historical numbers deliberately are not.
+#
+# This IS the required check: scripts/docs_gate.sh is what docs.yml's
+# `check-docs` job runs too, selftests, pyflakes, sabotages and milestone
+# gates included, so a green run here is a green required check (about 3 s).
+# The coverage lines stay here rather than in the script, because
+# docs/SPEC.md's checker reads `--covers` declarations from the body of the
+# task a cited step runs.
 [tool.poe.tasks.check-docs]
-help = "Fail if a machine-sourced number in the docs drifted from its source"
+help = "The docs gate the required check runs: doc facts, their selftests and sabotages"
 shell = """
-# The renderer's selftest first: check_docs subprocesses `render_bench_docs
-# --check` for the tables AND the prose spans, and a doc checker that cannot
-# fail is green having tested nothing. Here rather than a test.yml step so
-# doc-only pull requests (which run only docs.yml) prove it too.
-python3 scripts/render_bench_docs.py --selftest || exit 1
-# The docs site's link check runs inside check_docs (`docsite --check`,
-# standard library only); this proves those checks can fail, for the same
-# reason as the line above.
-python3 scripts/docsite.py --selftest || exit 1
-# The executor shim's rendering check runs inside check_docs
-# (`render_shim --check`); same rule.
-python3 scripts/render_shim.py --selftest || exit 1
-# The citation tracker runs inside check_docs (`check_citations.check`);
-# same rule: prove its rules can fail before believing they passed.
-python3 scripts/check_citations.py --selftest || exit 1
-# The benchmark scripts' quiet-machine gate (`bench_guard.py wait`) is what
-# stands between a busy laptop and a committed artifact; same rule: a guard
-# that cannot fire is decoration, so its selftest runs where the other
-# bench checks are proven.
-python3 scripts/bench_guard.py --selftest || exit 1
-# check_docs' own citation rule (prose may not cite an untracked path);
-# same rule again: prove it can fire before believing it passed.
-python3 scripts/check_docs.py --selftest || exit 1
-python3 scripts/check_docs.py || exit 1
+sh scripts/docs_gate.sh || exit 1
 python3 scripts/emit.py --covers F10 --task check-docs
 python3 scripts/emit.py --covers F12 --task check-docs
 python3 scripts/emit.py --covers F15 --task check-docs
