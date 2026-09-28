@@ -929,14 +929,30 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     # RFC's moment for it, both Closes having been
                     # exchanged.
                     ws_res.reply.clear()
+                # The pongs and the close echo go out WHOLE, now or through
+                # the write-ready path, never cut. This send's count was
+                # thrown away: a reply the kernel took only part of lost
+                # its tail, and the peer read the next frame's header as the
+                # rest of the payload -- every frame after it misframed
+                # (R6; measured on macOS, where a one-read reply of 31 pongs
+                # overflows a send buffer with 2 KB or more left, cut at
+                # byte 115 of a 125-byte pong). What the kernel refused is
+                # queued as the slot's response and the socket waits for
+                # writability like any frame the outbox sends; reads stop
+                # until it lands, so the reply is bounded by this one recv.
+                # A pong is no longer dropped on EAGAIN either: RFC 6455
+                # §5.5.2 says MUST, and a dropped close echo left the peer
+                # with no Close at all.
+                var reply_owed = False
                 if len(ws_res.reply) > 0:
-                    # Pongs and close echoes are tiny; a send failure that
-                    # isn't EAGAIN means the client is gone. A dropped
-                    # pong on EAGAIN is fine — the next ping repeats it.
                     var ws_reply_dead = False
+                    var ws_reply_sent = 0
                     try:
-                        _ = send(ws_fd, Span(ws_res.reply), UInt(len(ws_res.reply)), 0)
+                        ws_reply_sent = Int(
+                            send(ws_fd, Span(ws_res.reply), UInt(len(ws_res.reply)), 0)
+                        )
                     except ws_send_err:
+                        # Anything but EAGAIN means the client is gone.
                         if not ws_send_err.isa[SendEAGAINError]():
                             ws_reply_dead = True
                     if ws_reply_dead:
@@ -946,6 +962,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                             slot_sse, slot_ws, slot_ws_state,
                         )
                         continue
+                    if ws_reply_sent < len(ws_res.reply):
+                        slot_response[slot] = Bytes(Span(ws_res.reply))
+                        slot_send_offset[slot] = ws_reply_sent
+                        provision_pool.provisions[slot].state = (
+                            ConnectionState.responding()
+                        )
+                        reply_owed = True
                 # Every message of this batch is handed over — a False
                 # does not stop the delivery, because these messages were
                 # already read off the socket and the handler PARKS what
@@ -958,11 +981,16 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     ):
                         ws_suspend = True
                 if ws_res.close_after_reply:
-                    _close_slot(
-                        backend, handler, slot, fd_val,
-                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                    )
+                    if reply_owed:
+                        # The echo is still going out: close once it has
+                        # (`_after_send`'s `should_close` branch).
+                        provision_pool.provisions[slot].should_close = True
+                    else:
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
                 elif ws_suspend:
                     # Inbound backpressure: stop READING this socket until
                     # the handler's parked messages have gone through
@@ -1010,21 +1038,44 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     # would look at again.
                     #
                     # Only on a FULL staging buffer, so an ordinary
-                    # small-message socket pays no extra syscall.
-                    backend.try_add_read(fd_val)
-                    slot_read_armed[slot] = True
+                    # small-message socket pays no extra syscall. Not while
+                    # a reply is owed: `_after_send` re-arms once it lands.
+                    if not reply_owed:
+                        backend.try_add_read(fd_val)
+                        slot_read_armed[slot] = True
                 elif ws_peer_eof:
                     # The peer has sent everything it will, and this read
                     # took the rest of it: nothing more can arrive, so the
                     # socket ends here, after its frames were delivered. A
                     # full read re-armed above instead (more is buffered),
                     # and a suspended one closes when its resumed read finds
-                    # the EOF again.
-                    _close_slot(
-                        backend, handler, slot, fd_val,
-                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                        slot_sse, slot_ws, slot_ws_state,
-                    )
+                    # the EOF again. An owed reply goes out first.
+                    if reply_owed:
+                        provision_pool.provisions[slot].should_close = True
+                    else:
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
+                if reply_owed and slot_fds[slot] != UNUSED:
+                    # The reply takes the socket's registration until it
+                    # lands. Read interest goes first, on both backends:
+                    # epoll's write one-shot would replace it anyway, and
+                    # kqueue's level-triggered read would otherwise report
+                    # the client's next bytes on every wait while this slot,
+                    # RESPONDING, reads none of them.
+                    if slot_read_armed[slot]:
+                        backend.try_delete_read(fd_val)
+                        slot_read_armed[slot] = False
+                    try:
+                        backend.add_write_oneshot(fd_val)
+                    except:
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
                 continue
 
             if provision_pool.provisions[slot].state.kind == ConnectionState.LINGERING:

@@ -994,6 +994,14 @@
       "evidence": "`Smoke test the WebSocket echo demo` (every PR)"
     },
     {
+      "id": "I31",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A ping is answered by a whole pong even when the send buffer toward the client is full: what the kernel does not take goes out through the write-ready path, reads waiting until it has, rather than being cut or dropped (RFC 6455 \u00a75.5.2)",
+      "status": "verified",
+      "evidence": "`Smoke test the WebSocket echo demo` (every PR) \u2014 40,000 pings with distinct payloads, sent unread until the server's buffer is full, must all come back as whole pongs in order, and the socket must then close cleanly. Before the fix (review record R6) the loop discarded the send's count: a reply the kernel took only part of lost its tail, and the next frame's header landed inside a pong's payload (cut at byte 115 of 125 on macOS and after one byte in the Linux container, followed by `0x8A 0x7D`), and a reply refused whole was dropped. Sabotaged on both platforms both ways, the cut alone and the cut with the drop, and caught every run. A close echo is queued the same way, and the socket closes once it has gone out; no gate forces that case, because the echo is the last reply and whether the buffer is still full when it is sent is not the client's to arrange. Checked by hand by queueing every close echo, which passes, and closing at once as well, which fails"
+    },
+    {
       "id": "I4",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",

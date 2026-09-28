@@ -1532,6 +1532,7 @@ rm -f ws.log
 echo "smoke-ws OK"
 python3 scripts/emit.py --covers I1 --task smoke-ws
 python3 scripts/emit.py --covers I3 --task smoke-ws
+python3 scripts/emit.py --covers I31 --task smoke-ws
 """
 
 # Phase 1 (single worker): two sockets in one room — one speaks, both hear
