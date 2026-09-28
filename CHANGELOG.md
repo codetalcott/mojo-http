@@ -156,6 +156,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
   WebSocket ping or Close answered while the send buffer toward the client
   is full goes out whole once the socket drains (I31), where the reply was
   cut, misframing every frame after it, or dropped when refused whole.
+- **A client that stops reading no longer keeps the event loop at a full
+  core on macOS** (SPEC C10). A connection waiting for its client to take
+  a response, or whose request was out on a handler thread or the ASGI
+  executor, stayed registered for reads, and macOS reports an unread
+  event on every wait: a client that half-closed, or sent its next
+  request, and then stopped reading held the loop at 100% CPU for as long
+  as the response waited or the view ran. Such a connection is not
+  watched for reads until it can read again, on both platforms, and what
+  the client sent is still answered then. With `--access-log`, a stream
+  or WebSocket whose frames did not go out in a single send logged a
+  record for each such frame, and a chunked stream one more at its end;
+  `--metrics` counted each as a response. A stream is one record now,
+  written when its head lands (F17). On Linux, a WebSocket whose incoming
+  messages had been paused for the application could stop sending for
+  good if the pause lifted while a frame was still going out. And a
+  WebSocket the server closed itself, answering a message too large for
+  the handler pool with 1009, could be held until the process exited when
+  its client never answered the Close; it is closed after the 2 s linger.
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
   and the login read the silence as off: a visit to the `http://` URL sent
