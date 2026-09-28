@@ -388,11 +388,22 @@ is exactly 8 bytes and a message is at least 12.
 """
 
 comptime WS_DATAGRAM_MAX = 65546
-"""Largest `TAG_WS_MESSAGE` datagram a pool thread or the shim will read.
+"""The largest inbound-WebSocket datagram a submit channel carries, and so
+the buffer both of its readers post: a pool thread's (`m0_wsgi.blocking_pool`)
+and the executor shim's read of its lane, a literal there because the shim
+is Python and cannot import this.
 
-Equal to `m0_wsgi.blocking_pool.WS_JOB_BUFFER` and to the shim's own read
-size; `m0_wsgi.handler.WS_CHANNEL_DATAGRAM_MAX` is the same number on the
-other side of the package boundary, which m0-http may not import from."""
+The channel's own socket buffer, 64 KB, plus a tag header. Both readers
+read WITHOUT `MSG_TRUNC`: a SOCK_DGRAM datagram larger than the buffer is
+copied up to it and the rest DISCARDED, the short count looking exactly
+like a short message. So no sender puts a larger one on the channel --
+`send_ws_message` refuses it here, and `m0_wsgi.handler` refuses its
+executor tag against this same bound -- and the loop handler, which ends a
+socket whose message could never fit with a Close carrying 1009 (SPEC I26)
+rather than park it for ever, sizes that check by `ws_message_room`, the
+arithmetic `send_ws_message` refuses by. The loop's `max_message_size` does
+not keep a message under this, though comments here once said so: it is
+`max_request_body_size`, 4 MB by default."""
 
 comptime _WS_HEADER = 12
 """tag(1) + slot(8) + opcode(1) + chan_len(2)."""
@@ -448,19 +459,65 @@ def _size_socket(fd: Int):
         pass
 
 
-def _encode_job(slot: Int) -> List[UInt8]:
-    var out = List[UInt8](capacity=_JOB_BYTES)
-    var bits = UInt64(slot)
+comptime SEND_TRIES = 64
+"""How many times a sender on these channels offers one datagram before it
+gives up (`send_bounded`)."""
+
+
+def send_bounded(fd: Int, datagram: Span[Byte, _], tries: Int = SEND_TRIES) -> Bool:
+    """Offer one datagram to `fd` up to `tries` times, yielding the core
+    after each refusal; whether it went.
+
+    The one retry every sender on these channels uses -- the pool's
+    completions, wakes, pills, aborts, acks, chunks and batches, the hold
+    frame, and `m0_wsgi.handler`'s tags -- and it adds no wait of its own:
+    each sender runs on the event loop, which must not block, or on a
+    thread that must not wait in a send (an attached executor would hold
+    the GIL against the loop that drains the channel). Their descriptors
+    are non-blocking, the completion channel's write end aside, which is
+    sized so it cannot fill (`OffloadPool.complete`). What a refusal after
+    the last try means is the caller's: a completion or an ack is kept and
+    retried, a chunk is waited for detached, a wake or a disconnect tag is
+    dropped.
+
+    Every channel here is an AF_UNIX SOCK_DGRAM pair, where a send takes
+    the whole datagram or none of it, so success is the whole length. Any
+    failure is retried alike, a full buffer or not, as every copy of this
+    loop did."""
+    for _ in range(tries):
+        var rc = external_call["send", Int](
+            c_int(fd), datagram.unsafe_ptr(), UInt(len(datagram)), c_int(0)
+        )
+        if rc == len(datagram):
+            return True
+        _sched_yield()
+    return False
+
+
+def append_i64_le(mut out: List[UInt8], value: Int):
+    """Append `value` as eight little-endian bytes, two's complement: the
+    slot, generation and event-id words of the datagrams on these channels."""
+    var bits = UInt64(Int64(value))
     for shift in range(0, 64, 8):
         out.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+
+
+def read_i64_le(bytes: Span[Byte, _], at: Int) -> Int:
+    """The eight little-endian bytes at `at`, as `append_i64_le` wrote them."""
+    var bits = UInt64(0)
+    for i in range(8):
+        bits |= UInt64(bytes[at + i]) << UInt64(i * 8)
+    return Int(Int64(bits))
+
+
+def _encode_job(slot: Int) -> List[UInt8]:
+    var out = List[UInt8](capacity=_JOB_BYTES)
+    append_i64_le(out, slot)
     return out^
 
 
 def _decode_job(buf: Span[Byte, _]) -> Int:
-    var bits = UInt64(0)
-    for i in range(_JOB_BYTES):
-        bits |= UInt64(buf[i]) << UInt64(i * 8)
-    return Int(Int64(bits))
+    return read_i64_le(buf, 0)
 
 
 def stream_gen_seed(producer: Int) -> Int:
@@ -476,14 +533,27 @@ def stream_gen_seed(producer: Int) -> Int:
     start their low half at 1, so no generation is ever `STREAM_GEN_NONE`.
     """
     return ((producer + 1) << 32) + 1
+
+
+def ws_message_room(channel: String) -> Int:
+    """The largest payload one `TAG_WS_MESSAGE` datagram carries for a socket
+    that joined `channel`: `WS_DATAGRAM_MAX` less the header and the name.
+
+    What `OffloadPool.send_ws_message` refuses above, and what the loop
+    handler asks before it sends, ending the socket with 1009 past it (SPEC
+    I26). One function for both, because a check that disagreed with the
+    encoder by a byte would let through a message the encoder then refuses,
+    and the handler parks a refused message and retries it -- for ever, for
+    one that can never fit."""
+    return WS_DATAGRAM_MAX - _WS_HEADER - channel.byte_length()
+
+
 def _encode_job_batch(slots: List[Int]) -> List[UInt8]:
     """`[TAG_JOB_BATCH][slot i64 LE] x n`; see the tag's docstring."""
     var out = List[UInt8](capacity=1 + _JOB_BYTES * len(slots))
     out.append(TAG_JOB_BATCH)
     for i in range(len(slots)):
-        var bits = UInt64(Int64(slots[i]))
-        for shift in range(0, 64, 8):
-            out.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+        append_i64_le(out, slots[i])
     return out^
 
 
@@ -491,9 +561,7 @@ def _encode_completions(slots: List[Int]) -> List[UInt8]:
     """`k` concatenated 8-byte LE slots; see `COMPLETE_BATCH_MAX`."""
     var out = List[UInt8](capacity=_JOB_BYTES * len(slots))
     for i in range(len(slots)):
-        var bits = UInt64(Int64(slots[i]))
-        for shift in range(0, 64, 8):
-            out.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+        append_i64_le(out, slots[i])
     return out^
 
 
@@ -938,16 +1006,7 @@ struct OffloadPool(Movable):
         The False return is the last resort, and `_pump_events` says so on
         stdout rather than letting a truncated body look like a good one.
         """
-        for _ in range(64):
-            try:
-                _ = send(
-                    FileDescriptor(self.stream_chunk_write),
-                    frame, UInt(len(frame)), 0,
-                )
-                return True
-            except:
-                _sched_yield()
-        return False
+        return send_bounded(self.stream_chunk_write, frame)
 
     def enable_stream_ack(mut self, lane: Int) raises:
         """A private drain-ack pair for `lane`'s executor.
@@ -980,27 +1039,23 @@ struct OffloadPool(Movable):
         self, lane: Int, slot: Int, opcode: Int, channel: String,
         payload: Span[Byte, _],
     ) -> Bool:
-        """Hand one inbound WebSocket message to `lane`'s pool threads.
+        """Hand one inbound WebSocket message to `lane`'s pool threads: how
+        the loop handler delivers a message on a socket a pool thread's view
+        held. False when it did not go, and the caller keeps it.
 
         The loop's side of `TAG_WS_MESSAGE`. Bounded retry and never a park:
         this runs on the event loop, and a lost message is an application-
         visible gap rather than a corrupt one — the caller says so.
 
-        Refuses a datagram larger than the buffer `next_job` reads into,
-        for the reason that function's `recv` cannot help with: the read
-        passes no `MSG_TRUNC`, so an oversized datagram is delivered
-        truncated and the short count is indistinguishable from a short
-        message. `m0_wsgi.handler` has a second copy of this encoder with
-        the same check; a bound in one copy and not the other is not a
-        bound."""
-        var chan = channel.as_bytes()
-        if _WS_HEADER + len(chan) + len(payload) > WS_DATAGRAM_MAX:
+        Refuses a message over `ws_message_room(channel)`: past
+        `WS_DATAGRAM_MAX` the reader, whose `recv` passes no `MSG_TRUNC`,
+        would take it truncated and could not tell."""
+        if len(payload) > ws_message_room(channel):
             return False
+        var chan = channel.as_bytes()
         var msg = List[UInt8](capacity=_WS_HEADER + len(chan) + len(payload))
         msg.append(TAG_WS_MESSAGE)
-        var bits = UInt64(Int64(slot))
-        for shift in range(0, 64, 8):
-            msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+        append_i64_le(msg, slot)
         msg.append(UInt8(opcode))
         msg.append(UInt8(len(chan) & 0xFF))
         msg.append(UInt8((len(chan) >> 8) & 0xFF))
@@ -1008,20 +1063,16 @@ struct OffloadPool(Movable):
             msg.append(b)
         for b in payload:
             msg.append(b)
-        var fd = self.submit_write_fd(lane)
-        for _ in range(64):
-            try:
-                _ = send(FileDescriptor(fd), Span(msg), UInt(len(msg)), 0)
-                # A thread parked on its own channel is not watching the
-                # lane socket; wake the most recently parked one, which
-                # polls the socket first thing. No parked thread means a
-                # spinner or a busy one polls it within
-                # `POOL_DGRAM_POLL_NS`, as before.
-                _ = self._wake_registered(lane)
-                return True
-            except:
-                _sched_yield()
-        return False
+        if not send_bounded(self.submit_write_fd(lane), Span(msg)):
+            return False
+        # A thread parked on its own channel is not watching the lane
+        # socket; wake the most recently parked one, which polls the socket
+        # first thing. No parked thread means a spinner or a busy one polls
+        # it within `POOL_DGRAM_POLL_NS`. Without the wake the message sat
+        # until a thread happened to spin: CI's WebSocket smoke saw "only
+        # pings arriving".
+        _ = self._wake_registered(lane)
+        return True
 
     def slot_is_executor(self, slot: Int) -> Bool:
         """Whether an asyncio executor produced this slot's response.
@@ -1092,22 +1143,9 @@ struct OffloadPool(Movable):
         that will never come. Returns whether it went."""
         var msg = List[UInt8](capacity=_ABORT_BYTES)
         msg.append(TAG_STREAM_ABORT)
-        var s = UInt64(Int64(slot))
-        for shift in range(0, 64, 8):
-            msg.append(UInt8((s >> UInt64(shift)) & 0xFF))
-        var g = UInt64(Int64(gen))
-        for shift in range(0, 64, 8):
-            msg.append(UInt8((g >> UInt64(shift)) & 0xFF))
-        for _ in range(64):
-            try:
-                _ = send(
-                    FileDescriptor(self.complete_write),
-                    Span(msg), UInt(len(msg)), 0,
-                )
-                return True
-            except:
-                _sched_yield()
-        return False
+        append_i64_le(msg, slot)
+        append_i64_le(msg, gen)
+        return send_bounded(self.complete_write, Span(msg))
 
     def take_aborts(mut self) -> List[Int]:
         """The `(slot, gen)` pairs the last `drain_completions` found,
@@ -1152,16 +1190,7 @@ struct OffloadPool(Movable):
             msg.append(UInt8((s >> UInt32(8 * i)) & 0xFF))
         for i in range(4):
             msg.append(UInt8((b >> UInt32(8 * i)) & 0xFF))
-        for _ in range(64):
-            try:
-                _ = send(
-                    FileDescriptor(ack_fd),
-                    Span(msg), UInt(len(msg)), 0,
-                )
-                return True
-            except:
-                _sched_yield()
-        return False
+        return send_bounded(ack_fd, Span(msg))
 
     def addr(mut self) -> Int:
         """This pool's address, for `run_event_loop` and the thread blocks."""
@@ -1320,16 +1349,6 @@ struct OffloadPool(Movable):
         _ = atomic_at(self._parked_reg_addr(lane))[].fetch_add(-1)
         self._poke(Int(atomic_at(rec + _TR_WRITE)[].load()))
         return True
-
-    def wake_for_datagram(self, lane: Int) -> Bool:
-        """A sender that put a payload datagram on `lane`'s socket itself —
-        `m0_wsgi.handler`'s copy of the inbound-WebSocket encoder — calls
-        this after the send, for the reason `send_ws_message` wakes: a
-        thread parked on its own channel is not watching the lane socket,
-        and the most recently parked one polls it first thing when woken.
-        Returns whether a thread was woken; False means one is spinning or
-        busy and will poll the socket within `POOL_DGRAM_POLL_NS`."""
-        return self._wake_registered(lane)
 
     def _recv_own(self, thread: Int, mut buf: List[UInt8], flags: c_int) -> Int:
         """One datagram off `thread`'s own channel: `_OWN_POKE`,
@@ -1638,12 +1657,7 @@ struct OffloadPool(Movable):
         """One wake datagram on `fd`. Retried like `complete`: a wake that
         never lands is a parked thread that stays parked."""
         var msg = _encode_job(_POKE)
-        for _ in range(64):
-            try:
-                _ = send(FileDescriptor(fd), Span(msg), UInt(len(msg)), 0)
-                return
-            except:
-                _sched_yield()
+        _ = send_bounded(fd, Span(msg))
 
     def _chain_wake(self, lane: Int, ring: Ring):
         """A thread that just took a job wakes a parked sibling if work
@@ -1695,9 +1709,7 @@ struct OffloadPool(Movable):
                     return _none_job()
                 return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
             if n >= UInt(_WS_HEADER) and buf[0] == TAG_WS_MESSAGE:
-                var bits = UInt64(0)
-                for i in range(8):
-                    bits |= UInt64(buf[1 + i]) << UInt64(i * 8)
+                var ws_slot = read_i64_le(Span(buf), 1)
                 var chan_len = Int(buf[10]) | (Int(buf[11]) << 8)
                 var chan_start = _WS_HEADER
                 var payload_start = chan_start + chan_len
@@ -1706,7 +1718,7 @@ struct OffloadPool(Movable):
                     # something to serve half of.
                     return _none_job()
                 return PoolJob(
-                    JOB_WS_MESSAGE, Int(Int64(bits)), Int(buf[9]),
+                    JOB_WS_MESSAGE, ws_slot, Int(buf[9]),
                     chan_start, chan_len,
                     payload_start, Int(n) - payload_start,
                 )
@@ -1804,10 +1816,10 @@ struct OffloadPool(Movable):
     def submit_batch(self, lane: Int, slots: List[Int]) -> Bool:
         """One datagram carrying every slot in `slots` to `lane`'s executor.
 
-        A single slot goes as the legacy 8-byte job. One non-blocking send
-        and no retry: the caller owns the policy for a refused batch (the
-        loop runs those requests inline, as a refused `submit` always
-        meant). Executor lanes only — a pool thread takes one job per read.
+        A single slot goes as the legacy 8-byte job. Bounded retry
+        (`send_bounded`), and the caller owns what a refusal after it means:
+        the loop runs those requests inline, as a refused `submit` always
+        meant. Executor lanes only — a pool thread takes one job per read.
         """
         if len(slots) == 0:
             return True
@@ -1816,14 +1828,7 @@ struct OffloadPool(Movable):
             msg = _encode_job(slots[0])
         else:
             msg = _encode_job_batch(slots)
-        try:
-            _ = send(
-                FileDescriptor(self.submit_write_fd(lane)),
-                Span(msg), UInt(len(msg)), 0,
-            )
-        except:
-            return False
-        return True
+        return send_bounded(self.submit_write_fd(lane), Span(msg))
 
     def submit(mut self, slot: Int, path: String = String("")) -> Bool:
         """Queue `slot` on the lane serving `path`. False means it is full.
@@ -1924,21 +1929,14 @@ struct OffloadPool(Movable):
             if n == 0:
                 break  # EOF
             if n == UInt(_ABORT_BYTES) and self._drain_buf[0] == TAG_STREAM_ABORT:
-                var s = UInt64(0)
-                var g = UInt64(0)
-                for i in range(8):
-                    s |= UInt64(self._drain_buf[1 + i]) << UInt64(i * 8)
-                    g |= UInt64(self._drain_buf[9 + i]) << UInt64(i * 8)
-                self.aborts.append(Int(Int64(s)))
-                self.aborts.append(Int(Int64(g)))
+                self.aborts.append(read_i64_le(Span(self._drain_buf), 1))
+                self.aborts.append(read_i64_le(Span(self._drain_buf), 9))
                 continue
             if n % UInt(_JOB_BYTES) != 0:
                 continue  # not a completion; not ours to decode
             var count = Int(n) // _JOB_BYTES
             for i in range(count):
-                var got = _decode_job(
-                    Span(self._drain_buf)[i * _JOB_BYTES : (i + 1) * _JOB_BYTES]
-                )
+                var got = read_i64_le(Span(self._drain_buf), i * _JOB_BYTES)
                 if got == _POKE:
                     continue
                 done.append(got)
@@ -2001,12 +1999,7 @@ struct OffloadPool(Movable):
             if atomic_at(rec + _TR_LANE)[].load() != Int64(at):
                 continue
             var own = Int(atomic_at(rec + _TR_WRITE)[].load())
-            for _ in range(64):
-                try:
-                    _ = send(FileDescriptor(own), Span(pill), UInt(len(pill)), 0)
-                    break
-                except:
-                    _sched_yield()
+            _ = send_bounded(own, Span(pill))
             pilled += 1
         var lane_write = self.submit_write_fd(lane)
         for _ in range(threads - pilled):
@@ -2232,15 +2225,7 @@ struct OffloadPool(Movable):
                 self._poke(self.complete_write)
             return
         var msg = _encode_job(slot)
-        for _ in range(64):
-            try:
-                _ = send(
-                    FileDescriptor(self.complete_write),
-                    Span(msg), UInt(len(msg)), 0,
-                )
-                return
-            except:
-                _sched_yield()
+        _ = send_bounded(self.complete_write, Span(msg))
 
     def complete_many(self, slots: List[Int]) -> Bool:
         """Tell the loop that every slot in `slots` is finished — one datagram.
@@ -2255,16 +2240,7 @@ struct OffloadPool(Movable):
         if len(slots) == 0:
             return True
         var msg = _encode_completions(slots)
-        for _ in range(64):
-            try:
-                _ = send(
-                    FileDescriptor(self.complete_write),
-                    Span(msg), UInt(len(msg)), 0,
-                )
-                return True
-            except:
-                _sched_yield()
-        return False
+        return send_bounded(self.complete_write, Span(msg))
 
 
 def make_stream_ack_pair() raises -> Tuple[Int, Int]:
@@ -2528,9 +2504,9 @@ struct OffloadLoopState(Movable):
         return len(self.pending_submit[at]) >= SUBMIT_BATCH_MAX
 
     def flush_lane(mut self, lane: Int) -> List[Int]:
-        """Send `lane`'s buffered slots as one datagram (64 tries with
-        yields). Returns the slots it could NOT send, buffer cleared either
-        way — the caller runs those inline."""
+        """Send `lane`'s buffered slots as one datagram (`submit_batch`,
+        whose retry is bounded). Returns the slots it could NOT send, buffer
+        cleared either way — the caller runs those inline."""
         var at = lane if lane >= 0 else 0
         var unsent = List[Int]()
         if at >= len(self.pending_submit) or len(self.pending_submit[at]) == 0:
@@ -2538,13 +2514,7 @@ struct OffloadLoopState(Movable):
         var batch = self.pending_submit[at].copy()
         self.pending_submit[at] = List[Int]()
         self.pending_submit_count -= len(batch)
-        var sent = False
-        for _ in range(64):
-            if self.pool()[].submit_batch(lane, batch):
-                sent = True
-                break
-            _sched_yield()
-        if not sent:
+        if not self.pool()[].submit_batch(lane, batch):
             unsent = batch^
         return unsent^
 

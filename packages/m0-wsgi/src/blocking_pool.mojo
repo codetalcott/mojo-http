@@ -45,7 +45,7 @@ from std.time import perf_counter_ns
 
 from lightbug_http.offload import (
     OffloadPool, PoolJob, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP, JOB_NONE,
-    make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
+    make_stream_ack_pair, drain_ack_fd, stream_gen_seed, WS_DATAGRAM_MAX,
 )
 from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
 from lightbug_http.http.common_response import InternalError
@@ -81,21 +81,6 @@ comptime _TURN_KEEP = 16
 jobs already queued inside its slice without dropping the GIL (0 under
 `M0_POOL_TURN_KEEP=0`)."""
 comptime _TURN_BYTES = 24
-
-comptime WS_JOB_BUFFER = 65546
-"""Bytes a pool thread's receive buffer holds.
-
-The submit channel's own socket buffer, plus the tag header. Matches what
-the executor's shim reads for the same channel, and must equal
-`handler.WS_CHANNEL_DATAGRAM_MAX`, which is what the SENDER checks against.
-
-It is not `max_message_size` that keeps an inbound WebSocket message under
-this, though the comment here used to say so: that is
-`max_request_body_size`, 4 MB by default, 64x this buffer. `recv` here
-passes no `MSG_TRUNC`, so a larger datagram would be copied up to the
-buffer with the remainder discarded and the short count indistinguishable
-from a short message -- a truncated message handed to the application as a
-complete one. The senders in `handler.mojo` refuse to send one instead."""
 
 comptime JOIN_TIMEOUT_NS = 5_000_000_000
 """How long a shutdown waits for handler threads after the loop has drained.
@@ -352,11 +337,11 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
 
     # One receive buffer for this thread's life. An ordinary job is 8 bytes,
     # but an inbound WebSocket message rides in the datagram, so the buffer
-    # is sized for the largest one a channel will carry — allocated once
-    # here rather than per job, which would put a WebSocket's cost on every
-    # request.
-    var buf = List[UInt8](capacity=WS_JOB_BUFFER)
-    for _ in range(WS_JOB_BUFFER):
+    # is sized for the largest one a channel will carry (`WS_DATAGRAM_MAX`,
+    # the bound its sender refuses by) — allocated once here rather than per
+    # job, which would put a WebSocket's cost on every request.
+    var buf = List[UInt8](capacity=WS_DATAGRAM_MAX)
+    for _ in range(WS_DATAGRAM_MAX):
         buf.append(0)
 
     # When this thread's current run of the GIL began (the hand-off slice).
