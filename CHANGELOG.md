@@ -27,6 +27,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
   - Any other login: state `PREFIX_SECURE` in each environment that starts
     it, the deploy's included. `apps/fragment_notes` reads
     `M0_NOTES_SECURE`, and `serve-fragment-notes` defaults it to `0`.
+### Removed
+
+- **Upstream `lightbug_http` code that nothing used**, about 870 lines of
+  the fork, found by the 2026-09-28 review. None of it was reachable from
+  `m0serve` or the application layer, but the `m0` wheel ships the fork's
+  source, so an application importing one of these names directly needs
+  its own copy: the UDP read path (`UDPConnection`, `Socket.receive_from`,
+  `UDPSocket`, `UDP4Socket`, `UDPAddr`); `Socket.get_socket_option` and
+  `get_timeout`; `htonl` and `ntohl`; twenty-two `SocketOption` members
+  nothing set, several with OpenBSD's numbers and so wrong on macOS and
+  Linux, and every `SocketType` but `SOCK_STREAM`; the
+  `HTTPResponse.from_bytes(bytes, connection)` overload;
+  `http_parse_headers`; `uri.Scheme`; the five demo services in
+  `lightbug_http.service` (`Printer`, `Welcome`, `ExampleRouter`,
+  `TechEmpowerRouter`, `Counter`), `Welcome` and `Counter` also exported
+  from `lightbug_http` itself; `span_is_ascii`; `RequestBodyState`; and
+  `ListenConfig`'s `keep_alive` argument, which was stored and never read.
+  NOTICE lists each.
 
 ### Fixed
 

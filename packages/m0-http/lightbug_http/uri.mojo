@@ -1,5 +1,3 @@
-from std.hashlib.hash import Hasher
-
 from lightbug_http.io.bytes import ByteReader, Bytes, ByteView
 from lightbug_http.strings import http, https, strHttp10, strHttp11
 
@@ -194,33 +192,6 @@ struct URIDelimiters:
 struct PortBounds:
     comptime NINE: UInt8 = UInt8(ord("9"))
     comptime ZERO: UInt8 = UInt8(ord("0"))
-
-
-@fieldwise_init
-struct Scheme(Equatable, Hashable, ImplicitlyCopyable, Writable):
-    var value: UInt8
-    comptime HTTP = Self(0)
-    comptime HTTPS = Self(1)
-
-    def __hash__[H: Hasher](self, mut hasher: H):
-        # `Hasher.update` takes a `Span[UInt8]`, so a lone scalar is hashed
-        # by the scalar's own `__hash__` rather than handed over directly.
-        self.value.__hash__(hasher)
-
-    def __eq__(self, other: Self) -> Bool:
-        return self.value == other.value
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self == Self.HTTP:
-            writer.write("HTTP")
-        else:
-            writer.write("HTTPS")
-
-    def __repr__(self) -> String:
-        return String("Scheme(", self, ")")
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 struct URIParseError(Writable):
