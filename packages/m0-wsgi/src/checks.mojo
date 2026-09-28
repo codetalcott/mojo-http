@@ -7,7 +7,9 @@ the first failure (`refuse_first`); `--doctor` renders all of them
 (`add_checks`) and `Report.exit_code` answers with the first failure's code.
 So the doctor cannot call a configuration healthy that the server refuses,
 or refuse it for another reason. Until this module the doctor mirrored
-`main`'s order by hand, in a second description of every rule.
+`main`'s order by hand, in a second description of every rule, and the two
+had drifted: 127 mounts under the zero-config pool raised inside the server
+after the bind (exit 1) while the doctor reported 0.
 
 Three points in `main` evaluate them, because three things happen between:
 
@@ -53,6 +55,7 @@ from .cli import (
     EXIT_CONFIG,
     EXIT_STARTUP,
     EXIT_USAGE,
+    MAX_MOUNTS,
     PROTOCOL_ASGI,
 )
 from .doctor import Report
@@ -120,7 +123,7 @@ struct ServeCheck(Copyable, Movable):
     """One rule the server refuses by, evaluated: an entry of the list."""
 
     var name: String
-    """The doctor's name for it (`app-dir`, `threads-vs-workers`, ...). Stable:
+    """The doctor's name for it (`app-dir`, `mount-lanes`, ...). Stable:
     smokes and scripts find a check in the report by it."""
     var ok: Bool
     var detail: String
@@ -349,8 +352,9 @@ def flag_checks(opts: ServeOptions, facts: CheckFacts) -> List[ServeCheck]:
         else:
             out.append(ServeCheck("pg-listen", facts.libpq_found))
 
-    # Mount sets some mount could not be served in (SPEC M20), all
-    # decidable from the flags: a compiled mount's kind is in its spec.
+    # Mount sets some mount could not be served in (SPEC M20), and one a
+    # pool has no room for. All decidable from the flags: a compiled
+    # mount's kind is in its spec.
     var mounts = len(opts.mount_prefixes)
     if mounts > 0:
         # m0serve exists to host Python; `WSGIHandler.build` would have no
@@ -390,6 +394,21 @@ def flag_checks(opts: ServeOptions, facts: CheckFacts) -> List[ServeCheck]:
                 + " explicit --blocking-threads is honoured as given, never raised."
                 + " Leave it unset and these mounts get the default pool",
                 "add --blocking-threads " + String(needed) + " or more", EXIT_USAGE)
+        # Every mount is a submit lane whenever the loop hands requests to
+        # threads, and a pool's wake block has room for `MAX_MOUNTS` lanes:
+        # the 127th raised inside the worker, AFTER the bind, while the
+        # doctor said 0. Refused whatever the pool is -- the loop could
+        # serve a larger all-WSGI set inline, but one ASGI mount among them
+        # puts the set on the pool, and which mounts are ASGI is known only
+        # after the import.
+        _rule(out, "mount-lanes", mounts <= MAX_MOUNTS,
+            String(mounts) + " of at most " + String(MAX_MOUNTS) + " mounts",
+            String(mounts) + " applications are mounted, and m0serve serves at most "
+            + String(MAX_MOUNTS) + ": each mount is a submit lane of its loop's"
+            + " handler pool, which has wake words for " + String(MAX_MOUNTS) + " lanes",
+            "mount at most " + String(MAX_MOUNTS)
+            + " applications per server, and serve the rest from another",
+            EXIT_CONFIG)
 
     # A forked worker cannot carry MAX's parallel runtime (SPEC E33). The
     # fact is the binary's, so the shipped m0serve -- which links no MAX --

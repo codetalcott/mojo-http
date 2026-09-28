@@ -3207,10 +3207,18 @@ t = json.load(open('doctor.json'))['topology']
 assert t['blocking_threads'] >= 1 and t['blocking_threads_source'] == 'default', t
 " || fail 'a Mojo mount under --workers did not get the default pool in the doctor'
 refuses 0  'asgi beside wsgi, prefork'          --mount /=portal.wsgi:app --mount /feed=feed.asgi $H --workers 2
+# More mounts than a pool has lanes (126, the offload wake block). The 127th
+# lane used to raise inside the server AFTER the bind -- exit 1 -- while the
+# doctor said 0; refused before the bind now, at 78, by both. Refused under
+# an explicit --blocking-threads 0 too, which served them inline.
+M127=$(python3 -c "print(' '.join('--mount /a%d=bareapp.wsgi' % i for i in range(127)))")
+refuses 78 'more mounts than a pool has lanes'  $M127 $W
+refuses 78 'too many mounts, explicit no pool'  $M127 $W --blocking-threads 0
 # Order, where it changes the code: each row trips two rules, and the list's
 # first failure decides for the server and the doctor alike, so a reorder
 # moves both together and only the named code sees it.
 refuses 1  'missing app dir, then a conflict'   bareapp.wsgi --app-dir /no/such/dir --workers 2 --threads 2
+refuses 2  'compiled mount unserved, then lanes' $M127 --mount /native=mojo $W --blocking-threads 0
 
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
@@ -3265,6 +3273,7 @@ python3 scripts/emit.py --covers E7 --task smoke-doctor
 python3 scripts/emit.py --covers F8 --task smoke-doctor
 python3 scripts/emit.py --covers M5 --task smoke-doctor
 python3 scripts/emit.py --covers M20 --task smoke-doctor
+python3 scripts/emit.py --covers M28 --task smoke-doctor
 """
 
 [tool.poe.tasks.smoke-serve]

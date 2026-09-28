@@ -24,7 +24,7 @@ from std.os import getenv
 from std.ffi import external_call
 from std.sys.info import CompilationTarget, num_performance_cores
 
-from lightbug_http.offload import match_path_prefix
+from lightbug_http.offload import match_path_prefix, _WAKE_MAX_LANES
 from lightbug_http.c.platform import SC_NPROCESSORS_ONLN
 from lightbug_http.server_config import ServerConfig
 from m0_http.config import AppConfig
@@ -67,6 +67,13 @@ comptime MAX_AUTO_BLOCKING_THREADS = 8
 parallelism is waiting, not computing, and each thread costs a live handler
 (interpreter state included); eight covers the common core counts without
 turning a 128-core box into 128 interpreters nobody asked for."""
+
+comptime MAX_MOUNTS = _WAKE_MAX_LANES
+"""The most `--mount`s one server takes: 126, the lanes a loop's
+`OffloadPool` has wake words for. Every mount is a submit lane whenever the
+loop hands requests to threads, and `add_lane` raises past the block, so a
+larger set is refused before the bind (`flag_checks`, `mount-lanes`) rather
+than raising inside the worker after it."""
 
 
 struct ServeOptions(Copyable, Movable):

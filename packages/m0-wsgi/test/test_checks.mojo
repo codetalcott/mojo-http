@@ -9,8 +9,9 @@ outcome), which is what lets each be supplied by hand; `smoke-doctor` holds
 the built binary to the same answers from the outside.
 
 The order tests are the point. A configuration that trips two rules exits
-with the FIRST one's code, which the two descriptions this replaced kept in
-agreement by hand.
+with the FIRST one's code, and the two lists this replaced had drifted on
+exactly that: the server raised on the 127th mount after the bind (exit 1)
+while the doctor said 0.
 """
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
@@ -39,6 +40,7 @@ from src.cli import (
     EXIT_CONFIG,
     EXIT_STARTUP,
     EXIT_USAGE,
+    MAX_MOUNTS,
 )
 from src.threaded import (
     FreeThreadingReport,
@@ -137,7 +139,7 @@ def test_the_flag_rules_are_in_the_order_the_server_applies_them() raises:
         _names(checks),
         "app-dir,static-dir,reload-dir,threads-vs-workers,protocol-vs-realtime,"
         + "pg-listen,mounts-without-python,hold-mount-vs-realtime,hold-mount-key,"
-        + "compiled-mount-vs-threads,compiled-mount-threads,"
+        + "compiled-mount-vs-threads,compiled-mount-threads,mount-lanes,"
         + "workers-vs-parallel-runtime",
     )
     assert_false(Bool(first_refusal(checks)), _failed(checks))
@@ -314,6 +316,32 @@ def test_the_mount_rules_refuse_with_2() raises:
     assert_false(Bool(first_refusal(flag_checks(_opts(prefork.copy()), _facts()))))
 
 
+def test_more_mounts_than_a_pool_has_lanes_are_refused_with_78() raises:
+    """The follow-up to B14: `add_lane` raises past the wake block, which
+    under the zero-config pool happened inside the worker AFTER the bind
+    while the doctor said 0. The cap is the pool's own constant.
+
+    covers: M28
+    """
+    assert_equal(MAX_MOUNTS, 126)
+    var at_cap = flag_checks(_mounts(MAX_MOUNTS), _facts())
+    assert_false(Bool(first_refusal(at_cap)), _failed(at_cap))
+    var over = flag_checks(_mounts(MAX_MOUNTS + 1), _facts())
+    var c = _first(over)
+    assert_equal(c.name, "mount-lanes")
+    assert_equal(c.code, EXIT_CONFIG)
+    assert_true(c.detail.find("127 applications are mounted") >= 0, c.detail)
+    assert_true(c.detail.find("at most 126") >= 0, c.detail)
+    assert_true(c.fix.find("at most 126") >= 0, c.fix)
+    # Whatever the pool: an explicit --blocking-threads 0 is refused too,
+    # because one ASGI mount among them puts the set on the pool, and which
+    # are ASGI is known only after the import.
+    var none = _mounts(MAX_MOUNTS + 1)
+    none.blocking_threads = 0
+    none.blocking_threads_set = True
+    assert_equal(_first(flag_checks(none, _facts())).name, "mount-lanes")
+
+
 def test_a_forked_worker_beside_the_parallel_runtime_is_refused_with_2() raises:
     var opts = _opts([String("app.wsgi"), String("--workers"), String("2")])
     var c = _first(flag_checks(opts, _facts(parallel_runtime=True)))
@@ -332,7 +360,7 @@ def test_a_forked_worker_beside_the_parallel_runtime_is_refused_with_2() raises:
 
 
 def test_the_first_failure_is_the_earliest_rule_not_the_largest_code() raises:
-    """Two pairs where the codes differ, so a reorder changes the exit."""
+    """Three pairs where the codes differ, so a reorder changes the exit."""
     # A missing directory (1) before a usage conflict (2).
     var c = _first(flag_checks(
         _opts([
@@ -343,6 +371,18 @@ def test_the_first_failure_is_the_earliest_rule_not_the_largest_code() raises:
     ))
     assert_equal(c.name, "app-dir")
     assert_equal(c.code, EXIT_STARTUP)
+    # A compiled mount with no thread (2) before the lane cap (78).
+    var over = _mounts(MAX_MOUNTS + 1)
+    over.mount_prefixes.append(String("/native"))
+    over.mount_modules.append(String("mojo"))
+    over.mount_attributes.append(String("application"))
+    over.mount_explicit.append(True)
+    over.mojo_mounts.append(len(over.mount_prefixes) - 1)
+    over.blocking_threads = 0
+    over.blocking_threads_set = True
+    var checks = flag_checks(over, _facts())
+    assert_equal(_failed(checks), "compiled-mount-threads,mount-lanes")
+    assert_equal(_first(checks).code, EXIT_USAGE)
     # An absent libpq (78) before the mount rules (2).
     var pg = _opts([
         String("--mount"), String("/native=mojo"),
@@ -350,7 +390,7 @@ def test_the_first_failure_is_the_earliest_rule_not_the_largest_code() raises:
     ])
     var facts = _facts()
     facts.libpq(String("no libpq"), String(""))
-    var checks = flag_checks(pg, facts)
+    checks = flag_checks(pg, facts)
     assert_equal(_failed(checks), "pg-listen-libpq,mounts-without-python")
     assert_equal(_first(checks).code, EXIT_CONFIG)
 

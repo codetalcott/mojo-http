@@ -77,7 +77,9 @@ loop reachable, and those sets have no inline loop to keep. The compiled half is
 `flag_checks` (`src/checks.mojo`), which runs BEFORE the bind and the fork
 and is the same list `--doctor` renders (in a worker it crash-looped to exit
 1 under `--workers N`); the WSGI half needs detection and exits 78 in the
-worker (`app_checks`, `wsgi_lanes_unserved`). The inline loop is not a lane: with no pool and
+worker (`app_checks`, `wsgi_lanes_unserved`). A set of more than 126
+mounts is refused before the bind too (`mount-lanes`, 78): a pool has wake
+words for 126 lanes, and `add_lane` raised on the 127th after the bind. The inline loop is not a lane: with no pool and
 no ASGI mount the loop's handler answers every WSGI mount itself, and a
 compiled mount there used to fall through to the root application. **Several ASGI mounts
 each get their own executor**: they share the ONE slot-addressed chunk
