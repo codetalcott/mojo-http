@@ -1168,7 +1168,7 @@ def test_supervised_is_workers_above_one_or_reload() raises:
 
 
 def test_pg_listen_forked_truth_table() raises:
-    """macOS, `--pg-listen`, and a worker forked without exec -- `--reload`
+    """On macOS, `--pg-listen` and a worker forked without exec -- `--reload`
     at one worker included, which `workers > 1` alone let through. Linux is
     never refused, so the platform is a parameter and both answers are
     pinned on either."""
