@@ -184,6 +184,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `smoke-large-request` counts the calls under `strace` on Linux: 4 over
   2000 keep-alive requests, where the old loop made 4004. macOS paid one
   `kevent` a request for the same reason, and no longer does.
+- **`--workers N` no longer lets a worker's load read one connection
+  high for good** (SPEC E16). Since 0.18.0 the worker that passes a
+  connection to a sibling counted it in flight only after sending it, so
+  a sibling that admitted it and finished its pass first found nothing to
+  retire, and the late count then stayed: that worker looked one
+  connection busier than it was to every accept after. The count now goes
+  up before the send, and back down if the send fails.
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
   and the login read the silence as off: a visit to the `http://` URL sent

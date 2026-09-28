@@ -33,10 +33,10 @@ shared page, so the per-pass stores contend with nothing:
   mid-pass for a few microseconds is fine to send to.
 - `active`: its open connections, published at the bottom of every pass.
 - `pending`: connections passed to it that it has not yet admitted —
-  incremented by the sender, decremented by the receiver at the end of
-  the pass that admitted them. Without it an acceptor draining a burst
-  sees a sibling's stale count of zero thirty-two times over and hands
-  it everything.
+  incremented by the sender before its `sendmsg` (and taken back if the
+  send fails), decremented by the receiver at the end of the pass that
+  admitted them. Without it an acceptor draining a burst sees a sibling's
+  stale count of zero thirty-two times over and hands it everything.
 
 What can never happen: a lost connection. A send that fails for any
 reason (the sibling's channel full, a sibling gone) keeps the connection
@@ -128,6 +128,28 @@ def _store(addr: Int, value: Int):
 
 def _fetch_add(addr: Int, delta: Int) -> Int:
     return Int(_atomic(addr)[].fetch_add(Int64(delta)))
+
+
+trait HandoffPost:
+    """How `AcceptShare.send_with` queues a connection on a sibling's
+    channel. The server's is `SendFdPost`; a test's own conformance takes
+    the receiver's turn inside the hand-off, which no interleaving of real
+    processes does on demand."""
+
+    def post(mut self, channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
+        """Queue `fd` with `payload` on the send end `channel`: True once
+        queued, False when nothing was."""
+        ...
+
+
+struct SendFdPost(HandoffPost):
+    """The hand-off itself: one `sendmsg` carrying the descriptor."""
+
+    def __init__(out self):
+        pass
+
+    def post(mut self, channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
+        return send_fd(channel, fd, payload)
 
 
 struct AcceptShare(Copyable, Movable):
@@ -266,9 +288,12 @@ struct AcceptShare(Copyable, Movable):
         if self.drained > 0:
             var before = _fetch_add(self._word(me, _WORD_PENDING), -self.drained)
             if before - self.drained < 0:
-                # A predecessor that died between receiving and retiring
-                # left the count high, never low; clamp rather than carry a
-                # negative load into every sibling's `pick`.
+                # A floor, and one that no longer fires: the sender raises
+                # the count before its datagram exists (`send_with`), and a
+                # predecessor that died between receiving and retiring left
+                # it high, never low. It fired when the sender raised the
+                # count AFTER its `sendmsg` -- and turned a retire that beat
+                # the increment into a count one high for good (R5).
                 _store(self._word(me, _WORD_PENDING), 0)
             self.drained = 0
         if not self.left:
@@ -331,6 +356,26 @@ struct AcceptShare(Copyable, Movable):
         `fd`. False leaves the caller owning the connection: the target's
         channel is full, or the send failed some other way.
         """
+        var post = SendFdPost()
+        return self.send_with(post, target, fd, host, port)
+
+    def send_with[P: HandoffPost](
+        mut self, mut post: P, target: Int, fd: Int, host: String, port: Int
+    ) -> Bool:
+        """`send`, with the `sendmsg` itself as a parameter: the protocol
+        around the hand-off, which a test drives by taking the receiver's
+        turn inside it.
+
+        The target's `pending` is raised BEFORE the datagram is queued, and
+        taken back if nothing was. Raised after, the receiver could admit
+        the connection and retire it at the end of its pass in the gap
+        between the `sendmsg` and the increment: the retire found nothing
+        to take, `pass_end` clamped the count at 0, and the late increment
+        left `pending` one high for good, so every `pick` from then on read
+        that worker as a connection busier than it was (review record R5).
+        Raised first, a datagram the receiver can see was counted before it
+        existed, and the count is never below what is in flight.
+        """
         if target < 0 or target >= self.workers() or target == self.worker:
             return False
         var payload = List[UInt8](capacity=2 + host.byte_length())
@@ -338,9 +383,11 @@ struct AcceptShare(Copyable, Movable):
         payload.append(UInt8(port & 0xFF))
         for b in host.as_bytes():
             payload.append(b)
-        if not send_fd(self.write_fds[target], fd, payload):
+        var pending = self._word(target, _WORD_PENDING)
+        _ = _fetch_add(pending, 1)
+        if not post.post(self.write_fds[target], fd, payload):
+            _ = _fetch_add(pending, -1)
             return False
-        _ = _fetch_add(self._word(target, _WORD_PENDING), 1)
         self.handoffs_out += 1
         return True
 

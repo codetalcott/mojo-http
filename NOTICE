@@ -829,6 +829,13 @@ lightbug_http
         ADD, refused EEXIST, and its MOD on every keep-alive request
         (review record R2).
 
+      - accept_share.mojo (2026-09-28): the sender raises a sibling's
+        `pending` before its `sendmsg` and takes it back if the send fails;
+        raised after, a sibling that admitted and retired the connection
+        first left the count one high for good (review record R5). The send
+        is a `HandoffPost` parameter of `send_with`, so a test can take the
+        receiver's turn inside the hand-off.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
