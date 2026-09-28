@@ -90,13 +90,6 @@ struct Result(Movable):
         self.rows = pq.ntuples(handle)
         self.cols = pq.nfields(handle)
 
-    def __init__(out self, *, deinit move: Self):
-        self._handle = move._handle
-        self._pq = move._pq
-        self.rows = move.rows
-        self.cols = move.cols
-        self.binary = move.binary
-
     def __deinit__(deinit self):
         if self._handle != 0:
             self._pq.clear(self._handle)

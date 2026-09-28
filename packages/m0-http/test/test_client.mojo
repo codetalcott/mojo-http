@@ -9,11 +9,12 @@ smoke-client`, which runs real requests against a real server and counts
 its accepts.
 """
 
-from std.testing import assert_equal, assert_true, TestSuite
+from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
 from lightbug_http.uri import URI
 
 from src.client import (
+    Client,
     classify_response,
     FRAME_COMPLETE,
     FRAME_ERROR,
@@ -252,3 +253,31 @@ def test_status_code_parses_and_rejects() raises:
     assert_equal(_status_code(Span(_bytes("HTTP/1.1 200 OK\r\n"))), 200)
     assert_equal(_status_code(Span(_bytes("garbage-no-space-then\r\n"))), -1)
     assert_equal(_status_code(Span(_bytes("HTTP/1.1 abc\r\n"))), -1)
+
+
+# --- Copy and move -----------------------------------------------------------
+
+
+def test_a_copy_starts_cold_and_a_move_keeps_everything() raises:
+    """A copy shares settings, never sockets, so `Client` writes its own copy
+    constructor and it starts cold. The move is the compiler's and carries
+    every field. The warm connection needs a socket this file cannot open,
+    so the fields that describe it stand in: a move that went through the
+    cold copy would zero all three."""
+    var c = Client(timeout_s=7, max_response_bytes=4096, keep_alive=False)
+    c.connections_opened = 3
+    c._idle_host = String("example.test")
+    c._idle_port = 8091
+    var copied = c.copy()
+    assert_equal(copied.timeout_s, 7)
+    assert_equal(copied.max_response_bytes, 4096)
+    assert_false(copied.keep_alive)
+    assert_equal(copied.connections_opened, 0)
+    assert_equal(copied._idle_host, "")
+    assert_equal(Int(copied._idle_port), 0)
+    var moved = c^
+    assert_equal(moved.timeout_s, 7)
+    assert_false(moved.keep_alive)
+    assert_equal(moved.connections_opened, 3)
+    assert_equal(moved._idle_host, "example.test")
+    assert_equal(Int(moved._idle_port), 8091)

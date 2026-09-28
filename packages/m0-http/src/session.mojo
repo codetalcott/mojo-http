@@ -93,9 +93,6 @@ struct SessionKeys(Movable, Sized):
     def __init__(out self):
         self.keys = List[GrantKey]()
 
-    def __init__(out self, *, deinit move: Self):
-        self.keys = move.keys^
-
     def __len__(self) -> Int:
         return len(self.keys)
 

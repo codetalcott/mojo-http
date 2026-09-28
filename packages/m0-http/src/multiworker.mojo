@@ -108,16 +108,6 @@ struct SharedAtomics(Copyable, Movable):
         self._count = count
         self.fd = from_fd
 
-    def __init__(out self, *, copy: Self):
-        self._base = copy._base
-        self._count = copy._count
-        self.fd = copy.fd
-
-    def __init__(out self, *, deinit move: Self):
-        self._base = move._base
-        self._count = move._count
-        self.fd = move.fd
-
     def count(self) -> Int:
         return self._count
 

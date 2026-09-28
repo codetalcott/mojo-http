@@ -29,12 +29,6 @@ struct LogEntry(Movable):
         self.kv_keys = List[String]()
         self.kv_values = List[String]()
 
-    def __init__(out self, *, deinit move: Self):
-        self.level = move.level^
-        self.msg = move.msg^
-        self.kv_keys = move.kv_keys^
-        self.kv_values = move.kv_values^
-
     def add(mut self, key: String, value: String):
         self.kv_keys.append(key)
         self.kv_values.append(value)

@@ -84,38 +84,6 @@ struct ServerConfig(Copyable, Movable):
         self.sse_heartbeat_ms = 15000
         self.app_tick_ms = 0
 
-    def __init__(out self, *, copy: Self):
-        self.max_connections = copy.max_connections
-        self.max_keepalive_requests = copy.max_keepalive_requests
-        self.socket_buffer_size = copy.socket_buffer_size
-        self.recv_buffer_max = copy.recv_buffer_max
-        self.max_request_body_size = copy.max_request_body_size
-        self.max_request_uri_length = copy.max_request_uri_length
-        self.max_total_header_size = copy.max_total_header_size
-        self.header_read_timeout = copy.header_read_timeout
-        self.body_read_timeout = copy.body_read_timeout
-        self.idle_timeout = copy.idle_timeout
-        self.access_log = copy.access_log
-        self.enable_metrics = copy.enable_metrics
-        self.sse_heartbeat_ms = copy.sse_heartbeat_ms
-        self.app_tick_ms = copy.app_tick_ms
-
-    def __init__(out self, *, deinit move: Self):
-        self.max_connections = move.max_connections
-        self.max_keepalive_requests = move.max_keepalive_requests
-        self.socket_buffer_size = move.socket_buffer_size
-        self.recv_buffer_max = move.recv_buffer_max
-        self.max_request_body_size = move.max_request_body_size
-        self.max_request_uri_length = move.max_request_uri_length
-        self.max_total_header_size = move.max_total_header_size
-        self.header_read_timeout = move.header_read_timeout
-        self.body_read_timeout = move.body_read_timeout
-        self.idle_timeout = move.idle_timeout
-        self.access_log = move.access_log
-        self.enable_metrics = move.enable_metrics
-        self.sse_heartbeat_ms = move.sse_heartbeat_ms
-        self.app_tick_ms = move.app_tick_ms
-
     def recv_buffer_limit(self) -> Int:
         """The most bytes one connection may hold buffered and unprocessed.
 

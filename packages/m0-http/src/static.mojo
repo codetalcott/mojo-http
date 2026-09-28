@@ -128,16 +128,6 @@ struct StaticFiles(Copyable, Movable):
         self.prefix = prefix^
         self.cache_control = cache_control^
 
-    def __init__(out self, *, copy: Self):
-        self.root = copy.root
-        self.prefix = copy.prefix
-        self.cache_control = copy.cache_control
-
-    def __init__(out self, *, deinit move: Self):
-        self.root = move.root^
-        self.prefix = move.prefix^
-        self.cache_control = move.cache_control^
-
     def _with_cache_control(self, var resp: HTTPResponse) -> HTTPResponse:
         if self.cache_control.byte_length() > 0:
             resp.headers[HeaderKey.CACHE_CONTROL] = self.cache_control

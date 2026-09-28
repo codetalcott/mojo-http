@@ -132,11 +132,6 @@ struct ThreadSet(Movable):
             _slot(self._blocks + (i * BLK_INTS + BLK_STATUS) * 8)[] = STATUS_NEVER_RAN
             _slot(self._blocks + (i * BLK_INTS + BLK_INDEX) * 8)[] = i
 
-    def __init__(out self, *, deinit move: Self):
-        self.count = move.count
-        self._blocks = move._blocks
-        self._tids = move._tids
-
     def block(self, i: Int) -> ThreadBlock:
         return ThreadBlock(self._blocks + i * BLK_INTS * 8)
 
@@ -257,10 +252,6 @@ struct ShutdownFanout(Movable):
             var pair = create_shutdown_pipe()
             self._read_fds.append(pair[0])
             self._write_fds.append(pair[1].fd)
-
-    def __init__(out self, *, deinit move: Self):
-        self._read_fds = move._read_fds^
-        self._write_fds = move._write_fds^
 
     def count(self) -> Int:
         return len(self._read_fds)
