@@ -55,14 +55,12 @@ jobs:
       # smoke job because it needs nothing compiled and fails in seconds.
       - name: Check machine-sourced doc facts
         run: uv run poe check-docs
-      # Known issues must declare what retires them -- one outlived its fix
-      # by a release because nothing could notice. The milestone REPORT
-      # prints beside it, so "what is left for 1.0" is answered by CI on
-      # every pull request rather than by whoever remembers.
-      - name: Milestone rot gates, and the report
-        run: |
-          uv run poe check-milestones
-          uv run poe milestones
+      # "What is left for 1.0", answered by CI on every pull request rather
+      # than by whoever remembers. The milestone rot gates (known issues
+      # declare what retires them) run in the docs gate the step above runs,
+      # which docs.yml's required check runs on doc-only pull requests too.
+      - name: The milestone report
+        run: uv run poe milestones
       # m0-sqlite opens libsqlite3 at run time (SPEC O17), so nothing links
       # it; the development package is for `verify-vtab-layout`, which
       # compiles a C file against sqlite3.h. The library itself is on every
