@@ -804,7 +804,7 @@ def test_a_null_statement_handle_is_refused() raises:
     but the constructor is public and takes a bare Int.
     """
     with assert_raises():
-        var _s = Statement(0, open_library().stmt_lib())
+        var _s = Statement(0, open_library().fns)
 
 
 def test_query_scalar_reads_one_cell() raises:
