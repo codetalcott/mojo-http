@@ -909,20 +909,55 @@ def _first_section(text):
     return m.group(0) if m else None
 
 
-def _misplace_unit_covers(idx):
-    """Move one unit declaration to a function nothing cites.
+def _every_pr_citations(sheet):
+    """(unit, steps) for the sheet's `verified (every PR)` rows: `unit` holds
+    (file, fn, id) for each row citing a test function, `steps` the ids of
+    the rows citing a test.yml step, in sheet order."""
+    unit, steps = set(), []
+    for r in parse(sheet)[0]:
+        m = _EVIDENCE.match(r["evidence"]) if r["status"] == "verified" else None
+        if not m or m.group("cadence") != "every PR":
+            continue
+        u = _UNIT.match(m.group("gate"))
+        if u:
+            unit.add((u.group("file"), u.group("fn"), r["id"]))
+        else:
+            steps.append(r["id"])
+    return unit, steps
+
+
+def _misplace_unit_covers(idx, sheet):
+    """Move one CITED unit declaration to a function nothing cites.
 
     The id stays declared (so the no-gate-declares arm stays quiet) but no
     longer at the cited site — RULE 11's disagreement arm is the only rule
-    that can notice.
+    that can notice. Which declaration moves is the whole of it. This used
+    to take the first one in the first file that had any, and one there can
+    be extra coverage of a row that cites a STEP (#426 put `covers: E16` in
+    test_accept_share.mojo, which sorts first): moved, it disagrees with
+    nothing, so the arm rightly stayed quiet and the sabotage reported
+    MISSED for a working rule. So the one moved is one a unit-cited row
+    names, and a declaration of the other kind is planted first, where the
+    old choice landed -- the first file's first function -- so a choice that
+    regresses is MISSED here, not on the day the tree next grows such a line.
     """
+    unit, steps = _every_pr_citations(sheet)
+    if not idx or not steps:
+        return None
+    first = sorted(idx)[0]
+    idx = {**idx, first: {**idx[first], "covers": {
+        **idx[first].get("covers", {}),
+        "test_0_extra_coverage_planted_by_sabotage": {steps[0]}}}}
     for f, info in sorted(idx.items()):
-        cov = info.get("covers") or {}
-        if cov:
-            fn, ids = sorted(cov.items())[0]
-            moved = {k: v for k, v in cov.items() if k != fn}
-            moved[fn + "_moved_by_sabotage"] = ids
-            return {**idx, f: {**info, "covers": moved}}
+        for fn, ids in sorted(info.get("covers", {}).items()):
+            for rid in sorted(ids):
+                if (f, fn, rid) not in unit:
+                    continue
+                moved = {k: v for k, v in info["covers"].items() if k != fn}
+                if ids - {rid}:
+                    moved[fn] = ids - {rid}
+                moved[fn + "_moved_by_sabotage"] = {rid}
+                return {**idx, f: {**info, "covers": moved}}
     return None
 
 
@@ -1036,7 +1071,9 @@ SABOTAGES = [
          **idx, f: {**idx[f], "covers": {
              **idx[f].get("covers", {}), "test_injected_by_sabotage": {"Z9"}}}
      })(), "no row carries that id"),
-    ("a declaration sits in a different test than the row cites", "tests",
+    # Edits the test index; reads the sheet to learn which declarations a
+    # row cites (a tuple key: the patch edits the first, reads the rest).
+    ("a declaration sits in a different test than the row cites", ("tests", "sheet"),
      _misplace_unit_covers, "the citation and the declaration disagree"),
     ("every unit gate's declarations are deleted", "tests",
      lambda idx: {f: {**info, "covers": {}} for f, info in idx.items()},
@@ -1061,10 +1098,11 @@ def run_sabotages():
     ok = True
     for label, key, patch, must in SABOTAGES:
         src = read_sources()
+        key, *reads = key if isinstance(key, tuple) else (key,)
         if patch is None:
             src[key] = None
         elif callable(patch):
-            edited = patch(src[key])
+            edited = patch(src[key], *(src[r] for r in reads))
             if edited is None or edited == src[key]:
                 print(f"  NOT APPLICABLE  {label}\n     nothing in {key} matched the shape to sabotage")
                 ok = False
