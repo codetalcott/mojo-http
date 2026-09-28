@@ -37,6 +37,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   than text, give it `literal()`, not `text()`: a binary value is read in
   that type's binary form.
 
+- **`Result.raw` keeps its result alive while its bytes are read** (SPEC
+  O16). The span it returned had an untracked origin, so a result whose
+  last mention was the `raw` call was cleared on that line, and the span
+  read freed memory: measured as the next query's value. The span now
+  borrows the result, and the compiler keeps the result until the span's
+  last use. No caller changes.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

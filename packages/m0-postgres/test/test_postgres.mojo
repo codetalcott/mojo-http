@@ -193,6 +193,31 @@ def test_a_result_outlives_its_connection() raises:
     assert_equal(len(returned.fetch_texts(0)), 1)
 
 
+def test_a_raw_cell_keeps_its_result_alive() raises:
+    """The bytes `raw` hands back are read while their result lives.
+
+    They are the `PGresult`'s own, and `PQclear` frees them. With the span's
+    origin untracked, a result whose last mention was the `raw` call was
+    cleared on that line, and the span read what the next query left in
+    the freed memory: its value, `b` for `a`. The span borrows the result
+    now, so the compiler keeps the result until the span's last use. The
+    results held below are the same shape as the one read, so a freed block
+    is taken back and written over rather than left intact by luck.
+
+    covers: O16
+    """
+    var db = _db()
+    var rows = db.query("SELECT repeat('a', 64)", Params())
+    var cell = rows.raw(0, 0)
+    # `rows` is not mentioned again.
+    var others = List[Result]()
+    for _ in range(32):
+        others.append(db.query("SELECT repeat('b', 64)", Params()))
+    assert_equal(String(unsafe_from_utf8=cell), String("a") * 64)
+    assert_equal(others[31].text(0, 0), String("b") * 64)
+    _drop(db)
+
+
 def test_a_parameter_is_bound_not_interpolated() raises:
     """The property the whole `Params` type exists for.
 
