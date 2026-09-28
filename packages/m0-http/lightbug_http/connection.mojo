@@ -5,6 +5,8 @@ from lightbug_http.address import HostPort, NetworkType, ParseError, TCPAddr, UD
 from lightbug_http.c.address import AddressFamily
 from lightbug_http.c.socket_error import (
     AcceptError,
+    BindEADDRINUSEError,
+    BindError,
     GetpeernameError,
     RecvError,
     RecvfromError,
@@ -150,6 +152,27 @@ struct ListenerError(Movable, Writable):
     def __str__(self) -> String:
         return String(self)
 
+    def address_in_use(self) -> Bool:
+        """Whether this is a bind refused with EADDRINUSE, its retries spent
+        -- the one failure `ListenConfig.listen` waits out, and the only one
+        a caller may report as "address already in use"."""
+        return self.value.isa[SocketBindError]() and bind_in_use(
+            self.value[SocketBindError]
+        )
+
+
+def bind_in_use(err: SocketBindError) -> Bool:
+    """Whether a bind failed because the address is taken (EADDRINUSE).
+
+    The one bind failure that waiting can cure: a previous server still
+    draining, or another one on the port. Every other errno -- an address
+    that is not on this machine (EADDRNOTAVAIL), a privileged port
+    (EACCES) -- fails the same way a second later.
+    """
+    return err.value.isa[BindError]() and err.value[BindError].value.isa[
+        BindEADDRINUSEError
+    ]()
+
 
 struct NoTLSListener[network: NetworkType = NetworkType.tcp4](Movable):
     """A TCP listener that listens for incoming connections and can accept them."""
@@ -204,11 +227,13 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp4](Movable):
 struct ListenConfig:
     var _keep_alive: Duration
     var max_bind_retries: Int
-    """Maximum number of bind() attempts before raising ListenFailedError (Phase 4c).
+    """Maximum number of bind() attempts on an address IN USE before its
+    EADDRINUSE is raised (Phase 4c).
 
     Each retry sleeps 1 second.  Default 30 gives ~30 s total wait, covering
     the typical TIME_WAIT drain after a server restart.  Set to 0 for
-    infinite retries (original behaviour).
+    infinite retries (original behaviour). Any other bind failure is raised
+    at the first attempt: waiting cures none of them (`bind_in_use`).
     """
     var reuse_port: Bool
     """Set `SO_REUSEPORT` on the listener. Off by default, and opt-in on
@@ -293,14 +318,21 @@ struct ListenConfig:
                 socket.bind(addr.ip, addr.port)
                 bind_success = True
             except bind_err:
+                # Only an address in use is worth waiting out. Every other
+                # failure is raised at once, in its own words: retried, an
+                # address not on this machine spent the whole budget and was
+                # then reported as a failure to listen -- which m0serve
+                # printed as "address already in use".
+                if not bind_in_use(bind_err):
+                    raise bind_err^
                 bind_attempts += 1
                 if self.max_bind_retries > 0 and bind_attempts >= self.max_bind_retries:
-                    raise ListenFailedError()
+                    raise bind_err^
                 if not bind_fail_logged:
                     print(
                         "Bind failed on " + String(addr.ip) + ":"
                         + String(addr.port)
-                        + " (address in use? another server on the port,"
+                        + " (address in use: another server on the port,"
                         + " or a previous one still draining)"
                     )
                     var limit = String("unlimited") if self.max_bind_retries == 0 else String(self.max_bind_retries)

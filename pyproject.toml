@@ -3387,6 +3387,21 @@ kill -TERM $pid; wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "first server after the busy-port probe: exit $rc, want 0"
 rm -f "$second"
 
+# Only an address IN USE is waited out. Any other bind failure is refused at
+# once, in its own words: an address that is not on this machine (192.0.2.1,
+# the TEST-NET-1 documentation range) was retried for the busy port's five
+# seconds and then reported as "address already in use". Both the retry
+# notice and the time are asserted, so a slow runner cannot pass a retrying
+# build.
+t0=$(date +%s)
+"$srv" $SPEC --host 192.0.2.1 --port 8116 > serve.log 2>&1; rc=$?
+took=$(( $(date +%s) - t0 ))
+[ "$rc" = "1" ] || fail "an address not on this machine: exit $rc, want 1"
+grep -q 'address already in use' serve.log && fail 'an address not on this machine was reported as in use'
+grep -q 'cannot listen on 192.0.2.1:8116' serve.log || fail 'the listen failure does not name the address'
+grep -q 'Retrying' serve.log && fail 'a bind failure that waiting cannot cure was retried'
+[ "$took" -lt 3 ] || fail "an address not on this machine took ${took}s to be refused: it was retried"
+
 # A static mount is answered in Mojo with the freshness policy given; a path
 # outside it still reaches the app; --max-body and --metrics reach the server.
 "$srv" $SPEC --port 8098 --static /assets/=apps/django_realtime/static \

@@ -47,6 +47,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   before the 500. `smoke-wsgi-stream` gates both, counting `close()`
   calls. Found in review.
 
+- **m0serve reports a listen failure in its own words, and waits out only
+  an address in use.** Every failure to bind was retried for five seconds
+  and then reported as `address already in use`: a `--host` that is not an
+  address of this machine said the port was taken. Now only an address in
+  use is retried — a restart racing the previous server's drain still
+  succeeds — and anything else exits 1 at once, naming the address and the
+  system's reason (`cannot listen on 192.0.2.1:8080: ... Can't assign
+  requested address`). The Mojo host and every other `ListenConfig` caller
+  get the same rule. `smoke-serve` gates it with an address that is not on
+  the machine. Found in review.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

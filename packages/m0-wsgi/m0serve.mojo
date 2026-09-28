@@ -472,38 +472,48 @@ def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4
 def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
     """Bind, or say why not and exit `EXIT_STARTUP`.
 
-    Five attempts a second apart: a restart racing the previous process's
-    5 s drain still succeeds, and a port still busy after that belongs to
-    another server — which is the message a developer needs, not the
-    listener's retry chatter. `SO_REUSEPORT` is off (the `ListenConfig`
-    default since 0.14.0), so a second `m0serve` on a busy port fails here
-    instead of binding beside the first and taking a share of its
-    connections. `quiet=True`: the startup line printed after the
-    application loads is the ready signal, so "ready" means ready — the
+    Five attempts a second apart on an address IN USE: a restart racing the
+    previous process's 5 s drain still succeeds, and a port still busy
+    after that belongs to another server — which is the message a
+    developer needs, not the listener's retry chatter. Every other failure
+    — an address not on this machine, a privileged port — is not retried
+    and is reported in its own words: it used to wait out the same five
+    seconds and then read "address already in use". `SO_REUSEPORT` is off
+    (the `ListenConfig` default since 0.14.0), so a second `m0serve` on a
+    busy port fails here instead of binding beside the first and taking a
+    share of its connections. `quiet=True`: the startup line printed after
+    the application loads is the ready signal, so "ready" means ready — the
     banner used to print before the load, and a failed import read as
-    "Ready" followed by exit 1. `smoke-serve` pins both.
+    "Ready" followed by exit 1. `smoke-serve` pins all three.
     """
     if spawned_worker_index() >= 0:
         return _adopt_listener(opts)
+    var listener: NoTLSListener[NetworkType.tcp4]
     try:
-        var listener = ListenConfig(max_bind_retries=5, quiet=True).listen(
+        listener = ListenConfig(max_bind_retries=5, quiet=True).listen(
             opts.address()
         )
-        # Where a spawned worker finds it. Set unconditionally: it is one
-        # variable, and the fd number is the same whether or not anyone
-        # execs — a forked worker simply keeps using the listener itself.
-        # Close-on-exec like every socket here (SPEC G16); the spawn's own
-        # exec is the one that keeps it (`spawn_inherited_env`).
-        _ = setenv("M0_LISTEN_FD", String(listener.socket.fd.value), True)
-        return listener^
-    except:
+    except e:
+        if e.address_in_use():
+            _fail(
+                "address already in use: " + opts.address()
+                + " -- is another server running? (pick another --port, or"
+                + " stop it)",
+                EXIT_STARTUP,
+            )
         _fail(
-            "address already in use: " + opts.address()
-            + " -- is another server running? (pick another --port, or"
-            + " stop it)",
+            "cannot listen on " + opts.address() + ": " + String(e)
+            + " (check --host and --port)",
             EXIT_STARTUP,
         )
         raise Error("unreachable: _fail exits the process")
+    # Where a spawned worker finds it. Set unconditionally: it is one
+    # variable, and the fd number is the same whether or not anyone execs —
+    # a forked worker simply keeps using the listener itself. Close-on-exec
+    # like every socket here (SPEC G16); the spawn's own exec is the one
+    # that keeps it (`spawn_inherited_env`).
+    _ = setenv("M0_LISTEN_FD", String(listener.socket.fd.value), True)
+    return listener^
 
 
 def _resolve_spec(mut opts: ServeOptions) raises -> Bool:

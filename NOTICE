@@ -714,6 +714,15 @@ lightbug_http
         place, and two threads alternated while two starved
         (docs/notes/a-slice-keeps-the-gil.md).
 
+      - connection.mojo (2026-09-28): `ListenConfig.listen` retries a bind
+        only on EADDRINUSE, and raises that bind error itself once its
+        retries are spent; every other bind failure -- an address not on
+        this machine, a privileged port -- is raised at the first attempt,
+        in its own words. It used to retry every failure for the whole
+        budget and then raise `ListenFailedError`, which m0serve reported
+        as an address in use. `bind_in_use` and
+        `ListenerError.address_in_use` say which it was.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
