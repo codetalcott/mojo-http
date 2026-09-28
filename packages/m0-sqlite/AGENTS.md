@@ -7,7 +7,8 @@ and `packages/m0-postgres/AGENTS.md` holds the three loader rules it shares.
 `m0-sqlite` imports nothing else here and, since 2026-09-25, links
 **nothing**: libsqlite3 is opened with `dlopen` at run time (`src/lib.mojo`,
 in `m0-postgres`'s shape and under its three rules — handle and pointers in
-one struct, every entry point behind a method, the image pinned
+one struct, every entry point behind a method (all in one table,
+`SqliteFns`, which a `Statement` copies whole), the image pinned
 `RTLD_NODELETE` so a `Statement`'s copy of the table outlives the
 `Connection` that loaded it), from `M0_LIBSQLITE3` or a search path, and
 refused below 3.20.0, built without threads, or missing a symbol. So every

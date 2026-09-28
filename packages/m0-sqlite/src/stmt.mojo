@@ -26,22 +26,22 @@ from .ffi import (
     describe,
     check_c_int_length,
 )
-from .lib import StmtLib, as_cstr, str_cstr
+from .lib import SqliteFns, as_cstr, str_cstr
 
 
 struct Statement(Movable):
     """A compiled SQL statement. Finalized automatically when it goes out of scope.
 
-    Carries its own copy of the entry points it calls (`StmtLib`), cut from
-    the connection's table at `prepare`: the library is pinned for the life
+    Carries its own copy of the entry points (`SqliteFns`), the connection's
+    table copied whole at `prepare`: the library is pinned for the life
     of the process, so the statement keeps working after the connection —
     and the handle that loaded the library — are gone (O2).
     """
 
     var _handle: Int
-    var _lib: StmtLib
+    var _lib: SqliteFns
 
-    def __init__(out self, handle: Int, lib: StmtLib) raises:
+    def __init__(out self, handle: Int, lib: SqliteFns) raises:
         """Take ownership of a `sqlite3_stmt*` carried as an opaque address.
 
         Refuses a NULL handle. `Connection.prepare` already rejects the case

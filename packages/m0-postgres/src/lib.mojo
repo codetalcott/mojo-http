@@ -28,8 +28,9 @@ naming the paths tried, rather than a link failure or a load-time abort.
     `nm` showed present, and on a branch ending in `return` the first call
     after the handle's last use took `EXC_BAD_ACCESS`. This is the
     mechanism `OwnedDLHandle.get_function`'s own docstring warns about.
-    `PgLib` therefore holds `_lib` as its first field and every caller
-    keeps the `PgLib` alive for as long as it calls through it.
+    `PgLib` therefore holds `_lib` as its first field, beside the table of
+    pointers loaded from it (`PgFns`), and every caller keeps the `PgLib`
+    alive for as long as it calls through it.
 
   - **Every `const char *` parameter is typed as a pointer, never as `Int`.**
     An `Int(buf.unsafe_ptr())` argument erases the origin, so the `List` it
@@ -48,9 +49,9 @@ naming the paths tried, rather than a link failure or a load-time abort.
     `var rows = db.query(...)` with no later mention of `db`, then
     `rows.text(0, 0)`, was a segmentation fault three runs out of three,
     and the same program with a second `PgLib` held alive for the run read
-    the row correctly. The pin is what lets the entry points a `Result`
-    needs be COPIED out (`ResultLib`) rather than reached through the
-    connection's address, which a move or a destruction leaves dangling.
+    the row correctly. The pin is what lets a `Result` hold a COPY of the
+    table (`PgFns`, whole) rather than reach it through the connection's
+    address, which a move or a destruction leaves dangling.
     The cost is one library's pages kept mapped by a process that already
     chose to load it; nothing here ever reloads it, so nothing is lost.
 
@@ -374,12 +375,14 @@ def default_search_path() -> List[String]:
 
 
 struct PgLib(Movable):
-    """An open libpq and every entry point this package uses.
+    """An open libpq: the handle, which file it is, and every entry point.
 
     One struct on purpose: see the module docstring's first rule. The handle
-    must outlive every call made through the pointers beside it, and the
-    only way to say that in Mojo 1.0 — where a loaded pointer carries no
-    borrow — is to give them the same lifetime.
+    must outlive every call made through the pointers loaded from it, and
+    the only way to say that in Mojo 1.0 — where a loaded pointer carries no
+    borrow — is to give them the same lifetime: the table (`fns`) lives and
+    moves with the handle. A `Connection` holds one and calls through
+    `fns`; a `Result` holds a copy of `fns`, which the pin makes sound.
 
     Built once per thread and kept for that thread's life. Opening costs a
     `dlopen` and ~35 `dlsym`s; a call through a stored pointer costs a
@@ -392,6 +395,108 @@ struct PgLib(Movable):
 
     var path: String
     """Which file was opened — reported by `--doctor`, never guessed at."""
+
+    var fns: PgFns
+    """Every entry point, loaded from `_lib` and called through `PgFns`'s
+    wrappers (the second rule)."""
+
+    def __init__(out self, var handle: OwnedDLHandle, var path: String) raises:
+        """Resolve every entry point from an already-open handle.
+
+        Private in effect: `open` is the constructor callers use. The table
+        checks every symbol before loading it (`PgFns.__init__`); `path` and
+        `_lib` are assigned after it, so a missing symbol leaves no table to
+        half-own.
+        """
+        # First, so no path out of this constructor leaves a table whose
+        # library can be unmapped under it (the third rule).
+        pin_library(path)
+        self.fns = PgFns(handle, path)
+        self.path = path^
+        # Last, so the handle's own last mention is after every load above.
+        self._lib = handle^
+
+    @staticmethod
+    def open(path: String = "") raises -> Self:
+        """Open libpq: `path`, else `M0_LIBPQ`, else the search path.
+
+        The version floor and libpq's own thread-safety flag are checked
+        here, where both are one call and the answer can name the library
+        that failed. A libpq built without thread safety would be a data
+        race per pool thread rather than an error, so it is refused.
+        """
+        var tried = List[String]()
+        var candidates = List[String]()
+        if path:
+            candidates.append(path)
+        else:
+            var from_env = getenv("M0_LIBPQ", "")
+            if from_env:
+                candidates.append(from_env)
+            else:
+                candidates = default_search_path()
+
+        for candidate in candidates:
+            var handle: OwnedDLHandle
+            try:
+                handle = OwnedDLHandle(candidate)
+            except:
+                tried.append(candidate)
+                continue
+            var lib = Self(handle^, candidate)
+            var have = lib.libversion()
+            if have < MIN_LIBPQ_VERSION:
+                raise Error(
+                    "the libpq at " + candidate + " is version "
+                    + String(have) + ", older than the "
+                    + String(MIN_LIBPQ_VERSION) + " this package requires"
+                )
+            if lib.fns.isthreadsafe() == 0:
+                raise Error(
+                    "the libpq at " + candidate + " was built without thread"
+                    + " safety, and this package opens one connection per"
+                    + " thread"
+                )
+            return lib^
+
+        var names = String("")
+        for i in range(len(tried)):
+            names += ("\n  " if i else "") + tried[i]
+        raise Error(
+            "libpq could not be opened. Set M0_LIBPQ to the library file, or"
+            + " install one where it can be found. Tried:\n  " + names
+        )
+
+    def libversion(self) -> Int:
+        """`PQlibVersion`, asked of the library itself, for a caller that
+        holds no connection — `m0serve`'s `--pg-listen` checks among them."""
+        return self.fns.libversion()
+
+    def version_text(self) -> String:
+        """`libpq`'s version as `major.minor`, from its integer form."""
+        var v = self.libversion()
+        return String(v // 10000) + "." + String(v % 10000)
+
+
+struct PgFns(ImplicitlyCopyable, Movable):
+    """Every libpq entry point this package calls, and the wrapper for each.
+
+    The one place an entry point is added: its declaration above, then a
+    field, a load and a wrapper here. `PgLib` holds this table beside the
+    handle it was loaded from (the first rule), and a `Result` holds a COPY
+    of it, whole. A `Result` used to reach its entry points through the
+    address of its connection's `PgLib`, which dangles the moment that
+    connection is moved or destroyed — and Mojo destroys a connection at its
+    last use, so `var rows = db.query(...)` left `rows` reading a dead
+    struct. A copy of the pointers needs nothing of the connection; the pin
+    (the module docstring's third rule) is what keeps the code they point
+    at mapped.
+
+    Implicitly copyable, unlike `PgLib`, because it owns nothing: no handle,
+    no buffer, only addresses into a library that is never unloaded. Its
+    copy and its move are the compiler's; a struct of `thin` pointers needs
+    none written.
+    """
 
     var _libversion: _PQlibVersion.type
     var _isthreadsafe: _PQisthreadsafe.type
@@ -435,20 +540,18 @@ struct PgLib(Movable):
     below, which is where every call in this package goes.
     """
 
-    def __init__(out self, var handle: OwnedDLHandle, var path: String) raises:
-        """Resolve every entry point from an already-open handle.
+    def __init__(out self, ref handle: OwnedDLHandle, path: String) raises:
+        """Resolve every entry point from `handle`, checking each first.
 
-        Private in effect: `open` is the constructor callers use. Every
-        entry point goes through `_checked`, which asks `check_symbol`
-        before loading, because `load` aborts the process on a missing one
-        — a libpq too old, or a library that is not libpq at all, must be
-        an error naming the symbol rather than a stack trace with no cause
-        in it. One call per field, taking the symbol from the declaration
-        it loads, so an entry point cannot be loaded without being checked.
+        Built by `PgLib.__init__`, after the pin and while it still holds
+        the handle. Every entry point goes through `_checked`, which asks
+        `check_symbol` before loading, because `load` aborts the process on
+        a missing one — a libpq too old, or a library that is not libpq at
+        all, must be an error naming the symbol rather than a stack trace
+        with no cause in it. One call per field, taking the symbol from the
+        declaration it loads, so an entry point cannot be loaded without
+        being checked.
         """
-        # First, so no path out of this constructor leaves a table whose
-        # library can be unmapped under it (the third rule).
-        pin_library(path)
         self._libversion = _checked[
             _PQlibVersion.name, _PQlibVersion.type
         ](handle, path)
@@ -529,48 +632,9 @@ struct PgLib(Movable):
         self._escape_identifier = _checked[
             _PQescapeIdentifier.name, _PQescapeIdentifier.type
         ](handle, path)
-        self.path = path^
-        # Last, so the handle's own last mention is after every load above.
-        self._lib = handle^
-
-    def __init__(out self, *, deinit move: Self):
-        self._lib = move._lib^
-        self.path = move.path^
-        self._libversion = move._libversion
-        self._isthreadsafe = move._isthreadsafe
-        self._connectdb = move._connectdb
-        self._finish = move._finish
-        self._reset = move._reset
-        self._status = move._status
-        self._transaction_status = move._transaction_status
-        self._errmsg = move._errmsg
-        self._server_version = move._server_version
-        self._backend_pid = move._backend_pid
-        self._socket = move._socket
-        self._exec = move._exec
-        self._exec_params = move._exec_params
-        self._prepare = move._prepare
-        self._exec_prepared = move._exec_prepared
-        self._result_status = move._result_status
-        self._result_errmsg = move._result_errmsg
-        self._result_errfield = move._result_errfield
-        self._ntuples = move._ntuples
-        self._nfields = move._nfields
-        self._fname = move._fname
-        self._ftype = move._ftype
-        self._fformat = move._fformat
-        self._getvalue = move._getvalue
-        self._getlength = move._getlength
-        self._getisnull = move._getisnull
-        self._cmd_tuples = move._cmd_tuples
-        self._clear = move._clear
-        self._consume_input = move._consume_input
-        self._notifies = move._notifies
-        self._freemem = move._freemem
-        self._escape_identifier = move._escape_identifier
 
     def libversion(self) -> Int:
-        """`PQlibversion`."""
+        """`PQlibVersion`."""
         return Int(self._libversion())
 
     def isthreadsafe(self) -> Int:
@@ -594,19 +658,19 @@ struct PgLib(Movable):
         return Int(self._status(conn))
 
     def transaction_status(self, conn: Int) -> Int:
-        """`PQtransaction_status`."""
+        """`PQtransactionStatus`."""
         return Int(self._transaction_status(conn))
 
     def errmsg(self, conn: Int) -> Int:
-        """`PQerrmsg`."""
+        """`PQerrorMessage`."""
         return Int(self._errmsg(conn))
 
     def server_version(self, conn: Int) -> Int:
-        """`PQserver_version`."""
+        """`PQserverVersion`."""
         return Int(self._server_version(conn))
 
     def backend_pid(self, conn: Int) -> Int:
-        """`PQbackend_pid`."""
+        """`PQbackendPID`."""
         return Int(self._backend_pid(conn))
 
     def socket(self, conn: Int) -> Int:
@@ -618,7 +682,7 @@ struct PgLib(Movable):
         return Int(self._exec(conn, query))
 
     def exec_params(self, conn: Int, command: CStr, n: Int, types: Int, values: Int, lengths: Int, formats: Int, result_format: Int) -> Int:
-        """`PQexec_params`."""
+        """`PQexecParams`."""
         return Int(self._exec_params(conn, command, c_int(n), types, values, lengths, formats, c_int(result_format)))
 
     def prepare(self, conn: Int, name: CStr, query: CStr, n: Int, types: Int) -> Int:
@@ -626,19 +690,19 @@ struct PgLib(Movable):
         return Int(self._prepare(conn, name, query, c_int(n), types))
 
     def exec_prepared(self, conn: Int, name: CStr, n: Int, values: Int, lengths: Int, formats: Int, result_format: Int) -> Int:
-        """`PQexec_prepared`."""
+        """`PQexecPrepared`."""
         return Int(self._exec_prepared(conn, name, c_int(n), values, lengths, formats, c_int(result_format)))
 
     def result_status(self, res: Int) -> Int:
-        """`PQresult_status`."""
+        """`PQresultStatus`."""
         return Int(self._result_status(res))
 
     def result_errmsg(self, res: Int) -> Int:
-        """`PQresult_errmsg`."""
+        """`PQresultErrorMessage`."""
         return Int(self._result_errmsg(res))
 
     def result_errfield(self, res: Int, field: Int) -> Int:
-        """`PQresult_errfield`."""
+        """`PQresultErrorField`."""
         return Int(self._result_errfield(res, c_int(field)))
 
     def ntuples(self, res: Int) -> Int:
@@ -674,7 +738,7 @@ struct PgLib(Movable):
         return Int(self._getisnull(res, c_int(row), c_int(col)))
 
     def cmd_tuples(self, res: Int) -> Int:
-        """`PQcmd_tuples`."""
+        """`PQcmdTuples`."""
         return Int(self._cmd_tuples(res))
 
     def clear(self, res: Int):
@@ -682,7 +746,7 @@ struct PgLib(Movable):
         self._clear(res)
 
     def consume_input(self, conn: Int) -> Int:
-        """`PQconsume_input`."""
+        """`PQconsumeInput`."""
         return Int(self._consume_input(conn))
 
     def notifies(self, conn: Int) -> Int:
@@ -696,180 +760,6 @@ struct PgLib(Movable):
     def escape_identifier(self, conn: Int, text: CStr, length: Int) -> Int:
         """`PQescapeIdentifier`."""
         return Int(self._escape_identifier(conn, text, length))
-
-    def result_lib(self) -> ResultLib:
-        """The entry points a `Result` calls, copied out of this table.
-
-        A copy is sound because of the third rule: the library these
-        pointers came from is pinned for the life of the process, so they
-        stay valid after this `PgLib` — and the `Connection` holding it —
-        is gone.
-        """
-        return ResultLib(
-            self._result_status,
-            self._ntuples,
-            self._nfields,
-            self._fname,
-            self._ftype,
-            self._getvalue,
-            self._getlength,
-            self._getisnull,
-            self._cmd_tuples,
-            self._clear,
-        )
-
-    @staticmethod
-    def open(path: String = "") raises -> Self:
-        """Open libpq: `path`, else `M0_LIBPQ`, else the search path.
-
-        The version floor and libpq's own thread-safety flag are checked
-        here, where both are one call and the answer can name the library
-        that failed. A libpq built without thread safety would be a data
-        race per pool thread rather than an error, so it is refused.
-        """
-        var tried = List[String]()
-        var candidates = List[String]()
-        if path:
-            candidates.append(path)
-        else:
-            var from_env = getenv("M0_LIBPQ", "")
-            if from_env:
-                candidates.append(from_env)
-            else:
-                candidates = default_search_path()
-
-        for candidate in candidates:
-            var handle: OwnedDLHandle
-            try:
-                handle = OwnedDLHandle(candidate)
-            except:
-                tried.append(candidate)
-                continue
-            var lib = Self(handle^, candidate)
-            var have = lib.libversion()
-            if have < MIN_LIBPQ_VERSION:
-                raise Error(
-                    "the libpq at " + candidate + " is version "
-                    + String(have) + ", older than the "
-                    + String(MIN_LIBPQ_VERSION) + " this package requires"
-                )
-            if lib.isthreadsafe() == 0:
-                raise Error(
-                    "the libpq at " + candidate + " was built without thread"
-                    + " safety, and this package opens one connection per"
-                    + " thread"
-                )
-            return lib^
-
-        var names = String("")
-        for i in range(len(tried)):
-            names += ("\n  " if i else "") + tried[i]
-        raise Error(
-            "libpq could not be opened. Set M0_LIBPQ to the library file, or"
-            + " install one where it can be found. Tried:\n  " + names
-        )
-
-    def version_text(self) -> String:
-        """`libpq`'s version as `major.minor`, from its integer form."""
-        var v = self.libversion()
-        return String(v // 10000) + "." + String(v % 10000)
-
-
-struct ResultLib(ImplicitlyCopyable, Movable):
-    """The ten entry points a `Result` needs, held by value.
-
-    A `Result` used to reach them through the address of its connection's
-    `PgLib`, which dangles the moment that connection is moved or destroyed
-    — and Mojo destroys a connection at its last use, so
-    `var rows = db.query(...)` left `rows` reading a dead struct. A copy
-    of the pointers needs nothing of the connection; the pin (the module
-    docstring's third rule) is what keeps the code they point at mapped.
-
-    Implicitly copyable, unlike `PgLib`, because it owns nothing: no handle, no
-    buffer, only addresses into a library that is never unloaded.
-
-    The fields are private and every call goes through a method beside
-    them, for the same reason `PgLib`'s are: a `thin` pointer field called
-    as `value.field()` from outside its struct faults.
-    """
-
-    var _result_status: _PQresultStatus.type
-    var _ntuples: _PQntuples.type
-    var _nfields: _PQnfields.type
-    var _fname: _PQfname.type
-    var _ftype: _PQftype.type
-    var _getvalue: _PQgetvalue.type
-    var _getlength: _PQgetlength.type
-    var _getisnull: _PQgetisnull.type
-    var _cmd_tuples: _PQcmdTuples.type
-    var _clear: _PQclear.type
-
-    def __init__(
-        out self,
-        result_status: _PQresultStatus.type,
-        ntuples: _PQntuples.type,
-        nfields: _PQnfields.type,
-        fname: _PQfname.type,
-        ftype: _PQftype.type,
-        getvalue: _PQgetvalue.type,
-        getlength: _PQgetlength.type,
-        getisnull: _PQgetisnull.type,
-        cmd_tuples: _PQcmdTuples.type,
-        clear: _PQclear.type,
-    ):
-        """Built by `PgLib.result_lib`, which is where the pointers live."""
-        self._result_status = result_status
-        self._ntuples = ntuples
-        self._nfields = nfields
-        self._fname = fname
-        self._ftype = ftype
-        self._getvalue = getvalue
-        self._getlength = getlength
-        self._getisnull = getisnull
-        self._cmd_tuples = cmd_tuples
-        self._clear = clear
-
-    def result_status(self, res: Int) -> Int:
-        """`PQresultStatus`."""
-        return Int(self._result_status(res))
-
-    def ntuples(self, res: Int) -> Int:
-        """`PQntuples`."""
-        return Int(self._ntuples(res))
-
-    def nfields(self, res: Int) -> Int:
-        """`PQnfields`."""
-        return Int(self._nfields(res))
-
-    def fname(self, res: Int, col: Int) -> Int:
-        """`PQfname`."""
-        return Int(self._fname(res, c_int(col)))
-
-    def ftype(self, res: Int, col: Int) -> Int:
-        """`PQftype`."""
-        return Int(self._ftype(res, c_int(col)))
-
-    def getvalue(self, res: Int, row: Int, col: Int) -> Int:
-        """`PQgetvalue`."""
-        return Int(self._getvalue(res, c_int(row), c_int(col)))
-
-    def getlength(self, res: Int, row: Int, col: Int) -> Int:
-        """`PQgetlength`."""
-        return Int(self._getlength(res, c_int(row), c_int(col)))
-
-    def getisnull(self, res: Int, row: Int, col: Int) -> Int:
-        """`PQgetisnull`."""
-        return Int(self._getisnull(res, c_int(row), c_int(col)))
-
-    def cmd_tuples(self, res: Int) -> Int:
-        """`PQcmdTuples`."""
-        return Int(self._cmd_tuples(res))
-
-    def clear(self, res: Int):
-        """`PQclear`."""
-        self._clear(res)
-
-
 
 
 # --- C string helpers ------------------------------------------------------

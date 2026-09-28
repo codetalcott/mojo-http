@@ -7,8 +7,8 @@ its own memory and needs no connection to read or free — so `Result` is a
 value: it can outlive the `Connection` that produced it, be moved into a
 renderer, and be read in any order.
 
-It holds the entry points it calls BY VALUE (`ResultLib`), never by the
-address of its connection's table. The address was what it held first, and
+It holds the entry points it calls BY VALUE (a copy of the whole table,
+`PgFns`), never by the address of its connection's table. The address was what it held first, and
 `var rows = db.query(...)` with no later mention of `db` then read a
 destroyed connection's struct through a library that had been unloaded — a
 segmentation fault on the first `rows.text(0, 0)`. `lib.mojo`'s third rule,
@@ -33,7 +33,7 @@ notice — the same defect `m0-sqlite`'s column readers exist to refuse.
 from std.collections.span import Span
 from std.memory import Pointer
 
-from .lib import ResultLib, read_cstr
+from .lib import PgFns, read_cstr
 from .wire import (
     OID_BOOL,
     OID_FLOAT4,
@@ -60,7 +60,7 @@ struct Result(Movable):
     """One complete query result. Cleared when it goes out of scope."""
 
     var _handle: Int
-    var _pq: ResultLib
+    var _pq: PgFns
     """The entry points this result calls, copied rather than borrowed.
 
     Nothing here refers to the `Connection` that produced the result, so
@@ -72,7 +72,7 @@ struct Result(Movable):
     var cols: Int
     var binary: Bool
 
-    def __init__(out self, handle: Int, pq: ResultLib, binary: Bool) raises:
+    def __init__(out self, handle: Int, pq: PgFns, binary: Bool) raises:
         """Take ownership of a `PGresult *`.
 
         Refuses NULL, which libpq returns only when it could not allocate
