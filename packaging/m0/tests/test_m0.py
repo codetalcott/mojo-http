@@ -586,6 +586,52 @@ class New(unittest.TestCase):
                 self.assertIn(f'"mojo=={paths.build_info()["gated_mojo"][0]}"', pins)
                 self.assertIn('name = "corner-shop"', pins)
 
+    def test_the_deploy_states_secure_and_the_image_leaves_it_to_the_platform(self):
+        """A deployed login's session cookie is `Secure` without anyone
+        remembering to say so, and nothing guesses it anywhere else.
+
+        Every template's `deploy/fly.toml` states the login's `SECURE` as 1
+        beside `force_https` -- a `views` or `live` app that adds a login
+        later has it already -- under the prefix the `auth` template's
+        login reads. The image states none: a platform that says nothing is
+        then refused by the login (exit 78, naming it), never served in
+        clear, and a local `docker run` over http:// can say 0. The printed
+        `export` says 0 too, for the first run on http://localhost."""
+        import re
+
+        def table(text, name):
+            # `key = value` lines of one `[name]` table, values as written:
+            # enough for the scaffold's own fly.toml, and no tomllib, which
+            # the 3.10 this wheel supports does not have.
+            got, inside = {}, False
+            for line in text.splitlines():
+                s = line.strip()
+                if s.startswith("["):
+                    inside = s == "[%s]" % name
+                elif inside and "=" in s and not s.startswith("#"):
+                    key, value = s.split("=", 1)
+                    got[key.strip()] = value.strip()
+            return got
+
+        with tempfile.TemporaryDirectory() as tmp:
+            auth = Path(tmp) / "corner-auth"
+            code, out, err = self._new([str(auth), "--template", "auth"])
+            self.assertEqual((code, err), (0, ""))
+            views = (auth / "src" / "views.mojo").read_text()
+            prefix = re.search(r'^comptime LOGIN_ENV = "([A-Z][A-Z0-9_]*)"$', views, re.M)
+            self.assertIsNotNone(prefix, "the auth template names no LOGIN_ENV")
+            secure = prefix.group(1) + "_SECURE"
+            self.assertIn(f" {secure}=0", out)
+            for template in new.TEMPLATES:
+                target = Path(tmp) / f"corner-{template}-deploy"
+                code, _, err = self._new([str(target), "--template", template])
+                self.assertEqual((code, err), (0, ""))
+                fly = (target / "deploy" / "fly.toml").read_text()
+                self.assertEqual(table(fly, "http_service").get("force_https"), "true", template)
+                self.assertEqual(table(fly, "env").get(secure), '"1"', template)
+                image = (target / "deploy" / "Dockerfile").read_text()
+                self.assertFalse("_SECURE" in image, f"{template}: the image states a SECURE")
+
 
 if __name__ == "__main__":
     unittest.main()

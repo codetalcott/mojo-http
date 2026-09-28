@@ -8,11 +8,13 @@ derived from it. This is what an application built around that format,
 the same way both times:
 
 - `Login.from_env(prefix, cookie)` reads the configuration. `PREFIX_KEY`
-  (at least `LOGIN_KEY_MIN` bytes) and `PREFIX_PASSWORD` are required;
-  `PREFIX_KEY_PREV`, `PREFIX_USER`, `PREFIX_TTL` and `PREFIX_SECURE`
-  (`1` or `0`) are optional. It fails closed: anything it cannot serve
-  raises, naming the variable, and a host `make` turns that into exit 78
-  before anything is served.
+  (at least `LOGIN_KEY_MIN` bytes), `PREFIX_PASSWORD` and `PREFIX_SECURE`
+  (`1` behind HTTPS, `0` over plain http) are required; `PREFIX_KEY_PREV`,
+  `PREFIX_USER` and `PREFIX_TTL` are optional. It fails closed: anything
+  it cannot serve raises, naming the variable, and a host `make` turns
+  that into exit 78 before anything is served. `SECURE` has no default
+  because the scheme is a fact about the deployment that the server
+  cannot observe, and off by default is a session cookie sent in clear.
 - `sign_in(user, password)` is a session for the one user, or None: the
   credential check and the session are one call. What it returns is the
   session a page rendered behind it reads (`.session`, the CSRF token
@@ -188,11 +190,20 @@ struct Login(Movable):
                     " (400 days, the longest a browser keeps a cookie)",
                 ))
             ttl = Int64(parsed)
-        # `1` or `0`, and nothing else: `true` read as off would send the
-        # session cookie without `Secure` behind HTTPS and say nothing.
+        # `1` or `0`, stated, and nothing else. The server cannot see the
+        # scheme a proxy terminated, so this is the deployment's to say:
+        # unset, or `true`, read as off would send the session cookie
+        # without `Secure` behind HTTPS and say nothing -- in clear on a
+        # visitor's first `http://` request, before any redirect to HTTPS.
         var secure_env = String(prefix, "_SECURE")
         var secure = getenv(secure_env, "")
-        if secure != "" and secure != "0" and secure != "1":
+        if secure == "":
+            raise Error(String(
+                secure_env, " is not set: 1 when the application is served over HTTPS ",
+                "(the session cookie then carries Secure), 0 over plain http such as ",
+                "http://localhost",
+            ))
+        if secure != "0" and secure != "1":
             raise Error(String(
                 secure_env, " must be 1 (the deployment is HTTPS, so the cookie ",
                 "carries Secure) or 0, and '", secure, "' is neither",

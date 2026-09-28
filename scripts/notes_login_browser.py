@@ -220,6 +220,7 @@ def main() -> int:
             M0_PORT=str(args.port),
             M0_NOTES_KEY=KEY,
             M0_NOTES_PASSWORD=PASSWORD,
+            M0_NOTES_SECURE="0",
         )
         proc = subprocess.Popen([args.bin], env=env,
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
