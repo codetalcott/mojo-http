@@ -2595,13 +2595,13 @@ core_lib="$PWD/packages/m0-core/libm0core.$ext"
 
 cleanup() {
   kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out" ws1.log ws2.log ws3.log ws4.log
+  rm -rf "$out" ws1.log ws2.log ws3.log ws4.log ws5.log
 }
 trap cleanup EXIT
 
 fail() {
   echo "$1"
-  for log in ws1.log ws2.log ws3.log ws4.log; do
+  for log in ws1.log ws2.log ws3.log ws4.log ws5.log; do
     if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
   done
   exit 1
@@ -2781,7 +2781,35 @@ wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --realtime --mount with sockets: exit $rc, want 0"
 fi
 
-rm -f ws1.log ws2.log ws3.log ws4.log
+# Phase 5: two WSGI mounts served INLINE. With no pool the loop's own
+# handler holds both applications and takes every hold itself -- the shape
+# `--workers N` gives an all-WSGI mount set, spelled here as
+# `--blocking-threads 0`. A socket's messages go back to the application
+# whose view approved it, at its own prefix (`hold_app`, the inline twin of
+# phase 4's `hold_lane`). The SECOND mount is the one that matters:
+# unrecorded, every message was served by the first. The probe also POSTs
+# to each mount's synthetic path from the network, which must be a 404.
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
+  --mount /=wsmounts:first --mount /b=wsmounts:second \
+  --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
+  --blocking-threads 0 > ws5.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the inline mounted realtime server never became healthy'
+grep -q 'blocking-threads=' ws5.log && fail 'the banner reports a pool: the holds would be taken on pool threads, not inline'
+grep -q ' realtime' ws5.log || fail 'the banner does not report --realtime'
+python3 apps/django_realtime/mounts_ws_probe.py || fail 'mounts_ws_probe failed under inline mounts'
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  socks=$(curl -s http://localhost:8080/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
+  [ "$socks" = "0" ] && break
+  sleep 1
+done
+[ "$socks" = "0" ] || fail "closed sockets are still registered under inline mounts (sockets=$socks)"
+echo "phase 5: two WSGI mounts inline, each socket's messages served by the mount that approved it"
+kill $pid 2>/dev/null
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM under --realtime with inline mounts and sockets: exit $rc, want 0"
+
+rm -f ws1.log ws2.log ws3.log ws4.log ws5.log
 echo "smoke-django-realtime-ws OK"
 python3 scripts/emit.py --covers I12 --task smoke-django-realtime-ws
 python3 scripts/emit.py --covers I26 --task smoke-django-realtime-ws

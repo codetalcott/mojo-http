@@ -8,6 +8,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **An inbound WebSocket message reaches the mount that approved the
+  socket when mounts are served inline** (SPEC I12). Under `--realtime`
+  with several WSGI mounts and no handler pool — `--workers N` without
+  `--blocking-threads`, or `--blocking-threads 0` — one handler serves
+  every mount, and it delivered each inbound message, the synthetic
+  `/ws/message` POST, to the FIRST mount's application at the first
+  mount's prefix, whichever mount's view had approved the upgrade. The
+  handler now records, per held socket, the application that approved it,
+  and delivers the message there at that mount's prefix, as a handler pool
+  already did per lane. `smoke-django-realtime-ws` gates it with two WSGI
+  mounts served inline: each socket's message must reach its own mount's
+  view with that mount's `SCRIPT_NAME`, and a POST to either mount's
+  `/ws/message` from the network must be a 404. Found in review.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and
