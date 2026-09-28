@@ -22,9 +22,11 @@ from src import (
     open_memory,
     libversion,
     error_code,
+    c_string,
     SQLITE_RANGE,
 )
 from src.lib import libversion_number
+from src.vtab import KIND_INT, _bind_spec
 
 
 def _db() raises -> Connection:
@@ -366,6 +368,48 @@ def test_array_survives_allocation_churn_during_the_scan() raises:
     assert_equal(out[0], 0)
     for i in range(64):
         assert_equal(out[i], i)
+
+
+def test_the_tag_sqlite_keeps_is_not_a_freed_buffer() raises:
+    """The pointer-type tag outlives the bind, because SQLite keeps it.
+
+    `sqlite3_bind_pointer` stores the tag's ADDRESS with the bound value, and
+    `xFilter`'s `sqlite3_value_pointer` compares against it with `strcmp` at
+    step time. Bound from a buffer freed as the bind returned (1.7.0), the
+    stored tag read as whatever the allocator put there next, the lookup
+    answered NULL, and the scan was silently empty: an INSERT ... SELECT
+    inserted nothing and raised nothing.
+
+    So this binds the way `_run_over` does, fills the heap with live buffers
+    of the tag's own size holding other bytes, and steps while they are
+    alive. The public helpers step straight after binding, which is what hid
+    it: `xFilter`'s own copy of the tag took the freed block back and wrote
+    the same bytes into it. Calling `_bind_spec` is this test's business
+    only; see the note above the helpers in `stmt.mojo`.
+
+    covers: O4
+    """
+    var db = _db()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    var ins = db.prepare("INSERT INTO t SELECT value FROM m0_array(?1)")
+    var data = _seq(100, 3)
+    _bind_spec(
+        ins._lib, ins._handle, 1, Int(data.unsafe_ptr()), len(data), KIND_INT
+    )
+    # `c_string` of fifteen bytes is the tag's own allocation, size for size.
+    var churn = List[List[UInt8]](capacity=512)
+    for _ in range(512):
+        churn.append(c_string("zzzzzzzzzzzzzzz"))
+    while ins.step():
+        pass
+    ins._drop_borrow(1)
+    _ = churn
+    _ = data
+    assert_equal(db.changes(), 100)
+    var q = db.prepare("SELECT count(*), sum(v) FROM t")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 100)
+    assert_equal(q.column_int(1), 99 * 100 // 2 * 3)
 
 
 def test_out_of_range_parameter_raises_cleanly() raises:

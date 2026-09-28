@@ -239,10 +239,12 @@ jobs:
         run: uv run poe smoke-pg-notify
       - name: Record the measurements
         if: always()
-        run: python3 scripts/emit.py --render "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
       - name: Upload the measurements
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-results-postgres
           path: ci-results.jsonl

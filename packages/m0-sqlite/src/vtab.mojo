@@ -57,7 +57,11 @@ Three things about the implementation are deliberate:
 
   - **The pointer type tag is a `comptime` literal.** `sqlite3_bind_pointer`
     retains the tag pointer, so it must have static storage — a transient
-    `c_string()` buffer would dangle.
+    `c_string()` buffer would dangle. Both sites go through `_array_tag()`.
+    1.7.0 shipped the transient buffer at the bind (from the dlopen change):
+    SQLite then `strcmp`d freed memory at step time, and an INSERT ...
+    SELECT from `m0_array` inserted nothing once the block was reused.
+    `test_the_tag_sqlite_keeps_is_not_a_freed_buffer` is the guard.
 
 Borrow safety is not this file's job; see `Statement.execute_over` and
 `Statement.fetch_ints_over`, which are the only supported way to bind an
@@ -68,7 +72,7 @@ from std.ffi import c_int
 from std.memory import Pointer
 
 from .ffi import SQLITE_OK, SQLITE_NOMEM, SQLITE_CONSTRAINT, c_string
-from .lib import FreeFn, SqliteLib, StmtLib, VtabLib, as_cstr
+from .lib import CStr, FreeFn, SqliteLib, StmtLib, VtabLib, as_cstr
 
 # --- Constraint operators (xBestIndex input, not a result code) -------------
 comptime SQLITE_INDEX_CONSTRAINT_EQ: Int = 2
@@ -82,7 +86,8 @@ comptime SQLITE_INDEX_CONSTRAINT_EQ: Int = 2
 comptime SQLITE_MIN_VTAB_VERSION: Int = 3_026_000
 
 # Static storage: sqlite3_bind_pointer retains this pointer, so it cannot be a
-# transient buffer. A comptime literal is NUL-terminated with a stable address.
+# transient buffer. A comptime literal is NUL-terminated with a stable address;
+# `_array_tag()` is how both sites reach it.
 comptime ARRAY_TAG = "m0-sqlite-array"
 comptime ARRAY_DECL = "CREATE TABLE x(value, spec HIDDEN)"
 comptime ARRAY_NAME = "m0_array"
@@ -169,6 +174,22 @@ comptime XRowidFn = def (Int, Int) thin abi("C") -> c_int
 @always_inline
 def _words(addr: Int) -> WordPtr:
     return WordPtr(unsafe_from_address=addr)
+
+
+def _array_tag() -> CStr:
+    """`ARRAY_TAG`'s own static, NUL-terminated storage.
+
+    Never `c_string(ARRAY_TAG)`: SQLite keeps the bind's pointer and
+    compares it at step time, so a buffer freed after the call is read
+    after it is freed. The same address serves the lookup, so the two
+    sites cannot drift apart.
+    """
+    return (
+        ARRAY_TAG.as_c_string_span()
+        .ptr()
+        .unsafe_bitcast[UInt8]()
+        .as_unsafe_any_origin()
+    )
 
 
 # --- Module callbacks --------------------------------------------------------
@@ -300,11 +321,9 @@ def _x_filter(
 
     # NULL unless this value was set by bind_pointer with a matching tag, so a
     # stray integer parameter cannot be reinterpreted as an address.
-    var tag = c_string(ARRAY_TAG)
     var spec = _lib_of_cursor(p_cursor).value_pointer(
-        _words(argv)[unsafe_offset=0], as_cstr(tag)
+        _words(argv)[unsafe_offset=0], _array_tag()
     )
-    _ = tag
     if spec == 0:
         return c_int(SQLITE_OK)
 
@@ -452,9 +471,8 @@ def _bind_spec(
     w[unsafe_offset=S_COUNT] = count
     w[unsafe_offset=S_KIND] = kind
 
-    var tag = c_string(ARRAY_TAG)
-    var rc = lib.bind_pointer(stmt_handle, param, p, as_cstr(tag), lib.free_fn())
-    _ = tag
+    # The tag is retained, not copied: static storage, never a temporary.
+    var rc = lib.bind_pointer(stmt_handle, param, p, _array_tag(), lib.free_fn())
     if rc != SQLITE_OK:
         # No free here: bind_pointer runs the destructor even when the bind
         # fails — measured on 3.51.0 for both SQLITE_RANGE and SQLITE_MISUSE,

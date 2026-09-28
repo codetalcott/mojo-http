@@ -59,6 +59,7 @@ from .result import Result
 from .sqlstate import (
     ADMIN_SHUTDOWN,
     CANNOT_CONNECT_NOW,
+    CHARACTER_NOT_IN_REPERTOIRE,
     CHECK_VIOLATION,
     CONNECTION_FAILURE,
     CRASH_SHUTDOWN,
