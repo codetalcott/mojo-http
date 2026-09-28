@@ -1055,12 +1055,19 @@ help = "Test m0-postgres against a real server (M0_PG_TEST_URL; fails if absent)
 shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
+# MALLOC_PERTURB_ has glibc fill memory as it frees it (and memory it hands
+# out with the complement), so a read after free reads 0xA5, never what the
+# last owner left. O16's span arm, test_a_raw_cell_keeps_its_result_alive,
+# needs that on Linux, the leg CI runs this on: it catches a span read after
+# its PGresult was cleared only when the freed bytes changed, and without
+# the fill that depends on glibc taking the block back. macOS has no glibc
+# and ignores the variable, which is why it goes on the tests, not the build.
 for f in packages/m0-postgres/test/test_lib.mojo \
          packages/m0-postgres/test/test_postgres.mojo \
          packages/m0-postgres/test/test_notify.mojo; do
   name=$(basename "$f" .mojo)
   mojo build -I packages/m0-postgres "$f" -o "$out/$name" || exit 1
-  "$out/$name" || exit 1
+  MALLOC_PERTURB_=165 "$out/$name" || exit 1
 done
 python3 scripts/emit.py --covers O9 --task test-postgres-server
 python3 scripts/emit.py --covers O10 --task test-postgres-server
