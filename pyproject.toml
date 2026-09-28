@@ -1441,15 +1441,18 @@ python3 scripts/emit.py --covers C9 --task smoke-peer-reset
 # level triggered: a client that half-closed or pipelined, and then did not
 # read, woke every wait, and the loop ran at a full core for as long as it
 # waited. epoll's reads are edge triggered, so this fails without the fix
-# on macOS only. The probe starts its own server, because it meters that
-# server's CPU by PID.
+# on macOS only. SPEC F17 (R3) rides the same server: a stream whose frames
+# finish through the write-ready path is one access record, not one per
+# frame -- on both platforms. The probe starts its own server, because it
+# meters that server's CPU by PID.
 [tool.poe.tasks.smoke-slot-lifecycle]
-help = "A connection that stops reading costs the event loop nothing"
+help = "A connection that stops reading costs the event loop nothing, and a stream is one access record"
 deps = ["build-serve"]
 shell = """
 python3 scripts/slot_lifecycle_probe.py 8142 || exit 1
 echo "smoke-slot-lifecycle OK"
 python3 scripts/emit.py --covers C10 --task smoke-slot-lifecycle
+python3 scripts/emit.py --covers F17 --task smoke-slot-lifecycle
 """
 
 # RFC 9112 §9.6. The server refuses an oversized body while the client is

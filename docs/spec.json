@@ -866,6 +866,14 @@
       "evidence": "`Smoke test the documentation site` (every PR) \u2014 built by `scripts/docsite.py`, served through `--static` with `apps/site` behind it; every sitemap URL answers as HTML with the twin it advertises, the root text files name the site's pages by absolute URL, the sitemap goes out as XML, and the slash redirect and HTML 404 come from the application"
     },
     {
+      "id": "F17",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "A stream is one response to the access log and the metrics: recorded once, when its head lands, however its frames go out",
+      "status": "verified",
+      "evidence": "`Smoke test connections that stop reading` (every PR) \u2014 a chunked 8 MiB `/stream` and a `/ws/flood` WebSocket, each read by a client that stalls first so their frames finish through the write-ready path, must leave exactly one `--access-log` record each; before the fix (review record R3) they left 5 and 2, each frame the write-ready path finished being recorded as a response of its own, counted by `--metrics` and timed as the stream's age, and a chunked stream recorded once more when its terminator landed. The count is `test_slot_lifecycle.mojo:test_a_stream_is_recorded_once`"
+    },
+    {
       "id": "G1",
       "section": "G",
       "category": "G. Security hardening",

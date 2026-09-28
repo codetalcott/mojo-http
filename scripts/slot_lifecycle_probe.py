@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""A connection that is not being read costs the loop nothing (SPEC C10).
+"""A connection that is not being read costs the loop nothing, and a stream
+is one response (SPEC C10, F17).
 
-kqueue's connection read filter is LEVEL triggered, and it used to stay
+**The loop's CPU (C10).** kqueue's connection read filter is LEVEL
+triggered, and it used to stay
 registered on a slot that was not reading: one waiting to write
 (RESPONDING, on a one-shot write filter), or one whose request was out on a
 pool thread or an executor. A client that had half-closed, or had sent its
@@ -35,12 +37,24 @@ The meter is checked before it is trusted: a busy child must read as busy.
 A probe whose CPU counter read zero whatever happened would pass on a
 spinning loop.
 
+**One access record per stream (F17, review record R3).** `_after_send`
+runs for every send that completes, and a stream's frames complete through
+it whenever one does not go out in a single send: each was recorded as a
+response of its own -- another access-log line, another count, and the
+stream's age as a latency sample -- and a chunked stream logged once more
+when its terminator landed. Two streams, each read by a client that stalls
+first so their frames go through the write-ready path: a chunked HTTP
+stream (/stream) and a WebSocket (/ws/flood). Each must leave exactly ONE
+access record; before the fix, 5 and 2. Fails without it on both platforms.
+
 usage: slot_lifecycle_probe.py PORT
   starts ./bin/m0serve itself (it needs the PID to meter), on apps/asgi_bare
-  with `--static`; see `poe smoke-slot-lifecycle`
+  with `--access-log` and `--static`; see `poe smoke-slot-lifecycle`
 """
 
+import base64
 import os
+import struct
 import shutil
 import socket
 import subprocess
@@ -241,6 +255,115 @@ def shape_slow(pid, pipelined):
     sock.close()
 
 
+def read_chunked_to_end(sock):
+    """The body of a chunked response, read after the client has stalled."""
+    head, rest = read_head(sock, b"")
+    if b"transfer-encoding: chunked" not in head.lower():
+        raise RuntimeError("the stream is not chunked: %r" % head[:200])
+    body = b""
+    buf = rest
+    while True:
+        while b"\r\n" not in buf:
+            part = sock.recv(1 << 20)
+            if not part:
+                raise RuntimeError("closed inside the chunked body")
+            buf += part
+        size_line, buf = buf.split(b"\r\n", 1)
+        size = int(size_line.split(b";")[0], 16)
+        while len(buf) < size + 2:
+            part = sock.recv(1 << 20)
+            if not part:
+                raise RuntimeError("closed inside a chunk")
+            buf += part
+        if size == 0:
+            return body
+        body += buf[:size]
+        buf = buf[size + 2:]
+
+
+def ws_handshake(sock, path):
+    key = base64.b64encode(os.urandom(16)).decode()
+    sock.sendall(("GET %s HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
+                  "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
+                  "Sec-WebSocket-Version: 13\r\n\r\n" % (path, key)).encode())
+    head, rest = read_head(sock, b"")
+    if b" 101 " not in head.split(b"\r\n", 1)[0]:
+        raise RuntimeError("expected 101, got %r" % head[:80])
+    return rest
+
+
+def ws_read_until_close(sock, buf):
+    """Count data frames until the server's Close; returns the count."""
+    frames = 0
+    while True:
+        while len(buf) < 2:
+            part = sock.recv(1 << 20)
+            if not part:
+                raise RuntimeError("closed before the Close frame")
+            buf += part
+        ln = buf[1] & 0x7F
+        hdr = {126: 4, 127: 10}.get(ln, 2)
+        while len(buf) < hdr:
+            part = sock.recv(1 << 20)
+            if not part:
+                raise RuntimeError("closed inside a frame header")
+            buf += part
+        if ln == 126:
+            ln = struct.unpack(">H", buf[2:4])[0]
+        elif ln == 127:
+            ln = struct.unpack(">Q", buf[2:10])[0]
+        while len(buf) < hdr + ln:
+            part = sock.recv(1 << 20)
+            if not part:
+                raise RuntimeError("closed inside a frame")
+            buf += part
+        opcode = buf[0] & 0x0F
+        buf = buf[hdr + ln:]
+        if opcode == 0x8:
+            return frames
+        if opcode in (0x1, 0x2):
+            frames += 1
+
+
+def access_records(log_path, path):
+    needle = '"path":"%s"' % path
+    with open(log_path) as fh:
+        return [ln for ln in fh if '"msg":"access"' in ln and needle in ln]
+
+
+def one_record_each(log_path):
+    phase("one access record for a chunked stream sent through the write-ready path")
+    size = 8 * 1024 * 1024
+    sock = connect_armed()
+    sock.sendall(b"GET /stream?size=%d HTTP/1.1\r\nHost: x\r\n\r\n" % size)
+    time.sleep(1.5)  # stall, so its frames cannot land in one send
+    got = read_chunked_to_end(sock)
+    if len(got) != size:
+        fail("the stream arrived with %d of %d bytes" % (len(got), size))
+    sock.close()
+
+    phase("one access record for a WebSocket sent through the write-ready path")
+    sock = connect_armed()
+    rest = ws_handshake(sock, "/ws/flood")
+    time.sleep(1.5)
+    frames = ws_read_until_close(sock, rest)
+    if frames < 100:
+        fail("the flood delivered only %d frames before its Close" % frames)
+    sock.close()
+
+    phase("counting the access records")
+    time.sleep(0.5)
+    for path in ("/stream", "/ws/flood"):
+        recs = access_records(log_path, path)
+        if len(recs) != 1:
+            fail("%d access records for one %s stream, not 1 -- each frame the "
+                 "write-ready path finished was recorded as a response of its "
+                 "own (R3)%s" % (len(recs), path,
+                                 "" if not recs else ": " + recs[-1].strip()))
+        else:
+            print("  %s: one access record" % path)
+
+
 def main():
     phase("the meter's self-test")
     meter_self_test()
@@ -253,7 +376,7 @@ def main():
     srv = subprocess.Popen(
         [BIN, "bareapp.asgi:application", "--app-dir", "apps/asgi_bare",
          "--port", str(PORT), "--idle-timeout", "30", "--max-body", "32m",
-         "--static", "/files=" + tmp],
+         "--access-log", "--static", "/files=" + tmp],
         stdout=log, stderr=subprocess.STDOUT,
     )
     try:
@@ -283,6 +406,8 @@ def main():
         shape_slow(srv.pid, pipelined=False)
         phase("a request on the executor, the next request pipelined behind it")
         shape_slow(srv.pid, pipelined=True)
+
+        one_record_each(log_path)
     finally:
         srv.terminate()
         try:
@@ -306,7 +431,7 @@ def main():
             print("slot_lifecycle_probe: FAIL:", f)
         sys.exit(1)
     print("slot_lifecycle_probe: a connection that is not being read costs "
-          "the loop nothing")
+          "the loop nothing, and a stream is one access record")
 
 
 if __name__ == "__main__":

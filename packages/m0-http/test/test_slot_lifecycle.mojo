@@ -36,11 +36,13 @@ from lightbug_http.event_loop import (
     _await_write,
     _begin_request,
     _end_request,
+    _record_response,
     _stop_reads,
     _stream_idle,
 )
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
+from lightbug_http.metrics import ServerMetrics
 from lightbug_http.server import ProvisionPool
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.websocket import WSState
@@ -324,6 +326,30 @@ def test_the_keepalive_transition_owns_its_resets() raises:
     assert_true(s.deadline[slot] >= before + config.idle_timeout * 1_000_000_000)
     assert_true(backend.read)
     assert_true(s.read_armed[slot])
+
+
+def test_a_stream_is_recorded_once() raises:
+    """R3: `_after_send` runs for every send that completes, a stream's
+    frames included, and each was recorded as a response of its own -- a
+    count, an access-log line and the stream's age as a latency sample. The
+    head is the response; a frame after it records nothing."""
+    var config = _config()
+    config.enable_metrics = True
+    var pool = ProvisionPool(SLOTS, config)
+    var slot = pool.borrow()
+    var s = Slots()
+    var metrics = ServerMetrics()
+    pool.provisions[slot].response_status = 200
+    s.header_start[slot] = perf_counter_ns()
+    s.send_offset[slot] = 120
+    _record_response(config, slot, s.send_offset, s.header_start, pool, 1, metrics)
+    assert_equal(metrics.requests_total, 1)
+    assert_equal(metrics.latency_count, 1)
+    s.send_offset[slot] = 4096
+    _record_response(config, slot, s.send_offset, s.header_start, pool, 1, metrics)
+    assert_equal(metrics.requests_total, 1)
+    assert_equal(metrics.latency_count, 1)
+    assert_equal(metrics.bytes_sent_total, 120)
 
 
 def main() raises:

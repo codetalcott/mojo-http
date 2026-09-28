@@ -3851,7 +3851,21 @@ def _record_response(
     active_count: Int,
     mut metrics: ServerMetrics,
 ):
-    """Count, time and log the response whose bytes just landed."""
+    """Count, time and log the response whose bytes just landed -- ONCE.
+
+    `_after_send` runs for every send that completes, and a stream's
+    frames, a WebSocket's queued pongs and a heartbeat complete through it
+    too whenever one does not go out in a single send. Each was recorded as
+    a response of its own: another access-log line, another count, and the
+    stream's AGE as a latency sample (R3; 5 records for one chunked
+    stream, one per frame the write-ready path finished and one more when
+    its terminator landed). `response_status` is the marker:
+    `_finish_response` sets it for the response it encodes, and it is
+    cleared here once recorded, so a frame that lands later finds nothing
+    to record. A stream is recorded when its head lands.
+    """
+    if provision_pool.provisions[slot].response_status == 0:
+        return
     # Phase 4e: record completed response metrics
     if config.enable_metrics:
         metrics.record_response(
@@ -3877,6 +3891,7 @@ def _record_response(
             elapsed_us,
             slot_send_offset[slot],
         )
+    provision_pool.provisions[slot].response_status = 0
 
 
 def _farewell_streams[T: HTTPService, B: EventLoopBackend](
