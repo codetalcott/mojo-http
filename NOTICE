@@ -714,6 +714,26 @@ lightbug_http
         place, and two threads alternated while two starved
         (docs/notes/a-slice-keeps-the-gil.md).
 
+      - event_loop.mojo (2026-09-28): the body timer is armed in
+        `_handle_read_headers` only for a body still owed after what came
+        with the headers, and the timer handler acts only on a slot still
+        READING_BODY with no request on a pool thread, retiring any other
+        expiry (SPEC A23). Armed above the decode, a body that arrived
+        whole left it running: it closed the keep-alive connection
+        `body_read_timeout` later, and released the slot of a request a
+        pool thread still held, whose answer the next connection read. A
+        request's first bytes now clear the keep-alive deadline, which cut
+        a request begun late in the window (A4), and `_arm_send_deadline`
+        gives a response still owed `idle_timeout` between sends that move
+        bytes, refreshed on the write-ready path in memory and from a file
+        (A24): nothing bounded a client that stopped reading. Streams keep
+        their zero deadline, a WebSocket's non-zero one being its linger.
+
+      - offload.mojo (2026-09-28): `add_lane` raises past
+        `_WAKE_MAX_LANES` (126), before making the lane's socketpair: each
+        lane's wake words are one line of the 8192-byte wake block, and
+        `note_thread` wrote a 127th lane's past its end.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

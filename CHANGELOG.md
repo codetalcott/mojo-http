@@ -8,6 +8,28 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A POST no longer leaves a timer that closes its connection 30 seconds
+  later, or sends a pool thread's answer to another connection** (SPEC
+  A23). The body timer was armed for every request with a body and left
+  running when the body arrived with the headers, as a small POST's does.
+  When it fired it closed the connection whatever it was doing: an idle
+  keep-alive connection was dropped, and one whose next request was on a
+  `--blocking-threads` thread (a WSGI app gets them by default) had its
+  slot released under that thread, so the next client to connect read the
+  answer meant for the first. The timer is now armed only for a body still
+  arriving, and acts only on one. `--body-timeout SECONDS` (default 30,
+  0 = never) sets the deadline, and `--doctor` reports it. Two deadlines
+  around it changed too (A4, A24): a request that starts late in the
+  keep-alive window is no longer cut at the previous response's deadline,
+  as an upload begun 7 s into a 10 s `--idle-timeout` was at 10.2 s; and a
+  response the client stops reading is closed once `--idle-timeout` passes
+  with no send making progress, where it used to hold its connection for
+  good. A response read slowly but steadily is not affected. Separately, a
+  handler pool refuses a 127th mount's lane rather than writing past the
+  end of its wake block.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and
