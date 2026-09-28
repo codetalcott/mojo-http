@@ -22,7 +22,7 @@ from lightbug_http.c.epoll import (
     EPOLL_CLOEXEC,
     CLOCK_MONOTONIC, TFD_NONBLOCK, TFD_CLOEXEC,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
-    EV_EOF, EV_ERROR,
+    EV_EOF,
     EPOLL_EVENT_WORDS, epoll_event_mask, epoll_event_data,
     epoll_create1, epoll_ctl_add, epoll_ctl_mod, epoll_ctl_del, epoll_wait,
     timerfd_create, set_timerfd_ms,
@@ -121,12 +121,24 @@ struct EpollBackend(ConstructibleBackend):
         return EVFILT_READ
 
     def event_flags(self, i: Int) -> UInt16:
+        """EV_EOF for a peer's shutdown or reset, and for a socket error.
+
+        EPOLLERR is a socket error, and it is reported the way kqueue
+        reports one: as EV_EOF, the error being the socket's to return.
+        It used to be EV_ERROR, which is kqueue's word for a REGISTRATION
+        that failed and which the loop therefore skips -- and the skip took
+        every client reset on Linux with it. An RST arrives as ONE event
+        carrying EPOLLERR (beside EPOLLHUP), the one-shot write or
+        edge-triggered read it lands on is spent by it, and nothing
+        reported that socket again: its slot, descriptor and provision
+        were held for the life of the process (B12). As EV_EOF it reaches
+        the read or write path, whose recv or send returns the error and
+        closes the slot.
+        """
         var mask = epoll_event_mask(self._events, i)
         var flags: UInt16 = 0
-        if (mask & (EPOLLHUP | EPOLLRDHUP)) != 0:
+        if (mask & (EPOLLHUP | EPOLLRDHUP | EPOLLERR)) != 0:
             flags |= EV_EOF
-        if (mask & EPOLLERR) != 0:
-            flags |= EV_ERROR
         return flags
 
     def event_data(self, i: Int) -> Int:

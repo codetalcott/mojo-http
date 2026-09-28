@@ -207,6 +207,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   job was added, rendered with a flag `emit.py` does not have, while the
   check counted the other jobs' renders as its.
 
+- **A client that resets its connection no longer holds its slot on
+  Linux** (SPEC C9). epoll reported a socket error as a failed
+  registration, which the event loop skips, so a client's RST was never
+  seen: a response stalled on a full socket, or a keep-alive connection
+  sitting idle, kept its slot and descriptors for the life of the process
+  unless `--idle-timeout` reaped it, and every graceful shutdown then
+  waited out its full 5 s drain. The reset now closes the slot at once, as
+  it always did on macOS. Two sends that stop part-way are finished too. A
+  `--static` file whose response head the socket could not take at once is
+  now sent after it (J10): the file was skipped, so a client pipelining
+  requests read the next response's head where the body belonged. And a
+  WebSocket ping or Close answered while the send buffer toward the client
+  is full goes out whole once the socket drains (I31), where the reply was
+  cut, misframing every frame after it, or dropped when refused whole.
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
   and the login read the silence as off: a visit to the `http://` URL sent
