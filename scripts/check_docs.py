@@ -699,32 +699,50 @@ def check_consumer_jobs_stay_clean():
     path = REPO / ".github" / "workflows" / "release.yml"
     if not path.exists():
         return
-    text = path.read_text()
-    jobs = re.split(r"\n  (?=[a-z][a-z0-9-]*:\n)", text)
-    seen = []
-    for block in jobs:
-        name = re.match(r"\s*([a-z][a-z0-9-]*):", block)
-        if not name or not name.group(1).startswith("wheel-consume"):
+    for problem in consumer_job_problems(path.read_text()):
+        fail(problem)
+
+
+# The name of the step in which each consume job asserts its cleanliness.
+_CLEAN_STEP = "did not build the wheel"
+
+
+def consumer_job_problems(release):
+    """check_consumer_jobs_stay_clean, as a function of release.yml's text.
+
+    Read through spec_sheet's readers, job by job and without comments
+    (review H4). This took the step's phrase anywhere in a job's block, so
+    with the step commented out the comment passed for it; the assertion
+    must now be a step, named for it, that runs unconditionally. A comment
+    that names a forbidden action is not a use of it either.
+    """
+    import spec_sheet
+
+    problems, seen = [], []
+    for job, text in spec_sheet.workflow_jobs(release).items():
+        if not job.startswith("wheel-consume"):
             continue
-        seen.append(name.group(1))
+        seen.append(job)
         for forbidden, why in (
             ("actions/checkout", "a repository checkout"),
             ("astral-sh/setup-uv", "uv, which brings the Mojo toolchain"),
             ("poe ", "a poe task, which only exists in the repo"),
         ):
-            if forbidden in block:
-                fail(
-                    f"release.yml job {name.group(1)!r} uses {why} — that puts the "
+            if forbidden in text:
+                problems.append(
+                    f"release.yml job {job!r} uses {why} — that puts the "
                     "wheel back on a machine that could have built it, and the "
-                    "job stops proving anything"
-                )
-        if "did not build the wheel" not in block:
-            fail(
-                f"release.yml job {name.group(1)!r} no longer asserts its own "
-                "cleanliness before testing the wheel"
-            )
+                    "job stops proving anything")
+        if not any(name and _CLEAN_STEP in name and not conditional and body.strip()
+                   for name, conditional, body in spec_sheet.job_steps(text)):
+            problems.append(
+                f"release.yml job {job!r} no longer asserts its own "
+                f"cleanliness before testing the wheel: no step named for it "
+                f"(`... {_CLEAN_STEP}`) runs unconditionally")
     if not seen:
-        fail("release.yml has no wheel-consume-* job: nothing installs the wheel off the build machine")
+        problems.append("release.yml has no wheel-consume-* job: nothing installs "
+                        "the wheel off the build machine")
+    return problems
 
 
 # toml-rb 4.2.0's escape handling, replayed. Its MultilineString#value strips
@@ -1696,8 +1714,9 @@ def check_ci_measurements_are_collected():
     Three ways it can lapse, all silent, and the first two are asked of
     each JOB (B16):
 
-    - a job runs tasks that record but sets no `M0_RESULTS`, so every write
-      is skipped;
+    - a job runs tasks that record -- a measurement, or a coverage
+      declaration (`--covers`, SPEC F12) -- but sets no `M0_RESULTS`, so
+      every write is skipped;
     - a job collects but never renders into its run summary or uploads its
       own `ci-results-*` artifact, so the file dies with the runner;
     - the recorder's own selftest stops running, so a regression that drops
@@ -1708,6 +1727,12 @@ def check_ci_measurements_are_collected():
     with `emit.py --render`, a flag emit.py does not have, from d23c945 on,
     so its summary was empty -- and this check, which then read test.yml
     whole, took six other jobs' `--summary` lines as that job's.
+
+    A coverage declaration counts because it is written the same way and
+    lost the same way. While only measurements counted, the unit-tests job
+    set no M0_RESULTS, so the declarations its steps run (check-docs', the
+    unit tests', the recorder selftest's) ran and recorded nothing, and so
+    did wheel-aarch64's copy of the wheel smoke's.
     """
     for problem in measurement_problems(
             *_texts("pyproject.toml", ".github/workflows/test.yml"), _recorders()):
@@ -1722,9 +1747,10 @@ def _recorders():
         and re.search(r"^\s*(?:from emit import|import emit\b)", p.read_text(), re.M))
 
 
-# A recording call: `scripts/emit.py METRIC VALUE ...`. `--covers` (a
-# coverage declaration), `--summary` and `--selftest` are not measurements.
-_RECORDS = re.compile(r"\bscripts/emit\.py[ \t]+(?!-)\S")
+# A recording call: `scripts/emit.py METRIC VALUE ...`, or `--covers ID`, a
+# coverage declaration (SPEC F12), which is written to the same file and
+# lost the same way without it. `--summary` and `--selftest` record nothing.
+_RECORDS = re.compile(r"\bscripts/emit\.py[ \t]+(?:--covers\b|(?!-)\S)")
 _RENDERS = re.compile(
     r"\bscripts/emit\.py --summary\b[^\n]*>>[ \t]*\"?\$\{?GITHUB_STEP_SUMMARY\b")
 
@@ -1766,12 +1792,12 @@ def measurement_problems(pyproject, workflow, recorders=()):
         if not env:
             if why:
                 problems.append(
-                    f"test.yml job `{job}` records measurements "
+                    f"test.yml job `{job}` records measurements or coverage "
                     f"({', '.join(why[:3])}{', ...' if len(why) > 3 else ''}) "
                     "but sets no M0_RESULTS. emit.py is a deliberate no-op "
                     "without it, so every one of those calls would run, exit 0 "
                     "and record nothing — with no failure and an identical job "
-                    "log, because the tasks still echo the number.")
+                    "log, because the tasks still echo what they measured.")
             continue
         if not _RENDERS.search(text):
             problems.append(
@@ -2339,8 +2365,10 @@ _JOB_LAPSES = [
 # A job that records must collect. By name, because which jobs record is the
 # fact under test: smoke-gateway's smokes call emit.py in their bodies, while
 # pid1's record from Python probes (`from emit import emit`) and name no
-# emit.py call at all -- a text scan of task bodies alone misses those.
-_ENV_LAPSES = ["smoke-gateway", "pid1"]
+# emit.py call at all -- a text scan of task bodies alone misses those -- and
+# unit-tests records coverage declarations and no measurement, which the
+# rule did not count until `--covers` was a record.
+_ENV_LAPSES = ["smoke-gateway", "pid1", "unit-tests"]
 
 
 def _whole_file_blind(workflow):
@@ -2348,6 +2376,52 @@ def _whole_file_blind(workflow):
     return (bool(re.search(r"^\s+M0_RESULTS:", workflow, re.M))
             and "scripts/emit.py --summary" in workflow
             and bool(re.search(r"name: ci-results-", workflow)))
+
+
+def _consumer_block_blind(release):
+    """Would the old reading of release.yml's consume jobs pass this text?
+    It split the file on job heads and took the cleanliness step's phrase,
+    or a forbidden action, anywhere in a job's block, comments included."""
+    consume = [b for b in re.split(r"\n  (?=[a-z][a-z0-9-]*:\n)", release)
+               if re.match(r"\s*wheel-consume", b)]
+    return bool(consume) and all(
+        _CLEAN_STEP in b
+        and not any(f in b for f in ("actions/checkout", "astral-sh/setup-uv", "poe "))
+        for b in consume)
+
+
+def _clean_step_commented_out(job):
+    """A consume job's text with its cleanliness step commented out whole,
+    so the step's phrase survives in the comment and nowhere else."""
+    m = re.search(r"^( +)- name: [^\n]*" + re.escape(_CLEAN_STEP)
+                  + r"[^\n]*\n(?:\1  [^\n]*\n)+", job, re.M)
+    if not m:
+        return job
+    pad = m.group(1)
+    return (job[:m.start()]
+            + "".join(pad + "# " + line[len(pad):] + "\n" for line in m.group(0).splitlines())
+            + job[m.end():])
+
+
+def _before_first_step(line):
+    """An edit putting `line` first in a job's steps, at the items' indent."""
+    return lambda job: re.sub(r"^( +)steps:[ \t]*\n",
+                              lambda m: m.group(0) + m.group(1) + "  " + line + "\n",
+                              job, count=1, flags=re.M)
+
+
+# One lapse in ONE consume job, applied to each in turn: (label, edit, the old
+# block reading passed it).
+_CONSUMER_LAPSES = [
+    ("its cleanliness step commented out, its name left in the comment",
+     _clean_step_commented_out, True),
+    ("its cleanliness step made conditional",
+     lambda job: re.sub(r"^( +)(- name: [^\n]*" + re.escape(_CLEAN_STEP) + r"[^\n]*\n)",
+                        lambda m: (m.group(1) + m.group(2) + m.group(1)
+                                   + "  if: github.event_name == 'workflow_dispatch'\n"),
+                        job, count=1, flags=re.M), True),
+    ("a checkout added", _before_first_step("- uses: actions/checkout@v7"), False),
+]
 
 
 def _smoke_only_in_a_comment(workflow):
@@ -2775,6 +2849,39 @@ def selftest():
         good = _whole_file_blind(text) and any(f"job `{job}`" in g for g in got)
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
+    # The wheel consume jobs stay clean, read as they run (review H4): each
+    # lapse in each consume job alone must name it, and the first two are
+    # texts the old block reading passed.
+    got = consumer_job_problems(real_release)
+    print(f"  {'caught' if not got else 'MISSED'}          (control: release.yml's consume jobs as committed)"
+          + ("" if not got else f" -- got {got}"))
+    ok &= not got
+    consume = [j for j in spec_sheet.workflow_jobs(real_release) if j.startswith("wheel-consume")]
+    if not consume:
+        print("  MISSED          release.yml has no wheel-consume job, so no lapse was tried")
+        ok = False
+    for label, edit, blind in _CONSUMER_LAPSES:
+        missed = []
+        for job in consume:
+            text = _in_job(real_release, job, edit)
+            if text is None or text == real_release:
+                missed.append(f"{job} (NOT APPLICABLE)")
+            elif blind and not _consumer_block_blind(text):
+                missed.append(f"{job} (the old reading sees it: not a comment-blind case)")
+            elif not any(f"job {job!r}" in g for g in consumer_job_problems(text)):
+                missed.append(job)
+        good = not missed
+        print(f"  {'caught' if good else 'MISSED'}          a consume job with {label}, "
+              f"{len(consume) - len(missed)} of {len(consume)}"
+              + ("" if good else " -- missed in " + ", ".join(missed)))
+        ok &= good
+    text = _in_job(real_release, consume[0], _before_first_step(
+        "# never actions/checkout here: this job must not see the repository")) if consume else None
+    got = consumer_job_problems(text) if text else ["NOT APPLICABLE"]
+    good = text != real_release and not got
+    print(f"  {'caught' if good else 'MISSED'}          (control: a comment in a consume job naming actions/checkout)"
+          + ("" if good else f" -- got {got}"))
+    ok &= good
     # The required context: the three edits that hang every pull request
     # rather than failing one, and deletion.
     real_docs = (REPO / ".github" / "workflows" / "docs.yml").read_text()
