@@ -611,6 +611,14 @@ jobs:
       # a prompt close (Linux used to sit out the header timeout).
       - name: Smoke test a half-closed client
         run: uv run poe smoke-half-close
+      # And a client's reset, where the disagreement was over one flag:
+      # kqueue reports an RST as EV_EOF, while epoll's EPOLLERR came through
+      # as EV_ERROR, which the loop skips as a failed registration. The
+      # one-shot write or edge-triggered read the reset arrived on was spent
+      # with it, so the slot was held for the life of the process (SPEC C9).
+      # Fails without the fix on Linux only; macOS passes either way.
+      - name: Smoke test a client that resets its connection
+        run: uv run poe smoke-peer-reset
       # The same reset from the server's side. A 413 goes out while the
       # client is still uploading, and closing at once left the rest of the
       # body unread, which the kernel answers with RST -- so a client that

@@ -563,6 +563,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
         )
 
     for i in range(n_events):
+        # EV_ERROR is kqueue's report of a CHANGE that failed (a
+        # registration, errno in `data`), not of a socket, and no wait here
+        # returns one: kqueue changes go through `kevent_register_one` with
+        # no eventlist, so a failed one raises there instead. A socket's
+        # error reaches this loop as EV_EOF from both backends. epoll's
+        # EPOLLERR used to arrive as EV_ERROR, and this skip swallowed
+        # every client reset on Linux with it (B12).
         if (backend.event_flags(i) & EV_ERROR) != 0:
             continue
 

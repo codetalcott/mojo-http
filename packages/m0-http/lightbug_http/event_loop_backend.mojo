@@ -30,7 +30,15 @@ trait EventLoopBackend:
         ...
 
     def event_flags(self, i: Int) -> UInt16:
-        """Return the flags for event at index i (EV_EOF, EV_ERROR, etc.)."""
+        """Return the flags for event at index i.
+
+        EV_EOF: the peer shut down or reset, or the socket holds an error --
+        the recv or send the loop makes next returns it. kqueue sets it on
+        the filter (the error in `fflags`); epoll maps EPOLLHUP, EPOLLRDHUP
+        and EPOLLERR to it. EV_ERROR is kqueue's report of a registration
+        that failed, which no backend's `wait` returns: a socket error is
+        never EV_ERROR, because the loop skips that flag (B12).
+        """
         ...
 
     def event_data(self, i: Int) -> Int:

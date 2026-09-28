@@ -1425,6 +1425,31 @@ echo "smoke-half-close OK"
 python3 scripts/emit.py --covers A12 --task smoke-half-close
 """
 
+# SPEC C9 (B12). A client's RST reaches epoll as one EPOLLERR event, which
+# the epoll backend reported as EV_ERROR -- and the loop skips EV_ERROR, a
+# skip meant for kqueue's failed registrations. The reset was never seen,
+# the one-shot write or edge-triggered read it arrived on was spent, and
+# the slot was held for the life of the process. `--idle-timeout 0` keeps
+# every deadline off, so nothing else can give that slot back and a leak
+# stays visible; `--metrics` counts the slots. Fails without the fix on
+# Linux only: kqueue reports a reset as EV_EOF, so macOS passes either way.
+[tool.poe.tasks.smoke-peer-reset]
+help = "A client that resets mid-response or while idle gives its slot back at once"
+deps = ["build-serve"]
+shell = """
+files=$(mktemp -d)
+python3 -c "import sys; open(sys.argv[1] + '/big.bin', 'wb').write(b'm0' * 8388608)" "$files"
+bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8141 \
+  --idle-timeout 0 --metrics --max-body 32m --static /files="$files" > reset.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f reset.log; rm -rf "$files"' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8141/ > /dev/null \
+  || { echo '=== reset.log ==='; cat reset.log; exit 1; }
+python3 scripts/peer_reset_probe.py 8141 || { echo '=== reset.log ==='; cat reset.log; exit 1; }
+echo "smoke-peer-reset OK"
+python3 scripts/emit.py --covers C9 --task smoke-peer-reset
+"""
+
 # RFC 9112 §9.6. The server refuses an oversized body while the client is
 # still uploading it, and closing at once left the rest unread -- which the
 # kernel answers with RST, so a client that writes its whole body before it
