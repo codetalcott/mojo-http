@@ -376,7 +376,7 @@ Three things about it are load-bearing:
   names which side is missing.
 - **The rules are pure functions of text**, which is what lets
   `--sabotage` revert one in memory and insist the checker catches it —
-  `shim_ownership.py`'s shape. Ten of the twenty-eight sabotages mutate
+  `shim_ownership.py`'s shape. Fourteen of the thirty-two sabotages mutate
   `pyproject.toml`, `test.yml`, `cli.mojo`, the host's `flags.mojo` or the
   test index rather than the sheet, so every source arrives as an argument. Do not "simplify" the
   checker into something that reads paths.
@@ -1186,13 +1186,13 @@ Properties of the design, not defects to fix in passing:
   `smoke-hello` and `smoke-notes` send the bytes over a socket. Adding a
   slice of a request string means adding it there.
 - **A response header carrying CR, LF or NUL is dropped, not transmitted.**
-  `write_latin1_to` emits `name: value\r\n` with no inspection, so a value
-  an application built out of user input could end the header block and
-  add headers, or a body, of its own. `has_control_bytes` in
-  `response.mojo` refuses the header (and empties an injected status
-  reason phrase, which frameworks that validate header pairs still leave
-  alone). Dropping rather than raising: the application has already run
-  and its body is real.
+  A value an application built out of user input could otherwise end the
+  header block and add headers, or a body, of its own. The fork's head
+  writers refuse it for every response: `write_latin1_to` drops the
+  header, the cookie jar the `Set-Cookie` line, and `encode`/`encode_into`
+  empty an injected reason phrase (SPEC G1, G2); m0-wsgi also refuses it
+  as it reads an application's head. Dropping rather than raising: the
+  application has already run and its body is real.
 - **An application's `Set-Cookie` goes to the wire verbatim.** A `Cookie`
   is what the server builds for itself; a line a WSGI/ASGI application
   returned IS the header, and `ResponseCookieJar.add_raw` transmits it

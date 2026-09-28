@@ -149,7 +149,13 @@ has the Flask version of the whole thing, and CI drives that exact file.
   `413`.
 - `--idle-timeout SECONDS` closes idle keep-alive connections (default 60,
   0 = never). It also bounds a WebSocket's wait for the peer's close reply
-  and a refused upload's linger; at 0 both close at once.
+  and a refused upload's linger; at 0 both close at once. And it bounds a
+  response the client stops reading: one that goes that long without a
+  send making progress is closed, however long a response read steadily
+  takes.
+- `--body-timeout SECONDS` refuses a request body still arriving that long
+  after its headers (default 30, 0 = never): `408` on a connection's first
+  request, then the connection closes.
 - `--max-keepalive-requests N` (or `M0_MAX_KEEPALIVE_REQUESTS`) closes a
   keep-alive connection after N requests (0 = never). Every close is a
   reconnect for the client, and one reconnect per N requests is the

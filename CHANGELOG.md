@@ -98,6 +98,76 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `?connect_timeout`, and `...&` became `...&&`, an empty keyword. libpq
   refused both before connecting, with a message about percent-encoding a
   password.
+- **A request carrying two `Host` lines, or two `Transfer-Encoding`
+  lines, is answered 400** (SPEC B10, B11). The parser kept the last line
+  of a repeated field and served the request, so a proxy that routes on
+  the first `Host` and an application that reads the last (Django's
+  `HTTP_HOST`) disagreed about which site the request was for; RFC 9112
+  §3.2 requires a 400 for more than one `Host` line in any request. Two
+  `Transfer-Encoding: chunked` lines mean `chunked, chunked`, which was
+  refused on one line and accepted on two. A second line of either is now
+  refused whatever it says, as a second `Content-Length` line already was.
+
+- **A response header, reason phrase or `Set-Cookie` line carrying CR, LF
+  or NUL is refused on every path, not only the gateway's** (SPEC G1, G2).
+  The check lived in m0-wsgi, so a head built in Mojo -- a view's, the
+  Mojo host's, a `--mount X=mojo` pool thread's -- was written
+  uninspected, and a view that put request data in a header could end its
+  own head and add headers, or a body, of its choosing:
+  `reply.redirect(303, next)` with `next` from the query, which `unquote`
+  has already decoded from `%0D%0A` to CRLF. The server's head writer now
+  drops such a header or cookie line and sends such a reason phrase
+  empty, for every response, as m0-wsgi did for an application's head. On
+  an eight-header head the writer measured within about 10 ns of the old
+  one.
+
+- **A `Set-Cookie` value's bytes above 0x7F reach the wire as the
+  application gave them** (SPEC G17). Every other header goes out in
+  ISO-8859-1, as PEP 3333 and RFC 9110 §5.5 have it, but cookie lines were
+  written as UTF-8: a WSGI application's `caf\xe9` went out as
+  `caf\xc3\xa9`, and an ASGI application's own bytes `caf\xc3\xa9` as the
+  double-encoded `caf\xc3\x83\xc2\xa9`. Cookie lines now take the same
+  latin-1 writer as every other header. A cookie that is all ASCII, as
+  Django's and the session cookie `m0_http.session` builds are, is
+  unchanged.
+
+- **`--spawn-workers` works for a binary installed under a path that is
+  not ASCII** (SPEC E35). The running binary's path was rebuilt a byte at
+  a time as characters, so each byte above 0x7F became two: under
+  `/Users/josé/` every worker's exec failed with "No such file or
+  directory" and m0serve refused to serve (exit 78). The path is now the
+  bytes the operating system returned.
+- **A POST no longer leaves a timer that closes its connection 30 seconds
+  later, or sends a pool thread's answer to another connection** (SPEC
+  A23). The body timer was armed for every request with a body and left
+  running when the body arrived with the headers, as a small POST's does.
+  When it fired it closed the connection whatever it was doing: an idle
+  keep-alive connection was dropped, and one whose next request was on a
+  `--blocking-threads` thread (a WSGI app gets them by default) had its
+  slot released under that thread, so the next client to connect read the
+  answer meant for the first. The timer is now armed only for a body still
+  arriving, and acts only on one. `--body-timeout SECONDS` (default 30,
+  0 = never) sets the deadline, and `--doctor` reports it. Two deadlines
+  around it changed too (A4, A24): a request that starts late in the
+  keep-alive window is no longer cut at the previous response's deadline,
+  as an upload begun 7 s into a 10 s `--idle-timeout` was at 10.2 s; and a
+  response the client stops reading is closed once `--idle-timeout` passes
+  with no send making progress, where it used to hold its connection for
+  good. A response read slowly but steadily is not affected. Separately, a
+  handler pool refuses a 127th mount's lane rather than writing past the
+  end of its wake block.
+- **The docs gate is one list, and CI's coverage checks no longer take a
+  comment for a gate.** The required `Docs` check and `poe check-docs` now
+  run one script, `scripts/docs_gate.sh` (about 5 s): each used to skip
+  checks the other ran, and neither ran the milestone rot gates, which a
+  pull request touching only `docs/` could break unseen. The checks that
+  every smoke and test task runs in CI, and that each SPEC row's gate
+  declares its coverage, counted a task, a `--covers` declaration or a dev
+  dependency named only in a comment in `test.yml` or `pyproject.toml`; they
+  now read both files as they run. Each CI job must also render and upload
+  its own measurements: the postgres job's summary had been empty since the
+  job was added, rendered with a flag `emit.py` does not have, while the
+  check counted the other jobs' renders as its.
 
 ## [1.7.0] — 2026-09-27
 

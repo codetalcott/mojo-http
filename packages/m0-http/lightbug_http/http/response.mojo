@@ -3,6 +3,7 @@ from lightbug_http.connection import TCPConnection, default_buffer_size
 from lightbug_http.cookie import ResponseCookieJar
 from lightbug_http.header import (
     HeaderKey, Headers, ParsedResponseHeaders, parse_response_headers, write_header,
+    span_breaks_header_line,
     KH_CONNECTION, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_DATE,
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
@@ -547,14 +548,11 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
                 raise Error(String(e))
 
     def write_to[T: Writer](self, mut writer: T):
-        writer.write(
-            self.protocol,
-            whitespace,
-            self.status_code,
-            whitespace,
-            self.status_text,
-            lineBreak,
-        )
+        # The status line's rule is `encode`'s, so the text is the wire's.
+        writer.write(self.protocol, whitespace, self.status_code, whitespace)
+        if not span_breaks_header_line(self.status_text.as_bytes()):
+            writer.write(self.status_text)
+        writer.write(lineBreak)
 
         if HeaderKey.SERVER not in self.headers:
             writer.write("server: lightbug_http", lineBreak)
@@ -571,22 +569,23 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
 
         This method consumes the data in this request and it should
         no longer be considered valid.
+
+        A reason phrase holding CR, LF or NUL goes out as the empty phrase
+        and the code is kept (SPEC G1): the phrase is written verbatim into
+        the status line, where a CRLF ends the line and starts a header the
+        application never listed. Headers and `Set-Cookie` lines carrying
+        one are dropped by their own writers (SPEC G2).
         """
         var writer = ByteWriter()
-        writer.write(
-            self.protocol,
-            whitespace,
-            self.status_code,
-            whitespace,
-            self.status_text,
-            lineBreak,
-            "server: lightbug_http",
-            lineBreak,
-        )
+        writer.write(self.protocol, whitespace, self.status_code, whitespace)
+        if not span_breaks_header_line(self.status_text.as_bytes()):
+            writer.write(self.status_text)
+        writer.write(lineBreak, "server: lightbug_http", lineBreak)
         if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)
-        writer.write(self.cookies, lineBreak)
+        self.cookies.write_latin1_to(writer)
+        writer.write(lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 
@@ -613,20 +612,17 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         """
         buf.clear()
         var writer = ByteWriter(buf^)
-        writer.write(
-            self.protocol,
-            whitespace,
-            self.status_code,
-            whitespace,
-            self.status_text,
-            lineBreak,
-            "server: lightbug_http",
-            lineBreak,
-        )
+        # The head's rules are `encode`'s: an injected reason phrase is
+        # emptied, an injected header or `Set-Cookie` line dropped.
+        writer.write(self.protocol, whitespace, self.status_code, whitespace)
+        if not span_breaks_header_line(self.status_text.as_bytes()):
+            writer.write(self.status_text)
+        writer.write(lineBreak, "server: lightbug_http", lineBreak)
         if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)
-        writer.write(self.cookies, lineBreak)
+        self.cookies.write_latin1_to(writer)
+        writer.write(lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 
