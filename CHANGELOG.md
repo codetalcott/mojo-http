@@ -230,6 +230,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server `kill -PIPE`, then a client that resets before its answer, on
   both CI legs.
 
+- **A Datastar redirect no longer sends a location that runs script or
+  leaves the site** (SPEC I29). `redirect` and `DatastarStream.redirect_to`
+  assign the location to `window.location`, which runs a `javascript:` URL
+  in the page's origin and follows `//evil.example` off the site; a
+  `next=` parameter after a login is how either arrives. Both now raise
+  unless the location is an `http`/`https` URL or a reference relative to
+  the page (`/path`, `path`, `?query`, `#fragment`) that stays on its
+  site. The location is read as the browser reads it, so the spellings a
+  browser also takes for those are refused too: a leading space, a tab
+  inside the scheme, the scheme in capitals, `/\evil.example`. A redirect
+  off the site still goes out when it names its scheme. Found in review.
+
 ### Changed
 
 - **`SqliteLib` and `PgLib` keep their C entry points in one table,

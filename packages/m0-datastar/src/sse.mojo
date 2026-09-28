@@ -115,6 +115,77 @@ def _refuse_line_break(field: String, value: String) raises:
             )
 
 
+def _is_ascii_alpha(c: UInt8) -> Bool:
+    return (c >= UInt8(ord("a")) and c <= UInt8(ord("z"))) or (
+        c >= UInt8(ord("A")) and c <= UInt8(ord("Z"))
+    )
+
+
+def _is_slash(c: UInt8) -> Bool:
+    """`/`, or `\\`, which an http(s) URL reads as `/`."""
+    return c == UInt8(ord("/")) or c == UInt8(ord("\\"))
+
+
+def _refuse_unsafe_location(location: String) raises:
+    """Raise unless `location` is an http(s) URL or stays on the page's site.
+
+    Assigned to `window.location`, a `javascript:` URL runs its script in
+    the page's origin, and `//host` -- a reference with no scheme but an
+    authority -- leaves the site; a `next=` parameter after a login is
+    exactly where either arrives. So the location must be an absolute URL
+    whose scheme is `http` or `https`, or a reference relative to the page
+    (`/path`, `path`, `?query`, `#fragment`) that does not open with two
+    slashes.
+
+    Read the way the browser's URL parser reads it (WHATWG URL), or a
+    spelling the check does not know gets through: leading C0 controls and
+    spaces are stripped, a tab, LF or CR anywhere is removed, a scheme is
+    ASCII-case-insensitive, and an http(s) URL takes `\\` for `/`. So
+    ` javascript:`, `java<TAB>script:`, `JAVASCRIPT:`, `/\\host` and
+    `\\\\host` are refused with the plain forms. Refused rather than
+    rewritten: a redirect somewhere else is not the one the caller asked
+    for.
+    """
+    var src = location.as_bytes()
+    var n = location.byte_length()
+    var i = 0
+    while i < n and src[i] <= UInt8(0x20):
+        i += 1
+    var kept = List[UInt8](capacity=n - i)
+    while i < n:
+        var c = src[i]
+        if c != UInt8(0x09) and c != UInt8(0x0A) and c != UInt8(0x0D):
+            kept.append(c)
+        i += 1
+    var k = len(kept)
+
+    # A scheme is ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":".
+    if k > 0 and _is_ascii_alpha(kept[0]):
+        var j = 1
+        while j < k and (
+            _is_ascii_alpha(kept[j])
+            or (kept[j] >= UInt8(ord("0")) and kept[j] <= UInt8(ord("9")))
+            or kept[j] == UInt8(ord("+"))
+            or kept[j] == UInt8(ord("-"))
+            or kept[j] == UInt8(ord("."))
+        ):
+            j += 1
+        if j < k and kept[j] == UInt8(ord(":")):
+            var scheme = String(unsafe_from_utf8=Span(kept)[0:j]).lower()
+            if scheme == "http" or scheme == "https":
+                return
+            raise Error(
+                "m0_datastar: the redirect location's scheme is not http or"
+                " https, and assigned to window.location it would run or"
+                " open whatever the scheme names"
+            )
+    if k >= 2 and _is_slash(kept[0]) and _is_slash(kept[1]):
+        raise Error(
+            "m0_datastar: the redirect location opens with two slashes, which"
+            " names another host; give an off-site target its http(s) scheme"
+        )
+
+
 def _hex_digit(n: Int) -> UInt8:
     if n < 10:
         return UInt8(ord("0") + n)
@@ -340,11 +411,18 @@ def redirect(
     script element around it -- a `next=` parameter after a login is the
     usual way request data reaches here (SPEC I29).
 
+    Raises when `location` is neither an http(s) URL nor a reference that
+    stays on the page's site -- `javascript:alert(1)` would run in the
+    page, `//evil.example` would leave it -- and when `event_id` carries
+    CR or LF (SPEC I29).
+
     Args:
-        location: URL or path to redirect the client to.
+        location: An `http`/`https` URL, or a path, query or fragment
+            relative to the page.
         event_id: Optional SSE event ID.
         retry_duration: Optional SSE retry duration in ms.
     """
+    _refuse_unsafe_location(location)
     var buf = List[UInt8](capacity=64)
     _buf_write(buf, "setTimeout(() => window.location = ")
     _buf_write(buf, _js_string(location))
