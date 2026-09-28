@@ -72,7 +72,7 @@ from std.ffi import c_int
 from std.memory import Pointer
 
 from .ffi import SQLITE_OK, SQLITE_NOMEM, SQLITE_CONSTRAINT, c_string
-from .lib import CStr, FreeFn, SqliteLib, StmtLib, VtabLib, as_cstr
+from .lib import CStr, FreeFn, SqliteFns, VtabLib, as_cstr
 
 # --- Constraint operators (xBestIndex input, not a result code) -------------
 comptime SQLITE_INDEX_CONSTRAINT_EQ: Int = 2
@@ -375,7 +375,7 @@ def _x_rowid(p_cursor: Int, p_rowid: Int) abi("C") -> c_int:
 # --- Registration ------------------------------------------------------------
 
 
-def _build_module(lib: SqliteLib) raises -> Int:
+def _build_module(lib: SqliteFns) raises -> Int:
     """Allocate and fill the sqlite3_module, and the entry points after it.
     Returns its address.
 
@@ -434,7 +434,7 @@ def _build_module(lib: SqliteLib) raises -> Int:
     return m
 
 
-def _register(lib: SqliteLib, db_handle: Int) raises:
+def _register(lib: SqliteFns, db_handle: Int) raises:
     """Register `m0_array` on a connection. See `Connection.register_array_module`."""
     var m = _build_module(lib)
     var name = c_string(ARRAY_NAME)
@@ -455,7 +455,7 @@ def _register(lib: SqliteLib, db_handle: Int) raises:
 
 
 def _bind_spec(
-    lib: StmtLib, stmt_handle: Int, param: Int, data: Int, count: Int, kind: Int
+    lib: SqliteFns, stmt_handle: Int, param: Int, data: Int, count: Int, kind: Int
 ) raises:
     """Bind a {data, count, kind} header to `param` as a tagged pointer.
 

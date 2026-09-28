@@ -15,15 +15,17 @@ there were each found by crashing, and all three are in `lib.mojo`'s docstring:
   struct that holds it.** The pointer is identical by address before and after a
   move, and calling it that way faults while the same call from a method beside
   it answers correctly — so every entry point is private behind a wrapper
-  method, and `test_lib.mojo` asserts that shape in the position the broken one
-  failed in. A dangling call is a segmentation fault, not an exception, which is
+  method, all of them in ONE table (`PgFns`: field, load and wrapper side by
+  side), which `PgLib` holds beside the handle and a `Result` copies whole, so
+  an entry point is added there and nowhere else. `test_lib.mojo` asserts that
+  shape in the position the broken one failed in. A dangling call is a segmentation fault, not an exception, which is
   why the rule is written down as well as tested.
 - **libpq is never unloaded once opened.** `PgLib.__init__` re-opens its image
   with `RTLD_NODELETE` (`pin_library`), so no `dlclose` unmaps it. Without the
   pin, the last `Connection` going — at its last use, routinely the query
   itself — unloaded the library, and `rows.text(0, 0)` on the result was a
   segmentation fault three runs out of three. The pin is what makes it sound
-  for `Result` to hold COPIES of its entry points (`ResultLib`); reaching them
+  for `Result` to hold a COPY of the entry-point table (`PgFns`); reaching it
   through the connection's address instead faulted even with the pin, because
   a destroyed or moved connection leaves that address pointing at nothing.
 

@@ -18,20 +18,21 @@ found there by crashing — are adopted here up front:
   - **The handle and the pointers loaded from it live in ONE struct.** A
     `thin` pointer loaded from a handle carries no borrow, so an
     `OwnedDLHandle` held anywhere else is `dlclose`d at its last mention
-    and the next call jumps into unmapped memory. `SqliteLib` holds both.
+    and the next call jumps into unmapped memory. `SqliteLib` holds both:
+    the handle, and the table of pointers loaded from it (`SqliteFns`).
 
   - **A `thin` pointer FIELD is called only from a method beside it.** The
     same pointer, identical by address, faults when called as
     `table.field()` from outside its struct and answers correctly from a
     method next to it (measured on this toolchain, in m0-postgres). So every
-    entry point is private behind a wrapper, and nothing outside this file
-    calls one.
+    entry point is private behind a wrapper in `SqliteFns`, and nothing
+    outside that table calls one.
 
   - **The library is never unloaded once opened.** `SqliteLib.__init__`
     re-opens the image with `RTLD_NODELETE` (`pin_library`), so no
     `dlclose` unmaps it. That is what makes it sound for a `Statement` to
-    hold a COPY of the entry points it calls (`StmtLib`) and outlive the
-    `Connection` — and the handle — that loaded them: Mojo destroys a
+    hold a COPY of the table (`SqliteFns`, whole) and outlive the
+    `Connection` — and the handle — that loaded it: Mojo destroys a
     connection at its last use, routinely the `prepare()` itself (O2), and
     without the pin the statement's next `step` would call into memory the
     connection's `dlclose` had just unmapped. The virtual-table callbacks
@@ -310,14 +311,14 @@ def default_search_path() -> List[String]:
 
 
 struct SqliteLib(Movable):
-    """An open libsqlite3 and every entry point this package uses.
+    """An open libsqlite3: the handle, which file it is, and every entry point.
 
     One struct on purpose: the module docstring's first rule. The handle
-    must outlive every call made through the pointers beside it, and the
-    only way to say that in Mojo — where a loaded pointer carries no borrow
-    — is to give them the same lifetime. A `Connection` holds one; a
-    `Statement` holds the copy `stmt_lib` cuts from it, which the pin makes
-    sound.
+    must outlive every call made through the pointers loaded from it, and
+    the only way to say that in Mojo — where a loaded pointer carries no
+    borrow — is to give them the same lifetime: the table (`fns`) lives and
+    moves with the handle. A `Connection` holds one and calls through
+    `fns`; a `Statement` holds a copy of `fns`, which the pin makes sound.
     """
 
     var _lib: OwnedDLHandle
@@ -325,6 +326,44 @@ struct SqliteLib(Movable):
 
     var path: String
     """Which file was opened — reported, never guessed at."""
+
+    var fns: SqliteFns
+    """Every entry point, loaded from `_lib` and called through
+    `SqliteFns`'s wrappers (the second rule)."""
+
+    def __init__(out self, var handle: OwnedDLHandle, var path: String) raises:
+        """Resolve every entry point from an already-open handle.
+
+        Private in effect: `open_library` is the constructor callers use.
+        The pin comes first, so no path out of this constructor leaves a
+        table whose library can be unmapped under it; `path` and `_lib`
+        are assigned last, so a missing symbol leaves no table to half-own.
+        """
+        pin_library(path)
+        self.fns = SqliteFns(handle, path)
+        self.path = path^
+        # Last, so the handle's own last mention is after every load.
+        self._lib = handle^
+
+
+struct SqliteFns(ImplicitlyCopyable, Movable):
+    """Every libsqlite3 entry point this package calls, and the wrapper for each.
+
+    The one place an entry point is added: its declaration above, then a
+    field, a load and a wrapper here. `SqliteLib` holds this table beside
+    the handle it was loaded from (the first rule), and a `Statement` holds
+    a COPY of it, whole, taken at `prepare` — sound because of the third
+    rule: the library these pointers came from is pinned for the life of
+    the process, so they stay valid after the handle, and the `Connection`
+    holding it, are gone, which is exactly when a statement is still
+    stepping (O2). The virtual-table callbacks get their seven through
+    `vtab_lib`.
+
+    Implicitly copyable, unlike `SqliteLib`, because it owns nothing: no
+    handle, no buffer, only addresses into a library that is never
+    unloaded. Its copy and its move are the compiler's; a struct of `thin`
+    pointers needs none written.
+    """
 
     var _libversion: _libversion.type
     var _libversion_number: _libversion_number.type
@@ -370,15 +409,14 @@ struct SqliteLib(Movable):
     var _create_module_v2: _create_module_v2.type
     """Every entry point, private: the module docstring's second rule."""
 
-    def __init__(out self, var handle: OwnedDLHandle, var path: String) raises:
-        """Resolve every entry point from an already-open handle.
+    def __init__(out self, ref handle: OwnedDLHandle, path: String) raises:
+        """Resolve every entry point from `handle`, checking each first.
 
-        Private in effect: `open_library` is the constructor callers use.
-        The pin comes first, so no path out of this constructor leaves a
-        table whose library can be unmapped under it; `path` and `_lib`
-        are assigned last, so a missing symbol leaves no table to half-own.
+        Built by `SqliteLib.__init__`, after the pin and while it still
+        holds the handle. One `_checked` per field, taking the symbol from
+        the declaration it loads, so an entry point cannot be loaded without
+        being checked.
         """
-        pin_library(path)
         self._libversion = _checked[_libversion.name, _libversion.type](handle, path)
         self._libversion_number = _checked[
             _libversion_number.name, _libversion_number.type
@@ -439,9 +477,6 @@ struct SqliteLib(Movable):
         self._create_module_v2 = _checked[
             _create_module_v2.name, _create_module_v2.type
         ](handle, path)
-        self.path = path^
-        # Last, so the handle's own last mention is after every load above.
-        self._lib = handle^
 
     # --- Library ----------------------------------------------------------
 
@@ -496,10 +531,6 @@ struct SqliteLib(Movable):
         """`sqlite3_prepare_v2`."""
         return Int(self._prepare_v2(db, sql, c_int(length), out_stmt, out_tail))
 
-    def finalize(self, stmt: Int) -> Int:
-        """`sqlite3_finalize`."""
-        return Int(self._finalize(stmt))
-
     def get_autocommit(self, db: Int) -> Int:
         """`sqlite3_get_autocommit`."""
         return Int(self._get_autocommit(db))
@@ -520,167 +551,13 @@ struct SqliteLib(Movable):
         """`sqlite3_busy_timeout`."""
         return Int(self._busy_timeout(db, c_int(ms)))
 
-    def declare_vtab(self, db: Int, decl: CStr) -> Int:
-        """`sqlite3_declare_vtab`."""
-        return Int(self._declare_vtab(db, decl))
-
-    def malloc64(self, size: Int) -> Int:
-        """`sqlite3_malloc64`: an address, or 0."""
-        return Int(self._malloc64(Int64(size)))
-
-    def free(self, p: Int):
-        """`sqlite3_free`."""
-        self._free(p)
-
-    def free_fn(self) -> FreeFn:
-        """`sqlite3_free` itself, as the destructor SQLite is handed for a
-        buffer it should own — the module and the array specs. A pointer
-        loaded from the library, never a Mojo shim that would need a table
-        of its own to reach `sqlite3_free`."""
-        return self._free
-
     def create_module_v2(
         self, db: Int, name: CStr, module: Int, aux: Int, destroy: FreeFn
     ) -> Int:
         """`sqlite3_create_module_v2`."""
         return Int(self._create_module_v2(db, name, module, aux, destroy))
 
-    # --- Copies for the values that outlive a connection -------------------
-
-    def stmt_lib(self) -> StmtLib:
-        """The entry points a `Statement` calls, copied out of this table.
-
-        A copy is sound because of the third rule: the library these
-        pointers came from is pinned for the life of the process, so they
-        stay valid after this table — and the `Connection` holding it — is
-        gone, which is exactly when a statement is still stepping (O2).
-        """
-        return StmtLib(
-            self._finalize,
-            self._bind_int64,
-            self._bind_double,
-            self._bind_text,
-            self._bind_blob,
-            self._bind_null,
-            self._bind_pointer,
-            self._step,
-            self._reset,
-            self._clear_bindings,
-            self._column_count,
-            self._column_type,
-            self._column_int64,
-            self._column_double,
-            self._column_text,
-            self._column_blob,
-            self._column_bytes,
-            self._column_name,
-            self._db_handle,
-            self._errcode,
-            self._errmsg,
-            self._errstr,
-            self._malloc64,
-            self._free,
-        )
-
-    def vtab_lib(self) -> VtabLib:
-        """The entry points the virtual-table callbacks call, copied out,
-        for `vtab.mojo` to store in the module buffer SQLite owns."""
-        return VtabLib(
-            self._declare_vtab,
-            self._malloc64,
-            self._free,
-            self._value_pointer,
-            self._result_null,
-            self._result_double,
-            self._result_int64,
-        )
-
-
-struct StmtLib(ImplicitlyCopyable, Movable):
-    """The entry points a `Statement` needs, held by value.
-
-    Implicitly copyable, unlike `SqliteLib`, because it owns nothing: no
-    handle, no buffer, only addresses into a library that is never
-    unloaded. The fields are private and every call goes through a method
-    beside them, for the second rule.
-    """
-
-    var _finalize: _finalize.type
-    var _bind_int64: _bind_int64.type
-    var _bind_double: _bind_double.type
-    var _bind_text: _bind_text.type
-    var _bind_blob: _bind_blob.type
-    var _bind_null: _bind_null.type
-    var _bind_pointer: _bind_pointer.type
-    var _step: _step.type
-    var _reset: _reset.type
-    var _clear_bindings: _clear_bindings.type
-    var _column_count: _column_count.type
-    var _column_type: _column_type.type
-    var _column_int64: _column_int64.type
-    var _column_double: _column_double.type
-    var _column_text: _column_text.type
-    var _column_blob: _column_blob.type
-    var _column_bytes: _column_bytes.type
-    var _column_name: _column_name.type
-    var _db_handle: _db_handle.type
-    var _errcode: _errcode.type
-    var _errmsg: _errmsg.type
-    var _errstr: _errstr.type
-    var _malloc64: _malloc64.type
-    var _free: _free.type
-
-    def __init__(
-        out self,
-        finalize: _finalize.type,
-        bind_int64: _bind_int64.type,
-        bind_double: _bind_double.type,
-        bind_text: _bind_text.type,
-        bind_blob: _bind_blob.type,
-        bind_null: _bind_null.type,
-        bind_pointer: _bind_pointer.type,
-        step: _step.type,
-        reset: _reset.type,
-        clear_bindings: _clear_bindings.type,
-        column_count: _column_count.type,
-        column_type: _column_type.type,
-        column_int64: _column_int64.type,
-        column_double: _column_double.type,
-        column_text: _column_text.type,
-        column_blob: _column_blob.type,
-        column_bytes: _column_bytes.type,
-        column_name: _column_name.type,
-        db_handle: _db_handle.type,
-        errcode: _errcode.type,
-        errmsg: _errmsg.type,
-        errstr: _errstr.type,
-        malloc64: _malloc64.type,
-        free: _free.type,
-    ):
-        self._finalize = finalize
-        self._bind_int64 = bind_int64
-        self._bind_double = bind_double
-        self._bind_text = bind_text
-        self._bind_blob = bind_blob
-        self._bind_null = bind_null
-        self._bind_pointer = bind_pointer
-        self._step = step
-        self._reset = reset
-        self._clear_bindings = clear_bindings
-        self._column_count = column_count
-        self._column_type = column_type
-        self._column_int64 = column_int64
-        self._column_double = column_double
-        self._column_text = column_text
-        self._column_blob = column_blob
-        self._column_bytes = column_bytes
-        self._column_name = column_name
-        self._db_handle = db_handle
-        self._errcode = errcode
-        self._errmsg = errmsg
-        self._errstr = errstr
-        self._malloc64 = malloc64
-        self._free = free
+    # --- Statements -------------------------------------------------------
 
     def finalize(self, stmt: Int) -> Int:
         """`sqlite3_finalize`."""
@@ -760,11 +637,6 @@ struct StmtLib(ImplicitlyCopyable, Movable):
         """`sqlite3_column_name`; NULL for an index out of range."""
         return CharPtr(unsafe_from_address=Int(self._column_name(stmt, c_int(index))))
 
-    def errstr(self, code: Int) -> String:
-        """`sqlite3_errstr`."""
-        var p = CharPtr(unsafe_from_address=Int(self._errstr(c_int(code))))
-        return cstr_to_string(p, cstr_len(p))
-
     def stmt_errmsg(self, stmt: Int, rc: Int) -> String:
         """Message for `rc` from the connection owning `stmt`, or "" if unsure.
 
@@ -800,13 +672,39 @@ struct StmtLib(ImplicitlyCopyable, Movable):
         var p = CharPtr(unsafe_from_address=Int(self._errmsg(db)))
         return cstr_to_string(p, cstr_len(p))
 
+    # --- Memory and the virtual table -------------------------------------
+
+    def declare_vtab(self, db: Int, decl: CStr) -> Int:
+        """`sqlite3_declare_vtab`."""
+        return Int(self._declare_vtab(db, decl))
+
     def malloc64(self, size: Int) -> Int:
         """`sqlite3_malloc64`: an address, or 0."""
         return Int(self._malloc64(Int64(size)))
 
+    def free(self, p: Int):
+        """`sqlite3_free`."""
+        self._free(p)
+
     def free_fn(self) -> FreeFn:
-        """`sqlite3_free`, as a bind destructor (see `SqliteLib.free_fn`)."""
+        """`sqlite3_free` itself, as the destructor SQLite is handed for a
+        buffer it should own — the module and the array specs. A pointer
+        loaded from the library, never a Mojo shim that would need a table
+        of its own to reach `sqlite3_free`."""
         return self._free
+
+    def vtab_lib(self) -> VtabLib:
+        """The entry points the virtual-table callbacks call, copied out,
+        for `vtab.mojo` to store in the module buffer SQLite owns."""
+        return VtabLib(
+            self._declare_vtab,
+            self._malloc64,
+            self._free,
+            self._value_pointer,
+            self._result_null,
+            self._result_double,
+            self._result_int64,
+        )
 
 
 struct VtabLib(ImplicitlyCopyable, Movable):
@@ -954,15 +852,15 @@ def open_library(path: String = "") raises -> SqliteLib:
             tried.append(candidate)
             continue
         var lib = SqliteLib(handle^, candidate)
-        var have = lib.libversion_number()
+        var have = lib.fns.libversion_number()
         if have < MIN_SQLITE_VERSION:
             raise Error(
                 "the libsqlite3 at " + candidate + " is version "
-                + lib.libversion() + " (" + String(have) + "), older than the"
+                + lib.fns.libversion() + " (" + String(have) + "), older than the"
                 " 3.20.0 (" + String(MIN_SQLITE_VERSION) + ") this package"
                 " requires"
             )
-        if lib.threadsafe() == 0:
+        if lib.fns.threadsafe() == 0:
             raise Error(
                 "the libsqlite3 at " + candidate + " was built with"
                 " SQLITE_THREADSAFE=0, and this package opens one connection"
@@ -991,14 +889,14 @@ def libversion() raises -> String:
     """SQLite library version, e.g. "3.51.0", from the library the search
     path finds. Also the cheapest possible load check: an absent library
     fails here, before any database is touched."""
-    return open_library().libversion()
+    return open_library().fns.libversion()
 
 
 def libversion_number() raises -> Int:
     """SQLite library version as an integer, e.g. 3045001 for "3.45.1"."""
-    return open_library().libversion_number()
+    return open_library().fns.libversion_number()
 
 
 def errstr(code: Int) raises -> String:
     """English text for a primary result code, independent of any connection."""
-    return open_library().errstr(code)
+    return open_library().fns.errstr(code)

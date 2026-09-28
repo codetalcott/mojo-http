@@ -230,6 +230,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server `kill -PIPE`, then a client that resets before its answer, on
   both CI legs.
 
+### Changed
+
+- **`SqliteLib` and `PgLib` keep their C entry points in one table,
+  `fns`**, which each `Statement` and `Result` copies whole (SPEC O16,
+  O18). Code that called an entry point on the library itself now calls
+  it on the table: `lib.errstr(rc)` becomes `lib.fns.errstr(rc)`. `path`,
+  `open_library`, `PgLib.open`, `PgLib.libversion` and
+  `PgLib.version_text` are unchanged, and code that goes through
+  `Connection`, `Statement` and `Result` changes nothing.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and
