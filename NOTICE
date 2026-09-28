@@ -734,6 +734,24 @@ lightbug_http
         lane's wake words are one line of the 8192-byte wake block, and
         `note_thread` wrote a 127th lane's past its end.
 
+      - c/epoll_backend.mojo (2026-09-28): `event_flags` reports EPOLLERR
+        as EV_EOF, the way kqueue reports a socket error, where it was
+        EV_ERROR, which the event loop skips as kqueue's failed
+        registration. A client's RST reaches epoll as one EPOLLERR event,
+        and the one-shot write or edge-triggered read it lands on is spent
+        by it, so the reset was never seen and the slot was held for the
+        life of the process (SPEC C9).
+
+      - event_loop.mojo (2026-09-28): the write-ready path that finishes a
+        response's head pumps its file body next, as `_finish_response`
+        does; it went straight to `_after_send`, which reset the slot for
+        its next request with the file unsent (J10). The WebSocket read
+        path queues whatever part of a pong or close echo the kernel did
+        not take as the slot's response, stops reading until it lands, and
+        closes after a close echo only once it has: the send's count was
+        discarded, so a reply taken in part lost its tail and misframed
+        every frame after it, and one refused whole was dropped (I31).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
