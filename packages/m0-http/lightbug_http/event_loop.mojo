@@ -3754,7 +3754,14 @@ def _stream_idle[B: EventLoopBackend](
 
     A WebSocket sits in frame mode: reads now mean frames, not a new HTTP
     request, and the idle timeout no longer applies (an idle WebSocket is
-    healthy; heartbeat pings discover dead ones). Its reads are NOT re-armed
+    healthy; heartbeat pings discover dead ones). Its deadline is zeroed --
+    unless it is `closing`, because a WebSocket's non-zero deadline IS its
+    close linger (`_arm_ws_linger`), and a frame that lands does not end
+    one. It did: a socket the handler closed itself (`take_ws_closes`) has
+    its linger armed while its Close is still queued, and when that Close
+    needed the write-ready path this zeroed the deadline, so a peer that
+    never answered held the slot for good -- the heartbeat skips a closing
+    slot and the sweep skips a zero deadline. Its reads are NOT re-armed
     while inbound is deliberately suspended: this runs for the socket's OWN
     echo going out, and re-arming here is the socket undoing its own
     backpressure -- the parked queue then grows with the client's send rate
@@ -3769,7 +3776,8 @@ def _stream_idle[B: EventLoopBackend](
     slot_send_offset[slot] = 0
     if slot_ws[slot]:
         provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
-        slot_idle_deadline[slot] = 0
+        if not slot_ws_state[slot].closing:
+            slot_idle_deadline[slot] = 0
         if not slot_ws_state[slot].inbound_suspended:
             _ = _arm_reads(backend, slot, fd_val, slot_read_armed, provision_pool)
     else:

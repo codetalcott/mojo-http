@@ -274,6 +274,43 @@ def test_arming_reads_waits_out_a_send() raises:
     assert_true(s.read_armed[slot])
 
 
+def test_a_frame_keeps_a_websockets_close_linger() raises:
+    """A WebSocket's non-zero deadline IS its close linger, and a frame
+    that lands through the write-ready path must not clear it: a socket
+    the handler closed itself (`take_ws_closes`) has its linger armed while
+    its Close is still queued, and when that Close needed the write-ready
+    path, `_after_send` zeroed the deadline -- a peer that never answered
+    then held the slot for good. A socket that is not closing still sheds
+    any deadline as it goes back to frame mode."""
+    var backend = FakeBackend()
+    var config = _config()
+    var pool = ProvisionPool(SLOTS, config)
+    var slot = pool.borrow()
+    var s = Slots()
+    s.ws[slot] = True
+    _arm_ws_linger(slot, s.ws_state, s.deadline)
+    var armed = s.deadline[slot]
+    assert_true(armed > 0)
+    pool.provisions[slot].state = ConnectionState.responding()
+    _stream_idle(
+        backend, slot, FD, config, s.response, s.send_offset, pool,
+        s.ws, s.ws_state, s.read_armed, s.deadline,
+    )
+    assert_equal(pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
+    assert_equal(s.deadline[slot], armed)
+    assert_true(s.ws_state[slot].closing)
+
+    var other = pool.borrow()
+    s.ws[other] = True
+    s.deadline[other] = perf_counter_ns() + 1_000_000_000
+    pool.provisions[other].state = ConnectionState.responding()
+    _stream_idle(
+        backend, other, FD, config, s.response, s.send_offset, pool,
+        s.ws, s.ws_state, s.read_armed, s.deadline,
+    )
+    assert_equal(s.deadline[other], 0)
+
+
 def test_the_linger_arms_once() raises:
     """Arm once, and that is the whole bound: the drain reaches its linger
     branches on every pass while a slot lingers, and re-stamping pushed the
