@@ -409,6 +409,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   back, then ends the harness by that signal. Each task takes `--only` and
   `--skip`, and `sabotage-keepalive` now checks its unsabotaged probe
   first.
+- **CI's jobs share one setup step and one measurement step.** Every job
+  in `test.yml` set up uv, installed its Debian packages, and rendered and
+  uploaded its measurements with its own copy of the same steps. Each now
+  calls `.github/actions/setup` and `.github/actions/record-measurements`.
+  `check-docs` reads an action as part of each job that calls it, so a job
+  that stops calling the record action is still named. So is a
+  `wheel-consume` job that reaches uv through the setup action, which by
+  this repository's reference needs no checkout. Dependabot now reads the
+  actions' own pins, which `directory: "/"` never did, and `check-docs`
+  holds it to that. The check also compares the file a job's `M0_RESULTS`
+  names with the file it uploads by whole name: `results.jsonl` used to
+  pass as `ci-results.jsonl`.
 - **A supervisor, and what an application runs before its loop, survive
   SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
   which a supervisor never enters: m0serve's under `--workers` or

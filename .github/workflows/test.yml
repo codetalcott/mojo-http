@@ -29,7 +29,8 @@ jobs:
     # 4-6 when the cap was first set). Without an explicit cap a hung step
     # runs to GitHub's 6-hour default while holding this ref's concurrency
     # group, so a stall reads as "still running" for hours instead of
-    # failing. See the apt step below for the stall that motivated this.
+    # failing. See the apt step in .github/actions/setup for the stall that
+    # motivated this.
     #
     # 30 was too close. `Run unit tests` is ONE 14-minute step (`poe
     # test-all`), and the same slow ubuntu runners that cancelled the
@@ -40,15 +41,19 @@ jobs:
     timeout-minutes: 40
     # The coverage this job's steps declare (SPEC F12: check-docs, the unit
     # tests, the recorder's selftest, the fuzzer) is recorded here, and
-    # rendered and kept by the job's last two steps, as every job's is.
+    # rendered and kept by the job's last step, as every job's is.
     env:
       M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
       M0_RESULTS_TAG: unit-tests-${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      # m0-sqlite opens libsqlite3 at run time (SPEC O17), so nothing links
+      # it; the development package is for `verify-vtab-layout`, which
+      # compiles a C file against sqlite3.h. The library itself is on every
+      # runner already.
+      - uses: ./.github/actions/setup
         with:
-          enable-cache: true
+          apt: libsqlite3-dev patchelf
       # The doc-fact ratchet, before anything is built: prose numbers with
       # a machine source (warning counts, smoke coverage in THIS file, the
       # generated bench table) must match it. Runs here and not in the
@@ -61,18 +66,6 @@ jobs:
       # which docs.yml's required check runs on doc-only pull requests too.
       - name: The milestone report
         run: uv run poe milestones
-      # m0-sqlite opens libsqlite3 at run time (SPEC O17), so nothing links
-      # it; the development package is for `verify-vtab-layout`, which
-      # compiles a C file against sqlite3.h. The library itself is on every
-      # runner already.
-      - name: Install libsqlite3 (Linux)
-        if: runner.os == 'Linux'
-        # Normally ~6 s. Observed hanging for 63 min against an unreachable
-        # apt mirror, which is what a step-level cap turns into a fast,
-        # legible failure — the job cap above is the backstop, this is the
-        # one step known to stall.
-        timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
       # Both steps tee into one log so the ratchet below sees every warning:
       # build-all covers the packages, and test-all is the only thing that
       # compiles test/ sources, where most of the residual warnings live.
@@ -164,21 +157,14 @@ jobs:
       # libpython discovery problem legible.
       - name: Check the embedded interpreter resolves
         run: uv run python -c "import django, sys; print(sys.version, django.__version__)"
-      # Last, and `always()`, as in every job that collects: they must
-      # follow every step that records, and a failed run's records are the
+      # Last, and `always()`, as in every job that collects: it must follow
+      # every step that records, and a failed run's records are the
       # interesting ones.
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-unit-tests-${{ matrix.os }}
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
   # aarch64, on every pull request rather than only at release time.
   #
@@ -208,27 +194,17 @@ jobs:
       M0_RESULTS_TAG: wheel-aarch64
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup
         with:
-          enable-cache: true
-      - name: Install Linux build dependencies
-        timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+          apt: libsqlite3-dev patchelf
       - run: uv run poe build-all
       - name: Build and smoke test the aarch64 wheel
         run: uv run poe smoke-wheel
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-wheel-aarch64
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
   # The m0-postgres rows that need a real server (SPEC O10-O15). A separate
   # Linux-only job, the wheel-aarch64 / pid1 shape: job-level `runs-on`, no
@@ -268,12 +244,9 @@ jobs:
       M0_PG_TEST_URL: postgres://postgres:m0@127.0.0.1:5432/m0
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup
         with:
-          enable-cache: true
-      - name: Install Linux build dependencies
-        timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev libpq5 patchelf
+          apt: libsqlite3-dev libpq5 patchelf
       - run: uv run poe build-all
       - name: Test m0-postgres against a real server
         run: uv run poe test-postgres-server
@@ -283,16 +256,9 @@ jobs:
         run: uv run poe smoke-pg-notify
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-postgres
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
   # N30: `uv run m0 dev` on a scaffolded app, asked of a real process tree --
   # the OLD server answers while a build runs and after one fails, a build
@@ -316,9 +282,7 @@ jobs:
       M0_RESULTS_TAG: scaffold-dev-${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
+      - uses: ./.github/actions/setup
       - name: Smoke test m0 dev on the scaffold
         run: uv run poe smoke-scaffold-dev
       # N33: the Mojo stack's front door, executed. Here and not in `smoke`
@@ -330,16 +294,9 @@ jobs:
         run: uv run poe smoke-quickstart-mojo
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-scaffold-dev-${{ matrix.os }}
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
   # M11: `docker stop` is SIGTERM to PID 1 and nothing else, and PID 1 gets
   # no default signal dispositions — a SIGTERM with no handler installed is
@@ -355,12 +312,9 @@ jobs:
       M0_RESULTS_TAG: pid1
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup
         with:
-          enable-cache: true
-      - name: Install Linux build dependencies
-        timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+          apt: libsqlite3-dev patchelf
       - run: uv run poe build-all
       - name: Smoke test SIGTERM delivered to PID 1 in a container
         run: uv run poe smoke-pid1
@@ -401,16 +355,9 @@ jobs:
         run: uv run poe smoke-scaffold-image
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-pid1
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
   # E11: the handler pool's GIL hand-off, judged by job order. Four pool
   # threads under a CPU-bound view at sixteen connections must answer in
@@ -432,27 +379,17 @@ jobs:
       M0_RESULTS_TAG: pool-fairness
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup
         with:
-          enable-cache: true
-      - name: Install Linux build dependencies
-        timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+          apt: libsqlite3-dev patchelf
       - run: uv run poe build-all
       - name: Probe the handler pool's GIL hand-off for fairness
         run: uv run poe probe-pool-fairness
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-pool-fairness
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
   # E13/E14/M18: what only an Apple Silicon runner can check -- the
   # performance-core count against sysctl, the --qos knob, and the native
@@ -468,24 +405,15 @@ jobs:
       M0_RESULTS_TAG: apple-silicon
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
+      - uses: ./.github/actions/setup
       - run: uv run poe build-all
       - name: Smoke test Apple Silicon topology, QoS and the native build flavor
         run: uv run poe smoke-apple-silicon
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-apple-silicon
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
   smoke:
     strategy:
@@ -533,19 +461,11 @@ jobs:
       M0_RESULTS_TAG: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      # `strace` is the counter behind `smoke-large-request`'s epoll_ctl
+      # bound (review record R2), which fails rather than skips without it.
+      - uses: ./.github/actions/setup
         with:
-          enable-cache: true
-      - name: Install libsqlite3 and strace (Linux)
-        if: runner.os == 'Linux'
-        # Normally ~6 s. Observed hanging for 63 min against an unreachable
-        # apt mirror, which is what a step-level cap turns into a fast,
-        # legible failure — the job cap above is the backstop, this is the
-        # one step known to stall. `strace` is the counter behind
-        # `smoke-large-request`'s epoll_ctl bound (review record R2), which
-        # fails rather than skips without it.
-        timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf strace
+          apt: libsqlite3-dev patchelf strace
       - name: Build all packages
         run: uv run poe build-all
       # `Compile every example app` is deliberately NOT here. It builds each
@@ -846,23 +766,11 @@ jobs:
       # step above synced.
       - name: Smoke test m0serve with MAX's parallel runtime
         run: uv run --group max poe smoke-serve-parallel-runtime
-      # The measurements, rendered into the run's own summary page and kept as
-      # an artifact. Until now every one of these numbers went to a job log
-      # that expires, so "did it pass" was answerable and "is it drifting
-      # toward the limit" was not. `always()`: a measurement from a smoke that
-      # later failed is usually the interesting one.
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-${{ matrix.os }}
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
       - name: Upload server log on failure
         if: failure()
@@ -900,17 +808,9 @@ jobs:
       M0_RESULTS_TAG: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
+      - uses: ./.github/actions/setup
         with:
-          enable-cache: true
-      - name: Install libsqlite3 (Linux)
-        if: runner.os == 'Linux'
-        # Normally ~6 s. Observed hanging for 63 min against an unreachable
-        # apt mirror, which is what a step-level cap turns into a fast,
-        # legible failure — the job cap above is the backstop, this is the
-        # one step known to stall.
-        timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+          apt: libsqlite3-dev patchelf
       - name: Build all packages
         run: uv run poe build-all
       # The serve CLI: one binary for every WSGI row. Built here once; the
@@ -1125,23 +1025,11 @@ jobs:
       # the point of the mechanism.
       - name: Expect 100-continue, honoured and withheld
         run: uv run poe smoke-expect-continue
-      # The measurements, rendered into the run's own summary page and kept as
-      # an artifact. Until now every one of these numbers went to a job log
-      # that expires, so "did it pass" was answerable and "is it drifting
-      # toward the limit" was not. `always()`: a measurement from a smoke that
-      # later failed is usually the interesting one.
       - name: Record the measurements
         if: always()
-        run: |
-          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
-          python3 scripts/emit.py --summary "$M0_RESULTS" || true
-      - name: Upload the measurements
-        if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.github/actions/record-measurements
         with:
           name: ci-results-${{ matrix.os }}-gateway
-          path: ci-results.jsonl
-          if-no-files-found: ignore
 
       - name: Upload server log on failure
         if: failure()
