@@ -44,6 +44,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   borrows the result, and the compiler keeps the result until the span's
   last use. No caller changes.
 
+- **A connection URL ending in `?` or `&` connects** (SPEC O7). `open`
+  and `open_readonly` add their defaults as query parameters, and they
+  added a second separator to a URL that already ended in one: `...?`
+  became `...??connect_timeout=5`, which libpq reads as a keyword named
+  `?connect_timeout`, and `...&` became `...&&`, an empty keyword. libpq
+  refused both before connecting, with a message about percent-encoding a
+  password.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

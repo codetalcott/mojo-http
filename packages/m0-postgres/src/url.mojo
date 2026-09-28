@@ -193,10 +193,16 @@ def _sep(so_far: String, uri: Bool) -> String:
     """The separator a further keyword needs, given what is written already.
 
     A URI's first keyword opens the query string with `?` and the rest join
-    with `&`; a key/value conninfo separates with a space throughout.
+    with `&`; a key/value conninfo separates with a space throughout. A URI
+    that already ends in `?` or `&` has its separator, and a second one
+    made `??connect_timeout=5` (a keyword named `?connect_timeout`) or
+    `&&` (an empty one), either of which libpq refuses before connecting.
     """
     if not uri:
         return String(" ")
+    var b = so_far.as_bytes()
+    if len(b) > 0 and (b[len(b) - 1] == UInt8(ord("?")) or b[len(b) - 1] == UInt8(ord("&"))):
+        return String("")
     return String("&") if len(_split_query(so_far)[1].as_bytes()) > 0 else String("?")
 
 
