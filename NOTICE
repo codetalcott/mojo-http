@@ -736,6 +736,15 @@ lightbug_http
         in the same pass, which keeps the writer within about 10 ns of its
         old cost on an eight-header head.
 
+      - cookie/response_cookie_jar.mojo, http/response.mojo (2026-09-28):
+        `ResponseCookieJar.write_latin1_to` is new, and `encode` and
+        `encode_into` write the jar through it (SPEC G17). They wrote it
+        through `write_to`, which puts a String's UTF-8 on the wire as it
+        stands, so a `Set-Cookie` value was the one header not transcoded
+        to ISO-8859-1: a WSGI application's `caf\xe9` went out as
+        `caf\xc3\xa9`, an ASGI application's own `caf\xc3\xa9` as
+        `caf\xc3\x83\xc2\xa9`.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

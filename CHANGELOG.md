@@ -33,6 +33,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   an eight-header head the writer measured within about 10 ns of the old
   one.
 
+- **A `Set-Cookie` value's bytes above 0x7F reach the wire as the
+  application gave them** (SPEC G17). Every other header goes out in
+  ISO-8859-1, as PEP 3333 and RFC 9110 §5.5 have it, but cookie lines were
+  written as UTF-8: a WSGI application's `caf\xe9` went out as
+  `caf\xc3\xa9`, and an ASGI application's own bytes `caf\xc3\xa9` as the
+  double-encoded `caf\xc3\x83\xc2\xa9`. Cookie lines now take the same
+  latin-1 writer as every other header. A cookie that is all ASCII, as
+  Django's and the session cookie `m0_http.session` builds are, is
+  unchanged.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

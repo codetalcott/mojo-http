@@ -584,7 +584,8 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)
-        writer.write(self.cookies, lineBreak)
+        self.cookies.write_latin1_to(writer)
+        writer.write(lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 
@@ -620,7 +621,8 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)
-        writer.write(self.cookies, lineBreak)
+        self.cookies.write_latin1_to(writer)
+        writer.write(lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 

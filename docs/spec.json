@@ -842,6 +842,14 @@
       "evidence": "`test_response_cookies.mojo:test_raw_line_reaches_the_wire_verbatim` (every PR)"
     },
     {
+      "id": "G17",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "A `Set-Cookie` line's bytes above 0x7F go out in ISO-8859-1, as every other header's do: a WSGI application's latin-1 code points, and an ASGI application's own bytes",
+      "status": "verified",
+      "evidence": "`test_response_cookies.mojo:test_a_line_above_ascii_goes_out_latin1_like_every_header` (every PR) \u2014 on the bytes of both encoders. The bridge stores every header as UTF-8 and the header writer transcodes it back, but the cookie jar wrote its lines' UTF-8 as it stood: `bin/m0serve` sent a WSGI application's `cafxe9` as `cafxc3xa9`, and an ASGI application's own `cafxc3xa9` as `cafxc3x83xc2xa9`"
+    },
+    {
       "id": "G4",
       "section": "G",
       "category": "G. Security hardening",

@@ -13,6 +13,7 @@ takes now, and these tests are what hold it verbatim.
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.cookie import Cookie, ResponseCookieJar
+from lightbug_http.header import Header, Headers
 from lightbug_http.http import HTTPResponse
 from lightbug_http.io.bytes import Bytes
 
@@ -92,6 +93,98 @@ def test_empty_jar_writes_nothing() raises:
     assert_true(jar.empty())
     var wire = _wire(jar^)
     assert_equal(_count(wire, "set-cookie: "), 0)
+
+
+def _bytes_find(hay: List[Byte], needle: List[Byte]) -> Int:
+    var n = len(needle)
+    if n > len(hay):
+        return -1
+    for i in range(len(hay) - n + 1):
+        var hit = True
+        for j in range(n):
+            if hay[i + j] != needle[j]:
+                hit = False
+                break
+        if hit:
+            return i
+    return -1
+
+
+def _line(text: String, var tail: List[Byte]) -> List[Byte]:
+    """`text`'s bytes, then `tail`, then CRLF: a head line whose high bytes
+    are spelled out rather than left to a literal's encoding."""
+    var out = List[Byte](text.as_bytes())
+    out.extend(tail^)
+    out.append(0x0D)
+    out.append(0x0A)
+    return out^
+
+
+def _latin1_jar() -> ResponseCookieJar:
+    """What the bridge stores for three applications' lines. It keeps every
+    header as UTF-8 and leaves the transcode back to latin-1 to the writer:
+    a WSGI application's `caf\\xe9` arrives as the UTF-8 for U+00E9, an
+    ASGI application's own bytes `caf\\xc3\\xa9` as U+00C3 U+00A9, one
+    code point per byte it sent."""
+    var jar = ResponseCookieJar()
+    jar.add_raw("wsgi=café; Path=/")
+    jar.add_raw("asgi=cafÃ©; Path=/")
+    jar.set_cookie(Cookie("built", "é"))
+    return jar^
+
+
+def _assert_latin1_on_the_wire(wire: List[Byte]) raises:
+    var e9 = List[Byte]()
+    e9.append(0xE9)
+    var wsgi = List[Byte]()
+    wsgi.append(0xE9)
+    wsgi.extend(String("; Path=/").as_bytes())
+    assert_true(
+        _bytes_find(wire, _line("set-cookie: wsgi=caf", wsgi^)) >= 0,
+        "a WSGI application's latin-1 cookie did not reach the wire as latin-1",
+    )
+    var asgi = List[Byte]()
+    asgi.append(0xC3)
+    asgi.append(0xA9)
+    asgi.extend(String("; Path=/").as_bytes())
+    assert_true(
+        _bytes_find(wire, _line("set-cookie: asgi=caf", asgi^)) >= 0,
+        "an ASGI application's own cookie bytes did not reach the wire as sent",
+    )
+    assert_true(
+        _bytes_find(wire, _line("set-cookie: built=", e9^)) >= 0,
+        "a built cookie's value was not written as latin-1",
+    )
+    # And the ordinary header beside it, which always went out latin-1:
+    # the cookie now agrees with it.
+    var header = List[Byte]()
+    header.append(0xE9)
+    assert_true(_bytes_find(wire, _line("x-latin: caf", header^)) >= 0)
+
+
+def test_a_line_above_ascii_goes_out_latin1_like_every_header() raises:
+    """RFC 9110 §5.5 and PEP 3333: header bytes above 0x7F are latin-1 on
+    the wire. `Headers.write_latin1_to` transcoded every other header's
+    value from the UTF-8 it is stored in, and the jar wrote its lines'
+    UTF-8 as it stood -- so a WSGI application's `caf\\xe9` went out as
+    `caf\\xc3\\xa9`, and an ASGI application's own `caf\\xc3\\xa9` as
+    `caf\\xc3\\x83\\xc2\\xa9`, both measured against `bin/m0serve`. Held on
+    the bytes of both encoders, the blocking server's and the loop's.
+
+    covers: G17
+    """
+    var r1 = HTTPResponse(
+        owned_body=Bytes(),
+        headers=Headers(Header("x-latin", "café")),
+        cookies=_latin1_jar(),
+    )
+    _assert_latin1_on_the_wire(r1^.encode())
+    var r2 = HTTPResponse(
+        owned_body=Bytes(),
+        headers=Headers(Header("x-latin", "café")),
+        cookies=_latin1_jar(),
+    )
+    _assert_latin1_on_the_wire(r2^.encode_into(Bytes(capacity=256)))
 
 
 def main() raises:

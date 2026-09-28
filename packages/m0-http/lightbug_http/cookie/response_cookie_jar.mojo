@@ -1,7 +1,15 @@
 from std.collections import KeyElement
 from std.hashlib.hash import Hasher
 
-from lightbug_http.header import HeaderKey, span_breaks_header_line, write_header
+from lightbug_http.header import (
+    HEADER_VALUE_ASCII,
+    HEADER_VALUE_BREAKS,
+    HeaderKey,
+    encode_latin1_header_value,
+    header_value_kind,
+    span_breaks_header_line,
+    write_header,
+)
 from lightbug_http.io.bytes import ByteWriter
 from std.utils import Variant
 
@@ -149,3 +157,36 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
         for line in self.raw:
             if not span_breaks_header_line(line.as_bytes()):
                 write_header(writer, HeaderKey.SET_COOKIE, line)
+
+    def write_latin1_to(self, mut writer: ByteWriter):
+        """The jar's lines for the wire, each value in ISO-8859-1 as
+        `Headers.write_latin1_to` writes every other header's (RFC 9110
+        §5.5; PEP 3333 for a WSGI application's).
+
+        The encoders used to write the jar through `write_to`, which puts a
+        String's UTF-8 on the wire as it stands, so `Set-Cookie` was the one
+        header whose bytes above 0x7F did not go out as the application
+        gave them. The bridge stores every header as UTF-8 and leaves the
+        transcode back to the writer: a WSGI application's `caf\\xe9` went
+        out as `caf\\xc3\\xa9`, and an ASGI application's own bytes
+        `caf\\xc3\\xa9` as `caf\\xc3\\x83\\xc2\\xa9`. A line `write_to` drops,
+        this drops (SPEC G2).
+        """
+        for cookie in self._inner.values():
+            _write_set_cookie_latin1(writer, cookie.build_header_value())
+        for line in self.raw:
+            _write_set_cookie_latin1(writer, line)
+
+
+def _write_set_cookie_latin1(mut writer: ByteWriter, value: String):
+    """One `Set-Cookie` line in latin-1, or nothing for a value holding CR,
+    LF or NUL: `Headers.write_latin1_to`'s rules, for one header."""
+    var bytes = value.as_bytes()
+    var kind = header_value_kind(bytes)
+    if kind == HEADER_VALUE_BREAKS:
+        return
+    if kind == HEADER_VALUE_ASCII:
+        writer.write_header_line(HeaderKey.SET_COOKIE.as_bytes(), bytes)
+    else:
+        var latin1 = encode_latin1_header_value(value)
+        writer.write_header_line(HeaderKey.SET_COOKIE.as_bytes(), Span(latin1))
