@@ -3309,6 +3309,35 @@ grep -q 'DATABASE_URL is not set' serve.log || fail 'deep import failure: the ex
 grep -q 'Traceback (most recent call last)' serve.log || fail 'deep import failure: no traceback'
 grep -q 'inner.py' serve.log || fail 'deep import failure: the traceback does not name the raising file'
 grep -q 'Ready to accept' serve.log && fail 'a failed load printed a ready banner first'
+# Discovery takes a candidate that RAISES as the answer, for a mount exactly
+# as for the positional spec: `split_fail.asgi` raises on import beside a
+# `split_fail.wsgi` that imports cleanly. Both forms must exit 1 with the
+# traceback naming asgi.py, and neither may serve wsgi.py in its place --
+# which the mount form did, having no re-raise of its own. Bounded, because
+# the failure it catches is a server that starts serving instead of exiting.
+for shape in split_fail "--mount /=split_fail"; do
+  "$srv" $shape --app-dir apps/wsgi_bare --port 8116 > serve.log 2>&1 &
+  pid=$!
+  waited=0
+  while [ $waited -lt 12 ]; do
+    st=$(ps -o stat= -p $pid 2>/dev/null)
+    case "$st" in ""|Z*) break;; esac
+    sleep 1; waited=$((waited + 1))
+  done
+  if [ $waited -ge 12 ]; then
+    kill $pid 2>/dev/null; wait $pid 2>/dev/null
+    fail "$shape: still running after 12 s -- it served split_fail.wsgi instead of reporting that split_fail.asgi raised"
+  fi
+  wait $pid; rc=$?
+  [ "$rc" = "1" ] || fail "$shape: exit $rc, want 1"
+  grep -q 'REDIS_URL is not set' serve.log || fail "$shape: the exception text is missing"
+  grep -q 'Traceback (most recent call last)' serve.log || fail "$shape: no traceback"
+  grep -q 'split_fail/asgi.py' serve.log || fail "$shape: the traceback does not name the file that raised"
+done
+# And the doctor, which resolves through the same function.
+"$srv" --doctor --mount /=split_fail --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "--doctor --mount /=split_fail: exit $rc, want 1, as the server exits"
+grep -q 'REDIS_URL is not set' serve.log || fail '--doctor --mount /=split_fail does not report the import failure'
 # Under --workers the supervisor must not report success for an application
 # that never loaded: every worker dies at once, the breaker trips, exit 1.
 "$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare --workers 2 > serve.log 2>&1; rc=$?

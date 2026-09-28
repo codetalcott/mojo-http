@@ -12,8 +12,62 @@ from std.python import Python, PythonObject
 from lightbug_http import HTTPRequest, HTTPResponse
 
 from .bridge import PyBridge
+from .cli import discovery_specs, parse_app_spec
 from .shim_source import SHIM_SOURCE
 from .response import build_response
+
+
+def resolve_app(
+    module: String, attribute: String, explicit: Bool, forced: String = "auto"
+) raises -> Tuple[String, String, Bool]:
+    """Import one application spec, run discovery, and detect its protocol.
+
+    Returns `(module, attribute, is_asgi)` for what will actually be
+    served. The ONE resolver for the positional spec and for every
+    `--mount`, so the two cannot answer the same spec differently -- they
+    did: the mount loop was a copy without the re-raise below, so
+    `--mount /=proj` whose `proj.asgi` raised on import reported the first
+    candidate's miss instead, or served `proj.wsgi` if that one imported.
+
+    An explicit `MODULE:ATTR` detects exactly what it names. A bare
+    `MODULE` tries the `discovery_specs` conventions in order -- Django's
+    `asgi.py`/`wsgi.py` and the `main:app` shape -- and the first that
+    imports and classifies wins. A candidate that exists and RAISES on
+    import is the answer, not a miss to be papered over by the next
+    convention: the shim attaches the traceback to exactly that case
+    (`detect_spec`), and the discovery list would only hide it. On a total
+    miss, the primary spec's own error leads and every candidate tried is
+    listed.
+
+    Detection only, no lifespan: the caller must have put `--app-dir` on
+    `sys.path`, and every import here is a `sys.modules` hit for the
+    handlers that follow.
+    """
+    if explicit:
+        return (module, attribute, detect_protocol(module, attribute, forced))
+    var specs = discovery_specs(module)
+    var first_error = String("")
+    for i in range(len(specs)):
+        var pair = parse_app_spec(specs[i])
+        try:
+            var is_asgi = detect_protocol(pair[0], pair[1], forced)
+            return (pair[0], pair[1], is_asgi)
+        except e:
+            if String(e).find("Traceback (most recent call last)") >= 0:
+                raise Error(String(e))
+            if i == 0:
+                first_error = String(e)
+    raise Error(first_error + " (tried " + _specs_tried(specs) + ")")
+
+
+def _specs_tried(specs: List[String]) -> String:
+    """The discovery candidates as one comma-separated list, for errors."""
+    var joined = String("")
+    for i in range(len(specs)):
+        if i > 0:
+            joined += ", "
+        joined += specs[i]
+    return joined^
 
 
 def detect_protocol(

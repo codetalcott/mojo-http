@@ -24,6 +24,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   view with that mount's `SCRIPT_NAME`, and a POST to either mount's
   `/ws/message` from the network must be a 404. Found in review.
 
+- **`--mount PREFIX=MODULE` reports an application that raises on import,
+  as the positional spec does, and never serves the next convention in its
+  place.** Discovery tries `MODULE`, `MODULE.asgi`, `MODULE.wsgi`, and
+  more; a candidate that exists and raises on import is the answer, and the
+  positional spec exits 1 with its traceback. A mount went through a copy
+  of that resolver without the rule: with `proj.asgi` raising, `--mount
+  /=proj` reported the first candidate's one-line miss, or, if `proj.wsgi`
+  imported, silently served it — and `--doctor` called that healthy. Both
+  now resolve through one function. `smoke-serve` gates it with a package
+  whose `asgi.py` raises beside a `wsgi.py` that imports: the positional
+  spec, the mount and the doctor must each exit 1 with the traceback.
+  Found in review.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and
