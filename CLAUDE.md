@@ -166,7 +166,7 @@ takes it away. `scripts/pool_sabotage.py`
 reverts six of that file's rules by matching EXACT source lines (the
 `T.make(PoolContext(...))` call among them), and CI runs it on Linux only —
 so an edit to one of those lines passes every local gate and fails the
-pull request with `anchor missing`; run `poe sabotage-pool` after touching
+pull request with `NOT APPLICABLE`; run `poe sabotage-pool` after touching
 `mojo_pool.mojo`, and re-point the anchor with the line.
 
 `m0-core/ffi_exports.mojo` (package root, deliberately outside `src/`) holds

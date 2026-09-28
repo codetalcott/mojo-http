@@ -818,6 +818,14 @@
       "evidence": "`Self-test the measurement recorder` (every PR)"
     },
     {
+      "id": "F17",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The sabotage harnesses' own judge, `scripts/sabotage_lib.py`: a sabotage that does not compile, or whose gate fails without the text its rule names, is a miss and never a catch; an anchor must match exactly once; a skipped rule is never summarised as guarded; SIGINT and SIGTERM put the tree back and end the harness by the signal",
+      "status": "verified",
+      "evidence": "`Self-test the sabotage library` (every PR) \u2014 canned files through a stand-in `mojo` replaying the driver's output as measured on Mojo 1.1.0: a gate that passes is MISSED, a build error and a failed constraint are MISSED (does not compile), a double anchor is NOT APPLICABLE naming the file and the anchor, a timeout is settled by building the source alone, and a SIGINT or SIGTERM mid-run puts both files of a two-file rule back, ends the gate and the server it started, and kills the harness by the signal"
+    },
+    {
       "id": "F14",
       "section": "F",
       "category": "F. Observability",
