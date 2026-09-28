@@ -242,6 +242,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   inside the scheme, the scheme in capitals, `/\evil.example`. A redirect
   off the site still goes out when it names its scheme. Found in review.
 
+- **The Date header is right with loops on threads on Linux.** Every event
+  loop formats its own Date header, once a second, and did it through
+  libc's `gmtime`, which on glibc returns one buffer for the whole
+  process. A Mojo host application under `M0_THREADS`, or m0serve under
+  `--threads`, runs its loops as threads of one process, so a loop could
+  read fields another loop had just written, and at a day's or a year's
+  boundary send a Date mixing two seconds' fields. The formatter now fills a
+  buffer of its own (`gmtime_r`). macOS was not affected: its `gmtime`
+  keeps a buffer per thread. Found in review.
+
 ### Changed
 
 - **`SqliteLib` and `PgLib` keep their C entry points in one table,

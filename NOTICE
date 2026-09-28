@@ -792,6 +792,13 @@ lightbug_http
         No `MSG_NOSIGNAL` or `SO_NOSIGPIPE`: the process-wide ignore also
         covers `sendfile` and writes to pipes, where neither applies.
 
+      - http/date.mojo (2026-09-28): `http_date_from_unix` fills a
+        `struct tm` it allocates, through `gmtime_r`, where it read the one
+        `gmtime` returns. On glibc that is one static buffer for the whole
+        process, and every event loop formats its Date header here, so
+        with loops on threads (`M0_THREADS`, `--threads`) one loop could
+        read the fields another had just written.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
