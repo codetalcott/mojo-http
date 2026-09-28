@@ -1959,11 +1959,26 @@ def _run_wsgi(environ, body):
         return written.append
 
     result = _app(environ, start_response)
-    if (
-        captured
-        and environ.get('REQUEST_METHOD') == 'HEAD'
-        and _lazily_produced(result, captured['status'], captured['headers'])
-    ):
+    try:
+        # Which shape answers: a HEAD's first-item probe, a stream, or the
+        # join below. Both questions read the application's headers, and a
+        # malformed one -- a name that is not a str -- raises HERE, before
+        # any branch has taken charge of `result`; PEP 3333 still owes the
+        # application its close().
+        head_probe = (
+            captured
+            and environ.get('REQUEST_METHOD') == 'HEAD'
+            and _lazily_produced(result, captured['status'], captured['headers'])
+        )
+        stream = captured and _stream_this(
+            result, environ, captured['status'], captured['headers']
+        )
+    except BaseException:
+        close = getattr(result, 'close', None)
+        if close is not None:
+            close()
+        raise
+    if head_probe:
         # A HEAD to what a GET would stream (SPEC K13, L27's WSGI twin): the
         # head is all it gets, so the body is pulled to its first item --
         # an application that raises before producing anything is still an
@@ -1988,9 +2003,7 @@ def _run_wsgi(environ, body):
         # which the gateway measures for the head and the loop never sends.
         _body = b'' if produced else b''.join(written)
         return (captured['status'], captured['headers'], _body, False)
-    if captured and _stream_this(
-        result, environ, captured['status'], captured['headers']
-    ):
+    if stream:
         # Stream. PEP 3333 forbids sending the headers before the first
         # non-empty chunk exists, so it is pulled now: an application that
         # raises before producing anything is still an ordinary 500, and

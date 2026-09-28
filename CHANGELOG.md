@@ -30,6 +30,53 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **An inbound WebSocket message reaches the mount that approved the
+  socket when mounts are served inline** (SPEC I12). Under `--realtime`
+  with several WSGI mounts and no handler pool — `--workers N` without
+  `--blocking-threads`, or `--blocking-threads 0` — one handler serves
+  every mount, and it delivered each inbound message, the synthetic
+  `/ws/message` POST, to the FIRST mount's application at the first
+  mount's prefix, whichever mount's view had approved the upgrade. The
+  handler now records, per held socket, the application that approved it,
+  and delivers the message there at that mount's prefix, as a handler pool
+  already did per lane. `smoke-django-realtime-ws` gates it with two WSGI
+  mounts served inline: each socket's message must reach its own mount's
+  view with that mount's `SCRIPT_NAME`, and a POST to either mount's
+  `/ws/message` from the network must be a 404. Found in review.
+
+- **`--mount PREFIX=MODULE` reports an application that raises on import,
+  as the positional spec does, and never serves the next convention in its
+  place.** Discovery tries `MODULE`, `MODULE.asgi`, `MODULE.wsgi`, and
+  more; a candidate that exists and raises on import is the answer, and the
+  positional spec exits 1 with its traceback. A mount went through a copy
+  of that resolver without the rule: with `proj.asgi` raising, `--mount
+  /=proj` reported the first candidate's one-line miss, or, if `proj.wsgi`
+  imported, silently served it — and `--doctor` called that healthy. Both
+  now resolve through one function. `smoke-serve` gates it with a package
+  whose `asgi.py` raises beside a `wsgi.py` that imports: the positional
+  spec, the mount and the doctor must each exit 1 with the traceback.
+  Found in review.
+
+- **A WSGI body a handler thread would have streamed is closed when its
+  response head cannot be built.** A generator or other lazily produced
+  body with no `Content-Length` streams from a `--blocking-threads`
+  thread, and a malformed header on it — a value or a name that is not a
+  `str` — made the request a 500 without calling the body's `close()`,
+  which PEP 3333 requires however a response ends. Django hangs its
+  `request_finished` cleanup on that call. Both now close the body once
+  before the 500. `smoke-wsgi-stream` gates both, counting `close()`
+  calls. Found in review.
+
+- **m0serve reports a listen failure in its own words, and waits out only
+  an address in use.** Every failure to bind was retried for five seconds
+  and then reported as `address already in use`: a `--host` that is not an
+  address of this machine said the port was taken. Now only an address in
+  use is retried — a restart racing the previous server's drain still
+  succeeds — and anything else exits 1 at once, naming the address and the
+  system's reason (`cannot listen on 192.0.2.1:8080: ... Can't assign
+  requested address`). The Mojo host and every other `ListenConfig` caller
+  get the same rule. `smoke-serve` gates it with an address that is not on
+  the machine. Found in review.
 - **An `INSERT ... SELECT` from `m0_array` no longer inserts nothing**
   (SPEC O4). Since 1.7.0 (and `m0 0.3.0`) the pointer-type tag bound with
   an array was a buffer freed as the bind returned. SQLite keeps that
