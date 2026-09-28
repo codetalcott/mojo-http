@@ -37,6 +37,7 @@ from lightbug_http import HTTPResponse, Headers, HeaderKey
 from lightbug_http.cookie import ResponseCookieJar
 from lightbug_http.header import KH_CONTENT_LENGTH
 from lightbug_http.http import is_bodiless_status
+from m0_http.reply import reason_phrase
 
 from .bridge import PyBridge
 from .environ import span_has_control_bytes
@@ -93,148 +94,6 @@ def split_status(status: String) -> Tuple[Int, String]:
         return (500, String("Internal Server Error"))
 
 
-def reason_for(code: Int) -> String:
-    """The standard reason phrase for `code`, or the empty string.
-
-    CPython 3.13's `http.client.responses`, entry for entry (62 codes; the
-    generator is in the commit that added this). It replaces the shim's
-    `'%d %s' % (status, _reasons.get(status, ''))` on the executor path, so
-    an ASGI status crosses to Mojo as the `int` the application sent and
-    the phrase never becomes a Python `str` at all. An unknown code gets
-    an empty phrase, exactly as `responses.get(status, '')` gave it.
-    """
-    if code < 200:
-        if code == 100:
-            return "Continue"
-        elif code == 101:
-            return "Switching Protocols"
-        elif code == 102:
-            return "Processing"
-        elif code == 103:
-            return "Early Hints"
-    elif code < 300:
-        if code == 200:
-            return "OK"
-        elif code == 201:
-            return "Created"
-        elif code == 202:
-            return "Accepted"
-        elif code == 203:
-            return "Non-Authoritative Information"
-        elif code == 204:
-            return "No Content"
-        elif code == 205:
-            return "Reset Content"
-        elif code == 206:
-            return "Partial Content"
-        elif code == 207:
-            return "Multi-Status"
-        elif code == 208:
-            return "Already Reported"
-        elif code == 226:
-            return "IM Used"
-    elif code < 400:
-        if code == 300:
-            return "Multiple Choices"
-        elif code == 301:
-            return "Moved Permanently"
-        elif code == 302:
-            return "Found"
-        elif code == 303:
-            return "See Other"
-        elif code == 304:
-            return "Not Modified"
-        elif code == 305:
-            return "Use Proxy"
-        elif code == 307:
-            return "Temporary Redirect"
-        elif code == 308:
-            return "Permanent Redirect"
-    elif code < 500:
-        if code == 400:
-            return "Bad Request"
-        elif code == 401:
-            return "Unauthorized"
-        elif code == 402:
-            return "Payment Required"
-        elif code == 403:
-            return "Forbidden"
-        elif code == 404:
-            return "Not Found"
-        elif code == 405:
-            return "Method Not Allowed"
-        elif code == 406:
-            return "Not Acceptable"
-        elif code == 407:
-            return "Proxy Authentication Required"
-        elif code == 408:
-            return "Request Timeout"
-        elif code == 409:
-            return "Conflict"
-        elif code == 410:
-            return "Gone"
-        elif code == 411:
-            return "Length Required"
-        elif code == 412:
-            return "Precondition Failed"
-        elif code == 413:
-            return "Content Too Large"
-        elif code == 414:
-            return "URI Too Long"
-        elif code == 415:
-            return "Unsupported Media Type"
-        elif code == 416:
-            return "Range Not Satisfiable"
-        elif code == 417:
-            return "Expectation Failed"
-        elif code == 418:
-            return "I'm a Teapot"
-        elif code == 421:
-            return "Misdirected Request"
-        elif code == 422:
-            return "Unprocessable Content"
-        elif code == 423:
-            return "Locked"
-        elif code == 424:
-            return "Failed Dependency"
-        elif code == 425:
-            return "Too Early"
-        elif code == 426:
-            return "Upgrade Required"
-        elif code == 428:
-            return "Precondition Required"
-        elif code == 429:
-            return "Too Many Requests"
-        elif code == 431:
-            return "Request Header Fields Too Large"
-        elif code == 451:
-            return "Unavailable For Legal Reasons"
-    elif code < 600:
-        if code == 500:
-            return "Internal Server Error"
-        elif code == 501:
-            return "Not Implemented"
-        elif code == 502:
-            return "Bad Gateway"
-        elif code == 503:
-            return "Service Unavailable"
-        elif code == 504:
-            return "Gateway Timeout"
-        elif code == 505:
-            return "HTTP Version Not Supported"
-        elif code == 506:
-            return "Variant Also Negotiates"
-        elif code == 507:
-            return "Insufficient Storage"
-        elif code == 508:
-            return "Loop Detected"
-        elif code == 510:
-            return "Not Extended"
-        elif code == 511:
-            return "Network Authentication Required"
-    return ""
-
-
 def build_response(
     bridge: PyBridge, status: String, headers: PythonObject, body: PythonObject,
     streaming: Bool = False,
@@ -275,13 +134,14 @@ def build_asgi_response(
     application's own list of `(bytes, bytes)` pairs: the executor's `done`
     and `stream_start` events carry them exactly as the app produced them,
     so no `'%d %s'` is formatted and no name or value is decoded to `str`
-    on the Python side — the reason phrase comes from `reason_for`, the
+    on the Python side — the reason phrase comes from `m0_http`'s
+    `reason_phrase`, the table every server path shares, and the
     bytes are read where they are. `streaming` is the executor's
     `stream_start` head and `is_head` a HEAD's answer, with the same
     contracts as `build_response`'s.
     """
     return _assemble(
-        bridge, status, reason_for(status), headers, True, body, streaming,
+        bridge, status, reason_phrase(status), headers, True, body, streaming,
         is_head,
     )
 

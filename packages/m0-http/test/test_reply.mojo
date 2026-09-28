@@ -24,6 +24,7 @@ from src.reply import (
     no_content,
     param_int,
     problem,
+    reason_phrase,
     redirect,
     vary,
     vary_accept,
@@ -75,6 +76,34 @@ def test_redirect_sets_location_and_a_real_reason_phrase() raises:
     assert_equal(redirect(302, String("/a")).status_text, "Found")
     assert_equal(redirect(303, String("/a")).status_text, "See Other")
     assert_equal(redirect(307, String("/a")).status_text, "Temporary Redirect")
+    # The status is the caller's, and so is its own phrase: a 201 with a
+    # `Location` is `Created`, where the redirect's own table said `Redirect`.
+    assert_equal(redirect(201, String("/a")).status_text, "Created")
+
+
+def test_reason_phrase_matches_http_client_responses() raises:
+    """The one table (`m0serve`'s ASGI path answers an application's integer
+    status with it too): CPython 3.13's `http.client.responses`, including
+    the two it renamed (413, 422) and the one everybody checks (418)."""
+    assert_equal(reason_phrase(200), "OK")
+    assert_equal(reason_phrase(101), "Switching Protocols")
+    assert_equal(reason_phrase(304), "Not Modified")
+    assert_equal(reason_phrase(404), "Not Found")
+    assert_equal(reason_phrase(413), "Content Too Large")
+    assert_equal(reason_phrase(418), "I'm a Teapot")
+    assert_equal(reason_phrase(422), "Unprocessable Content")
+    assert_equal(reason_phrase(500), "Internal Server Error")
+    assert_equal(reason_phrase(511), "Network Authentication Required")
+
+
+def test_reason_phrase_of_an_unknown_code_is_empty() raises:
+    """`responses.get(status, '')`, which the executor shim used, gave an
+    unknown code an empty phrase; the status line then carries the code
+    alone, which is legal."""
+    assert_equal(reason_phrase(299), "")
+    assert_equal(reason_phrase(599), "")
+    assert_equal(reason_phrase(0), "")
+    assert_equal(reason_phrase(1000), "")
 
 
 def _with_byte(before: String, byte: Int, after: String) -> String:
