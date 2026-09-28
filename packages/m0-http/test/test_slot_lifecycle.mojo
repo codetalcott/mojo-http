@@ -321,8 +321,12 @@ def test_the_linger_arms_once() raises:
     assert_true(first > 0)
     assert_true(first <= perf_counter_ns() + WS_CLOSE_LINGER_NS)
     assert_true(s.ws_state[1].closing)
+    # An armed linger is left alone. A sentinel rather than a second call's
+    # clock: two reads of it nanoseconds apart can be one tick, and a
+    # re-stamp would then look like arm-once (it did, on an M-series Mac).
+    s.deadline[1] = 12345
     _arm_ws_linger(1, s.ws_state, s.deadline)
-    assert_equal(s.deadline[1], first)
+    assert_equal(s.deadline[1], 12345)
 
 
 def test_a_request_begins_with_no_idle_deadline() raises:
