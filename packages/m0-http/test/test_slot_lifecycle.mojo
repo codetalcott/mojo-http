@@ -16,9 +16,11 @@ macOS it fails without the fix.
 **The transitions** (`event_loop.mojo`'s "Per-slot lifecycle" section,
 review record C4). Each helper owns the resets of its phase, which is what
 makes a stale-state defect a helper's bug rather than one call site's. They
-are driven here over `FakeBackend`, which keeps one socket's registration
-the way epoll does -- ONE registration, so a read added replaces a pending
-write -- the stricter of the two, and the one a wrong arm is wrong on.
+are driven here over a `LoopState` built by its own constructor, as
+`prepare_loop` builds one, and over `FakeBackend`, which keeps one socket's
+registration the way epoll does -- ONE registration, so a read added
+replaces a pending write -- the stricter of the two, and the one a wrong
+arm is wrong on.
 """
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
@@ -30,6 +32,7 @@ from lightbug_http.c.socket import close, send
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
 from lightbug_http.event_loop import (
+    LoopState,
     WS_CLOSE_LINGER_NS,
     _arm_reads,
     _arm_ws_linger,
@@ -42,10 +45,7 @@ from lightbug_http.event_loop import (
 )
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
-from lightbug_http.metrics import ServerMetrics
-from lightbug_http.server import ProvisionPool
 from lightbug_http.server_config import ServerConfig
-from lightbug_http.websocket import WSState
 
 
 struct FakeBackend(EventLoopBackend):
@@ -120,43 +120,19 @@ comptime SLOTS = 4
 comptime FD = 7
 
 
-struct Slots:
-    """The loop's per-slot lists, as `prepare_loop` builds them."""
-
-    var response: List[Bytes]
-    var send_offset: List[Int]
-    var header_start: List[Int]
-    var sse: List[Bool]
-    var ws: List[Bool]
-    var read_armed: List[Bool]
-    var deadline: List[Int]
-    var ws_state: List[WSState]
-
-    def __init__(out self):
-        self.response = List[Bytes]()
-        self.send_offset = List[Int]()
-        self.header_start = List[Int]()
-        self.sse = List[Bool]()
-        self.ws = List[Bool]()
-        self.read_armed = List[Bool]()
-        self.deadline = List[Int]()
-        self.ws_state = List[WSState]()
-        for _ in range(SLOTS):
-            self.response.append(Bytes())
-            self.send_offset.append(0)
-            self.header_start.append(0)
-            self.sse.append(False)
-            self.ws.append(False)
-            self.read_armed.append(False)
-            self.deadline.append(0)
-            self.ws_state.append(WSState(1024))
-
-
 def _config() -> ServerConfig:
     var config = ServerConfig()
     config.idle_timeout = 5
     config.sse_heartbeat_ms = 0
+    config.max_connections = SLOTS
     return config^
+
+
+def _loop(config: ServerConfig) -> LoopState:
+    """A loop's state before its first pass, over no socket: the helpers
+    under test touch the slot tables and the backend they are handed, never
+    the listener."""
+    return LoopState(FileDescriptor(-1), config, String(""), True)
 
 
 def test_a_write_wait_holds_no_read_interest() raises:
@@ -215,20 +191,18 @@ def test_a_resume_mid_send_keeps_the_write() raises:
     var rx = pair[0]
     var tx = pair[1]
     var backend = PlatformBackend()
-    var config = _config()
-    var pool = ProvisionPool(SLOTS, config)
-    var slot = pool.borrow()
-    var s = Slots()
-    s.ws[slot] = True
-    pool.provisions[slot].state = ConnectionState.streaming_ws()
-    assert_true(_arm_reads(backend, slot, rx, s.read_armed, pool))
-    _stop_reads(backend, slot, rx, s.read_armed)
-    s.ws_state[slot].inbound_suspended = True
-    pool.provisions[slot].state = ConnectionState.responding()
-    assert_true(_await_write(backend, slot, rx, s.read_armed))
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    st.slot_ws[slot] = True
+    st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+    assert_true(_arm_reads(backend, st, slot, rx))
+    _stop_reads(backend, st, slot, rx)
+    st.slot_ws_state[slot].inbound_suspended = True
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    assert_true(_await_write(backend, st, slot, rx))
 
-    s.ws_state[slot].inbound_suspended = False
-    assert_true(_arm_reads(backend, slot, rx, s.read_armed, pool))
+    st.slot_ws_state[slot].inbound_suspended = False
+    assert_true(_arm_reads(backend, st, slot, rx))
     var n = backend.wait(1000)
     var writes = 0
     for i in range(n):
@@ -249,29 +223,24 @@ def test_arming_reads_waits_out_a_send() raises:
     arms reads: here `_stream_idle`, as the write-ready path's
     `_after_send` runs it."""
     var backend = FakeBackend()
-    var config = _config()
-    var pool = ProvisionPool(SLOTS, config)
-    var slot = pool.borrow()
-    var s = Slots()
-    s.ws[slot] = True
-    pool.provisions[slot].state = ConnectionState.responding()
-    assert_true(_await_write(backend, slot, FD, s.read_armed))
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    st.slot_ws[slot] = True
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    assert_true(_await_write(backend, st, slot, FD))
     assert_true(backend.write)
-    assert_false(s.read_armed[slot])
+    assert_false(st.slot_read_armed[slot])
 
-    assert_true(_arm_reads(backend, slot, FD, s.read_armed, pool))
+    assert_true(_arm_reads(backend, st, slot, FD))
     assert_true(backend.write)
     assert_false(backend.read)
-    assert_false(s.read_armed[slot])
+    assert_false(st.slot_read_armed[slot])
     assert_equal(backend.read_adds, 0)
 
-    _stream_idle(
-        backend, slot, FD, config, s.response, s.send_offset, pool,
-        s.ws, s.ws_state, s.read_armed, s.deadline,
-    )
-    assert_equal(pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
+    _stream_idle(backend, st, slot, FD)
+    assert_equal(st.provision_pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
     assert_true(backend.read)
-    assert_true(s.read_armed[slot])
+    assert_true(st.slot_read_armed[slot])
 
 
 def test_a_frame_keeps_a_websockets_close_linger() raises:
@@ -283,60 +252,52 @@ def test_a_frame_keeps_a_websockets_close_linger() raises:
     then held the slot for good. A socket that is not closing still sheds
     any deadline as it goes back to frame mode."""
     var backend = FakeBackend()
-    var config = _config()
-    var pool = ProvisionPool(SLOTS, config)
-    var slot = pool.borrow()
-    var s = Slots()
-    s.ws[slot] = True
-    _arm_ws_linger(slot, s.ws_state, s.deadline)
-    var armed = s.deadline[slot]
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    st.slot_ws[slot] = True
+    _arm_ws_linger(st, slot)
+    var armed = st.slot_idle_deadline[slot]
     assert_true(armed > 0)
-    pool.provisions[slot].state = ConnectionState.responding()
-    _stream_idle(
-        backend, slot, FD, config, s.response, s.send_offset, pool,
-        s.ws, s.ws_state, s.read_armed, s.deadline,
-    )
-    assert_equal(pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
-    assert_equal(s.deadline[slot], armed)
-    assert_true(s.ws_state[slot].closing)
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    _stream_idle(backend, st, slot, FD)
+    assert_equal(st.provision_pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
+    assert_equal(st.slot_idle_deadline[slot], armed)
+    assert_true(st.slot_ws_state[slot].closing)
 
-    var other = pool.borrow()
-    s.ws[other] = True
-    s.deadline[other] = perf_counter_ns() + 1_000_000_000
-    pool.provisions[other].state = ConnectionState.responding()
-    _stream_idle(
-        backend, other, FD, config, s.response, s.send_offset, pool,
-        s.ws, s.ws_state, s.read_armed, s.deadline,
-    )
-    assert_equal(s.deadline[other], 0)
+    var other = st.provision_pool.borrow()
+    st.slot_ws[other] = True
+    st.slot_idle_deadline[other] = perf_counter_ns() + 1_000_000_000
+    st.provision_pool.provisions[other].state = ConnectionState.responding()
+    _stream_idle(backend, st, other, FD)
+    assert_equal(st.slot_idle_deadline[other], 0)
 
 
 def test_the_linger_arms_once() raises:
     """Arm once, and that is the whole bound: the drain reaches its linger
     branches on every pass while a slot lingers, and re-stamping pushed the
     deadline out for good."""
-    var s = Slots()
-    _arm_ws_linger(1, s.ws_state, s.deadline)
-    var first = s.deadline[1]
+    var st = _loop(_config())
+    _arm_ws_linger(st, 1)
+    var first = st.slot_idle_deadline[1]
     assert_true(first > 0)
     assert_true(first <= perf_counter_ns() + WS_CLOSE_LINGER_NS)
-    assert_true(s.ws_state[1].closing)
+    assert_true(st.slot_ws_state[1].closing)
     # An armed linger is left alone. A sentinel rather than a second call's
     # clock: two reads of it nanoseconds apart can be one tick, and a
     # re-stamp would then look like arm-once (it did, on an M-series Mac).
-    s.deadline[1] = 12345
-    _arm_ws_linger(1, s.ws_state, s.deadline)
-    assert_equal(s.deadline[1], 12345)
+    st.slot_idle_deadline[1] = 12345
+    _arm_ws_linger(st, 1)
+    assert_equal(st.slot_idle_deadline[1], 12345)
 
 
 def test_a_request_begins_with_no_idle_deadline() raises:
     """B2: the keep-alive deadline bounds the wait BETWEEN requests, and a
     request's first bytes end it -- left standing it cut an upload begun
     late in the window at the previous response's deadline."""
-    var s = Slots()
-    s.deadline[2] = perf_counter_ns() + 1_000_000_000
-    _begin_request(2, s.deadline)
-    assert_equal(s.deadline[2], 0)
+    var st = _loop(_config())
+    st.slot_idle_deadline[2] = perf_counter_ns() + 1_000_000_000
+    _begin_request(st, 2)
+    assert_equal(st.slot_idle_deadline[2], 0)
 
 
 def test_the_keepalive_transition_owns_its_resets() raises:
@@ -345,28 +306,24 @@ def test_the_keepalive_transition_owns_its_resets() raises:
     in place of any send deadline, and read interest back."""
     var backend = FakeBackend()
     var config = _config()
-    var pool = ProvisionPool(SLOTS, config)
-    var slot = pool.borrow()
-    var s = Slots()
-    pool.provisions[slot].state = ConnectionState.responding()
-    s.header_start[slot] = perf_counter_ns()
-    s.response[slot] = Bytes(String("HTTP/1.1 200 OK\r\n\r\n").as_bytes())
-    s.send_offset[slot] = len(s.response[slot])
-    assert_true(_await_write(backend, slot, FD, s.read_armed))
-    assert_false(s.read_armed[slot])
+    var st = _loop(config)
+    var slot = st.provision_pool.borrow()
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    st.slot_header_start[slot] = perf_counter_ns()
+    st.slot_response[slot] = Bytes(String("HTTP/1.1 200 OK\r\n\r\n").as_bytes())
+    st.slot_send_offset[slot] = len(st.slot_response[slot])
+    assert_true(_await_write(backend, st, slot, FD))
+    assert_false(st.slot_read_armed[slot])
     var before = perf_counter_ns()
-    _end_request(
-        backend, slot, FD, config, s.response, s.send_offset, s.header_start,
-        pool, s.read_armed, s.deadline,
-    )
-    assert_equal(pool.provisions[slot].keepalive_count, 1)
-    assert_equal(pool.provisions[slot].state.kind, ConnectionState.READING_HEADERS)
-    assert_equal(s.header_start[slot], 0)
-    assert_equal(s.send_offset[slot], 0)
-    assert_equal(len(s.response[slot]), 0)
-    assert_true(s.deadline[slot] >= before + config.idle_timeout * 1_000_000_000)
+    _end_request(backend, st, slot, FD)
+    assert_equal(st.provision_pool.provisions[slot].keepalive_count, 1)
+    assert_equal(st.provision_pool.provisions[slot].state.kind, ConnectionState.READING_HEADERS)
+    assert_equal(st.slot_header_start[slot], 0)
+    assert_equal(st.slot_send_offset[slot], 0)
+    assert_equal(len(st.slot_response[slot]), 0)
+    assert_true(st.slot_idle_deadline[slot] >= before + config.idle_timeout * 1_000_000_000)
     assert_true(backend.read)
-    assert_true(s.read_armed[slot])
+    assert_true(st.slot_read_armed[slot])
 
 
 def test_a_stream_is_recorded_once() raises:
@@ -376,21 +333,20 @@ def test_a_stream_is_recorded_once() raises:
     head is the response; a frame after it records nothing."""
     var config = _config()
     config.enable_metrics = True
-    var pool = ProvisionPool(SLOTS, config)
-    var slot = pool.borrow()
-    var s = Slots()
-    var metrics = ServerMetrics()
-    pool.provisions[slot].response_status = 200
-    s.header_start[slot] = perf_counter_ns()
-    s.send_offset[slot] = 120
-    _record_response(config, slot, s.send_offset, s.header_start, pool, 1, metrics)
-    assert_equal(metrics.requests_total, 1)
-    assert_equal(metrics.latency_count, 1)
-    s.send_offset[slot] = 4096
-    _record_response(config, slot, s.send_offset, s.header_start, pool, 1, metrics)
-    assert_equal(metrics.requests_total, 1)
-    assert_equal(metrics.latency_count, 1)
-    assert_equal(metrics.bytes_sent_total, 120)
+    var st = _loop(config)
+    var slot = st.provision_pool.borrow()
+    st.active_count = 1
+    st.provision_pool.provisions[slot].response_status = 200
+    st.slot_header_start[slot] = perf_counter_ns()
+    st.slot_send_offset[slot] = 120
+    _record_response(st, slot)
+    assert_equal(st.metrics.requests_total, 1)
+    assert_equal(st.metrics.latency_count, 1)
+    st.slot_send_offset[slot] = 4096
+    _record_response(st, slot)
+    assert_equal(st.metrics.requests_total, 1)
+    assert_equal(st.metrics.latency_count, 1)
+    assert_equal(st.metrics.bytes_sent_total, 120)
 
 
 def main() raises:

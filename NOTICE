@@ -945,6 +945,20 @@ lightbug_http
         every field and did nothing else, which is what the compiler
         derives. Behaviour-preserving.
 
+      - event_loop.mojo (2026-09-28): every function of the loop takes its
+        state whole, as `(handler, backend, st, slot, fd)` less what it
+        does not use, where it took the fields of `LoopState` one by one:
+        thirteen functions took 20 to 28 parameters, and each of
+        `_close_slot`'s 46 call sites spelled twelve of them (review record
+        C3). `_run_pass` is the pass's outline over named blocks
+        (`_on_timer`, `_heartbeat`, `_on_read`, `_read_websocket`,
+        `_read_body`, `_on_write`, `_admit_batches`, `_retry_owed_acks`,
+        `_drain_outboxes`, `_sweep_deadlines`, `_linger_handler_closes`,
+        `_resume_suspended_reads`), 176 lines where it was 1,343, and
+        `LoopState` builds its own slot tables, so `prepare_loop` only
+        registers. Behaviour-preserving: the blocks moved verbatim and run
+        in the same order. The file went from 4,576 lines to 3,686.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
