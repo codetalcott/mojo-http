@@ -20,10 +20,11 @@
 
 Every view but the login's needs a session, and every write the session's
 CSRF token: a write without it is a 403. One user, configured in the
-environment: `APP_KEY` (at least 32 bytes; `openssl rand -hex 32`) and
-`APP_PASSWORD`, and optionally `APP_USER` (admin), `APP_TTL` (3600 s),
-`APP_SECURE=1` behind HTTPS and `APP_KEY_PREV` during a key rotation.
-Without the two it does not start: exit 78, naming the variable.
+environment: `APP_KEY` (at least 32 bytes; `openssl rand -hex 32`),
+`APP_PASSWORD` and `APP_SECURE` (`1` behind HTTPS, as `deploy/fly.toml`
+states it; `0` over http://localhost), and optionally `APP_USER` (admin),
+`APP_TTL` (3600 s) and `APP_KEY_PREV` during a key rotation. Without the
+three it does not start: exit 78, naming the variable.
 
 `views.mojo` holds the state and the table, `pages.mojo` the rendering.
 This file is the whole of `main`: the host owns the listener, the workers,

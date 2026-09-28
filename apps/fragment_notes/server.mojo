@@ -190,9 +190,9 @@ comptime LOGOUT = "/logout"
 comptime SESSION_COOKIE = "m0_notes_session"
 comptime SESSION_TTL_DEFAULT = 3600
 comptime LOGIN_ENV = "M0_NOTES"
-"""The configuration's prefix: `M0_NOTES_KEY` and `M0_NOTES_PASSWORD`,
-and optionally `M0_NOTES_KEY_PREV`, `M0_NOTES_USER`, `M0_NOTES_TTL` and
-`M0_NOTES_SECURE`."""
+"""The configuration's prefix: `M0_NOTES_KEY`, `M0_NOTES_PASSWORD` and
+`M0_NOTES_SECURE` (`1` behind HTTPS, `0` over plain http), and optionally
+`M0_NOTES_KEY_PREV`, `M0_NOTES_USER` and `M0_NOTES_TTL`."""
 
 
 def notes_login() raises -> Login:
