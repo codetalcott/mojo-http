@@ -77,6 +77,10 @@ comptime NOT_EXECUTOR_OWNED = -2
 """`exec_lane` for a slot no executor opened: `-1` is a real lane (the
 unmounted executor), so the sentinel cannot be -1."""
 
+comptime NOT_INLINE_HELD = -1
+"""`hold_app` for a slot this handler's own view is not holding: an index
+into `apps` is never negative."""
+
 comptime WS_MESSAGE_PATH = "/ws/message"
 
 comptime STREAM_PIECE = 16 * 1024
@@ -212,17 +216,6 @@ struct WSGIHandler(ThreadHandler):
     `--realtime --blocking-threads` that reported zero subscribers while
     events were being delivered."""
 
-    var mounted: Bool
-    """Whether the SERVER hosts more than one application.
-
-    From `opts`, never from `len(self.apps)`: a pool thread builds only its
-    own mount (`only_mount`), so counting applications here would tell that
-    handler it was unmounted. A WebSocket hold is refused when this is true
-    — an inbound frame comes back as a synthesised POST into ONE urlconf
-    (`ws_message` serves `apps[0]`), and which mount should receive it has
-    no defensible answer. SSE holds have no inbound half and work on every
-    mount."""
-
     var route_prefixes: List[String]
     """Every mount's prefix, compiled mounts included; empty when unmounted.
 
@@ -270,7 +263,21 @@ struct WSGIHandler(ThreadHandler):
     `-1` is a real lane (the unmounted pool), so the sentinel cannot be -1.
     It is what separates the three ways a socket can be held on one loop: by
     a pool thread's view (here), by an executor (a reserved filter url), or
-    by the loop's own handler."""
+    by the loop's own handler (`hold_app`)."""
+
+    var hold_app: List[Int]
+    """Loop side: for a socket THIS handler's own view held — the inline
+    shape, where one handler serves every WSGI mount — the index in `apps`
+    of the application that approved it; `NOT_INLINE_HELD` for every other
+    slot.
+
+    `hold_lane`'s record for the third way a socket is held, and for the
+    same reason: an inbound message is a synthetic POST into ONE
+    application, and the only defensible one is the application that gated
+    the upgrade, at its own prefix. Unrecorded, every message went to
+    `apps[0]` — with several WSGI mounts inline (`--workers N` or
+    `--blocking-threads 0`), a socket the second mount approved had its
+    messages served by the first."""
 
     var hold_notify_fd: Int
     """Set on a `--blocking-threads` handler under `--realtime`: this loop's
@@ -380,7 +387,6 @@ struct WSGIHandler(ThreadHandler):
         self.asgi_notify_fd = -1
         self.lane = -1
         self.ws_pool_fds = List[Int]()
-        self.mounted = False
         self.route_prefixes = List[String]()
         self.answers_local = True
         self.hold_notify_fd = -1
@@ -402,6 +408,7 @@ struct WSGIHandler(ThreadHandler):
         self.asgi_done = List[Bool](capacity=slots)
         self.exec_lane = List[Int](capacity=slots)
         self.hold_lane = List[Int](capacity=slots)
+        self.hold_app = List[Int](capacity=slots)
         self.stream_gen = List[Int](capacity=slots)
         self.stream_lost = List[Bool](capacity=slots)
         self.ws_in_sent = List[Int](capacity=slots)
@@ -414,6 +421,7 @@ struct WSGIHandler(ThreadHandler):
             self.asgi_done.append(False)
             self.exec_lane.append(NOT_EXECUTOR_OWNED)
             self.hold_lane.append(NOT_POOL_HELD)
+            self.hold_app.append(NOT_INLINE_HELD)
             self.stream_gen.append(STREAM_GEN_NONE)
             self.stream_lost.append(False)
             self.ws_in_sent.append(0)
@@ -510,7 +518,6 @@ struct WSGIHandler(ThreadHandler):
             asgi_streaming=opts.asgi_streaming,
             root_prefix=opts.mount_prefixes[head],
         )
-        handler.mounted = len(opts.mount_prefixes) > 1
         handler.route_prefixes = opts.mount_prefixes.copy()
         if only_mount >= 0:
             return handler^
@@ -776,8 +783,9 @@ struct WSGIHandler(ThreadHandler):
         # held only because nobody had tried the other way in.
         #
         # A request that arrived over the wire is refused here; the
-        # synthetic one never passes through `serve_local` (`ws_message`
-        # calls `apps[0].serve` directly), so the real path is untouched.
+        # synthetic one never passes through `serve_local`
+        # (`_serve_synthetic` calls the owning application's `serve`
+        # directly), so the real path is untouched.
         # 404 rather than 403: the route's existence is not a client's
         # business.
         #
@@ -802,13 +810,14 @@ struct WSGIHandler(ThreadHandler):
     def _is_ws_message_path(self, path: String) -> Bool:
         """Whether `path` names the synthetic WebSocket-message endpoint.
 
-        Under every mount, not just the bare one: the pool thread builds
-        the synthetic request as `mount_prefixes[0] + WS_MESSAGE_PATH`
-        (`_deliver_ws_message`), so on `--mount /app=...` the application's
-        route is at `/app/ws/message` and a reservation that only compared
-        the bare path would have left it reachable from the network — the
-        exact hole the reservation exists to close, still open in the one
-        configuration where the path is not obvious.
+        Under every mount, not just the bare one: the synthetic request is
+        built at the prefix of the mount whose view holds the socket, plus
+        `WS_MESSAGE_PATH` (`serve_ws_message` on a pool thread, `_ws_forward`
+        inline), so on `--mount /app=...` the application's route is at
+        `/app/ws/message` and a reservation that only compared the bare path
+        would have left it reachable from the network — the exact hole the
+        reservation exists to close, still open in the one configuration
+        where the path is not obvious.
         """
         if path == WS_MESSAGE_PATH:
             return True
@@ -840,17 +849,18 @@ struct WSGIHandler(ThreadHandler):
         cpy.PyGILState_Release(gs)
         return resp^
 
-    def _serve_synthetic(mut self, req: HTTPRequest) raises:
-        """Run a synthetic `/ws/message` POST through the root app, attaching
-        first when this handler's thread holds no thread state; the response
-        is discarded (what the view does is the point)."""
+    def _serve_synthetic(mut self, req: HTTPRequest, app: Int) raises:
+        """Run a synthetic `/ws/message` POST through `apps[app]` — the
+        application whose view holds the socket — attaching first when this
+        handler's thread holds no thread state; the response is discarded
+        (what the view does is the point)."""
         if not self.attach_in_func:
-            _ = self.apps[0].serve(req)
+            _ = self.apps[app].serve(req)
             return
         ref cpy = Python().cpython()
         var gs = cpy.PyGILState_Ensure()
         try:
-            _ = self.apps[0].serve(req)
+            _ = self.apps[app].serve(req)
         except e:
             cpy.PyGILState_Release(gs)
             raise e^
@@ -943,6 +953,11 @@ struct WSGIHandler(ThreadHandler):
             self.sockets.subscribe(
                 slot, hold.channel, request_last_event_id(req)
             )
+            # And which application approved it: this handler serves every
+            # WSGI mount inline, and the socket's messages go back to this
+            # one alone, at its own prefix (`_ws_forward`).
+            if slot < len(self.hold_app):
+                self.hold_app[slot] = which
             return ws_resp^
 
         return resp^
@@ -1171,6 +1186,8 @@ struct WSGIHandler(ThreadHandler):
         self.sockets.unsubscribe(slot)
         if slot < len(self.hold_lane):
             self.hold_lane[slot] = NOT_POOL_HELD
+        if slot < len(self.hold_app):
+            self.hold_app[slot] = NOT_INLINE_HELD
         if slot < len(self.asgi_done):
             self.asgi_done[slot] = False
         if slot < len(self.exec_lane):
@@ -1463,7 +1480,7 @@ struct WSGIHandler(ThreadHandler):
                 self.mount_prefixes[0] + WS_MESSAGE_PATH,
                 channel, slot, opcode, payload,
             )
-            self._serve_synthetic(req)
+            self._serve_synthetic(req, 0)
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
 
@@ -1572,6 +1589,17 @@ struct WSGIHandler(ThreadHandler):
         var channel = self.sockets.filter_url(slot)
         if channel.byte_length() == 0:
             return True  # not a held socket of ours; nothing names its channel
+        # The application that approved the upgrade, and nothing else: this
+        # handler holds every WSGI mount, and `apps[0]` is merely the first.
+        # Every inline hold records its owner as it subscribes, so the
+        # fallback is only the unmounted server's one application.
+        var app = 0
+        if (
+            slot < len(self.hold_app)
+            and self.hold_app[slot] >= 0
+            and self.hold_app[slot] < len(self.apps)
+        ):
+            app = self.hold_app[slot]
         # The response is discarded: what the view does — publishing, writing
         # to a database — is the point, and a hold instruction here would
         # subscribe nothing (the synthetic request carries no slot).
@@ -1580,13 +1608,13 @@ struct WSGIHandler(ThreadHandler):
         # try is mandatory, not defensive: a raising view must not take the
         # socket, or the loop, down with it.
         try:
-            # Same expression the pool path uses, so the two cannot
-            # synthesise different paths for the same server.
+            # The owner's prefix, as the pool path uses its own mount's: the
+            # bridge trims exactly that many bytes to make PATH_INFO.
             var req = ws_message_request(
-                self.mount_prefixes[0] + WS_MESSAGE_PATH,
+                self.mount_prefixes[app] + WS_MESSAGE_PATH,
                 channel, slot, opcode, Span(payload),
             )
-            self._serve_synthetic(req)
+            self._serve_synthetic(req, app)
         except e:
             print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
         return True
@@ -1746,21 +1774,6 @@ def _hold_unavailable() -> HTTPResponse:
         headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
         status_code=503,
         status_text="Service Unavailable",
-    )
-
-
-def _ws_hold_unavailable(mounted: Bool) -> HTTPResponse:
-    """The socket half of a hold, refused — naming which reason applies."""
-    var why = String("--mount") if mounted else String("--blocking-threads")
-    return HTTPResponse(
-        body_bytes=String(
-            '{"error":"M0-Hold: websocket is not available with ' + why
-            + ' yet; serve the WebSocket application on its own.'
-            ' SSE holds work here."}'
-        ).as_bytes(),
-        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
-        status_code=409,
-        status_text="Conflict",
     )
 
 

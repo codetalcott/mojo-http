@@ -2162,10 +2162,10 @@ SABOTAGES = [
     ),
     (
         "a WSGI HEAD joins its whole body",
-        "        and environ.get('REQUEST_METHOD') == 'HEAD'\n"
-        "        and _lazily_produced(",
-        "        and False\n"
-        "        and _lazily_produced(",
+        "            and environ.get('REQUEST_METHOD') == 'HEAD'\n"
+        "            and _lazily_produced(",
+        "            and False\n"
+        "            and _lazily_produced(",
     ),
     (
         "a disconnect's close code is dropped",

@@ -91,9 +91,9 @@ from m0_http.prefork import (
     spawned_worker_index,
 )
 from m0_wsgi import (
-    WSGIApp, WSGIHandler, ServeOptions, parse_args, parse_app_spec, usage,
+    WSGIApp, WSGIHandler, ServeOptions, parse_args, usage,
     ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
-    AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, detect_protocol, discovery_specs, resolve_blocking_threads,
+    AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, resolve_app, resolve_blocking_threads,
     zero_config_topology, use_asgi_executor, wsgi_lanes, mojo_lanes, has_wsgi_mount, asgi_mount_names,
     hold_lanes, is_compiled_mount, has_python_mount,
     compiled_mount_threads_needed, wsgi_lanes_unserved, pool_is_default, parallel_runtime_forked,
@@ -449,16 +449,6 @@ def _refuse_executor_on_free_threaded(executor_mode: Bool) raises:
         _fail(asgi_free_threading_refusal(report), EXIT_NOT_FREE_THREADED)
 
 
-def _specs_tried(specs: List[String]) -> String:
-    """The discovery candidates as one comma-separated list, for errors."""
-    var joined = String("")
-    for i in range(len(specs)):
-        if i > 0:
-            joined += ", "
-        joined += specs[i]
-    return joined^
-
-
 def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
     """The listener a spawned worker inherited, by fd number (`M0_LISTEN_FD`)."""
     var raw = getenv("M0_LISTEN_FD", "")
@@ -482,50 +472,56 @@ def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4
 def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
     """Bind, or say why not and exit `EXIT_STARTUP`.
 
-    Five attempts a second apart: a restart racing the previous process's
-    5 s drain still succeeds, and a port still busy after that belongs to
-    another server — which is the message a developer needs, not the
-    listener's retry chatter. `SO_REUSEPORT` is off (the `ListenConfig`
-    default since 0.14.0), so a second `m0serve` on a busy port fails here
-    instead of binding beside the first and taking a share of its
-    connections. `quiet=True`: the startup line printed after the
-    application loads is the ready signal, so "ready" means ready — the
+    Five attempts a second apart on an address IN USE: a restart racing the
+    previous process's 5 s drain still succeeds, and a port still busy
+    after that belongs to another server — which is the message a
+    developer needs, not the listener's retry chatter. Every other failure
+    — an address not on this machine, a privileged port — is not retried
+    and is reported in its own words: it used to wait out the same five
+    seconds and then read "address already in use". `SO_REUSEPORT` is off
+    (the `ListenConfig` default since 0.14.0), so a second `m0serve` on a
+    busy port fails here instead of binding beside the first and taking a
+    share of its connections. `quiet=True`: the startup line printed after
+    the application loads is the ready signal, so "ready" means ready — the
     banner used to print before the load, and a failed import read as
-    "Ready" followed by exit 1. `smoke-serve` pins both.
+    "Ready" followed by exit 1. `smoke-serve` pins all three.
     """
     if spawned_worker_index() >= 0:
         return _adopt_listener(opts)
+    var listener: NoTLSListener[NetworkType.tcp4]
     try:
-        var listener = ListenConfig(max_bind_retries=5, quiet=True).listen(
+        listener = ListenConfig(max_bind_retries=5, quiet=True).listen(
             opts.address()
         )
-        # Where a spawned worker finds it. Set unconditionally: it is one
-        # variable, and the fd number is the same whether or not anyone
-        # execs — a forked worker simply keeps using the listener itself.
-        # Close-on-exec like every socket here (SPEC G16); the spawn's own
-        # exec is the one that keeps it (`spawn_inherited_env`).
-        _ = setenv("M0_LISTEN_FD", String(listener.socket.fd.value), True)
-        return listener^
-    except:
+    except e:
+        if e.address_in_use():
+            _fail(
+                "address already in use: " + opts.address()
+                + " -- is another server running? (pick another --port, or"
+                + " stop it)",
+                EXIT_STARTUP,
+            )
         _fail(
-            "address already in use: " + opts.address()
-            + " -- is another server running? (pick another --port, or"
-            + " stop it)",
+            "cannot listen on " + opts.address() + ": " + String(e)
+            + " (check --host and --port)",
             EXIT_STARTUP,
         )
         raise Error("unreachable: _fail exits the process")
+    # Where a spawned worker finds it. Set unconditionally: it is one
+    # variable, and the fd number is the same whether or not anyone execs —
+    # a forked worker simply keeps using the listener itself. Close-on-exec
+    # like every socket here (SPEC G16); the spawn's own exec is the one
+    # that keeps it (`spawn_inherited_env`).
+    _ = setenv("M0_LISTEN_FD", String(listener.socket.fd.value), True)
+    return listener^
 
 
 def _resolve_spec(mut opts: ServeOptions) raises -> Bool:
     """Import, resolve discovery, and detect the protocol — no lifespan.
 
-    An explicit `MODULE:ATTR` detects exactly what it names. A bare
-    `MODULE` tries the `discovery_specs` conventions in order — Django's
-    `asgi.py`/`wsgi.py` and the `main:app` shape — and the first one that
-    imports and classifies wins; `opts` is updated to the winner so the
-    banner and the per-thread handlers name what is actually being served.
-    On a total miss, the primary spec's own error leads and every
-    candidate tried is listed.
+    `resolve_app` does all three, for this spec and for every `--mount`
+    alike; `opts` is updated to the winner so the banner and the
+    per-thread handlers name what is actually being served.
 
     Detection is deliberately separate from `WSGIApp` construction: the
     executor mode's decision needs the protocol BEFORE any bridge exists,
@@ -534,36 +530,23 @@ def _resolve_spec(mut opts: ServeOptions) raises -> Bool:
     `sys.path`; the imports here are `sys.modules` hits for everything
     that follows.
     """
-    if opts.attribute_explicit:
-        return detect_protocol(opts.module, opts.attribute, opts.protocol)
-    var specs = discovery_specs(opts.module)
-    var first_error = String("")
-    for i in range(len(specs)):
-        var pair = parse_app_spec(specs[i])
-        try:
-            var is_asgi = detect_protocol(pair[0], pair[1], opts.protocol)
-            opts.module = pair[0]
-            opts.attribute = pair[1]
-            return is_asgi
-        except e:
-            # A candidate that exists and RAISES on import is the answer,
-            # not a miss to be papered over by the next convention: the
-            # shim attaches the traceback to exactly that case, and the
-            # discovery list would only hide it.
-            if String(e).find("Traceback (most recent call last)") >= 0:
-                raise Error(String(e))
-            if i == 0:
-                first_error = String(e)
-    raise Error(first_error + " (tried " + _specs_tried(specs) + ")")
+    var resolved = resolve_app(
+        opts.module, opts.attribute, opts.attribute_explicit, opts.protocol
+    )
+    opts.module = resolved[0]
+    opts.attribute = resolved[1]
+    return resolved[2]
 
 
 def _resolve_mounts(mut opts: ServeOptions) raises -> Bool:
     """Detect every mount's protocol; returns True when they are all ASGI.
 
-    Each mount resolves independently — discovery included, so
-    `--mount /=djangoproj` finds `djangoproj.wsgi` exactly as a positional
-    spec would — and the winner is written back so the banner and every
-    handler name what is actually served.
+    Each mount resolves independently, through the positional spec's own
+    `resolve_app` — discovery included, so `--mount /=djangoproj` finds
+    `djangoproj.wsgi` exactly as a positional spec would, and a candidate
+    that raises on import is reported with its traceback rather than
+    skipped for the next convention — and the winner is written back so
+    the banner and every handler name what is actually served.
 
     Mixed WSGI/ASGI mounts are the point: each gets its native execution
     mode, so `opts.asgi_mounts` records which mounts are ASGI rather than
@@ -582,32 +565,13 @@ def _resolve_mounts(mut opts: ServeOptions) raises -> Bool:
         # server of one Mojo mount starts no interpreter work for it.
         if is_compiled_mount(opts, i):
             continue
-        var module = opts.mount_modules[i]
-        var attribute = opts.mount_attributes[i]
-        var is_asgi: Bool
-        if opts.mount_explicit[i]:
-            is_asgi = detect_protocol(module, attribute, opts.protocol)
-        else:
-            var specs = discovery_specs(module)
-            var first_error = String("")
-            var found = False
-            is_asgi = False
-            for k in range(len(specs)):
-                var pair = parse_app_spec(specs[k])
-                try:
-                    is_asgi = detect_protocol(pair[0], pair[1], opts.protocol)
-                    opts.mount_modules[i] = pair[0]
-                    opts.mount_attributes[i] = pair[1]
-                    found = True
-                    break
-                except e:
-                    if k == 0:
-                        first_error = String(e)
-            if not found:
-                raise Error(
-                    first_error + " (tried " + _specs_tried(specs) + ")"
-                )
-        if is_asgi:
+        var resolved = resolve_app(
+            opts.mount_modules[i], opts.mount_attributes[i],
+            opts.mount_explicit[i], opts.protocol,
+        )
+        opts.mount_modules[i] = resolved[0]
+        opts.mount_attributes[i] = resolved[1]
+        if resolved[2]:
             asgi_count += 1
             opts.asgi_mounts.append(i)
     return asgi_count > 0
