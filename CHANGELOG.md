@@ -345,6 +345,35 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server `kill -PIPE`, then a client that resets before its answer, on
   both CI legs.
 
+- **A Datastar redirect no longer sends a location that runs script or
+  leaves the site** (SPEC I29). `redirect` and `DatastarStream.redirect_to`
+  assign the location to `window.location`, which runs a `javascript:` URL
+  in the page's origin and follows `//evil.example` off the site; a
+  `next=` parameter after a login is how either arrives. Both now raise
+  unless the location is an `http`/`https` URL or a reference relative to
+  the page (`/path`, `path`, `?query`, `#fragment`) that stays on its
+  site. The location is read as the browser reads it, so the spellings a
+  browser also takes for those are refused too: a leading space, a tab
+  inside the scheme, the scheme in capitals, `/\evil.example`. A redirect
+  off the site still goes out when it names its scheme. Found in review.
+
+- **The Date header is right with loops on threads on Linux.** Every event
+  loop formats its own Date header, once a second, and did it through
+  libc's `gmtime`, which on glibc returns one buffer for the whole
+  process. A Mojo host application under `M0_THREADS`, or m0serve under
+  `--threads`, runs its loops as threads of one process, so a loop could
+  read fields another loop had just written, and at a day's or a year's
+  boundary send a Date mixing two seconds' fields. The formatter now fills a
+  buffer of its own (`gmtime_r`). macOS was not affected: its `gmtime`
+  keeps a buffer per thread. Found in review.
+
+- **`m0_core.json_parse.parse_json_int` no longer reads `1.9` or `1e3` as
+  1.** It returned a number's leading digits, so a fraction was cut off
+  and an exponent dropped, against its own contract of `None` for a value
+  that is not an integer. A value whose digits are followed by anything
+  but whitespace, `,`, `}` or `]` is now refused; `parse_json_number`
+  reads fractions and exponents. Found in review.
+
 ### Changed
 
 - **`SqliteLib` and `PgLib` keep their C entry points in one table,

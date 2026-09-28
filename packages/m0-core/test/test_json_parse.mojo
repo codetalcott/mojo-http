@@ -152,6 +152,49 @@ def test_parse_int_not_numeric() raises:
     assert_false(Bool(r))
 
 
+def test_parse_int_refuses_a_fraction_or_an_exponent() raises:
+    """A number not written as an integer is refused, not cut to its digits.
+
+    The digits were read up to the first byte that was not one and
+    returned, so `1.9` read as 1 and `1e3`, a thousand, read as 1, where
+    the contract is None for a value that is not a valid integer: a caller
+    cannot tell a truncated 1 from a real one. The value must end where
+    its digits end, at whitespace, `,`, `}`, `]` or the end of the body,
+    which is where `_skip_value` ends a number too.
+    """
+    var refused = [
+        String('{"n":1.9}'),
+        String('{"n":1e3}'),
+        String('{"n":1E3}'),
+        String('{"n":1e+3}'),
+        String('{"n":3e-1}'),
+        String('{"n":-2.5}'),
+        String('{"n":1.0}'),
+        String('{"n":7.}'),
+        String('{"n":12abc}'),
+        String('{"n":1-2}'),
+    ]
+    for body in refused:
+        var r = parse_json_int(body, "n")
+        assert_false(Bool(r), String("parse_json_int read ", body, " as an integer"))
+    # The control: an integer ends at every terminator a number may have.
+    var kept = [
+        (String('{"n":12}'), 12),
+        (String('{"n":12 }'), 12),
+        (String('{"n":12,"m":1.5}'), 12),
+        (String('{"n":-7\n}'), -7),
+        (String('{"n":0\t,"m":1}'), 0),
+        (String('{"a":[1],"n":5]'), 5),
+        (String('{"n":34'), 34),
+    ]
+    for pair in kept:
+        var r = parse_json_int(pair[0], "n")
+        assert_true(Bool(r), String("parse_json_int refused ", pair[0]))
+        assert_equal(r.value(), pair[1])
+    # The field's own fraction is refused; a neighbour's does not matter.
+    assert_equal(parse_json_int('{"m":1.5,"n":9}', "n").value(), 9)
+
+
 # --- Number extraction ---
 
 def test_parse_number_integer() raises:
