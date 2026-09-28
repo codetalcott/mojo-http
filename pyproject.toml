@@ -819,35 +819,19 @@ python3 scripts/warning_ratchet.py "$log" $flag
 # The doc-fact ratchet: prose numbers with a machine source of truth are
 # checked against it (warning counts vs the baseline JSON, smoke tasks vs
 # the workflow that must run them, the generated bench table vs the newest
-# committed artifact). Runs in CI. See scripts/check_docs.py for why each
-# fact is on the list and why historical numbers deliberately are not.
+# committed artifact). See scripts/check_docs.py for why each fact is on the
+# list and why historical numbers deliberately are not.
+#
+# This IS the required check: scripts/docs_gate.sh is what docs.yml's
+# `check-docs` job runs too, selftests, pyflakes, sabotages and milestone
+# gates included, so a green run here is a green required check (about 3 s).
+# The coverage lines stay here rather than in the script, because
+# docs/SPEC.md's checker reads `--covers` declarations from the body of the
+# task a cited step runs.
 [tool.poe.tasks.check-docs]
-help = "Fail if a machine-sourced number in the docs drifted from its source"
+help = "The docs gate the required check runs: doc facts, their selftests and sabotages"
 shell = """
-# The renderer's selftest first: check_docs subprocesses `render_bench_docs
-# --check` for the tables AND the prose spans, and a doc checker that cannot
-# fail is green having tested nothing. Here rather than a test.yml step so
-# doc-only pull requests (which run only docs.yml) prove it too.
-python3 scripts/render_bench_docs.py --selftest || exit 1
-# The docs site's link check runs inside check_docs (`docsite --check`,
-# standard library only); this proves those checks can fail, for the same
-# reason as the line above.
-python3 scripts/docsite.py --selftest || exit 1
-# The executor shim's rendering check runs inside check_docs
-# (`render_shim --check`); same rule.
-python3 scripts/render_shim.py --selftest || exit 1
-# The citation tracker runs inside check_docs (`check_citations.check`);
-# same rule: prove its rules can fail before believing they passed.
-python3 scripts/check_citations.py --selftest || exit 1
-# The benchmark scripts' quiet-machine gate (`bench_guard.py wait`) is what
-# stands between a busy laptop and a committed artifact; same rule: a guard
-# that cannot fire is decoration, so its selftest runs where the other
-# bench checks are proven.
-python3 scripts/bench_guard.py --selftest || exit 1
-# check_docs' own citation rule (prose may not cite an untracked path);
-# same rule again: prove it can fire before believing it passed.
-python3 scripts/check_docs.py --selftest || exit 1
-python3 scripts/check_docs.py || exit 1
+sh scripts/docs_gate.sh || exit 1
 python3 scripts/emit.py --covers F10 --task check-docs
 python3 scripts/emit.py --covers F12 --task check-docs
 python3 scripts/emit.py --covers F15 --task check-docs
@@ -1137,15 +1121,16 @@ bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
-# The app refuses to start without a signing key of at least 32 bytes and
-# a password (m0_http.login), so the dev runner supplies obviously-fake
-# ones and lets the environment win. Set M0_NOTES_KEY and
-# M0_NOTES_PASSWORD to run it as anything but a demo.
+# The app refuses to start without a signing key of at least 32 bytes, a
+# password and M0_NOTES_SECURE (m0_http.login), so the dev runner supplies
+# obviously-fake ones, and 0 for plain http, and lets the environment win.
+# Set M0_NOTES_KEY and M0_NOTES_PASSWORD to run it as anything but a demo.
 [tool.poe.tasks.serve-fragment-notes]
 help = "Run the fragment notes example (the notes resource as an htmx app, behind a login) on :8080"
 shell = """
 M0_NOTES_KEY=${M0_NOTES_KEY:-dev-only-not-a-secret-0123456789abcdef} \
 M0_NOTES_PASSWORD=${M0_NOTES_PASSWORD:-notes} \
+M0_NOTES_SECURE=${M0_NOTES_SECURE:-0} \
 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo
 """
 
@@ -1365,20 +1350,51 @@ python3 scripts/emit.py --covers A5 --task smoke-header-timeout
 # fires" and "the server hangs up on everyone" look identical from one side.
 # `--idle-timeout` exists so this costs 20 seconds rather than the default's
 # 60; the linger itself is a constant and is measured at its real value.
+# The last three phases (B2) are the deadline's other side: a request that
+# starts late in the window is not cut at it, and a response its client
+# stops reading is reaped after it with no send progress -- over /echo and
+# over a 16 MiB `--static` file, which refresh the deadline on separate
+# paths, hence `--max-body` and the file.
 [tool.poe.tasks.smoke-idle-timeout]
-help = "Idle connections are closed, busy ones are not, and a WebSocket close waits for its reply"
+help = "Idle connections are closed, busy ones are not, a WebSocket close waits for its reply, and an unread response is reaped"
 deps = ["build-serve"]
 shell = """
+files=$(mktemp -d)
+python3 -c "import sys; open(sys.argv[1] + '/big.bin', 'wb').write(b'm0' * 8388608)" "$files"
 bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8093 \
-  --idle-timeout 3 > idle.log 2>&1 &
+  --idle-timeout 3 --max-body 32m --static /files="$files" > idle.log 2>&1 &
 pid=$!
-trap 'kill $pid 2>/dev/null; rm -f idle.log' EXIT
+trap 'kill $pid 2>/dev/null; rm -f idle.log; rm -rf "$files"' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8093/ > /dev/null \
   || { echo '=== idle.log ==='; cat idle.log; exit 1; }
 python3 scripts/idle_timeout_probe.py 8093 3 || { echo '=== idle.log ==='; cat idle.log; exit 1; }
 echo "smoke-idle-timeout OK"
 python3 scripts/emit.py --covers A4 --task smoke-idle-timeout
 python3 scripts/emit.py --covers L16 --task smoke-idle-timeout
+python3 scripts/emit.py --covers A24 --task smoke-idle-timeout
+"""
+
+# B1. The body timer was armed above the decode of what came with the
+# headers, so every body that arrived whole left it running: it closed a
+# keep-alive connection `body_read_timeout` after its POST, and under the
+# handler pool it released the slot of a request out on a pool thread, whose
+# answer the next connection then read. `--body-timeout 2` makes the 30 s
+# default provable in seconds. Five arms, two of which stop the server so a
+# read and an expiring timer share one wait: each half of the fix is then
+# the only thing standing (scripts/body_timeout_probe.py says which).
+[tool.poe.tasks.smoke-body-timeout]
+help = "A stalled body is refused at the deadline, and a timer from a body that arrived whole never outlives it"
+deps = ["build-serve"]
+shell = """
+bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8092 \
+  --blocking-threads 2 --body-timeout 2 --idle-timeout 30 > bodyto.log 2>&1 &
+pid=$!
+trap 'kill -CONT $pid 2>/dev/null; kill $pid 2>/dev/null; rm -f bodyto.log' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8092/ > /dev/null \
+  || { echo '=== bodyto.log ==='; cat bodyto.log; exit 1; }
+python3 scripts/body_timeout_probe.py 8092 2 || { echo '=== bodyto.log ==='; cat bodyto.log; exit 1; }
+echo "smoke-body-timeout OK"
+python3 scripts/emit.py --covers A23 --task smoke-body-timeout
 """
 
 [tool.poe.tasks.smoke-half-close]
@@ -2595,13 +2611,13 @@ core_lib="$PWD/packages/m0-core/libm0core.$ext"
 
 cleanup() {
   kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out" ws1.log ws2.log ws3.log ws4.log
+  rm -rf "$out" ws1.log ws2.log ws3.log ws4.log ws5.log
 }
 trap cleanup EXIT
 
 fail() {
   echo "$1"
-  for log in ws1.log ws2.log ws3.log ws4.log; do
+  for log in ws1.log ws2.log ws3.log ws4.log ws5.log; do
     if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
   done
   exit 1
@@ -2781,7 +2797,35 @@ wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --realtime --mount with sockets: exit $rc, want 0"
 fi
 
-rm -f ws1.log ws2.log ws3.log ws4.log
+# Phase 5: two WSGI mounts served INLINE. With no pool the loop's own
+# handler holds both applications and takes every hold itself -- the shape
+# `--workers N` gives an all-WSGI mount set, spelled here as
+# `--blocking-threads 0`. A socket's messages go back to the application
+# whose view approved it, at its own prefix (`hold_app`, the inline twin of
+# phase 4's `hold_lane`). The SECOND mount is the one that matters:
+# unrecorded, every message was served by the first. The probe also POSTs
+# to each mount's synthetic path from the network, which must be a 404.
+M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
+  --mount /=wsmounts:first --mount /b=wsmounts:second \
+  --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
+  --blocking-threads 0 > ws5.log 2>&1 &
+pid=$!
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the inline mounted realtime server never became healthy'
+grep -q 'blocking-threads=' ws5.log && fail 'the banner reports a pool: the holds would be taken on pool threads, not inline'
+grep -q ' realtime' ws5.log || fail 'the banner does not report --realtime'
+python3 apps/django_realtime/mounts_ws_probe.py || fail 'mounts_ws_probe failed under inline mounts'
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  socks=$(curl -s http://localhost:8080/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
+  [ "$socks" = "0" ] && break
+  sleep 1
+done
+[ "$socks" = "0" ] || fail "closed sockets are still registered under inline mounts (sockets=$socks)"
+echo "phase 5: two WSGI mounts inline, each socket's messages served by the mount that approved it"
+kill $pid 2>/dev/null
+wait $pid; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM under --realtime with inline mounts and sockets: exit $rc, want 0"
+
+rm -f ws1.log ws2.log ws3.log ws4.log ws5.log
 echo "smoke-django-realtime-ws OK"
 python3 scripts/emit.py --covers I12 --task smoke-django-realtime-ws
 python3 scripts/emit.py --covers I26 --task smoke-django-realtime-ws
@@ -3297,6 +3341,35 @@ grep -q 'DATABASE_URL is not set' serve.log || fail 'deep import failure: the ex
 grep -q 'Traceback (most recent call last)' serve.log || fail 'deep import failure: no traceback'
 grep -q 'inner.py' serve.log || fail 'deep import failure: the traceback does not name the raising file'
 grep -q 'Ready to accept' serve.log && fail 'a failed load printed a ready banner first'
+# Discovery takes a candidate that RAISES as the answer, for a mount exactly
+# as for the positional spec: `split_fail.asgi` raises on import beside a
+# `split_fail.wsgi` that imports cleanly. Both forms must exit 1 with the
+# traceback naming asgi.py, and neither may serve wsgi.py in its place --
+# which the mount form did, having no re-raise of its own. Bounded, because
+# the failure it catches is a server that starts serving instead of exiting.
+for shape in split_fail "--mount /=split_fail"; do
+  "$srv" $shape --app-dir apps/wsgi_bare --port 8116 > serve.log 2>&1 &
+  pid=$!
+  waited=0
+  while [ $waited -lt 12 ]; do
+    st=$(ps -o stat= -p $pid 2>/dev/null)
+    case "$st" in ""|Z*) break;; esac
+    sleep 1; waited=$((waited + 1))
+  done
+  if [ $waited -ge 12 ]; then
+    kill $pid 2>/dev/null; wait $pid 2>/dev/null
+    fail "$shape: still running after 12 s -- it served split_fail.wsgi instead of reporting that split_fail.asgi raised"
+  fi
+  wait $pid; rc=$?
+  [ "$rc" = "1" ] || fail "$shape: exit $rc, want 1"
+  grep -q 'REDIS_URL is not set' serve.log || fail "$shape: the exception text is missing"
+  grep -q 'Traceback (most recent call last)' serve.log || fail "$shape: no traceback"
+  grep -q 'split_fail/asgi.py' serve.log || fail "$shape: the traceback does not name the file that raised"
+done
+# And the doctor, which resolves through the same function.
+"$srv" --doctor --mount /=split_fail --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+[ "$rc" = "1" ] || fail "--doctor --mount /=split_fail: exit $rc, want 1, as the server exits"
+grep -q 'REDIS_URL is not set' serve.log || fail '--doctor --mount /=split_fail does not report the import failure'
 # Under --workers the supervisor must not report success for an application
 # that never loaded: every worker dies at once, the breaker trips, exit 1.
 "$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare --workers 2 > serve.log 2>&1; rc=$?
@@ -3345,6 +3418,21 @@ curl --silent --fail http://localhost:8113/ > /dev/null || fail 'the first serve
 kill -TERM $pid; wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "first server after the busy-port probe: exit $rc, want 0"
 rm -f "$second"
+
+# Only an address IN USE is waited out. Any other bind failure is refused at
+# once, in its own words: an address that is not on this machine (192.0.2.1,
+# the TEST-NET-1 documentation range) was retried for the busy port's five
+# seconds and then reported as "address already in use". Both the retry
+# notice and the time are asserted, so a slow runner cannot pass a retrying
+# build.
+t0=$(date +%s)
+"$srv" $SPEC --host 192.0.2.1 --port 8116 > serve.log 2>&1; rc=$?
+took=$(( $(date +%s) - t0 ))
+[ "$rc" = "1" ] || fail "an address not on this machine: exit $rc, want 1"
+grep -q 'address already in use' serve.log && fail 'an address not on this machine was reported as in use'
+grep -q 'cannot listen on 192.0.2.1:8116' serve.log || fail 'the listen failure does not name the address'
+grep -q 'Retrying' serve.log && fail 'a bind failure that waiting cannot cure was retried'
+[ "$took" -lt 3 ] || fail "an address not on this machine took ${took}s to be refused: it was retried"
 
 # A static mount is answered in Mojo with the freshness policy given; a path
 # outside it still reaches the app; --max-body and --metrics reach the server.
@@ -5598,6 +5686,21 @@ print("stream-raises: pieces delivered, then closed without a terminator")
 PYEOF
 grep -q 'streamed response raised after its head' stream.log \
   || fail 'the raise inside the generator was not reported'
+
+# A stream whose head cannot be built is a 500, and its iterable is still
+# closed, once: PEP 3333 owes the application close() however the response
+# ended. Two sites: a header VALUE that is not a str fails the head in Mojo
+# after the shim has kept the iterable for this thread, and a header NAME
+# that is not one fails the shim's own stream-or-buffer decision before
+# anything has kept it. Both were left open, the pool thread moving on.
+for path in /stream-bad-head /stream-bad-name; do
+  before=$(curl -s --max-time 5 $B/close/count)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$B$path")
+  [ "$code" = "500" ] || fail "$path answered '$code', want 500"
+  after=$(curl -s --max-time 5 $B/close/count)
+  [ "$after" = "$((before + 1))" ] \
+    || fail "$path: the close() tally went $before -> $after; the iterable must be closed exactly once"
+done
 
 # Sixteen 1 MB streams at once on four threads: every byte, in order, and
 # the server answers afterwards. This is the channel's shared capacity
@@ -8957,7 +9060,7 @@ grep -q 'M0_NOTES_PASSWORD is not set' refusal.log || fail 'the refusal did not 
 # a different one. The app says so (max_workers) and the Mojo host refuses
 # the count before it binds. In the background with a deadline: a binary
 # that served instead would never exit.
-M0_PORT=8095 M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > refusal.log 2>&1 &
+M0_PORT=8095 M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > refusal.log 2>&1 &
 rpid=$!
 i=0
 while kill -0 $rpid 2>/dev/null; do
@@ -8973,7 +9076,7 @@ grep -q 'listening' refusal.log && fail 'M0_WORKERS=2 was refused after the port
 # The same list would be N lists under M0_THREADS -- every loop builds its
 # own state -- and the app never said a word about threads: `max_threads`
 # defaults to `max_workers`, so the one answer refuses both (SPEC E29).
-M0_PORT=8095 M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > refusal.log 2>&1 &
+M0_PORT=8095 M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > refusal.log 2>&1 &
 rpid=$!
 i=0
 while kill -0 $rpid 2>/dev/null; do
@@ -8987,7 +9090,7 @@ code=$?
 grep -q 'M0_THREADS=2' refusal.log || fail 'the loop-count refusal did not name M0_THREADS'
 grep -q 'listening' refusal.log && fail 'M0_THREADS=2 was refused after the port was bound'
 
-M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > fragment.log 2>&1 &
+M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > fragment.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
 B=http://localhost:8094

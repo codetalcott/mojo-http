@@ -35,7 +35,7 @@ from src.threads import read_one_byte_blocking
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, was_signaled, exit_code,
-    kill_process, SIGTERM,
+    kill_process, SIGTERM, executable_path, path_from_bytes,
 )
 from lightbug_http.c.socketpair import socketpair_dgram
 
@@ -344,6 +344,31 @@ def test_spawned_workers_run_the_exec_image_with_their_index() raises:
     assert_true(path.exists(m1), "worker 1 never ran the exec image with its index")
     remove(m0)
     remove(m1)
+
+
+def test_a_path_above_ascii_keeps_its_bytes_for_the_exec() raises:
+    """The spawn re-execs `executable_path()`, and a path is bytes: the
+    String it is built from must hold exactly the bytes the OS returned.
+    `chr()` per byte re-encoded each one at or above 0x80, so a binary
+    under `/Users/josé/` answered `josÃ©`, which names no file. The bytes
+    here are that `é` in UTF-8 and a 0xFF that is not UTF-8 at all, as a
+    Linux path may hold; and `executable_path()` itself still answers the
+    running image.
+
+    covers: E35
+    """
+    var raw = List[UInt8](String("/Users/jos").as_bytes())
+    raw.append(0xC3)
+    raw.append(0xA9)
+    raw.extend(String("/d").as_bytes())
+    raw.append(0xFF)
+    raw.extend(String("/m0serve").as_bytes())
+    var got = path_from_bytes(Span(raw))
+    var bytes = got.as_bytes()
+    assert_equal(len(bytes), len(raw), "the path's length changed on the way")
+    for i in range(len(raw)):
+        assert_equal(Int(bytes[i]), Int(raw[i]), String("byte ", i, " changed"))
+    assert_true(path.exists(executable_path()), "executable_path() names no file")
 
 
 def test_a_crashed_spawned_worker_is_respawned_through_exec() raises:

@@ -545,6 +545,120 @@ def span_is_ascii(s: Span[Byte, _]) -> Bool:
 
 
 @always_inline
+def _breaks_line_lanes[W: Int](w: SIMD[DType.uint8, W]) -> Bool:
+    """Whether a chunk holds CR, LF or NUL. XOR zeroes exactly the lanes
+    equal to its operand and a NUL lane is zero already, so the lane-wise
+    minimum of the three is zero where any of them sits -- one `reduce_min`
+    for the three bytes, `find_header_end`'s idiom."""
+    var cr = w ^ SIMD[DType.uint8, W](0x0D)
+    var lf = w ^ SIMD[DType.uint8, W](0x0A)
+    return min(min(cr, lf), w).reduce_min() == 0
+
+
+@always_inline
+def span_breaks_header_line(s: Span[Byte, _]) -> Bool:
+    """Whether `s` holds CR, LF or NUL, which no header name, header value,
+    reason phrase or `Set-Cookie` line may carry onto the wire.
+
+    CR and LF end a line, so either one inside a value lets the rest of it
+    be read as headers of its own -- and, after a blank line, as a body
+    the application never wrote: response splitting. NUL ends a C string.
+    Every writer of a head asks this of what it is about to write and
+    drops what answers yes (SPEC G1, G2), because the application has
+    already run and its body is real; `m0-wsgi` asks the same of an
+    application's head as it reads it, for the same reason.
+
+    It runs on every name and value of every response, most of them under
+    sixteen bytes, so no length walks a byte at a time past the third: what
+    one full-width load cannot cover is read by a second that ENDS at the
+    last byte, overlapping bytes already clear -- sixteen lanes for a long
+    span, two loads of eight or of four for a short one. A byte loop for
+    the tail cost more than the rest of the scan put together.
+    """
+    var n = len(s)
+    var p = s.unsafe_ptr()
+    if n >= 16:
+        var i = 0
+        while i + 16 <= n:
+            if _breaks_line_lanes[16](p.unsafe_offset(i).unsafe_load[width=16]()):
+                return True
+            i += 16
+        return i < n and _breaks_line_lanes[16](
+            p.unsafe_offset(n - 16).unsafe_load[width=16]()
+        )
+    if n >= 8:
+        return _breaks_line_lanes[8](
+            p.unsafe_load[width=8]()
+        ) or _breaks_line_lanes[8](p.unsafe_offset(n - 8).unsafe_load[width=8]())
+    if n >= 4:
+        return _breaks_line_lanes[4](
+            p.unsafe_load[width=4]()
+        ) or _breaks_line_lanes[4](p.unsafe_offset(n - 4).unsafe_load[width=4]())
+    for i in range(n):
+        var c = p[unsafe_offset=i]
+        if c == 0x0D or c == 0x0A or c == 0x00:
+            return True
+    return False
+
+
+comptime HEADER_VALUE_ASCII = 0
+"""`header_value_kind`: every byte below 0x80, none of them CR, LF or NUL."""
+comptime HEADER_VALUE_HIGH = 1
+"""`header_value_kind`: a byte above 0x7F, and no CR, LF or NUL."""
+comptime HEADER_VALUE_BREAKS = 2
+"""`header_value_kind`: a CR, LF or NUL somewhere. Ordered last, so the
+`max` of two chunks' kinds is the span's."""
+
+
+@always_inline
+def _value_lanes[W: Int](w: SIMD[DType.uint8, W]) -> Int:
+    if _breaks_line_lanes[W](w):
+        return HEADER_VALUE_BREAKS
+    return HEADER_VALUE_HIGH if w.reduce_max() >= 0x80 else HEADER_VALUE_ASCII
+
+
+@always_inline
+def header_value_kind(s: Span[Byte, _]) -> Int:
+    """`span_breaks_header_line` and `span_is_ascii` in one pass, for the
+    one caller that asks both of every value: `Headers.write_latin1_to`.
+    The loads are `span_breaks_header_line`'s, each asked both questions."""
+    var n = len(s)
+    var p = s.unsafe_ptr()
+    if n >= 16:
+        var kind = HEADER_VALUE_ASCII
+        var i = 0
+        while i + 16 <= n:
+            var k = _value_lanes[16](p.unsafe_offset(i).unsafe_load[width=16]())
+            if k == HEADER_VALUE_BREAKS:
+                return k
+            kind = max(kind, k)
+            i += 16
+        if i < n:
+            kind = max(
+                kind, _value_lanes[16](p.unsafe_offset(n - 16).unsafe_load[width=16]())
+            )
+        return kind
+    if n >= 8:
+        return max(
+            _value_lanes[8](p.unsafe_load[width=8]()),
+            _value_lanes[8](p.unsafe_offset(n - 8).unsafe_load[width=8]()),
+        )
+    if n >= 4:
+        return max(
+            _value_lanes[4](p.unsafe_load[width=4]()),
+            _value_lanes[4](p.unsafe_offset(n - 4).unsafe_load[width=4]()),
+        )
+    var kind = HEADER_VALUE_ASCII
+    for i in range(n):
+        var c = p[unsafe_offset=i]
+        if c == 0x0D or c == 0x0A or c == 0x00:
+            return HEADER_VALUE_BREAKS
+        if c >= 0x80:
+            kind = HEADER_VALUE_HIGH
+    return kind
+
+
+@always_inline
 def _presence_bit(name: Span[Byte, _]) -> UInt64:
     """The bit `name` sets in a `Headers._present` word.
 
@@ -904,25 +1018,48 @@ struct Headers(Copyable, Writable):
         return total
 
     def write_to[T: Writer, //](self, mut writer: T):
+        """The headers as text, dropping what `write_latin1_to` drops, so
+        a response printed is the response sent."""
         for i in range(self.count()):
+            var name = self.name_span(i)
+            var value = self.value_span(i)
+            if span_breaks_header_line(value) or span_breaks_header_line(name):
+                continue
             writer.write(
-                StringSpan(unsafe_from_utf8=self.name_span(i)),
+                StringSpan(unsafe_from_utf8=name),
                 ": ",
-                StringSpan(unsafe_from_utf8=self.value_span(i)),
+                StringSpan(unsafe_from_utf8=value),
                 lineBreak,
             )
 
     def write_latin1_to(self, mut writer: ByteWriter):
-        """Write headers with values transcoded to ISO-8859-1 for the wire."""
+        """Write headers with values transcoded to ISO-8859-1 for the wire.
+
+        A header whose name or value holds CR, LF or NUL is DROPPED, and
+        the rest are written (SPEC G2). Every head this server sends is
+        written here -- a Mojo view's, the Mojo host's, a `--mount X=mojo`
+        pool thread's, the gateway's -- so this is the one place the rule
+        can live; it used to live only in `m0-wsgi`, which left every
+        response built in Mojo writing `name: value\\r\\n` uninspected. A
+        view that put request data in a header (a redirect to `next`, say,
+        which `unquote` has already turned from `%0D%0A` into CRLF) could
+        end its own head and write headers, or a body, of its choosing.
+        Dropped rather than raised: the application has run and its body
+        is real, and the header is the one part that cannot be sent.
+        """
         for i in range(self.count()):
+            var name = self.name_span(i)
             var value = self.value_span(i)
-            if span_is_ascii(value):
-                writer.write_header_line(self.name_span(i), value)
+            var kind = header_value_kind(value)
+            if kind == HEADER_VALUE_BREAKS or span_breaks_header_line(name):
+                continue
+            if kind == HEADER_VALUE_ASCII:
+                writer.write_header_line(name, value)
             else:
                 var latin1 = encode_latin1_header_value(
                     String(unsafe_from_utf8=value)
                 )
-                writer.write_header_line(self.name_span(i), Span(latin1))
+                writer.write_header_line(name, Span(latin1))
 
     def __str__(self) -> String:
         return String(self)
@@ -1023,9 +1160,8 @@ def parse_request_headers(
     var cookies = List[String]()
     var seen_content_length = False
     var seen_transfer_encoding = False
-    # -1 while no Host field has been seen; the last one's length after.
-    # `set_bytes` keeps the last of duplicate fields, so the length the
-    # RFC 9112 §3.2 check below wants is the last one's.
+    # -1 while no Host field has been seen; its length after. A second Host
+    # line is refused where it is met, so there is only ever the one.
     var host_len = -1
 
     # The header array holds OFFSETS into `buffer`; every name and value is a
@@ -1084,9 +1220,24 @@ def parse_request_headers(
             # The two fields the RFC checks below ask about are noted on
             # the way past. They used to be three scans of the finished
             # collection — and the Host one built a String to measure it.
+            #
+            # A SECOND line of either is refused here, as a second
+            # Content-Length is above: `set_bytes` keeps the last of a
+            # repeated field, so the request was served on whichever line
+            # came last. RFC 9112 §3.2 asks for 400 on more than one Host
+            # line in ANY request -- a proxy routing on the first and an
+            # application reading the last (Django's `HTTP_HOST`) disagreed
+            # about the site. Field lines of one name combine into a list
+            # (RFC 9110 §5.3), so two `Transfer-Encoding: chunked` lines are
+            # the `chunked, chunked` refused below, which the last line
+            # alone read as one `chunked`.
             if kid == KH_HOST:
+                if host_len >= 0:
+                    raise RequestParseError(InvalidHTTPRequestError())
                 host_len = len(value)
             elif kid == KH_TRANSFER_ENCODING:
+                if seen_transfer_encoding:
+                    raise RequestParseError(InvalidHTTPRequestError())
                 seen_transfer_encoding = True
             headers._set_bytes(name_bytes, value, kid)
 
@@ -1105,9 +1256,10 @@ def parse_request_headers(
 
     # RFC 9112 §3.2: an HTTP/1.1 request MUST carry exactly one Host field,
     # and a server MUST respond 400 to one that does not. Both halves are
-    # checked: a *missing* Host used to pass, because the check was an
-    # `and` that a None short-circuited — which leaves the request's
-    # target host unstated in any deployment that routes or caches on it.
+    # checked, "more than one" in the loop above: a *missing* Host used to
+    # pass, because the check was an `and` that a None short-circuited —
+    # which leaves the request's target host unstated in any deployment
+    # that routes or caches on it.
     #
     # Whitespace-only values ("Host: " / "Host: \t") are stripped to "" by
     # the parser's OWS skip and are rejected by the same check.
@@ -1117,9 +1269,9 @@ def parse_request_headers(
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
     # Reject e.g. "Transfer-Encoding: chunked, zorg".
     if seen_transfer_encoding:
-        # `get` for the value rather than the loop's span: with duplicate
-        # fields it is the last one that `set_bytes` kept, and this path
-        # runs only for requests that carry the header at all.
+        # `get` for the value rather than the loop's span: a second line
+        # was refused in the loop, so the one stored is the only one, and
+        # this path runs only for requests that carry the header at all.
         var te_str = headers.get(HeaderKey.TRANSFER_ENCODING).value().lower()
         # Lowercased before the test, not only for `last_te`: transfer-coding
         # names are case-insensitive (RFC 9112 §7.1), so testing the raw

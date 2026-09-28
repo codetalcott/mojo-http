@@ -760,6 +760,27 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             if slot == UNUSED:
                 continue
 
+            # A body timer ends a body that stopped arriving, and nothing
+            # else. It closed its slot unasked -- a keep-alive connection
+            # idle between requests, or one whose request was out on a pool
+            # thread, whose provision `_close_slot` then RELEASED: the next
+            # connection took the slot and was sent the pool thread's
+            # response (B1). The arm below the decode in
+            # `_handle_read_headers` leaves no timer behind a body that is
+            # complete, but an expiry already in this batch outlives any
+            # delete: the body's last bytes and the timer can land in one
+            # `wait`, the read first, and the pass that completes the body
+            # then reaches the timer. Retired rather than skipped, because
+            # epoll's timerfd is level-triggered and an unread expiry is
+            # reported by every wait after it.
+            if timer_ident < TIMER_IDLE and (
+                provision_pool.provisions[slot].state.kind
+                != ConnectionState.READING_BODY
+                or offload.offloaded[slot]
+            ):
+                backend.try_delete_timer(timer_ident)
+                continue
+
             # Phase 1d: idle timeout is expected client behaviour — close cleanly.
             # Only send 408 for header/body timeouts on the first request.
             if timer_ident < TIMER_IDLE and provision_pool.provisions[slot].keepalive_count == 0:
@@ -1239,6 +1260,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             if remaining <= 0:
                 # Head already drained: this readiness belongs to the
                 # file body, if one is still owed.
+                var file_owed = provision_pool.provisions[slot].body_fd_remaining
                 var pumped = _pump_body_fd(
                     provision_pool.provisions[slot], fd_val
                 )
@@ -1251,6 +1273,16 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     )
                     continue
                 if pumped == BODY_FD_MORE:
+                    # The file moved: the client is still taking it, so its
+                    # send deadline starts again (`_arm_send_deadline`).
+                    if (
+                        slot_idle_deadline[slot] != 0
+                        and provision_pool.provisions[slot].body_fd_remaining
+                        < file_owed
+                    ):
+                        _arm_send_deadline(
+                            config, slot, slot_sse, slot_ws, slot_idle_deadline
+                        )
                     try:
                         backend.add_write_oneshot(fd_val)
                         slot_read_armed[slot] = False
@@ -1337,6 +1369,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     date_cache_sec, date_cache, offload,
                 )
             else:
+                # Bytes moved and more are owed: the send deadline starts
+                # again (`_arm_send_deadline`). Only one already armed, so a
+                # stream's zero deadline stays zero.
+                if sent > 0 and slot_idle_deadline[slot] != 0:
+                    _arm_send_deadline(
+                        config, slot, slot_sse, slot_ws, slot_idle_deadline
+                    )
                 try:
                     backend.add_write_oneshot(fd_val)
                     slot_read_armed[slot] = False
@@ -2492,6 +2531,16 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         )
         return
 
+    # A request has begun: its first bytes are in the buffer, read now or
+    # left there pipelined behind the last answer. The keep-alive deadline
+    # `_after_send` set bounds how long a connection may sit BETWEEN
+    # requests, and left standing it cut a request that started late in
+    # that window at the previous response's deadline: an upload begun 7 s
+    # into a 10 s idle timeout was closed at 10.2 s, mid-body (B2). From
+    # here the header timeout, the body timer and the send deadline
+    # (`_arm_send_deadline`) bound the request.
+    slot_idle_deadline[slot] = 0
+
     if recv_eof:
         # recv returning 0 IS the peer's EOF, however the event was
         # flagged. Without this, a preserved pipelined tail holding only a
@@ -2616,9 +2665,6 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             )
             provision_pool.provisions[slot].state = ConnectionState.reading_body(effective_length)
 
-            if config.body_read_timeout > 0:
-                backend.try_add_timer(UInt(fd_val) + TIMER_BODY, config.body_read_timeout * 1000)
-
             # Phase 1b: decode whatever of the body arrived with the headers,
             # through the CONNECTION's decoder — the same one the
             # READING_BODY branch resumes. A throwaway decoder here would
@@ -2705,6 +2751,27 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     slot_sse, slot_ws, slot_ws_state,
                     slot_read_armed, slot_idle_deadline,
                     date_cache_sec, date_cache, offload,
+                )
+
+            # The body timer, for a body still OWED. It was armed above the
+            # decode, so a body that arrived whole with its headers --
+            # completed just above, where nothing deleted it -- left it
+            # running, and `body_read_timeout` later it closed the
+            # connection, whatever it was doing by then (B1; the timer
+            # handler's guard is the other half). Armed here instead, once
+            # what came with the headers has been taken: `_process_request`
+            # never leaves the slot READING_BODY, so the state says whether a
+            # body is still owed, and a small POST costs no timer at all.
+            # The READING_BODY branch of `_run_pass` deletes it at the end
+            # of a body that arrives later.
+            if (
+                config.body_read_timeout > 0
+                and slot_fds[slot] != UNUSED
+                and provision_pool.provisions[slot].state.kind
+                == ConnectionState.READING_BODY
+            ):
+                backend.try_add_timer(
+                    UInt(fd_val) + TIMER_BODY, config.body_read_timeout * 1000
                 )
         else:
             provision_pool.provisions[slot].request_end = header_end_offset
@@ -3502,6 +3569,38 @@ def _pump_body_fd(mut provision: ConnectionProvision, fd_val: Int) -> Int:
     return BODY_FD_DONE
 
 
+@always_inline
+def _arm_send_deadline(
+    config: ServerConfig,
+    slot: Int,
+    slot_sse: List[Bool],
+    slot_ws: List[Bool],
+    mut slot_idle_deadline: List[Int],
+):
+    """Give a response its client has stopped taking `idle_timeout` to move.
+
+    The idle sweep reaps the slot once the deadline passes, and a send that
+    moves bytes pushes it out again (the write-ready path), so it bounds
+    the time BETWEEN two sends that make progress, not the whole response:
+    nginx's `send_timeout`, on the timeout m0serve already exposes. Nothing
+    bounded a RESPONDING slot before this. A keep-alive request answered on
+    the loop happened to inherit the previous response's idle deadline,
+    which B2's fix clears at the request's first bytes, and every request a
+    pool thread or an executor answered had its deadline zeroed when it was
+    offloaded: a client that asked for a large response and never read it
+    held its slot for the life of the process.
+
+    A stream is not a response here (`slot_sse`, `slot_ws`). A WebSocket's
+    non-zero deadline IS its close linger -- the linger sites arm it only
+    while it is 0 -- and a stream's slot keeps a zero deadline between
+    frames; neither is this function's to change.
+    """
+    if config.idle_timeout > 0 and not (slot_sse[slot] or slot_ws[slot]):
+        slot_idle_deadline[slot] = (
+            perf_counter_ns() + config.idle_timeout * 1_000_000_000
+        )
+
+
 def _finish_response[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
     slot: Int,
@@ -3776,7 +3875,10 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # else: more of the file is owed — fall through and wait for
         # writability exactly as a partial head send does.
 
-    # Partial send or EAGAIN: register EVFILT_WRITE for the remainder.
+    # Partial send or EAGAIN: register EVFILT_WRITE for the remainder, and
+    # start the send deadline; the write-ready path refreshes it as long as
+    # the client keeps taking bytes.
+    _arm_send_deadline(config, slot, slot_sse, slot_ws, slot_idle_deadline)
     try:
         backend.add_write_oneshot(fd_val)
         slot_read_armed[slot] = False

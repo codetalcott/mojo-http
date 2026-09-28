@@ -321,10 +321,21 @@ def executable_path() raises -> String:
         if got < 0:
             raise Error("readlink(/proc/self/exe) failed, errno: ", get_errno())
         n = Int(got)
-    var out = String()
-    for i in range(n):
-        out += chr(Int(buf[i]))
-    return out^
+    return path_from_bytes(Span(buf)[:n])
+
+
+def path_from_bytes(bytes: Span[UInt8, _]) -> String:
+    """A path the OS returned, as a String holding exactly its bytes.
+
+    A path is bytes, not text, and `execv` wants them back unchanged.
+    `executable_path` used to append `chr()` of each byte, which encodes a
+    byte at or above 0x80 as a two-byte codepoint: `/Users/josé/` came back
+    as `josÃ©`, which names no file, so `--spawn-workers` could not re-exec
+    a binary installed under it. The bytes are copied as they are -- also
+    those of a Linux path that are not UTF-8 at all -- and `_c_string`
+    hands them to `execv` as they came.
+    """
+    return String(unsafe_from_utf8=bytes)
 
 
 def exec_process(path: String, args: List[String]) -> String:

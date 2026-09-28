@@ -41,6 +41,9 @@ application. This does, per template, as a user would:
             fragment; a DELETE with the token in its URL a 403, in the
             header a 200; sign-out a 303 expiring the cookie. No redirect
             is followed anywhere: a 3xx is an answer to read
+  deploy    auth: `deploy/fly.toml` forces HTTPS, and the binary run with
+            that file's `[env]` and the two secrets `fly secrets set` adds,
+            nothing of this run's own, sets a `Secure` session cookie
   doctor    `uv run m0 doctor --json`: green, the host's report inside it;
             the scaffold it wrote matches, and an edited Dockerfile is named.
             auth: without APP_PASSWORD the doctor is exit 78 naming it, the
@@ -91,11 +94,17 @@ TEST_FILE = {"views": "test/test_views.mojo", "live": "test/test_live.mojo",
              "auth": "test/test_auth.mojo"}
 
 # What a template's server needs in its environment to serve at all; `auth`
-# refuses to start without both (exit 78, naming the variable).
+# refuses to start without all three (exit 78, naming the variable), and
+# this run is plain http, so its `APP_SECURE` is 0, as the printed hint's is.
 AUTH_PASSWORD = "smoke scaffold"
 SERVE_ENV = {"auth": {"APP_KEY": "scaffold-smoke-key-0123456789abcdef0123456789",
-                      "APP_PASSWORD": AUTH_PASSWORD}}
-AUTH_HINT = "export APP_KEY=\"$(openssl rand -hex 32)\" APP_PASSWORD='choose one'"
+                      "APP_PASSWORD": AUTH_PASSWORD, "APP_SECURE": "0"}}
+AUTH_HINT = ("export APP_KEY=\"$(openssl rand -hex 32)\" APP_PASSWORD='choose one' "
+             "APP_SECURE=0")
+# What `fly secrets set` adds to a deployed `auth` app, beside
+# `deploy/fly.toml`'s `[env]`: the two variables that file must never hold.
+DEPLOY_SECRETS = {"APP_KEY": "scaffold-deploy-key-0123456789abcdef0123456789",
+                  "APP_PASSWORD": AUTH_PASSWORD}
 
 HTMX_TAG = '<script src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"></script>'
 DATASTAR_TAG = ('<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/'
@@ -435,6 +444,61 @@ def wire_auth(port):
           "delete, sign-out")
 
 
+def deploy_auth(project, env, port):
+    """The session cookie a DEPLOYED `auth` app sets is `Secure`, from the
+    deploy configuration exactly as `m0 new` wrote it.
+
+    Fly runs the image with `deploy/fly.toml`'s `[env]` and the secrets
+    `fly secrets set` stored, and with nothing of the shell that built it.
+    So the binary runs here with those alone -- every `APP_` variable of
+    this run's own removed -- and is signed in to over plain http, which is
+    how the proxy that terminated TLS forwards a request. A fly.toml that
+    states nothing is refused by the login (exit 78, naming APP_SECURE),
+    and one that states 0 sets a cookie a browser sends in clear on a
+    visitor's first http:// request, before `force_https` redirects it.
+    """
+    fly = tomllib.loads((project / "deploy" / "fly.toml").read_text())
+    if fly.get("http_service", {}).get("force_https") is not True:
+        fail("deploy/fly.toml does not force HTTPS: [http_service] is %r"
+             % fly.get("http_service"))
+    deploy_env = {k: v for k, v in env.items() if not k.startswith("APP_")}
+    deploy_env.update({k: str(v) for k, v in fly.get("env", {}).items()})
+    deploy_env.update(DEPLOY_SECRETS)
+    server = subprocess.Popen([str(project / "bin" / "server"), "--port", str(port)],
+                              cwd=project, env=deploy_env, stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
+    try:
+        deadline = time.time() + 10
+        while True:
+            if server.poll() is not None:
+                fail("under deploy/fly.toml's [env] and its two secrets the server exited "
+                     "%d without serving:\n%s" % (server.returncode, server.stdout.read()[-1500:]))
+            try:
+                if request(port, "GET", "/health")[0] == 200:
+                    break
+            except OSError:
+                pass
+            if time.time() > deadline:
+                fail("under deploy/fly.toml's [env] and its two secrets no /health within 10 s")
+            time.sleep(0.1)
+        status, _, headers, _ = request(port, "POST", "/login", PLAIN_FORM,
+                                        ("user=admin&password=%s"
+                                         % urllib.parse.quote_plus(AUTH_PASSWORD)).encode())
+        cookie = headers.get("Set-Cookie", "")
+        attributes = [a.strip() for a in cookie.split(";")[1:]]
+        if status != 303 or not cookie.startswith("corner-auth-session=v1."):
+            fail("under deploy/fly.toml's [env] and its two secrets signing in answered %d, "
+                 "cookie %r" % (status, cookie))
+        if "Secure" not in attributes:
+            fail("under deploy/fly.toml's [env] and its two secrets the session cookie has no "
+                 "Secure, so a browser sends it in clear on a first http:// request: %r" % cookie)
+    finally:
+        server.terminate()
+        server.wait(timeout=15)
+    print("deploy[auth]: under deploy/fly.toml's [env] and its two secrets, force_https and a "
+          "Secure session cookie")
+
+
 WIRE = {"views": wire_views, "live": wire_live, "auth": wire_auth}
 
 
@@ -517,6 +581,10 @@ def serve_and_probe(project, env, template, name, port, pin, m0v, servers):
         fail("the server exited %d on SIGTERM:\n%s" % (code, banner[-1500:]))
     if name not in banner:
         fail("the server's banner does not carry the application's name:\n" + banner[:500])
+
+    if template == "auth":
+        phase("deploy [auth]")
+        deploy_auth(project, env, port + 20)
 
     phase("doctor [%s]" % template)
     if template == "auth":

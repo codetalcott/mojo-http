@@ -47,9 +47,13 @@ one home; `0.x` until the layer soak). Rules:
 - **`m0 new` writes from REAL files** (`src/m0/templates/`, SPEC N27–N29,
   N45, D53; docs/notes/the-scaffold.md): three templates, `views`
   (htmx 4), `auth` (the `views` list behind `m0_http.login`, its `main`
-  reading `APP_KEY` and `APP_PASSWORD` BEFORE `serve` so the doctor
-  refuses what the run would; `new.py`'s `ENV_HINT` prints their
-  `export`) and `live` (a producer and Datastar frames, its kick count kept
+  reading `APP_KEY`, `APP_PASSWORD` and `APP_SECURE` BEFORE `serve` so the
+  doctor refuses what the run would; `new.py`'s `ENV_HINT` prints their
+  `export`, `APP_SECURE=0` for `http://localhost`, and the common
+  `deploy/fly.toml` states `APP_SECURE = "1"` beside `force_https` while
+  the image states none — `smoke-scaffold`'s deploy phase signs in under
+  that file's `[env]` and requires a `Secure` cookie) and `live` (a
+  producer and Datastar frames, its kick count kept
   in SQLite by a store the handler opens in `make` — once per worker, loop
   or pool thread, after the fork — and counted inside the kick's own
   request, so it is a committed row when the 204 is answered; a producer

@@ -20,6 +20,13 @@ primary_region = "iad"
 [env]
   # A comment frame every 25 s keeps a quiet stream open through the proxy.
   M0_SSE_HEARTBEAT_MS = "25000"
+  # Behind Fly's TLS (`force_https` below), so a login's session cookie
+  # carries `Secure` and no browser sends it on a visitor's first http://
+  # request, before the redirect. `m0_http.login` will not start with it
+  # unstated; an application without a login reads nothing here. A login's
+  # APP_KEY and APP_PASSWORD are SECRETS (`fly secrets set`), never written
+  # in this file.
+  APP_SECURE = "1"
 
 # The database (the image sets M0_DB under /app/data) survives a deploy only
 # on a volume. Create it first -- `fly volumes create data --size 1 -a

@@ -198,6 +198,11 @@ struct ServeOptions(Copyable, Movable):
     close-at-once behaviour rather than leaking the slot -- see
     `WS_CLOSE_LINGER_NS` in event_loop.mojo.
     """
+    var body_timeout: Int
+    """`--body-timeout`: seconds a request body may take to arrive once its
+    headers have; -1 leaves `ServerConfig.body_read_timeout` (30) alone,
+    and 0 turns the body timer off. A body still short at the deadline is
+    refused -- 408 on a connection's first request -- and closed."""
     var metrics: Bool
     var realtime: Bool
     """Hold SSE streams and WebSockets that the application approves.
@@ -281,6 +286,7 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = -1
         self.max_keepalive_requests = -1
         self.idle_timeout = -1
+        self.body_timeout = -1
         self.metrics = False
         self.realtime = False
         self.reload = False
@@ -323,6 +329,7 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = copy.max_body
         self.max_keepalive_requests = copy.max_keepalive_requests
         self.idle_timeout = copy.idle_timeout
+        self.body_timeout = copy.body_timeout
         self.metrics = copy.metrics
         self.realtime = copy.realtime
         self.reload = copy.reload
@@ -365,6 +372,7 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = move.max_body
         self.max_keepalive_requests = move.max_keepalive_requests
         self.idle_timeout = move.idle_timeout
+        self.body_timeout = move.body_timeout
         self.metrics = move.metrics
         self.realtime = move.realtime
         self.reload = move.reload
@@ -444,6 +452,8 @@ struct ServeOptions(Copyable, Movable):
             sc.max_keepalive_requests = self.max_keepalive_requests
         if self.idle_timeout >= 0:
             sc.idle_timeout = self.idle_timeout
+        if self.body_timeout >= 0:
+            sc.body_read_timeout = self.body_timeout
         sc.enable_metrics = self.metrics
         return sc^
 
@@ -1166,6 +1176,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--max-body"
         or name == "--max-keepalive-requests"
         or name == "--idle-timeout"
+        or name == "--body-timeout"
         or name == "--health-path"
         or name == "--reload-dir"
         or name == "--protocol"
@@ -1307,6 +1318,13 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
                 "--idle-timeout must be 0 or more seconds, got " + value
             )
         opts.idle_timeout = idle
+    elif name == "--body-timeout":
+        var body = parse_int(value, "--body-timeout")
+        if body < 0:
+            raise Error(
+                "--body-timeout must be 0 or more seconds, got " + value
+            )
+        opts.body_timeout = body
     elif name == "--reload-dir":
         var watched = String(value.strip())
         if watched.byte_length() == 0:
@@ -1463,6 +1481,9 @@ def usage() -> String:
         "                              M0_MAX_KEEPALIVE_REQUESTS)\n"
         "  --idle-timeout SECONDS      close a keep-alive connection left idle\n"
         "                              this long (default 60, 0 = never)\n"
+        "  --body-timeout SECONDS      refuse a request body still arriving this\n"
+        "                              long after its headers (default 30,\n"
+        "                              0 = never)\n"
         "  --metrics                   serve Prometheus metrics at /__metrics\n"
         "  --realtime                  hold SSE streams and WebSockets the app\n"
         "                              approves with M0-Hold; publish with m0pub.py\n"

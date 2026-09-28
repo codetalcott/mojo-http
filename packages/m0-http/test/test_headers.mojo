@@ -400,8 +400,10 @@ def test_duplicate_names_keep_the_last_value() raises:
     """Repeated non-cookie names collapse to the last one seen.
 
     Matches the `Dict` this replaced, where a second insert overwrote the
-    first. (Content-Length is exempt: a duplicate is rejected outright as a
-    request-smuggling vector, asserted in test_parsing.mojo.)
+    first. (Content-Length, Transfer-Encoding and Host are exempt: a
+    duplicate of any of them is rejected outright, the first two as a
+    request-smuggling vector and Host by RFC 9112 §3.2, asserted in
+    test_parsing.mojo.)
     """
     var raw = String(
         "GET / HTTP/1.1\r\n",

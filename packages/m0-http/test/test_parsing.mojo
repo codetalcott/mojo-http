@@ -92,11 +92,23 @@ def test_transfer_encoding_before_content_length_is_also_rejected() raises:
 
 
 def test_duplicate_content_length_is_rejected() raises:
-    """Two lengths is the same ambiguity as a length plus a chunked encoding."""
+    """Two lengths is the same ambiguity as a length plus a chunked encoding.
+
+    Two lines that AGREE are refused too. RFC 9112 §6.3 lets a recipient
+    collapse identical values into one, and RFC 9110 §8.6 lets it reject
+    them instead; this parser takes the second, so a second length line
+    is never read as anything but a second framing.
+    """
     assert_true(
         _rejected(
             "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n"
             "Content-Length: 5\r\n\r\n"
+        )
+    )
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 6\r\n"
+            "Content-Length: 6\r\n\r\n"
         )
     )
 
@@ -197,6 +209,84 @@ def test_http11_requires_host_to_be_present_at_all() raises:
     and let the request through with its target host unstated."""
     assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
     assert_true(_rejected("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n"))
+
+
+def test_a_second_host_line_is_rejected() raises:
+    """RFC 9112 §3.2: a server MUST answer 400 to "any request message
+    that contains more than one Host header field line". The parser kept
+    the last line and served the request, so a proxy routing on the first
+    `Host` and an application reading the last (Django's `HTTP_HOST`)
+    disagreed about which site the request was for.
+
+    The rule counts LINES: two that agree are still refused, and so are
+    two that differ only in the name's letter case. It is not HTTP/1.1's
+    alone, and an empty first line does not hide the second.
+
+    covers: B10
+    """
+    assert_true(
+        _rejected("GET / HTTP/1.1\r\nHost: a.example\r\nHost: b.example\r\n\r\n")
+    )
+    assert_true(
+        _rejected("GET / HTTP/1.1\r\nHost: a.example\r\nHost: a.example\r\n\r\n")
+    )
+    assert_true(
+        _rejected("GET / HTTP/1.1\r\nHost: a.example\r\nhOST: b.example\r\n\r\n")
+    )
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: \r\nHost: b.example\r\n\r\n"))
+    assert_true(
+        _rejected("GET / HTTP/1.0\r\nHost: a.example\r\nHost: b.example\r\n\r\n")
+    )
+    # Not adjacent: another field between the two lines hides nothing.
+    assert_true(
+        _rejected(
+            "GET / HTTP/1.1\r\nHost: a.example\r\nAccept: */*\r\n"
+            "Host: b.example\r\n\r\n"
+        )
+    )
+    # The control: one Host line, on either version, is served.
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost: a.example\r\nAccept: */*\r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.0\r\nHost: a.example\r\n\r\n"))
+
+
+def test_a_second_transfer_encoding_line_is_rejected() raises:
+    """Field lines of one name combine into one comma-separated list (RFC
+    9110 §5.3), so two `Transfer-Encoding: chunked` lines are `chunked,
+    chunked` -- refused on one line (RFC 9112 §6.1), and accepted on two,
+    because the parser kept only the last line and read a single `chunked`.
+    A hop that combines the lines frames the body differently from one
+    that keeps the last: the desync the rules above exist to prevent. A
+    second line is refused whatever the two say, as a second
+    `Content-Length` line is.
+
+    covers: B11
+    """
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
+            "Transfer-Encoding: chunked\r\n\r\n"
+        )
+    )
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
+            "transfer-encoding: CHUNKED\r\n\r\n"
+        )
+    )
+    # `gzip` then `chunked` is `gzip, chunked` combined, and the last line
+    # alone reads as a plain `chunked`: two hops, two framings again.
+    assert_true(
+        _rejected(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n"
+            "Transfer-Encoding: chunked\r\n\r\n"
+        )
+    )
+    # The control: the same codings on ONE line keep working.
+    assert_true(
+        _accepted(
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+        )
+    )
 
 
 # --- Transfer-Encoding is case-insensitive (RFC 9112 7.1) --------------------

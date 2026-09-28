@@ -714,6 +714,73 @@ lightbug_http
         place, and two threads alternated while two starved
         (docs/notes/a-slice-keeps-the-gil.md).
 
+      - connection.mojo (2026-09-28): `ListenConfig.listen` retries a bind
+        only on EADDRINUSE, and raises that bind error itself once its
+        retries are spent; every other bind failure -- an address not on
+        this machine, a privileged port -- is raised at the first attempt,
+        in its own words. It used to retry every failure for the whole
+        budget and then raise `ListenFailedError`, which m0serve reported
+        as an address in use. `bind_in_use` and
+        `ListenerError.address_in_use` say which it was.
+
+      - header.mojo (2026-09-28): `parse_request_headers` refuses a second
+        `Host` or `Transfer-Encoding` line where it meets it, as it refused
+        a second `Content-Length` line (SPEC B10, B11). `set_bytes` keeps
+        the last of a repeated field, so the request was served on the last
+        line: a proxy routing on the first `Host` disagreed with an
+        application reading the last, and two `chunked` lines (`chunked,
+        chunked` combined, RFC 9110 §5.3) read as one.
+
+      - header.mojo, http/response.mojo, cookie/response_cookie_jar.mojo
+        (2026-09-28): the head writers refuse CR, LF and NUL (SPEC G1, G2).
+        `Headers.write_latin1_to` drops a header whose name or value holds
+        one, `encode` and `encode_into` write an empty reason phrase in
+        place of one that does, and the cookie jar drops such a
+        `Set-Cookie` line; the text forms (`write_to`) apply the same rules,
+        so a printed response is the one sent. The refusal had lived only
+        in m0-wsgi, so every head built in Mojo went out uninspected.
+        `span_breaks_header_line` and `header_value_kind` are new beside
+        `span_is_ascii`, reading a short span with two overlapping loads
+        rather than a byte loop; the second answers the transcode question
+        in the same pass, which keeps the writer within about 10 ns of its
+        old cost on an eight-header head.
+
+      - cookie/response_cookie_jar.mojo, http/response.mojo (2026-09-28):
+        `ResponseCookieJar.write_latin1_to` is new, and `encode` and
+        `encode_into` write the jar through it (SPEC G17). They wrote it
+        through `write_to`, which puts a String's UTF-8 on the wire as it
+        stands, so a `Set-Cookie` value was the one header not transcoded
+        to ISO-8859-1: a WSGI application's `caf\xe9` went out as
+        `caf\xc3\xa9`, an ASGI application's own `caf\xc3\xa9` as
+        `caf\xc3\x83\xc2\xa9`.
+
+      - c/process.mojo (2026-09-28): `executable_path` builds its String
+        from the bytes the OS returned, through the new `path_from_bytes`
+        (SPEC E35). It appended `chr()` of each byte, which encodes a byte
+        at or above 0x80 as a two-byte codepoint, so a binary under
+        `/Users/josé/` answered `josÃ©`, and every exec `--spawn-workers`
+        made of it failed with ENOENT.
+
+      - event_loop.mojo (2026-09-28): the body timer is armed in
+        `_handle_read_headers` only for a body still owed after what came
+        with the headers, and the timer handler acts only on a slot still
+        READING_BODY with no request on a pool thread, retiring any other
+        expiry (SPEC A23). Armed above the decode, a body that arrived
+        whole left it running: it closed the keep-alive connection
+        `body_read_timeout` later, and released the slot of a request a
+        pool thread still held, whose answer the next connection read. A
+        request's first bytes now clear the keep-alive deadline, which cut
+        a request begun late in the window (A4), and `_arm_send_deadline`
+        gives a response still owed `idle_timeout` between sends that move
+        bytes, refreshed on the write-ready path in memory and from a file
+        (A24): nothing bounded a client that stopped reading. Streams keep
+        their zero deadline, a WebSocket's non-zero one being its linger.
+
+      - offload.mojo (2026-09-28): `add_lane` raises past
+        `_WAKE_MAX_LANES` (126), before making the lane's socketpair: each
+        lane's wake words are one line of the 8192-byte wake block, and
+        `note_thread` wrote a 127th lane's past its end.
+
       - c/process.mojo, event_loop.mojo, server.mojo (2026-09-28): the
         server ignores SIGPIPE (SPEC A25). `ignore_sigpipe` sets it to
         `SIG_IGN` through the existing signal(2) declaration, beside new

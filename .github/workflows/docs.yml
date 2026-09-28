@@ -25,10 +25,13 @@
 # `tests-${{ github.ref }}` would cancel an in-flight `Tests` run on any PR
 # that touches both code and docs.
 #
-# scripts/check_docs.py imports only the standard library (json, re,
-# subprocess, sys, pathlib), and its one network check treats a failure to ask
-# as a skip. So this needs no uv, no Mojo toolchain, and nothing compiled —
-# verified against a bare Python 3.9.
+# What it runs is scripts/docs_gate.sh, the same file `poe check-docs` runs,
+# so the required check and the local task are one list (they were two, and
+# each skipped checks the other ran). That script needs standard-library
+# Python 3.11 or later (tomllib) and pyflakes, and check_docs' one network
+# check treats a failure to ask as a skip. So this needs no uv, no Mojo
+# toolchain, and nothing compiled. (It once said a bare Python 3.9 was
+# enough; tomllib ended that, and the runner's python3 is 3.12.)
 name: Docs
 
 on:
@@ -49,34 +52,17 @@ jobs:
       - uses: actions/checkout@v7
       # No setup-python: the runner's system python3 is enough, and pinning a
       # version here would be a third place the interpreter is chosen.
-      - name: Check machine-sourced doc facts
-        run: python3 scripts/check_docs.py
-      # The docs site's link check runs inside check_docs (scripts/docsite.py
-      # --check, standard library only), so a doc-only PR that breaks a
-      # relative link or adds a docs page without a title fails above. This
-      # proves those checks can fail, the way the recorder's selftest does.
-      - name: Self-test the site generator's checks
-        run: python3 scripts/docsite.py --selftest
-      # The executor shim's rendering check (packages/m0-wsgi/shim/m0_shim.py
-      # against the Mojo constant the binary embeds) runs inside check_docs
-      # above; this proves it can fail, for the same reason.
-      - name: Self-test the shim renderer's check
-        run: python3 scripts/render_shim.py --selftest
-      # The shim is a Python file precisely so a linter can read it: a
-      # NameError inside it surfaces at run time as streams truncated at
-      # 64 KB with a log line that says only "raised after its head". Pinned,
-      # and installed here rather than through uv, because this workflow
-      # deliberately needs no toolchain.
-      - name: pyflakes over the executor shim
-        run: python3 -m pip install --quiet pyflakes==3.4.0 && python3 -m pyflakes packages/m0-wsgi/shim/m0_shim.py scripts/render_shim.py
-      # Guard the guard. The spec sheet's rules are only worth the page they
-      # back if reverting one goes red, so each is reverted in memory here and
-      # the checker must catch every one -- and a sabotage whose patch no
-      # longer applies is itself a failure, which is what stops a rule being
-      # renamed out of existence quietly.
-      - name: Sabotage the spec sheet's rules
-        run: python3 scripts/spec_sheet.py --sabotage
-      # The citation tracker runs inside check_docs above; this proves its
-      # rules can fail on canned input, then reverts each against the tree.
-      - name: Sabotage the citation tracker's rules
-        run: python3 scripts/check_citations.py --selftest && python3 scripts/check_citations.py --sabotage
+      # pyflakes is the gate's one dependency outside the standard library,
+      # pinned, and installed here rather than through uv because this
+      # workflow deliberately needs no toolchain.
+      - name: Install pyflakes
+        run: python3 -m pip install --quiet pyflakes==3.4.0
+      # The whole gate: the doc-fact ratchet with docs/SPEC.md's rules, each
+      # checker's selftest, pyflakes over the executor shim, the spec-sheet,
+      # citation and milestone sabotages, and the milestone rot gates. What
+      # each part is for is written beside it in the script. An unconditional
+      # step that may not fail: check_docs holds it to that, because this
+      # job is the required check and a step that could not fail it would
+      # leave every pull request merging on nothing.
+      - name: The docs gate, as `poe check-docs` runs it
+        run: sh scripts/docs_gate.sh

@@ -12,6 +12,11 @@ uv run m0 image                                 # docker build -f deploy/Dockerf
 docker run --rm -p 8080:8080 __M0_APP__
 ```
 
+An application with a login takes its variables into the container as
+well: `docker run --rm -p 8080:8080 -e APP_KEY -e APP_PASSWORD -e
+APP_SECURE=0 __M0_APP__`, the first two from the shell that exported them
+and `0` because this is plain http. The image states none of the three.
+
 The builder stage runs `uv run m0 build --release`: the platform's baseline
 CPU, never the builder's own. `/app/about.json` in the image is what the
 image measured about itself (its size, and that no interpreter is in it);
@@ -44,6 +49,12 @@ fly scale count 1 -a __M0_APP__
   survive that.
 - `scale count 1`: the first deploy creates two machines. State held in
   the process is one machine's; see the comment in `fly.toml`.
+- A login's secrets are set once, before the first deploy, and never
+  written in `fly.toml`: `fly secrets set -a __M0_APP__
+  APP_KEY="$(openssl rand -hex 32)" APP_PASSWORD='choose one'`. `fly.toml`
+  already states `APP_SECURE = "1"`, since the proxy serves HTTPS; on
+  another platform, state it there, or the login refuses to start (exit
+  78, naming it).
 - One loop. On one shared vCPU a second worker or thread cannot run beside
   the first, so `M0_WORKERS`/`M0_THREADS` stay unset. On more than one
   vCPU, set `M0_THREADS` to the count.

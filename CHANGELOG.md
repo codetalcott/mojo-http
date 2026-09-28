@@ -8,8 +8,75 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **`m0`: `Login.from_env` refuses an unset `PREFIX_SECURE`** (SPEC N43),
+  a change to the framework an application built with `m0` must act on.
+  Whether the session cookie carries `Secure` is a fact about the
+  deployment that the server cannot see behind a proxy, and read as off
+  when unset it sent the cookie in clear on a visitor's first `http://`
+  request, before any redirect to HTTPS. It is now stated, and a server
+  without it exits 78 naming it: `1` wherever the application is served
+  over HTTPS, `0` over plain http such as `http://localhost`. What an
+  application does about it:
+  - One made with `m0 new --template auth`: add `APP_SECURE = "1"` to
+    `deploy/fly.toml`'s `[env]`, and `APP_SECURE=0` where it runs locally:
+    the shell's `export`, `smoke.sh`, and the tests' `setenv`. A project
+    `m0 new` writes now has all three (under Fixed), and `m0 doctor` names
+    the scaffold files an earlier `m0` wrote differently.
+  - Any other login: state `PREFIX_SECURE` in each environment that starts
+    it, the deploy's included. `apps/fragment_notes` reads
+    `M0_NOTES_SECURE`, and `serve-fragment-notes` defaults it to `0`.
+
 ### Fixed
 
+- **An inbound WebSocket message reaches the mount that approved the
+  socket when mounts are served inline** (SPEC I12). Under `--realtime`
+  with several WSGI mounts and no handler pool — `--workers N` without
+  `--blocking-threads`, or `--blocking-threads 0` — one handler serves
+  every mount, and it delivered each inbound message, the synthetic
+  `/ws/message` POST, to the FIRST mount's application at the first
+  mount's prefix, whichever mount's view had approved the upgrade. The
+  handler now records, per held socket, the application that approved it,
+  and delivers the message there at that mount's prefix, as a handler pool
+  already did per lane. `smoke-django-realtime-ws` gates it with two WSGI
+  mounts served inline: each socket's message must reach its own mount's
+  view with that mount's `SCRIPT_NAME`, and a POST to either mount's
+  `/ws/message` from the network must be a 404. Found in review.
+
+- **`--mount PREFIX=MODULE` reports an application that raises on import,
+  as the positional spec does, and never serves the next convention in its
+  place.** Discovery tries `MODULE`, `MODULE.asgi`, `MODULE.wsgi`, and
+  more; a candidate that exists and raises on import is the answer, and the
+  positional spec exits 1 with its traceback. A mount went through a copy
+  of that resolver without the rule: with `proj.asgi` raising, `--mount
+  /=proj` reported the first candidate's one-line miss, or, if `proj.wsgi`
+  imported, silently served it — and `--doctor` called that healthy. Both
+  now resolve through one function. `smoke-serve` gates it with a package
+  whose `asgi.py` raises beside a `wsgi.py` that imports: the positional
+  spec, the mount and the doctor must each exit 1 with the traceback.
+  Found in review.
+
+- **A WSGI body a handler thread would have streamed is closed when its
+  response head cannot be built.** A generator or other lazily produced
+  body with no `Content-Length` streams from a `--blocking-threads`
+  thread, and a malformed header on it — a value or a name that is not a
+  `str` — made the request a 500 without calling the body's `close()`,
+  which PEP 3333 requires however a response ends. Django hangs its
+  `request_finished` cleanup on that call. Both now close the body once
+  before the 500. `smoke-wsgi-stream` gates both, counting `close()`
+  calls. Found in review.
+
+- **m0serve reports a listen failure in its own words, and waits out only
+  an address in use.** Every failure to bind was retried for five seconds
+  and then reported as `address already in use`: a `--host` that is not an
+  address of this machine said the port was taken. Now only an address in
+  use is retried — a restart racing the previous server's drain still
+  succeeds — and anything else exits 1 at once, naming the address and the
+  system's reason (`cannot listen on 192.0.2.1:8080: ... Can't assign
+  requested address`). The Mojo host and every other `ListenConfig` caller
+  get the same rule. `smoke-serve` gates it with an address that is not on
+  the machine. Found in review.
 - **An `INSERT ... SELECT` from `m0_array` no longer inserts nothing**
   (SPEC O4). Since 1.7.0 (and `m0 0.3.0`) the pointer-type tag bound with
   an array was a buffer freed as the bind returned. SQLite keeps that
@@ -51,6 +118,101 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `?connect_timeout`, and `...&` became `...&&`, an empty keyword. libpq
   refused both before connecting, with a message about percent-encoding a
   password.
+- **A request carrying two `Host` lines, or two `Transfer-Encoding`
+  lines, is answered 400** (SPEC B10, B11). The parser kept the last line
+  of a repeated field and served the request, so a proxy that routes on
+  the first `Host` and an application that reads the last (Django's
+  `HTTP_HOST`) disagreed about which site the request was for; RFC 9112
+  §3.2 requires a 400 for more than one `Host` line in any request. Two
+  `Transfer-Encoding: chunked` lines mean `chunked, chunked`, which was
+  refused on one line and accepted on two. A second line of either is now
+  refused whatever it says, as a second `Content-Length` line already was.
+
+- **A response header, reason phrase or `Set-Cookie` line carrying CR, LF
+  or NUL is refused on every path, not only the gateway's** (SPEC G1, G2).
+  The check lived in m0-wsgi, so a head built in Mojo -- a view's, the
+  Mojo host's, a `--mount X=mojo` pool thread's -- was written
+  uninspected, and a view that put request data in a header could end its
+  own head and add headers, or a body, of its choosing:
+  `reply.redirect(303, next)` with `next` from the query, which `unquote`
+  has already decoded from `%0D%0A` to CRLF. The server's head writer now
+  drops such a header or cookie line and sends such a reason phrase
+  empty, for every response, as m0-wsgi did for an application's head. On
+  an eight-header head the writer measured within about 10 ns of the old
+  one.
+
+- **A `Set-Cookie` value's bytes above 0x7F reach the wire as the
+  application gave them** (SPEC G17). Every other header goes out in
+  ISO-8859-1, as PEP 3333 and RFC 9110 §5.5 have it, but cookie lines were
+  written as UTF-8: a WSGI application's `caf\xe9` went out as
+  `caf\xc3\xa9`, and an ASGI application's own bytes `caf\xc3\xa9` as the
+  double-encoded `caf\xc3\x83\xc2\xa9`. Cookie lines now take the same
+  latin-1 writer as every other header. A cookie that is all ASCII, as
+  Django's and the session cookie `m0_http.session` builds are, is
+  unchanged.
+
+- **`--spawn-workers` works for a binary installed under a path that is
+  not ASCII** (SPEC E35). The running binary's path was rebuilt a byte at
+  a time as characters, so each byte above 0x7F became two: under
+  `/Users/josé/` every worker's exec failed with "No such file or
+  directory" and m0serve refused to serve (exit 78). The path is now the
+  bytes the operating system returned.
+- **A POST no longer leaves a timer that closes its connection 30 seconds
+  later, or sends a pool thread's answer to another connection** (SPEC
+  A23). The body timer was armed for every request with a body and left
+  running when the body arrived with the headers, as a small POST's does.
+  When it fired it closed the connection whatever it was doing: an idle
+  keep-alive connection was dropped, and one whose next request was on a
+  `--blocking-threads` thread (a WSGI app gets them by default) had its
+  slot released under that thread, so the next client to connect read the
+  answer meant for the first. The timer is now armed only for a body still
+  arriving, and acts only on one. `--body-timeout SECONDS` (default 30,
+  0 = never) sets the deadline, and `--doctor` reports it. Two deadlines
+  around it changed too (A4, A24): a request that starts late in the
+  keep-alive window is no longer cut at the previous response's deadline,
+  as an upload begun 7 s into a 10 s `--idle-timeout` was at 10.2 s; and a
+  response the client stops reading is closed once `--idle-timeout` passes
+  with no send making progress, where it used to hold its connection for
+  good. A response read slowly but steadily is not affected. Separately, a
+  handler pool refuses a 127th mount's lane rather than writing past the
+  end of its wake block.
+- **The docs gate is one list, and CI's coverage checks no longer take a
+  comment for a gate.** The required `Docs` check and `poe check-docs` now
+  run one script, `scripts/docs_gate.sh` (about 5 s): each used to skip
+  checks the other ran, and neither ran the milestone rot gates, which a
+  pull request touching only `docs/` could break unseen. The checks that
+  every smoke and test task runs in CI, and that each SPEC row's gate
+  declares its coverage, counted a task, a `--covers` declaration or a dev
+  dependency named only in a comment in `test.yml` or `pyproject.toml`; they
+  now read both files as they run. Each CI job must also render and upload
+  its own measurements: the postgres job's summary had been empty since the
+  job was added, rendered with a flag `emit.py` does not have, while the
+  check counted the other jobs' renders as its.
+
+- **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
+  N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
+  and the login read the silence as off: a visit to the `http://` URL sent
+  the session cookie in clear before Fly's redirect, and a stateless
+  cookie copied there works until it expires. Every template's `fly.toml`
+  now states `APP_SECURE = "1"`. The image states nothing, so a platform
+  that says nothing is refused rather than served in clear. `m0 new`
+  prints `APP_SECURE=0` in its `export` for `http://localhost`, where a
+  browser need not keep a `Secure` cookie, and the template's `smoke.sh`
+  and tests set `0`. `deploy/README.md` names the two secrets a login
+  needs on Fly and what a local `docker run` passes. `smoke-scaffold`
+  signs in to the binary under the written `fly.toml`'s `[env]` alone and
+  requires a `Secure` cookie, and `sabotage-scaffold` removes the line
+  and sets it to `0`.
+
+- **`reply.redirect` percent-encodes a control byte in its target** (SPEC
+  G2). A target built from request data, such as
+  `?next=%0D%0A...`, which `unquote` decodes to a real line break, carried
+  the break into the response head, where it could end the header and
+  start one of the request's choosing. Every C0 control byte and DEL in
+  the target is now percent-encoded, as `url_for` encodes one, so the
+  redirect still goes where the view meant; every other byte is written as
+  given, so an ordinary target is unchanged. `test_reply.mojo` holds both,
+  on the header and on the head's bytes.
 - **A client that leaves no longer kills a Mojo server** (SPEC A25). A
   built Mojo binary kept SIGPIPE's default action, which ends the
   process, and the kernel raises SIGPIPE when the server writes to a
