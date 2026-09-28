@@ -912,6 +912,12 @@ lightbug_http
         with loops on threads (`M0_THREADS`, `--threads`) one loop could
         read the fields another had just written.
 
+      - accept_share.mojo, broadcast.mojo, server_config.mojo (2026-09-28):
+        the hand-written copy and move constructors of `AcceptShare`,
+        `BroadcastBus` and `ServerConfig` are deleted. Each copied or moved
+        every field and did nothing else, which is what the compiler
+        derives. Behaviour-preserving.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

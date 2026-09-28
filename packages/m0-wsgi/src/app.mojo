@@ -215,10 +215,6 @@ struct WSGIApp(Movable):
             script_name=script_name,
         )
 
-    def __init__(out self, *, deinit move: Self):
-        self._bridge = move._bridge^
-        self.is_asgi = move.is_asgi
-
     def serve(mut self, req: HTTPRequest) raises -> HTTPResponse:
         """Run one request through the application.
 

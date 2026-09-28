@@ -376,11 +376,6 @@ struct MojoPool(Movable):
         self.stragglers = 0
         self._threads = PoolThreads(count)
 
-    def __init__(out self, *, deinit move: Self):
-        self.count = move.count
-        self.stragglers = move.stragglers
-        self._threads = move._threads^
-
     def start[T: PoolHandler](
         mut self, pool_addr: Int, user: Int = 0, var lanes: List[Int] = List[Int]()
     ) raises:

@@ -665,11 +665,6 @@ struct ProducerThread(Movable):
         self._started = False
         self.stragglers = 0
 
-    def __init__(out self, *, deinit move: Self):
-        self._set = move._set^
-        self._started = move._started
-        self.stragglers = move.stragglers
-
     def start[P: Producer](mut self, ctx: HostContext) raises:
         """Build the producer, then spawn its thread.
 

@@ -85,14 +85,6 @@ struct GrantKey(Copyable, Movable):
         self.kid = grant_key_id(key)
         self.mac = HmacSha256(key)
 
-    def __init__(out self, *, copy: Self):
-        self.kid = copy.kid
-        self.mac = copy.mac.copy()
-
-    def __init__(out self, *, deinit move: Self):
-        self.kid = move.kid^
-        self.mac = move.mac^
-
 
 def find_key(keys: List[GrantKey], kid: Span[UInt8, _]) -> Int:
     """The index of the key in `keys` whose id is `kid`, or -1.
@@ -126,10 +118,6 @@ struct GrantKeys(Movable):
     def __init__(out self, cookie: String = String(GRANT_COOKIE_DEFAULT)):
         self.keys = List[GrantKey]()
         self.cookie = cookie
-
-    def __init__(out self, *, deinit move: Self):
-        self.keys = move.keys^
-        self.cookie = move.cookie^
 
     def add(mut self, key: Span[UInt8, _]):
         self.keys.append(GrantKey(key))

@@ -134,12 +134,6 @@ struct BlockingPool(Movable):
         self.turn_addr = 0
         self._threads = PoolThreads(count)
 
-    def __init__(out self, *, deinit move: Self):
-        self.count = move.count
-        self.stragglers = move.stragglers
-        self.turn_addr = move.turn_addr
-        self._threads = move._threads^
-
     def start[T: ThreadHandler](
         mut self, pool_addr: Int, user: Int, var lanes: List[Int] = List[Int](),
         qos: Bool = False,

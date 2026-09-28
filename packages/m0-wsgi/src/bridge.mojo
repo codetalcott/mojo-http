@@ -306,40 +306,6 @@ struct PyBridge(Movable):
         self._scratch_name = List[UInt8](capacity=64)
         self._scratch_value = List[UInt8](capacity=256)
 
-    def __init__(out self, *, deinit move: Self):
-        self._ns = move._ns^
-        self._run = move._run^
-        self._spawn = move._spawn^
-        self._spawn_ws = move._spawn_ws^
-        self._run_forever = move._run_forever^
-        self._on_disconnect = move._on_disconnect^
-        self._base = move._base^
-        self._script_len = move._script_len
-        self._k_method = move._k_method^
-        self._k_path = move._k_path^
-        self._k_query = move._k_query^
-        self._k_remote_addr = move._k_remote_addr^
-        self._k_remote_port = move._k_remote_port^
-        self._k_protocol = move._k_protocol^
-        self._scope = move._scope^
-        self._lifespan_state = move._lifespan_state^
-        self._k_s_method = move._k_s_method^
-        self._k_s_path = move._k_s_path^
-        self._k_s_raw_path = move._k_s_raw_path^
-        self._k_s_query = move._k_s_query^
-        self._k_s_http_version = move._k_s_http_version^
-        self._k_s_headers = move._k_s_headers^
-        self._k_s_client = move._k_s_client^
-        self._k_s_state = move._k_s_state^
-        self._bytes_as_string = move._bytes_as_string
-        self._bytes_from = move._bytes_from
-        self._dict_copy = move._dict_copy
-        self._scratch_name = move._scratch_name^
-        self._scratch_value = move._scratch_value^
-        self._stream_next_fn = move._stream_next_fn^
-        self._stream_close_fn = move._stream_close_fn^
-        self.stream_pending = move.stream_pending
-
     def set_stream_capable(self, flag: Bool) raises:
         """Let the shim stream unsized iterables (a pool thread with a chunk
         channel) or keep joining them. Startup-only: the argument leaks one

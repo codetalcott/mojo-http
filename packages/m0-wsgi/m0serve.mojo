@@ -121,9 +121,6 @@ struct GrantGate(Movable):
     def __init__(out self, var keys: GrantKeys):
         self.keys = keys^
 
-    def __init__(out self, *, deinit move: Self):
-        self.keys = move.keys^
-
 
 def hold_stream(
     req: HTTPRequest, params: List[String], st: GrantGate
@@ -307,13 +304,6 @@ struct Imported(Movable):
         self.auto_pool = auto_pool
         self.executor = executor
         self.checks = checks^
-
-    def __init__(out self, *, deinit move: Self):
-        self.loaded = move.loaded
-        self.is_asgi = move.is_asgi
-        self.auto_pool = move.auto_pool
-        self.executor = move.executor
-        self.checks = move.checks^
 
 
 def _import_and_check(

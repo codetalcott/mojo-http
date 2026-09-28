@@ -213,26 +213,6 @@ struct AcceptShare(Copyable, Movable):
         self.read_fds = read_fds.copy()
         self.write_fds = write_fds.copy()
 
-    def __init__(out self, *, copy: Self):
-        self.worker = copy.worker
-        self.read_fds = copy.read_fds.copy()
-        self.write_fds = copy.write_fds.copy()
-        self.page = copy.page
-        self.left = copy.left
-        self.drained = copy.drained
-        self.handoffs_out = copy.handoffs_out
-        self.handoffs_in = copy.handoffs_in
-
-    def __init__(out self, *, deinit move: Self):
-        self.worker = move.worker
-        self.read_fds = move.read_fds^
-        self.write_fds = move.write_fds^
-        self.page = move.page
-        self.left = move.left
-        self.drained = move.drained
-        self.handoffs_out = move.handoffs_out
-        self.handoffs_in = move.handoffs_in
-
     def workers(self) -> Int:
         return len(self.read_fds)
 

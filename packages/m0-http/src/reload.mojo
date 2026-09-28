@@ -81,12 +81,6 @@ struct MtimeScanner(Movable):
         self._last = ScanResult()
         self._primed = False
 
-    def __init__(out self, *, deinit move: Self):
-        self.dirs = move.dirs^
-        self.suffix = move.suffix^
-        self._last = move._last
-        self._primed = move._primed
-
     def scan(self) -> ScanResult:
         """One pass over every watched directory. Never raises: see below.
 

@@ -114,12 +114,6 @@ struct AsgiExecutor(Movable):
         self._lanes = List[Int]()
         self.stragglers = 0
 
-    def __init__(out self, *, deinit move: Self):
-        self._set = move._set^
-        self._started = move._started
-        self._lanes = move._lanes^
-        self.stragglers = move.stragglers
-
     def start(
         mut self, pool_addr: Int, user: Int, var lanes: List[Int],
         qos: Bool = False,
