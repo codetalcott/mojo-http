@@ -25,8 +25,8 @@ from std.testing import (
 from src.lib import (
     MIN_LIBPQ_VERSION,
     PGRES_FATAL_ERROR,
+    PgFns,
     PgLib,
-    ResultLib,
     _checked,
     default_search_path,
 )
@@ -53,7 +53,7 @@ def test_the_library_opens_and_meets_the_version_floor() raises:
     """
     var lib = PgLib.open()
     assert_true(lib.libversion() >= MIN_LIBPQ_VERSION)
-    assert_true(lib.isthreadsafe() != 0)
+    assert_true(lib.fns.isthreadsafe() != 0)
     assert_true(len(lib.path.as_bytes()) > 0)
     assert_true(lib.version_text().startswith("1"))
 
@@ -65,32 +65,33 @@ def test_the_table_still_works_after_being_moved() raises:
     pointer's value is identical before and after — but calling it as
     `table.field()` from outside the struct that holds it jumps into
     unmapped memory, while the same call from a method beside it answers
-    correctly. So every entry point is private and every call goes through
-    a wrapper method, and this asserts that shape survives the two moves
-    the real code makes: out of `PgLib.open`, and out of the function that
-    built it.
+    correctly. So every entry point is private to the table (`PgFns`) and
+    every call goes through a wrapper method beside it, and this asserts
+    that shape survives the two moves the real code makes: out of
+    `PgLib.open`, and out of the function that built it.
 
     covers: O9
     """
     var lib = _moved_through_a_function()
     assert_true(lib.libversion() >= MIN_LIBPQ_VERSION)
     var moved = lib^
-    assert_true(moved.libversion() >= MIN_LIBPQ_VERSION)
+    assert_true(moved.fns.libversion() >= MIN_LIBPQ_VERSION)
     # And repeatedly, because a handle closed at its last mention would take
     # the second call rather than the first.
     for _ in range(3):
-        assert_true(moved.libversion() >= MIN_LIBPQ_VERSION)
+        assert_true(moved.fns.libversion() >= MIN_LIBPQ_VERSION)
+        assert_true(moved.fns.isthreadsafe() != 0)
 
 
-def _result_table_of_a_dropped_library() raises -> ResultLib:
-    """Copy a `Result`'s entry points out, and let the `PgLib` go.
+def _result_table_of_a_dropped_library() raises -> PgFns:
+    """Copy out the table a `Result` holds, and let the `PgLib` go.
 
     The `PgLib` is destroyed before this returns, which releases its
     `dlopen` handle. When that was the only reference, the library was
     unmapped here and every copied pointer pointed into nothing.
     """
     var lib = PgLib.open()
-    return lib.result_lib()
+    return lib.fns
 
 
 def test_a_result_table_outlives_the_handle_it_was_copied_from() raises:

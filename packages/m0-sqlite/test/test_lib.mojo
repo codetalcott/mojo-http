@@ -45,7 +45,7 @@ def _moved_through_a_function() raises -> SqliteLib:
     var lib = open_library()
     # Called here too, so the failure can be told apart: a table that never
     # worked is a different defect from one that stopped working when moved.
-    assert_true(lib.libversion_number() >= MIN_SQLITE_VERSION)
+    assert_true(lib.fns.libversion_number() >= MIN_SQLITE_VERSION)
     return lib^
 
 
@@ -56,24 +56,26 @@ def test_the_library_opens_and_meets_the_floor() raises:
     covers: O17
     """
     var lib = open_library()
-    assert_true(lib.libversion_number() >= MIN_SQLITE_VERSION)
-    assert_true(lib.threadsafe() != 0)
+    assert_true(lib.fns.libversion_number() >= MIN_SQLITE_VERSION)
+    assert_true(lib.fns.threadsafe() != 0)
     assert_true(len(lib.path.as_bytes()) > 0)
-    assert_true(lib.libversion().startswith("3."))
-    assert_equal(lib.errstr(0), "not an error")
+    assert_true(lib.fns.libversion().startswith("3."))
+    assert_equal(lib.fns.errstr(0), "not an error")
 
 
 def test_the_table_still_works_after_being_moved() raises:
     """The first rule: the handle and its pointers move together.
 
-    `open_library` returns the table by move, and a `Connection` moves it
+    `open_library` returns the library by move, and a `Connection` moves it
     again into its field. A loaded pointer carries no borrow, so a handle
-    held anywhere else would be closed at its last mention; with both in
-    one struct the move carries both.
+    held anywhere else would be closed at its last mention; with the handle
+    and its table (`fns`) in one struct the move carries both, and every
+    call goes through a wrapper beside the pointer it calls (the second
+    rule).
     """
     var lib = _moved_through_a_function()
-    assert_true(lib.libversion_number() >= MIN_SQLITE_VERSION)
-    assert_true(lib.threadsafe() != 0)
+    assert_true(lib.fns.libversion_number() >= MIN_SQLITE_VERSION)
+    assert_true(lib.fns.threadsafe() != 0)
     var db = open_memory()
     assert_equal(db.library_path(), lib.path)
 
@@ -142,7 +144,7 @@ def test_a_symbol_the_library_lacks_is_an_error_naming_it() raises:
 
     # And the whole table still loads, which is the 41 checks passing.
     var lib = open_library()
-    assert_true(lib.libversion_number() > 0)
+    assert_true(lib.fns.libversion_number() > 0)
 
 
 def test_a_path_that_is_not_a_library_is_an_error_naming_it() raises:
