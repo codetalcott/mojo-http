@@ -34,6 +34,7 @@ from src import (
 )
 from src.lib import PgLib
 from src.sqlstate import (
+    CHARACTER_NOT_IN_REPERTOIRE,
     READ_ONLY_SQL_TRANSACTION,
     SYNTAX_ERROR,
     UNDEFINED_TABLE,
@@ -192,6 +193,31 @@ def test_a_result_outlives_its_connection() raises:
     assert_equal(len(returned.fetch_texts(0)), 1)
 
 
+def test_a_raw_cell_keeps_its_result_alive() raises:
+    """The bytes `raw` hands back are read while their result lives.
+
+    They are the `PGresult`'s own, and `PQclear` frees them. With the span's
+    origin untracked, a result whose last mention was the `raw` call was
+    cleared on that line, and the span read what the next query left in
+    the freed memory: its value, `b` for `a`. The span borrows the result
+    now, so the compiler keeps the result until the span's last use. The
+    results held below are the same shape as the one read, so a freed block
+    is taken back and written over rather than left intact by luck.
+
+    covers: O16
+    """
+    var db = _db()
+    var rows = db.query("SELECT repeat('a', 64)", Params())
+    var cell = rows.raw(0, 0)
+    # `rows` is not mentioned again.
+    var others = List[Result]()
+    for _ in range(32):
+        others.append(db.query("SELECT repeat('b', 64)", Params()))
+    assert_equal(String(unsafe_from_utf8=cell), String("a") * 64)
+    assert_equal(others[31].text(0, 0), String("b") * 64)
+    _drop(db)
+
+
 def test_a_parameter_is_bound_not_interpolated() raises:
     """The property the whole `Params` type exists for.
 
@@ -265,6 +291,77 @@ def test_null_is_distinguishable_from_an_empty_value() raises:
     assert_true(rows.is_null(0, 0))
     assert_false(rows.is_null(0, 1))
     assert_equal(rows.text(0, 1), "")
+    _drop(db)
+
+
+def _with_nul(head: String, tail: String) -> String:
+    """`head`, one NUL byte, then `tail`: valid UTF-8, and one String."""
+    var b = List[UInt8]()
+    for x in head.as_bytes():
+        b.append(x)
+    b.append(0)
+    for x in tail.as_bytes():
+        b.append(x)
+    return String(unsafe_from_utf8=Span(b))
+
+
+def test_a_nul_in_text_is_refused_never_cut_short() raises:
+    """A text value arrives whole, so a NUL in one is an error, not a match.
+
+    libpq reads a TEXT-format parameter with `strlen`, whatever length it is
+    handed, so `admin`, a NUL and `x` was bound as `admin` and matched the
+    admin row. `text()` goes binary, framed by its length, and the server
+    refuses the NUL. What libpq takes only as a C string — SQL text, a name
+    to quote, and a `literal`, which stays text so the server can type it —
+    is refused before the call, under the state the server gives.
+
+    covers: O10
+    """
+    var db = _db()
+    db.execute("CREATE TABLE users (name text)")
+    var admin = Params()
+    admin.text("admin")
+    _ = db.query("INSERT INTO users (name) VALUES ($1)", admin)
+    var evil = _with_nul("admin", "x")
+    assert_equal(len(evil.as_bytes()), 7)
+
+    var p = Params()
+    p.text(evil)
+    var matched = -1
+    var state = String("")
+    try:
+        var rows = db.query("SELECT count(*) FROM users WHERE name = $1", p)
+        matched = rows.int(0, 0)
+    except e:
+        state = sqlstate(String(e))
+    assert_equal(matched, -1, "a value cut short at its NUL was matched")
+    assert_equal(state, CHARACTER_NOT_IN_REPERTOIRE)
+
+    var local = String("")
+    try:
+        var lit = Params()
+        lit.literal(evil)
+    except e:
+        local = String(e)
+    assert_true("NUL" in local, "a literal carrying a NUL was accepted")
+    assert_equal(sqlstate(local), CHARACTER_NOT_IN_REPERTOIRE)
+
+    var sql = _with_nul("SELECT 1", "; DROP TABLE users")
+    with assert_raises(contains="NUL"):
+        db.execute(sql)
+    with assert_raises(contains="NUL"):
+        _ = db.query(sql, Params())
+    with assert_raises(contains="NUL"):
+        _ = db.prepare(sql, List[Int]())
+    with assert_raises(contains="NUL"):
+        _ = db.quote_identifier(evil)
+    # Cut at the NUL, this is the test URL itself, and it would connect.
+    with assert_raises(contains="NUL"):
+        var _other = open(_with_nul(_url(), "?sslmode=require"))
+
+    # None of it ran the tail or cost the connection.
+    var left = db.query("SELECT count(*) FROM users", Params())
+    assert_equal(left.int(0, 0), 1)
     _drop(db)
 
 
