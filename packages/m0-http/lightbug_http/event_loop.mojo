@@ -302,6 +302,11 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         T: The HTTP service handler type.
         B: The IO multiplexing backend (KqueueBackend on macOS, EpollBackend on Linux).
     """
+    from lightbug_http.c.process import ignore_sigpipe
+
+    # Before the loop's first send: a client that resets is then an EPIPE
+    # on its own connection, not SIGPIPE ending the process (SPEC A25).
+    ignore_sigpipe()
     var st = prepare_loop(
         listen_fd, backend, config, server_address,
         tcp_keep_alive, shutdown_read_fd, bus_read_fd, offload_addr,

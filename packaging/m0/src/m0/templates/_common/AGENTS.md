@@ -89,9 +89,15 @@ carrying a CSRF token. `m0_http.login` is the glue it is written on, and
 what a `views` or `live` application adds the day it needs one.
 
 - `Login.from_env("APP", "NAME-session")` reads `APP_KEY` (at least 32
-  bytes) and `APP_PASSWORD`, and raises naming what is missing. Read it in
-  `main` BEFORE `serve` and exit 78 on the error, so `--doctor` refuses
-  what the run would; read it again in `make`.
+  bytes), `APP_PASSWORD` and `APP_SECURE`, and raises naming what is
+  missing. Read it in `main` BEFORE `serve` and exit 78 on the error, so
+  `--doctor` refuses what the run would; read it again in `make`.
+- **`APP_SECURE` is stated, never assumed**: `1` wherever the app is
+  served over HTTPS, so the session cookie carries `Secure` --
+  `deploy/fly.toml` says so -- and `0` over plain http such as
+  `http://localhost`, where a browser need not keep a `Secure` cookie at
+  all. Never put it in the image: a platform that says nothing is then
+  refused rather than served in clear.
 - A view behind it opens with two lines: `var session =
   st.login.session_of(req)`, then, without one, `return
   refuse_signed_out(req, LOGIN, render_login(...))` -- a 303 for a

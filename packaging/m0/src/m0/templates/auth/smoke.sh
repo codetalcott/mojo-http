@@ -10,7 +10,8 @@
 #
 # The server runs with a key and a password of this run's own, whatever
 # the shell exported, so the run never signs in to a real deployment's
-# configuration and never needs one.
+# configuration and never needs one. `APP_SECURE=0`: this run is plain
+# http on 127.0.0.1, where a `Secure` cookie is one a client may keep back.
 set -u
 
 PORT="${1:-$((20000 + $$ % 20000))}"
@@ -19,8 +20,9 @@ PID=""
 JAR=smoke.jar
 APP_KEY="smoke-$$-0123456789abcdef0123456789abcdef"
 APP_PASSWORD="smoke-$$"
-export APP_KEY APP_PASSWORD
-unset APP_USER APP_TTL APP_SECURE APP_KEY_PREV
+APP_SECURE=0
+export APP_KEY APP_PASSWORD APP_SECURE
+unset APP_USER APP_TTL APP_KEY_PREV
 
 fail() {
     echo "smoke: FAIL: $1" >&2

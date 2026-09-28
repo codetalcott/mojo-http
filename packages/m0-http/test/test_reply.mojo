@@ -77,6 +77,75 @@ def test_redirect_sets_location_and_a_real_reason_phrase() raises:
     assert_equal(redirect(307, String("/a")).status_text, "Temporary Redirect")
 
 
+def _with_byte(before: String, byte: Int, after: String) -> String:
+    """`before`, one raw byte, then `after`: a target a view built from
+    request data, where `unquote` has already turned `%0D` into the byte."""
+    var b = List[UInt8]()
+    for c in before.as_bytes():
+        b.append(c)
+    b.append(UInt8(byte))
+    for c in after.as_bytes():
+        b.append(c)
+    return String(StringSpan(unsafe_from_utf8=Span(b)))
+
+
+def _escaped(byte: Int) -> String:
+    comptime HEX = "0123456789ABCDEF"
+    return String("%", HEX[byte=byte >> 4 : (byte >> 4) + 1], HEX[byte=byte & 15 : (byte & 15) + 1])
+
+
+def test_redirect_percent_encodes_a_control_byte_in_its_target() raises:
+    """A target a view built from request data -- `?next=%0D%0A...`, which
+    `unquote` decodes to a real line break -- keeps its `Location`. Every
+    C0 control byte and DEL is percent-encoded, as `url_for` encodes one, so
+    the header survives the writer, which drops a value carrying CR, LF or
+    NUL rather than let it split the response, and the browser is still
+    sent where the view asked. Judged on the header and on the head's own
+    bytes: one `location` line, intact, and no line the target smuggled in.
+
+    Every other byte is left alone, so an ordinary target -- a query, an
+    escape already made, a fragment, UTF-8, a request byte that is not
+    UTF-8 -- is byte-identical to what it was.
+
+    covers: G2
+    """
+    var split = redirect(303, String("/next\r\nSet-Cookie: s=1"))
+    assert_equal(split.headers[HeaderKey.LOCATION], "/next%0D%0ASet-Cookie: s=1")
+    var wire = String(unsafe_from_utf8=split^.encode())
+    assert_true("\r\nlocation: /next%0D%0ASet-Cookie: s=1\r\n" in wire, wire)
+    assert_false("\r\nSet-Cookie" in wire, wire)
+
+    var controls = List[Int]()
+    for byte in range(0x20):
+        controls.append(byte)
+    controls.append(0x7F)
+    for byte in controls:
+        var target = _with_byte("/a", byte, "b")
+        var want = String("/a", _escaped(byte), "b")
+        var r = redirect(302, target)
+        assert_equal(r.headers[HeaderKey.LOCATION], want, String("byte ", byte))
+        var head = String(unsafe_from_utf8=r^.encode())
+        assert_true(String("\r\nlocation: ", want, "\r\n") in head, String("byte ", byte))
+
+    # A non-UTF-8 request byte beside a control byte: a byte walk, never a
+    # codepoint slice, which would trap on the 0x80 (SPEC G14).
+    var mixed = redirect(303, _with_byte(_with_byte("/x", 0x80, ""), 0x0D, "y"))
+    assert_equal(
+        mixed.headers[HeaderKey.LOCATION], String(_with_byte("/x", 0x80, ""), "%0Dy")
+    )
+
+    var ordinary = List[String]()
+    ordinary.append(String("/items"))
+    ordinary.append(String("/items?page=2&q=a%20b&next=%2Fx"))
+    ordinary.append(String("https://example.com/a/b?c=d#e"))
+    ordinary.append(String("/café au lait"))
+    ordinary.append(String("/a%0D%0Ab"))
+    ordinary.append(_with_byte("/raw", 0x80, "~"))
+    ordinary.append(String(""))
+    for target in ordinary:
+        assert_equal(redirect(301, target).headers[HeaderKey.LOCATION], target)
+
+
 def test_problem_is_rfc9457_shaped() raises:
     var r = problem(404, String("Not Found"), String("no note"), String("/notes/1"))
     assert_equal(r.status_code, 404)

@@ -8,6 +8,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **`m0`: `Login.from_env` refuses an unset `PREFIX_SECURE`** (SPEC N43),
+  a change to the framework an application built with `m0` must act on.
+  Whether the session cookie carries `Secure` is a fact about the
+  deployment that the server cannot see behind a proxy, and read as off
+  when unset it sent the cookie in clear on a visitor's first `http://`
+  request, before any redirect to HTTPS. It is now stated, and a server
+  without it exits 78 naming it: `1` wherever the application is served
+  over HTTPS, `0` over plain http such as `http://localhost`. What an
+  application does about it:
+  - One made with `m0 new --template auth`: add `APP_SECURE = "1"` to
+    `deploy/fly.toml`'s `[env]`, and `APP_SECURE=0` where it runs locally:
+    the shell's `export`, `smoke.sh`, and the tests' `setenv`. A project
+    `m0 new` writes now has all three (under Fixed), and `m0 doctor` names
+    the scaffold files an earlier `m0` wrote differently.
+  - Any other login: state `PREFIX_SECURE` in each environment that starts
+    it, the deploy's included. `apps/fragment_notes` reads
+    `M0_NOTES_SECURE`, and `serve-fragment-notes` defaults it to `0`.
+
 ### Fixed
 
 - **An `INSERT ... SELECT` from `m0_array` no longer inserts nothing**
@@ -121,6 +141,47 @@ in a minor release: `m0serve`'s flags and environment variables, the
   its own measurements: the postgres job's summary had been empty since the
   job was added, rendered with a flag `emit.py` does not have, while the
   check counted the other jobs' renders as its.
+
+- **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
+  N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
+  and the login read the silence as off: a visit to the `http://` URL sent
+  the session cookie in clear before Fly's redirect, and a stateless
+  cookie copied there works until it expires. Every template's `fly.toml`
+  now states `APP_SECURE = "1"`. The image states nothing, so a platform
+  that says nothing is refused rather than served in clear. `m0 new`
+  prints `APP_SECURE=0` in its `export` for `http://localhost`, where a
+  browser need not keep a `Secure` cookie, and the template's `smoke.sh`
+  and tests set `0`. `deploy/README.md` names the two secrets a login
+  needs on Fly and what a local `docker run` passes. `smoke-scaffold`
+  signs in to the binary under the written `fly.toml`'s `[env]` alone and
+  requires a `Secure` cookie, and `sabotage-scaffold` removes the line
+  and sets it to `0`.
+
+- **`reply.redirect` percent-encodes a control byte in its target** (SPEC
+  G2). A target built from request data, such as
+  `?next=%0D%0A...`, which `unquote` decodes to a real line break, carried
+  the break into the response head, where it could end the header and
+  start one of the request's choosing. Every C0 control byte and DEL in
+  the target is now percent-encoded, as `url_for` encodes one, so the
+  redirect still goes where the view meant; every other byte is written as
+  given, so an ordinary target is unchanged. `test_reply.mojo` holds both,
+  on the header and on the head's bytes.
+- **A client that leaves no longer kills a Mojo server** (SPEC A25). A
+  built Mojo binary kept SIGPIPE's default action, which ends the
+  process, and the kernel raises SIGPIPE when the server writes to a
+  connection its client has reset: a visitor who closes the tab before
+  the page comes back, a download abandoned halfway, an SSE subscriber
+  going away. On macOS one such client ended a fresh server every time,
+  with status 141. Every Mojo host application was exposed (`apps/blobs`,
+  `fragment_notes`, anything `m0 new` scaffolds), as was a server built
+  on `Server` directly. Under `M0_THREADS` the whole process went; under
+  `M0_WORKERS` the supervisor respawned the worker, which read as churn.
+  The event loop, and the blocking `Server.serve`, now ignore SIGPIPE
+  before their first send, so the write fails and only that connection
+  closes. m0serve's serving processes were not affected: the CPython
+  they embed already ignores the signal. `smoke-host` sends a built
+  server `kill -PIPE`, then a client that resets before its answer, on
+  both CI legs.
 
 ## [1.7.0] — 2026-09-27
 

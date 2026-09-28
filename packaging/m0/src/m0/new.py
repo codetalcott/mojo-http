@@ -86,9 +86,10 @@ EARLY_CHECKS = ("platform", "c-compiler")
 # What a template needs in the environment before its binary will serve,
 # printed with the next commands: `auth` refuses to start without them
 # (exit 78, naming the variable), and the first minute should not be spent
-# reading that refusal.
+# reading that refusal. `APP_SECURE=0` is this machine's http://localhost;
+# `deploy/fly.toml` states 1 for the deploy behind HTTPS.
 ENV_HINT = {
-    "auth": "export APP_KEY=\"$(openssl rand -hex 32)\" APP_PASSWORD='choose one'",
+    "auth": "export APP_KEY=\"$(openssl rand -hex 32)\" APP_PASSWORD='choose one' APP_SECURE=0",
 }
 
 

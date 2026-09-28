@@ -53,8 +53,10 @@ def _put(name: String, value: String):
 
 
 def _env(key: String = KEY, password: String = "hunter2", prev: String = "", user: String = "",
-         ttl: String = "", secure: String = ""):
-    """Every variable `from_env` reads, set; an empty one unset."""
+         ttl: String = "", secure: String = "0"):
+    """Every variable `from_env` reads, set; an empty one unset. `SECURE`
+    is `0` unless a test says otherwise: it is required, and these run
+    over no scheme at all."""
     _put("APP_KEY", key)
     _put("APP_PASSWORD", password)
     _put("APP_KEY_PREV", prev)
@@ -71,7 +73,7 @@ def _refusal(cookie: String = COOKIE, default_ttl: Int = LOGIN_TTL_DEFAULT) -> S
     return String("")
 
 
-def _login(key: String = KEY, prev: String = "", ttl: String = "", secure: String = "") raises -> Login:
+def _login(key: String = KEY, prev: String = "", ttl: String = "", secure: String = "0") raises -> Login:
     _env(key=key, prev=prev, ttl=ttl, secure=secure)
     return Login.from_env("APP", COOKIE)
 
@@ -181,6 +183,30 @@ def test_the_configuration_reads_what_it_was_given() raises:
     var own = Login.from_env("APP", COOKIE, default_user="notes", default_ttl=43200)
     assert_equal(own.user, "notes")
     assert_equal(own.ttl, Int64(43200))
+
+
+def test_secure_is_stated_never_assumed() raises:
+    """Whether the cookie carries `Secure` is the deployment's to say, and
+    the server cannot see the scheme a proxy terminated. So an unset
+    `SECURE` is refused, naming both values, rather than read as off: off
+    behind an HTTPS redirect sends the session in clear on a visitor's
+    first `http://` request, and the cookie works until it expires. An
+    empty value is unset. The configuration's other refusals come first, so
+    a shell with nothing set still hears about the key.
+
+    covers: N43
+    """
+    _env(secure="")
+    var said = _refusal()
+    assert_true("APP_SECURE is not set" in said, said)
+    assert_true("1 when the application is served over HTTPS" in said, said)
+    assert_true("0 over plain http" in said, said)
+    _env(key="", secure="")
+    assert_true("APP_KEY is not set" in _refusal(), _refusal())
+    _env(secure="1")
+    assert_true(Login.from_env("APP", COOKIE).secure)
+    _env(secure="0")
+    assert_false(Login.from_env("APP", COOKIE).secure)
 
 
 def test_only_the_one_users_credentials_start_a_session() raises:
