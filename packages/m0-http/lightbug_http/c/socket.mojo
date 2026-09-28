@@ -5,7 +5,6 @@ from lightbug_http.c.aliases import c_void
 from lightbug_http.c.network import SocketAddress, sockaddr, sockaddr_in, socklen_t
 from lightbug_http.c.socket_error import *
 from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
-from std.memory import stack_allocation
 
 
 @fieldwise_init
@@ -37,96 +36,34 @@ comptime SOL_SOCKET = 0xFFFF if _IS_MACOS else 1
 
 
 # Socket option flags — platform-specific values resolved at compile time.
+# Only the options this server sets, each checked against the macOS SDK's
+# <sys/socket.h> and Linux's asm-generic/socket.h, which x86-64 and arm64
+# share (SO_RCVTIMEO there is SO_RCVTIMEO_OLD on a 64-bit target). The
+# upstream list carried twenty-two options nothing set, several with
+# OpenBSD's numbers: its SO_TIMESTAMP, 0x0800, is 0x0400 on macOS.
 @fieldwise_init
 struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     var value: c_int
-    comptime SO_DEBUG = Self(c_int(1))
     comptime SO_REUSEADDR = Self(c_int(0x0004 if _IS_MACOS else 2))
-    comptime SO_KEEPALIVE = Self(c_int(0x0008 if _IS_MACOS else 9))
-    comptime SO_DONTROUTE = Self(c_int(0x0010 if _IS_MACOS else 5))
-    comptime SO_BROADCAST = Self(c_int(0x0020 if _IS_MACOS else 6))
-    comptime SO_OOBINLINE = Self(c_int(0x0100 if _IS_MACOS else 10))
-    comptime SO_ACCEPTCONN = Self(c_int(0x0002 if _IS_MACOS else 30))
-    comptime SO_USELOOPBACK = Self(c_int(0x0040 if _IS_MACOS else 0))
-    comptime SO_LINGER = Self(c_int(0x0080 if _IS_MACOS else 13))
     comptime SO_REUSEPORT = Self(c_int(0x0200 if _IS_MACOS else 15))
-    comptime SO_TIMESTAMP = Self(c_int(0x0800 if _IS_MACOS else 29))
     comptime SO_SNDBUF = Self(c_int(0x1001 if _IS_MACOS else 7))
     comptime SO_RCVBUF = Self(c_int(0x1002 if _IS_MACOS else 8))
-    comptime SO_SNDLOWAT = Self(c_int(0x1003 if _IS_MACOS else 19))
-    comptime SO_RCVLOWAT = Self(c_int(0x1004 if _IS_MACOS else 18))
-    comptime SO_SNDTIMEO = Self(c_int(0x1005 if _IS_MACOS else 21))
     comptime SO_RCVTIMEO = Self(c_int(0x1006 if _IS_MACOS else 20))
-    comptime SO_ERROR = Self(c_int(0x1007 if _IS_MACOS else 4))
-    comptime SO_TYPE = Self(c_int(0x1008 if _IS_MACOS else 3))
-    # BSD-only options (unused on Linux, kept for API compatibility)
-    comptime SO_BINDANY = Self(0x1000)
-    comptime SO_ZEROIZE = Self(0x2000)
-    comptime SO_NETPROC = Self(0x1020)
-    comptime SO_RTABLE = Self(0x1021)
-    comptime SO_PEERCRED = Self(0x1022)
-    comptime SO_SPLICE = Self(0x1023)
-    comptime SO_DOMAIN = Self(0x1024)
-    comptime SO_PROTOCOL = Self(0x1025)
 
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
     def write_to[W: Writer, //](self, mut writer: W):
-        if self == Self.SO_DEBUG:
-            writer.write("SO_DEBUG")
-        elif self == Self.SO_ACCEPTCONN:
-            writer.write("SO_ACCEPTCONN")
-        elif self == Self.SO_REUSEADDR:
+        if self == Self.SO_REUSEADDR:
             writer.write("SO_REUSEADDR")
-        elif self == Self.SO_KEEPALIVE:
-            writer.write("SO_KEEPALIVE")
-        elif self == Self.SO_DONTROUTE:
-            writer.write("SO_DONTROUTE")
-        elif self == Self.SO_BROADCAST:
-            writer.write("SO_BROADCAST")
-        elif self == Self.SO_USELOOPBACK:
-            writer.write("SO_USELOOPBACK")
-        elif self == Self.SO_LINGER:
-            writer.write("SO_LINGER")
-        elif self == Self.SO_OOBINLINE:
-            writer.write("SO_OOBINLINE")
         elif self == Self.SO_REUSEPORT:
             writer.write("SO_REUSEPORT")
-        elif self == Self.SO_TIMESTAMP:
-            writer.write("SO_TIMESTAMP")
-        elif self == Self.SO_BINDANY:
-            writer.write("SO_BINDANY")
-        elif self == Self.SO_ZEROIZE:
-            writer.write("SO_ZEROIZE")
         elif self == Self.SO_SNDBUF:
             writer.write("SO_SNDBUF")
         elif self == Self.SO_RCVBUF:
             writer.write("SO_RCVBUF")
-        elif self == Self.SO_SNDLOWAT:
-            writer.write("SO_SNDLOWAT")
-        elif self == Self.SO_RCVLOWAT:
-            writer.write("SO_RCVLOWAT")
-        elif self == Self.SO_SNDTIMEO:
-            writer.write("SO_SNDTIMEO")
         elif self == Self.SO_RCVTIMEO:
             writer.write("SO_RCVTIMEO")
-        elif self == Self.SO_ERROR:
-            writer.write("SO_ERROR")
-        elif self == Self.SO_TYPE:
-            writer.write("SO_TYPE")
-        elif self == Self.SO_NETPROC:
-            writer.write("SO_NETPROC")
-        elif self == Self.SO_RTABLE:
-            writer.write("SO_RTABLE")
-        elif self == Self.SO_PEERCRED:
-            writer.write("SO_PEERCRED")
-        elif self == Self.SO_SPLICE:
-            writer.write("SO_SPLICE")
-        elif self == Self.SO_DOMAIN:
-            writer.write("SO_DOMAIN")
-        elif self == Self.SO_PROTOCOL:
-            writer.write("SO_PROTOCOL")
         else:
             writer.write("SocketOption(", self.value, ")")
 
@@ -140,19 +77,12 @@ comptime O_ACCMODE = 3
 comptime O_CLOEXEC = 16777216 if CompilationTarget.is_macos() else 524288
 
 
-# Socket Type constants
+# Socket Type constants. SOCK_STREAM is the only one a `Socket` is made
+# with; the AF_UNIX datagram channels spell theirs in c/socketpair.mojo.
 @fieldwise_init
 struct SocketType(Copyable, Equatable, Writable, TrivialRegisterPassable):
     var value: c_int
     comptime SOCK_STREAM = Self(1)
-    comptime SOCK_DGRAM = Self(2)
-    comptime SOCK_RAW = Self(3)
-    comptime SOCK_RDM = Self(4)
-    comptime SOCK_SEQPACKET = Self(5)
-    comptime SOCK_DCCP = Self(6)
-    comptime SOCK_PACKET = Self(10)
-    comptime SOCK_CLOEXEC = Self(c_int(O_CLOEXEC))
-    comptime SOCK_NONBLOCK = Self(c_int(O_NONBLOCK))
 
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
@@ -160,22 +90,6 @@ struct SocketType(Copyable, Equatable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         if self == Self.SOCK_STREAM:
             writer.write("SOCK_STREAM")
-        elif self == Self.SOCK_DGRAM:
-            writer.write("SOCK_DGRAM")
-        elif self == Self.SOCK_RAW:
-            writer.write("SOCK_RAW")
-        elif self == Self.SOCK_RDM:
-            writer.write("SOCK_RDM")
-        elif self == Self.SOCK_SEQPACKET:
-            writer.write("SOCK_SEQPACKET")
-        elif self == Self.SOCK_DCCP:
-            writer.write("SOCK_DCCP")
-        elif self == Self.SOCK_PACKET:
-            writer.write("SOCK_PACKET")
-        elif self == Self.SOCK_CLOEXEC:
-            writer.write("SOCK_CLOEXEC")
-        elif self == Self.SOCK_NONBLOCK:
-            writer.write("SOCK_NONBLOCK")
         else:
             writer.write("SocketType(", self.value, ")")
 
@@ -360,113 +274,6 @@ def setsockopt(
                 "SetsockoptError: An error occurred while setting the socket option. Error code: ",
                 errno,
             )
-
-
-def _getsockopt[
-    origin: MutOrigin
-](
-    socket: c_int,
-    level: c_int,
-    option_name: c_int,
-    option_value: Pointer[c_void, _],
-    option_len: Pointer[socklen_t, origin],
-) -> c_int:
-    """Libc POSIX `getsockopt` function.
-
-    Args:
-        socket: A File Descriptor.
-        level: The protocol level.
-        option_name: The option to set.
-        option_value: A Pointer to the value to set.
-        option_len: The size of the value.
-
-    Returns:
-        0 on success, -1 on error.
-
-    #### C Function
-    ```c
-    int getsockopt(int socket, int level, int option_name, void *restrict option_value, socklen_t *restrict option_len);
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/getsockopt.3p.html
-    """
-    return external_call[
-        "getsockopt",
-        c_int,  # FnName, RetType
-        type_of(socket),
-        type_of(level),
-        type_of(option_name),
-        type_of(option_value),
-        type_of(option_len),  # Args
-    ](socket, level, option_name, option_value, option_len)
-
-
-def getsockopt(
-    socket: FileDescriptor,
-    level: c_int,
-    option_name: c_int,
-) raises GetsockoptError -> Int:
-    """Libc POSIX `getsockopt` function.
-
-    Manipulate options for the socket referred to by the file descriptor, `socket`.
-
-    Args:
-        socket: A File Descriptor.
-        level: The protocol level.
-        option_name: The option to set.
-
-    Returns:
-        The value of the option.
-
-    Raises:
-        GetsockoptError: If an error occurs while getting the socket option.
-        * EBADF: The argument `socket` is not a valid descriptor.
-        * EFAULT: The argument `option_value` points outside the process's allocated address space.
-        * EINVAL: The argument `option_len` is invalid. Can sometimes occur when `option_value` is invalid.
-        * ENOPROTOOPT: The option is unknown at the level indicated.
-        * ENOTSOCK: The argument `socket` is not a socket.
-
-    #### C Function
-    ```c
-    int getsockopt(int socket, int level, int option_name, void *restrict option_value, socklen_t *restrict option_len);
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/getsockopt.3p.html .
-    """
-    # An `Int`-sized landing area, because `option_len` tells the kernel it
-    # has that much room and the return below reads that much back. The
-    # allocation used to be one `c_void`, which made every call a write past
-    # the end of it -- latent only because nothing instantiated this body.
-    var option_value = stack_allocation[1, Int]()
-    var option_len = socklen_t(size_of[Int]())
-    var result = _getsockopt(
-        Int32(socket.value),
-        level,
-        option_name,
-        option_value.unsafe_bitcast[c_void](),
-        Pointer(to=option_len),
-    )
-    if result == -1:
-        var errno = get_errno()
-        if errno == errno.EBADF:
-            raise GetsockoptEBADFError()
-        elif errno == errno.EFAULT:
-            raise GetsockoptEFAULTError()
-        elif errno == errno.EINVAL:
-            raise GetsockoptEINVALError()
-        elif errno == errno.ENOPROTOOPT:
-            raise GetsockoptENOPROTOOPTError()
-        elif errno == errno.ENOTSOCK:
-            raise GetsockoptENOTSOCKError()
-        else:
-            raise Error(
-                "GetsockoptError: An error occurred while getting the socket option. Error code: ",
-                errno,
-            )
-
-    return option_value.unsafe_take_pointee()
 
 
 def _getsockname[
@@ -1078,138 +885,6 @@ def recv[
         else:
             raise Error(
                 "RecvError: An error occurred while attempting to receive data from the socket. Error code: ",
-                errno,
-            )
-
-    return UInt(result)
-
-
-def _recvfrom[
-    origin: MutOrigin
-](
-    socket: c_int,
-    buffer: Pointer[c_void, _],
-    length: c_size_t,
-    flags: c_int,
-    address: Pointer[sockaddr, _],
-    address_len: Pointer[socklen_t, origin],
-) -> c_ssize_t:
-    """Libc POSIX `recvfrom` function.
-
-    Args:
-        socket: Specifies the socket file descriptor.
-        buffer: Points to the buffer where the message should be stored.
-        length: Specifies the length in bytes of the buffer pointed to by the buffer argument.
-        flags: Specifies the type of message reception.
-        address: A null pointer, or points to a sockaddr structure in which the sending address is to be stored.
-        address_len: Either a null pointer, if address is a null pointer, or a pointer to a socklen_t object which on input specifies the length of the supplied sockaddr structure, and on output specifies the length of the stored address.
-
-    Returns:
-        The number of bytes received or -1 in case of failure.
-
-    #### C Function
-    ```c
-    ssize_t recvfrom(int socket, void *restrict buffer, size_t length,
-        int flags, struct sockaddr *restrict address,
-        socklen_t *restrict address_len)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/recvfrom.3p.html .
-    * Valid Flags:
-        * `MSG_PEEK`: Peeks at an incoming message. The data is treated as unread and the next recvfrom() or similar function shall still return this data.
-        * `MSG_OOB`: Requests out-of-band data. The significance and semantics of out-of-band data are protocol-specific.
-        * `MSG_WAITALL`: On SOCK_STREAM sockets this requests that the function block until the full amount of data can be returned. The function may return the smaller amount of data if the socket is a message-based socket, if a signal is caught, if the connection is terminated, if MSG_PEEK was specified, or if an error is pending for the socket.
-
-    """
-    return external_call[
-        "recvfrom",
-        c_ssize_t,
-        type_of(socket),
-        type_of(buffer),
-        type_of(length),
-        type_of(flags),
-        type_of(address),
-        type_of(address_len),
-    ](socket, buffer, length, flags, address, address_len)
-
-
-def recvfrom[
-    origin: MutOrigin
-](
-    socket: FileDescriptor,
-    buffer: Span[c_uchar, origin],
-    length: c_size_t,
-    flags: c_int,
-    mut address: SocketAddress,
-) raises RecvfromError -> c_size_t:
-    """Libc POSIX `recvfrom` function.
-
-    Args:
-        socket: Specifies the socket file descriptor.
-        buffer: Points to the buffer where the message should be stored.
-        length: Specifies the length in bytes of the buffer pointed to by the buffer argument.
-        flags: Specifies the type of message reception.
-        address: A null pointer, or points to a sockaddr structure in which the sending address is to be stored.
-
-    Returns:
-        The number of bytes received.
-
-    Raises:
-        RecvfromError: If an error occurs while receiving data from the socket.
-
-    #### C Function
-    ```c
-    ssize_t recvfrom(int socket, void *restrict buffer, size_t length,
-        int flags, struct sockaddr *restrict address,
-        socklen_t *restrict address_len)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/recvfrom.3p.html .
-    * Valid Flags:
-        * `MSG_PEEK`: Peeks at an incoming message. The data is treated as unread and the next recvfrom() or similar function shall still return this data.
-        * `MSG_OOB`: Requests out-of-band data. The significance and semantics of out-of-band data are protocol-specific.
-        * `MSG_WAITALL`: On SOCK_STREAM sockets this requests that the function block until the full amount of data can be returned. The function may return the smaller amount of data if the socket is a message-based socket, if a signal is caught, if the connection is terminated, if MSG_PEEK was specified, or if an error is pending for the socket.
-    """
-    var address_buffer_size = address.SIZE
-    var result = _recvfrom(
-        Int32(socket.value),
-        buffer.unsafe_ptr().unsafe_bitcast[c_void](),
-        length,
-        flags,
-        address.unsafe_ptr(),
-        Pointer(to=address_buffer_size),
-    )
-    if result == -1:
-        var errno = get_errno()
-        if errno in [errno.EAGAIN, errno.EWOULDBLOCK]:
-            raise RecvfromEAGAINError()
-        elif errno == errno.EBADF:
-            raise RecvfromEBADFError()
-        elif errno == errno.ECONNRESET:
-            raise RecvfromECONNRESETError()
-        elif errno == errno.EINTR:
-            raise RecvfromEINTRError()
-        elif errno == errno.EINVAL:
-            raise RecvfromEINVALError()
-        elif errno == errno.ENOTCONN:
-            raise RecvfromENOTCONNError()
-        elif errno == errno.ENOTSOCK:
-            raise RecvfromENOTSOCKError()
-        elif errno == errno.EOPNOTSUPP:
-            raise RecvfromEOPNOTSUPPError()
-        elif errno == errno.ETIMEDOUT:
-            raise RecvfromETIMEDOUTError()
-        elif errno == errno.EIO:
-            raise RecvfromEIOError()
-        elif errno == errno.ENOBUFS:
-            raise RecvfromENOBUFSError()
-        elif errno == errno.ENOMEM:
-            raise RecvfromENOMEMError()
-        else:
-            raise Error(
-                "RecvfromError: An error occurred while attempting to receive data from the socket. Error code: ",
                 errno,
             )
 

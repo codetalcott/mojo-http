@@ -697,33 +697,3 @@ def http_parse_response_headers[
             return -2
         else:
             return -1
-
-
-def http_parse_headers[
-    buf_origin: ImmOrigin, header_origin: MutOrigin
-](
-    buf_start: Pointer[UInt8, buf_origin],
-    len: Int,
-    headers: Span[HTTPHeader, header_origin],
-    mut num_headers: Int,
-    last_len: Int,
-) -> Int:
-    """Parse only headers (for standalone header parsing). Returns bytes consumed or negative error code."""
-    var max_headers = num_headers
-    num_headers = 0
-
-    var buf_span = Span[UInt8, buf_origin](unsafe_ptr=buf_start, length=len)
-    var buf = ByteReader(buf_span)
-
-    try:
-        if last_len != 0:
-            is_complete(buf, last_len)
-
-        parse_headers(buf, headers, num_headers, max_headers)
-
-        return buf.read_pos
-    except e:
-        if e.isa[IncompleteError]():
-            return -2
-        else:
-            return -1

@@ -772,6 +772,33 @@ lightbug_http
         lane's wake words are one line of the 8192-byte wake block, and
         `note_thread` wrote a 127th lane's past its end.
 
+      - connection.mojo, socket.mojo, address.mojo, c/socket.mojo,
+        c/network.mojo, service.mojo, http/response.mojo, http/parsing.mojo,
+        header.mojo, uri.mojo (2026-09-28): upstream code no caller used,
+        found by the 2026-09-28 review, removed -- each name searched for
+        across the whole repository, then the fork compiled whole. The UDP
+        read path, which the 2026-09-05 removal of its send path left
+        behind: `UDPConnection`, `Socket.receive_from`, the `UDPSocket`
+        aliases, `UDPAddr`, and the `recvfrom` binding with its checked
+        wrapper. The `getsockopt` binding and wrapper with
+        `Socket.get_socket_option` and `get_timeout`, since nothing reads an
+        option back. `htonl` and `ntohl`, which IPv4 never needed.
+        Twenty-two `SocketOption` members nothing set, several with
+        OpenBSD's numbers, and every `SocketType` but `SOCK_STREAM`; the
+        five options kept, and `SOL_SOCKET`, were checked against the macOS
+        and Linux headers. `HTTPResponse.from_bytes`'s overload that read a
+        body from a `TCPConnection`, with its `_decode_chunks`.
+        `http_parse_headers`. uri.mojo's `Scheme`. The five demo services
+        in service.mojo (`Printer`, `Welcome`, `ExampleRouter`,
+        `TechEmpowerRouter` and `Counter`, the second and last re-exported
+        from the package root). `span_is_ascii`, which lost its last caller
+        to `header_value_kind` the same day. And two fields written and
+        never read: `ListenConfig`'s keep-alive duration, with its
+        constructor argument, and `ConnectionState`'s `RequestBodyState`,
+        which duplicated the provision's `BodyReadState`. The typed errors
+        that now have no raiser are left for the change that replaces them,
+        and the IPv6 and `getaddrinfo` paths are as they were.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
