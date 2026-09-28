@@ -2877,7 +2877,7 @@ python3 scripts/emit.py --covers M18 --task smoke-apple-silicon
 """
 
 [tool.poe.tasks.smoke-spawn-workers]
-help = "--spawn-workers: exec'd workers serve, a killed one is re-exec'd, SIGTERM reaps them, and on macOS the view a forked worker dies in answers"
+help = "--spawn-workers: exec'd workers serve, a killed one is re-exec'd, the supervisor survives SIGPIPE, SIGTERM reaps them, and on macOS the view a forked worker dies in answers"
 deps = ["build-serve"]
 shell = """
 srv=bin/m0serve
@@ -2957,7 +2957,22 @@ echo "smoke-spawn-workers: a killed worker is re-exec'd"
 curl -sf http://127.0.0.1:8481/proxies > /dev/null || fail "a spawned worker did not answer /proxies"
 echo "smoke-spawn-workers: the proxies view answers under spawn"
 
-# 5. SIGTERM to the supervisor alone reaps every exec'd worker.
+# 5. SIGPIPE to the supervisor alone (SPEC A25). It forks before any Python
+# call and never makes one, so CPython's own ignore never reaches it; the
+# listener's, made before the fork, does. Without that, `kill -PIPE` ended it
+# with 141 and left both workers serving, orphaned (measured, macOS). Both
+# still answering, and step 6 reaping them, is the proof it still supervises.
+kill -PIPE "$spid"
+sleep 0.3
+if ! kill -0 "$spid" 2>/dev/null; then
+  wait "$spid"; rc=$?; spid=""
+  for w in $(grep -oE 'pid=[0-9]+ starting' sw-spawn.log | grep -oE '[0-9]+'); do kill -KILL "$w" 2>/dev/null; done
+  fail "SIGPIPE: kill -PIPE ended the m0serve supervisor (exit $rc; 141 is the signal's default action), orphaning its workers"
+fi
+wait_for_pids 8481 2 || fail "after kill -PIPE to the supervisor expected 2 worker pids, saw $seen"
+echo "smoke-spawn-workers: the supervisor survives kill -PIPE"
+
+# 6. SIGTERM to the supervisor alone reaps every exec'd worker.
 workers=$(grep -oE 'pid=[0-9]+ starting' sw-spawn.log | grep -oE '[0-9]+' | sort -u)
 kill -TERM "$spid"; wait "$spid"; rc=$?; spid=""
 [ "$rc" -eq 0 ] || fail "the spawn supervisor exited $rc on SIGTERM"
@@ -2981,6 +2996,7 @@ if [ "$(uname)" = Darwin ]; then
   echo "smoke-spawn-workers: the same view kills a forked worker 3 of 3 (macOS)"
 fi
 python3 scripts/emit.py --covers E15 --task smoke-spawn-workers
+python3 scripts/emit.py --covers A25 --task smoke-spawn-workers
 """
 
 [tool.poe.tasks.smoke-accept-spread]
@@ -8231,10 +8247,50 @@ stop "one worker"
 grep -q 'abandoned' "$out/one.log" && fail "one worker: the drain abandoned the producer instead of stopping it"
 echo "one worker: $res; exit 0 in ${took}s"
 
+# --- SIGPIPE before the loop: the producer's make (SPEC A25) ----------------
+# One worker, so no supervisor and no fork: the producer's `make` runs on the
+# main thread before `run_event_loop` is entered, and the knob makes it write
+# to a pipe whose reader has gone. The listener ignores SIGPIPE before any of
+# it. With only the loop's own ignore this ended the server with 141 before
+# it served (measured on macOS; under M0_THREADS=2 alike, and under
+# M0_WORKERS=2 worker 0 died of it on every respawn). The EPIPE line is the
+# proof that the write was made.
+env M0_PORT=8785 M0_HOSTCHECK_PRODUCER_PIPE=1 "$out/host_check" > "$out/pipe.log" 2>&1 &
+pid=$!
+i=0
+until curl --silent --fail --max-time 1 http://127.0.0.1:8785/health > /dev/null 2>&1; do
+  if ! kill -0 $pid 2>/dev/null; then
+    wait $pid
+    fail "SIGPIPE: the producer's make, writing before the loop, ended the server (exit $?; 141 is the signal's default action)"
+  fi
+  i=$((i + 1))
+  [ $i -le 300 ] || fail "SIGPIPE: never became healthy (pipe)"
+  sleep 0.1
+done
+grep -q "wrote to a closed pipe: EPIPE" "$out/pipe.log" \
+  || fail "SIGPIPE: the producer's make did not write, or its write did not fail with EPIPE"
+stop "pipe"
+[ "$rc" -eq 0 ] || fail "SIGPIPE: SIGTERM exited $rc after the producer's write, not 0"
+echo "SIGPIPE: the producer's make wrote to a closed pipe before the loop, and the server served"
+
 # --- two workers: every worker's streams get every beat, once --------------
 start 8782 two M0_WORKERS=2
 res=$(python3 scripts/host_probe.py streams 8782 4 2 2 2>&1) || fail "two workers: $res"
 echo "two workers: $res"
+
+# --- SIGPIPE to the supervisor (SPEC A25) -----------------------------------
+# $pid is the supervisor, which never enters the event loop: only the
+# listener's ignore, made before the fork, covers it. Without that,
+# `kill -PIPE` ended it with 141 and left both workers serving, orphaned
+# (measured, macOS). The drain below is the rest of the proof: streams held
+# on both workers, then SIGTERM forwarded and both workers reaped.
+kill -PIPE $pid
+sleep 0.3
+if ! kill -0 $pid 2>/dev/null; then
+  wait $pid
+  fail "SIGPIPE: kill -PIPE ended the supervisor (exit $?; 141 is the signal's default action), orphaning its workers"
+fi
+echo "SIGPIPE: the supervisor survived kill -PIPE"
 
 # --- a drain under held streams, signalled to the supervisor alone ---------
 # What `docker stop` does. The workers must drain -- streams ended by the

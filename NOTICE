@@ -725,6 +725,15 @@ lightbug_http
         No `MSG_NOSIGNAL` or `SO_NOSIGPIPE`: the process-wide ignore also
         covers `sendfile` and writes to pipes, where neither applies.
 
+      - connection.mojo, c/process.mojo (2026-09-28): `ListenConfig.listen`
+        calls `ignore_sigpipe` first (SPEC A25). Both hosts bind before
+        they fork or start a thread, so the ignore reaches what the loop's
+        own call cannot: a supervisor, which never enters the loop (m0serve's
+        under `--workers` or `--reload`, the Mojo host's under `M0_WORKERS`;
+        `kill -PIPE` ended either with 141 and orphaned its workers), and
+        what a Mojo host application runs before its loop, its `make`, its
+        producer and its pool threads.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
