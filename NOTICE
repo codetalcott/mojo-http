@@ -722,6 +722,20 @@ lightbug_http
         application reading the last, and two `chunked` lines (`chunked,
         chunked` combined, RFC 9110 §5.3) read as one.
 
+      - header.mojo, http/response.mojo, cookie/response_cookie_jar.mojo
+        (2026-09-28): the head writers refuse CR, LF and NUL (SPEC G1, G2).
+        `Headers.write_latin1_to` drops a header whose name or value holds
+        one, `encode` and `encode_into` write an empty reason phrase in
+        place of one that does, and the cookie jar drops such a
+        `Set-Cookie` line; the text forms (`write_to`) apply the same rules,
+        so a printed response is the one sent. The refusal had lived only
+        in m0-wsgi, so every head built in Mojo went out uninspected.
+        `span_breaks_header_line` and `header_value_kind` are new beside
+        `span_is_ascii`, reading a short span with two overlapping loads
+        rather than a byte loop; the second answers the transcode question
+        in the same pass, which keeps the writer within about 10 ns of its
+        old cost on an eight-header head.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

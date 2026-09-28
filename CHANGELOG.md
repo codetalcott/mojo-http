@@ -20,6 +20,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   refused on one line and accepted on two. A second line of either is now
   refused whatever it says, as a second `Content-Length` line already was.
 
+- **A response header, reason phrase or `Set-Cookie` line carrying CR, LF
+  or NUL is refused on every path, not only the gateway's** (SPEC G1, G2).
+  The check lived in m0-wsgi, so a head built in Mojo -- a view's, the
+  Mojo host's, a `--mount X=mojo` pool thread's -- was written
+  uninspected, and a view that put request data in a header could end its
+  own head and add headers, or a body, of its choosing:
+  `reply.redirect(303, next)` with `next` from the query, which `unquote`
+  has already decoded from `%0D%0A` to CRLF. The server's head writer now
+  drops such a header or cookie line and sends such a reason phrase
+  empty, for every response, as m0-wsgi did for an application's head. On
+  an eight-header head the writer measured within about 10 ns of the old
+  one.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

@@ -1,7 +1,7 @@
 from std.collections import KeyElement
 from std.hashlib.hash import Hasher
 
-from lightbug_http.header import HeaderKey, write_header
+from lightbug_http.header import HeaderKey, span_breaks_header_line, write_header
 from lightbug_http.io.bytes import ByteWriter
 from std.utils import Variant
 
@@ -134,8 +134,18 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
     #         write_header(writer, HeaderKey.SET_COOKIE, v)
 
     def write_to[T: Writer](self, mut writer: T):
+        """One `Set-Cookie` line per cookie, the built ones first.
+
+        A line holding CR, LF or NUL is DROPPED, as `Headers` drops such a
+        header (SPEC G2): a cookie is a header value like any other, and a
+        CRLF in one -- a `Cookie` a view built from request data, or a line
+        an application handed `add_raw` -- would end the line and start a
+        header of its own. The jar's other lines still go out.
+        """
         for cookie in self._inner.values():
             var v = cookie.build_header_value()
-            write_header(writer, HeaderKey.SET_COOKIE, v)
+            if not span_breaks_header_line(v.as_bytes()):
+                write_header(writer, HeaderKey.SET_COOKIE, v)
         for line in self.raw:
-            write_header(writer, HeaderKey.SET_COOKIE, line)
+            if not span_breaks_header_line(line.as_bytes()):
+                write_header(writer, HeaderKey.SET_COOKIE, line)
