@@ -243,7 +243,7 @@ which is why the canary scopes that variable strictly to the swapped
 environment.
 
 **The multi-thread question is also measured** — `poe py-thread-probe`
-(`scripts/py_thread_probe.mojo`) spawns raw pthreads from Mojo, has each
+(`scripts/probes/py_thread_probe.mojo`) spawns raw pthreads from Mojo, has each
 attach with `PyGILState_Ensure` (after the main thread's `PyEval_SaveThread`
 — on a GIL build workers would otherwise block forever against the state
 `Py_Initialize` left attached), and calls into the interpreter from every

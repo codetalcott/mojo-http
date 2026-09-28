@@ -17,7 +17,8 @@ theory attached to it was not, and the fix direction it named was
 backwards; all three measured 2026-09-02 in a Linux container (colima,
 4 vCPU, the 0.16.0 aarch64 wheel, `--workers 2`, the smoke's own probe
 of 10 rounds x 8 sequential connections) with
-`scripts/accept_placement.py`.
+`scripts/accept_placement.py` (removed from the tree on 2026-09-28; its
+last version is in commit `65b1b2b`).
 
 The mechanism: `M0_WORKERS` forks after `listen`, so both workers share
 ONE listen socket, each registers it `EPOLLIN|EPOLLET` in its own epoll,
@@ -72,7 +73,7 @@ re-forked — and was sabotaged in both layers before it counted: with
 `kill -STOP` made a no-op it fails as "SIGSTOP did not take", and with
 `_reload` altered to leave the old worker 1 alive while logging it as
 re-forked (so only the stop layer can see it) it fails naming the old
-body that worker served. `accept_placement.py serve --stop-winner` is
-the same measurement bare. `SO_REUSEPORT` per worker stays the change to
+body that worker served. `accept_placement.py serve --stop-winner` (in
+`65b1b2b`) is the same measurement bare. `SO_REUSEPORT` per worker stays the change to
 make to the server only if a deployment, not a probe, shows the
 imbalance mattering.

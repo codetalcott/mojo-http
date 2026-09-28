@@ -27,8 +27,8 @@ the work, detaches with `PyEval_SaveThread` BEFORE spawning, every worker
 attaches once with `PyGILState_Ensure` and releases at the end, main
 reattaches after `pthread_join` and proves the interpreter survived.
 
-    uv run mojo run scripts/py_thread_stdpy_probe.mojo
-    M0_PROBE_THREADS=8 M0_PROBE_N=2000000 uv run mojo run scripts/py_thread_stdpy_probe.mojo
+    uv run mojo run scripts/probes/py_thread_stdpy_probe.mojo
+    M0_PROBE_THREADS=8 M0_PROBE_N=2000000 uv run mojo run scripts/probes/py_thread_stdpy_probe.mojo
 """
 
 from std.ffi import c_int, external_call
