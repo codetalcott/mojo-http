@@ -789,15 +789,57 @@ def pool_is_default(opts: ServeOptions) -> Bool:
     return not opts.blocking_threads_set and mounts_need_threads(opts)
 
 
+def supervised(opts: ServeOptions) -> Bool:
+    """Whether a supervisor process forks this server's workers.
+
+    `--workers N` above 1, or `--reload`, which supervises even one worker
+    -- and the one child `--threads` runs in -- because something has to
+    outlive the process it restarts. `main` forks on it, and every rule
+    about what a forked child cannot do asks it through
+    `forks_without_exec`, so the two cannot disagree. It was spelled out
+    four times -- `main`, the pg-listen refusal, the parallel-runtime
+    refusal and the doctor's report of it -- and a spelling that tested
+    `workers > 1` alone let `--reload` through the pg-listen refusal into
+    the crash loop that refusal exists to prevent. A spawned worker is
+    supervised and supervises nothing; that is a fact about the process
+    (`spawned_worker_index`), not about the configuration, and `main`
+    applies it on top.
+    """
+    return opts.workers > 1 or opts.reload
+
+
+def forks_without_exec(opts: ServeOptions) -> Bool:
+    """Whether a worker runs in a child forked without exec: `supervised`,
+    and not `--spawn-workers`, whose worker execs this binary afresh, which
+    is the escape every platform-runtime rule names."""
+    return supervised(opts) and not opts.spawn_workers
+
+
+def pg_listen_forked(opts: ServeOptions, macos: Bool) -> Bool:
+    """Whether this configuration would connect to libpq in a forked child.
+
+    macOS only, and measured rather than assumed: `PQconnectdb` calls
+    `pg_GSS_have_cred_cache`, which reaches libgssapi_krb5 and then
+    CoreFoundation, and Objective-C aborts a forked child rather than run in
+    one. The observed shape is the worker killed by signal 9 and respawned
+    until the supervisor gives up -- a churning worker and dropped
+    connections, the disguise CLAUDE.md records for `urlopen` and
+    `_scproxy`. Linux has no such abort, so it is not refused there, and
+    `macos` arrives from the caller (`CheckFacts.macos`) so the test pins
+    both platforms' answers on either. "Forked" is `forks_without_exec`,
+    never the worker count alone.
+    """
+    return macos and len(opts.pg_listen.as_bytes()) > 0 and forks_without_exec(opts)
+
+
 def parallel_runtime_forked(opts: ServeOptions, linked: Bool) -> Bool:
     """Whether this configuration would run MAX's parallel runtime in a
     forked child, which never returns from a `parallelize` (SPEC E33).
 
-    One predicate for `main` and `--doctor`, in `_pg_listen_forked_on_macos`'s
-    shape and for its reason: "forked" is `main`'s own `supervised` --
-    `--workers N` above 1, or `--reload`, which supervises even one worker
-    -- and `--spawn-workers` is the escape, because the worker execs and
-    the runtime starts fresh in the new image (measured in
+    One predicate for `main` and `--doctor`, in `pg_listen_forked`'s shape
+    and for its reason: "forked" is `forks_without_exec`, and
+    `--spawn-workers` is the escape, because the worker execs and the
+    runtime starts fresh in the new image (measured in
     docs/notes/m0serve-and-the-runtime-a-fork-cannot-carry.md: a forked
     worker answers `/par/ser` and never `/par/par`, and both exec'd
     workers answer it). `linked` arrives from the caller so both gather
@@ -806,7 +848,41 @@ def parallel_runtime_forked(opts: ServeOptions, linked: Bool) -> Bool:
     a binary that links nothing. Both platforms: the fork rule this rests
     on is the runtime's, not the kernel's.
     """
-    return linked and (opts.workers > 1 or opts.reload) and not opts.spawn_workers
+    return linked and forks_without_exec(opts)
+
+
+def serves_offloaded(opts: ServeOptions, executor: Bool, blocking_threads: Int) -> Bool:
+    """Whether a loop hands requests to threads -- an asyncio executor or a
+    WSGI handler pool -- rather than calling the application itself.
+
+    ONE answer for prefork's `main` and for every `--threads` loop, which
+    asked it as two expressions: `main` added a mounted mix of ASGI and
+    WSGI, the threaded loop the ASGI lanes, and both reduce to this,
+    because a mounted server's `executor` is exactly "some mount is ASGI"
+    (`use_asgi_executor`). The ASGI lanes are named anyway, so the answer
+    does not rest on that equivalence.
+    """
+    return executor or blocking_threads > 0 or len(opts.asgi_mounts) > 0
+
+
+def pool_thread_count(opts: ServeOptions, executor: Bool, blocking_threads: Int) -> Int:
+    """How many WSGI handler threads a loop starts behind its pool.
+
+    The rule both execution modes deal by (`wire_offload`). Mounted, the
+    pool serves the WSGI lanes and nothing else, so a mount set with none
+    starts NO pool whatever the count says: its threads would be dealt lane
+    -1, which is lane 0 -- on a server whose first mount is Mojo or ASGI,
+    that mount's lane, and its jobs taken by threads holding a
+    `WSGIHandler` for an application that was never imported. The guard
+    used to exist in prefork's `_serve_offloaded` alone; the threaded loop
+    was only safe because the refusals in front of it (a compiled mount
+    under `--threads`, a mount set with no Python) left it no way to get
+    there. Unmounted, an ASGI application's executor takes the lane and the
+    pool is off; a WSGI one gets the count it was given.
+    """
+    if len(opts.mount_prefixes) > 0:
+        return blocking_threads if has_wsgi_mount(opts) else 0
+    return 0 if executor else blocking_threads
 
 
 def compiled_mount_threads_needed(opts: ServeOptions) -> Int:

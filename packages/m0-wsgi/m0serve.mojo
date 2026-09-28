@@ -57,10 +57,10 @@ from std.sys.arg import argv
 from std.sys.info import CompilationTarget
 
 from lightbug_http import Server, HTTPRequest, HTTPResponse
-from m0_http import MojoPool, PoolContext, PoolHandler
+from m0_http import PoolContext, PoolHandler
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 from m0_http import Mount, Views, reply
-from m0_http import GrantKeys, verify_grant, GRANT_KEY_ENV
+from m0_http import GrantKeys, verify_grant
 from lightbug_http.http.date import unix_now
 from lightbug_http.broadcast import BroadcastBus
 from m0_postgres import PgLib
@@ -78,10 +78,8 @@ from lightbug_http.c.platform import PlatformBackend
 
 from m0_http import (
     StaticFiles, WorkerSupervisor, install_shutdown_signals, exit_worker,
-    threads_conflict,
 )
 from m0_http.config import AppConfig
-from m0_http.parallel_runtime import parallel_runtime_linked
 from m0_http.prefork import (
     bind_accept_share,
     prefork_accept_share,
@@ -91,17 +89,19 @@ from m0_http.prefork import (
     spawned_worker_index,
 )
 from m0_wsgi import (
-    WSGIApp, WSGIHandler, ServeOptions, parse_args, usage,
-    ThreadedServer, require_free_threading, BlockingPool, DetachingBackend,
-    AsgiExecutor, serve_inverted, JOIN_TIMEOUT_NS, resolve_app, resolve_blocking_threads,
-    zero_config_topology, use_asgi_executor, wsgi_lanes, mojo_lanes, has_wsgi_mount, asgi_mount_names,
-    hold_lanes, is_compiled_mount, has_python_mount,
-    compiled_mount_threads_needed, wsgi_lanes_unserved, pool_is_default, parallel_runtime_forked,
-    effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report, probe_free_threading, EXIT_NOT_FREE_THREADED,
-    use_loop_inversion,
-    asgi_free_threading_refusal,
-    M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_CONFIG, EXIT_USAGE, EXIT_STARTUP, PROTOCOL_ASGI,
-    DEFAULT_CHANNEL, PgListener, PgListenSpec, listener_body,
+    WSGIHandler, ServeOptions, parse_args, usage,
+    ThreadedServer, DetachingBackend,
+    serve_inverted, resolve_app, resolve_blocking_threads,
+    use_asgi_executor, mojo_lanes, asgi_mount_names,
+    hold_lanes, is_compiled_mount, pool_is_default,
+    effective_cpus, performance_cpus, pool_cpus, usable_cpus, apple_target, Report,
+    probe_free_threading, FreeThreadingReport,
+    use_loop_inversion, supervised, serves_offloaded, pool_thread_count,
+    ServeCheck, CheckFacts, flag_checks, interpreter_checks, app_checks,
+    first_refusal, refuse_first, add_checks, pg_listen_needs_libpq,
+    OffloadThreads, wire_offload, join_offload,
+    M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP,
+    DEFAULT_CHANNEL, PgListener,
 )
 
 
@@ -212,26 +212,6 @@ struct HoldMount(PoolHandler):
         pass
 
 
-def _realtime_without_wsgi(opts: ServeOptions, is_asgi: Bool) -> Bool:
-    """Whether `--realtime` has no application that could ever take a hold.
-
-    `M0-Hold` is a response-header protocol for buffered WSGI responses, so
-    the flag needs a WSGI application somewhere. Unmounted that is the whole
-    question. **Mounted it is per mount**: a server whose WSGI mounts take
-    holds while its ASGI mounts stream through their own executor is exactly
-    the mixed application this pair was refused for, and the loop tells the
-    two apart by lane. Only a mounted server with no WSGI mount at all is
-    asking for nothing.
-    """
-    if len(opts.mount_prefixes) == 0:
-        return is_asgi
-    # Asked positively. `len(asgi_mounts) == len(mount_prefixes)` was the
-    # same question while there were two kinds; with a third it lets a
-    # server of one Mojo mount and no WSGI mount pass the check and take
-    # `--realtime` with nothing that could ever hold a connection.
-    return not has_wsgi_mount(opts)
-
-
 def _fail(message: String, code: Int):
     """Report and exit with `code`.
 
@@ -275,178 +255,119 @@ def _discover_core_lib() -> String:
     return String("")
 
 
-comptime _HOLD_MOUNT_NEEDS_REALTIME = (
-    "--mount PREFIX=hold needs --realtime: the flag is what wires a pool"
-    " thread's hold to the event loop, and a hold mount can do nothing else"
-)
-comptime _HOLD_MOUNT_NEEDS_KEY = (
-    "--mount PREFIX=hold needs M0_GRANT_KEY: the mount verifies grants the"
-    " application signed with it (32 random bytes; openssl rand -base64 32)"
-)
-comptime _MOUNTS_WITHOUT_PYTHON = (
-    "every --mount is 'mojo' or 'hold', so there is no Python application to"
-    " host; write a Mojo server binary instead of using m0serve"
-)
-comptime _COMPILED_MOUNT_UNDER_THREADS = (
-    "--mount PREFIX=mojo and PREFIX=hold are not served under --threads: the"
-    " threaded loops start no Mojo pool, so the mount would never answer"
-)
+def _check_facts(opts: ServeOptions) -> CheckFacts:
+    """`flag_checks`' facts for this process, the libpq probe included.
 
-
-struct MountRefusal(Copyable, Movable):
-    """A mount configuration `main` refuses before it binds, and why.
-
-    One value for both callers, so `main` and `--doctor` cannot disagree
-    about which refusal a configuration hits first: `_mount_refusal` is the
-    order, and each of them only renders it.
+    The library is opened where the list reaches it
+    (`pg_listen_needs_libpq`) and before the bind, so an absent one is a
+    refusal naming every path tried rather than a server that runs with no
+    listener -- which it used to be: the thread logged one line and the
+    process served forever, an absent library degrading into a listener
+    that silently hears nothing. Pre-fork on purpose: the workers would each
+    report it otherwise, and the supervisor -- the one process whose exit
+    status anyone reads -- would report nothing. Here rather than in
+    `m0_wsgi.checks` because this file links the Postgres bindings and the
+    check list does not.
     """
+    var facts = CheckFacts.gather()
+    if pg_listen_needs_libpq(opts, facts):
+        try:
+            var probe = PgLib.open()
+            facts.libpq(
+                String(""),
+                String("libpq ") + probe.version_text() + " at " + probe.path,
+            )
+        except e:
+            facts.libpq(String(e), String(""))
+    return facts^
 
-    var check: String
-    var message: String
-    var hint: String
 
-    def __init__(out self, check: String, message: String, hint: String):
-        self.check = check
-        self.message = message
-        self.hint = hint
+struct Imported(Movable):
+    """What importing the application decided, and the checks that needed it."""
+
+    var loaded: Bool
+    var is_asgi: Bool
+    var auto_pool: Bool
+    """The pool size was the server's to choose (`pool_is_default`)."""
+    var executor: Bool
+    """`use_asgi_executor`'s answer, over the resolved pool size."""
+    var checks: List[ServeCheck]
+    """`app_checks`: the import's own verdict first."""
+
+    def __init__(
+        out self,
+        loaded: Bool,
+        is_asgi: Bool,
+        auto_pool: Bool,
+        executor: Bool,
+        var checks: List[ServeCheck],
+    ):
+        self.loaded = loaded
+        self.is_asgi = is_asgi
+        self.auto_pool = auto_pool
+        self.executor = executor
+        self.checks = checks^
+
+    def __init__(out self, *, deinit move: Self):
+        self.loaded = move.loaded
+        self.is_asgi = move.is_asgi
+        self.auto_pool = move.auto_pool
+        self.executor = move.executor
+        self.checks = move.checks^
 
 
-def _mount_refusal(opts: ServeOptions) -> Optional[MountRefusal]:
-    """The first mount refusal decidable from the flags alone, or None.
+def _import_and_check(
+    mut opts: ServeOptions,
+    interp: Optional[FreeThreadingReport] = None,
+) -> Imported:
+    """Import what `opts` serves, resolve what the import decides, and
+    evaluate the checks that need it (`app_checks`).
 
-    Every one of these runs BEFORE the bind and the fork. They used to run
-    after the resolve, inside each worker, so under `--workers N` every
-    child refused, the supervisor respawned them, and the process ended in
-    "5 rapid crashes" with exit 1 -- a usage error read as a crash loop, the
-    shape `--pg-listen`'s refusals had until they moved before the fork. None of
-    them needs an interpreter: a compiled mount's kind is in its spec.
+    ONE sequence for prefork's worker, the `--threads` main thread and
+    `--doctor`, each of which spelled it out: put `--app-dir` on
+    `sys.path`, resolve the spec or every mount and detect each protocol --
+    WITHOUT building a bridge, because the executor decision needs the
+    protocol before any lifespan may run -- then size the pool
+    (`resolve_blocking_threads`, written back into `opts`, which
+    `use_asgi_executor` reads) and decide the executor. Under prefork this
+    is the process's first Python call, after the fork.
 
-    The last two are new. A compiled mount under `--threads` was accepted
-    and never served, since the threaded loops start no `MojoPool`; and a
-    `--blocking-threads` below the compiled mount count either served them
-    inline (at 0, where the loop's handler knows only the Python mounts and
-    a request under `/native` fell through to the root application) or
-    started a `MojoPool` of fewer threads than lanes, which leaves a lane
-    nothing reads. `--workers N` alone is not refused: a compiled mount
-    makes the pool the server's to size (`pool_is_default`).
+    `interp` is the interpreter's report when the caller has one (the
+    threaded mode probed it for its own guard, the doctor for its facts);
+    otherwise it is probed here, and only if the executor would run, which
+    is what `app_checks` asks it about. A probe that fails invents no
+    refusal.
     """
-    if len(opts.mount_prefixes) == 0:
-        return None
-    if not has_python_mount(opts):
-        # m0serve exists to host Python; `WSGIHandler.build` would have no
-        # application to build. `apps/pool_spike` is the Mojo server shape.
-        return MountRefusal(
-            String("mounts-without-python"),
-            String(_MOUNTS_WITHOUT_PYTHON),
-            String(
-                "mount a Python application beside it, or build a Mojo"
-                " server binary (apps/pool_spike is the shape)"
-            ),
-        )
-    if len(opts.hold_mounts) > 0 and not opts.realtime:
-        return MountRefusal(
-            String("hold-mount-vs-realtime"),
-            String(_HOLD_MOUNT_NEEDS_REALTIME),
-            String("add --realtime"),
-        )
-    if len(opts.hold_mounts) > 0 and getenv(GRANT_KEY_ENV, "").byte_length() == 0:
-        return MountRefusal(
-            String("hold-mount-key"),
-            String(_HOLD_MOUNT_NEEDS_KEY),
-            String("export M0_GRANT_KEY, the same value the application signs with"),
-        )
-    var needed = compiled_mount_threads_needed(opts)
-    if needed == 0:
-        return None
-    if opts.threads > 1:
-        return MountRefusal(
-            String("compiled-mount-vs-threads"),
-            String(_COMPILED_MOUNT_UNDER_THREADS),
-            String("serve with --workers N instead of --threads"),
-        )
-    if opts.blocking_threads_set and opts.blocking_threads < needed:
-        return MountRefusal(
-            String("compiled-mount-threads"),
-            "--mount PREFIX=mojo and PREFIX=hold are served by handler threads,"
-            + " one per mount of a kind, and --blocking-threads is "
-            + String(opts.blocking_threads) + " where these mounts need "
-            + String(needed) + ": a lane with no thread never answers, and an"
-            + " explicit --blocking-threads is honoured as given, never raised."
-            + " Leave it unset and these mounts get the default pool",
-            "add --blocking-threads " + String(needed) + " or more",
-        )
-    return None
-
-
-def _wsgi_lanes_unserved_message(unserved: Int, blocking_threads: Int) -> String:
-    """The 78 `main` exits with when detection leaves a WSGI mount no thread."""
-    return (
-        String(unserved) + " WSGI mount(s) would have no handler thread:"
-        + " beside an ASGI mount or a handler pool every mount is served from"
-        + " its own lane, and --blocking-threads " + String(blocking_threads)
-        + " deals too few threads to give each WSGI mount one, so its"
-        + " requests would never be answered. An explicit --blocking-threads is"
-        + " honoured as given, never raised; leave it unset and every mount"
-        + " gets a thread"
+    var error: Optional[String] = None
+    var is_asgi = False
+    try:
+        if opts.app_dir.byte_length() > 0 and isdir(opts.app_dir):
+            prepend_to_path(opts.app_dir)
+        if len(opts.mount_prefixes) > 0:
+            is_asgi = _resolve_mounts(opts)
+        else:
+            is_asgi = _resolve_spec(opts)
+    except e:
+        error = String(e)
+    if error:
+        return Imported(False, False, False, False, app_checks(opts, error, False, interp))
+    # Zero-config: with no topology flag or M0_* topology variable at all,
+    # the protocol picks the concurrency -- a pool for WSGI, the asyncio
+    # executor for ASGI. Detection had to run first, which is why this sits
+    # after the import (and, under prefork, inside each worker; every worker
+    # resolves the same app to the same answer).
+    var auto_pool = pool_is_default(opts)
+    opts.blocking_threads = resolve_blocking_threads(opts, is_asgi, pool_cpus())
+    var executor = use_asgi_executor(opts, is_asgi)
+    var report = interp.copy()
+    if executor and not report:
+        try:
+            report = probe_free_threading()
+        except:
+            pass
+    return Imported(
+        True, is_asgi, auto_pool, executor, app_checks(opts, None, is_asgi, report)
     )
-
-
-comptime _PARALLEL_RUNTIME_FORKED = (
-    "a forked worker cannot serve MAX's parallel runtime: --workers N forks"
-    " one, and so does --reload, which supervises even a single worker, and"
-    " this binary links libAsyncRTMojoBindings -- what"
-    " max.algorithm.parallelize needs -- whose worker threads a fork() does"
-    " not copy, so a parallelize in a forked worker never returns. Use"
-    " --spawn-workers (the worker forks, then execs this binary, and the"
-    " runtime starts fresh in it), or --workers 1 without --reload"
-)
-comptime _PARALLEL_RUNTIME_FIX = (
-    "--spawn-workers, or --workers 1 without --reload"
-)
-comptime _PG_LISTEN_NEEDS_REALTIME = (
-    "--pg-listen needs --realtime: the flag is what creates the broadcast bus"
-    " and the subscriber registries, and a listener with nothing to publish"
-    " into can do nothing at all"
-)
-comptime _PG_LISTEN_FORKED_ON_MACOS = (
-    "--pg-listen with a forked worker is refused on macOS: --workers N forks"
-    " one, and so does --reload, which supervises even a single worker."
-    " libpq's connect reaches GSSAPI, which reaches Kerberos and"
-    " CoreFoundation, and Objective-C aborts a forked child rather than run"
-    " in one. The worker dies with SIGKILL and the supervisor respawns it,"
-    " which reads as a load problem and is not. Use --spawn-workers (the"
-    " child execs, so the rule does not apply; it composes with --reload),"
-    " or serve without --reload on one worker or --threads, or put"
-    " gssencmode=disable in the connection string if you do not use GSSAPI"
-    " encryption"
-)
-comptime _REALTIME_ASGI_CONFLICT = (
-    "--realtime requires a WSGI application: the M0-Hold contract is a"
-    " response-header protocol for buffered WSGI responses, and an ASGI"
-    " application streams through its own send() instead. Serve it without"
-    " --realtime."
-)
-
-
-def _refuse_executor_on_free_threaded(executor_mode: Bool) raises:
-    """Exit 78 when the asyncio executor would run on a free-threaded build.
-
-    The executor's `ExecutorPort` is built with `PythonModuleBuilder`, and
-    the stdlib's `PyObject` is the GIL build's 16-byte header; a
-    free-threaded build's is 32, so module creation segfaults
-    (modular/modular#5726). Checked wherever `use_asgi_executor` said yes
-    -- prefork's worker, the threaded path, and the doctor -- and keyed on
-    the BUILD (`Py_GIL_DISABLED`), not on whether the GIL happens to be
-    enabled, because the layout is the build's. Under prefork this runs in
-    the worker (detection cannot precede the fork), and the supervisor
-    treats a worker's 78 as the refusal it is rather than a crash to
-    respawn (`WorkerSupervisor`, `EX_CONFIG`).
-    """
-    if not executor_mode:
-        return
-    var report = probe_free_threading()
-    if report.free_threaded_build:
-        _fail(asgi_free_threading_refusal(report), EXIT_NOT_FREE_THREADED)
 
 
 def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
@@ -607,7 +528,7 @@ def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
     worker's environment agrees, and before any Python touch, because
     CPython snapshots the C environ at interpreter init. Under `--threads`
     there is no fork, but the second half still binds -- the interpreter
-    comes up inside `require_free_threading`.
+    comes up inside `_serve_threaded`'s `probe_free_threading`.
 
     The bus is created UNCONDITIONALLY, `--realtime` or not, one worker or
     many: an ASGI application's pub/sub (`state["m0"]`) rides it, the
@@ -633,39 +554,6 @@ def _prepare_realtime(opts: ServeOptions, channels: Int) raises -> BroadcastBus:
     return bus^
 
 
-def _pg_listen_forked_on_macos(opts: ServeOptions) -> Bool:
-    """Whether this configuration would connect to libpq in a forked child.
-
-    One predicate, asked by `main` and by `--doctor`, because the two are
-    required to agree and mirror each other's order rather than share
-    control flow.
-
-    macOS only, and measured rather than assumed: `PQconnectdb` calls
-    `pg_GSS_have_cred_cache`, which reaches libgssapi_krb5 and then
-    CoreFoundation, and Objective-C aborts a forked child rather than run in
-    one. The observed shape is the worker killed by signal 9 and respawned
-    until the supervisor gives up — a churning worker and dropped
-    connections, which is the same disguise CLAUDE.md records for `urlopen`
-    and `_scproxy`. `--spawn-workers` is the documented escape from exactly
-    this half of the fork rule, because the child execs.
-
-    Linux has no such abort, so it is not refused there.
-
-    "Forked" is `main`'s own `supervised`, not the worker count: `--reload`
-    puts a supervisor over even one worker (and over the one child
-    `--threads` runs in), and `fork_all` forks without exec unless
-    `--spawn-workers` is given. Testing `workers > 1` alone let
-    `--reload --realtime --pg-listen` through, main and doctor alike, into
-    the crash loop this refusal exists to prevent.
-    """
-    return (
-        CompilationTarget.is_macos()
-        and len(opts.pg_listen.as_bytes()) > 0
-        and (opts.workers > 1 or opts.reload)
-        and not opts.spawn_workers
-    )
-
-
 comptime _DOCTOR_PROBE = """
 import sys, platform
 
@@ -676,140 +564,18 @@ def where():
 """
 
 
-def _doctor_dirs(mut report: Report, opts: ServeOptions):
-    """The three directory checks, in `main`'s order and with its exit code."""
-    if not isdir(opts.app_dir):
-        report.fail_check(
-            String("app-dir"),
-            "app dir does not exist: " + opts.app_dir,
-            "create it, or pass --app-dir with the directory holding "
-            + opts.module,
-            EXIT_STARTUP,
-        )
-    else:
-        report.pass_check(String("app-dir"), opts.app_dir + " exists")
-    for i in range(len(opts.static_dirs)):
-        if not isdir(opts.static_dirs[i]):
-            report.fail_check(
-                String("static-dir"),
-                "static dir does not exist: " + opts.static_dirs[i],
-                "create it, or drop --static " + opts.static_prefixes[i],
-                EXIT_STARTUP,
-            )
-    for i in range(len(opts.reload_dirs)):
-        if not isdir(opts.reload_dirs[i]):
-            report.fail_check(
-                String("reload-dir"),
-                "reload dir does not exist: " + opts.reload_dirs[i],
-                "create it, or drop --reload-dir " + opts.reload_dirs[i],
-                EXIT_STARTUP,
-            )
-
-
-def _doctor_conflicts(mut report: Report, opts: ServeOptions):
-    """The refusals `main` makes before it binds — all EXIT_USAGE."""
-    var conflict = threads_conflict(opts.workers, opts.threads)
-    if conflict:
-        report.fail_check(
-            String("threads-vs-workers"),
-            conflict.value(),
-            String("give one of --workers or --threads, not both"),
-            EXIT_USAGE,
-        )
-    else:
-        report.pass_check(
-            String("threads-vs-workers"),
-            String("topology flags are consistent"),
-        )
-    if opts.protocol == PROTOCOL_ASGI and opts.realtime:
-        report.fail_check(
-            String("protocol-vs-realtime"),
-            String(_REALTIME_ASGI_CONFLICT),
-            String("drop --realtime; an ASGI app streams natively"),
-            EXIT_USAGE,
-        )
-    if opts.pg_listen:
-        if not opts.realtime:
-            report.fail_check(
-                String("pg-listen-vs-realtime"),
-                String(_PG_LISTEN_NEEDS_REALTIME),
-                String("add --realtime"),
-                EXIT_USAGE,
-            )
-        elif _pg_listen_forked_on_macos(opts):
-            report.fail_check(
-                String("pg-listen-vs-fork"),
-                String(_PG_LISTEN_FORKED_ON_MACOS),
-                String(
-                    "add --spawn-workers, or serve one worker without --reload"
-                ),
-                EXIT_USAGE,
-            )
-        else:
-            # What the library resolution WOULD do, without starting a
-            # thread or opening a connection: a doctor that cannot say
-            # whether libpq is present leaves the operator to discover it
-            # from a worker's log line after the server is up.
-            try:
-                var probe = PgLib.open()
-                report.pass_check(
-                    String("pg-listen"),
-                    String("libpq ") + probe.version_text() + " at "
-                    + probe.path,
-                )
-            except e:
-                report.fail_check(
-                    String("pg-listen-libpq"),
-                    String(e),
-                    String("set M0_LIBPQ, or install a libpq where it can be found"),
-                    EXIT_CONFIG,
-                )
-    # The same function `main` refuses by, so the order cannot drift.
-    var mount_refusal = _mount_refusal(opts)
-    if mount_refusal:
-        ref refused = mount_refusal.value()
-        report.fail_check(
-            refused.check, refused.message, refused.hint, EXIT_USAGE
-        )
-    elif len(opts.hold_mounts) > 0:
-        report.pass_check(
-            String("hold-mount"),
-            String("--realtime is on and M0_GRANT_KEY is set"),
-        )
-    # The same predicate `main` refuses by, at the same point in its order
-    # (SPEC E33; `parallel_runtime_forked` lives in cli.mojo so test_cli can
-    # pin its table). The fact is the binary's, so a doctor run on the shipped
-    # m0serve -- which links no MAX -- always passes this one.
-    var linked = parallel_runtime_linked()
-    report.add_bool(String("topology"), String("parallel_runtime"), linked)
-    if parallel_runtime_forked(opts, linked):
-        report.fail_check(
-            String("workers-vs-parallel-runtime"),
-            String(_PARALLEL_RUNTIME_FORKED),
-            String(_PARALLEL_RUNTIME_FIX),
-            EXIT_USAGE,
-        )
-    else:
-        report.pass_check(
-            String("workers-vs-parallel-runtime"),
-            String("MAX's parallel runtime is linked; ")
-            + (String("spawned workers exec and start it fresh")
-               if opts.spawn_workers and (opts.workers > 1 or opts.reload)
-               else String("one process serves it"))
-            if linked
-            else String("MAX's parallel runtime is not linked"),
-        )
-
-
 def _run_doctor(mut opts: ServeOptions) -> Int:
     """`--doctor`: report the configuration, bind nothing, fork nothing.
 
-    The order of `report.*` calls IS the order `main` performs the same
-    checks, because `Report.exit_code` returns the first failure rather than
-    the worst one — so a configuration that trips two refusals reports the
-    one the server would actually hit first. Keeping the two in step is
-    manual and therefore worth stating: if a check moves in `main`, it moves
-    here.
+    Every refusal comes from `m0_wsgi.checks`, the lists `main` refuses by,
+    in the order it evaluates them -- the flags (`flag_checks`), the
+    interpreter (`interpreter_checks`), the application (`app_checks`) -- so
+    `Report.exit_code`, the first failure's code, is the server's by
+    construction rather than by a second description kept in step by hand,
+    which is what this function used to be. One entry is the doctor's own:
+    `interpreter`, because the doctor probes CPython first for its facts, and
+    a binary that cannot load libpython says so there; the server finds the
+    same thing importing the application, and exits the same 1.
 
     Never raises. A doctor that dies while diagnosing is the one failure
     mode it cannot have, so every fallible step is caught and becomes a
@@ -849,23 +615,17 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     # and usage conflicts are decided before any Python runs. Recording the
     # interpreter check here instead made `--workers 2 --threads 2` report
     # 78 where the server exits 2.
-    var py_ok = False
-    var py_version = String("")
-    var py_ft_build = False
-    var py_gil = True
+    var interp: Optional[FreeThreadingReport] = None
     var py_error = String("")
     try:
         var py = probe_free_threading()
-        py_ok = True
-        py_version = py.version
-        py_ft_build = py.free_threaded_build
-        py_gil = py.gil_enabled
         report.add_fact(String("python"), String("version"), py.version)
         report.add_bool(
             String("python"), String("free_threaded_build"),
             py.free_threaded_build,
         )
         report.add_bool(String("python"), String("gil_enabled"), py.gil_enabled)
+        interp = py^
         try:
             var builtins = Python.import_module("builtins")
             var ns = Python.dict()
@@ -888,42 +648,21 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     except e:
         py_error = String(e)
 
-    _doctor_dirs(report, opts)
-    _doctor_conflicts(report, opts)
+    # Before the bind: the same list, and the same facts, `main` refuses by.
+    var facts = _check_facts(opts)
+    add_checks(report, flag_checks(opts, facts))
+    report.add_bool(String("topology"), String("parallel_runtime"), facts.parallel_runtime)
 
     # Python enters here, in `main`'s order: after every check that needs no
     # interpreter at all.
-    var threads_ok = True
-    if py_ok:
+    var threads_ok: Bool
+    if interp:
         report.pass_check(
-            String("interpreter"), "CPython " + py_version + " resolved"
+            String("interpreter"), "CPython " + interp.value().version + " resolved"
         )
-        # 78 only when a threaded mode was actually asked for -- that is
-        # `require_free_threading`'s own rule, and the doctor must not
-        # invent a refusal the server would not make.
-        if opts.threads > 1:
-            if py_gil:
-                threads_ok = False
-                report.fail_check(
-                    String("free-threading"),
-                    "--threads " + String(opts.threads)
-                    + " requires free-threaded CPython with the GIL disabled;"
-                    + (
-                        " this is not a free-threaded build"
-                        if not py_ft_build
-                        else " the GIL is enabled (PYTHON_GIL=1?)"
-                    ),
-                    String(
-                        "use --workers N instead, or run on 3.14t with"
-                        " PYTHON_GIL=0"
-                    ),
-                    EXIT_NOT_FREE_THREADED,
-                )
-            else:
-                report.pass_check(
-                    String("free-threading"),
-                    String("interpreter is free-threaded and the GIL is off"),
-                )
+        var interpreter = interpreter_checks(opts, interp.value())
+        add_checks(report, interpreter)
+        threads_ok = not first_refusal(interpreter)
     else:
         threads_ok = False
         report.fail_check(
@@ -941,8 +680,7 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     # sane" call, and reporting a missing app as a defect would make the
     # useful invocation always exit non-zero.
     var have_app = opts.module.byte_length() > 0 or len(opts.mount_prefixes) > 0
-    var is_asgi = False
-    var resolved = False
+    var imported = Imported(False, False, False, False, List[ServeCheck]())
     if not have_app:
         report.add_bool(String("application"), String("requested"), False)
     elif not threads_ok:
@@ -954,34 +692,15 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         )
     else:
         report.add_bool(String("application"), String("requested"), True)
-        try:
-            if opts.app_dir.byte_length() > 0 and isdir(opts.app_dir):
-                prepend_to_path(opts.app_dir)
-            if len(opts.mount_prefixes) > 0:
-                is_asgi = _resolve_mounts(opts)
-            else:
-                is_asgi = _resolve_spec(opts)
-            resolved = True
-        except e:
-            report.fail_check(
-                String("application"),
-                "could not load " + opts.served() + " from " + opts.app_dir
-                + ": " + String(e),
-                String(
-                    "check --app-dir and the MODULE[:ATTR] spec; a bare"
-                    " MODULE also tries MODULE.asgi, MODULE.wsgi, MODULE:app"
-                    " and MODULE.main:app"
-                ),
-                EXIT_STARTUP,
-            )
-        if resolved:
+        imported = _import_and_check(opts, interp.copy())
+        if imported.loaded:
             report.add_fact(
                 String("application"), String("spec"), opts.served()
             )
             report.add_fact(
                 String("application"),
                 String("protocol"),
-                String("asgi") if is_asgi else String("wsgi"),
+                String("asgi") if imported.is_asgi else String("wsgi"),
             )
             report.add_bool(
                 String("application"),
@@ -1010,20 +729,9 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
                 report.add_raw(
                     String("application"), String("mounts"), mounts
                 )
-            report.pass_check(
-                String("application"),
-                opts.served() + " imports and classifies as "
-                + (String("asgi") if is_asgi else String("wsgi")),
-            )
-            # The two refusals that need the detected protocol -- the same
-            # pair main makes right after its own resolve, at EXIT_STARTUP.
-            if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
-                report.fail_check(
-                    String("realtime-vs-asgi"),
-                    String(_REALTIME_ASGI_CONFLICT),
-                    String("drop --realtime; an ASGI app streams natively"),
-                    EXIT_STARTUP,
-                )
+        # After the import: the application's own verdict, then what needs
+        # its protocol -- the list `main` refuses by at the same point.
+        add_checks(report, imported.checks)
 
     # Topology, resolved the way the server resolves it -- which needs the
     # protocol, hence its place after the import. Without a resolved app the
@@ -1050,50 +758,20 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         String("topology"), String("accept_sharing"), accept_sharing_wanted(opts.workers)
     )
     report.add_int(String("topology"), String("threads"), opts.threads)
-    if resolved:
-        var auto_pool = pool_is_default(opts)
-        var blocking = resolve_blocking_threads(opts, is_asgi, pool_cpus())
-        var executor = use_asgi_executor(opts, is_asgi)
+    if imported.loaded:
+        # `_import_and_check` wrote the resolved pool size back, as `main`'s
+        # does, so `blocking_threads` is the number the server would use.
+        var blocking = opts.blocking_threads
+        var executor = imported.executor
         report.add_int(
             String("topology"), String("blocking_threads"), blocking
         )
         report.add_fact(
             String("topology"),
             String("blocking_threads_source"),
-            String("default") if auto_pool else String("configured"),
+            String("default") if imported.auto_pool else String("configured"),
         )
         report.add_bool(String("topology"), String("asgi_executor"), executor)
-        # The refusal main makes right after the same decision, at 78:
-        # the executor's Python type cannot be built on a free-threaded
-        # build (modular/modular#5726). A probe that itself fails invents
-        # no refusal; the interpreter check above already spoke.
-        if executor:
-            try:
-                var ft = probe_free_threading()
-                if ft.free_threaded_build:
-                    report.fail_check(
-                        String("asgi-vs-free-threading"),
-                        asgi_free_threading_refusal(ft),
-                        String(
-                            "run this application on a GIL-enabled CPython"
-                            " (3.10-3.14 without the t suffix), with"
-                            " --workers for concurrency"
-                        ),
-                        EXIT_NOT_FREE_THREADED,
-                    )
-            except:
-                pass
-        # The refusal main makes next, also at 78: a WSGI mount the resolved
-        # pool leaves with no thread on its lane.
-        var unserved = wsgi_lanes_unserved(opts, executor, blocking)
-        if unserved > 0:
-            report.fail_check(
-                String("wsgi-mount-threads"),
-                _wsgi_lanes_unserved_message(unserved, blocking),
-                "add --blocking-threads "
-                + String(len(wsgi_lanes(opts))) + " or more",
-                EXIT_CONFIG,
-            )
         var mode: String
         if opts.threads > 1:
             mode = String("threads")
@@ -1105,14 +783,16 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         # WHICH LOOP, which `mode` does not say: it answered `single` for
         # the pump and for the inversion alike, so the two shapes were
         # indistinguishable from outside the process and only the startup
-        # banner told you which one you had. `use_loop_inversion` is the
-        # same predicate `main` branches on, so this cannot drift from what
-        # actually runs. "n/a" where no executor serves the application at
-        # all (WSGI, or an explicit pool).
+        # banner told you which one you had. `use_loop_inversion` over
+        # `pool_thread_count` is exactly what `_serve_offloaded` branches
+        # on, so this cannot drift from what actually runs. "n/a" where no
+        # executor serves the application at all (WSGI, or an explicit pool).
         var loop_shape: String
         if not executor:
             loop_shape = String("n/a")
-        elif use_loop_inversion(opts, executor, blocking):
+        elif use_loop_inversion(
+            opts, executor, pool_thread_count(opts, executor, blocking)
+        ):
             loop_shape = String("inverted")
         else:
             loop_shape = String("pump")
@@ -1178,84 +858,19 @@ def main() raises:
     if opts.show_version:
         print("m0serve " + M0SERVE_VERSION, flush=True)
         return
-    # Before the directory checks below, because those `_fail` on the first
-    # problem and the doctor's job is to report all of them at once.
+    # Before the checks below, which stop at the first failure where the
+    # doctor's job is to report all of them at once.
     if opts.show_doctor:
         process_exit(_run_doctor(opts))
         return
 
-    # Everything checkable without an interpreter, checked before the bind.
-    if not isdir(opts.app_dir):
-        _fail("app dir does not exist: " + opts.app_dir, EXIT_STARTUP)
-    for i in range(len(opts.static_dirs)):
-        if not isdir(opts.static_dirs[i]):
-            _fail("static dir does not exist: " + opts.static_dirs[i], EXIT_STARTUP)
-    for i in range(len(opts.reload_dirs)):
-        if not isdir(opts.reload_dirs[i]):
-            _fail("reload dir does not exist: " + opts.reload_dirs[i], EXIT_STARTUP)
-
-    var conflict = threads_conflict(opts.workers, opts.threads)
-    if conflict:
-        print(usage(), flush=True)
-        _fail(conflict.value(), EXIT_USAGE)
-
-    # `--blocking-threads` moves `func` onto a pool thread, but the streaming
-    # hooks — `sse_drain_slot`, `sse_slot_disconnected`, `ws_message` — are
-    # called on the LOOP's handler, which owns a different `SSERegistry` and a
-    # different `WSHub`. A stream opened by a pool thread's handler would be
-    # invisible to the loop that has to feed it. Refused rather than half-wired,
-    # which is the same call `--threads` makes about a GIL-enabled interpreter.
-
-    # The forced half of the ASGI/realtime refusal is checkable without an
-    # interpreter; the auto-detected half fails after the app loads, with
-    # the same message.
-    if opts.protocol == PROTOCOL_ASGI and opts.realtime:
-        print(usage(), flush=True)
-        _fail(_REALTIME_ASGI_CONFLICT, EXIT_USAGE)
-
-    # Both pg-listen refusals live HERE, before the bind and before the fork.
-    # Placed after it first, they ran in each worker and never in the
-    # supervisor: the server forked, every child refused, and the parent
-    # respawned them — so a misconfiguration read as a crash loop instead of
-    # a usage error.
-    if opts.pg_listen and not opts.realtime:
-        _fail(_PG_LISTEN_NEEDS_REALTIME, EXIT_USAGE)
-        return
-    if _pg_listen_forked_on_macos(opts):
-        _fail(_PG_LISTEN_FORKED_ON_MACOS, EXIT_USAGE)
-        return
-    if opts.pg_listen:
-        # The library is resolved HERE, before anything starts, so an absent
-        # one is a refusal naming every path tried rather than a server that
-        # runs with no listener. It used to be the latter: the thread logged
-        # one line and the process served forever, which is an absent
-        # library degrading into a listener that silently hears nothing —
-        # the failure this flag exists to make impossible.
-        #
-        # Pre-fork on purpose. The workers would each report it otherwise,
-        # and the supervisor — the one process whose exit status anyone
-        # reads — would report nothing.
-        try:
-            var probe = PgLib.open()
-            _ = probe.libversion()
-        except e:
-            _fail(String(e), EXIT_CONFIG)
-            return
-
-    # The mount refusals decidable from the flags, before the bind and the
-    # fork for the same reason as the pg-listen pair above. `--doctor` asks
-    # the same function at the same point in its order.
-    var mount_refusal = _mount_refusal(opts)
-    if mount_refusal:
-        _fail(mount_refusal.value().message, EXIT_USAGE)
-        return
-
-    # A Mojo mount that links MAX's parallel runtime cannot be served from
-    # a forked worker (SPEC E33): refused here, before the bind and the
-    # fork, by the same predicate `--doctor` asks at the same point.
-    if parallel_runtime_forked(opts, parallel_runtime_linked()):
-        _fail(_PARALLEL_RUNTIME_FORKED, EXIT_USAGE)
-        return
+    # Everything decidable without an interpreter, refused before the bind
+    # and the fork: `flag_checks`, the list `--doctor` renders, read here to
+    # its first failure. Before the bind because a refusal after it ran in
+    # every worker and never in the supervisor -- the server forked, every
+    # child refused, the parent respawned them -- so a usage error read as a
+    # crash loop, which is how the pg-listen and mount refusals first shipped.
+    refuse_first(flag_checks(opts, _check_facts(opts)))
 
     # Bind before forking; every worker accepts from this one socket.
     var listener = _listen_or_fail(opts)
@@ -1278,13 +893,13 @@ def main() raises:
     # `opts.workers` is 1 under threads and the supervisor manages the one
     # multi-threaded child.
     var multiprocess = opts.workers > 1
-    var supervised = multiprocess or opts.reload
+    var is_supervised = supervised(opts)
     var worker = 0
     # A spawned worker is a supervised process that must NOT supervise: its
     # parent already does, and it serves the index it was exec'd with.
     var spawned = spawned_worker_index()
     if spawned >= 0:
-        supervised = False
+        is_supervised = False
         worker = spawned
     if opts.reload:
         # Set before the fork and before the first Python call, because the
@@ -1301,7 +916,7 @@ def main() raises:
         # never a cache to go stale. The cost is slower imports on a
         # development-only flag.
         _ = setenv("PYTHONDONTWRITEBYTECODE", "1", True)
-    if supervised:
+    if is_supervised:
         var supervisor = WorkerSupervisor(opts.workers)
         if opts.reload:
             supervisor.enable_reload(_reload_dirs(opts), String(".py"))
@@ -1328,54 +943,23 @@ def main() raises:
         # watch a pipe. Prefork never hits this because `serve_nonblocking`
         # uses the listener itself, later.
         _serve_threaded(opts, listener, bus)
-        if supervised:
+        if is_supervised:
             # Forked, so it must leave through `exit_worker()` — returning
             # from `main` runs a teardown that reaches into libdispatch.
             exit_worker()
         return
 
-    # The first Python call in this process: put --app-dir on sys.path and
-    # resolve the spec + protocol, WITHOUT building a bridge — the executor
-    # decision below needs the protocol before any lifespan may run.
-    var is_asgi: Bool
-    try:
-        if opts.app_dir.byte_length() > 0:
-            prepend_to_path(opts.app_dir)
-        if len(opts.mount_prefixes) > 0:
-            is_asgi = _resolve_mounts(opts)
-        else:
-            is_asgi = _resolve_spec(opts)
-    except e:
-        _fail(
-            "could not load " + opts.served() + " from " + opts.app_dir + ": "
-            + String(e),
-            EXIT_STARTUP,
-        )
-        return
-
-    if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
-        _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
-
-    # Zero-config: with no topology flag or M0_* topology variable at all,
-    # the protocol picks the concurrency — a pool for WSGI, the asyncio
-    # executor for ASGI. Detection had to run first, which is why this
-    # sits after the resolve (and, under prefork, inside each worker;
-    # every worker resolves the same app to the same answer).
-    var auto_pool = pool_is_default(opts)
-    opts.blocking_threads = resolve_blocking_threads(
-        opts, is_asgi, pool_cpus()
-    )
-    var executor_mode = use_asgi_executor(opts, is_asgi)
-    _refuse_executor_on_free_threaded(executor_mode)
-    # Needs detection, so it runs here, in the worker -- at 78, which the
+    # The first Python call in this process: import what is served and
+    # decide the pool and the executor, WITHOUT building a bridge -- the
+    # executor decision needs the protocol before any lifespan may run --
+    # then refuse by the checks that needed the import (`app_checks`, the
+    # doctor's too). In the worker, so a refusal is 78 or 1, which the
     # supervisor stops on rather than respawning (E10).
-    var unserved = wsgi_lanes_unserved(opts, executor_mode, opts.blocking_threads)
-    if unserved > 0:
-        _fail(
-            _wsgi_lanes_unserved_message(unserved, opts.blocking_threads),
-            EXIT_CONFIG,
-        )
-        return
+    var imported = _import_and_check(opts)
+    refuse_first(imported.checks)
+    var is_asgi = imported.is_asgi
+    var auto_pool = imported.auto_pool
+    var executor_mode = imported.executor
     # In executor mode the loop's own handler is the queue-overflow
     # fallback: its bridge gets a loop but no lifespan, so the executor's
     # app owns the one lifespan this process runs. Its registries do size
@@ -1451,10 +1035,7 @@ def main() raises:
             # reports the same condition before anything starts.
             print("m0serve: pg-listen did not start: " + String(e), flush=True)
 
-    var mounted_mix = (
-        len(opts.mount_prefixes) > 0 and len(opts.asgi_mounts) > 0
-    )
-    if executor_mode or opts.blocking_threads > 0 or mounted_mix:
+    if serves_offloaded(opts, executor_mode, opts.blocking_threads):
         # Offloaded serving under prefork: this process gets one acceptor
         # loop and either the asyncio executor (ASGI) or a handler pool.
         # The threads are spawned AFTER `fork_all()` returned and after the
@@ -1464,8 +1045,6 @@ def main() raises:
         _serve_offloaded(
             opts, listener, handler, server_config, shutdown_fd,
             executor_mode,
-            asgi_lanes=opts.asgi_mounts.copy(),
-            wsgi_lanes=wsgi_lanes(opts),
             peer_bus_fd=bus.read_fd(worker),
             # Under `--realtime` a pool thread's hold reaches THIS worker's
             # loop through this worker's own channel — `m0pub` writes every
@@ -1482,7 +1061,7 @@ def main() raises:
         # mode its lifespan never ran, and shutdown just closes its loop.
         handler.shutdown()
         pg.stop()
-        if supervised:
+        if is_supervised:
             exit_worker()
         return
 
@@ -1514,7 +1093,7 @@ def main() raises:
     _ = listener
     handler.shutdown()
     pg.stop()
-    if supervised:
+    if is_supervised:
         exit_worker()
 
 
@@ -1525,8 +1104,6 @@ def _serve_offloaded(
     config: ServerConfig,
     shutdown_fd: Int,
     executor: Bool,
-    var asgi_lanes: List[Int] = List[Int](),
-    var wsgi_lanes: List[Int] = List[Int](),
     peer_bus_fd: Int = -1,
     hold_notify_fd: Int = -1,
     accept_share: AcceptShare = AcceptShare(),
@@ -1536,36 +1113,28 @@ def _serve_offloaded(
     `--blocking-threads N` (WSGI, or the ASGI escape hatch) puts N handler
     threads behind the loop; `executor` puts the one asyncio-executor
     thread there instead — both speak the same `OffloadPool`, so the loop
-    is identical either way.
-
-    `Server.serve_nonblocking` is bypassed for one reason — the loop thread
-    serves with NO thread state (docs/notes/detached-loop.md). It runs no
-    Python except the inline fallback, which `WSGIHandler.func` attaches
-    around for itself. Attached, it re-acquired the GIL after every wait
-    and was blocked in that acquire 36–45 % of wall time under load, so the
-    executor's and the pool's Python never overlapped its own parsing and
-    writing; detached, the executor and pool rows ran +50–100 %.
-    `M0_LOOP_ATTACHED=1` restores the old shape for an A/B.
-
-    With `--mount`, both run AT ONCE: `asgi_lanes` names the mounts that
-    get an executor each and `wsgi_lanes` the mounts the pool threads
-    serve, so sync applications and async ones share this loop, this
+    is identical either way. With `--mount`, both run AT ONCE, each mount on
+    its own lane, so sync applications and async ones share this loop, this
     listener and this shutdown while each keeps its native concurrency.
-    That is the whole point of mounts, and it is only expressible because
-    a lane is a submit channel rather than a mode for the process.
+    `wire_offload` lays the lanes and starts their threads, the same wiring
+    each `--threads` loop uses (`threaded._serve_one`); what is prefork's
+    alone stays here -- the inversion, the compiled mounts' pools, whose
+    handler types are this file's, and the loop that holds no thread state.
 
-    Several executors share ONE chunk channel — datagrams are
-    slot-addressed and the queue is globally FIFO, so the recycled-slot
-    safety argument survives two writers — but each gets its own drain-ack
-    pair (`enable_stream_ack`): credit belongs to the executor that owns
-    the slot, and an ack routed anywhere else is a stream stalled forever.
+    `Server.serve_nonblocking` is bypassed for that last one — the loop
+    thread serves with NO thread state (docs/notes/detached-loop.md). It
+    runs no Python except the inline fallback, which `WSGIHandler.func`
+    attaches around for itself. Attached, it re-acquired the GIL after every
+    wait and was blocked in that acquire 36–45 % of wall time under load, so
+    the executor's and the pool's Python never overlapped its own parsing
+    and writing; detached, the executor and pool rows ran +50–100 %.
+    `M0_LOOP_ATTACHED=1` restores the old shape for an A/B.
 
     `peer_bus_fd` is this worker's BroadcastBus channel (M0_WORKERS>1),
     registered beside the chunk channel: GRIP-named frames on it are
-    forwarded to the executors for `state["m0"]` subscribers. `--realtime`
-    composes with the pool (`hold_notify_fd`: a pool thread's hold reaches
-    this loop's registries as a reserved frame on this loop's own bus
-    channel) and is still refused with the executor and with `--mount`.
+    forwarded to the executors for `state["m0"]` subscribers.
+    `hold_notify_fd` is how a pool thread's hold under `--realtime` reaches
+    this loop's registries: a reserved frame on this loop's own bus channel.
     """
     var pool = OffloadPool(config.max_connections)
     # Without a GIL a parked thread beside a queued job is an idle core,
@@ -1573,42 +1142,9 @@ def _serve_offloaded(
     # call, startup-only, on the worker's attached main thread — after
     # the process's first.
     pool.set_parallel(not probe_free_threading().gil_enabled)
-    # The loop's handler needs the pool for one thing only: a chunk frame
-    # its outbox has to refuse must abort the stream rather than vanish.
-    # See `WSGIHandler.abort_pool_addr`.
-    handler.set_abort_pool(pool.addr())
-    if hold_notify_fd >= 0:
-        pool.set_hold_notify(hold_notify_fd)
-    var mounted = len(opts.mount_prefixes) > 0
-    if mounted:
-        # Lane i is mount i, so the loop's `submit(slot, path)` and the
-        # handler's `app_for(path)` cannot disagree: both ask
-        # `match_path_prefix` the same question about the same table.
-        for i in range(len(opts.mount_prefixes)):
-            pool.add_lane(opts.mount_prefixes[i])
-    var mojo_ln = mojo_lanes(opts)
-    var hold_ln = hold_lanes(opts)
-    # A compiled mount's threads never attach, so its lane is not queueing
-    # for a GIL and a job that has waited past the spin gets a sibling woken
-    # whether or not the ring is moving (`OffloadPool.lane_gil_free`). Under
-    # the GIL lanes' progress rule the Mojo mount's search route ran on one
-    # of four threads. After `add_lane`, which declared these lanes.
-    for i in range(len(mojo_ln)):
-        pool.set_lane_gil_free(mojo_ln[i])
-    for i in range(len(hold_ln)):
-        pool.set_lane_gil_free(hold_ln[i])
-    var pool_count = (
-        opts.blocking_threads
-        if (len(wsgi_lanes) > 0 or not executor) else 0
-    )
-    if mounted and len(wsgi_lanes) == 0:
-        # No WSGI mount: no WSGI pool. Without this the pool starts with an
-        # empty lane list, `BlockingPool.start` deals every thread lane -1,
-        # and -1 is lane 0 — which on a Mojo-only mounted server is the Mojo
-        # mount's lane. Its jobs would be taken by threads holding a
-        # `WSGIHandler` for an application that was never imported.
-        pool_count = 0
-    if use_loop_inversion(opts, executor, pool_count) and not mounted:
+    if use_loop_inversion(
+        opts, executor, pool_thread_count(opts, executor, opts.blocking_threads)
+    ):
         # M0_INVERTED: the loop inversion, on one thread. Unmounted,
         # pool-free ASGI only -- the benchmark shape -- and behind the
         # variable until its gate passes (docs/ROADMAP.md, "The loop
@@ -1629,81 +1165,27 @@ def _serve_offloaded(
             pool, peer_bus_fd, accept_share,
         )
         return
-    var pool_threads = BlockingPool(0 if (executor and not mounted) else pool_count)
-    # Every pool thread's wake record, reserved ONCE and before any pool
-    # starts: `reserve_threads` sizes the block on its first call and ignores
-    # the rest, and the WSGI pool used to be the only caller, so the Mojo and
-    # hold pools' threads found no record left. The counts are the ones the
-    # two `MojoPool`s below are constructed with.
-    var mojo_count = opts.blocking_threads if len(mojo_ln) > 0 else 0
-    var hold_count = opts.blocking_threads if len(hold_ln) > 0 else 0
-    pool.reserve_threads(pool_threads.count + mojo_count + hold_count)
-    var exec_thread = AsgiExecutor(
-        len(asgi_lanes) if len(asgi_lanes) > 0 else 1
-    )
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
-    var run_executor = executor or len(asgi_lanes) > 0
-    if run_executor:
-        # The streaming channels exist before any executor thread does, so
-        # their fds are plain fields by the time anything reads them; the
-        # shared chunk pair's read end is this loop's bus fd, and the
-        # handler learns where to send each lane's disconnect tags — on
-        # that mount's own submit channel, since that is where its
-        # executor is parked.
-        pool.enable_stream_channel()
-        pool.enable_base_stream_ack()
-        # The pump: the loop thread keeps its per-pass outbox sweep even
-        # with no stream open, because the microsecond it costs is what
-        # lets a pass batch submits (offload.mojo, `sweeps_every_pass`).
-        pool.set_sweep_every_pass()
-        if len(asgi_lanes) == 0:
-            handler.set_asgi_notify(pool.submit_write_fd(-1))
-        for k in range(len(asgi_lanes)):
-            var lane = asgi_lanes[k]
-            pool.enable_stream_ack(lane)
-            handler.set_lane_notify(lane, pool.submit_write_fd(lane))
-        exec_thread.start(pool.addr(), opts_addr, asgi_lanes.copy(), qos=opts.qos)
-    if pool_threads.count > 0 and not pool.chunk_active():
-        # Pool threads stream WSGI iterables through the same chunk channel
-        # the executor uses — a second producer on one FIFO — so a
-        # pure-WSGI pool server creates it too. NOT the executor's ack
-        # pair: `stream_active()` keeps meaning "an executor exists", which
-        # is what keeps an M0-Hold on this loop from being mistaken for a
-        # channel stream.
-        pool.enable_stream_channel()
-    if pool_threads.count > 0:
-        # Where an inbound WebSocket message goes when a pool thread's view
-        # held the socket: that mount's own submit lane, so the frame is
-        # served by a thread that has that urlconf and no other. Read before
-        # the lanes are moved into `start`.
-        if opts.realtime:
-            if len(wsgi_lanes) == 0:
-                handler.set_ws_pool_notify(-1, pool.submit_write_fd(-1))
-            for wl in range(len(wsgi_lanes)):
-                handler.set_ws_pool_notify(
-                    wsgi_lanes[wl], pool.submit_write_fd(wsgi_lanes[wl])
-                )
-        pool_threads.start[WSGIHandler](
-            pool.addr(), opts_addr, wsgi_lanes^, qos=opts.qos
+    var threads = wire_offload[WSGIHandler](
+        pool, handler, opts, executor, opts.blocking_threads, opts_addr,
+        hold_notify_fd=hold_notify_fd,
+    )
+    # The compiled mounts' workers, sized and reserved by `wire_offload`.
+    # They are started like the WSGI pool and are unlike it in the one way
+    # that matters: `MojoPool`'s body has no attach/detach bracket, because
+    # there is nothing to attach to. A job on one of these lanes never
+    # touches the interpreter, which is what lets this mount answer while
+    # every Python thread is behind the GIL. Two `MojoPool`s rather than one
+    # because `start[T]` is generic over the handler, and each lane is dealt
+    # only its own kind.
+    if threads.mojo_pool.count > 0:
+        threads.mojo_pool.start[MojoMount](
+            pool.addr(), user=0, lanes=mojo_lanes(opts)
         )
-    # The Mojo mount's workers. They are started like the WSGI pool and are
-    # unlike it in the one way that matters: `MojoPool`'s body has no
-    # attach/detach bracket, because there is nothing to attach to. A job on
-    # one of these lanes never touches the interpreter, which is what lets
-    # this mount answer while every Python thread is behind the GIL.
-    var mojo_threads = MojoPool(mojo_count)
-    if mojo_threads.count > 0:
-        mojo_threads.start[MojoMount](
-            pool.addr(), user=0, lanes=mojo_ln.copy()
-        )
-    # The hold mount's workers: the same pool shape, a different handler
-    # type. Two `MojoPool`s rather than one because `start[T]` is generic
-    # over the handler, and each lane is dealt only its own kind.
-    var hold_threads = MojoPool(hold_count)
-    if hold_threads.count > 0:
-        hold_threads.start[HoldMount](
-            pool.addr(), user=0, lanes=hold_ln.copy()
+    if threads.hold_pool.count > 0:
+        threads.hold_pool.start[HoldMount](
+            pool.addr(), user=0, lanes=hold_lanes(opts)
         )
 
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
@@ -1735,50 +1217,7 @@ def _serve_offloaded(
     if not loop_attached:
         cpy0.PyEval_RestoreThread(loop_ts)
 
-    # Detached across it, for the reason the pool body details: a thread
-    # finishing its last job (or the executor draining its tasks) has to
-    # attach, and it cannot while this thread holds a state and blocks in
-    # `pthread_join`.
-    ref cpy = Python().cpython()
-    var join_ts = cpy.PyEval_SaveThread()
-    var failed = 0
-    var stuck = 0
-    if run_executor:
-        failed += exec_thread.stop_and_join(pool, JOIN_TIMEOUT_NS)
-        stuck += exec_thread.stragglers
-    if pool_threads.count > 0:
-        failed += pool_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
-        stuck += pool_threads.stragglers
-    if mojo_threads.count > 0:
-        # Pills go per lane, so a Mojo thread parked on lane 2 is not woken
-        # by one sent to lane 0. `MojoPool.stop_and_join` sends its own.
-        failed += mojo_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
-        stuck += mojo_threads.stragglers
-    if hold_threads.count > 0:
-        failed += hold_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
-        stuck += hold_threads.stragglers
-    if stuck > 0:
-        # A thread still inside the application after the drain AND the join
-        # budget is not coming back: a response that never ends (an SSE
-        # generator served buffered under WSGI; docs/REAL_APP_VALIDATION.md)
-        # holds it for the life of the process. Nothing here can unwind
-        # Python on another thread, so leave the way a forked worker does --
-        # `_exit`, no teardown -- with every connection the loop could answer
-        # already answered. The alternative was a SIGTERM that did nothing
-        # until `docker stop` gave up and sent SIGKILL, which is what it did.
-        print(
-            "m0serve: " + String(stuck) + " handler thread(s) still inside the"
-            " application " + String(JOIN_TIMEOUT_NS // 1_000_000_000)
-            + " s after the drain; exiting without them",
-            flush=True,
-        )
-        process_exit(0)
-    cpy.PyEval_RestoreThread(join_ts)
-    if failed > 0:
-        print(
-            String(failed) + " offload thread(s) did not exit cleanly",
-            flush=True,
-        )
+    join_offload(threads, pool, "m0serve: ")
     # `pool` must outlive the join: a thread still finishing a job writes into
     # it. This use is what stops destroy-at-last-use freeing it above.
     _ = pool.capacity
@@ -1793,13 +1232,14 @@ def _serve_threaded(
 
     The order here is the threaded mode's load-bearing part, the mirror
     image of the prefork rule above. The interpreter comes up on THIS
-    thread (`require_free_threading` is the first Python call, and the
-    place a GIL-enabled interpreter is refused), the application is
-    imported once here so Django's `setup()` runs single-threaded, the
-    signal pipe is armed once for the process — and only then does
-    `ThreadedServer.serve` detach this thread and spawn the loops, each of
-    which builds its own `WSGIHandler` from `opts` via `WSGIHandler.make`.
-    No fork, so `main` returns normally.
+    thread (`probe_free_threading` is the first Python call, and
+    `interpreter_checks` the place a GIL-enabled interpreter is refused,
+    before anything is imported), the application is imported once here so
+    Django's `setup()` runs single-threaded, the signal pipe is armed once
+    for the process — and only then does `ThreadedServer.serve` detach this
+    thread and spawn the loops, each of which builds its own `WSGIHandler`
+    from `opts` via `WSGIHandler.make` and wires its pool as prefork's
+    worker does (`wire_offload`). No fork, so `main` returns normally.
 
     Under `--realtime` each thread also drains its own bus channel, exactly
     as a worker drains its own. `bus` was built on the main thread before
@@ -1808,7 +1248,8 @@ def _serve_threaded(
     same N `os.write`s it used to reach N processes — it never learns which
     it is talking to.
     """
-    require_free_threading(opts.threads)
+    var interp = probe_free_threading()
+    refuse_first(interpreter_checks(opts, interp))
     # The Postgres listener, once for the process — there is one here, where
     # prefork has one per worker and starts it only on worker 0. It publishes
     # to `bus.write_fds`, which in this mode is one channel per THREAD, and
@@ -1827,44 +1268,19 @@ def _serve_threaded(
             )
         except e:
             print("m0serve: pg-listen did not start: " + String(e), flush=True)
-    if opts.app_dir.byte_length() > 0:
-        prepend_to_path(opts.app_dir)
     # Import once on main (so Django's setup() runs single-threaded) and
     # detect the protocol while at it — the imports below are sys.modules
-    # hits for every serving thread.
-    var is_asgi: Bool
-    try:
-        if len(opts.mount_prefixes) > 0:
-            is_asgi = _resolve_mounts(opts)
-        else:
-            is_asgi = _resolve_spec(opts)
-    except e:
-        _fail(
-            "could not load " + opts.served() + " from " + opts.app_dir + ": "
-            + String(e),
-            EXIT_STARTUP,
-        )
-        return
-    if opts.realtime and _realtime_without_wsgi(opts, is_asgi):
-        _fail(_REALTIME_ASGI_CONFLICT, EXIT_STARTUP)
-    var auto_pool = pool_is_default(opts)
-    opts.blocking_threads = resolve_blocking_threads(
-        opts, is_asgi, pool_cpus()
-    )
-    var executor_mode = use_asgi_executor(opts, is_asgi)
-    # `--threads` REQUIRES a free-threaded build, and the executor cannot
-    # run on one: an ASGI application under --threads is refused here on
-    # this toolchain, whatever the thread count.
-    _refuse_executor_on_free_threaded(executor_mode)
-    # Each loop deals its --blocking-threads over the WSGI lanes exactly as
-    # prefork's does, so the same shortfall leaves the same mount unserved.
-    var unserved = wsgi_lanes_unserved(opts, executor_mode, opts.blocking_threads)
-    if unserved > 0:
-        _fail(
-            _wsgi_lanes_unserved_message(unserved, opts.blocking_threads),
-            EXIT_CONFIG,
-        )
-        return
+    # hits for every serving thread. Then the checks that needed it, as
+    # prefork's worker makes them: `--threads` REQUIRES a free-threaded
+    # build and the executor cannot run on one, so an ASGI application is
+    # refused here whatever the thread count; and each loop deals its
+    # --blocking-threads over the WSGI lanes exactly as prefork's does, so
+    # the same shortfall leaves the same mount unserved.
+    var imported = _import_and_check(opts, interp.copy())
+    refuse_first(imported.checks)
+    var is_asgi = imported.is_asgi
+    var auto_pool = imported.auto_pool
+    var executor_mode = imported.executor
     # Each serving thread's own loop handler is only the fallback in
     # executor mode; the one lifespan per loop belongs to that loop's
     # executor. Registries size up for the chunk outboxes — the executor's

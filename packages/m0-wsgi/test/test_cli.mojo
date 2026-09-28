@@ -35,6 +35,11 @@ from src.cli import (
     mounts_need_threads,
     pool_is_default,
     parallel_runtime_forked,
+    supervised,
+    forks_without_exec,
+    pg_listen_forked,
+    pool_thread_count,
+    serves_offloaded,
     DEFAULT_PORT,
     M0SERVE_VERSION,
     MAX_AUTO_BLOCKING_THREADS,
@@ -1132,6 +1137,100 @@ def test_parallel_runtime_forked_truth_table() raises:
     assert_false(parallel_runtime_forked(opts, False))
     opts.spawn_workers = True
     assert_false(parallel_runtime_forked(opts, True))
+
+
+def test_supervised_is_workers_above_one_or_reload() raises:
+    """The ONE spelling `main` forks on and every forked-child rule asks.
+    `--reload` supervises even one worker (and the child `--threads` runs
+    in); `--spawn-workers` is still supervised, and forks without exec only
+    when it is not given."""
+    var opts = _seed()
+    assert_false(supervised(opts))
+    assert_false(forks_without_exec(opts))
+    opts.workers = 2
+    assert_true(supervised(opts))
+    assert_true(forks_without_exec(opts))
+    opts.spawn_workers = True
+    assert_true(supervised(opts))
+    assert_false(forks_without_exec(opts))
+    opts = _seed()
+    opts.reload = True
+    assert_true(supervised(opts))
+    assert_true(forks_without_exec(opts))
+    opts.threads = 4
+    assert_true(supervised(opts))
+    opts = _seed()
+    opts.threads = 4
+    assert_false(supervised(opts))
+    # Without a supervisor the flag has nothing to exec.
+    opts.spawn_workers = True
+    assert_false(forks_without_exec(opts))
+
+
+def test_pg_listen_forked_truth_table() raises:
+    """macOS, `--pg-listen`, and a worker forked without exec -- `--reload`
+    at one worker included, which `workers > 1` alone let through. Linux is
+    never refused, so the platform is a parameter and both answers are
+    pinned on either."""
+    var opts = _seed()
+    opts.workers = 2
+    assert_false(pg_listen_forked(opts, True))
+    opts.pg_listen = String("postgres://db/x")
+    assert_true(pg_listen_forked(opts, True))
+    assert_false(pg_listen_forked(opts, False))
+    opts.spawn_workers = True
+    assert_false(pg_listen_forked(opts, True))
+    opts.spawn_workers = False
+    opts.workers = 1
+    assert_false(pg_listen_forked(opts, True))
+    opts.reload = True
+    assert_true(pg_listen_forked(opts, True))
+    assert_false(pg_listen_forked(opts, False))
+
+
+def test_pool_thread_count_starts_no_pool_for_a_mount_set_without_wsgi() raises:
+    """The guard `_serve_offloaded` had and the threaded loop did not: a
+    mount set with no WSGI mount starts NO WSGI pool, whatever the count and
+    whether or not an executor runs -- its threads would be dealt lane -1,
+    which is lane 0, the first mount's, and take jobs for an application
+    they cannot run. One function now deals both modes."""
+    var asgi_only = _parse([String("--mount"), String("/feed=feed.asgi")])
+    asgi_only.asgi_mounts.append(0)
+    assert_equal(pool_thread_count(asgi_only, True, 4), 0)
+    assert_equal(pool_thread_count(asgi_only, False, 4), 0)
+    var mojo_asgi = _parse([
+        String("--mount"), String("/n=mojo"), String("--mount"), String("/feed=feed.asgi"),
+    ])
+    mojo_asgi.asgi_mounts.append(1)
+    assert_equal(pool_thread_count(mojo_asgi, True, 4), 0)
+    assert_equal(pool_thread_count(mojo_asgi, False, 4), 0)
+    # A WSGI mount gets the count, beside an executor or not.
+    var mixed = _parse([
+        String("--mount"), String("/=app.wsgi"), String("--mount"), String("/feed=feed.asgi"),
+    ])
+    mixed.asgi_mounts.append(1)
+    assert_equal(pool_thread_count(mixed, True, 4), 4)
+    assert_equal(pool_thread_count(mixed, False, 4), 4)
+    # Unmounted: the executor takes the lane, or the pool gets the count.
+    var plain = _parse([String("app.wsgi")])
+    assert_equal(pool_thread_count(plain, True, 4), 0)
+    assert_equal(pool_thread_count(plain, False, 4), 4)
+    assert_equal(pool_thread_count(plain, False, 0), 0)
+
+
+def test_serves_offloaded_is_an_executor_a_pool_or_an_asgi_lane() raises:
+    """The one answer both modes branch on: prefork's `main` asked it with a
+    mounted mix, the threaded loop with its ASGI lanes."""
+    var plain = _parse([String("app.wsgi")])
+    assert_false(serves_offloaded(plain, False, 0))
+    assert_true(serves_offloaded(plain, False, 2))
+    assert_true(serves_offloaded(plain, True, 0))
+    var mixed = _parse([
+        String("--mount"), String("/=app.wsgi"), String("--mount"), String("/feed=feed.asgi"),
+    ])
+    assert_false(serves_offloaded(mixed, False, 0))
+    mixed.asgi_mounts.append(1)
+    assert_true(serves_offloaded(mixed, False, 0))
 
 
 def main() raises:
