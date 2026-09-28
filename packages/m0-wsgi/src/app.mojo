@@ -234,10 +234,20 @@ struct WSGIApp(Movable):
         # the crossings the bridge documents as leak-free.
         var streaming = len(result) >= 4 and Bool(py=result[3])
         self._bridge.stream_pending = streaming
-        return build_response(
-            self._bridge, String(py=result[0]), result[1], result[2],
-            streaming=streaming, is_head=req.method == "HEAD",
-        )
+        try:
+            return build_response(
+                self._bridge, String(py=result[0]), result[1], result[2],
+                streaming=streaming, is_head=req.method == "HEAD",
+            )
+        except e:
+            if streaming:
+                # The shim kept the iterable for a head that cannot be built
+                # -- a header value that is not a str, say. The request
+                # becomes a 500, so nothing will ever pull that iterable,
+                # and nothing but this would close it: PEP 3333 owes the
+                # application its close() however the response ended.
+                self._bridge.stream_close()
+            raise e^
 
     def set_stream_capable(mut self, flag: Bool) raises:
         """Startup-only: let the shim stream iterables (a pool thread with a

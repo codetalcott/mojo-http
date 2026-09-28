@@ -5640,6 +5640,21 @@ PYEOF
 grep -q 'streamed response raised after its head' stream.log \
   || fail 'the raise inside the generator was not reported'
 
+# A stream whose head cannot be built is a 500, and its iterable is still
+# closed, once: PEP 3333 owes the application close() however the response
+# ended. Two sites: a header VALUE that is not a str fails the head in Mojo
+# after the shim has kept the iterable for this thread, and a header NAME
+# that is not one fails the shim's own stream-or-buffer decision before
+# anything has kept it. Both were left open, the pool thread moving on.
+for path in /stream-bad-head /stream-bad-name; do
+  before=$(curl -s --max-time 5 $B/close/count)
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 "$B$path")
+  [ "$code" = "500" ] || fail "$path answered '$code', want 500"
+  after=$(curl -s --max-time 5 $B/close/count)
+  [ "$after" = "$((before + 1))" ] \
+    || fail "$path: the close() tally went $before -> $after; the iterable must be closed exactly once"
+done
+
 # Sixteen 1 MB streams at once on four threads: every byte, in order, and
 # the server answers afterwards. This is the channel's shared capacity
 # under pressure -- a dropped chunk here is a short body.

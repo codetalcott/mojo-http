@@ -442,6 +442,45 @@ def stream_cl(environ, start_response):
     return (piece for piece in body)
 
 
+class StreamCloseCounting:
+    """A lazily produced body -- an iterator, so a pool thread streams it --
+    whose close() is counted in `CloseCounting`'s tally (`/close/count`)."""
+
+    def __init__(self, chunks):
+        self._it = iter(list(chunks))
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._it)
+
+    def close(self):
+        global _closed
+        _closed += 1
+
+
+def stream_bad_head(environ, start_response):
+    """A streamed body whose head cannot be built: a header VALUE that is not
+    a str (PEP 3333 asks for native strings). The shim pulls the first piece
+    and keeps the iterable for the pool thread; the head then fails in Mojo
+    and the request is a 500. close() must still run, once: the iterable is
+    the application's, and nothing else will ever close it.
+
+    Deliberately non-conforming, like `/inject`: exercised only unvalidated.
+    """
+    start_response("200 OK", list(TEXT) + [("X-Count", 42)])
+    return StreamCloseCounting([b"never-sent-1", b"never-sent-2"])
+
+
+def stream_bad_name(environ, start_response):
+    """`/stream-bad-head`'s twin that fails one step earlier: a header NAME
+    that is not a str, which the shim's own stream-or-buffer decision trips
+    over before it has kept anything. close() must run all the same."""
+    start_response("200 OK", list(TEXT) + [(42, "count")])
+    return StreamCloseCounting([b"never-sent-1", b"never-sent-2"])
+
+
 def stream_hold(environ, start_response):
     """A generator with an M0-Hold header: the hold's contract wins — the
     body LEADS the held stream, so it is joined, never streamed."""
@@ -570,6 +609,8 @@ ROUTES = {
     "/stream-write-inside": stream_write_inside,
     "/stream-cl": stream_cl,
     "/stream-hold": stream_hold,
+    "/stream-bad-head": stream_bad_head,
+    "/stream-bad-name": stream_bad_name,
     "/inject": header_injection,
     "/redirect": redirect,
     "/nocontent": nocontent,

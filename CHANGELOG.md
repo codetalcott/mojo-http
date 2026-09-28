@@ -37,6 +37,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   spec, the mount and the doctor must each exit 1 with the traceback.
   Found in review.
 
+- **A WSGI body a handler thread would have streamed is closed when its
+  response head cannot be built.** A generator or other lazily produced
+  body with no `Content-Length` streams from a `--blocking-threads`
+  thread, and a malformed header on it — a value or a name that is not a
+  `str` — made the request a 500 without calling the body's `close()`,
+  which PEP 3333 requires however a response ends. Django hangs its
+  `request_finished` cleanup on that call. Both now close the body once
+  before the 500. `smoke-wsgi-stream` gates both, counting `close()`
+  calls. Found in review.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and
