@@ -1365,20 +1365,28 @@ python3 scripts/emit.py --covers A5 --task smoke-header-timeout
 # fires" and "the server hangs up on everyone" look identical from one side.
 # `--idle-timeout` exists so this costs 20 seconds rather than the default's
 # 60; the linger itself is a constant and is measured at its real value.
+# The last three phases (B2) are the deadline's other side: a request that
+# starts late in the window is not cut at it, and a response its client
+# stops reading is reaped after it with no send progress -- over /echo and
+# over a 16 MiB `--static` file, which refresh the deadline on separate
+# paths, hence `--max-body` and the file.
 [tool.poe.tasks.smoke-idle-timeout]
-help = "Idle connections are closed, busy ones are not, and a WebSocket close waits for its reply"
+help = "Idle connections are closed, busy ones are not, a WebSocket close waits for its reply, and an unread response is reaped"
 deps = ["build-serve"]
 shell = """
+files=$(mktemp -d)
+python3 -c "import sys; open(sys.argv[1] + '/big.bin', 'wb').write(b'm0' * 8388608)" "$files"
 bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8093 \
-  --idle-timeout 3 > idle.log 2>&1 &
+  --idle-timeout 3 --max-body 32m --static /files="$files" > idle.log 2>&1 &
 pid=$!
-trap 'kill $pid 2>/dev/null; rm -f idle.log' EXIT
+trap 'kill $pid 2>/dev/null; rm -f idle.log; rm -rf "$files"' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8093/ > /dev/null \
   || { echo '=== idle.log ==='; cat idle.log; exit 1; }
 python3 scripts/idle_timeout_probe.py 8093 3 || { echo '=== idle.log ==='; cat idle.log; exit 1; }
 echo "smoke-idle-timeout OK"
 python3 scripts/emit.py --covers A4 --task smoke-idle-timeout
 python3 scripts/emit.py --covers L16 --task smoke-idle-timeout
+python3 scripts/emit.py --covers A24 --task smoke-idle-timeout
 """
 
 # B1. The body timer was armed above the decode of what came with the

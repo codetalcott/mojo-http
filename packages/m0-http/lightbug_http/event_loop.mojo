@@ -1255,6 +1255,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             if remaining <= 0:
                 # Head already drained: this readiness belongs to the
                 # file body, if one is still owed.
+                var file_owed = provision_pool.provisions[slot].body_fd_remaining
                 var pumped = _pump_body_fd(
                     provision_pool.provisions[slot], fd_val
                 )
@@ -1267,6 +1268,16 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     )
                     continue
                 if pumped == BODY_FD_MORE:
+                    # The file moved: the client is still taking it, so its
+                    # send deadline starts again (`_arm_send_deadline`).
+                    if (
+                        slot_idle_deadline[slot] != 0
+                        and provision_pool.provisions[slot].body_fd_remaining
+                        < file_owed
+                    ):
+                        _arm_send_deadline(
+                            config, slot, slot_sse, slot_ws, slot_idle_deadline
+                        )
                     try:
                         backend.add_write_oneshot(fd_val)
                         slot_read_armed[slot] = False
@@ -1353,6 +1364,13 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     date_cache_sec, date_cache, offload,
                 )
             else:
+                # Bytes moved and more are owed: the send deadline starts
+                # again (`_arm_send_deadline`). Only one already armed, so a
+                # stream's zero deadline stays zero.
+                if sent > 0 and slot_idle_deadline[slot] != 0:
+                    _arm_send_deadline(
+                        config, slot, slot_sse, slot_ws, slot_idle_deadline
+                    )
                 try:
                     backend.add_write_oneshot(fd_val)
                     slot_read_armed[slot] = False
@@ -2508,6 +2526,16 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         )
         return
 
+    # A request has begun: its first bytes are in the buffer, read now or
+    # left there pipelined behind the last answer. The keep-alive deadline
+    # `_after_send` set bounds how long a connection may sit BETWEEN
+    # requests, and left standing it cut a request that started late in
+    # that window at the previous response's deadline: an upload begun 7 s
+    # into a 10 s idle timeout was closed at 10.2 s, mid-body (B2). From
+    # here the header timeout, the body timer and the send deadline
+    # (`_arm_send_deadline`) bound the request.
+    slot_idle_deadline[slot] = 0
+
     if recv_eof:
         # recv returning 0 IS the peer's EOF, however the event was
         # flagged. Without this, a preserved pipelined tail holding only a
@@ -3536,6 +3564,38 @@ def _pump_body_fd(mut provision: ConnectionProvision, fd_val: Int) -> Int:
     return BODY_FD_DONE
 
 
+@always_inline
+def _arm_send_deadline(
+    config: ServerConfig,
+    slot: Int,
+    slot_sse: List[Bool],
+    slot_ws: List[Bool],
+    mut slot_idle_deadline: List[Int],
+):
+    """Give a response its client has stopped taking `idle_timeout` to move.
+
+    The idle sweep reaps the slot once the deadline passes, and a send that
+    moves bytes pushes it out again (the write-ready path), so it bounds
+    the time BETWEEN two sends that make progress, not the whole response:
+    nginx's `send_timeout`, on the timeout m0serve already exposes. Nothing
+    bounded a RESPONDING slot before this. A keep-alive request answered on
+    the loop happened to inherit the previous response's idle deadline,
+    which B2's fix clears at the request's first bytes, and every request a
+    pool thread or an executor answered had its deadline zeroed when it was
+    offloaded: a client that asked for a large response and never read it
+    held its slot for the life of the process.
+
+    A stream is not a response here (`slot_sse`, `slot_ws`). A WebSocket's
+    non-zero deadline IS its close linger -- the linger sites arm it only
+    while it is 0 -- and a stream's slot keeps a zero deadline between
+    frames; neither is this function's to change.
+    """
+    if config.idle_timeout > 0 and not (slot_sse[slot] or slot_ws[slot]):
+        slot_idle_deadline[slot] = (
+            perf_counter_ns() + config.idle_timeout * 1_000_000_000
+        )
+
+
 def _finish_response[T: HTTPService, B: EventLoopBackend](
     mut backend: B,
     slot: Int,
@@ -3810,7 +3870,10 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # else: more of the file is owed — fall through and wait for
         # writability exactly as a partial head send does.
 
-    # Partial send or EAGAIN: register EVFILT_WRITE for the remainder.
+    # Partial send or EAGAIN: register EVFILT_WRITE for the remainder, and
+    # start the send deadline; the write-ready path refreshes it as long as
+    # the client keeps taking bytes.
+    _arm_send_deadline(config, slot, slot_sse, slot_ws, slot_idle_deadline)
     try:
         backend.add_write_oneshot(fd_val)
         slot_read_armed[slot] = False
