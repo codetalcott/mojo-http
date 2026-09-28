@@ -409,6 +409,29 @@ def test_server_config_applies_max_keepalive_requests_over_the_environment() rai
     assert_equal(base.max_keepalive_requests, ServerConfig().max_keepalive_requests)
 
 
+def test_body_timeout_parses_and_reaches_the_server_config() raises:
+    """`--body-timeout` sets `body_read_timeout`; 0 turns the body timer off,
+    and unset (-1) leaves the default of 30 s alone."""
+    _clear_env()
+    assert_equal(_parse([String("m.wsgi")]).body_timeout, -1)
+    var unflagged = _parse([String("m.wsgi")]).server_config(AppConfig())
+    assert_equal(unflagged.body_read_timeout, ServerConfig().body_read_timeout)
+    assert_equal(ServerConfig().body_read_timeout, 30)
+    var two = _parse([String("m.wsgi"), String("--body-timeout"), String("2")])
+    assert_equal(two.body_timeout, 2)
+    assert_equal(two.server_config(AppConfig()).body_read_timeout, 2)
+    var off = _parse([String("m.wsgi"), String("--body-timeout"), String("0")])
+    assert_equal(off.server_config(AppConfig()).body_read_timeout, 0)
+
+
+def test_body_timeout_rejects_junk_and_negatives() raises:
+    for bad in [String(""), String("x"), String("-1"), String("2s")]:
+        assert_true(
+            _fails([String("m.wsgi"), String("--body-timeout"), bad]),
+            "--body-timeout accepted '" + bad + "'",
+        )
+
+
 def test_server_config_keeps_env_access_log_when_flag_absent() raises:
     """The flag can only turn logging on; it must not turn M0_ACCESS_LOG off."""
     _clear_env()
@@ -504,6 +527,7 @@ def test_usage_mentions_every_flag() raises:
         String("--host"), String("--port"), String("--workers"), String("--threads"), String("--app-dir"),
         String("--static"), String("--static-cache-control"), String("--access-log"),
         String("--max-body"), String("--max-keepalive-requests"), String("--metrics"), String("--realtime"),
+        String("--body-timeout"),
         String("--health-path"), String("--reload"), String("--reload-dir"),
         String("--protocol"), String("--blocking-threads"), String("--mount"),
         String("--help"), String("--version"), String("--doctor"),

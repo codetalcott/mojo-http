@@ -11,9 +11,12 @@ this file can confirm from the workflow files.
 
 The checks are pure functions of TEXT rather than readers of paths. That is not
 style: `--sabotage` follows scripts/shim_ownership.py and scripts/pool_sabotage.py
-in patching sources *in memory* and insisting the suite goes red for each. Ten
-of the twenty-eight sabotages mutate pyproject.toml, test.yml, cli.mojo, the
-host's flags.mojo or the test index rather than the sheet, so every source has to arrive as an argument.
+in patching sources *in memory* and insisting the suite goes red for each.
+Fourteen of the thirty-two sabotages mutate pyproject.toml, test.yml, cli.mojo,
+the host's flags.mojo or the test index rather than the sheet, so every source
+has to arrive as an argument. check_docs.py's coverage checks read test.yml and
+the task table through the same two readers (`workflow_steps`, `poe_tasks`),
+which see only what runs.
 
 Coverage is DECLARED by the gate, not merely cited by the sheet (SPEC F12;
 docs/notes/traceability.md, phase 2): every `verified (every PR)` row must be
@@ -38,6 +41,7 @@ degradation it was meant to stop is bounded instead by RULE 6, which forces
 every wire-level CI gate to be accounted for by some row.
 """
 
+import functools
 import json
 import re
 import sys
@@ -204,103 +208,200 @@ def _covers_by_fn(text):
     return out
 
 
-def _all_task_bodies(pyproject):
-    """EVERY poe task's raw block text, not only the smoke-* ones.
+# --- What CI RUNS: the workflow's jobs and steps, and the task table -------
+# Every coverage rule here and in check_docs.py asks one question -- does CI
+# run this? -- of two texts, test.yml and pyproject.toml's task table, and a
+# name in a comment is not an answer. All three readers took one for an
+# answer (review H4): check_docs' smoke coverage scanned test.yml whole, its
+# test coverage and this file's step reader let a step's body run on through
+# the comment introducing the next step or the next JOB (the aarch64 wheel
+# step "ran" `test-postgres-server`, which the postgres job's header comment
+# names), and the task reader took `build-wsgi`, `smoke-asgi` and `smoke-host`
+# for sequences because a comment in each says the word. check_docs.py reads
+# both texts through these functions too, so there is one reading of each.
+# They stay pure functions of text: `--sabotage` edits the texts in memory.
 
-    `_task_bodies` stays smoke-scoped for the rules that are about smoke
-    shape; coverage declarations may sit in any task a cited step runs
-    (`fuzz-request`, `sabotage-trailers`, `test-shim` are all cited).
+# A key line may end in a trailing comment; YAML allows one after the colon.
+_EOL = r"[ \t]*(?:#.*)?$"
+
+
+def strip_comment_lines(text):
+    """`text` without its full-line comments.
+
+    One rule covers every text these checks read. A line whose first
+    non-blank character is `#` is a comment in YAML and in TOML, and inside
+    a `run:` block or a task's shell body it is a shell comment (or a Python
+    one, in a heredoc) -- executed by nobody either way. A trailing comment
+    is left alone: a `#` after code may sit inside a quoted string, and
+    stripping one there would lose the code before it rather than a name.
+    """
+    return "\n".join(
+        line for line in text.split("\n") if not line.lstrip().startswith("#"))
+
+
+def workflow_jobs(workflow):
+    """Job id -> that job's text, comments stripped, in file order.
+
+    A job is a two-space key under the top-level `jobs:`, and its text runs
+    to the next one: header, `env:` and steps. Reading one job's own text is
+    what lets a rule be asked per job, where one job's line cannot answer
+    for another's (B16: the postgres job never rendered its measurements,
+    and the whole-file check read six other jobs' renders as its).
+    """
+    text = strip_comment_lines(workflow)
+    m = re.search(r"^jobs:" + _EOL, text, re.M)
+    if not m:
+        return {}
+    rest = text[m.end():]
+    end = re.search(r"^\S", rest, re.M)  # the next top-level key, if any
+    if end:
+        rest = rest[:end.start()]
+    heads = list(re.finditer(r"^  ([A-Za-z_][A-Za-z0-9_-]*):" + _EOL, rest, re.M))
+    return {
+        h.group(1): rest[h.end():heads[i + 1].start() if i + 1 < len(heads) else len(rest)]
+        for i, h in enumerate(heads)
+    }
+
+
+def job_steps(job):
+    """(name or None, `if:` present, text) for each item of a job's `steps:`.
+
+    The items of the list and nothing after it, so a step never runs on
+    into the job's next key or into the next job. An item is a `- ` line at
+    the list's own indentation; its keys are that line's and those one level
+    in, which is where `name:` and `if:` count (an `if:` nested deeper, in a
+    `with:` say, is not the step's). A step's text is its lines without its
+    `name:` line -- a name is a label, not something the step runs.
+    """
+    lines = job.split("\n")
+    start = next((i for i, line in enumerate(lines)
+                  if re.match(r"^ *steps:" + _EOL, line)), None)
+    if start is None:
+        return []
+    depth = len(lines[start]) - len(lines[start].lstrip(" "))
+    items, indent = [], None
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip(" ")) <= depth:
+            break
+        m = re.match(r"^( *)- ", line)
+        if m and (indent is None or len(m.group(1)) == indent):
+            indent = len(m.group(1))
+            items.append([line])
+        elif items:
+            items[-1].append(line)
+    out = []
+    for item in items:
+        keys = [(0, item[0][indent + 2:])] + [
+            (j, line[indent + 2:]) for j, line in enumerate(item[1:], 1)
+            if line.startswith(" " * (indent + 2))
+            and not line[indent + 2:].startswith(" ")
+        ]
+        name = next(((j, m.group(1)) for j, key in keys
+                     for m in [re.match(r"name:[ \t]*(\S.*?)[ \t]*$", key)] if m),
+                    None)
+        conditional = any(re.match(r"if:", key) for _j, key in keys)
+        text = "\n".join(line for j, line in enumerate(item)
+                         if name is None or j != name[0])
+        out.append((name[1] if name else None, conditional, text))
+    return out
+
+
+def workflow_steps(workflow):
+    """test.yml step name -> (poe tasks it runs, `if:` present, body text).
+
+    Every NAMED step is citable, not only those running a poe task: a row may
+    legitimately point at `Self-test the measurement recorder`, which runs a
+    plain `python3`, so `tasks` may be empty, which is what the smoke-specific
+    rules key off. A step with no name contributes nothing to cite. The body
+    is what the coverage rules read `--covers` declarations out of, for the
+    rows whose cited step runs a bare `python3` rather than a poe task. Read
+    job by job and without comments; see the note above.
     """
     out = {}
-    for name, body in re.findall(
-        r"^\[tool\.poe\.tasks\.([a-z0-9-]+)\]$(.*?)(?=^\[tool\.poe\.tasks\.)",
-        pyproject + "\n[tool.poe.tasks.__end__]\n",
-        re.M | re.S,
-    ):
-        out[name] = body
+    for job in workflow_jobs(workflow).values():
+        for name, conditional, body in job_steps(job):
+            if name and body.strip():
+                out[name] = (set(re.findall(r"poe ([a-z0-9-]+)", body)),
+                             conditional, body)
     return out
 
 
-def _sequences(pyproject):
-    """poe sequence tasks, as name -> [referenced task]."""
+@functools.lru_cache(maxsize=8)
+def _toml(text):
+    """The parsed text, cached: several rules read one pyproject per run."""
+    import tomllib  # Python 3.11+, the docs gate's floor (scripts/docs_gate.sh)
+
+    return tomllib.loads(text)
+
+
+_CODE_KEYS = ("shell", "cmd", "script", "expr")
+
+
+def poe_tasks(pyproject):
+    """poe task name -> (what it executes, the tasks it runs by name).
+
+    Read as TOML, which is how poe reads it: a comment outside a string is
+    gone by construction, a `help` string is not a command, and a sequence
+    is its list rather than every quoted word in a block that says the word.
+    Inside a body, comment lines are stripped as everywhere else. The names
+    are a sequence's items (a bare string is a reference, poe's default for
+    `default_item_type`), a `ref`, and `deps`, which poe runs first. The
+    parse is the one poe does, so a text that is not TOML raises ValueError
+    rather than being read around.
+    """
+    try:
+        data = _toml(pyproject)
+    except Exception as e:  # tomllib.TOMLDecodeError, and nothing else
+        raise ValueError(f"pyproject.toml does not parse as TOML: {e}") from None
+    poe = data.get("tool", {}).get("poe", {})
+    default_item = poe.get("default_array_item_task_type", "ref")
     out = {}
-    blocks = re.findall(
-        r"^\[tool\.poe\.tasks\.([a-z0-9-]+)\]$(.*?)(?=^\[tool\.poe\.tasks\.)",
-        pyproject + "\n[tool.poe.tasks.__end__]\n",
-        re.M | re.S,
-    )
-    for name, body in blocks:
-        if "sequence" in body:
-            out[name] = re.findall(r'"([a-z0-9-]+)"', body)
+    for name, spec in poe.get("tasks", {}).items():
+        if isinstance(spec, list):
+            spec = {"sequence": spec}
+        elif not isinstance(spec, dict):
+            spec = {"cmd": spec}
+        code = [spec[k] for k in _CODE_KEYS if isinstance(spec.get(k), str)]
+        refs = [spec["ref"]] if isinstance(spec.get("ref"), str) else []
+        item_type = spec.get("default_item_type", default_item)
+        for item in spec.get("sequence") or []:
+            if isinstance(item, str) and item_type == "ref":
+                refs.append(item)
+            elif isinstance(item, str):
+                code.append(item)
+            elif isinstance(item, dict):
+                code += [item[k] for k in _CODE_KEYS if isinstance(item.get(k), str)]
+                if isinstance(item.get("ref"), str):
+                    refs.append(item["ref"])
+        refs += [d for d in spec.get("deps") or [] if isinstance(d, str)]
+        out[name] = (strip_comment_lines("\n".join(code)),
+                     [r.split()[0] for r in refs if r.split()])
     return out
 
 
-def _reachable(pyproject, root="test-all"):
-    seq, seen, queue = _sequences(pyproject), set(), [root]
+def reachable_tasks(tasks, *roots):
+    """Every task `roots` run: themselves, and their sequences and deps."""
+    seen, queue = set(), list(roots)
     while queue:
         name = queue.pop()
         if name in seen:
             continue
         seen.add(name)
-        queue.extend(seq.get(name, ()))
+        queue.extend(tasks.get(name, ("", []))[1])
     return seen
 
 
-def _task_bodies(pyproject):
-    """smoke task name -> its shell body."""
-    out = {}
-    blocks = re.findall(
-        r"^\[tool\.poe\.tasks\.(smoke-[a-z0-9-]+)\]$(.*?)(?=^\[tool\.poe\.tasks\.)",
-        pyproject + "\n[tool.poe.tasks.__end__]\n",
-        re.M | re.S,
-    )
-    for name, body in blocks:
-        out[name] = body
-    return out
-
-
-def _steps(workflow):
-    """test.yml step name -> (poe tasks it runs, `if:` present, body text).
-
-    Steps are `- name: X` followed by `run:`; a step with no name (there is one,
-    in the aarch64 job) simply contributes nothing to cite. The body text is
-    what the coverage rules read `--covers` declarations out of, for the rows
-    whose cited step runs a bare `python3` rather than a poe task.
-    """
-    out, name, conditional, buf = {}, None, False, []
-
-    def flush():
-        # Every NAMED step is citable, not only those running a poe task: a row
-        # may legitimately point at `Self-test the measurement recorder`, which
-        # runs a plain `python3`. `tasks` stays possibly-empty, which is what
-        # the smoke-specific rules below key off.
-        if name and buf:
-            body = "\n".join(buf)
-            tasks = set(re.findall(r"poe ([a-z0-9-]+)", body))
-            out[name] = (tasks, conditional, body)
-
-    for line in workflow.splitlines():
-        m = re.match(r"^\s*- name: (.+?)\s*$", line)
-        if m:
-            flush()
-            name, conditional, buf = m.group(1), False, []
-            continue
-        if re.match(r"^\s*- (uses|run):", line):
-            flush()
-            name, conditional, buf = None, False, []
-            if line.lstrip().startswith("- run:"):
-                continue
-        if name is not None:
-            if re.match(r"^\s+if:", line):
-                conditional = True
-            buf.append(line)
-    flush()
-    return out
-
-
 def _dev_group(pyproject):
-    m = re.search(r"^dev = \[(.*?)\]", pyproject, re.M | re.S)
-    return re.findall(r'"([A-Za-z0-9_.-]+)', m.group(1)) if m else []
+    """The `dev` dependency group's package names, read as TOML -- so a name
+    in a comment inside the list is not a dependency (review H4). The regex
+    this replaced listed `server`, from a comment quoting "server never
+    became healthy"; a gate skipping on `import server` would have passed."""
+    try:
+        group = _toml(pyproject).get("dependency-groups", {}).get("dev", [])
+    except Exception:
+        return []
+    return [m.group(0) for d in group if isinstance(d, str)
+            for m in [re.match(r"[A-Za-z0-9_.-]+", d)] if m]
 
 
 def analyse(src):
@@ -314,9 +415,16 @@ def analyse(src):
 
     rows, failures = parse(sheet)
     pyproject, workflow = src["pyproject"], src["workflow"]
-    steps = _steps(workflow)
-    smoke_bodies = _task_bodies(pyproject)
-    reachable = _reachable(pyproject)
+    try:
+        table = poe_tasks(pyproject)
+    except ValueError as e:
+        # Every rule below reads the task table; poe could not run a task
+        # either, so this is the failure, not one of many downstream of it.
+        return rows, failures + [str(e)]
+    steps = workflow_steps(workflow)
+    smoke_bodies = {n: body for n, (body, _r) in table.items()
+                    if n.startswith("smoke-")}
+    reachable = reachable_tasks(table, "test-all")
     dev = [re.sub(r"[^a-z0-9]", "", d.lower()) for d in _dev_group(pyproject)]
     cited_steps, cited_flags = set(), set()
     # (id, where, kind, key) for every `verified (every PR)` row — the rows
@@ -535,7 +643,7 @@ def analyse(src):
         for fn, ids in sorted(info.get("covers", {}).items()):
             for rid in ids:
                 declared.setdefault(rid, []).append(("unit", fname, fn))
-    for task, body in sorted(_all_task_bodies(pyproject).items()):
+    for task, (body, _refs) in sorted(table.items()):
         for m in re.finditer(r"emit\.py --covers ([A-Z]\d+)", body):
             declared.setdefault(m.group(1), []).append(("task", task))
     for step, (_tasks, _cond, body) in sorted(steps.items()):
@@ -713,6 +821,20 @@ def _drop_a_sole_covers_line(text):
     and the wheel smoke, which is what found this.) Picking a sole
     declaration keeps the sabotage testing what it names.
     """
+    return _edit_a_sole_covers_line(text, lambda line: [])
+
+
+def _comment_out_a_sole_covers_line(text):
+    """The same declaration, commented out rather than deleted.
+
+    How a declaration is really switched off, and what the task reader used
+    to miss: it read a task's raw block, so `# python3 scripts/emit.py
+    --covers X` still declared X (review H4).
+    """
+    return _edit_a_sole_covers_line(text, lambda line: ["# " + line])
+
+
+def _edit_a_sole_covers_line(text, edit):
     lines = text.split("\n")
     counts = {}
     for line in lines:
@@ -722,8 +844,25 @@ def _drop_a_sole_covers_line(text):
     for i, line in enumerate(lines):
         m = re.match(r"^python3 scripts/emit\.py --covers ([A-Z]\d+)", line)
         if m and counts[m.group(1)] == 1:
-            return "\n".join(lines[:i] + lines[i + 1:])
+            return "\n".join(lines[:i] + edit(line) + lines[i + 1:])
     return None
+
+
+def _test_all_member_in_a_comment(text):
+    """`test-http` out of test-all's sequence, still quoted in a comment.
+
+    The old reader called any task block holding the word `sequence` a
+    sequence and took every quoted word in the block for a member, comments
+    included, so the package stayed "reachable" and its rows stayed green.
+    """
+    old = '"test-core", "test-http"'
+    if old not in text:
+        return None
+    at = text.index(old)
+    eol = text.index("\n", at)
+    return (text[:at] + '"test-core"' + text[at + len(old):eol]
+            + '\n# "test-http" is out of the sequence while it is reworked'
+            + text[eol:])
 
 
 def _mangle_first_row(fn):
@@ -813,6 +952,10 @@ SABOTAGES = [
                 if _first_unit_row(t) else None), "has no `def"),
     ("test package leaves the test-all sequence", "pyproject",
      ('"test-core", "test-http"', '"test-core"'), "not reachable from `poe test-all`"),
+    # The comment-blind twins of rules above (review H4): each lapse leaves
+    # the name it removed in a comment, which the old readers counted.
+    ("a test package leaves test-all, named only in a comment", "pyproject",
+     _test_all_member_in_a_comment, "not reachable from `poe test-all`"),
     # Deleting a row whose gate ANOTHER row also cites proves nothing -- the
     # rule is "cited by at least one" -- so this deletes a SINGLY-cited one,
     # found by counting rather than by quoting a row that reword would break.
@@ -828,10 +971,22 @@ SABOTAGES = [
      ("`--max-body`", "`--max-corpus`"), "which cli.mojo does not accept"),
     ("a self-skipping gate loses its dependency", "pyproject",
      ('"flask>=3.0",\n', ""), "is not in [dependency-groups] dev"),
+    ("a self-skipping gate's dependency survives only in a comment", "pyproject",
+     ('"flask>=3.0",\n', '# "flask>=3.0",\n'), "is not in [dependency-groups] dev"),
     ("a cited step becomes conditional", "workflow",
      ("      - name: Smoke test pipelined requests\n",
       "      - name: Smoke test pipelined requests\n        if: runner.os == 'Linux'\n"),
      "carries an `if:`"),
+    # A smoke named only in a comment is not run, so the row citing its step
+    # is uncovered: the declaration in the smoke no longer sits in anything
+    # the step runs.
+    ("a cited smoke step names its smoke only in a comment", "workflow",
+     ("      - name: Smoke test pipelined requests\n"
+      "        run: uv run poe smoke-pipelining\n",
+      "      - name: Smoke test pipelined requests\n"
+      "        # run: uv run poe smoke-pipelining\n"
+      "        run: echo skipped\n"),
+     "the citation and the declaration disagree"),
     # Inserts its own planned row rather than re-pointing an existing one:
     # quoting a real row's heading broke when I13 was legitimately resolved
     # (CI's own catch, 2026-09-01), and locating "the first planned row"
@@ -888,6 +1043,8 @@ SABOTAGES = [
      "no gate declares"),
     ("a smoke's declaration line is deleted", "pyproject",
      _drop_a_sole_covers_line, "no gate declares"),
+    ("a smoke's declaration line is commented out", "pyproject",
+     _comment_out_a_sole_covers_line, "no gate declares"),
     ("a weekly row names a gate no weekly workflow runs", "sheet",
      lambda t: (lambda m: t.replace(m.group(0), "`no-such-gate` (weekly)", 1) if m else None)(
          re.search(r"`[^`]+` \(weekly\)", t)),

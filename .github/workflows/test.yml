@@ -239,10 +239,12 @@ jobs:
         run: uv run poe smoke-pg-notify
       - name: Record the measurements
         if: always()
-        run: python3 scripts/emit.py --render "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
       - name: Upload the measurements
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ci-results-postgres
           path: ci-results.jsonl
@@ -593,6 +595,12 @@ jobs:
       # never answered Close held its slot forever.
       - name: Smoke test the idle connection timeout
         run: uv run poe smoke-idle-timeout
+      # The body timer (SPEC A23), which a body that arrived whole with its
+      # headers left running: it closed the keep-alive connection 30 s
+      # later, and under the handler pool released a slot whose request a
+      # pool thread still held, so the next connection read that answer.
+      - name: Smoke test the request body timeout
+        run: uv run poe smoke-body-timeout
       # The two backends genuinely disagree about trigger mode, and used to
       # disagree about half-close too; each disagreement hid a bug on the
       # platform that forgives it. These smokes run on both runners for
