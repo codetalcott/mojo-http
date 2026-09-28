@@ -4,33 +4,15 @@ from lightbug_http.connection import (
     ListenConfig,
     ListenerError,
     NoTLSListener,
-    TCPConnection,
-    default_buffer_size,
 )
-from lightbug_http.header import (
-    HeaderKey,
-    Headers,
-    ParsedRequestHeaders,
-    RequestParseError,
-    find_header_end,
-    parse_request_headers,
-)
-from lightbug_http.http.common_response import BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge, PayloadTooLarge, StreamingUnsupported
-from lightbug_http.io.bytes import Bytes, ByteView
-from lightbug_http.strings import strHttp10
-from std.memory import unsafe_memcpy
+from lightbug_http.header import ParsedRequestHeaders
+from lightbug_http.io.bytes import Bytes
 from lightbug_http.service import HTTPService
-from lightbug_http.c.sendfile import send_file
 from lightbug_http.c.socket import close as close_fd
-from lightbug_http.c.process import ignore_sigpipe
-from lightbug_http.socket import EOF, FatalCloseError, SocketAcceptError, SocketClosedError, SocketRecvError
+from lightbug_http.socket import FatalCloseError, SocketAcceptError, SocketRecvError
 from lightbug_http.utils.error import CustomError
-from std.time import perf_counter_ns
 from std.utils import Variant
 
-from lightbug_http.http import (
-    HTTPRequest, HTTPResponse, encode, enforce_bodiless_framing, is_bodiless_status,
-)
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.c.platform import PlatformBackend
@@ -136,12 +118,6 @@ struct ConnectionProvision(Movable):
 
     var parsed_headers: Optional[ParsedRequestHeaders]
     """Parsed headers (available after header parsing completes)."""
-
-    var request: Optional[HTTPRequest]
-    """Constructed request (available after body is complete)."""
-
-    var response: Optional[HTTPResponse]
-    """Response to send."""
 
     var state: ConnectionState
     """Current state in the connection state machine."""
@@ -253,8 +229,6 @@ struct ConnectionProvision(Movable):
         self.recv_buffer = Bytes()
         self.recv_staging = Bytes()
         self.parsed_headers = None
-        self.request = None
-        self.response = None
         self.state = ConnectionState.reading_headers()
         self.body_state = None
         self.peer_eof = False
@@ -332,8 +306,6 @@ struct ConnectionProvision(Movable):
         first request.
         """
         self.parsed_headers = None
-        self.request = None
-        self.response = None
         if (
             keep_pipelined
             and self.request_end > 0
@@ -494,459 +466,6 @@ struct ProvisionPool(Movable):
         return self.capacity - self.available_count()
 
 
-def gate_streaming_response(var response: HTTPResponse) -> HTTPResponse:
-    """Refuse a response the blocking loop cannot honour, else pass it through.
-
-    Two shapes qualify. An `sse_streaming` response asks the loop to keep
-    the connection open and drain a registry outbox; a `101` asks it to
-    switch the socket to WebSocket frame mode. Both are event-loop
-    machinery (`listen_and_serve_nonblocking`), and the blocking loop
-    honouring neither used to be SILENT: the stream went out as a one-shot
-    body and the 101 as a plain response on a socket that then stayed in
-    HTTP mode. The comments in two apps and CLAUDE.md always claimed "the
-    plain accept loop answers every stream open with 409" -- but that 409
-    lived only inside DatastarStream.open, so apps on the lower-level
-    `sse_response()` + `SSERegistry` path got the silent version (#118).
-    This makes the claim true where it was always said to be true.
-    """
-    if response.sse_streaming or response.status_code == 101:
-        return StreamingUnsupported()
-    return response^
-
-
-def handle_connection[
-    T: HTTPService
-](
-    mut conn: TCPConnection[NetworkType.tcp4],
-    mut provision: ConnectionProvision,
-    mut handler: T,
-    config: ServerConfig,
-    server_address: String,
-    tcp_keep_alive: Bool,
-) raises SocketRecvError:
-    """Handle a single HTTP connection through its lifecycle.
-
-    Args:
-        conn: The TCP connection to handle.
-        provision: Pre-allocated resources for this connection.
-        handler: The HTTP service handler.
-        config: Server configuration.
-        server_address: The server's address string.
-        tcp_keep_alive: Whether to enable TCP keep-alive.
-
-    Raises:
-        SocketRecvError: If a socket read operation fails (not including clean EOF/close).
-    """
-    # Set initial header read timeout
-    if config.header_read_timeout > 0:
-        try:
-            conn.set_recv_timeout(config.header_read_timeout)
-        except:
-            return  # Cannot protect this connection without a timeout
-
-    var header_start_ns = perf_counter_ns()
-
-    while True:
-        if provision.state.kind == ConnectionState.READING_HEADERS:
-            # Wall-clock deadline for total header parsing (slowloris protection)
-            if config.header_read_timeout > 0:
-                var elapsed_s = (perf_counter_ns() - header_start_ns) / 1_000_000_000
-                if elapsed_s >= Int(config.header_read_timeout):
-                    _send_error_response(conn, RequestTimeout())
-                    provision.state = ConnectionState.closed()
-                    break
-
-            # Bytes the keep-alive reset preserved are parsed BEFORE
-            # blocking on the socket: the client already sent them and is
-            # waiting on their responses, so a blocking read here would sit
-            # out the idle timeout for data that is never coming.
-            if len(provision.recv_buffer) <= provision.last_parse_len:
-                var buffer = Bytes(capacity=config.socket_buffer_size)
-                var bytes_read: UInt
-
-                try:
-                    bytes_read = conn.read(buffer)
-                except read_err:
-                    if read_err.isa[EOF]():
-                        provision.state = ConnectionState.closed()
-                        break
-                    # On keep-alive connections, treat timeout (EAGAIN) as clean close
-                    # so the server can accept new connections.
-                    if provision.keepalive_count > 0:
-                        provision.state = ConnectionState.closed()
-                        break
-                    # First request timeout: send 408 Request Timeout
-                    if config.header_read_timeout > 0:
-                        _send_error_response(conn, RequestTimeout())
-                        provision.state = ConnectionState.closed()
-                        break
-                    raise read_err^
-
-                if bytes_read == 0:
-                    provision.state = ConnectionState.closed()
-                    break
-
-                provision.recv_buffer.extend(buffer^)
-
-            if len(provision.recv_buffer) > config.recv_buffer_limit():
-                _send_error_response(conn, BadRequest())
-                provision.state = ConnectionState.closed()
-                break
-
-            var search_start = provision.last_parse_len
-            if search_start > 3:
-                search_start -= 3  # Account for partial \r\n\r\n match
-
-            var header_end = find_header_end(
-                Span(provision.recv_buffer),
-                search_start,
-            )
-
-            if header_end:
-                var header_end_offset = header_end.value()
-
-                # Check total header size
-                if header_end_offset > config.max_total_header_size:
-                    _send_error_response(conn, HeadersTooLarge())
-                    provision.state = ConnectionState.closed()
-                    break
-
-                var parsed: ParsedRequestHeaders
-                try:
-                    parsed = parse_request_headers(
-                        Span(provision.recv_buffer)[:header_end_offset],
-                        provision.last_parse_len,
-                    )
-                except parse_err:
-                    _send_error_response(conn, BadRequest())
-                    provision.state = ConnectionState.closed()
-                    break
-
-                if parsed.path.byte_length() > config.max_request_uri_length:
-                    _send_error_response(conn, URITooLong())
-                    provision.state = ConnectionState.closed()
-                    break
-
-                var content_length = parsed.content_length()
-                var is_chunked = parsed.is_chunked_body()
-
-                if not is_chunked and content_length > config.max_request_body_size:
-                    _send_error_response(conn, PayloadTooLarge())
-                    provision.state = ConnectionState.closed()
-                    break
-
-                var body_bytes_in_buffer = len(provision.recv_buffer) - header_end_offset
-
-                provision.parsed_headers = parsed^
-
-                if content_length > 0 or is_chunked:
-                    # Switch to body read timeout
-                    if config.body_read_timeout > 0:
-                        try:
-                            conn.set_recv_timeout(config.body_read_timeout)
-                        except:
-                            _send_error_response(conn, InternalError())
-                            provision.state = ConnectionState.closed()
-                            break
-                    # RFC 9110 §10.1.1: send 100 Continue before reading the
-                    # body. Case-INSENSITIVE on the expectation-name, and
-                    # never to an HTTP/1.0 client, which has no 1xx and would
-                    # read the interim response as the real one. The event
-                    # loop carries the same two rules; a rule in one copy and
-                    # not the other is not a rule.
-                    if provision.parsed_headers.value().headers.value_equals_ignore_case(
-                        HeaderKey.EXPECT, "100-continue"
-                    ) and provision.parsed_headers.value().protocol != strHttp10:
-                        try:
-                            _ = conn.write("HTTP/1.1 100 Continue\r\n\r\n".as_bytes())
-                        except:
-                            provision.state = ConnectionState.closed()
-                            break
-
-                    var effective_length = config.max_request_body_size if is_chunked else content_length
-                    # `bytes_read` counts DECODED bytes for a chunked body,
-                    # and nothing has been decoded yet — the bytes already
-                    # buffered are still raw. Same rule as the loop's branch.
-                    provision.body_state = BodyReadState(
-                        content_length=effective_length,
-                        bytes_read=0 if is_chunked else body_bytes_in_buffer,
-                        header_end_offset=header_end_offset,
-                        is_chunked=is_chunked,
-                    )
-                    # Where this request will end. Chunked cannot know yet
-                    # (0 = whole buffer); the completion below stamps it.
-                    provision.request_end = (
-                        0 if is_chunked else header_end_offset + content_length
-                    )
-                    provision.state = ConnectionState.reading_body(effective_length)
-                else:
-                    provision.request_end = header_end_offset
-                    provision.state = ConnectionState.processing()
-
-            provision.last_parse_len = len(provision.recv_buffer)
-
-        elif provision.state.kind == ConnectionState.READING_BODY:
-            var body_st = provision.body_state.value()
-
-            if body_st.is_chunked:
-                # Phase 1b: resume the CONNECTION's decoder over the bytes
-                # that have not been decoded yet — the same shape as the
-                # non-blocking loop's branch, and for the same two reasons.
-                # Rebuilding a decoder here and re-decoding the whole body
-                # each pass was O(N^2) in the number of reads, and it
-                # disagreed with the loop about where a chunked body ends
-                # (`consume_trailer`), which is the difference between a
-                # clean close and an RST that discards the response.
-                var raw_body_start = body_st.header_end_offset
-                var decoded_so_far = body_st.bytes_read
-                var tail_start = raw_body_start + decoded_so_far
-                var buf_len = len(provision.recv_buffer)
-                # Decoded size and raw size are bounded separately; see the
-                # matching check in `event_loop.mojo`.
-                if (
-                    buf_len - raw_body_start > config.max_request_body_size
-                    or provision.chunk_decoder._total_read
-                    > 2 * config.max_request_body_size
-                ):
-                    _send_error_response(conn, PayloadTooLarge())
-                    provision.state = ConnectionState.closed()
-                    break
-                if buf_len > tail_start:
-                    var ret: Int
-                    var produced: Int
-                    ret, produced = provision.chunk_decoder.decode(
-                        Span(provision.recv_buffer)[tail_start:]
-                    )
-                    if ret == -1:
-                        _send_error_response(conn, BadRequest())
-                        provision.state = ConnectionState.closed()
-                        break
-                    var leftover = provision.chunk_decoder.pending_bytes
-                    provision.recv_buffer.resize(
-                        tail_start + produced + leftover, 0
-                    )
-                    decoded_so_far += produced
-                    body_st.bytes_read = decoded_so_far
-                    provision.body_state = body_st
-                    if ret >= 0:
-                        # `pending_bytes` bytes remain past the chunked
-                        # data — the next pipelined request. The buffer was
-                        # already resized to keep exactly them above; the
-                        # resize that used to discard them here is why a
-                        # pipelined request behind a chunked body was lost.
-                        provision.request_end = raw_body_start + decoded_so_far
-                        body_st.content_length = decoded_so_far
-                        body_st.bytes_read = decoded_so_far
-                        body_st.is_chunked = False
-                        provision.body_state = body_st
-                        provision.state = ConnectionState.processing()
-                        continue
-                    # ret == -2: incomplete, fall through to recv more
-            else:
-                if body_st.bytes_read >= body_st.content_length:
-                    provision.state = ConnectionState.processing()
-                    continue
-
-            var buffer = Bytes(capacity=config.socket_buffer_size)
-            var bytes_read: UInt
-
-            try:
-                bytes_read = conn.read(buffer)
-            except read_err:
-                if read_err.isa[EOF]():
-                    provision.state = ConnectionState.closed()
-                    break
-                raise read_err^
-
-            if bytes_read == 0:
-                provision.state = ConnectionState.closed()
-                break
-
-            provision.recv_buffer.extend(buffer^)
-
-            if not body_st.is_chunked:
-                body_st.bytes_read += Int(bytes_read)
-                provision.body_state = body_st
-
-            if len(provision.recv_buffer) > config.recv_buffer_limit():
-                _send_error_response(conn, BadRequest())
-                provision.state = ConnectionState.closed()
-                break
-
-            if not body_st.is_chunked and body_st.bytes_read >= body_st.content_length:
-                provision.state = ConnectionState.processing()
-
-        elif provision.state.kind == ConnectionState.PROCESSING:
-            var parsed = provision.parsed_headers.take()
-
-            var body = Bytes()
-            if provision.body_state:
-                var body_st = provision.body_state.value()
-                var body_start = body_st.header_end_offset
-                var body_end = body_start + body_st.content_length
-
-                if body_end <= len(provision.recv_buffer):
-                    body = Bytes(capacity=body_st.content_length)
-                    unsafe_memcpy(
-                        dest=body.unsafe_ptr(),
-                        src=provision.recv_buffer.unsafe_ptr().unsafe_offset(body_start),
-                        count=body_st.content_length,
-                    )
-                    body._len = body_st.content_length
-
-            var request: HTTPRequest
-            try:
-                request = HTTPRequest.from_parsed(
-                    server_address,
-                    parsed^,
-                    body^,
-                    config.max_request_uri_length,
-                )
-            except build_err:
-                _send_error_response(conn, BadRequest())
-                provision.state = ConnectionState.closed()
-                break
-
-            provision.should_close = (not tcp_keep_alive) or request.connection_close()
-            var request_method = request.method
-            var request_path = request.uri.path
-
-            var response: HTTPResponse
-            # Before hook: short-circuit if it returns a response
-            var early = handler.before_request(request)
-            if early:
-                var early_resp = early.take()
-                response = early_resp^
-            else:
-                try:
-                    response = handler.func(request^)
-                except handler_err:
-                    response = InternalError()
-                    provision.should_close = True
-
-            # A held stream or an upgrade cannot work here -- see
-            # `gate_streaming_response`. Gated before the after hook so the
-            # 409 is what gets logged, because it is what goes on the wire.
-            response = gate_streaming_response(response^)
-
-            # After hook: add headers, log, etc.
-            handler.after_response(request_method, request_path, response)
-
-            if (not provision.should_close) and (config.max_keepalive_requests > 0):
-                if (provision.keepalive_count + 1) >= config.max_keepalive_requests:
-                    provision.should_close = True
-
-            # A 1xx, 204 or 304 carries no content and a 1xx or 204 no
-            # Content-Length (RFC 9110 §8.6) -- the event loop's rule, the
-            # same function (SPEC A21).
-            if is_bodiless_status(response.status_code):
-                enforce_bodiless_framing(response)
-
-            # RFC 9110 §9.3.2: HEAD response must not contain a body. An
-            # fd-backed body is dropped by closing the file; the headers,
-            # Content-Length included, still describe what a GET returns.
-            if request_method == "HEAD":
-                response.body_raw = Bytes()
-                if response.body_fd >= 0:
-                    try:
-                        close_fd(FileDescriptor(response.body_fd))
-                    except:
-                        pass
-                    response.body_fd = -1
-                    response.body_fd_len = 0
-
-            # No `Keep-Alive: timeout=..., max=...` header, deliberately, and
-            # the event loop -- the path every shipped binary runs -- has
-            # never sent one. It is not in RFC 9110 or 9112 (RFC 2068 §19.7.1
-            # described it and RFC 2616 dropped it), browsers ignore it, and
-            # this loop emitted it where nothing could read it: nothing in
-            # this tree calls `listen_and_serve`, and no test asserted the
-            # header. The value was also wrong -- `max` is the number of
-            # ADDITIONAL requests, and `keepalive_count` is not incremented
-            # until after the response is built, so request 99 of 100
-            # advertised `max=2` and served one more.
-            #
-            # Emitting it from the event loop instead would put a header
-            # nobody reads on every keep-alive response of the hot path. If a
-            # client pool ever needs `timeout=` to avoid racing the idle
-            # close, that is the place to add it, with a row and a gate.
-            if provision.should_close:
-                response.set_connection_close()
-            else:
-                response.set_connection_keep_alive()
-
-            provision.response = response^
-            provision.state = ConnectionState.responding()
-
-        elif provision.state.kind == ConnectionState.RESPONDING:
-            var response = provision.response.take()
-
-            # The file body, taken before `encode` consumes the response.
-            # This loop is blocking, so the transfer is a plain loop over
-            # `sendfile` rather than the event loop's readiness dance —
-            # but it has to exist, or an fd-backed response would go out
-            # as headers promising a body that never arrives.
-            var body_fd = response.body_fd
-            var body_off = response.body_fd_offset
-            var body_rem = response.body_fd_len
-            response.body_fd = -1
-
-            try:
-                _ = conn.write(encode(response^))
-            except write_err:
-                if body_fd >= 0:
-                    try:
-                        close_fd(FileDescriptor(body_fd))
-                    except:
-                        pass
-                provision.state = ConnectionState.closed()
-                break
-
-            if body_fd >= 0:
-                var send_failed = False
-                while body_rem > 0:
-                    var r = send_file(
-                        conn.socket.fd.value, body_fd, body_off, body_rem
-                    )
-                    body_off += r.sent
-                    body_rem -= r.sent
-                    if r.failed():
-                        send_failed = True
-                        break
-                    if r.sent == 0 and not r.again:
-                        send_failed = True
-                        break
-                try:
-                    close_fd(FileDescriptor(body_fd))
-                except:
-                    pass
-                if send_failed:
-                    provision.state = ConnectionState.closed()
-                    break
-
-            if provision.should_close:
-                provision.state = ConnectionState.closed()
-                break
-
-            if (config.max_keepalive_requests > 0) and (provision.keepalive_count >= config.max_keepalive_requests):
-                provision.state = ConnectionState.closed()
-                break
-
-            provision.keepalive_count += 1
-            provision.prepare_for_new_request(keep_pipelined=True)
-            header_start_ns = perf_counter_ns()
-            # Switch to idle timeout for next request on keep-alive
-            if config.idle_timeout > 0:
-                try:
-                    conn.set_recv_timeout(config.idle_timeout)
-                except:
-                    provision.state = ConnectionState.closed()
-                    break
-
-        else:
-            break
-
-
 struct Server(Movable):
     """HTTP/1.1 Server implementation."""
 
@@ -1004,7 +523,14 @@ struct Server(Movable):
         self.config.max_request_uri_length = length
 
     def listen_and_serve[T: HTTPService](mut self, address: StringSpan, mut handler: T) raises ServerError:
-        """Listen for incoming connections and serve HTTP requests.
+        """Listen on `address` and serve it on the event loop.
+
+        `listen_and_serve_nonblocking` with every optional argument at its
+        default, so the server's own `shutdown_read_fd` is honoured, SSE and
+        WebSocket responses work, and connections are served at once rather
+        than in turn. It used to run a blocking accept loop of its own, one
+        connection at a time, which answered a stream with 409 and had
+        missed fixes the event loop carries; NOTICE records its retirement.
 
         Parameters:
             T: The type of HTTPService that handles incoming requests.
@@ -1014,23 +540,16 @@ struct Server(Movable):
             handler: An object that handles incoming HTTP requests.
 
         Raises:
-            ServerError: If listener setup fails or serving encounters fatal errors.
+            ServerError: If listener setup fails or an unrecoverable error occurs.
         """
-        var listener: NoTLSListener[NetworkType.tcp4]
-        try:
-            listener = ListenConfig().listen(address)
-        except listener_err:
-            raise listener_err^
-
-        self.set_address(String(address))
-
-        try:
-            self.serve(listener, handler)
-        except server_err:
-            raise server_err^
+        self.listen_and_serve_nonblocking(address, handler)
 
     def serve[T: HTTPService](self, ln: NoTLSListener[NetworkType.tcp4], mut handler: T) raises ServerError:
-        """Serve HTTP requests from an existing listener.
+        """Serve an existing listener on the event loop.
+
+        `serve_nonblocking` with the server's own `shutdown_read_fd`, which
+        `listen_and_serve` honours too, and every other optional argument at
+        its default.
 
         Parameters:
             T: The type of HTTPService that handles incoming requests.
@@ -1040,52 +559,9 @@ struct Server(Movable):
             handler: An object that handles incoming HTTP requests.
 
         Raises:
-            ServerError: If accept fails or critical connection handling errors occur.
+            ServerError: If an unrecoverable error occurs.
         """
-        # Before the first write, as the event loop does: a client that
-        # resets costs its connection, not the process (SPEC A25).
-        ignore_sigpipe()
-        var provision_pool = ProvisionPool(self.config.max_connections, self.config)
-
-        while True:
-            var conn: TCPConnection[NetworkType.tcp4]
-            try:
-                conn = ln.accept()
-            except listener_err:
-                raise listener_err^
-
-            var index: Int
-            try:
-                index = provision_pool.borrow()
-            except provision_err:
-                # Pool exhausted - close the connection and continue
-                try:
-                    conn^.teardown()
-                except:
-                    pass
-                continue
-
-            try:
-                handle_connection(
-                    conn,
-                    provision_pool.provisions[index],
-                    handler,
-                    self.config,
-                    self.address(),
-                    self.tcp_keep_alive,
-                )
-            except socket_err:
-                # Connection handling failed - just close the connection
-                pass
-            finally:
-                try:
-                    conn^.teardown()
-                except:
-                    pass
-                provision_pool.provisions[index].prepare_for_new_request()
-                provision_pool.provisions[index].keepalive_count = 0
-                provision_pool.release(index)
-
+        self.serve_nonblocking(ln, handler, self.shutdown_read_fd)
 
     def listen_and_serve_nonblocking[T: HTTPService](
         mut self, address: StringSpan, mut handler: T,
@@ -1175,16 +651,3 @@ struct Server(Movable):
             )
         except e:
             raise e^
-
-
-def _send_error_response(mut conn: TCPConnection[NetworkType.tcp4], var response: HTTPResponse):
-    """Helper to send an error response, ignoring write errors.
-
-    Every caller closes the connection after it, so the response says
-    `Connection: close` -- the event loop's `_send_error_to_fd` rule.
-    """
-    response.set_connection_close()
-    try:
-        _ = conn.write(encode(response^))
-    except:
-        pass  # Ignore write errors for error responses

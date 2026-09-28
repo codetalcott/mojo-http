@@ -792,6 +792,20 @@ lightbug_http
         No `MSG_NOSIGNAL` or `SO_NOSIGPIPE`: the process-wide ignore also
         covers `sendfile` and writes to pipes, where neither applies.
 
+      - server.mojo, http/common_response.mojo (2026-09-28): the blocking
+        accept loop is retired. `Server.listen_and_serve` and
+        `Server.serve` delegate to `listen_and_serve_nonblocking` and
+        `serve_nonblocking`, so every entry point runs the event loop and
+        honours the server's `shutdown_read_fd`. Removed with the loop:
+        `handle_connection`, `_send_error_response`,
+        `gate_streaming_response` and the 409 `StreamingUnsupported` it
+        answered SSE and WebSocket responses with, and
+        `ConnectionProvision`'s `request` and `response` fields, which
+        nothing else used. It served one connection at a time, so one idle
+        keep-alive client held every other, and it had missed fixes the
+        event loop carries, the lingering close after an early 413 among
+        them; nothing in the tree called it.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

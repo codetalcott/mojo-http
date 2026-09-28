@@ -350,9 +350,8 @@ def _hold_unavailable() -> HTTPResponse:
 def _streaming_refused() -> HTTPResponse:
     """What a pool thread answers when a handler tries to stream from one.
 
-    409, matching `gate_streaming_response`'s refusal of a stream on the
-    blocking loop: the same class of mistake — a streaming response where
-    nothing can drain it — answered with the same status.
+    409: a streaming response where nothing can drain it, the status the
+    retired blocking accept loop gave the same mistake.
     """
     return HTTPResponse(
         body_bytes=String(

@@ -243,14 +243,14 @@ def ignore_sigpipe():
     `mojo run` and an embedded CPython each ignore the signal themselves,
     which is why no test saw it.
 
-    `run_event_loop` and the blocking `Server.serve` call this before their
-    first send (SPEC A25). Unconditional, as CPython's own is: a server has
-    no use for the signal, and an application learns of a closed peer from
-    the write's `EPIPE`. The disposition is process-wide and survives
-    `fork` and `exec`, so a child an application execs starts with SIGPIPE
-    ignored. One syscall, and idempotent, so every loop calls it, several
-    at once under `M0_THREADS`. The kernel refuses `signal(2)` only for
-    SIGKILL and SIGSTOP, so there is no failure to report.
+    `run_event_loop`, which every `Server` entry point runs, calls this
+    before its first send (SPEC A25). Unconditional, as CPython's own is:
+    a server has no use for the signal, and an application learns of a
+    closed peer from the write's `EPIPE`. The disposition is process-wide
+    and survives `fork` and `exec`, so a child an application execs starts
+    with SIGPIPE ignored. One syscall, and idempotent, so every loop calls
+    it, several at once under `M0_THREADS`. The kernel refuses `signal(2)`
+    only for SIGKILL and SIGSTOP, so there is no failure to report.
     """
     _ = _raw_signal(c_int(SIGPIPE), SIG_IGN)
 

@@ -169,7 +169,7 @@ def test_a_line_above_ascii_goes_out_latin1_like_every_header() raises:
     UTF-8 as it stood -- so a WSGI application's `caf\\xe9` went out as
     `caf\\xc3\\xa9`, and an ASGI application's own `caf\\xc3\\xa9` as
     `caf\\xc3\\x83\\xc2\\xa9`, both measured against `bin/m0serve`. Held on
-    the bytes of both encoders, the blocking server's and the loop's.
+    the bytes of both encoders, `encode` and `encode_into`.
 
     covers: G17
     """
