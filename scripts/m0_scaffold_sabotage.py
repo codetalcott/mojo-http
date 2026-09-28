@@ -216,6 +216,17 @@ RULES = [
      '[ "$code" = 403 ] || fail "POST /items without the token',
      '[ "$code" = 200 ] || fail "POST /items without the token',
      "the scaffold's own smoke.sh exited 1, not 0", WIRE),
+    # The deploy as written: the wire runs with this run's own
+    # APP_SECURE=0, so only the deploy phase, under fly.toml's [env], can
+    # see the file say nothing (the login refuses) or say 0 (no Secure).
+    ("auth: the deploy does not state Secure", "auth", T + "_common/deploy/fly.toml",
+     '  APP_SECURE = "1"\n',
+     "",
+     "under deploy/fly.toml's [env] and its two secrets the server exited 78", WIRE),
+    ("auth: the deploy states Secure off", "auth", T + "_common/deploy/fly.toml",
+     '  APP_SECURE = "1"\n',
+     '  APP_SECURE = "0"\n',
+     "the session cookie has no Secure", WIRE),
 
     # --- live, on the wire ----------------------------------------------------
     ("live: the state never steps", "live", T + "live/src/server.mojo",
