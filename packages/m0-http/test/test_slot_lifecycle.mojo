@@ -31,10 +31,13 @@ from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
 from lightbug_http.event_loop import (
     WS_CLOSE_LINGER_NS,
+    _arm_reads,
     _arm_ws_linger,
     _await_write,
     _begin_request,
     _end_request,
+    _stop_reads,
+    _stream_idle,
 )
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
@@ -196,6 +199,77 @@ def test_a_write_wait_holds_no_read_interest() raises:
     assert_equal(backend.event_filter(0), EVFILT_READ)
     close(FileDescriptor(rx))
     close(FileDescriptor(tx))
+
+
+def test_a_resume_mid_send_keeps_the_write() raises:
+    """R1 on the real multiplexer: a WebSocket suspended its reads (the
+    registration deleted), a frame then went out only in part, so the slot
+    waits to write, and the resume arms reads while it does. The write
+    readiness must still be reported. On epoll `add_read`'s ADD, EEXIST,
+    MOD replaced the write one-shot, the wait reported nothing, and the
+    frame's tail never went out: the slot stayed RESPONDING for good.
+    kqueue's filters are separate, so this passes on macOS either way."""
+    var pair = socketpair_dgram()
+    var rx = pair[0]
+    var tx = pair[1]
+    var backend = PlatformBackend()
+    var config = _config()
+    var pool = ProvisionPool(SLOTS, config)
+    var slot = pool.borrow()
+    var s = Slots()
+    s.ws[slot] = True
+    pool.provisions[slot].state = ConnectionState.streaming_ws()
+    assert_true(_arm_reads(backend, slot, rx, s.read_armed, pool))
+    _stop_reads(backend, slot, rx, s.read_armed)
+    s.ws_state[slot].inbound_suspended = True
+    pool.provisions[slot].state = ConnectionState.responding()
+    assert_true(_await_write(backend, slot, rx, s.read_armed))
+
+    s.ws_state[slot].inbound_suspended = False
+    assert_true(_arm_reads(backend, slot, rx, s.read_armed, pool))
+    var n = backend.wait(1000)
+    var writes = 0
+    for i in range(n):
+        if (
+            Int(backend.event_ident(i)) == rx
+            and backend.event_filter(i) == EVFILT_WRITE
+        ):
+            writes += 1
+    assert_equal(writes, 1)
+    close(FileDescriptor(rx))
+    close(FileDescriptor(tx))
+
+
+def test_arming_reads_waits_out_a_send() raises:
+    """R1 at the helper: a slot RESPONDING is waiting for its write
+    one-shot, and arming reads on it is refused -- over a registration kept
+    as epoll keeps it, the arm replaced the write. The send's completion
+    arms reads: here `_stream_idle`, as the write-ready path's
+    `_after_send` runs it."""
+    var backend = FakeBackend()
+    var config = _config()
+    var pool = ProvisionPool(SLOTS, config)
+    var slot = pool.borrow()
+    var s = Slots()
+    s.ws[slot] = True
+    pool.provisions[slot].state = ConnectionState.responding()
+    assert_true(_await_write(backend, slot, FD, s.read_armed))
+    assert_true(backend.write)
+    assert_false(s.read_armed[slot])
+
+    assert_true(_arm_reads(backend, slot, FD, s.read_armed, pool))
+    assert_true(backend.write)
+    assert_false(backend.read)
+    assert_false(s.read_armed[slot])
+    assert_equal(backend.read_adds, 0)
+
+    _stream_idle(
+        backend, slot, FD, config, s.response, s.send_offset, pool,
+        s.ws, s.ws_state, s.read_armed, s.deadline,
+    )
+    assert_equal(pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
+    assert_true(backend.read)
+    assert_true(s.read_armed[slot])
 
 
 def test_the_linger_arms_once() raises:

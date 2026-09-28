@@ -1790,14 +1790,6 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         slot_sse, slot_ws, slot_ws_state,
                     )
 
-    # Inbound WebSocket resume: slots whose parked messages all went
-    # through get their read re-armed. kqueue's level trigger refires for
-    # bytes already buffered; epoll's ADD (the registration was DELETED,
-    # not disarmed) reports readiness at add time — so a client that
-    # finished sending mid-suspension is not stranded. Guarded on the slot
-    # still being THIS websocket: a stale resume for a closed slot names
-    # either an UNUSED slot or a successor whose read is already armed,
-    # so the worst case is an idempotent re-add.
     # Sockets the handler closed itself (SPEC I26): its Close is queued, so
     # the loop lingers as it does after its own -- the peer's reply ends the
     # connection with no second Close, a peer that never replies is reaped
@@ -1820,6 +1812,16 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 slot_sse, slot_ws, slot_ws_state,
             )
 
+    # Inbound WebSocket resume: slots whose parked messages all went
+    # through get their read re-armed. kqueue's level trigger refires for
+    # bytes already buffered; epoll's ADD (the registration was DELETED,
+    # not disarmed) reports readiness at add time — so a client that
+    # finished sending mid-suspension is not stranded. Guarded on the slot
+    # still being THIS websocket: a stale resume for a closed slot names
+    # either an UNUSED slot or a successor whose read is already armed,
+    # so the worst case is an idempotent re-add. A socket whose frame or
+    # pong is still going out keeps waiting to write, and its reads come
+    # back when that lands (`_arm_reads`, R1).
     var ws_resumes = handler.take_ws_resumes()
     for ri in range(len(ws_resumes)):
         var rs = ws_resumes[ri]
@@ -1828,7 +1830,9 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             and slot_ws[rs] and not slot_read_armed[rs]
         ):
             slot_ws_state[rs].inbound_suspended = False
-            _ = _arm_reads(backend, rs, slot_fds[rs], slot_read_armed)
+            _ = _arm_reads(
+                backend, rs, slot_fds[rs], slot_read_armed, provision_pool
+            )
 
     # Accept sharing: park, publish the count, retire what the channel
     # delivered during this pass from the in-flight word.
@@ -2019,7 +2023,7 @@ def _admit_connection[T: HTTPService, B: EventLoopBackend](
         and provision_pool.provisions[slot].state.kind
         == ConnectionState.READING_HEADERS
     ):
-        if not _arm_reads(backend, slot, fd_val, slot_read_armed):
+        if not _arm_reads(backend, slot, fd_val, slot_read_armed, provision_pool):
             _close_slot(
                 backend, handler, slot, fd_val,
                 slot_fds, fd_to_slot, provision_pool, active_count, metrics,
@@ -3585,7 +3589,11 @@ def _pump_body_fd(mut provision: ConnectionProvision, fd_val: Int) -> Int:
 
 @always_inline
 def _arm_reads[B: EventLoopBackend](
-    mut backend: B, slot: Int, fd_val: Int, mut slot_read_armed: List[Bool],
+    mut backend: B,
+    slot: Int,
+    fd_val: Int,
+    mut slot_read_armed: List[Bool],
+    provision_pool: ProvisionPool,
 ) -> Bool:
     """Make sure a slot at rest has read interest: the one place it is
     added for a slot whose next event is a read.
@@ -3596,7 +3604,18 @@ def _arm_reads[B: EventLoopBackend](
     nothing re-arms the socket and it stalls for good. False only when the
     registration failed; the flag then stays False, so the next transition
     that wants reads tries again.
+
+    A slot RESPONDING is left without it, and this returns True: its bytes
+    are still going out, and the completion of that send (`_after_send`)
+    is what arms reads. Arming them anyway is R1: on epoll `add_read`'s
+    ADD, EEXIST, MOD replaced the pending write one-shot, so the send never
+    learned the socket was writable and the slot stayed RESPONDING for
+    good -- which the WebSocket resume (`take_ws_resumes`) did to a socket
+    whose frame, or whose pong (a reply the kernel took only part of), was
+    still going out.
     """
+    if provision_pool.provisions[slot].state.kind == ConnectionState.RESPONDING:
+        return True
     if slot_read_armed[slot]:
         return True
     try:
@@ -3712,7 +3731,7 @@ def _end_request[B: EventLoopBackend](
     # Read interest for the next request -- unless it is still armed from
     # this cycle (registrations are persistent; only the write one-shot
     # disarms them, and `_await_write` clears the flag).
-    _ = _arm_reads(backend, slot, fd_val, slot_read_armed)
+    _ = _arm_reads(backend, slot, fd_val, slot_read_armed, provision_pool)
 
 
 def _stream_idle[B: EventLoopBackend](
@@ -3752,11 +3771,11 @@ def _stream_idle[B: EventLoopBackend](
         provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
         slot_idle_deadline[slot] = 0
         if not slot_ws_state[slot].inbound_suspended:
-            _ = _arm_reads(backend, slot, fd_val, slot_read_armed)
+            _ = _arm_reads(backend, slot, fd_val, slot_read_armed, provision_pool)
     else:
         provision_pool.provisions[slot].state = ConnectionState.streaming_sse()
         slot_idle_deadline[slot] = 0
-        _ = _arm_reads(backend, slot, fd_val, slot_read_armed)
+        _ = _arm_reads(backend, slot, fd_val, slot_read_armed, provision_pool)
     # The heartbeat timer (the configured interval, re-armed by each beat).
     if config.sse_heartbeat_ms > 0:
         backend.try_add_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT, config.sse_heartbeat_ms)
@@ -3819,7 +3838,7 @@ def _ws_linger[B: EventLoopBackend](
     slot_response[slot] = Bytes()
     slot_send_offset[slot] = 0
     provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
-    _ = _arm_reads(backend, slot, fd_val, slot_read_armed)
+    _ = _arm_reads(backend, slot, fd_val, slot_read_armed, provision_pool)
 
 
 @always_inline
@@ -4424,7 +4443,7 @@ def _reject_and_linger[T: HTTPService, B: EventLoopBackend](
     provision_pool.provisions[slot].prepare_for_new_request()
     provision_pool.provisions[slot].state = ConnectionState.lingering()
     slot_idle_deadline[slot] = perf_counter_ns() + REJECT_LINGER_NS
-    _ = _arm_reads(backend, slot, fd_val, slot_read_armed)
+    _ = _arm_reads(backend, slot, fd_val, slot_read_armed, provision_pool)
     # Discard what is already buffered now: on epoll the edge that brought
     # it is spent, and a client blocked on a full window sends nothing
     # that would raise another. Belt and braces, deliberately: the SHUT_WR
