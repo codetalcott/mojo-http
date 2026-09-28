@@ -24,14 +24,37 @@ import socket
 import struct
 import sys
 import time
+import traceback
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8080"))
 GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
+# Which phase is running, for the crash handler below: the helpers every
+# phase shares (`recv_exact`, `read_text`) name the CALL that failed and
+# never the PHASE being proven. `realtime_probe.py` carries the original of
+# this; `scripts/phase_stamp_check.py` holds every probe to it.
+PHASE = "startup"
+
+
+def phase(name):
+    global PHASE
+    PHASE = name
+
+
+def _stamped(kind, exc, tb):
+    traceback.print_exception(kind, exc, tb)
+    print("mounts_ws_probe FAIL: %s: %r" % (PHASE, exc))
+
+
+sys.excepthook = _stamped
+
+
 def fail(msg):
-    print("mounts_ws_probe FAIL:", msg)
+    # The phase too: a helper's own failure ("connection closed wanting 2
+    # bytes") reads the same in every phase.
+    print("mounts_ws_probe FAIL: %s: %s" % (PHASE, msg))
     sys.exit(1)
 
 
@@ -157,11 +180,13 @@ def forged_post(path, channel):
     return resp.status
 
 
+phase("opening a socket on each mount")
 on_first = open_socket("/ws", "chan-first")
 on_second = open_socket("/b/ws", "chan-second")
 
 # The reservation holds under every mount: the path each synthetic POST is
 # built at is answered 404 from the network, and reaches no view.
+phase("the synthetic paths refused from the network")
 for path, channel in (("/ws/message", "chan-first"), ("/b/ws/message", "chan-second")):
     status = forged_post(path, channel)
     if status != 404:
@@ -171,6 +196,7 @@ expect_silence(on_second, "second")
 
 # The SECOND mount's socket. Its message must reach the second mount's view,
 # at that mount's path -- never the first's.
+phase("a message on the second mount's socket (B4)")
 got = reply_to(on_second, "to-second")
 if got.get("app") == "first":
     fail(
@@ -184,6 +210,7 @@ expect_silence(on_second, "second")
 expect_silence(on_first, "first")
 
 # And the first mount's own socket still reaches the first mount.
+phase("a message on the first mount's socket")
 got = reply_to(on_first, "to-first")
 want = {"app": "first", "script_name": "", "path_info": "/ws/message", "text": "to-first"}
 if got != want:
@@ -191,6 +218,7 @@ if got != want:
 expect_silence(on_first, "first")
 expect_silence(on_second, "second")
 
+phase("closing both sockets")
 for sock in (on_first, on_second):
     try:
         send_frame(sock, 0x8, struct.pack(">H", 1000))
