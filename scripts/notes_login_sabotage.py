@@ -26,8 +26,8 @@ the CSRF rules live in the layer's `login.mojo`, and the delete form's
 header is `html.mojo`'s to spell: those arms revert the LAYER, which is
 what makes this gate evidence for the module and not only for the app.
 
-Rebuilds `m0-http` whenever `session.mojo`, `fragment.mojo`, `login.mojo`
-or `html.mojo` has moved since the last build
+Rebuilds `m0-http` whenever `session.mojo`, `grant.mojo`, `fragment.mojo`,
+`login.mojo` or `html.mojo` has moved since the last build
 -- on the sabotage AND on the restore. The app resolves `m0_http` through
 the `.mojoc`, so an edit there is not in the app until `build-http` runs;
 running the gate against a stale artifact tests a tree nobody has, in
@@ -48,31 +48,34 @@ import tempfile
 from pathlib import Path
 
 SESSION = Path("packages/m0-http/src/session.mojo")
+GRANT = Path("packages/m0-http/src/grant.mojo")
 FRAGMENT = Path("packages/m0-http/src/fragment.mojo")
 LOGIN = Path("packages/m0-http/src/login.mojo")
 HTML = Path("packages/m0-http/src/html.mojo")
 APP = Path("apps/fragment_notes/server.mojo")
-LAYER = (SESSION, FRAGMENT, LOGIN, HTML)
+LAYER = (SESSION, GRANT, FRAGMENT, LOGIN, HTML)
 """The layer files an arm may edit: `m0_http` is rebuilt whenever any of
-them differs from what the last build read."""
+them differs from what the last build read. `grant.mojo` holds the signed
+envelope a session cookie is read with (`SignedToken`), and so the tag and
+expiry checks the first two arms revert."""
 
 # (label, path, old, new)
 SABOTAGES = [
     (
         "the tag is never checked, so anyone may write a session cookie",
-        SESSION,
-        """    if not constant_time_equal(Span(expected.as_bytes()), sig):
-        return session_refused(String("bad signature"))""",
-        """    if False:
-        return session_refused(String("bad signature"))""",
+        GRANT,
+        """        if not constant_time_equal(Span(expected.as_bytes()), tag):
+            return String("bad signature")""",
+        """        if False:
+            return String("bad signature")""",
     ),
     (
         "the expiry never fires, so a session lasts forever",
-        SESSION,
-        """    if now >= exp:
-        return session_refused(String("expired"))""",
-        """    if False:
-        return session_refused(String("expired"))""",
+        GRANT,
+        """        if now >= self.exp:
+            return String("expired")""",
+        """        if False:
+            return String("expired")""",
     ),
     (
         "the cookie loses HttpOnly and SameSite",

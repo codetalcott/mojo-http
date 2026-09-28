@@ -15,6 +15,8 @@ port; `--port abc` is exit 2 with the usage. So is an unknown flag, a missing
 value, a value on a boolean, a port outside 1-65535, and any positional: a
 host application takes no arguments of its own, and its own configuration
 stays in its own variables, checked in its `main` before `serve` is called.
+The reading is `m0_http.cmdline`, which m0serve's parser reads with too, so
+the two command lines refuse the same things in the same words.
 
 **What is NOT a usage error.** A count the host cannot serve --
 `--workers 0`, both modes at once, more workers than the application's state
@@ -41,6 +43,7 @@ from std.sys.arg import argv
 from lightbug_http.c.process import process_exit
 from lightbug_http.server_config import ServerConfig
 
+from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig
 
 
@@ -104,22 +107,6 @@ def _env_of(name: String) -> String:
     return ""
 
 
-def _parse_int(text: String, what: String) raises -> Int:
-    """Strict decimal parse; anything but digits is a usage error."""
-    var digits = String(text.strip())
-    var n = digits.byte_length()
-    if n == 0 or n > 18:
-        raise Error(what + " must be a number, got '" + text + "'")
-    var bytes = digits.as_bytes()
-    var value = 0
-    for i in range(n):
-        var c = Int(bytes[i])
-        if c < ord("0") or c > ord("9"):
-            raise Error(what + " must be a number, got '" + text + "'")
-        value = value * 10 + (c - ord("0"))
-    return value
-
-
 struct HostFlags(Copyable, Movable):
     """A command line, applied: the resolved config and what was asked for."""
 
@@ -180,7 +167,7 @@ def _apply(mut config: AppConfig, name: String, value: String) raises:
             raise Error("--host must not be empty")
         config.host = String("127.0.0.1") if host == "localhost" else host
     elif name == "--port":
-        var port = _parse_int(value, "--port")
+        var port = parse_int(value, "--port")
         if port < 1 or port > 65535:
             raise Error("--port must be 1-65535, got " + value)
         config.port = port
@@ -189,20 +176,20 @@ def _apply(mut config: AppConfig, name: String, value: String) raises:
         if getenv("M0_BASE_URL", "").byte_length() == 0:
             config.base_url = "http://localhost:" + String(port)
     elif name == "--workers":
-        config.workers = _parse_int(value, "--workers")
+        config.workers = parse_int(value, "--workers")
         config.workers_set = True
     elif name == "--threads":
-        config.threads = _parse_int(value, "--threads")
+        config.threads = parse_int(value, "--threads")
         config.threads_set = True
     elif name == "--blocking-threads":
-        config.blocking_threads = _parse_int(value, "--blocking-threads")
+        config.blocking_threads = parse_int(value, "--blocking-threads")
         config.blocking_threads_set = True
     elif name == "--sse-heartbeat-ms":
-        config.sse_heartbeat_ms = _parse_int(value, "--sse-heartbeat-ms")
+        config.sse_heartbeat_ms = parse_int(value, "--sse-heartbeat-ms")
     elif name == "--app-tick-ms":
-        config.app_tick_ms = _parse_int(value, "--app-tick-ms")
+        config.app_tick_ms = parse_int(value, "--app-tick-ms")
     elif name == "--max-keepalive-requests":
-        config.max_keepalive_requests = _parse_int(value, "--max-keepalive-requests")
+        config.max_keepalive_requests = parse_int(value, "--max-keepalive-requests")
     else:
         # Unreachable: `_takes_value` gated entry. Explicit, so a flag added
         # there and forgotten here fails instead of being silently dropped.
@@ -222,42 +209,27 @@ def parse_host_flags(args: List[String], seed: AppConfig) raises -> HostFlags:
         var arg = args[i]
         if arg == "-h":
             flags.help = True
-        elif arg.startswith("--") and arg.byte_length() > 2:
-            var name = arg
-            var inline = String("")
-            var has_inline = False
-            var eq = arg.find("=")
-            if eq >= 0:
-                # Byte spans, not `[byte=a:b]`: a command line need not be
-                # UTF-8, and that slice asserts a codepoint boundary.
-                name = String(unsafe_from_utf8=arg.as_bytes()[:eq])
-                inline = String(unsafe_from_utf8=arg.as_bytes()[eq + 1 :])
-                has_inline = True
-            if _is_bool(name):
-                if has_inline:
-                    raise Error(name + " takes no value")
-                if name == "--help":
-                    flags.help = True
-                elif name == "--doctor":
-                    flags.doctor = True
-                elif name == "--access-log":
-                    flags.config.access_log = True
-                elif name == "--qos":
-                    flags.config.qos = True
-                elif name == "--spawn-workers":
-                    flags.config.spawn_workers = True
-                else:
-                    raise Error("unhandled boolean option " + name)
+        elif is_long_flag(arg):
+            # The option and its value, read the way m0serve reads them
+            # (`m0_http.cmdline`): by bytes, strictly, and naming what it
+            # refuses -- an unknown option, a value on a boolean, a value
+            # missing at the end.
+            var flag = read_long_flag(args, i, _takes_value, _is_bool)
+            var name = flag.name
+            if name == "--help":
+                flags.help = True
+            elif name == "--doctor":
+                flags.doctor = True
+            elif name == "--access-log":
+                flags.config.access_log = True
+            elif name == "--qos":
+                flags.config.qos = True
+            elif name == "--spawn-workers":
+                flags.config.spawn_workers = True
             elif _takes_value(name):
-                var value = inline
-                if not has_inline:
-                    if i + 1 >= len(args):
-                        raise Error(name + " needs a value")
-                    i += 1
-                    value = args[i]
-                _apply(flags.config, name, value)
+                _apply(flags.config, name, flag.value)
             else:
-                raise Error("unknown option " + name)
+                raise Error("unhandled boolean option " + name)
             if not flags.was_given(name):
                 flags.given.append(name)
         elif arg.startswith("-") and arg.byte_length() > 1:
