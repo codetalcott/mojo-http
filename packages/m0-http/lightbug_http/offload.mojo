@@ -158,7 +158,6 @@ from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import (
     send, recv, close, setsockopt, SocketOption, SOL_SOCKET,
 )
-from lightbug_http.c.socket_error import RecvEAGAINError, RecvEINTRError
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.c.platform import MSG_DONTWAIT
@@ -1382,11 +1381,11 @@ struct OffloadPool(Movable):
             try:
                 n = recv(fd, Span(buf), UInt(_JOB_BYTES), flags)
             except recv_err:
-                if recv_err.isa[RecvEINTRError]():
+                if recv_err.interrupted():
                     if flags != 0:
                         return _OWN_NONE
                     continue
-                if recv_err.isa[RecvEAGAINError]():
+                if recv_err.would_block():
                     return _OWN_NONE
                 return _OWN_DEAD
             if n != UInt(_JOB_BYTES):
@@ -1718,11 +1717,11 @@ struct OffloadPool(Movable):
             try:
                 n = recv(fd, Span(buf), UInt(cap), flags)
             except recv_err:
-                if recv_err.isa[RecvEINTRError]():
+                if recv_err.interrupted():
                     if flags != 0:
                         return _none_job()
                     continue
-                if recv_err.isa[RecvEAGAINError]():
+                if recv_err.would_block():
                     return _none_job()
                 # The channel is unusable, and a thread that cannot receive
                 # has nothing left to do.

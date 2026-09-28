@@ -1,4 +1,4 @@
-from std.ffi import c_uint, get_errno
+from std.ffi import ErrNo, c_uint, get_errno
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import c_void
@@ -19,7 +19,6 @@ from lightbug_http.c.socket import (
     SocketOption,
     SocketType,
     _setsockopt,
-    accept,
     bind,
     close,
     connect,
@@ -32,30 +31,7 @@ from lightbug_http.c.socket import (
     shutdown,
     socket,
 )
-from lightbug_http.c.socket_error import (
-    AcceptError,
-    BindError,
-    CloseEBADFError,
-    CloseEINTRError,
-    CloseEIOError,
-    CloseENOSPCError,
-    CloseError,
-    ConnectError,
-    GetpeernameError,
-    GetsocknameError,
-    ListenError,
-    RecvError,
-    RecvfromError,
-    SendError,
-    SetsockoptEBADFError,
-    SetsockoptEINVALError,
-    SetsockoptENOPROTOOPTError,
-    SetsockoptENOTSOCKError,
-    SetsockoptError,
-    ShutdownEINVALError,
-    ShutdownError,
-)
-from lightbug_http.c.socket_error import SocketError as CSocketError
+from lightbug_http.c.socket_error import SysError
 from lightbug_http.connection import default_buffer_size
 from lightbug_http.io.bytes import Bytes
 from std.utils import Variant
@@ -72,34 +48,25 @@ struct EOF(Movable, TrivialRegisterPassable):
 
 
 @fieldwise_init
-struct InvalidCloseErrorConversionError(Movable, Writable, TrivialRegisterPassable):
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write("InvalidCloseErrorConversionError: Cannot convert EBADF to FatalCloseError")
-
-    def __str__(self) -> String:
-        return String(self)
-
-
-@fieldwise_init
 struct SocketRecvError(Movable, Writable):
     """Error variant for socket receive operations.
-    Can be RecvError from the syscall or EOF if connection closed cleanly.
+    Can be a SysError from the syscall or EOF if connection closed cleanly.
     """
 
-    comptime type = Variant[RecvError, EOF]
+    comptime type = Variant[SysError, EOF]
     var value: Self.type
 
     @implicit
-    def __init__(out self, var value: RecvError):
-        self.value = value^
+    def __init__(out self, value: SysError):
+        self.value = value
 
     @implicit
     def __init__(out self, value: EOF):
         self.value = value
 
     def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[RecvError]():
-            writer.write(self.value[RecvError])
+        if self.value.isa[SysError]():
+            writer.write(self.value[SysError])
         elif self.value.isa[EOF]():
             writer.write("EOF")
 
@@ -114,54 +81,18 @@ struct SocketRecvError(Movable, Writable):
 
 
 @fieldwise_init
-struct SocketRecvfromError(Movable, Writable):
-    """Error variant for socket recvfrom operations.
-    Can be RecvfromError from the syscall or EOF if connection closed cleanly.
+struct SocketNameError(Movable, Writable):
+    """Error variant for `get_sock_name` and `get_peer_name`.
+    Can be a SysError from getsockname or getpeername (its `op` says which),
+    SocketClosedError, or InetNtopError from binary_ip_to_string.
     """
 
-    comptime type = Variant[RecvfromError, EOF]
+    comptime type = Variant[SysError, SocketClosedError, InetNtopError]
     var value: Self.type
 
     @implicit
-    def __init__(out self, var value: RecvfromError):
-        self.value = value^
-
-    @implicit
-    def __init__(out self, value: EOF):
+    def __init__(out self, value: SysError):
         self.value = value
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[RecvfromError]():
-            writer.write(self.value[RecvfromError])
-        elif self.value.isa[EOF]():
-            writer.write("EOF")
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
-
-@fieldwise_init
-struct SocketAcceptError(Movable, Writable):
-    """Error variant for socket accept operations.
-    Can be AcceptError or GetpeernameError from the syscall, SocketClosedError, or InetNtopError from binary_ip_to_string.
-    """
-
-    comptime type = Variant[AcceptError, GetpeernameError, SocketClosedError, InetNtopError]
-    var value: Self.type
-
-    @implicit
-    def __init__(out self, var value: AcceptError):
-        self.value = value^
-
-    @implicit
-    def __init__(out self, var value: GetpeernameError):
-        self.value = value^
 
     @implicit
     def __init__(out self, value: SocketClosedError):
@@ -172,10 +103,8 @@ struct SocketAcceptError(Movable, Writable):
         self.value = value^
 
     def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[AcceptError]():
-            writer.write(self.value[AcceptError])
-        elif self.value.isa[GetpeernameError]():
-            writer.write(self.value[GetpeernameError])
+        if self.value.isa[SysError]():
+            writer.write(self.value[SysError])
         elif self.value.isa[SocketClosedError]():
             writer.write("SocketClosedError")
         elif self.value.isa[InetNtopError]():
@@ -194,18 +123,18 @@ struct SocketAcceptError(Movable, Writable):
 @fieldwise_init
 struct SocketBindError(Movable, Writable):
     """Error variant for socket bind operations.
-    Can be BindError from bind(), SocketGetsocknameError from get_sock_name(), or InetPtonError from inet_pton.
+    Can be a SysError from bind(), SocketNameError from get_sock_name(), or InetPtonError from inet_pton.
     """
 
-    comptime type = Variant[BindError, SocketGetsocknameError, InetPtonError]
+    comptime type = Variant[SysError, SocketNameError, InetPtonError]
     var value: Self.type
 
     @implicit
-    def __init__(out self, var value: BindError):
-        self.value = value^
+    def __init__(out self, value: SysError):
+        self.value = value
 
     @implicit
-    def __init__(out self, var value: SocketGetsocknameError):
+    def __init__(out self, var value: SocketNameError):
         self.value = value^
 
     @implicit
@@ -213,137 +142,12 @@ struct SocketBindError(Movable, Writable):
         self.value = value^
 
     def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[BindError]():
-            writer.write(self.value[BindError])
-        elif self.value.isa[SocketGetsocknameError]():
-            writer.write(self.value[SocketGetsocknameError])
+        if self.value.isa[SysError]():
+            writer.write(self.value[SysError])
+        elif self.value.isa[SocketNameError]():
+            writer.write(self.value[SocketNameError])
         elif self.value.isa[InetPtonError]():
             writer.write(self.value[InetPtonError])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
-
-@fieldwise_init
-struct SocketConnectError(Movable, Writable):
-    """Error variant for socket connect operations.
-    Can be ConnectError from the syscall or SocketAcceptError from get_peer_name.
-    """
-
-    comptime type = Variant[ConnectError, SocketAcceptError]
-    var value: Self.type
-
-    @implicit
-    def __init__(out self, var value: ConnectError):
-        self.value = value^
-
-    @implicit
-    def __init__(out self, var value: SocketAcceptError):
-        self.value = value^
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[ConnectError]():
-            writer.write(self.value[ConnectError])
-        elif self.value.isa[SocketAcceptError]():
-            writer.write(self.value[SocketAcceptError])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
-
-@fieldwise_init
-struct SocketGetsocknameError(Movable, Writable):
-    """Error variant for socket getsockname operations.
-    Can be GetsocknameError from the syscall, SocketClosedError, or InetNtopError from binary_ip_to_string.
-    """
-
-    comptime type = Variant[GetsocknameError, SocketClosedError, InetNtopError]
-    var value: Self.type
-
-    @implicit
-    def __init__(out self, var value: GetsocknameError):
-        self.value = value^
-
-    @implicit
-    def __init__(out self, value: SocketClosedError):
-        self.value = value
-
-    @implicit
-    def __init__(out self, var value: InetNtopError):
-        self.value = value^
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[GetsocknameError]():
-            writer.write(self.value[GetsocknameError])
-        elif self.value.isa[SocketClosedError]():
-            writer.write("SocketClosedError")
-        elif self.value.isa[InetNtopError]():
-            writer.write(self.value[InetNtopError])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
-
-@fieldwise_init
-struct FatalCloseError(Movable, Writable):
-    """Error type for Socket.close() that excludes EBADF.
-
-    EBADF is excluded because it indicates the socket is already closed,
-    which is the desired state. Other errors indicate actual failures
-    that should be propagated.
-    """
-
-    comptime type = Variant[CloseEINTRError, CloseEIOError, CloseENOSPCError]
-    var value: Self.type
-
-    @implicit
-    def __init__(out self, value: CloseEINTRError):
-        self.value = value
-
-    @implicit
-    def __init__(out self, value: CloseEIOError):
-        self.value = value
-
-    @implicit
-    def __init__(out self, value: CloseENOSPCError):
-        self.value = value
-
-    @implicit
-    def __init__(out self, var value: CloseError) raises InvalidCloseErrorConversionError:
-        if value.isa[CloseEINTRError]():
-            self.value = CloseEINTRError()
-        elif value.isa[CloseEIOError]():
-            self.value = CloseEIOError()
-        elif value.isa[CloseENOSPCError]():
-            self.value = CloseENOSPCError()
-        else:
-            raise InvalidCloseErrorConversionError()
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[CloseEINTRError]():
-            writer.write(self.value[CloseEINTRError])
-        elif self.value.isa[CloseEIOError]():
-            writer.write(self.value[CloseEIOError])
-        elif self.value.isa[CloseENOSPCError]():
-            writer.write(self.value[CloseENOSPCError])
 
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
@@ -388,7 +192,7 @@ struct Socket[
         out self,
         local_address: Self.address = Self.address(),
         remote_address: Self.address = Self.address(),
-    ) raises CSocketError:
+    ) raises SysError:
         """Create a new socket object.
 
         Args:
@@ -396,7 +200,7 @@ struct Socket[
             remote_address: The remote address of the socket (peer's address if connected).
 
         Raises:
-            Error: If the socket creation fails.
+            SysError: If the socket creation fails.
         """
         # TODO: Tried unspec for both address family and protocol, and inet for both but that doesn't seem to work.
         # I guess for now, I'll leave protocol as unspec.
@@ -413,7 +217,7 @@ struct Socket[
         remote_address: Self.address = Self.address(),
     ):
         """
-        Create a new socket object when you already have a socket file descriptor. Typically through socket.accept().
+        Create a new socket object when you already have a socket file descriptor, such as a listener another process bound.
 
         Args:
             fd: The file descriptor of the socket.
@@ -426,7 +230,7 @@ struct Socket[
         self._closed = False
         self._connected = True
 
-    def teardown(deinit self) raises FatalCloseError:
+    def teardown(deinit self) raises SysError:
         """Close the socket and free the file descriptor."""
         if self._connected:
             try:
@@ -474,36 +278,14 @@ struct Socket[
             ")",
         )
 
-    def accept(self) raises SocketAcceptError -> Self:
-        """Accept a connection. The socket must be bound to an address and listening for connections.
-        The return value is a connection where conn is a new socket object usable to send and receive data on the connection,
-        and address is the address bound to the socket on the other end of the connection.
-
-        Returns:
-            A new socket object and the address of the remote socket.
-
-        Raises:
-            AcceptError: If accept fails.
-            GetpeernameError: If getting peer address fails.
-        """
-        var new_socket_fd = accept(self.fd)
-
-        var new_socket = Self(
-            fd=new_socket_fd,
-            local_address=self.local_address,
-        )
-        var peer = new_socket.get_peer_name()
-        new_socket.remote_address = Self.address(peer[0], peer[1])
-        return new_socket^
-
-    def listen(self, backlog: UInt = 0) raises ListenError:
+    def listen(self, backlog: UInt = 0) raises SysError:
         """Enable a server to accept connections.
 
         Args:
             backlog: The maximum number of queued connections. Should be at least 0, and the maximum is system-dependent (usually 5).
 
         Raises:
-            ListenError: If listening for a connection fails.
+            SysError: If listening for a connection fails.
         """
         listen(self.fd, Int32(backlog))
 
@@ -537,14 +319,14 @@ struct Socket[
         var local = self.get_sock_name()
         self.local_address = Self.address(local[0], local[1])
 
-    def get_sock_name(self) raises SocketGetsocknameError -> Tuple[String, UInt16]:
+    def get_sock_name(self) raises SocketNameError -> Tuple[String, UInt16]:
         """Return the address of the socket.
 
         Returns:
             The address of the socket.
 
         Raises:
-            SocketGetsocknameError: If socket is closed or getsockname fails.
+            SocketNameError: If socket is closed or getsockname fails.
         """
         if self._closed:
             raise SocketClosedError()
@@ -559,14 +341,14 @@ struct Socket[
             UInt16(binary_port_to_int(local_sockaddr_in.sin_port)),
         )
 
-    def get_peer_name(self) raises SocketAcceptError -> Tuple[String, UInt16]:
+    def get_peer_name(self) raises SocketNameError -> Tuple[String, UInt16]:
         """Return the address of the peer connected to the socket.
 
         Returns:
             The address of the peer connected to the socket.
 
         Raises:
-            SocketAcceptError: If socket is closed or getpeername fails.
+            SocketNameError: If socket is closed or getpeername fails.
         """
         if self._closed:
             raise SocketClosedError()
@@ -580,15 +362,15 @@ struct Socket[
             UInt16(binary_port_to_int(peer_sockaddr_in.sin_port)),
         )
 
-    def set_socket_option(self, option_name: SocketOption, var option_value: Int = 1) raises SetsockoptError:
-        """Return the value of the given socket option.
+    def set_socket_option(self, option_name: SocketOption, var option_value: Int = 1) raises SysError:
+        """Set the given socket option.
 
         Args:
             option_name: The socket option to set.
             option_value: The value to set the socket option to. Defaults to 1 (True).
 
         Raises:
-            SetsockoptError: If setting the socket option fails.
+            SysError: If setting the socket option fails.
         """
         setsockopt(self.fd, Int32(SOL_SOCKET), option_name.value, Int32(option_value))
 
@@ -609,7 +391,7 @@ struct Socket[
         var remote = self.get_peer_name()
         self.remote_address = Self.address(remote[0], remote[1])
 
-    def send(self, buffer: Span[Byte, _]) raises SendError -> UInt:
+    def send(self, buffer: Span[Byte, _]) raises SysError -> UInt:
         return send(self.fd, buffer, UInt(len(buffer)), 0)
 
     def _receive(self, mut buffer: Bytes) raises SocketRecvError -> UInt:
@@ -622,8 +404,8 @@ struct Socket[
             The number of bytes received.
 
         Raises:
-            RecvError: If reading data from the socket fails.
-            EOF: If 0 bytes are received.
+            SocketRecvError: A SysError if reading from the socket fails, or
+                EOF if 0 bytes are received.
         """
         var bytes_received: UInt
         var size = len(buffer)
@@ -663,53 +445,52 @@ struct Socket[
             The buffer with the received data, and an error if one occurred.
 
         Raises:
-            Error: If reading data from the socket fails.
-            EOF: If 0 bytes are received, return EOF.
+            SocketRecvError: A SysError if reading from the socket fails, or
+                EOF if 0 bytes are received.
         """
         return self._receive(buffer)
 
-    def shutdown(mut self) raises ShutdownEINVALError -> None:
-        """Shut down the socket. The remote end will receive no more data (after queued data is flushed)."""
+    def shutdown(mut self) raises SysError -> None:
+        """Shut down the socket. The remote end will receive no more data (after queued data is flushed).
+
+        Raises:
+            SysError: EINVAL only. Any other failure means the socket is
+                already closed or its descriptor is gone, which is shut
+                down.
+        """
         try:
             shutdown(self.fd, ShutdownOption.SHUT_RDWR)
         except shutdown_err:
-            # For the other errors, either the socket is already closed or the descriptor is invalid.
-            # At that point we can feasibly say that the socket is already shut down.
-            if shutdown_err.isa[ShutdownEINVALError]():
-                raise shutdown_err.get[ShutdownEINVALError]()
+            if shutdown_err.errno == ErrNo.EINVAL:
+                raise shutdown_err
 
         self._connected = False
 
-    def close(mut self) raises FatalCloseError -> None:
+    def close(mut self) raises SysError -> None:
         """Mark the socket closed.
         Once that happens, all future operations on the socket object will fail.
         The remote end will receive no more data (after queued data is flushed).
 
         Raises:
-            FatalCloseError: If closing the socket fails (excludes EBADF which means already closed).
+            SysError: If closing the socket fails, except EBADF, which means
+                it is already closed.
         """
         try:
             close(self.fd)
         except close_err:
-            # EBADF is silently ignored as it means socket already closed
-            if not close_err.isa[CloseEBADFError]():
-                if close_err.isa[CloseEINTRError]():
-                    raise close_err.get[CloseEINTRError]()
-                elif close_err.isa[CloseEIOError]():
-                    raise close_err.get[CloseEIOError]()
-                elif close_err.isa[CloseENOSPCError]():
-                    raise close_err.get[CloseENOSPCError]()
+            if close_err.errno != ErrNo.EBADF:
+                raise close_err
 
         self._closed = True
 
-    def set_timeout(self, seconds: Int) raises SetsockoptError:
+    def set_timeout(self, seconds: Int) raises SysError:
         """Set the receive timeout for the socket.
 
         Args:
             seconds: The timeout duration in seconds.
 
         Raises:
-            SetsockoptError: If setting the socket option fails.
+            SysError: If setting the socket option fails.
         """
         # SO_RCVTIMEO requires a timeval struct: {tv_sec: Int64, tv_usec: Int64}
         # (16 bytes on both macOS and Linux 64-bit).
@@ -722,20 +503,7 @@ struct Socket[
             16,
         )
         if result == -1:
-            var errno = get_errno()
-            if errno == errno.EBADF:
-                raise SetsockoptEBADFError()
-            elif errno == errno.EINVAL:
-                raise SetsockoptEINVALError()
-            elif errno == errno.ENOPROTOOPT:
-                raise SetsockoptENOPROTOOPTError()
-            elif errno == errno.ENOTSOCK:
-                raise SetsockoptENOTSOCKError()
-            else:
-                raise Error(
-                    "SetsockoptError: Failed to set SO_RCVTIMEO. Error code: ",
-                    errno,
-                )
+            raise SysError("setsockopt", get_errno())
 
 
 comptime TCPSocket[address: Addr] = Socket[
