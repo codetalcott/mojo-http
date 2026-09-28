@@ -48,6 +48,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **m0serve refuses more than 126 mounts before it binds, and `--doctor`
+  says so too.** Each mount is a lane of the loop's handler pool, which has
+  room for 126. With a 127th, m0serve bound the port, imported every
+  application and then exited 1 on a bare `Unhandled exception` line,
+  while `--doctor` reported the same configuration as fine. Both now exit
+  78 at once, naming the limit. The limit applies whatever
+  `--blocking-threads` is set to, because a single ASGI mount among them
+  puts the whole set on the pool. `--doctor` now reads the same ordered
+  list of checks the server refuses by, so the two cannot disagree about
+  which refusal comes first, and it lists every check it made, passing
+  ones included. `smoke-doctor` gates both. Found in review.
+
 - **An inbound WebSocket message reaches the mount that approved the
   socket when mounts are served inline** (SPEC I12). Under `--realtime`
   with several WSGI mounts and no handler pool — `--workers N` without

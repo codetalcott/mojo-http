@@ -1384,10 +1384,9 @@ Properties of the design, not defects to fix in passing:
   is strict where the env loader is lenient. `--doctor` prints the whole
   resolved configuration as JSON and starts nothing; its contract is that
   it **exits with the code `m0serve` would exit with for the same
-  arguments**, which is held true by `smoke-doctor` running both and
-  comparing — the doctor mirrors `main`'s check order rather than sharing
-  its control flow, so a check that moves in `main` must move in
-  `_run_doctor` too.
+  arguments**, held by `smoke-doctor` running both and comparing — both
+  read one ordered list (`m0_wsgi.checks`: the flags before the bind, the
+  application after the import), so add a refusal THERE, never beside it.
 
 ## Mojo 1.1 patterns
 

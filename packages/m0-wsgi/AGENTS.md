@@ -74,10 +74,12 @@ compiled mount, or an ASGI mount beside a WSGI one — keeps the default pool
 under `--workers`/`--threads` when `--blocking-threads` is unset
 (`pool_is_default`): `--workers N` turns the pool off to keep the inline
 loop reachable, and those sets have no inline loop to keep. The compiled half is decidable from the flags and goes in
-`_mount_refusal`, which runs BEFORE the bind and the fork and is the same
-function `--doctor` renders (in a worker it crash-looped to exit 1 under
-`--workers N`); the WSGI half needs detection and exits 78 in the worker
-(`wsgi_lanes_unserved`). The inline loop is not a lane: with no pool and
+`flag_checks` (`src/checks.mojo`), which runs BEFORE the bind and the fork
+and is the same list `--doctor` renders (in a worker it crash-looped to exit
+1 under `--workers N`); the WSGI half needs detection and exits 78 in the
+worker (`app_checks`, `wsgi_lanes_unserved`). A set of more than 126
+mounts is refused before the bind too (`mount-lanes`, 78): a pool has wake
+words for 126 lanes, and `add_lane` raised on the 127th after the bind. The inline loop is not a lane: with no pool and
 no ASGI mount the loop's handler answers every WSGI mount itself, and a
 compiled mount there used to fall through to the root application. **Several ASGI mounts
 each get their own executor**: they share the ONE slot-addressed chunk
@@ -102,7 +104,9 @@ that keeps it alive through a proxy. Sockets travel the same seam — the
 whose view gated the upgrade and to no other. One refusal remains:
 `--realtime` on a server with no WSGI mount at all, which is asking for a
 hold nothing could take. **`--threads` gets the same
-lanes**: `_serve_one` mirrors `_serve_offloaded` per loop, so N loops of
+lanes**: `_serve_one` and `_serve_offloaded` both lay them with
+`wire_offload` and stop them with `join_offload`
+(`src/offload_threads.mojo`), so N loops of
 per-mount modes is N times the prefork shape — with two consequences to keep
 straight. The executor's chunk channel takes `bus_read_fd`, so a threaded
 loop's own bus channel rides `peer_bus_fd` (both drain identically; passing
@@ -243,8 +247,9 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     (a supervisor over even one worker, forked) exits 2 before the bind
     naming `--spawn-workers`, `--doctor` failing the same check
     (`workers-vs-parallel-runtime`; `parallel_runtime_forked` in `cli.mojo`
-    is the one predicate both read, in `_pg_listen_forked_on_macos`'s
-    shape, its truth table pinned by `test_cli.mojo`; SPEC E33, D51,
+    is the one predicate both read, in `pg_listen_forked`'s shape, both
+    asking `forks_without_exec`, its truth table pinned by
+    `test_cli.mojo`; SPEC E33, D51,
     `smoke-serve-parallel-runtime`). The fact is
     `m0_http.parallel_runtime_linked`, the function the Mojo host reads
     for E32, so the shipped `bin/m0serve` passes the check unlinked.
@@ -650,7 +655,7 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       fast route's p99 at 8–10 ms under slow views against 2–4 with eager
       wakes, and neither variant of the stall check moved it. **A Mojo or
       hold mount's lane is GIL-free on any interpreter**
-      (`set_lane_gil_free`, marked by `_serve_offloaded`): its stall check
+      (`set_lane_gil_free`, marked by `wire_offload`): its stall check
       counts from the push against the idle spin
       (`POOL_FREE_WAKE_AGE_NS`, 10 µs), but its `submit` stays elastic —
       the progress rule held a Mojo compute route to one of four threads
@@ -682,7 +687,7 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       aged wakes (27 in 11 s) from the 132k idle wakes that were the cost.
       **Every pool that serves a lane obeys these rules, not only the WSGI
       one**: `MojoPool` threads register, pass their id to `next_job` and
-      unregister, and `_serve_offloaded` reserves records for every pool
+      unregister, and `wire_offload` reserves records for every pool
       before starting any (`reserve_threads` sizes on its first call).
       **Both pools register in `start`, on the spawning thread, never in
       the thread body**: `stop` pills registered threads by name and the

@@ -72,9 +72,8 @@ from lightbug_http.server_config import ServerConfig
 from lightbug_http.c.platform import PlatformBackend
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 
-from .asgi_executor import AsgiExecutor
-from .blocking_pool import BlockingPool, JOIN_TIMEOUT_NS
-from .cli import ServeOptions, wsgi_lanes
+from .cli import ServeOptions, serves_offloaded
+from .offload_threads import OffloadThreads, join_offload, wire_offload
 from .thread_handler import ThreadContext, ThreadHandler
 
 from m0_http import (
@@ -178,6 +177,16 @@ def asgi_free_threading_refusal(report: FreeThreadingReport) -> String:
     )
 
 
+def free_threading_refusal(threads: Int, report: FreeThreadingReport) -> Optional[String]:
+    """The threaded mode's one refusal, or None: `threads` loops above one on
+    an interpreter whose GIL is on. The rule's only spelling --
+    `require_free_threading` refuses by it, and so does `m0serve`'s check
+    list (`interpreter_checks`), which `--doctor` renders."""
+    if threads > 1 and report.gil_enabled:
+        return refusal_message(threads, report)
+    return None
+
+
 def require_free_threading(threads: Int) raises:
     """Refuse to start a threaded mode the interpreter cannot run.
 
@@ -188,9 +197,9 @@ def require_free_threading(threads: Int) raises:
     """
     if threads <= 1:
         return
-    var report = probe_free_threading()
-    if report.gil_enabled:
-        print(refusal_message(threads, report), flush=True)
+    var refusal = free_threading_refusal(threads, probe_free_threading())
+    if refusal:
+        print(refusal.value(), flush=True)
         process_exit(EXIT_NOT_FREE_THREADED)
 
 
@@ -411,91 +420,38 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     # after it, so an in-flight job always has somewhere to land.
     #
     # Under `--mount` this loop runs BOTH kinds at once, one submit lane per
-    # mount, exactly as prefork's `_serve_offloaded` does: the sync mounts'
-    # pool threads and the async mounts' executors are parked on different
-    # lanes of one pool, so `submit(slot, path)` reaches the worker that can
-    # actually run that request. Per-mount modes are per-LANE — the two
-    # server fields below decide what a lane's worker is, never "what this
-    # loop is".
+    # mount, through the wiring prefork's `_serve_offloaded` uses
+    # (`wire_offload`): the sync mounts' pool threads and the async mounts'
+    # executors are parked on different lanes of one pool, so
+    # `submit(slot, path)` reaches the worker that can actually run that
+    # request. Per-mount modes are per-LANE -- the two server fields below
+    # decide what a lane's worker is, never "what this loop is".
     var opts = Pointer[ServeOptions, MutUntrackedOrigin](
         unsafe_from_address=ctx.user
     )
     if opts[].qos:
         _ = request_qos_class(QOS_CLASS_USER_INTERACTIVE)
-    var mounted = len(opts[].mount_prefixes) > 0
-    var asgi_lanes = opts[].asgi_mounts.copy()
-    var pool_lanes = wsgi_lanes(opts[])
 
     var blocking = server[].blocking_threads
     var executor_mode = server[].asgi_executor
-    var run_executor = executor_mode or len(asgi_lanes) > 0
-    var use_offload = blocking > 0 or run_executor
+    var use_offload = serves_offloaded(opts[], executor_mode, blocking)
     var pool = OffloadPool(server[].config.max_connections if use_offload else 0)
     # This mode refused a GIL-enabled interpreter at startup, so the pool
     # wakes eagerly (`OffloadPool.parallel`).
     pool.set_parallel(True)
-    var pool_addr = pool.addr() if use_offload else 0
-    # This loop's handler needs the pool for one thing: a chunk frame its
-    # outbox refuses must abort the stream rather than vanish. See
-    # `WSGIHandler.abort_pool_addr`.
-    handler.set_abort_pool(pool_addr)
-    if use_offload and opts[].realtime and ctx.index < len(server[].bus_write_fds):
+    var threads = OffloadThreads()
+    if use_offload:
         # A pool thread's hold must land in THIS loop's registries, so it
         # rides this loop's own bus channel -- never another loop's, whose
         # slot numbers mean nothing here.
-        pool.set_hold_notify(server[].bus_write_fds[ctx.index])
-    if mounted:
-        # Lane i is mount i, so this loop's `submit(slot, path)` and the
-        # handler's `app_for(path)` cannot disagree: both ask
-        # `match_path_prefix` the same question about the same table.
-        for i in range(len(opts[].mount_prefixes)):
-            pool.add_lane(opts[].mount_prefixes[i])
-    var pool_count = (
-        blocking if (len(pool_lanes) > 0 or not executor_mode) else 0
-    )
-    var pool_threads = BlockingPool(
-        0 if (executor_mode and not mounted) else pool_count
-    )
-    var exec_thread = AsgiExecutor(
-        len(asgi_lanes) if len(asgi_lanes) > 0 else 1
-    )
-    if run_executor:
-        # Streaming channel before any executor thread exists; the shared
-        # chunk pair's read end becomes this loop's bus fd, and each
-        # executor learns where its own lane's disconnect tags go — on that
-        # mount's submit channel, since that is where it is parked. Every
-        # executor gets its OWN drain-ack pair: credit belongs to the
-        # executor owning the slot, and an ack routed elsewhere is a stream
-        # stalled forever.
-        pool.enable_stream_channel()
-        pool.enable_base_stream_ack()
-        # The pump shape, per loop: keep the per-pass outbox sweep (see
-        # `_serve_offloaded` and offload.mojo, `sweeps_every_pass`).
-        pool.set_sweep_every_pass()
-        if len(asgi_lanes) == 0:
-            handler.set_asgi_notify(pool.submit_write_fd(-1))
-        for k in range(len(asgi_lanes)):
-            var lane = asgi_lanes[k]
-            pool.enable_stream_ack(lane)
-            handler.set_lane_notify(lane, pool.submit_write_fd(lane))
-        var exec_lanes = asgi_lanes.copy()
-        if len(exec_lanes) == 0:
-            exec_lanes.append(-1)
-        exec_thread.start(pool_addr, ctx.user, exec_lanes^, qos=opts[].qos)
-    if pool_threads.count > 0 and not pool.chunk_active():
-        # Pool threads stream WSGI iterables through the same channel the
-        # executor uses; a pure-WSGI pool server needs it created too.
-        pool.enable_stream_channel()
-    if pool_threads.count > 0:
-        # See `_serve_offloaded`: read the lanes before `start` moves them.
-        if opts[].realtime:
-            if len(pool_lanes) == 0:
-                handler.set_ws_pool_notify(-1, pool.submit_write_fd(-1))
-            for wl in range(len(pool_lanes)):
-                handler.set_ws_pool_notify(
-                    pool_lanes[wl], pool.submit_write_fd(pool_lanes[wl])
-                )
-        pool_threads.start[T](pool_addr, ctx.user, pool_lanes^, qos=opts[].qos)
+        var hold_fd = -1
+        if opts[].realtime and ctx.index < len(server[].bus_write_fds):
+            hold_fd = server[].bus_write_fds[ctx.index]
+        threads = wire_offload[T](
+            pool, handler, opts[], executor_mode, blocking, ctx.user,
+            hold_notify_fd=hold_fd,
+        )
+    var pool_addr = pool.addr() if use_offload else 0
     # The chunk channel consumes `bus_read_fd`, so this thread's own
     # BroadcastBus channel rides the loop's second registered fd. Both are
     # drained identically (same codec, same `sse_peer_frame`), which is
@@ -511,45 +467,10 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     )
 
     if use_offload:
-        # Detached across it: a receiver finishing its last job (or the
-        # executor draining its tasks) needs to attach, and it cannot
-        # while this thread holds a state and blocks.
-        #
-        # Both kinds are stopped when both ran (a mounted mix): each sends
-        # its pills PER LANE, because a worker parked on lane 2 is not
-        # woken by a pill sent to lane 0 and `next_job` has no timeout —
-        # the failure is a hung `pthread_join`, not a slow one.
-        ref cpy = Python().cpython()
-        var join_ts = cpy.PyEval_SaveThread()
-        var failed = 0
-        var stuck = 0
-        if run_executor:
-            failed += exec_thread.stop_and_join(pool, JOIN_TIMEOUT_NS)
-            stuck += exec_thread.stragglers
-        if pool_threads.count > 0:
-            failed += pool_threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
-            stuck += pool_threads.stragglers
-        if stuck > 0:
-            # Same reasoning as `_serve_offloaded` in m0serve.mojo: a thread
-            # still inside the application past the budget never returns,
-            # and the process leaves without it. From a serving thread that
-            # ends every loop at once -- acceptable, because by now every
-            # loop's own 5 s drain has long elapsed.
-            print(
-                "thread[" + String(ctx.index) + "] " + String(stuck)
-                + " handler thread(s) still inside the application "
-                + String(JOIN_TIMEOUT_NS // 1_000_000_000)
-                + " s after the drain; exiting without them",
-                flush=True,
-            )
-            process_exit(0)
-        cpy.PyEval_RestoreThread(join_ts)
-        if failed > 0:
-            print(
-                "thread[" + String(ctx.index) + "] " + String(failed)
-                + " offload thread(s) did not exit cleanly",
-                flush=True,
-            )
+        # From a serving thread a straggler's `_exit` ends every loop at
+        # once -- acceptable, because by now every loop's own 5 s drain has
+        # long elapsed.
+        join_offload(threads, pool, "thread[" + String(ctx.index) + "] ")
     # `pool` must outlive the join — a thread still finishing a job writes
     # into it. This use is what keeps destroy-at-last-use from freeing it
     # somewhere above.

@@ -1866,6 +1866,14 @@
       "evidence": "`Smoke test the Mojo demo's deploy image` (every PR) \u2014 the image's last layer measures itself (unpacked bytes of the filesystem and of `/app`, and that no interpreter is anywhere in it, failing the build if one is) into `/app/about.json`, which the app reads through `M0_IMAGE_FACTS`; the probe re-measures with `du` as root and requires agreement within 1 %, the version to be `pyproject.toml`'s, the target CPU the one asked for, `/about` to be the file verbatim, and the page's footer to carry exactly its version, its no-Python clause and both sizes as the app formats them. `scripts/blobs_probe.py serve`, `smoke-blobs`' main run, then passes through the published port, 100 streams are held and answered, and a stream that has received a frame is ended BY THE SERVER on `docker stop` -- exit 0 within 10 s, nothing abandoned in the log. `sabotage-mojo-image` (pre-release) builds a size written rather than measured, a footer sizing the app as the image, a page rendered without its footer, an `/about` that is not the file, and a producer never told to stop, and each fails in the phase that names it. The same probe, pointed at a URL instead of an image, is what the `deploy-blobs` job runs against `blobs.m0serve.dev` after a release: `/about` naming the version, the footer, whole-state frames and a producer stepping"
     },
     {
+      "id": "M28",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "A mount set larger than a loop's handler pool can lane -- 126 applications, the lanes its wake block has room for -- is refused with 78 before the bind and the fork, and `--doctor` refuses it with the same code: every mount is a submit lane whenever the loop hands requests to threads, and one ASGI mount among them puts the set on the pool, so the cap holds whatever `--blocking-threads` says",
+      "status": "verified",
+      "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR) \u2014 127 mounts under the zero-config pool and under `--blocking-threads 0`, each required to agree with the doctor and to exit 78, and 128 with a Mojo mount given no thread, where the mount refusal (2) must come first. Before: the zero-config server bound, imported every mount and exited 1 with `lane 127 has no wake words` from `add_lane`, while the doctor reported 0. The unit half is `test_checks.mojo:test_more_mounts_than_a_pool_has_lanes_are_refused_with_78`"
+    },
+    {
       "id": "N1",
       "section": "N",
       "category": "N. Writing an application in Mojo",
