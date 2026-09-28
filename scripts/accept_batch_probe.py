@@ -21,7 +21,7 @@ widest GAP, not its length: a later macOS run measured a request at
 burst's total judged the runner's timers again, while no two of its answers
 were more than 100 ms apart.
 
-  arm       the default batch (ACCEPT_BATCH, read from event_loop.mojo so the
+  arm       the default batch (ACCEPT_BATCH, read from loop/state.mojo so the
             bound follows the constant): `/fast` answered within one and a
             half batches' cost of the blocker -- the loop served the
             connection it held before the next batch, not after the backlog
@@ -64,7 +64,7 @@ BLOCK_MS = 600
 # request: 11 ms on Linux, 54-100 ms on the macOS runner.
 GAP_MS = 500
 LOOP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packages",
-                    "m0-http", "lightbug_http", "event_loop.mojo")
+                    "m0-http", "lightbug_http", "loop", "state.mojo")
 
 
 # Which phase is running, for the crash handler below: a traceback names the

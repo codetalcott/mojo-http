@@ -203,7 +203,7 @@ struct ServeOptions(Copyable, Movable):
     reply (RFC 6455 5.5.1). With no sweep there is nothing to reap a peer
     that never replies, so that configuration deliberately keeps the older
     close-at-once behaviour rather than leaking the slot -- see
-    `WS_CLOSE_LINGER_NS` in event_loop.mojo.
+    `WS_CLOSE_LINGER_NS` in lightbug_http/loop/state.mojo.
     """
     var body_timeout: Int
     """`--body-timeout`: seconds a request body may take to arrive once its

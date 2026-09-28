@@ -41,7 +41,7 @@ DOCKERFILE = Path("deploy/mojo/Dockerfile")
 ABOUT = Path("apps/blobs/about.mojo")
 SERVER = Path("apps/blobs/server.mojo")
 HOST = Path("packages/m0-http/m0_host/host.mojo")
-EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
+LOOP_SHUTDOWN = Path("packages/m0-http/lightbug_http/loop/shutdown.mojo")
 
 # What `.dockerignore` lets into the context, copied for a source sabotage.
 CONTEXT = [
@@ -133,7 +133,7 @@ SABOTAGES = [
     ),
     (
         "the producer is never told to stop",
-        "probe", (EVENT_LOOP, HOST),
+        "probe", (LOOP_SHUTDOWN, HOST),
         (
             "    if st.stop_addr != 0:\n"
             "        atomic_at(st.stop_addr)[].store(Int64(perf_counter_ns()))\n",

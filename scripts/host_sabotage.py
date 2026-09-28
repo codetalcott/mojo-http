@@ -19,7 +19,7 @@ gated on `test_views.mojo`, a unit gate, for that reason). An anchor that
 no longer matches is a failure -- re-point it with the line. A rule that
 takes edits in MORE THAN ONE FILE names a tuple of paths beside its tuples
 of anchors: the producer's stop has two writers since the pool lane (the
-loop's stamp in `event_loop.mojo` and the join's fallback in `host.mojo`),
+loop's stamp in `loop/shutdown.mojo` and the join's fallback in `host.mojo`),
 and removing one alone is not "never told to stop".
 
 Not here, and why: the handler built BEFORE the fork, and the pages and the
@@ -91,7 +91,7 @@ FLAGS = "flags"
 PARALLEL = "parallel"
 
 HOST = Path("packages/m0-http/m0_host/host.mojo")
-EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
+LOOP_SHUTDOWN = Path("packages/m0-http/lightbug_http/loop/shutdown.mojo")
 VIEWS_SRC = Path("packages/m0-http/src/views.mojo")
 HOST_CHECK = Path("apps/host_check/server.mojo")
 FLAGS_SRC = Path("packages/m0-http/m0_host/flags.mojo")
@@ -163,7 +163,7 @@ SABOTAGES = [
     (
         "the producer is never told to stop",
         SMOKE,
-        (EVENT_LOOP, HOST),
+        (LOOP_SHUTDOWN, HOST),
         (
             "    if st.stop_addr != 0:\n"
             "        atomic_at(st.stop_addr)[].store(Int64(perf_counter_ns()))\n",

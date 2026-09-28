@@ -953,6 +953,22 @@ lightbug_http
         registers. Behaviour-preserving: the blocks moved verbatim and run
         in the same order. The file went from 4,576 lines to 3,686.
 
+      - event_loop.mojo, loop/ (2026-09-28): the event loop is split into
+        modules, the package `lightbug_http.loop` (review record C3):
+        `state` (`LoopState`, the constants the modules share, and the
+        per-slot transitions, `_close_slot` among them), `timers`,
+        `accept`, `request`, `response`, `streams`, `offload` (the loop's
+        side of the handler pool and the ASGI executor) and `shutdown`.
+        `event_loop.mojo` keeps `prepare_loop`, `run_event_loop`,
+        `run_pass_once` and the pass's outline, `_run_pass`, and imports
+        what the ASGI executor takes from it, so no caller changed. A move:
+        every function and comment went verbatim, by script, save two
+        comments that pointed across the new boundaries. The fork's one
+        import of `m0_http` (`m0_http.log`) now sits in `loop/state.mojo`,
+        with the access log's `_record_response`, and DECISIONS D33 covers
+        every module of `loop/`. The 3,686-line file is a 467-line door and
+        eight modules of 139 to 946 lines.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -4,7 +4,7 @@ Everything protocol-shaped lives here, socket-free, so the whole state
 machine is unit-testable without a connection: the opening handshake
 (`websocket_upgrade`), frame encoding (`encode_ws_frame`), and the
 incremental frame parser (`WSState.feed`). The event loop owns the sockets
-and calls in; see `event_loop.mojo` for the wiring.
+and calls in; see `loop/streams.mojo` for the wiring.
 
 The split of responsibilities is deliberate:
 
