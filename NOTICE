@@ -745,6 +745,13 @@ lightbug_http
         `caf\xc3\xa9`, an ASGI application's own `caf\xc3\xa9` as
         `caf\xc3\x83\xc2\xa9`.
 
+      - c/process.mojo (2026-09-28): `executable_path` builds its String
+        from the bytes the OS returned, through the new `path_from_bytes`
+        (SPEC E35). It appended `chr()` of each byte, which encodes a byte
+        at or above 0x80 as a two-byte codepoint, so a binary under
+        `/Users/josé/` answered `josÃ©`, and every exec `--spawn-workers`
+        made of it failed with ENOENT.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

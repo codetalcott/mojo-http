@@ -43,6 +43,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Django's and the session cookie `m0_http.session` builds are, is
   unchanged.
 
+- **`--spawn-workers` works for a binary installed under a path that is
+  not ASCII** (SPEC E35). The running binary's path was rebuilt a byte at
+  a time as characters, so each byte above 0x7F became two: under
+  `/Users/josé/` every worker's exec failed with "No such file or
+  directory" and m0serve refused to serve (exit 78). The path is now the
+  bytes the operating system returned.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

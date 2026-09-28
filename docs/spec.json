@@ -546,6 +546,14 @@
       "evidence": "`Smoke test spawned workers` (every PR) \u2014 two exec'd workers serve one listener, a SIGKILLed one is re-exec'd, SIGTERM to the supervisor reaps them, and the doctor reports `worker_mode`; on macOS the negative arm: `urllib.request.getproxies()` answers under spawn and kills a forked worker 3 of 3. The exec path itself: `test_respawn.mojo:test_spawned_workers_run_the_exec_image_with_their_index`"
     },
     {
+      "id": "E35",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "`--spawn-workers` re-execs a binary installed under a path that is not ASCII: the path it execs is the bytes the OS returned",
+      "status": "verified",
+      "evidence": "`test_respawn.mojo:test_a_path_above_ascii_keeps_its_bytes_for_the_exec` (every PR) \u2014 `executable_path` rebuilt the path a byte at a time with `chr()`, which encodes a byte above 0x7F as two, so under `/Users/jos\u00e9/` every spawned worker's exec failed with ENOENT and m0serve refused to serve (78). The test holds the bytes-to-path step on UTF-8 and on bytes that are not UTF-8 at all; `executable_path`'s own call to it is reached only by a binary under such a path, which no gate builds"
+    },
+    {
       "id": "E17",
       "section": "E",
       "category": "E. Process and worker model",
