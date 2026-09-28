@@ -41,7 +41,7 @@ been priced by part.
 
 ## The instrument first
 
-`scripts/bench_bridge_parts.mojo` grew an ASGI half before anything was
+`scripts/probes/bench_bridge_parts.mojo` grew an ASGI half before anything was
 changed: a six-header app, a stand-in port that records what
 `ExecutorPort` would dispatch, the loop driven in batches of a thousand.
 The rows split the executor's per-request work as `spawn` (the crossing,

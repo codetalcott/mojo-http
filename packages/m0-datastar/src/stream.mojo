@@ -549,7 +549,11 @@ struct DatastarStream:
         return eid
 
     def redirect_to(mut self, url: String, location: String) raises -> Int:
-        """Redirect every subscriber to `location`."""
+        """Redirect every subscriber to `location`.
+
+        Raises, queueing nothing, when `location` is neither an http(s) URL
+        nor a reference that stays on the page's site; see `sse.redirect`.
+        """
         var eid = self._next_id()
         var frame = _frame_redirect(
             location=location, event_id=String(eid)

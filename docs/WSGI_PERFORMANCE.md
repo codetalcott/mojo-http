@@ -192,7 +192,8 @@ well: a hello route cannot produce the failure Stage B fixes.
 ### A methodology trap, recorded because it nearly produced a wrong answer
 
 The first `wrk` table (`scripts/bench_wsgi_tail.sh`, which measures
-keep-alive *and* close-per-request in each row) reported a clean 8–10x tail
+keep-alive *and* close-per-request in each row; removed from the tree on
+2026-09-28, last in commit `a78f189`) reported a clean 8–10x tail
 gap between threads and prefork — `--threads` p99 17–22 ms against
 prefork's 2.3 ms — and five rows with no numbers at all. Both were the
 same artifact.
@@ -302,7 +303,7 @@ could retire it.
 ### What the bridge is actually doing — measured, not assumed
 
 Reading the code suggested the Python shim's environ parse. Splitting the
-~1 ms by part (`scripts/bench_bridge_parts.mojo`, 20k iterations, a
+~1 ms by part (`scripts/probes/bench_bridge_parts.mojo`, 20k iterations, a
 twelve-header GET producing a 636-byte blob) put it somewhere else:
 
 | part | before | after |
@@ -1363,8 +1364,9 @@ pinned venv unless stated:
 - Threads vs prefork: `uv pip install --python .venv/bin/python gunicorn`,
   then `scripts/bench_wsgi_modes.sh`.
 - The keep-alive tail: `scripts/bench_wsgi_tail_ka.sh`. Not
-  `bench_wsgi_tail.sh`: its close-per-request runs exhaust the ephemeral
-  port range and poison every row after the first.
+  `bench_wsgi_tail.sh` (removed on 2026-09-28, last in commit `a78f189`):
+  its close-per-request runs exhaust the ephemeral port range and poison
+  every row after the first.
 - The gunicorn comparison in Results has no script. Its shape, with the
   browser-shaped request the Setup section describes:
 

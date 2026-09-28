@@ -46,7 +46,44 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `ListenConfig`'s `keep_alive` argument, which was stored and never read.
   NOTICE lists each.
 
+- **`listen_and_serve` and `Server.serve` run the event loop, so SSE and
+  WebSockets work through them.** They were a blocking accept loop of
+  their own, the one README's WSGI example calls. It served one connection
+  at a time: a second client waited behind a first that held its
+  keep-alive connection idle, up to the 60-second idle timeout. It
+  answered every SSE or WebSocket response with `409`. And it had missed
+  fixes the event loop carries: an upload over the body limit had its
+  connection reset under it after a few hundred KB, where the loop reads
+  and discards the rest and the client reads its `413`. Both now delegate
+  to `listen_and_serve_nonblocking` and `serve_nonblocking` with their
+  defaults, and a `shutdown_read_fd` given to `Server` ends either
+  gracefully. `m0serve` and the Mojo host never used them.
+  `test_sigpipe.mojo` runs each until its closed shutdown pipe ends the
+  loop, under a watchdog that fails the file rather than hang it. Found in
+  review.
+
+### Removed
+
+- **The blocking accept loop's own code**, about 560 lines of the fork:
+  `handle_connection`, `gate_streaming_response`, and
+  `StreamingUnsupported`, the `409` it answered a stream with. The `m0`
+  wheel ships the fork's source, so an application calling one of them
+  directly needs its own copy; `listen_and_serve` and `Server.serve` stay,
+  as above. NOTICE lists each.
+
 ### Fixed
+
+- **m0serve refuses more than 126 mounts before it binds, and `--doctor`
+  says so too.** Each mount is a lane of the loop's handler pool, which has
+  room for 126. With a 127th, m0serve bound the port, imported every
+  application and then exited 1 on a bare `Unhandled exception` line,
+  while `--doctor` reported the same configuration as fine. Both now exit
+  78 at once, naming the limit. The limit applies whatever
+  `--blocking-threads` is set to, because a single ASGI mount among them
+  puts the whole set on the pool. `--doctor` now reads the same ordered
+  list of checks the server refuses by, so the two cannot disagree about
+  which refusal comes first, and it lists every check it made, passing
+  ones included. `smoke-doctor` gates both. Found in review.
 
 - **An inbound WebSocket message reaches the mount that approved the
   socket when mounts are served inline** (SPEC I12). Under `--realtime`
@@ -136,6 +173,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `?connect_timeout`, and `...&` became `...&&`, an empty keyword. libpq
   refused both before connecting, with a message about percent-encoding a
   password.
+
+- **The capability sheet said m0-postgres's binary results read like its
+  text results for every type** (SPEC O11). They do not for `timestamp`,
+  `timestamptz`, `bytea` and `float4`, nor for a `float8`'s text. In
+  binary mode a timestamp's `text()` is microseconds from 2000-01-01
+  rather than a date, a `bytea`'s is its raw bytes rather than the `\x`
+  escape, and a `float4` reads `0.10000000149011612` where text mode reads
+  `0.1`. O11 now names the types that agree, and a Known issue records
+  what each mode returns and what a fix needs. Read those types in text
+  mode, which is the default.
+
 - **A request carrying two `Host` lines, or two `Transfer-Encoding`
   lines, is answered 400** (SPEC B10, B11). The parser kept the last line
   of a repeated field and served the request, so a proxy that routes on
@@ -206,7 +254,67 @@ in a minor release: `m0serve`'s flags and environment variables, the
   its own measurements: the postgres job's summary had been empty since the
   job was added, rendered with a flag `emit.py` does not have, while the
   check counted the other jobs' renders as its.
+- **Every CI job keeps the coverage its gates declare, and the release
+  workflow's cleanliness check reads steps, not comments.** The unit-tests
+  and aarch64 wheel jobs ran their `emit.py --covers` declarations with
+  nowhere to record them, because the check that each job collects counted
+  measurements only; both now record, render and upload like the rest, and
+  `emit.py --selftest` no longer writes into, or fails under, the results
+  file of the job running it. Each `wheel-consume` job must assert its own
+  cleanliness in a step that runs, where the phrase in a comment used to
+  pass. `sabotage-spec` no longer reports a working rule MISSED when the
+  first test file carries extra coverage, and `test.yml` no longer runs the
+  milestone rot gates a second time beside the docs gate.
 
+- **A client that resets its connection no longer holds its slot on
+  Linux** (SPEC C9). epoll reported a socket error as a failed
+  registration, which the event loop skips, so a client's RST was never
+  seen: a response stalled on a full socket, or a keep-alive connection
+  sitting idle, kept its slot and descriptors for the life of the process
+  unless `--idle-timeout` reaped it, and every graceful shutdown then
+  waited out its full 5 s drain. The reset now closes the slot at once, as
+  it always did on macOS. Two sends that stop part-way are finished too. A
+  `--static` file whose response head the socket could not take at once is
+  now sent after it (J10): the file was skipped, so a client pipelining
+  requests read the next response's head where the body belonged. And a
+  WebSocket ping or Close answered while the send buffer toward the client
+  is full goes out whole once the socket drains (I31), where the reply was
+  cut, misframing every frame after it, or dropped when refused whole.
+- **A client that stops reading no longer keeps the event loop at a full
+  core on macOS** (SPEC C10). A connection waiting for its client to take
+  a response, or whose request was out on a handler thread or the ASGI
+  executor, stayed registered for reads, and macOS reports an unread
+  event on every wait: a client that half-closed, or sent its next
+  request, and then stopped reading held the loop at 100% CPU for as long
+  as the response waited or the view ran. Such a connection is not
+  watched for reads until it can read again, on both platforms, and what
+  the client sent is still answered then. With `--access-log`, a stream
+  or WebSocket whose frames did not go out in a single send logged a
+  record for each such frame, and a chunked stream one more at its end;
+  `--metrics` counted each as a response. A stream is one record now,
+  written when its head lands (F18). On Linux, a WebSocket whose incoming
+  messages had been paused for the application could stop sending for
+  good if the pause lifted while a frame was still going out. And a
+  WebSocket the server closed itself, answering a message too large for
+  the handler pool with 1009, could be held until the process exited when
+  its client never answered the Close; it is closed after the 2 s linger.
+- **A keep-alive request no longer costs two `epoll_ctl` calls on Linux**
+  (SPEC A13). Since 0.13.0 the event loop re-registered a connection's
+  read interest after every read, which the kernel refused as already
+  registered before accepting the modification behind it: two wasted
+  system calls per request, the pair 0.4.0 had measured out of the hot
+  path. Only a read that fills the buffer, or the client's EOF, now
+  re-registers; the rest of a large request is still read at once.
+  `smoke-large-request` counts the calls under `strace` on Linux: 4 over
+  2000 keep-alive requests, where the old loop made 4004. macOS paid one
+  `kevent` a request for the same reason, and no longer does.
+- **`--workers N` no longer lets a worker's load read one connection
+  high for good** (SPEC E16). Since 0.18.0 the worker that passes a
+  connection to a sibling counted it in flight only after sending it, so
+  a sibling that admitted it and finished its pass first found nothing to
+  retire, and the late count then stayed: that worker looked one
+  connection busier than it was to every accept after. The count now goes
+  up before the send, and back down if the send fails.
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
   and the login read the silence as off: a visit to the `http://` URL sent
@@ -248,6 +356,35 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server `kill -PIPE`, then a client that resets before its answer, on
   both CI legs.
 
+- **A Datastar redirect no longer sends a location that runs script or
+  leaves the site** (SPEC I29). `redirect` and `DatastarStream.redirect_to`
+  assign the location to `window.location`, which runs a `javascript:` URL
+  in the page's origin and follows `//evil.example` off the site; a
+  `next=` parameter after a login is how either arrives. Both now raise
+  unless the location is an `http`/`https` URL or a reference relative to
+  the page (`/path`, `path`, `?query`, `#fragment`) that stays on its
+  site. The location is read as the browser reads it, so the spellings a
+  browser also takes for those are refused too: a leading space, a tab
+  inside the scheme, the scheme in capitals, `/\evil.example`. A redirect
+  off the site still goes out when it names its scheme. Found in review.
+
+- **The Date header is right with loops on threads on Linux.** Every event
+  loop formats its own Date header, once a second, and did it through
+  libc's `gmtime`, which on glibc returns one buffer for the whole
+  process. A Mojo host application under `M0_THREADS`, or m0serve under
+  `--threads`, runs its loops as threads of one process, so a loop could
+  read fields another loop had just written, and at a day's or a year's
+  boundary send a Date mixing two seconds' fields. The formatter now fills a
+  buffer of its own (`gmtime_r`). macOS was not affected: its `gmtime`
+  keeps a buffer per thread. Found in review.
+
+- **`m0_core.json_parse.parse_json_int` no longer reads `1.9` or `1e3` as
+  1.** It returned a number's leading digits, so a fraction was cut off
+  and an exponent dropped, against its own contract of `None` for a value
+  that is not an integer. A value whose digits are followed by anything
+  but whitespace, `,`, `}` or `]` is now refused; `parse_json_number`
+  reads fractions and exponents. Found in review.
+
 ### Changed
 
 - **`SqliteLib` and `PgLib` keep their C entry points in one table,
@@ -272,6 +409,39 @@ in a minor release: `m0serve`'s flags and environment variables, the
   back, then ends the harness by that signal. Each task takes `--only` and
   `--skip`, and `sabotage-keepalive` now checks its unsabotaged probe
   first.
+- **A supervisor, and what an application runs before its loop, survive
+  SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
+  which a supervisor never enters: m0serve's under `--workers` or
+  `--reload`, and the Mojo host's under `M0_WORKERS`. `kill -PIPE` ended
+  either with status 141 and left its workers serving, orphaned (measured
+  on macOS). m0serve's supervisor forks before any Python call, so
+  CPython's own ignore never reached it. A Mojo host application's `make`,
+  producer and pool threads also run before the loop, so a write there to
+  a peer that had gone ended the server before it served (one worker, or
+  `M0_THREADS`), or killed worker 0 on every respawn (`M0_WORKERS`). The
+  listener now ignores SIGPIPE first: both hosts bind before they fork or
+  start a thread, so every process and thread they run inherits it.
+  `smoke-host` sends the supervisor `kill -PIPE` and has a producer's
+  `make` write to a closed pipe; `smoke-spawn-workers` sends m0serve's
+  supervisor `kill -PIPE`.
+
+- **A malformed accept-sharing hand-off no longer leaks its connection**
+  (SPEC E16). `recv_fd` refuses a message whose control data was cut
+  short, and its check never saw one. Linux's `MSG_CTRUNC` is 0x08, and
+  the 0x20 it tested there is `MSG_TRUNC`, set when the payload is cut
+  short. macOS's `struct msghdr` is 48 bytes, not the 56 assumed, so its
+  flags were read from a word the kernel never writes. A refused message
+  also closed nothing, though the kernel installs each passed descriptor
+  as the message arrives. So on Linux a hand-off whose payload was cut
+  short lost its connection, left open for the life of the worker with
+  its client waiting, and on both platforms a message carrying extra
+  descriptors was taken in part, the rest left open. Neither shape comes
+  from the server's own `send_fd`, which passes one descriptor and a
+  payload that fits. The flags are now read where each kernel writes
+  them, a truncated control message is refused with every descriptor it
+  delivered closed, and a payload cut short keeps its descriptor.
+  `test_accept_share.mojo` sends both shapes and checks that nothing is
+  left open.
 
 ## [1.7.0] — 2026-09-27
 

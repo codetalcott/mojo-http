@@ -819,6 +819,99 @@ lightbug_http
         that now have no raiser are left for the change that replaces them,
         and the IPv6 and `getaddrinfo` paths are as they were.
 
+      - c/epoll_backend.mojo (2026-09-28): `event_flags` reports EPOLLERR
+        as EV_EOF, the way kqueue reports a socket error, where it was
+        EV_ERROR, which the event loop skips as kqueue's failed
+        registration. A client's RST reaches epoll as one EPOLLERR event,
+        and the one-shot write or edge-triggered read it lands on is spent
+        by it, so the reset was never seen and the slot was held for the
+        life of the process (SPEC C9).
+
+      - event_loop.mojo (2026-09-28): the write-ready path that finishes a
+        response's head pumps its file body next, as `_finish_response`
+        does; it went straight to `_after_send`, which reset the slot for
+        its next request with the file unsent (J10). The WebSocket read
+        path queues whatever part of a pong or close echo the kernel did
+        not take as the slot's response, stops reading until it lands, and
+        closes after a close echo only once it has: the send's count was
+        discarded, so a reply taken in part lost its tail and misframed
+        every frame after it, and one refused whole was dropped (I31).
+
+      - c/kqueue_backend.mojo, c/kqueue.mojo (2026-09-28): the write
+        one-shot deletes the fd's read filter in the same `kevent` call
+        (`kevent_register_pair`, which forgives the ENOENT of a delete
+        that finds nothing), so a write one-shot replaces the read
+        interest on both backends, as epoll's MOD always did. The read
+        filter is level triggered and stayed, and a slot waiting on a
+        client that had half-closed or pipelined was reported readable by
+        every wait: the loop at a full core (SPEC C10).
+
+      - event_loop.mojo (2026-09-28): per-slot lifecycle helpers own the
+        resets of `slot_read_armed` and `slot_idle_deadline` (`_arm_reads`,
+        `_rearm_reads`, `_stop_reads`, `_await_write`, `_begin_request`,
+        `_end_request`, `_stream_idle`, `_arm_ws_linger`, `_ws_linger`,
+        `_record_response`, `_farewell_streams`), in place of some forty
+        call sites. An offloaded slot's read event drops its read interest
+        until the completion (C10); `_arm_reads` leaves a slot waiting to
+        write alone, where a WebSocket resume on epoll replaced the pending
+        write one-shot with a read (R1); a response is recorded once, not
+        again for every stream frame the write-ready path finishes (F18);
+        and a frame that lands no longer zeroes a WebSocket's close linger.
+
+      - event_loop.mojo (2026-09-28): `_handle_read_headers` re-registers
+        read interest only after a read that filled the staging buffer, or
+        the peer's EOF, and otherwise keeps a registration that stands
+        (`_arm_reads`). Re-registering after every read put an `epoll_ctl`
+        ADD, refused EEXIST, and its MOD on every keep-alive request
+        (review record R2).
+
+      - accept_share.mojo (2026-09-28): the sender raises a sibling's
+        `pending` before its `sendmsg` and takes it back if the send fails;
+        raised after, a sibling that admitted and retired the connection
+        first left the count one high for good (review record R5). The send
+        is a `HandoffPost` parameter of `send_with`, so a test can take the
+        receiver's turn inside the hand-off.
+
+      - connection.mojo, c/process.mojo (2026-09-28): `ListenConfig.listen`
+        calls `ignore_sigpipe` first (SPEC A25). Both hosts bind before
+        they fork or start a thread, so the ignore reaches what the loop's
+        own call cannot: a supervisor, which never enters the loop (m0serve's
+        under `--workers` or `--reload`, the Mojo host's under `M0_WORKERS`;
+        `kill -PIPE` ended either with 141 and orphaned its workers), and
+        what a Mojo host application runs before its loop, its `make`, its
+        producer and its pool threads.
+
+      - c/fdpass.mojo (2026-09-28): `recv_fd`'s `MSG_CTRUNC` check, which
+        tested control truncation on neither platform. Linux's `MSG_CTRUNC`
+        is 0x08; the 0x20 tested is its `MSG_TRUNC`. macOS's `struct msghdr`
+        is 48 bytes, not 56, and `msg_flags` is the high half of the sixth
+        word, so the seventh, which the check read, was never written. The
+        bit is now per platform and the flags are read where each kernel
+        writes them. A refused message closes every descriptor that reached
+        its control buffer, since the kernel installs them on receipt. A
+        payload cut short keeps its descriptor.
+
+      - server.mojo, http/common_response.mojo (2026-09-28): the blocking
+        accept loop is retired. `Server.listen_and_serve` and
+        `Server.serve` delegate to `listen_and_serve_nonblocking` and
+        `serve_nonblocking`, so every entry point runs the event loop and
+        honours the server's `shutdown_read_fd`. Removed with the loop:
+        `handle_connection`, `_send_error_response`,
+        `gate_streaming_response` and the 409 `StreamingUnsupported` it
+        answered SSE and WebSocket responses with, and
+        `ConnectionProvision`'s `request` and `response` fields, which
+        nothing else used. It served one connection at a time, so one idle
+        keep-alive client held every other, and it had missed fixes the
+        event loop carries, the lingering close after an early 413 among
+        them; nothing in the tree called it.
+
+      - http/date.mojo (2026-09-28): `http_date_from_unix` fills a
+        `struct tm` it allocates, through `gmtime_r`, where it read the one
+        `gmtime` returns. On glibc that is one static buffer for the whole
+        process, and every event loop formats its Date header here, so
+        with loops on threads (`M0_THREADS`, `--threads`) one loop could
+        read the fields another had just written.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

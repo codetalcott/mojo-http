@@ -1095,7 +1095,7 @@ struct PyBridge(Movable):
 
     # --- diagnostic probes -------------------------------------------------
     #
-    # `scripts/bench_bridge_parts.mojo` uses these to split the per-request
+    # `scripts/probes/bench_bridge_parts.mojo` uses these to split the per-request
     # cost into its parts. They are the same operations `run` performs,
     # exposed individually; nothing in the serving path calls them.
 

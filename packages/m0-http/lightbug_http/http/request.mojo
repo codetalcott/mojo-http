@@ -142,7 +142,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
     var remote_port: Int
     """The accepted connection's peer, stamped by the non-blocking event
     loop after parsing (the same post-construction pattern as `slot_id`);
-    empty/0 on the blocking accept path and for outgoing requests. What
+    empty/0 for outgoing requests and any built without a connection. What
     feeds WSGI's `REMOTE_ADDR` and ASGI's `scope["client"]` — Django reads
     both, and an empty one silently disables every IP-keyed thing an app
     does (rate limits, allow-lists, audit logs) rather than erroring."""

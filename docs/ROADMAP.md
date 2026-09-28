@@ -140,6 +140,44 @@ somebody else's Django projects inside the pull request that trips it.
   re-tested by syncing the group and `mojo run`ning a program that prints
   `parallel_runtime_linked()`.
 
+- **m0-postgres reads `timestamp`, `timestamptz`, `bytea` and `float4`
+  differently in binary mode.** `binary=True` is one choice for the whole
+  query, and for these types it changes what the readers return. Measured
+  on 2026-09-28 against Postgres 17, the session in America/New_York:
+
+  - `timestamp` and `timestamptz`: text mode's `text()` is the server's
+    rendering (`2026-09-12 12:00:00`, and for a `timestamptz` the session's
+    zone, `2026-09-12 08:00:00-04`); binary `text()` is the count of
+    microseconds from 2000-01-01 (`842529600000000`), and binary `int()`
+    answers that count where text mode raises.
+  - `bytea`: text mode's `text()` is the escape `\x0080ff` and `bytes()`
+    that escape's ASCII; binary `bytes()` is the raw bytes, and binary
+    `text()` a `String` holding them unchecked, so not necessarily UTF-8
+    (the hazard SPEC G14 describes).
+  - `float4`: binary widens to a double, so `text()` and `float()` read
+    `0.10000000149011612` where text mode reads `0.1`.
+  - `float8`, and `float4` with it: binary `text()` is Mojo's notation, not
+    the server's `float8out` or `float4out`: `100000.0`, `-0.0`, `inf` and
+    `nan` where text mode has `100000`, `-0`, `Infinity` and `NaN`.
+
+  Past the notation, a number can differ too, because Mojo 1.1's `Float64`
+  printing and parsing are not correctly rounded. Stepping through the
+  bit patterns of every exponent, 23 of 75,388 doubles, all between about
+  2e16 and 6e19, printed as a neighbouring double: binary `text()` of
+  `6.0146505155939864e16` is `6.014650515593986e+16`. And the shortest
+  forms of 47 of 60,000 random doubles parsed one unit in the last place
+  away, so text mode's `float()` can differ from binary `float()`, which
+  decodes exactly. `Float32` printing has the same defect, which is why
+  `float4` is not rendered through it. SPEC O11 claims only the types that
+  agree.
+
+  **Closed by:** none — a design round retires it: a calendar and the
+  session's `TimeZone` for timestamps, `float4out` and `float8out`'s
+  notation and a correctly rounded printer and parser for floats, and
+  `bytea_output` for `bytea`. An application that reads these types in
+  binary mode is what would schedule it; until then, read them in text
+  mode.
+
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker

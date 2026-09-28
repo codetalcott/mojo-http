@@ -74,6 +74,14 @@ SDK option cannot be dropped silently. Map it in `event_call`.
   their own. A new single-line field gets its own `_refuse_line_break` call.
 - **`redirect` writes its location through `_js_string`.** Do not paste it
   between quotes.
+- **`redirect` refuses a location that would run script or leave the site**
+  (SPEC I29). Only an `http`/`https` URL, or a reference relative to the
+  page that does not open with two slashes, goes out: `javascript:` runs in
+  the page's origin, and `//host` leaves it. `_refuse_unsafe_location`
+  reads the location as the browser's URL parser does: leading C0 controls
+  and spaces stripped, a tab, LF or CR anywhere removed, the scheme
+  case-insensitive, `\` a slash. A plain prefix test misses
+  `javascript:` behind a space, `java<TAB>script:` and `/\host`.
 - **`execute_script`'s `attributes` go out verbatim**, the Go SDK's shape,
   so the caller escapes them.
 
@@ -112,7 +120,7 @@ SDK option cannot be dropped silently. Map it in `event_call`.
 |---|---|---|
 | Every SDK conformance case, judged by the SDK's comparator | `poe check-datastar-sdk` | I27 |
 | `read_signals` reads GET and DELETE from the query | `test_stream.mojo`, and the same harness | I28 |
-| Line breaks refused; the redirect literal escaped | `test_frame_injection.mojo` | I29 |
+| Line breaks refused; the redirect literal escaped and its location checked | `test_frame_injection.mojo` | I29 |
 | The newest state sent at `open` | `test_stream.mojo` | I24 |
 | A catch-up the journal cannot give is reported, not sent in part | `test_stream.mojo`, `smoke-todo` | I30 |
 | Invalid UTF-8 after a line break does not trap | `test_sse.mojo` | G14 |

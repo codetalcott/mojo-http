@@ -114,7 +114,25 @@ def emit(metric, value, unit=None, limit=None, task=None, path=None, tag=None):
         return False
 
 
+_ENV = ("M0_RESULTS", "M0_RESULTS_TAG")
+
+
 def _selftest():
+    """Run the checks with the caller's recording variables set aside.
+
+    Under a job that collects, the "writes nothing without a path" checks
+    wrote into the job's own results -- a measurement `m` and a coverage
+    record for A7 that no run made -- and the first of them failed, because
+    it did write. So the selftest must not depend on its environment.
+    """
+    saved = {k: os.environ.pop(k) for k in _ENV if k in os.environ}
+    try:
+        return _selftest_checks()
+    finally:
+        os.environ.update(saved)
+
+
+def _selftest_checks():
     import tempfile
 
     ok = True
@@ -128,7 +146,7 @@ def _selftest():
         p = os.path.join(d, "results.jsonl")
 
         check("no path and no M0_RESULTS writes nothing",
-              emit("m", 1, path=None) is False or not os.environ.get("M0_RESULTS"))
+              emit("m", 1, path=None) is False)
 
         check("writes a record when given a path", emit("rss", 4096, unit="KB",
               limit=12288, task="smoke-x", path=p, tag="ubuntu") is True)
@@ -187,8 +205,7 @@ def _selftest():
         check("the coverage record carries the id and task",
               (r4["covers"], r4["task"]) == ("A7", "smoke-pipelining"))
         check("no path and no M0_RESULTS writes no coverage",
-              emit_covers("A7", path=None) is False
-              or bool(os.environ.get("M0_RESULTS")))
+              emit_covers("A7", path=None) is False)
         check("an unwritable path is survived by --covers too",
               emit_covers("A7", path=os.path.join(d, "no", "dir", "f")) is False)
         emit("rss", 64, unit="KB", limit=128, path=p4)
@@ -201,6 +218,23 @@ def _selftest():
               "1 SPEC row(s) declared covered" in summarise(
                   (emit_covers("B1", path=os.path.join(d, "only.jsonl")),
                    os.path.join(d, "only.jsonl"))[1]))
+
+        # The way CI records: no path given, the variables name the file
+        # and the tag. Every check above passes a path, so this one is the
+        # only proof that a job's `env:` block reaches the file at all.
+        p5 = os.path.join(d, "env.jsonl")
+        os.environ.update(M0_RESULTS=p5, M0_RESULTS_TAG="from-env")
+        try:
+            emit("rss", 1)
+            emit_covers("A7")
+        finally:
+            for k in _ENV:
+                os.environ.pop(k, None)
+        recs = ([json.loads(l) for l in open(p5) if l.strip()]
+                if os.path.exists(p5) else [])
+        check("M0_RESULTS names the file, and M0_RESULTS_TAG the tag",
+              [(r.get("metric"), r.get("covers"), r.get("tag")) for r in recs]
+              == [("rss", None, "from-env"), (None, "A7", "from-env")])
 
     print("emit selftest: " + ("PASS" if ok else "FAIL"))
     return ok

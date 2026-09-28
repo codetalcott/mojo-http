@@ -101,9 +101,9 @@
       "id": "A13",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "Request headers larger than one socket read",
+      "capability": "Request headers larger than one socket read, at no cost to a request that fits one: only a read that fills the buffer, or the peer's EOF, re-registers read interest",
       "status": "verified",
-      "evidence": "`Smoke test a request larger than one read` (every PR)"
+      "evidence": "`Smoke test a request larger than one read` (every PR) \u2014 requests up to the 32 KB header cap are answered and a larger one refused 431, on both platforms; on the Linux leg `scripts/epoll_rearm_probe.py` counts the server's `epoll_ctl` calls under strace, at most 0.5 per request over 2000 keep-alive requests (0.002 measured, each connection's own registration; 2.002 when every read re-registered, an ADD refused EEXIST and its MOD, review record R2), and 50 requests three reads long must each be answered and raise the count, so the meter is seen to read a re-registration before its silence is trusted. macOS has no unprivileged syscall counter, and kqueue's level-triggered reads never needed the re-registration"
     },
     {
       "id": "A14",
@@ -197,9 +197,9 @@
       "id": "A25",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "A client that resets or leaves while the server writes to it costs that connection, never the process: `run_event_loop` (the Mojo host's loops, `listen_and_serve_nonblocking`'s and m0serve's prefork and threaded ones) and the blocking `Server.serve` ignore SIGPIPE before their first send, so the write fails with `EPIPE` and the connection closes. A built Mojo binary otherwise keeps the signal's default action, which ends the process; `mojo run` and m0serve's embedded CPython each ignore it on their own, which is why no gate saw it",
+      "capability": "A client that resets or leaves while the server writes to it costs that connection, never the process, and SIGPIPE ends no process a server runs: `ListenConfig.listen` ignores it first, before either host forks or starts a thread, so a supervisor, which never enters the loop (m0serve's under `--workers` or `--reload`, the Mojo host's under `M0_WORKERS`), and what a Mojo host application runs before its loop (its `make`, producer and pool threads) inherit the ignore; `run_event_loop` (the Mojo host's loops, m0serve's prefork and threaded ones, and every `Server` entry point's: `listen_and_serve`, `serve` and their `_nonblocking` forms) ignores it again before its first send, so the write fails with `EPIPE` and the connection closes. A built Mojo binary otherwise keeps the signal's default action, which ends the process; `mojo run` and m0serve's embedded CPython each ignore it on their own, which is why no gate saw it, and m0serve's supervisor forks before its first Python call",
       "status": "verified",
-      "evidence": "`Smoke test the Mojo host` (every PR) \u2014 `apps/host_check`, built, as one process: after `kill -PIPE` it must still answer `/health`, and again after a client asks for a 300 ms `/slow` and resets 50 ms in, so the answer is written to a reset socket. The signal is the arm that tells a fixed build from a broken one on both legs. Measured before the fix, on macOS: that client ended a fresh built server with status 141 in 10 of 10 rounds, as did one leaving an 8 MB response after 1 KB (event loop and blocking `Server.serve` alike), SSE subscribers resetting on 1 ms beats ended it within 8 to 34 resets, and `kill -PIPE` ended every shape. The unit halves are `test_sigpipe.mojo:test_a_write_to_a_closed_pipe_is_an_error_not_the_end`, `test_kill_pipe_does_not_end_the_process` and `test_the_blocking_server_ignores_sigpipe_before_it_accepts`, each putting the default back first, so under `mojo run` too a missing ignore kills the test process"
+      "evidence": "`Smoke test the Mojo host` (every PR) \u2014 `apps/host_check`, built, as one process: after `kill -PIPE` it must still answer `/health`, and again after a client asks for a 300 ms `/slow` and resets 50 ms in, so the answer is written to a reset socket. The signal is the arm that tells a fixed build from a broken one on both legs. In the same step, a one-worker server whose producer's `make` writes to a closed pipe before the loop starts must serve, the write failing with `EPIPE`, and the two-worker supervisor must survive `kill -PIPE`, then hold streams on both workers and reap both on SIGTERM; `Smoke test spawned workers` sends m0serve's supervisor `kill -PIPE` and requires both workers answering and the reap after. Measured before the fix, on macOS: that client ended a fresh built server with status 141 in 10 of 10 rounds, as did one leaving an 8 MB response after 1 KB (event loop and the then-blocking `Server.serve` alike), SSE subscribers resetting on 1 ms beats ended it within 8 to 34 resets, and `kill -PIPE` ended every shape. With the loop's ignore alone, `kill -PIPE` ended either supervisor with 141 and orphaned its workers, a stdout reader that left ended the host with 141 at its next line, and the producer's write ended the server before it served, with one worker and under `M0_THREADS=2` alike, and killed worker 0 on every respawn under `M0_WORKERS=2`. The unit halves are `test_sigpipe.mojo:test_a_write_to_a_closed_pipe_is_an_error_not_the_end` and `test_kill_pipe_does_not_end_the_process`, which provoke the signal, and `test_serve_runs_the_event_loop_which_ignores_sigpipe` and `test_listen_and_serve_runs_the_event_loop_which_ignores_sigpipe`, which run each public entry point until its closed shutdown pipe ends the loop and read the disposition back; each puts the default back first, so under `mojo run` too a missing ignore fails it"
     },
     {
       "id": "B1",
@@ -352,6 +352,22 @@
       "capability": "A burst of new connections does not hold the event loop away from the connections it already serves: one pass admits at most `ACCEPT_BATCH` (16) of them \u2014 off the listener, or off a sibling's accept-share channel \u2014 AFTER it has served the events of the connections it holds, and what a batch leaves is owed to the next pass, whose wait does not block, because both listeners are edge-triggered and nothing announces the same backlog twice; the graceful drain still admits every connection a sibling handed over, and the loop inversion takes owed batches inside its callback up to the old bound. `M0_ACCEPT_BATCH` overrides the batch, 0 taking the whole backlog in one pass as the loop used to (an A/B knob). Before: epoll reports no backlog depth, so its drain ran to EAGAIN, through connections that arrived during it, up to `max_connections` \u2014 and every admission is the connection's eager read, on a loop that runs `func` itself the whole request",
       "status": "verified",
       "evidence": "`Smoke test the accept batch` (every PR) \u2014 `apps/pool_spike` with `func` on the loop: a 600 ms request parks the loop, 120 connections queue behind it each carrying a 10 ms request, and a keep-alive connection already established sends `/fast`. No bound is in nominal milliseconds, because a runner's timers oversleep (two of CI's macOS runs failed one with the loop behaving). `/fast` must be answered within one and a half batches of what one such request COSTS on the box, measured first and counted from the blocker's own answer (the default 16, which the probe reads from the constant; 153 ms measured on Linux against about 256, the rest of the one batch the blocker itself was admitted in), with all 120 answered (a batch stranded behind the listener times out) and no two answers more than 500 ms apart: half the loop's one-second wait, which a wait that blocked between owed batches runs to (1012 ms measured), where the widest honest gap is one request (11 ms on Linux; 54\u2013100 ms on the macOS runner, whose per-request cost moved from 17 to 49 ms inside one run, so the burst's total is printed, not bounded). On Linux the same probe with `M0_ACCEPT_BATCH=0` must show the starvation, at least two thirds of the burst's cost (1225 ms measured against about 850) \u2014 the arm that proves the probe sees the old drain; on macOS kqueue reports the depth and the knob alone does not recreate the old order, so it is not asserted there. Sabotaged by hand before landing \u2014 no cap, nothing owed, a wait that blocks while a batch is owed, the batch taken where the listen event falls \u2014 each caught by its own check, recorded in the note with the throughput measured beside it. The design is [the-accept-batch](notes/the-accept-batch.md)"
+    },
+    {
+      "id": "C9",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A client that resets its connection gives its slot back at once, whether its response is stalled on a full socket, in memory or a `--static` file, or the connection sits idle between requests: the send or recv the reset wakes returns the error, and the slot closes",
+      "status": "verified",
+      "evidence": "`Smoke test a client that resets its connection` (every PR) \u2014 m0serve with `--idle-timeout 0`, so no deadline can give back a slot a reset leaves behind, and `--metrics`: each of the three shapes is reset with `SO_LINGER 0`, and `http_active_connections` must be one higher while the connection is open and back to its earlier count within 3 s of the reset. Fails without the fix on Linux only (review record B12): epoll reported EPOLLERR as `EV_ERROR`, which the loop skips as kqueue's failed registration, and the one-shot write or edge-triggered read the RST arrived on was spent with it. Measured in the Linux container before the fix, every shape held its slot, and a stalled file response still held the slot and both its descriptors 20 s after the reset, while SIGTERM took the full 5 s drain (0.04 s after). kqueue reports a reset as `EV_EOF`, so on macOS this passes either way"
+    },
+    {
+      "id": "C10",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A connection that is not being read costs the loop nothing: a slot waiting to write -- its response stalled on a client that is not reading, in memory or from a `--static` file -- or whose request is out on a pool thread or an executor holds no read interest, so a client that half-closed, or sent its next request, and then stopped reading is not reported again until the slot reads, and what it sent is answered then",
+      "status": "verified",
+      "evidence": "`Smoke test connections that stop reading` (every PR) \u2014 `scripts/slot_lifecycle_probe.py` meters the server's CPU for 2 s in four shapes, each built so the loop has armed its read interest before the request arrives: a 16 MiB echo stalled on its client, which then half-closes; a 16 MiB `--static` file with the next request pipelined behind it, unread; and a request on the executor, half-closed and pipelined. Each must stay under half a CPU second, and everything the client asked for must then arrive whole. A spinning child must read as spinning first, so the meter is checked before it is trusted. Fails without the fix on macOS only (review record R4): kqueue's read filter is level triggered, stayed registered beside the write one-shot and was never removed for an offloaded request, so every wait reported the same bytes or EOF \u2014 1.97\u20132.01 CPU seconds in 2 in each shape, against 0.00 for a request on the executor with nothing pending; the write one-shot now drops the read filter in the same `kevent` call, and an offloaded slot's read event drops it until the completion. Each half sabotaged alone fails its own two shapes. epoll's write one-shot replaces its read interest and its reads are edge triggered, so Linux passes either way. The backend contract is also `test_slot_lifecycle.mojo:test_a_write_wait_holds_no_read_interest`, against the real multiplexer on each OS"
     },
     {
       "id": "D1",
@@ -591,7 +607,7 @@
       "category": "E. Process and worker model",
       "capability": "Workers sharing one listener share its connections: the worker that wins an accept passes the connection to the least-loaded sibling over a pre-fork `SCM_RIGHTS` channel, so a burst of keep-alive connections spreads across `--workers N` to within 2:1 on both platforms, forked or spawned, at no cost to a single worker (`M0_ACCEPT_SHARE=0` restores the bare race)",
       "status": "verified",
-      "evidence": "`Smoke test accept sharing` (every PR) \u2014 two rounds of a 32-connection burst per worker mode must land within 2:1, the doctor must report `accept_sharing` for two workers and not for one, and on macOS the knob-off arm must skew; the descriptor passing and the load policy: `test_accept_share.mojo:test_a_connection_passes_between_two_workers_with_its_peer`. The measurement, both platforms before and after: docs/notes/accept-sharing.md"
+      "evidence": "`Smoke test accept sharing` (every PR) \u2014 two rounds of a 32-connection burst per worker mode must land within 2:1, the doctor must report `accept_sharing` for two workers and not for one, and on macOS the knob-off arm must skew; the descriptor passing and the load policy: `test_accept_share.mojo:test_a_connection_passes_between_two_workers_with_its_peer`; the in-flight count raised before the descriptor is sent and taken back if the send fails, so a receiver that admits and retires the connection before the sender's next instruction leaves nothing behind (review record R5; raised after, the retire was clamped at 0 and the late increment left the sibling one connection heavier for good): `test_accept_share.mojo:test_a_receiver_that_retires_inside_the_handoff_leaves_nothing_pending`. A hand-off that is not `send_fd`'s shape leaves no descriptor open: `test_a_control_message_cut_short_is_refused_and_leaks_nothing` and `test_a_payload_cut_short_still_hands_over_its_descriptor`, where a truncation check that tested no control truncation on either platform (Linux's `MSG_TRUNC` bit; macOS's flags read past its 48-byte `struct msghdr`) had returned or leaked what it should have closed. The measurement, both platforms before and after: docs/notes/accept-sharing.md"
     },
     {
       "id": "E18",
@@ -858,6 +874,14 @@
       "evidence": "`Smoke test the documentation site` (every PR) \u2014 built by `scripts/docsite.py`, served through `--static` with `apps/site` behind it; every sitemap URL answers as HTML with the twin it advertises, the root text files name the site's pages by absolute URL, the sitemap goes out as XML, and the slash redirect and HTML 404 come from the application"
     },
     {
+      "id": "F18",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "A stream is one response to the access log and the metrics: recorded once, when its head lands, however its frames go out",
+      "status": "verified",
+      "evidence": "`Smoke test connections that stop reading` (every PR) \u2014 a chunked 8 MiB `/stream` and a `/ws/flood` WebSocket, each read by a client that stalls first so their frames finish through the write-ready path, must leave exactly one `--access-log` record each; before the fix (review record R3) they left 5 and 2, each frame the write-ready path finished being recorded as a response of its own, counted by `--metrics` and timed as the stream's age, and a chunked stream recorded once more when its terminator landed. The count is `test_slot_lifecycle.mojo:test_a_stream_is_recorded_once`"
+    },
+    {
       "id": "G1",
       "section": "G",
       "category": "G. Security hardening",
@@ -1032,6 +1056,14 @@
       "capability": "Ping/pong, and a server heartbeat on a cadence",
       "status": "verified",
       "evidence": "`Smoke test the WebSocket echo demo` (every PR)"
+    },
+    {
+      "id": "I31",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A ping is answered by a whole pong even when the send buffer toward the client is full: what the kernel does not take goes out through the write-ready path, reads waiting until it has, rather than being cut or dropped (RFC 6455 \u00a75.5.2)",
+      "status": "verified",
+      "evidence": "`Smoke test the WebSocket echo demo` (every PR) \u2014 40,000 pings with distinct payloads, sent unread until the server's buffer is full, must all come back as whole pongs in order, and the socket must then close cleanly. Before the fix (review record R6) the loop discarded the send's count: a reply the kernel took only part of lost its tail, and the next frame's header landed inside a pong's payload (cut at byte 115 of 125 on macOS and after one byte in the Linux container, followed by `0x8A 0x7D`), and a reply refused whole was dropped. Sabotaged on both platforms both ways, the cut alone and the cut with the drop, and caught every run. A close echo is queued the same way, and the socket closes once it has gone out; no gate forces that case, because the echo is the last reply and whether the buffer is still full when it is sent is not the client's to arrange. Checked by hand by queueing every close echo, which passes, and closing at once as well, which fails"
     },
     {
       "id": "I4",
@@ -1237,9 +1269,9 @@
       "id": "I29",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
-      "capability": "A Datastar frame cannot be split by what it carries: a selector, mode, namespace, view-transition selector or event id holding CR or LF is refused with an error rather than written \u2014 two breaks would end the event and open one of the sender's choosing \u2014 and `redirect` writes its location as a JavaScript string literal with the quote, the backslash, `<`, every control byte and U+2028/U+2029 escaped, so it can end neither the literal nor its `<script>`",
+      "capability": "A Datastar frame cannot be split by what it carries: a selector, mode, namespace, view-transition selector or event id holding CR or LF is refused with an error rather than written \u2014 two breaks would end the event and open one of the sender's choosing \u2014 and `redirect` writes its location as a JavaScript string literal with the quote, the backslash, `<`, every control byte and U+2028/U+2029 escaped, so it can end neither the literal nor its `<script>`; and it refuses a location that is neither an `http`/`https` URL nor a reference relative to the page that stays on its site, since `javascript:` assigned to `window.location` runs in the page's origin and `//host` leaves it, reading the location as the browser's URL parser does, so a leading space or control byte, a tab or line break inside the scheme, the scheme's case and a backslash for a slash are refused with the plain forms",
       "status": "verified",
-      "evidence": "`test_frame_injection.mojo:test_a_line_break_in_a_single_line_field_is_refused` (every PR) \u2014 every field through every builder, the event-injection shape among them, with a control that a break-free selector still goes out; `test_redirect_location_cannot_leave_its_literal` requires exactly one `</script>` in a frame whose location carries two. `poe sabotage-datastar-sdk` reverts the refusal and three of the escapes, each caught"
+      "evidence": "`test_frame_injection.mojo:test_a_line_break_in_a_single_line_field_is_refused` (every PR) \u2014 every field through every builder, the event-injection shape among them, with a control that a break-free selector still goes out; `test_redirect_location_cannot_leave_its_literal` requires exactly one `</script>` in a frame whose location carries two; `test_redirect_refuses_a_location_that_runs_script_or_leaves_the_site` refuses nine spellings of a scheme and six of another host, each of which the WHATWG URL parser resolves to a scheme other than http(s) or to another host, beside eleven locations that go out, and `test_stream.mojo:test_a_refused_redirect_reaches_no_subscriber` holds `redirect_to` to the same rule with nothing queued. `poe sabotage-datastar-sdk` reverts the refusal and three of the escapes, each caught"
     },
     {
       "id": "I30",
@@ -1256,6 +1288,14 @@
       "capability": "Zero-copy `sendfile`, body never entering the process",
       "status": "verified",
       "evidence": "`Smoke test zero-copy static file serving` (every PR) \u2014 `--static`"
+    },
+    {
+      "id": "J10",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "A file response whose head the socket cannot take at once still sends its file: the write-ready path that finishes the head pumps the file after it, as the eager path does",
+      "status": "verified",
+      "evidence": "`Smoke test zero-copy static file serving` (every PR) \u2014 1000 requests for a small `--static` file pipelined on one connection to a client that reads more slowly than the server answers, each head made 12 KB by a long `--static-cache-control` so the send buffer fills at a head on both kernels, and every response must arrive with its own file. Before the fix a head that needed a second send went straight to the keep-alive reset with the file unsent, and the client read the next head where the body belonged: at response 37 on macOS and 173 in the Linux container, every run. With 5000-byte files and short heads, 19 of 78 stalls fell on a head over 20 MB, because XNU's sendfile refuses below the send low-water mark"
     },
     {
       "id": "J2",
@@ -1874,6 +1914,14 @@
       "evidence": "`Smoke test the Mojo demo's deploy image` (every PR) \u2014 the image's last layer measures itself (unpacked bytes of the filesystem and of `/app`, and that no interpreter is anywhere in it, failing the build if one is) into `/app/about.json`, which the app reads through `M0_IMAGE_FACTS`; the probe re-measures with `du` as root and requires agreement within 1 %, the version to be `pyproject.toml`'s, the target CPU the one asked for, `/about` to be the file verbatim, and the page's footer to carry exactly its version, its no-Python clause and both sizes as the app formats them. `scripts/blobs_probe.py serve`, `smoke-blobs`' main run, then passes through the published port, 100 streams are held and answered, and a stream that has received a frame is ended BY THE SERVER on `docker stop` -- exit 0 within 10 s, nothing abandoned in the log. `sabotage-mojo-image` (pre-release) builds a size written rather than measured, a footer sizing the app as the image, a page rendered without its footer, an `/about` that is not the file, and a producer never told to stop, and each fails in the phase that names it. The same probe, pointed at a URL instead of an image, is what the `deploy-blobs` job runs against `blobs.m0serve.dev` after a release: `/about` naming the version, the footer, whole-state frames and a producer stepping"
     },
     {
+      "id": "M28",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "A mount set larger than a loop's handler pool can lane -- 126 applications, the lanes its wake block has room for -- is refused with 78 before the bind and the fork, and `--doctor` refuses it with the same code: every mount is a submit lane whenever the loop hands requests to threads, and one ASGI mount among them puts the set on the pool, so the cap holds whatever `--blocking-threads` says",
+      "status": "verified",
+      "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR) \u2014 127 mounts under the zero-config pool and under `--blocking-threads 0`, each required to agree with the doctor and to exit 78, and 128 with a Mojo mount given no thread, where the mount refusal (2) must come first. Before: the zero-config server bound, imported every mount and exited 1 with `lane 127 has no wake words` from `add_lane`, while the doctor reported 0. The unit half is `test_checks.mojo:test_more_mounts_than_a_pool_has_lanes_are_refused_with_78`"
+    },
+    {
       "id": "N1",
       "section": "N",
       "category": "N. Writing an application in Mojo",
@@ -2317,9 +2365,9 @@
       "id": "O11",
       "section": "O",
       "category": "O. Storage packages",
-      "capability": "The same query in text and binary modes reads the same, so `binary` is a performance decision rather than a semantic one; a binary type with no decoder raises naming the way out instead of returning plausible bytes",
+      "capability": "For `int8`, `bool`, `text`, `uuid` and `jsonb` columns the same query reads the same in text and binary modes (`jsonb` less the version byte its binary form carries), so for those types `binary` is a performance decision rather than a semantic one; a binary `float8` decodes to the double the server holds, and a binary `timestamptz` read with `int()` is its instant in microseconds from 2000-01-01; a binary type with no decoder raises naming the way out instead of returning plausible bytes. `timestamp`, `timestamptz`, `bytea`, `float4` and `float8` do not read the same in both modes: a [known issue](ROADMAP.md#known-issues)",
       "status": "verified",
-      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 `numeric` is text-only on purpose: its binary form is a base-10000 digit vector with its own NaN encoding, and a wrong decoding of one is silently a different number"
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 `numeric` is text-only on purpose: its binary form is a base-10000 digit vector with its own NaN encoding, and a wrong decoding of one is silently a different number. Until 2026-09-28 the row claimed every type; review B18 read a timestamp, a `bytea` and a `float4` both ways and found each different"
     },
     {
       "id": "O12",

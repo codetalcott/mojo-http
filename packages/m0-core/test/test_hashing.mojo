@@ -4,7 +4,7 @@ from std.testing import assert_equal, assert_not_equal, assert_true, TestSuite
 
 from src.hashing import (
     fnv1a, fnv1a_step, format_hash32, format_hash64,
-    xxhash32, wyhash64, wyhash64_string,
+    xxhash32, wyhash64, wyhash64_string, _xxhash32_ptr,
 )
 
 
@@ -95,6 +95,39 @@ def test_xxhash32_long_string() raises:
     var hash = xxhash32(long_input)
     assert_true(hash > 0)
     assert_equal(hash, xxhash32(long_input))
+
+
+def test_xxhash32_at_every_alignment() raises:
+    """The same bytes hash the same from any address, and to the reference.
+
+    `_read_u32_le` loads the input four bytes at a time from the CALLER's
+    address -- a byte offset into a String, or whatever a foreign caller
+    hands `m0_xxhash32` -- so 71 bytes are hashed from offsets 0 to 7 of
+    one buffer, every alignment class of a 4- and an 8-byte word, through
+    four 16-byte stripes, a 4-byte tail word and three tail bytes. Offset
+    0 is the aligned copy; each other must match it, and all must match
+    the `xxhash` library's own answer for these bytes and seeds.
+
+    This proves the ANSWER at a misaligned address, not the load: arm64
+    and x86-64 both tolerate a misaligned load, so the 4-aligned load this
+    replaced passed here too. The load itself is in the IR -- `load i32,
+    align 4` before, `align 1` after (review R17).
+    """
+    comptime N = 71
+    var buf = List[UInt8](length=N + 8, fill=0)
+    for seed_and_want in [(UInt32(0), UInt32(0x541DEF65)), (UInt32(7), UInt32(0xF98BCFD0))]:
+        var seed = seed_and_want[0]
+        var aligned = UInt32(0)
+        for off in range(8):
+            for j in range(N + 8):
+                buf[j] = UInt8(0xAA)
+            for j in range(N):
+                buf[off + j] = UInt8(j)
+            var got = _xxhash32_ptr(buf.unsafe_ptr().unsafe_offset(off), N, seed)
+            if off == 0:
+                aligned = got
+            assert_equal(got, aligned)
+            assert_equal(got, seed_and_want[1])
 
 
 def test_xxhash32_effect_like() raises:

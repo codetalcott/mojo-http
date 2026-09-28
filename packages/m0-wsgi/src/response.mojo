@@ -1,7 +1,7 @@
 """WSGI and ASGI `(status, headers, body)` → `HTTPResponse`.
 
 **This is the response half of the bridge, and it was unmeasured until
-2026-08-24.** `scripts/bench_bridge_parts.mojo` split the request side five
+2026-08-24.** `scripts/probes/bench_bridge_parts.mojo` split the request side five
 times over while stopping short of this file, so a six-header Django-shaped
 response cost **22.97 µs here against 2.18 µs for the entire request side** —
 ten times the thing that had been optimised five times. See

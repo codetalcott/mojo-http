@@ -1417,6 +1417,51 @@ echo "smoke-half-close OK"
 python3 scripts/emit.py --covers A12 --task smoke-half-close
 """
 
+# SPEC C9 (B12). A client's RST reaches epoll as one EPOLLERR event, which
+# the epoll backend reported as EV_ERROR -- and the loop skips EV_ERROR, a
+# skip meant for kqueue's failed registrations. The reset was never seen,
+# the one-shot write or edge-triggered read it arrived on was spent, and
+# the slot was held for the life of the process. `--idle-timeout 0` keeps
+# every deadline off, so nothing else can give that slot back and a leak
+# stays visible; `--metrics` counts the slots. Fails without the fix on
+# Linux only: kqueue reports a reset as EV_EOF, so macOS passes either way.
+[tool.poe.tasks.smoke-peer-reset]
+help = "A client that resets mid-response or while idle gives its slot back at once"
+deps = ["build-serve"]
+shell = """
+files=$(mktemp -d)
+python3 -c "import sys; open(sys.argv[1] + '/big.bin', 'wb').write(b'm0' * 8388608)" "$files"
+bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8141 \
+  --idle-timeout 0 --metrics --max-body 32m --static /files="$files" > reset.log 2>&1 &
+pid=$!
+trap 'kill $pid 2>/dev/null; rm -f reset.log; rm -rf "$files"' EXIT
+curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8141/ > /dev/null \
+  || { echo '=== reset.log ==='; cat reset.log; exit 1; }
+python3 scripts/peer_reset_probe.py 8141 || { echo '=== reset.log ==='; cat reset.log; exit 1; }
+echo "smoke-peer-reset OK"
+python3 scripts/emit.py --covers C9 --task smoke-peer-reset
+"""
+
+# SPEC C10 (review record R4). A connection that is not being read -- its
+# response waiting on its client, or its request out on a pool thread or an
+# executor -- kept its read interest on kqueue, where connection reads are
+# level triggered: a client that half-closed or pipelined, and then did not
+# read, woke every wait, and the loop ran at a full core for as long as it
+# waited. epoll's reads are edge triggered, so this fails without the fix
+# on macOS only. SPEC F18 (R3) rides the same server: a stream whose frames
+# finish through the write-ready path is one access record, not one per
+# frame -- on both platforms. The probe starts its own server, because it
+# meters that server's CPU by PID.
+[tool.poe.tasks.smoke-slot-lifecycle]
+help = "A connection that stops reading costs the event loop nothing, and a stream is one access record"
+deps = ["build-serve"]
+shell = """
+python3 scripts/slot_lifecycle_probe.py 8142 || exit 1
+echo "smoke-slot-lifecycle OK"
+python3 scripts/emit.py --covers C10 --task smoke-slot-lifecycle
+python3 scripts/emit.py --covers F18 --task smoke-slot-lifecycle
+"""
+
 # RFC 9112 §9.6. The server refuses an oversized body while the client is
 # still uploading it, and closing at once left the rest unread -- which the
 # kernel answers with RST, so a client that writes its whole body before it
@@ -1437,15 +1482,32 @@ echo "smoke-early-413 OK"
 python3 scripts/emit.py --covers A20 --task smoke-early-413
 """
 
+# SPEC A13 has two halves, and this runs both. A request bigger than one
+# read is answered: the read that fills the buffer re-registers, because on
+# epoll nothing else announces the rest. And on Linux a keep-alive request
+# of ordinary size re-registers NOTHING: re-registering after every read put
+# an epoll_ctl ADD, refused EEXIST, and its MOD on every request (review
+# record R2; 4004 calls for 2000 requests). `strace` counts them, so the
+# ubuntu leg installs it; macOS has no unprivileged syscall counter, and
+# kqueue's level trigger never needed the re-registration anyway.
 [tool.poe.tasks.smoke-large-request]
-help = "A request bigger than one read must be answered, not stalled"
+help = "A request bigger than one read must be answered, not stalled; on Linux, under strace, a keep-alive request costs no epoll_ctl"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > lr.log 2>&1 &
+out=$(mktemp -d)
+trap 'kill $pid 2>/dev/null; rm -rf "$out"' EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo -o "$out/hello" || exit 1
+"$out/hello" > "$out/lr.log" 2>&1 &
 pid=$!
-trap 'kill $pid 2>/dev/null; rm -f lr.log' EXIT
 curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
-  || { echo '=== lr.log ==='; cat lr.log; exit 1; }
-python3 scripts/large_request_probe.py 8080 || { echo '=== lr.log ==='; cat lr.log; exit 1; }
+  || { echo '=== lr.log ==='; cat "$out/lr.log"; exit 1; }
+python3 scripts/large_request_probe.py 8080 || { echo '=== lr.log ==='; cat "$out/lr.log"; exit 1; }
+if [ "$(uname)" = Linux ]; then
+  python3 scripts/epoll_rearm_probe.py "$out/hello" > "$out/rearm.out" 2>&1 \
+    || { cat "$out/rearm.out"; exit 1; }
+  cat "$out/rearm.out"
+  per=$(grep '^epoll_ctl_per_request ' "$out/rearm.out" | cut -d' ' -f2)
+  python3 scripts/emit.py large_request.epoll_ctl_per_request "$per" --unit calls --limit 0.5 --task smoke-large-request
+fi
 echo "smoke-large-request OK"
 python3 scripts/emit.py --covers A13 --task smoke-large-request
 """
@@ -1499,6 +1561,7 @@ rm -f ws.log
 echo "smoke-ws OK"
 python3 scripts/emit.py --covers I1 --task smoke-ws
 python3 scripts/emit.py --covers I3 --task smoke-ws
+python3 scripts/emit.py --covers I31 --task smoke-ws
 """
 
 # Phase 1 (single worker): two sockets in one room — one speaks, both hear
@@ -2928,7 +2991,7 @@ python3 scripts/emit.py --covers M18 --task smoke-apple-silicon
 """
 
 [tool.poe.tasks.smoke-spawn-workers]
-help = "--spawn-workers: exec'd workers serve, a killed one is re-exec'd, SIGTERM reaps them, and on macOS the view a forked worker dies in answers"
+help = "--spawn-workers: exec'd workers serve, a killed one is re-exec'd, the supervisor survives SIGPIPE, SIGTERM reaps them, and on macOS the view a forked worker dies in answers"
 deps = ["build-serve"]
 shell = """
 srv=bin/m0serve
@@ -3008,7 +3071,22 @@ echo "smoke-spawn-workers: a killed worker is re-exec'd"
 curl -sf http://127.0.0.1:8481/proxies > /dev/null || fail "a spawned worker did not answer /proxies"
 echo "smoke-spawn-workers: the proxies view answers under spawn"
 
-# 5. SIGTERM to the supervisor alone reaps every exec'd worker.
+# 5. SIGPIPE to the supervisor alone (SPEC A25). It forks before any Python
+# call and never makes one, so CPython's own ignore never reaches it; the
+# listener's, made before the fork, does. Without that, `kill -PIPE` ended it
+# with 141 and left both workers serving, orphaned (measured, macOS). Both
+# still answering, and step 6 reaping them, is the proof it still supervises.
+kill -PIPE "$spid"
+sleep 0.3
+if ! kill -0 "$spid" 2>/dev/null; then
+  wait "$spid"; rc=$?; spid=""
+  for w in $(grep -oE 'pid=[0-9]+ starting' sw-spawn.log | grep -oE '[0-9]+'); do kill -KILL "$w" 2>/dev/null; done
+  fail "SIGPIPE: kill -PIPE ended the m0serve supervisor (exit $rc; 141 is the signal's default action), orphaning its workers"
+fi
+wait_for_pids 8481 2 || fail "after kill -PIPE to the supervisor expected 2 worker pids, saw $seen"
+echo "smoke-spawn-workers: the supervisor survives kill -PIPE"
+
+# 6. SIGTERM to the supervisor alone reaps every exec'd worker.
 workers=$(grep -oE 'pid=[0-9]+ starting' sw-spawn.log | grep -oE '[0-9]+' | sort -u)
 kill -TERM "$spid"; wait "$spid"; rc=$?; spid=""
 [ "$rc" -eq 0 ] || fail "the spawn supervisor exited $rc on SIGTERM"
@@ -3032,6 +3110,7 @@ if [ "$(uname)" = Darwin ]; then
   echo "smoke-spawn-workers: the same view kills a forked worker 3 of 3 (macOS)"
 fi
 python3 scripts/emit.py --covers E15 --task smoke-spawn-workers
+python3 scripts/emit.py --covers A25 --task smoke-spawn-workers
 """
 
 [tool.poe.tasks.smoke-accept-spread]
@@ -3122,9 +3201,11 @@ fail() {
 
 # The property that gives --doctor its value: for the SAME arguments, the
 # doctor's exit code equals the server's. A diagnostic that reports "fine"
-# where the server refuses is worse than no diagnostic -- and the two are
-# kept in step by hand, since the doctor mirrors main's check order rather
-# than sharing its control flow. This is what notices when they drift.
+# where the server refuses is worse than no diagnostic. Both read one list
+# (m0_wsgi.checks: the flags before the bind, the application after the
+# import), so a rule added, moved or dropped moves both at once -- which is
+# why agreement alone is not enough, and the `refuses` rows below also pin
+# the code. This is what notices when the two, or the list, drift.
 #
 # A configuration the server accepts never exits: it blocks in accept().
 # So it is backgrounded under a watchdog, and "still running when the
@@ -3213,6 +3294,18 @@ t = json.load(open('doctor.json'))['topology']
 assert t['blocking_threads'] >= 1 and t['blocking_threads_source'] == 'default', t
 " || fail 'a Mojo mount under --workers did not get the default pool in the doctor'
 refuses 0  'asgi beside wsgi, prefork'          --mount /=portal.wsgi:app --mount /feed=feed.asgi $H --workers 2
+# More mounts than a pool has lanes (126, the offload wake block). The 127th
+# lane used to raise inside the server AFTER the bind -- exit 1 -- while the
+# doctor said 0; refused before the bind now, at 78, by both. Refused under
+# an explicit --blocking-threads 0 too, which served them inline.
+M127=$(python3 -c "print(' '.join('--mount /a%d=bareapp.wsgi' % i for i in range(127)))")
+refuses 78 'more mounts than a pool has lanes'  $M127 $W
+refuses 78 'too many mounts, explicit no pool'  $M127 $W --blocking-threads 0
+# Order, where it changes the code: each row trips two rules, and the list's
+# first failure decides for the server and the doctor alike, so a reorder
+# moves both together and only the named code sees it.
+refuses 1  'missing app dir, then a conflict'   bareapp.wsgi --app-dir /no/such/dir --workers 2 --threads 2
+refuses 2  'compiled mount unserved, then lanes' $M127 --mount /native=mojo $W --blocking-threads 0
 
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
@@ -3267,6 +3360,7 @@ python3 scripts/emit.py --covers E7 --task smoke-doctor
 python3 scripts/emit.py --covers F8 --task smoke-doctor
 python3 scripts/emit.py --covers M5 --task smoke-doctor
 python3 scripts/emit.py --covers M20 --task smoke-doctor
+python3 scripts/emit.py --covers M28 --task smoke-doctor
 """
 
 [tool.poe.tasks.smoke-serve]
@@ -8341,10 +8435,50 @@ stop "one worker"
 grep -q 'abandoned' "$out/one.log" && fail "one worker: the drain abandoned the producer instead of stopping it"
 echo "one worker: $res; exit 0 in ${took}s"
 
+# --- SIGPIPE before the loop: the producer's make (SPEC A25) ----------------
+# One worker, so no supervisor and no fork: the producer's `make` runs on the
+# main thread before `run_event_loop` is entered, and the knob makes it write
+# to a pipe whose reader has gone. The listener ignores SIGPIPE before any of
+# it. With only the loop's own ignore this ended the server with 141 before
+# it served (measured on macOS; under M0_THREADS=2 alike, and under
+# M0_WORKERS=2 worker 0 died of it on every respawn). The EPIPE line is the
+# proof that the write was made.
+env M0_PORT=8785 M0_HOSTCHECK_PRODUCER_PIPE=1 "$out/host_check" > "$out/pipe.log" 2>&1 &
+pid=$!
+i=0
+until curl --silent --fail --max-time 1 http://127.0.0.1:8785/health > /dev/null 2>&1; do
+  if ! kill -0 $pid 2>/dev/null; then
+    wait $pid
+    fail "SIGPIPE: the producer's make, writing before the loop, ended the server (exit $?; 141 is the signal's default action)"
+  fi
+  i=$((i + 1))
+  [ $i -le 300 ] || fail "SIGPIPE: never became healthy (pipe)"
+  sleep 0.1
+done
+grep -q "wrote to a closed pipe: EPIPE" "$out/pipe.log" \
+  || fail "SIGPIPE: the producer's make did not write, or its write did not fail with EPIPE"
+stop "pipe"
+[ "$rc" -eq 0 ] || fail "SIGPIPE: SIGTERM exited $rc after the producer's write, not 0"
+echo "SIGPIPE: the producer's make wrote to a closed pipe before the loop, and the server served"
+
 # --- two workers: every worker's streams get every beat, once --------------
 start 8782 two M0_WORKERS=2
 res=$(python3 scripts/host_probe.py streams 8782 4 2 2 2>&1) || fail "two workers: $res"
 echo "two workers: $res"
+
+# --- SIGPIPE to the supervisor (SPEC A25) -----------------------------------
+# $pid is the supervisor, which never enters the event loop: only the
+# listener's ignore, made before the fork, covers it. Without that,
+# `kill -PIPE` ended it with 141 and left both workers serving, orphaned
+# (measured, macOS). The drain below is the rest of the proof: streams held
+# on both workers, then SIGTERM forwarded and both workers reaped.
+kill -PIPE $pid
+sleep 0.3
+if ! kill -0 $pid 2>/dev/null; then
+  wait $pid
+  fail "SIGPIPE: kill -PIPE ended the supervisor (exit $?; 141 is the signal's default action), orphaning its workers"
+fi
+echo "SIGPIPE: the supervisor survived kill -PIPE"
 
 # --- a drain under held streams, signalled to the supervisor alone ---------
 # What `docker stop` does. The workers must drain -- streams ended by the
@@ -8820,9 +8954,30 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" $B/asset
 [ "$code" = "304" ] || fail "the file's own ETag produced $code, want 304"
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
+
+# SPEC J10: a file response whose HEAD the socket cannot take at once still
+# sends its file. The write-ready path finished such a head and reset the
+# slot with the file unsent. Pipelined requests to a client slower than the
+# server fill the send buffer at a head; a long Cache-Control makes every
+# head bigger than its file and than the kernel's send low-water mark, so
+# the stalls land on heads on macOS as well as Linux. Its own server, so the
+# HEAD check above keeps its 4 KB bound; no keep-alive cap, so one
+# connection carries all of them.
+long=$(python3 -c "print('public, max-age=60, x-pad=' + 'p' * 12000)")
+"$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8140 \
+  --static /assets/="$dir" --static-cache-control "$long" \
+  --max-keepalive-requests 0 > sendfile.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'the pipelining server never became healthy'
+python3 scripts/pipelined_files_probe.py 8140 /assets/small.txt "$dir/small.txt" 1000 \
+  || fail 'a pipelined file response lost its file'
+
+kill $pid 2>/dev/null; wait $pid 2>/dev/null
 rm -rf "$dir" part.bin head.txt sendfile.log
 echo "smoke-sendfile OK"
 python3 scripts/emit.py --covers J1 --task smoke-sendfile
+python3 scripts/emit.py --covers J10 --task smoke-sendfile
 """
 
 [tool.poe.tasks.smoke-notes]
@@ -9575,7 +9730,7 @@ echo "CANARY PASSED against $(mojo --version)"
 # parallelizes (run it as bare `poe` after `py314t-try`).
 [tool.poe.tasks.py-thread-probe-stdpy]
 help = "Thread probe via std.python's CPython bindings — no -lpython, plain mojo run"
-cmd = "mojo run scripts/py_thread_stdpy_probe.mojo"
+cmd = "mojo run scripts/probes/py_thread_stdpy_probe.mojo"
 
 # The instrument behind the thread-pool go/no-go (docs/WSGI_VS_ASGI.md §5):
 # spawns raw pthreads from Mojo and has each attach to the embedded
@@ -9593,7 +9748,7 @@ shell = """
 libdir=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
 ldver=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("LDVERSION"))')
 out=$(mktemp -d)
-mojo build scripts/py_thread_probe.mojo -o "$out/probe" \
+mojo build scripts/probes/py_thread_probe.mojo -o "$out/probe" \
   -Xlinker -L"$libdir" -Xlinker -lpython"$ldver" -Xlinker -rpath -Xlinker "$libdir" || exit 1
 "$out/probe"
 rc=$?

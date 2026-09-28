@@ -265,7 +265,7 @@ noise" — retired the rest of the header work. That verdict was drawn at
 ~50k rps, when a request cost ~20 µs. The server now does 116k rps/core, a
 request costs ~8.6 µs, and a cost that was 5% of the old request is 12% of
 the new one. Loopback sampling cannot see a change of a few hundred
-nanoseconds; a per-part instrument can, and `scripts/bench_http_parts.mojo`
+nanoseconds; a per-part instrument can, and `scripts/probes/bench_http_parts.mojo`
 is that instrument — the same shape as `bench_bridge_parts.mojo`, one layer
 down. Twelve-header browser GET, 20k iterations, Apple M4:
 

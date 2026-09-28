@@ -124,12 +124,19 @@ comptime PRIME32_5: UInt32 = 0x165667B1
 
 
 def _read_u32_le(data: Pointer[UInt8, _], offset: Int) -> UInt32:
-    """Read a little-endian UInt32 from a byte pointer via bitcast.
+    """Load an unaligned little-endian UInt32 at `offset` bytes past `data`.
 
-    All target platforms (osx-arm64) are little-endian,
-    so a direct bitcast load produces the correct value.
+    Every target is little-endian (osx-arm64, linux x86_64 and arm64), so a
+    bitcast load produces the value. alignment=1, as `_load_u64` asks: the
+    address is the caller's -- a byte offset into a String, or whatever a
+    foreign caller hands `m0_xxhash32` -- and the `[]` dereference this
+    replaced told the compiler it was 4-aligned (`load i32, align 4`),
+    which on a target that faults on a misaligned load is a fault, and
+    anywhere is an assumption the optimizer may act on.
     """
-    return data.unsafe_offset(offset).unsafe_bitcast[UInt32]()[]
+    return data.unsafe_offset(offset).unsafe_bitcast[UInt32]().unsafe_load[
+        alignment=1
+    ]()
 
 
 def _xxhash32_round(acc: UInt32, input: UInt32) -> UInt32:

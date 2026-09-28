@@ -10,14 +10,18 @@ same bytes in its buffer — only which process answers it.
 Two C layouts differ between the platforms this builds on, and both are
 spelled out here rather than derived:
 
-- `struct msghdr` is 56 bytes on both, but macOS declares `msg_iovlen` as
-  `int` and `msg_controllen` as `socklen_t` where glibc uses `size_t`. On
-  a little-endian 64-bit target a `UInt64` field written with a small
-  value sets the 32-bit member and zeroes the padding beside it, and
-  reading a 32-bit member the kernel wrote through the same `UInt64`
-  returns it as long as the padding was zero going in — so one seven-word
-  struct serves both, and every header starts from zeros. The same
-  single-definition hazard `sockaddr` and `set_nonblocking` document.
+- `struct msghdr` is 56 bytes on Linux and 48 on macOS, which declares
+  `msg_iovlen` as `int` and `msg_controllen` as `socklen_t` where glibc
+  uses `size_t`. On a little-endian 64-bit target a `UInt64` field written
+  with a small value sets the 32-bit member and zeroes the four bytes
+  above it. Above `msg_iovlen` those are padding. Above `msg_controllen`
+  they are macOS's `msg_flags`, its struct's last member, so the seventh
+  word lies past the end of macOS's struct and its kernel never writes it.
+  One seven-word struct serves both for everything but reading
+  `msg_flags` back, which `recv_fd` takes from the sixth word's high half
+  on macOS (measured with `offsetof`: flags at 44 there, 48 on Linux).
+  Every header starts from zeros. The same single-definition hazard
+  `sockaddr` and `set_nonblocking` document.
 - `struct cmsghdr` genuinely differs: macOS opens with a 4-byte
   `socklen_t cmsg_len` (header 12, `CMSG_SPACE(int)` 16), Linux with an
   8-byte `size_t` (header 16, `CMSG_SPACE(int)` 24). The fd sits right
@@ -29,6 +33,7 @@ from std.sys.info import CompilationTarget
 
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
+from lightbug_http.c.pipe import close_fd
 
 comptime _MSG_CMSG_CLOEXEC_LINUX = 0x40000000
 from lightbug_http.c.socket import iovec_t
@@ -42,9 +47,12 @@ comptime _CMSG_LEN_INT = _CMSG_HDR + 4
 """`CMSG_LEN(sizeof(int))`: the header plus one fd, unpadded."""
 comptime _CMSG_SPACE_INT = 16 if CompilationTarget.is_macos() else 24
 """`CMSG_SPACE(sizeof(int))`: one fd's control message, padded."""
-comptime _MSG_CTRUNC = 0x20
-"""`msg_flags` bit: the control buffer was too small and the kernel
-dropped (and closed) what did not fit. Same value on both platforms."""
+comptime _MSG_CTRUNC = 0x20 if CompilationTarget.is_macos() else 0x08
+"""`msg_flags` bit: the control buffer was too small for what the message
+carried. 0x20 in macOS's `<sys/socket.h>` but 0x08 in Linux's
+`<bits/socket.h>`, where 0x20 is `MSG_TRUNC`: the data bit, set when a
+datagram is longer than its buffer, which costs the payload's tail and
+never the descriptor."""
 
 comptime FDPASS_MAX_PAYLOAD = 64
 """The most data bytes a passed descriptor travels with. The caller's
@@ -132,9 +140,19 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
 
     Returns the new fd (this process's own reference), with the datagram's
     data bytes in `payload`; -1 when nothing is waiting (EAGAIN), the
-    channel is closed, or a datagram arrived carrying no descriptor — a
-    truncated control message (`MSG_CTRUNC`) is treated as no descriptor,
-    the kernel having already closed whatever it dropped.
+    channel is closed, or a datagram arrived carrying no descriptor.
+
+    The kernel installs a passed descriptor in this process when the
+    message is received, so every one that reaches the control buffer is
+    this function's to return or to close: one it drops is open for the
+    life of the process, and a handed-over connection's client waits on it
+    forever. A message whose control data was cut short (`MSG_CTRUNC`)
+    carried more than the one descriptor `send_fd` passes, and is refused,
+    each of its descriptors in the buffer closed. What did not fit, Linux
+    releases; macOS installs it too, with its number lost (measured), where
+    nothing can close it -- which a sender of one never causes. A payload
+    cut short (`MSG_TRUNC`) keeps its descriptor, as `send_fd`'s own cap
+    does.
     """
     payload.clear()
     var data = List[UInt8](capacity=FDPASS_MAX_PAYLOAD)
@@ -160,19 +178,19 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
     if Int(rc) > 0:
         for i in range(Int(rc)):
             payload.append(data[i])
-        var flags = Int(hdr.msg_flags & 0xFFFFFFFF)
+        var flags: Int
+        comptime if CompilationTarget.is_macos():
+            # The high half of the sixth word: see the module docstring.
+            flags = Int(hdr.msg_controllen >> 32)
+        else:
+            flags = Int(hdr.msg_flags & 0xFFFFFFFF)
         var clen = Int(hdr.msg_controllen & 0xFFFFFFFF)
-        if (flags & _MSG_CTRUNC) == 0 and clen >= _CMSG_LEN_INT:
-            var level: Int
-            var kind: Int
-            comptime if CompilationTarget.is_macos():
-                level = Int(_load_u32(control, 4))
-                kind = Int(_load_u32(control, 8))
-            else:
-                level = Int(_load_u32(control, 8))
-                kind = Int(_load_u32(control, 12))
-            if level == _SOL_SOCKET and kind == _SCM_RIGHTS:
-                got = Int(_load_u32(control, _CMSG_HDR))
+        var passed = _passed_fds(control, clen)
+        if len(passed) > 0 and (flags & _MSG_CTRUNC) == 0:
+            got = passed[0]
+        for i in range(len(passed)):
+            if passed[i] != got:
+                close_fd(passed[i])
     comptime if CompilationTarget.is_macos():
         if got >= 0:
             # F_SETFD fails only on EBADF, which a received descriptor is not.
@@ -181,6 +199,32 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
     _ = data
     _ = control
     return got
+
+
+def _passed_fds(control: List[UInt8], clen: Int) -> List[Int]:
+    """The descriptors an `SCM_RIGHTS` message put in `control`: those in
+    the `clen` bytes the kernel filled, which is fewer than the header's
+    `cmsg_len` claims when the message was cut short."""
+    var fds = List[Int]()
+    if clen < _CMSG_LEN_INT:
+        return fds^
+    var level: Int
+    var kind: Int
+    comptime if CompilationTarget.is_macos():
+        level = Int(_load_u32(control, 4))
+        kind = Int(_load_u32(control, 8))
+    else:
+        level = Int(_load_u32(control, 8))
+        kind = Int(_load_u32(control, 12))
+    if level != _SOL_SOCKET or kind != _SCM_RIGHTS:
+        return fds^
+    # `cmsg_len` is a `size_t` on Linux; its low half is the whole value.
+    var end = min(Int(_load_u32(control, 0)), min(clen, len(control)))
+    var at = _CMSG_HDR
+    while at + 4 <= end:
+        fds.append(Int(_load_u32(control, at)))
+        at += 4
+    return fds^
 
 
 def _store_u32(mut buf: List[UInt8], offset: Int, value: UInt32):

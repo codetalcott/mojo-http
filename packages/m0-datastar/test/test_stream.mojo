@@ -1,6 +1,12 @@
 """Tests for the Datastar server glue: DatastarStream and read_signals."""
 
-from std.testing import assert_equal, assert_true, assert_false, TestSuite
+from std.testing import (
+    assert_equal,
+    assert_true,
+    assert_false,
+    assert_raises,
+    TestSuite,
+)
 
 from lightbug_http.broadcast import BroadcastBus, drain_bus_channel
 from lightbug_http.http import HTTPRequest
@@ -159,6 +165,26 @@ def test_redirect_carries_an_event_id() raises:
     var out = _text(s.drain(0))
     assert_true(out.find("id: 1\n") >= 0)
     assert_true(out.find("window.location") >= 0)
+
+
+def test_a_refused_redirect_reaches_no_subscriber() raises:
+    """`redirect_to` raises for a location `sse.redirect` refuses.
+
+    Nothing is queued: a `javascript:` URL would run in every subscriber's
+    page, and `//host` would take every one of them off the site.
+
+    covers: I29
+    """
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    with assert_raises(contains="scheme is not http or https"):
+        _ = s.redirect_to("/e", "javascript:alert(document.cookie)")
+    with assert_raises(contains="two slashes"):
+        _ = s.redirect_to("/e", "//evil.example/login")
+    assert_equal(len(s.drain(0)), 0)
+    # The id each refusal took is skipped, as for any frame that raises.
+    _ = s.redirect_to("/e", "/next")
+    assert_true(_text(s.drain(0)).find("window.location = \"/next\"") >= 0)
 
 
 def test_send_frame_is_verbatim() raises:

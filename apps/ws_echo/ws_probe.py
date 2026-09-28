@@ -5,7 +5,9 @@ Speaking the wire format by hand is the point: the smoke then proves the
 server against the protocol itself, not against a client library's
 tolerances. Covers: handshake (Sec-WebSocket-Accept verified), masked text
 echo, fragmented message reassembly, client ping -> pong, server heartbeat
-pings (when WS_EXPECT_PINGS=1), and the close handshake down to the TCP FIN.
+pings (when WS_EXPECT_PINGS=1), the close handshake down to the TCP FIN, and
+a burst of pings answered whole and in order while the send buffer toward
+the client is full (SPEC I31).
 """
 
 import base64
@@ -14,6 +16,7 @@ import os
 import socket
 import struct
 import sys
+import threading
 import time
 import traceback
 
@@ -194,5 +197,152 @@ except socket.timeout:
     fail("server did not close TCP after the close handshake")
 if rest != b"":
     fail("expected TCP close after close frame, got %r" % rest)
+
+# --- Pings answered while the send buffer toward the client is full ----------
+# SPEC I31 (R6). The loop answers control frames itself, one send per read:
+# the pongs for every ping a 4 KB read held, or a close echo. That send's
+# count was thrown away, so a reply the kernel took only PART of lost its
+# tail and the next frame's header landed inside a pong's payload -- every
+# frame after it misframed (measured on macOS: a 125-byte pong cut at byte
+# 115, followed by 0x8A 0x7D). A reply the kernel refused whole was dropped,
+# against RFC 6455 §5.5.2's MUST. So a burst of pings goes out unread
+# until the server's buffer is full, and then every pong must come back,
+# whole and in order: a cut one misframes the rest, a dropped one is a gap.
+# Its own connection, after the main one has closed, so the heartbeats this
+# takes seconds of are not waiting on a socket nobody reads.
+phase("pings answered while the send buffer toward the client is full")
+
+FLOOD_PINGS = 40000  # 5 MB of pongs, past a send buffer grown to 4 MB
+flood = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+# A small window, so the server's buffer fills and stays full.
+flood.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8192)
+flood.settimeout(10)
+flood.connect((HOST, PORT))
+fkey = base64.b64encode(os.urandom(16)).decode()
+flood.sendall(
+    (
+        "GET /ws HTTP/1.1\r\nHost: %s:%d\r\n"
+        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+        "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"
+        % (HOST, PORT, fkey)
+    ).encode()
+)
+fbuf = b""
+while b"\r\n\r\n" not in fbuf:
+    chunk = flood.recv(4096)
+    if not chunk:
+        fail("the flood connection closed during its handshake")
+    fbuf += chunk
+fhead, fbuf = fbuf.split(b"\r\n\r\n", 1)
+if b" 101 " not in fhead.split(b"\r\n")[0] + b" ":
+    fail("flood handshake: expected 101, got %r" % fhead.split(b"\r\n")[0])
+
+
+def flood_payload(i):
+    head = b"%09d:" % i
+    return head + b"p" * (125 - len(head))
+
+
+def ping_burst(first, count):
+    # A zero masking key masks nothing, so the frames are built without a
+    # byte loop; the server unmasks with whatever key a frame carries.
+    return b"".join(
+        bytes([0x89, 0x80 | 125]) + b"\x00\x00\x00\x00" + flood_payload(i)
+        for i in range(first, first + count)
+    )
+
+
+def send_behind(data):
+    """Send `data` from a thread: the server stops reading while a reply is
+    owed, so a burst this size blocks until the client reads."""
+
+    def run():
+        try:
+            flood.sendall(data)
+        # `err`, not `exc`: phase_stamp_check takes an OSError clause bound
+        # to `exc` for the probe's crash handler, and this is a sender
+        # thread's -- so named, it hid a removed excepthook from the check.
+        except OSError as err:
+            print("ws_probe: the ping burst could not all be sent: %r" % err)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+SILENCE = "silence"
+fbeats = 0
+
+
+def next_frame():
+    """The server's next frame other than a heartbeat ping: (opcode,
+    payload), None at EOF, or SILENCE."""
+    global fbuf, fbeats
+    while True:
+        while len(fbuf) >= 2:
+            b0, b1 = fbuf[0], fbuf[1]
+            n = b1 & 0x7F
+            if n > 125 or (b1 & 0x80) or (b0 & 0x70) or not (b0 & 0x80):
+                fail("a frame header %02x %02x: the stream is misframed -- a "
+                     "reply went out cut" % (b0, b1))
+            if len(fbuf) < 2 + n:
+                break
+            op, payload = b0 & 0x0F, fbuf[2:2 + n]
+            fbuf = fbuf[2 + n:]
+            if op == 0x9:
+                fbeats += 1  # the server's heartbeat; nothing to prove here
+                continue
+            return op, payload
+        try:
+            chunk = flood.recv(65536)
+        except socket.timeout:
+            return SILENCE
+        if not chunk:
+            return None
+        fbuf += chunk
+
+
+def take_pongs(first, count):
+    """Every pong for pings first..first+count-1, whole and in order."""
+    for i in range(first, first + count):
+        got = next_frame()
+        if got == SILENCE:
+            fail("only %d of %d pings answered, then silence: the rest were "
+                 "dropped while the send buffer was full" % (i - first, count))
+        if got is None:
+            fail("the connection closed after %d of %d pongs" % (i - first, count))
+        op, payload = got
+        if op != 0xA:
+            fail("opcode %d where the pong for ping %d belonged" % (op, i))
+        if payload != flood_payload(i):
+            fail("pong %d is %r..., not ping %d's payload: a pong was cut or "
+                 "dropped while the send buffer was full" % (i, payload[:20], i))
+
+
+flood.settimeout(5)
+# Unread for a second first: the server answers until its buffer is full,
+# and the next reply does not fit.
+send_behind(ping_burst(0, FLOOD_PINGS))
+time.sleep(1.0)
+take_pongs(0, FLOOD_PINGS)
+
+# The socket is whole after the burst: an ordinary close handshake ends it.
+# (A close echo that finds the buffer full is queued the same way, and the
+# socket closes once it has gone out; this does not force that case -- the
+# echo is the last reply, and whether the buffer is still full when it is
+# sent is not the client's to arrange.)
+flood.sendall(bytes([0x88, 0x80 | 2]) + b"\x00\x00\x00\x00" + struct.pack(">H", 1000))
+got = next_frame()
+if got is None or got == SILENCE or got[0] != 0x8:
+    fail("no close echo after the burst (got %r)" % (got,))
+if got[1] != struct.pack(">H", 1000):
+    fail("the close echo carries %r, not the 1000 sent" % (got[1],))
+got = next_frame()
+if got is not None:
+    fail("expected the TCP close after the close echo, got %r" % (got,))
+if fbuf:
+    fail("%d bytes after the close echo: %r" % (len(fbuf), fbuf[:20]))
+flood.close()
+print("ws_probe: %d pings answered whole and in order with the send buffer "
+      "full (%d heartbeats between), then the close handshake"
+      % (FLOOD_PINGS, fbeats))
 
 print("ws_probe OK")
