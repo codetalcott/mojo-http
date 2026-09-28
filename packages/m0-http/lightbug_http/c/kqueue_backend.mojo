@@ -5,8 +5,8 @@ can be parameterized over the backend type.
 """
 
 from lightbug_http.c.kqueue import (
-    kevent_t, ev_set, kqueue, kevent_register_one, kevent_poll,
-    set_nonblocking,
+    kevent_t, ev_set, kqueue, kevent_register_one, kevent_register_pair,
+    kevent_poll, set_nonblocking,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT, EV_EOF, EV_ERROR,
 )
@@ -67,7 +67,24 @@ struct KqueueBackend(ConstructibleBackend):
             pass
 
     def add_write_oneshot(mut self, fd: Int) raises:
-        kevent_register_one(self.kq, ev_set(UInt(fd), EVFILT_WRITE, EV_ADD | EV_ONESHOT))
+        """A one-shot write filter IN PLACE OF the fd's read filter.
+
+        epoll's registration is one mask per fd, so its write one-shot has
+        always replaced the read interest; kqueue's filters are separate,
+        and the read filter stayed. It is level triggered (`add_read` is
+        EV_ADD without EV_CLEAR), so a slot waiting to write whose client
+        had half-closed, or had sent its next request, was reported
+        readable by every wait while it read nothing -- the loop at a full
+        core for as long as the response waited (R4). Dropped in the same
+        `kevent` call, so the two backends agree and it costs no syscall;
+        the loop re-adds it when the send lands. The delete finds nothing
+        when the read filter is already gone, which the pair forgives.
+        """
+        kevent_register_pair(
+            self.kq,
+            ev_set(UInt(fd), EVFILT_WRITE, EV_ADD | EV_ONESHOT),
+            ev_set(UInt(fd), EVFILT_READ, EV_DELETE),
+        )
 
     def try_add_write_oneshot(mut self, fd: Int):
         try:

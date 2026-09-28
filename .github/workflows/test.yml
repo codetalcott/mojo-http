@@ -621,6 +621,14 @@ jobs:
       # Fails without the fix on Linux only; macOS passes either way.
       - name: Smoke test a client that resets its connection
         run: uv run poe smoke-peer-reset
+      # A connection that is not being read -- its response waiting on its
+      # client, or its request out on a pool thread or an executor -- kept
+      # its read interest on kqueue, where reads are level triggered: a
+      # client that half-closed or pipelined and then stopped reading woke
+      # every wait, the loop at a full core (SPEC C10). Fails without the
+      # fix on macOS only; epoll's reads are edge triggered.
+      - name: Smoke test connections that stop reading
+        run: uv run poe smoke-slot-lifecycle
       # The same reset from the server's side. A 413 goes out while the
       # client is still uploading, and closing at once left the rest of the
       # body unread, which the kernel answers with RST -- so a client that

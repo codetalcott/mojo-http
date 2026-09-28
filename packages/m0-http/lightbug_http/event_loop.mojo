@@ -822,14 +822,16 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     # pipelined request the drain still owes an answer,
                     # and the recv->0 after the last one closes cleanly.
                     provision_pool.provisions[slot].peer_eof = True
-                    slot_read_armed[slot] = False
-                else:
-                    # A pipelined request arrived mid-flight. Both backends
-                    # are edge-triggered, so consuming this event without
-                    # reading would lose the only edge those bytes ever
-                    # get; clearing the armed flag makes `_after_send`
-                    # re-register, which regenerates readiness for them.
-                    slot_read_armed[slot] = False
+                # Nothing reads this slot until its completion: the EOF
+                # above, or a pipelined request that arrived mid-flight,
+                # waits for it. The read interest goes until then. kqueue's
+                # is level triggered, and left registered it reported the
+                # same bytes or EOF on every wait for as long as the view
+                # ran -- the loop at a full core (R4, 3.97 CPU seconds in
+                # 4 behind a half-closed /slow). `_after_send` re-arms it,
+                # which on epoll, edge triggered, is also what regenerates
+                # the readiness this event spent.
+                _stop_reads(backend, slot, fd_val, slot_read_armed)
                 continue
 
             # A WebSocket whose peer has sent its last byte: read what it
@@ -1057,13 +1059,8 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         )
                 if reply_owed and slot_fds[slot] != UNUSED:
                     # The reply takes the socket's registration until it
-                    # lands. Read interest goes first, on both backends:
-                    # epoll's write one-shot would replace it anyway, and
-                    # kqueue's level-triggered read would otherwise report
-                    # the client's next bytes on every wait while this slot,
-                    # RESPONDING, reads none of them.
-                    if slot_read_armed[slot]:
-                        _stop_reads(backend, slot, fd_val, slot_read_armed)
+                    # lands, and its read interest with it, on both
+                    # backends (`_await_write`).
                     if not _await_write(backend, slot, fd_val, slot_read_armed):
                         _close_slot(
                             backend, handler, slot, fd_val,
@@ -1272,6 +1269,36 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     == ConnectionState.READING_BODY
                 ):
                     _rearm_reads(backend, slot, fd_val, slot_read_armed)
+
+            else:
+                # A slot that reads nothing in its state -- RESPONDING, its
+                # bytes waiting for the client -- holds no read interest
+                # (`_await_write`), so no event should reach it here. One
+                # that does is consumed by putting that right, never by
+                # falling through: kqueue's read is level triggered and
+                # would report it again on every wait, the loop spinning
+                # while the client does not read (R4), and on epoll a read
+                # registration here has replaced the pending write one-shot
+                # (R1's shape), which re-registering the write restores.
+                # Belt and braces, deliberately: no path arms reads on such
+                # a slot, so no gate fails without this (sabotage-verified);
+                # it turns a write registration that FAILED, which leaves
+                # kqueue's read filter in place, into a retry or a close
+                # rather than a spinning loop.
+                if (
+                    provision_pool.provisions[slot].state.kind
+                    == ConnectionState.RESPONDING
+                ):
+                    if not _await_write(backend, slot, fd_val, slot_read_armed):
+                        _close_slot(
+                            backend, handler, slot, fd_val,
+                            slot_fds, fd_to_slot, provision_pool,
+                            active_count, metrics,
+                            slot_sse, slot_ws, slot_ws_state,
+                        )
+                else:
+                    _stop_reads(backend, slot, fd_val, slot_read_armed)
+                continue
 
             # A response completed inline above may have left the NEXT
             # pipelined request whole in recv_buffer, with no event ever

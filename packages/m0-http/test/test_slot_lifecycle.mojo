@@ -1,16 +1,33 @@
-"""The event loop's per-slot lifecycle.
+"""The event loop's per-slot lifecycle, and the backend contract it rests on.
 
-The transitions (`event_loop.mojo`'s "Per-slot lifecycle" section, review
-record C4). Each helper owns the resets of its phase, which is what makes a
-stale-state defect a helper's bug rather than one call site's. They are
-driven here over `FakeBackend`, which keeps one socket's registration the
-way epoll does -- ONE registration, so a read added replaces a pending
+Two halves.
+
+**The backend contract, on the real multiplexer.** A write one-shot
+REPLACES a socket's read interest on both backends: a slot waiting to write
+reads nothing until `add_read` restores it. epoll always behaved so (read
+and write share one registration, and the MOD replaces the mask); kqueue's
+filters are separate, and its read filter, level triggered, stayed -- so a
+slot waiting on a client that had half-closed, or had sent its next
+request, was reported readable by every wait while it read nothing, the
+loop at a full core (review record R4). `test_a_write_wait_holds_no_read_interest`
+runs against `PlatformBackend`, so it holds each OS to the same answer; on
+macOS it fails without the fix.
+
+**The transitions** (`event_loop.mojo`'s "Per-slot lifecycle" section,
+review record C4). Each helper owns the resets of its phase, which is what
+makes a stale-state defect a helper's bug rather than one call site's. They
+are driven here over `FakeBackend`, which keeps one socket's registration
+the way epoll does -- ONE registration, so a read added replaces a pending
 write -- the stricter of the two, and the one a wrong arm is wrong on.
 """
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
+from lightbug_http.c.kqueue import EVFILT_READ, EVFILT_WRITE
+from lightbug_http.c.platform import PlatformBackend
+from lightbug_http.c.socket import close, send
+from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
 from lightbug_http.event_loop import (
     WS_CLOSE_LINGER_NS,
@@ -135,6 +152,50 @@ def _config() -> ServerConfig:
     config.idle_timeout = 5
     config.sse_heartbeat_ms = 0
     return config^
+
+
+def test_a_write_wait_holds_no_read_interest() raises:
+    """The backend contract, on this OS's multiplexer: with a datagram
+    pending, a registered read reports it; once the write one-shot is
+    registered the wait reports the write and NOT the read; the one-shot
+    spent, nothing is reported; `add_read` reports the datagram again.
+    kqueue kept its read filter beside the write before R4's fix, and the
+    second wait returned both."""
+    var pair = socketpair_dgram()
+    var rx = pair[0]
+    var tx = pair[1]
+    var backend = PlatformBackend()
+    backend.add_read(rx)
+    var one = String("m")
+    _ = send(FileDescriptor(tx), one.as_bytes(), UInt(1), 0)
+
+    var n = backend.wait(1000)
+    assert_equal(n, 1)
+    assert_equal(Int(backend.event_ident(0)), rx)
+    assert_equal(backend.event_filter(0), EVFILT_READ)
+
+    backend.add_write_oneshot(rx)
+    n = backend.wait(1000)
+    var reads = 0
+    var writes = 0
+    for i in range(n):
+        if Int(backend.event_ident(i)) != rx:
+            continue
+        if backend.event_filter(i) == EVFILT_READ:
+            reads += 1
+        elif backend.event_filter(i) == EVFILT_WRITE:
+            writes += 1
+    assert_equal(writes, 1)
+    assert_equal(reads, 0)
+
+    assert_equal(backend.wait(50), 0)
+
+    backend.add_read(rx)
+    n = backend.wait(1000)
+    assert_equal(n, 1)
+    assert_equal(backend.event_filter(0), EVFILT_READ)
+    close(FileDescriptor(rx))
+    close(FileDescriptor(tx))
 
 
 def test_the_linger_arms_once() raises:

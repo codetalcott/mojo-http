@@ -1434,6 +1434,23 @@ echo "smoke-peer-reset OK"
 python3 scripts/emit.py --covers C9 --task smoke-peer-reset
 """
 
+# SPEC C10 (review record R4). A connection that is not being read -- its
+# response waiting on its client, or its request out on a pool thread or an
+# executor -- kept its read interest on kqueue, where connection reads are
+# level triggered: a client that half-closed or pipelined, and then did not
+# read, woke every wait, and the loop ran at a full core for as long as it
+# waited. epoll's reads are edge triggered, so this fails without the fix
+# on macOS only. The probe starts its own server, because it meters that
+# server's CPU by PID.
+[tool.poe.tasks.smoke-slot-lifecycle]
+help = "A connection that stops reading costs the event loop nothing"
+deps = ["build-serve"]
+shell = """
+python3 scripts/slot_lifecycle_probe.py 8142 || exit 1
+echo "smoke-slot-lifecycle OK"
+python3 scripts/emit.py --covers C10 --task smoke-slot-lifecycle
+"""
+
 # RFC 9112 §9.6. The server refuses an oversized body while the client is
 # still uploading it, and closing at once left the rest unread -- which the
 # kernel answers with RST, so a client that writes its whole body before it
