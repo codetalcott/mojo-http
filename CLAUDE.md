@@ -376,7 +376,7 @@ Three things about it are load-bearing:
   names which side is missing.
 - **The rules are pure functions of text**, which is what lets
   `--sabotage` revert one in memory and insist the checker catches it —
-  `shim_ownership.py`'s shape. Ten of the twenty-eight sabotages mutate
+  `shim_ownership.py`'s shape. Fourteen of the thirty-two sabotages mutate
   `pyproject.toml`, `test.yml`, `cli.mojo`, the host's `flags.mojo` or the
   test index rather than the sheet, so every source arrives as an argument. Do not "simplify" the
   checker into something that reads paths.

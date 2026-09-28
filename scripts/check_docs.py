@@ -1,7 +1,7 @@
 """The doc-fact ratchet: prose numbers must match their machine sources.
 
     python3 scripts/check_docs.py        # exit 1 on any mismatch, naming it
-    python3 scripts/check_docs.py --selftest   # the citation rule can fire
+    python3 scripts/check_docs.py --selftest   # each rule can fire
 
 Same philosophy as the warning ratchet: a fact with a machine-readable
 source of truth is never trusted from prose. This exists because the drift
@@ -31,9 +31,10 @@ what is mechanical about it is that the note it says records it exists,
 its retiring condition is written down, and its id is one nobody else
 holds. Whether the decision is still right is the retiring condition's job.
 
-CI runs this via `uv run poe check-docs` on code changes. test.yml ignores
-*.md, so a doc-only edit is not re-checked — acceptable, because drift is
-caused by code moving, not by doc edits.
+CI runs this, with its selftest, through scripts/docs_gate.sh: in docs.yml's
+`check-docs` job on every pull request, doc-only ones included -- it is the
+one required check on `main` -- and through `poe check-docs` in test.yml's
+unit tests.
 """
 
 import json
@@ -83,6 +84,11 @@ def check_warning_counts():
         )
 
 
+def _texts(*rels):
+    """The named repo files' texts, in order ("" for one that is missing)."""
+    return [(REPO / rel).read_text() if (REPO / rel).exists() else "" for rel in rels]
+
+
 def check_smoke_coverage():
     """Every smoke-* poe task must be run by .github/workflows/test.yml.
 
@@ -90,24 +96,35 @@ def check_smoke_coverage():
     and a green tick ships without ever running it (that happened; the
     task was smoke-sendfile).
     """
-    tasks = set(
-        re.findall(
-            r"^\[tool\.poe\.tasks\.(smoke-[a-z0-9-]+)\]",
-            (REPO / "pyproject.toml").read_text(),
-            re.M,
-        )
-    )
-    workflow = (REPO / ".github" / "workflows" / "test.yml").read_text()
-    run = set(re.findall(r"poe (smoke-[a-z0-9-]+)", workflow))
+    for problem in smoke_coverage_problems(*_texts("pyproject.toml", ".github/workflows/test.yml")):
+        fail(problem)
+
+
+def smoke_coverage_problems(pyproject, workflow):
+    """check_smoke_coverage, as a function of the two texts.
+
+    Both are read through spec_sheet's readers, which see only what runs: a
+    smoke named in a test.yml comment is not run by it, and this counted one
+    as run until review H4 (the whole file was scanned, comments and all).
+    """
+    import spec_sheet
+
+    try:
+        tasks = {n for n in spec_sheet.poe_tasks(pyproject) if n.startswith("smoke-")}
+    except ValueError as e:
+        return [str(e)]
+    run = set(re.findall(r"poe (smoke-[a-z0-9-]+)",
+                         spec_sheet.strip_comment_lines(workflow)))
+    problems = []
     missing = sorted(tasks - run)
     if missing:
-        fail(
-            "smoke task(s) defined but never run by test.yml: "
-            + ", ".join(missing)
-        )
+        problems.append(
+            "smoke task(s) defined but never run by test.yml: " + ", ".join(missing))
     ghosts = sorted(run - tasks)
     if ghosts:
-        fail("test.yml runs smoke task(s) that do not exist: " + ", ".join(ghosts))
+        problems.append(
+            "test.yml runs smoke task(s) that do not exist: " + ", ".join(ghosts))
+    return problems
 
 
 def check_test_coverage():
@@ -130,40 +147,40 @@ def check_test_coverage():
     libraries. Without it the only way to keep such a test in CI is to
     stop calling it `test-*`, which is dodging the rule by spelling.
     """
-    toml = (REPO / "pyproject.toml").read_text()
-    tasks = set(re.findall(r"^\[tool\.poe\.tasks\.(test-[a-z0-9-]+)\]", toml, re.M))
-    sequences = {
-        name: re.findall(r'"([a-z0-9-]+)"', body)
-        for name, body in re.findall(
-            r"^\[tool\.poe\.tasks\.([a-z0-9-]+)\]$(.*?)(?=^\[tool\.poe\.tasks\.)",
-            toml + "\n[tool.poe.tasks.__end__]\n",
-            re.M | re.S,
-        )
-        for _ in [0]
-        if "sequence" in body
-    }
-    reached, queue = set(), ["test-all"]
-    while queue:
-        name = queue.pop()
-        if name in reached:
-            continue
-        reached.add(name)
-        queue.extend(sequences.get(name, ()))
+    for problem in test_coverage_problems(*_texts("pyproject.toml", ".github/workflows/test.yml")):
+        fail(problem)
+
+
+def test_coverage_problems(pyproject, workflow):
+    """check_test_coverage, as a function of the two texts.
+
+    Through spec_sheet's readers, which see only what runs (review H4). This
+    counted two things that do not: a step's body ran on through the comment
+    introducing the next step or job -- the postgres job's header comment
+    names `poe test-postgres-server`, so the aarch64 wheel step "ran" it --
+    and any task block containing the word `sequence` was a sequence, every
+    quoted word in it a member.
+    """
+    import spec_sheet
+
+    try:
+        table = spec_sheet.poe_tasks(pyproject)
+    except ValueError as e:
+        return [str(e)]
+    tasks = {n for n in table if n.startswith("test-")}
+    reached = spec_sheet.reachable_tasks(table, "test-all")
     # The other route: a task a named test.yml step runs by itself.
-    workflow = (REPO / ".github" / "workflows" / "test.yml").read_text()
     stepped = set()
-    for name, body in re.findall(
-        r"^\s*- name: (.+?)\s*$(.*?)(?=^\s*- (?:name|uses|run):|\Z)",
-        workflow, re.M | re.S,
-    ):
-        stepped |= set(re.findall(r"poe (test-[a-z0-9-]+)", body))
+    for step_tasks, _conditional, _body in spec_sheet.workflow_steps(workflow).values():
+        stepped |= {t for t in step_tasks if t.startswith("test-")}
     missing = sorted(tasks - reached - stepped)
     if missing:
-        fail(
+        return [
             "test task(s) defined but neither reachable from `poe test-all` "
             "nor run by a named step in test.yml, "
             "which is what CI runs: " + ", ".join(missing)
-        )
+        ]
+    return []
 
 
 def check_release_branches_cleaned():
@@ -964,7 +981,7 @@ def check_spec_sheet():
     The sheet is a public completeness tracker, so `verified` has to mean
     something mechanical: a row may claim it only by naming a CI step, a test
     function, or a weekly, monthly or pre-release gate that this repo can be shown to run.
-    The rules, the both-ways cross-references and the seventeen sabotages that
+    The rules, the both-ways cross-references and the sabotages that
     prove each of them live in scripts/spec_sheet.py, which is written as a
     pure function of text so `--sabotage` can revert a rule in memory. This is
     the four-line wrapper that reads the files and forwards what it says.
@@ -1012,27 +1029,32 @@ def check_required_context_intact():
       reason docs.yml is unfiltered and eligible to be required at all, while
       test.yml is not.
 
-    Sabotaged three ways while writing it: each edit made this fire, and the
-    message names the ruleset rather than only the file, because the person
-    reading it will be looking at a stuck pull request.
+    Sabotaged three ways while writing it, plus deletion, and now on every
+    run of the selftest: each edit made this fire, and the message names the
+    ruleset rather than only the file, because the person reading it will be
+    looking at a stuck pull request.
     """
     path = REPO / ".github" / "workflows" / "docs.yml"
-    if not path.exists():
-        fail(
+    for problem in required_context_problems(path.read_text() if path.exists() else None):
+        fail(problem)
+
+
+def required_context_problems(text):
+    """check_required_context_intact, as a function of docs.yml's text (None: gone)."""
+    if text is None:
+        return [
             ".github/workflows/docs.yml is gone, but the `main` ruleset still "
             f"requires the status check {REQUIRED_CONTEXT!r} — every pull "
             "request will wait forever for a check nothing produces"
-        )
-        return
-    text = path.read_text()
-
+        ]
+    problems = []
     job = re.search(
         r"^  " + re.escape(REQUIRED_CONTEXT) + r":\s*$(.*?)(?=^  \S|\Z)",
         text,
         re.M | re.S,
     )
     if not job:
-        fail(
+        problems.append(
             f"docs.yml no longer defines a job named {REQUIRED_CONTEXT!r}. That "
             "string is the status check the `main` ruleset requires, and a "
             "check run is named after its JOB, not its workflow — renaming it "
@@ -1040,7 +1062,7 @@ def check_required_context_intact():
             "that will never be reported."
         )
     elif re.search(r"^\s+(strategy|matrix):", job.group(1), re.M):
-        fail(
+        problems.append(
             f"docs.yml's {REQUIRED_CONTEXT!r} job has a matrix, which suffixes "
             f"the check run name (`{REQUIRED_CONTEXT} (ubuntu-latest)`). The "
             f"`main` ruleset requires the bare string {REQUIRED_CONTEXT!r}, so "
@@ -1049,15 +1071,87 @@ def check_required_context_intact():
 
     on = re.search(r"^on:\s*$(.*?)(?=^\S)", text, re.M | re.S)
     if not on:
-        fail("docs.yml has no `on:` block to check for path filters")
+        problems.append("docs.yml has no `on:` block to check for path filters")
     elif re.search(r"^\s+paths(-ignore)?:", on.group(1), re.M):
-        fail(
+        problems.append(
             "docs.yml has acquired a `paths`/`paths-ignore` filter. It is "
             "deliberately unfiltered: a filtered workflow does not report on "
             "the pull requests it skips, and this one is a REQUIRED check on "
             "`main`, so those pull requests would hang unmergeable. That is "
             "the defect test.yml has and the reason this workflow exists."
         )
+    return problems
+
+
+# The docs gate: ONE script, run by the required check and by the local task.
+DOCS_GATE = "scripts/docs_gate.sh"
+
+
+def check_docs_gate_shared():
+    """The required check and `poe check-docs` must run the same gate.
+
+    They did not (review H4). docs.yml ran its own list and `poe check-docs`
+    another: the required check skipped check_docs' selftest and two others
+    that the task's own comments said ran "so doc-only pull requests prove
+    it too", while the task skipped pyflakes and two sabotages the required
+    check ran, and neither ran the milestone rot gates, which read only
+    docs/**. Both now run scripts/docs_gate.sh; this holds them to it, since
+    the drift was silent -- each list was green on its own.
+    """
+    docs_yml, pyproject = _texts(".github/workflows/docs.yml", "pyproject.toml")
+    for problem in docs_gate_problems(docs_yml, pyproject):
+        fail(problem)
+
+
+def docs_gate_problems(docs_yml, pyproject):
+    """check_docs_gate_shared, as a function of the two texts.
+
+    What counts as running the gate is a line that runs it and nothing
+    after it: in docs.yml, an unconditional step that may not fail, in the
+    `check-docs` job; in the task, a line that exits on failure or is the
+    last -- a poe shell task reports only its LAST command's status, so a
+    failed gate followed by a recording line would be a green task.
+    """
+    import spec_sheet
+
+    problems = []
+    gate = re.compile(r"^\s*(?:- )?(?:run:[ \t]*)?sh " + re.escape(DOCS_GATE) + r"[ \t]*$", re.M)
+    job = spec_sheet.workflow_jobs(docs_yml).get(REQUIRED_CONTEXT, "")
+    runs = [(cond, step) for _n, cond, step in spec_sheet.job_steps(job)
+            if gate.search(step)]
+    if not runs:
+        problems.append(
+            f"docs.yml's `{REQUIRED_CONTEXT}` job has no step running "
+            f"`sh {DOCS_GATE}` (and nothing after it on the line). That job is "
+            "the one required check on `main`, and the gate is what it is "
+            "required to have run: without it every pull request merges on a "
+            "check that checks nothing, and `poe check-docs` stops being what "
+            "the required check runs.")
+    elif not any(not cond and not re.search(r"^\s*continue-on-error:[ \t]*true", step, re.M)
+                 for cond, step in runs):
+        problems.append(
+            f"docs.yml runs `sh {DOCS_GATE}` in a step with an `if:` or "
+            "`continue-on-error: true`, so the required check can report "
+            "success without the gate having passed")
+    try:
+        body = spec_sheet.poe_tasks(pyproject).get("check-docs", ("", []))[0]
+    except ValueError as e:
+        return problems + [str(e)]
+    lines = [line.strip() for line in body.split("\n") if line.strip()]
+    at = [i for i, line in enumerate(lines)
+          if line.startswith(f"sh {DOCS_GATE}")]
+    if not at:
+        problems.append(
+            f"`poe check-docs` no longer runs `sh {DOCS_GATE}`, so the local "
+            "task and the required check have separate lists again — which is "
+            "how each came to skip checks the other ran")
+    elif not any(lines[i] == f"sh {DOCS_GATE} || exit 1" or i == len(lines) - 1
+                 for i in at):
+        problems.append(
+            f"`poe check-docs` runs `sh {DOCS_GATE}` without `|| exit 1` and "
+            "not as its last line: a poe shell task reports only its last "
+            "command's status, so a failed gate would read as a green task")
+    return problems
 
 
 # The Dependabot auto-merge gate. Its failure mode is the required-context
@@ -1445,7 +1539,7 @@ def _mojo_pages_cases():
     changes nothing is NOT APPLICABLE and fails the selftest.
     """
     pages, urls, src = _mojo_pages_inputs()
-    host, index, quick = "docs/MOJO_HOST.md", "docs/MOJO.md", "packaging/m0/QUICKSTART.md"
+    host, quick = "docs/MOJO_HOST.md", "packaging/m0/QUICKSTART.md"
 
     def page(rel, old, new):
         return dict(pages, **{rel: pages[rel].replace(old, new, 1)})
@@ -2155,6 +2249,76 @@ def _dependabot_gate_cases():
     ]
 
 
+def _smoke_only_in_a_comment(workflow):
+    """(workflow, smoke): one step's smoke left only in a comment, the step
+    running `echo` instead -- a smoke run by no other step, found by count
+    rather than quoted, so a reworded step cannot turn the case off."""
+    import spec_sheet
+
+    code = spec_sheet.strip_comment_lines(workflow)
+    for m in re.finditer(r"^( +)run: uv run poe (smoke-[a-z0-9-]+)[ \t]*$", workflow, re.M):
+        smoke, pad = m.group(2), m.group(1)
+        if len(re.findall(r"poe " + re.escape(smoke) + r"(?![a-z0-9-])", code)) == 1:
+            return (workflow[:m.start()] + f"{pad}# run: uv run poe {smoke}\n"
+                    f"{pad}run: echo skipped" + workflow[m.end():], smoke)
+    return None, None
+
+
+def _test_step_only_in_a_comment(workflow, pyproject):
+    """(workflow, task): the one step running a test task that `test-all`
+    does not reach keeps the task in a comment and runs `echo`. The tree has
+    the live form of this: the postgres job's header comment names `poe
+    test-postgres-server`, and the old reader ran the aarch64 wheel step's
+    body on through it."""
+    import spec_sheet
+
+    reached = spec_sheet.reachable_tasks(spec_sheet.poe_tasks(pyproject), "test-all")
+    code = spec_sheet.strip_comment_lines(workflow)
+    for m in re.finditer(r"^( +)run: uv run poe (test-[a-z0-9-]+)[ \t]*$", workflow, re.M):
+        pad, task = m.group(1), m.group(2)
+        if task in reached or len(re.findall(
+                r"poe " + re.escape(task) + r"(?![a-z0-9-])", code)) != 1:
+            continue
+        return (workflow[:m.start()] + f"{pad}run: echo needs a server\n"
+                f"{pad}# was: uv run poe {task}" + workflow[m.end():], task)
+    return None, None
+
+
+def _required_context_cases(real):
+    job = f"\n  {REQUIRED_CONTEXT}:\n"
+    return [
+        ("(control: docs.yml as committed)", real, False),
+        ("the required job renamed", real.replace(job, "\n  docs-check:\n", 1), True),
+        ("the required job given a matrix",
+         real.replace(job, job + "    strategy:\n      matrix:\n        os: [ubuntu-latest]\n", 1), True),
+        ("a path filter on the workflow",
+         real.replace("  pull_request:\n    branches: [main]\n",
+                      "  pull_request:\n    branches: [main]\n    paths-ignore: ['docs/**']\n", 1),
+         True),
+        ("docs.yml deleted", None, True),
+    ]
+
+
+def _docs_gate_cases(docs, toml):
+    step = f"        run: sh {DOCS_GATE}\n"
+    task = f"\nsh {DOCS_GATE} || exit 1\n"
+    return [
+        ("(control: docs.yml and the task as committed)", docs, toml, False),
+        ("docs.yml's gate step commented out",
+         docs.replace(step, f"        # run: sh {DOCS_GATE}\n        run: echo skipped\n", 1), toml, True),
+        ("docs.yml's gate step made conditional",
+         docs.replace(step, "        if: github.event_name == 'push'\n" + step, 1), toml, True),
+        ("docs.yml's gate step allowed to fail",
+         docs.replace(step, "        continue-on-error: true\n" + step, 1), toml, True),
+        ("docs.yml's gate step swallowing its status",
+         docs.replace(step, step[:-1] + " || true\n", 1), toml, True),
+        ("`poe check-docs` no longer running the gate",
+         docs, toml.replace(task, "\n", 1), True),
+        ("`poe check-docs` running it without `|| exit 1`, then recording",
+         docs, toml.replace(task, f"\nsh {DOCS_GATE}\n", 1), True),
+    ]
+
+
 def selftest():
     """The citation rule must be able to fire: one doctored input per case."""
     tracked = {".claude/handoffs/soak-design.md", "scripts/probes/herd.c",
@@ -2450,6 +2614,50 @@ def selftest():
         good = bool(conflict_markers(files)) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}")
         ok &= good
+    # Coverage guards that see only what runs (review H4): a smoke or a test
+    # task whose one step names it only in a comment is reported, against the
+    # committed texts. The old readers counted the comment and passed both.
+    real_wf, real_toml = _texts(".github/workflows/test.yml", "pyproject.toml")
+    good = not smoke_coverage_problems(real_toml, real_wf) and not test_coverage_problems(real_toml, real_wf)
+    print(f"  {'caught' if good else 'MISSED'}          (control: the coverage guards pass the committed texts)")
+    ok &= good
+    for label, (text, task), check in (
+            ("a smoke named only in a comment is reported uncovered",
+             _smoke_only_in_a_comment(real_wf), smoke_coverage_problems),
+            ("a test task named only in a comment is reported unrun",
+             _test_step_only_in_a_comment(real_wf, real_toml), test_coverage_problems)):
+        if text is None:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, no step runs such a task alone")
+            ok = False
+            continue
+        got = check(real_toml, text)
+        good = any(task in g for g in got)
+        print(f"  {'caught' if good else 'MISSED'}          {label} ({task})"
+              + ("" if good else f" -- got {got}"))
+        ok &= good
+    # The required context: the three edits that hang every pull request
+    # rather than failing one, and deletion.
+    real_docs = (REPO / ".github" / "workflows" / "docs.yml").read_text()
+    for label, text, must_fire in _required_context_cases(real_docs):
+        if must_fire and text == real_docs:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation left docs.yml unchanged")
+            ok = False
+            continue
+        got = required_context_problems(text)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
+    # One docs gate: both callers run it, and neither can run it in a way
+    # that lets a failure through.
+    for label, docs, toml, must_fire in _docs_gate_cases(real_docs, real_toml):
+        if must_fire and docs == real_docs and toml == real_toml:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation changed nothing")
+            ok = False
+            continue
+        got = docs_gate_problems(docs, toml)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -2489,6 +2697,7 @@ def main():
     check_backend_seam()
     check_spec_sheet()
     check_required_context_intact()
+    check_docs_gate_shared()
     check_dependabot_gate()
     check_m0_release_workflow()
     check_mojo_pages()

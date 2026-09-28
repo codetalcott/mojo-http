@@ -783,7 +783,7 @@
       "category": "F. Observability",
       "capability": "Every RFC the tree cites is a current document",
       "status": "verified",
-      "evidence": "`Check machine-sourced doc facts` (every PR) \u2014 `scripts/check_citations.py` looks every `RFC nnnn` in a tracked text file up in `scripts/rfc_status.json`, a committed snapshot of the RFC Editor's per-document JSON; a citation with no entry fails, and a citation of an obsoleted RFC fails unless the same paragraph cites a successor. Section numbers are not checked. Selftested in `check-docs`; each rule reverted against the tree by the sabotage step in docs.yml"
+      "evidence": "`Check machine-sourced doc facts` (every PR) \u2014 `scripts/check_citations.py` looks every `RFC nnnn` in a tracked text file up in `scripts/rfc_status.json`, a committed snapshot of the RFC Editor's per-document JSON; a citation with no entry fails, and a citation of an obsoleted RFC fails unless the same paragraph cites a successor. Section numbers are not checked. Selftested, and each rule reverted against the tree, by the docs gate (`scripts/docs_gate.sh`), which `check-docs` and docs.yml both run"
     },
     {
       "id": "F16",
