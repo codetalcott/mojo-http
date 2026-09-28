@@ -188,6 +188,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   its own measurements: the postgres job's summary had been empty since the
   job was added, rendered with a flag `emit.py` does not have, while the
   check counted the other jobs' renders as its.
+- **Every CI job keeps the coverage its gates declare, and the release
+  workflow's cleanliness check reads steps, not comments.** The unit-tests
+  and aarch64 wheel jobs ran their `emit.py --covers` declarations with
+  nowhere to record them, because the check that each job collects counted
+  measurements only; both now record, render and upload like the rest, and
+  `emit.py --selftest` no longer writes into, or fails under, the results
+  file of the job running it. Each `wheel-consume` job must assert its own
+  cleanliness in a step that runs, where the phrase in a comment used to
+  pass. `sabotage-spec` no longer reports a working rule MISSED when the
+  first test file carries extra coverage, and `test.yml` no longer runs the
+  milestone rot gates a second time beside the docs gate.
 
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
