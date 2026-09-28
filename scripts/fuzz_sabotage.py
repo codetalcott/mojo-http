@@ -8,30 +8,24 @@ believable result for a decoder with the unit suite this one has -- and is
 worth nothing unless the harness can be shown to fail.
 
 So each entry below reverts one property the fuzzer claims to check, in the
-decoder itself, and the run must fail. Same shape as `pool_sabotage.py` and
-`trailer_sabotage.py`; no binary is built, so there is no stale-`.mojoc`
-hazard -- `mojo run` compiles the package source directly.
+decoder itself, and the run must fail -- on THAT invariant: each entry names
+the text the fuzzer must report, and a run that fails without it failed
+elsewhere, which is a miss. So is a sabotage that does not compile: a build
+error fails the run too, and proves nothing about the invariants. Same shape
+as `pool_sabotage.py` and `trailer_sabotage.py`, on `sabotage_lib.py`; no
+binary is built, so there is no stale-`.mojoc` hazard -- `mojo run`
+compiles the package source directly.
 
     python3 scripts/fuzz_sabotage.py
+    python3 scripts/fuzz_sabotage.py --only pending_bytes
 """
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-# The venv's own compiler, never `uv run mojo`: a child `uv run` re-syncs the
-# venv to uv.lock even under a parent `uv run --no-sync` (measured 2026-09-02:
-# the child printed Mojo 1.0.0 and the venv stayed there), which on a nightly
-# (`poe canary`, nightly-canary.yml) swaps the toolchain back to stable
-# mid-run and reports the next step's ".mojoc is newer than the compiler" as
-# a nightly break. poe's virtualenv executor puts .venv/bin first on PATH, so
-# the sibling of this interpreter is the compiler every other task uses.
-_SIBLING = Path(sys.executable).with_name("mojo")
-MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
+from sabotage_lib import MojoRun, Ran, rule, run
 
 HEADER = Path("packages/m0-http/lightbug_http/header.mojo")
 CHUNKED = Path("packages/m0-http/lightbug_http/http/chunked.mojo")
@@ -86,74 +80,22 @@ SABOTAGES = [
 ]
 
 
-def run_fuzzer() -> tuple[bool, str]:
-    p = subprocess.run(
-        [MOJO, "run", "-I", "packages/m0-http", "-I",
-         "packages/m0-core", str(FUZZER), "--iterations", ITERATIONS],
-        capture_output=True, text=True, timeout=900,
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and "fuzz-request OK" in out), out
+RULES = [rule(label, path, old, new, expect=expect)
+         for label, path, old, new, expect in SABOTAGES]
 
 
-def main() -> int:
-    originals = {p: p.read_text() for p in (HEADER, CHUNKED)}
-    tmp = Path(tempfile.mkdtemp())
-    for p, text in originals.items():
-        (tmp / p.name).write_text(text)
+def fuzz_passed(ran: Ran) -> bool:
+    """The fuzzer's pass: exit 0 AND its own OK line."""
+    return ran.returncode == 0 and "fuzz-request OK" in ran.output
 
-    print("baseline (unsabotaged) must PASS:")
-    ok, out = run_fuzzer()
-    print(f"  {'ok' if ok else 'FAIL'}  baseline")
-    if not ok:
-        print(out[-1500:])
-        return 1
 
-    failures = []
-    for label, path, old, new, expect in SABOTAGES:
-        original = originals[path]
-        if old not in original:
-            print(f"  FAIL  anchor missing: {label}")
-            failures.append(label)
-            continue
-        path.write_text(original.replace(old, new, 1))
-        try:
-            ok, out = run_fuzzer()
-        except subprocess.TimeoutExpired:
-            ok, out = False, "(timed out — itself a failure)"
-        path.write_text(original)
+GATE = MojoRun(FUZZER, args=("--iterations", ITERATIONS), passed=fuzz_passed,
+               timeout=900)
 
-        if ok:
-            print(f"  BAD   {label} (the fuzzer passed on a broken decoder)")
-            failures.append(label)
-            continue
 
-        # It failed -- but for the RIGHT reason? A build error also fails, and
-        # would make every sabotage here look caught while proving nothing
-        # about the invariants.
-        named = expect in out
-        if not named:
-            if "error:" in out:
-                print(f"  SKIP  {label} (does not compile, so proves nothing)")
-                continue
-            print(f"  BAD   {label} (failed, but not on its invariant)")
-            failures.append(label)
-            continue
-        print(f"  ok    {label}")
-        print(f"          reported: {expect}")
-
-    for p in originals:
-        shutil.copy(tmp / p.name, p)
-
-    print()
-    if failures:
-        print(f"{len(failures)} invariant(s) the fuzzer does not actually check:")
-        for f in failures:
-            print(f"  - {f}")
-        return 1
-    print(f"all {len(SABOTAGES)} decoder invariant(s) are really checked")
-    return 0
+def main(argv: list[str]) -> int:
+    return run("sabotage-fuzz", RULES, GATE, argv)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

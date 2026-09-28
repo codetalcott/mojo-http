@@ -35,20 +35,23 @@ means for the tree.
 `--sabotage` reverts each rule IN THE PROBE SOURCE, compiles that, and
 insists this checker fails for every one, so a probe edited into agreeing
 with itself is caught. It exists for the same reason
-`scripts/shim_ownership.py --sabotage` does.
+`scripts/shim_ownership.py --sabotage` does. It runs on `sabotage_lib.py`,
+in memory (the probe on disk is never written): the unsabotaged probe must
+pass first, and a sabotaged probe that does not compile is a MISS -- the
+checker judged no IR -- where it used to count as caught (review B15).
+`--sabotage --only LABEL` runs one rule.
 """
 
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
+from sabotage_lib import DIAGNOSTIC, MOJO, Gate, Outcome, rule, run
+
 ROOT = Path(__file__).resolve().parent.parent
 PROBE = ROOT / "scripts" / "keepalive_probe.mojo"
-_SIBLING = Path(sys.executable).with_name("mojo")
-MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
 
 # The allocator free Mojo emits for an owning value, matched by shape
 # rather than by its current KGEN name, which is not an API.
@@ -62,8 +65,13 @@ class Finding(Exception):
     """A conclusion about the toolchain, not a crash."""
 
 
+class CompileFailed(Finding):
+    """The probe did not compile, so no IR was read. A finding for the check
+    itself; for `--sabotage`, a sabotage that proved nothing."""
+
+
 def compile_ir(source: str) -> str:
-    """Compile probe `source` to LLVM IR, raising a Finding if it will not."""
+    """Compile probe `source` to LLVM IR, raising CompileFailed if it will not."""
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "keepalive_probe.mojo"
         src.write_text(source)
@@ -73,7 +81,7 @@ def compile_ir(source: str) -> str:
             cwd=ROOT, capture_output=True, text=True,
         )
         if proc.returncode != 0:
-            raise Finding(f"the probe did not compile:\n{proc.stderr}")
+            raise CompileFailed(f"the probe did not compile:\n{proc.stderr}")
         return out.read_text()
 
 
@@ -147,7 +155,7 @@ def findings(ir: str) -> list[str]:
 
 
 # Each reverts one rule of the probe by matching EXACT source lines, so an
-# edit that re-words them fails here as `anchor missing` rather than
+# edit that re-words them fails here as NOT APPLICABLE rather than
 # quietly testing nothing.
 SABOTAGES: list[tuple[str, str, str]] = [
     (
@@ -170,33 +178,34 @@ SABOTAGES: list[tuple[str, str, str]] = [
 ]
 
 
-def sabotage() -> int:
-    """Every reverted rule must make this checker fail."""
-    source = PROBE.read_text()
-    failed = 0
-    for label, old, new in SABOTAGES:
-        if source.count(old) != 1:
-            print(f"keepalive-barrier: anchor missing ({source.count(old)} "
-                  f"matches) for: {label}")
-            failed += 1
-            continue
+class Checker(Gate):
+    """This checker, on the text it is handed. A probe that does not compile
+    is `unbuilt` -- no IR was judged -- and every other Finding is the
+    checker failing in its own words."""
+
+    def run(self, texts) -> Outcome:
         try:
-            caught = bool(findings(compile_ir(source.replace(old, new, 1))))
-        except Finding:
-            caught = True
-        print(f"  {'caught  ' if caught else 'MISSED  '}{label}")
-        if not caught:
-            failed += 1
-    if failed:
-        print(f"keepalive-barrier: {failed} sabotage(s) not caught")
-        return 1
-    print(f"keepalive-barrier: all {len(SABOTAGES)} sabotages caught")
-    return 0
+            ir = compile_ir(texts[PROBE])
+        except CompileFailed as exc:
+            said = DIAGNOSTIC.search(str(exc))
+            return Outcome.unbuilt(said.group(0).strip() if said else str(exc).strip(),
+                                   str(exc))
+        try:
+            found = findings(ir)
+        except Finding as exc:
+            return Outcome.failed(str(exc))
+        return Outcome.failed(found[0]) if found else Outcome.passed()
+
+
+def sabotage(argv: list[str]) -> int:
+    """Every reverted rule must make this checker fail."""
+    rules = [rule(label, PROBE, old, new) for label, old, new in SABOTAGES]
+    return run("sabotage-keepalive", rules, Checker(), argv, write=False)
 
 
 def main(argv: list[str]) -> int:
     if "--sabotage" in argv:
-        return sabotage()
+        return sabotage([a for a in argv if a != "--sabotage"])
     try:
         found = findings(compile_ir(PROBE.read_text()))
     except Finding as exc:
