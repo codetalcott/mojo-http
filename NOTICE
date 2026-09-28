@@ -912,6 +912,33 @@ lightbug_http
         with loops on threads (`M0_THREADS`, `--threads`) one loop could
         read the fields another had just written.
 
+      - c/socket_error.mojo, c/socket.mojo, socket.mojo, connection.mojo,
+        server.mojo, event_loop.mojo, offload.mojo, http/response.mojo
+        (2026-09-28): one error, `SysError` -- the call's name and its
+        errno, with `would_block`, `interrupted`, `connection_aborted` and
+        `address_in_use` -- replaces c/socket_error.mojo's 109 typed errors
+        and the 14 variants over them, and every wrapper in c/socket.mojo
+        raises it whenever its call fails. The wrappers raised a type for
+        each errno their man page listed and returned normally for any
+        other: `socket()` gave back -1 as a descriptor (EPROTOTYPE on
+        macOS), `listen()` on a connected socket reported success (EINVAL),
+        and `accept_with_peer` handed the event loop -1 to admit (review
+        record B9). The loop and the handler pool read the predicates where
+        they matched leaf types, and the listener's bind retry reads
+        `address_in_use` (review record R9): no errno is handled differently.
+        The listener raises the failed call's own error where it raised
+        `SocketCreationError` or `ListenFailedError`, which dropped the
+        errno. `TCPConnection.write` raises untyped, since the client mixes
+        it with errors of its own in one `try`, which `SendError` absorbed.
+        Removed with the typed errors, each without a raiser or a caller:
+        `Socket.accept`, `NoTLSListener.accept` and the `accept` wrapper;
+        `SocketAcceptError`, `SocketConnectError`, `SocketRecvfromError`,
+        `FatalCloseError` and `InvalidCloseErrorConversionError`;
+        `SocketGetsocknameError`, now `SocketNameError`, which
+        `get_peer_name` raises too; `CreateConnectionError` and
+        `BindFailedError`; `ServerError`'s accept, receive and close arms;
+        and `ChunkedEncodingError`. About 2,960 lines.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
