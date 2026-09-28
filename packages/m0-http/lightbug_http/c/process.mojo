@@ -247,8 +247,8 @@ def ignore_sigpipe():
     they fork or start a thread: a supervisor, which never enters the event
     loop and makes no Python call to inherit CPython's ignore from, and the
     application's `make`, producer and pool, which run before the loop, are
-    covered from there. `run_event_loop` and the blocking `Server.serve` call
-    it again before their first send, for a listener made some other way
+    covered from there. `run_event_loop`, which every `Server` entry point
+    runs, calls it again before its first send, for a listener made some other way
     (SPEC A25). Unconditional, as CPython's own is: a server has
     no use for the signal, and an application learns of a closed peer from
     the write's `EPIPE`. The disposition is process-wide and survives

@@ -353,10 +353,10 @@ with the bare fragment as `text/html`, which Datastar morphs into the element
 carrying the fragment's id. One renderer, two transports; what was checked
 against the bundle is [one-renderer-two-transports](docs/notes/one-renderer-two-transports.md).
 
-**SSE and WebSockets need `listen_and_serve_nonblocking`,** not `listen_and_serve`. Only
-the non-blocking event loop assigns `req.slot_id`, drains the outbox, and parses
-WebSocket frames; the plain accept loop leaves `slot_id` at `-1` and every stream
-open answers `409`.
+**SSE and WebSockets work from every `Server` entry point.** `listen_and_serve`
+runs the same event loop as `listen_and_serve_nonblocking`, which assigns
+`req.slot_id`, drains the outbox, and parses WebSocket frames; the blocking accept
+loop that answered every stream open with `409` is gone.
 
 ## WebSockets
 

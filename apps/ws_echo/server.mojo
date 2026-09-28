@@ -109,8 +109,8 @@ def main() raises:
     # M0_SSE_HEARTBEAT_MS cadence drives both stream kinds.
     var server = Server(config.server_config(), config.address())
     var handler = EchoHandler()
-    # Upgrades need the non-blocking loop: it assigns req.slot_id and owns
-    # the frame parsing; the plain accept loop knows nothing of WebSockets.
+    # Upgrades need the event loop, which every `Server` entry point runs:
+    # it assigns req.slot_id and owns the frame parsing.
     var shutdown_fd = install_shutdown_signals()
     server.listen_and_serve_nonblocking(
         config.address(), handler, shutdown_read_fd=shutdown_fd

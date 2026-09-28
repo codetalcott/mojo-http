@@ -1,8 +1,10 @@
 """Non-blocking kqueue event loop for concurrent HTTP connection handling.
 
-Replaces the blocking accept-loop in server.mojo with a single-threaded,
-non-blocking event loop using macOS kqueue. Handles multiple concurrent
-connections by advancing per-connection state machines on IO readiness.
+The server's only accept loop: every `Server` entry point runs it, and the
+blocking one it replaced in server.mojo is gone. Single-threaded and
+non-blocking, over kqueue on macOS and epoll on Linux. Handles multiple
+concurrent connections by advancing per-connection state machines on IO
+readiness.
 """
 
 from lightbug_http.c.kqueue import (
@@ -2624,10 +2626,6 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             # MUST NOT send 100 (Continue) to an HTTP/1.0 client: 1.0 has no
             # 1xx, so that client reads the interim response as THE response
             # and the real one behind it as garbage.
-            #
-            # Both copies of this check must agree -- `server.mojo` has the
-            # other, for the blocking accept loop -- because a rule in one
-            # and not the other is not a rule.
             if provision_pool.provisions[slot].parsed_headers.value().headers.value_equals_ignore_case(
                 HeaderKey.EXPECT, "100-continue"
             ):

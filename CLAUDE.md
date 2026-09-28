@@ -586,12 +586,11 @@ implements `func` and nothing else: reverting any
 default in the trait to `...` makes that file fail to compile, which is
 checked by sabotaging all eight.
 
-**SSE and WebSockets require `listen_and_serve_nonblocking`,** not
-`listen_and_serve`. Only the non-blocking event loop assigns `req.slot_id`,
-drains the outbox, and parses WebSocket frames; the plain accept loop leaves
-`slot_id` at `-1` and refuses every `sse_streaming` response and every `101`
-with the server's own `409` (`gate_streaming_response`).
-Slots index the registry directly, so a stream's capacity
+**Every `Server` entry point runs the event loop**, which assigns
+`req.slot_id`, drains the outbox, and parses WebSocket frames:
+`listen_and_serve` and `serve` are the `_nonblocking` pair with their
+defaults, and the blocking accept loop that answered every stream `409` is
+gone. Slots index the registry directly, so a stream's capacity
 (`DatastarStream(1024)`) must be at least the server's max connections.
 A WebSocket upgrade is signalled on the wire, not by a flag: the loop
 switches a slot to frame mode when the handler's response is
@@ -1267,9 +1266,7 @@ Properties of the design, not defects to fix in passing:
   purpose (recursing through the handler chain nests a call stack per
   request) and unbounded on purpose (the send buffer is the real bound:
   an iteration whose response cannot go out whole leaves the slot
-  RESPONDING and exits). The blocking path has the same fix in its own
-  shape — it parses preserved bytes before blocking on a socket that may
-  never speak again. `poe smoke-pipelining` pins all of it.
+  RESPONDING and exits). `poe smoke-pipelining` pins all of it.
 - **A WebSocket this side closes LINGERS for the peer's Close reply.** RFC
   6455 §5.5.1: the endpoint that sends Close first waits to RECEIVE one
   before closing the connection. Closing as soon as the Close frame drained

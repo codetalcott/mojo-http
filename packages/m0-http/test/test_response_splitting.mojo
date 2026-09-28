@@ -8,8 +8,9 @@ used to live only in m0-wsgi, which reads an application's head through the
 C API, so every head built in Mojo -- a view's, the Mojo host's, a
 `--mount X=mojo` pool thread's -- reached `write_latin1_to` uninspected. It
 lives in the fork's head writers now, which every response passes through:
-`encode` (the blocking server), `encode_into` (the event loop) and the text
-form a test prints, each held here.
+`encode` (the event loop's error answers, `_send_error_to_fd`),
+`encode_into` (every other response the loop writes) and the text form a
+test prints, each held here.
 
 Every case is judged on the BYTES a writer produced: the injected marker
 must be absent from all of them, every head line must be free of CR, LF and
@@ -79,7 +80,7 @@ def _head_lines(wire: List[Byte]) raises -> Int:
 
 
 def _encoded(var resp: HTTPResponse) -> List[Byte]:
-    """What the blocking server writes."""
+    """What the event loop writes for an error it answers itself."""
     return resp^.encode()
 
 

@@ -46,6 +46,31 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `ListenConfig`'s `keep_alive` argument, which was stored and never read.
   NOTICE lists each.
 
+- **`listen_and_serve` and `Server.serve` run the event loop, so SSE and
+  WebSockets work through them.** They were a blocking accept loop of
+  their own, the one README's WSGI example calls. It served one connection
+  at a time: a second client waited behind a first that held its
+  keep-alive connection idle, up to the 60-second idle timeout. It
+  answered every SSE or WebSocket response with `409`. And it had missed
+  fixes the event loop carries: an upload over the body limit had its
+  connection reset under it after a few hundred KB, where the loop reads
+  and discards the rest and the client reads its `413`. Both now delegate
+  to `listen_and_serve_nonblocking` and `serve_nonblocking` with their
+  defaults, and a `shutdown_read_fd` given to `Server` ends either
+  gracefully. `m0serve` and the Mojo host never used them.
+  `test_sigpipe.mojo` runs each until its closed shutdown pipe ends the
+  loop, under a watchdog that fails the file rather than hang it. Found in
+  review.
+
+### Removed
+
+- **The blocking accept loop's own code**, about 560 lines of the fork:
+  `handle_connection`, `gate_streaming_response`, and
+  `StreamingUnsupported`, the `409` it answered a stream with. The `m0`
+  wheel ships the fork's source, so an application calling one of them
+  directly needs its own copy; `listen_and_serve` and `Server.serve` stay,
+  as above. NOTICE lists each.
+
 ### Fixed
 
 - **m0serve refuses more than 126 mounts before it binds, and `--doctor`
