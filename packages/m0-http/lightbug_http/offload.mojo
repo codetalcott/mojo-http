@@ -1787,7 +1787,18 @@ struct OffloadPool(Movable):
         after it gets its own `SOCK_DGRAM` pair, set up exactly like lane 0:
         the loop's write end non-blocking so a full queue is visible, the
         worker's read end blocking so a parked worker sleeps.
+
+        Raises past `_WAKE_MAX_LANES` (126), before making anything: each
+        lane's wake words are one cache line of the `_WAKE_BYTES` block,
+        and `note_thread` writes a lane's line whatever its index, so a
+        127th lane wrote past the end of the block (B14).
         """
+        if len(self.lane_prefixes) >= _WAKE_MAX_LANES:
+            raise Error(
+                "a pool serves at most " + String(_WAKE_MAX_LANES)
+                + " lanes, one per mount; lane "
+                + String(len(self.lane_prefixes) + 1) + " has no wake words"
+            )
         if len(self.lane_prefixes) == 0:
             self.lane_prefixes.append(prefix^)
             self.lane_ack_read.append(-1)

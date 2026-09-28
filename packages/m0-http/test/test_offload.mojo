@@ -8,7 +8,9 @@ What is NOT covered here is the concurrency itself; that is what
 `poe smoke-blocking-threads` measures against a live server.
 """
 
+from std.ffi import c_int, external_call
 from std.os import setenv
+from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from std.time import perf_counter_ns, sleep
 
@@ -21,7 +23,7 @@ from lightbug_http.offload import (
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
-    POOL_FREE_WAKE_AGE_NS,
+    POOL_FREE_WAKE_AGE_NS, _WAKE_MAX_LANES,
 )
 from lightbug_http.uri import URI
 
@@ -1418,6 +1420,62 @@ def test_a_burst_into_a_parked_lane_wakes_one_thread() raises:
     var a = threads.block(0).get(_BLK_SERVED)
     var b = threads.block(1).get(_BLK_SERVED)
     assert_true(a == 4 or b == 4)
+
+
+def _ensure_descriptors(want: Int):
+    """Raise the soft descriptor limit to `want` when it is lower.
+
+    A macOS shell starts at 256, and the test below holds about 250 of its
+    own: every lane past the first is a socketpair. Best effort -- under a
+    hard limit below `want` the test's own failure names the socketpair
+    that could not be made.
+    """
+    comptime RLIMIT_NOFILE = 8 if CompilationTarget.is_macos() else 7
+    var lim = Array[UInt64, 2](fill=UInt64(0))
+    comptime LimPtr = type_of(Pointer(to=lim[0]))
+    if external_call["getrlimit", c_int, c_int, LimPtr](
+        c_int(RLIMIT_NOFILE), Pointer(to=lim[0])
+    ) != 0:
+        return
+    if lim[0] >= UInt64(want):
+        return
+    lim[0] = UInt64(want) if lim[1] >= UInt64(want) else lim[1]
+    _ = external_call["setrlimit", c_int, c_int, LimPtr](
+        c_int(RLIMIT_NOFILE), Pointer(to=lim[0])
+    )
+
+
+def test_a_lane_past_the_wake_block_is_refused() raises:
+    """`add_lane` refuses the lane past `_WAKE_MAX_LANES` and takes the last
+    one that fits. A lane's wake words are one cache line of an 8192-byte
+    block, room for 126 lanes, and `note_thread` writes a lane's line
+    whatever its index, so a 127th lane -- 127 mounts under the
+    zero-config pool -- wrote past the end of the block (B14). The last
+    lane that fits is used as well as made: its thread count round-trips
+    through the block's last line.
+    """
+    assert_equal(_WAKE_MAX_LANES, 126)
+    _ensure_descriptors(1024)
+    var pool = OffloadPool(4)
+    for lane in range(_WAKE_MAX_LANES):
+        pool.add_lane(String("/m") + String(lane))
+    var refused = False
+    try:
+        pool.add_lane(String("/one-too-many"))
+    except e:
+        refused = True
+        assert_true(
+            String(e).find(String(_WAKE_MAX_LANES)) >= 0,
+            "the refusal does not name the cap: " + String(e),
+        )
+    assert_true(refused, "a lane past the wake block was accepted")
+    var last = _WAKE_MAX_LANES - 1
+    assert_equal(pool.lane_for(String("/m") + String(last)), last)
+    if pool.ring_enabled:
+        pool.note_thread(last, 1)
+        assert_equal(pool.thread_count(last), 1)
+        pool.note_thread(last, -1)
+        assert_equal(pool.thread_count(last), 0)
 
 
 def main() raises:
