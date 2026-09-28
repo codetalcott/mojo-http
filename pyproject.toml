@@ -5914,7 +5914,7 @@ python3 scripts/emit.py --covers E4 --task smoke-pool
 [tool.poe.tasks.sabotage-pool]
 help = "Revert each mojo_pool rule and insist test_mojo_pool fails for every one"
 deps = ["build-core", "build-http"]
-shell = "python3 scripts/pool_sabotage.py"
+cmd = "python3 scripts/pool_sabotage.py"
 
 # The decoder's trailer states were its untested region: the round-trip tests
 # set `consume_trailer = True` but their wire carried no trailer section, so
@@ -5922,7 +5922,7 @@ shell = "python3 scripts/pool_sabotage.py"
 [tool.poe.tasks.sabotage-trailers]
 help = "Revert each chunked-trailer rule and insist test_parsing fails for it"
 deps = ["build-core", "build-http"]
-shell = "python3 scripts/trailer_sabotage.py"
+cmd = "python3 scripts/trailer_sabotage.py"
 
 # SPEC G13. The request decoder is a pure function over bytes, so the harness
 # needs no socket and no server: mutate a seed corpus, assert the invariants,
@@ -5950,7 +5950,7 @@ done
 # that cannot: this breaks each invariant in turn and insists it is reported.
 [tool.poe.tasks.sabotage-fuzz]
 help = "Break each decoder invariant and insist the fuzzer reports it"
-shell = "python3 scripts/fuzz_sabotage.py"
+cmd = "python3 scripts/fuzz_sabotage.py"
 
 [tool.poe.tasks.probe-pool-fairness]
 help = "Pool threads answer a CPU-bound view in job order, judged by requests passed over so a pause of the whole process cannot fail it; the turn disabled must convoy and the keep rule disabled must starve a waiter (SPEC E11, E34; every PR on the Linux runner, the pool-fairness job; the reference Mac before a release)"
@@ -7226,7 +7226,7 @@ shell = "python3 scripts/notes_login_sabotage.py"
 # PRE-RELEASE: rebuilds m0serve per sabotage, so minutes rather than seconds.
 [tool.poe.tasks.sabotage-outbox-cap]
 help = "PRE-RELEASE: revert each outbox-cap rule and insist the probe fails"
-shell = "python3 scripts/outbox_cap_sabotage.py"
+cmd = "python3 scripts/outbox_cap_sabotage.py"
 
 # Both ends of the wire in Mojo: the client dials, sends, and parses against
 # the notes API — GET, POST with body, negotiation, problem+json, a refused

@@ -110,26 +110,6 @@ struct InetPtonError(Movable, Writable):
         return String(self)
 
 
-def htonl(hostlong: c_uint) -> c_uint:
-    """Libc POSIX `htonl` function.
-
-    Args:
-        hostlong: A 32-bit integer in host byte order.
-
-    Returns:
-        The value provided in network byte order.
-
-    #### C Function
-    ```c
-    uint32_t htonl(uint32_t hostlong)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/htonl.3p.html .
-    """
-    return external_call["htonl", c_uint, type_of(hostlong)](hostlong)
-
-
 def htons(hostshort: c_ushort) -> c_ushort:
     """Libc POSIX `htons` function.
 
@@ -148,26 +128,6 @@ def htons(hostshort: c_ushort) -> c_ushort:
     * Reference: https://man7.org/linux/man-pages/man3/htonl.3p.html .
     """
     return external_call["htons", c_ushort, type_of(hostshort)](hostshort)
-
-
-def ntohl(netlong: c_uint) -> c_uint:
-    """Libc POSIX `ntohl` function.
-
-    Args:
-        netlong: A 32-bit integer in network byte order.
-
-    Returns:
-        The value provided in host byte order.
-
-    #### C Function
-    ```c
-    uint32_t ntohl(uint32_t netlong)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/htonl.3p.html .
-    """
-    return external_call["ntohl", c_uint, type_of(netlong)](netlong)
 
 
 def ntohs(netshort: c_ushort) -> c_ushort:

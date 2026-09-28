@@ -2,7 +2,6 @@ from std.memory import unsafe_memcpy
 from lightbug_http.http.parsing import (
     HTTPHeader,
     _first_lane,
-    http_parse_headers,
     http_parse_request_headers,
     http_parse_response_headers,
 )
@@ -521,30 +520,6 @@ def known_header_id(name: Span[Byte, _]) -> Int:
 
 
 @always_inline
-def span_is_ascii(s: Span[Byte, _]) -> Bool:
-    """Whether every byte of `s` is below 0x80: sixteen lanes at a time,
-    then eight, then the tail. The byte loop this replaces walked every
-    response header value on the event loop, about eighty bytes a
-    response."""
-    var n = len(s)
-    var p = s.unsafe_ptr()
-    var i = 0
-    while i + 16 <= n:
-        if p.unsafe_offset(i).unsafe_load[width=16]().reduce_max() >= 0x80:
-            return False
-        i += 16
-    while i + 8 <= n:
-        if p.unsafe_offset(i).unsafe_load[width=8]().reduce_max() >= 0x80:
-            return False
-        i += 8
-    while i < n:
-        if p[unsafe_offset=i] >= 0x80:
-            return False
-        i += 1
-    return True
-
-
-@always_inline
 def _breaks_line_lanes[W: Int](w: SIMD[DType.uint8, W]) -> Bool:
     """Whether a chunk holds CR, LF or NUL. XOR zeroes exactly the lanes
     equal to its operand and a NUL lane is zero already, so the lane-wise
@@ -619,8 +594,8 @@ def _value_lanes[W: Int](w: SIMD[DType.uint8, W]) -> Int:
 
 @always_inline
 def header_value_kind(s: Span[Byte, _]) -> Int:
-    """`span_breaks_header_line` and `span_is_ascii` in one pass, for the
-    one caller that asks both of every value: `Headers.write_latin1_to`.
+    """`span_breaks_header_line` and an is-it-ASCII test in one pass, for
+    the one caller that asks both of every value: `Headers.write_latin1_to`.
     The loads are `span_breaks_header_line`'s, each asked both questions."""
     var n = len(s)
     var p = s.unsafe_ptr()

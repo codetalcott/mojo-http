@@ -166,7 +166,7 @@ takes it away. `scripts/pool_sabotage.py`
 reverts six of that file's rules by matching EXACT source lines (the
 `T.make(PoolContext(...))` call among them), and CI runs it on Linux only —
 so an edit to one of those lines passes every local gate and fails the
-pull request with `anchor missing`; run `poe sabotage-pool` after touching
+pull request with `NOT APPLICABLE`; run `poe sabotage-pool` after touching
 `mojo_pool.mojo`, and re-point the anchor with the line.
 
 `m0-core/ffi_exports.mojo` (package root, deliberately outside `src/`) holds
@@ -579,10 +579,10 @@ nothing and schedules nothing writes none of them.
 
 Adding a method **with a default** is now a non-breaking change; adding one
 **without** a default still breaks every implementer at once — every app
-under `apps/`, the five demo services inside `service.mojo`, `WSGIHandler`,
-and the example in README.md — so give a new hook a default unless there is
-a reason not to. The guard is `packages/m0-http/test/test_service.mojo`,
-whose `MinimalService` implements `func` and nothing else: reverting any
+under `apps/`, `WSGIHandler`, and the example in README.md — so give a new
+hook a default unless there is a reason not to. The guard is
+`packages/m0-http/test/test_service.mojo`, whose `MinimalService`
+implements `func` and nothing else: reverting any
 default in the trait to `...` makes that file fail to compile, which is
 checked by sabotaging all eight.
 
