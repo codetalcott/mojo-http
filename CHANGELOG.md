@@ -252,6 +252,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   buffer of its own (`gmtime_r`). macOS was not affected: its `gmtime`
   keeps a buffer per thread. Found in review.
 
+- **`m0_core.json_parse.parse_json_int` no longer reads `1.9` or `1e3` as
+  1.** It returned a number's leading digits, so a fraction was cut off
+  and an exponent dropped, against its own contract of `None` for a value
+  that is not an integer. A value whose digits are followed by anything
+  but whitespace, `,`, `}` or `]` is now refused; `parse_json_number`
+  reads fractions and exponents. Found in review.
+
 ### Changed
 
 - **`SqliteLib` and `PgLib` keep their C entry points in one table,

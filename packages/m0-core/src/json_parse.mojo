@@ -294,7 +294,11 @@ def parse_json_string(body: String, field: String) -> Optional[String]:
 def parse_json_int(body: String, field: String) -> Optional[Int]:
     """Extract an integer value for top-level `field` from a JSON object.
 
-    Returns `None` if the field is missing or not a valid integer.
+    Returns `None` if the field is missing or not a valid integer. The
+    value must end where its digits do -- at whitespace, `,`, `}`, `]` or
+    the end of the body -- so a fraction (`1.9`), an exponent (`1e3`) or
+    anything else after the digits is refused rather than read as its
+    leading digits; `parse_json_number` reads the first two.
     Overflow is not checked; callers should validate range when relevant.
     """
     var i = _find_value_start(body, field)
@@ -317,6 +321,12 @@ def parse_json_int(body: String, field: String) -> Optional[Int]:
     while i < blen and bytes[i] >= 0x30 and bytes[i] <= 0x39:
         result = result * 10 + Int(bytes[i]) - 0x30
         i += 1
+
+    # `1.9` and `1e3` are numbers whose leading digits are not their value.
+    if i < blen:
+        var c = bytes[i]
+        if not (_is_ws(c) or c == 0x2C or c == 0x7D or c == 0x5D):
+            return None
 
     if negative:
         return Optional[Int](-result)
