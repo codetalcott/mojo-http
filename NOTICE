@@ -714,6 +714,14 @@ lightbug_http
         place, and two threads alternated while two starved
         (docs/notes/a-slice-keeps-the-gil.md).
 
+      - header.mojo (2026-09-28): `parse_request_headers` refuses a second
+        `Host` or `Transfer-Encoding` line where it meets it, as it refused
+        a second `Content-Length` line (SPEC B10, B11). `set_bytes` keeps
+        the last of a repeated field, so the request was served on the last
+        line: a proxy routing on the first `Host` disagreed with an
+        application reading the last, and two `chunked` lines (`chunked,
+        chunked` combined, RFC 9110 §5.3) read as one.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

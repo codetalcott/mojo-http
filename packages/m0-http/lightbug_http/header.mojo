@@ -1023,9 +1023,8 @@ def parse_request_headers(
     var cookies = List[String]()
     var seen_content_length = False
     var seen_transfer_encoding = False
-    # -1 while no Host field has been seen; the last one's length after.
-    # `set_bytes` keeps the last of duplicate fields, so the length the
-    # RFC 9112 §3.2 check below wants is the last one's.
+    # -1 while no Host field has been seen; its length after. A second Host
+    # line is refused where it is met, so there is only ever the one.
     var host_len = -1
 
     # The header array holds OFFSETS into `buffer`; every name and value is a
@@ -1084,9 +1083,24 @@ def parse_request_headers(
             # The two fields the RFC checks below ask about are noted on
             # the way past. They used to be three scans of the finished
             # collection — and the Host one built a String to measure it.
+            #
+            # A SECOND line of either is refused here, as a second
+            # Content-Length is above: `set_bytes` keeps the last of a
+            # repeated field, so the request was served on whichever line
+            # came last. RFC 9112 §3.2 asks for 400 on more than one Host
+            # line in ANY request -- a proxy routing on the first and an
+            # application reading the last (Django's `HTTP_HOST`) disagreed
+            # about the site. Field lines of one name combine into a list
+            # (RFC 9110 §5.3), so two `Transfer-Encoding: chunked` lines are
+            # the `chunked, chunked` refused below, which the last line
+            # alone read as one `chunked`.
             if kid == KH_HOST:
+                if host_len >= 0:
+                    raise RequestParseError(InvalidHTTPRequestError())
                 host_len = len(value)
             elif kid == KH_TRANSFER_ENCODING:
+                if seen_transfer_encoding:
+                    raise RequestParseError(InvalidHTTPRequestError())
                 seen_transfer_encoding = True
             headers._set_bytes(name_bytes, value, kid)
 
@@ -1105,9 +1119,10 @@ def parse_request_headers(
 
     # RFC 9112 §3.2: an HTTP/1.1 request MUST carry exactly one Host field,
     # and a server MUST respond 400 to one that does not. Both halves are
-    # checked: a *missing* Host used to pass, because the check was an
-    # `and` that a None short-circuited — which leaves the request's
-    # target host unstated in any deployment that routes or caches on it.
+    # checked, "more than one" in the loop above: a *missing* Host used to
+    # pass, because the check was an `and` that a None short-circuited —
+    # which leaves the request's target host unstated in any deployment
+    # that routes or caches on it.
     #
     # Whitespace-only values ("Host: " / "Host: \t") are stripped to "" by
     # the parser's OWS skip and are rejected by the same check.
@@ -1117,9 +1132,9 @@ def parse_request_headers(
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
     # Reject e.g. "Transfer-Encoding: chunked, zorg".
     if seen_transfer_encoding:
-        # `get` for the value rather than the loop's span: with duplicate
-        # fields it is the last one that `set_bytes` kept, and this path
-        # runs only for requests that carry the header at all.
+        # `get` for the value rather than the loop's span: a second line
+        # was refused in the loop, so the one stored is the only one, and
+        # this path runs only for requests that carry the header at all.
         var te_str = headers.get(HeaderKey.TRANSFER_ENCODING).value().lower()
         # Lowercased before the test, not only for `last_te`: transfer-coding
         # names are case-insensitive (RFC 9112 §7.1), so testing the raw

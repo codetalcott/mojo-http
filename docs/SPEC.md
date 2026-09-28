@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**289 capabilities: 265 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 265 verified, 258 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**291 capabilities: 267 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 267 verified, 260 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -83,6 +83,8 @@ that found, is in [the traceability note](notes/traceability.md).
 | B7 | Chunk size with the sign bit set rejected | verified | `test_parsing.mojo:test_chunk_size_with_the_sign_bit_set_is_rejected` (every PR) |
 | B8 | h2spec conformance run | out of scope | follows from having no HTTP/2 (A18), the same reason C7 gives |
 | B9 | PortSwigger-style desync scanning | out of scope | the scanner probes a proxy/server PAIR for disagreement about framing; this server has no proxy in front of it in any gate, so there is no second parser to disagree with. The shapes it looks for are unit-tested directly above (B1-B7), and fuzzing the decoder itself is G13 |
+| B10 | More than one `Host` field line rejected, on any HTTP version and across letter case (RFC 9112 §3.2) | verified | `test_parsing.mojo:test_a_second_host_line_is_rejected` (every PR) — the parser kept the last line and served the request, so a proxy routing on the first `Host` and an application reading the last (Django's `HTTP_HOST`) disagreed about the site; two lines that agree are refused too |
+| B11 | More than one `Transfer-Encoding` field line rejected, across letter case | verified | `test_parsing.mojo:test_a_second_transfer_encoding_line_is_rejected` (every PR) — field lines combine into one list (RFC 9110 §5.3), so two `chunked` lines are the `chunked, chunked` B3's rule refuses on one line, which the last line alone read as a single `chunked` |
 
 ## C. Connection management and denial of service
 

@@ -250,6 +250,22 @@
       "evidence": "the scanner probes a proxy/server PAIR for disagreement about framing; this server has no proxy in front of it in any gate, so there is no second parser to disagree with. The shapes it looks for are unit-tested directly above (B1-B7), and fuzzing the decoder itself is G13"
     },
     {
+      "id": "B10",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "More than one `Host` field line rejected, on any HTTP version and across letter case (RFC 9112 \u00a73.2)",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_second_host_line_is_rejected` (every PR) \u2014 the parser kept the last line and served the request, so a proxy routing on the first `Host` and an application reading the last (Django's `HTTP_HOST`) disagreed about the site; two lines that agree are refused too"
+    },
+    {
+      "id": "B11",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "More than one `Transfer-Encoding` field line rejected, across letter case",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_second_transfer_encoding_line_is_rejected` (every PR) \u2014 field lines combine into one list (RFC 9110 \u00a75.3), so two `chunked` lines are the `chunked, chunked` B3's rule refuses on one line, which the last line alone read as a single `chunked`"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",

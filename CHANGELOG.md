@@ -8,6 +8,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A request carrying two `Host` lines, or two `Transfer-Encoding`
+  lines, is answered 400** (SPEC B10, B11). The parser kept the last line
+  of a repeated field and served the request, so a proxy that routes on
+  the first `Host` and an application that reads the last (Django's
+  `HTTP_HOST`) disagreed about which site the request was for; RFC 9112
+  §3.2 requires a 400 for more than one `Host` line in any request. Two
+  `Transfer-Encoding: chunked` lines mean `chunked, chunked`, which was
+  refused on one line and accepted on two. A second line of either is now
+  refused whatever it says, as a second `Content-Length` line already was.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and
