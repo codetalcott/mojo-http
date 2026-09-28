@@ -2309,9 +2309,9 @@
       "id": "O11",
       "section": "O",
       "category": "O. Storage packages",
-      "capability": "The same query in text and binary modes reads the same, so `binary` is a performance decision rather than a semantic one; a binary type with no decoder raises naming the way out instead of returning plausible bytes",
+      "capability": "For `int8`, `bool`, `text`, `uuid` and `jsonb` columns the same query reads the same in text and binary modes (`jsonb` less the version byte its binary form carries), so for those types `binary` is a performance decision rather than a semantic one; a binary `float8` decodes to the double the server holds, and a binary `timestamptz` read with `int()` is its instant in microseconds from 2000-01-01; a binary type with no decoder raises naming the way out instead of returning plausible bytes. `timestamp`, `timestamptz`, `bytea`, `float4` and `float8` do not read the same in both modes: a [known issue](ROADMAP.md#known-issues)",
       "status": "verified",
-      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 `numeric` is text-only on purpose: its binary form is a base-10000 digit vector with its own NaN encoding, and a wrong decoding of one is silently a different number"
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 `numeric` is text-only on purpose: its binary form is a base-10000 digit vector with its own NaN encoding, and a wrong decoding of one is silently a different number. Until 2026-09-28 the row claimed every type; review B18 read a timestamp, a `bytea` and a `float4` both ways and found each different"
     },
     {
       "id": "O12",
