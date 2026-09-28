@@ -819,7 +819,7 @@ lightbug_http
         until the completion (C10); `_arm_reads` leaves a slot waiting to
         write alone, where a WebSocket resume on epoll replaced the pending
         write one-shot with a read (R1); a response is recorded once, not
-        again for every stream frame the write-ready path finishes (F17);
+        again for every stream frame the write-ready path finishes (F18);
         and a frame that lands no longer zeroes a WebSocket's close linger.
 
     For the modification history carried into this repository (36 commits):

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """A connection that is not being read costs the loop nothing, and a stream
-is one response (SPEC C10, F17).
+is one response (SPEC C10, F18).
 
 **The loop's CPU (C10).** kqueue's connection read filter is LEVEL
 triggered, and it used to stay
@@ -37,7 +37,7 @@ The meter is checked before it is trusted: a busy child must read as busy.
 A probe whose CPU counter read zero whatever happened would pass on a
 spinning loop.
 
-**One access record per stream (F17, review record R3).** `_after_send`
+**One access record per stream (F18, review record R3).** `_after_send`
 runs for every send that completes, and a stream's frames complete through
 it whenever one does not go out in a single send: each was recorded as a
 response of its own -- another access-log line, another count, and the

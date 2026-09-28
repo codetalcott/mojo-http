@@ -168,7 +168,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   or WebSocket whose frames did not go out in a single send logged a
   record for each such frame, and a chunked stream one more at its end;
   `--metrics` counted each as a response. A stream is one record now,
-  written when its head lands (F17). On Linux, a WebSocket whose incoming
+  written when its head lands (F18). On Linux, a WebSocket whose incoming
   messages had been paused for the application could stop sending for
   good if the pause lifted while a frame was still going out. And a
   WebSocket the server closed itself, answering a message too large for

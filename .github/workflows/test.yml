@@ -628,7 +628,7 @@ jobs:
       # every wait, the loop at a full core (SPEC C10). Fails without the
       # fix on macOS only; epoll's reads are edge triggered. The same probe
       # counts access records for a stream whose frames finish through the
-      # write-ready path: one each, where every such frame logged (F17).
+      # write-ready path: one each, where every such frame logged (F18).
       - name: Smoke test connections that stop reading
         run: uv run poe smoke-slot-lifecycle
       # The same reset from the server's side. A 413 goes out while the
