@@ -9730,7 +9730,7 @@ echo "CANARY PASSED against $(mojo --version)"
 # parallelizes (run it as bare `poe` after `py314t-try`).
 [tool.poe.tasks.py-thread-probe-stdpy]
 help = "Thread probe via std.python's CPython bindings — no -lpython, plain mojo run"
-cmd = "mojo run scripts/py_thread_stdpy_probe.mojo"
+cmd = "mojo run scripts/probes/py_thread_stdpy_probe.mojo"
 
 # The instrument behind the thread-pool go/no-go (docs/WSGI_VS_ASGI.md §5):
 # spawns raw pthreads from Mojo and has each attach to the embedded
@@ -9748,7 +9748,7 @@ shell = """
 libdir=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("LIBDIR"))')
 ldver=$(python3 -c 'import sysconfig; print(sysconfig.get_config_var("LDVERSION"))')
 out=$(mktemp -d)
-mojo build scripts/py_thread_probe.mojo -o "$out/probe" \
+mojo build scripts/probes/py_thread_probe.mojo -o "$out/probe" \
   -Xlinker -L"$libdir" -Xlinker -lpython"$ldver" -Xlinker -rpath -Xlinker "$libdir" || exit 1
 "$out/probe"
 rc=$?

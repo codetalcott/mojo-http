@@ -173,6 +173,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `?connect_timeout`, and `...&` became `...&&`, an empty keyword. libpq
   refused both before connecting, with a message about percent-encoding a
   password.
+
+- **The capability sheet said m0-postgres's binary results read like its
+  text results for every type** (SPEC O11). They do not for `timestamp`,
+  `timestamptz`, `bytea` and `float4`, nor for a `float8`'s text. In
+  binary mode a timestamp's `text()` is microseconds from 2000-01-01
+  rather than a date, a `bytea`'s is its raw bytes rather than the `\x`
+  escape, and a `float4` reads `0.10000000149011612` where text mode reads
+  `0.1`. O11 now names the types that agree, and a Known issue records
+  what each mode returns and what a fix needs. Read those types in text
+  mode, which is the default.
+
 - **A request carrying two `Host` lines, or two `Transfer-Encoding`
   lines, is answered 400** (SPEC B10, B11). The parser kept the last line
   of a repeated field and served the request, so a proxy that routes on

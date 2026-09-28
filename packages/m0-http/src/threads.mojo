@@ -3,7 +3,7 @@
 Mojo 1.0's standard library ships atomics but no thread or mutex type, and
 the runtime's own task pool is the wrong shape for "N loops that each block
 in kevent/epoll_wait for the life of the process". What a threaded server
-needs is exactly what `scripts/py_thread_probe.mojo` used: `pthread_create`
+needs is exactly what `scripts/probes/py_thread_probe.mojo` used: `pthread_create`
 through `external_call`, a start routine whose address is taken from a
 `def`, and a per-thread argument block of Int64 slots in malloc'd memory
 reached through one `void*` — no Mojo collections cross the boundary.

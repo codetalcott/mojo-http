@@ -9,7 +9,7 @@ This splits the user-space request path by part, in isolation, so a change
 to one part is measured against that part and not against loopback noise.
 
     uv run mojo run -I packages/m0-http -I packages/m0-core \\
-      scripts/bench_http_parts.mojo
+      scripts/probes/bench_http_parts.mojo
 
 Deliberately NOT a poe task: a diagnostic, not a gate. The parts, in the
 order the event loop runs them on a keep-alive request:

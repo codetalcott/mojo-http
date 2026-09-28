@@ -13,6 +13,10 @@ from. None is a CI gate; two are pre-release gates through `poe`.
 | `bench_threads.py` | one server under `wrk` with per-thread CPU by `ps -M` and an optional `xctrace` profile; one JSON line per run | see its docstring |
 | `bench_arms.py` | alternates pool arms (zero-config, eager, bt1, …, granian) under `bench_threads.py` | see its docstring |
 | `bench_slow.py` | the fast route's tail with N slow Django views in flight, one fresh server per arm and round, arms alternated; arms carry env overrides and alternative binaries | see its docstring |
+| `bench_http_parts.mojo` | the Mojo HTTP layer's user-space cost per request, part by part in isolation: the header scan, the parse, the request object, header lookups, routing, the response encode (docs/SERVER_PERFORMANCE.md, docs/notes/loop-user-space.md) | `uv run mojo run -I packages/m0-http -I packages/m0-core scripts/probes/bench_http_parts.mojo` |
+| `bench_bridge_parts.mojo` | the WSGI and ASGI bridge's cost per request, part by part, in both directions (docs/WSGI_PERFORMANCE.md) | `uv run mojo run -I packages/m0-wsgi -I packages/m0-http -I packages/m0-core scripts/probes/bench_bridge_parts.mojo` |
+| `py_thread_probe.mojo` | Mojo-spawned pthreads attaching to the embedded interpreter through the raw C API: correctness per mode and the parallel speedup, the thread pool's go/no-go (docs/notes/wsgi-vs-asgi-history.md) | `poe py-thread-probe`, which builds it against the venv's libpython |
+| `py_thread_stdpy_probe.mojo` | the same through `std.python`'s own bindings with no libpython on the link line, plus `print` from a pthread and a parametric `def` as a start routine | `poe py-thread-probe-stdpy` |
 | `xctrace_report.py` | per-thread on-CPU self time by leaf symbol from an `xctrace` export (regex-based: Mojo symbols break the XML) | see its docstring |
 | `linux_setup.sh`, `linux_sync.sh` | create the `m0lin` build container and copy the Mac tree into it | header of each |
 | `source_stamp.sh` | a content hash of the sources the sync copies, computed identically on the Mac and in the container, so a sync that landed the wrong tree is loud | `bash scripts/probes/source_stamp.sh` |

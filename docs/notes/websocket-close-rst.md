@@ -107,7 +107,8 @@ requires every entry here to declare what would close it.
   would close. It is the machine: ten fast cores where CI's macOS runner is
   three shared virtualized ones, and the server wins the race every time here.
   `scripts/epoll_inverted_check.sh` picks the new coverage up for free on
-  Linux the next time it runs.
+  Linux the next time it runs. (It was removed from the tree on 2026-09-28;
+  its last version is in commit `6daa4fb`.)
 
   **The probe's own diagnosis was thinner than the failure deserved**, and was
   improved on the way past. The CI traceback named a line in `recv_exact`, a

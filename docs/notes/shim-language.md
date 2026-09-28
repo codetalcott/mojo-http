@@ -75,10 +75,11 @@ into Mojo through one `_port.dispatch` call (~70 ns).
 
 ## What is language-neutral, and what moving it would buy
 
-Measured with `scripts/shim_parts.py`'s method — the shim driven through real
-socketpairs by the same harness `poe test-shim` uses, a stand-in port, a
-trivial application, CPython 3.13.6, Apple M4, idle — the bookkeeping a
-Mojo port could take is:
+Measured with `scripts/shim_parts.py`'s method (the script was removed from
+the tree on 2026-09-28; its last version is in commit `791d196`) — the
+shim driven through real socketpairs by the same harness `poe test-shim`
+uses, a stand-in port, a trivial application, CPython 3.13.6, Apple M4,
+idle — the bookkeeping a Mojo port could take is:
 
 | per operation | cost |
 |---|---:|

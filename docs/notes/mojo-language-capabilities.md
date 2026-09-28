@@ -15,7 +15,7 @@ that gap closed. The rest is recorded here.
 - **More SIMD in the request path.** Was refused by our own profile — 31 of
   35 stack samples in `__libc_send` (SERVER_PERFORMANCE.md) — and the
   instrument that entry asked for, once built, disagreed with the profile.
-  `scripts/bench_http_parts.mojo` (2026-08-28) put `parse_request_headers`
+  `scripts/probes/bench_http_parts.mojo` (2026-08-28) put `parse_request_headers`
   at **two thirds** of the user-space request: the profile's verdict was
   drawn at 50k rps and the server now does 116k, so a cost that was
   invisible in loopback noise is a quarter of every request. The

@@ -36,7 +36,7 @@ space was 43 %, about 2.7 µs, against tokio's 1.2. Its largest symbols:
 | 1.9 % | `_service_completions` | a fresh `List` per drain, and on every read of the completion channel a 2 KB buffer allocated and zero-filled one `append` at a time |
 | 1.1 % | `ByteReader.peek` | a raising call, in a `try`, for a byte the caller had already proven present |
 
-The isolated instrument agreed about the parse: `scripts/bench_http_parts.mojo`
+The isolated instrument agreed about the parse: `scripts/probes/bench_http_parts.mojo`
 priced `parse_request_headers` at 0.89 µs for a twelve-header browser
 GET, and the whole user-space request at 1.98.
 

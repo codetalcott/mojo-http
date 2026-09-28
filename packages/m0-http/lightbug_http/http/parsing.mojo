@@ -10,7 +10,7 @@ from std.utils import Variant
 # the first in a byte class. It used to be answered in two steps — a
 # `reduce_min` to learn whether ANY lane matched, then a scalar loop over
 # up to 64 lanes to learn which — at 9.4 ns per chunk for a CR at lane 46
-# (measured beside `scripts/bench_http_parts.mojo`). A `select` of `iota`
+# (measured beside `scripts/probes/bench_http_parts.mojo`). A `select` of `iota`
 # against 255 and one `reduce_min` answers both at once in 0.8 ns, with no
 # branch and no lane extraction. The old CR-first three-stage scan also
 # answered wrong: it reported the first CR even when an LF or a NUL sat
@@ -158,7 +158,7 @@ struct HTTPHeader(Copyable, Movable):
     twin — which copied them AGAIN into the `Headers` blob. Two copies of
     every header per request, the first of which existed only to be the
     source of the second; measured at 1.2 µs of a 3.7 µs user-space request
-    on the twelve-header browser shape (`scripts/bench_http_parts.mojo`).
+    on the twelve-header browser shape (`scripts/probes/bench_http_parts.mojo`).
     As offsets the intermediate is gone, and the 100-element fill the
     parser preallocates is 3.2 KB of integers rather than 200 String
     constructions.
@@ -281,7 +281,7 @@ def scan_to_eol[
     directly, because a header's value only ever becomes bytes in the
     `Headers` blob — the `String` it used to build was a copy made to be
     copied again, and at twelve headers per request that copying was a
-    third of the whole user-space request (`scripts/bench_http_parts.mojo`).
+    third of the whole user-space request (`scripts/probes/bench_http_parts.mojo`).
     """
     var token_start = buf.read_pos
 

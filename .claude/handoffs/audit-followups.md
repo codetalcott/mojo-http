@@ -85,7 +85,7 @@ of those two before deciding whether they need a free function.
 
 **Steps.**
 
-1. Baseline first, on an idle machine: `scripts/bench_http_parts.mojo`
+1. Baseline first, on an idle machine: `scripts/probes/bench_http_parts.mojo`
    (the in-context per-part timings; the audit memory says a part timed
    alone can be a fifth of its real cost) and `scripts/bench_hello.sh` for
    loop rps. Record both numbers in the PR description before changing

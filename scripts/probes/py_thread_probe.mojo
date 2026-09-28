@@ -43,8 +43,8 @@ Modes (`M0_PROBE_MODE`):
 Knobs: `M0_PROBE_THREADS` (default 4), `M0_PROBE_N` (loop iterations,
 default 4,000,000 — sized so the Python work dominates thread plumbing).
 
-    uv run mojo run scripts/py_thread_probe.mojo          # pinned 3.13
-    # after `poe py314t-try`: .venv/bin/mojo run scripts/py_thread_probe.mojo
+    uv run mojo run scripts/probes/py_thread_probe.mojo          # pinned 3.13
+    # after `poe py314t-try`: .venv/bin/mojo run scripts/probes/py_thread_probe.mojo
 """
 
 from std.ffi import c_int, external_call

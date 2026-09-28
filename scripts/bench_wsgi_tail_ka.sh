@@ -1,6 +1,7 @@
 #!/bin/bash
 # The keep-alive tail alone, replicated — the focused half of
-# scripts/bench_wsgi_tail.sh.
+# scripts/bench_wsgi_tail.sh (removed from the tree on 2026-09-28; its last
+# version is in commit a78f189).
 #
 # The full script's close-per-request runs open ~160k connections each, and a
 # long session exhausts the ephemeral port range: rows late in a run come back
