@@ -166,6 +166,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
   redirect still goes where the view meant; every other byte is written as
   given, so an ordinary target is unchanged. `test_reply.mojo` holds both,
   on the header and on the head's bytes.
+- **A client that leaves no longer kills a Mojo server** (SPEC A25). A
+  built Mojo binary kept SIGPIPE's default action, which ends the
+  process, and the kernel raises SIGPIPE when the server writes to a
+  connection its client has reset: a visitor who closes the tab before
+  the page comes back, a download abandoned halfway, an SSE subscriber
+  going away. On macOS one such client ended a fresh server every time,
+  with status 141. Every Mojo host application was exposed (`apps/blobs`,
+  `fragment_notes`, anything `m0 new` scaffolds), as was a server built
+  on `Server` directly. Under `M0_THREADS` the whole process went; under
+  `M0_WORKERS` the supervisor respawned the worker, which read as churn.
+  The event loop, and the blocking `Server.serve`, now ignore SIGPIPE
+  before their first send, so the write fails and only that connection
+  closes. m0serve's serving processes were not affected: the CPython
+  they embed already ignores the signal. `smoke-host` sends a built
+  server `kill -PIPE`, then a client that resets before its answer, on
+  both CI legs.
 
 ## [1.7.0] — 2026-09-27
 
