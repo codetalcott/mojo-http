@@ -178,6 +178,14 @@
       "evidence": "`test_uri_userinfo.mojo:test_an_at_in_a_request_query_keeps_the_path_and_query` (every PR) \u2014 `URI.parse` skipped to the first `@` anywhere after the scheme, so `GET /echo?x=a@b` reached the application as `/` with an empty query and a POST to `/save?x=a@b` ran the root's POST handler, on every server shape; the outbound client, which dials the parsed host, connected to whatever followed an `@` in a query. Browsers and htmx encode `@`, which kept it to typed and hand-built URLs; a Flask app compared against Werkzeug found it. Its neighbours hold the path form (`/users/@alice?page=2`), the client's host, and a real userinfo still skipped, and `Conformance test the WSGI bridge` sends a GET and a POST carrying the raw byte to a live server and requires the path, the query and the method back. The `://` half of the same search is `test_uri_scheme.mojo`"
     },
     {
+      "id": "A25",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A client that resets or leaves while the server writes to it costs that connection, never the process: `run_event_loop` (the Mojo host's loops, `listen_and_serve_nonblocking`'s and m0serve's prefork and threaded ones) and the blocking `Server.serve` ignore SIGPIPE before their first send, so the write fails with `EPIPE` and the connection closes. A built Mojo binary otherwise keeps the signal's default action, which ends the process; `mojo run` and m0serve's embedded CPython each ignore it on their own, which is why no gate saw it",
+      "status": "verified",
+      "evidence": "`Smoke test the Mojo host` (every PR) \u2014 `apps/host_check`, built, as one process: after `kill -PIPE` it must still answer `/health`, and again after a client asks for a 300 ms `/slow` and resets 50 ms in, so the answer is written to a reset socket. The signal is the arm that tells a fixed build from a broken one on both legs. Measured before the fix, on macOS: that client ended a fresh built server with status 141 in 10 of 10 rounds, as did one leaving an 8 MB response after 1 KB (event loop and blocking `Server.serve` alike), SSE subscribers resetting on 1 ms beats ended it within 8 to 34 resets, and `kill -PIPE` ended every shape. The unit halves are `test_sigpipe.mojo:test_a_write_to_a_closed_pipe_is_an_error_not_the_end`, `test_kill_pipe_does_not_end_the_process` and `test_the_blocking_server_ignores_sigpipe_before_it_accepts`, each putting the default back first, so under `mojo run` too a missing ignore kills the test process"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

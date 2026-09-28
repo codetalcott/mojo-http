@@ -8133,7 +8133,7 @@ cmd = "python3 scripts/host_sabotage.py"
 # every server on its own port: SO_REUSEPORT lets a stray one answer for a
 # port, which fakes a pass or a failure.
 [tool.poe.tasks.smoke-host]
-help = "The Mojo host: the bus at one worker, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals, a respawned producer's ids, a raising make refused, the pool lane and the overlapping shutdown bounds"
+help = "The Mojo host: the bus at one worker, SIGPIPE survived, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals, a respawned producer's ids, a raising make refused, the pool lane and the overlapping shutdown bounds"
 shell = """
 out=$(mktemp -d)
 pid=
@@ -8192,6 +8192,40 @@ stop() {
 start 8781 one
 res=$(python3 scripts/host_probe.py streams 8781 2 2 1 2>&1) || fail "one worker: $res"
 grep -q '^\\[worker' "$out/one.log" && fail "one worker: the host forked"
+
+# --- SIGPIPE costs a connection, never the process (SPEC A25) --------------
+# The same single process. A built binary keeps SIGPIPE's default action,
+# which ends the process, and the kernel raises it on a send to a client
+# that has reset; `mojo run` ignores the signal itself, so only a BUILT
+# server shows it. The signal first -- the arm that tells the two builds
+# apart on both legs -- then the shape that killed it in practice (10 of
+# 10 on macOS): a client asking for a 300 ms answer and resetting 50 ms
+# in, so the answer is written to a reset socket.
+kill -PIPE $pid
+sleep 0.3
+if ! kill -0 $pid 2>/dev/null; then
+  wait $pid
+  fail "SIGPIPE: kill -PIPE ended the server (exit $?; 141 is the signal's default action)"
+fi
+curl --silent --fail --max-time 5 http://127.0.0.1:8781/health > /dev/null \
+  || fail "SIGPIPE: no answer after kill -PIPE"
+python3 - 8781 <<'PY' || fail "SIGPIPE: the resetting client could not connect"
+import socket, struct, sys, time
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+s.sendall(b"GET /slow?ms=300 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+time.sleep(0.05)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+s.close()  # an RST, while the answer is still being computed
+time.sleep(0.45)
+PY
+if ! kill -0 $pid 2>/dev/null; then
+  wait $pid
+  fail "SIGPIPE: a client that reset before its answer was written ended the server (exit $?)"
+fi
+curl --silent --fail --max-time 5 http://127.0.0.1:8781/health > /dev/null \
+  || fail "SIGPIPE: no answer after a client reset"
+echo "SIGPIPE: kill -PIPE and a client resetting before its answer, both survived"
+
 stop "one worker"
 [ "$rc" -eq 0 ] || fail "one worker: SIGTERM exited $rc, not 0"
 grep -q 'abandoned' "$out/one.log" && fail "one worker: the drain abandoned the producer instead of stopping it"
@@ -8434,6 +8468,7 @@ echo "smoke-host OK"
 python3 scripts/emit.py host.overrun_exit_s "$overrun_s" --unit s --limit 12 --task smoke-host
 python3 scripts/emit.py host.pool_health_ms "$pool_ms" --unit ms --limit 100 --task smoke-host
 python3 scripts/emit.py host.overlap_exit_s "$overlap_s" --unit s --limit 6 --task smoke-host
+python3 scripts/emit.py --covers A25 --task smoke-host
 python3 scripts/emit.py --covers E21 --task smoke-host
 python3 scripts/emit.py --covers E22 --task smoke-host
 python3 scripts/emit.py --covers E23 --task smoke-host

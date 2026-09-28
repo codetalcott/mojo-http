@@ -714,6 +714,17 @@ lightbug_http
         place, and two threads alternated while two starved
         (docs/notes/a-slice-keeps-the-gil.md).
 
+      - c/process.mojo, event_loop.mojo, server.mojo (2026-09-28): the
+        server ignores SIGPIPE (SPEC A25). `ignore_sigpipe` sets it to
+        `SIG_IGN` through the existing signal(2) declaration, beside new
+        `SIGPIPE`, `SIG_DFL` and `SIG_IGN` constants, and
+        `run_event_loop` and the blocking `Server.serve` call it before
+        their first send. A built Mojo binary kept the signal's default
+        action, so a send to a client that had reset ended the process
+        where the write sites already handle the `EPIPE` it now returns.
+        No `MSG_NOSIGNAL` or `SO_NOSIGPIPE`: the process-wide ignore also
+        covers `sendfile` and writes to pipes, where neither applies.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -220,6 +220,41 @@ def install_signal_handler(sig: Int, handler_address: Int) -> Bool:
     return _raw_signal(c_int(sig), handler_address) != _SIG_ERR
 
 
+comptime SIGPIPE = 13
+"""Raised on a write to a socket whose peer has gone, or to a pipe with no
+reader. Its default action ends the process. 13 on macOS and Linux alike."""
+
+comptime SIG_DFL = 0
+"""`signal(2)`'s default disposition."""
+
+comptime SIG_IGN = 1
+"""`signal(2)`'s ignore disposition."""
+
+
+def ignore_sigpipe():
+    """Make a write to a peer that has gone an error, not the end of the process.
+
+    The kernel raises SIGPIPE on a `send` or `write` to a socket whose peer
+    has reset or closed, and its default action kills the process. Ignored,
+    the write fails with `EPIPE` instead, which the server's write sites
+    already treat as a closed connection. A client that resets before its
+    answer is written, one that leaves mid-download, and an SSE subscriber
+    closing its tab all reach it. A built Mojo binary keeps the default;
+    `mojo run` and an embedded CPython each ignore the signal themselves,
+    which is why no test saw it.
+
+    `run_event_loop` and the blocking `Server.serve` call this before their
+    first send (SPEC A25). Unconditional, as CPython's own is: a server has
+    no use for the signal, and an application learns of a closed peer from
+    the write's `EPIPE`. The disposition is process-wide and survives
+    `fork` and `exec`, so a child an application execs starts with SIGPIPE
+    ignored. One syscall, and idempotent, so every loop calls it, several
+    at once under `M0_THREADS`. The kernel refuses `signal(2)` only for
+    SIGKILL and SIGSTOP, so there is no failure to report.
+    """
+    _ = _raw_signal(c_int(SIGPIPE), SIG_IGN)
+
+
 # --- exec, and the shared page that survives it ----------------------------
 #
 # A spawned worker is a forked child that immediately `execv`s the same
