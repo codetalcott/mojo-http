@@ -73,6 +73,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **m0serve reads a command-line argument that is not UTF-8 instead of
+  crashing on it.** It cut `--name=value`, the positional `MODULE:ATTR`,
+  and the `PREFIX=` of `--static` and `--mount` with a slice that asserts
+  a UTF-8 character boundary, so an argument whose byte after the `=` or
+  `:` continued a multi-byte character -- a directory name in a legacy
+  encoding, say -- stopped the process on an assertion instead of serving
+  it or printing a usage error. m0serve now reads its command line by
+  bytes, with the same reader a Mojo host application uses, which already
+  did; the two refuse the same malformed lines in the same words.
+  `test_cli.mojo` gates each of the four. Found in review.
+
 - **m0serve refuses more than 126 mounts before it binds, and `--doctor`
   says so too.** Each mount is a lane of the loop's handler pool, which has
   room for 126. With a 127th, m0serve bound the port, imported every
