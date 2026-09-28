@@ -2197,9 +2197,9 @@
       "id": "O4",
       "section": "O",
       "category": "O. Storage packages",
-      "capability": "`m0_array(?)` streams a Mojo `List` into SQL without copying it, and the borrow cannot outlive the data: an array is bindable only through the helpers that take it as an argument and finish the statement before returning",
+      "capability": "`m0_array(?)` streams a Mojo `List` into SQL without copying it, and the borrow cannot outlive the data: an array is bindable only through the helpers that take it as an argument and finish the statement before returning; and the pointer-type tag bound with the array is the literal's own static storage, never a buffer freed after the bind, because SQLite keeps the pointer and compares against it when the statement steps",
       "status": "verified",
-      "evidence": "`test_vtab.mojo:test_borrow_is_dropped_after_the_call` (every PR) \u2014 the C struct offsets the module depends on are asserted against the real sqlite3.h by extraction before any Mojo test runs, and moving any one of them is caught, both inside `poe test-all`"
+      "evidence": "`test_vtab.mojo:test_borrow_is_dropped_after_the_call` (every PR) \u2014 the C struct offsets the module depends on are asserted against the real sqlite3.h by extraction before any Mojo test runs, and moving any one of them is caught, both inside `poe test-all`. `test_the_tag_sqlite_keeps_is_not_a_freed_buffer` beside it fills the heap between the bind and the step: 1.7.0 bound a buffer freed as the call returned, and an `INSERT ... SELECT` from the array inserted 0 of 100 rows, silently, in 30 runs of 30 on macOS. The public helpers step at once, and the lookup's own copy of the tag took the freed block back and rewrote it, which is why nothing else noticed"
     },
     {
       "id": "O5",

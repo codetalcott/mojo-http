@@ -8,6 +8,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **An `INSERT ... SELECT` from `m0_array` no longer inserts nothing**
+  (SPEC O4). Since 1.7.0 (and `m0 0.3.0`) the pointer-type tag bound with
+  an array was a buffer freed as the bind returned. SQLite keeps that
+  pointer and compares against it when the statement steps, so once the
+  freed block was reused the scan found no array: the statement inserted
+  0 rows and raised nothing. The public helpers step straight after
+  binding, and the scan's own copy of the tag usually took the freed block
+  back and wrote the same bytes into it, which hid it from every test; any
+  allocation in between that took the block emptied the scan. The tag is
+  the literal's static storage again, at the bind and at the lookup.
+  `test_vtab.mojo` now fills the heap between the bind and the step: 0 of
+  100 rows arrived in 30 runs of 30 on the 1.7.0 code.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and
