@@ -815,7 +815,7 @@
       "category": "G. Security hardening",
       "capability": "A response header carrying CR, LF or NUL is dropped, and a clean one beside it is not",
       "status": "verified",
-      "evidence": "`Conformance test the WSGI bridge` (every PR)"
+      "evidence": "`Conformance test the WSGI bridge` (every PR) \u2014 `test_reply.mojo:test_redirect_percent_encodes_a_control_byte_in_its_target` holds the constructor's side: `reply.redirect` percent-encodes every C0 control byte and DEL in its target, as `url_for` encodes one, so a `Location` a view built from request data is kept rather than dropped, and an ordinary target is byte-identical"
     },
     {
       "id": "G3",

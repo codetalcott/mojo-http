@@ -87,6 +87,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   requires a `Secure` cookie, and `sabotage-scaffold` removes the line
   and sets it to `0`.
 
+- **`reply.redirect` percent-encodes a control byte in its target** (SPEC
+  G2). A target built from request data, such as
+  `?next=%0D%0A...`, which `unquote` decodes to a real line break, carried
+  the break into the response head, where it could end the header and
+  start one of the request's choosing. Every C0 control byte and DEL in
+  the target is now percent-encoded, as `url_for` encodes one, so the
+  redirect still goes where the view meant; every other byte is written as
+  given, so an ordinary target is unchanged. `test_reply.mojo` holds both,
+  on the header and on the head's bytes.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

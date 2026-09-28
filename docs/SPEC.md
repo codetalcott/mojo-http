@@ -178,7 +178,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | id | capability | status | evidence |
 |---|---|---|---|
 | G1 | An injected status reason phrase is emptied, not transmitted | verified | `test_response.mojo:test_status_reason_with_crlf_is_emptied_not_transmitted` (every PR) |
-| G2 | A response header carrying CR, LF or NUL is dropped, and a clean one beside it is not | verified | `Conformance test the WSGI bridge` (every PR) |
+| G2 | A response header carrying CR, LF or NUL is dropped, and a clean one beside it is not | verified | `Conformance test the WSGI bridge` (every PR) — `test_reply.mojo:test_redirect_percent_encodes_a_control_byte_in_its_target` holds the constructor's side: `reply.redirect` percent-encodes every C0 control byte and DEL in its target, as `url_for` encodes one, so a `Location` a view built from request data is kept rather than dropped, and an ordinary target is byte-identical |
 | G3 | An application's `Set-Cookie` reaches the wire verbatim | verified | `test_response_cookies.mojo:test_raw_line_reaches_the_wire_verbatim` (every PR) |
 | G4 | `Proxy` request header never becomes `HTTP_PROXY` (httpoxy) | verified | `test_environ.mojo:test_proxy_header_is_excluded_from_the_environ` (every PR) |
 | G5 | Path traversal rejected (`../`) | verified | `test_static.mojo:test_dotdot_is_rejected` (every PR) |

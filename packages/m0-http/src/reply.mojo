@@ -63,13 +63,47 @@ def redirect(status: Int, location: String) -> HTTPResponse:
     constructor at all, so an app redirecting permanently built the response
     and its `Location` by hand. `status` is not validated: 3xx is the caller's
     to choose, and a deliberate 201-with-Location is legitimate.
+
+    A control byte in `location` -- any C0 control, CR, LF and NUL among
+    them, or DEL -- is percent-encoded, as `url_for` encodes one. A target
+    built from request data (`?next=%0D%0A...`, which `unquote` decodes to
+    a real line break) would otherwise carry the break into the head, where
+    the writer drops the whole header rather than let it split the
+    response, and the redirect would go out with no `Location` at all. It
+    cannot raise instead: views on the loop and the login's refusals call
+    this from code that does not raise. Every other byte is written as
+    given, so an ordinary target is unchanged.
     """
     return HTTPResponse(
         body_bytes=String("").as_bytes(),
-        headers=Headers(Header(HeaderKey.LOCATION, location)),
+        headers=Headers(Header(HeaderKey.LOCATION, _encode_controls(location))),
         status_code=status,
         status_text=_reason_for_redirect(status),
     )
+
+
+def _encode_controls(s: String) -> String:
+    """`s` with each C0 control byte and DEL as `%XX`, every other byte as
+    it was. A byte walk: `s` may hold request bytes that are not UTF-8, so
+    it is never sliced on a codepoint boundary (SPEC G14)."""
+    comptime HEX = "0123456789ABCDEF"
+    var b = s.as_bytes()
+    var n = len(b)
+    var out = String()
+    var run = 0
+    for i in range(n):
+        var ch = Int(b[i])
+        if ch >= 0x20 and ch != 0x7F:
+            continue
+        out += StringSpan(unsafe_from_utf8=b[run:i])
+        out += "%"
+        out += HEX[byte=ch >> 4 : (ch >> 4) + 1]
+        out += HEX[byte=ch & 15 : (ch & 15) + 1]
+        run = i + 1
+    if run == 0:
+        return s
+    out += StringSpan(unsafe_from_utf8=b[run:n])
+    return out
 
 
 def problem(
