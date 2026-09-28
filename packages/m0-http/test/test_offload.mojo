@@ -231,6 +231,149 @@ def test_loop_state_reaches_the_pool_it_was_given() raises:
     _ = pool.capacity
 
 
+# --- the moves: derived by the compiler, pinned here ---
+
+
+def _ints(xs: List[Int]) -> String:
+    var s = String("[")
+    for i in range(len(xs)):
+        s += String(xs[i]) + ","
+    return s + "]"
+
+
+def _bools(xs: List[Bool]) -> String:
+    var s = String("[")
+    for i in range(len(xs)):
+        s += "T," if xs[i] else "F,"
+    return s + "]"
+
+
+def _pool_fields(pool: OffloadPool) -> String:
+    """Every field of `pool`, rendered: what a move has to carry whole."""
+    var s = String()
+    for i in range(len(pool.lane_prefixes)):
+        s += "'" + pool.lane_prefixes[i] + "',"
+    s += _ints(pool.lane_submit_read) + _ints(pool.lane_submit_write)
+    s += String(pool.submit_read) + "," + String(pool.submit_write) + ","
+    s += String(pool.complete_read) + "," + String(pool.complete_write) + ","
+    for i in range(len(pool.requests)):
+        s += "R" if pool.requests[i] else "-"
+    for i in range(len(pool.responses)):
+        s += "S" if pool.responses[i] else "-"
+    s += _bools(pool.errored)
+    s += String(pool.stream_chunk_read) + "," + String(pool.stream_chunk_write) + ","
+    s += String(pool.stream_ack_read) + "," + String(pool.stream_ack_write) + ","
+    s += String(pool.hold_notify_fd) + ","
+    s += _ints(pool.slot_lane) + _ints(pool.lane_ack_read) + _ints(pool.lane_ack_write)
+    s += _ints(pool.slot_ack_fd) + _ints(pool.aborts)
+    s += String(len(pool._drain_buf)) + "," + String(pool.sweep_every_pass) + ","
+    s += String(pool.capacity) + "," + String(pool.ring_enabled) + ","
+    for i in range(len(pool.job_rings)):
+        s += String(pool.job_rings[i].base) + "/" + String(pool.job_rings[i].mask) + ","
+    s += String(pool.done_ring.base) + "/" + String(pool.done_ring.mask) + ","
+    s += String(pool.wake_base) + "," + String(pool.elastic) + ","
+    s += String(pool.debug) + ","
+    s += _ints(pool.submit_ns) + _ints(pool.lane_pops) + _ints(pool.lane_progress)
+    s += String(pool.parallel) + "," + String(pool._parallel_forced) + ","
+    s += _bools(pool.lane_gil_free)
+    s += String(pool.wake_age) + "," + String(pool.spin) + ","
+    s += String(pool.thread_base) + "," + String(pool.thread_cap)
+    return s^
+
+
+def _loop_state_fields(state: OffloadLoopState) -> String:
+    """Every field of `state`, rendered, as `_pool_fields` does the pool's."""
+    var s = String(state.addr) + ","
+    s += _bools(state.offloaded) + _bools(state.is_head)
+    s += _bools(state.http11) + _bools(state.chunked)
+    s += _ints(state.ack_payload) + _ints(state.ack_owed)
+    s += String(state.ack_owed_count) + "," + String(state.inflight) + ","
+    s += _ints(state.stream_gen)
+    for i in range(len(state.pending_submit)):
+        s += _ints(state.pending_submit[i])
+    s += String(state.pending_submit_count) + "," + String(state.streaming_hint) + ","
+    s += _ints(state.done_scratch)
+    s += String(state.waits) + "," + String(state.waits_capped) + ","
+    s += String(state.waits_skipped) + "," + String(state.waits_empty) + ","
+    s += _ints(state.wait_over) + _ints(state.pass_over)
+    return s^
+
+
+def _moved_pool(var pool: OffloadPool) -> OffloadPool:
+    """A transfer through a call, so the move constructor runs whatever the
+    optimiser makes of a transfer between two locals."""
+    return pool^
+
+
+def _moved_loop_state(var state: OffloadLoopState) -> OffloadLoopState:
+    return state^
+
+
+def test_a_moved_pool_carries_every_field() raises:
+    """`OffloadPool`'s move is the one Mojo 1.1 derives: the hand-written
+    one listed all 39 fields and did nothing else. Every field is set away
+    from its default here, the pool is moved, and the moved value reads back
+    whole -- and still hands over the job it was holding."""
+    var pool = OffloadPool(8)
+    pool.add_lane(String(""))
+    pool.add_lane(String("/b"))
+    pool.enable_stream_channel()
+    pool.enable_base_stream_ack()
+    pool.enable_stream_ack(1)
+    pool.set_hold_notify(42)
+    pool.set_sweep_every_pass()
+    pool.set_lane_gil_free(1)
+    pool.set_parallel(True)
+    pool.reserve_threads(2)
+    pool.set_slot_ack_fd(3, 17)
+    pool.stamp_lane(5, 1)
+    pool.put_response(2, OK(String("x")), raised=True)
+    assert_true(pool.abort_stream(4, 9))
+    _ = pool.drain_completions()
+    _ = pool.wake_aged(12345, 1)
+    pool.park_request(6, _request("/a"))
+    assert_true(pool.submit(6, String("/a")))
+    var before = _pool_fields(pool)
+    var moved = _moved_pool(pool^)
+    assert_equal(_pool_fields(moved), before)
+    var buf = _job_buffer()
+    var job = moved.try_next_job(0, buf)
+    assert_equal(job.kind, JOB_REQUEST)
+    assert_equal(job.slot, 6)
+    assert_equal(moved.take_request(6).uri.path, "/a")
+    var aborts = moved.take_aborts()
+    assert_equal(len(aborts), 2)
+    assert_equal(aborts[0], 4)
+    assert_equal(aborts[1], 9)
+
+
+def test_a_moved_loop_state_carries_every_field() raises:
+    """The same for `OffloadLoopState`, which `LoopState` moves into itself
+    on every server start: all 20 fields set, moved, and read back whole."""
+    var pool = OffloadPool(8)
+    var state = OffloadLoopState(pool.addr(), 8)
+    state.offloaded[1] = True
+    state.is_head[2] = True
+    state.http11[3] = True
+    state.chunked[4] = True
+    state.ack_payload[5] = 55
+    state.ack_owed[6] = 66
+    state.ack_owed_count = 1
+    state.inflight = 3
+    state.stream_gen[7] = 77
+    _ = state.queue_submit(2, 1)
+    state.streaming_hint = 4
+    state.done_scratch.append(9)
+    state.note_wait(True, True, 0, 3_000_000)
+    state.note_wait(False, False, 0)
+    state.note_pass(5_000_000)
+    var before = _loop_state_fields(state)
+    var moved = _moved_loop_state(state^)
+    assert_equal(_loop_state_fields(moved), before)
+    assert_equal(moved.pool()[].capacity, 8)
+    _ = pool.capacity
+
+
 # --- streamed WSGI bodies: a pool thread as a second chunk-channel producer ---
 
 

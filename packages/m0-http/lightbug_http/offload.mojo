@@ -866,47 +866,6 @@ struct OffloadPool(Movable):
         _set_nonblocking_fd(self.submit_write)
         _set_nonblocking_fd(self.complete_read)
 
-    def __init__(out self, *, deinit move: Self):
-        self.lane_prefixes = move.lane_prefixes^
-        self.lane_submit_read = move.lane_submit_read^
-        self.lane_submit_write = move.lane_submit_write^
-        self.lane_ack_read = move.lane_ack_read^
-        self.lane_ack_write = move.lane_ack_write^
-        self.slot_lane = move.slot_lane^
-        self.slot_ack_fd = move.slot_ack_fd^
-        self.aborts = move.aborts^
-        self._drain_buf = move._drain_buf^
-        self.submit_read = move.submit_read
-        self.submit_write = move.submit_write
-        self.complete_read = move.complete_read
-        self.complete_write = move.complete_write
-        self.stream_chunk_read = move.stream_chunk_read
-        self.stream_chunk_write = move.stream_chunk_write
-        self.stream_ack_read = move.stream_ack_read
-        self.stream_ack_write = move.stream_ack_write
-        self.hold_notify_fd = move.hold_notify_fd
-        self.requests = move.requests^
-        self.responses = move.responses^
-        self.errored = move.errored^
-        self.capacity = move.capacity
-        self.sweep_every_pass = move.sweep_every_pass
-        self.ring_enabled = move.ring_enabled
-        self.job_rings = move.job_rings^
-        self.done_ring = move.done_ring.copy()
-        self.wake_base = move.wake_base
-        self.elastic = move.elastic
-        self.debug = move.debug
-        self.submit_ns = move.submit_ns^
-        self.wake_age = move.wake_age
-        self.spin = move.spin
-        self.thread_base = move.thread_base
-        self.thread_cap = move.thread_cap
-        self.lane_pops = move.lane_pops^
-        self.lane_progress = move.lane_progress^
-        self.parallel = move.parallel
-        self._parallel_forced = move._parallel_forced
-        self.lane_gil_free = move.lane_gil_free^
-
     def set_hold_notify(mut self, fd: Int):
         """Wiring under `--realtime --blocking-threads`: see `hold_notify_fd`."""
         self.hold_notify_fd = fd
@@ -2478,8 +2437,8 @@ struct OffloadLoopState(Movable):
     returned more than 1/2/4/8 ms AFTER the timeout they asked for (a
     capped 1 ms wait that returns at 6 ms is a loop thread the kernel did
     not run for 5), and `pass_over[i]` counts passes that took more than
-    1/2/4/8 ms of wall time. Under `M0_POOL_DEBUG`; the arrays are always
-    allocated so the move constructor has nothing conditional to do.
+    1/2/4/8 ms of wall time. Printed under `M0_POOL_DEBUG`; the arrays are
+    always allocated, because `note_pass` counts into them on every pass.
 
     The pass cadence, for the same instrument: how many times the loop went
     to wait, how many of those were capped to `POOL_WAKE_WAIT_MS` because
@@ -2520,28 +2479,6 @@ struct OffloadLoopState(Movable):
             self.ack_payload.append(0)
             self.ack_owed.append(0)
             self.stream_gen.append(STREAM_GEN_NONE)
-
-    def __init__(out self, *, deinit move: Self):
-        self.addr = move.addr
-        self.offloaded = move.offloaded^
-        self.is_head = move.is_head^
-        self.http11 = move.http11^
-        self.chunked = move.chunked^
-        self.ack_payload = move.ack_payload^
-        self.ack_owed = move.ack_owed^
-        self.ack_owed_count = move.ack_owed_count
-        self.inflight = move.inflight
-        self.stream_gen = move.stream_gen^
-        self.pending_submit = move.pending_submit^
-        self.pending_submit_count = move.pending_submit_count
-        self.streaming_hint = move.streaming_hint
-        self.done_scratch = move.done_scratch^
-        self.waits = move.waits
-        self.waits_capped = move.waits_capped
-        self.waits_skipped = move.waits_skipped
-        self.waits_empty = move.waits_empty
-        self.wait_over = move.wait_over^
-        self.pass_over = move.pass_over^
 
     def note_wait(mut self, capped: Bool, skipped: Bool, events: Int, late_ns: Int = 0):
         """One `_wait_for_events` call: see the `waits` fields. `late_ns` is
