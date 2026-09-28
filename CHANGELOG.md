@@ -174,6 +174,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   WebSocket the server closed itself, answering a message too large for
   the handler pool with 1009, could be held until the process exited when
   its client never answered the Close; it is closed after the 2 s linger.
+- **A keep-alive request no longer costs two `epoll_ctl` calls on Linux**
+  (SPEC A13). Since 0.13.0 the event loop re-registered a connection's
+  read interest after every read, which the kernel refused as already
+  registered before accepting the modification behind it: two wasted
+  system calls per request, the pair 0.4.0 had measured out of the hot
+  path. Only a read that fills the buffer, or the client's EOF, now
+  re-registers; the rest of a large request is still read at once.
+  `smoke-large-request` counts the calls under `strace` on Linux: 4 over
+  2000 keep-alive requests, where the old loop made 4004. macOS paid one
+  `kevent` a request for the same reason, and no longer does.
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
   and the login read the silence as off: a visit to the `http://` URL sent

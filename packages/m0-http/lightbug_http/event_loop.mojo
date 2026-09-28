@@ -2805,11 +2805,12 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     # Nothing else does. The accept path arms EVFILT_READ only while the
     # state is still READING_HEADERS, so a request whose headers completed
     # in the eager read but whose body did not would sit unarmed until the
-    # body timer answered 408. The re-registration is unconditional rather
-    # than guarded on `slot_read_armed`, because epoll is edge-triggered:
-    # the tail of the body is frequently already in the socket buffer, the
-    # edge that carried it is spent, and only a fresh EPOLL_CTL_MOD
-    # regenerates readiness for bytes that are pending but unread.
+    # body timer answered 408. After a full read the re-registration is
+    # unconditional rather than guarded on `slot_read_armed`, because epoll
+    # is edge-triggered: the tail of the body is frequently already in the
+    # socket buffer, the edge that carried it is spent, and only a fresh
+    # EPOLL_CTL_MOD regenerates readiness for bytes that are pending but
+    # unread.
     #
     # HEADERS need it for the identical reason, and used not to have it.
     # This function performs exactly ONE `recv` of `recv_staging.capacity()`
@@ -2822,12 +2823,26 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     # `EV_ADD` without `EV_CLEAR` and so LEVEL triggered, and the next
     # `kevent` reported the socket readable again. 8 KB of request headers
     # is a large cookie jar or a JWT, not an attack.
+    #
+    # Re-registered only when this read may have left something that no
+    # edge will announce: a read that FILLED the buffer (more may wait
+    # behind it), or the peer's EOF (whose one edge this event spent). A
+    # shorter read took everything the socket held, so the next byte raises
+    # an edge of its own, and a slot whose interest stands needs no syscall
+    # at all -- `_arm_reads` adds it only if a write wait took it. Doing it
+    # after every read put an `epoll_ctl` ADD, refused EEXIST, and the MOD
+    # behind it on every keep-alive request: 4004 calls for 2000 requests,
+    # the pair 9a6651f had measured out of the hot path (review record R2;
+    # `poe smoke-large-request` counts them on Linux).
     if slot_fds[slot] != UNUSED and (
         provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY
         or provision_pool.provisions[slot].state.kind
         == ConnectionState.READING_HEADERS
     ):
-        _rearm_reads(backend, slot, fd_val, slot_read_armed)
+        if bytes_read == UInt(want) or recv_eof:
+            _rearm_reads(backend, slot, fd_val, slot_read_armed)
+        else:
+            _ = _arm_reads(backend, slot, fd_val, slot_read_armed, provision_pool)
 
     # After an inline-completed request the keep-alive reset zeroed
     # `last_parse_len` for the PRESERVED pipelined tail; stamping the buffer

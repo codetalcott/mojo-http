@@ -492,14 +492,16 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
-      - name: Install libsqlite3 (Linux)
+      - name: Install libsqlite3 and strace (Linux)
         if: runner.os == 'Linux'
         # Normally ~6 s. Observed hanging for 63 min against an unreachable
         # apt mirror, which is what a step-level cap turns into a fast,
         # legible failure — the job cap above is the backstop, this is the
-        # one step known to stall.
+        # one step known to stall. `strace` is the counter behind
+        # `smoke-large-request`'s epoll_ctl bound (review record R2), which
+        # fails rather than skips without it.
         timeout-minutes: 3
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf strace
       - name: Build all packages
         run: uv run poe build-all
       # `Compile every example app` is deliberately NOT here. It builds each
@@ -642,7 +644,10 @@ jobs:
         run: uv run poe smoke-early-413
       # The mirror image: connection reads are level triggered on kqueue and
       # edge triggered on epoll, so a request bigger than one read stalled on
-      # Linux at exactly 8192 bytes while macOS served any size.
+      # Linux at exactly 8192 bytes while macOS served any size. The fix's
+      # other half is counted here too, on Linux under strace: only a read
+      # that fills the buffer re-registers, so a keep-alive request costs no
+      # epoll_ctl -- re-registering after every read cost two (R2).
       - name: Smoke test a request larger than one read
         run: uv run poe smoke-large-request
       # RFC 9112 §9.3: pipelined requests get no readiness event of their

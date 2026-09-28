@@ -822,6 +822,13 @@ lightbug_http
         again for every stream frame the write-ready path finishes (F18);
         and a frame that lands no longer zeroes a WebSocket's close linger.
 
+      - event_loop.mojo (2026-09-28): `_handle_read_headers` re-registers
+        read interest only after a read that filled the staging buffer, or
+        the peer's EOF, and otherwise keeps a registration that stands
+        (`_arm_reads`). Re-registering after every read put an `epoll_ctl`
+        ADD, refused EEXIST, and its MOD on every keep-alive request
+        (review record R2).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -101,9 +101,9 @@
       "id": "A13",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "Request headers larger than one socket read",
+      "capability": "Request headers larger than one socket read, at no cost to a request that fits one: only a read that fills the buffer, or the peer's EOF, re-registers read interest",
       "status": "verified",
-      "evidence": "`Smoke test a request larger than one read` (every PR)"
+      "evidence": "`Smoke test a request larger than one read` (every PR) \u2014 requests up to the 32 KB header cap are answered and a larger one refused 431, on both platforms; on the Linux leg `scripts/epoll_rearm_probe.py` counts the server's `epoll_ctl` calls under strace, at most 0.5 per request over 2000 keep-alive requests (0.002 measured, each connection's own registration; 2.002 when every read re-registered, an ADD refused EEXIST and its MOD, review record R2), and 50 requests three reads long must each be answered and raise the count, so the meter is seen to read a re-registration before its silence is trusted. macOS has no unprivileged syscall counter, and kqueue's level-triggered reads never needed the re-registration"
     },
     {
       "id": "A14",
