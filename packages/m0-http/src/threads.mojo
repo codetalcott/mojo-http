@@ -48,7 +48,7 @@ comptime BLK_LANE = 6
 comptime BLK_TURN_ADDR = 8
 """Address of a pool's turn counters -- the hand-off barrier around its
 threads' re-attach (`m0_wsgi.blocking_pool`) -- or 0. Slot 7 is `BLK_POOL`,
-private to that module."""
+the pools' own (`mojo_pool.mojo`)."""
 comptime BLK_QOS = 9
 """1 if the thread should request its role's Darwin QoS class at start.
 
