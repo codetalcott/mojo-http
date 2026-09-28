@@ -19,10 +19,6 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import (
     accept_with_peer, recv, send, close, shutdown, ShutdownOption,
 )
-from lightbug_http.c.socket_error import (
-    AcceptEAGAINError, AcceptECONNABORTEDError, AcceptEINTRError,
-    RecvEAGAINError, SendEAGAINError,
-)
 from lightbug_http.connection import ConnectionState, default_buffer_size
 from lightbug_http.header import (
     HeaderKey, KH_DATE, ParsedRequestHeaders, find_header_end, parse_request_headers,
@@ -740,7 +736,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     # other job: discovering a dead subscriber that never
                     # sent a FIN. Close it (which notifies the handler)
                     # rather than leaving a zombie stream.
-                    if not hb_err.isa[SendEAGAINError]():
+                    if not hb_err.would_block():
                         hb_dead = True
                 if hb_dead:
                     _close_slot(
@@ -904,7 +900,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         0,
                     )
                 except ws_recv_err:
-                    if ws_recv_err.isa[RecvEAGAINError]():
+                    if ws_recv_err.would_block():
                         continue
                     _close_slot(
                         backend, handler, slot, fd_val,
@@ -961,7 +957,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         )
                     except ws_send_err:
                         # Anything but EAGAIN means the client is gone.
-                        if not ws_send_err.isa[SendEAGAINError]():
+                        if not ws_send_err.would_block():
                             ws_reply_dead = True
                     if ws_reply_dead:
                         _close_slot(
@@ -1122,7 +1118,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         0,
                     )
                 except recv_err:
-                    if recv_err.isa[RecvEAGAINError]():
+                    if recv_err.would_block():
                         continue
                     _close_slot(
                         backend, handler, slot, fd_val,
@@ -1351,7 +1347,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                         0,
                     )
                 except send_err:
-                    if send_err.isa[SendEAGAINError]():
+                    if send_err.would_block():
                         _ = _await_write(backend, slot, fd_val, slot_read_armed)
                         continue
                     _close_slot(
@@ -2140,7 +2136,7 @@ def _accept_batch[T: HTTPService, B: EventLoopBackend](
             peer_port = accepted[2]
         except accept_err:
             # EAGAIN: backlog drained — this readiness event is done.
-            if accept_err.isa[AcceptEAGAINError]():
+            if accept_err.would_block():
                 return False
             # ECONNABORTED (the client gave up while queued) and
             # EINTR are per-attempt transients. They MUST NOT end
@@ -2149,7 +2145,7 @@ def _accept_batch[T: HTTPService, B: EventLoopBackend](
             # here are owed no new readiness edge until some later
             # connection arrives — under bursty load that strands
             # live clients behind a dead one.
-            if accept_err.isa[AcceptECONNABORTEDError]() or accept_err.isa[AcceptEINTRError]():
+            if accept_err.connection_aborted() or accept_err.interrupted():
                 continue
             # Anything else (EMFILE, ENFILE, ...) won't be cured
             # by accepting harder; stop and let the loop breathe.
@@ -2511,7 +2507,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         )
         recv_eof = bytes_read == 0
     except recv_err:
-        if recv_err.isa[RecvEAGAINError]():
+        if recv_err.would_block():
             # No new data — check for pipelined data already in recv_buffer.
             if len(provision_pool.provisions[slot].recv_buffer) == 0:
                 return
@@ -4223,7 +4219,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
             var sent = send(fd_desc, Span(slot_response[slot]), UInt(response_len), 0)
             slot_send_offset[slot] = Int(sent)
         except send_err:
-            if not send_err.isa[SendEAGAINError]():
+            if not send_err.would_block():
                 _close_slot(
                     backend, handler, slot, fd_val,
                     slot_fds, fd_to_slot, provision_pool, active_count, metrics,
@@ -4533,7 +4529,7 @@ def _linger_discard[T: HTTPService, B: EventLoopBackend](
                 0,
             )
         except linger_err:
-            if linger_err.isa[RecvEAGAINError]():
+            if linger_err.would_block():
                 return
             n = 0
         if n == 0:

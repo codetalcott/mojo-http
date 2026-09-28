@@ -33,20 +33,9 @@ struct ResponseBodyReadError(ImplicitlyCopyable):
         return String("Failed to read response body: ", self.detail)
 
 
-@fieldwise_init
-struct ChunkedEncodingError(ImplicitlyCopyable):
-    """Invalid chunked transfer encoding."""
-
-    var detail: String
-
-    def message(self) -> String:
-        return String("Invalid chunked encoding: ", self.detail)
-
-
 comptime ResponseParseError = Variant[
     ResponseHeaderParseError,
     ResponseBodyReadError,
-    ChunkedEncodingError,
 ]
 
 

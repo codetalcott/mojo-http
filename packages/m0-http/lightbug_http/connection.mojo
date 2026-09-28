@@ -3,25 +3,11 @@ from std.time import sleep
 
 from lightbug_http.address import HostPort, NetworkType, ParseError, TCPAddr, parse_address
 from lightbug_http.c.process import ignore_sigpipe
-from lightbug_http.c.socket_error import (
-    AcceptError,
-    BindEADDRINUSEError,
-    BindError,
-    GetpeernameError,
-    RecvError,
-    SendError,
-    SetsockoptError,
-    ShutdownEINVALError,
-)
-from lightbug_http.c.socket_error import SocketError as CSocketError
+from lightbug_http.c.socket_error import SysError
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.socket import (
-    EOF,
-    FatalCloseError,
     Socket,
-    SocketAcceptError,
     SocketBindError,
-    SocketConnectError,
     SocketOption,
     SocketRecvError,
     TCPSocket,
@@ -48,48 +34,14 @@ struct AddressParseError(CustomError, ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct SocketCreationError(CustomError, ImplicitlyCopyable):
-    comptime message = "ListenerError: Failed to create socket"
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
-
-
-@fieldwise_init
-struct BindFailedError(CustomError, ImplicitlyCopyable):
-    comptime message = "ListenerError: Failed to bind socket to address"
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
-
-
-@fieldwise_init
-struct ListenFailedError(CustomError, ImplicitlyCopyable):
-    comptime message = "ListenerError: Failed to listen on socket"
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
-
-
-@fieldwise_init
 struct ListenerError(Movable, Writable):
     """Error variant for listener creation operations.
 
-    Represents failures during address parsing, socket creation, binding, or listening.
+    An address that does not parse, or the call that failed, errno and all:
+    a SysError from `socket` or `listen`, a SocketBindError from the bind.
     """
 
-    comptime type = Variant[
-        AddressParseError, SocketCreationError, BindFailedError, ListenFailedError, CSocketError, SocketBindError, Error
-    ]
+    comptime type = Variant[AddressParseError, SysError, SocketBindError, Error]
     var value: Self.type
 
     @implicit
@@ -97,20 +49,8 @@ struct ListenerError(Movable, Writable):
         self.value = value
 
     @implicit
-    def __init__(out self, value: SocketCreationError):
+    def __init__(out self, value: SysError):
         self.value = value
-
-    @implicit
-    def __init__(out self, value: BindFailedError):
-        self.value = value
-
-    @implicit
-    def __init__(out self, value: ListenFailedError):
-        self.value = value
-
-    @implicit
-    def __init__(out self, var value: CSocketError):
-        self.value = value^
 
     @implicit
     def __init__(out self, var value: SocketBindError):
@@ -123,14 +63,8 @@ struct ListenerError(Movable, Writable):
     def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[AddressParseError]():
             writer.write(self.value[AddressParseError])
-        elif self.value.isa[SocketCreationError]():
-            writer.write(self.value[SocketCreationError])
-        elif self.value.isa[BindFailedError]():
-            writer.write(self.value[BindFailedError])
-        elif self.value.isa[ListenFailedError]():
-            writer.write(self.value[ListenFailedError])
-        elif self.value.isa[CSocketError]():
-            writer.write(self.value[CSocketError])
+        elif self.value.isa[SysError]():
+            writer.write(self.value[SysError])
         elif self.value.isa[SocketBindError]():
             writer.write(self.value[SocketBindError])
         elif self.value.isa[Error]():
@@ -162,54 +96,41 @@ def bind_in_use(err: SocketBindError) -> Bool:
     that is not on this machine (EADDRNOTAVAIL), a privileged port
     (EACCES) -- fails the same way a second later.
     """
-    return err.value.isa[BindError]() and err.value[BindError].value.isa[
-        BindEADDRINUSEError
-    ]()
+    return err.value.isa[SysError]() and err.value[SysError].address_in_use()
 
 
 struct NoTLSListener[network: NetworkType = NetworkType.tcp4](Movable):
-    """A TCP listener that listens for incoming connections and can accept them."""
+    """A bound, listening TCP socket; the event loop accepts from its descriptor."""
 
     var socket: TCPSocket[TCPAddr[Self.network]]
 
     def __init__(out self, var socket: TCPSocket[TCPAddr[Self.network]]):
         self.socket = socket^
 
-    def __init__(out self) raises CSocketError:
+    def __init__(out self) raises SysError:
         self.socket = Socket[TCPAddr[Self.network]]()
 
-    def accept(self) raises SocketAcceptError -> TCPConnection[Self.network]:
-        """Accept an incoming TCP connection.
-
-        Returns:
-            A new TCPConnection for the accepted client.
-
-        Raises:
-            SocketAcceptError: If accept fails.
-        """
-        return TCPConnection(self.socket.accept())
-
-    def close(mut self) raises FatalCloseError -> None:
+    def close(mut self) raises SysError -> None:
         """Close the listener socket.
 
         Raises:
-            FatalCloseError: If close fails (excludes EBADF).
+            SysError: If close fails (excludes EBADF).
         """
         return self.socket.close()
 
-    def shutdown(mut self) raises ShutdownEINVALError:
+    def shutdown(mut self) raises SysError:
         """Shutdown the listener socket.
 
         Raises:
-            ShutdownEINVALError: If shutdown fails.
+            SysError: If shutdown fails with EINVAL.
         """
         return self.socket.shutdown()
 
-    def teardown(deinit self) raises FatalCloseError:
+    def teardown(deinit self) raises SysError:
         """Teardown the listener socket on destruction.
 
         Raises:
-            FatalCloseError: If close fails during teardown.
+            SysError: If close fails during teardown.
         """
         self.socket^.teardown()
 
@@ -289,7 +210,7 @@ struct ListenConfig:
         try:
             socket = Socket[TCPAddr[network]]()
         except socket_err:
-            raise SocketCreationError()
+            raise socket_err
 
         # SO_REUSEADDR: allow rapid restart after TIME_WAIT
         try:
@@ -347,7 +268,7 @@ struct ListenConfig:
         try:
             socket.listen(128)
         except listen_err:
-            raise ListenFailedError()
+            raise listen_err
 
         var listener = NoTLSListener(socket^)
         var msg = String(
@@ -448,8 +369,12 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
         """
         return self.socket.receive(buf)
 
-    def write(self, buf: Span[Byte, _]) raises SendError -> UInt:
+    def write(self, buf: Span[Byte, _]) raises -> UInt:
         """Write all data to the TCP connection, handling partial sends.
+
+        Untyped on purpose: the client writes and reads in one `try` beside
+        errors of its own, which `SendError`'s `Error` arm used to absorb
+        and a `SysError` cannot.
 
         Args:
             buf: Buffer containing data to write.
@@ -458,7 +383,7 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
             Total number of bytes written.
 
         Raises:
-            SendError: If write fails.
+            Error: The send's SysError, as text, if a send fails.
         """
         var total_sent: UInt = 0
         while total_sent < UInt(len(buf)):
@@ -466,38 +391,38 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
             total_sent += sent
         return total_sent
 
-    def set_recv_timeout(self, seconds: Int) raises SetsockoptError:
+    def set_recv_timeout(self, seconds: Int) raises SysError:
         """Set the receive timeout on this connection's socket.
 
         Args:
             seconds: Timeout in seconds. 0 to disable.
 
         Raises:
-            SetsockoptError: If setting the socket option fails.
+            SysError: If setting the socket option fails.
         """
         self.socket.set_timeout(seconds)
 
-    def close(mut self) raises FatalCloseError:
+    def close(mut self) raises SysError:
         """Close the TCP connection.
 
         Raises:
-            FatalCloseError: If close fails (excludes EBADF).
+            SysError: If close fails (excludes EBADF).
         """
         self.socket.close()
 
-    def shutdown(mut self) raises ShutdownEINVALError:
+    def shutdown(mut self) raises SysError:
         """Shutdown the TCP connection.
 
         Raises:
-            ShutdownEINVALError: If shutdown fails.
+            SysError: If shutdown fails with EINVAL.
         """
         self.socket.shutdown()
 
-    def teardown(deinit self) raises FatalCloseError:
+    def teardown(deinit self) raises SysError:
         """Teardown the connection on destruction.
 
         Raises:
-            FatalCloseError: If close fails during teardown.
+            SysError: If close fails during teardown.
         """
         self.socket^.teardown()
 
@@ -510,39 +435,6 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
 
     def remote_addr(self) -> TCPAddr[Self.network]:
         return self.socket.remote_address
-
-
-@fieldwise_init
-struct CreateConnectionError(Movable, Writable):
-    """Error variant for create_connection operations.
-    Can be CSocketError from socket creation or SocketConnectError from connect.
-    """
-
-    comptime type = Variant[CSocketError, SocketConnectError]
-    var value: Self.type
-
-    @implicit
-    def __init__(out self, var value: CSocketError):
-        self.value = value^
-
-    @implicit
-    def __init__(out self, var value: SocketConnectError):
-        self.value = value^
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[CSocketError]():
-            writer.write(self.value[CSocketError])
-        elif self.value.isa[SocketConnectError]():
-            writer.write(self.value[SocketConnectError])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 def create_connection(mut host: String, port: UInt16) raises -> TCPConnection[NetworkType.tcp4]:
@@ -558,15 +450,13 @@ def create_connection(mut host: String, port: UInt16) raises -> TCPConnection[Ne
     Raises:
         Error: If socket creation, name resolution, or connection fails.
         The original error propagates: `Socket.connect` raises a plain
-        `Error`, which the old `raises CreateConnectionError` signature
-        could not carry — that wrap never compiled, this path being dead
-        code until the client revived it.
+        `Error`, name resolution's among them.
     """
     var socket: Socket[TCPAddr[NetworkType.tcp4]]
     try:
         socket = Socket[TCPAddr[NetworkType.tcp4]]()
     except socket_err:
-        raise socket_err^
+        raise socket_err
 
     try:
         socket.connect(host, port)

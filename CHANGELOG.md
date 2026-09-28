@@ -46,6 +46,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `ListenConfig`'s `keep_alive` argument, which was stored and never read.
   NOTICE lists each.
 
+- **The fork's typed socket errors, replaced by one `SysError`**, about
+  2,960 lines. Each function in `lightbug_http.c.socket` raised one of 109
+  types, one per errno (`SendEAGAINError`, `BindEADDRINUSEError`, ...),
+  through 14 variants (`SendError`, `AcceptError`, ...), and returned
+  normally for an errno none of them named: `socket()` could hand back -1
+  as a descriptor, and `listen()` on a connected socket reported success.
+  Each now raises `lightbug_http.c.socket_error.SysError` whenever its
+  call fails, naming the call and carrying its errno, with
+  `would_block()`, `interrupted()`, `connection_aborted()` and
+  `address_in_use()` for what the server asks of one. `m0serve` and the
+  Mojo host serve as before, and a listener they cannot make is reported
+  with the call and its errno, such as `bind: Can't assign requested
+  address (errno 49)` on macOS. The `m0` wheel ships the fork's source, so
+  an application that catches one of these types, or names one, needs to
+  change: every per-errno type and variant; `FatalCloseError`,
+  `SocketAcceptError`, `SocketConnectError`, `SocketRecvfromError`,
+  `InvalidCloseErrorConversionError`, `CreateConnectionError`,
+  `BindFailedError`, `SocketCreationError`, `ListenFailedError` and
+  `ChunkedEncodingError`; `SocketGetsocknameError`, now `SocketNameError`;
+  and `Socket.accept`, `NoTLSListener.accept` and the `accept` function,
+  which nothing called (the event loop uses `accept_with_peer`). NOTICE
+  lists each. Found in review.
+
 - **`listen_and_serve` and `Server.serve` run the event loop, so SSE and
   WebSockets work through them.** They were a blocking accept loop of
   their own, the one README's WSGI example calls. It served one connection
@@ -72,6 +95,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   as above. NOTICE lists each.
 
 ### Fixed
+
+- **m0serve reads a command-line argument that is not UTF-8 instead of
+  crashing on it.** It cut `--name=value`, the positional `MODULE:ATTR`,
+  and the `PREFIX=` of `--static` and `--mount` with a slice that asserts
+  a UTF-8 character boundary, so an argument whose byte after the `=` or
+  `:` continued a multi-byte character -- a directory name in a legacy
+  encoding, say -- stopped the process on an assertion instead of serving
+  it or printing a usage error. m0serve now reads its command line by
+  bytes, with the same reader a Mojo host application uses, which already
+  did; the two refuse the same malformed lines in the same words.
+  `test_cli.mojo` gates each of the four. Found in review.
 
 - **m0serve refuses more than 126 mounts before it binds, and `--doctor`
   says so too.** Each mount is a lane of the loop's handler pool, which has
