@@ -12,10 +12,12 @@ format's definition), and this module is the only reader:
 Verification is a pure function of the grant, the keys, the clock and the
 session cookie, in that order of refusal: malformed, an unknown key, a bad
 signature (constant time), expired, then a session binding the cookie does
-not satisfy. The key states are `HmacSha256` values prepared once per pool
-thread (`GrantKeys.from_env`), so a verification costs the grant's own
-bytes and one SHA-256 of the cookie -- a microsecond -- and allocates
-nothing but the small strings it returns.
+not satisfy. All but the last are the signed envelope's, `SignedToken`,
+which `session.mojo` reads its cookie with too. The key states are
+`HmacSha256` values prepared once per pool thread (`GrantKeys.from_env`),
+so a verification costs the grant's own bytes and one SHA-256 of the
+cookie -- a microsecond -- and allocates nothing but the small strings it
+returns.
 
 Every field is read as bytes and never sliced with a codepoint-checked
 slice: the grant is request-derived, and SPEC G14 is why.
@@ -38,6 +40,11 @@ comptime GRANT_SIG_CHARS = 43
 """Length of the tag field: base64url of 32 bytes without padding."""
 comptime GRANT_SB_CHARS = 22
 """Length of the session-binding field: base64url of 16 bytes without padding."""
+comptime TOKEN_EXP_DIGITS = 12
+"""The most digits of expiry a signed token carries, grant or session: Unix
+seconds to the year 33658."""
+comptime TOKEN_MAX = 400
+"""The longest token either verifier reads; anything longer is malformed."""
 
 
 def base64url(data: Span[UInt8, _]) -> String:
@@ -187,6 +194,105 @@ def _is_b64url_byte(b: UInt8) -> Bool:
     )
 
 
+struct SignedToken(Movable):
+    """A signed token's envelope, read: `v1.<kid>.<exp>.` in front, `.<tag>`
+    last, and the tag base64url of an HMAC-SHA256 over everything before it.
+
+    A grant (`v1.<kid>.<exp>.<channel>.<sb>.<tag>`) and a session cookie
+    (`v1.<kid>.<exp>.<subject>.<tag>`, `session.mojo`) are this envelope
+    around fields of their own, and each verifier carried a copy of it until
+    2026-09-28. So is the order of refusal: malformed, an unknown key, a bad
+    signature, expired -- the signature BEFORE the expiry, so a token nobody
+    signed is never reported as merely old. A format reads its own fields
+    between the constructor and `check`, which keeps every malformed refusal
+    ahead of the key lookup.
+    """
+
+    var dots: List[Int]
+    """Where each `.` is: field i runs from `start(i)` to `end(i)`."""
+    var length: Int
+    var exp: Int64
+    """The expiry field, read: Unix seconds."""
+    var key: Int
+    """The index of the key whose tag matched, once `check` has passed;
+    -1 before."""
+    var well_formed: Bool
+    """Whether the envelope held: the length, exactly `fields` fields, `v1`,
+    an 8-character key id, 1 to `TOKEN_EXP_DIGITS` digits of expiry, and a
+    43-character base64url tag. False is `malformed`."""
+
+    def __init__(out self, token: Span[UInt8, _], fields: Int, min_length: Int):
+        self.dots = List[Int](capacity=fields - 1)
+        self.length = len(token)
+        self.exp = 0
+        self.key = -1
+        self.well_formed = False
+        var n = len(token)
+        if n < min_length or n > TOKEN_MAX:
+            return
+        for i in range(n):
+            if token[i] == UInt8(ord(".")):
+                if len(self.dots) == fields - 1:
+                    return
+                self.dots.append(i)
+        if len(self.dots) != fields - 1:
+            return
+        var version = token[0 : self.dots[0]]
+        if (
+            len(version) != 2
+            or version[0] != UInt8(ord("v"))
+            or version[1] != UInt8(ord("1"))
+        ):
+            return
+        if self.end(1) - self.start(1) != GRANT_KID_CHARS:
+            return
+        var exp_field = token[self.start(2) : self.end(2)]
+        if len(exp_field) < 1 or len(exp_field) > TOKEN_EXP_DIGITS:
+            return
+        var exp = Int64(0)
+        for b in exp_field:
+            if b < UInt8(ord("0")) or b > UInt8(ord("9")):
+                return
+            exp = exp * 10 + Int64(b - UInt8(ord("0")))
+        var tag = token[self.start(fields - 1) : n]
+        if len(tag) != GRANT_SIG_CHARS:
+            return
+        for b in tag:
+            if not _is_b64url_byte(b):
+                return
+        self.exp = exp
+        self.well_formed = True
+
+    def start(self, field: Int) -> Int:
+        """Where field `field` begins."""
+        return 0 if field == 0 else self.dots[field - 1] + 1
+
+    def end(self, field: Int) -> Int:
+        """Where field `field` ends: its dot, or the end of the token."""
+        return self.dots[field] if field < len(self.dots) else self.length
+
+    def check(
+        mut self, token: Span[UInt8, _], keys: List[GrantKey], now: Int64
+    ) -> String:
+        """Why a well-formed `token` is refused -- `unknown key`, `bad
+        signature`, `expired`, in that order -- or empty when it is not, and
+        `key` then names the key that signed it. The tag is compared in
+        constant time; the expiry is against the clock the caller gives."""
+        var last = len(self.dots)
+        var which = find_key(keys, token[self.start(1) : self.end(1)])
+        if which < 0:
+            return String("unknown key")
+        var signed = token[0 : self.dots[last - 1]]
+        var tag = token[self.start(last) : self.length]
+        var expected = base64url(Span(keys[which].mac.mac(signed)))
+        if not constant_time_equal(Span(expected.as_bytes()), tag):
+            return String("bad signature")
+        if now >= self.exp:
+            return String("expired")
+        self.key = which
+        return String("")
+
+
 def verify_grant(
     grant: Span[UInt8, _],
     keys: GrantKeys,
@@ -198,37 +304,12 @@ def verify_grant(
     `cookie` is the session cookie's value, or None when the request has
     none; a grant whose `sb` is `-` ignores it, any other `sb` requires it.
     """
-    var n = len(grant)
-    if n < 20 or n > 400:
+    # Six fields, five dots; the envelope is `SignedToken`'s to read.
+    var token = SignedToken(grant, 6, 20)
+    if not token.well_formed:
         return _refuse(String("malformed"))
-    # Six fields, five dots.
-    var dots = List[Int](capacity=5)
-    for i in range(n):
-        if grant[i] == UInt8(ord(".")):
-            if len(dots) == 5:
-                return _refuse(String("malformed"))
-            dots.append(i)
-    if len(dots) != 5:
-        return _refuse(String("malformed"))
-    var version = grant[0:dots[0]]
-    var kid = grant[dots[0] + 1:dots[1]]
-    var exp_field = grant[dots[1] + 1:dots[2]]
-    var channel = grant[dots[2] + 1:dots[3]]
-    var sb = grant[dots[3] + 1:dots[4]]
-    var sig = grant[dots[4] + 1:n]
-    var signed = grant[0:dots[4]]
-
-    if len(version) != 2 or version[0] != UInt8(ord("v")) or version[1] != UInt8(ord("1")):
-        return _refuse(String("malformed"))
-    if len(kid) != GRANT_KID_CHARS:
-        return _refuse(String("malformed"))
-    if len(exp_field) < 1 or len(exp_field) > 12:
-        return _refuse(String("malformed"))
-    var exp = Int64(0)
-    for b in exp_field:
-        if b < UInt8(ord("0")) or b > UInt8(ord("9")):
-            return _refuse(String("malformed"))
-        exp = exp * 10 + Int64(b - UInt8(ord("0")))
+    var channel = grant[token.start(3) : token.end(3)]
+    var sb = grant[token.start(4) : token.end(4)]
     if len(channel) < 1 or len(channel) > GRANT_CHANNEL_MAX:
         return _refuse(String("malformed"))
     for b in channel:
@@ -241,20 +322,10 @@ def verify_grant(
         for b in sb:
             if not _is_b64url_byte(b):
                 return _refuse(String("malformed"))
-    if len(sig) != GRANT_SIG_CHARS:
-        return _refuse(String("malformed"))
-    for b in sig:
-        if not _is_b64url_byte(b):
-            return _refuse(String("malformed"))
 
-    var which = keys.find(kid)
-    if which < 0:
-        return _refuse(String("unknown key"))
-    var expected = base64url(Span(keys.keys[which].mac.mac(signed)))
-    if not constant_time_equal(Span(expected.as_bytes()), sig):
-        return _refuse(String("bad signature"))
-    if now >= exp:
-        return _refuse(String("expired"))
+    var refused = token.check(grant, keys.keys, now)
+    if refused:
+        return _refuse(refused)
     if bound:
         if not cookie:
             return _refuse(String("no session cookie"))
