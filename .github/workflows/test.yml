@@ -38,6 +38,12 @@ jobs:
     # run can reach is a coin toss, so this one is left at roughly twice
     # the measured run, like the two smoke jobs below.
     timeout-minutes: 40
+    # The coverage this job's steps declare (SPEC F12: check-docs, the unit
+    # tests, the recorder's selftest, the fuzzer) is recorded here, and
+    # rendered and kept by the job's last two steps, as every job's is.
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: unit-tests-${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -152,6 +158,21 @@ jobs:
       # libpython discovery problem legible.
       - name: Check the embedded interpreter resolves
         run: uv run python -c "import django, sys; print(sys.version, django.__version__)"
+      # Last, and `always()`, as in every job that collects: they must
+      # follow every step that records, and a failed run's records are the
+      # interesting ones.
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-unit-tests-${{ matrix.os }}
+          path: ci-results.jsonl
+          if-no-files-found: ignore
 
   # aarch64, on every pull request rather than only at release time.
   #
@@ -174,6 +195,11 @@ jobs:
   wheel-aarch64:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 30
+    # The wheel smoke declares its rows' coverage (SPEC F12), recorded and
+    # kept here as in every job that runs it.
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: wheel-aarch64
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
@@ -185,6 +211,18 @@ jobs:
       - run: uv run poe build-all
       - name: Build and smoke test the aarch64 wheel
         run: uv run poe smoke-wheel
+      - name: Record the measurements
+        if: always()
+        run: |
+          python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+          python3 scripts/emit.py --summary "$M0_RESULTS" || true
+      - name: Upload the measurements
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-results-wheel-aarch64
+          path: ci-results.jsonl
+          if-no-files-found: ignore
 
   # The m0-postgres rows that need a real server (SPEC O10-O15). A separate
   # Linux-only job, the wheel-aarch64 / pid1 shape: job-level `runs-on`, no

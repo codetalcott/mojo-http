@@ -1696,8 +1696,9 @@ def check_ci_measurements_are_collected():
     Three ways it can lapse, all silent, and the first two are asked of
     each JOB (B16):
 
-    - a job runs tasks that record but sets no `M0_RESULTS`, so every write
-      is skipped;
+    - a job runs tasks that record -- a measurement, or a coverage
+      declaration (`--covers`, SPEC F12) -- but sets no `M0_RESULTS`, so
+      every write is skipped;
     - a job collects but never renders into its run summary or uploads its
       own `ci-results-*` artifact, so the file dies with the runner;
     - the recorder's own selftest stops running, so a regression that drops
@@ -1708,6 +1709,12 @@ def check_ci_measurements_are_collected():
     with `emit.py --render`, a flag emit.py does not have, from d23c945 on,
     so its summary was empty -- and this check, which then read test.yml
     whole, took six other jobs' `--summary` lines as that job's.
+
+    A coverage declaration counts because it is written the same way and
+    lost the same way. While only measurements counted, the unit-tests job
+    set no M0_RESULTS, so the declarations its steps run (check-docs', the
+    unit tests', the recorder selftest's) ran and recorded nothing, and so
+    did wheel-aarch64's copy of the wheel smoke's.
     """
     for problem in measurement_problems(
             *_texts("pyproject.toml", ".github/workflows/test.yml"), _recorders()):
@@ -1722,9 +1729,10 @@ def _recorders():
         and re.search(r"^\s*(?:from emit import|import emit\b)", p.read_text(), re.M))
 
 
-# A recording call: `scripts/emit.py METRIC VALUE ...`. `--covers` (a
-# coverage declaration), `--summary` and `--selftest` are not measurements.
-_RECORDS = re.compile(r"\bscripts/emit\.py[ \t]+(?!-)\S")
+# A recording call: `scripts/emit.py METRIC VALUE ...`, or `--covers ID`, a
+# coverage declaration (SPEC F12), which is written to the same file and
+# lost the same way without it. `--summary` and `--selftest` record nothing.
+_RECORDS = re.compile(r"\bscripts/emit\.py[ \t]+(?:--covers\b|(?!-)\S)")
 _RENDERS = re.compile(
     r"\bscripts/emit\.py --summary\b[^\n]*>>[ \t]*\"?\$\{?GITHUB_STEP_SUMMARY\b")
 
@@ -1766,12 +1774,12 @@ def measurement_problems(pyproject, workflow, recorders=()):
         if not env:
             if why:
                 problems.append(
-                    f"test.yml job `{job}` records measurements "
+                    f"test.yml job `{job}` records measurements or coverage "
                     f"({', '.join(why[:3])}{', ...' if len(why) > 3 else ''}) "
                     "but sets no M0_RESULTS. emit.py is a deliberate no-op "
                     "without it, so every one of those calls would run, exit 0 "
                     "and record nothing — with no failure and an identical job "
-                    "log, because the tasks still echo the number.")
+                    "log, because the tasks still echo what they measured.")
             continue
         if not _RENDERS.search(text):
             problems.append(
@@ -2339,8 +2347,10 @@ _JOB_LAPSES = [
 # A job that records must collect. By name, because which jobs record is the
 # fact under test: smoke-gateway's smokes call emit.py in their bodies, while
 # pid1's record from Python probes (`from emit import emit`) and name no
-# emit.py call at all -- a text scan of task bodies alone misses those.
-_ENV_LAPSES = ["smoke-gateway", "pid1"]
+# emit.py call at all -- a text scan of task bodies alone misses those -- and
+# unit-tests records coverage declarations and no measurement, which the
+# rule did not count until `--covers` was a record.
+_ENV_LAPSES = ["smoke-gateway", "pid1", "unit-tests"]
 
 
 def _whole_file_blind(workflow):
