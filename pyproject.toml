@@ -8731,9 +8731,30 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" $B/asset
 [ "$code" = "304" ] || fail "the file's own ETag produced $code, want 304"
 
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
+
+# SPEC J10: a file response whose HEAD the socket cannot take at once still
+# sends its file. The write-ready path finished such a head and reset the
+# slot with the file unsent. Pipelined requests to a client slower than the
+# server fill the send buffer at a head; a long Cache-Control makes every
+# head bigger than its file and than the kernel's send low-water mark, so
+# the stalls land on heads on macOS as well as Linux. Its own server, so the
+# HEAD check above keeps its 4 KB bound; no keep-alive cap, so one
+# connection carries all of them.
+long=$(python3 -c "print('public, max-age=60, x-pad=' + 'p' * 12000)")
+"$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8140 \
+  --static /assets/="$dir" --static-cache-control "$long" \
+  --max-keepalive-requests 0 > sendfile.log 2>&1 &
+pid=$!
+curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
+  || fail 'the pipelining server never became healthy'
+python3 scripts/pipelined_files_probe.py 8140 /assets/small.txt "$dir/small.txt" 1000 \
+  || fail 'a pipelined file response lost its file'
+
+kill $pid 2>/dev/null; wait $pid 2>/dev/null
 rm -rf "$dir" part.bin head.txt sendfile.log
 echo "smoke-sendfile OK"
 python3 scripts/emit.py --covers J1 --task smoke-sendfile
+python3 scripts/emit.py --covers J10 --task smoke-sendfile
 """
 
 [tool.poe.tasks.smoke-notes]

@@ -1218,6 +1218,14 @@
       "evidence": "`Smoke test zero-copy static file serving` (every PR) \u2014 `--static`"
     },
     {
+      "id": "J10",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "A file response whose head the socket cannot take at once still sends its file: the write-ready path that finishes the head pumps the file after it, as the eager path does",
+      "status": "verified",
+      "evidence": "`Smoke test zero-copy static file serving` (every PR) \u2014 1000 requests for a small `--static` file pipelined on one connection to a client that reads more slowly than the server answers, each head made 12 KB by a long `--static-cache-control` so the send buffer fills at a head on both kernels, and every response must arrive with its own file. Before the fix a head that needed a second send went straight to the keep-alive reset with the file unsent, and the client read the next head where the body belonged: at response 37 on macOS and 173 in the Linux container, every run. With 5000-byte files and short heads, 19 of 78 stalls fell on a head over 20 MB, because XNU's sendfile refuses below the send low-water mark"
+    },
+    {
       "id": "J2",
       "section": "J",
       "category": "J. Static file serving",

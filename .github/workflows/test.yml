@@ -672,7 +672,9 @@ jobs:
       # file served three times must arrive byte-exact while RSS stays
       # flat. Both platforms, because sendfile(2)'s signature and its
       # short-write reporting differ between them and a Darwin-only run
-      # would exercise half the branch.
+      # would exercise half the branch. Then pipelined file responses to a
+      # slow reader, which stall at a head: each must still send its file
+      # (SPEC J10).
       - name: Smoke test zero-copy static file serving
         run: uv run poe smoke-sendfile
       # The documentation site: the tree's own pages rendered by

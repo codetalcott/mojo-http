@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**292 capabilities: 268 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 268 verified, 261 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**293 capabilities: 269 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 269 verified, 262 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -245,6 +245,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | id | capability | status | evidence |
 |---|---|---|---|
 | J1 | Zero-copy `sendfile`, body never entering the process | verified | `Smoke test zero-copy static file serving` (every PR) — `--static` |
+| J10 | A file response whose head the socket cannot take at once still sends its file: the write-ready path that finishes the head pumps the file after it, as the eager path does | verified | `Smoke test zero-copy static file serving` (every PR) — 1000 requests for a small `--static` file pipelined on one connection to a client that reads more slowly than the server answers, each head made 12 KB by a long `--static-cache-control` so the send buffer fills at a head on both kernels, and every response must arrive with its own file. Before the fix a head that needed a second send went straight to the keep-alive reset with the file unsent, and the client read the next head where the body belonged: at response 37 on macOS and 173 in the Linux container, every run. With 5000-byte files and short heads, 19 of 78 stalls fell on a head over 20 MB, because XNU's sendfile refuses below the send low-water mark |
 | J2 | Byte range served as 206 with `Content-Range` | verified | `test_static.mojo:test_range_serves_206_with_content_range` (every PR) |
 | J3 | Unsatisfiable range answered 416 carrying the total | verified | `test_static.mojo:test_range_unsatisfiable_is_416_with_total` (every PR) |
 | J4 | `If-None-Match` takes precedence over a range | verified | `test_static.mojo:test_if_none_match_beats_range` (every PR) |

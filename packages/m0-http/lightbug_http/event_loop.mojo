@@ -1259,29 +1259,39 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 continue
 
             var remaining = len(slot_response[slot]) - slot_send_offset[slot]
-            if remaining <= 0:
-                # Head already drained: this readiness belongs to the
-                # file body, if one is still owed.
-                var file_owed = provision_pool.provisions[slot].body_fd_remaining
-                var pumped = _pump_body_fd(
-                    provision_pool.provisions[slot], fd_val
-                )
-                if pumped == BODY_FD_FATAL:
+            # Whether this readiness moved any bytes, head or file: the
+            # send deadline restarts on progress (`_arm_send_deadline`).
+            var moved = False
+            if remaining > 0:
+                var fd_desc = FileDescriptor(fd_val)
+                var sent: UInt
+                try:
+                    sent = send(
+                        fd_desc,
+                        Span(slot_response[slot])[slot_send_offset[slot]:],
+                        UInt(remaining),
+                        0,
+                    )
+                except send_err:
+                    if send_err.isa[SendEAGAINError]():
+                        backend.try_add_write_oneshot(fd_val)
+                        slot_read_armed[slot] = False
+                        continue
                     _close_slot(
                         backend, handler, slot, fd_val,
-                        slot_fds, fd_to_slot, provision_pool,
-                        active_count, metrics,
+                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                     )
                     continue
-                if pumped == BODY_FD_MORE:
-                    # The file moved: the client is still taking it, so its
-                    # send deadline starts again (`_arm_send_deadline`).
-                    if (
-                        slot_idle_deadline[slot] != 0
-                        and provision_pool.provisions[slot].body_fd_remaining
-                        < file_owed
-                    ):
+
+                slot_send_offset[slot] += Int(sent)
+                moved = sent > 0
+
+                if slot_send_offset[slot] < len(slot_response[slot]):
+                    # Bytes moved and more are owed: the send deadline starts
+                    # again (`_arm_send_deadline`). Only one already armed, so a
+                    # stream's zero deadline stays zero.
+                    if moved and slot_idle_deadline[slot] != 0:
                         _arm_send_deadline(
                             config, slot, slot_sse, slot_ws, slot_idle_deadline
                         )
@@ -1291,55 +1301,11 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                     except:
                         _close_slot(
                             backend, handler, slot, fd_val,
-                            slot_fds, fd_to_slot, provision_pool,
-                            active_count, metrics,
+                            slot_fds, fd_to_slot, provision_pool, active_count, metrics,
                             slot_sse, slot_ws, slot_ws_state,
                         )
                     continue
-                _after_send(
-                    backend, slot, fd_val,
-                    handler, config, server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset,
-                    slot_header_start,
-                    fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse, slot_ws, slot_ws_state,
-                    slot_read_armed, slot_idle_deadline,
-                )
-                _drain_pipelined(
-                    backend, slot, fd_val, handler, config,
-                    server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset,
-                    slot_header_start, fd_to_slot, provision_pool,
-                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                    slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache, offload,
-                )
-                continue
 
-            var fd_desc = FileDescriptor(fd_val)
-            var sent: UInt
-            try:
-                sent = send(
-                    fd_desc,
-                    Span(slot_response[slot])[slot_send_offset[slot]:],
-                    UInt(remaining),
-                    0,
-                )
-            except send_err:
-                if send_err.isa[SendEAGAINError]():
-                    backend.try_add_write_oneshot(fd_val)
-                    slot_read_armed[slot] = False
-                    continue
-                _close_slot(
-                    backend, handler, slot, fd_val,
-                    slot_fds, fd_to_slot, provision_pool, active_count, metrics,
-                    slot_sse, slot_ws, slot_ws_state,
-                )
-                continue
-
-            slot_send_offset[slot] += Int(sent)
-
-            if slot_send_offset[slot] >= len(slot_response[slot]):
                 # The partial-send completion of a streaming buffer: ack
                 # the PAYLOAD the drain recorded for it (the drain pass
                 # acked nothing, having sent only part). Not the buffer
@@ -1352,29 +1318,36 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                             offload.ack_owed_count += 1
                         offload.ack_owed[slot] += offload.ack_payload[slot]
                 offload.ack_payload[slot] = 0
-                _after_send(
-                    backend, slot, fd_val,
-                    handler, config, server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset,
-                    slot_header_start,
-                    fd_to_slot, provision_pool, active_count, metrics,
+
+            # The head is on the wire, drained just now or by an earlier
+            # readiness: a file body, if one is owed, follows it -- the
+            # ordering `_finish_response` keeps between the two transfers.
+            # A head that needed this path used to go straight to
+            # `_after_send`, which reset the slot for its next request with
+            # the file unsent: the client read a `Content-Length` promise
+            # and then the next response's head where the body belonged.
+            # It needs a send buffer full at the head, which a pipelined
+            # predecessor or a slow reader of `--static` files provides.
+            var file_owed = provision_pool.provisions[slot].body_fd_remaining
+            var pumped = _pump_body_fd(
+                provision_pool.provisions[slot], fd_val
+            )
+            if pumped == BODY_FD_FATAL:
+                _close_slot(
+                    backend, handler, slot, fd_val,
+                    slot_fds, fd_to_slot, provision_pool,
+                    active_count, metrics,
                     slot_sse, slot_ws, slot_ws_state,
-                    slot_read_armed, slot_idle_deadline,
                 )
-                _drain_pipelined(
-                    backend, slot, fd_val, handler, config,
-                    server_address, tcp_keep_alive,
-                    slot_fds, slot_response, slot_send_offset,
-                    slot_header_start, fd_to_slot, provision_pool,
-                    active_count, metrics, slot_sse, slot_ws, slot_ws_state,
-                    slot_read_armed, slot_idle_deadline,
-                    date_cache_sec, date_cache, offload,
-                )
-            else:
-                # Bytes moved and more are owed: the send deadline starts
-                # again (`_arm_send_deadline`). Only one already armed, so a
-                # stream's zero deadline stays zero.
-                if sent > 0 and slot_idle_deadline[slot] != 0:
+                continue
+            if pumped == BODY_FD_MORE:
+                # The response moved: the client is still taking it, so its
+                # send deadline starts again (`_arm_send_deadline`).
+                if slot_idle_deadline[slot] != 0 and (
+                    moved
+                    or provision_pool.provisions[slot].body_fd_remaining
+                    < file_owed
+                ):
                     _arm_send_deadline(
                         config, slot, slot_sse, slot_ws, slot_idle_deadline
                     )
@@ -1384,9 +1357,29 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
                 except:
                     _close_slot(
                         backend, handler, slot, fd_val,
-                        slot_fds, fd_to_slot, provision_pool, active_count, metrics,
+                        slot_fds, fd_to_slot, provision_pool,
+                        active_count, metrics,
                         slot_sse, slot_ws, slot_ws_state,
                     )
+                continue
+            _after_send(
+                backend, slot, fd_val,
+                handler, config, server_address, tcp_keep_alive,
+                slot_fds, slot_response, slot_send_offset,
+                slot_header_start,
+                fd_to_slot, provision_pool, active_count, metrics,
+                slot_sse, slot_ws, slot_ws_state,
+                slot_read_armed, slot_idle_deadline,
+            )
+            _drain_pipelined(
+                backend, slot, fd_val, handler, config,
+                server_address, tcp_keep_alive,
+                slot_fds, slot_response, slot_send_offset,
+                slot_header_start, fd_to_slot, provision_pool,
+                active_count, metrics, slot_sse, slot_ws, slot_ws_state,
+                slot_read_armed, slot_idle_deadline,
+                date_cache_sec, date_cache, offload,
+            )
 
     # New connections, after every event of the connections already held
     # (ACCEPT_BATCH): at most one batch per door per pass, whether this
