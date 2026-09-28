@@ -47,7 +47,7 @@ from .wire import (
     encode_float8,
     encode_int8,
 )
-from .lib import FORMAT_BINARY, FORMAT_TEXT
+from .lib import FORMAT_BINARY, FORMAT_TEXT, refuse_nul
 
 
 comptime NULL_OFFSET: Int = -1
@@ -64,9 +64,10 @@ struct Params(Movable, Copyable, Sized):
     """
 
     var _bytes: List[UInt8]
-    """Every parameter's encoded value, back to back. Text values carry a
-    NUL terminator they do not count in their length, so a value can be
-    passed to an entry point that takes no length if one is ever needed."""
+    """Every parameter's encoded value, back to back, each followed by a NUL
+    its length does not count. Load-bearing for a TEXT-format value
+    (`literal`): libpq ignores its length and reads it with `strlen`, so
+    the terminator is what ends it."""
 
     var _offsets: List[Int]
     var _lengths: List[Int]
@@ -121,14 +122,23 @@ struct Params(Movable, Copyable, Sized):
         self._push(Span(encode_bool(value)), OID_BOOL, FORMAT_BINARY)
 
     def text(mut self, value: String):
-        """Text, sent as `text`.
+        """Text, sent binary as `text`.
 
-        Text format, not binary: for a string the two are the same bytes,
-        and text is what an application reading the wire expects to see.
-        The bytes go as given — the connection is `client_encoding=UTF8`
-        and a Mojo `String` is UTF-8, so no transcoding is needed or done.
+        Binary, because it is framed by its length. `text`'s binary form is
+        the same bytes as its text form, but libpq reads a TEXT-format
+        value with `strlen`, whatever length it is handed, so a NUL ended
+        it there: `admin`, a NUL and `x` was bound as `admin` and matched
+        the admin row. Sent whole, the NUL reaches the server, which
+        refuses it (`CHARACTER_NOT_IN_REPERTOIRE`) as it refuses any byte
+        that is not UTF-8 — the connection is `client_encoding=UTF8`, and
+        the bytes go as given.
+
+        A statement prepared with `OID_UNKNOWN` in this position has the
+        type the server chose, and a binary value is read in that type's
+        binary form: give such a position `literal`, which the server
+        types.
         """
-        self._push(value.as_bytes(), OID_TEXT, FORMAT_TEXT)
+        self._push(value.as_bytes(), OID_TEXT, FORMAT_BINARY)
 
     def bytes(mut self, value: Span[UInt8, _]):
         """Arbitrary bytes, sent binary as `bytea`.
@@ -146,7 +156,7 @@ struct Params(Movable, Copyable, Sized):
         self._oids.append(OID_UNKNOWN)
         self._formats.append(FORMAT_TEXT)
 
-    def literal(mut self, value: String):
+    def literal(mut self, value: String) raises:
         """Text the SERVER types, for a type this package does not encode.
 
         Sent as `unknown`, which Postgres resolves from context: a
@@ -158,7 +168,13 @@ struct Params(Movable, Copyable, Sized):
 
         The cost is the cast site: in a bare `SELECT $1` with nothing to
         infer from, an `unknown` parameter comes out as text.
+
+        Text format, since the server parses it — which is also why a NUL
+        is refused here: libpq reads a text-format value with `strlen`, so
+        one would end the value where it stands, and the server would
+        coerce what was left.
         """
+        refuse_nul(value.as_bytes(), "a literal")
         self._push(value.as_bytes(), OID_UNKNOWN, FORMAT_TEXT)
 
     def oid_at(self, index: Int) raises -> Int:

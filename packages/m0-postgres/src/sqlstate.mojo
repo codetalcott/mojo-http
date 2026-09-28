@@ -36,6 +36,14 @@ comptime CONNECTION_FAILURE = "08006"
 """The connection broke mid-statement. With `ADMIN_SHUTDOWN`, the pair a
 pool thread meets when the server restarts under it."""
 
+# --- Class 22 — data exception ---
+comptime CHARACTER_NOT_IN_REPERTOIRE = "22021"
+"""A NUL, or bytes that are not the connection's encoding, inside text. The
+server's answer to a NUL in a `text` parameter, and the state this package
+gives the NULs it refuses before libpq — in SQL text, an identifier, a
+`literal`, a connection string — since libpq reads each as a C string and
+would end it at the NUL rather than refuse it."""
+
 # --- Class 23 — integrity constraint violation ---
 comptime NOT_NULL_VIOLATION = "23502"
 comptime FOREIGN_KEY_VIOLATION = "23503"

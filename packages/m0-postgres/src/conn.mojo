@@ -51,7 +51,7 @@ from .lib import (
     PQTRANS_INTRANS,
     PgLib,
     as_cstr,
-    c_string,
+    c_text,
     read_cstr,
 )
 from .params import ParamArrays, Params
@@ -143,7 +143,7 @@ struct Connection(Movable):
         assembled the whole conninfo itself and means it.
         """
         var safe = redact(url)
-        var conninfo = c_string(url)
+        var conninfo = c_text(url, "the connection string")
         var handle = lib.connectdb(as_cstr(conninfo))
         # `conninfo` is named and used after the call on every path, which is
         # what keeps libpq from parsing a freed buffer (lib.mojo, rule 2).
@@ -236,7 +236,7 @@ struct Connection(Movable):
         concatenated query cannot be written without noticing which function
         was reached for.
         """
-        var text = c_string(sql)
+        var text = c_text(sql, "the SQL text")
         var res = self._lib.exec(self._handle, as_cstr(text))
         var held = len(text)
         _ = held
@@ -251,7 +251,7 @@ struct Connection(Movable):
         same protection `m0-sqlite`'s `prepare` builds by hand. Parameters
         are `$1`, `$2`, … in the order they were added.
         """
-        var text = c_string(sql)
+        var text = c_text(sql, "the SQL text")
         var arrays = ParamArrays(params)
         var res = self._lib.exec_params(
             self._handle,
@@ -286,8 +286,8 @@ struct Connection(Movable):
         """
         var name = "m0_" + String(self._next_statement)
         self._next_statement += 1
-        var cname = c_string(name)
-        var text = c_string(sql)
+        var cname = c_text(name, "the statement name")
+        var text = c_text(sql, "the SQL text")
         var type_array = List[Int32](capacity=len(oids))
         for o in oids:
             type_array.append(Int32(o))
@@ -329,7 +329,7 @@ struct Connection(Movable):
                     + " and was given OID " + String(got)
                     + " [" + statement.sql + "]"
 )
-        var cname = c_string(statement.name)
+        var cname = c_text(statement.name, "the statement name")
         var arrays = ParamArrays(params)
         var res = self._lib.exec_prepared(
             self._handle,
@@ -366,7 +366,7 @@ struct Connection(Movable):
         name is frequently application input and `LISTEN` takes no
         parameters.
         """
-        var raw = c_string(name)
+        var raw = c_text(name, "the name to quote")
         var quoted = self._lib.escape_identifier(
             self._handle, as_cstr(raw), len(name.as_bytes())
 )

@@ -23,6 +23,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `test_vtab.mojo` now fills the heap between the bind and the step: 0 of
   100 rows arrived in 30 runs of 30 on the 1.7.0 code.
 
+- **A NUL inside a `text()` parameter is refused instead of matching the
+  value cut short at it** (SPEC O10). libpq reads a text-format parameter
+  with `strlen`, whatever length it is handed, so `admin`, a NUL and `x`
+  was bound as `admin` and matched the `admin` row. `Params.text` now sends
+  binary, framed by its length, and Postgres refuses the NUL with SQLSTATE
+  22021 (`CHARACTER_NOT_IN_REPERTOIRE`, now exported). What libpq takes
+  only as a C string is refused before the call, under the same state:
+  SQL text, a statement name, a name `quote_identifier` quotes, a
+  connection string, and `Params.literal`, which stays text so the server
+  can type it and so now raises. Where a statement was prepared with
+  `OID_UNKNOWN` and the server typed that position as something other
+  than text, give it `literal()`, not `text()`: a binary value is read in
+  that type's binary form.
+
 ## [1.7.0] — 2026-09-27
 
 MAX's parallel runtime does not survive a fork, so the Mojo host and

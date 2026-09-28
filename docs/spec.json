@@ -2245,9 +2245,9 @@
       "id": "O10",
       "section": "O",
       "category": "O. Storage packages",
-      "capability": "Parameters are bound, not interpolated: a value carrying a quote and a semicolon arrives whole, every binding method round-trips through a real column, and NULL stays distinguishable from an empty value \u2014 which it is not once both have length zero",
+      "capability": "Parameters are bound, not interpolated: a value carrying a quote and a semicolon arrives whole, every binding method round-trips through a real column, and NULL stays distinguishable from an empty value \u2014 which it is not once both have length zero. A text value arrives whole, so a NUL inside one is the server's refusal (SQLSTATE 22021), never a match against the value cut short at it: libpq reads a text-format parameter with `strlen`, whatever length it is handed, so `text()` travels binary. SQL text, a statement name, a name to quote, a `literal` and a connection string, each of which libpq reads as a C string, are refused before the call when they carry one, under the same state",
       "status": "verified",
-      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 `test_postgres.mojo`, in a schema named for the connection's own backend pid so parallel runs cannot collide"
+      "evidence": "`Test m0-postgres against a real server` (every PR) \u2014 `test_postgres.mojo`, in a schema named for the connection's own backend pid so parallel runs cannot collide. Before the fix, `admin`, a NUL and `x` matched the `admin` row"
     },
     {
       "id": "O11",
