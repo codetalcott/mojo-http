@@ -1039,12 +1039,19 @@ help = "Test m0-postgres against a real server (M0_PG_TEST_URL; fails if absent)
 shell = """
 out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
+# MALLOC_PERTURB_ has glibc fill memory as it frees it (and memory it hands
+# out with the complement), so a read after free reads 0xA5, never what the
+# last owner left. O16's span arm, test_a_raw_cell_keeps_its_result_alive,
+# needs that on Linux, the leg CI runs this on: it catches a span read after
+# its PGresult was cleared only when the freed bytes changed, and without
+# the fill that depends on glibc taking the block back. macOS has no glibc
+# and ignores the variable, which is why it goes on the tests, not the build.
 for f in packages/m0-postgres/test/test_lib.mojo \
          packages/m0-postgres/test/test_postgres.mojo \
          packages/m0-postgres/test/test_notify.mojo; do
   name=$(basename "$f" .mojo)
   mojo build -I packages/m0-postgres "$f" -o "$out/$name" || exit 1
-  "$out/$name" || exit 1
+  MALLOC_PERTURB_=165 "$out/$name" || exit 1
 done
 python3 scripts/emit.py --covers O9 --task test-postgres-server
 python3 scripts/emit.py --covers O10 --task test-postgres-server
@@ -1121,15 +1128,16 @@ bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
-# The app refuses to start without a signing key of at least 32 bytes and
-# a password (m0_http.login), so the dev runner supplies obviously-fake
-# ones and lets the environment win. Set M0_NOTES_KEY and
-# M0_NOTES_PASSWORD to run it as anything but a demo.
+# The app refuses to start without a signing key of at least 32 bytes, a
+# password and M0_NOTES_SECURE (m0_http.login), so the dev runner supplies
+# obviously-fake ones, and 0 for plain http, and lets the environment win.
+# Set M0_NOTES_KEY and M0_NOTES_PASSWORD to run it as anything but a demo.
 [tool.poe.tasks.serve-fragment-notes]
 help = "Run the fragment notes example (the notes resource as an htmx app, behind a login) on :8080"
 shell = """
 M0_NOTES_KEY=${M0_NOTES_KEY:-dev-only-not-a-secret-0123456789abcdef} \
 M0_NOTES_PASSWORD=${M0_NOTES_PASSWORD:-notes} \
+M0_NOTES_SECURE=${M0_NOTES_SECURE:-0} \
 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo
 """
 
@@ -8250,7 +8258,7 @@ cmd = "python3 scripts/host_sabotage.py"
 # every server on its own port: SO_REUSEPORT lets a stray one answer for a
 # port, which fakes a pass or a failure.
 [tool.poe.tasks.smoke-host]
-help = "The Mojo host: the bus at one worker, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals, a respawned producer's ids, a raising make refused, the pool lane and the overlapping shutdown bounds"
+help = "The Mojo host: the bus at one worker, SIGPIPE survived, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals, a respawned producer's ids, a raising make refused, the pool lane and the overlapping shutdown bounds"
 shell = """
 out=$(mktemp -d)
 pid=
@@ -8309,6 +8317,40 @@ stop() {
 start 8781 one
 res=$(python3 scripts/host_probe.py streams 8781 2 2 1 2>&1) || fail "one worker: $res"
 grep -q '^\\[worker' "$out/one.log" && fail "one worker: the host forked"
+
+# --- SIGPIPE costs a connection, never the process (SPEC A25) --------------
+# The same single process. A built binary keeps SIGPIPE's default action,
+# which ends the process, and the kernel raises it on a send to a client
+# that has reset; `mojo run` ignores the signal itself, so only a BUILT
+# server shows it. The signal first -- the arm that tells the two builds
+# apart on both legs -- then the shape that killed it in practice (10 of
+# 10 on macOS): a client asking for a 300 ms answer and resetting 50 ms
+# in, so the answer is written to a reset socket.
+kill -PIPE $pid
+sleep 0.3
+if ! kill -0 $pid 2>/dev/null; then
+  wait $pid
+  fail "SIGPIPE: kill -PIPE ended the server (exit $?; 141 is the signal's default action)"
+fi
+curl --silent --fail --max-time 5 http://127.0.0.1:8781/health > /dev/null \
+  || fail "SIGPIPE: no answer after kill -PIPE"
+python3 - 8781 <<'PY' || fail "SIGPIPE: the resetting client could not connect"
+import socket, struct, sys, time
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
+s.sendall(b"GET /slow?ms=300 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
+time.sleep(0.05)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+s.close()  # an RST, while the answer is still being computed
+time.sleep(0.45)
+PY
+if ! kill -0 $pid 2>/dev/null; then
+  wait $pid
+  fail "SIGPIPE: a client that reset before its answer was written ended the server (exit $?)"
+fi
+curl --silent --fail --max-time 5 http://127.0.0.1:8781/health > /dev/null \
+  || fail "SIGPIPE: no answer after a client reset"
+echo "SIGPIPE: kill -PIPE and a client resetting before its answer, both survived"
+
 stop "one worker"
 [ "$rc" -eq 0 ] || fail "one worker: SIGTERM exited $rc, not 0"
 grep -q 'abandoned' "$out/one.log" && fail "one worker: the drain abandoned the producer instead of stopping it"
@@ -8551,6 +8593,7 @@ echo "smoke-host OK"
 python3 scripts/emit.py host.overrun_exit_s "$overrun_s" --unit s --limit 12 --task smoke-host
 python3 scripts/emit.py host.pool_health_ms "$pool_ms" --unit ms --limit 100 --task smoke-host
 python3 scripts/emit.py host.overlap_exit_s "$overlap_s" --unit s --limit 6 --task smoke-host
+python3 scripts/emit.py --covers A25 --task smoke-host
 python3 scripts/emit.py --covers E21 --task smoke-host
 python3 scripts/emit.py --covers E22 --task smoke-host
 python3 scripts/emit.py --covers E23 --task smoke-host
@@ -8983,7 +9026,7 @@ grep -q 'M0_NOTES_PASSWORD is not set' refusal.log || fail 'the refusal did not 
 # a different one. The app says so (max_workers) and the Mojo host refuses
 # the count before it binds. In the background with a deadline: a binary
 # that served instead would never exit.
-M0_PORT=8095 M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > refusal.log 2>&1 &
+M0_PORT=8095 M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > refusal.log 2>&1 &
 rpid=$!
 i=0
 while kill -0 $rpid 2>/dev/null; do
@@ -8999,7 +9042,7 @@ grep -q 'listening' refusal.log && fail 'M0_WORKERS=2 was refused after the port
 # The same list would be N lists under M0_THREADS -- every loop builds its
 # own state -- and the app never said a word about threads: `max_threads`
 # defaults to `max_workers`, so the one answer refuses both (SPEC E29).
-M0_PORT=8095 M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > refusal.log 2>&1 &
+M0_PORT=8095 M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > refusal.log 2>&1 &
 rpid=$!
 i=0
 while kill -0 $rpid 2>/dev/null; do
@@ -9013,7 +9056,7 @@ code=$?
 grep -q 'M0_THREADS=2' refusal.log || fail 'the loop-count refusal did not name M0_THREADS'
 grep -q 'listening' refusal.log && fail 'M0_THREADS=2 was refused after the port was bound'
 
-M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > fragment.log 2>&1 &
+M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > fragment.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
 B=http://localhost:8094

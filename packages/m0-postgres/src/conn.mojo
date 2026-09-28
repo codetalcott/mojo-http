@@ -113,7 +113,8 @@ struct Connection(Movable):
 
     var _handle: Int
     var _lib: PgLib
-    """This connection's own table, and the `dlopen` handle inside it.
+    """This connection's own library: the `dlopen` handle, and the table
+    (`fns`) every call below goes through.
 
     Held here rather than shared, because `PgLib` owns an `OwnedDLHandle`
     that must not be duplicated and must outlive every call made through
@@ -144,7 +145,7 @@ struct Connection(Movable):
         """
         var safe = redact(url)
         var conninfo = c_text(url, "the connection string")
-        var handle = lib.connectdb(as_cstr(conninfo))
+        var handle = lib.fns.connectdb(as_cstr(conninfo))
         # `conninfo` is named and used after the call on every path, which is
         # what keeps libpq from parsing a freed buffer (lib.mojo, rule 2).
         var parsed_bytes = len(conninfo)
@@ -153,14 +154,14 @@ struct Connection(Movable):
                 "libpq could not allocate a connection for " + safe
                 + " (" + String(parsed_bytes) + " bytes of conninfo)"
 )
-        if lib.status(handle) != CONNECTION_OK:
+        if lib.fns.status(handle) != CONNECTION_OK:
             # libpq quotes pieces of a string it could not parse — half an
             # unencoded password, measured — so its text goes through the
             # same redaction as the URL it is printed beside.
             var detail = redact_message(
-                String(read_cstr(lib.errmsg(handle)).strip()), url
+                String(read_cstr(lib.fns.errmsg(handle)).strip()), url
             )
-            lib.finish(handle)
+            lib.fns.finish(handle)
             raise Error(
                 "could not connect to " + safe + ": " + detail
 )
@@ -179,7 +180,7 @@ struct Connection(Movable):
 
     def __deinit__(deinit self):
         if self._handle != 0:
-            self._lib.finish(self._handle)
+            self._lib.fns.finish(self._handle)
 
     # --- State -------------------------------------------------------------
 
@@ -191,15 +192,15 @@ struct Connection(Movable):
         between statements reads OK here until the next statement fails,
         which is why a guard asks this AND branches on the SQLSTATE.
         """
-        return self._handle != 0 and self._lib.status(self._handle) == CONNECTION_OK
+        return self._handle != 0 and self._lib.fns.status(self._handle) == CONNECTION_OK
 
     def server_version(self) -> Int:
         """The server's version as an integer, `170006` for 17.6."""
-        return self._lib.server_version(self._handle)
+        return self._lib.fns.server_version(self._handle)
 
     def backend_pid(self) -> Int:
         """The server-side process id — what a `NOTIFY` reports as its source."""
-        return self._lib.backend_pid(self._handle)
+        return self._lib.fns.backend_pid(self._handle)
 
     def socket_fd(self) -> Int:
         """The connection's file descriptor, for a poll that waits on it.
@@ -208,7 +209,7 @@ struct Connection(Movable):
         shutdown pipe, and a notification is a readable event rather than a
         thread spinning.
         """
-        return self._lib.socket(self._handle)
+        return self._lib.fns.socket(self._handle)
 
     def in_transaction(self) -> Bool:
         """Whether a transaction is open, INCLUDING a failed one.
@@ -218,12 +219,12 @@ struct Connection(Movable):
         as "not in a transaction" is how a connection gets handed back to a
         pool holding locks.
         """
-        var st = self._lib.transaction_status(self._handle)
+        var st = self._lib.fns.transaction_status(self._handle)
         return st == PQTRANS_INTRANS or st == PQTRANS_INERROR
 
     def errmsg(self) -> String:
         """The most recent error on this connection, as libpq worded it."""
-        return String(read_cstr(self._lib.errmsg(self._handle)).strip())
+        return String(read_cstr(self._lib.fns.errmsg(self._handle)).strip())
 
     # --- Statements --------------------------------------------------------
 
@@ -237,11 +238,11 @@ struct Connection(Movable):
         was reached for.
         """
         var text = c_text(sql, "the SQL text")
-        var res = self._lib.exec(self._handle, as_cstr(text))
+        var res = self._lib.fns.exec(self._handle, as_cstr(text))
         var held = len(text)
         _ = held
         self._raise_on_error(res, sql)
-        self._lib.clear(res)
+        self._lib.fns.clear(res)
 
     def query(
         mut self, sql: String, params: Params, binary: Bool = False
@@ -253,7 +254,7 @@ struct Connection(Movable):
         """
         var text = c_text(sql, "the SQL text")
         var arrays = ParamArrays(params)
-        var res = self._lib.exec_params(
+        var res = self._lib.fns.exec_params(
             self._handle,
             as_cstr(text),
             len(params),
@@ -269,7 +270,7 @@ struct Connection(Movable):
         var held = len(text) + len(arrays.values)
         _ = held
         self._raise_on_error(res, sql)
-        return Result(res, self._lib.result_lib(), binary)
+        return Result(res, self._lib.fns, binary)
 
     def prepare(mut self, sql: String, oids: List[Int]) raises -> Prepared:
         """Prepare a statement on the server under a generated name.
@@ -291,7 +292,7 @@ struct Connection(Movable):
         var type_array = List[Int32](capacity=len(oids))
         for o in oids:
             type_array.append(Int32(o))
-        var res = self._lib.prepare(
+        var res = self._lib.fns.prepare(
             self._handle,
             as_cstr(cname),
             as_cstr(text),
@@ -301,7 +302,7 @@ struct Connection(Movable):
         var held = len(cname) + len(text) + len(type_array)
         _ = held
         self._raise_on_error(res, sql)
-        self._lib.clear(res)
+        self._lib.fns.clear(res)
         return Prepared(name^, sql, oids.copy())
 
     def query_prepared(
@@ -331,7 +332,7 @@ struct Connection(Movable):
 )
         var cname = c_text(statement.name, "the statement name")
         var arrays = ParamArrays(params)
-        var res = self._lib.exec_prepared(
+        var res = self._lib.fns.exec_prepared(
             self._handle,
             as_cstr(cname),
             len(params),
@@ -343,7 +344,7 @@ struct Connection(Movable):
         var held = len(cname) + len(arrays.values)
         _ = held
         self._raise_on_error(res, statement.sql)
-        return Result(res, self._lib.result_lib(), binary)
+        return Result(res, self._lib.fns, binary)
 
     def close_prepared(mut self, statement: Prepared) raises:
         """Release a prepared statement on the server.
@@ -367,7 +368,7 @@ struct Connection(Movable):
         parameters.
         """
         var raw = c_text(name, "the name to quote")
-        var quoted = self._lib.escape_identifier(
+        var quoted = self._lib.fns.escape_identifier(
             self._handle, as_cstr(raw), len(name.as_bytes())
 )
         var held = len(raw)
@@ -377,7 +378,7 @@ struct Connection(Movable):
                 "PQescapeIdentifier refused `" + name + "`: " + self.errmsg()
 )
         var out = read_cstr(quoted)
-        self._lib.freemem(quoted)
+        self._lib.fns.freemem(quoted)
         return out^
 
     # --- Transactions ------------------------------------------------------
@@ -429,11 +430,11 @@ struct Connection(Movable):
         offsets are asserted against the real header by this package's own
         layout check, the way `m0-sqlite`'s virtual-table offsets are.
         """
-        if self._lib.consume_input(self._handle) == 0:
+        if self._lib.fns.consume_input(self._handle) == 0:
             raise Error(
                 describe("consumeInput", String(""), self.errmsg())
 )
-        var note = self._lib.notifies(self._handle)
+        var note = self._lib.fns.notifies(self._handle)
         if note == 0:
             return None
         var relname = Pointer[Int, MutUntrackedOrigin](
@@ -448,7 +449,7 @@ struct Connection(Movable):
         var out = Notification(read_cstr(relname), pid, read_cstr(extra))
         # libpq allocated it; PQfreemem is the only correct free, because on
         # some platforms the library's allocator is not the caller's.
-        self._lib.freemem(note)
+        self._lib.fns.freemem(note)
         return out^
     def reset(mut self) raises:
         """Reconnect, and restore every channel this connection was listening to.
@@ -458,8 +459,8 @@ struct Connection(Movable):
         to nothing, so a listener that reset without this would run forever
         delivering no notifications and logging no error.
         """
-        self._lib.reset(self._handle)
-        if self._lib.status(self._handle) != CONNECTION_OK:
+        self._lib.fns.reset(self._handle)
+        if self._lib.fns.status(self._handle) != CONNECTION_OK:
             raise Error(
                 "could not reconnect to " + self.url_for_logs + ": "
                 + self.errmsg()
@@ -477,7 +478,7 @@ struct Connection(Movable):
         """
         if self._handle == 0:
             return
-        self._lib.finish(self._handle)
+        self._lib.fns.finish(self._handle)
         self._handle = 0
 
     # --- Errors ------------------------------------------------------------
@@ -494,7 +495,7 @@ struct Connection(Movable):
             raise Error(
                 describe_in("exec", String(""), self.errmsg(), context)
             )
-        var status = self._lib.result_status(res)
+        var status = self._lib.fns.result_status(res)
         if (
             status == PGRES_COMMAND_OK
             or status == PGRES_TUPLES_OK
@@ -502,10 +503,10 @@ struct Connection(Movable):
         ):
             return
         var state = read_cstr(
-            self._lib.result_errfield(res, PG_DIAG_SQLSTATE)
+            self._lib.fns.result_errfield(res, PG_DIAG_SQLSTATE)
 )
-        var message = String(read_cstr(self._lib.result_errmsg(res)).strip())
-        self._lib.clear(res)
+        var message = String(read_cstr(self._lib.fns.result_errmsg(res)).strip())
+        self._lib.fns.clear(res)
         raise Error(describe_in("exec", state, message, context))
 
 

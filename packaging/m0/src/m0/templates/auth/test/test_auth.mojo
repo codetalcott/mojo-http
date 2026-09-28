@@ -27,6 +27,7 @@ comptime PASSWORD = "correct horse"
 def _items() raises -> Items:
     _ = setenv("APP_KEY", "test-key-0123456789abcdef0123456789abcdef", True)
     _ = setenv("APP_PASSWORD", PASSWORD, True)
+    _ = setenv("APP_SECURE", "0", True)
     return Items(login_from_env())
 
 

@@ -22,6 +22,7 @@ from std.memory import unsafe_memcpy
 from lightbug_http.service import HTTPService
 from lightbug_http.c.sendfile import send_file
 from lightbug_http.c.socket import close as close_fd
+from lightbug_http.c.process import ignore_sigpipe
 from lightbug_http.socket import EOF, FatalCloseError, SocketAcceptError, SocketClosedError, SocketRecvError
 from lightbug_http.utils.error import CustomError
 from std.time import perf_counter_ns
@@ -1041,6 +1042,9 @@ struct Server(Movable):
         Raises:
             ServerError: If accept fails or critical connection handling errors occur.
         """
+        # Before the first write, as the event loop does: a client that
+        # resets costs its connection, not the process (SPEC A25).
+        ignore_sigpipe()
         var provision_pool = ProvisionPool(self.config.max_connections, self.config)
 
         while True:
