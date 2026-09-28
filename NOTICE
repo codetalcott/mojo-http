@@ -714,6 +714,44 @@ lightbug_http
         place, and two threads alternated while two starved
         (docs/notes/a-slice-keeps-the-gil.md).
 
+      - header.mojo (2026-09-28): `parse_request_headers` refuses a second
+        `Host` or `Transfer-Encoding` line where it meets it, as it refused
+        a second `Content-Length` line (SPEC B10, B11). `set_bytes` keeps
+        the last of a repeated field, so the request was served on the last
+        line: a proxy routing on the first `Host` disagreed with an
+        application reading the last, and two `chunked` lines (`chunked,
+        chunked` combined, RFC 9110 §5.3) read as one.
+
+      - header.mojo, http/response.mojo, cookie/response_cookie_jar.mojo
+        (2026-09-28): the head writers refuse CR, LF and NUL (SPEC G1, G2).
+        `Headers.write_latin1_to` drops a header whose name or value holds
+        one, `encode` and `encode_into` write an empty reason phrase in
+        place of one that does, and the cookie jar drops such a
+        `Set-Cookie` line; the text forms (`write_to`) apply the same rules,
+        so a printed response is the one sent. The refusal had lived only
+        in m0-wsgi, so every head built in Mojo went out uninspected.
+        `span_breaks_header_line` and `header_value_kind` are new beside
+        `span_is_ascii`, reading a short span with two overlapping loads
+        rather than a byte loop; the second answers the transcode question
+        in the same pass, which keeps the writer within about 10 ns of its
+        old cost on an eight-header head.
+
+      - cookie/response_cookie_jar.mojo, http/response.mojo (2026-09-28):
+        `ResponseCookieJar.write_latin1_to` is new, and `encode` and
+        `encode_into` write the jar through it (SPEC G17). They wrote it
+        through `write_to`, which puts a String's UTF-8 on the wire as it
+        stands, so a `Set-Cookie` value was the one header not transcoded
+        to ISO-8859-1: a WSGI application's `caf\xe9` went out as
+        `caf\xc3\xa9`, an ASGI application's own `caf\xc3\xa9` as
+        `caf\xc3\x83\xc2\xa9`.
+
+      - c/process.mojo (2026-09-28): `executable_path` builds its String
+        from the bytes the OS returned, through the new `path_from_bytes`
+        (SPEC E35). It appended `chr()` of each byte, which encodes a byte
+        at or above 0x80 as a two-byte codepoint, so a binary under
+        `/Users/josé/` answered `josÃ©`, and every exec `--spawn-workers`
+        made of it failed with ENOENT.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
