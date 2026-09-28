@@ -362,6 +362,14 @@
       "evidence": "`Smoke test a client that resets its connection` (every PR) \u2014 m0serve with `--idle-timeout 0`, so no deadline can give back a slot a reset leaves behind, and `--metrics`: each of the three shapes is reset with `SO_LINGER 0`, and `http_active_connections` must be one higher while the connection is open and back to its earlier count within 3 s of the reset. Fails without the fix on Linux only (review record B12): epoll reported EPOLLERR as `EV_ERROR`, which the loop skips as kqueue's failed registration, and the one-shot write or edge-triggered read the RST arrived on was spent with it. Measured in the Linux container before the fix, every shape held its slot, and a stalled file response still held the slot and both its descriptors 20 s after the reset, while SIGTERM took the full 5 s drain (0.04 s after). kqueue reports a reset as `EV_EOF`, so on macOS this passes either way"
     },
     {
+      "id": "C10",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A connection that is not being read costs the loop nothing: a slot waiting to write -- its response stalled on a client that is not reading, in memory or from a `--static` file -- or whose request is out on a pool thread or an executor holds no read interest, so a client that half-closed, or sent its next request, and then stopped reading is not reported again until the slot reads, and what it sent is answered then",
+      "status": "verified",
+      "evidence": "`Smoke test connections that stop reading` (every PR) \u2014 `scripts/slot_lifecycle_probe.py` meters the server's CPU for 2 s in four shapes, each built so the loop has armed its read interest before the request arrives: a 16 MiB echo stalled on its client, which then half-closes; a 16 MiB `--static` file with the next request pipelined behind it, unread; and a request on the executor, half-closed and pipelined. Each must stay under half a CPU second, and everything the client asked for must then arrive whole. A spinning child must read as spinning first, so the meter is checked before it is trusted. Fails without the fix on macOS only (review record R4): kqueue's read filter is level triggered, stayed registered beside the write one-shot and was never removed for an offloaded request, so every wait reported the same bytes or EOF \u2014 1.97\u20132.01 CPU seconds in 2 in each shape, against 0.00 for a request on the executor with nothing pending; the write one-shot now drops the read filter in the same `kevent` call, and an offloaded slot's read event drops it until the completion. Each half sabotaged alone fails its own two shapes. epoll's write one-shot replaces its read interest and its reads are edge triggered, so Linux passes either way. The backend contract is also `test_slot_lifecycle.mojo:test_a_write_wait_holds_no_read_interest`, against the real multiplexer on each OS"
+    },
+    {
       "id": "D1",
       "section": "D",
       "category": "D. Graceful shutdown and restart",
@@ -864,6 +872,14 @@
       "capability": "The documentation site: the tree's own pages rendered and served by the server, `llms.txt` at the root, a Markdown twin beside every page",
       "status": "verified",
       "evidence": "`Smoke test the documentation site` (every PR) \u2014 built by `scripts/docsite.py`, served through `--static` with `apps/site` behind it; every sitemap URL answers as HTML with the twin it advertises, the root text files name the site's pages by absolute URL, the sitemap goes out as XML, and the slash redirect and HTML 404 come from the application"
+    },
+    {
+      "id": "F18",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "A stream is one response to the access log and the metrics: recorded once, when its head lands, however its frames go out",
+      "status": "verified",
+      "evidence": "`Smoke test connections that stop reading` (every PR) \u2014 a chunked 8 MiB `/stream` and a `/ws/flood` WebSocket, each read by a client that stalls first so their frames finish through the write-ready path, must leave exactly one `--access-log` record each; before the fix (review record R3) they left 5 and 2, each frame the write-ready path finished being recorded as a response of its own, counted by `--metrics` and timed as the stream's age, and a chunked stream recorded once more when its terminator landed. The count is `test_slot_lifecycle.mojo:test_a_stream_is_recorded_once`"
     },
     {
       "id": "G1",

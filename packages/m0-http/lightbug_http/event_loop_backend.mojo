@@ -56,10 +56,14 @@ trait EventLoopBackend:
         ...
 
     def add_read(mut self, fd: Int) raises:
-        """Register fd for edge-triggered read events (connection socket).
+        """Register fd for read events (connection socket).
 
-        kqueue: EV_ADD
-        epoll:  EPOLLIN | EPOLLET
+        The two differ, and every read path must satisfy the stricter:
+        kqueue: EV_ADD, LEVEL triggered (no EV_CLEAR) -- bytes left unread
+                are reported again by the next wait
+        epoll:  EPOLLIN | EPOLLRDHUP | EPOLLET, edge triggered -- bytes
+                left unread raise no further event until a re-add (ADD, or
+                MOD on an fd already registered) regenerates one
         """
         ...
 
@@ -68,10 +72,13 @@ trait EventLoopBackend:
         ...
 
     def add_write_oneshot(mut self, fd: Int) raises:
-        """Register fd for a one-shot write-ready event.
+        """Register fd for a one-shot write-ready event IN PLACE OF its read
+        interest, on both backends: a slot waiting to write reads nothing
+        until `add_read` restores it (R4).
 
-        kqueue: EV_ADD | EV_ONESHOT on EVFILT_WRITE
-        epoll:  EPOLLOUT | EPOLLET | EPOLLONESHOT
+        kqueue: EV_ADD | EV_ONESHOT on EVFILT_WRITE, and EV_DELETE on
+                EVFILT_READ, in one kevent call
+        epoll:  EPOLLOUT | EPOLLET | EPOLLONESHOT (the MOD replaces the mask)
         """
         ...
 

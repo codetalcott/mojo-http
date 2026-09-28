@@ -837,6 +837,27 @@ lightbug_http
         discarded, so a reply taken in part lost its tail and misframed
         every frame after it, and one refused whole was dropped (I31).
 
+      - c/kqueue_backend.mojo, c/kqueue.mojo (2026-09-28): the write
+        one-shot deletes the fd's read filter in the same `kevent` call
+        (`kevent_register_pair`, which forgives the ENOENT of a delete
+        that finds nothing), so a write one-shot replaces the read
+        interest on both backends, as epoll's MOD always did. The read
+        filter is level triggered and stayed, and a slot waiting on a
+        client that had half-closed or pipelined was reported readable by
+        every wait: the loop at a full core (SPEC C10).
+
+      - event_loop.mojo (2026-09-28): per-slot lifecycle helpers own the
+        resets of `slot_read_armed` and `slot_idle_deadline` (`_arm_reads`,
+        `_rearm_reads`, `_stop_reads`, `_await_write`, `_begin_request`,
+        `_end_request`, `_stream_idle`, `_arm_ws_linger`, `_ws_linger`,
+        `_record_response`, `_farewell_streams`), in place of some forty
+        call sites. An offloaded slot's read event drops its read interest
+        until the completion (C10); `_arm_reads` leaves a slot waiting to
+        write alone, where a WebSocket resume on epoll replaced the pending
+        write one-shot with a read (R1); a response is recorded once, not
+        again for every stream frame the write-ready path finishes (F18);
+        and a frame that lands no longer zeroes a WebSocket's close linger.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

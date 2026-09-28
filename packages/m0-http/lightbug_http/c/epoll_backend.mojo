@@ -187,8 +187,10 @@ struct EpollBackend(ConstructibleBackend):
             pass
 
     def add_write_oneshot(mut self, fd: Int) raises:
-        """One-shot write-ready event.
+        """One-shot write-ready event, in place of the fd's read interest.
 
+        The MOD replaces the whole mask, so the read interest goes with it
+        -- the contract both backends now keep (`EventLoopBackend`).
         EPOLLONESHOT disarms the fd after any event fires. After send
         completes, add_read() re-arms with MOD (not ADD) to restore
         read events for keep-alive.

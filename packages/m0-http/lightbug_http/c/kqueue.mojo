@@ -124,6 +124,29 @@ def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises:
         raise Error("kevent_register_one failed, errno: " + String(errno))
 
 
+def kevent_register_pair(kq: FileDescriptor, first: kevent_t, second: kevent_t) raises:
+    """Submit two kevent changes in ONE syscall, forgiving the second a
+    delete of nothing.
+
+    kevent applies a changelist in order and, with no eventlist to report
+    into, stops at the first change that fails and returns its errno -- so
+    when the call fails with ENOENT, the first change has taken effect and
+    the second found nothing to delete. No EV_ADD returns ENOENT, which is
+    what makes it the one failure safe to forgive. The caller is
+    `KqueueBackend.add_write_oneshot`, whose second change drops a read
+    filter that may already be gone.
+    """
+    var cl = stack_allocation[2, kevent_t]()
+    cl[unsafe_offset=0] = first
+    cl[unsafe_offset=1] = second
+    var result = _kevent(Int32(kq.value), cl, c_int(2), None, c_int(0), None)
+    if result == -1:
+        var errno = get_errno()
+        if errno == errno.ENOENT:
+            return
+        raise Error("kevent_register_pair failed, errno: " + String(errno))
+
+
 def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
     """Submit kevent changes without polling for events.
 
