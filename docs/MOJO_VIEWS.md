@@ -205,7 +205,7 @@ the identity.
 wrote the same way by hand:
 
 ```mojo
-var login = Login.from_env("APP", "shop-session")   # APP_KEY, APP_PASSWORD
+var login = Login.from_env("APP", "shop-session")   # APP_KEY, APP_PASSWORD, APP_SECURE
 
 var session = st.login.session_of(req)                # a view's first lines
 if not session.ok:
@@ -216,10 +216,15 @@ if refused:
 ```
 
 - `Login.from_env(PREFIX, cookie)` reads `PREFIX_KEY` (`LOGIN_KEY_MIN`
-  bytes at least; `openssl rand -hex 32` makes one) and `PREFIX_PASSWORD`, with `PREFIX_KEY_PREV`, `PREFIX_USER`,
-  `PREFIX_TTL` and `PREFIX_SECURE` (`1` or `0`) optional, and raises
-  naming what is missing or malformed. Read it in `main` before `serve` and exit 78 on the error, so
+  bytes at least; `openssl rand -hex 32` makes one), `PREFIX_PASSWORD` and
+  `PREFIX_SECURE`, with `PREFIX_KEY_PREV`, `PREFIX_USER` and `PREFIX_TTL`
+  optional, and raises naming what is missing or malformed. Read it in `main` before `serve` and exit 78 on the error, so
   `--doctor` refuses what the run would.
+- `PREFIX_SECURE` is stated, never assumed: `1` wherever the application
+  is served over HTTPS, so the session cookie carries `Secure`, and `0`
+  over plain http such as `http://localhost`. The server cannot see the
+  scheme a proxy terminated, and a cookie without `Secure` behind an HTTPS
+  redirect travels in clear on a visitor's first `http://` request.
 - `sign_in(user, password)` is the credential check and the session in one
   call: None for the wrong pair, else `.session` (the subject and CSRF
   token a page renders) and `set_cookie(resp)`. `sign_out(resp)` expires

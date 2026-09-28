@@ -92,7 +92,9 @@ def test_the_storage_package_rides_and_opens_its_library() raises:
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
 """
-APP_ENV = {"M0_NOTES_KEY": "0123456789abcdef0123456789abcdef", "M0_NOTES_PASSWORD": "pw"}
+# The copied notes app's login: plain http here, so `SECURE` says 0.
+APP_ENV = {"M0_NOTES_KEY": "0123456789abcdef0123456789abcdef", "M0_NOTES_PASSWORD": "pw",
+           "M0_NOTES_SECURE": "0"}
 
 
 def fail(msg):

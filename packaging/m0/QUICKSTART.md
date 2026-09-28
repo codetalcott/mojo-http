@@ -38,7 +38,7 @@ shop/
 `--template live` writes another: a producer thread that pushes its whole
 state to every open tab over Server-Sent Events, with Datastar. `--template
 auth` writes the `views` list behind a login, a CSRF token on every write,
-and prints the two variables it will not start without.
+and prints the variables it will not start without.
 
 ## 2. Build and serve
 

@@ -1121,15 +1121,16 @@ bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
 help = "Run the notes API example on :8080 (M0_PORT to change)"
 cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo"
 
-# The app refuses to start without a signing key of at least 32 bytes and
-# a password (m0_http.login), so the dev runner supplies obviously-fake
-# ones and lets the environment win. Set M0_NOTES_KEY and
-# M0_NOTES_PASSWORD to run it as anything but a demo.
+# The app refuses to start without a signing key of at least 32 bytes, a
+# password and M0_NOTES_SECURE (m0_http.login), so the dev runner supplies
+# obviously-fake ones, and 0 for plain http, and lets the environment win.
+# Set M0_NOTES_KEY and M0_NOTES_PASSWORD to run it as anything but a demo.
 [tool.poe.tasks.serve-fragment-notes]
 help = "Run the fragment notes example (the notes resource as an htmx app, behind a login) on :8080"
 shell = """
 M0_NOTES_KEY=${M0_NOTES_KEY:-dev-only-not-a-secret-0123456789abcdef} \
 M0_NOTES_PASSWORD=${M0_NOTES_PASSWORD:-notes} \
+M0_NOTES_SECURE=${M0_NOTES_SECURE:-0} \
 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo
 """
 
@@ -8881,7 +8882,7 @@ grep -q 'M0_NOTES_PASSWORD is not set' refusal.log || fail 'the refusal did not 
 # a different one. The app says so (max_workers) and the Mojo host refuses
 # the count before it binds. In the background with a deadline: a binary
 # that served instead would never exit.
-M0_PORT=8095 M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > refusal.log 2>&1 &
+M0_PORT=8095 M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > refusal.log 2>&1 &
 rpid=$!
 i=0
 while kill -0 $rpid 2>/dev/null; do
@@ -8897,7 +8898,7 @@ grep -q 'listening' refusal.log && fail 'M0_WORKERS=2 was refused after the port
 # The same list would be N lists under M0_THREADS -- every loop builds its
 # own state -- and the app never said a word about threads: `max_threads`
 # defaults to `max_workers`, so the one answer refuses both (SPEC E29).
-M0_PORT=8095 M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > refusal.log 2>&1 &
+M0_PORT=8095 M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > refusal.log 2>&1 &
 rpid=$!
 i=0
 while kill -0 $rpid 2>/dev/null; do
@@ -8911,7 +8912,7 @@ code=$?
 grep -q 'M0_THREADS=2' refusal.log || fail 'the loop-count refusal did not name M0_THREADS'
 grep -q 'listening' refusal.log && fail 'M0_THREADS=2 was refused after the port was bound'
 
-M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD ./notes_app > fragment.log 2>&1 &
+M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > fragment.log 2>&1 &
 pid=$!
 trap 'kill $pid 2>/dev/null' EXIT
 B=http://localhost:8094
