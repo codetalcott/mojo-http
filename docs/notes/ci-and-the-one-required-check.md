@@ -158,9 +158,12 @@ one.
 Two costs are larger than any rebalancing, and no job's to fix by moving
 steps. Every step whose task depends on `build-serve` relinks `bin/m0serve`
 before it runs, about 8.5 seconds each, though its job built the binary
-first: 44 steps, about six minutes a leg across the jobs. And the `--doctor`
-smoke waits out an 8-second watchdog for each configuration that serves:
-seven of them, 56 of its 77 seconds.
+first: 44 steps, about six minutes a leg across the jobs. The `--doctor`
+smoke waited out an 8-second watchdog for each configuration that serves,
+seven of them, 56 of its 77 seconds, until review record CI1: it now polls
+until the server answers and allows it 2 seconds more, and an application
+that answers once and then exits proves on every run that the watchdog
+still reads such a server as its exit code, not as served.
 
 No job `needs:` another, and the smokes used to: that gate put `unit-tests`
 on the front of every run and caught nothing (the comment on `smoke` names

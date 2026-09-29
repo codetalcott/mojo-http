@@ -138,6 +138,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   layout guard. By their measured times that puts both jobs at about 16.5
   min cold on ubuntu, and each is capped at 35. `poe test-all` runs the
   same tasks as before.
+- **`poe smoke-doctor` takes half as long.** To tell a configuration the
+  server accepts from one it refuses, it waited a fixed 8 s for each of the
+  seven that serve. It now polls until the server answers and allows it 2 s
+  more, so a server that answers and then dies is still read as its exit
+  code, and a new control row, an application that answers once and then
+  exits 3, fails the smoke if the watchdog ever reads it as served. The
+  task went from 70 s to 33 on an Apple-silicon Mac.
 - **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
   phase stamp, `fail()`, a server watched until it answers, a free port,
   an SSE reader and a WebSocket client, each proven by

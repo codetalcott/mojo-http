@@ -3140,6 +3140,7 @@ port=$(free_port)
 # server's own output in doctor.log.
 json=$SMOKE_DIR/doctor.json.log
 served=$SMOKE_DIR/doctor.served
+silent=$SMOKE_DIR/doctor.silent
 
 # The property that gives --doctor its value: for the SAME arguments, the
 # doctor's exit code equals the server's. A diagnostic that reports "fine"
@@ -3153,22 +3154,41 @@ served=$SMOKE_DIR/doctor.served
 # So it is backgrounded under a watchdog, and "still running when the
 # watchdog fired" is what exit 0 means on the doctor's side.
 #
+# The watchdog polls until the server answers -- any HTTP answer: no
+# configuration here names --health-path, so /health is the application's
+# 404 -- then allows it GRACE seconds, and fires only if it is STILL ALIVE
+# after them. It waited a fixed 8 s until 2026-09-29, 56 of the smoke's
+# 77 s with seven serving rows, though each answered within a second. The
+# grace is what the fixed wait was for: a server that answers and then
+# dies must read as its exit code, never as served, and the
+# `answer_then_exit` row below proves the watchdog still sees one. A
+# refused configuration exits and is reaped by the `wait` below without an
+# answer, so no marker is written for one; a server still alive and still
+# silent after READY seconds is a failure of its own.
+#
 # NOT `timeout`: that is GNU coreutils and the macOS runners do not ship
 # it. A missing command exits 127, which reads as a server refusal rather
 # than as a broken harness -- this smoke's first CI run duly reported
 # "server exits 127" for a configuration that serves perfectly, on the one
 # platform the author could not reproduce (homebrew coreutils was on the
 # development machine). Nothing else in this file uses `timeout`.
-equiv() {
-  desc="$1"; shift
-  "$srv" --doctor "$@" > "$json" 2>/dev/null; doc=$?
-  rm -f "$served"
+GRACE=2
+READY=30
+serve() {
+  rm -f "$served" "$silent"
   spawn doctor.log "$srv" "$@" --port $port
   spid=$pid
-  # The watchdog fires only if the server is STILL ALIVE at the deadline.
-  # A refused configuration has exited and been reaped by the `wait` below
-  # long before then, so the marker is never written for one.
-  ( sleep 8
+  ( end=$(($(date +%s) + READY))
+    until curl --silent --max-time 2 --output /dev/null "http://127.0.0.1:$port/health"; do
+      kill -0 "$spid" 2>/dev/null || exit 0
+      if [ "$(date +%s)" -ge "$end" ]; then
+        : > "$silent"
+        kill -TERM "$spid" 2>/dev/null
+        exit 0
+      fi
+      sleep 0.2
+    done
+    sleep $GRACE
     if kill -0 "$spid" 2>/dev/null; then
       : > "$served"
       kill -TERM "$spid" 2>/dev/null
@@ -3177,7 +3197,13 @@ equiv() {
   wait "$spid"; real=$?
   kill "$wpid" 2>/dev/null
   wait "$wpid" 2>/dev/null || true
+  [ -f "$silent" ] && fail "$desc: the server neither answered nor exited within ${READY}s"
   [ -f "$served" ] && real=0
+}
+equiv() {
+  desc="$1"; shift
+  "$srv" --doctor "$@" > "$json" 2>/dev/null; doc=$?
+  serve "$@"
   [ "$doc" = "$real" ] || fail "$desc: doctor exits $doc, server exits $real"
   python3 -c "import json,sys; json.load(open('$json'))" \
     || fail "$desc: --doctor did not print valid JSON"
@@ -3190,6 +3216,14 @@ if d['ok'] != ($doc == 0):
     sys.exit('ok=%r disagrees with exit %d' % (d['ok'], $doc))
 " || fail "$desc: the JSON verdict disagrees with the exit code"
 }
+
+# The watchdog's control: this application answers its first request and
+# exits 3 a fifth of a second later (apps/wsgi_bare/answer_then_exit). A
+# watchdog that read it as served would pass every row below that serves
+# whatever the server did after its first answer.
+desc='answer, then exit'
+serve answer_then_exit:application --app-dir apps/wsgi_bare
+[ "$real" = 3 ] || fail "$desc: the watchdog read a server that answered, then exited 3, as exit $real"
 
 # Serves. The zero-config default must be visible here, because it is the
 # thing a person runs --doctor to find out.
