@@ -1255,7 +1255,7 @@
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Datastar frames are the SDK's own: every conformance case the Datastar SDK ships at the version `m0-datastar` pins \u2014 its get-cases and its post-case, vendored byte for byte with each file hashed \u2014 is produced by the package's builders and judged by the SDK's own `compare-sse.sh`, which lets datalines of different keys arrive in any order and nothing else: multi-line `signals` go out one dataline per line, `remove` mode carries no `elements` line, and `execute_script` writes its `attributes`",
       "status": "verified",
-      "evidence": "`Run unit tests` (every PR) \u2014 `poe check-datastar-sdk`, inside `test-all`, refuses fixtures from any tag but the one `consts.VERSION` pins and any vendored file whose hash has changed, and fails by name on a fixture field it does not map; `poe sabotage-datastar-sdk`, inside `test-all` too, reverts each of the three rules in a copy of the package and each is caught by the case it breaks. Before the gate the package passed 14 of the 19 get-cases"
+      "evidence": "`Run the shim tests and the compile gates` (every PR) \u2014 `poe check-datastar-sdk`, inside `test-all`, refuses fixtures from any tag but the one `consts.VERSION` pins and any vendored file whose hash has changed, and fails by name on a fixture field it does not map; `poe sabotage-datastar-sdk`, inside `test-all` too, reverts each of the three rules in a copy of the package and each is caught by the case it breaks. Before the gate the package passed 14 of the 19 get-cases"
     },
     {
       "id": "I28",
