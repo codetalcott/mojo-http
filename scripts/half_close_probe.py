@@ -25,7 +25,8 @@ usage: half_close_probe.py PORT
 """
 import socket
 import sys
-import traceback
+
+from probelib import phase, stamp
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 ROUNDS = 15
@@ -38,27 +39,14 @@ CHUNKED = (b"POST /health HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
            b"Connection: close\r\n\r\n%x\r\n%s\r\n0\r\n\r\n" % (len(BODY), BODY))
 
 
-# Which phase is running, for the crash handler below. A traceback names the
-# CALL that raised -- here `attempt`, which every shape below shares -- and
-# never the PHASE being proven. The 2026-08-30 CI failure cost two
-# investigations to exactly that distinction; apps/asgi_bare/ws_probe.py
-# carries the original of this comment. The distinction matters most here:
-# `attempt` runs half-closed AND as its own control, so "a reset in attempt"
-# reads identically whether the fix regressed or the server is simply down.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("half_close_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+# Which phase is running, for the crash handler. A traceback names the CALL
+# that raised -- here `attempt`, which every shape below shares -- and never
+# the PHASE being proven. The 2026-08-30 CI failure cost two investigations
+# to exactly that distinction; apps/asgi_bare/ws_probe.py carries the
+# original of this comment. The distinction matters most here: `attempt`
+# runs half-closed AND as its own control, so "a reset in attempt" reads
+# identically whether the fix regressed or the server is simply down.
+stamp("half_close_probe: FAIL")
 
 
 def attempt(payload, half):

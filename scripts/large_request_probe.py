@@ -19,7 +19,8 @@ usage: large_request_probe.py PORT
 import socket
 import sys
 import time
-import traceback
+
+from probelib import phase, stamp
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 
@@ -29,27 +30,14 @@ SIZES = (4000, 8192, 8200, 12000, 20000, 31000)
 OVERSIZED = 40000
 
 
-# Which phase is running, for the crash handler below. All three phases
-# funnel through `send`, so a traceback naming its recv or sendall says
-# which CALL raised and never which PHASE was being proven -- and the
-# phases here mean opposite things (a size that must be ANSWERED versus one
-# that must be REFUSED). Two investigations of the 2026-08-30 CI failure
-# were lost to that distinction; apps/asgi_bare/ws_probe.py carries the
-# original of this comment.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("large_request_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+# Which phase is running, for the crash handler. All three phases funnel
+# through `send`, so a traceback naming its recv or sendall says which CALL
+# raised and never which PHASE was being proven -- and the phases here mean
+# opposite things (a size that must be ANSWERED versus one that must be
+# REFUSED). Two investigations of the 2026-08-30 CI failure were lost to
+# that distinction; apps/asgi_bare/ws_probe.py carries the original of this
+# comment.
+stamp("large_request_probe: FAIL")
 
 
 def request_of(total):

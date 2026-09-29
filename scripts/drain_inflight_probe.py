@@ -26,7 +26,8 @@ import signal
 import socket
 import sys
 import time
-import traceback
+
+from probelib import fail, phase, stamp
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1])
@@ -38,26 +39,13 @@ SLOW_MS = int(sys.argv[3]) if len(sys.argv) > 3 else 1500
 LIMIT = SLOW_MS / 1000.0 + 1.5
 
 
-# Which phase is running, for the crash handler below. The two assertions
-# here fail in the same recv/kill calls but mean opposite things: an
-# in-flight request DROPPED by the drain, versus one answered whose
-# keep-alive connection then held the drain to its deadline. A traceback
-# names the call and not the claim. apps/asgi_bare/ws_probe.py carries the
-# original of this comment.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("drain_inflight_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
+# Which phase is running, for the crash handler. The two assertions here fail
+# in the same recv/kill calls but mean opposite things: an in-flight request
+# DROPPED by the drain, versus one answered whose keep-alive connection then
+# held the drain to its deadline. A traceback names the call and not the
+# claim. apps/asgi_bare/ws_probe.py carries the original of this comment. A
+# `fail()` line is the finding alone, on stderr beside the crash line.
+stamp("drain_inflight_probe: FAIL", fail="{msg}", stream=sys.stderr)
 
 
 def main() -> int:
@@ -77,14 +65,12 @@ def main() -> int:
     while b"\r\n\r\n" not in data:
         chunk = s.recv(65536)
         if not chunk:
-            print("connection closed before the response arrived", file=sys.stderr)
-            return 1
+            fail("connection closed before the response arrived")
         data += chunk
     answered = time.time()
     head = data.split(b"\r\n", 1)[0]
     if not head.startswith(b"HTTP/1.1 200"):
-        print(f"in-flight request answered with {head!r}, want 200", file=sys.stderr)
-        return 1
+        fail(f"in-flight request answered with {head!r}, want 200")
     print(
         f"in-flight request answered {answered - start:.2f}s after it was sent"
         f" ({answered - signalled:.2f}s after SIGTERM)"
@@ -106,15 +92,10 @@ def main() -> int:
     except OSError:
         pass
     else:
-        print(f"server still alive {exited:.2f}s after the request was sent", file=sys.stderr)
-        return 1
+        fail(f"server still alive {exited:.2f}s after the request was sent")
     if exited > LIMIT:
-        print(
-            f"server exited {exited:.2f}s after the request was sent, limit {LIMIT:.2f}s"
-            " -- the answered keep-alive connection is holding the drain open",
-            file=sys.stderr,
-        )
-        return 1
+        fail(f"server exited {exited:.2f}s after the request was sent, limit {LIMIT:.2f}s"
+             " -- the answered keep-alive connection is holding the drain open")
     print(f"server exited {exited:.2f}s after the request was sent ({exited - (answered - start):.2f}s after answering)")
     return 0
 

@@ -41,9 +41,10 @@ import statistics
 import sys
 import threading
 import time
-import traceback
 import urllib.error
 import urllib.request
+
+from probelib import phase, stamp
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8099
 # Sized to ~200 ms each on a 2026 laptop: 64 KB is ~22 us a digest and 1 KB
@@ -58,20 +59,7 @@ BASE = "http://127.0.0.1:%d" % PORT
 # Both ratios come out of the same two helpers, so an unhandled reset in
 # either names the call and not the route being proven. Same stamp, same
 # reason, as scripts/pipeline_probe.py.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("pool_parallelism_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("pool_parallelism_probe: FAIL")
 
 
 def fetch(mode, timeout=300.0):

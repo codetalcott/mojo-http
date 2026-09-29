@@ -33,27 +33,15 @@ this probe see a 413 where a naive one sees only a broken pipe.
 import socket
 import time
 import sys
-import traceback
+
+from probelib import phase, stamp
 
 
-# Which phase is running, for the crash handler below. A traceback names the
-# CALL that raised -- here `attempt`, which both phases share -- and never the PHASE being proven.
-# apps/asgi_bare/ws_probe.py carries the original of this comment and the
-# 2026-08-30 failure that motivated it.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("chunked overhead FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+# Which phase is running, for the crash handler. A traceback names the CALL
+# that raised -- here `attempt`, which both phases share -- and never the
+# PHASE being proven. apps/asgi_bare/ws_probe.py carries the original of this
+# comment and the 2026-08-30 failure that motivated it.
+stamp("chunked overhead FAIL")
 
 
 def attempt_split(port, chunks, first_frames):

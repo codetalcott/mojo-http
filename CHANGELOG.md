@@ -541,6 +541,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   timeout was reset by every heartbeat. `demo_probe.py` names a refused
   WebSocket upgrade; it used to die of `ValueError('too many values to
   unpack')`.
+- **The last twenty-one probes on `scripts/probelib.py`**: the raw-socket
+  probes of `smoke-shutdown`, `smoke-pipelining`, `smoke-early-413`,
+  `smoke-body-timeout` and the other HTTP/1.1 smokes, the response-head
+  and chunked keep-alive probes of the WSGI and ASGI smokes,
+  `smoke-ramp`'s, `probe-pool-fairness`'s, and the `pid1` job's two
+  docker probes. Each prints what it printed, on the stream it printed it
+  on. Every probe but `apps/ws_echo/ws_probe.py`, which stays inline as
+  `poe check-phase-stamps`' example of that form, now takes its phase
+  stamp from the library. `pool_fairness_probe.py` waits for its server
+  through the library's `wait_healthy`: its own poller, answered with an
+  empty body, asked again at once, about 10,700 times a second against a
+  server that answers 101, where the library's asks 19.
 - **A supervisor, and what an application runs before its loop, survive
   SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
   which a supervisor never enters: m0serve's under `--workers` or
