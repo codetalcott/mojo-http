@@ -143,6 +143,29 @@ def test_seed_is_kept_when_no_flag_names_it() raises:
     assert_true(opts.access_log)
 
 
+def test_a_copy_of_the_options_owns_its_lists() raises:
+    """`parse_args` starts from `seed.copy()` and appends to the copy's lists,
+    so a copy must own them: rewriting or growing one leaves the original
+    alone. The copy and the move are the compiler's."""
+    var seed = _seed()
+    seed.mount_prefixes.append(String("/api"))
+    seed.reload_dirs.append(String("/src"))
+    var copied = seed.copy()
+    assert_equal(len(copied.mount_prefixes), 1)
+    assert_equal(len(copied.reload_dirs), 1)
+    copied.mount_prefixes[0] = String("/other")
+    copied.reload_dirs.append(String("/more"))
+    copied.host = String("10.0.0.9")
+    assert_equal(seed.mount_prefixes[0], "/api")
+    assert_equal(len(seed.reload_dirs), 1)
+    assert_equal(seed.host, "0.0.0.0")
+    var moved = copied^
+    assert_equal(len(moved.mount_prefixes), 1)
+    assert_equal(moved.mount_prefixes[0], "/other")
+    assert_equal(len(moved.reload_dirs), 2)
+    assert_equal(moved.host, "10.0.0.9")
+
+
 def test_equals_form_is_accepted() raises:
     var opts = _parse([String("m.wsgi"), String("--port=9000"), String("--host=127.0.0.1")])
     assert_equal(opts.port, 9000)
@@ -186,6 +209,38 @@ def test_missing_value_at_the_end_is_an_error() raises:
 
 def test_boolean_flag_refuses_a_value() raises:
     assert_true(_fails([String("m.wsgi"), String("--metrics=yes")]))
+
+
+def _with_byte(before: String, byte: Int, after: String) -> String:
+    """`before`, one raw byte, then `after`: an argument that is not UTF-8,
+    which nothing stops argv from carrying."""
+    var b = List[UInt8]()
+    for c in before.as_bytes():
+        b.append(c)
+    b.append(UInt8(byte))
+    for c in after.as_bytes():
+        b.append(c)
+    return String(unsafe_from_utf8=Span(b))
+
+
+def test_an_argument_that_is_not_utf8_is_read_not_trapped() raises:
+    """`argv` is bytes. `parse_args` cut `--name=value` with a
+    codepoint-checked slice, so a value opening with a byte that continues
+    a UTF-8 sequence trapped the process, where the Mojo host's copy of the
+    same loop cut by bytes and read it. One reader now (`m0_http.cmdline`);
+    the positional's `:` and the `=` of `--static` and `--mount` are cut by
+    bytes too."""
+    var odd = _with_byte("", 0x80, "x")
+    assert_equal(_parse([String("m.wsgi"), String("--app-dir=") + odd]).app_dir, odd)
+    var spec = _parse([String("mod:") + odd])
+    assert_equal(spec.module, "mod")
+    assert_equal(spec.attribute, odd)
+    var static = _parse([String("m.wsgi"), String("--static=/s=") + odd])
+    assert_equal(static.static_prefixes[0], "/s")
+    assert_equal(static.static_dirs[0], odd)
+    var mounted = _parse([String("--mount=/m=") + odd])
+    assert_equal(mounted.mount_prefixes[0], "/m")
+    assert_equal(mounted.mount_modules[0], odd)
 
 
 # --- host, app-dir -----------------------------------------------------------

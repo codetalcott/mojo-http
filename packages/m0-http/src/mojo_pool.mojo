@@ -2,12 +2,15 @@
 
 `m0-wsgi`'s `blocking_pool.mojo` puts N handler threads behind one event loop
 so a slow view stops holding the keep-alive connections pinned to that loop
-(p99 1.0 ms -> 190.7 ms without it, -> 7.4 ms with; docs/BENCHMARKS.md). That
-file is the same shape as this one and cannot be shared: it imports
-`std.python`, and importing it here would put libpython on the link line of
-every Mojo app in the repo. `lightbug_http.offload` was written for exactly
-this split — its docstring says it "knows nothing about Python or about
-handlers" — so what is left is the thread body below.
+(p99 1.0 ms -> 190.7 ms without it, -> 7.4 ms with; docs/BENCHMARKS.md). The
+two pools differ in what a thread RUNS, and that half cannot be shared: the
+WSGI body imports `std.python`, and importing it here would put libpython on
+the link line of every Mojo app in the repo. Everything else -- dealing the
+threads over the lanes, registering them, the pills and the bounded join --
+is `PoolThreads` below, which `blocking_pool` imports; it was a second copy
+there until 2026-09-28, `stop_and_join` byte for byte. `lightbug_http.offload`
+was written for exactly this split — its docstring says it "knows nothing
+about Python or about handlers" — so what is left here is the thread body.
 
 **Only for handlers that BLOCK.** A pool buys nothing for a handler that is
 merely slow to compute: `std.runtime.asyncrt` already parallelises CPU work
@@ -79,12 +82,13 @@ from .threads import (
 
 
 comptime BLK_POOL = 7
-"""Block slot holding the `OffloadPool`'s address. Same slot the WSGI pool
-uses, and for the same reason: `BLK_INTS` is 8, so 7 is the last one free."""
+"""Block slot holding the `OffloadPool`'s address, written by
+`PoolThreads.deal` for either pool's thread body. `threads.mojo` names
+slots 0-6, 8 and 9 of a block's `BLK_INTS`; 7, 10 and 11 are the pools'."""
 
 comptime BLK_THREAD_ID = 10
-"""Block slot holding this thread's registered id (`register_thread`), or -1.
-The slot `m0_wsgi.blocking_pool` uses for the same value."""
+"""Block slot holding this thread's registered id (`register_thread`), or
+-1: it parks on the lane socket. Written by `PoolThreads.deal`."""
 
 comptime BLK_READY = 11
 """Block slot a pool thread sets to 1 once `T.make` has returned.
@@ -109,12 +113,18 @@ is skipped below rather than truncated.
 """
 
 comptime JOIN_TIMEOUT_NS = 5_000_000_000
-"""How long `stop_and_join` waits before leaving a thread behind.
+"""How long `stop_and_join` waits before leaving a thread behind, in either
+pool (`m0_wsgi.blocking_pool` imports this one).
 
-The same budget the WSGI pool and the loop's drain use. A Mojo handler
-blocked in a syscall with no timeout holds its thread for as long as the
-syscall does, and `pthread_join` has none — so past this the caller is
-expected to leave without it rather than make SIGTERM a no-op.
+The same 5 s the loop gives its own drain. A Mojo handler blocked in a
+syscall with no timeout holds its thread for as long as the syscall does,
+and a WSGI view is inside the application for as long as the application
+keeps it: an SSE generator served under WSGI used to be the real case
+(docs/REAL_APP_VALIDATION.md, textshelf, 2026-08-26) -- buffered, it never
+ended -- and a generator asleep between events still does not notice a
+disconnect until it wakes. `pthread_join` has no timeout, so `stop_and_join`
+used to wait for those forever: SIGTERM did nothing, and `docker stop`
+ended in SIGKILL. Past this budget the caller leaves without them.
 """
 
 
@@ -180,6 +190,167 @@ trait PoolHandler(HTTPService, Movable, Deinitable):
         pass
 
 
+struct PoolThreads(Movable):
+    """The threads under a handler pool: dealt over one loop's submit lanes,
+    registered before they exist, pilled on their own lanes, joined within a
+    bound.
+
+    `MojoPool` below and `m0_wsgi.blocking_pool.BlockingPool` differ in what
+    a thread RUNS -- a Mojo handler, or a WSGI application inside an
+    attached region -- and in nothing this does; each carried a copy of it
+    until 2026-09-28. A pool deals, writes any block words of its own, then
+    spawns, and its thread body ends with `leave_pool`:
+
+        var threads = PoolThreads(count)
+        threads.deal(pool_addr, user, lanes)
+        threads.block(i).set(BLK_QOS, 1)        # a word of the pool's own
+        threads.spawn(body_addr)
+        ...
+        _ = threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
+
+    `stop_and_join` rather than a separate `OffloadPool.stop(n)` + `join()`:
+    the pill count must equal the thread count exactly, because `next_job`
+    blocks with no timeout and a thread that gets no pill hangs the join
+    forever. Keeping both under one method makes that a property of the
+    type rather than an agreement between two call sites that could drift.
+    """
+
+    var count: Int
+    var stragglers: Int
+    """Threads `stop_and_join` gave up waiting for: still inside the handler
+    when its budget ran out, left running and unjoined."""
+    var started: Bool
+    var _set: ThreadSet
+    var _lanes: List[Int]
+    """Each thread's submit lane, filled by `deal` and read by
+    `stop_and_join` -- the pills have to go where the threads are parked."""
+
+    def __init__(out self, count: Int):
+        self.count = count
+        self.stragglers = 0
+        self.started = False
+        self._set = ThreadSet(count)
+        self._lanes = List[Int]()
+
+    def block(self, i: Int) -> ThreadBlock:
+        return self._set.block(i)
+
+    def status(self, i: Int) -> Int:
+        return self._set.status(i)
+
+    def deal(mut self, pool_addr: Int, user: Int, lanes: List[Int]):
+        """Write every thread's block, and register each thread on its lane.
+
+        Thread i takes `lanes[i % len(lanes)]`, or lane -1 -- the unmounted
+        pool, every thread on its one lane -- when `lanes` is empty; its
+        block gets `user`, the pool's address and the lane.
+
+        A wake channel per thread is reserved first, on the spawning thread
+        before any of them exists. A no-op when the caller reserved already:
+        the reservation is made ONCE per `OffloadPool`, so a server running
+        pools beside one another reserves for all of them before starting
+        any (`m0_wsgi.offload_threads.wire_offload`); a thread past the
+        reservation still counts on its lane and parks on the lane socket.
+
+        Registered HERE, before the thread exists, never in its body: `stop`
+        pills every registered thread on its own channel and sends the rest
+        to the lane socket, so a thread that registered after a `stop` had
+        already run parked on a channel with no pill in it while its pill sat
+        on a socket it no longer reads -- a hung join, caught by each pool's
+        test, which stops the pool the instant it starts. Registered here,
+        the pill is waiting for the thread whenever it gets there.
+        """
+        ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+            unsafe_from_address=pool_addr
+        )[]
+        pool.reserve_threads(self.count)
+        self._lanes = List[Int]()
+        for i in range(self.count):
+            var lane = -1 if len(lanes) == 0 else lanes[i % len(lanes)]
+            self._lanes.append(lane)
+            var block = self._set.block(i)
+            block.set(BLK_USER, user)
+            block.set(BLK_POOL, pool_addr)
+            block.set(BLK_LANE, lane)
+            block.set(BLK_THREAD_ID, pool.register_thread(lane if lane > 0 else 0))
+
+    def spawn(mut self, body_addr: Int) raises:
+        """Start every thread on `body_addr`, a `def (arg: Int) -> Int` that
+        is handed its block's address. `deal` has written the blocks."""
+        for i in range(self.count):
+            self._set.spawn(i, body_addr)
+        self.started = True
+
+    def stop_and_join(
+        mut self, mut pool: OffloadPool, timeout_ns: Int = -1
+    ) raises -> Int:
+        """Poison the queue with one pill per thread, then join. Returns the
+        count that did not end cleanly.
+
+        With `timeout_ns >= 0` the join is bounded (`ThreadSet.join_within`):
+        a thread still inside the handler when the budget runs out is
+        counted in `stragglers`, left unjoined, and the caller is expected
+        to leave the process without it. Unbounded otherwise, for callers
+        that know every thread will come back.
+
+        One pill per THREAD, on that thread's own lane: a thread parked on
+        lane 2 is not woken by a pill sent to lane 0, and `next_job` has no
+        timeout, so a miscounted lane is a hung `pthread_join` rather than a
+        slow one. Closing the queue does not rescue it -- on Linux a closed
+        peer does not wake a blocked `recv` on a connected SOCK_DGRAM pair
+        (`OffloadPool.stop`). Lane 0 goes last because its `stop` also
+        closes the descriptor.
+        """
+        if not self.started:
+            return 0
+        for lane in range(1, len(pool.lane_prefixes)):
+            var n = 0
+            for i in range(len(self._lanes)):
+                if self._lanes[i] == lane:
+                    n += 1
+            if n > 0:
+                pool.stop(n, lane)
+        var zero = 0
+        for i in range(len(self._lanes)):
+            if self._lanes[i] <= 0:
+                zero += 1
+        if zero > 0:
+            pool.stop(zero, 0)
+        if timeout_ns >= 0:
+            self.stragglers = self._set.join_within(timeout_ns)
+        else:
+            self._set.join_all()
+        var failed = 0
+        for i in range(self.count):
+            if self._set.status(i) != STATUS_OK:
+                failed += 1
+        return failed
+
+
+def leave_pool(block: ThreadBlock, status: Int):
+    """A pool thread's last act: off its lane's count, then its status.
+
+    A thread counts on its lane from `PoolThreads.deal` until it leaves,
+    however it leaves: the elastic wake (`OffloadPool.note_thread`) reads
+    the count to tell "every thread is parked" from "one is busy in a
+    view", and a thread that died without un-announcing would be a busy
+    thread forever -- every job on the lane then waiting out the age check.
+    The Mojo pool once skipped it, and its lane read as "every thread
+    parked" whenever its one awake thread was busy, so `submit` poked a
+    sibling on nearly every push: measured on `/native/probe` at 16
+    connections as 65k wakes with one thread and 202k with eight, the eight
+    serving 20 % fewer requests on more CPU. The status goes LAST: it is
+    the word `ThreadSet.join_within` waits on, and a thread that has
+    written it is on its way out.
+    """
+    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+        unsafe_from_address=block.get(BLK_POOL)
+    )[]
+    var lane = block.get(BLK_LANE)
+    pool.unregister_thread(block.get(BLK_THREAD_ID), lane if lane > 0 else 0)
+    block.set(BLK_STATUS, status)
+
+
 struct MojoPool(Movable):
     """N handler threads against one loop's `OffloadPool`.
 
@@ -189,71 +360,29 @@ struct MojoPool(Movable):
         server.listen_and_serve_nonblocking(addr, handler, offload_addr=pool.addr())
         _ = threads.stop_and_join(pool, JOIN_TIMEOUT_NS)
 
-    `stop_and_join` rather than a separate `stop(n)` + `join()`: the pill
-    count must equal the thread count exactly, because `next_job` blocks with
-    no timeout and a thread that gets no pill hangs the join forever. Keeping
-    both under one method makes that a property of the type rather than an
-    agreement between two call sites that could drift.
+    The threads are `PoolThreads`, pills and join included; what is this
+    type's own is the body they run (`_pool_body`) and the wait for every
+    thread's handler to be built (`wait_ready`).
     """
 
     var count: Int
-    var _set: ThreadSet
-    var _started: Bool
-    var _lanes: List[Int]
     var stragglers: Int
     """Threads `stop_and_join` gave up waiting for: still inside the handler
     when its budget ran out, left running and unjoined."""
+    var _threads: PoolThreads
 
     def __init__(out self, count: Int):
         self.count = count
-        self._set = ThreadSet(count)
-        self._started = False
-        self._lanes = List[Int]()
         self.stragglers = 0
-
-    def __init__(out self, *, deinit move: Self):
-        self.count = move.count
-        self._set = move._set^
-        self._started = move._started
-        self._lanes = move._lanes^
-        self.stragglers = move.stragglers
+        self._threads = PoolThreads(count)
 
     def start[T: PoolHandler](
         mut self, pool_addr: Int, user: Int = 0, var lanes: List[Int] = List[Int]()
     ) raises:
         """Spawn the threads. `user` is what `T.make` receives as `ctx.user`."""
         var body = _pool_body[T]
-        var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
-        self._lanes = List[Int]()
-        # A wake channel per thread, reserved on the spawning thread before
-        # any of them exists. A no-op when the caller reserved already --
-        # the reservation is made ONCE per pool, so a server running this
-        # beside a `BlockingPool` reserves for both before starting either
-        # (`m0serve._serve_offloaded`); a thread past the reservation still
-        # counts on its lane and parks on the lane socket.
-        ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
-            unsafe_from_address=pool_addr
-        )[]
-        pool.reserve_threads(self.count)
-        for i in range(self.count):
-            var lane = -1 if len(lanes) == 0 else lanes[i % len(lanes)]
-            self._lanes.append(lane)
-            var block = self._set.block(i)
-            block.set(BLK_USER, user)
-            block.set(BLK_POOL, pool_addr)
-            block.set(BLK_LANE, lane)
-            # Registered HERE, before the thread exists, never in its body:
-            # `stop` pills every registered thread on its own channel and
-            # sends the rest to the lane socket, so a thread that registered
-            # after a `stop` already ran would park on a channel with no pill
-            # in it while its pill sat on a socket it no longer reads -- a
-            # hung join, caught by `test_stop_and_join_ends_every_thread`,
-            # which stops the pool the instant it starts. Registered here,
-            # the pill is waiting for it whenever it gets there.
-            block.set(BLK_THREAD_ID, pool.register_thread(lane if lane > 0 else 0))
-        for i in range(self.count):
-            self._set.spawn(i, body_addr)
-        self._started = True
+        self._threads.deal(pool_addr, user, lanes)
+        self._threads.spawn(Pointer(to=body).unsafe_bitcast[Int]()[])
 
     def wait_ready(self, timeout_ns: Int) raises -> Int:
         """How many threads have NOT built their handler within `timeout_ns`.
@@ -266,15 +395,15 @@ struct MojoPool(Movable):
         `make` that raises on a pool thread is a refusal (exit 78) rather
         than a server quietly one thread short.
         """
-        if not self._started:
+        if not self._threads.started:
             return 0
         var deadline = perf_counter_ns() + timeout_ns
         var short = 0
         for i in range(self.count):
-            var block = self._set.block(i)
+            var block = self._threads.block(i)
             while (
                 block.get(BLK_READY) == 0
-                and self._set.status(i) == STATUS_NEVER_RAN
+                and self._threads.status(i) == STATUS_NEVER_RAN
                 and perf_counter_ns() < deadline
             ):
                 sleep(0.001)
@@ -286,13 +415,13 @@ struct MojoPool(Movable):
         """How many threads ended (`STATUS_RAISED`) without ever setting
         `BLK_READY`: a `make` that raised, as opposed to one still
         building. For the caller of `wait_ready` to say which."""
-        if not self._started:
+        if not self._threads.started:
             return 0
         var n = 0
         for i in range(self.count):
             if (
-                self._set.block(i).get(BLK_READY) == 0
-                and self._set.status(i) == STATUS_RAISED
+                self._threads.block(i).get(BLK_READY) == 0
+                and self._threads.status(i) == STATUS_RAISED
             ):
                 n += 1
         return n
@@ -300,39 +429,11 @@ struct MojoPool(Movable):
     def stop_and_join(
         mut self, mut pool: OffloadPool, timeout_ns: Int = -1
     ) raises -> Int:
-        """Poison the queue with one pill per thread, then join.
-
-        Returns the count that did not end cleanly. With `timeout_ns >= 0` the
-        join is bounded and a thread still inside the handler when the budget
-        runs out is counted in `stragglers`, left unjoined, and the caller is
-        expected to leave the process without it.
-        """
-        if not self._started:
-            return 0
-        var pending = List[Int]()
-        for i in range(len(self._lanes)):
-            pending.append(self._lanes[i])
-        for lane in range(1, len(pool.lane_prefixes)):
-            var n = 0
-            for i in range(len(pending)):
-                if pending[i] == lane:
-                    n += 1
-            if n > 0:
-                pool.stop(n, lane)
-        var zero = 0
-        for i in range(len(pending)):
-            if pending[i] <= 0:
-                zero += 1
-        if zero > 0:
-            pool.stop(zero, 0)
-        if timeout_ns >= 0:
-            self.stragglers = self._set.join_within(timeout_ns)
-        else:
-            self._set.join_all()
-        var failed = 0
-        for i in range(self.count):
-            if self._set.status(i) != STATUS_OK:
-                failed += 1
+        """`PoolThreads.stop_and_join`: one pill per thread, then the join,
+        bounded by `timeout_ns` unless it is negative. Returns the count
+        that did not end cleanly; `stragglers` says how many were left."""
+        var failed = self._threads.stop_and_join(pool, timeout_ns)
+        self.stragglers = self._threads.stragglers
         return failed
 
 
@@ -488,19 +589,6 @@ def _pool_body[T: PoolHandler](arg: Int) -> Int:
     `blocking_pool._pool_body`.
     """
     var block = ThreadBlock(arg)
-    # Counted on its lane from `start` until it leaves, however it leaves --
-    # the WSGI pool's rule, which this pool skipped. Uncounted, the lane read as
-    # "every thread parked" to `_all_idle` whenever its one awake thread was
-    # busy, so `submit` poked a sibling on nearly every push: measured on
-    # `/native/probe` at 16 connections as 65k wakes with one thread and
-    # 202k with eight, the eight serving 20 % fewer requests on more CPU,
-    # while the WSGI lane beside it reported its threads and woke nobody.
-    # `start` registered it, on the spawning thread; see there for why.
-    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
-        unsafe_from_address=block.get(BLK_POOL)
-    )[]
-    var lane = block.get(BLK_LANE)
-    lane = lane if lane > 0 else 0
     var status = STATUS_RAISED
     try:
         _pool_serve[T](block)
@@ -510,6 +598,5 @@ def _pool_body[T: PoolHandler](arg: Int) -> Int:
             "mojo-pool[" + String(block.get(BLK_INDEX)) + "] raised: " + String(e),
             flush=True,
         )
-    pool.unregister_thread(block.get(BLK_THREAD_ID), lane)
-    block.set(BLK_STATUS, status)
+    leave_pool(block, status)
     return 0

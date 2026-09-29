@@ -131,14 +131,6 @@ struct BroadcastBus(Copyable, Movable):
         self.read_fds = read_fds.copy()
         self.write_fds = write_fds.copy()
 
-    def __init__(out self, *, copy: Self):
-        self.read_fds = copy.read_fds.copy()
-        self.write_fds = copy.write_fds.copy()
-
-    def __init__(out self, *, deinit move: Self):
-        self.read_fds = move.read_fds^
-        self.write_fds = move.write_fds^
-
     def size(self) -> Int:
         return len(self.read_fds)
 

@@ -78,7 +78,7 @@ def redirect(status: Int, location: String) -> HTTPResponse:
         body_bytes=String("").as_bytes(),
         headers=Headers(Header(HeaderKey.LOCATION, _encode_controls(location))),
         status_code=status,
-        status_text=_reason_for_redirect(status),
+        status_text=reason_phrase(status),
     )
 
 
@@ -210,57 +210,146 @@ def param_int(s: String) -> Int:
     return result
 
 
-def _reason_for_redirect(status: Int) -> String:
-    if status == 301:
-        return String("Moved Permanently")
-    if status == 302:
-        return String("Found")
-    if status == 303:
-        return String("See Other")
-    if status == 307:
-        return String("Temporary Redirect")
-    if status == 308:
-        return String("Permanent Redirect")
-    return String("Redirect")
-
-
 def reason_phrase(status: Int) -> String:
-    """The RFC 9110 reason phrase for the statuses a view answers with, or
-    an empty phrase — legal on the wire — for one not listed.
+    """The standard reason phrase for `status`, or the empty string --
+    legal on the wire -- for a code with none.
 
-    For `page_or_fragment`, whose `status` used to travel with a default
-    `text` of `"OK"`: a styled 422 went out as `422 OK`.
+    CPython 3.13's `http.client.responses`, entry for entry (62 codes; the
+    generator is in the commit that added the table to `m0_wsgi.response`).
+    The one table: `redirect`, `page_or_fragment` and the login's refusals
+    name their statuses with it, and `m0serve` answers an ASGI
+    application's integer status with it, so that phrase never becomes a
+    Python `str` at all. `page_or_fragment`'s `status` used to travel with
+    a default `text` of `"OK"` (a styled 422 went out as `422 OK`), and the
+    redirect table answered any code it did not list `Redirect`.
     """
-    if status == 200:
-        return String("OK")
-    if status == 201:
-        return String("Created")
-    if status == 202:
-        return String("Accepted")
-    if status == 400:
-        return String("Bad Request")
-    if status == 401:
-        return String("Unauthorized")
-    if status == 403:
-        return String("Forbidden")
-    if status == 404:
-        return String("Not Found")
-    if status == 405:
-        return String("Method Not Allowed")
-    if status == 409:
-        return String("Conflict")
-    if status == 410:
-        return String("Gone")
-    if status == 413:
-        return String("Content Too Large")
-    if status == 415:
-        return String("Unsupported Media Type")
-    if status == 422:
-        return String("Unprocessable Content")
-    if status == 429:
-        return String("Too Many Requests")
-    if status == 500:
-        return String("Internal Server Error")
-    if status == 503:
-        return String("Service Unavailable")
-    return String("")
+    if status < 200:
+        if status == 100:
+            return "Continue"
+        elif status == 101:
+            return "Switching Protocols"
+        elif status == 102:
+            return "Processing"
+        elif status == 103:
+            return "Early Hints"
+    elif status < 300:
+        if status == 200:
+            return "OK"
+        elif status == 201:
+            return "Created"
+        elif status == 202:
+            return "Accepted"
+        elif status == 203:
+            return "Non-Authoritative Information"
+        elif status == 204:
+            return "No Content"
+        elif status == 205:
+            return "Reset Content"
+        elif status == 206:
+            return "Partial Content"
+        elif status == 207:
+            return "Multi-Status"
+        elif status == 208:
+            return "Already Reported"
+        elif status == 226:
+            return "IM Used"
+    elif status < 400:
+        if status == 300:
+            return "Multiple Choices"
+        elif status == 301:
+            return "Moved Permanently"
+        elif status == 302:
+            return "Found"
+        elif status == 303:
+            return "See Other"
+        elif status == 304:
+            return "Not Modified"
+        elif status == 305:
+            return "Use Proxy"
+        elif status == 307:
+            return "Temporary Redirect"
+        elif status == 308:
+            return "Permanent Redirect"
+    elif status < 500:
+        if status == 400:
+            return "Bad Request"
+        elif status == 401:
+            return "Unauthorized"
+        elif status == 402:
+            return "Payment Required"
+        elif status == 403:
+            return "Forbidden"
+        elif status == 404:
+            return "Not Found"
+        elif status == 405:
+            return "Method Not Allowed"
+        elif status == 406:
+            return "Not Acceptable"
+        elif status == 407:
+            return "Proxy Authentication Required"
+        elif status == 408:
+            return "Request Timeout"
+        elif status == 409:
+            return "Conflict"
+        elif status == 410:
+            return "Gone"
+        elif status == 411:
+            return "Length Required"
+        elif status == 412:
+            return "Precondition Failed"
+        elif status == 413:
+            return "Content Too Large"
+        elif status == 414:
+            return "URI Too Long"
+        elif status == 415:
+            return "Unsupported Media Type"
+        elif status == 416:
+            return "Range Not Satisfiable"
+        elif status == 417:
+            return "Expectation Failed"
+        elif status == 418:
+            return "I'm a Teapot"
+        elif status == 421:
+            return "Misdirected Request"
+        elif status == 422:
+            return "Unprocessable Content"
+        elif status == 423:
+            return "Locked"
+        elif status == 424:
+            return "Failed Dependency"
+        elif status == 425:
+            return "Too Early"
+        elif status == 426:
+            return "Upgrade Required"
+        elif status == 428:
+            return "Precondition Required"
+        elif status == 429:
+            return "Too Many Requests"
+        elif status == 431:
+            return "Request Header Fields Too Large"
+        elif status == 451:
+            return "Unavailable For Legal Reasons"
+    elif status < 600:
+        if status == 500:
+            return "Internal Server Error"
+        elif status == 501:
+            return "Not Implemented"
+        elif status == 502:
+            return "Bad Gateway"
+        elif status == 503:
+            return "Service Unavailable"
+        elif status == 504:
+            return "Gateway Timeout"
+        elif status == 505:
+            return "HTTP Version Not Supported"
+        elif status == 506:
+            return "Variant Also Negotiates"
+        elif status == 507:
+            return "Insufficient Storage"
+        elif status == 508:
+            return "Loop Detected"
+        elif status == 510:
+            return "Not Extended"
+        elif status == 511:
+            return "Network Authentication Required"
+    return ""

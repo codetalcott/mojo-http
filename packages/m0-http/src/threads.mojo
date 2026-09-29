@@ -48,7 +48,7 @@ comptime BLK_LANE = 6
 comptime BLK_TURN_ADDR = 8
 """Address of a pool's turn counters -- the hand-off barrier around its
 threads' re-attach (`m0_wsgi.blocking_pool`) -- or 0. Slot 7 is `BLK_POOL`,
-private to that module."""
+the pools' own (`mojo_pool.mojo`)."""
 comptime BLK_QOS = 9
 """1 if the thread should request its role's Darwin QoS class at start.
 
@@ -131,11 +131,6 @@ struct ThreadSet(Movable):
                 _slot(self._blocks + (i * BLK_INTS + s) * 8)[] = 0
             _slot(self._blocks + (i * BLK_INTS + BLK_STATUS) * 8)[] = STATUS_NEVER_RAN
             _slot(self._blocks + (i * BLK_INTS + BLK_INDEX) * 8)[] = i
-
-    def __init__(out self, *, deinit move: Self):
-        self.count = move.count
-        self._blocks = move._blocks
-        self._tids = move._tids
 
     def block(self, i: Int) -> ThreadBlock:
         return ThreadBlock(self._blocks + i * BLK_INTS * 8)
@@ -257,10 +252,6 @@ struct ShutdownFanout(Movable):
             var pair = create_shutdown_pipe()
             self._read_fds.append(pair[0])
             self._write_fds.append(pair[1].fd)
-
-    def __init__(out self, *, deinit move: Self):
-        self._read_fds = move._read_fds^
-        self._write_fds = move._write_fds^
 
     def count(self) -> Int:
         return len(self._read_fds)

@@ -77,13 +77,6 @@ struct OffloadThreads(Movable):
         self.hold_pool = hold_pool^
         self.run_executor = run_executor
 
-    def __init__(out self, *, deinit move: Self):
-        self.executors = move.executors^
-        self.handler_pool = move.handler_pool^
-        self.mojo_pool = move.mojo_pool^
-        self.hold_pool = move.hold_pool^
-        self.run_executor = move.run_executor
-
 
 def wire_offload[T: ThreadHandler](
     mut pool: OffloadPool,

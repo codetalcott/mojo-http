@@ -88,6 +88,19 @@ def test_publish_reaches_every_peer_but_not_self() raises:
     assert_equal(len(drain_bus_channel(bus.read_fd(0))), 0)
 
 
+def test_a_bus_copy_publishes_into_the_same_channels() raises:
+    """The Mojo host hands each loop, and each pool thread's context, a copy
+    of the bus. A copy names the same channels, so what it publishes reaches
+    the original's peers, and it owns its lists. The copy is the compiler's."""
+    var bus = BroadcastBus(2)
+    var copied = bus.copy()
+    _ = copied.publish(0, "/events", 1, Span(_bytes("f\n\n")))
+    assert_equal(len(drain_bus_channel(bus.read_fd(1))), 1)
+    copied.read_fds.append(-1)
+    assert_equal(bus.size(), 2)
+    assert_equal(copied.size(), 3)
+
+
 def test_drain_preserves_order_and_boundaries() raises:
     """Two publishes arrive as two frames, in order, bytes intact."""
     var bus = BroadcastBus(2)

@@ -939,6 +939,12 @@ lightbug_http
         `BindFailedError`; `ServerError`'s accept, receive and close arms;
         and `ChunkedEncodingError`. About 2,960 lines.
 
+      - accept_share.mojo, broadcast.mojo, server_config.mojo (2026-09-28):
+        the hand-written copy and move constructors of `AcceptShare`,
+        `BroadcastBus` and `ServerConfig` are deleted. Each copied or moved
+        every field and did nothing else, which is what the compiler
+        derives. Behaviour-preserving.
+
       - event_loop.mojo (2026-09-28): every function of the loop takes its
         state whole, as `(handler, backend, st, slot, fd)` less what it
         does not use, where it took the fields of `LoopState` one by one:

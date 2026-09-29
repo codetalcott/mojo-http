@@ -27,6 +27,7 @@ from std.sys.info import CompilationTarget, num_performance_cores
 from lightbug_http.offload import match_path_prefix, _WAKE_MAX_LANES
 from lightbug_http.c.platform import SC_NPROCESSORS_ONLN
 from lightbug_http.server_config import ServerConfig
+from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig
 
 
@@ -304,92 +305,6 @@ struct ServeOptions(Copyable, Movable):
         self.show_version = False
         self.show_doctor = False
 
-    def __init__(out self, *, copy: Self):
-        self.module = copy.module
-        self.attribute = copy.attribute
-        self.attribute_explicit = copy.attribute_explicit
-        self.mount_prefixes = copy.mount_prefixes.copy()
-        self.mount_modules = copy.mount_modules.copy()
-        self.mount_attributes = copy.mount_attributes.copy()
-        self.mount_explicit = copy.mount_explicit.copy()
-        self.asgi_mounts = copy.asgi_mounts.copy()
-        self.mojo_mounts = copy.mojo_mounts.copy()
-        self.hold_mounts = copy.hold_mounts.copy()
-        self.protocol = copy.protocol
-        self.host = copy.host
-        self.port = copy.port
-        self.workers = copy.workers
-        self.threads = copy.threads
-        self.blocking_threads = copy.blocking_threads
-        self.workers_set = copy.workers_set
-        self.threads_set = copy.threads_set
-        self.blocking_threads_set = copy.blocking_threads_set
-        self.handler_lifespan = copy.handler_lifespan
-        self.asgi_streaming = copy.asgi_streaming
-        self.app_dir = copy.app_dir
-        self.static_prefixes = copy.static_prefixes.copy()
-        self.static_dirs = copy.static_dirs.copy()
-        self.static_cache_control = copy.static_cache_control
-        self.access_log = copy.access_log
-        self.qos = copy.qos
-        self.spawn_workers = copy.spawn_workers
-        self.max_body = copy.max_body
-        self.max_keepalive_requests = copy.max_keepalive_requests
-        self.idle_timeout = copy.idle_timeout
-        self.body_timeout = copy.body_timeout
-        self.metrics = copy.metrics
-        self.realtime = copy.realtime
-        self.reload = copy.reload
-        self.reload_dirs = copy.reload_dirs.copy()
-        self.health_path = copy.health_path
-        self.pg_listen = copy.pg_listen
-        self.show_help = copy.show_help
-        self.show_version = copy.show_version
-        self.show_doctor = copy.show_doctor
-
-    def __init__(out self, *, deinit move: Self):
-        self.module = move.module^
-        self.attribute = move.attribute^
-        self.attribute_explicit = move.attribute_explicit
-        self.mount_prefixes = move.mount_prefixes^
-        self.mount_modules = move.mount_modules^
-        self.mount_attributes = move.mount_attributes^
-        self.mount_explicit = move.mount_explicit^
-        self.asgi_mounts = move.asgi_mounts^
-        self.mojo_mounts = move.mojo_mounts^
-        self.hold_mounts = move.hold_mounts^
-        self.protocol = move.protocol^
-        self.host = move.host^
-        self.port = move.port
-        self.workers = move.workers
-        self.threads = move.threads
-        self.blocking_threads = move.blocking_threads
-        self.workers_set = move.workers_set
-        self.threads_set = move.threads_set
-        self.blocking_threads_set = move.blocking_threads_set
-        self.handler_lifespan = move.handler_lifespan
-        self.asgi_streaming = move.asgi_streaming
-        self.app_dir = move.app_dir^
-        self.static_prefixes = move.static_prefixes^
-        self.static_dirs = move.static_dirs^
-        self.static_cache_control = move.static_cache_control^
-        self.access_log = move.access_log
-        self.qos = move.qos
-        self.spawn_workers = move.spawn_workers
-        self.max_body = move.max_body
-        self.max_keepalive_requests = move.max_keepalive_requests
-        self.idle_timeout = move.idle_timeout
-        self.body_timeout = move.body_timeout
-        self.metrics = move.metrics
-        self.realtime = move.realtime
-        self.reload = move.reload
-        self.reload_dirs = move.reload_dirs^
-        self.health_path = move.health_path^
-        self.pg_listen = move.pg_listen^
-        self.show_help = move.show_help
-        self.show_version = move.show_version
-        self.show_doctor = move.show_doctor
-
     @staticmethod
     def from_env() -> Self:
         """Defaults overlaid with whatever `M0_*` variables are set.
@@ -479,29 +394,13 @@ def parse_app_spec(spec: String) raises -> Tuple[String, String]:
         if text.byte_length() == 0:
             raise Error("missing MODULE[:ATTR]")
         return (text^, String(DEFAULT_ATTRIBUTE))
-    var module = String(StringSpan(text)[byte = :colon])
-    var attribute = String(StringSpan(text)[byte = colon + 1 :])
+    var module = String(unsafe_from_utf8=text.as_bytes()[:colon])
+    var attribute = String(unsafe_from_utf8=text.as_bytes()[colon + 1 :])
     if module.byte_length() == 0:
         raise Error("missing module before ':' in '" + text + "'")
     if attribute.byte_length() == 0:
         raise Error("missing attribute after ':' in '" + text + "'")
     return (module^, attribute^)
-
-
-def parse_int(text: String, what: String) raises -> Int:
-    """Strict decimal parse; anything but digits is a usage error."""
-    var digits = String(text.strip())
-    var n = digits.byte_length()
-    if n == 0 or n > 18:
-        raise Error(what + " must be a number, got '" + text + "'")
-    var bytes = digits.as_bytes()
-    var value = 0
-    for i in range(n):
-        var c = Int(bytes[i])
-        if c < ord("0") or c > ord("9"):
-            raise Error(what + " must be a number, got '" + text + "'")
-        value = value * 10 + (c - ord("0"))
-    return value
 
 
 def parse_size(text: String) raises -> Int:
@@ -524,7 +423,7 @@ def parse_size(text: String) raises -> Int:
     elif last == UInt8(ord("g")) or last == UInt8(ord("G")):
         multiplier = 1024 * 1024 * 1024
     if multiplier != 1:
-        digits = String(StringSpan(trimmed)[byte = : n - 1])
+        digits = String(unsafe_from_utf8=trimmed.as_bytes()[: n - 1])
     try:
         return parse_int(digits, "--max-body") * multiplier
     except:
@@ -1332,8 +1231,8 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         var eq = value.find("=")
         if eq < 0:
             raise Error("--static expects PREFIX=DIR, got '" + value + "'")
-        var prefix = String(StringSpan(value)[byte = :eq])
-        var directory = String(StringSpan(value)[byte = eq + 1 :])
+        var prefix = String(unsafe_from_utf8=value.as_bytes()[:eq])
+        var directory = String(unsafe_from_utf8=value.as_bytes()[eq + 1 :])
         if not prefix.startswith("/"):
             raise Error("--static prefix must start with '/', got '" + prefix + "'")
         if directory.byte_length() == 0:
@@ -1346,18 +1245,17 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         var meq = value.find("=")
         if meq < 0:
             raise Error("--mount expects PREFIX=MODULE[:ATTR], got '" + value + "'")
-        var raw = String(StringSpan(value)[byte = :meq])
-        var spec = String(StringSpan(value)[byte = meq + 1 :])
+        var raw = String(unsafe_from_utf8=value.as_bytes()[:meq])
+        var spec = String(unsafe_from_utf8=value.as_bytes()[meq + 1 :])
         if not raw.startswith("/"):
             raise Error("--mount prefix must start with '/', got '" + raw + "'")
         # Stored without the trailing slash, so '/' becomes '' -- PEP 3333's
         # SCRIPT_NAME and ASGI's root_path for an app at the root are both
         # the empty string, and the matcher gets one shape to compare.
-        var prefix = raw
-        while prefix.endswith("/"):
-            prefix = String(
-                StringSpan(prefix)[byte = : prefix.byte_length() - 1]
-            )
+        var keep = raw.byte_length()
+        while keep > 0 and raw.as_bytes()[keep - 1] == UInt8(ord("/")):
+            keep -= 1
+        var prefix = String(unsafe_from_utf8=raw.as_bytes()[:keep])
         for m in range(len(opts.mount_prefixes)):
             if opts.mount_prefixes[m] == prefix:
                 raise Error(
@@ -1446,52 +1344,39 @@ def parse_args(args: List[String], seed: ServeOptions) raises -> ServeOptions:
             opts.show_help = True
         elif arg == "-V":
             opts.show_version = True
-        elif arg.startswith("--") and arg.byte_length() > 2:
-            var name = arg
-            var inline = String("")
-            var has_inline = False
-            var eq = arg.find("=")
-            if eq >= 0:
-                name = String(StringSpan(arg)[byte = :eq])
-                inline = String(StringSpan(arg)[byte = eq + 1 :])
-                has_inline = True
-            if _is_bool(name):
-                if has_inline:
-                    raise Error(name + " takes no value")
-                if name == "--help":
-                    opts.show_help = True
-                elif name == "--version":
-                    opts.show_version = True
-                elif name == "--access-log":
-                    opts.access_log = True
-                elif name == "--qos":
-                    opts.qos = True
-                elif name == "--spawn-workers":
-                    opts.spawn_workers = True
-                elif name == "--realtime":
-                    opts.realtime = True
-                elif name == "--reload":
-                    opts.reload = True
-                elif name == "--metrics":
-                    opts.metrics = True
-                elif name == "--doctor":
-                    opts.show_doctor = True
-                else:
-                    # Unreachable: `_is_bool` gated entry. Explicit anyway --
-                    # this used to be `opts.metrics = True`, so a new boolean
-                    # flag added to `_is_bool` and forgotten here silently
-                    # turned on Prometheus metrics instead of doing its job.
-                    raise Error("unhandled boolean option " + name)
+        elif is_long_flag(arg):
+            # The option and its value, read the way the Mojo host reads
+            # them (`m0_http.cmdline`): by bytes, strictly, and naming what
+            # it refuses -- an unknown option, a value on a boolean, a value
+            # missing at the end.
+            var flag = read_long_flag(args, i, _takes_value, _is_bool)
+            var name = flag.name
+            if name == "--help":
+                opts.show_help = True
+            elif name == "--version":
+                opts.show_version = True
+            elif name == "--access-log":
+                opts.access_log = True
+            elif name == "--qos":
+                opts.qos = True
+            elif name == "--spawn-workers":
+                opts.spawn_workers = True
+            elif name == "--realtime":
+                opts.realtime = True
+            elif name == "--reload":
+                opts.reload = True
+            elif name == "--metrics":
+                opts.metrics = True
+            elif name == "--doctor":
+                opts.show_doctor = True
             elif _takes_value(name):
-                var value = inline
-                if not has_inline:
-                    if i + 1 >= len(args):
-                        raise Error(name + " needs a value")
-                    i += 1
-                    value = args[i]
-                _apply(opts, name, value)
+                _apply(opts, name, flag.value)
             else:
-                raise Error("unknown option " + name)
+                # Unreachable: `_is_bool` gated entry. Explicit anyway --
+                # this used to be `opts.metrics = True`, so a new boolean
+                # flag added to `_is_bool` and forgotten here silently
+                # turned on Prometheus metrics instead of doing its job.
+                raise Error("unhandled boolean option " + name)
         elif arg.startswith("-") and arg.byte_length() > 1:
             raise Error("unknown option " + arg)
         else:

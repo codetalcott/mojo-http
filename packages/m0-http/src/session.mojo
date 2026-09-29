@@ -48,20 +48,26 @@ slice: a cookie is request-derived, and SPEC G14 is why.
 The key ring is `grant.mojo`'s. A `GrantKey` is a key id and an
 `HmacSha256` absorbed once, which is exactly what a session key is, and
 a second copy of those lines would be a second place for the key-id rule
-to drift. `apps/fragment_notes` is the worked application.
+to drift. So is the envelope: `SignedToken` reads the version, key id,
+expiry and tag of both formats and refuses in the order above, and this
+module reads the subject between. `apps/fragment_notes` is the worked
+application.
 """
 
-from m0_core import HmacSha256, constant_time_equal
+from m0_core import HmacSha256
 
-from .grant import GrantKey, base64url, find_key
+from .grant import (
+    GRANT_KID_CHARS, GRANT_SIG_CHARS, TOKEN_EXP_DIGITS, GrantKey, SignedToken,
+    base64url, find_key,
+)
 
 
 comptime SESSION_VERSION = "v1"
-comptime SESSION_KID_CHARS = 8
-comptime SESSION_SIG_CHARS = 43
+comptime SESSION_KID_CHARS = GRANT_KID_CHARS
+comptime SESSION_SIG_CHARS = GRANT_SIG_CHARS
 """Length of the tag field: base64url of 32 bytes without padding."""
 comptime SESSION_SUBJECT_MAX = 64
-comptime SESSION_EXP_DIGITS = 12
+comptime SESSION_EXP_DIGITS = TOKEN_EXP_DIGITS
 """The most digits of expiry `verify_session` reads: Unix seconds to the
 year 33658, so an expiry past it is a timestamp in another unit --
 milliseconds, most often -- and `issue_session` refuses it."""
@@ -86,9 +92,6 @@ struct SessionKeys(Movable, Sized):
 
     def __init__(out self):
         self.keys = List[GrantKey]()
-
-    def __init__(out self, *, deinit move: Self):
-        self.keys = move.keys^
 
     def __len__(self) -> Int:
         return len(self.keys)
@@ -150,16 +153,6 @@ def _is_subject_byte(b: UInt8) -> Bool:
         or b == UInt8(ord("-"))
         or b == UInt8(ord(":"))
         or b == UInt8(ord("@"))
-    )
-
-
-def _is_b64url_byte(b: UInt8) -> Bool:
-    return (
-        (b >= UInt8(ord("A")) and b <= UInt8(ord("Z")))
-        or (b >= UInt8(ord("a")) and b <= UInt8(ord("z")))
-        or (b >= UInt8(ord("0")) and b <= UInt8(ord("9")))
-        or b == UInt8(ord("-"))
-        or b == UInt8(ord("_"))
     )
 
 
@@ -234,63 +227,26 @@ def verify_session(
         order — the signature is checked before the expiry so an expired
         cookie nobody signed is not reported as merely expired.
     """
-    var n = len(cookie)
-    if n < 16 or n > 400:
+    # Five fields, four dots; the envelope is `SignedToken`'s to read.
+    var token = SignedToken(cookie, 5, 16)
+    if not token.well_formed:
         return session_refused(String("malformed"))
-    # Five fields, four dots.
-    var dots = List[Int](capacity=4)
-    for i in range(n):
-        if cookie[i] == UInt8(ord(".")):
-            if len(dots) == 4:
-                return session_refused(String("malformed"))
-            dots.append(i)
-    if len(dots) != 4:
-        return session_refused(String("malformed"))
-    var version = cookie[0 : dots[0]]
-    var kid = cookie[dots[0] + 1 : dots[1]]
-    var exp_field = cookie[dots[1] + 1 : dots[2]]
-    var subject = cookie[dots[2] + 1 : dots[3]]
-    var sig = cookie[dots[3] + 1 : n]
-    var signed = cookie[0 : dots[3]]
-
-    if (
-        len(version) != 2
-        or version[0] != UInt8(ord("v"))
-        or version[1] != UInt8(ord("1"))
-    ):
-        return session_refused(String("malformed"))
-    if len(kid) != SESSION_KID_CHARS:
-        return session_refused(String("malformed"))
-    if len(exp_field) < 1 or len(exp_field) > SESSION_EXP_DIGITS:
-        return session_refused(String("malformed"))
-    var exp = Int64(0)
-    for b in exp_field:
-        if b < UInt8(ord("0")) or b > UInt8(ord("9")):
-            return session_refused(String("malformed"))
-        exp = exp * 10 + Int64(b - UInt8(ord("0")))
+    var subject = cookie[token.start(3) : token.end(3)]
     if len(subject) < 1 or len(subject) > SESSION_SUBJECT_MAX:
         return session_refused(String("malformed"))
     for b in subject:
         if not _is_subject_byte(b):
             return session_refused(String("malformed"))
-    if len(sig) != SESSION_SIG_CHARS:
-        return session_refused(String("malformed"))
-    for b in sig:
-        if not _is_b64url_byte(b):
-            return session_refused(String("malformed"))
 
-    var which = keys.find(kid)
-    if which < 0:
-        return session_refused(String("unknown key"))
-    var expected = base64url(Span(keys.keys[which].mac.mac(signed)))
-    if not constant_time_equal(Span(expected.as_bytes()), sig):
-        return session_refused(String("bad signature"))
-    if now >= exp:
-        return session_refused(String("expired"))
+    var refused = token.check(cookie, keys.keys, now)
+    if refused:
+        return session_refused(refused^)
     return SessionVerdict(
         True,
         String(StringSpan(unsafe_from_utf8=subject)),
-        csrf_token(keys.keys[which].mac, sig),
+        csrf_token(
+            keys.keys[token.key].mac, cookie[token.start(4) : token.end(4)]
+        ),
         String(""),
     )
 
