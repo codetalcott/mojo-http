@@ -84,6 +84,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `check-docs` refuses a task that `test-all` reaches and no CI step does.
   Both jobs keep Mojo's compile cache between a pull request's runs, which
   took a warm re-run of `unit-tests` from 20.7 min to 9.2.
+- **`poe test-shim` proves each of the executor shim's rules with the test
+  written for it** (SPEC L7). Its sabotage reverted each of 55 rules and
+  ran all 59 tests against it, 3,304 runs, and took a rule as proven when
+  any test failed, even one written for another rule. Each rule now names
+  its test, only that runs, and a rule whose own test passes is unproven
+  whatever else fails, with the tests that did fail listed so the fix is
+  plain. The task took 583 s on an M4 before and takes 26 s. `--sabotage-all`
+  is the whole run, kept for re-deriving the tests when rules change, and
+  `--selftest`, which the task runs first, shows on a real rule that a test
+  that does not catch it, a test the suite does not list and a patch that
+  does not apply each fail the run.
 - **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
   phase stamp, `fail()`, a server watched until it answers, a free port,
   an SSE reader and a WebSocket client, each proven by

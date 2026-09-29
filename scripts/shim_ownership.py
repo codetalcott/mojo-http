@@ -45,14 +45,36 @@ Plus the ack clamp: a drain ack names a slot and no generation, so one for
 the stream that just ended can land after the next stream on that slot has
 seeded its window whole.
 
-    python3 scripts/shim_ownership.py              # run the tests
-    python3 scripts/shim_ownership.py --sabotage   # and prove they bite
+    python3 scripts/shim_ownership.py                 # run the tests
+    python3 scripts/shim_ownership.py --sabotage      # and prove they bite
+    python3 scripts/shim_ownership.py --sabotage-all  # the audit: all x all
+    python3 scripts/shim_ownership.py --selftest      # the verdicts can fail
 
 `--sabotage` reverts each rule in the extracted source in turn and insists
-the suite FAILS for every one — the repo's "every guard is sabotage-
-verified" rule, made permanent instead of remembered. A patch that no
-longer applies is itself a failure: it means the guarded line was renamed
-or deleted, which is the thing this file exists to notice.
+that the test WRITTEN for it fails — the repo's "every guard is sabotage-
+verified" rule, made permanent instead of remembered. Each entry in
+SABOTAGES names its catchers, the test or tests written for its rule, and
+only they run, in order: the first to fail proves the rule. A rule that no
+named catcher catches is UNPROVEN even when some other test fails, because
+a neighbour failing for its own reason is no evidence that this rule is
+guarded; the rest of the suite then runs, to say which tests did catch it.
+A patch that no longer applies is itself a failure: it means the guarded
+line was renamed or deleted, which is the thing this file exists to notice.
+So is a catcher that TESTS does not list.
+
+Until 2026-09-29 every test ran against every rule, so the sabotage cost
+tests x rules and grew with each rule added: 59 tests against 55 rules,
+with the base run, was 3,304 runs, most of each an `asyncio.sleep` settle.
+It is now the base run and one run per rule, 114, a second catcher running
+only when the first misses.
+
+`--sabotage-all` is that whole run, kept for audits: every test against
+every rule, each rule's failing tests listed, judged by the named catchers
+as the default is. It is how the catchers are re-derived when rules
+change. CI runs `--sabotage`; `poe test-shim` runs `--selftest` first,
+which proves on real rules and real tests, in memory, that a catcher that
+does not catch, a catcher TESTS does not list and a patch that does not
+apply each fail the run.
 """
 
 import asyncio
@@ -1928,23 +1950,37 @@ TESTS = [
 # One per rule, each reverting it to the shape that shipped the bug (or, for
 # the ack clamp, to the shape that has it). Applied to the extracted source,
 # so nothing on disk is touched and CI can run this unattended.
+#
+# An entry is (rule, guarded source, reverted source, catchers). The
+# catchers are the tests WRITTEN for the rule, chosen by name, docstring and
+# assertion rather than by which tests happen to fail, and the rule is
+# proven only when one of them fails. `--sabotage-all` lists every test
+# that fails for every rule, which is where a new rule's catcher comes from:
+# the test written for it. When every test that fails was written for
+# something else, the rule has no test of its own yet, and naming one of
+# them anyway hides that. The table's were derived that way on 2026-09-29,
+# and every rule's own test was among the tests that fail for it.
 
 SABOTAGES = [
     (
         "the streaming mark goes on the current task, not the slot's owner",
         "                task = _exec_slot_task.get(slot) or asyncio.current_task()",
         "                task = asyncio.current_task()",
+        ("test_a_stream_sent_from_a_child_task_marks_the_owner",),
     ),
     (
         "a send is judged by the calling task, not the connection's",
         "    return getattr(owner, '_m0_disconnected', False) or owner.done()",
         "    import asyncio\n\n"
         "    return getattr(asyncio.current_task(), '_m0_disconnected', False)",
+        ("test_a_gone_sockets_hook_can_send_to_the_others",
+         "test_a_stale_socket_send_never_reaches_the_slots_next_client"),
     ),
     (
         "a finished connection is not gone",
         "    return getattr(owner, '_m0_disconnected', False) or owner.done()",
         "    return getattr(owner, '_m0_disconnected', False)",
+        ("test_a_send_from_a_finished_socket_is_refused",),
     ),
     (
         "a send to a gone socket returns quietly",
@@ -1952,6 +1988,8 @@ SABOTAGES = [
         "        if closed[0]:",
         "            return\n"
         "        if closed[0]:",
+        ("test_a_stale_socket_send_never_reaches_the_slots_next_client",
+         "test_a_send_from_a_finished_socket_is_refused"),
     ),
     (
         "a disconnect is not stamped on the owning task",
@@ -1959,11 +1997,13 @@ SABOTAGES = [
         "    if owner is not None:\n"
         "        owner._m0_disconnected = True",
         "    owner = _exec_slot_task.get(slot)",
+        ("test_a_lingering_task_does_not_end_its_successors_stream",),
     ),
     (
         "_task_done cleans up whoever finishes",
         "    if _exec_slot_task.get(slot) is t:",
         "    if t is not None:",
+        ("test_a_stale_task_does_not_wipe_its_successors_slot_state",),
     ),
     (
         "websocket.send is not credit-gated",
@@ -1972,6 +2012,7 @@ SABOTAGES = [
         "                raise ClientDisconnected()\n"
         "            _exec_put(('ws_send', slot, opcode, payload))",
         "            _exec_put(('ws_send', slot, opcode, payload))",
+        ("test_a_websocket_send_waits_for_its_window",),
     ),
     (
         "a websocket window is never seeded",
@@ -1979,21 +2020,25 @@ SABOTAGES = [
         "            _exec_credit_evts[slot] = asyncio.Event()\n"
         "            resolved[0] = True",
         "            resolved[0] = True",
+        ("test_a_websocket_send_waits_for_its_window",),
     ),
     (
         "a disconnect cancels the socket's task",
         "    task._m0_ws = True\n",
         "    task._m0_ws = True\n    _exec_stream_tasks[slot] = task\n",
+        ("test_a_socket_disconnect_reaches_the_app_through_receive",),
     ),
     (
         "a receive after the disconnect waits",
         "        if ended[0] is not None:\n",
         "        if False:\n",
+        ("test_a_receive_after_the_disconnect_says_so_again",),
     ),
     (
         "the drain waits for every socket",
         "        if getattr(t, '_m0_ws', False):\n            t.cancel()\n",
         "        pass\n",
+        ("test_the_drain_ends_a_socket_blocked_outside_receive",),
     ),
     (
         "a response is answered when the application returns",
@@ -2001,6 +2046,8 @@ SABOTAGES = [
         "            body, self.chunks = b''.join(self.chunks), []\n"
         "            _exec_put(('done', self.slot, self.status, self.headers, body))",
         "            return",
+        ("test_a_response_is_answered_at_its_final_body",
+         "test_an_error_after_the_final_body_keeps_the_apps_response"),
     ),
     (
         "a stream is ended when the application returns",
@@ -2009,21 +2056,26 @@ SABOTAGES = [
         "                return",
         "                    self.completed = False\n"
         "                return",
+        ("test_a_stream_ends_at_its_final_body",),
     ),
     (
         "an ended stream stays cancellable",
         "                        _exec_stream_tasks.pop(self.slot, None)\n",
         "                        pass\n",
+        ("test_a_stream_ends_at_its_final_body",),
     ),
     (
         "the log gets the exception's name only",
         "    return head + '\\n' + '\\n'.join(lines)",
         "    return head",
+        ("test_an_error_before_the_response_is_logged_with_its_traceback",
+         "test_a_late_error_is_logged_with_its_traceback"),
     ),
     (
         "an application error closes the socket with 1000",
         "                _exec_put(('ws_close', slot, 1011 if failed else 1000))",
         "                _exec_put(('ws_close', slot, 1000))",
+        ("test_a_socket_whose_app_raises_closes_with_1011",),
     ),
     (
         "a client's departure is logged as an application error",
@@ -2031,6 +2083,7 @@ SABOTAGES = [
         "                _exec_put(('stream_note', slot, _describe(exc)))",
         "            if exc is not None:\n"
         "                _exec_put(('stream_note', slot, _describe(exc)))",
+        ("test_a_disconnect_that_escapes_the_app_is_not_an_error",),
     ),
     (
         "a socket's own close does not end what it may send",
@@ -2038,11 +2091,14 @@ SABOTAGES = [
         "            # This socket's own close has gone out: nothing more may.",
         "        if False:\n"
         "            # This socket's own close has gone out: nothing more may.",
+        ("test_a_socket_the_app_closed_refuses_its_kept_send",
+         "test_a_second_close_is_not_a_rejection"),
     ),
     (
         "a socket's finally closes a socket it already closed",
         "            if accepted[0] and not closed[0]:",
         "            if accepted[0]:",
+        ("test_a_socket_the_app_closed_does_not_close_the_next_client",),
     ),
     (
         "a socket's own close does not end its receive()",
@@ -2052,6 +2108,7 @@ SABOTAGES = [
         "            if False:\n"
         "                ended[0] = {\n"
         "                    'type': 'websocket.disconnect',",
+        ("test_a_receive_after_the_apps_own_close_is_a_disconnect",),
     ),
     (
         "a send after the response is over still answers",
@@ -2059,6 +2116,7 @@ SABOTAGES = [
         "            # The response is over",
         "        if self.completed:\n"
         "            # The response is over",
+        ("test_a_leftover_task_never_answers_the_slots_next_request",),
     ),
     (
         "a body after the final body answers again",
@@ -2066,6 +2124,7 @@ SABOTAGES = [
         "            # The response is over",
         "        if self.task.done():\n"
         "            # The response is over",
+        ("test_a_body_after_the_final_body_answers_nothing",),
     ),
     (
         "a receive after the response waits",
@@ -2073,6 +2132,7 @@ SABOTAGES = [
         "            # Answered, or gone",
         "        if _task_gone(self.task):\n"
         "            # Answered, or gone",
+        ("test_receive_after_the_response_is_a_disconnect",),
     ),
     (
         "a gone request's receive waits on the slot's future",
@@ -2080,6 +2140,7 @@ SABOTAGES = [
         "            # Answered, or gone",
         "        if self.completed:\n"
         "            # Answered, or gone",
+        ("test_a_gone_requests_receive_says_so_at_once",),
     ),
     (
         "a socket is charged for credit after it has gone",
@@ -2087,6 +2148,7 @@ SABOTAGES = [
         "        raise ClientDisconnected()\n"
         "    _exec_credits[slot] -= nbytes",
         "    _exec_credits[slot] -= nbytes",
+        ("test_a_gone_socket_is_not_charged_for_the_credit_it_woke_to",),
     ),
     (
         "a stream is charged for credit after it has gone",
@@ -2094,11 +2156,13 @@ SABOTAGES = [
         "                # Woken by an ack and a disconnect in the same pass",
         "            if False:\n"
         "                # Woken by an ack and a disconnect in the same pass",
+        ("test_a_gone_stream_is_not_charged_for_the_credit_it_woke_to",),
     ),
     (
         "a finished background task cleans whatever the slot holds",
         "        if _exec_slot_task.get(self.slot) is t:",
         "        if True:",
+        ("test_a_finished_background_task_leaves_the_next_stream_alone",),
     ),
     (
         "a gone stream's final body still ends the stream",
@@ -2106,6 +2170,7 @@ SABOTAGES = [
         "                        _exec_put(('stream_end', self.slot))",
         "                    if True:\n"
         "                        _exec_put(('stream_end', self.slot))",
+        ("test_a_gone_streams_final_body_does_not_end_the_next_stream",),
     ),
     (
         "a dropped send does not yield",
@@ -2115,6 +2180,7 @@ SABOTAGES = [
         "    await asyncio.sleep(0)",
         "    # land.\n"
         "    return",
+        ("test_a_tight_producer_into_a_gone_stream_still_yields",),
     ),
     (
         "a client's departure after the response is logged",
@@ -2126,6 +2192,7 @@ SABOTAGES = [
         "                _exec_put(\n"
         "                    (\n"
         "                        'log',",
+        ("test_a_client_disconnect_after_the_response_is_not_logged",),
     ),
     (
         "the task is recorded only by spawn",
@@ -2133,6 +2200,7 @@ SABOTAGES = [
         "            # asyncio.eager_task_factory",
         "        if False:\n"
         "            # asyncio.eager_task_factory",
+        ("test_an_eager_task_factory_still_ends_its_stream",),
     ),
     (
         "a drain ack is added rather than clamped to the window",
@@ -2141,16 +2209,19 @@ SABOTAGES = [
         "                    credited = _ASGI_CREDIT_WINDOW\n"
         "                _exec_credits[slot] = credited",
         "                _exec_credits[slot] += n",
+        ("test_a_stale_ack_cannot_inflate_the_successors_window",),
     ),
     (
         "a HEAD streams like a GET",
         "                if self.head or self.status < 200 or self.status in (204, 304):",
         "                if self.status < 200 or self.status in (204, 304):",
+        ("test_a_head_is_answered_at_its_first_streamed_body_and_never_streams",),
     ),
     (
         "a status with no content streams",
         "                if self.head or self.status < 200 or self.status in (204, 304):",
         "                if self.head:",
+        ("test_a_bodiless_status_is_answered_at_its_first_streamed_body",),
     ),
     (
         "a receive() parked before a HEAD's early answer is never woken",
@@ -2160,11 +2231,13 @@ SABOTAGES = [
         "                    if False:\n"
         "                        pass\n"
         "                    else:\n",
+        ("test_a_head_tells_a_listening_application_its_response_is_over",),
     ),
     (
         "a HEAD's application that never listens is never stopped",
         "                        _loop.call_later(_HEAD_GRACE, self._stop_unheard)",
         "                        pass",
+        ("test_a_head_stops_an_application_that_never_listens",),
     ),
     (
         "a body before its start is kept before it is refused",
@@ -2182,18 +2255,21 @@ SABOTAGES = [
         "                )\n"
         "            if False:\n"
         "                self.chunks.append(chunk)\n",
+        ("test_a_body_before_its_start_leaves_no_stray_bytes",),
     ),
     (
         "an HTTP spawn keeps the previous connection's stream task",
         "    _exec_stream_tasks.pop(slot, None)\n"
         "    cycle = _Cycle(slot, body)\n",
         "    cycle = _Cycle(slot, body)\n",
+        ("test_an_http_spawn_forgets_the_previous_connections_stream_task",),
     ),
     (
         "a WebSocket spawn keeps the previous connection's stream task",
         "    # socket's to cancel when its client leaves (PR 1 review M3).\n"
         "    _exec_stream_tasks.pop(slot, None)\n",
         "    # socket's to cancel when its client leaves (PR 1 review M3).\n",
+        ("test_a_websocket_spawn_forgets_the_previous_connections_stream_task",),
     ),
     (
         "the drain waits on an HTTP task for ever",
@@ -2203,11 +2279,14 @@ SABOTAGES = [
         "        for t in pending:\n"
         "            pass\n"
         "        if pending:\n",
+        ("test_the_drain_ends_an_http_task_that_never_ends",),
     ),
     (
         "an error's summary is said twice",
         "    if end >= len(summary) and lines[end - len(summary):end] == summary:\n",
         "    if False:\n",
+        ("test_an_error_is_described_once",
+         "test_an_application_error_is_described_once"),
     ),
     (
         "a WSGI HEAD joins its whole body",
@@ -2215,16 +2294,19 @@ SABOTAGES = [
         "            and _lazily_produced(",
         "            and False\n"
         "            and _lazily_produced(",
+        ("test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body",),
     ),
     (
         "a disconnect's close code is dropped",
         "                    int.from_bytes(data[9:11], 'little') if len(data) == 11 else 0,\n",
         "                    0,\n",
+        ("test_a_socket_hears_its_clients_close_code",),
     ),
     (
         "the drain starts twice",
         "    if stopping and not _exec_draining[0]:\n",
         "    if stopping:\n",
+        ("test_the_drain_runs_once",),
     ),
     (
         "a task left behind reaches the port",
@@ -2232,11 +2314,13 @@ SABOTAGES = [
         "        return\n"
         "    stopping = _port.dispatch(ev)\n",
         "    stopping = _port.dispatch(ev)\n",
+        ("test_a_task_left_behind_never_reaches_the_port",),
     ),
     (
         "background work is cancelled at the pill",
         "            rest, timeout=max(0.0, _HTTP_DRAIN_GRACE - _WS_DRAIN_GRACE)\n",
         "            rest, timeout=0\n",
+        ("test_background_work_inside_the_grace_finishes",),
     ),
     (
         "background work is cancelled with the sockets",
@@ -2245,12 +2329,14 @@ SABOTAGES = [
         "    rest = ",
         "        t.cancel()\n"
         "    rest = ",
+        ("test_background_work_inside_the_grace_finishes",),
     ),
     (
         "a cancelled task is waited on for as long as it runs",
         "            _, stuck = await asyncio.wait(pending, timeout=_CANCEL_GRACE)\n",
         "            await asyncio.gather(*pending, return_exceptions=True)\n"
         "            stuck = ()\n",
+        ("test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain",),
     ),
     (
         "an eager stream's own entry is dropped at its spawn",
@@ -2260,6 +2346,7 @@ SABOTAGES = [
         "    cycle = _Cycle(slot, body)\n"
         "    task = _loop.create_task(cycle.run(scope))\n"
         "    _exec_stream_tasks.pop(slot, None)\n",
+        ("test_an_eager_stream_is_still_cancelled_at_its_disconnect",),
     ),
     (
         "a WSGI HEAD's body is never closed",
@@ -2267,11 +2354,13 @@ SABOTAGES = [
         "        # A body that produced nothing",
         "                pass\n"
         "        # A body that produced nothing",
+        ("test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body",),
     ),
     (
         "a HEAD to a body that produced nothing drops write()",
         "        _body = b'' if produced else b''.join(written)\n",
         "        _body = b''\n",
+        ("test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write",),
     ),
     (
         "an inverted disconnect overtakes the messages before it",
@@ -2279,30 +2368,36 @@ SABOTAGES = [
         "        reader()\n"
         "    _exec_on_disconnect(slot, code)\n",
         "    _exec_on_disconnect(slot, code)\n",
+        ("test_an_inverted_disconnect_follows_the_messages_before_it",),
     ),
     (
         "a stop a flush's pass read waits for a later pass to see it",
         "    if _port.flush() and not _exec_draining[0] and _exec_start_drain[0] is not None:\n"
         "        _exec_start_drain[0]()\n",
         "    _port.flush()\n",
+        ("test_a_stop_read_by_a_flush_starts_the_drain",),
     ),
     (
         "the inverted loop never registers its drain starter",
         "    _exec_start_drain[0] = _start_drain\n",
         "",
+        ("test_a_stop_read_by_a_flush_starts_the_drain",),
     ),
     (
         "work scheduled at import is not named",
         "    if isinstance(e, RuntimeError) and str(e).startswith(_NO_LOOP):",
         "    if False:",
+        ("test_work_scheduled_at_import_is_refused_by_name",),
     ),
 ]
 
 
-def run_suite(source, verbose=True):
-    """Every test against one source. Returns the list of failures."""
+def run_suite(source, verbose=True, tests=None, first=False):
+    """Each test against one source, on a Harness of its own: all of TESTS,
+    or `tests`. Returns the failures as (name, exception) pairs; `first`
+    stops at the first."""
     failures = []
-    for test in TESTS:
+    for test in TESTS if tests is None else tests:
         h = Harness(source)
         try:
             test(h)
@@ -2319,50 +2414,198 @@ def run_suite(source, verbose=True):
                 h.close()
             except Exception:
                 pass
+        if first and failures:
+            break
     return failures
 
 
-def run_sabotages(source):
-    """Each rule reverted in turn; every one must break the suite."""
+def run_sabotages(source, whole=False, sabotages=None, tests=None):
+    """Each rule reverted in turn, and proven by a test written for it.
+
+    An entry is (name, old, new, catchers), `catchers` naming the tests in
+    TESTS written for the rule. Only they run, in order, and the first to
+    fail proves it. When none fails the rule is UNPROVEN, whatever else
+    would, and the rest of the suite runs to say which tests did catch it.
+    `whole` (`--sabotage-all`) runs every test against every rule and lists
+    each rule's failures, judged by the named catchers all the same.
+
+    Returns the names of the rules not proven. A patch that does not apply
+    and a catcher TESTS does not list are among them: each is the table gone
+    stale, and runs nothing."""
+    sabotages = SABOTAGES if sabotages is None else sabotages
+    tests = TESTS if tests is None else tests
+    listed = {t.__name__: t for t in tests}
     unproven = []
-    for name, old, new in SABOTAGES:
+    for name, old, new, catchers in sabotages:
+        if isinstance(catchers, str):
+            # `("test_x")` is a string, not a tuple of one.
+            catchers = (catchers,)
         if source.count(old) != 1:
             print("SABOTAGE PATCH DOES NOT APPLY: %s" % name)
             print("  the guarded lines were renamed, reformatted or removed; "
                   "update SABOTAGES in this file, or the guard is untested")
             unproven.append(name)
             continue
+        strays = [c for c in catchers if c not in listed]
+        if strays or not catchers:
+            print("SABOTAGE CATCHER NOT IN TESTS: %s: %s"
+                  % (name, ", ".join(strays) or "none named"))
+            print("  name the test written for this rule as TESTS lists it, "
+                  "or the guard is untested")
+            unproven.append(name)
+            continue
         broken = source.replace(old, new)
-        failures = run_suite(broken, verbose=False)
-        if failures:
-            print("proven  %-58s (%d test(s) fail: %s)"
-                  % (name, len(failures),
-                     ", ".join(n for n, _ in failures)))
+        if whole:
+            failed = [n for n, _ in run_suite(broken, verbose=False,
+                                              tests=tests)]
+            if set(failed) & set(catchers):
+                print("proven  %-58s (%d test(s) fail: %s)"
+                      % (name, len(failed), ", ".join(failed)))
+                idle = [c for c in catchers if c not in failed]
+                if idle:
+                    print("        named but passing: %s" % ", ".join(idle))
+                continue
+        else:
+            caught = run_suite(broken, verbose=False,
+                               tests=[listed[c] for c in catchers],
+                               first=True)
+            if caught:
+                print("proven  %-58s (caught by %s)" % (name, caught[0][0]))
+                continue
+            failed = [n for n, _ in run_suite(
+                broken, verbose=False,
+                tests=[t for t in tests if t.__name__ not in catchers])]
+        unproven.append(name)
+        if failed:
+            print("UNPROVEN %s: no named catcher fails (%s); caught only by "
+                  "%s" % (name, ", ".join(catchers), ", ".join(failed)))
         else:
             print("UNPROVEN %s: the suite still passes with the rule "
                   "reverted" % name)
-            unproven.append(name)
     return unproven
 
 
-def main(argv):
+def selftest():
+    """The sabotage's verdicts can fail, shown on a real rule and real tests.
+
+    Each case is a table of one rule run through `main`, as `--sabotage` or
+    `--sabotage-all` runs it, over two tests that need no loop: one written
+    for the rule and one that passes with it reverted. The exit status is
+    checked, the verdict's line, and which tests ran. Every failure here is
+    an assertion inside a test or a refusal the harness prints, so nothing
+    dies by a signal."""
+    import contextlib
+    import io
+
+    listed = {t.__name__: t for t in TESTS}
+    rule = "an error's summary is said twice"
+    old, new = [(o, n) for name, o, n, _ in SABOTAGES if name == rule][0]
+    writ = "test_an_error_is_described_once"
+    other = "test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write"
+    ran = []
+
+    def spied(name):
+        def test(h):
+            ran.append(name)
+            listed[name](h)
+        test.__name__ = name
+        return test
+
+    tests = [spied(writ), spied(other)]
+    base = [writ, other]
+    proven = "proven  %-58s (caught by %s)" % (rule, writ)
+    missed = ("UNPROVEN %s: no named catcher fails (%s); caught only by %s"
+              % (rule, other, writ))
+    cases = [
+        # what the case shows, the flag, the table's one entry, the exit
+        # status, lines the output must hold, and the tests run against the
+        # reverted rule
+        ("the first named catcher to fail proves a rule, and nothing after "
+         "it runs",
+         "--sabotage", (rule, old, new, (writ, other)), 0, [proven], [writ]),
+        ("a later named catcher proves it when an earlier one passes",
+         "--sabotage", (rule, old, new, (other, writ)), 0, [proven],
+         [other, writ]),
+        ("a named catcher that does not catch leaves the rule UNPROVEN, "
+         "and the rest of the suite names what does",
+         "--sabotage", (rule, old, new, (other,)), 1, [missed],
+         [other, writ]),
+        ("a catcher TESTS does not list is refused, and nothing runs",
+         "--sabotage", (rule, old, new, ("test_nobody_wrote",)), 1,
+         ["SABOTAGE CATCHER NOT IN TESTS: %s: test_nobody_wrote" % rule], []),
+        ("a patch that does not apply is refused, and nothing runs",
+         "--sabotage", (rule, "a line the shim has not got\n", new, (writ,)),
+         1, ["SABOTAGE PATCH DOES NOT APPLY: %s" % rule], []),
+        ("a rule that nothing catches is UNPROVEN",
+         "--sabotage", (rule, old, old, (writ,)), 1,
+         ["UNPROVEN %s: the suite still passes with the rule reverted"
+          % rule], [writ, other]),
+        ("the audit runs every test, lists what fails, and names a catcher "
+         "that passed",
+         "--sabotage-all", (rule, old, new, (writ, other)), 0,
+         ["proven  %-58s (1 test(s) fail: %s)" % (rule, writ),
+          "        named but passing: %s" % other], [writ, other]),
+        ("the audit judges by the named catchers too",
+         "--sabotage-all", (rule, old, new, (other,)), 1, [missed],
+         [writ, other]),
+    ]
+    bad = 0
+    for what, flag, entry, status, verdicts, after in cases:
+        del ran[:]
+        out = io.StringIO()
+        wrong = []
+        try:
+            with contextlib.redirect_stdout(out):
+                got = main([flag], sabotages=[entry], tests=tests)
+        except Exception:  # noqa: BLE001 - a harness that raises has failed
+            got = None
+            wrong.append("raised:\n" + traceback.format_exc())
+        if got != status:
+            wrong.append("exit %s, not %d" % (got, status))
+        for verdict in verdicts:
+            if verdict not in out.getvalue().splitlines():
+                wrong.append("no line %r" % verdict)
+        if ran != base + after:
+            wrong.append("ran %r against the rule, not %r"
+                         % (ran[len(base):], after))
+        print("%s %s" % ("FAIL" if wrong else "ok  ", what))
+        if wrong:
+            bad += 1
+            for w in wrong:
+                print("       " + w)
+            print("       its output:\n" + out.getvalue())
+    if bad:
+        print("shim-ownership selftest: %d of %d case(s) failed"
+              % (bad, len(cases)))
+        return 1
+    print("shim-ownership selftest: %d cases OK" % len(cases))
+    return 0
+
+
+def main(argv, sabotages=None, tests=None):
+    if "--selftest" in argv:
+        return selftest()
+    sabotages = SABOTAGES if sabotages is None else sabotages
+    tests = TESTS if tests is None else tests
     source = shim_source()
     print("shim-ownership: %d lines of shim read from %s"
           % (len(source.splitlines()), os.path.relpath(SHIM, os.getcwd())))
-    failures = run_suite(source)
+    failures = run_suite(source, tests=tests)
     if failures:
         print("shim-ownership: %d test(s) failed" % len(failures))
         return 1
-    if "--sabotage" in argv:
-        print("--- sabotage ---")
-        unproven = run_sabotages(source)
+    whole = "--sabotage-all" in argv
+    if whole or "--sabotage" in argv:
+        print("--- sabotage%s ---"
+              % (": every test against every rule" if whole else ""))
+        unproven = run_sabotages(source, whole, sabotages, tests)
         if unproven:
             print("shim-ownership: %d guard(s) unproven" % len(unproven))
             return 1
         print("shim-ownership: %d tests OK, %d guards sabotage-proven"
-              % (len(TESTS), len(SABOTAGES)))
+              % (len(tests), len(sabotages)))
         return 0
-    print("shim-ownership: %d tests OK" % len(TESTS))
+    print("shim-ownership: %d tests OK" % len(tests))
     return 0
 
 
