@@ -3007,7 +3007,7 @@ mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -
 # lib reaps whatever it leaves. Two ports: the arm's, and the one above it
 # for the negative arm.
 spawn probe.log python3 scripts/accept_batch_probe.py "$out/pool_spike" $(free_port 2)
-wait $pid || fail "$(grep -m 1 ': FAIL: ' "$out/probe.log")"
+wait $pid || fail "$(grep -m 1 'smoke-accept-batch: ' "$out/probe.log")"
 cat "$out/probe.log"
 beyond=$(grep '^beyond_ms ' "$out/probe.log" | cut -d' ' -f2)
 bound=$(grep '^bound_ms ' "$out/probe.log" | cut -d' ' -f2)
@@ -7788,7 +7788,7 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
 # lib reaps whatever it leaves. The probe draws a port per row, upward from
 # this one, out of a run of forty.
 spawn doctor.log python3 scripts/host_doctor_probe.py "$out/host_check" $(free_port 40)
-wait $pid || fail "$(grep -m 1 ': FAIL: ' "$out/doctor.log")"
+wait $pid || fail "$(grep -m 1 'host_doctor_probe: FAIL' "$out/doctor.log")"
 cat "$out/doctor.log"
 echo "smoke-host-doctor OK"
 python3 scripts/emit.py --covers E30 --task smoke-host-doctor
@@ -7817,7 +7817,7 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
 # Spawned, so the servers the probe starts share its process group and the
 # lib reaps whatever it leaves. Five ports upward from this one, a phase each.
 spawn probe.log python3 scripts/parallel_runtime_probe.py "$out/host_parallel" $(free_port 5)
-wait $pid || fail "$(grep -m 1 ': FAIL: ' "$out/probe.log")"
+wait $pid || fail "$(grep -m 1 'parallel_runtime_probe: FAIL' "$out/probe.log")"
 cat "$out/probe.log"
 par=$(grep '^par_us ' "$out/probe.log" | cut -d' ' -f2)
 ser=$(grep '^ser_us ' "$out/probe.log" | cut -d' ' -f2)
@@ -7852,7 +7852,7 @@ M0SERVE_MOUNT_DIR=apps/serve_parallel/mount M0SERVE_INCLUDE=apps M0SERVE_OUT="$o
 # Spawned, so the servers the probe starts share its process group and the
 # lib reaps whatever it leaves. Three ports upward from this one, a phase each.
 spawn probe.log python3 scripts/serve_parallel_probe.py "$out/m0serve-par" bin/m0serve $(free_port 3)
-wait $pid || fail "$(grep -m 1 ': FAIL: ' "$out/probe.log")"
+wait $pid || fail "$(grep -m 1 'serve_parallel_probe: FAIL' "$out/probe.log")"
 cat "$out/probe.log"
 par=$(grep '^par_us ' "$out/probe.log" | cut -d' ' -f2)
 ser=$(grep '^ser_us ' "$out/probe.log" | cut -d' ' -f2)
