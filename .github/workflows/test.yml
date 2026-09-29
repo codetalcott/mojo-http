@@ -548,8 +548,8 @@ jobs:
       # from the connections it already serves. A pass admits at most one
       # batch of them, after the events of the ones it holds; before, the
       # epoll drain ran to EAGAIN and a keep-alive request waited out the
-      # whole backlog (625 ms behind 120 queued 5 ms requests). Both legs;
-      # the knob-off arm, the old drain, is asserted on Linux.
+      # whole backlog (625 ms behind 120 queued 5 ms requests). Both legs,
+      # the batch and the knob-off arm (the old drain) counted on both.
       - name: Smoke test the accept batch
         run: uv run poe smoke-accept-batch
       # The drain's other half (SPEC D9): a request whose body is still

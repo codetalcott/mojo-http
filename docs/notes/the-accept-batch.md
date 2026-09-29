@@ -63,10 +63,11 @@ one-second wait, which a wait that blocks between owed batches runs to.
 The widest honest gap is one request. Here (Linux, 4 vCPUs) a request
 costs 10.6–10.7 ms; `/fast` is answered 153–154 ms after the blocker,
 against one and a half batches (about 256 ms); the burst's last answer
-1227 ms after it, the widest gap between two answers 11 ms; and the
-knob-off arm 1225 ms, against a floor of two thirds of the burst (about
-850 ms). On the macOS runner the widest gap measured 54 ms (a request at
-36.2 ms, the burst 3908 ms) and 100 ms (the run above).
+1227 ms after it, the widest gap between two answers 11 ms; and with the
+knob off, `/fast` 1225 ms after it, the whole burst (then held to a floor
+of two thirds of its cost; it is counted now, below). On the macOS runner
+the widest gap measured 54 ms (a request at 36.2 ms, the burst 3908 ms)
+and 100 ms (the run above).
 
 The second row is why the batch runs where it does. The blocker is itself
 admitted inside a listen batch, and that batch goes on to take 15 more of
@@ -130,17 +131,91 @@ better to the admission's cost, and was not chosen: a count is what the
 probe can hold the loop to, and a clock read per accept buys nothing a
 smaller count does not.
 
+## Counted on a stopped server (2026-09-29)
+
+The macOS leg held less than this note said. Unstopped, the blocker
+arrives alone: kqueue reports a backlog of one, so the batch the blocker
+is admitted in is the blocker alone, and the burst queues behind a pass
+that has already sized its batch. `/fast` goes next, 0–1 ms after the
+blocker in every macOS CI run of 2026-09-28 and 29 (27 runs), with none
+of the burst before it, cap or no cap: 10 of 10 rounds counted none here
+with the default batch, and 5 of 5 with `M0_ACCEPT_BATCH=0`. So on macOS
+the arm held the burst's answers and its widest gap, and `/fast`'s bound
+held nothing.
+
+Stopping the server while the blocker and the burst queue, the negative
+arm's shape since a race unstopped on Linux let the loop serve the blocker
+from a later pass (the probe's docstring), puts the whole burst in the
+backlog before the loop runs, and kqueue then reports all of it.
+But a bound in the measured cost is still a clock, and the macOS runners'
+request cost moved from 16.6 to 97.5 ms between runs and by up to 2.95×
+within one: a stopped round under that bound would have failed 6 of those
+27 runs.
+
+A stopped round's order needs no clock. The loop answers one request after
+another, so the burst answers that precede `/fast`'s are the batch `/fast`
+waited behind. The probe counts the burst sockets readable the moment
+`/fast`'s answer has been read (each one answered, when read later). The
+next burst answer trails `/fast`'s by a whole request (10.1–15.0 ms here,
+10.0–11.5 ms in the Linux container), while `/fast` trails the last one
+counted by 0.10–0.40 ms: the count is exact unless the probe stalls a
+whole request between the two reads, and a stall only adds to it. Arrival
+times read per socket by a thread of their own agreed with that count in
+all 90 rounds, 60 on macOS and 30 in the container, with no two burst
+answers out of queue order.
+
+| the stopped round | burst answered before `/fast` |
+|---|---|
+| the default batch, macOS (20 runs of the gate) | 15 in every run |
+| `M0_ACCEPT_BATCH=0`, macOS (20 runs) | 120 in every run |
+| the default batch, Linux container (20 runs) | 15 in every run |
+| `M0_ACCEPT_BATCH=0`, Linux container (20 runs) | 120 in every run |
+
+Fifteen is the blocker's batch less the blocker. The stopped arm allows
+between one and one and a half batches (24), and the knob-off arm must put
+two thirds of the burst (80) before `/fast`.
+
+The stop did not hold one thing on its own. On macOS a stop takes effect
+when a thread returns to user space, so a loop waiting in `kevent` when it
+lands is woken by the next arrival, collects what is ready then, and stops
+on its way out with that list, which it processes first when it
+continues. The round sent its proof and connected the blocker at once;
+when the blocker's connection beat that collection, the listener was
+reported at the depth it had then, one, and the round lost its shape:
+`/fast` straight after the blocker, none of the burst before it. That was
+11 of 120 stopped rounds on the gate's own ports and 0 of 80 on fresh
+ones; it comes and goes with the machine (the old order lost none of 40
+an hour later), but it follows the order exactly: with the blocker
+connected 50 ms before the proof, 8 of 8 first passes reported the
+listener at one; with the proof 50 ms first, 8 of 8 held the proof alone
+and the next pass the listener at 121 (a copy of the loop printing each
+pass's events). So the
+blocker now connects a quarter of a second after the proof. A round that
+still loses its shape fails by name, none of the burst before `/fast`,
+where it used to pass with nothing: a count of none is under the bound
+too. Linux's stop interrupts `epoll_wait` before it collects anything.
+
+Sabotaged on both legs, the stopped arm with the cap disabled, once by the
+knob and once by `_admit_batches` no longer capping its budget: each
+counted all 120 of the burst before `/fast`, against 24, and failed on
+macOS and in the Linux container. With the arm's batch set to one, the
+blocker's batch is the blocker alone, the shape a round loses, and the
+floor failed it on both: none of the burst before `/fast`.
+
 ## What the gate proves, and what it cannot
 
-The probe holds three things on both legs: `/fast` answered within one
-and a half batches of the blocker's answer, in the measured cost of a
-request (the batch, deferred); all 120 burst connections answered, a batch
-stranded behind the edge-triggered listener timing out instead; and no two
-of those answers more than half a second apart, which a wait that blocked
-between owed batches (up to a second each, the loop's idle timeout)
-exceeds, its total printed beside it. On Linux the same probe with
-`M0_ACCEPT_BATCH=0` must show at least two thirds of the burst, so the
-probe is known to see the drain it guards against.
+On both legs: all 120 burst connections answered, a batch stranded behind
+the edge-triggered listener timing out instead; no two of those answers
+more than half a second apart, which a wait that blocked between owed
+batches (up to a second each, the loop's idle timeout) exceeds, its total
+printed beside it; between one and one and a half batches of the burst
+answered before `/fast` on a stopped server, the batch counted; and with
+`M0_ACCEPT_BATCH=0` at least two thirds of it, so the probe is known to see
+the drain it guards against. On Linux also `/fast` answered within one and
+a half batches of the blocker's answer, in the measured cost of a request,
+unstopped: the batch timed, in the shape a server meets. On macOS that
+bound is asserted and holds nothing, the unstopped blocker's batch being
+the blocker alone.
 
 Sabotaged by hand before landing, one rule at a time against the probe as
 committed, each caught by its own check: no cap (`/fast` 1225 ms after the
@@ -149,11 +224,6 @@ behind the listener), a wait that blocks while a batch is owed (its
 widest gap 1012 ms, the burst 7237 ms after the blocker against 1295 of
 work),
 and the batch taken where the listen event falls in the pass (480 ms).
-
-Not asserted on macOS: kqueue's depth bounds its drain to what was queued,
-and with accepts taken after the pass's other events, the knob alone does
-not recreate the old order there, so the negative arm would test the
-platform rather than the rule.
 
 Not measured by it: the hand-off door. Accept sharing already skips a
 sibling that has been inside a pass for over 2 ms, so a busy worker is

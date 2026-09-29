@@ -1079,7 +1079,7 @@ Properties of the design, not defects to fix in passing:
   `max_connections` accepts' worth — the old bound, because under a flood
   the backlog never empties and the callback must return for the
   application's tasks to run. `M0_ACCEPT_BATCH=0` is the A/B knob;
-  `smoke-accept-batch` is the gate on both legs, its negative arm on Linux.
+  `smoke-accept-batch` counts the batch and the knob's drain on both legs.
 - **Graceful shutdown is opt-in, and armed after the fork.**
   `install_shutdown_signals()` returns the fd to pass as `shutdown_read_fd`;
   its handler writes one byte to that pipe and nothing else. Dispositions and
