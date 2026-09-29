@@ -36,6 +36,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
+from sabotage_lib import own_tmpdir
+
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = Path("deploy/mojo/Dockerfile")
 ABOUT = Path("apps/blobs/about.mojo")
@@ -230,4 +232,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with own_tmpdir("sabotage-mojo-image"):
+        sys.exit(main())

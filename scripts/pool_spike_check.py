@@ -16,11 +16,12 @@ import http.client
 import json
 import os
 import signal
-import socket
 import subprocess
 import sys
 import threading
 import time
+
+from probelib import free_port
 
 FAILURES: list[str] = []
 
@@ -31,15 +32,9 @@ def check(ok: bool, label: str) -> None:
         FAILURES.append(label)
 
 
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
 class Server:
     def __init__(self, binary: str, pool_threads: int) -> None:
-        self.port = _free_port()
+        self.port = free_port()
         env = dict(os.environ)
         env["M0_PORT"] = str(self.port)
         env["M0_POOL_THREADS"] = str(pool_threads)

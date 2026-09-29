@@ -45,6 +45,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from sabotage_lib import own_tmpdir
+
 ROOT = Path(__file__).resolve().parents[1]
 M0 = "packaging/m0/src/m0/"
 ARM, UNIT = "arm", "unit"
@@ -230,4 +232,5 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    with own_tmpdir("sabotage-m0-wheel"):
+        main()

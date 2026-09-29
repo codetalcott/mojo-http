@@ -742,7 +742,9 @@ Properties of the design, not defects to fix in passing. Each names its note.
   admitted it; `leave` wins over the per-pass stores. One worker pays
   nothing (`active()` is false). `M0_ACCEPT_SHARE=0` is the A/B knob;
   `smoke-accept-spread` gates both CI legs, its knob-off negative arm on
-  macOS only.
+  macOS only. On macOS each channel stays in flight (`_anchor_channels`) or
+  XNU's collector flushes its hand-offs, and `recv_fd` omits `MSG_DONTWAIT`,
+  which fails EAGAIN while the collector's scan holds the buffer lock.
 - **A pass admits one batch of new connections, AFTER the events of those
   it holds** (`ACCEPT_BATCH`, 16; SPEC C8; docs/notes/the-accept-batch.md).
   Both listeners are edge-triggered, so what a batch leaves is OWED
