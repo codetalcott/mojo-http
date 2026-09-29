@@ -612,7 +612,9 @@ shell = "python3 scripts/check_task_shells.py && python3 scripts/check_task_shel
 
 # m0-sqlite depends on nothing in this repo — it is a sibling of m0-core and
 # m0-http, not a layer on them — so it needs no -I at build time, and consumers
-# need only -I packages/m0-sqlite. It links against the system libsqlite3.
+# need only -I packages/m0-sqlite. It links NOTHING: libsqlite3 is opened with
+# dlopen at run time, from M0_LIBSQLITE3 or a search path (SPEC O17), so a
+# binary that imports this package carries no libsqlite3 dependency.
 [tool.poe.tasks.build-sqlite]
 help = "Build m0-sqlite package"
 shell = "cd packages/m0-sqlite && mojo precompile src -o m0_sqlite.mojoc"
