@@ -40,29 +40,6 @@ from lightbug_http.http import is_bodiless_status
 from m0_http.reply import reason_phrase
 
 from .bridge import PyBridge
-from .environ import span_has_control_bytes
-
-
-def has_control_bytes(value: String) -> Bool:
-    """Whether `value` carries a byte that would break header framing.
-
-    CR and LF end a header line, so either one inside a value or a name
-    lets the rest of that string be read as further headers — and, after a
-    blank line, as a body the application never wrote. NUL is included
-    because it terminates a C string and this repo hands header bytes to
-    `sendfile`/`send` paths and to Python.
-
-    The check exists because the alternative was trusting every
-    application: `write_latin1_to` emits `name: value\\r\\n` with no
-    inspection, so an app that reflected a query parameter into a header
-    could split its own response. Django and Werkzeug reject these
-    themselves, but a bare WSGI app has nothing between it and the socket,
-    and the reason phrase is unvalidated even by the frameworks that do
-    check header pairs. uvicorn and gunicorn both refuse them; so does
-    this now. The bridge applies the byte-span form
-    (`span_has_control_bytes`) to every header it reads.
-    """
-    return span_has_control_bytes(value.as_bytes())
 
 
 def split_status(status: String) -> Tuple[Int, String]:
@@ -72,11 +49,14 @@ def split_status(status: String) -> Tuple[Int, String]:
     raising: the application already ran, and a bad status is not worth
     discarding a real body over.
 
-    A reason phrase carrying CR/LF/NUL is dropped to the empty string: it
-    is written verbatim into the status line, so it is the one part of an
-    application's response that frameworks generally do not validate and
-    that would split the response just as a header value would. The code
-    is kept — the client still gets the status the app chose.
+    The phrase is kept as the application wrote it, CR, LF and NUL
+    included. It is the one part of a response frameworks that validate
+    header pairs leave alone, and it is written into the status line --
+    by the fork's encoders, which are the only readers of `status_text`
+    and each write an empty phrase in place of one that would split the
+    response (SPEC G1). This function emptied it too until 2026-09-29, a
+    second copy of that rule with nothing left to protect. The code is
+    kept either way: the client still gets the status the app chose.
     """
     var space = status.find(" ")
     if space < 0:
@@ -87,8 +67,6 @@ def split_status(status: String) -> Tuple[Int, String]:
     try:
         var code = Int(String(status[byte=:space]).strip())
         var text = String(String(status[byte=space + 1 :]).strip())
-        if has_control_bytes(text):
-            return (code, String(""))
         return (code, text^)
     except:
         return (500, String("Internal Server Error"))

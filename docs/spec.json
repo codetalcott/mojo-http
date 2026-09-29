@@ -887,7 +887,7 @@
       "category": "G. Security hardening",
       "capability": "An injected status reason phrase is emptied, not transmitted, and its code kept, on every response the server writes",
       "status": "verified",
-      "evidence": "`test_response_splitting.mojo:test_an_injected_reason_phrase_is_emptied_and_the_code_kept` (every PR) \u2014 judged on the bytes of both encoders (`encode`, `encode_into`) and the printed form, which every response passes through, Mojo-native and gateway alike. Until 2026-09-28 the rule lived only in m0-wsgi's `split_status`, which still empties an application's phrase as it reads it (`test_response.mojo:test_status_reason_with_crlf_is_emptied_not_transmitted`)"
+      "evidence": "`test_response_splitting.mojo:test_an_injected_reason_phrase_is_emptied_and_the_code_kept` (every PR) \u2014 judged on the bytes of both encoders (`encode`, `encode_into`) and the printed form, which every response passes through, Mojo-native and gateway alike. Until 2026-09-28 the rule lived only in m0-wsgi's `split_status`, whose copy was deleted on 2026-09-29 as redundant: the encoders are `status_text`'s only readers, and `split_status` now passes the phrase on and keeps the code (`test_response.mojo:test_an_injected_status_keeps_its_code`)"
     },
     {
       "id": "G2",
