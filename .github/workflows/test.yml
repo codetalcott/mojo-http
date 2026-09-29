@@ -858,10 +858,6 @@ jobs:
       # as XML, and the slash redirect and HTML 404 from the app behind it.
       - name: Smoke test the documentation site
         run: uv run poe smoke-site
-      # Both ends of the wire in Mojo: the client dials, sends, and parses
-      # against the notes API, including the error and refusal paths.
-      - name: Smoke test the HTTP client
-        run: uv run poe smoke-client
       # RFC 6455 spoken raw from python's stdlib: handshake with the accept
       # key verified, masked echo, fragment reassembly, ping/pong both ways,
       # heartbeat cadence bounds, the close handshake to the TCP FIN, and a

@@ -1830,8 +1830,8 @@
       "section": "M",
       "category": "M. Deployment and operations",
       "capability": "An HTTP client in Mojo, for server-to-server calls",
-      "status": "verified",
-      "evidence": "`Smoke test the HTTP client` (every PR)"
+      "status": "out of scope",
+      "evidence": "removed 2026-09-29: no application called it, it spoke no TLS, and a blocking call made from a view on the loop stalls every connection that loop holds. A client comes back as a design of its own that answers TLS, where the call runs (a pool thread or the loop) and connection reuse \u2014 [DECISIONS](DECISIONS.md) D55"
     },
     {
       "id": "M15",

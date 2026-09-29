@@ -1,7 +1,7 @@
 # What the m0 wheel promises — 2026-09-29
 
-A design note from the engineering record. D54 is the decision; SPEC G9
-moves to `out of scope`.
+A design note from the engineering record. D54 and D55 are the decisions;
+SPEC G9 and M14 move to `out of scope`.
 
 ## The question
 
@@ -44,11 +44,11 @@ decision of 2026-09-29 is that Siren/GRAIL on m0 is not a product aim.
 ## What was decided
 
 **The packages ship what the application layer and `m0serve` use.** Each
-name above left the tree, with its tests. Two moved rather than left:
-`stats_ints` went into `bench_sqlite.mojo`, so the aggregate figure in
-`docs/SQLITE_PERFORMANCE.md` stays reproducible, and the bench refuses to
-time an answer that differs from SQLite's own, which is the check that
-mattered. SPEC G9, API-key authentication, moved to `out of scope`: an
+name above left the tree, with its tests. One moved rather than left:
+`stats_ints`, with `ColumnStats`, went into `bench_sqlite.mojo`, so the
+aggregate figure in `docs/SQLITE_PERFORMANCE.md` stays reproducible, and
+the bench refuses to time an answer that differs from SQLite's own, which
+is the check that mattered. SPEC G9, API-key authentication, moved to `out of scope`: an
 application authenticates in its own views, with the layer's signed
 session and CSRF check (N13, N43) or a grant (I21), and a key checked in
 front of the server is a proxy's.
@@ -59,8 +59,25 @@ changes is what an application built with the `m0` wheel can import, and
 the wheel is a `0.x` preview (D43): an application that imported one of
 these names keeps a copy of its own.
 
+## The client
+
+`m0_http.Client` (`client.mojo`), an HTTP/1.1 client over the fork's own
+connect, encode and parse, went the same way, with its end-to-end check
+and its smoke (SPEC M14). No application called it. It spoke no TLS, so it
+could reach almost nothing outside a private network. And it blocked: a
+view that runs on the loop and makes a call stalls every connection that
+loop holds until the answer comes back, and where a call should run — a
+pool thread, or the loop without blocking it — was never decided. A gate
+kept it compiling and answering, which is not the same as it being usable.
+
+**Outbound calls are designed later, as a phase of their own** (D55), not
+kept alive by a gate on a client nobody used. That design answers TLS,
+where the call runs, and connection reuse. The fork is untouched: the
+pieces the client assembled stay where they were.
+
 ## What would retire it
 
-Siren/GRAIL returning as a product aim on m0, which brings its supports
-back with it; or an application on the layer that needs one of these names
-and cannot keep its own copy.
+For D54: Siren/GRAIL returning as a product aim on m0, which brings its
+supports back with it; or an application on the layer that needs one of
+these names and cannot keep its own copy. For D55: an application on the
+layer that needs outbound calls.

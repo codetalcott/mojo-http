@@ -236,6 +236,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `bench_sqlite.mojo`, its one user; and `poe bench-core` went with the
   m0-core benchmark it ran, which no longer compiled.
 
+- **The Mojo HTTP client, `m0_http.Client`**, with `poe smoke-client`
+  (DECISIONS D55). No application called it, it spoke no TLS, and a call
+  from a view on the loop blocked every connection the loop held. Nothing
+  served changes. An application built with the `m0` wheel that used it
+  needs its own; a client comes back as a design of its own that answers
+  TLS and where the call runs. SPEC M14 is now `out of scope`.
+
 - **Upstream `lightbug_http` code that nothing used**, about 870 lines of
   the fork, found by the 2026-09-28 review. None of it was reachable from
   `m0serve` or the application layer, but the `m0` wheel ships the fork's

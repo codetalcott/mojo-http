@@ -194,12 +194,12 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | wyhash64, SHA-256 and HMAC-SHA256, SIMD JSON escape, HTML escape, JSON field parser, a C-ABI export | 82 |
-| `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, HTTP client, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 914 |
+| `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 889 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 95 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 182 |
 | `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 118 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 78 |
-| **Total** | | **1469** |
+| **Total** | | **1444** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -225,8 +225,6 @@ Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http
 **HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · weak ETags (wyhash) with `304 Not Modified` · static file serving with lexical traversal defense, extension content types, ETag/304, and single byte ranges (206/416) · SSE with backpressure and `Last-Event-ID` reconnect replay · WebSockets (RFC 6455): handshake, fragmented messages, UTF-8 validation of text (1007), protocol-error refusals, ping/pong heartbeats, clean close.
 
 **Production bits** — CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown on SIGTERM/SIGINT that drains in-flight requests, propagated to workers when only the supervisor is signalled · multi-worker fork supervisor (`M0_WORKERS=4`) — workers accept from one shared pre-fork listener, with a cross-worker SSE broadcast bus when the app wires it in.
-
-**Outbound too** — `Client` speaks HTTP/1.1 the other way: `client.get(url)` / `client.post(url, body)` with DNS, timeouts, keep-alive connection reuse (framing boundaries computed per response — Content-Length, chunked with trailers, bodiless statuses, HEAD — with conservative retirement rules and a single stale-connection retry), and full response parsing with loud truncation detection. No TLS, no redirect following — the same honest constraints as the server, documented in `client.mojo`. `poe smoke-client` proves a six-request conversation rides one TCP connection in CI.
 
 Most of that composed, in one small app: [apps/notes_api/](apps/notes_api/server.mojo)
 — CRUD with `:id` routes and a real `405` with `Allow`, the same note negotiated
@@ -894,7 +892,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1469 unit tests, then compiles every example
+uv run poe test-all         # 1444 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
@@ -910,7 +908,6 @@ uv run poe smoke-ws         # speak RFC 6455 raw: handshake, echo, fragments, pi
 uv run poe smoke-chat       # one chat message reaches sockets on BOTH workers, over the bus
 uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect cleanup, app tick, fan-out
 uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
-uv run poe smoke-client     # run the Mojo HTTP client against a Mojo server
 uv run poe smoke-wsgi       # PEP 3333 conformance against a bare WSGI callable
 uv run poe smoke-flask      # the same framework contract, against Flask
 uv run poe smoke-django     # assert a Django request/response cycle end to end
