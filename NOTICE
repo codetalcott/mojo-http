@@ -1087,6 +1087,19 @@ lightbug_http
         descriptor's, a new one taking the lowest free number (review
         record B27).
 
+      - socket.mojo (2026-09-29): `Socket.close()` leaves the socket
+        holding -1 in place of the number it closed, so every later call
+        -- `send`, `receive`, `bind`, `listen`, `connect`, the socket
+        options -- fails with EBADF, `shutdown` does nothing and `into_fd`
+        returns -1, where each acted on whatever descriptor had taken the
+        number since (review record B27b).
+
+      - c/network.mojo (2026-09-29): `inet_pton` counts its address buffer
+        in bytes. It was `stack_allocation[4, c_void]` (16 for AF_INET6),
+        and `c_void` is `NoneType`, whose size is zero, so the address was
+        written past a buffer of no bytes onto the caller's stack; found
+        crashing `ListenConfig.listen` (review record B27b).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
