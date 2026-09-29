@@ -13,7 +13,7 @@ loop at a full core (review record R4). `test_a_write_wait_holds_no_read_interes
 runs against `PlatformBackend`, so it holds each OS to the same answer; on
 macOS it fails without the fix.
 
-**The transitions** (`event_loop.mojo`'s "Per-slot lifecycle" section,
+**The transitions** (`loop/state.mojo`'s "Per-slot lifecycle" section,
 review record C4). Each helper owns the resets of its phase, which is what
 makes a stale-state defect a helper's bug rather than one call site's. They
 are driven here over a `LoopState` built by its own constructor, as
@@ -31,7 +31,7 @@ from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.socket import close, send
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
-from lightbug_http.event_loop import (
+from lightbug_http.loop.state import (
     LoopState,
     WS_CLOSE_LINGER_NS,
     _arm_reads,

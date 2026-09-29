@@ -59,7 +59,7 @@ HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 IDLE = float(sys.argv[2]) if len(sys.argv) > 2 else 3.0
 
-# event_loop.mojo's WS_CLOSE_LINGER_NS, in seconds. Not configurable, and
+# loop/state.mojo's WS_CLOSE_LINGER_NS, in seconds. Not configurable, and
 # deliberately not read from anywhere: if it changes, this constant is a
 # place someone has to look.
 LINGER = 2.0

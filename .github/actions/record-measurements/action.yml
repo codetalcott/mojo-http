@@ -1,0 +1,39 @@
+# The last step of every job in .github/workflows/test.yml that collects
+# measurements, meaning a job that sets M0_RESULTS: the job's own file,
+# rendered into its run summary and its log, and kept as an artifact. Each
+# job renders its own file, and another job's render does not cover it
+# (B16). That is why each such job calls this, rather than one job calling
+# it for all.
+#
+# The calling step carries `if: always()`, because a measurement from a smoke
+# that later failed is usually the interesting one. Both steps here carry it
+# too. That keeps the upload independent of the render, as the two were when
+# they were separate workflow steps, and keeps both running when the run is
+# cancelled. check_ci_measurements_are_collected in scripts/check_docs.py
+# reads this file as part of each job that uses it.
+name: Record the measurements
+description: >-
+  Render the job's $M0_RESULTS into its run summary and its log with
+  scripts/emit.py, and upload the file as the named artifact.
+inputs:
+  name:
+    description: >-
+      The artifact's name: `ci-results-` and what tells this job's file from
+      every other job's.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Render the measurements
+      if: always()
+      shell: bash
+      run: |
+        python3 scripts/emit.py --summary "$M0_RESULTS" >> "$GITHUB_STEP_SUMMARY" || true
+        python3 scripts/emit.py --summary "$M0_RESULTS" || true
+    - name: Upload the measurements
+      if: always()
+      uses: actions/upload-artifact@v7
+      with:
+        name: ${{ inputs.name }}
+        path: ci-results.jsonl
+        if-no-files-found: ignore

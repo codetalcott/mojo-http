@@ -33,8 +33,13 @@ updates:
 
   # Keeps the workflow actions current. These had drifted three majors behind
   # and onto the deprecated Node 20 runtime before being bumped by hand.
+  # "/" reads .github/workflows only. The composite actions test.yml's jobs
+  # share pin actions of their own, so their directories are listed too;
+  # check_docs.py's check_dependabot_reads_actions holds this list to them.
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "monthly"
     groups:

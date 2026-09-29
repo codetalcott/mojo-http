@@ -51,7 +51,7 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
   degrades the same way (`take_stream_hold`): nothing here performs a 101.
 - **`before_request` runs TWICE per pooled request**, and that is the loop's
   contract, not an accident here: once on the LOOP's handler before the job
-  is submitted (`event_loop.mojo` — what answers there never becomes a job),
+  is submitted (`loop/request.mojo` — what answers there never becomes a job),
   and once on the pool thread's own handler inside `_pool_serve`. The WSGI
   pool has the same double call and `WSGIHandler` neutralises its pool-side
   one; a Mojo handler whose `before_request` has side effects (a rate

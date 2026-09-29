@@ -1,0 +1,47 @@
+# The setup every job in .github/workflows/test.yml opens with, written once:
+# uv with its cache, then, on a Linux runner, the Debian packages the job
+# names. A local action is read from the checkout, so `actions/checkout`
+# runs before it.
+#
+# `poe build-all` is deliberately not here. It is already one line in each
+# job that builds, and it is that job's longest setup step: as a step of its
+# own, its time and any failure are reported under its own name. Folded in
+# here, both would be reported as this action's.
+name: Set up uv and the Debian packages
+description: >-
+  astral-sh/setup-uv with its cache, then on a Linux runner the Debian
+  packages named by `apt`, capped at three minutes.
+inputs:
+  apt:
+    description: >-
+      Debian packages to install on a Linux runner, space-separated. Ignored
+      on macOS, whose runners carry libsqlite3 and need neither patchelf nor
+      strace.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+    # Normally about 6 s. It has been seen hanging for 63 min against an
+    # unreachable apt mirror, and a cap turns that into a fast, legible
+    # failure; the job's own cap is the backstop, and this is the one setup
+    # step known to stall. The cap is the shell's because a composite
+    # action's step cannot carry `timeout-minutes`, and a cap on the step
+    # that calls this action would cover uv's setup and cache restore too.
+    - name: Install the Debian packages (Linux)
+      if: runner.os == 'Linux' && inputs.apt != ''
+      shell: bash
+      env:
+        APT_PACKAGES: ${{ inputs.apt }}
+      run: |
+        status=0
+        # One argument per package: the list is split on purpose.
+        # shellcheck disable=SC2086
+        sudo timeout 180 sh -c 'apt-get update -qq && apt-get install -y -qq "$@"' apt $APT_PACKAGES || status=$?
+        if [ "$status" -eq 124 ]; then
+          echo "::error title=apt-get stalled::apt-get did not finish within 3 minutes: the mirror is unreachable or stalled"
+        fi
+        exit "$status"

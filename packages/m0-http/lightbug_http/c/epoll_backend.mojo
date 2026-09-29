@@ -38,7 +38,7 @@ comptime _MAX_EVENTS = 64
 # The remaining 63 bits carry the original ident value.
 comptime _TIMER_FLAG: UInt64 = 1 << 63
 
-# Timer slot bases — must match event_loop.mojo TIMER_HEADER/BODY/IDLE/
+# Timer slot bases — must match loop/state.mojo's TIMER_HEADER/BODY/IDLE/
 # SSE_HEARTBEAT/APP_TICK.
 comptime _TIMER_HEADER: UInt = 0x100000
 comptime _TIMER_BODY: UInt = 0x200000

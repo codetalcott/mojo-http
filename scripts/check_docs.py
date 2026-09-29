@@ -683,6 +683,112 @@ def check_target_cpu_pinned():
                 )
 
 
+# --- The repository's composite actions, read as part of the jobs using them
+# test.yml's jobs set up uv and record their measurements through actions in
+# `.github/actions/<name>/action.yml` (review H5), so a job's own text no
+# longer holds everything the job runs. The rules below that ask what a job
+# does read each action it uses as part of it. The action texts arrive as an
+# argument, as every source does here, so a selftest can edit them in memory.
+ACTIONS_DIR = ".github/actions"
+
+# A step that runs one of them, as `./.github/actions/<name>` or by this
+# repository's reference, `owner/repo/.github/actions/<name>@ref`, which a
+# job can use without any checkout. Group 1 is the action's directory. A
+# reference into another repository whose action shares a name here is read
+# as this one, which for the rules that use this is the stricter reading.
+_ACTION_USE = re.compile(
+    r"^[ \t]*(?:- )?uses:[ \t]*[\"']?(?:\./|[\w.-]+/[\w.-]+/)(" + re.escape(ACTIONS_DIR)
+    + r"/[\w.-]+)/?(?:@[^\s\"']+)?[\"']?[ \t]*$", re.M)
+_INPUT_REF = re.compile(r"\$\{\{\s*inputs\.([\w-]+)\s*\}\}")
+
+
+def _actions():
+    """Each composite action in the tree: its directory -> its action.yml text."""
+    root = REPO / ACTIONS_DIR
+    if not root.is_dir():
+        return {}
+    return {f"{ACTIONS_DIR}/{p.parent.name}": p.read_text()
+            for p in sorted(root.glob("*/action.y*ml"))}
+
+
+def _children(lines, i):
+    """(key, scalar, line index) for each key one level under line `i`'s key,
+    quotes stripped: what a step's `with:` or an action's `inputs:` holds. A
+    block scalar reads as its indicator; neither holds one here."""
+    head = lines[i]
+    indent = len(head) - len(head.lstrip(" ")) + (2 if head.lstrip().startswith("- ") else 0)
+    child = None
+    for j in range(i + 1, len(lines)):
+        line = lines[j]
+        if not line.strip():
+            continue
+        ind = len(line) - len(line.lstrip(" "))
+        if ind <= indent:
+            return
+        child = ind if child is None else child
+        m = re.match(r" *([\w-]+):(?:[ \t]+(.*?))?[ \t]*$", line)
+        if ind == child and m:
+            value = m.group(2) or ""
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+                value = value[1:-1]
+            yield m.group(1), value, j
+
+
+def _step_inputs(step):
+    """The inputs a step passes in its own `with:`, key -> value.
+
+    The step's text is spec_sheet.job_steps', which leaves out its `name:`
+    line, so the first line is either the item's `- ` line or a key at the
+    item's key indent. Either way it gives that indent."""
+    lines = step.split("\n")
+    first = re.match(r"( *)(- )?", lines[0])
+    at = len(first.group(1)) + (2 if first.group(2) else 0)
+    for i, line in enumerate(lines):
+        key = line[at:]
+        if (i == 0 or (line.startswith(" " * at) and not key.startswith(" "))) \
+                and re.match(r"with:[ \t]*(?:#.*)?$", key):
+            return {k: v for k, v, _j in _children(lines, i)}
+    return {}
+
+
+def _input_defaults(action):
+    """An action's inputs, name -> its default ('' where it declares none)."""
+    lines = action.split("\n")
+    head = next((i for i, line in enumerate(lines)
+                 if re.match(r"inputs:[ \t]*(?:#.*)?$", line)), None)
+    if head is None:
+        return {}
+    return {name: {k: v for k, v, _ in _children(lines, j)}.get("default", "")
+            for name, _v, j in _children(lines, head)}
+
+
+def steps_as_run(job, actions, _depth=0):
+    """A job's steps as the runner runs them, as spec_sheet.job_steps gives
+    them: (name or None, `if:` present, text).
+
+    Each step that uses one of `actions` (directory -> action.yml text) is
+    followed by that action's own steps. Their `${{ inputs.X }}` take the
+    calling step's `with:` value, else the input's default, else '' as the
+    runner gives them, and each is conditional when the calling step or its
+    own entry carries an `if:`. An action that uses another is read the same
+    way, to a fixed depth, so an action naming itself cannot loop.
+    """
+    import spec_sheet
+
+    out = []
+    for name, conditional, text in spec_sheet.job_steps(job):
+        out.append((name, conditional, text))
+        m = _ACTION_USE.search(text)
+        action = actions.get(m.group(1)) if m and _depth < 4 else None
+        if action is None:
+            continue
+        action = spec_sheet.strip_comment_lines(action)
+        values = {**_input_defaults(action), **_step_inputs(text)}
+        body = _INPUT_REF.sub(lambda r: values.get(r.group(1), "").replace("\n", " "), action)
+        out += [(n, conditional or c, t) for n, c, t in steps_as_run(body, actions, _depth + 1)]
+    return out
+
+
 def check_consumer_jobs_stay_clean():
     """The wheel consume jobs must not acquire a checkout or the toolchain.
 
@@ -699,7 +805,7 @@ def check_consumer_jobs_stay_clean():
     path = REPO / ".github" / "workflows" / "release.yml"
     if not path.exists():
         return
-    for problem in consumer_job_problems(path.read_text()):
+    for problem in consumer_job_problems(path.read_text(), _actions()):
         fail(problem)
 
 
@@ -707,14 +813,19 @@ def check_consumer_jobs_stay_clean():
 _CLEAN_STEP = "did not build the wheel"
 
 
-def consumer_job_problems(release):
-    """check_consumer_jobs_stay_clean, as a function of release.yml's text.
+def consumer_job_problems(release, actions):
+    """check_consumer_jobs_stay_clean, as a function of release.yml's text
+    and the repository's composite actions (directory -> action.yml text),
+    which are required: a job read without them could reach uv unseen.
 
     Read through spec_sheet's readers, job by job and without comments
     (review H4). This took the step's phrase anywhere in a job's block, so
     with the step commented out the comment passed for it; the assertion
     must now be a step, named for it, that runs unconditionally. A comment
-    that names a forbidden action is not a use of it either.
+    that names a forbidden action is not a use of it either. A job is read
+    with each of the repository's actions it uses (review H5): the setup
+    action brings uv, and by this repository's reference a job can use it
+    with no checkout and no `astral-sh/setup-uv` in its own text.
     """
     import spec_sheet
 
@@ -723,18 +834,22 @@ def consumer_job_problems(release):
         if not job.startswith("wheel-consume"):
             continue
         seen.append(job)
+        steps = steps_as_run(text, actions)
+        run = "\n".join([text] + [body for _n, _c, body in steps])
+        via = sorted({m.group(1) for m in _ACTION_USE.finditer(text)} & set(actions))
         for forbidden, why in (
             ("actions/checkout", "a repository checkout"),
             ("astral-sh/setup-uv", "uv, which brings the Mojo toolchain"),
             ("poe ", "a poe task, which only exists in the repo"),
         ):
-            if forbidden in text:
+            if forbidden in run:
+                through = "" if forbidden in text else f" (through {', '.join(via)})"
                 problems.append(
-                    f"release.yml job {job!r} uses {why} — that puts the "
-                    "wheel back on a machine that could have built it, and the "
-                    "job stops proving anything")
+                    f"release.yml job {job!r} uses {why}{through} — that puts "
+                    "the wheel back on a machine that could have built it, and "
+                    "the job stops proving anything")
         if not any(name and _CLEAN_STEP in name and not conditional and body.strip()
-                   for name, conditional, body in spec_sheet.job_steps(text)):
+                   for name, conditional, body in steps):
             problems.append(
                 f"release.yml job {job!r} no longer asserts its own "
                 f"cleanliness before testing the wheel: no step named for it "
@@ -1270,6 +1385,58 @@ def check_dependabot_gate():
         fail(problem)
 
 
+DEPENDABOT_CONFIG = ".github/dependabot.yml"
+
+
+def check_dependabot_reads_actions():
+    """Dependabot updates the actions the repository's composite actions pin.
+
+    Its github-actions entry at `directory: "/"` reads .github/workflows and
+    a root action.yml, and nothing under .github/actions. A pin moved there
+    (review H5: test.yml's setup and measurement steps) would stay put while
+    every workflow's copy of it moved on, and nothing would say so.
+    """
+    for problem in dependabot_config_problems(*_texts(DEPENDABOT_CONFIG), _actions()):
+        fail(problem)
+
+
+def dependabot_config_problems(config, actions):
+    """check_dependabot_reads_actions, as a function of dependabot.yml's text
+    and the composite actions (directory -> action.yml text): each action
+    that pins another must sit in a directory the github-actions entry
+    lists, by name or by glob."""
+    import spec_sheet
+
+    pinned = sorted(d for d, text in actions.items() if re.search(
+        r"^[ \t]*(?:- )?uses:[ \t]*[\"']?(?!\./|docker://)[\w.-]+/[\w.-]+[^\s@]*@",
+        spec_sheet.strip_comment_lines(text), re.M))
+    if not pinned:
+        return []
+    entry = next((e for e in re.split(r"^[ \t]*- (?=package-ecosystem:)",
+                                      spec_sheet.strip_comment_lines(config), flags=re.M)
+                  if re.match(r"package-ecosystem:[ \t]*[\"']?github-actions[\"']?[ \t]*$",
+                              e.split("\n", 1)[0])), None)
+    if entry is None:
+        return [f"{DEPENDABOT_CONFIG} has no github-actions entry, so nothing "
+                f"updates the actions pinned in {', '.join(pinned)}"]
+    dirs = re.findall(r"^[ \t]*directory:[ \t]*[\"']?([^\"'\s]+)", entry, re.M)
+    listed = re.search(r"^[ \t]*directories:[ \t]*(?:\[([^\]]*)\])?[ \t]*$", entry, re.M)
+    if listed and listed.group(1) is not None:
+        dirs += re.findall(r"[^\s,\"']+", listed.group(1))
+    elif listed:
+        for line in entry[listed.end():].split("\n")[1:]:
+            item = re.match(r"[ \t]*- [ \t]*[\"']?([^\"'\s]+)", line)
+            if not item:
+                break
+            dirs.append(item.group(1))
+    dirs = ["/" + d.lstrip("/") for d in dirs]
+    return [f"{DEPENDABOT_CONFIG}'s github-actions entry does not read /{d}, so "
+            "the actions its action.yml pins are never updated: `directory: "
+            "\"/\"` reads .github/workflows and a root action.yml only. List it "
+            "under `directories:`, where \"/.github/actions/*\" covers every one."
+            for d in pinned if not any(fnmatch.fnmatch("/" + d, p) for p in dirs)]
+
+
 M0_RELEASE = ".github/workflows/release-m0.yml"
 _PUBLISH_PIN = re.compile(r"uses: pypa/gh-action-pypi-publish@([0-9a-f]{40})\b")
 
@@ -1733,9 +1900,15 @@ def check_ci_measurements_are_collected():
     set no M0_RESULTS, so the declarations its steps run (check-docs', the
     unit tests', the recorder selftest's) ran and recorded nothing, and so
     did wheel-aarch64's copy of the wheel smoke's.
+
+    Each job renders and uploads through one composite action,
+    `.github/actions/record-measurements` (review H5), so a job is read with
+    the actions it uses as part of it. The action being right answers for
+    no job that does not call it.
     """
     for problem in measurement_problems(
-            *_texts("pyproject.toml", ".github/workflows/test.yml"), _recorders()):
+            *_texts("pyproject.toml", ".github/workflows/test.yml"), _recorders(),
+            _actions()):
         fail(problem)
 
 
@@ -1755,13 +1928,18 @@ _RENDERS = re.compile(
     r"\bscripts/emit\.py --summary\b[^\n]*>>[ \t]*\"?\$\{?GITHUB_STEP_SUMMARY\b")
 
 
-def measurement_problems(pyproject, workflow, recorders=()):
+def measurement_problems(pyproject, workflow, recorders=(), actions=None):
     """check_ci_measurements_are_collected, as a function of its texts.
 
     `recorders` are the scripts that record from Python (`from emit import
     emit`), so a task that runs one records though its body never names
-    emit.py -- the pid1 job's probes do exactly that. Tasks and the workflow
-    are read through spec_sheet's readers, so a comment answers nothing.
+    emit.py -- the pid1 job's probes do exactly that. `actions` are the
+    repository's composite actions, directory -> action.yml text, and a job
+    is read with each one it uses as part of it (steps_as_run): its render
+    and its upload live in `.github/actions/record-measurements`, so a job
+    that stops calling it has lost both, whatever the other jobs do. Tasks,
+    the workflow and the actions are read through spec_sheet's readers, so
+    a comment answers nothing.
     """
     import spec_sheet
 
@@ -1774,7 +1952,9 @@ def measurement_problems(pyproject, workflow, recorders=()):
         return bool(_RECORDS.search(text)) or any(r in text for r in recorders)
 
     recording = {n for n, (body, _refs) in table.items() if records(body)}
-    code = spec_sheet.strip_comment_lines(workflow)
+    jobs = {job: (text, steps_as_run(text, actions or {}))
+            for job, text in spec_sheet.workflow_jobs(workflow).items()}
+    code = "\n".join(body for _text, steps in jobs.values() for _n, _c, body in steps)
     problems = []
     if not recording:
         if "scripts/emit.py --summary" in code:
@@ -1783,10 +1963,11 @@ def measurement_problems(pyproject, workflow, recorders=()):
                 "— the summary will always be empty")
         return problems
 
-    for job, text in spec_sheet.workflow_jobs(workflow).items():
-        ran = spec_sheet.reachable_tasks(table, *re.findall(r"poe ([a-z0-9-]+)", text))
+    for job, (text, steps) in jobs.items():
+        run = "\n".join(body for _n, _c, body in steps)
+        ran = spec_sheet.reachable_tasks(table, *re.findall(r"poe ([a-z0-9-]+)", run))
         why = sorted(ran & recording)
-        if records(text):
+        if records(run):
             why.append("its own `run:` lines")
         env = re.search(r"^\s+M0_RESULTS:[ \t]*(\S.*?)[ \t]*$", text, re.M)
         if not env:
@@ -1799,26 +1980,32 @@ def measurement_problems(pyproject, workflow, recorders=()):
                     "and record nothing — with no failure and an identical job "
                     "log, because the tasks still echo what they measured.")
             continue
-        if not _RENDERS.search(text):
+        if not _RENDERS.search(run):
             problems.append(
                 f"test.yml job `{job}` collects measurements (it sets "
                 "M0_RESULTS) but never renders them: no `scripts/emit.py "
-                "--summary` into $GITHUB_STEP_SUMMARY in that job, so its run "
-                "summary is empty. Each job renders its own file; another "
-                "job's render does not cover it.")
+                "--summary` into $GITHUB_STEP_SUMMARY in that job or an "
+                "action it uses, so its run summary is empty. Each job renders "
+                "its own file; another job's render does not cover it. The "
+                "jobs here render and upload by ending with a step that uses "
+                f"{ACTIONS_DIR}/record-measurements.")
         target = env.group(1).strip("'\"").rsplit("/", 1)[-1]
         uploads = [
-            step for _name, _cond, step in spec_sheet.job_steps(text)
+            step for _name, _cond, step in steps
             if re.search(r"^\s*(?:- )?uses:[ \t]*actions/upload-artifact@", step, re.M)
             and re.search(r"^\s+name:[ \t]*ci-results-", step, re.M)
         ]
         if not uploads:
             problems.append(
                 f"test.yml job `{job}` collects measurements but uploads no "
-                "`ci-results-*` artifact, so they die with the runner and no "
-                "run can be compared against the next")
-        elif not any(re.search(r"^\s+(?:path:[ \t]*)?\S*" + re.escape(target) + r"\b",
-                               step, re.M) for step in uploads):
+                "`ci-results-*` artifact, in its own steps or an action it "
+                "uses, so they die with the runner and no run can be compared "
+                "against the next")
+        # The whole file name, after a directory if any: a suffix match took
+        # `path: ci-results.jsonl` for a job whose M0_RESULTS named
+        # `results.jsonl`, which that upload never finds.
+        elif not any(re.search(r"^\s+(?:path:[ \t]*)?[\"']?(?:.*/)?" + re.escape(target)
+                               + r"[\"']?(?!\S)", step, re.M) for step in uploads):
             problems.append(
                 f"test.yml job `{job}` uploads a `ci-results-*` artifact, but "
                 f"not `{target}`, the file its M0_RESULTS names — with "
@@ -2347,19 +2534,76 @@ def _in_job(workflow, job, edit):
     return workflow[:head.start()] + edit(workflow[head.start():end]) + workflow[end:]
 
 
-# One lapse in ONE job, applied to each job that collects in turn. Each leaves
-# the other jobs' lines in the file, which is the shape a whole-file reading
-# cannot see (B16) -- the loop below asserts that too.
+_RECORD = f"{ACTIONS_DIR}/record-measurements"
+_RECORD_USE = f"uses: ./{_RECORD}"
+
+
+def _step_edit(marker, edit):
+    """An edit replacing the step item whose lines hold `marker` with
+    `edit(item, pad)`, `pad` being the item's indent; the text is left as
+    it was when no item holds it."""
+    def apply(text):
+        for m in re.finditer(r"^( +)- [^\n]*\n(?:\1  [^\n]*\n)*", text, re.M):
+            if marker in m.group(0):
+                return text[:m.start()] + edit(m.group(0), m.group(1)) + text[m.end():]
+        return text
+    return apply
+
+
+def _commented(item, pad):
+    """A step item commented out whole, so what it named survives in comments."""
+    return "".join(pad + "# " + line[len(pad):] + "\n" for line in item.splitlines())
+
+
+# The two steps each collecting job ended with before they became the record
+# action (review H5), written back in place of a job's call to it.
+_INLINE_RECORD = (
+    "{pad}- name: Record the measurements\n"
+    "{pad}  if: always()\n"
+    "{pad}  run: |\n"
+    "{pad}    python3 scripts/emit.py --summary \"$M0_RESULTS\" >> \"$GITHUB_STEP_SUMMARY\" || true\n"
+    "{pad}- name: Upload the measurements\n"
+    "{pad}  if: always()\n"
+    "{pad}  uses: actions/upload-artifact@v7\n"
+    "{pad}  with:\n"
+    "{pad}    name: {name}\n"
+    "{pad}    path: ci-results.jsonl\n"
+    "{pad}    if-no-files-found: ignore\n")
+
+
+def _record_inline(item, pad):
+    name = re.search(r"^[ \t]+name:[ \t]*(ci-results-\S.*?)[ \t]*$", item, re.M)
+    return _INLINE_RECORD.format(pad=pad, name=name.group(1) if name else "ci-results-x")
+
+
+# One lapse in ONE job's call of the record action, applied to each job that
+# collects in turn. Each leaves the other jobs' calls in the file, which is
+# the shape a whole-file reading cannot see (B16) -- the loop below asserts
+# that too.
 _JOB_LAPSES = [
+    ("its record step dropped", _step_edit(_RECORD_USE, lambda item, pad: "")),
+    ("its record step commented out", _step_edit(_RECORD_USE, _commented)),
+    ("its record step calling another action",
+     lambda t: t.replace(_RECORD_USE, f"uses: ./{ACTIONS_DIR}/setup", 1)),
+    ("its artifact named without `ci-results-`",
+     lambda t: re.sub(r"^([ \t]+name:[ \t]*)ci-results-", r"\1results-", t, count=1, flags=re.M)),
+    ("its M0_RESULTS naming a file the action does not upload",
+     lambda t: re.sub(r"^([ \t]+M0_RESULTS:[^\n]*/)ci-results\.jsonl", r"\1results.jsonl",
+                      t, count=1, flags=re.M)),
+]
+
+# The lapses a job's own two steps could carry before they became the record
+# action, carried by the action now: each must name every job that uses it.
+_ACTION_LAPSES = [
     ("its render misspelled `--render`, as the postgres job's was (B16)",
      lambda t: t.replace("emit.py --summary", "emit.py --render", 1)),
     ("its render commented out",
      lambda t: re.sub(r"^([ \t]*)(python3 scripts/emit\.py --summary)", r"\1# \2", t, flags=re.M)),
-    ("its upload commented out",
-     lambda t: re.sub(r"^([ \t]*)(uses: actions/upload-artifact@\S+\n[ \t]+with:\n[ \t]+name: ci-results-)",
-                      r"\1# \2", t, flags=re.M)),
+    ("its upload commented out", _step_edit("uses: actions/upload-artifact@", _commented)),
     ("its upload naming another file",
      lambda t: t.replace("path: ci-results.jsonl", "path: results.jsonl")),
+    ("its upload named by itself, not by the job calling it",
+     lambda t: t.replace("${{ inputs.name }}", "measurements")),
 ]
 
 # A job that records must collect. By name, because which jobs record is the
@@ -2371,11 +2615,13 @@ _JOB_LAPSES = [
 _ENV_LAPSES = ["smoke-gateway", "pid1", "unit-tests"]
 
 
-def _whole_file_blind(workflow):
-    """Would the old whole-file reading of test.yml pass this text? (B16)"""
-    return (bool(re.search(r"^\s+M0_RESULTS:", workflow, re.M))
-            and "scripts/emit.py --summary" in workflow
-            and bool(re.search(r"name: ci-results-", workflow)))
+def _whole_file_blind(workflow, actions=()):
+    """Would the old whole-file reading of test.yml pass this text, the
+    actions' texts read with it? (B16)"""
+    text = "\n".join([workflow, *actions])
+    return (bool(re.search(r"^\s+M0_RESULTS:", text, re.M))
+            and "scripts/emit.py --summary" in text
+            and bool(re.search(r"name: ci-results-", text)))
 
 
 def _consumer_block_blind(release):
@@ -2401,6 +2647,23 @@ def _clean_step_commented_out(job):
     return (job[:m.start()]
             + "".join(pad + "# " + line[len(pad):] + "\n" for line in m.group(0).splitlines())
             + job[m.end():])
+
+
+def _clean_step_moved(job, condition):
+    """(job, action): a consume job's cleanliness step moved into an action
+    of the repository's, which the job calls in its place by reference (a
+    consume job has no checkout), under `if: condition` when one is given."""
+    m = re.search(r"^( +)- name: ([^\n]*" + re.escape(_CLEAN_STEP) + r"[^\n]*)\n((?:\1  [^\n]*\n)+)",
+                  job, re.M)
+    if not m:
+        return job, None
+    pad, name, body = m.group(1), m.group(2), m.group(3)
+    action = ("runs:\n  using: composite\n  steps:\n    - name: " + name + "\n"
+              + "".join("      " + line[len(pad) + 2:] + "\n" for line in body.splitlines()))
+    call = (pad + "- name: Check the runner\n"
+            + (pad + "  if: " + condition + "\n" if condition else "")
+            + pad + f"  uses: codetalcott/mojo-http/{ACTIONS_DIR}/clean-probe@main\n")
+    return job[:m.start()] + call + job[m.end():], action
 
 
 def _before_first_step(line):
@@ -2810,32 +3073,82 @@ def selftest():
         print(f"  {'caught' if good else 'MISSED'}          {label} ({task})"
               + ("" if good else f" -- got {got}"))
         ok &= good
-    # Measurements, per job (B16): each lapse applied to each collecting job
-    # alone must name that job, in a text the whole-file reading passed.
+    # Measurements, per job (B16), each job read with the record action it
+    # calls (review H5): each lapse in one job's call must name that job, in
+    # a text the whole-file reading passed; each lapse in the action must
+    # name every job that calls it.
     import spec_sheet
     recorders = _recorders()
-    got = measurement_problems(real_toml, real_wf, recorders)
+    real_actions = _actions()
+    got = measurement_problems(real_toml, real_wf, recorders, real_actions)
     print(f"  {'caught' if not got else 'MISSED'}          (control: every job's measurements as committed)"
           + ("" if not got else f" -- got {got}"))
     ok &= not got
-    collecting = [job for job, text in spec_sheet.workflow_jobs(real_wf).items()
-                  if re.search(r"^\s+M0_RESULTS:", text, re.M)]
-    if not collecting:
-        print("  MISSED          no job in test.yml collects measurements, so no lapse was tried")
+    jobs = spec_sheet.workflow_jobs(real_wf)
+    collecting = [job for job, text in jobs.items() if re.search(r"^\s+M0_RESULTS:", text, re.M)]
+    calling = [job for job in collecting if _RECORD_USE in jobs[job]]
+    if not collecting or not calling:
+        print("  MISSED          no job in test.yml collects measurements through "
+              f"{_RECORD}, so no lapse was tried")
         ok = False
+    # The control is clean because the action is read: left unread, every
+    # job calling it has lost its render and its upload.
+    got = measurement_problems(real_toml, real_wf, recorders, {})
+    missed = [job for job in calling if not any(f"job `{job}`" in g for g in got)]
+    good = bool(calling) and not missed
+    print(f"  {'caught' if good else 'MISSED'}          the actions left unread, "
+          f"{len(calling) - len(missed)} of {len(calling)} jobs calling {_RECORD}"
+          + ("" if good else " -- missed in " + ", ".join(missed)))
+    ok &= good
     for label, edit in _JOB_LAPSES:
         missed = []
-        for job in collecting:
+        for job in calling:
             text = _in_job(real_wf, job, edit)
             if text is None or text == real_wf:
                 missed.append(f"{job} (NOT APPLICABLE)")
-            elif not _whole_file_blind(text):
+            elif not _whole_file_blind(text, real_actions.values()):
                 missed.append(f"{job} (a whole-file reading sees it: not a per-job case)")
-            elif not any(f"job `{job}`" in g for g in measurement_problems(real_toml, text, recorders)):
+            elif not any(f"job `{job}`" in g
+                         for g in measurement_problems(real_toml, text, recorders, real_actions)):
                 missed.append(job)
-        good = not missed
+        good = bool(calling) and not missed
         print(f"  {'caught' if good else 'MISSED'}          a job with {label}, "
-              f"{len(collecting) - len(missed)} of {len(collecting)} collecting jobs"
+              f"{len(calling) - len(missed)} of {len(calling)} collecting jobs"
+              + ("" if good else " -- missed in " + ", ".join(missed)))
+        ok &= good
+    for label, edit in _ACTION_LAPSES:
+        action = real_actions.get(_RECORD)
+        mutated = edit(action) if action is not None else None
+        if not calling or mutated is None or mutated == action:
+            print(f"  MISSED          {_RECORD} with {label} -- NOT APPLICABLE, "
+                  "no such action, or the mutation left it unchanged")
+            ok = False
+            continue
+        got = measurement_problems(real_toml, real_wf, recorders, {**real_actions, _RECORD: mutated})
+        missed = [job for job in calling if not any(f"job `{job}`" in g for g in got)]
+        good = not missed
+        print(f"  {'caught' if good else 'MISSED'}          {_RECORD} with {label}, "
+              f"{len(calling) - len(missed)} of {len(calling)} jobs calling it"
+              + ("" if good else " -- missed in " + ", ".join(missed)))
+        ok &= good
+    # A job that records inline, as each did before the action, is read as
+    # it always was: clean as written, and named with its render misspelled.
+    inline = _step_edit(_RECORD_USE, _record_inline)
+    for label, edit, must_fire in (
+            ("(control: a job recording inline, as before the action)", inline, False),
+            ("a job recording inline with its render misspelled `--render` (B16)",
+             lambda t: inline(t).replace("emit.py --summary", "emit.py --render", 1), True)):
+        missed = []
+        for job in calling:
+            text = _in_job(real_wf, job, edit)
+            if text is None or text == real_wf:
+                missed.append(f"{job} (NOT APPLICABLE)")
+            elif any(f"job `{job}`" in g for g in measurement_problems(
+                    real_toml, text, recorders, real_actions)) != must_fire:
+                missed.append(job)
+        good = bool(calling) and not missed
+        print(f"  {'caught' if good else 'MISSED'}          {label}, "
+              f"{len(calling) - len(missed)} of {len(calling)} collecting jobs"
               + ("" if good else " -- missed in " + ", ".join(missed)))
         ok &= good
     for job in _ENV_LAPSES:
@@ -2845,14 +3158,14 @@ def selftest():
             print(f"  MISSED          {label} -- NOT APPLICABLE, no such job or line")
             ok = False
             continue
-        got = measurement_problems(real_toml, text, recorders)
-        good = _whole_file_blind(text) and any(f"job `{job}`" in g for g in got)
+        got = measurement_problems(real_toml, text, recorders, real_actions)
+        good = _whole_file_blind(text, real_actions.values()) and any(f"job `{job}`" in g for g in got)
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
     # The wheel consume jobs stay clean, read as they run (review H4): each
     # lapse in each consume job alone must name it, and the first two are
     # texts the old block reading passed.
-    got = consumer_job_problems(real_release)
+    got = consumer_job_problems(real_release, real_actions)
     print(f"  {'caught' if not got else 'MISSED'}          (control: release.yml's consume jobs as committed)"
           + ("" if not got else f" -- got {got}"))
     ok &= not got
@@ -2868,20 +3181,94 @@ def selftest():
                 missed.append(f"{job} (NOT APPLICABLE)")
             elif blind and not _consumer_block_blind(text):
                 missed.append(f"{job} (the old reading sees it: not a comment-blind case)")
-            elif not any(f"job {job!r}" in g for g in consumer_job_problems(text)):
+            elif not any(f"job {job!r}" in g for g in consumer_job_problems(text, real_actions)):
                 missed.append(job)
         good = not missed
         print(f"  {'caught' if good else 'MISSED'}          a consume job with {label}, "
               f"{len(consume) - len(missed)} of {len(consume)}"
               + ("" if good else " -- missed in " + ", ".join(missed)))
         ok &= good
+    # uv reached through the repository's own action that sets it up (review
+    # H5): no forbidden action in the job's own text, so a reading that does
+    # not follow the action passes it. By this repository's reference the
+    # action needs no checkout, so nothing else in the job would fail.
+    uv_action = next((d for d, t in sorted(real_actions.items()) if "astral-sh/setup-uv" in t), None)
+    for label, line in (
+            ("the uv setup action used by this repository's reference",
+             f"- uses: codetalcott/mojo-http/{uv_action}@main"),
+            ("the uv setup action used from a checkout", f"- uses: ./{uv_action}")):
+        missed = []
+        for job in consume if uv_action else []:
+            text = _in_job(real_release, job, _before_first_step(line))
+            if text is None or text == real_release:
+                missed.append(f"{job} (NOT APPLICABLE)")
+            elif any(f"job {job!r}" in g for g in consumer_job_problems(text, {})):
+                missed.append(f"{job} (seen without the action: not an action case)")
+            elif not any(f"job {job!r}" in g and uv_action in g
+                         for g in consumer_job_problems(text, real_actions)):
+                missed.append(job)
+        good = bool(uv_action) and bool(consume) and not missed
+        print(f"  {'caught' if good else 'MISSED'}          a consume job with {label}, "
+              f"{len(consume) - len(missed)} of {len(consume)}"
+              + ("" if good else " -- NOT APPLICABLE, no action in the tree sets up uv"
+                 if not uv_action else " -- missed in " + ", ".join(missed)))
+        ok &= good
+    # The cleanliness step moved into an action: called plainly it answers
+    # for the job, and under an `if:` it does not, as the step would not.
+    for label, condition, must_fire in (
+            ("(control: its cleanliness step moved into an action it calls)", None, False),
+            ("its cleanliness step moved into an action called under an `if:`",
+             "github.event_name == 'workflow_dispatch'", True)):
+        missed = []
+        for job in consume:
+            moved = {}
+
+            def edit(t, condition=condition, moved=moved):
+                t, moved["action"] = _clean_step_moved(t, condition)
+                return t
+            text = _in_job(real_release, job, edit)
+            if text is None or text == real_release or not moved.get("action"):
+                missed.append(f"{job} (NOT APPLICABLE)")
+                continue
+            got = consumer_job_problems(
+                text, {**real_actions, f"{ACTIONS_DIR}/clean-probe": moved["action"]})
+            if any(f"job {job!r}" in g for g in got) != must_fire:
+                missed.append(job)
+        good = bool(consume) and not missed
+        print(f"  {'caught' if good else 'MISSED'}          {label}, "
+              f"{len(consume) - len(missed)} of {len(consume)} consume jobs"
+              + ("" if good else " -- missed in " + ", ".join(missed)))
+        ok &= good
     text = _in_job(real_release, consume[0], _before_first_step(
         "# never actions/checkout here: this job must not see the repository")) if consume else None
-    got = consumer_job_problems(text) if text else ["NOT APPLICABLE"]
+    got = consumer_job_problems(text, real_actions) if text else ["NOT APPLICABLE"]
     good = text != real_release and not got
     print(f"  {'caught' if good else 'MISSED'}          (control: a comment in a consume job naming actions/checkout)"
           + ("" if good else f" -- got {got}"))
     ok &= good
+    # Dependabot reads the actions' own pins: the committed list covers them,
+    # and the list as it stood before them does not.
+    real_dependabot = (REPO / DEPENDABOT_CONFIG).read_text()
+    before = re.sub(r"directories:[ \t]*\n(?:[ \t]+- [^\n]*\n)+", 'directory: "/"\n',
+                    real_dependabot, count=1)
+    for label, config, acts, must_fire in (
+            ("(control: dependabot.yml and the actions as committed)", real_dependabot, real_actions, False),
+            ("the actions' directories dropped from Dependabot's github-actions entry",
+             before, real_actions, True),
+            ("dependabot.yml without a github-actions entry",
+             re.sub(r"^  - package-ecosystem:[ \t]*\"github-actions\"[^\n]*\n(?:(?:    [^\n]*)?\n)*",
+                    "", real_dependabot, flags=re.M), real_actions, True),
+            ("(control: an action that pins nothing needs no entry)",
+             before, {f"{ACTIONS_DIR}/x": "runs:\n  using: composite\n  steps:\n"
+                      f"    - uses: ./{_RECORD}\n"}, False)):
+        if must_fire and config == real_dependabot:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation left dependabot.yml unchanged")
+            ok = False
+            continue
+        got = dependabot_config_problems(config, acts)
+        good = (bool(got) and all(any(d in g for g in got) for d in acts)) if must_fire else not got
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
     # The required context: the three edits that hang every pull request
     # rather than failing one, and deletion.
     real_docs = (REPO / ".github" / "workflows" / "docs.yml").read_text()
@@ -2946,6 +3333,7 @@ def main():
     check_required_context_intact()
     check_docs_gate_shared()
     check_dependabot_gate()
+    check_dependabot_reads_actions()
     check_m0_release_workflow()
     check_mojo_pages()
     check_ci_measurements_are_collected()
