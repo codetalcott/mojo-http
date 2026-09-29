@@ -284,6 +284,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   it. `test_listener_owner.mojo` holds each owner's number past its return
   on both platforms, and `smoke-shutdown` traces m0serve's under strace on
   Linux. Found in review.
+- **A closed `Socket` leaves its descriptor number alone** (SPEC D1). A
+  socket made from a descriptor it was given (`Socket(fd=...)`) is born
+  connected, and `close()` did not mark it otherwise, so destroying it
+  after `close()` shut down whatever the process had opened on that number
+  since -- a new descriptor takes the lowest free number -- and a second
+  `close()` closed that descriptor outright. Nothing in m0serve or the Mojo
+  host closes such a socket and keeps it since the listener fix above; a
+  Mojo application that adopts a descriptor into a `Socket` could. `close()`
+  now marks the socket unconnected, and does nothing on a socket already
+  closed. `test_socket_close.mojo` gates both. Found in review.
 - **A connection accept sharing passes to a worker that is shutting down
   is answered** (SPEC E16, D1). Under `--workers N` the worker that
   accepts a connection may pass it to a lighter sibling. When that sibling
