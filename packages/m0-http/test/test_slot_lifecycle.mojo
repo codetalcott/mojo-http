@@ -25,15 +25,20 @@ reported by every wait until it is deleted, where kqueue's one-shot fires
 once.
 """
 
+from std.ffi import c_int, external_call, get_errno
+from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
-from lightbug_http.c.kqueue import EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE
-from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.c.socket import close, send
+from lightbug_http.c.kqueue import (
+    EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
+)
+from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
+from lightbug_http.c.socket import close, recv, send
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
+from lightbug_http.loop.response import _on_write
 from lightbug_http.loop.state import (
     LoopState,
     TIMER_BODY,
@@ -436,6 +441,94 @@ def test_a_stale_body_expiry_is_retired() raises:
         st.slot_fds[slot] = UNUSED
         st.fd_to_slot[FD] = UNUSED
         st.provision_pool.release(slot)
+
+
+def test_a_send_deadline_leaves_a_websockets_close_linger() raises:
+    """`_arm_send_deadline` skips a stream, and the skip is what keeps a
+    WebSocket's close linger. A socket the handler closed itself
+    (`take_ws_closes`) has its linger armed while its Close is still
+    queued, and when that Close, or a frame ahead of it, goes out through
+    the write-ready path, every send that moves bytes restarts the send
+    deadline. Without the skip that re-stamped the linger as `idle_timeout`
+    from the last progress. `_stream_idle` does not hide it: it keeps a
+    closing socket's deadline when the bytes land
+    (`test_a_frame_keeps_a_websockets_close_linger`), so the sweep would
+    have reaped a peer that never answers by the idle timeout, not by
+    `WS_CLOSE_LINGER_NS`.
+
+    covers: L16
+    """
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.slot_ws[slot] = True
+    st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+    _arm_ws_linger(st, slot)
+    var linger = st.slot_idle_deadline[slot]
+    assert_true(linger > 0)
+    # Queued bytes bigger than the socket takes in one send, on their way
+    # out through the write-ready path, as the outbox drain leaves them.
+    st.slot_response[slot] = Bytes(length=8 << 20, fill=0x61)
+    st.slot_send_offset[slot] = 0
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    _on_write(app, backend, st, fd)
+    assert_true(st.slot_send_offset[slot] > 0)
+    assert_true(st.slot_send_offset[slot] < len(st.slot_response[slot]))
+    assert_equal(
+        st.slot_idle_deadline[slot], linger,
+        "a send that moved bytes re-stamped the close linger",
+    )
+    # The peer reads the rest: the bytes land and the slot lingers in frame
+    # mode, by the deadline it was given when the Close was queued.
+    var rounds = 0
+    while (
+        st.provision_pool.provisions[slot].state.kind == ConnectionState.RESPONDING
+        and rounds < 100_000
+    ):
+        _discard_all(peer)
+        _on_write(app, backend, st, fd)
+        rounds += 1
+    assert_equal(st.provision_pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
+    assert_equal(st.slot_idle_deadline[slot], linger)
+    close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+
+
+def _stream_pair() raises -> Tuple[Int, Int]:
+    """An `AF_UNIX` `SOCK_STREAM` pair, non-blocking at both ends: the first
+    end is the server's side of a connection, the second the client's."""
+    var fds = unsafe_alloc[c_int](count=2)
+    var rc = external_call[
+        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
+    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
+    if rc != 0:
+        var errno = get_errno()
+        fds.unsafe_free()
+        raise Error("socketpair() failed, errno: ", errno)
+    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
+    fds.unsafe_free()
+    set_nonblocking(FileDescriptor(pair[0]))
+    set_nonblocking(FileDescriptor(pair[1]))
+    return pair
+
+
+def _discard_all(fd: Int):
+    """Read and drop everything waiting on `fd`, without blocking."""
+    var buf = List[UInt8](length=65536, fill=0)
+    while True:
+        var n: UInt
+        try:
+            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+        except:
+            break
+        if n == 0:
+            break
 
 
 def main() raises:

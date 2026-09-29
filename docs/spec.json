@@ -1599,7 +1599,7 @@
       "category": "L. ASGI 3.0",
       "capability": "...and the wait for the peer's reply is BOUNDED, so a peer that never answers does not hold its slot",
       "status": "verified",
-      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server"
+      "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 the linger used to re-arm on every loop pass, which held the slot for the life of the process; L15 alone passes on that server. A socket whose Close goes out through the write-ready path keeps the linger it was given: the send deadline, which each send that moves bytes restarts, skips a stream; without the skip, a Close queued behind a large frame would linger for the idle timeout from its last progress instead: `test_slot_lifecycle.mojo:test_a_send_deadline_leaves_a_websockets_close_linger`"
     },
     {
       "id": "L18",
