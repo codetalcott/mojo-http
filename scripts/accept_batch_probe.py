@@ -37,6 +37,20 @@ were more than 100 ms apart.
             pass's other events the knob alone does not recreate the old
             order, so there it is not asserted.
 
+The negative arm's round STOPS the server (SIGSTOP) while the blocker and
+the burst queue. The drain the knob restores runs on past the blocker only
+when the blocker is served inside it, by its own admission's eager read, and
+that needs the blocker's request in its socket before the loop accepts it.
+Unstopped, the loop can win that race: it reads nothing, serves the blocker
+from a read event a pass later, and takes the keep-alive's `/fast` before
+any of the burst queued meanwhile -- `/fast` 0 ms after the blocker, in one
+of 42 Linux CI runs (2026-09-29). Stopped, the blocker's request and the
+whole burst are queued before the loop runs again. A request sent on the
+keep-alive connection during the stop proves it held (it is answered only
+once the server continues), and its answer says when to send `/fast`: that
+pass answers it before its accepts, so `/fast` waits for the drain. The arm
+above keeps the unstopped shape, where the race can only make `/fast` early.
+
 The measurements are in docs/notes/the-accept-batch.md. Prints `beyond_ms N`,
 `bound_ms N`, `burst_ms N`, `gap_ms N` and `cost_ms N` for the recorder.
 """
@@ -48,7 +62,10 @@ import http.client
 import os
 import platform
 import re
+import select
+import signal
 import socket
+import subprocess
 import sys
 import tempfile
 import threading
@@ -115,40 +132,88 @@ def cost(port: int) -> float:
     return samples[len(samples) // 2]
 
 
-def one_round(port: int) -> dict:
+def slow(port: int, ms: int) -> socket.socket:
+    """A new connection carrying `/slow?ms=MS`, sent whole."""
+    s = socket.create_connection(("127.0.0.1", port))
+    s.sendall(b"GET /slow?ms=%d HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" % ms)
+    return s
+
+
+def state(pid: int) -> str:
+    """The kernel's one-letter state for `pid`; `T` is stopped."""
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            return f.read().rsplit(")", 1)[1].split()[0]
+    except OSError:
+        return subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                              capture_output=True, text=True).stdout.strip()[:1]
+
+
+def sigstop(pid: int) -> None:
+    """SIGSTOP `pid`, returning once it has taken: `kill` only queues the
+    signal, and a request sent before it takes would be answered."""
+    os.kill(pid, signal.SIGSTOP)
+    deadline = time.monotonic() + 5
+    while state(pid) not in ("T", "t"):
+        if time.monotonic() > deadline:
+            fail("SIGSTOP did not stop the server within 5 s (state %r)" % state(pid))
+        time.sleep(0.005)
+
+
+def one_round(port: int, pid: int | None = None) -> dict:
     """One blocker, one burst, one `/fast`. Times in ms from the blocker's
     answer: `beyond` to `/fast`'s, `burst` to the last burst answer, `gap`
-    the widest silence between two burst answers."""
+    the widest silence between two burst answers.
+
+    With `pid`, the blocker and the burst queue while that server is
+    stopped (the negative arm; the module docstring says why)."""
     keep = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
     keep.request("GET", "/fast")
     keep.getresponse().read()           # established, and kept alive
 
-    blocker = socket.create_connection(("127.0.0.1", port))
-    blocker.settimeout(60)
-    blocker.sendall(b"GET /slow?ms=%d HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" % BLOCK_MS)
-    t_block = time.monotonic()
     answered: list[float] = []
 
-    def blocker_answer() -> None:
+    def watch(blocker: socket.socket) -> threading.Thread:
+        blocker.settimeout(60)
+
+        def blocker_answer() -> None:
+            try:
+                if blocker.recv(1):
+                    answered.append(time.monotonic())
+            except OSError:
+                pass
+
+        watcher = threading.Thread(target=blocker_answer, daemon=True)
+        watcher.start()
+        return watcher
+
+    if pid is None:
+        blocker = slow(port, BLOCK_MS)
+        t_block = time.monotonic()
+        watcher = watch(blocker)
+        time.sleep(0.05)                # the loop takes it and parks in usleep
+        burst = [slow(port, EACH_MS) for _ in range(K)]
+        t_sent = time.monotonic()
+        if answered or (t_sent - t_block) * 1000 > BLOCK_MS * 0.8:
+            fail("queueing the burst took %.0f ms of the blocker's %d: this runner is too slow "
+                 "for the shape the probe needs" % ((t_sent - t_block) * 1000, BLOCK_MS))
+    else:
         try:
-            if blocker.recv(1):
-                answered.append(time.monotonic())
-        except OSError:
-            pass
-
-    watcher = threading.Thread(target=blocker_answer, daemon=True)
-    watcher.start()
-    time.sleep(0.05)                    # the loop takes it and parks in usleep
-
-    burst = []
-    for _ in range(K):
-        s = socket.create_connection(("127.0.0.1", port))
-        s.sendall(b"GET /slow?ms=%d HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n" % EACH_MS)
-        burst.append(s)
-    t_sent = time.monotonic()
-    if answered or (t_sent - t_block) * 1000 > BLOCK_MS * 0.8:
-        fail("queueing the burst took %.0f ms of the blocker's %d: this runner is too slow "
-             "for the shape the probe needs" % ((t_sent - t_block) * 1000, BLOCK_MS))
+            sigstop(pid)
+            keep.request("GET", "/fast")    # the stop's proof
+            blocker = slow(port, BLOCK_MS)
+            burst = [slow(port, EACH_MS) for _ in range(K)]
+            held = not select.select([keep.sock], [], [], 0)[0]
+            watcher = watch(blocker)
+        finally:
+            os.kill(pid, signal.SIGCONT)
+        t_sent = time.monotonic()
+        if not held:
+            fail("the server answered while it was stopped: the blocker's request and the "
+                 "burst did not queue before the loop could run")
+        # Answered in the first pass the server runs, before that pass's
+        # accepts: `/fast`, sent now, waits for the drain the pass goes on to.
+        keep.getresponse().read()
 
     keep.request("GET", "/fast")
     keep.getresponse().read()
@@ -224,11 +289,11 @@ def main() -> None:
 
     if platform.system() == "Linux":
         phase("negative arm: start the server")
-        with started(binary, port + 1, "0"):
+        with started(binary, port + 1, "0") as proc:
             phase("negative arm: measure what one request costs")
             neg_each = cost(port + 1)
             phase("negative arm: the burst behind the blocker")
-            n = one_round(port + 1)
+            n = one_round(port + 1, proc.pid)
         print("negative arm (M0_ACCEPT_BATCH=0): /slow?ms=%d costs %.1f ms; /fast %.0f ms after "
               "the blocker; burst answered %d/%d" % (EACH_MS, neg_each, n["beyond"], n["served"], K))
         if n["beyond"] < K * neg_each * 2 / 3:
