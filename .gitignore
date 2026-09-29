@@ -31,30 +31,9 @@ bin/
 # is what stamped its artifact `git_dirty: true`.
 /*.log
 
-# smoke-fragment-notes: the refusal run's log and the binary it builds, plus
-# the curl scratch files. A smoke that FAILS never reaches its own `rm -f`,
-# so these are what a red gate leaves behind.
-notes_app
-headers.txt
-page.html
-frag.html
-jar.txt
-sse.txt
-expected.bin
-got.bin
 # A wheel staged for the docs site's image probe (scripts/site_image_probe.py)
 deploy/site/wheelhouse/*.whl
-rt6.doctor
-# Per-connection probe output from the multi-worker and realtime smokes:
-# the index is a loop variable, so these are globs rather than names.
-mw_hdr_*.txt
-mw_sse_*.txt
-todo_*.txt
-slow*.txt
-serve_*.txt
-big_app.bin
-big_live.bin
-dj.jar
+
 .venv-pinned/
 probe.out
 dist/
