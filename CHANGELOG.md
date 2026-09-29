@@ -300,6 +300,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   pass. `sabotage-spec` no longer reports a working rule MISSED when the
   first test file carries extra coverage, and `test.yml` no longer runs the
   milestone rot gates a second time beside the docs gate.
+- **Twenty-two smokes no longer bind a fixed port or write into the
+  checkout, and no task re-syncs the venv it runs in.** They source
+  `scripts/smoke/lib.sh`, so each server takes a free port, where fourteen
+  of them shared 8080, and its logs go to a temporary directory that is
+  kept, and uploaded by CI, only when the smoke fails. A server that dies
+  while starting is reported at once with its log, where the smoke
+  retried for a minute first, and cleanup stops the server's whole process
+  group and waits for it, where it signalled one pid and could leave a
+  supervisor's workers running. Ten tasks could run a nested `uv run poe`
+  (three on every run, seven to build something missing), which re-syncs
+  the environment the task runs in, swapping packages under anything else
+  using it and undoing `nightly-try` or `py314t-try`; they pass
+  `--no-sync`, or take the build as a poe dependency. A new step on the
+  Linux leg, `poe check-task-shells`, parses every task under dash and
+  refuses such a call.
 
 - **A client that resets its connection no longer holds its slot on
   Linux** (SPEC C9). epoll reported a socket error as a failed
