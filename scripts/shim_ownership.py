@@ -125,6 +125,7 @@ class Harness:
         self.bg_done = False
         self.http_receives = []  # every stored stream's receive
         self.bg_receive = []     # what a receive() after the response got
+        self.heard = []          # (task, type): what a parked listener heard
         self.head_receive = []   # what a receive() after a streamed HEAD got
         self.head_finished = False  # the streamed HEAD's app ran to its end
         self.head_task = None    # a HEAD application's own task
@@ -395,6 +396,19 @@ class Harness:
             await receive()
             await receive()
             return
+        if behaviour == "listen":
+            # Starlette's StreamingResponse under ASGI 2.3, the version this
+            # server advertises: a stream, and a listener parked in
+            # receive() whose first http.disconnect ends it. What the
+            # listener heard is recorded against the task that heard it.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"x" * 64,
+                        "more_body": True})
+            await receive()  # the request's own body
+            msg = await receive()
+            self.heard.append((asyncio.current_task(), msg["type"]))
+            return
         if behaviour == "bodyfirst":
             # A body before its start, the error caught, then a proper
             # answer: only the proper answer may reach the client.
@@ -435,6 +449,20 @@ class Harness:
             finally:
                 await send({"type": "http.response.body", "body": b"",
                             "more_body": False})
+        if behaviour == "slowclean":
+            # A push hub's stream whose cleanup is slow: it keeps its send
+            # for the hub, and the cancellation its client's departure sends
+            # runs a finally that waits for the test's release. Its task
+            # runs on, its client gone, for as long as the test says.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await send({"type": "http.response.body", "body": b"hello",
+                        "more_body": True})
+            self.http_sends.append(send)
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await self.release.wait()
         if behaviour in ("background", "plain", "failafter"):
             status = 500 if behaviour == "failafter" else 200
             await send({"type": "http.response.start", "status": status,
@@ -803,6 +831,56 @@ def test_a_websocket_successor_does_not_inherit_its_predecessors_disconnect(h):
         "disconnect swallowed it: %r" % (kinds,))
     assert "ws_reject" not in kinds, (
         "the handshake was rejected: %r" % (kinds,))
+
+
+def test_a_successors_receive_does_not_hear_its_predecessors_disconnect(h):
+    """`spawn` drops the slot's disconnect future before its task exists.
+
+    A receive() parked before the response is over waits on a future kept
+    by SLOT, which the loop's disconnect tag resolves. The tag precedes the
+    next connection's job on the channel, so when the slot is recycled in
+    one batch the previous task has not finished yet, and when it does it
+    no longer owns the slot: its cleanup does not run, and the resolved
+    future stays on the slot. Without the drop, the successor's receive()
+    found it and returned `http.disconnect` at once, with its client still
+    connected. Under Starlette's StreamingResponse that listener ends the
+    stream, so the next client's stream ended as it began.
+
+    Both requests are streams, because a stream is what the loop tags. A
+    socket hears its client leave through the inbox its own task makes and
+    never waits on this future, so `spawn_ws` dropping it has no test: no
+    socket's receive() can tell."""
+    h.job(0, "listen")
+    h.settle()
+    assert h.kinds(0)[:1] == ["stream_start"], (
+        "the first stream did not start: %r" % (h.kinds(0),))
+    first = h.ns["_exec_slot_task"][0]
+    assert 0 in h.ns["_exec_disconnects"], (
+        "the first stream is not parked in receive() on the slot's future, "
+        "so the rule is not reached: %r" % (h.kinds(0),))
+    mark = len(h.events)
+    # One batch: the disconnect for the old connection and the job for the
+    # new one, read by a single `_on_submit` callback, in FIFO order.
+    h.disconnect(0)
+    h.job(0, "listen")
+    h.settle()
+    heard = [msg for task, msg in h.heard if task is not first]
+    assert not heard, (
+        "the successor's receive() returned %r before its client left: it "
+        "heard the disconnect that closed the connection before it" % (heard,))
+    after = [e[0] for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
+    assert "stream_start" in after, "the successor never started: %r" % after
+    assert "stream_end" not in after and "stream_abort" not in after, (
+        "the successor's stream was ended before its client left: %r"
+        % (after,))
+    second = h.ns["_exec_slot_task"].get(0)
+    assert second is not None and second is not first \
+        and not second.done(), "the successor is not still streaming"
+    # And its own client's departure does reach it.
+    h.disconnect(0)
+    h.settle()
+    assert second.done(), "the successor outlived its own disconnect"
+    _assert_global_window_whole(h)
 
 
 def test_a_websocket_recycle_forgets_the_predecessors_accept(h):
@@ -1329,6 +1407,51 @@ def test_a_gone_stream_is_not_charged_for_the_credit_it_woke_to(h):
     assert h.ns["_exec_inflight"].get(0, 0) == 0, (
         "%d bytes charged to a stream that had gone stay in flight on the "
         "slot" % h.ns["_exec_inflight"].get(0, 0))
+    _assert_global_window_whole(h)
+
+
+def test_a_stale_stream_send_is_a_no_op_after_the_next_owner_cleans_the_slot(h):
+    """`_emit` asks whether its stream has gone BEFORE it reads the slot.
+
+    Three checks drop a send to a gone stream, and this is the case only
+    the first in `_emit` covers. `send`'s asks whether the stream's task
+    has FINISHED, and one whose finally is still awaiting cleanup has not.
+    `_emit`'s later checks come after `_exec_credit_evts[slot]` is read,
+    and that read fails once the slot's next request has been answered and
+    its task, the owner by then, has cleaned the slot. Unchecked, a hub's
+    push to a stream whose client had gone raised `KeyError: 0` into the
+    hub, where ASGI 2.3, and uvicorn, make it a quiet no-op; sent from the
+    stream's own finally, the same KeyError was logged as an application
+    error."""
+    h.job(0, "slowclean")
+    h.settle()
+    stale = h.http_sends[0]
+    first = h.ns["_exec_slot_task"][0]
+    # One batch: the client leaves, and the next connection's request lands
+    # on the recycled slot, is answered, and its task cleans the slot.
+    h.disconnect(0)
+    h.job(0, "plain")
+    h.settle()
+    done = [e for e in h.events if e[0] == "done" and e[1] == 0]
+    assert [d[4] for d in done] == [b"plain"], (
+        "the next request was not answered: %r" % (h.kinds(0),))
+    assert not first.done(), (
+        "the first stream's cleanup is not still running, so the rule is "
+        "not reached")
+    assert 0 not in h.ns["_exec_credit_evts"], (
+        "the next request's task did not clean the slot, so the rule is not "
+        "reached")
+    mark = len(h.events)
+    result = h.run(h.foreign(stale, {"type": "http.response.body",
+                                     "body": b"STALE", "more_body": True}))
+    assert result == "returned", (
+        "a send to a gone stream must be a quiet no-op once the slot's next "
+        "owner has cleaned it, got %r" % (result,))
+    after = [e for e in h.events[mark:] if len(e) > 1 and e[1] == 0]
+    assert not after, "a gone stream's send reached the slot: %r" % (after,)
+    h.release.set()
+    h.settle()
+    assert first.done(), "the first stream's cleanup never finished"
     _assert_global_window_whole(h)
 
 
@@ -1889,6 +2012,7 @@ TESTS = [
     test_a_successor_does_not_inherit_its_predecessors_disconnect,
     test_a_stale_ack_cannot_inflate_the_successors_window,
     test_a_websocket_successor_does_not_inherit_its_predecessors_disconnect,
+    test_a_successors_receive_does_not_hear_its_predecessors_disconnect,
     test_a_websocket_recycle_forgets_the_predecessors_accept,
     test_a_websocket_send_waits_for_its_window,
     test_a_stream_sent_from_a_child_task_marks_the_owner,
@@ -1914,6 +2038,7 @@ TESTS = [
     test_receive_after_the_response_is_a_disconnect,
     test_a_gone_socket_is_not_charged_for_the_credit_it_woke_to,
     test_a_gone_stream_is_not_charged_for_the_credit_it_woke_to,
+    test_a_stale_stream_send_is_a_no_op_after_the_next_owner_cleans_the_slot,
     test_a_finished_background_task_leaves_the_next_stream_alone,
     test_a_gone_streams_final_body_does_not_end_the_next_stream,
     test_a_body_after_the_final_body_answers_nothing,
@@ -2410,6 +2535,28 @@ SABOTAGES = [
         "    accepted = globals().setdefault('_m0_ws_accepts', {})"
         ".setdefault(slot, [False])\n",
         ("test_a_websocket_recycle_forgets_the_predecessors_accept",),
+    ),
+    # Two lines whose removal failed no test until 2026-09-29. The second is
+    # the first of three checks that drop a send to a gone stream; the other
+    # two are "a send after the response is over still answers" and "a
+    # stream is charged for credit after it has gone", and its test passes
+    # with either of those reverted.
+    (
+        "an HTTP spawn keeps the previous connection's disconnect",
+        "    _exec_disconnects.pop(slot, None)\n"
+        "    _exec_stream_tasks.pop(slot, None)\n"
+        "    cycle = _Cycle(slot, body)\n",
+        "    _exec_stream_tasks.pop(slot, None)\n"
+        "    cycle = _Cycle(slot, body)\n",
+        ("test_a_successors_receive_does_not_hear_its_predecessors_disconnect",),
+    ),
+    (
+        "a send to a gone stream reads the slot before it asks",
+        "            if _task_gone(owner):\n"
+        "                return await _dropped()\n"
+        "            evt = _exec_credit_evts[slot]\n",
+        "            evt = _exec_credit_evts[slot]\n",
+        ("test_a_stale_stream_send_is_a_no_op_after_the_next_owner_cleans_the_slot",),
     ),
 ]
 

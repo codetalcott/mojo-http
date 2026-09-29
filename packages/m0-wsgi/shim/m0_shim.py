@@ -1422,6 +1422,12 @@ class _Cycle:
         view = memoryview(data)
         for start in range(0, len(view), _ASGI_CHUNK_SPLIT):
             piece = bytes(view[start : start + _ASGI_CHUNK_SPLIT])
+            # Asked before the slot is read, not only after the wait: a gone
+            # stream's task can still be running (a finally awaiting its
+            # cleanup), which `send`'s check lets through, and once the
+            # slot's next request is answered its task, the owner by then,
+            # has cleaned the slot. Unasked, the read below raised KeyError
+            # into whoever sent. `poe test-shim` holds this line.
             if _task_gone(owner):
                 return await _dropped()
             evt = _exec_credit_evts[slot]

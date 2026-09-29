@@ -99,6 +99,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   which the task runs first, shows on a real rule that a test that does
   not catch it, a test the suite does not list and a patch that does not
   apply each fail the run.
+- **`poe test-shim` guards two more of the executor shim's rules, each a
+  line whose removal failed no test** (SPEC L7). `spawn` drops the slot's
+  disconnect future before a request's task exists. Without that, a
+  request parked in `receive()` on a slot recycled from a stream heard the
+  stream's disconnect at once, and under Starlette's `StreamingResponse`
+  the next client's stream ended as it began. And a stream's send asks
+  whether its client has gone before it reads the slot's credit state.
+  Without that, a push to a stream whose client had gone, while the
+  stream's task was still in a `finally`, raised `KeyError` once the
+  slot's next request had finished and cleaned the slot, where it must be
+  a quiet no-op.
+  Neither changes what the server does: each rule now has a test written
+  for it, and the sabotage reverts it.
 - **CI's smokes are three jobs.** The `smoke` job had grown to a median of
   21.4 min on the ubuntu leg, against a 30-minute cap that a runner 1.45
   times slower, the slowest seen, would pass. It keeps the server's smokes
