@@ -92,7 +92,7 @@ jobs:
         # --no-project: the repository's own environment pins a Mojo
         # toolchain this job has no use for.
         run: uv run --no-project --with markdown-it-py python scripts/docsite.py --out dist/site --base-url https://m0serve.dev
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1  # 1.6
       - name: Deploy
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_DEPLOY_SITE }}
@@ -169,7 +169,7 @@ jobs:
           tree=$(python3 -c 'import re;print(re.search(r"^version = \"([^\"]+)\"", open("pyproject.toml").read(), re.M).group(1))')
           [ "$tree" = "${{ steps.v.outputs.version }}" ] || { echo "::error::checked out version $tree, pinning ${{ steps.v.outputs.version }}"; exit 1; }
           echo "tree $(git rev-parse --short HEAD) is m0serve $tree"
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1  # 1.6
       - name: Deploy
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_DEPLOY_DEMO }}
@@ -252,7 +252,7 @@ jobs:
             echo "present=false" >> "$GITHUB_OUTPUT"
             echo "::notice::v$tree predates the Mojo demo's deploy (deploy/blobs/); nothing to deploy"
           fi
-      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be  # 1.5
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1  # 1.6
         if: steps.tree.outputs.present == 'true'
       - name: Deploy
         if: steps.tree.outputs.present == 'true'
