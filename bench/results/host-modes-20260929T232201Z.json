@@ -1,0 +1,944 @@
+{
+  "bench": "host_modes",
+  "recorded_utc": "2026-09-29T23:22:01+00:00",
+  "environment": {
+    "version": "1.8.0",
+    "git_sha": "be647c0",
+    "source_stamp": "",
+    "git_dirty": false,
+    "os": "Darwin 27.0.0",
+    "machine": "arm64",
+    "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+    "mojo": "Mojo 1.1.0 (8189361e)",
+    "granian": "granian 2.8.3",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "numpy": "2.5.3",
+    "cpu": "Apple M4",
+    "cores_physical": "10",
+    "os_build": "macOS 27.0 (26A428)",
+    "memory_bytes": "17179869184",
+    "cores_performance": "4",
+    "cores_efficiency": "6",
+    "power_source": "AC Power",
+    "low_power_mode": "0",
+    "thermal": "No thermal warning level has been recorded; No performance warning level has been recorded; No CPU power status has been recorded"
+  },
+  "parameters": {
+    "duration": "8s",
+    "connections": "16,256",
+    "rounds": "3",
+    "n": "4",
+    "wrk_threads": "4",
+    "subject": "apps/ramp under m0_host.serve; /x/now on the loop, /x/search?sel=25 in func",
+    "keepalive_cap": "off (M0_MAX_KEEPALIVE_REQUESTS=0)",
+    "accepted_drift": "host-modes-20260925T003557Z.json"
+  },
+  "definitions": {
+    "medians.rps_per_core": "median rps across rounds / median cores across rounds; the figure docs/BENCHMARKS.md renders",
+    "medians.rps_per_core_rounds": "median across rounds of each round's own rps per core",
+    "cores": "process CPU seconds over wall seconds during the measured window",
+    "comparisons": "by_case[case]: threads=4 over workers=4, the median across rounds of the ratio within each round; throughput and per_core above 1 favour threads, p99 and rss below 1 favour threads"
+  },
+  "rows": [
+    {
+      "rps": 245199.9,
+      "cores": 0.99,
+      "rps_per_core": 246662,
+      "p50_us": 51.0,
+      "p99_us": 121.0,
+      "rss_kb_summed": 18112,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 1,
+      "name": "workers=1 now c16"
+    },
+    {
+      "rps": 197798.7,
+      "cores": 2.48,
+      "rps_per_core": 79685,
+      "p50_us": 69.0,
+      "p99_us": 119.0,
+      "rss_kb_summed": 44672,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        5,
+        12,
+        0,
+        0
+      ],
+      "handoffs_in": [
+        1,
+        1,
+        8,
+        7
+      ],
+      "round": 1,
+      "name": "workers=N now c16"
+    },
+    {
+      "rps": 196488.8,
+      "cores": 2.56,
+      "rps_per_core": 76740,
+      "p50_us": 69.0,
+      "p99_us": 122.0,
+      "rss_kb_summed": 34448,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        10,
+        0,
+        1,
+        5
+      ],
+      "handoffs_in": [
+        1,
+        6,
+        5,
+        4
+      ],
+      "round": 1,
+      "name": "threads=N now c16"
+    },
+    {
+      "rps": 245866.8,
+      "cores": 1.0,
+      "rps_per_core": 246500,
+      "p50_us": 1020.0,
+      "p99_us": 1370.0,
+      "rss_kb_summed": 21040,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 1,
+      "name": "workers=1 now c256"
+    },
+    {
+      "rps": 214501.3,
+      "cores": 2.69,
+      "rps_per_core": 79747,
+      "p50_us": 1150.0,
+      "p99_us": 1360.0,
+      "rss_kb_summed": 47616,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        22,
+        22,
+        23,
+        230
+      ],
+      "handoffs_in": [
+        69,
+        109,
+        112,
+        7
+      ],
+      "round": 1,
+      "name": "workers=N now c256"
+    },
+    {
+      "rps": 213009.0,
+      "cores": 2.74,
+      "rps_per_core": 77640,
+      "p50_us": 1160.0,
+      "p99_us": 1380.0,
+      "rss_kb_summed": 37344,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        229,
+        36,
+        7,
+        31
+      ],
+      "handoffs_in": [
+        9,
+        77,
+        108,
+        109
+      ],
+      "round": 1,
+      "name": "threads=N now c256"
+    },
+    {
+      "rps": 30552.9,
+      "cores": 1.0,
+      "rps_per_core": 30622,
+      "p50_us": 494.0,
+      "p99_us": 1010.0,
+      "rss_kb_summed": 18160,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 1,
+      "name": "workers=1 search c16"
+    },
+    {
+      "rps": 102905.1,
+      "cores": 3.92,
+      "rps_per_core": 26277,
+      "p50_us": 130.0,
+      "p99_us": 529.0,
+      "rss_kb_summed": 44720,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        3,
+        12,
+        2,
+        2
+      ],
+      "handoffs_in": [
+        6,
+        2,
+        5,
+        6
+      ],
+      "round": 1,
+      "name": "workers=N search c16"
+    },
+    {
+      "rps": 103039.4,
+      "cores": 3.94,
+      "rps_per_core": 26150,
+      "p50_us": 129.0,
+      "p99_us": 513.0,
+      "rss_kb_summed": 34464,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        5,
+        9,
+        6,
+        0
+      ],
+      "handoffs_in": [
+        5,
+        5,
+        4,
+        6
+      ],
+      "round": 1,
+      "name": "threads=N search c16"
+    },
+    {
+      "rps": 30572.4,
+      "cores": 1.0,
+      "rps_per_core": 30651,
+      "p50_us": 8310.0,
+      "p99_us": 8700.0,
+      "rss_kb_summed": 21104,
+      "processes": 1,
+      "errors": 423,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 1,
+      "name": "workers=1 search c256"
+    },
+    {
+      "rps": 105583.1,
+      "cores": 3.95,
+      "rps_per_core": 26756,
+      "p50_us": 1990.0,
+      "p99_us": 5530.0,
+      "rss_kb_summed": 47632,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        108,
+        104,
+        50,
+        48
+      ],
+      "handoffs_in": [
+        80,
+        61,
+        80,
+        89
+      ],
+      "round": 1,
+      "name": "workers=N search c256"
+    },
+    {
+      "rps": 105501.2,
+      "cores": 3.96,
+      "rps_per_core": 26642,
+      "p50_us": 1990.0,
+      "p99_us": 5470.0,
+      "rss_kb_summed": 37376,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        154,
+        83,
+        72,
+        71
+      ],
+      "handoffs_in": [
+        75,
+        100,
+        105,
+        100
+      ],
+      "round": 1,
+      "name": "threads=N search c256"
+    },
+    {
+      "rps": 243797.7,
+      "cores": 0.99,
+      "rps_per_core": 245251,
+      "p50_us": 51.0,
+      "p99_us": 125.0,
+      "rss_kb_summed": 18160,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 2,
+      "name": "workers=1 now c16"
+    },
+    {
+      "rps": 196598.0,
+      "cores": 2.47,
+      "rps_per_core": 79470,
+      "p50_us": 69.0,
+      "p99_us": 121.0,
+      "rss_kb_summed": 44448,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        2,
+        15,
+        2,
+        0
+      ],
+      "handoffs_in": [
+        7,
+        1,
+        4,
+        7
+      ],
+      "round": 2,
+      "name": "workers=N now c16"
+    },
+    {
+      "rps": 196544.8,
+      "cores": 2.56,
+      "rps_per_core": 76766,
+      "p50_us": 69.0,
+      "p99_us": 120.0,
+      "rss_kb_summed": 34480,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        9,
+        1,
+        5,
+        2
+      ],
+      "handoffs_in": [
+        1,
+        5,
+        4,
+        7
+      ],
+      "round": 2,
+      "name": "threads=N now c16"
+    },
+    {
+      "rps": 246843.0,
+      "cores": 1.0,
+      "rps_per_core": 247812,
+      "p50_us": 1020.0,
+      "p99_us": 1360.0,
+      "rss_kb_summed": 21024,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 2,
+      "name": "workers=1 now c256"
+    },
+    {
+      "rps": 213026.8,
+      "cores": 2.67,
+      "rps_per_core": 79677,
+      "p50_us": 1160.0,
+      "p99_us": 1400.0,
+      "rss_kb_summed": 47552,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        12,
+        16,
+        223,
+        42
+      ],
+      "handoffs_in": [
+        103,
+        115,
+        11,
+        64
+      ],
+      "round": 2,
+      "name": "workers=N now c256"
+    },
+    {
+      "rps": 212978.1,
+      "cores": 2.75,
+      "rps_per_core": 77490,
+      "p50_us": 1160.0,
+      "p99_us": 1380.0,
+      "rss_kb_summed": 37360,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        27,
+        25,
+        6,
+        252
+      ],
+      "handoffs_in": [
+        110,
+        78,
+        114,
+        8
+      ],
+      "round": 2,
+      "name": "threads=N now c256"
+    },
+    {
+      "rps": 30580.2,
+      "cores": 1.0,
+      "rps_per_core": 30688,
+      "p50_us": 489.0,
+      "p99_us": 1010.0,
+      "rss_kb_summed": 18160,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 2,
+      "name": "workers=1 search c16"
+    },
+    {
+      "rps": 103327.7,
+      "cores": 3.92,
+      "rps_per_core": 26372,
+      "p50_us": 128.0,
+      "p99_us": 478.0,
+      "rss_kb_summed": 44656,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        9,
+        0,
+        1,
+        10
+      ],
+      "handoffs_in": [
+        3,
+        7,
+        7,
+        3
+      ],
+      "round": 2,
+      "name": "workers=N search c16"
+    },
+    {
+      "rps": 104216.4,
+      "cores": 3.95,
+      "rps_per_core": 26397,
+      "p50_us": 130.0,
+      "p99_us": 498.0,
+      "rss_kb_summed": 34512,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        3,
+        9,
+        2,
+        3
+      ],
+      "handoffs_in": [
+        5,
+        3,
+        4,
+        5
+      ],
+      "round": 2,
+      "name": "threads=N search c16"
+    },
+    {
+      "rps": 30625.7,
+      "cores": 1.0,
+      "rps_per_core": 30641,
+      "p50_us": 8320.0,
+      "p99_us": 8640.0,
+      "rss_kb_summed": 21088,
+      "processes": 1,
+      "errors": 545,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 2,
+      "name": "workers=1 search c256"
+    },
+    {
+      "rps": 105710.4,
+      "cores": 3.95,
+      "rps_per_core": 26788,
+      "p50_us": 1980.0,
+      "p99_us": 5500.0,
+      "rss_kb_summed": 47552,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        60,
+        74,
+        42,
+        101
+      ],
+      "handoffs_in": [
+        82,
+        74,
+        70,
+        51
+      ],
+      "round": 2,
+      "name": "workers=N search c256"
+    },
+    {
+      "rps": 104491.6,
+      "cores": 3.94,
+      "rps_per_core": 26517,
+      "p50_us": 2000.0,
+      "p99_us": 5730.0,
+      "rss_kb_summed": 37440,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        96,
+        125,
+        75,
+        52
+      ],
+      "handoffs_in": [
+        88,
+        68,
+        87,
+        105
+      ],
+      "round": 2,
+      "name": "threads=N search c256"
+    },
+    {
+      "rps": 242228.1,
+      "cores": 1.0,
+      "rps_per_core": 242768,
+      "p50_us": 52.0,
+      "p99_us": 117.0,
+      "rss_kb_summed": 18208,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 3,
+      "name": "workers=1 now c16"
+    },
+    {
+      "rps": 197303.2,
+      "cores": 2.5,
+      "rps_per_core": 79047,
+      "p50_us": 69.0,
+      "p99_us": 120.0,
+      "rss_kb_summed": 44448,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        2,
+        4,
+        1,
+        7
+      ],
+      "handoffs_in": [
+        6,
+        5,
+        2,
+        1
+      ],
+      "round": 3,
+      "name": "workers=N now c16"
+    },
+    {
+      "rps": 197583.9,
+      "cores": 2.57,
+      "rps_per_core": 76871,
+      "p50_us": 69.0,
+      "p99_us": 117.0,
+      "rss_kb_summed": 34448,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        2,
+        2,
+        8,
+        2
+      ],
+      "handoffs_in": [
+        4,
+        4,
+        1,
+        5
+      ],
+      "round": 3,
+      "name": "threads=N now c16"
+    },
+    {
+      "rps": 250223.9,
+      "cores": 1.0,
+      "rps_per_core": 251179,
+      "p50_us": 1010.0,
+      "p99_us": 1360.0,
+      "rss_kb_summed": 21040,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 3,
+      "name": "workers=1 now c256"
+    },
+    {
+      "rps": 214686.5,
+      "cores": 2.65,
+      "rps_per_core": 80969,
+      "p50_us": 1150.0,
+      "p99_us": 1390.0,
+      "rss_kb_summed": 47328,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        32,
+        219,
+        21,
+        20
+      ],
+      "handoffs_in": [
+        70,
+        9,
+        102,
+        111
+      ],
+      "round": 3,
+      "name": "workers=N now c256"
+    },
+    {
+      "rps": 214024.1,
+      "cores": 2.75,
+      "rps_per_core": 77771,
+      "p50_us": 1160.0,
+      "p99_us": 1370.0,
+      "rss_kb_summed": 37328,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        40,
+        25,
+        10,
+        231
+      ],
+      "handoffs_in": [
+        86,
+        98,
+        108,
+        14
+      ],
+      "round": 3,
+      "name": "threads=N now c256"
+    },
+    {
+      "rps": 30586.3,
+      "cores": 1.0,
+      "rps_per_core": 30615,
+      "p50_us": 494.0,
+      "p99_us": 1010.0,
+      "rss_kb_summed": 18208,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 3,
+      "name": "workers=1 search c16"
+    },
+    {
+      "rps": 104663.0,
+      "cores": 3.94,
+      "rps_per_core": 26574,
+      "p50_us": 127.0,
+      "p99_us": 492.0,
+      "rss_kb_summed": 44880,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        6,
+        2,
+        3,
+        7
+      ],
+      "handoffs_in": [
+        5,
+        4,
+        6,
+        3
+      ],
+      "round": 3,
+      "name": "workers=N search c16"
+    },
+    {
+      "rps": 104402.1,
+      "cores": 3.95,
+      "rps_per_core": 26436,
+      "p50_us": 126.0,
+      "p99_us": 519.0,
+      "rss_kb_summed": 34576,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        3,
+        2,
+        9,
+        3
+      ],
+      "handoffs_in": [
+        5,
+        4,
+        2,
+        6
+      ],
+      "round": 3,
+      "name": "threads=N search c16"
+    },
+    {
+      "rps": 30552.0,
+      "cores": 1.0,
+      "rps_per_core": 30592,
+      "p50_us": 8300.0,
+      "p99_us": 8680.0,
+      "rss_kb_summed": 21040,
+      "processes": 1,
+      "errors": 401,
+      "handoffs_out": [],
+      "handoffs_in": [],
+      "round": 3,
+      "name": "workers=1 search c256"
+    },
+    {
+      "rps": 105471.7,
+      "cores": 3.96,
+      "rps_per_core": 26663,
+      "p50_us": 2000.0,
+      "p99_us": 5500.0,
+      "rss_kb_summed": 47712,
+      "processes": 5,
+      "errors": 0,
+      "handoffs_out": [
+        63,
+        69,
+        52,
+        137
+      ],
+      "handoffs_in": [
+        81,
+        84,
+        103,
+        53
+      ],
+      "round": 3,
+      "name": "workers=N search c256"
+    },
+    {
+      "rps": 105066.0,
+      "cores": 3.95,
+      "rps_per_core": 26590,
+      "p50_us": 2000.0,
+      "p99_us": 5620.0,
+      "rss_kb_summed": 37376,
+      "processes": 1,
+      "errors": 0,
+      "handoffs_out": [
+        110,
+        73,
+        58,
+        68
+      ],
+      "handoffs_in": [
+        55,
+        96,
+        82,
+        76
+      ],
+      "round": 3,
+      "name": "threads=N search c256"
+    }
+  ],
+  "medians": {
+    "workers=1 now c16": {
+      "rounds": 3,
+      "rps": 243797.7,
+      "cores": 0.99,
+      "rps_per_core": 246260,
+      "rps_per_core_rounds": 245251,
+      "p99_us": 121.0,
+      "p99_us_min": 117.0,
+      "p99_us_max": 125.0
+    },
+    "workers=N now c16": {
+      "rounds": 3,
+      "rps": 197303.2,
+      "cores": 2.48,
+      "rps_per_core": 79558,
+      "rps_per_core_rounds": 79470,
+      "p99_us": 120.0,
+      "p99_us_min": 119.0,
+      "p99_us_max": 121.0
+    },
+    "threads=N now c16": {
+      "rounds": 3,
+      "rps": 196544.8,
+      "cores": 2.56,
+      "rps_per_core": 76775,
+      "rps_per_core_rounds": 76766,
+      "p99_us": 120.0,
+      "p99_us_min": 117.0,
+      "p99_us_max": 122.0
+    },
+    "workers=1 now c256": {
+      "rounds": 3,
+      "rps": 246843.0,
+      "cores": 1.0,
+      "rps_per_core": 246843,
+      "rps_per_core_rounds": 247812,
+      "p99_us": 1360.0,
+      "p99_us_min": 1360.0,
+      "p99_us_max": 1370.0
+    },
+    "workers=N now c256": {
+      "rounds": 3,
+      "rps": 214501.3,
+      "cores": 2.67,
+      "rps_per_core": 80338,
+      "rps_per_core_rounds": 79747,
+      "p99_us": 1390.0,
+      "p99_us_min": 1360.0,
+      "p99_us_max": 1400.0
+    },
+    "threads=N now c256": {
+      "rounds": 3,
+      "rps": 213009.0,
+      "cores": 2.75,
+      "rps_per_core": 77458,
+      "rps_per_core_rounds": 77640,
+      "p99_us": 1380.0,
+      "p99_us_min": 1370.0,
+      "p99_us_max": 1380.0
+    },
+    "workers=1 search c16": {
+      "rounds": 3,
+      "rps": 30580.2,
+      "cores": 1.0,
+      "rps_per_core": 30580,
+      "rps_per_core_rounds": 30622,
+      "p99_us": 1010.0,
+      "p99_us_min": 1010.0,
+      "p99_us_max": 1010.0
+    },
+    "workers=N search c16": {
+      "rounds": 3,
+      "rps": 103327.7,
+      "cores": 3.92,
+      "rps_per_core": 26359,
+      "rps_per_core_rounds": 26372,
+      "p99_us": 492.0,
+      "p99_us_min": 478.0,
+      "p99_us_max": 529.0
+    },
+    "threads=N search c16": {
+      "rounds": 3,
+      "rps": 104216.4,
+      "cores": 3.95,
+      "rps_per_core": 26384,
+      "rps_per_core_rounds": 26397,
+      "p99_us": 513.0,
+      "p99_us_min": 498.0,
+      "p99_us_max": 519.0
+    },
+    "workers=1 search c256": {
+      "rounds": 3,
+      "rps": 30572.4,
+      "cores": 1.0,
+      "rps_per_core": 30572,
+      "rps_per_core_rounds": 30641,
+      "p99_us": 8680.0,
+      "p99_us_min": 8640.0,
+      "p99_us_max": 8700.0
+    },
+    "workers=N search c256": {
+      "rounds": 3,
+      "rps": 105583.1,
+      "cores": 3.95,
+      "rps_per_core": 26730,
+      "rps_per_core_rounds": 26756,
+      "p99_us": 5500.0,
+      "p99_us_min": 5500.0,
+      "p99_us_max": 5530.0
+    },
+    "threads=N search c256": {
+      "rounds": 3,
+      "rps": 105066.0,
+      "cores": 3.95,
+      "rps_per_core": 26599,
+      "rps_per_core_rounds": 26590,
+      "p99_us": 5620.0,
+      "p99_us_min": 5470.0,
+      "p99_us_max": 5730.0
+    }
+  },
+  "comparisons": {
+    "definition": "by_case[case]: threads=4 over workers=4, the median across rounds of the ratio within each round; throughput and per_core above 1 favour threads, p99 and rss below 1 favour threads",
+    "n": 4,
+    "by_case": {
+      "now c16": {
+        "throughput": 1.0,
+        "per_core": 0.966,
+        "p99": 0.992,
+        "rss": 0.775,
+        "rounds": 3
+      },
+      "now c256": {
+        "throughput": 0.997,
+        "per_core": 0.973,
+        "p99": 0.986,
+        "rss": 0.786,
+        "rounds": 3
+      },
+      "search c16": {
+        "throughput": 1.001,
+        "per_core": 0.995,
+        "p99": 1.042,
+        "rss": 0.771,
+        "rounds": 3
+      },
+      "search c256": {
+        "throughput": 0.996,
+        "per_core": 0.996,
+        "p99": 1.022,
+        "rss": 0.785,
+        "rounds": 3
+      }
+    }
+  }
+}

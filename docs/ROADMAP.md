@@ -232,10 +232,10 @@ The last entries, all built:
 ## Not planned, and why
 
 Recorded so they are not re-proposed. The number that frames each: the
-Mojo HTTP layer alone does <!-- num:hello-rps-k@1 -->209.5<!-- /num -->k rps/core on
-`hello`, the executor does <!-- num:asgi-m0-rps-k@1 -->84.3<!-- /num -->k, uvicorn with
-uvloop does <!-- num:asgi-uvloop-rps-k@1 -->85.3<!-- /num -->k and `uvicorn --loop asyncio`
-does <!-- num:asgi-uvicorn-rps-k@1 -->60.3<!-- /num -->k. Everything between the first two
+Mojo HTTP layer alone does <!-- num:hello-rps-k@1 -->227.9<!-- /num -->k rps/core on
+`hello`, the executor does <!-- num:asgi-m0-rps-k@1 -->84.5<!-- /num -->k, uvicorn with
+uvloop does <!-- num:asgi-uvloop-rps-k@1 -->85.2<!-- /num -->k and `uvicorn --loop asyncio`
+does <!-- num:asgi-uvicorn-rps-k@1 -->58.9<!-- /num -->k. Everything between the first two
 figures is Python-side per-request work and the loop-to-executor handoff, so
 optimising the HTTP layer buys nothing here.
 
