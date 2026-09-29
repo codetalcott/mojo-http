@@ -25,6 +25,9 @@ Routes:
                     answers ``ok``, then keeps running for ever, as
                     background work after a response can: the shutdown
                     drain must end it and still run lifespan shutdown
+    /raise-sigterm  raises SIGTERM on the serving thread in its first step,
+                    then answers: the server must still drain and exit
+                    (SPEC L8)
     /stream-forever an infinite SSE-shaped stream: pins the buffered
                     bridge's watchdog error, and later a streaming
                     server's actual streaming
@@ -37,6 +40,10 @@ Routes:
 Lifespan shutdown writes the file named by ``M0_SHUTDOWN_MARKER`` when that
 variable is set, so a smoke can assert the application was shut down (and
 not merely killed) after a request outlived the server's drain.
+
+``M0_ASGI_EAGER_TASKS`` makes lifespan startup install asyncio's eager task
+factory, as an application may, so every request's first step runs inside
+the server's spawn (SPEC L30).
 """
 
 import asyncio
@@ -81,6 +88,14 @@ async def application(scope, receive, send):
             message = await receive()
             if message["type"] == "lifespan.startup":
                 _LIFESPAN["started"] = True
+                if os.environ.get("M0_ASGI_EAGER_TASKS"):
+                    # asyncio's own opt-in (3.12+): a task's first step runs
+                    # inside create_task, so a request that answers before
+                    # its first await is answered while the server is still
+                    # inside the spawn that made its task (SPEC L30).
+                    asyncio.get_running_loop().set_task_factory(
+                        asyncio.eager_task_factory
+                    )
                 # state is per-server-lifetime, shallow-copied into each
                 # request scope; /lifespan asserts this arrived.
                 scope.get("state", {})["bare_started"] = True
@@ -209,6 +224,17 @@ async def application(scope, receive, send):
         await _text(send, 200, b"ok")
         while True:
             await asyncio.sleep(0.05)
+    elif path == "/raise-sigterm":
+        # SIGTERM raised on the serving thread, in this request's first step,
+        # before it answers. Under M0_INVERTED that puts the shutdown pipe's
+        # byte between the pass that parked this request and the flush that
+        # pass queued behind it, so the flush's own pass is the one that reads
+        # it -- every time, where a SIGTERM from outside lands there by chance
+        # (SPEC L8). On the pump it is an ordinary SIGTERM.
+        import signal
+
+        signal.raise_signal(signal.SIGTERM)
+        await _text(send, 200, b"sigterm raised")
     elif path == "/slow":
         ms = 0
         for pair in scope["query_string"].decode("latin-1").split("&"):

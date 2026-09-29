@@ -111,6 +111,9 @@ class Harness:
         self.forever_ended = False  # the endless background task's finally ran
         self.slowbg_done = False    # a short background task finished
         self.latebg_done = False    # background work begun inside the drain
+        self.flush_stops = False    # flush() reports the drain begun (inverted)
+        self.drain_steps = 0        # the inverted drain's steps taken
+        self.drain_finished = False  # the inverted drain's tail ran
         self.ns["_port"] = self
         self.ns["set_scope_base"]("testhost", 8088)
 
@@ -162,7 +165,20 @@ class Harness:
         return False
 
     def flush(self):
-        pass
+        # True once the drain has begun, which only the inverted port says.
+        return self.flush_stops
+
+    # The inverted port's other three, for `run_forever_inverted`: a pass
+    # that never reports the stop, and a drain with nothing left in it.
+    def pass_(self):
+        return False
+
+    def drain_step(self):
+        self.drain_steps += 1
+        return True
+
+    def drain_finish(self):
+        self.drain_finished = True
 
     # --- the application ---------------------------------------------------
 
@@ -1756,6 +1772,38 @@ def test_an_inverted_disconnect_follows_the_messages_before_it(h):
     assert h.ws_log == [("msg", "last-words"), ("disc", 1001)], h.ws_log
 
 
+def test_a_stop_read_by_a_flush_starts_the_drain(h):
+    """B20 (SPEC L8): under M0_INVERTED the pass a flush runs can be the one
+    that reads the shutdown pipe, and that pass has begun the drain -- the
+    listener closed, the pipe no longer watched -- so no later pass will see
+    the stop. The flush reports it and the shim starts the drain from there.
+    Here `pass_` never reports it, which is what every pass of an inverted
+    server said once the flush had stored its stale copy of the executor's
+    state back over the drain's record: the loop idled for ever, its tick
+    firing into passes that saw nothing (CI, macOS, about 2 in 100). The
+    guard outlasts two ticks, so a drain that only a later pass could start
+    fails here rather than passing late."""
+    quiet_r, quiet_w = socket.socketpair()
+    fired = []
+
+    def expire():
+        fired.append(True)
+        h.loop.stop()
+
+    try:
+        h.flush_stops = True
+        # Any event arms a flush, as a completion does after a pass.
+        h.loop.call_soon(h.ns["_exec_put"], ("log", -1, "a flush reads the stop"))
+        guard = h.loop.call_later(2.5, expire)
+        h.ns["run_forever_inverted"](quiet_r.fileno())
+        guard.cancel()
+    finally:
+        quiet_r.close()
+        quiet_w.close()
+    assert not fired, "the drain did not start from the flush that read the stop"
+    assert h.drain_steps >= 1 and h.drain_finished, (h.drain_steps, h.drain_finished)
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -1864,6 +1912,7 @@ TESTS = [
     test_a_wsgi_head_answers_at_its_first_item_and_closes_the_body,
     test_a_socket_hears_its_clients_close_code,
     test_an_inverted_disconnect_follows_the_messages_before_it,
+    test_a_stop_read_by_a_flush_starts_the_drain,
     test_background_work_inside_the_grace_finishes,
     test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
     test_a_task_left_behind_never_reaches_the_port,
@@ -2230,6 +2279,17 @@ SABOTAGES = [
         "        reader()\n"
         "    _exec_on_disconnect(slot, code)\n",
         "    _exec_on_disconnect(slot, code)\n",
+    ),
+    (
+        "a stop a flush's pass read waits for a later pass to see it",
+        "    if _port.flush() and not _exec_draining[0] and _exec_start_drain[0] is not None:\n"
+        "        _exec_start_drain[0]()\n",
+        "    _port.flush()\n",
+    ),
+    (
+        "the inverted loop never registers its drain starter",
+        "    _exec_start_drain[0] = _start_drain\n",
+        "",
     ),
     (
         "work scheduled at import is not named",

@@ -6294,6 +6294,43 @@ wait_exit 'SIGTERM with a live stream'
 kill $stream_pid 2>/dev/null; wait $stream_pid 2>/dev/null
 [ "$rc" = "0" ] || fail "SIGTERM with a live stream: exit $rc, want 0"
 
+# SIGTERM read by the pass a flush runs (SPEC L8). Inverted, whichever pass
+# reads the shutdown pipe first begins the drain -- listener closed, pipe no
+# longer watched -- and on CI's macOS runners about 2 in 100 runs of the phase
+# above that was the pass `_flush_inverted` runs. The flush held the
+# executor's state as a copy from before its pass and stored it back after,
+# erasing the drain's record, so no later pass saw the stop and the process
+# never exited. /raise-sigterm puts the byte there every time: the
+# application raises SIGTERM on the serving thread in its first step, after
+# the pass that parked it and before the flush that pass queued. It is sent
+# on a connection already answered, so it arrives while the loop waits and
+# the backend callback's pass is the one that reads it; sent on a new one
+# it could land in a flush's pass instead, and the task's first step came a
+# turn later, behind the backend callback (1 of 5 on Linux).
+#
+# The inversion's alone, and checked by its banner: the pump runs no flush
+# pass. And on Linux the pump meets a different defect with this request,
+# not yet fixed: the pass that reads the shutdown pipe stops at it, and a
+# completion behind it in the same epoll batch is never reported again, so
+# the request waits out the drain (every time with the server on one CPU).
+if [ "${M0_INVERTED:-}" = "1" ]; then
+  spawn asgi-flushstop.log "$srv" $SPEC
+  wait_ready $B/ $pid
+  grep -q '^inverted: the event loop runs inside asyncio' "$SMOKE_DIR/asgi-flushstop.log" \
+    || fail 'M0_INVERTED=1 but the server is not inverted: the flush-stop phase would prove nothing'
+  python3 - "$port" <<'PYEOF'
+import http.client, sys
+c = http.client.HTTPConnection("localhost", int(sys.argv[1]), timeout=10)
+c.request("GET", "/")
+c.getresponse().read()
+c.request("GET", "/raise-sigterm")
+sys.exit(0 if c.getresponse().read() == b"sigterm raised" else 1)
+PYEOF
+  [ $? = 0 ] || fail 'the request that raised SIGTERM was not answered on its keep-alive connection'
+  wait_exit 'SIGTERM read by the pass a flush runs'
+  [ "$rc" = "0" ] || fail "SIGTERM read by the pass a flush runs: exit $rc, want 0"
+fi
+
 # Two requests that outlive the 5 s drain and finish in DIFFERENT loop
 # iterations after the pill: the executor's post-pill gather must run both
 # to completion and lifespan shutdown must still reach the application.
@@ -6367,6 +6404,23 @@ wait_exit 'background-forever'
 [ "$rc" = "0" ] || fail "SIGTERM with endless background work: exit $rc, want 0"
 [ -f "$out/bgforever.marker" ] \
   || fail 'lifespan shutdown did not run: an endless background task held the drain'
+
+# An application that installs asyncio's eager task factory (SPEC L30): a
+# task's first step then runs inside the executor's spawn, so a response sent
+# before the first await is parked while the job that spawned it is still
+# running. That job held the executor's state as a copy and stored it back as
+# it returned, erasing the parked completion: every such request went
+# unanswered, on the pump and inverted alike, a plain answer and a stream's
+# head both. /slow awaits before it answers, so it is the readiness check.
+spawn asgi-eager.log env M0_ASGI_EAGER_TASKS=1 "$srv" $SPEC
+wait_ready "$B/slow?ms=1" $pid
+got=$(curl -s --max-time 5 $B/)
+[ "$got" = "hello from asgi_bare" ] \
+  || fail "under an eager task factory a response sent in the first step was not answered: '$got' (L30)"
+got=$(curl -s --max-time 5 $B/chunks)
+[ "$got" = "one-two-three" ] \
+  || fail "under an eager task factory a stream begun in the first step was not answered: '$got' (L30)"
+stop $pid
 
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
@@ -6500,6 +6554,7 @@ python3 scripts/emit.py --covers L25 --task smoke-asgi
 python3 scripts/emit.py --covers L26 --task smoke-asgi
 python3 scripts/emit.py --covers L28 --task smoke-asgi
 python3 scripts/emit.py --covers L29 --task smoke-asgi
+python3 scripts/emit.py --covers L30 --task smoke-asgi
 python3 scripts/emit.py --covers I26 --task smoke-asgi
 """
 
