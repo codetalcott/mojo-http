@@ -59,6 +59,16 @@ comptime FDPASS_MAX_PAYLOAD = 64
 payload is the peer address the acceptor already decoded — a port and an
 IPv4 dotted quad — so the receiver need not `getpeername` it again."""
 
+comptime RECV_FD_EMPTY = -1
+"""`recv_fd` took nothing off the channel: nothing was waiting (EAGAIN), or
+the receive itself failed. A drain stops here."""
+
+comptime RECV_FD_REFUSED = -2
+"""`recv_fd` took a datagram off the channel that carried no descriptor to
+hand over: none at all, more than `send_fd` sends, or one the kernel could
+not install in this process. That datagram is gone and the ones queued
+behind it are not, so a drain skips it and goes on."""
+
 
 @fieldwise_init
 struct _msghdr(TrivialRegisterPassable):
@@ -139,8 +149,17 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
     """Receive one passed descriptor from `channel`, without blocking.
 
     Returns the new fd (this process's own reference), with the datagram's
-    data bytes in `payload`; -1 when nothing is waiting (EAGAIN), the
-    channel is closed, or a datagram arrived carrying no descriptor.
+    data bytes in `payload`; `RECV_FD_EMPTY` when nothing was taken off the
+    channel; `RECV_FD_REFUSED` when a datagram was, carrying no descriptor
+    to hand over. The two used to be one -1, and a drain that read a
+    refusal as an empty channel stopped with hand-offs still queued behind
+    it and no edge left to announce them.
+
+    A refusal is what a receiver out of descriptors sees, with nothing
+    wrong on the sending side: the kernel cannot install the descriptor,
+    so macOS fails that receive with EMSGSIZE and leaves the datagram's
+    data queued without it, and Linux delivers the data with `MSG_CTRUNC`
+    set and nothing installed (both measured).
 
     The kernel installs a passed descriptor in this process when the
     message is received, so every one that reaches the control buffer is
@@ -152,7 +171,12 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
     releases; macOS installs it too, with its number lost (measured), where
     nothing can close it -- which a sender of one never causes. A payload
     cut short (`MSG_TRUNC`) keeps its descriptor, as `send_fd`'s own cap
-    does.
+    does, and so does a datagram with no payload at all: a read of 0 bytes
+    that brought a descriptor is a zero-length datagram, whose descriptor
+    was installed like any other (it was left open, and -1 returned). A
+    read of 0 that brought nothing is taken as nothing received -- a
+    zero-length datagram cannot be told from a read side shut down, which
+    reads 0 forever, and no drain may spin on that.
     """
     payload.clear()
     var data = List[UInt8](capacity=FDPASS_MAX_PAYLOAD)
@@ -174,8 +198,8 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
     comptime if not CompilationTarget.is_macos():
         recv_flags = MSG_DONTWAIT | c_int(_MSG_CMSG_CLOEXEC_LINUX)
     var rc = _recvmsg(c_int(channel), Pointer(to=hdr), recv_flags)
-    var got = -1
-    if Int(rc) > 0:
+    var got = RECV_FD_EMPTY
+    if Int(rc) >= 0:
         for i in range(Int(rc)):
             payload.append(data[i])
         var flags: Int
@@ -186,7 +210,11 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
             flags = Int(hdr.msg_flags & 0xFFFFFFFF)
         var clen = Int(hdr.msg_controllen & 0xFFFFFFFF)
         var passed = _passed_fds(control, clen)
-        if len(passed) > 0 and (flags & _MSG_CTRUNC) == 0:
+        var truncated = (flags & _MSG_CTRUNC) != 0
+        # A datagram was taken if it brought bytes or control data.
+        if Int(rc) > 0 or len(passed) > 0 or truncated:
+            got = RECV_FD_REFUSED
+        if len(passed) > 0 and not truncated:
             got = passed[0]
         for i in range(len(passed)):
             if passed[i] != got:

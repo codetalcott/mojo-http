@@ -6,7 +6,9 @@ Everything here runs in one process: a passed descriptor is a kernel
 mechanism that behaves the same across a socketpair whether the two ends
 are in one process or two, and the shared page is plain memory until a
 fork. The fork half — two real workers splitting a burst — is
-`poe smoke-accept-spread` against the real server on both platforms.
+`poe smoke-accept-spread` against the real server on both platforms. The
+loop's own drain of the channel (`_admit_handoffs`) runs here too, over a
+`LoopState` built by its constructor and this OS's multiplexer.
 """
 
 from std.ffi import c_int, external_call, get_errno
@@ -15,19 +17,23 @@ from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from std.time import perf_counter_ns
 
+from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.accept_share import (
     AcceptShare, accept_share_slots, ACCEPT_SHARE_FIRST_WORKER_SLOT,
     ACCEPT_SHARE_WORKER_STRIDE, ACCEPT_SHARE_BUSY_NS, STATE_LEFT,
     HandoffPost,
 )
 from lightbug_http.c.fdpass import (
-    send_fd, recv_fd, FDPASS_MAX_PAYLOAD,
+    send_fd, recv_fd, FDPASS_MAX_PAYLOAD, RECV_FD_EMPTY, RECV_FD_REFUSED,
     _CMSG_HDR, _SCM_RIGHTS, _SOL_SOCKET, _msghdr, _sendmsg, _store_u32,
 )
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import iovec_t, send, recv, close, setsockopt, SocketOption, SOL_SOCKET
 from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.c.platform import MSG_DONTWAIT
+from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
+from lightbug_http.loop.accept import _admit_handoffs
+from lightbug_http.loop.state import LoopState, UNUSED, _close_slot
+from lightbug_http.server_config import ServerConfig
 
 from src.multiworker import SharedAtomics
 
@@ -138,8 +144,8 @@ def test_a_descriptor_crosses_a_socketpair_with_its_payload() raises:
     var n = recv(FileDescriptor(got), Span(buf), UInt(16), MSG_DONTWAIT)
     assert_equal(Int(n), 4)
     assert_equal(String(from_utf8_lossy=Span(buf)[:4]), "ping")
-    # An empty channel answers -1, not a stale descriptor.
-    assert_equal(recv_fd(channel[0], payload), -1)
+    # An empty channel answers that it is empty, not a stale descriptor.
+    assert_equal(recv_fd(channel[0], payload), RECV_FD_EMPTY)
     close(FileDescriptor(got))
     close(FileDescriptor(conn[1]))
     close(FileDescriptor(channel[0]))
@@ -169,11 +175,44 @@ def test_a_payload_is_capped_and_an_empty_one_still_carries_the_fd() raises:
 
 
 def test_a_datagram_without_a_descriptor_is_not_a_connection() raises:
+    """Refused, and told apart from an empty channel: the datagram was
+    taken off it, and whatever is queued behind is still owed a read.
+    Both used to answer -1."""
     var channel = _nonblocking_pair()
     var msg = _bytes("no fd here")
     _ = send(FileDescriptor(channel[1]), Span(msg), UInt(len(msg)), 0)
     var payload = List[UInt8]()
-    assert_equal(recv_fd(channel[0], payload), -1)
+    assert_equal(recv_fd(channel[0], payload), RECV_FD_REFUSED)
+    assert_equal(recv_fd(channel[0], payload), RECV_FD_EMPTY)
+    close(FileDescriptor(channel[0]))
+    close(FileDescriptor(channel[1]))
+
+
+def test_a_zero_length_datagram_still_hands_over_its_descriptor() raises:
+    """A datagram with no payload that brings a descriptor: the kernel
+    installed it when the message was received, so it is the receiver's to
+    hand over or close. `recv_fd` read the control data only when the read
+    returned bytes, so it answered -1 and left this one open for the life
+    of the process (`send_fd` itself always sends a byte). A read of 0 that
+    brings nothing is still nothing received: it cannot be told from a read
+    side shut down, which reads 0 forever, and a drain must not spin on it.
+    """
+    var channel = _nonblocking_pair()
+    var conn = _stream_pair()
+    var fds = List[Int]()
+    fds.append(conn[0])
+    assert_true(_send_raw(channel[1], 0, fds), "sendmsg failed")
+    close(FileDescriptor(conn[0]))  # the kernel's in-flight reference holds it
+    var payload = List[UInt8]()
+    var got = recv_fd(channel[0], payload)
+    assert_true(got >= 0, "a zero-length datagram's descriptor was not handed over")
+    assert_equal(len(payload), 0)
+    close(FileDescriptor(got))
+    assert_true(_peer_gone(conn[1]), "a reference to the passed descriptor is still open")
+    var empty = List[UInt8]()
+    _ = send(FileDescriptor(channel[1]), Span(empty), UInt(0), 0)
+    assert_equal(recv_fd(channel[0], payload), RECV_FD_EMPTY)
+    close(FileDescriptor(conn[1]))
     close(FileDescriptor(channel[0]))
     close(FileDescriptor(channel[1]))
 
@@ -240,7 +279,7 @@ def test_a_control_message_cut_short_is_refused_and_leaks_nothing() raises:
     close(FileDescriptor(c[0]))
     var payload = List[UInt8]()
     var got = recv_fd(channel[0], payload)
-    assert_true(got == -1, "a message whose control data was cut short was not refused")
+    assert_true(got == RECV_FD_REFUSED, "a message whose control data was cut short was not refused")
     assert_true(_peer_gone(a[1]), "the refused message's first descriptor was left open")
     comptime if not CompilationTarget.is_macos():
         assert_true(_peer_gone(b[1]), "the refused message's second descriptor was left open")
@@ -259,7 +298,7 @@ def test_an_unbound_share_is_inactive_and_costs_nothing() raises:
     assert_equal(share.pick(0, perf_counter_ns()), -1)
     var host = String("x")
     var port = 1
-    assert_equal(share.receive(host, port), -1)
+    assert_equal(share.receive(host, port), RECV_FD_EMPTY)
     # Two channels but bound as a single worker: still inactive.
     var one = AcceptShare(1)
     var page = SharedAtomics(accept_share_slots(1))
@@ -294,7 +333,7 @@ def test_a_connection_passes_between_two_workers_with_its_peer() raises:
     w1.pass_end(7)
     assert_equal(page.load(_word_slot(1, 2)), 0)
     assert_equal(page.load(_word_slot(1, 1)), 7)
-    assert_equal(w1.receive(host, port), -1)
+    assert_equal(w1.receive(host, port), RECV_FD_EMPTY)
     close(FileDescriptor(fd))
     close(FileDescriptor(conn[1]))
 
@@ -369,6 +408,91 @@ def test_a_receiver_that_retires_inside_the_handoff_leaves_nothing_pending() rai
     close(FileDescriptor(race.admitted))
     close(FileDescriptor(conn[0]))
     close(FileDescriptor(conn[1]))
+
+
+struct _DescriptorLost(HandoffPost):
+    """A hand-off as a receiver that could not install its descriptor sees
+    it: the payload and nothing else. That is what a worker out of
+    descriptors receives from a sender that did everything right -- macOS
+    fails the receive with EMSGSIZE and leaves the data queued alone, Linux
+    flags `MSG_CTRUNC` and installs nothing."""
+
+    def __init__(out self):
+        pass
+
+    def post(mut self, channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
+        try:
+            return Int(send(FileDescriptor(channel), Span(payload), UInt(len(payload)), 0)) > 0
+        except:
+            return False
+
+
+@fieldwise_init
+struct _Quiet(HTTPService):
+    """A handler no request reaches: the connections admitted below send
+    nothing, so their eager read finds the socket empty."""
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("quiet", "text/plain")
+
+
+def test_a_refused_handoff_does_not_stop_the_drain() raises:
+    """A hand-off that arrives without its descriptor is skipped, and the
+    one queued behind it is still admitted.
+
+    `recv_fd` answered -1 for an empty channel and for a datagram that
+    brought no descriptor alike, and `_admit_handoffs` stopped at -1: a
+    connection queued behind a refusal waited, its client connected and
+    unanswered, until some later hand-off to this worker raised an edge on
+    the channel. A refusal counts against the batch like any hand-off
+    taken, and is retired from `pending` with the rest -- its sender
+    counted it, and left there `pick` would read this worker a connection
+    heavier for good (R5's shape).
+    """
+    var page = SharedAtomics(accept_share_slots(2))
+    var share = AcceptShare(2)
+    var w0 = share.copy()
+    w0.bind(0, page.addr(0))
+    var w1 = share.copy()
+    w1.bind(1, page.addr(0))
+    var config = ServerConfig()
+    config.max_connections = 4
+    var st = LoopState(FileDescriptor(-1), config, String(""), True, accept_share=w1)
+    var backend = PlatformBackend()
+    var handler = _Quiet()
+
+    var lost = _stream_pair()
+    var kept = _stream_pair()
+    var dropped = _DescriptorLost()
+    assert_true(w0.send_with(dropped, 1, lost[0], "10.0.0.1", 1001))
+    assert_true(w0.send(1, kept[0], "10.0.0.2", 2002))
+    close(FileDescriptor(lost[0]))
+    close(FileDescriptor(kept[0]))  # the kernel's in-flight reference holds it
+    assert_equal(page.load(_word_slot(1, 2)), 2, "pending[1] counts both hand-offs")
+
+    # A batch of one takes the refusal, and owes what is behind it.
+    assert_true(
+        _admit_handoffs(handler, backend, st, 1),
+        "a refused hand-off ended the drain as if the channel were empty",
+    )
+    assert_equal(st.active_count, 0, "a refusal was admitted, or took no share of the batch")
+    # The next batch admits the connection behind it and empties the channel.
+    assert_false(_admit_handoffs(handler, backend, st, 16))
+    assert_equal(st.active_count, 1, "the hand-off behind a refused one was not admitted")
+    var slot = -1
+    for s in range(st.max_conns):
+        if st.slot_fds[s] != UNUSED:
+            slot = s
+    assert_true(slot >= 0)
+    assert_equal(st.provision_pool.provisions[slot].peer_host, "10.0.0.2")
+    assert_equal(st.provision_pool.provisions[slot].peer_port, 2002)
+    st.accept_share.pass_end(st.active_count)
+    assert_equal(page.load(_word_slot(1, 2)), 0, "a refused hand-off was never retired from pending")
+
+    _close_slot(handler, backend, st, slot, st.slot_fds[slot])
+    assert_true(_peer_gone(kept[1]), "the admitted connection is not the one sent, or leaked")
+    close(FileDescriptor(lost[1]))
+    close(FileDescriptor(kept[1]))
 
 
 def test_pick_names_the_least_loaded_sibling_or_itself() raises:

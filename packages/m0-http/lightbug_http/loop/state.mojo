@@ -37,7 +37,6 @@ comptime TIMER_IDLE: UInt = 0x300000
 comptime TIMER_SSE_HEARTBEAT: UInt = 0x400000
 comptime TIMER_APP_TICK: UInt = 0x500000
 
-comptime MAX_EVENTS = 64
 # How long a WebSocket that this side has closed waits for the peer's Close
 # reply before the idle sweep reaps it. Bounded because a peer that never
 # replies must not hold the slot; two seconds is far past any real round

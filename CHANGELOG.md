@@ -343,6 +343,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `smoke-large-request` counts the calls under `strace` on Linux: 4 over
   2000 keep-alive requests, where the old loop made 4004. macOS paid one
   `kevent` a request for the same reason, and no longer does.
+- **An upload no longer costs two `epoll_ctl` calls per read on Linux**
+  (SPEC A13). The same re-registration, on the body: the event loop
+  repeated it after every read of a request body, so an upload arriving in
+  pieces paid the refused registration and the modification behind it on
+  each one. Only a read that fills the buffer, or the client's EOF, now
+  re-registers, as for headers. `smoke-large-request` counts the calls
+  under `strace` on Linux: 3 over 101 reads of a body sent in 100 pieces,
+  where the old loop made 201. A 1 MB body sent at once is still read
+  without a stall, and one the client cuts short with a half-close is still
+  closed at once rather than at the body timeout. macOS paid one `kevent`
+  a read, and no longer does.
 - **`--workers N` no longer lets a worker's load read one connection
   high for good** (SPEC E16). Since 0.18.0 the worker that passes a
   connection to a sibling counted it in flight only after sending it, so
@@ -350,6 +361,31 @@ in a minor release: `m0serve`'s flags and environment variables, the
   retire, and the late count then stayed: that worker looked one
   connection busier than it was to every accept after. The count now goes
   up before the send, and back down if the send fails.
+- **Under `--workers N`, a worker at its open-file limit no longer
+  strands the connections passed to it** (SPEC E16). A connection one
+  worker accepts and passes to a sibling travels as a descriptor, and a
+  sibling with no descriptor free cannot take it: the kernel closes that
+  connection and delivers the message without it, on Linux at once and on
+  macOS after one failed receive. The sibling read that as an empty
+  channel and stopped admitting, and the channel only announces new
+  arrivals, so the connections queued behind it waited, their clients
+  connected and unanswered, until another connection was passed to that
+  worker; and the lost one stayed counted as in flight to it, so every
+  accept after read that worker as a connection busier than it was. It now
+  skips the lost one, admits the rest and retires its count.
+  `test_accept_share.mojo` gates it. Found in review.
+- **On Linux, a connection that fails as it is accepted no longer holds
+  up the ones queued behind it.** Linux's `accept` can return a network
+  error already pending on the connection it takes off the queue, such as
+  `EPROTO` or `EHOSTUNREACH`, and says to retry. The event loop stopped
+  taking connections for that pass on `EPROTO` and `EOPNOTSUPP`, and the
+  listener announces only new arrivals, so clients already queued waited
+  for another connection to arrive; the six others reached it as a
+  descriptor of -1, which it failed to admit and skipped, until the
+  socket errors became one error (under Removed) and they stopped the pass
+  too. All eight now cost only their own connection, as a client that
+  gave up while queued always has. `test_socket_errors.mojo` holds the
+  list. Found in review.
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
   and the login read the silence as off: a visit to the `http://` URL sent
