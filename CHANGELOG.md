@@ -135,9 +135,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   on the ubuntu leg, against `unit-gates`' 12.6. Five tasks move from `poe
   test-packages` to `poe test-gates`: the Datastar SDK's conformance and
   its sabotage, the probes' phase-stamp check, and m0-sqlite's tests and
-  layout guard. By their measured times that puts both jobs at about 16.5
-  min cold on ubuntu, and each is capped at 35. `poe test-all` runs the
-  same tasks as before.
+  layout guard. Measured cold on the eight runs that followed, `unit-tests`
+  ran 10.4 to 17.5 min on ubuntu and `unit-gates` 13.3 to 17.6, the two
+  about even on runners of the same CPU, and each is capped at 35. `poe test-all` runs the same
+  tasks as before.
 - **`poe smoke-doctor` takes half as long.** To tell a configuration the
   server accepts from one it refuses, it waited a fixed 8 s for each of the
   seven that serve. It now polls until the server answers and allows it 2 s
