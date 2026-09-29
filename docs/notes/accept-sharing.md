@@ -110,6 +110,17 @@ per connection that changes hands. Built.
   receiver need not `getpeername`), `pending` incremented on success, the
   acceptor's own reference closed. On any failure — the channel full, a
   sibling gone — the acceptor keeps the connection. Nothing is dropped.
+
+  **Correction, 2026-09-28.** Incrementing on success was a race. The
+  receiver could admit the connection and retire it at the end of its
+  pass in the gap between the acceptor's `sendmsg` and the increment: the
+  retire found nothing to take, `pass_end` floored the count at 0, and
+  the late increment left that worker's `pending` one high for good, so
+  every `pick` after it read the worker as a connection busier than it
+  was (review record R5). Since #434 the acceptor raises the target's
+  `pending` BEFORE the datagram is queued and takes it back if `send_fd`
+  fails (`AcceptShare.send_with`), so the count is never below what is in
+  flight.
 - **The admission.** The receiver's loop registers its channel like a bus
   fd and drains it to `EAGAIN`; each descriptor enters `_admit_connection`,
   the accept path's tail factored out for the purpose: borrow a slot,

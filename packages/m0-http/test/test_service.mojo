@@ -1,17 +1,20 @@
-"""The `HTTPService` contract: `func` is required, the other eight default.
+"""The `HTTPService` contract: `func` is required, the other thirteen default.
 
 This file is the guard for the trait's default bodies. `MinimalService`
 implements `func` and nothing else — **it not compiling is the failure**, so
 the assertions below are secondary to the file existing at all. Revert any
 default in `service.mojo` to `...` and `poe test-http` fails naming this file.
 
-The defaults are not cosmetic. The event loop calls all nine methods on every
-handler regardless of what the handler cares about (`event_loop.mojo` is
-parameterized on `[T: HTTPService, B: EventLoopBackend]`), so a default that
+The defaults are not cosmetic. The event loop calls all fourteen methods on
+every handler regardless of what the handler cares about (`event_loop.mojo`
+is parameterized on `[T: HTTPService, B: EventLoopBackend]`, and it reaches
+`ws_message` through `ws_message_take`'s default), so a default that
 returned the wrong thing would be a silent behaviour change across every app
 rather than a compile error. That is what the value assertions pin: an empty
-drain, a non-streaming slot, and a `before_request` that does not
-short-circuit.
+drain, a non-streaming slot, a `before_request` that does not
+short-circuit, no WebSocket closed by the handler, a `ws_message_take` that
+keeps the socket reading, no suspended read resumed, and a `direct_job`
+that declines.
 """
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
@@ -79,8 +82,29 @@ def test_default_sse_is_streaming_is_false() raises:
     assert_false(s.sse_is_streaming(0))
 
 
+def test_default_ws_message_take_keeps_reading() raises:
+    """False here would take every WebSocket off the read set after its
+    first message, owed a resume the default never names."""
+    var s = MinimalService(0)
+    assert_true(s.ws_message_take(0, 1, List[UInt8]()))
+
+
+def test_default_take_ws_resumes_is_empty() raises:
+    """The loop re-arms the read of every slot named here, each pass; the
+    default suspends none, so it resumes none."""
+    var s = MinimalService(0)
+    assert_equal(len(s.take_ws_resumes()), 0)
+
+
+def test_default_direct_job_declines() raises:
+    """True here would leave every executor-bound request parked, its
+    datagram never sent and nobody running it."""
+    var s = MinimalService(0)
+    assert_false(s.direct_job(0))
+
+
 def test_default_hooks_are_callable_and_inert() raises:
-    """The four `pass` defaults must exist and change nothing observable."""
+    """The six `pass` defaults must exist and change nothing observable."""
     var s = MinimalService(0)
     var resp = OK("ok", "text/plain")
     s.after_response(String("GET"), String("/"), resp)

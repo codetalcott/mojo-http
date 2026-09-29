@@ -752,8 +752,8 @@ Properties of the design, not defects to fix in passing. Each names its note.
   where the listener closes. Owed only when the BATCH stopped the drain —
   never for an error accepting harder will not cure (EMFILE). `run_pass_once`
   takes owed batches inside its callback, up to `max_connections` accepts.
-  `M0_ACCEPT_BATCH=0` is the A/B knob; `smoke-accept-batch` gates both legs,
-  its negative arm on Linux.
+  `M0_ACCEPT_BATCH=0` is the A/B knob; `smoke-accept-batch` counts the batch
+  and the knob's drain on both legs.
 - **Graceful shutdown is opt-in, and armed after the fork**
   (docs/notes/workers-signals-and-the-fork.md): `install_shutdown_signals()`
   returns the fd to pass as `shutdown_read_fd`, and its handler writes one

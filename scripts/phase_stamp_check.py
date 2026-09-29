@@ -90,7 +90,8 @@ EXCUSED = {
 }
 
 # Probe-shaped files whose names do not contain "probe".
-EXTRA = ("scripts/chunked_keepalive.py", "scripts/hybrid_isolation.py")
+EXTRA = ("scripts/accept_spread.py", "scripts/chunked_keepalive.py",
+         "scripts/hybrid_isolation.py")
 
 # The library the second form takes its stamp from. Its name contains
 # "probe", so the closed set finds it; it is held to the structural rules
