@@ -32,13 +32,20 @@ jobs:
     # failing. See the apt step in .github/actions/setup for the stall that
     # motivated this.
     #
-    # 30 was too close. `Run unit tests` is ONE 14-minute step (`poe
-    # test-all`), and the same slow ubuntu runners that cancelled the
-    # smoke job ran this leg at 22m0s and 26m1s against 18m0s on `main`
-    # — 87% of the cap, with nothing in the tree changed. A cap a green
-    # run can reach is a coin toss, so this one is left at roughly twice
-    # the measured run, like the two smoke jobs below.
-    timeout-minutes: 40
+    # 30 was too close. `Run unit tests` is ONE step (`poe test-all`), and
+    # the same slow ubuntu runners that cancelled the smoke job ran this
+    # leg at 22m0s and 26m1s against 18m0s on `main` — 87% of the cap,
+    # with nothing in the tree changed. A cap a green run can reach is a
+    # coin toss, so this one was left at roughly twice the measured run,
+    # like the two smoke jobs below.
+    #
+    # 40 has since become that coin toss. The step, 14 minutes when the
+    # above was written, measured 31-32 min on the ubuntu leg by
+    # 2026-09-26, and the review plan's new gates took it to 34-35: train
+    # 19 (#481) was cancelled at 40m01s, green in every step it reached.
+    # 60 is a stopgap, not twice the run. The growth is being measured and
+    # the job split, so each half runs well inside twice its time again.
+    timeout-minutes: 60
     # The coverage this job's steps declare (SPEC F12: check-docs, the unit
     # tests, the recorder's selftest, the fuzzer) is recorded here, and
     # rendered and kept by the job's last step, as every job's is.
