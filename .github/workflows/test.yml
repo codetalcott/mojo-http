@@ -112,6 +112,15 @@ jobs:
         run: |
           python3 scripts/sabotage_lib.py --selftest
           python3 scripts/emit.py --covers F17 --task sabotage-lib-selftest
+      # The smoke probes' shared library: the phase stamp, fail(), a server
+      # watched while it starts, the SSE reader and the WebSocket client the
+      # probes on it speak through. A regression there fails a probe for the
+      # wrong reason, or never fails it at all -- a deadline that stopped
+      # bounding a read hangs until the job's cap. Real sockets and
+      # processes, on both legs because process groups and sockets are
+      # where the two kernels differ; stdlib only, seconds.
+      - name: Self-test the probe library
+        run: python3 scripts/probelib.py --selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
       # The Mojo pool's guards, proven able to fail: each rule in

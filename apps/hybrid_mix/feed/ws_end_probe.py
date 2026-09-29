@@ -11,52 +11,29 @@ that disconnect arrives only if the loop routes it by the lane the socket's
 begin frame recorded -- the end erased the channel name. Stdlib only.
 
 Which phase a failure broke is what its message says; a traceback names the
-call that raised and never the phase, which is why `PHASE` exists
+call that raised and never the phase, which is why the stamp exists
 (apps/asgi_bare/ws_probe.py has the history).
 """
 
-import base64
 import os
 import socket
 import sys
 import time
-import traceback
 import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+                                "scripts"))
+from probelib import fail, phase, stamp, upgrade_request, ws_key  # noqa: E402
 
 PORT = int(os.environ.get("M0_PORT", "8110"))
 MOUNT = sys.argv[1] if len(sys.argv) > 1 else "/live"
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("ws_end_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("ws_end_probe FAIL: %s: %s" % (PHASE, msg))
-    sys.exit(1)
+stamp("ws_end_probe FAIL", fail="ws_end_probe FAIL: {phase}: {msg}")
 
 
 def main():
     phase("the handshake on %s" % MOUNT)
     s = socket.create_connection(("127.0.0.1", PORT), timeout=10)
-    key = base64.b64encode(os.urandom(16)).decode()
-    s.sendall(
-        (
-            "GET %s/ws HTTP/1.1\r\nHost: 127.0.0.1:%d\r\nUpgrade: websocket\r\n"
-            "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n" % (MOUNT, PORT, key)
-        ).encode()
-    )
+    s.sendall(upgrade_request(MOUNT + "/ws", ws_key(), "127.0.0.1:%d" % PORT))
 
     phase("the server ends the socket")
     s.settimeout(5)
