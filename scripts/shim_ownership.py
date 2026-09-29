@@ -65,8 +65,8 @@ So is a catcher that TESTS does not list.
 Until 2026-09-29 every test ran against every rule, so the sabotage cost
 tests x rules and grew with each rule added: 59 tests against 55 rules,
 with the base run, was 3,304 runs, most of each an `asyncio.sleep` settle.
-It is now the base run and one run per rule, 114, a second catcher running
-only when the first misses.
+It now costs tests + rules: the base run and one run per rule, a second
+catcher running only when the first misses.
 
 `--sabotage-all` is that whole run, kept for audits: every test against
 every rule, each rule's failing tests listed, judged by the named catchers
@@ -2388,6 +2388,28 @@ SABOTAGES = [
         "    if isinstance(e, RuntimeError) and str(e).startswith(_NO_LOOP):",
         "    if False:",
         ("test_work_scheduled_at_import_is_refused_by_name",),
+    ),
+    # Two rules whose tests no sabotage reverted until 2026-09-29. A stream
+    # ends at its final body, so its owner's release is `_Cycle.done`'s
+    # completed branch rather than `_on_task_done`'s.
+    (
+        "a finished owner leaves its slot's state behind",
+        "        if _exec_slot_task.get(self.slot) is t:\n"
+        "            _exec_slot_task.pop(self.slot, None)\n"
+        "            _exec_cleanup_slot(self.slot)\n",
+        "        if False:\n"
+        "            _exec_slot_task.pop(self.slot, None)\n"
+        "            _exec_cleanup_slot(self.slot)\n",
+        ("test_a_finished_owner_does_clean_its_slot",),
+    ),
+    (
+        # The accept as the shape that shipped it: the slot's, so a new
+        # handshake on a recycled slot inherits the one before it.
+        "a socket's accept is kept by its slot",
+        "    accepted = [False]\n",
+        "    accepted = globals().setdefault('_m0_ws_accepts', {})"
+        ".setdefault(slot, [False])\n",
+        ("test_a_websocket_recycle_forgets_the_predecessors_accept",),
     ),
 ]
 
