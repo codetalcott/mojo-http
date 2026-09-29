@@ -29,13 +29,15 @@ from std.os import path, remove, setenv
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from std.time import sleep
 
-from src.multiworker import WorkerSupervisor
+from src.multiworker import WorkerSupervisor, _forget_supervisor_signals
+from src.global_slot import record_supervisor_stop
 from src.signal import install_shutdown_signals
 from src.threads import read_one_byte_blocking
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.process import (
-    fork, process_exit, getpid, waitpid_blocking, was_signaled, exit_code,
-    kill_process, SIGTERM, executable_path, path_from_bytes,
+    fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
+    was_signaled, term_signal, exit_code, kill_process, SIGTERM, SIGKILL,
+    executable_path, path_from_bytes,
 )
 from lightbug_http.c.socketpair import socketpair_dgram
 
@@ -225,9 +227,8 @@ def test_a_worker_that_fails_while_stopping_is_not_respawned() raises:
         sleep(0.01)
         waited += 1
     assert_true(path.exists(ready), "the worker never armed its shutdown")
-    # The supervisor arms its forwarding handler once every child is forked;
-    # give it that moment before signalling it.
-    sleep(0.3)
+    # The supervisor armed its forwarding handler before it forked the
+    # worker (B21), so the worker's marker is the only wait there is.
     _ = kill_process(pid, SIGTERM)
     var result = waitpid_blocking(pid)
     var status = result[1]
@@ -281,6 +282,116 @@ def test_a_refusal_by_one_worker_ends_its_siblings() raises:
     assert_false(path.exists(outlived), "the sibling was left serving after the refusal")
     if path.exists(outlived):
         remove(outlived)
+
+
+# --- A stop while the supervisor forks (B21) ---------------------------------
+#
+# The supervisor arms its handler before its first fork, so every worker
+# inherits it until `_forget_supervisor_signals`, and a stop can land between
+# a fork and the publish of its PID. `smoke-shutdown` signals a supervisor
+# held between two forks; these two pin the rules for the moments too short
+# to hit from outside.
+
+
+def _inherited_stop_scenario():
+    """The isolated process plays a supervisor that has armed and published,
+    as `fork_all` does before its first fork, with a stand-in sibling in its
+    list. Its worker is signalled before it reaches
+    `_forget_supervisor_signals`, where a SIGTERM forwarded to a worker forked
+    a moment before lands, so the handler it inherited runs in it. Exits 0
+    when the worker left with 0 and the sibling was not signalled, 3 when the
+    worker served on, 4 when the worker passed the signal to the sibling."""
+    try:
+        var sibling = fork()
+        if sibling == 0:
+            sleep(10.0)
+            process_exit(0)
+        var supervisor = WorkerSupervisor(2)
+        supervisor.child_pids.append(sibling)
+        supervisor._arm_signal_propagation()
+        var worker = fork()
+        if worker == 0:
+            _ = kill_process(getpid(), SIGTERM)
+            _forget_supervisor_signals()
+            process_exit(3)  # served on: the stop was swallowed
+        var w = waitpid_blocking(worker)
+        # A signal the worker sent the sibling has ended it by now.
+        sleep(0.2)
+        var s = waitpid_nonblocking()
+        _ = kill_process(sibling, SIGKILL)
+        if s[0] == 0:
+            _ = waitpid_blocking(sibling)
+        if was_signaled(w[1]) or exit_code(w[1]) != 0:
+            process_exit(3)
+        if s[0] == sibling:
+            process_exit(4)
+        process_exit(0)
+    except:
+        process_exit(7)
+
+
+def test_a_worker_signalled_before_it_resets_leaves_and_signals_no_sibling() raises:
+    """A worker the stop reaches before it restores its own signals leaves.
+
+    The handler it inherited catches the signal, so without the rule the
+    worker went on to serve with the stop swallowed, and a supervisor
+    waiting for it never exits. And a worker must never act as the
+    supervisor: the list its handler would read is its parent's.
+
+    covers: D2
+    """
+    var pid = fork()
+    if pid == 0:
+        _inherited_stop_scenario()
+        process_exit(99)  # unreachable
+    var result = waitpid_blocking(pid)
+    var status = result[1]
+    assert_false(was_signaled(status), "the stand-in supervisor died on a signal")
+    var code = exit_code(status)
+    assert_true(code != 3, "a worker stopped before it reset its signals served on")
+    assert_true(code != 4, "a worker's inherited handler signalled a sibling")
+    assert_equal(code, 0)
+
+
+def _catch_up_scenario():
+    """A stop the handler recorded while a just-forked child's PID was not
+    yet published. The child keeps the default disposition, so the SIGTERM
+    the publish must send ends it; without one it sleeps out and exits 0.
+    Exits 0 when the child was signalled, 5 when it was not."""
+    try:
+        var child = fork()
+        if child == 0:
+            sleep(5.0)
+            process_exit(0)
+        var supervisor = WorkerSupervisor(1)
+        record_supervisor_stop(SIGTERM)
+        supervisor.child_pids.append(child)
+        supervisor._publish_children()
+        var r = waitpid_blocking(child)
+        if was_signaled(r[1]) and term_signal(r[1]) == SIGTERM:
+            process_exit(0)
+        process_exit(5)
+    except:
+        process_exit(7)
+
+
+def test_a_stop_before_a_pid_is_published_still_reaches_that_child() raises:
+    """The handler signals the PIDs published when it runs, so a stop that
+    lands between a fork and the publish of its PID reaches that child only
+    because the publish passes it on.
+
+    covers: D2
+    """
+    var pid = fork()
+    if pid == 0:
+        _catch_up_scenario()
+        process_exit(99)  # unreachable
+    var result = waitpid_blocking(pid)
+    var status = result[1]
+    assert_false(was_signaled(status), "the stand-in supervisor died on a signal")
+    assert_equal(
+        exit_code(status), 0, "a stop recorded before the publish never reached the child"
+    )
 
 
 def main() raises:

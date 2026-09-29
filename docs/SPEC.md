@@ -109,7 +109,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | id | capability | status | evidence |
 |---|---|---|---|
 | D1 | SIGTERM drains in-flight requests | verified | `Smoke test graceful shutdown` (every PR) |
-| D2 | SIGTERM to the supervisor alone reaps workers | verified | `Smoke test graceful shutdown` (every PR) |
+| D2 | SIGTERM to the supervisor alone reaps workers | verified | `Smoke test graceful shutdown` (every PR) — the supervisor alone is signalled once its workers serve, and again while it is still forking them: `M0_TEST_FORK_GAP_MS` holds it between its first fork and its second, and it must pass the signal on, fork no more and exit 0 with nothing of its process group left. It armed that handler only after its last fork until 2026-09-29, and a worker answers before the next is forked, so a SIGTERM in between killed the supervisor and orphaned the workers (CI, once in about a hundred runs). `test_respawn.mojo` holds the two moments too short to hit from outside: a worker the stop reaches before it restores its own signals leaves at once, signalling no sibling, and a stop that lands before a worker's PID is published still reaches it |
 | D3 | Bounded drain, naming what it abandoned | verified | `Smoke test streamed WSGI bodies` (every PR) |
 | D4 | SIGTERM reaches a shutdown pipe rather than killing the process | verified | `test_lifecycle.mojo:test_sigterm_reaches_the_shutdown_pipe` (every PR) |
 | D5 | Development hot reload on file change | verified | `Smoke test hot reload` (every PR) — `--reload`, `--reload-dir` |
