@@ -1079,6 +1079,12 @@ lightbug_http
         holds the buffer's lock, instead of failing EAGAIN with a datagram
         queued (review record B25).
 
+      - c/network.mojo (2026-09-29): `inet_pton` counts its address buffer
+        in bytes. It was `stack_allocation[4, c_void]` (16 for AF_INET6),
+        and `c_void` is `NoneType`, whose size is zero, so every listen
+        wrote the address past a buffer of no bytes onto the caller's stack
+        (review record B30).
+
       - socket.mojo (2026-09-29): `Socket.close()` marks the socket
         unconnected, and does nothing on a socket already closed. A socket
         made from a descriptor (`Socket(fd=...)`) is born connected, so

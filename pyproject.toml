@@ -1080,10 +1080,11 @@ default_item_type = "ref"
 # `unit-gates` installs libsqlite3-dev on Linux; and the compile gates
 # built ON the packages -- every app, m0serve and its IR, the scaffold's
 # templates, an outside vocabulary, the trait and view probes, the
-# keep-alive probe. CI's `unit-gates` job, after its own `build-all`.
+# keep-alive probe, the zero-size buffer scan. CI's `unit-gates` job, after
+# its own `build-all`.
 [tool.poe.tasks.test-gates]
 help = "test-all's second half: the shim's rules, the Datastar SDK's conformance, the phase stamps, m0-sqlite, and the compile gates (CI's unit-gates job)"
-sequence = ["test-shim", "check-datastar-sdk", "sabotage-datastar-sdk", "check-phase-stamps", "test-sqlite", "sabotage-vtab", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "check-copyback", "build-apps", "build-serve"]
+sequence = ["test-shim", "check-datastar-sdk", "sabotage-datastar-sdk", "check-phase-stamps", "test-sqlite", "sabotage-vtab", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -1181,6 +1182,20 @@ cmd = "python3 scripts/keepalive_barrier_check.py"
 [tool.poe.tasks.sabotage-keepalive]
 help = "Revert each rule of the keep-alive probe; check-keepalive-barrier must catch every one"
 cmd = "python3 scripts/keepalive_barrier_check.py --sabotage"
+
+# Review B30. `inet_pton` handed C a stack buffer of zero bytes -- four
+# `c_void`s, and `c_void` is `NoneType` -- on every listen. This reads
+# m0serve's IR and a probe's (both address families, and the old shape as
+# a bare arm that must be refused) and fails on any zero-size alloca that
+# anything could write through. It needs the .mojoc files, as check-copyback
+# does.
+[tool.poe.tasks.check-zero-alloca]
+help = "No zero-size stack buffer escapes in m0serve's IR or inet_pton's, and the old shape is still refused"
+cmd = "python3 scripts/zero_alloca_check.py"
+
+[tool.poe.tasks.sabotage-zero-alloca]
+help = "Put inet_pton's zero-byte buffer back, and edit the probe into agreeing; check-zero-alloca must catch every one"
+cmd = "python3 scripts/zero_alloca_check.py --sabotage"
 
 # SPEC L31. Mojo 1.1.0 copies a `mut` argument of 256 bytes or less in and
 # stores it back, which erased two writes B20 found (#463); this reads

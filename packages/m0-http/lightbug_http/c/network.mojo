@@ -425,10 +425,14 @@ def inet_pton[address_family: AddressFamily](var src: String) raises InetPtonErr
     """
     var ip_buffer: ExternalMutPointer[c_void]
 
+    # Counted in bytes: `c_void` is `NoneType`, whose size is 0, so
+    # `stack_allocation[4, c_void]` reserved nothing and `inet_pton` wrote
+    # the address over whatever the stack held beside it -- a String the
+    # caller was building, found crashing `ListenConfig.listen` (review B27b).
     comptime if address_family == AddressFamily.AF_INET6:
-        ip_buffer = stack_allocation[16, c_void]()
+        ip_buffer = stack_allocation[16, UInt8]().unsafe_bitcast[c_void]()
     else:
-        ip_buffer = stack_allocation[4, c_void]()
+        ip_buffer = stack_allocation[4, UInt8]().unsafe_bitcast[c_void]()
 
     var result = _inet_pton(address_family.value, src.as_c_string_span().ptr(), ip_buffer)
     if result == 0:
