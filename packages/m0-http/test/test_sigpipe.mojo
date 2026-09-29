@@ -117,14 +117,13 @@ def test_serve_runs_the_event_loop_which_ignores_sigpipe() raises:
     var err = String()
     _arm_watchdog("Server.serve, its shutdown pipe closed,")
     try:
-        server.serve(ln, handler)
+        # The loop's now: it closes the listener as its drain begins.
+        server.serve(ln^, handler)
     except e:
         err = String(e)
     _disarm_watchdog()
     var now = _swap(original)
     close_fd(stop[0])
-    # The loop closed the listener as its drain began.
-    _ = ln^
     assert_equal(err, "")
     assert_equal(now, SIG_IGN)
 

@@ -134,6 +134,18 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp4](Movable):
         """
         self.socket^.teardown()
 
+    def into_fd(deinit self) -> FileDescriptor:
+        """Hand the listener's descriptor over without closing it.
+
+        `run_event_loop` owns the listener it is given and closes it once,
+        as its drain begins; this is how an owner gives it one (review
+        B26). Passing `listener.socket.fd` instead left the listener here to
+        close the number a second time when it was destroyed, after the
+        loop returned -- by then the lowest free number, and often another
+        part of the process's descriptor.
+        """
+        return self.socket^.into_fd()
+
     def addr(self) -> TCPAddr[Self.network]:
         return self.socket.local_address
 
