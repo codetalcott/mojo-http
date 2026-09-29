@@ -44,12 +44,25 @@ jobs:
     # job `poe test-packages`, `unit-gates` `poe test-gates`, and
     # check-docs refuses a task `test-all` reaches that no step here does.
     # Cold, on #482, this job ran 20.7 min on ubuntu and 13.9 on macOS and
-    # `unit-gates` 20.1 and 19.8, so both caps are 40: twice the run, and
+    # `unit-gates` 20.1 and 19.8, so both caps were 40: twice the run, and
     # the slowest runner seen (1.45x, the smoke job's comment) lands a
     # 21-minute job at 30. `unit-gates` ran 12.7 min and 9.4 on #483,
-    # cold, its `test-shim` down to seconds. `test-http` grows 20-30 s with
-    # each event loop test, so this half is the one to lighten, and moving
-    # a task between the halves is free.
+    # cold, its `test-shim` down to seconds, and this job 20.6 and 17.7,
+    # every run's longest; on train 20 (#485), cold, 23.8 and 17.2 against
+    # `unit-gates`' 12.6 and 10.2. That ubuntu leg drew a Xeon 8370C, which
+    # took 1.16 times the EPYCs' time on the same tasks. So five tasks
+    # that share no compile with this half went to `test-gates`, their
+    # cold times on those runs (ubuntu, then macOS): the Datastar SDK's
+    # sabotage (157-183 s, 108-111) and conformance (7-9, 4-6),
+    # `test-sqlite` (50-59, 34-39), `sabotage-vtab` (about 1 s) and
+    # `check-phase-stamps` (26-27, 25-27). That is about 240 s on ubuntu's
+    # EPYCs and 180 on macOS, which by those runs puts both jobs at about
+    # 16.5 min on ubuntu (this one 19 on the Xeon) and this one at 14.5
+    # and `unit-gates` at 13 on macOS: both caps are 35. `test-http`
+    # (563-666 s of this job) grows 20-30 s with each event loop test, so
+    # this half is the one to lighten next, and moving a task between the
+    # halves is free. The trailer sabotage and the fuzzer stay: this job's
+    # own steps that run them again reuse `test-packages`' compiles.
     #
     # Mojo's compile cache is restored below and saved after the job. It
     # holds one entry per whole program and CPU compiled for (`mojo run`
@@ -70,22 +83,21 @@ jobs:
     # while holding this ref's concurrency group, so a stall reads as
     # "still running" for hours instead of failing. See the apt step in
     # .github/actions/setup for the stall that motivated this.
-    timeout-minutes: 40
-    # The coverage this job's steps declare (SPEC F12: check-docs, the unit
-    # tests, the recorder's selftest, the fuzzer) is recorded here, and
-    # rendered and kept by the job's last step, as every job's is.
+    timeout-minutes: 35
+    # The coverage this job's steps declare (SPEC F12: check-docs, the
+    # recorder's selftest, the sabotage library's, the fuzzer) is recorded
+    # here, and rendered and kept by the job's last step, as every job's is.
     env:
       M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
       M0_RESULTS_TAG: unit-tests-${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      # m0-sqlite opens libsqlite3 at run time (SPEC O17), so nothing links
-      # it; the development package is for `verify-vtab-layout`, which
-      # compiles a C file against sqlite3.h. The library itself is on every
-      # runner already.
+      # patchelf for the rpath build-ffi sets on Linux. The sqlite
+      # development package went to `unit-gates` with `test-sqlite`:
+      # nothing here compiles against sqlite3.h.
       - uses: ./.github/actions/setup
         with:
-          apt: libsqlite3-dev patchelf
+          apt: patchelf
       # Mojo's compile cache (`mojo --print-cache-location`), restored from
       # this pull request's latest run of this job on the same CPU model and
       # saved after it (the job's comment has the numbers). An entry is good
@@ -145,7 +157,6 @@ jobs:
       - name: Run unit tests
         shell: bash
         run: |
-          python3 scripts/emit.py --covers I27 --task step
           set -o pipefail
           uv run poe test-packages 2>&1 | tee -a compile.log
       # Holds the residual warning count at scripts/warning_baseline.json.
@@ -188,8 +199,8 @@ jobs:
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
       # The Mojo pool's sabotage runs in `unit-gates`, for time alone: it is
-      # ~160 s on the ubuntu leg and nothing on macOS, which is what that
-      # job's ubuntu leg has room for.
+      # ~175 s on the ubuntu leg and nothing on macOS, and the halves were
+      # balanced with it counted.
 
       # The chunked decoder's trailer states: reverting each rule must fail
       # test_parsing. They were the decoder's untested region -- the
@@ -224,40 +235,47 @@ jobs:
         with:
           name: ci-results-unit-tests-${{ matrix.os }}
 
-  # test-all's second half: the executor shim's rules, and the gates built
-  # ON the packages -- every app, m0serve and its IR, the scaffold's
-  # templates, an outside vocabulary, the trait and view probes, the
-  # keep-alive probe -- plus the Mojo pool's sabotage (Linux). Cold, it ran
-  # 20.1 min on ubuntu and 19.8 on macOS (#482), most of it `test-shim`
+  # test-all's second half: the executor shim's rules; the Datastar SDK's
+  # conformance and its sabotage, the probes' phase stamps, and m0-sqlite's
+  # tests and layout guard, moved here to balance the halves; and the
+  # gates built ON the packages -- every app, m0serve and its IR, the
+  # scaffold's templates, an outside vocabulary, the trait and view probes,
+  # the keep-alive probe -- plus the Mojo pool's sabotage (Linux). Cold, it
+  # ran 20.1 min on ubuntu and 19.8 on macOS (#482), most of it `test-shim`
   # (~490 s and ~820 s) and `build-apps` (~285 s and ~165 s), and the cap
-  # of 40 is twice that. `test-shim` now runs only the test written for
+  # of 40 was twice that. `test-shim` now runs only the test written for
   # each of its guards (#483): 26 s on ubuntu and 33 on macOS, and this
-  # job 12.7 min and 9.4, cold, on that pull request, most of it
-  # `build-apps` (~290 s and ~275 s) and on ubuntu the pool's sabotage
-  # (~180 s). `unit-tests`' comment has the rest of the measurements. A
-  # separate JOB and no `needs:`, for the smokes' reasons: the sheet
-  # refuses a cited step with an `if:`, and nothing here waits on the
-  # other half.
+  # job 12.7 min and 9.4, cold, on that pull request, and 12.6 and 10.2 on
+  # train 20 (#485), most of it `build-apps` (~290 s and ~275-300 s) and
+  # on ubuntu the pool's sabotage (~175 s). The five tasks moved from
+  # `test-packages` add about 240 s on ubuntu and 180 on macOS, which puts
+  # this job at about 16.5 min and 13, so the cap is 35. `unit-tests`'
+  # comment has the rest of the measurements. A separate JOB and no
+  # `needs:`, for the smokes' reasons: the sheet refuses a cited step with
+  # an `if:`, and nothing here waits on the other half.
   unit-gates:
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 35
     # The coverage this job's test step declares (SPEC F12: the shim's
-    # rows, the templates', the copy-back guard's) is recorded here, and
-    # rendered and kept by the job's last step, as every job's is.
+    # rows, the Datastar SDK's, the templates', the copy-back guard's) is
+    # recorded here, and rendered and kept by the job's last step, as every
+    # job's is.
     env:
       M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
       M0_RESULTS_TAG: unit-gates-${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-      # patchelf for the rpath build-ffi and build-serve set on Linux. The
-      # sqlite development package is `unit-tests`' alone: nothing here
-      # compiles against sqlite3.h.
+      # patchelf for the rpath build-ffi and build-serve set on Linux, and
+      # the sqlite development package for `verify-vtab-layout`, which
+      # compiles a C file against sqlite3.h. m0-sqlite opens libsqlite3 at
+      # run time (SPEC O17), so nothing links it; the library itself is on
+      # every runner already.
       - uses: ./.github/actions/setup
         with:
-          apt: patchelf
+          apt: libsqlite3-dev patchelf
       # Mojo's compile cache, keyed by the runner's CPU, as in `unit-tests`.
       - name: Name the runner's CPU for the compile cache
         id: cpu
@@ -288,6 +306,7 @@ jobs:
           python3 scripts/emit.py --covers L20 --task step
           python3 scripts/emit.py --covers N28 --task step
           python3 scripts/emit.py --covers L31 --task step
+          python3 scripts/emit.py --covers I27 --task step
           set -o pipefail
           uv run poe test-gates 2>&1 | tee -a compile.log
       - name: Check the compiler warning count has not grown

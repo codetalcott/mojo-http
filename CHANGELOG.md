@@ -107,6 +107,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   its applications, the m0 wheel and its scaffold, and MAX's runtime under
   both hosts. By the step times of the 15 green runs of 2026-09-29, the
   three come to 12 to 13.5 min on ubuntu, and each is capped at 25.
+- **CI's two unit-test jobs are balanced.** With `test-shim` down to
+  seconds, `unit-tests` was every run's longest job, 20.6 to 23.8 min cold
+  on the ubuntu leg, against `unit-gates`' 12.6. Five tasks move from `poe
+  test-packages` to `poe test-gates`: the Datastar SDK's conformance and
+  its sabotage, the probes' phase-stamp check, and m0-sqlite's tests and
+  layout guard. By their measured times that puts both jobs at about 16.5
+  min cold on ubuntu, and each is capped at 35. `poe test-all` runs the
+  same tasks as before.
 - **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
   phase stamp, `fail()`, a server watched until it answers, a free port,
   an SSE reader and a WebSocket client, each proven by

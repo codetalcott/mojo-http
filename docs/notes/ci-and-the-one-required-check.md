@@ -135,10 +135,12 @@ seventh macOS job, and the account runs five at once, so two of a run's
 macOS jobs wait: one for the first to finish (`apple-silicon`, 1.5
 minutes), one for the second (`scaffold-dev`, 2 to 4). GitHub does not start
 them in file order. In the two runs with six, the job that waited was a
-smoke job once and `scaffold-dev` once. A smoke job or `scaffold-dev` that
-waits still ends before the unit jobs, which set the run's length at about
-20 minutes cold. If `unit-gates` waits, at 15 to 20 minutes on macOS, the run
-ends up to 4 minutes later. When several pull requests run at once, the five
+smoke job once and `scaffold-dev` once. A job that waits ends up to 4
+minutes late. The unit jobs set the run's length, at about 17 minutes cold
+on ubuntu once their halves were balanced (the next section), so a waiting
+smoke job (13 to 14 minutes on macOS) or `unit-tests` (14.5) ends the run
+up to 2 minutes later, and `scaffold-dev` or `unit-gates` (13) about when
+it would have ended anyway. When several pull requests run at once, the five
 macOS runners are shared among them. Across the 76 runs since 2026-09-28
 17:00, a macOS job waited a median of 4.4 minutes and a p90 of 34, and one
 more job in each run adds its minute of setup to that queue.
@@ -188,18 +190,35 @@ file (62 files, about 575 seconds on ubuntu, 3 of them spent running
 tests). Then the gates added since.
 
 So `test-all` is now `build-all` and two halves, and CI runs each half in a
-job of its own: `unit-tests` runs `poe test-packages` (the packages' tests,
-their whole-package compiles and the harnesses beside them) and
-`unit-gates` runs `poe test-gates` (the shim's rules and the compile gates
-built on the packages). Locally `poe test-all` is still the whole. On the
-pull request that split them (#482), cold, `unit-tests` ran 20.7 minutes on
+job of its own: `unit-tests` runs `poe test-packages` and `unit-gates` runs
+`poe test-gates`. Locally `poe test-all` is still the whole. On the pull
+request that split them (#482), cold, `unit-tests` ran 20.7 minutes on
 ubuntu and 13.9 on macOS and `unit-gates` 20.1 and 19.8, against caps of
 40. Two halves could not go lower while `test-shim` was 8-14 minutes in one
-piece; on #483, cold, `unit-gates` ran 12.7 minutes on ubuntu and 9.4 on
-macOS. The split is measured, not thematic, and moving a task between the
-halves is free. A task added to `test-all`'s own sequence, beside the
-halves, would run locally and in no job, so `check-docs` refuses anything
-`test-all` reaches that no unconditional step does.
+piece. On #483, cold, `unit-gates` ran 12.7 minutes on ubuntu and 9.4 on
+macOS, and `unit-tests` 20.6 and 17.7, every run's longest job. On train 20
+(#485) they ran 12.6 and 10.2 against 23.8 and 17.2; that `unit-tests`
+ubuntu leg drew a Xeon 8370C, which took 1.16 times the EPYCs' time on the
+same tasks.
+
+So five tasks went from `test-packages` to `test-gates`, chosen by those
+runs' cold task times, read from the `Poe =>` lines' timestamps in the
+logs: the Datastar SDK's conformance and its sabotage (164-192 seconds on
+ubuntu, about 115 on macOS), `test-sqlite` and `sabotage-vtab` (50-59 and
+35-40), and `check-phase-stamps` (25-27 on both). None shares a compile
+with a task that stayed, and `unit-gates` now installs `libsqlite3-dev`,
+for the layout guard's `sqlite3.h`. What stayed is the packages' Mojo tests
+but m0-sqlite's, the fork's and the host's whole-package compiles, and the
+chunked decoder's trailer sabotage and fuzzer, whose compiles the
+`unit-tests` steps that run them again reuse. By those runs, both jobs come
+to about 16.5 minutes cold on ubuntu's EPYCs, and `unit-tests` to 14.5 and
+`unit-gates` to 13 on macOS, so both are capped at 35. `test-http` is most
+of `unit-tests` (563-666 seconds) and grows 20-30 seconds with each event
+loop test, so that half is the one to lighten next. The split is measured,
+not thematic, and moving a task between the halves is free. A task added to
+`test-all`'s own sequence, beside the halves, would run locally and in no
+job, so `check-docs` refuses anything `test-all` reaches that no
+unconditional step does.
 
 Both jobs restore Mojo's compile cache and save it after. The cache holds
 one entry per whole program, keyed by everything the program compiles and
