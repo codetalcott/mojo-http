@@ -567,9 +567,10 @@ python3 scripts/emit.py --covers I18 --task smoke-realtime-holds
 # pre-fix binary: exit 1, naming the 2887 dropped messages.
 [tool.poe.tasks.smoke-ws-inbound]
 help = "Inbound WebSocket messages are delivered, not dropped, when a client stalls"
+deps = ["build-serve"]
 shell = """
-uv run poe build-serve || exit 1
-python3 scripts/ws_inbound_loss_probe.py 3000 4096 8354 || exit 1
+. scripts/smoke/lib.sh
+python3 scripts/ws_inbound_loss_probe.py 3000 4096 $(free_port) || exit 1
 python3 scripts/emit.py --covers I19 --task smoke-ws-inbound
 python3 scripts/emit.py --covers L17 --task smoke-ws-inbound
 """
@@ -627,6 +628,13 @@ shell = "python3 scripts/milestones.py --check && python3 scripts/milestones.py 
 [tool.poe.tasks.check-phase-stamps]
 help = "Every probe stamps its phase for the crash handler, and sabotage-prove it"
 shell = "python3 scripts/phase_stamp_check.py --sabotage"
+
+# poe runs a shell task under `sh`: dash on the Linux runner, bash's POSIX
+# mode on a Mac, which accepts what dash refuses. scripts/smoke/lib.sh is
+# the harness the smokes source, and its selftest runs under both shells.
+[tool.poe.tasks.check-task-shells]
+help = "Every poe shell task parses under dash and calls no syncing `uv run`; self-test that and scripts/smoke/lib.sh"
+shell = "python3 scripts/check_task_shells.py && python3 scripts/check_task_shells.py --selftest"
 
 # m0-sqlite depends on nothing in this repo — it is a sibling of m0-core and
 # m0-http, not a layer on them — so it needs no -I at build time, and consumers
@@ -725,7 +733,7 @@ out="${M0SERVE_OUT:-bin/m0serve}"
 # front of every smoke. After editing a package's src/, run build-all (or
 # that package's build and every one above it) before this, as before.
 for pkg in core http postgres wsgi; do
-  [ -f "packages/m0-$pkg/m0_$pkg.mojoc" ] || uv run poe "build-$pkg" || exit 1
+  [ -f "packages/m0-$pkg/m0_$pkg.mojoc" ] || uv run --no-sync poe "build-$pkg" || exit 1
 done
 mojo build --target-cpu "$tcpu" \
   -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I "$mount_dir" \
@@ -1117,7 +1125,7 @@ help = "Run the Django realtime example on :8080 — sync Django views, live SSE
 deps = ["build-serve"]
 shell = """
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
-[ -f "packages/m0-core/libm0core.$ext" ] || uv run poe build-ffi || exit 1
+[ -f "packages/m0-core/libm0core.$ext" ] || uv run --no-sync poe build-ffi || exit 1
 bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
   --port 8080 --realtime --health-path /health \
   --static /static/=apps/django_realtime/static \
@@ -1196,20 +1204,19 @@ cmd = "mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ws_chat/
 [tool.poe.tasks.smoke-hello]
 help = "Start serve-hello, assert /health, stop"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > hello.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || { echo '=== hello.log ==='; cat hello.log; exit 1; }
-echo
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn hello.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
+wait_ready http://localhost:$port/health $pid
 
 # G14: a request target holding a byte that is not UTF-8 beside a
 # percent-escape used to trap the loop thread inside `unquote`, so one GET
 # killed the process -- every app, before any handler ran. Raw sockets,
 # because curl will not send the byte. Each must be ANSWERED (any status),
 # and the server must still be up afterwards.
-python3 - <<'PY' || { echo 'a malformed target got no answer'; echo '=== hello.log ==='; cat hello.log; exit 1; }
-import socket
+python3 - "$port" <<'PY' || fail 'a malformed target got no answer'
+import socket, sys
+port = int(sys.argv[1])
 tail = b" HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n"
 for req in (
     b"GET /?x=\\x80%41" + tail,                       # the decoder, in the query
@@ -1218,14 +1225,14 @@ for req in (
     b"GET /\\x80" + tail,
     b"GET / HTTP/1.1\\r\\nHost: x\\r\\nCookie: a=\\x80; b=1\\r\\nConnection: close\\r\\n\\r\\n",  # the cookie jar, parsed for every request
 ):
-    s = socket.create_connection(("127.0.0.1", 8080), timeout=5)
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
     s.sendall(req)
     head = s.recv(4096).split(b"\\r\\n")[0]
     s.close()
     assert head.startswith(b"HTTP/1.1 "), (req, head)
 PY
-curl --silent --fail http://localhost:8080/health > /dev/null \
-  || { echo 'the server was gone after a malformed target'; echo '=== hello.log ==='; cat hello.log; exit 1; }
+curl --silent --fail http://localhost:$port/health > /dev/null \
+  || fail 'the server was gone after a malformed target'
 
 echo "smoke-hello OK"
 python3 scripts/emit.py --covers A2 --task smoke-hello
@@ -1242,28 +1249,24 @@ python3 scripts/emit.py --covers G14 --task smoke-hello
 [tool.poe.tasks.smoke-shutdown]
 help = "SIGTERM drains the loop, and reaches the workers when only the supervisor is signalled"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > shutdown1.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health   || { echo '=== shutdown1.log ==='; cat shutdown1.log; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn shutdown1.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
+wait_ready http://localhost:$port/health $pid
 # 0 is the drain path running to completion. 143 is 128+SIGTERM: the default
 # action took the process down where it stood, which is the old behaviour.
 kill -TERM $pid
 rc=0
 wait $pid || rc=$?
-[ "$rc" -eq 0 ]   || { echo "hello exited $rc, want 0 (143 means the signal killed it outright)"; cat shutdown1.log; exit 1; }
-trap - EXIT
+[ "$rc" -eq 0 ]   || fail "hello exited $rc, want 0 (143 means the signal killed it outright)"
 
-M0_WORKERS=2 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/   apps/datastar_counter/server.mojo > shutdown2.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health   || { echo '=== shutdown2.log ==='; cat shutdown2.log; exit 1; }
+spawn shutdown2.log env M0_PORT=$port M0_WORKERS=2 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/   apps/datastar_counter/server.mojo
+wait_ready http://localhost:$port/health $pid
 workers=''
-for p in $(grep -oE 'pid=[0-9]+' shutdown2.log | cut -d= -f2 | sort -u); do
+for p in $(grep -oE 'pid=[0-9]+' "$SMOKE_DIR/shutdown2.log" | cut -d= -f2 | sort -u); do
   [ "$p" != "$pid" ] && workers="$workers $p"
 done
-[ -n "$workers" ] || { echo 'no worker pids in the log'; cat shutdown2.log; exit 1; }
-trap 'kill $pid $workers 2>/dev/null' EXIT
+[ -n "$workers" ] || fail 'no worker pids in the log'
 
 # The supervisor ALONE. Nothing signals the workers directly.
 kill -TERM $pid
@@ -1275,13 +1278,11 @@ for i in 1 2 3 4 5 6 7 8 9 10; do
   [ -z "$alive" ] && break
   sleep 1
 done
-[ -z "$alive" ]   || { echo "orphaned workers after signalling the supervisor:$alive"; cat shutdown2.log; exit 1; }
+[ -z "$alive" ]   || fail "orphaned workers after signalling the supervisor:$alive"
 # A worker that drained but then fell off the end of main would die in the Mojo
 # runtime's teardown, and the supervisor would read that as a crash.
-grep -q 'exited cleanly' shutdown2.log   || { echo 'no worker reported a clean exit'; cat shutdown2.log; exit 1; }
-grep -q 'respawn' shutdown2.log && { echo 'a worker was respawned during shutdown'; cat shutdown2.log; exit 1; }
-trap - EXIT
-rm -f shutdown2.log
+grep -q 'exited cleanly' "$SMOKE_DIR/shutdown2.log"   || fail 'no worker reported a clean exit'
+grep -q 'respawn' "$SMOKE_DIR/shutdown2.log" && fail 'a worker was respawned during shutdown'
 
 # Idle keep-alive connections must not hold the drain open. `active_count`
 # counts a merely-open connection the same as one mid-request, so before the
@@ -1290,12 +1291,9 @@ rm -f shutdown2.log
 # idle, in every execution mode. The in-flight half of the contract (a request
 # running at SIGTERM is answered, not dropped) is pinned by
 # smoke-blocking-threads; this is the other half.
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > shutdown3.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null   || { echo '=== shutdown3.log ==='; cat shutdown3.log; exit 1; }
-python3 scripts/drain_idle_probe.py 8080 $pid 8   || { echo '=== shutdown3.log ==='; cat shutdown3.log; exit 1; }
-trap - EXIT
+spawn shutdown3.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
+wait_ready http://localhost:$port/health $pid
+python3 scripts/drain_idle_probe.py $port $pid 8   || fail
 
 # The other shape: a request still running at SIGTERM, on a pool thread so
 # the loop is free to see the signal, whose response completes DURING the
@@ -1305,16 +1303,10 @@ trap - EXIT
 # exit against 1.55s with `Connection: close`, the response itself at 1.5s in
 # both. The drain now re-runs the between-requests sweep after every
 # completion pass. Python-free: apps/pool_spike's /slow on the Mojo pool.
-out=$(mktemp -d)
-mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$out/pool_spike"   || { echo 'pool_spike failed to build'; exit 1; }
-M0_PORT=8080 M0_POOL_THREADS=2 "$out/pool_spike" > shutdown4.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/fast > /dev/null   || { echo '=== shutdown4.log ==='; cat shutdown4.log; exit 1; }
-python3 scripts/drain_inflight_probe.py 8080 $pid   || { echo '=== shutdown4.log ==='; cat shutdown4.log; exit 1; }
-trap - EXIT
-rm -rf "$out"
-rm -f shutdown1.log shutdown3.log shutdown4.log
+mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$SMOKE_DIR/pool_spike"   || fail 'pool_spike failed to build'
+spawn shutdown4.log env M0_PORT=$port M0_POOL_THREADS=2 "$SMOKE_DIR/pool_spike"
+wait_ready http://localhost:$port/fast $pid
+python3 scripts/drain_inflight_probe.py $port $pid   || fail
 echo "smoke-shutdown OK"
 python3 scripts/emit.py --covers D1 --task smoke-shutdown
 python3 scripts/emit.py --covers D2 --task smoke-shutdown
@@ -1336,12 +1328,11 @@ python3 scripts/emit.py --covers D2 --task smoke-shutdown
 [tool.poe.tasks.smoke-header-timeout]
 help = "Assert a silent connection times out, and a keep-alive gap does not"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > ht.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -f ht.log' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
-  || { echo '=== ht.log ==='; cat ht.log; exit 1; }
-python3 scripts/header_timeout_probe.py 8080 || { echo '=== ht.log ==='; cat ht.log; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn ht.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
+wait_ready http://localhost:$port/health $pid
+python3 scripts/header_timeout_probe.py $port || fail
 echo "smoke-header-timeout OK"
 python3 scripts/emit.py --covers A5 --task smoke-header-timeout
 """
@@ -1366,15 +1357,15 @@ python3 scripts/emit.py --covers A5 --task smoke-header-timeout
 help = "Idle connections are closed, busy ones are not, a WebSocket close waits for its reply, and an unread response is reaped"
 deps = ["build-serve"]
 shell = """
-files=$(mktemp -d)
+. scripts/smoke/lib.sh
+files=$SMOKE_DIR/files
+mkdir "$files"
 python3 -c "import sys; open(sys.argv[1] + '/big.bin', 'wb').write(b'm0' * 8388608)" "$files"
-bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8093 \
-  --idle-timeout 3 --max-body 32m --static /files="$files" > idle.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -f idle.log; rm -rf "$files"' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8093/ > /dev/null \
-  || { echo '=== idle.log ==='; cat idle.log; exit 1; }
-python3 scripts/idle_timeout_probe.py 8093 3 || { echo '=== idle.log ==='; cat idle.log; exit 1; }
+port=$(free_port)
+spawn idle.log bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port \
+  --idle-timeout 3 --max-body 32m --static /files="$files"
+wait_ready http://localhost:$port/ $pid
+python3 scripts/idle_timeout_probe.py $port 3 || fail
 echo "smoke-idle-timeout OK"
 python3 scripts/emit.py --covers A4 --task smoke-idle-timeout
 python3 scripts/emit.py --covers L16 --task smoke-idle-timeout
@@ -1393,13 +1384,12 @@ python3 scripts/emit.py --covers A24 --task smoke-idle-timeout
 help = "A stalled body is refused at the deadline, and a timer from a body that arrived whole never outlives it"
 deps = ["build-serve"]
 shell = """
-bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8092 \
-  --blocking-threads 2 --body-timeout 2 --idle-timeout 30 > bodyto.log 2>&1 &
-pid=$!
-trap 'kill -CONT $pid 2>/dev/null; kill $pid 2>/dev/null; rm -f bodyto.log' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8092/ > /dev/null \
-  || { echo '=== bodyto.log ==='; cat bodyto.log; exit 1; }
-python3 scripts/body_timeout_probe.py 8092 2 || { echo '=== bodyto.log ==='; cat bodyto.log; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn bodyto.log bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port \
+  --blocking-threads 2 --body-timeout 2 --idle-timeout 30
+wait_ready http://localhost:$port/ $pid
+python3 scripts/body_timeout_probe.py $port 2 || fail
 echo "smoke-body-timeout OK"
 python3 scripts/emit.py --covers A23 --task smoke-body-timeout
 """
@@ -1407,12 +1397,11 @@ python3 scripts/emit.py --covers A23 --task smoke-body-timeout
 [tool.poe.tasks.smoke-half-close]
 help = "A client that half-closes after sending must still get its response"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > hc.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -f hc.log' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
-  || { echo '=== hc.log ==='; cat hc.log; exit 1; }
-python3 scripts/half_close_probe.py 8080 || { echo '=== hc.log ==='; cat hc.log; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn hc.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
+wait_ready http://localhost:$port/health $pid
+python3 scripts/half_close_probe.py $port || fail
 echo "smoke-half-close OK"
 python3 scripts/emit.py --covers A12 --task smoke-half-close
 """
@@ -1429,15 +1418,15 @@ python3 scripts/emit.py --covers A12 --task smoke-half-close
 help = "A client that resets mid-response or while idle gives its slot back at once"
 deps = ["build-serve"]
 shell = """
-files=$(mktemp -d)
+. scripts/smoke/lib.sh
+files=$SMOKE_DIR/files
+mkdir "$files"
 python3 -c "import sys; open(sys.argv[1] + '/big.bin', 'wb').write(b'm0' * 8388608)" "$files"
-bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8141 \
-  --idle-timeout 0 --metrics --max-body 32m --static /files="$files" > reset.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -f reset.log; rm -rf "$files"' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8141/ > /dev/null \
-  || { echo '=== reset.log ==='; cat reset.log; exit 1; }
-python3 scripts/peer_reset_probe.py 8141 || { echo '=== reset.log ==='; cat reset.log; exit 1; }
+port=$(free_port)
+spawn reset.log bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port \
+  --idle-timeout 0 --metrics --max-body 32m --static /files="$files"
+wait_ready http://localhost:$port/ $pid
+python3 scripts/peer_reset_probe.py $port || fail
 echo "smoke-peer-reset OK"
 python3 scripts/emit.py --covers C9 --task smoke-peer-reset
 """
@@ -1472,12 +1461,11 @@ python3 scripts/emit.py --covers F18 --task smoke-slot-lifecycle
 [tool.poe.tasks.smoke-early-413]
 help = "A 413 sent mid-upload must reach a client that writes its whole body first"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > e413.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -f e413.log' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
-  || { echo '=== e413.log ==='; cat e413.log; exit 1; }
-python3 scripts/early_413_probe.py 8080 || { echo '=== e413.log ==='; cat e413.log; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn e413.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
+wait_ready http://localhost:$port/health $pid
+python3 scripts/early_413_probe.py $port || fail
 echo "smoke-early-413 OK"
 python3 scripts/emit.py --covers A20 --task smoke-early-413
 """
@@ -1495,14 +1483,13 @@ python3 scripts/emit.py --covers A20 --task smoke-early-413
 [tool.poe.tasks.smoke-large-request]
 help = "A request bigger than one read must be answered, not stalled; on Linux, under strace, a keep-alive request and a short read of an upload cost no epoll_ctl"
 shell = """
-out=$(mktemp -d)
-trap 'kill $pid 2>/dev/null; rm -rf "$out"' EXIT
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 mojo build -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo -o "$out/hello" || exit 1
-"$out/hello" > "$out/lr.log" 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
-  || { echo '=== lr.log ==='; cat "$out/lr.log"; exit 1; }
-python3 scripts/large_request_probe.py 8080 || { echo '=== lr.log ==='; cat "$out/lr.log"; exit 1; }
+port=$(free_port)
+spawn lr.log env M0_PORT=$port "$out/hello"
+wait_ready http://localhost:$port/health $pid
+python3 scripts/large_request_probe.py $port || fail
 if [ "$(uname)" = Linux ]; then
   python3 scripts/epoll_rearm_probe.py "$out/hello" > "$out/rearm.out" 2>&1 \
     || { cat "$out/rearm.out"; exit 1; }
@@ -1526,12 +1513,11 @@ python3 scripts/emit.py --covers A13 --task smoke-large-request
 [tool.poe.tasks.smoke-pipelining]
 help = "Every pipelined request is answered, in order — not just the first"
 shell = """
-mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo > pl.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -f pl.log' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null \
-  || { echo '=== pl.log ==='; cat pl.log; exit 1; }
-python3 scripts/pipeline_probe.py 8080 || { echo '=== pl.log ==='; cat pl.log; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn pl.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
+wait_ready http://localhost:$port/health $pid
+python3 scripts/pipeline_probe.py $port || fail
 echo "smoke-pipelining OK"
 python3 scripts/emit.py --covers A1 --task smoke-pipelining
 python3 scripts/emit.py --covers A6 --task smoke-pipelining
@@ -1540,28 +1526,25 @@ python3 scripts/emit.py --covers A6 --task smoke-pipelining
 [tool.poe.tasks.smoke-ws]
 help = "WebSocket echo demo: handshake, echo, fragmentation, ping/pong, heartbeats, close"
 shell = """
-M0_SSE_HEARTBEAT_MS=400 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/ws_echo/server.mojo > ws.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || { echo '=== ws.log ==='; cat ws.log; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn ws.log env M0_PORT=$port M0_SSE_HEARTBEAT_MS=400 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/ws_echo/server.mojo
+wait_ready http://localhost:$port/health $pid
 
 # A plain HTTP GET on the endpoint is told how to connect, not left hanging.
-code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/ws)
-[ "$code" = "426" ] || { echo "GET /ws without upgrade: expected 426, got $code"; exit 1; }
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$port/ws)
+[ "$code" = "426" ] || fail "GET /ws without upgrade: expected 426, got $code"
 
-WS_EXPECT_PINGS=1 python3 apps/ws_echo/ws_probe.py \
-  || { echo '=== ws.log ==='; cat ws.log; exit 1; }
+M0_PORT=$port WS_EXPECT_PINGS=1 python3 apps/ws_echo/ws_probe.py || fail
 
 # The closed socket must be gone from the handler's registry — the close
 # handshake path notifies sse_slot_disconnected like every other close.
 for i in 1 2 3 4 5; do
-  conns=$(curl -s http://localhost:8080/health | grep -o '"connections":[0-9]*' | cut -d: -f2)
+  conns=$(curl -s http://localhost:$port/health | grep -o '"connections":[0-9]*' | cut -d: -f2)
   [ "$conns" = "0" ] && break
   sleep 1
 done
-[ "$conns" = "0" ] || { echo "socket closed but still registered (connections=$conns)"; exit 1; }
-rm -f ws.log
+[ "$conns" = "0" ] || fail "socket closed but still registered (connections=$conns)"
 echo "smoke-ws OK"
 python3 scripts/emit.py --covers I1 --task smoke-ws
 python3 scripts/emit.py --covers I3 --task smoke-ws
@@ -1577,37 +1560,26 @@ python3 scripts/emit.py --covers I31 --task smoke-ws
 [tool.poe.tasks.smoke-chat]
 help = "WebSocket chat demo: room broadcast, then cross-worker fan-out over the bus"
 shell = """
-M0_SSE_HEARTBEAT_MS=500 mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ws_chat/server.mojo > chat.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || { echo '=== chat.log ==='; cat chat.log; exit 1; }
-curl -s http://localhost:8080/ | grep -q 'mojo-http chat' \
-  || { echo 'chat page did not render'; exit 1; }
-python3 apps/ws_chat/chat_probe.py \
-  || { echo '=== chat.log ==='; cat chat.log; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn chat.log env M0_PORT=$port M0_SSE_HEARTBEAT_MS=500 mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ws_chat/server.mojo
+wait_ready http://localhost:$port/health $pid
+curl -s http://localhost:$port/ | grep -q 'mojo-http chat' \
+  || fail 'chat page did not render'
+M0_PORT=$port python3 apps/ws_chat/chat_probe.py || fail
 for i in 1 2 3 4 5; do
-  conns=$(curl -s http://localhost:8080/health | grep -o '"connections":[0-9]*' | cut -d: -f2)
+  conns=$(curl -s http://localhost:$port/health | grep -o '"connections":[0-9]*' | cut -d: -f2)
   [ "$conns" = "0" ] && break
   sleep 1
 done
-[ "$conns" = "0" ] || { echo "sockets closed but still registered (connections=$conns)"; exit 1; }
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
+[ "$conns" = "0" ] || fail "sockets closed but still registered (connections=$conns)"
+stop $pid
 
-# Phase 2: cross-worker fan-out.
-M0_WORKERS=2 M0_SSE_HEARTBEAT_MS=500 mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ws_chat/server.mojo > chat2.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || { echo '=== chat2.log ==='; cat chat2.log; exit 1; }
-# Reap the forked workers on ANY exit — a failing probe would otherwise
-# leave two workers holding :8080 to poison the next run's phase 1.
-worker_pids=$(grep -oE 'pid=[0-9]+' chat2.log | cut -d= -f2 | sort -u)
-trap 'kill $pid $worker_pids 2>/dev/null' EXIT
-CHAT_EXPECT_WORKERS=2 python3 apps/ws_chat/chat_probe.py \
-  || { echo '=== chat2.log ==='; cat chat2.log; exit 1; }
-kill $pid $worker_pids 2>/dev/null
-rm -f chat.log chat2.log
+# Phase 2: cross-worker fan-out. The forked workers share the server's
+# process group, which the lib reaps whole on any exit.
+spawn chat2.log env M0_PORT=$port M0_WORKERS=2 M0_SSE_HEARTBEAT_MS=500 mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/ws_chat/server.mojo
+wait_ready http://localhost:$port/health $pid
+M0_PORT=$port CHAT_EXPECT_WORKERS=2 python3 apps/ws_chat/chat_probe.py || fail
 echo "smoke-chat OK"
 python3 scripts/emit.py --covers I8 --task smoke-chat
 """
@@ -1615,33 +1587,33 @@ python3 scripts/emit.py --covers I8 --task smoke-chat
 [tool.poe.tasks.smoke-counter]
 help = "Counter demo: assert SSE broadcast, heartbeat cadence, disconnect cleanup, the app tick, and cross-worker fan-out"
 shell = """
-M0_SSE_HEARTBEAT_MS=500 M0_APP_TICK_MS=300 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
-  apps/datastar_counter/server.mojo > counter.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || { echo '=== counter.log ==='; cat counter.log; exit 1; }
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+port=$(free_port)
+spawn counter.log env M0_PORT=$port M0_SSE_HEARTBEAT_MS=500 M0_APP_TICK_MS=300 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+  apps/datastar_counter/server.mojo
+wait_ready http://localhost:$port/health $pid
 # A HEAD to the stream is its head (SPEC L27): the route is matched by path
 # alone, and the loop used to hold a HEAD as the stream a GET opens, writing
 # every frame and heartbeat after the head where a keep-alive client reads
 # its next response. The next request on the connection must be answered,
 # and the HEAD must leave no subscriber behind.
-python3 scripts/head_probe.py --port 8080 --hold /events --then /health \
-  || { echo 'a HEAD to /events did not end at its head (L27)'; cat counter.log; exit 1; }
-subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
-[ "$subs" = "0" ] || { echo "a HEAD to /events left a subscriber (subscribers=$subs)"; exit 1; }
-curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:8080/events > sse.txt &
+python3 scripts/head_probe.py --port $port --hold /events --then /health \
+  || fail 'a HEAD to /events did not end at its head (L27)'
+subs=$(curl -s http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+[ "$subs" = "0" ] || fail "a HEAD to /events left a subscriber (subscribers=$subs)"
+curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:$port/events > "$out/sse.txt" &
 sse=$!
 sleep 2
-curl -s -X POST http://localhost:8080/increment -o /dev/null
+curl -s -X POST http://localhost:$port/increment -o /dev/null
 sleep 2
 kill $sse 2>/dev/null
 wait $sse 2>/dev/null
-grep -q 'event: datastar-patch-signals' sse.txt \
-  || { echo 'no Datastar frame reached the client'; cat sse.txt; exit 1; }
-grep -q '"count":1' sse.txt \
-  || { echo 'broadcast did not carry the new count'; cat sse.txt; exit 1; }
-grep -q 'data: event:' sse.txt && { echo 'frame was double-framed'; exit 1; }
+grep -q 'event: datastar-patch-signals' "$out/sse.txt" \
+  || { cat "$out/sse.txt"; fail 'no Datastar frame reached the client'; }
+grep -q '"count":1' "$out/sse.txt" \
+  || { cat "$out/sse.txt"; fail 'broadcast did not carry the new count'; }
+grep -q 'data: event:' "$out/sse.txt" && fail 'frame was double-framed'
 
 # Heartbeats: the stream was held ~6s with the cadence set to 500ms, so
 # several ': heartbeat' comments must have arrived. The bounds are the
@@ -1649,11 +1621,11 @@ grep -q 'data: event:' sse.txt && { echo 'frame was double-framed'; exit 1; }
 # heartbeat per stream, ever); an absurd count means the fired timer kept
 # being redelivered (the level-triggered epoll storm, which floods the
 # client at loop speed).
-beats=$(grep -c '^: heartbeat' sse.txt)
+beats=$(grep -c '^: heartbeat' "$out/sse.txt")
 [ "$beats" -ge 2 ] \
-  || { echo "expected repeating heartbeats, saw $beats"; cat sse.txt; exit 1; }
+  || { cat "$out/sse.txt"; fail "expected repeating heartbeats, saw $beats"; }
 [ "$beats" -le 40 ] \
-  || { echo "heartbeat storm: $beats beats in ~6s at 500ms cadence"; exit 1; }
+  || fail "heartbeat storm: $beats beats in ~6s at 500ms cadence"
 
 # Server-initiated push: the tick hook broadcast these uptime patches with
 # NO inbound request driving them — the stream above was idle apart from
@@ -1663,40 +1635,34 @@ beats=$(grep -c '^: heartbeat' sse.txt)
 # but the demo's 1s sub-schedule masks it from frame counts — the
 # heartbeat's storm guard above pins that failure shape for the identical
 # timer pattern.
-ups=$(grep -c '"uptime":' sse.txt)
+ups=$(grep -c '"uptime":' "$out/sse.txt")
 [ "$ups" -ge 2 ] \
-  || { echo "expected tick-driven uptime patches, saw $ups"; cat sse.txt; exit 1; }
+  || { cat "$out/sse.txt"; fail "expected tick-driven uptime patches, saw $ups"; }
 [ "$ups" -le 40 ] \
-  || { echo "tick storm: $ups uptime patches in ~6s at 1s cadence"; exit 1; }
+  || fail "tick storm: $ups uptime patches in ~6s at 1s cadence"
 
 # The subscriber the loop just lost (the curl above was killed, not closed
 # politely) must be unsubscribed from the handler's registry — every close
 # path notifies sse_slot_disconnected, not only the polite recv->0 one.
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+  subs=$(curl -s http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
   [ "$subs" = "0" ] && break
   sleep 1
 done
 [ "$subs" = "0" ] \
-  || { echo "dead SSE client still subscribed (subscribers=$subs)"; exit 1; }
+  || fail "dead SSE client still subscribed (subscribers=$subs)"
 
 # Phase 2: cross-worker fan-out. Two workers, one shared listener; one
 # stream is placed on EACH worker (the X-Worker header on each stream
 # response says who owns it), then ONE mutation must reach both — the one
 # on the other worker arrives over the BroadcastBus.
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
-M0_WORKERS=2 M0_APP_TICK_MS=400 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
-  apps/datastar_counter/server.mojo > counter2.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || { echo '=== counter2.log ==='; cat counter2.log; exit 1; }
-# The trap must reap the forked workers too, not just the supervisor: a
-# failing assertion below would otherwise leave two workers holding :8080,
-# and the NEXT smoke run's phase 1 talks to this stale server and fails on
-# its leftover state.
-worker_pids=$(grep -oE 'pid=[0-9]+' counter2.log | cut -d= -f2 | sort -u)
-trap 'kill $pid $worker_pids 2>/dev/null' EXIT
+stop $pid
+spawn counter2.log env M0_PORT=$port M0_WORKERS=2 M0_APP_TICK_MS=400 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+  apps/datastar_counter/server.mojo
+wait_ready http://localhost:$port/health $pid
+# The forked workers share the supervisor's process group, which the lib
+# reaps whole on any exit -- resuming a stopped worker first -- so a failing
+# assertion below leaves nothing running.
 # Which worker wins an accept is the kernel's choice and it is not a fair
 # one: a macOS runner once handed ONE worker all 24 opens across six
 # rounds, so this phase failed with nothing whatever wrong in the server.
@@ -1711,56 +1677,52 @@ trap 'kill $pid $worker_pids 2>/dev/null' EXIT
 # are unchanged — only the way this two-worker arrangement is reached
 # stopped being a gamble.
 count=2
-curl -sN --max-time 60 -D mw_hdr_1.txt -H 'Accept: text/event-stream' \
-  http://localhost:8080/events > mw_sse_1.txt &
+curl -sN --max-time 60 -D "$out/mw_hdr_1.txt" -H 'Accept: text/event-stream' \
+  http://localhost:$port/events > "$out/mw_sse_1.txt" &
 sleep 2
-w_a=$(grep -i '^x-worker' mw_hdr_1.txt | tr -dc '0-9')
+w_a=$(grep -i '^x-worker' "$out/mw_hdr_1.txt" | tr -dc '0-9')
 [ -n "$w_a" ] \
-  || { echo 'first stream never opened (no X-Worker header)'; cat mw_hdr_1.txt; cat counter2.log; exit 1; }
+  || { cat "$out/mw_hdr_1.txt"; fail 'first stream never opened (no X-Worker header)'; }
 
-# Freeze the winner. The trap resumes it on any exit — leaving a STOPped
+# Freeze the winner. The lib resumes it on any exit — leaving a STOPped
 # process behind would wedge the next run.
 kill -STOP "$w_a" 2>/dev/null
-trap 'kill -CONT $w_a 2>/dev/null; kill $pid $worker_pids 2>/dev/null' EXIT
-curl -sN --max-time 60 -D mw_hdr_2.txt -H 'Accept: text/event-stream' \
-  http://localhost:8080/events > mw_sse_2.txt &
+curl -sN --max-time 60 -D "$out/mw_hdr_2.txt" -H 'Accept: text/event-stream' \
+  http://localhost:$port/events > "$out/mw_sse_2.txt" &
 sleep 3
-w_b=$(grep -i '^x-worker' mw_hdr_2.txt | tr -dc '0-9')
+w_b=$(grep -i '^x-worker' "$out/mw_hdr_2.txt" | tr -dc '0-9')
 kill -CONT "$w_a" 2>/dev/null
-trap 'kill $pid $worker_pids 2>/dev/null' EXIT
 
 [ -n "$w_b" ] \
-  || { echo "second stream never opened while worker $w_a was stopped"; cat mw_hdr_2.txt; cat counter2.log; exit 1; }
+  || { cat "$out/mw_hdr_2.txt"; fail "second stream never opened while worker $w_a was stopped"; }
 [ "$w_a" != "$w_b" ] \
-  || { echo "both streams landed on worker $w_a even though it was SIGSTOPped"; cat counter2.log; exit 1; }
+  || fail "both streams landed on worker $w_a even though it was SIGSTOPped"
 
 # ONE mutation, handled by whichever worker wins the accept race; every
 # stream — both workers' — must see the new count.
-curl -s -X POST http://localhost:8080/increment -o /dev/null
+curl -s -X POST http://localhost:$port/increment -o /dev/null
 sleep 2
 for i in $(seq 1 $count); do
   # '"count":1' rather than a full-frame match: the POST's own patch can
   # lose an ordering race against a concurrent tick (documented
   # best-effort semantics) — but the reconciling tick re-carries the
   # count, so every stream converges on it within a second either way.
-  grep -q '"count":1' mw_sse_$i.txt \
-    || { echo "stream $i missed the cross-worker broadcast (worker $(grep -i '^x-worker' mw_hdr_$i.txt))"; cat counter2.log; exit 1; }
+  grep -q '"count":1' "$out/mw_sse_$i.txt" \
+    || fail "stream $i missed the cross-worker broadcast (worker $(grep -i '^x-worker' "$out/mw_hdr_$i.txt"))"
 done
 
 # The tick composes with the bus: only worker 0 drives the clock, so a
 # stream owned by the OTHER worker receiving uptime patches proves the
 # tick's broadcasts crossed the bus like any other.
-w0=$(grep -oE 'worker 0. pid=[0-9]+' counter2.log | grep -oE '[0-9]+' | tail -1)
+w0=$(grep -oE 'worker 0. pid=[0-9]+' "$out/counter2.log" | grep -oE '[0-9]+' | tail -1)
 for i in $(seq 1 $count); do
-  wpid=$(grep -i '^x-worker' mw_hdr_$i.txt | tr -d ' \r' | cut -d: -f2)
+  wpid=$(grep -i '^x-worker' "$out/mw_hdr_$i.txt" | tr -d ' \r' | cut -d: -f2)
   if [ -n "$wpid" ] && [ "$wpid" != "$w0" ]; then
-    grep -q '"uptime":' mw_sse_$i.txt \
-      || { echo "stream $i (worker $wpid) never saw the tick owner's clock over the bus"; cat counter2.log; exit 1; }
+    grep -q '"uptime":' "$out/mw_sse_$i.txt" \
+      || fail "stream $i (worker $wpid) never saw the tick owner's clock over the bus"
   fi
 done
 
-kill $pid $worker_pids 2>/dev/null
-rm -f sse.txt mw_sse_*.txt mw_hdr_*.txt counter2.log
 echo "smoke-counter OK"
 python3 scripts/emit.py --covers I9 --task smoke-counter
 python3 scripts/emit.py --covers L27 --task smoke-counter
@@ -1893,37 +1855,24 @@ python3 scripts/emit.py --covers N15 --task smoke-sim-loop
 help = "Start the Django example, assert a real request/response cycle (single-worker, then M0_WORKERS=2), stop"
 deps = ["build-serve"]
 shell = """
-out=$(mktemp -d)
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+port=$(free_port)
 # bin/m0serve is built by the deps entry above; SPEC is what the row serves.
 srv=bin/m0serve
-SPEC="djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8080"
-
-cleanup() {
-  kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
+SPEC="djangoproj.wsgi:application --app-dir apps/django_wsgi --port $port"
 
 # M0_WORKERS=1 is explicit topology, which keeps the zero-config handler
 # pool off: this phase's RSS guard calibrates against ONE bridge, and a
 # pool would spread the 10k requests over several.
-M0_WORKERS=1 "$srv" $SPEC > django.log 2>&1 &
-pid=$!
-
-fail() {
-  echo "$1"
-  for log in django.log django2.log django3.log; do
-    if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
-  done
-  exit 1
-}
+spawn django.log env M0_WORKERS=1 "$srv" $SPEC
+wait_ready http://localhost:$port/ $pid
 
 # The framework-facing contract -- routing, both halves of the cookie path,
 # body round trip, binary safety, query parsing, 404 and 500 -- shared verbatim
 # with every other framework row, because every one of those is true of any
 # WSGI framework. Everything below this line is Django-specific and stays here.
-# The contract also carries the readiness retry, so it must run first.
-bash scripts/wsgi_framework_contract.sh http://localhost:8080 'hello from django on mojo-http' django \
+bash scripts/wsgi_framework_contract.sh http://localhost:$port 'hello from django on mojo-http' django \
   || fail 'the WSGI framework contract failed against Django'
 
 # The full round trip, which is the point of all of the above: Django sets a
@@ -1932,7 +1881,7 @@ bash scripts/wsgi_framework_contract.sh http://localhost:8080 'hello from django
 # forever. Signed-cookie sessions, so this needs no database.
 jar="$out/cookies.txt"
 for expected in 1 2 3; do
-  got=$(curl -s -c "$jar" -b "$jar" http://localhost:8080/session/bump)
+  got=$(curl -s -c "$jar" -b "$jar" http://localhost:$port/session/bump)
   [ "$got" = "count=$expected" ] \
     || fail "session did not persist across requests: expected count=$expected, got '$got'"
 done
@@ -1943,7 +1892,7 @@ grep -q 'sessionid' "$jar" || fail 'Django never set a session cookie'
 # used to re-serialise Set-Cookie through its own parser and dropped
 # expires and SameSite from every response of every Django app, which no
 # count of headers could see.
-line=$(curl -s -i -b "$jar" http://localhost:8080/session/bump | grep -i '^set-cookie: sessionid=')
+line=$(curl -s -i -b "$jar" http://localhost:$port/session/bump | grep -i '^set-cookie: sessionid=')
 [ -n "$line" ] || fail 'the session cookie was not re-sent on the wire'
 for attr in 'expires=' 'HttpOnly' 'Max-Age=' 'SameSite=Lax'; do
   echo "$line" | grep -q "$attr" || fail "the session cookie lost its $attr attribute on the wire: $line"
@@ -1959,14 +1908,15 @@ rm -f "$jar"
 # than the 4KB staging buffer, and any client that flushes headers before
 # the body. The socket timeouts keep a regression to seconds instead of
 # hanging CI until the job limit.
-python3 - <<'PYEOF'
+python3 - "$port" <<'PYEOF'
 import socket, sys, time
+PORT = int(sys.argv[1])
 
 def post(body, split):
     head = (b"POST /echo HTTP/1.1\\r\\nHost: localhost\\r\\n"
             b"Content-Type: application/octet-stream\\r\\n"
             b"Content-Length: %d\\r\\n\\r\\n" % len(body))
-    s = socket.create_connection(("localhost", 8080), timeout=15)
+    s = socket.create_connection(("localhost", PORT), timeout=15)
     try:
         if split:
             s.sendall(head)
@@ -2010,13 +1960,13 @@ PYEOF
 [ $? = 0 ] || fail 'a request body that needed a second read did not complete'
 
 # One process by default, and the environ says so.
-curl -s http://localhost:8080/wsgi | grep -q 'multiprocess=False' \
+curl -s http://localhost:$port/wsgi | grep -q 'multiprocess=False' \
   || fail 'wsgi.multiprocess was not False with one worker'
 
 # The PEP 3333 canary is an ordinary 200 here. It is only a violation while
 # the validator is watching, which is exactly what makes it a usable probe
 # for whether the validation pass further down really has the wrapper on.
-got=$(curl -s http://localhost:8080/pep3333/canary)
+got=$(curl -s http://localhost:$port/pep3333/canary)
 [ "$got" = "canary" ] || fail "/pep3333/canary did not answer normally: got '$got'"
 
 # The bridge must not leak per request. Through Mojo 1.0 its PythonObject
@@ -2027,10 +1977,11 @@ got=$(curl -s http://localhost:8080/pep3333/canary)
 # PyDict_SetItem does not steal and PyTuple_SetItem does. The pre-blob bridge
 # leaked ~2.3KB/request — ~23MB over this loop; 12MB allows allocator noise.
 rss0=$(ps -o rss= -p $pid | tr -d ' ')
-python3 - <<'PYEOF'
-import http.client
+python3 - "$port" <<'PYEOF'
+import http.client, sys
+PORT = int(sys.argv[1])
 done = attempts = 0
-conn = http.client.HTTPConnection("localhost", 8080)
+conn = http.client.HTTPConnection("localhost", PORT)
 while done < 10000 and attempts < 20000:
     attempts += 1
     try:
@@ -2039,7 +1990,7 @@ while done < 10000 and attempts < 20000:
         done += 1
     except Exception:
         conn.close()
-        conn = http.client.HTTPConnection("localhost", 8080)
+        conn = http.client.HTTPConnection("localhost", PORT)
 conn.close()
 raise SystemExit(0 if done >= 10000 else 1)
 PYEOF
@@ -2054,28 +2005,25 @@ echo "rss growth over 10k requests: ${growth}KB (limit ${M0_RSS_LIMIT_KB:-12288}
 python3 scripts/emit.py wsgi.rss_growth_kb "$growth" --unit KB --limit "${M0_RSS_LIMIT_KB:-12288}" --task smoke-django
 [ "$growth" -lt "${M0_RSS_LIMIT_KB:-12288}" ] || fail "bridge leaked ${growth}KB of RSS over 10k requests"
 
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
+stop $pid
 
 # --- M0_WORKERS=2: the prefork path -----------------------------------------
 
-M0_WORKERS=2 "$srv" $SPEC > django2.log 2>&1 &
-pid=$!
+# Workers are forks of the supervisor, not children of this shell, so $pid
+# alone cannot reach them -- but they share its process group, which the
+# lib's stop and cleanup signal whole.
+spawn django2.log env M0_WORKERS=2 "$srv" $SPEC
+wait_ready http://localhost:$port/ $pid 60
 
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
+curl -s http://localhost:$port/ \
   | grep -q 'hello from django on mojo-http' || fail 'GET / failed with M0_WORKERS=2'
 
-# Workers are forks of the supervisor, not children of this shell, so $pid
-# alone cannot reach them at cleanup. Their pids exist only in the log
-# ("[worker N] pid=... starting") — capture them now, before the log is gone.
-worker_pids=$(grep -oE 'pid=[0-9]+' django2.log | cut -d= -f2 | sort -u)
-
 # Each worker built its own WSGIApp after fork, with multiprocess=True.
-curl -s http://localhost:8080/wsgi | grep -q 'multiprocess=True' \
+curl -s http://localhost:$port/wsgi | grep -q 'multiprocess=True' \
   || fail 'wsgi.multiprocess was not True with two workers'
 
 # Correctness holds when a different process may answer each request.
-curl -s 'http://localhost:8080/query?name=ada+lovelace' \
+curl -s "http://localhost:$port/query?name=ada+lovelace" \
   | grep -q 'ada lovelace' || fail 'QUERY_STRING broke under M0_WORKERS=2'
 
 # Two overlapping 1.5s requests must finish in ~1x the view latency, not 2x.
@@ -2090,16 +2038,16 @@ attempt=0
 while [ $attempt -lt 8 ]; do
   attempt=$((attempt + 1))
   start=$(date +%s)
-  curl -s http://localhost:8080/slow > slow1.txt &
+  curl -s http://localhost:$port/slow > "$out/slow1.txt" &
   c1=$!
-  curl -s http://localhost:8080/slow > slow2.txt &
+  curl -s http://localhost:$port/slow > "$out/slow2.txt" &
   c2=$!
   wait $c1 $c2
   elapsed=$(( $(date +%s) - start ))
-  grep -q 'slow done' slow1.txt || fail 'first /slow response was wrong'
-  grep -q 'slow done' slow2.txt || fail 'second /slow response was wrong'
-  pid1=$(cut -d= -f2 slow1.txt)
-  pid2=$(cut -d= -f2 slow2.txt)
+  grep -q 'slow done' "$out/slow1.txt" || fail 'first /slow response was wrong'
+  grep -q 'slow done' "$out/slow2.txt" || fail 'second /slow response was wrong'
+  pid1=$(cut -d= -f2 "$out/slow1.txt")
+  pid2=$(cut -d= -f2 "$out/slow2.txt")
   if [ "$pid1" != "$pid2" ]; then
     [ "$elapsed" -lt 3 ] || fail "distinct workers, yet overlapping requests took ${elapsed}s"
     parallel_ok=1
@@ -2107,7 +2055,6 @@ while [ $attempt -lt 8 ]; do
   fi
 done
 [ "$parallel_ok" = 1 ] || fail 'the request pair never reached two distinct workers in 8 attempts'
-rm -f slow1.txt slow2.txt
 
 # --- M0_WSGI_VALIDATE=1: PEP 3333 conformance -------------------------------
 #
@@ -2122,48 +2069,45 @@ rm -f slow1.txt slow2.txt
 # only 6 start a live HTTP server; the rest reach the application in-process
 # through django.test.Client and never open a socket.
 
-kill $pid $worker_pids 2>/dev/null
-wait $pid 2>/dev/null
-worker_pids=
+stop $pid
 
 # M0_WORKERS=1 for the same reason as phase 1: keep the validator pass on
 # the single-bridge shape it has always measured.
-M0_WSGI_VALIDATE=1 M0_WORKERS=1 "$srv" $SPEC > django3.log 2>&1 &
-pid=$!
+spawn django3.log env M0_WSGI_VALIDATE=1 M0_WORKERS=1 "$srv" $SPEC
+wait_ready http://localhost:$port/ $pid 60
 
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8080/ \
+curl -s http://localhost:$port/ \
   | grep -q 'hello from django on mojo-http' || fail 'GET / failed under M0_WSGI_VALIDATE'
 
 # One request per environ shape the bridge assembles differently.
-curl -s 'http://localhost:8080/query?name=ada+lovelace' \
+curl -s "http://localhost:$port/query?name=ada+lovelace" \
   | grep -q 'ada lovelace' || fail 'QUERY_STRING did not survive validation'
 
-echo 'round-trip-me' | curl -s --data-binary @- http://localhost:8080/echo \
+echo 'round-trip-me' | curl -s --data-binary @- http://localhost:$port/echo \
   | grep -q 'round-trip-me' || fail 'CONTENT_TYPE/CONTENT_LENGTH/wsgi.input did not survive validation'
 
 # HTTP_COOKIE specifically. Content-Type and Content-Length are the only two
 # headers PEP 3333 wants *without* the HTTP_ prefix, and the validator asserts
 # the converse as well -- an environ carrying HTTP_CONTENT_TYPE is a failure.
-got=$(curl -s -H 'Cookie: a=1' http://localhost:8080/cookies/echo)
+got=$(curl -s -H 'Cookie: a=1' http://localhost:$port/cookies/echo)
 [ "$got" = 'a=1' ] || fail "HTTP_COOKIE did not survive validation: got '$got'"
 
 # A body past the shim's 64KB transfer buffer, so grow() runs while wsgi.input
 # is the validator's InputWrapper rather than a bare BytesIO.
-python3 -c 'import sys; sys.stdout.buffer.write(b"x" * 262144)' > big.bin
-n=$(curl -s --data-binary @big.bin http://localhost:8080/echo | wc -c | tr -d ' ')
+python3 -c 'import sys; sys.stdout.buffer.write(b"x" * 262144)' > "$out/big.bin"
+n=$(curl -s --data-binary "@$out/big.bin" http://localhost:$port/echo | wc -c | tr -d ' ')
 [ "$n" = "262144" ] || fail "a 256KB body did not survive validation: echoed $n bytes"
-rm -f big.bin
 
 # A binary response body, and a status the mapper has to carry through.
-n=$(curl -s http://localhost:8080/binary | wc -c | tr -d ' ')
+n=$(curl -s http://localhost:$port/binary | wc -c | tr -d ' ')
 [ "$n" = "256" ] || fail "binary body did not survive validation: got $n bytes"
-code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/nope)
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$port/nope)
 [ "$code" = "404" ] || fail "the 404 path did not survive validation, got $code"
 
 # The session round trip: two Set-Cookie headers out, HTTP_COOKIE back in.
 jar="$out/validated-cookies.txt"
 for expected in 1 2; do
-  got=$(curl -s -c "$jar" -b "$jar" http://localhost:8080/session/bump)
+  got=$(curl -s -c "$jar" -b "$jar" http://localhost:$port/session/bump)
   [ "$got" = "count=$expected" ] || fail "session round trip failed validation: got '$got'"
 done
 rm -f "$jar"
@@ -2171,7 +2115,7 @@ rm -f "$jar"
 # The validator asserts close() is called on the application's iterable
 # exactly once, and reports a missed close from the iterator's __del__ -- on
 # a later request, out of band. So a clean run has to be quiet as well.
-grep -qiE 'assertionerror|not being closed' django3.log \
+grep -qiE 'assertionerror|not being closed' "$out/django3.log" \
   && fail 'the validator reported a violation out of band (see django3.log)'
 
 # Last, because it is the one request that is *meant* to fail: proof the
@@ -2180,17 +2124,13 @@ grep -qiE 'assertionerror|not being closed' django3.log \
 # name would silently downgrade the whole pass into a second unvalidated run
 # that always succeeds. It runs after the log check because a deliberate
 # violation is entitled to make noise.
-code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/pep3333/canary)
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$port/pep3333/canary)
 [ "$code" = "500" ] || fail "validator not engaged: /pep3333/canary answered $code, expected 500"
 
 # ...and the server is still serving after the validator raised through it.
-curl -s --fail http://localhost:8080/ > /dev/null \
+curl -s --fail http://localhost:$port/ > /dev/null \
   || fail 'server died after a validation failure'
 
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
-
-rm -f django.log django2.log django3.log
 echo "smoke-django OK"
 python3 scripts/emit.py --covers E1 --task smoke-django
 python3 scripts/emit.py --covers K8 --task smoke-django
@@ -2208,13 +2148,15 @@ python3 scripts/emit.py --covers K8 --task smoke-django
 help = "Realtime demo: Django-gated SSE holds, Django-originated publish, channel isolation, cleanup, cross-worker fan-out"
 deps = ["build-serve"]
 shell = """
-out=$(mktemp -d)
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+port=$(free_port)
 # The row has no server.mojo of its own: --realtime is the whole of it.
 srv=bin/m0serve
 # No quoted value inside SPEC: it is deliberately unquoted at each use so the
 # shell word-splits it, and a value with a space would not survive that. The
 # one such flag is passed quoted at each invocation instead.
-SPEC="djangoproj.wsgi:application --app-dir apps/django_realtime --port 8080 \
+SPEC="djangoproj.wsgi:application --app-dir apps/django_realtime --port $port \
   --realtime --health-path /health \
   --static /static/=apps/django_realtime/static"
 CC="public, max-age=3600"
@@ -2226,38 +2168,22 @@ CC="public, max-age=3600"
 # what keeps this row's assertion about numbering independent of that.
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 core_lib="$PWD/packages/m0-core/libm0core.$ext"
-[ -f "$core_lib" ] || uv run poe build-ffi || exit 1
+[ -f "$core_lib" ] || uv run --no-sync poe build-ffi || exit 1
 
 # Phase 4 (the threaded row) only runs where the GIL is genuinely off, which
 # is py-canary. Same gate, and same reason, as smoke-threads phase 2.
 gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
 
-cleanup() {
-  kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log
-}
-trap cleanup EXIT
-
-fail() {
-  echo "$1"
-  for log in rt.log rt2.log rt5.log rt6.log; do
-    if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
-  done
-  exit 1
-}
-
 # Phase 1: single worker. The heartbeat cadence is set low so the stream
 # provably stays alive under the loop's timer, not by accident.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" > rt.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || fail 'server never became healthy'
+spawn rt.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC"
+wait_ready http://localhost:$port/health $pid
 
 # Django gates the subscription: no token means a plain 403 — and no hold, so
 # nothing may appear in the registry.
-code=$(curl -s -o /dev/null -w '%{http_code}' 'http://localhost:8080/events?channel=news')
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$port/events?channel=news")
 [ "$code" = "403" ] || fail "expected 403 without token, got $code"
-subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+subs=$(curl -s http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
 [ "$subs" = "0" ] || fail "a refused subscribe still registered (subscribers=$subs)"
 
 # A HEAD to the hold is its head (SPEC L27). The view approves a hold for any
@@ -2265,15 +2191,15 @@ subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | c
 # heartbeat after the head, where a keep-alive client reads its next
 # response. The next request on the connection must be answered, and the
 # HEAD must leave no subscription behind.
-python3 scripts/head_probe.py --port 8080 --hold '/events?channel=news&token=letmein' --then /health \
+python3 scripts/head_probe.py --port $port --hold '/events?channel=news&token=letmein' --then /health \
   || fail 'a HEAD to a hold did not end at its head (L27)'
-subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+subs=$(curl -s http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
 [ "$subs" = "0" ] || fail "a HEAD to a hold left a subscription (subscribers=$subs)"
 
 # Two subscribers on different channels: A hears news, B must not.
-curl -sN --max-time 8 -D "$out/hdr_a" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/sse_a" &
+curl -sN --max-time 8 -D "$out/hdr_a" "http://localhost:$port/events?channel=news&token=letmein" > "$out/sse_a" &
 sse_a=$!
-curl -sN --max-time 8 'http://localhost:8080/events?channel=other&token=letmein' > "$out/sse_b" &
+curl -sN --max-time 8 "http://localhost:$port/events?channel=other&token=letmein" > "$out/sse_b" &
 sse_b=$!
 sleep 2
 
@@ -2283,13 +2209,13 @@ grep -iq '^content-type: text/event-stream' "$out/hdr_a" || fail 'held response 
 grep -iq '^m0-hold' "$out/hdr_a" && fail 'M0-Hold leaked to the client'
 grep -iq '^m0-channel' "$out/hdr_a" && fail 'M0-Channel leaked to the client'
 grep -iq '^content-length' "$out/hdr_a" && fail 'a held response still carries Content-Length'
-subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+subs=$(curl -s http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
 [ "$subs" = "2" ] || fail "expected 2 subscribers, health says $subs"
 
 # ONE publish from a synchronous Django view. Its response reports how many
 # worker channels the os.write reached — delivery to subscribers is the
 # server's business and is asserted on the stream below.
-resp=$(curl -s -X POST -d channel=news -d msg=hello-realtime http://localhost:8080/publish)
+resp=$(curl -s -X POST -d channel=news -d msg=hello-realtime http://localhost:$port/publish)
 echo "$resp" | grep -q '"workers": 1' || fail "publish did not reach the worker channel: $resp"
 sleep 2
 kill $sse_a $sse_b 2>/dev/null
@@ -2305,13 +2231,13 @@ grep -q 'hello-realtime' "$out/sse_b" && fail 'channel isolation failed: the oth
 # re-armed; an absurd count is the level-triggered storm. Same bounds as
 # smoke-counter, same failure shapes.
 beats=$(grep -c '^: heartbeat' "$out/sse_a")
-[ "$beats" -ge 2 ] || { echo "expected repeating heartbeats, saw $beats"; cat "$out/sse_a"; exit 1; }
+[ "$beats" -ge 2 ] || { cat "$out/sse_a"; fail "expected repeating heartbeats, saw $beats"; }
 [ "$beats" -le 40 ] || fail "heartbeat storm: $beats beats in ~6s at 500ms cadence"
 
 # Both clients were killed, not closed politely; every close path must
 # unsubscribe them from the registry.
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+  subs=$(curl -s http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
   [ "$subs" = "0" ] && break
   sleep 1
 done
@@ -2320,52 +2246,47 @@ done
 # Static assets: the other half of the hybrid. Served by the Mojo layer with
 # type, ETag revalidation, and a freshness policy — the request never enters
 # Python, which is the WhiteNoise/nginx replacement claim, asserted.
-curl -s -D "$out/static_hdr" http://localhost:8080/static/app.css -o "$out/static_body"
+curl -s -D "$out/static_hdr" http://localhost:$port/static/app.css -o "$out/static_body"
 grep -q 'font-family' "$out/static_body" || fail 'static css did not serve'
 grep -iq '^content-type: text/css' "$out/static_hdr" || fail 'static css content type wrong'
 grep -iq '^cache-control: public, max-age=3600' "$out/static_hdr" || fail 'static cache-control missing'
 setag=$(grep -i '^etag' "$out/static_hdr" | cut -d' ' -f2- | tr -d '\r')
 [ -n "$setag" ] || fail 'static file served without an ETag'
-code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8080/static/app.css)
+code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:$port/static/app.css)
 [ "$code" = "304" ] || fail "static revalidation expected 304, got $code"
 # A traversal probe answers 404 — and 404 specifically: no confirmation
 # that it was even understood.
-code=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is http://localhost:8080/static/../m0pub.py)
+code=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is http://localhost:$port/static/../m0pub.py)
 [ "$code" = "404" ] || fail "traversal expected 404, got $code"
 
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
+stop $pid
 
 # Phase 2: cross-worker fan-out. One stream is pinned on EACH worker with the
 # SIGSTOP technique from smoke-counter (accept is not fair; racing it flakes),
 # then ONE Django-handled publish must reach both — the stream on the other
-# worker receives it over the BroadcastBus.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --workers 2 > rt2.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || fail 'two-worker server never became healthy'
-worker_pids=$(grep -oE 'pid=[0-9]+' rt2.log | cut -d= -f2 | sort -u)
-trap 'kill $pid $worker_pids 2>/dev/null; rm -rf "$out" rt.log rt2.log rt3.log' EXIT
+# worker receives it over the BroadcastBus. The workers share the
+# supervisor's process group, which the lib reaps whole (resuming a stopped
+# one first) on any exit.
+spawn rt2.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --workers 2
+wait_ready http://localhost:$port/health $pid
 
-curl -sN --max-time 60 -D "$out/mw_hdr_1" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/mw_sse_1" &
+curl -sN --max-time 60 -D "$out/mw_hdr_1" "http://localhost:$port/events?channel=news&token=letmein" > "$out/mw_sse_1" &
 sleep 2
 w_a=$(grep -i '^x-worker' "$out/mw_hdr_1" | tr -dc '0-9')
 [ -n "$w_a" ] || fail 'first stream never opened (no x-worker header)'
 
 kill -STOP "$w_a" 2>/dev/null
-trap 'kill -CONT $w_a 2>/dev/null; kill $pid $worker_pids 2>/dev/null; rm -rf "$out" rt.log rt2.log rt3.log' EXIT
-curl -sN --max-time 60 -D "$out/mw_hdr_2" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/mw_sse_2" &
+curl -sN --max-time 60 -D "$out/mw_hdr_2" "http://localhost:$port/events?channel=news&token=letmein" > "$out/mw_sse_2" &
 sleep 3
 w_b=$(grep -i '^x-worker' "$out/mw_hdr_2" | tr -dc '0-9')
 kill -CONT "$w_a" 2>/dev/null
-trap 'kill $pid $worker_pids 2>/dev/null; rm -rf "$out" rt.log rt2.log rt3.log' EXIT
 
 [ -n "$w_b" ] || fail "second stream never opened while worker $w_a was stopped"
 [ "$w_a" != "$w_b" ] || fail "both streams landed on worker $w_a even though it was SIGSTOPped"
 
 # The publish view reports both worker channels written; each held stream —
 # one per worker — must then carry the frame.
-resp=$(curl -s -X POST -d channel=news -d msg=cross-worker-hello http://localhost:8080/publish)
+resp=$(curl -s -X POST -d channel=news -d msg=cross-worker-hello http://localhost:$port/publish)
 echo "$resp" | grep -q '"workers": 2' || fail "publish did not reach both worker channels: $resp"
 sleep 2
 grep -q '^data: cross-worker-hello' "$out/mw_sse_1" \
@@ -2373,9 +2294,7 @@ grep -q '^data: cross-worker-hello' "$out/mw_sse_1" \
 grep -q '^data: cross-worker-hello' "$out/mw_sse_2" \
   || fail "stream on worker $w_b missed the cross-worker publish"
 
-kill $pid $worker_pids 2>/dev/null
-wait $pid 2>/dev/null
-worker_pids=""
+stop $pid
 
 # Phase 3: numbered event ids, and what they buy.
 #
@@ -2386,13 +2305,10 @@ worker_pids=""
 #
 # Self-calibrating: /publish reports the id it allocated, so the assertions
 # never assume where the counter happens to be after earlier phases.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" > rt3.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -rf "$out" rt.log rt2.log rt3.log' EXIT
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || fail 'numbering server never became healthy'
+spawn rt3.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC"
+wait_ready http://localhost:$port/health $pid
 
-warm=$(curl -s -X POST -d channel=dedup -d msg=warmup http://localhost:8080/publish)
+warm=$(curl -s -X POST -d channel=dedup -d msg=warmup http://localhost:$port/publish)
 id0=$(echo "$warm" | grep -o '"id": [0-9-]*' | tr -dc '0-9-')
 [ -n "$id0" ] || fail "publish reported no id: $warm"
 [ "$id0" -gt 0 ] || fail "ids are not being allocated (id=$id0) — is M0_CORE_LIB reachable?"
@@ -2401,15 +2317,15 @@ id0=$(echo "$warm" | grep -o '"id": [0-9-]*' | tr -dc '0-9-')
 # The registry delivers only ids strictly greater than that.
 resume=$((id0 + 1))
 curl -sN --max-time 10 -H "Last-Event-ID: $resume" \
-  'http://localhost:8080/events?channel=dedup&token=letmein' > "$out/dedup" &
+  "http://localhost:$port/events?channel=dedup&token=letmein" > "$out/dedup" &
 sse_d=$!
 sleep 2
 
-sup=$(curl -s -X POST -d channel=dedup -d msg=SUPPRESSED http://localhost:8080/publish)
+sup=$(curl -s -X POST -d channel=dedup -d msg=SUPPRESSED http://localhost:$port/publish)
 sup_id=$(echo "$sup" | grep -o '"id": [0-9-]*' | tr -dc '0-9-')
 [ "$sup_id" = "$resume" ] || fail "expected the next id to be $resume, got $sup_id ($sup)"
 sleep 1
-del=$(curl -s -X POST -d channel=dedup -d msg=DELIVERED http://localhost:8080/publish)
+del=$(curl -s -X POST -d channel=dedup -d msg=DELIVERED http://localhost:$port/publish)
 del_id=$(echo "$del" | grep -o '"id": [0-9-]*' | tr -dc '0-9-')
 sleep 2
 kill $sse_d 2>/dev/null
@@ -2424,8 +2340,7 @@ grep -q '^data: DELIVERED' "$out/dedup" \
 grep -q "^id: $del_id" "$out/dedup" \
   || { echo "=== dedup stream ==="; cat "$out/dedup"; fail "no id: line on the wire"; }
 
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
+stop $pid
 
 # Phase 4: the same fan-out across THREADS, where the GIL is off.
 #
@@ -2441,18 +2356,15 @@ wait $pid 2>/dev/null
 # the loop that accepted it; the assertion is that at least two distinct
 # loops are represented before the single publish goes out.
 if [ "$gil_off" = "1" ]; then
-  M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC \
-    --static-cache-control "$CC" --threads 4 > rt4.log 2>&1 &
-  pid=$!
-  trap 'kill $pid 2>/dev/null; rm -rf "$out" rt.log rt2.log rt3.log rt4.log' EXIT
-  curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail \
-    http://localhost:8080/health || fail 'threaded realtime server never became healthy'
-  grep -q 'threaded: 4 loops' rt4.log || fail 'startup did not report 4 loops'
+  spawn rt4.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC \
+    --static-cache-control "$CC" --threads 4
+  wait_ready http://localhost:$port/health $pid
+  grep -q 'threaded: 4 loops' "$out/rt4.log" || fail 'startup did not report 4 loops'
 
   sse_pids=""
   for i in 1 2 3 4 5 6; do
     curl -sN --max-time 10 -D "$out/th_hdr_$i" \
-      'http://localhost:8080/events?channel=threaded&token=letmein' > "$out/th_sse_$i" &
+      "http://localhost:$port/events?channel=threaded&token=letmein" > "$out/th_sse_$i" &
     sse_pids="$sse_pids $!"
   done
   sleep 3
@@ -2470,7 +2382,7 @@ if [ "$gil_off" = "1" ]; then
 
   # ONE publish, from whichever thread's Django answers the POST.
   resp=$(curl -s -X POST -d channel=threaded -d msg=cross-thread-hello \
-    http://localhost:8080/publish)
+    http://localhost:$port/publish)
   echo "$resp" | grep -q '"workers": 4' \
     || fail "publish did not reach all 4 thread channels: $resp"
   sleep 2
@@ -2486,7 +2398,7 @@ if [ "$gil_off" = "1" ]; then
   kill $pid
   wait $pid; rc=$?
   [ "$rc" = "0" ] || fail "SIGTERM under --threads 4 --realtime: exit $rc, want 0"
-  n=$(grep -c 'exited cleanly' rt4.log)
+  n=$(grep -c 'exited cleanly' "$out/rt4.log")
   [ "$n" = "4" ] || fail "expected 4 'exited cleanly' lines, saw $n"
   echo "phase 4: cross-thread fan-out over loops $loops"
 fi
@@ -2501,26 +2413,25 @@ fi
 # proved must hold here -- subscribe, publish, heartbeat, cleanup -- plus the
 # thing the pool exists for: two slow views in flight, and a subscribe then
 # a publish still land promptly.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --blocking-threads 4 --static-cache-control "$CC" > rt5.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the pooled realtime server never became healthy'
-grep -q 'blocking-threads=4' rt5.log || fail 'the banner does not show the pool beside realtime'
-grep -q ' realtime' rt5.log || fail 'the banner does not show realtime beside the pool'
+spawn rt5.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --blocking-threads 4 --static-cache-control "$CC"
+wait_ready http://localhost:$port/health $pid
+grep -q 'blocking-threads=4' "$out/rt5.log" || fail 'the banner does not show the pool beside realtime'
+grep -q ' realtime' "$out/rt5.log" || fail 'the banner does not show realtime beside the pool'
 
-curl -s -o /dev/null --max-time 20 http://localhost:8080/slow &
+curl -s -o /dev/null --max-time 20 http://localhost:$port/slow &
 slow1=$!
-curl -s -o /dev/null --max-time 20 http://localhost:8080/slow &
+curl -s -o /dev/null --max-time 20 http://localhost:$port/slow &
 slow2=$!
 sleep 0.3
 # The subscribe goes through while both slow views hold their threads: the
 # hold is taken on a third pool thread and the registration reaches the loop.
-curl -sN --max-time 6 -D "$out/p5_hdr" 'http://localhost:8080/events?channel=pool&token=letmein' > "$out/p5_sse" &
+curl -sN --max-time 6 -D "$out/p5_hdr" "http://localhost:$port/events?channel=pool&token=letmein" > "$out/p5_sse" &
 sse5=$!
 sleep 0.5
-subs=$(curl -s --max-time 5 http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+subs=$(curl -s --max-time 5 http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
 [ "$subs" = "1" ] || fail "a hold taken on a pool thread did not register with the loop (subscribers=$subs)"
 t0=$(python3 -c 'import time; print(time.time())')
-resp=$(curl -s --max-time 5 -X POST -d channel=pool -d msg=hello-pool http://localhost:8080/publish)
+resp=$(curl -s --max-time 5 -X POST -d channel=pool -d msg=hello-pool http://localhost:$port/publish)
 echo "$resp" | grep -q '"workers": 1' || fail "publish under the pool did not reach the worker channel: $resp"
 for i in 1 2 3 4 5 6 7 8 9 10; do grep -q '^data: hello-pool' "$out/p5_sse" && break; sleep 0.1; done
 grep -q '^data: hello-pool' "$out/p5_sse" || { cat "$out/p5_sse"; fail 'publish never reached the pooled subscriber'; }
@@ -2536,7 +2447,7 @@ wait $sse5 2>/dev/null
 beats=$(grep -c '^: heartbeat' "$out/p5_sse")
 [ "$beats" -ge 2 ] || { cat "$out/p5_sse"; fail "the pooled stream saw $beats heartbeats; the loop is not driving it"; }
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  subs=$(curl -s http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+  subs=$(curl -s http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
   [ "$subs" = "0" ] && break
   sleep 1
 done
@@ -2546,7 +2457,7 @@ done
 # cross the seam; it upgrades now, and `smoke-django-realtime-ws` phase 3
 # runs the whole socket probe against this shape. Here: the handshake alone,
 # which is what this phase can assert without a WebSocket client.
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'http://localhost:8080/ws?channel=pool&token=letmein')
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "http://localhost:$port/ws?channel=pool&token=letmein")
 [ "$code" = "101" ] || fail "a WebSocket hold under the pool answered $code, want 101"
 
 kill $pid
@@ -2577,55 +2488,53 @@ echo "phase 5: a hold taken on a pool thread, delivered in ${took}ms behind two 
 ft=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)")
 if [ "$ft" = "1" ]; then
   M0_CORE_LIB="$core_lib" "$srv" --mount /=djangoproj.wsgi --mount /live=liveasgi \
-    --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
-    --blocking-threads 4 > rt6.log 2>&1
+    --app-dir apps/django_realtime --port $port --realtime --health-path /health \
+    --blocking-threads 4 > "$out/rt6.log" 2>&1
   rc=$?
-  [ "$rc" = "78" ] || { cat rt6.log; fail "an ASGI mount on a free-threaded build exited $rc, want the refusal's 78"; }
-  grep -q 'modular/modular#5726' rt6.log || { cat rt6.log; fail 'the refusal does not name the upstream issue'; }
-  grep -q 'free-threaded CPython build' rt6.log || { cat rt6.log; fail 'the refusal does not say what was refused'; }
+  [ "$rc" = "78" ] || fail "an ASGI mount on a free-threaded build exited $rc, want the refusal's 78"
+  grep -q 'modular/modular#5726' "$out/rt6.log" || fail 'the refusal does not name the upstream issue'
+  grep -q 'free-threaded CPython build' "$out/rt6.log" || fail 'the refusal does not say what was refused'
   M0_CORE_LIB="$core_lib" "$srv" --doctor --mount /=djangoproj.wsgi --mount /live=liveasgi \
-    --app-dir apps/django_realtime --port 8080 --realtime --blocking-threads 4 > rt6.doctor 2>&1
+    --app-dir apps/django_realtime --port $port --realtime --blocking-threads 4 > "$out/rt6.doctor" 2>&1
   drc=$?
-  [ "$drc" = "78" ] || { cat rt6.doctor; fail "--doctor exited $drc for a refusal the server makes at 78"; }
-  grep -q '"asgi-vs-free-threading"' rt6.doctor || { cat rt6.doctor; fail '--doctor does not name the check'; }
-  rm -f rt6.doctor
+  [ "$drc" = "78" ] || { cat "$out/rt6.doctor"; fail "--doctor exited $drc for a refusal the server makes at 78"; }
+  grep -q '"asgi-vs-free-threading"' "$out/rt6.doctor" || { cat "$out/rt6.doctor"; fail '--doctor does not name the check'; }
   # Under prefork the refusal happens in each worker; the supervisor must
   # pass it up as 78, promptly, with no respawn.
   start=$(date +%s)
   M0_CORE_LIB="$core_lib" "$srv" --mount /=djangoproj.wsgi --mount /live=liveasgi \
-    --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
-    --blocking-threads 4 --workers 2 > rt6.log 2>&1
+    --app-dir apps/django_realtime --port $port --realtime --health-path /health \
+    --blocking-threads 4 --workers 2 > "$out/rt6.log" 2>&1
   rc=$?
   took=$(( $(date +%s) - start ))
-  [ "$rc" = "78" ] || { cat rt6.log; fail "under --workers 2 the refusal came back as $rc, want 78"; }
-  grep -q 'refused its configuration (exit_code=78); not respawning' rt6.log || { cat rt6.log; fail 'the supervisor did not recognise the refusal'; }
+  [ "$rc" = "78" ] || fail "under --workers 2 the refusal came back as $rc, want 78"
+  grep -q 'refused its configuration (exit_code=78); not respawning' "$out/rt6.log" || fail 'the supervisor did not recognise the refusal'
   # The supervisor's own wording for a real crash or a respawn; its refusal
   # line says "not respawning", so a bare 'respawn' would match the good case.
-  ! grep -Eq 'crashed \\(exit_code=|respawned worker|worker respawn|max respawns|rapid crashes' rt6.log || { cat rt6.log; fail 'the supervisor treated the refusal as a crash'; }
+  ! grep -Eq 'crashed \\(exit_code=|respawned worker|worker respawn|max respawns|rapid crashes' "$out/rt6.log" || fail 'the supervisor treated the refusal as a crash'
   [ "$took" -lt 15 ] || fail "the refusal under --workers took ${took}s; it should be immediate"
   beats=0
   echo "phase 6: refused on a free-threaded build, exit 78 naming modular/modular#5726 -- alone, via --doctor, and under --workers 2 without a respawn"
 else
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
+spawn rt6.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
   --mount /=djangoproj.wsgi --mount /live=liveasgi \
-  --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
-  --blocking-threads 4 > rt6.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the mounted realtime server never became healthy'
-grep -q 'asgi-loop@/live' rt6.log || fail 'the ASGI mount did not get its own executor beside --realtime'
-grep -q ' realtime' rt6.log || fail 'the banner lost realtime under --mount'
+  --app-dir apps/django_realtime --port $port --realtime --health-path /health \
+  --blocking-threads 4
+wait_ready http://localhost:$port/health $pid
+grep -q 'asgi-loop@/live' "$out/rt6.log" || fail 'the ASGI mount did not get its own executor beside --realtime'
+grep -q ' realtime' "$out/rt6.log" || fail 'the banner lost realtime under --mount'
 
 # The ASGI mount streams for real: five events 100ms apart must not all
 # arrive together.
-curl -sN --max-time 8 http://localhost:8080/live/stream > "$out/m_asgi" &
+curl -sN --max-time 8 http://localhost:$port/live/stream > "$out/m_asgi" &
 asgi_pid=$!
 # ...while a hold on the WSGI mount is subscribed and fed by a publish.
-curl -sN --max-time 8 -D "$out/m_hdr" 'http://localhost:8080/events?channel=mounted&token=letmein' > "$out/m_sse" &
+curl -sN --max-time 8 -D "$out/m_hdr" "http://localhost:$port/events?channel=mounted&token=letmein" > "$out/m_sse" &
 sse_pid=$!
 sleep 1
-subs=$(curl -s --max-time 5 http://localhost:8080/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
+subs=$(curl -s --max-time 5 http://localhost:$port/health | grep -o '"subscribers":[0-9]*' | cut -d: -f2)
 [ "$subs" = "1" ] || fail "the hold on the WSGI mount did not register beside an ASGI mount (subscribers=$subs)"
-resp=$(curl -s --max-time 5 -X POST -d channel=mounted -d msg=hello-mounted http://localhost:8080/publish)
+resp=$(curl -s --max-time 5 -X POST -d channel=mounted -d msg=hello-mounted http://localhost:$port/publish)
 echo "$resp" | grep -q '"workers": 1' || fail "publish from the mounted app did not reach the bus: $resp"
 wait $asgi_pid $sse_pid 2>/dev/null
 grep -q '^data: hello-mounted' "$out/m_sse" || { cat "$out/m_sse"; fail 'the publish never reached the held stream on the WSGI mount'; }
@@ -2642,7 +2551,7 @@ grep -iq '^transfer-encoding: chunked' "$out/m_hdr" && fail 'the held stream was
 # A WebSocket hold under mounts was the last refusal; it upgrades now, and
 # the mount its messages go back to is asserted in `smoke-django-realtime-ws`
 # phase 4, which needs a real WebSocket client to say anything about frames.
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' 'http://localhost:8080/ws?channel=mounted&token=letmein')
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "http://localhost:$port/ws?channel=mounted&token=letmein")
 [ "$code" = "101" ] || fail "a WebSocket hold under --mount answered $code, want 101"
 
 kill $pid
@@ -2651,8 +2560,6 @@ wait $pid; rc=$?
 echo "phase 6: a held stream and an executor stream on one loop, $beats heartbeats on the held one"
 fi
 
-trap 'rm -rf "$out" rt.log rt2.log rt3.log rt4.log rt5.log rt6.log rt6.doctor' EXIT
-rm -f rt.log rt2.log rt3.log rt4.log rt5.log rt6.log rt6.doctor
 echo "smoke-django-realtime OK"
 python3 scripts/emit.py --covers F6 --task smoke-django-realtime
 python3 scripts/emit.py --covers I11 --task smoke-django-realtime
@@ -2669,50 +2576,38 @@ python3 scripts/emit.py --covers L27 --task smoke-django-realtime
 help = "Realtime demo over WebSockets: Django-gated upgrades, messages as POSTs, and one publish reaching sockets AND streams on both workers"
 deps = ["build-serve"]
 shell = """
-out=$(mktemp -d)
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+port=$(free_port)
+# The probes find the server through M0_PORT.
+export M0_PORT=$port
 srv=bin/m0serve
 # No quoted value inside SPEC: it is deliberately unquoted at each use so the
 # shell word-splits it, and a value with a space would not survive that. The
 # one such flag is passed quoted at each invocation instead.
-SPEC="djangoproj.wsgi:application --app-dir apps/django_realtime --port 8080 \
+SPEC="djangoproj.wsgi:application --app-dir apps/django_realtime --port $port \
   --realtime --health-path /health \
   --static /static/=apps/django_realtime/static"
 CC="public, max-age=3600"
 
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 core_lib="$PWD/packages/m0-core/libm0core.$ext"
-[ -f "$core_lib" ] || uv run poe build-ffi || exit 1
-
-cleanup() {
-  kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out" ws1.log ws2.log ws3.log ws4.log ws5.log
-}
-trap cleanup EXIT
-
-fail() {
-  echo "$1"
-  for log in ws1.log ws2.log ws3.log ws4.log ws5.log; do
-    if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
-  done
-  exit 1
-}
+[ -f "$core_lib" ] || uv run --no-sync poe build-ffi || exit 1
 
 # Phase 1: single worker. The probe carries the assertions that need one
 # process to hold several sockets at once — Django's 403 on an unauthorised
 # upgrade, a real handshake on an authorised one, a message reaching a
 # synchronous view and coming back to every socket on the channel, and
 # another channel hearing none of it.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" > ws1.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || fail 'server never became healthy'
+spawn ws1.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC"
+wait_ready http://localhost:$port/health $pid
 
 python3 apps/django_realtime/realtime_probe.py || fail 'realtime_probe failed'
 
 # The probe closed its sockets politely; every close path must unregister
 # them, or a later publish fans out to slots nobody is on.
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  socks=$(curl -s http://localhost:8080/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
+  socks=$(curl -s http://localhost:$port/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
   [ "$socks" = "0" ] && break
   sleep 1
 done
@@ -2722,39 +2617,35 @@ done
 # header it is Django that answers first (403 without a token), and the
 # server that answers second (426 for an approved request that never asked
 # to upgrade) — neither can be produced by the other.
-code=$(curl -s -o /dev/null -w '%{http_code}' 'http://localhost:8080/ws?channel=news')
+code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$port/ws?channel=news")
 [ "$code" = "403" ] || fail "expected Django's 403 for a plain GET /ws without a token, got $code"
-code=$(curl -s -o "$out/plain_ws" -w '%{http_code}' 'http://localhost:8080/ws?channel=news&token=letmein')
+code=$(curl -s -o "$out/plain_ws" -w '%{http_code}' "http://localhost:$port/ws?channel=news&token=letmein")
 [ "$code" = "426" ] || fail "expected 426 for an approved upgrade with no Upgrade header, got $code"
 grep -iq 'm0-hold' "$out/plain_ws" && fail 'the hold instruction leaked into the 426 body'
 
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
+stop $pid
 
 # Phase 2: two workers, both transports, ONE publish.
 #
 # An SSE stream is pinned on each worker with the SIGSTOP technique from
 # smoke-counter, then the probe pins a WebSocket on each worker the same way
 # and asserts its own half. Four held connections, two transports, two
-# processes — and one synchronous Django view reaching all of them.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --workers 2 > ws2.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || fail 'two-worker server never became healthy'
-worker_pids=$(grep -oE 'pid=[0-9]+' ws2.log | cut -d= -f2 | sort -u)
+# processes — and one synchronous Django view reaching all of them. The
+# workers share the supervisor's process group, which the lib reaps whole
+# (resuming a stopped one first) on any exit.
+spawn ws2.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --workers 2
+wait_ready http://localhost:$port/health $pid
 
-curl -sN --max-time 90 -D "$out/hdr1" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/sse1" &
+curl -sN --max-time 90 -D "$out/hdr1" "http://localhost:$port/events?channel=news&token=letmein" > "$out/sse1" &
 sleep 2
 w_a=$(grep -i '^x-worker' "$out/hdr1" | tr -dc '0-9')
 [ -n "$w_a" ] || fail 'first stream never opened (no x-worker header)'
 
 kill -STOP "$w_a" 2>/dev/null
-trap 'kill -CONT $w_a 2>/dev/null; cleanup' EXIT
-curl -sN --max-time 90 -D "$out/hdr2" 'http://localhost:8080/events?channel=news&token=letmein' > "$out/sse2" &
+curl -sN --max-time 90 -D "$out/hdr2" "http://localhost:$port/events?channel=news&token=letmein" > "$out/sse2" &
 sleep 3
 w_b=$(grep -i '^x-worker' "$out/hdr2" | tr -dc '0-9')
 kill -CONT "$w_a" 2>/dev/null
-trap cleanup EXIT
 
 [ -n "$w_b" ] || fail "second stream never opened while worker $w_a was stopped"
 [ "$w_a" != "$w_b" ] || fail "both streams landed on worker $w_a even though it was SIGSTOPped"
@@ -2779,8 +2670,7 @@ for f in sse1 sse2; do
   grep -q '^id: ' "$out/$f" || fail "$f carried no numbered events"
 done
 
-kill $pid $worker_pids 2>/dev/null
-wait $pid 2>/dev/null
+stop $pid
 
 # Phase 3: the same sockets, held by a POOL thread's view. `--realtime` with
 # `--blocking-threads` was refused outright, then allowed for SSE only, and
@@ -2791,24 +2681,23 @@ wait $pid 2>/dev/null
 # executor's shape plus the channel, since a pool thread's registries are
 # empty), so the whole probe -- handshake, fan-out, relay through Django,
 # channel isolation -- has to pass with the pool in front of it.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --blocking-threads 4 > ws3.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the pooled realtime server never became healthy'
-grep -q 'blocking-threads=4' ws3.log || fail 'the banner does not show the pool'
+spawn ws3.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --blocking-threads 4
+wait_ready http://localhost:$port/health $pid
+grep -q 'blocking-threads=4' "$out/ws3.log" || fail 'the banner does not show the pool'
 t_base=$(python3 -c 'import time; print(time.time())')
 python3 apps/django_realtime/realtime_probe.py || fail 'realtime_probe failed with a handler pool'
 base_ms=$(python3 -c "import time, sys; print(int((time.time() - float(sys.argv[1])) * 1000))" "$t_base")
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  socks=$(curl -s http://localhost:8080/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
+  socks=$(curl -s http://localhost:$port/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
   [ "$socks" = "0" ] && break
   sleep 1
 done
 [ "$socks" = "0" ] || fail "closed sockets are still registered under the pool (sockets=$socks)"
 # And the thing the pool is for: a socket's message must not queue behind a
 # slow view. Two of them in flight, then the whole probe again.
-curl -s -o /dev/null --max-time 20 http://localhost:8080/slow &
+curl -s -o /dev/null --max-time 20 http://localhost:$port/slow &
 slow1=$!
-curl -s -o /dev/null --max-time 20 http://localhost:8080/slow &
+curl -s -o /dev/null --max-time 20 http://localhost:$port/slow &
 slow2=$!
 sleep 0.3
 t0=$(python3 -c 'import time; print(time.time())')
@@ -2840,27 +2729,26 @@ wait $pid; rc=$?
 ft=$(python3 -c "import sysconfig; print(sysconfig.get_config_var('Py_GIL_DISABLED') or 0)")
 if [ "$ft" = "1" ]; then
   M0_CORE_LIB="$core_lib" "$srv" --mount /=djangoproj.wsgi --mount /live=liveasgi \
-    --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
-    --blocking-threads 4 > ws4.log 2>&1
+    --app-dir apps/django_realtime --port $port --realtime --health-path /health \
+    --blocking-threads 4 > "$out/ws4.log" 2>&1
   rc=$?
-  [ "$rc" = "78" ] || { cat ws4.log; fail "sockets beside an ASGI mount on a free-threaded build exited $rc, want the refusal's 78"; }
-  grep -q 'modular/modular#5726' ws4.log || { cat ws4.log; fail 'the refusal does not name the upstream issue'; }
+  [ "$rc" = "78" ] || fail "sockets beside an ASGI mount on a free-threaded build exited $rc, want the refusal's 78"
+  grep -q 'modular/modular#5726' "$out/ws4.log" || fail 'the refusal does not name the upstream issue'
   echo "phase 4: refused on a free-threaded build, exit 78 naming modular/modular#5726 (sockets under --mount need the ASGI mount's executor)"
 else
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
+spawn ws4.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
   --mount /=djangoproj.wsgi --mount /live=liveasgi \
-  --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
-  --blocking-threads 4 > ws4.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the mounted realtime server never became healthy'
-grep -q 'asgi-loop@/live' ws4.log || fail 'the ASGI mount lost its executor beside sockets'
-curl -sN --max-time 8 http://localhost:8080/live/stream > "$out/m4_asgi" &
+  --app-dir apps/django_realtime --port $port --realtime --health-path /health \
+  --blocking-threads 4
+wait_ready http://localhost:$port/health $pid
+grep -q 'asgi-loop@/live' "$out/ws4.log" || fail 'the ASGI mount lost its executor beside sockets'
+curl -sN --max-time 8 http://localhost:$port/live/stream > "$out/m4_asgi" &
 asgi4=$!
 python3 apps/django_realtime/realtime_probe.py || fail 'realtime_probe failed under --mount'
 wait $asgi4 2>/dev/null
 [ "$(grep -c '^data: ' "$out/m4_asgi")" = "5" ] || { cat "$out/m4_asgi"; fail 'the ASGI mount stopped streaming while sockets were held'; }
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  socks=$(curl -s http://localhost:8080/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
+  socks=$(curl -s http://localhost:$port/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
   [ "$socks" = "0" ] && break
   sleep 1
 done
@@ -2879,17 +2767,16 @@ fi
 # phase 4's `hold_lane`). The SECOND mount is the one that matters:
 # unrecorded, every message was served by the first. The probe also POSTs
 # to each mount's synthetic path from the network, which must be a 404.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
+spawn ws5.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" \
   --mount /=wsmounts:first --mount /b=wsmounts:second \
-  --app-dir apps/django_realtime --port 8080 --realtime --health-path /health \
-  --blocking-threads 0 > ws5.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health > /dev/null || fail 'the inline mounted realtime server never became healthy'
-grep -q 'blocking-threads=' ws5.log && fail 'the banner reports a pool: the holds would be taken on pool threads, not inline'
-grep -q ' realtime' ws5.log || fail 'the banner does not report --realtime'
+  --app-dir apps/django_realtime --port $port --realtime --health-path /health \
+  --blocking-threads 0
+wait_ready http://localhost:$port/health $pid
+grep -q 'blocking-threads=' "$out/ws5.log" && fail 'the banner reports a pool: the holds would be taken on pool threads, not inline'
+grep -q ' realtime' "$out/ws5.log" || fail 'the banner does not report --realtime'
 python3 apps/django_realtime/mounts_ws_probe.py || fail 'mounts_ws_probe failed under inline mounts'
 for i in 1 2 3 4 5 6 7 8 9 10; do
-  socks=$(curl -s http://localhost:8080/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
+  socks=$(curl -s http://localhost:$port/health | grep -o '"sockets":[0-9]*' | cut -d: -f2)
   [ "$socks" = "0" ] && break
   sleep 1
 done
@@ -2899,7 +2786,6 @@ kill $pid 2>/dev/null
 wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --realtime with inline mounts and sockets: exit $rc, want 0"
 
-rm -f ws1.log ws2.log ws3.log ws4.log ws5.log
 echo "smoke-django-realtime-ws OK"
 python3 scripts/emit.py --covers I12 --task smoke-django-realtime-ws
 python3 scripts/emit.py --covers I26 --task smoke-django-realtime-ws
@@ -4053,7 +3939,7 @@ shell = """
 # even into its own file or socket on a bus fd's number. It needs a
 # libm0core a plain Python child can load.
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
-[ -f "packages/m0-core/libm0core.$ext" ] || uv run poe build-ffi || exit 1
+[ -f "packages/m0-core/libm0core.$ext" ] || uv run --no-sync poe build-ffi || exit 1
 out=$(python3 scripts/child_publish_probe.py --port 8671 2>&1) || { echo "$out"; exit 1; }
 echo "$out"
 echo "smoke-child-publish OK"
@@ -4299,7 +4185,7 @@ cp packaging/m0serve/src/m0serve/m0pub.py "$out/m0serve/m0pub.py"
 
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 core_lib="$PWD/packages/m0-core/libm0core.$ext"
-[ -f "$core_lib" ] || uv run poe build-ffi || exit 1
+[ -f "$core_lib" ] || uv run --no-sync poe build-ffi || exit 1
 
 SPEC="realtime_flask:app --app-dir $out --port $port --realtime --health-path /health"
 
@@ -5228,7 +5114,7 @@ mkdir -p "$out/m0serve"
 cp packaging/m0serve/src/m0serve/m0pub.py "$out/m0serve/m0pub.py"
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 core_lib="$PWD/packages/m0-core/libm0core.$ext"
-[ -f "$core_lib" ] || uv run poe build-ffi || exit 1
+[ -f "$core_lib" ] || uv run --no-sync poe build-ffi || exit 1
 PYTHONPATH="$out" M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=25000 bin/m0serve demoapp:application \
   --app-dir apps/demo --realtime --workers 2 --port 8190 --max-body 8k --health-path /health --access-log
 """
@@ -6865,21 +6751,15 @@ python3 scripts/emit.py --covers I26 --task smoke-asgi
 help = "The keep-alive cap must close the connection, not destroy the response"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
-fail() {
-  echo "$1"
-  if [ -f kac.log ]; then echo '=== kac.log ==='; cat kac.log; fi
-  exit 1
-}
+port=$(free_port)
 # The cap is pinned here rather than inherited: the probe counts to 100,
 # and a gate that read the default would test nothing the day the default
 # moved (docs/notes/pool-tail.md moved it).
-"$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port 8144 --max-keepalive-requests 100 > kac.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -f kac.log' EXIT
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8144/ > /dev/null \
-  || fail 'the asgi_bare app never became healthy'
-python3 scripts/keepalive_cap_probe.py 8144 || fail 'keepalive cap probe failed'
+spawn kac.log "$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port $port --max-keepalive-requests 100
+wait_ready http://localhost:$port/ $pid
+python3 scripts/keepalive_cap_probe.py $port || fail 'keepalive cap probe failed'
 python3 scripts/emit.py --covers A3 --task smoke-keepalive-cap
 """
 
@@ -6894,18 +6774,12 @@ python3 scripts/emit.py --covers A3 --task smoke-keepalive-cap
 help = "A message at or above the outbox cap ends the connection, not silently dropped"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
-fail() {
-  echo "$1"
-  if [ -f oc.log ]; then echo '=== oc.log ==='; cat oc.log; fi
-  exit 1
-}
-"$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port 8156 > oc.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null; rm -f oc.log' EXIT
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8156/ > /dev/null \
-  || fail 'the asgi_bare app never became healthy'
-python3 scripts/outbox_cap_probe.py 8156 || fail 'outbox cap probe failed'
+port=$(free_port)
+spawn oc.log "$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port $port
+wait_ready http://localhost:$port/ $pid
+python3 scripts/outbox_cap_probe.py $port || fail 'outbox cap probe failed'
 python3 scripts/emit.py --covers I17 --task smoke-outbox-cap
 """
 
@@ -6928,7 +6802,7 @@ fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat seam.log 2
 # run would satisfy the produced-nothing check falsely, so clear it first.
 rm -f bin/m0serve-absent
 out=$(M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture/absent M0SERVE_OUT=bin/m0serve-absent \
-  uv run poe build-serve 2>&1)
+  uv run --no-sync poe build-serve 2>&1)
 rc=$?
 [ $rc -ne 0 ] || fail "build-serve accepted a mount directory with no m0serve_mount.mojo"
 echo "$out" | grep -q 'no m0serve_mount.mojo in' \
@@ -6937,7 +6811,7 @@ echo "$out" | grep -q 'no m0serve_mount.mojo in' \
 
 # The seam: the same entry file, a different module on the path.
 M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture M0SERVE_OUT=$srv \
-  uv run poe build-serve || fail "build-serve with the fixture mount did not build"
+  uv run --no-sync poe build-serve || fail "build-serve with the fixture mount did not build"
 
 "$srv" --mount /=bareapp.wsgi --mount /native=mojo \
   --app-dir apps/wsgi_bare --port $P --blocking-threads 2 > seam.log 2>&1 &
@@ -7010,7 +6884,7 @@ fail() {
 # the ordinary app build.
 rm -f "$srv"
 M0SERVE_MOUNT_DIR=apps/ramp/mount M0SERVE_INCLUDE=apps M0SERVE_OUT=$srv \
-  uv run poe build-serve || fail "build-serve with the ramp mount did not build"
+  uv run --no-sync poe build-serve || fail "build-serve with the ramp mount did not build"
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
   apps/ramp/server.mojo -o "$out/ramp" || fail "the ramp's host binary did not build"
 
@@ -8727,81 +8601,76 @@ python3 scripts/emit.py --covers E26 --task smoke-host
 [tool.poe.tasks.smoke-todo]
 help = "Todo demo: assert a broadcast patches a live client, the list survives a restart, Last-Event-ID replays across it, and two workers share one list"
 shell = """
-out=$(mktemp -d)
-trap 'kill $pid 2>/dev/null; pkill -KILL -f "$out/" 2>/dev/null; rm -rf "$out"' EXIT
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
   -I packages/m0-sqlite/ -I apps/ \
   apps/datastar_todo/server.mojo -o "$out/todo" || exit 1
 
-M0_DB="$out/todos.db" "$out/todo" > todo.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || { echo '=== todo.log ==='; cat todo.log; exit 1; }
-curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:8080/events > todo_sse.txt &
+port=$(free_port)
+spawn todo.log env M0_PORT=$port M0_DB="$out/todos.db" "$out/todo"
+wait_ready http://localhost:$port/health $pid
+curl -sN --max-time 6 -H 'Accept: text/event-stream' http://localhost:$port/events > "$out/todo_sse.txt" &
 sse=$!
 sleep 2
-curl -s -X POST http://localhost:8080/add -d '{"draft":"buy milk"}' -o /dev/null
-curl -s -X POST http://localhost:8080/toggle/1 -o /dev/null
+curl -s -X POST http://localhost:$port/add -d '{"draft":"buy milk"}' -o /dev/null
+curl -s -X POST http://localhost:$port/toggle/1 -o /dev/null
 # The rename form (SPEC N12): what Datastar sends for {contentType: 'form'}
 # is the form's fields urlencoded, which form(req) reads; a JSON signal
 # store posted to the same route is refused rather than read as a field.
-curl -s -X POST http://localhost:8080/add -d '{"draft":"walk dog"}' -o /dev/null
-curl -s -X POST http://localhost:8080/edit/2 -H 'Content-Type: application/x-www-form-urlencoded' -d 'text=walk+the+dog' -o /dev/null
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/edit/2 -H 'Content-Type: application/json' -d '{"text":"nope"}')
-[ "$code" = 400 ] || { echo "a JSON body posted to the rename route answered $code, not 400"; exit 1; }
+curl -s -X POST http://localhost:$port/add -d '{"draft":"walk dog"}' -o /dev/null
+curl -s -X POST http://localhost:$port/edit/2 -H 'Content-Type: application/x-www-form-urlencoded' -d 'text=walk+the+dog' -o /dev/null
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$port/edit/2 -H 'Content-Type: application/json' -d '{"text":"nope"}')
+[ "$code" = 400 ] || fail "a JSON body posted to the rename route answered $code, not 400"
 sleep 2
 kill $sse 2>/dev/null
-grep -q 'event: datastar-patch-elements' todo_sse.txt \
-  || { echo 'no patch-elements frame reached the client'; cat todo_sse.txt; exit 1; }
-grep -q 'data: elements <section id="todos">' todo_sse.txt \
-  || { echo 'broadcast did not carry the todos fragment'; cat todo_sse.txt; exit 1; }
-grep -q 'buy milk' todo_sse.txt \
-  || { echo 'broadcast did not carry the new todo'; cat todo_sse.txt; exit 1; }
-grep -q '<s>buy milk</s>' todo_sse.txt \
-  || { echo 'toggle broadcast did not strike the todo through'; cat todo_sse.txt; exit 1; }
-grep -q 'data: event:' todo_sse.txt && { echo 'frame was double-framed'; exit 1; }
-grep -q 'value="walk the dog"' todo_sse.txt \
-  || { echo 'the rename posted as a form did not reach the broadcast'; cat todo_sse.txt; exit 1; }
-grep -q 'nope' todo_sse.txt && { echo 'the refused JSON body was applied anyway'; exit 1; }
-curl -s http://localhost:8080/ > todo_page.txt
-grep -q '<s>buy milk</s>' todo_page.txt \
-  || { echo 'a fresh page load did not render current server state'; exit 1; }
+grep -q 'event: datastar-patch-elements' "$out/todo_sse.txt" \
+  || { cat "$out/todo_sse.txt"; fail 'no patch-elements frame reached the client'; }
+grep -q 'data: elements <section id="todos">' "$out/todo_sse.txt" \
+  || { cat "$out/todo_sse.txt"; fail 'broadcast did not carry the todos fragment'; }
+grep -q 'buy milk' "$out/todo_sse.txt" \
+  || { cat "$out/todo_sse.txt"; fail 'broadcast did not carry the new todo'; }
+grep -q '<s>buy milk</s>' "$out/todo_sse.txt" \
+  || { cat "$out/todo_sse.txt"; fail 'toggle broadcast did not strike the todo through'; }
+grep -q 'data: event:' "$out/todo_sse.txt" && fail 'frame was double-framed'
+grep -q 'value="walk the dog"' "$out/todo_sse.txt" \
+  || { cat "$out/todo_sse.txt"; fail 'the rename posted as a form did not reach the broadcast'; }
+grep -q 'nope' "$out/todo_sse.txt" && fail 'the refused JSON body was applied anyway'
+curl -s http://localhost:$port/ > "$out/todo_page.txt"
+grep -q '<s>buy milk</s>' "$out/todo_page.txt" \
+  || fail 'a fresh page load did not render current server state'
 # The form arm's wire spelling, as the page serves it: the submit action
 # with the form content type, generated by Fragment[Datastar] from the
 # route pattern, and the field the handler reads.
-grep -q 'data-on:submit__prevent="@post(&#x27;/edit/2&#x27;, {contentType: &#x27;form&#x27;})"' todo_page.txt \
-  || { echo 'the page does not carry the Datastar form arm for the rename'; grep -o '<form[^>]*>' todo_page.txt; exit 1; }
-grep -q 'name="text" value="walk the dog"' todo_page.txt \
-  || { echo 'the rename form does not carry the current text'; exit 1; }
-rm -f todo_page.txt
+grep -q 'data-on:submit__prevent="@post(&#x27;/edit/2&#x27;, {contentType: &#x27;form&#x27;})"' "$out/todo_page.txt" \
+  || { grep -o '<form[^>]*>' "$out/todo_page.txt"; fail 'the page does not carry the Datastar form arm for the rename'; }
+grep -q 'name="text" value="walk the dog"' "$out/todo_page.txt" \
+  || fail 'the rename form does not carry the current text'
 
 # The persistence claim: kill the server, start it again on the same M0_DB,
 # and the struck-through todo must still be there.
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
-M0_DB="$out/todos.db" "$out/todo" > todo.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:8080/health \
-  || { echo '=== todo.log (restart) ==='; cat todo.log; exit 1; }
-curl -s http://localhost:8080/ | grep -q '<s>buy milk</s>' \
-  || { echo 'the list did not survive the restart'; curl -s http://localhost:8080/; exit 1; }
+stop $pid
+spawn todo-restart.log env M0_PORT=$port M0_DB="$out/todos.db" "$out/todo"
+wait_ready http://localhost:$port/health $pid
+curl -s http://localhost:$port/ | grep -q '<s>buy milk</s>' \
+  || { curl -s http://localhost:$port/; fail 'the list did not survive the restart'; }
 
 # The replay claim: a client reconnecting with the id it saw last is caught
 # up by the *restarted* process from the persisted event log — the toggle
 # frame (id 2) replays, the add frame (id 1) it already has does not, and no
 # new mutation is needed to cause any of it.
 curl -sN --max-time 4 -H 'Accept: text/event-stream' -H 'Last-Event-ID: 1' \
-  http://localhost:8080/events > todo_replay.txt || true
-grep -q 'id: 2' todo_replay.txt \
-  || { echo 'reconnect did not replay the missed frame after restart'; cat todo_replay.txt; exit 1; }
-grep -q '<s>buy milk</s>' todo_replay.txt \
-  || { echo 'the replayed frame did not carry the struck-through todo'; cat todo_replay.txt; exit 1; }
-grep -q 'id: 1$' todo_replay.txt \
-  && { echo 'replay redelivered a frame the client already had'; cat todo_replay.txt; exit 1; }
+  http://localhost:$port/events > "$out/todo_replay.txt" || true
+grep -q 'id: 2' "$out/todo_replay.txt" \
+  || { cat "$out/todo_replay.txt"; fail 'reconnect did not replay the missed frame after restart'; }
+grep -q '<s>buy milk</s>' "$out/todo_replay.txt" \
+  || { cat "$out/todo_replay.txt"; fail 'the replayed frame did not carry the struck-through todo'; }
+grep -q 'id: 1$' "$out/todo_replay.txt" \
+  && { cat "$out/todo_replay.txt"; fail 'replay redelivered a frame the client already had'; }
 # A consumer with no Last-Event-ID is new, and gets no history.
-curl -sN --max-time 4 -H 'Accept: text/event-stream' http://localhost:8080/events > todo_fresh.txt || true
-grep -q 'datastar-patch-elements' todo_fresh.txt \
-  && { echo 'a new consumer was served history it never asked for'; cat todo_fresh.txt; exit 1; }
+curl -sN --max-time 4 -H 'Accept: text/event-stream' http://localhost:$port/events > "$out/todo_fresh.txt" || true
+grep -q 'datastar-patch-elements' "$out/todo_fresh.txt" \
+  && { cat "$out/todo_fresh.txt"; fail 'a new consumer was served history it never asked for'; }
 
 # G14 on the BROADCAST path, over a socket. A todo's text is request data
 # and goes into the fragment every subscriber is sent; HTML escaping leaves
@@ -8812,26 +8681,24 @@ grep -q 'datastar-patch-elements' todo_fresh.txt \
 # unauthenticated POST killing the process, taking every connected tab with
 # it. `\\n` is the JSON escape (a real newline once parsed) and `\\200` is
 # the raw byte; printf spells both portably, curl sends the file unaltered.
-printf '{"draft":"bad\\\\n\\200tail"}' > todo_hostile.txt
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8080/add \
-  -H 'Content-Type: application/json' --data-binary @todo_hostile.txt)
-[ "$code" = 204 ] || { echo "a todo carrying invalid UTF-8 answered $code, not 204"; cat todo.log; exit 1; }
-curl -s --fail --max-time 5 http://localhost:8080/health > /dev/null \
-  || { echo 'the server died broadcasting a todo whose text is not UTF-8 (G14)'; cat todo.log; exit 1; }
-curl -s --fail --max-time 5 http://localhost:8080/ > todo_hostile_page.txt \
-  || { echo 'the server survived but stopped rendering after the hostile todo'; exit 1; }
-grep -q '<s>buy milk</s>' todo_hostile_page.txt \
-  || { echo 'the page stopped rendering earlier todos after the hostile one'; exit 1; }
+printf '{"draft":"bad\\\\n\\200tail"}' > "$out/todo_hostile.txt"
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$port/add \
+  -H 'Content-Type: application/json' --data-binary "@$out/todo_hostile.txt")
+[ "$code" = 204 ] || fail "a todo carrying invalid UTF-8 answered $code, not 204"
+curl -s --fail --max-time 5 http://localhost:$port/health > /dev/null \
+  || fail 'the server died broadcasting a todo whose text is not UTF-8 (G14)'
+curl -s --fail --max-time 5 http://localhost:$port/ > "$out/todo_hostile_page.txt" \
+  || fail 'the server survived but stopped rendering after the hostile todo'
+grep -q '<s>buy milk</s>' "$out/todo_hostile_page.txt" \
+  || fail 'the page stopped rendering earlier todos after the hostile one'
 # Without this the phase would pass vacuously if the draft ever parsed
 # empty: nothing would be added, nothing broadcast, nothing to trap.
 # LC_ALL=C because the match sits on the line carrying the 0x80: in a UTF-8
 # locale grep silently does not match a line whose bytes are not valid
 # UTF-8 (measured both ways), so without it this assertion fails on a
 # server that is working perfectly -- and could differ by runner locale.
-LC_ALL=C grep -q 'tail' todo_hostile_page.txt \
-  || { echo 'the hostile todo never reached the list, so nothing exercised the splitter'; cat todo_hostile_page.txt; exit 1; }
-rm -f todo_hostile_page.txt
-rm -f todo_hostile.txt
+LC_ALL=C grep -q 'tail' "$out/todo_hostile_page.txt" \
+  || { cat "$out/todo_hostile_page.txt"; fail 'the hostile todo never reached the list, so nothing exercised the splitter'; }
 
 # SPEC I30 on the wire: a reconnect whose missed frames outweigh its 64 KB
 # outbox. Every frame here is the whole list, so twelve adds of a 2 KB todo
@@ -8844,16 +8711,15 @@ rm -f todo_hostile.txt
 # phase's 0x80.
 pad=$(printf '%2000s' '' | tr ' ' x)
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  curl -s -X POST http://localhost:8080/add -d '{"draft":"bulk-'"$i-$pad"'"}' -o /dev/null
+  curl -s -X POST http://localhost:$port/add -d '{"draft":"bulk-'"$i-$pad"'"}' -o /dev/null
 done
-curl -s -X POST http://localhost:8080/add -d '{"draft":"zz-newest"}' -o /dev/null
+curl -s -X POST http://localhost:$port/add -d '{"draft":"zz-newest"}' -o /dev/null
 curl -sN --max-time 4 -H 'Accept: text/event-stream' -H 'Last-Event-ID: 1' \
-  http://localhost:8080/events > todo_behind.txt || true
-LC_ALL=C grep -q 'zz-newest' todo_behind.txt \
-  || { echo 'a reconnect too far behind for its outbox never got the current list (I30)'; head -c 400 todo_behind.txt; exit 1; }
-LC_ALL=C grep -q '^id: ' todo_behind.txt \
-  && { echo 'a catch-up too big for the outbox was served in part (I30)'; grep '^id: ' todo_behind.txt; exit 1; }
-rm -f todo_behind.txt
+  http://localhost:$port/events > "$out/todo_behind.txt" || true
+LC_ALL=C grep -q 'zz-newest' "$out/todo_behind.txt" \
+  || { head -c 400 "$out/todo_behind.txt"; fail 'a reconnect too far behind for its outbox never got the current list (I30)'; }
+LC_ALL=C grep -q '^id: ' "$out/todo_behind.txt" \
+  && { grep '^id: ' "$out/todo_behind.txt"; fail 'a catch-up too big for the outbox was served in part (I30)'; }
 
 # Two workers over one database (the Mojo host). Streams must land on both
 # workers or the phase is vacuous; adds from a connection on each worker at
@@ -8865,23 +8731,19 @@ rm -f todo_behind.txt
 # widens it (M0_TODO_RENDER_PAUSE_MS): with 5 ms, a build without the lock
 # failed 5 of 5 rounds, and this one passed 5 of 5. Its own port and
 # database.
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
-env M0_PORT=8086 M0_WORKERS=2 M0_TODO_RENDER_PAUSE_MS=5 M0_DB="$out/two.db" \
-  "$out/todo" > "$out/two.log" 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8086/health > /dev/null \
-  || { echo '=== two.log ==='; cat "$out/two.log"; exit 1; }
-two=$(python3 scripts/todo_probe.py two 8086 "$out/two.db" 2>&1) \
-  || { echo "two workers: $two"; cat "$out/two.log"; exit 1; }
+stop $pid
+port2=$(free_port)
+spawn two.log env M0_PORT=$port2 M0_WORKERS=2 M0_TODO_RENDER_PAUSE_MS=5 M0_DB="$out/two.db" \
+  "$out/todo"
+wait_ready http://localhost:$port2/health $pid
+two=$(python3 scripts/todo_probe.py two $port2 "$out/two.db" 2>&1) \
+  || fail "two workers: $two"
 echo "two workers: $two"
 kill -TERM $pid
 wait $pid
 rc=$?
-pid=
-[ "$rc" = 0 ] || { echo "two workers: SIGTERM to the supervisor exited $rc"; cat "$out/two.log"; exit 1; }
+[ "$rc" = 0 ] || fail "two workers: SIGTERM to the supervisor exited $rc"
 
-rm -f todo_sse.txt todo_replay.txt todo_fresh.txt todo.log
 echo "smoke-todo OK"
 python3 scripts/emit.py --covers I10 --task smoke-todo
 python3 scripts/emit.py --covers N12 --task smoke-todo
@@ -8892,7 +8754,8 @@ python3 scripts/emit.py --covers N17 --task smoke-todo
 
 # Each assertion pins one framework feature the notes API exists to showcase:
 # routing with :id and a real 405, negotiation, ETag/304, problem+json, CORS,
-# and M0_PORT via AppConfig (the smoke runs the whole thing on :8091).
+# and M0_PORT via AppConfig (the smoke runs the whole thing on a free port,
+# never the 8080 default).
 [tool.poe.tasks.smoke-sendfile]
 help = "Serve a file larger than every buffer without holding it in memory"
 deps = ["build-serve"]
@@ -8987,125 +8850,126 @@ python3 scripts/emit.py --covers J10 --task smoke-sendfile
 [tool.poe.tasks.smoke-notes]
 help = "Start the notes API, assert each framework feature end to end (incl. static files), stop"
 shell = """
-M0_PORT=8091 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo > notes.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-
-fail() { echo "$1"; echo '=== notes.log ==='; cat notes.log; exit 1; }
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+port=$(free_port)
+spawn notes.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo
 
 # A 1xx, 204 or 304 carries no Content-Length or Content-Type its handler did
 # not set (A21; RFC 9110 §8.6): the constructor used to invent both, a length
 # of 0 and application/octet-stream, on every bodiless answer.
 no_entity_headers() {
-  if grep -qi -E '^content-(length|type):' headers.txt; then
-    fail "$1 carries an entity header nobody set: $(grep -i '^content-' headers.txt | tr -d '\\r' | tr '\\n' ' ')"
+  if grep -qi -E '^content-(length|type):' "$out/headers.txt"; then
+    fail "$1 carries an entity header nobody set: $(grep -i '^content-' "$out/headers.txt" | tr -d '\\r' | tr '\\n' ' ')"
   fi
 }
 
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8091/health \
+wait_ready http://localhost:$port/health $pid 60
+curl --silent --fail http://localhost:$port/health \
   | grep -q '"status":"ok"' || fail 'health check did not answer'
 
-# M0_PORT reached AppConfig: the server is on 8091, not the 8080 default.
+# M0_PORT reached AppConfig: the server is on $port, not the 8080 default.
 
 # Create: 201, a Location header, and the note echoed back.
-code=$(curl -s -o note1.json -w '%{http_code}' -D headers.txt \
-  -X POST http://localhost:8091/notes -d '{"title":"First","body":"hello"}')
+code=$(curl -s -o "$out/note1.json" -w '%{http_code}' -D "$out/headers.txt" \
+  -X POST http://localhost:$port/notes -d '{"title":"First","body":"hello"}')
 [ "$code" = "201" ] || fail "expected 201 from create, got $code"
-grep -qi '^location: /notes/1' headers.txt || fail 'create did not answer a Location header'
-grep -q '"title":"First"' note1.json || fail 'created note did not echo its title'
+grep -qi '^location: /notes/1' "$out/headers.txt" || fail 'create did not answer a Location header'
+grep -q '"title":"First"' "$out/note1.json" || fail 'created note did not echo its title'
 
 # The :id route, and an ETag on the JSON representation.
-curl -s -D headers.txt http://localhost:8091/notes/1 -o /dev/null
-etag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\\r\\n')
+curl -s -D "$out/headers.txt" http://localhost:$port/notes/1 -o /dev/null
+etag=$(grep -i '^etag:' "$out/headers.txt" | cut -d' ' -f2 | tr -d '\\r\\n')
 [ -n "$etag" ] || fail 'GET /notes/:id answered no ETag'
 
 # 304: same resource, If-None-Match, no body.
-code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -D "$out/headers.txt" -w '%{http_code}' -H "If-None-Match: $etag" http://localhost:$port/notes/1)
 [ "$code" = "304" ] || fail "expected 304 for a matching If-None-Match, got $code"
 no_entity_headers 'the 304 for a matching If-None-Match'
 
 # Content negotiation: same note, HTML representation on request — and the
 # response says it varies, so a shared cache cannot replay HTML to a JSON
 # client.
-curl -s -H 'Accept: text/html' http://localhost:8091/notes/1 \
+curl -s -H 'Accept: text/html' http://localhost:$port/notes/1 \
   | grep -q '<h1>First</h1>' || fail 'Accept: text/html did not negotiate HTML'
-curl -s -D headers.txt http://localhost:8091/notes/1 -o /dev/null
-grep -qi '^vary: Accept' headers.txt || fail 'negotiated response carried no Vary'
+curl -s -D "$out/headers.txt" http://localhost:$port/notes/1 -o /dev/null
+grep -qi '^vary: Accept' "$out/headers.txt" || fail 'negotiated response carried no Vary'
 # A plain curl (Accept: */*) still gets JSON, never HTML.
-curl -s http://localhost:8091/notes \
+curl -s http://localhost:$port/notes \
   | grep -q '^\\[{"id":1' || fail 'the list was not JSON for Accept: */*'
 
 # Errors are RFC 9457 problem+json, with the right content type.
-curl -s -D headers.txt http://localhost:8091/notes/999 -o problem.json
-grep -qi '^content-type: application/problem+json' headers.txt \
+curl -s -D "$out/headers.txt" http://localhost:$port/notes/999 -o "$out/problem.json"
+grep -qi '^content-type: application/problem+json' "$out/headers.txt" \
   || fail 'a 404 was not problem+json'
-grep -q '"status":404' problem.json || fail 'the problem body did not carry the status'
+grep -q '"status":404' "$out/problem.json" || fail 'the problem body did not carry the status'
 
 # The router distinguishes 405 from 404, and says what IS allowed.
-code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -X PATCH http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -D "$out/headers.txt" -X PATCH http://localhost:$port/notes/1)
 [ "$code" = "405" ] || fail "expected 405 for PATCH on a GET/PUT/DELETE route, got $code"
-grep -qi '^allow: GET, HEAD, PUT, DELETE, OPTIONS' headers.txt || fail '405 carried no Allow header'
+grep -qi '^allow: GET, HEAD, PUT, DELETE, OPTIONS' "$out/headers.txt" || fail '405 carried no Allow header'
 # And a method the route does not take must not reach any view: the
 # handler-id dispatch chain this app used to carry ended in a bare
 # `return self._delete(...)`, so a route registered without its own arm
 # deleted the note instead of answering. The note must still be there.
-code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$port/notes/1)
 [ "$code" = "200" ] || fail "a 405 must leave the note intact, but GET answered $code"
 
 # CORS: preflight and ordinary responses both carry the headers.
-code=$(curl -s -D headers.txt -w '%{http_code}' -X OPTIONS http://localhost:8091/notes -o /dev/null)
-grep -qi '^access-control-allow-origin' headers.txt || fail 'preflight carried no CORS headers'
+code=$(curl -s -D "$out/headers.txt" -w '%{http_code}' -X OPTIONS http://localhost:$port/notes -o /dev/null)
+grep -qi '^access-control-allow-origin' "$out/headers.txt" || fail 'preflight carried no CORS headers'
 [ "$code" = "204" ] || fail "expected the preflight to answer 204, got $code"
 no_entity_headers 'the OPTIONS preflight, the Views table 204,'
 
 # Validation: a body without a title is a 400 problem, not a 500.
-code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:8091/notes -d '{"nope":1}')
+code=$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:$port/notes -d '{"nope":1}')
 [ "$code" = "400" ] || fail "expected 400 for a note without a title, got $code"
 
 # Update and delete round out the CRUD.
-curl -s -X PUT http://localhost:8091/notes/1 -d '{"title":"Renamed","body":"x"}' \
+curl -s -X PUT http://localhost:$port/notes/1 -d '{"title":"Renamed","body":"x"}' \
   | grep -q '"title":"Renamed"' || fail 'PUT did not update the note'
-code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -X DELETE http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -D "$out/headers.txt" -w '%{http_code}' -X DELETE http://localhost:$port/notes/1)
 [ "$code" = "204" ] || fail "expected 204 from delete, got $code"
 no_entity_headers 'the 204 from delete'
-code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8091/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:$port/notes/1)
 [ "$code" = "404" ] || fail "expected 404 after delete, got $code"
 
 # Static files: a real type, an ETag, a 304 on revalidation — and, the part
 # that matters, traversal probes answering 404 with no source code in them.
-curl -s -D headers.txt http://localhost:8091/static/styles.css -o static.css
-grep -q 'font-family' static.css || fail 'static css did not serve'
-grep -qi '^content-type: text/css' headers.txt || fail 'static css had the wrong content type'
-setag=$(grep -i '^etag:' headers.txt | cut -d' ' -f2 | tr -d '\r\n')
+curl -s -D "$out/headers.txt" http://localhost:$port/static/styles.css -o "$out/static.css"
+grep -q 'font-family' "$out/static.css" || fail 'static css did not serve'
+grep -qi '^content-type: text/css' "$out/headers.txt" || fail 'static css had the wrong content type'
+setag=$(grep -i '^etag:' "$out/headers.txt" | cut -d' ' -f2 | tr -d '\r\n')
 [ -n "$setag" ] || fail 'static file served without an ETag'
-code=$(curl -s -o /dev/null -D headers.txt -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:8091/static/styles.css)
+code=$(curl -s -o /dev/null -D "$out/headers.txt" -w '%{http_code}' -H "If-None-Match: $setag" http://localhost:$port/static/styles.css)
 [ "$code" = "304" ] || fail "static revalidation expected 304, got $code"
 no_entity_headers 'the static mount 304'
 
 # Byte ranges: a bounded range comes back 206 with the right slice and a
 # Content-Range naming the total; a range past the end is 416 with */total.
-total=$(wc -c < static.css | tr -d ' ')
-code=$(curl -s -o part.bin -w '%{http_code}' -D headers.txt -r 0-3 http://localhost:8091/static/styles.css)
+total=$(wc -c < "$out/static.css" | tr -d ' ')
+code=$(curl -s -o "$out/part.bin" -w '%{http_code}' -D "$out/headers.txt" -r 0-3 http://localhost:$port/static/styles.css)
 [ "$code" = "206" ] || fail "range request expected 206, got $code"
-[ "$(wc -c < part.bin | tr -d ' ')" = "4" ] || fail 'range served the wrong number of bytes'
-grep -qi "^content-range: bytes 0-3/$total" headers.txt || fail 'missing or wrong Content-Range'
-code=$(curl -s -o /dev/null -w '%{http_code}' -r 9999999- http://localhost:8091/static/styles.css)
+[ "$(wc -c < "$out/part.bin" | tr -d ' ')" = "4" ] || fail 'range served the wrong number of bytes'
+grep -qi "^content-range: bytes 0-3/$total" "$out/headers.txt" || fail 'missing or wrong Content-Range'
+code=$(curl -s -o /dev/null -w '%{http_code}' -r 9999999- http://localhost:$port/static/styles.css)
 [ "$code" = "416" ] || fail "unsatisfiable range expected 416, got $code"
-rm -f part.bin
-code=$(curl -s --path-as-is -o trav.txt -w '%{http_code}' http://localhost:8091/static/../server.mojo)
+rm -f "$out/part.bin"
+code=$(curl -s --path-as-is -o "$out/trav.txt" -w '%{http_code}' http://localhost:$port/static/../server.mojo)
 [ "$code" = "404" ] || fail "traversal probe expected 404, got $code"
-grep -q 'HTTPService' trav.txt && fail 'traversal probe served source code'
-code=$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://localhost:8091/static/%2e%2e/server.mojo)
+grep -q 'HTTPService' "$out/trav.txt" && fail 'traversal probe served source code'
+code=$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://localhost:$port/static/%2e%2e/server.mojo)
 [ "$code" = "404" ] || fail "encoded traversal probe expected 404, got $code"
 
 # G14, the app-level sites: a byte that is not UTF-8 in the static path,
 # in Accept, in If-None-Match and in Range used to trap a String slice on
 # the loop thread and kill the process. Each must be answered and the
 # server must still be up. Raw sockets, because curl will not send the byte.
-python3 - <<'PY' || fail 'a request carrying a byte that is not UTF-8 got no answer'
-import socket
+python3 - "$port" <<'PY' || fail 'a request carrying a byte that is not UTF-8 got no answer'
+import socket, sys
+port = int(sys.argv[1])
 def req(line, headers=b""):
-    s = socket.create_connection(("127.0.0.1", 8091), timeout=5)
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
     s.sendall(line + b" HTTP/1.1\\r\\nHost: x\\r\\n" + headers + b"Connection: close\\r\\n\\r\\n")
     head = s.recv(4096).split(b"\\r\\n")[0]
     s.close()
@@ -9118,9 +8982,8 @@ req(b"GET /notes/1", b"If-None-Match: \\"\\x80\\", W/\\"\\x80\\r\\n")
 req(b"GET /static/styles.css", b"Range: bytes=\\x80-\\r\\n")
 req(b"GET /notes", b"Cookie: a=\\x80; b=1\\r\\n")
 PY
-curl --silent --fail http://localhost:8091/health > /dev/null || fail 'the server was gone after a request carrying a byte that is not UTF-8'
+curl --silent --fail http://localhost:$port/health > /dev/null || fail 'the server was gone after a request carrying a byte that is not UTF-8'
 
-rm -f notes.log note1.json problem.json headers.txt static.css trav.txt
 echo "smoke-notes OK"
 python3 scripts/emit.py --covers G10 --task smoke-notes
 python3 scripts/emit.py --covers J6 --task smoke-notes
@@ -9145,32 +9008,33 @@ python3 scripts/emit.py --covers A21 --task smoke-notes
 [tool.poe.tasks.smoke-fragment-notes]
 help = "Start the fragment notes app, assert its wire contract (login, sessions, CSRF, fragment vs page, Vary, forms, escaping, 405), stop"
 shell = """
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 KEY=notes-smoke-key-0123456789abcdef
 PASSWORD=hunter2-correct-horse
 
 # Built rather than `mojo run`, because the gate runs the app TWICE: once
 # to serve, and once with no key at all to prove it refuses to start.
-mojo build -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo -o notes_app
-
-fail() { echo "$1"; echo '=== fragment.log ==='; cat fragment.log; exit 1; }
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo -o "$out/notes_app"
 
 # Fail closed. A notes app that served everyone because a deployment
 # forgot a variable is worse than one that did not start, so the refusal
 # is a gated claim and not a comment. EX_CONFIG (78), the code the hold
 # mount refuses with.
-M0_PORT=8095 ./notes_app > refusal.log 2>&1
+rport=$(free_port)
+M0_PORT=$rport "$out/notes_app" > "$out/refusal.log" 2>&1
 code=$?
 [ "$code" = "78" ] || fail "expected exit 78 with no M0_NOTES_KEY, got $code"
-grep -q 'M0_NOTES_KEY is not set' refusal.log || fail 'the refusal did not name the missing variable'
-M0_PORT=8095 M0_NOTES_KEY=$KEY ./notes_app > refusal.log 2>&1
+grep -q 'M0_NOTES_KEY is not set' "$out/refusal.log" || fail 'the refusal did not name the missing variable'
+M0_PORT=$rport M0_NOTES_KEY=$KEY "$out/notes_app" > "$out/refusal.log" 2>&1
 code=$?
 [ "$code" = "78" ] || fail "expected exit 78 with no M0_NOTES_PASSWORD, got $code"
-grep -q 'M0_NOTES_PASSWORD is not set' refusal.log || fail 'the refusal did not name the missing password'
+grep -q 'M0_NOTES_PASSWORD is not set' "$out/refusal.log" || fail 'the refusal did not name the missing password'
 # One process: the notes are a list in memory, so a second worker would hold
 # a different one. The app says so (max_workers) and the Mojo host refuses
 # the count before it binds. In the background with a deadline: a binary
 # that served instead would never exit.
-M0_PORT=8095 M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > refusal.log 2>&1 &
+M0_PORT=$rport M0_WORKERS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 "$out/notes_app" > "$out/refusal.log" 2>&1 &
 rpid=$!
 i=0
 while kill -0 $rpid 2>/dev/null; do
@@ -9181,12 +9045,12 @@ done
 wait $rpid
 code=$?
 [ "$code" = "78" ] || fail "expected exit 78 for M0_WORKERS=2, got $code"
-grep -q 'M0_WORKERS=2' refusal.log || fail 'the worker-count refusal did not name M0_WORKERS'
-grep -q 'listening' refusal.log && fail 'M0_WORKERS=2 was refused after the port was bound'
+grep -q 'M0_WORKERS=2' "$out/refusal.log" || fail 'the worker-count refusal did not name M0_WORKERS'
+grep -q 'listening' "$out/refusal.log" && fail 'M0_WORKERS=2 was refused after the port was bound'
 # The same list would be N lists under M0_THREADS -- every loop builds its
 # own state -- and the app never said a word about threads: `max_threads`
 # defaults to `max_workers`, so the one answer refuses both (SPEC E29).
-M0_PORT=8095 M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > refusal.log 2>&1 &
+M0_PORT=$rport M0_THREADS=2 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 "$out/notes_app" > "$out/refusal.log" 2>&1 &
 rpid=$!
 i=0
 while kill -0 $rpid 2>/dev/null; do
@@ -9197,18 +9061,18 @@ done
 wait $rpid
 code=$?
 [ "$code" = "78" ] || fail "expected exit 78 for M0_THREADS=2, got $code"
-grep -q 'M0_THREADS=2' refusal.log || fail 'the loop-count refusal did not name M0_THREADS'
-grep -q 'listening' refusal.log && fail 'M0_THREADS=2 was refused after the port was bound'
+grep -q 'M0_THREADS=2' "$out/refusal.log" || fail 'the loop-count refusal did not name M0_THREADS'
+grep -q 'listening' "$out/refusal.log" && fail 'M0_THREADS=2 was refused after the port was bound'
 
-M0_PORT=8094 M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 ./notes_app > fragment.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-B=http://localhost:8094
+port=$(free_port)
+spawn fragment.log env M0_PORT=$port M0_NOTES_KEY=$KEY M0_NOTES_PASSWORD=$PASSWORD M0_NOTES_SECURE=0 "$out/notes_app"
+B=http://localhost:$port
 
 # Every header the fragment-or-page decision reads, in the order Vary names them.
 VARY='HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request, HX-Request-Type'
 
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/health \
+wait_ready $B/health $pid 60
+curl --silent --fail $B/health \
   | grep -q '"status":"ok"' || fail 'health check did not answer'
 
 # --- N13: nothing under /notes is readable without a session ---------------
@@ -9217,16 +9081,16 @@ curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/health \
 # form as a bare fragment, because a redirect a swap followed would put the
 # login page inside the element the list was in. Both answers are chosen by
 # the fragment headers, so both name them in Vary.
-code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -D "$out/headers.txt" $B/notes)
 [ "$code" = "303" ] || fail "expected 303 for /notes with no session, got $code"
-grep -qi '^location: /login' headers.txt || fail 'the unauthenticated redirect did not name the login page'
-grep -qi "^vary: $VARY" headers.txt || fail 'the unauthenticated redirect carried no Vary naming every header read'
-code=$(curl -s -o frag.html -w '%{http_code}' -D headers.txt -H 'HX-Request: true' $B/notes)
+grep -qi '^location: /login' "$out/headers.txt" || fail 'the unauthenticated redirect did not name the login page'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the unauthenticated redirect carried no Vary naming every header read'
+code=$(curl -s -o "$out/frag.html" -w '%{http_code}' -D "$out/headers.txt" -H 'HX-Request: true' $B/notes)
 [ "$code" = "401" ] || fail "expected 401 for a swap with no session, got $code"
-head -c 20 frag.html | grep -q '<section id="notes">' || fail 'the 401 did not carry the login fragment'
-grep -qiE 'doctype|<html' frag.html && fail 'the 401 fragment carried document markup'
-grep -q 'name="password"' frag.html || fail 'the 401 fragment carried no login form'
-grep -qi "^vary: $VARY" headers.txt || fail 'the 401 carried no Vary naming every header read'
+head -c 20 "$out/frag.html" | grep -q '<section id="notes">' || fail 'the 401 did not carry the login fragment'
+grep -qiE 'doctype|<html' "$out/frag.html" && fail 'the 401 fragment carried document markup'
+grep -q 'name="password"' "$out/frag.html" || fail 'the 401 fragment carried no login form'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the 401 carried no Vary naming every header read'
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'HX-Request: true' -d 'title=x' $B/notes)
 [ "$code" = "401" ] || fail "expected 401 for a write with no session, got $code"
 # The other two writes, with the token field present but EMPTY: a refused
@@ -9239,10 +9103,10 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -d 'csrf=' $B/logout)
 # Everything the session decided says so to a cache: the redirect and the
 # 401 alike, or a shared cache hands the anonymous answer to a signed-in
 # user.
-curl -s -o /dev/null -D headers.txt $B/notes
-grep -qi '^cache-control: no-store' headers.txt || fail 'the unauthenticated redirect was cacheable'
-curl -s -o /dev/null -D headers.txt -H 'HX-Request: true' $B/notes
-grep -qi '^cache-control: no-store' headers.txt || fail 'the 401 fragment was cacheable'
+curl -s -o /dev/null -D "$out/headers.txt" $B/notes
+grep -qi '^cache-control: no-store' "$out/headers.txt" || fail 'the unauthenticated redirect was cacheable'
+curl -s -o /dev/null -D "$out/headers.txt" -H 'HX-Request: true' $B/notes
+grep -qi '^cache-control: no-store' "$out/headers.txt" || fail 'the 401 fragment was cacheable'
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/1)
 [ "$code" = "303" ] || fail "expected 303 for a note with no session, got $code"
 # A detail page must not say whether the note exists: 303 before the lookup.
@@ -9251,33 +9115,33 @@ code=$(curl -s -o /dev/null -w '%{http_code}' $B/notes/999)
 
 # The login page is the one page outside the session, and it is a document
 # without the header and a fragment with it, like every other page here.
-curl -s -D headers.txt $B/login -o page.html
-head -c 15 page.html | grep -q '<!doctype html>' || fail 'GET /login was not a document'
-grep -q 'name="user"' page.html || fail 'the login page carried no form'
-grep -qi "^vary: $VARY" headers.txt || fail 'the login page carried no Vary naming every header read'
+curl -s -D "$out/headers.txt" $B/login -o "$out/page.html"
+head -c 15 "$out/page.html" | grep -q '<!doctype html>' || fail 'GET /login was not a document'
+grep -q 'name="user"' "$out/page.html" || fail 'the login page carried no form'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the login page carried no Vary naming every header read'
 
 # The library the shell loads is the one the layer is gated against, by
 # exact version. The htmx-config meta the 2.0.4 shell carried is GONE, and
 # its absence is asserted: htmx 4 has no methodsThatUseUrlParams to narrow
 # (a DELETE's fields ride the query string, hard-coded), so a meta left
 # behind would be a setting that reads as a protection and is none.
-grep -q 'src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"' page.html \
+grep -q 'src="https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"' "$out/page.html" \
   || fail 'the shell did not load htmx 4.0.0'
-grep -q 'htmx-config' page.html && fail 'the shell still carries an htmx-config meta htmx 4 does not read'
+grep -q 'htmx-config' "$out/page.html" && fail 'the shell still carries an htmx-config meta htmx 4 does not read'
 
 # --- N13: the login itself -------------------------------------------------
-code=$(curl -s -o frag.html -w '%{http_code}' -D headers.txt -d "user=notes&password=wrong" $B/login)
+code=$(curl -s -o "$out/frag.html" -w '%{http_code}' -D "$out/headers.txt" -d "user=notes&password=wrong" $B/login)
 [ "$code" = "401" ] || fail "expected 401 for a wrong password, got $code"
-grep -qi '^set-cookie' headers.txt && fail 'a failed login set a cookie'
-grep -q 'wrong user or password' frag.html || fail 'a failed login did not say so'
-code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -d "user=someone&password=$PASSWORD" $B/login)
+grep -qi '^set-cookie' "$out/headers.txt" && fail 'a failed login set a cookie'
+grep -q 'wrong user or password' "$out/frag.html" || fail 'a failed login did not say so'
+code=$(curl -s -o /dev/null -w '%{http_code}' -D "$out/headers.txt" -d "user=someone&password=$PASSWORD" $B/login)
 [ "$code" = "401" ] || fail "expected 401 for a wrong user, got $code"
-grep -qi '^set-cookie' headers.txt && fail 'a login as an unknown user set a cookie'
+grep -qi '^set-cookie' "$out/headers.txt" && fail 'a login as an unknown user set a cookie'
 
-code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt -c jar.txt -d "user=notes&password=$PASSWORD" $B/login)
+code=$(curl -s -o /dev/null -w '%{http_code}' -D "$out/headers.txt" -c "$out/jar.txt" -d "user=notes&password=$PASSWORD" $B/login)
 [ "$code" = "303" ] || fail "expected 303 from a good login, got $code"
-grep -qi '^location: /notes' headers.txt || fail 'a good login did not redirect to the notes'
-SETCOOKIE=$(grep -i '^set-cookie' headers.txt | head -1)
+grep -qi '^location: /notes' "$out/headers.txt" || fail 'a good login did not redirect to the notes'
+SETCOOKIE=$(grep -i '^set-cookie' "$out/headers.txt" | head -1)
 echo "$SETCOOKIE" | grep -q 'HttpOnly' || fail "the session cookie is not HttpOnly: $SETCOOKIE"
 echo "$SETCOOKIE" | grep -q 'SameSite=Lax' || fail "the session cookie is not SameSite=Lax: $SETCOOKIE"
 echo "$SETCOOKIE" | grep -q 'Path=/' || fail "the session cookie has no Path: $SETCOOKIE"
@@ -9334,115 +9198,115 @@ curl -s -H 'HX-Request: true' \
 #
 # Everything below this line is what the app promised before it had a login,
 # asserted with the cookie the login just set. None of it changed.
-CSRF=$($ISSUE --key $KEY --csrf-for "$(grep m0_notes_session jar.txt | awk '{print $7}')")
+CSRF=$($ISSUE --key $KEY --csrf-for "$(grep m0_notes_session "$out/jar.txt" | awk '{print $7}')")
 
 # One URL, two representations. Without the header: a whole document, and
 # the fragment inside it. With it: the bare fragment, no doctype, no <html>.
-curl -s -b jar.txt -D headers.txt $B/notes -o page.html
-grep -qi '^cache-control: no-store' headers.txt || fail 'the signed-in list, token and all, was cacheable'
-head -c 15 page.html | grep -q '<!doctype html>' || fail 'GET /notes without HX-Request was not a document'
-grep -q '<section id="notes">' page.html || fail 'the document did not contain the fragment'
-grep -qi "^vary: $VARY" headers.txt || fail 'the document carried no Vary naming every header read'
-curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' $B/notes -o frag.html
-head -c 20 frag.html | grep -q '<section id="notes">' || fail 'GET /notes with HX-Request did not start with the fragment'
-grep -qiE 'doctype|<html' frag.html && fail 'the fragment carried document markup'
-grep -qi "^vary: $VARY" headers.txt || fail 'the fragment carried no Vary naming every header read'
-grep -q 'none yet' frag.html || fail 'the empty list did not say so'
+curl -s -b "$out/jar.txt" -D "$out/headers.txt" $B/notes -o "$out/page.html"
+grep -qi '^cache-control: no-store' "$out/headers.txt" || fail 'the signed-in list, token and all, was cacheable'
+head -c 15 "$out/page.html" | grep -q '<!doctype html>' || fail 'GET /notes without HX-Request was not a document'
+grep -q '<section id="notes">' "$out/page.html" || fail 'the document did not contain the fragment'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the document carried no Vary naming every header read'
+curl -s -b "$out/jar.txt" -D "$out/headers.txt" -H 'HX-Request: true' $B/notes -o "$out/frag.html"
+head -c 20 "$out/frag.html" | grep -q '<section id="notes">' || fail 'GET /notes with HX-Request did not start with the fragment'
+grep -qiE 'doctype|<html' "$out/frag.html" && fail 'the fragment carried document markup'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the fragment carried no Vary naming every header read'
+grep -q 'none yet' "$out/frag.html" || fail 'the empty list did not say so'
 # The token the browser will send back, rendered into the form by the app
 # and derived from the cookie by CPython: the two must be the same string.
-grep -q "value=\\"$CSRF\\"" frag.html || fail 'the rendered CSRF token is not the one the session stands for'
+grep -q "value=\\"$CSRF\\"" "$out/frag.html" || fail 'the rendered CSRF token is not the one the session stands for'
 
 # A history restore is a page: htmx 2.0.4 sends `HX-Request: true` AND
 # `HX-History-Restore-Request: true`, then swaps the answer's body into
 # the page it is rebuilding — a bare fragment there is a page with no
 # head, no script and no styles. The second header wins.
-curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-History-Restore-Request: true' $B/notes -o page.html
-head -c 15 page.html | grep -q '<!doctype html>' || fail 'a history restore was answered a bare fragment'
-grep -q '<section id="notes">' page.html || fail 'the restored document did not contain the fragment'
-grep -qi "^vary: $VARY" headers.txt || fail 'the restored document carried no Vary naming every header read'
+curl -s -b "$out/jar.txt" -D "$out/headers.txt" -H 'HX-Request: true' -H 'HX-History-Restore-Request: true' $B/notes -o "$out/page.html"
+head -c 15 "$out/page.html" | grep -q '<!doctype html>' || fail 'a history restore was answered a bare fragment'
+grep -q '<section id="notes">' "$out/page.html" || fail 'the restored document did not contain the fragment'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the restored document carried no Vary naming every header read'
 
 # A boosted navigation is a page too: hx-boost sends `HX-Boosted: true`
 # beside `HX-Request: true`, targets the body with innerHTML and takes a
 # full document's body — a bare fragment there replaces the whole page
 # with one section.
-curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-Boosted: true' $B/notes -o page.html
-head -c 15 page.html | grep -q '<!doctype html>' || fail 'a boosted request was answered a bare fragment'
-grep -qi "^vary: $VARY" headers.txt || fail 'the boosted document carried no Vary naming every header read'
+curl -s -b "$out/jar.txt" -D "$out/headers.txt" -H 'HX-Request: true' -H 'HX-Boosted: true' $B/notes -o "$out/page.html"
+head -c 15 "$out/page.html" | grep -q '<!doctype html>' || fail 'a boosted request was answered a bare fragment'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the boosted document carried no Vary naming every header read'
 
 # --- N22: htmx 4 says which it wants ---------------------------------------
 # Every htmx 4.0.0 request carries HX-Request-Type, and when it is there it
 # decides. `full` beside `HX-Request: true` is a page: the target is the
 # body, and the 2.x rule alone would hand it a bare section.
-curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-Request-Type: full' $B/notes -o page.html
-head -c 15 page.html | grep -q '<!doctype html>' || fail 'HX-Request-Type: full was answered a bare fragment'
-grep -qi "^vary: $VARY" headers.txt || fail 'the full answer carried no Vary naming every header read'
-curl -s -b jar.txt -D headers.txt -H 'HX-Request: true' -H 'HX-Request-Type: partial' $B/notes -o frag.html
-head -c 20 frag.html | grep -q '<section id="notes">' || fail 'HX-Request-Type: partial was not answered the fragment'
-grep -qi "^vary: $VARY" headers.txt || fail 'the partial answer carried no Vary naming every header read'
+curl -s -b "$out/jar.txt" -D "$out/headers.txt" -H 'HX-Request: true' -H 'HX-Request-Type: full' $B/notes -o "$out/page.html"
+head -c 15 "$out/page.html" | grep -q '<!doctype html>' || fail 'HX-Request-Type: full was answered a bare fragment'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the full answer carried no Vary naming every header read'
+curl -s -b "$out/jar.txt" -D "$out/headers.txt" -H 'HX-Request: true' -H 'HX-Request-Type: partial' $B/notes -o "$out/frag.html"
+head -c 20 "$out/frag.html" | grep -q '<section id="notes">' || fail 'HX-Request-Type: partial was not answered the fragment'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the partial answer carried no Vary naming every header read'
 # The restore as htmx 4 sends it, measured in Chromium: the marker and
 # `full`, and NO HX-Request at all.
-curl -s -b jar.txt -H 'HX-History-Restore-Request: true' -H 'HX-Request-Type: full' $B/notes -o page.html
-head -c 15 page.html | grep -q '<!doctype html>' || fail 'an htmx 4 history restore was answered a bare fragment'
+curl -s -b "$out/jar.txt" -H 'HX-History-Restore-Request: true' -H 'HX-Request-Type: full' $B/notes -o "$out/page.html"
+head -c 15 "$out/page.html" | grep -q '<!doctype html>' || fail 'an htmx 4 history restore was answered a bare fragment'
 # Where the two majors differ on the same headers: a boosted element with
 # its own hx-target sends `partial` beside HX-Boosted, and means it.
-curl -s -b jar.txt -H 'HX-Request: true' -H 'HX-Boosted: true' -H 'HX-Request-Type: partial' $B/notes -o frag.html
-head -c 20 frag.html | grep -q '<section id="notes">' || fail 'an htmx 4 boosted partial was answered a document'
+curl -s -b "$out/jar.txt" -H 'HX-Request: true' -H 'HX-Boosted: true' -H 'HX-Request-Type: partial' $B/notes -o "$out/frag.html"
+head -c 20 "$out/frag.html" | grep -q '<section id="notes">' || fail 'an htmx 4 boosted partial was answered a document'
 
 # Datastar asks with its own header and gets the same bare fragment as a
 # text/html body, which it morphs into the element carrying the id. One
 # renderer, the other transport, decided by the framework from the header.
-curl -s -b jar.txt -D headers.txt -H 'Datastar-Request: true' $B/notes -o frag.html
-head -c 20 frag.html | grep -q '<section id="notes">' || fail 'GET /notes with Datastar-Request did not answer the fragment'
-grep -qiE 'doctype|<html' frag.html && fail 'the Datastar answer carried document markup'
-grep -qi '^content-type: text/html' headers.txt || fail 'the Datastar answer was not text/html'
-grep -qi "^vary: $VARY" headers.txt || fail 'the Datastar answer carried no Vary naming every header read'
+curl -s -b "$out/jar.txt" -D "$out/headers.txt" -H 'Datastar-Request: true' $B/notes -o "$out/frag.html"
+head -c 20 "$out/frag.html" | grep -q '<section id="notes">' || fail 'GET /notes with Datastar-Request did not answer the fragment'
+grep -qiE 'doctype|<html' "$out/frag.html" && fail 'the Datastar answer carried document markup'
+grep -qi '^content-type: text/html' "$out/headers.txt" || fail 'the Datastar answer was not text/html'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the Datastar answer carried no Vary naming every header read'
 
 # --- N13: a write carries the token, and only this session's ---------------
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -d 'title=forged' $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -d 'title=forged' $B/notes)
 [ "$code" = "403" ] || fail "expected 403 for a write with no CSRF token, got $code"
 OTHER=$($ISSUE --key $KEY --subject notes --exp $((NOW + 1200)))
 OTHER_CSRF=$($ISSUE --key $KEY --csrf-for "$OTHER")
 [ "$OTHER_CSRF" != "$CSRF" ] || fail 'two sessions derived the same CSRF token'
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -d "csrf=$OTHER_CSRF&title=forged" $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -d "csrf=$OTHER_CSRF&title=forged" $B/notes)
 [ "$code" = "403" ] || fail "expected 403 for another session's CSRF token, got $code"
 # The token is read from the body or the X-CSRF-Token header and from
 # nowhere else: in the query string it is in the access log, the Referer
 # and the history.
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X POST "$B/notes?csrf=$CSRF" -d 'title=forged')
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -X POST "$B/notes?csrf=$CSRF" -d 'title=forged')
 [ "$code" = "403" ] || fail "expected 403 for a CSRF token in the query string, got $code"
-curl -s -b jar.txt -H 'HX-Request: true' $B/notes | grep -q 'forged' \
+curl -s -b "$out/jar.txt" -H 'HX-Request: true' $B/notes | grep -q 'forged' \
   && fail 'a write refused for its token still happened'
 
 # A urlencoded form: `+` is a space, %C3%A9 is one character and must come
 # back as those two bytes, and a checkbox key repeated once per tick keeps
 # every value. The answer is the list, as a fragment.
-code=$(curl -s -o frag.html -w '%{http_code}' -b jar.txt -H 'HX-Request: true' \
+code=$(curl -s -o "$out/frag.html" -w '%{http_code}' -b "$out/jar.txt" -H 'HX-Request: true' \
   -d "csrf=$CSRF&title=Caf%C3%A9+au+lait&body=hello+world&tag=work&tag=home" $B/notes)
 [ "$code" = "200" ] || fail "expected 200 from create, got $code"
-grep -q 'Café au lait' frag.html || fail 'the title did not round-trip: multi-byte or plus-space decoding is wrong'
-grep -q '<span class="tag">work</span>' frag.html || fail 'the first checkbox value was lost'
-grep -q '<span class="tag">home</span>' frag.html || fail 'the repeated checkbox key lost its second value'
-head -c 20 frag.html | grep -q '<section id="notes">' || fail 'POST /notes with HX-Request did not answer the fragment'
+grep -q 'Café au lait' "$out/frag.html" || fail 'the title did not round-trip: multi-byte or plus-space decoding is wrong'
+grep -q '<span class="tag">work</span>' "$out/frag.html" || fail 'the first checkbox value was lost'
+grep -q '<span class="tag">home</span>' "$out/frag.html" || fail 'the repeated checkbox key lost its second value'
+head -c 20 "$out/frag.html" | grep -q '<section id="notes">' || fail 'POST /notes with HX-Request did not answer the fragment'
 
 # A title that is markup is rendered as text, in the list and on its page.
-curl -s -o frag.html -b jar.txt -H 'HX-Request: true' \
+curl -s -o "$out/frag.html" -b "$out/jar.txt" -H 'HX-Request: true' \
   --data-urlencode "csrf=$CSRF" --data-urlencode 'title=<script>alert(1)</script>' --data-urlencode 'body=b' $B/notes
-grep -q '&lt;script&gt;alert(1)&lt;/script&gt;' frag.html || fail 'a markup title was not escaped in the list'
-grep -q '<script>alert' frag.html && fail 'a markup title reached the list unescaped'
-curl -s -b jar.txt -D headers.txt $B/notes/2 -o page.html
-grep -q '<h1>&lt;script&gt;alert(1)&lt;/script&gt;</h1>' page.html || fail 'a markup title was not escaped on its page'
-grep -q '<script>alert' page.html && fail 'a markup title reached its page unescaped'
-grep -qi "^vary: $VARY" headers.txt || fail 'the detail page carried no Vary naming every header read'
+grep -q '&lt;script&gt;alert(1)&lt;/script&gt;' "$out/frag.html" || fail 'a markup title was not escaped in the list'
+grep -q '<script>alert' "$out/frag.html" && fail 'a markup title reached the list unescaped'
+curl -s -b "$out/jar.txt" -D "$out/headers.txt" $B/notes/2 -o "$out/page.html"
+grep -q '<h1>&lt;script&gt;alert(1)&lt;/script&gt;</h1>' "$out/page.html" || fail 'a markup title was not escaped on its page'
+grep -q '<script>alert' "$out/page.html" && fail 'a markup title reached its page unescaped'
+grep -qi "^vary: $VARY" "$out/headers.txt" || fail 'the detail page carried no Vary naming every header read'
 
 # The detail route, reached by FOLLOWING a rendered link rather than typing
 # the path: a route constant that was never registered reverses fine and
 # 404s only when clicked, and this is the click. Then a note that does not
 # exist.
-href=$(grep -o 'href="/notes/[0-9]*"' frag.html | head -1 | cut -d'"' -f2)
+href=$(grep -o 'href="/notes/[0-9]*"' "$out/frag.html" | head -1 | cut -d'"' -f2)
 [ -n "$href" ] || fail 'the list rendered no link to a note'
-curl -s -b jar.txt -H 'HX-Request: true' "$B$href" | grep -q '<h1>Café au lait</h1><p>hello world</p>' \
+curl -s -b "$out/jar.txt" -H 'HX-Request: true' "$B$href" | grep -q '<h1>Café au lait</h1><p>hello world</p>' \
   || fail "following the rendered link $href did not reach the note"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/999)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" $B/notes/999)
 [ "$code" = "404" ] || fail "expected 404 for a missing note, got $code"
 
 # --- N37: a swap that arrives at a view moves the address bar ----------------
@@ -9451,39 +9315,39 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/999)
 # half, which is what makes a pushed address a real one: the pushed URL asked
 # for as htmx 4 asks on reload and on back -- `full`, no HX-Request -- is the
 # note as a document.
-grep -q '<a href="'"$href"'" hx-get="'"$href"'" hx-target="#notes" hx-swap="outerHTML" hx-push-url="true">' frag.html \
+grep -q '<a href="'"$href"'" hx-get="'"$href"'" hx-target="#notes" hx-swap="outerHTML" hx-push-url="true">' "$out/frag.html" \
   || fail "the list's link to $href does not push its URL"
-curl -s -b jar.txt -H 'HX-Request: true' "$B$href" \
+curl -s -b "$out/jar.txt" -H 'HX-Request: true' "$B$href" \
   | grep -q '<a href="/notes" hx-get="/notes" hx-target="#notes" hx-swap="outerHTML" hx-push-url="true">' \
   || fail 'the link back to the list does not push its URL'
-[ "$(grep -o 'hx-push-url' frag.html | wc -l | tr -d ' ')" = "$(grep -o '<a href="/notes/' frag.html | wc -l | tr -d ' ')" ] \
+[ "$(grep -o 'hx-push-url' "$out/frag.html" | wc -l | tr -d ' ')" = "$(grep -o '<a href="/notes/' "$out/frag.html" | wc -l | tr -d ' ')" ] \
   || fail 'something other than a link to a note pushes a URL'
-curl -s -b jar.txt -H 'HX-History-Restore-Request: true' -H 'HX-Request-Type: full' "$B$href" -o page.html
-head -c 15 page.html | grep -q '<!doctype html>' || fail "the pushed URL $href was not answered as a document on restore"
-grep -q '<h1>Café au lait</h1>' page.html || fail "the pushed URL $href did not rebuild the note"
+curl -s -b "$out/jar.txt" -H 'HX-History-Restore-Request: true' -H 'HX-Request-Type: full' "$B$href" -o "$out/page.html"
+head -c 15 "$out/page.html" | grep -q '<!doctype html>' || fail "the pushed URL $href was not answered as a document on restore"
+grep -q '<h1>Café au lait</h1>' "$out/page.html" || fail "the pushed URL $href did not rebuild the note"
 
 # A body whose content type is not the form's is refused, never parsed as
 # one. The bytes are deliberately form-SHAPED under a JSON content type:
 # a JSON document would fail the title check anyway, so only this shape
 # tells a server that reads the content type from one that guesses.
 # A form with no title is refused too.
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -H 'Content-Type: application/json' -d 'title=json' $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -H 'Content-Type: application/json' -d 'title=json' $B/notes)
 [ "$code" = "400" ] || fail "expected 400 for a body declared application/json, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -d "csrf=$CSRF&title=&body=b" $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -d "csrf=$CSRF&title=&body=b" $B/notes)
 [ "$code" = "400" ] || fail "expected 400 for an empty title, got $code"
-curl -s -b jar.txt -H 'HX-Request: true' $B/notes -o frag.html
-grep -q 'json' frag.html && fail 'a refused body still created a note'
+curl -s -b "$out/jar.txt" -H 'HX-Request: true' $B/notes -o "$out/frag.html"
+grep -q 'json' "$out/frag.html" && fail 'a refused body still created a note'
 # Two notes were created above; a refused one must not have become a third.
-[ "$(grep -o '<li>' frag.html | wc -l | tr -d ' ')" = "2" ] || fail 'a refused body still created a note (list length moved)'
+[ "$(grep -o '<li>' "$out/frag.html" | wc -l | tr -d ' ')" = "2" ] || fail 'a refused body still created a note (list length moved)'
 
 # The router distinguishes 405 from 404 and says what IS allowed; a method
 # a note's route does not take must not touch the note.
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -D headers.txt -X DELETE $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -D "$out/headers.txt" -X DELETE $B/notes)
 [ "$code" = "405" ] || fail "expected 405 for DELETE on the collection, got $code"
-grep -qi '^allow: GET, HEAD, POST, OPTIONS' headers.txt || fail '405 carried no or a wrong Allow header'
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X PATCH $B/notes/1)
+grep -qi '^allow: GET, HEAD, POST, OPTIONS' "$out/headers.txt" || fail '405 carried no or a wrong Allow header'
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -X PATCH $B/notes/1)
 [ "$code" = "405" ] || fail "expected 405 for PATCH on a note, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" $B/notes/1)
 [ "$code" = "200" ] || fail "a 405 on a note must leave it intact, but GET answered $code"
 
 # Delete carries the token as a HEADER. htmx 4 sends a DELETE with no body
@@ -9491,43 +9355,43 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
 # no token field at all -- one there is one in the URL -- and carries
 # hx-headers instead. With the token in the query it is refused, and the
 # note survives.
-DELFORM=$(grep -o '<form class="delete"[^>]*hx-delete="/notes/1"[^>]*>' frag.html)
+DELFORM=$(grep -o '<form class="delete"[^>]*hx-delete="/notes/1"[^>]*>' "$out/frag.html")
 [ -n "$DELFORM" ] || fail 'the list carried no delete form for note 1'
 echo "$DELFORM" | grep -q "hx-headers=\\"{&quot;X-CSRF-Token&quot;:&quot;$CSRF&quot;}\\"" \
   || fail 'the delete form did not carry this session token as hx-headers'
 # The token is a FIELD in the create form and the sign-out form and in no
 # other: two notes are listed, so a field in each delete form would be four.
-[ "$(grep -o 'name="csrf"' frag.html | wc -l | tr -d ' ')" = "2" ] \
+[ "$(grep -o 'name="csrf"' "$out/frag.html" | wc -l | tr -d ' ')" = "2" ] \
   || fail 'a delete form holds a csrf FIELD, which htmx 4 would put in the URL'
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE "$B/notes/1?csrf=$CSRF")
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -X DELETE "$B/notes/1?csrf=$CSRF")
 [ "$code" = "403" ] || fail "expected 403 for a DELETE whose token was in the query, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -X DELETE $B/notes/1)
 [ "$code" = "403" ] || fail "expected 403 for a DELETE with no token, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" $B/notes/1)
 [ "$code" = "200" ] || fail "a refused DELETE must leave the note, but GET answered $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE -H "X-CSRF-Token: $OTHER_CSRF" $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -X DELETE -H "X-CSRF-Token: $OTHER_CSRF" $B/notes/1)
 [ "$code" = "403" ] || fail "expected 403 for a DELETE carrying another session's token as a header, got $code"
 # A header that is present decides: a wrong one is not rescued by a right
 # field beside it.
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X DELETE -H "X-CSRF-Token: $OTHER_CSRF" -d "csrf=$CSRF" $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -X DELETE -H "X-CSRF-Token: $OTHER_CSRF" -d "csrf=$CSRF" $B/notes/1)
 [ "$code" = "403" ] || fail "expected 403 for a wrong token header beside a right field, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" $B/notes/1)
 [ "$code" = "200" ] || fail "a DELETE refused for its header must leave the note, but GET answered $code"
 # The request as htmx 4.0.0 shapes it: no body, the token a header.
-curl -s -X DELETE -b jar.txt -H 'HX-Request: true' -H 'HX-Request-Type: partial' -H "X-CSRF-Token: $CSRF" $B/notes/1 -o frag.html
-head -c 20 frag.html | grep -q '<section id="notes">' || fail 'the DELETE was not answered the list fragment'
-grep -q 'Café au lait' frag.html && fail 'the list after delete still carried the note'
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes/1)
+curl -s -X DELETE -b "$out/jar.txt" -H 'HX-Request: true' -H 'HX-Request-Type: partial' -H "X-CSRF-Token: $CSRF" $B/notes/1 -o "$out/frag.html"
+head -c 20 "$out/frag.html" | grep -q '<section id="notes">' || fail 'the DELETE was not answered the list fragment'
+grep -q 'Café au lait' "$out/frag.html" && fail 'the list after delete still carried the note'
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" $B/notes/1)
 [ "$code" = "404" ] || fail "expected 404 after delete, got $code"
 
 # G14, the body side: a form field holding a byte that is not UTF-8
 # beside a percent-escape reaches the decoder from the body, not the
 # target. It must be answered, and the server must still be up. The
 # cookie rides with it, so the session parser sees the same bytes.
-COOKIE=$(grep m0_notes_session jar.txt | awk '{print $7}')
-python3 - "$COOKIE" "$CSRF" <<'PY' || fail 'a form body carrying a byte that is not UTF-8 got no answer'
+COOKIE=$(grep m0_notes_session "$out/jar.txt" | awk '{print $7}')
+python3 - "$COOKIE" "$CSRF" "$port" <<'PY' || fail 'a form body carrying a byte that is not UTF-8 got no answer'
 import socket, sys
-cookie, csrf = sys.argv[1], sys.argv[2]
+cookie, csrf, port = sys.argv[1], sys.argv[2], int(sys.argv[3])
 body = ("csrf=%s&title=" % csrf).encode() + b"\\x80%41&body=x"
 head = (
     "POST /notes HTTP/1.1\\r\\nHost: x\\r\\n"
@@ -9535,7 +9399,7 @@ head = (
     "Content-Type: application/x-www-form-urlencoded\\r\\n"
     "Content-Length: %d\\r\\nConnection: close\\r\\n\\r\\n" % (cookie, len(body))
 ).encode()
-s = socket.create_connection(("127.0.0.1", 8094), timeout=5)
+s = socket.create_connection(("127.0.0.1", port), timeout=5)
 s.sendall(head + body)
 line = s.recv(4096).split(b"\\r\\n")[0]
 s.close()
@@ -9544,14 +9408,15 @@ PY
 # G14, the cookie side: the session cookie is request-derived too, and a
 # byte above 0x7F in it reaches the verifier's field walk. Refused, not
 # fatal — one such request used to take the loop thread with it.
-python3 - <<'PY' || fail 'a session cookie carrying a byte that is not UTF-8 got no answer'
-import socket
+python3 - "$port" <<'PY' || fail 'a session cookie carrying a byte that is not UTF-8 got no answer'
+import socket, sys
+port = int(sys.argv[1])
 head = (
     b"GET /notes HTTP/1.1\\r\\nHost: x\\r\\n"
     b"Cookie: m0_notes_session=v1.aaaaaaaa.1800000600.n\\x80tes.x\\r\\n"
     b"Connection: close\\r\\n\\r\\n"
 )
-s = socket.create_connection(("127.0.0.1", 8094), timeout=5)
+s = socket.create_connection(("127.0.0.1", port), timeout=5)
 s.sendall(head)
 line = s.recv(4096).split(b"\\r\\n")[0]
 s.close()
@@ -9565,26 +9430,25 @@ curl --silent --fail $B/health > /dev/null || fail 'the server was gone after a 
 # that kept the value could use it until its own expiry. That is the TTL's
 # job, and the gate says which of the two it is asserting — the jar is
 # what honours the expiry.
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -c jar.txt -D headers.txt -d "csrf=$CSRF" $B/logout)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -c "$out/jar.txt" -D "$out/headers.txt" -d "csrf=$CSRF" $B/logout)
 [ "$code" = "303" ] || fail "expected 303 from logout, got $code"
-grep -qi '^location: /login' headers.txt || fail 'logout did not redirect to the login page'
-grep -i '^set-cookie' headers.txt | grep -q 'Max-Age=0' || fail 'logout did not expire the cookie'
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes)
+grep -qi '^location: /login' "$out/headers.txt" || fail 'logout did not redirect to the login page'
+grep -i '^set-cookie' "$out/headers.txt" | grep -q 'Max-Age=0' || fail 'logout did not expire the cookie'
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" $B/notes)
 [ "$code" = "303" ] || fail "expected 303 after logout, got $code"
 # And logout is itself a write: without the token it does not happen.
-curl -s -o /dev/null -c jar.txt -d "user=notes&password=$PASSWORD" $B/login
-CSRF=$($ISSUE --key $KEY --csrf-for "$(grep m0_notes_session jar.txt | awk '{print $7}')")
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt -X POST $B/logout)
+curl -s -o /dev/null -c "$out/jar.txt" -d "user=notes&password=$PASSWORD" $B/login
+CSRF=$($ISSUE --key $KEY --csrf-for "$(grep m0_notes_session "$out/jar.txt" | awk '{print $7}')")
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" -X POST $B/logout)
 [ "$code" = "403" ] || fail "expected 403 for a logout with no CSRF token, got $code"
-code=$(curl -s -o /dev/null -w '%{http_code}' -b jar.txt $B/notes)
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$out/jar.txt" $B/notes)
 [ "$code" = "200" ] || fail "a refused logout signed the session out anyway ($code)"
 
 # The root is a redirect to the list, not a second copy of it.
-code=$(curl -s -o /dev/null -w '%{http_code}' -D headers.txt $B/)
+code=$(curl -s -o /dev/null -w '%{http_code}' -D "$out/headers.txt" $B/)
 [ "$code" = "303" ] || fail "expected 303 from /, got $code"
-grep -qi '^location: /notes' headers.txt || fail 'the root redirect carried no Location'
+grep -qi '^location: /notes' "$out/headers.txt" || fail 'the root redirect carried no Location'
 
-rm -f fragment.log refusal.log headers.txt page.html frag.html jar.txt notes_app
 echo "smoke-fragment-notes OK"
 python3 scripts/emit.py --covers N1 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N8 --task smoke-fragment-notes

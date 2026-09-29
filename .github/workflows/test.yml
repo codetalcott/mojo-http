@@ -60,6 +60,15 @@ jobs:
       # smoke job because it needs nothing compiled and fails in seconds.
       - name: Check machine-sourced doc facts
         run: uv run poe check-docs
+      # poe runs every shell task under `sh`, which is dash on this leg and
+      # bash's POSIX mode on a Mac: a bashism written and run on a Mac exits
+      # 2 here before its first assertion. The checker parses every task
+      # body under dash, refuses what `-n` cannot see (a bash expansion, a
+      # nested `uv run` that re-syncs the venv), and self-tests its rules and
+      # scripts/smoke/lib.sh. Nothing compiled, so beside the step above.
+      - name: Parse every poe shell task under dash
+        if: matrix.os == 'ubuntu-latest'
+        run: uv run poe check-task-shells
       # "What is left for 1.0", answered by CI on every pull request rather
       # than by whoever remembers. The milestone rot gates (known issues
       # declare what retires them) run in the docs gate the step above runs,
@@ -112,6 +121,15 @@ jobs:
         run: |
           python3 scripts/sabotage_lib.py --selftest
           python3 scripts/emit.py --covers F17 --task sabotage-lib-selftest
+      # The smoke probes' shared library: the phase stamp, fail(), a server
+      # watched while it starts, the SSE reader and the WebSocket client the
+      # probes on it speak through. A regression there fails a probe for the
+      # wrong reason, or never fails it at all -- a deadline that stopped
+      # bounding a read hangs until the job's cap. Real sockets and
+      # processes, on both legs because process groups and sockets are
+      # where the two kernels differ; stdlib only, seconds.
+      - name: Self-test the probe library
+        run: python3 scripts/probelib.py --selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
       # The Mojo pool's guards, proven able to fail: each rule in
@@ -772,19 +790,17 @@ jobs:
         with:
           name: ci-results-${{ matrix.os }}
 
+      # A smoke on scripts/smoke/lib.sh keeps its logs, and only its logs,
+      # in $RUNNER_TEMP/m0-smoke.* when it fails; the rest still write to
+      # the repo root.
       - name: Upload server log on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: server-logs-${{ matrix.os }}
           path: |
-            hello.log
-            shutdown1.log
-            shutdown2.log
+            ${{ runner.temp }}/m0-smoke.*/*.log
             notes.log
-            fragment.log
-            counter.log
-            todo.log
             serve.log
             threads.log
           if-no-files-found: ignore
@@ -1031,22 +1047,17 @@ jobs:
         with:
           name: ci-results-${{ matrix.os }}-gateway
 
+      # See the smoke job's upload: the lib's smokes keep their logs under
+      # $RUNNER_TEMP when they fail.
       - name: Upload server log on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: server-logs-${{ matrix.os }}-gateway
           path: |
-            django.log
-            django2.log
-            django3.log
+            ${{ runner.temp }}/m0-smoke.*/*.log
             wsgi.log
             flask.log
             serve.log
             threads.log
-            rt.log
-            rt2.log
-            rt3.log
-            ws1.log
-            ws2.log
           if-no-files-found: ignore

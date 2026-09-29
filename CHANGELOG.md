@@ -300,6 +300,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   pass. `sabotage-spec` no longer reports a working rule MISSED when the
   first test file carries extra coverage, and `test.yml` no longer runs the
   milestone rot gates a second time beside the docs gate.
+- **Twenty-two smokes no longer bind a fixed port or write into the
+  checkout, and no task re-syncs the venv it runs in.** They source
+  `scripts/smoke/lib.sh`, so each server takes a free port, where fourteen
+  of them shared 8080, and its logs go to a temporary directory that is
+  kept, and uploaded by CI, only when the smoke fails. A server that dies
+  while starting is reported at once with its log, where the smoke
+  retried for a minute first, and cleanup stops the server's whole process
+  group and waits for it, where it signalled one pid and could leave a
+  supervisor's workers running. Ten tasks could run a nested `uv run poe`
+  (three on every run, seven to build something missing), which re-syncs
+  the environment the task runs in, swapping packages under anything else
+  using it and undoing `nightly-try` or `py314t-try`; they pass
+  `--no-sync`, or take the build as a poe dependency. A new step on the
+  Linux leg, `poe check-task-shells`, parses every task under dash and
+  refuses such a call.
 
 - **A client that resets its connection no longer holds its slot on
   Linux** (SPEC C9). epoll reported a socket error as a failed
@@ -497,6 +512,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   holds it to that. The check also compares the file a job's `M0_RESULTS`
   names with the file it uploads by whole name: `results.jsonl` used to
   pass as `ci-results.jsonl`.
+- **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
+  phase stamp, `fail()`, a server watched until it answers, a free port,
+  an SSE reader and a WebSocket client, each proven by
+  `python3 scripts/probelib.py --selftest` in CI. A server that exits
+  before it answers is reported at once, with its log:
+  `smoke-exec-inherit` and `smoke-child-publish` used to wait 120 s for
+  one, and `smoke-ws-inbound` and `smoke-slot-lifecycle` 30 s.
+  `outbox_cap_probe.py` gives the connection one 20 s deadline, where a
+  per-read timeout was reset by every heartbeat, so
+  `sabotage-outbox-cap`'s two rules that leave the connection open are
+  caught by the probe's own verdict rather than by the harness killing it
+  at 180 s. `poe check-phase-stamps` accepts a probe that takes its stamp
+  from the library and holds the library to the crash handler's rules. It
+  now judges the unsabotaged tree before any sabotage, and requires every
+  rule to have a sabotage that the rule itself catches.
 - **A supervisor, and what an application runs before its loop, survive
   SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
   which a supervisor never enters: m0serve's under `--workers` or

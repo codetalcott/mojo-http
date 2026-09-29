@@ -46,11 +46,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import time
-import traceback
+
+from probelib import phase, server, sse_events, stamp
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PHASE = "startup"
+stamp("child_publish_probe FAIL")
 
 SHAPES = [
     ("one-worker", []),
@@ -58,19 +58,6 @@ SHAPES = [
     ("spawn-workers", ["--workers", "2", "--spawn-workers"]),
 ]
 UNNUMBERED = ("inherit", "scrub", "stale_fd", "stale_bus", "stale_bus_socket", "malformed_bus")
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("child_publish_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
 
 
 def core_lib(tmp):
@@ -97,20 +84,6 @@ def core_lib(tmp):
     return lib
 
 
-def wait_healthy(port, log):
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        try:
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-            conn.request("GET", "/nope")
-            conn.getresponse().read()
-            conn.close()
-            return
-        except OSError:
-            time.sleep(0.5)
-    sys.exit("server never answered; it said:\n" + open(log).read())
-
-
 def open_stream(port, channel):
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=20)
     conn.request("GET", "/events?channel=" + channel,
@@ -125,19 +98,12 @@ def open_stream(port, channel):
 
 
 def read_child_frame(resp):
-    """The `id:` of the frame carrying `from-child`, or None if it had none."""
-    event_id = None
-    while True:
-        line = resp.fp.readline()
-        if not line:
-            raise RuntimeError("stream ended before the child's frame")
-        text = line.decode("utf-8", "replace").rstrip("\r\n")
-        if text.startswith("id: "):
-            event_id = int(text[4:])
-        elif text == "data: from-child":
-            return event_id
-        elif text == "":
-            event_id = None
+    """The `id:` of the frame carrying `from-child`, or None if it had none:
+    the frame's OWN id line, which is what an unnumbered publish leaves out."""
+    for ev in sse_events(resp.fp):
+        if ev.data == "from-child":
+            return None if ev.id is None else int(ev.id)
+    raise RuntimeError("stream ended before the child's frame")
 
 
 def run_case(port, shape, mode, problems):
@@ -220,23 +186,16 @@ def main():
         env = dict(os.environ, M0_CORE_LIB=core_lib(tmp))
         for i, (shape, flags) in enumerate(SHAPES):
             port = args.port + i
-            log = os.path.join(tmp, shape + ".log")
             phase("%s: starting" % shape)
-            srv = subprocess.Popen(
-                [args.bin, "bareapp.childpub:application", "--app-dir",
-                 os.path.join(REPO, "apps", "wsgi_bare"), "--realtime",
-                 "--port", str(port)] + flags,
-                stdout=open(log, "w"), stderr=subprocess.STDOUT, env=env, cwd=REPO)
-            try:
-                wait_healthy(port, log)
+            # Any answer is ready, a 404 included; a server that exits first
+            # is reported then, not after the 120 s a slow runner is given.
+            argv = [args.bin, "bareapp.childpub:application", "--app-dir",
+                    os.path.join(REPO, "apps", "wsgi_bare"), "--realtime",
+                    "--port", str(port)] + flags
+            with server(argv, "http://127.0.0.1:%d/nope" % port, timeout=120, status=None,
+                        log=os.path.join(tmp, shape + ".log"), env=env, cwd=REPO):
                 for mode in args.modes.split(","):
                     run_case(port, shape, mode, problems)
-            finally:
-                srv.terminate()
-                try:
-                    srv.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    srv.kill()
     if problems:
         print("child_publish_probe FAIL:")
         for p in problems:

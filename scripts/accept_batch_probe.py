@@ -43,17 +43,18 @@ The measurements are in docs/notes/the-accept-batch.md. Prints `beyond_ms N`,
 
 from __future__ import annotations
 
+import contextlib
 import http.client
 import os
 import platform
 import re
 import socket
-import subprocess
 import sys
 import tempfile
 import threading
 import time
-import traceback
+
+from probelib import fail, phase, server, stamp
 
 K = 120          # under the listen backlog of 128, so all of it queues at once
 EACH_MS = 10     # what each queued request asks for; its COST is measured
@@ -67,28 +68,11 @@ LOOP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packages"
                     "m0-http", "lightbug_http", "loop", "state.mojo")
 
 
-# Which phase is running, for the crash handler below: a traceback names the
-# CALL that raised (a socket helper every phase shares) and never the PHASE
-# being proven. scripts/phase_stamp_check.py holds every probe to it.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("smoke-accept-batch: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg: str) -> None:
-    print("smoke-accept-batch: %s: %s" % (PHASE, msg), file=sys.stderr)
-    sys.exit(1)
+# Which phase is running, for the crash handler: a traceback names the CALL
+# that raised (a socket helper every phase shares) and never the PHASE being
+# proven. scripts/phase_stamp_check.py holds every probe to it.
+stamp("smoke-accept-batch: FAIL", fail="smoke-accept-batch: {phase}: {msg}",
+      stream=sys.stderr)
 
 
 def accept_batch() -> int:
@@ -100,41 +84,20 @@ def accept_batch() -> int:
     return int(m.group(1))
 
 
-def start(binary: str, port: int, batch: str | None) -> subprocess.Popen:
+@contextlib.contextmanager
+def started(binary: str, port: int, batch: str | None):
+    """The server for one arm, stopped and reaped on the way out; one that
+    exits before /health answers is reported then, with its log."""
     env = dict(os.environ, M0_PORT=str(port), M0_POOL_THREADS="0")
     env.pop("M0_ACCEPT_BATCH", None)
     if batch is not None:
         env["M0_ACCEPT_BATCH"] = batch
     # A file, not a pipe nobody reads: a server that logs enough to fill a
     # pipe would block on it and fake the stall this probe measures.
-    log = tempfile.TemporaryFile(mode="w+")
-    proc = subprocess.Popen([binary], env=env, stdout=log, stderr=subprocess.STDOUT, text=True)
-    deadline = time.time() + 20
-    while time.time() < deadline:
-        if proc.poll() is not None:
-            log.seek(0)
-            fail("the server exited %s before answering /health:\n%s"
-                 % (proc.returncode, log.read()[-2000:]))
-        try:
-            c = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-            c.request("GET", "/health")
-            if c.getresponse().status == 200:
-                c.close()
-                return proc
-        except OSError:
-            time.sleep(0.05)
-    proc.kill()
-    fail("the server never answered /health on :%d" % port)
-    raise AssertionError
-
-
-def stop(proc: subprocess.Popen) -> None:
-    proc.terminate()
-    try:
-        proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+    with tempfile.TemporaryFile(mode="w+") as log, \
+            server([binary], "http://127.0.0.1:%d/health" % port, timeout=20, log=log,
+                   grace=10, env=env) as proc:
+        yield proc
 
 
 def cost(port: int) -> float:
@@ -236,14 +199,11 @@ def main() -> None:
     batch = accept_batch()
 
     phase("arm: start the server")
-    proc = start(binary, port, None)
-    try:
+    with started(binary, port, None):
         phase("arm: measure what one request costs")
         each = cost(port)
         phase("arm: the burst behind the blocker")
         r = one_round(port)
-    finally:
-        stop(proc)
     whole = K * each
     bound = 1.5 * batch * each
     print("arm: /slow?ms=%d costs %.1f ms here; /fast %.0f ms after the blocker's answer, behind "
@@ -264,14 +224,11 @@ def main() -> None:
 
     if platform.system() == "Linux":
         phase("negative arm: start the server")
-        proc = start(binary, port + 1, "0")
-        try:
+        with started(binary, port + 1, "0"):
             phase("negative arm: measure what one request costs")
             neg_each = cost(port + 1)
             phase("negative arm: the burst behind the blocker")
             n = one_round(port + 1)
-        finally:
-            stop(proc)
         print("negative arm (M0_ACCEPT_BATCH=0): /slow?ms=%d costs %.1f ms; /fast %.0f ms after "
               "the blocker; burst answered %d/%d" % (EACH_MS, neg_each, n["beyond"], n["served"], K))
         if n["beyond"] < K * neg_each * 2 / 3:
