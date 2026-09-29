@@ -390,8 +390,9 @@ is exactly 8 bytes and a message is at least 12.
 comptime WS_DATAGRAM_MAX = 65546
 """The largest inbound-WebSocket datagram a submit channel carries, and so
 the buffer both of its readers post: a pool thread's (`m0_wsgi.blocking_pool`)
-and the executor shim's read of its lane, a literal there because the shim
-is Python and cannot import this.
+and the executor shim's read of its lane, `_WS_DATAGRAM_MAX` there because
+the shim is Python and cannot import this -- `render_shim.py --check`, in
+the docs gate, holds the two equal.
 
 The channel's own socket buffer, 64 KB, plus a tag header. Both readers
 read WITHOUT `MSG_TRUNC`: a SOCK_DGRAM datagram larger than the buffer is

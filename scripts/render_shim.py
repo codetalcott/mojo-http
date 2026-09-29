@@ -26,14 +26,35 @@ as well as the freshness: the rendered literal, unescaped the way the
 compiler unescapes it, must equal the ``.py`` -- which is what lets
 ``scripts/shim_ownership.py`` test the ``.py`` and still be testing the
 program the binary runs.
+
+``--check`` holds one more thing: the numbers the shim MIRRORS. The shim
+cannot import Mojo, so a size the Mojo side owns -- the largest datagram a
+submit lane carries, the header before an inbound WebSocket message, the
+inbound window -- is a module constant in the ``.py``, and ``MIRRORED``
+names each one's source. A drift is a read that truncates a message or a
+credit window that never refills, with nothing failing at the time; the
+check fails naming the pair instead. ``--selftest`` drifts each side of
+each pair, and removes each constant, and insists every one is caught.
 """
 
+import re
 import sys
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SOURCE = REPO / "packages" / "m0-wsgi" / "shim" / "m0_shim.py"
 TARGET = REPO / "packages" / "m0-wsgi" / "src" / "shim_source.mojo"
+
+# (shim constant, Mojo source file, Mojo constant): each number the shim
+# mirrors, and where the Mojo side defines it. Both sides must be a plain
+# integer literal on a line of its own, so the check reads them without
+# evaluating anything.
+MIRRORED = [
+    ("_WS_DATAGRAM_MAX", "packages/m0-http/lightbug_http/offload.mojo",
+     "WS_DATAGRAM_MAX"),
+    ("_WS_TAG_HEADER", "packages/m0-wsgi/src/handler.mojo", "WS_TAG_HEADER"),
+    ("_WS_IN_WINDOW", "packages/m0-wsgi/src/handler.mojo", "WS_IN_WINDOW"),
+]
 
 _OPEN = 'comptime SHIM_SOURCE = """'
 _CLOSE = '\n"""\n'
@@ -125,6 +146,45 @@ def stale(source_text, rendered_text):
     return None
 
 
+def _int_constant(text, pattern, name):
+    """The integer `pattern` binds `name` to in `text`, or None."""
+    found = re.findall(pattern % re.escape(name), text, re.MULTILINE)
+    if len(found) != 1:
+        return None
+    return int(found[0].replace("_", ""))
+
+
+def mirror_drift(source_text, mojo_texts):
+    """Why the shim's mirrored constants disagree with Mojo, or None.
+
+    `mojo_texts` maps each file `MIRRORED` names to its text: a pure
+    function of text, so the selftest can drift either side in memory."""
+    problems = []
+    for py_name, mojo_path, mojo_name in MIRRORED:
+        py = _int_constant(source_text, r"^%s = ([0-9_]+)\s*$", py_name)
+        mojo = _int_constant(
+            mojo_texts.get(mojo_path, ""),
+            r"^comptime %s = ([0-9_]+)\s*$", mojo_name)
+        if py is None:
+            problems.append("m0_shim.py does not define %s as one integer "
+                            "literal" % py_name)
+        elif mojo is None:
+            problems.append("%s does not define %s as one integer literal"
+                            % (mojo_path, mojo_name))
+        elif py != mojo:
+            problems.append("m0_shim.py's %s is %d but %s's %s is %d"
+                            % (py_name, py, mojo_path, mojo_name, mojo))
+    if problems:
+        return ("the shim's mirrored constants disagree with their Mojo "
+                "source: " + "; ".join(problems))
+    return None
+
+
+def _mojo_texts():
+    return {path: (REPO / path).read_text(encoding="utf-8")
+            for path in {m[1] for m in MIRRORED}}
+
+
 def selftest():
     source = SOURCE.read_text(encoding="utf-8")
     rendered = render(source)
@@ -150,6 +210,29 @@ def selftest():
         report("a triple double-quote in the source is refused", False)
     except ValueError:
         report("a triple double-quote in the source is refused", True)
+    mojo = _mojo_texts()
+    report("(control: the mirrored constants agree)",
+           mirror_drift(source, mojo) is None)
+    for py_name, mojo_path, mojo_name in MIRRORED:
+        py_line = re.search(r"^%s = [0-9_]+\s*$" % re.escape(py_name),
+                            source, re.MULTILINE)
+        mojo_line = re.search(
+            r"^comptime %s = [0-9_]+\s*$" % re.escape(mojo_name),
+            mojo[mojo_path], re.MULTILINE)
+        if py_line is None or mojo_line is None:
+            report("%s is found on both sides" % py_name, False)
+            continue
+        drifted = source.replace(py_line.group(0), py_name + " = 7", 1)
+        report("%s drifted in the shim" % py_name,
+               mirror_drift(drifted, mojo) is not None)
+        other = dict(mojo)
+        other[mojo_path] = mojo[mojo_path].replace(
+            mojo_line.group(0), "comptime %s = 7" % mojo_name, 1)
+        report("%s drifted in %s" % (mojo_name, mojo_path.split("/")[-1]),
+               mirror_drift(source, other) is not None)
+        gone = source.replace(py_line.group(0), "", 1)
+        report("%s removed from the shim" % py_name,
+               mirror_drift(gone, mojo) is not None)
     print("render_shim selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -161,11 +244,12 @@ def main():
     rendered = render(source)
     if "--check" in sys.argv:
         current = TARGET.read_text(encoding="utf-8") if TARGET.exists() else ""
-        why = stale(source, current)
+        why = stale(source, current) or mirror_drift(source, _mojo_texts())
         if why:
             print("render_shim --check: " + why)
             sys.exit(1)
-        print("render_shim --check: shim_source.mojo is current")
+        print("render_shim --check: shim_source.mojo is current, and the "
+              "shim's mirrored constants agree")
         return
     TARGET.write_text(rendered, encoding="utf-8")
     print("rendered %s -> %s (%d lines of Python)"

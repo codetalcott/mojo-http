@@ -1628,7 +1628,7 @@ struct WSGIHandler(ThreadHandler):
             # function, so this check and that encoder cannot disagree.
             return ws_message_room(self.sockets.filter_url(slot))
         if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
-            return WS_DATAGRAM_MAX - 10  # `_send_ws_message_tag`'s
+            return WS_DATAGRAM_MAX - WS_TAG_HEADER
         return -1
 
     def _ws_refuse_too_big(mut self, slot: Int, size: Int, limit: Int):
@@ -1822,8 +1822,9 @@ executor-held socket's `receive()` queue.
 
 Charged in DATAGRAM bytes (`_ws_in_cost`) and acked CUMULATIVELY by the
 shim as the application's `receive()` actually consumes ('r' frames on the
-chunk channel), so a lost ack heals at the next one. Must mirror the clamp
-in the shim's `_exec_on_ws_message` (64 KB) — a drift here is a window that
+chunk channel), so a lost ack heals at the next one. Mirrored by the clamp
+in the shim's `_exec_on_ws_message`, `_WS_IN_WINDOW`, which
+`render_shim.py --check` holds equal to this — a drift is a window that
 never fills or never opens. Fits the 256 KB submit channel with 4x headroom
 (`_OFFLOAD_SOCKET_BUF`), which is what makes a mid-window channel refusal
 rare rather than routine.
@@ -2083,15 +2084,26 @@ def _send_bus_frame_tag(fd: Int, event_id: Int, url: String, frame: List[UInt8])
 
 def _ws_in_cost(payload_len: Int) -> Int:
     """What one inbound message charges against `WS_IN_WINDOW`: the DATAGRAM
-    bytes (`_send_ws_message_tag`'s 10-byte header plus payload), clamped to
-    the window so a single maximal message can still travel. Mirrored by the
-    shim's `_exec_on_ws_message`, which acks these exact bytes back — charge
-    payload here and be acked datagrams there and the window drifts by ten
-    bytes on every message."""
-    var cost = 10 + payload_len
+    bytes (`WS_TAG_HEADER` plus payload), clamped to the window so a single
+    maximal message can still travel. Mirrored by the shim's
+    `_exec_on_ws_message`, which acks these exact bytes back — charge
+    payload here and be acked datagrams there and the window drifts by the
+    header on every message."""
+    var cost = WS_TAG_HEADER + payload_len
     if cost > WS_IN_WINDOW:
         return WS_IN_WINDOW
     return cost
+
+
+comptime WS_TAG_HEADER = 10
+"""The header `_send_ws_message_tag` writes before an inbound message's
+payload on an EXECUTOR lane: `[tag=2 u8][slot i64 LE][opcode u8]`. The
+room left for the payload in one datagram is `WS_DATAGRAM_MAX` less this
+(`_ws_datagram_room`), and what a message charges against `WS_IN_WINDOW`
+is this plus its payload (`_ws_in_cost`). The shim reads the same header
+as `_WS_TAG_HEADER`, which `render_shim.py --check` holds equal to this.
+A pool lane's message carries its channel too, a different header
+(`lightbug_http.offload.ws_message_room`)."""
 
 
 def _send_ws_message_tag(
@@ -2105,9 +2117,9 @@ def _send_ws_message_tag(
     `_ws_forward` never sends one this large, ending the socket with 1009
     instead (SPEC I26). Retried like the disconnect tag — a lost
     inbound message is an app-visible gap."""
-    if 10 + len(payload) > WS_DATAGRAM_MAX:
+    if WS_TAG_HEADER + len(payload) > WS_DATAGRAM_MAX:
         return False
-    var msg = List[UInt8](capacity=10 + len(payload))
+    var msg = List[UInt8](capacity=WS_TAG_HEADER + len(payload))
     msg.append(2)
     append_i64_le(msg, slot)
     msg.append(UInt8(opcode))
