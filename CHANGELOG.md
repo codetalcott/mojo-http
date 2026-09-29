@@ -349,6 +349,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   retire, and the late count then stayed: that worker looked one
   connection busier than it was to every accept after. The count now goes
   up before the send, and back down if the send fails.
+- **On Linux, a connection that fails as it is accepted no longer holds
+  up the ones queued behind it.** Linux's `accept` can return a network
+  error already pending on the connection it takes off the queue, such as
+  `EPROTO` or `EHOSTUNREACH`, and says to retry. The event loop stopped
+  taking connections for that pass on `EPROTO` and `EOPNOTSUPP`, and the
+  listener announces only new arrivals, so clients already queued waited
+  for another connection to arrive; the six others reached it as a
+  descriptor of -1, which it failed to admit and skipped, until the
+  socket errors became one error (under Removed) and they stopped the pass
+  too. All eight now cost only their own connection, as a client that
+  gave up while queued always has. `test_socket_errors.mojo` holds the
+  list. Found in review.
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
   and the login read the silence as off: a visit to the `http://` URL sent

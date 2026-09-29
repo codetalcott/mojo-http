@@ -976,6 +976,14 @@ lightbug_http
         body, R2's `epoll_ctl` pair on each read of an upload still
         arriving (review record R2).
 
+      - loop/accept.mojo (2026-09-28): the accept drain goes on past the
+        network errors Linux's `accept` returns for a connection it has
+        already taken off the queue (ENETDOWN, EPROTO, ENOPROTOOPT,
+        EHOSTDOWN, ENONET, EHOSTUNREACH, EOPNOTSUPP, ENETUNREACH), which
+        accept(2) says to retry like EAGAIN, as it goes on past
+        ECONNABORTED and EINTR (`_accept_retries`); read as any other error,
+        they stopped the pass.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

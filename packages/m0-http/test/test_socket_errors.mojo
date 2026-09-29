@@ -13,6 +13,7 @@ the listener's bind retry read.
 
 from std.collections import Optional
 from std.ffi import ErrNo, c_int
+from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
 from lightbug_http.c.network import SocketAddress
@@ -38,6 +39,7 @@ from lightbug_http.c.socket import (
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ListenConfig, create_connection
+from lightbug_http.loop.accept import _accept_retries
 
 
 comptime AF_INET = 2
@@ -207,6 +209,45 @@ def test_the_predicates_read_the_errno() raises:
     assert_false(SysError("accept", ErrNo.EMFILE).connection_aborted())
     assert_true(SysError("bind", ErrNo.EADDRINUSE).address_in_use())
     assert_false(SysError("bind", ErrNo.EADDRNOTAVAIL).address_in_use())
+
+
+def _goes_on(errno: ErrNo) -> Bool:
+    return _accept_retries(SysError("accept", errno))
+
+
+def test_the_accept_drain_goes_on_past_one_connections_error() raises:
+    """`_accept_retries`: whether the loop's accept drain takes the next
+    connection after a failed `accept`, or stops the pass.
+
+    ECONNABORTED and EINTR go on everywhere. On Linux so do the eight
+    network errors accept(2) returns for a connection it has already taken
+    off the queue and says to retry like EAGAIN: read as anything else,
+    they stopped the pass, and the listener is edge-triggered, so the
+    backlog behind them waited for the next connection to arrive. macOS
+    returns none of them, and its EOPNOTSUPP is a listener that cannot
+    accept at all. What a retry cannot cure stops the pass everywhere.
+    """
+    assert_true(_goes_on(ErrNo.ECONNABORTED), "ECONNABORTED")
+    assert_true(_goes_on(ErrNo.EINTR), "EINTR")
+    assert_false(_goes_on(ErrNo.EAGAIN), "EAGAIN ends the drain on its own path")
+    assert_false(_goes_on(ErrNo.EMFILE), "EMFILE")
+    assert_false(_goes_on(ErrNo.ENFILE), "ENFILE")
+    assert_false(_goes_on(ErrNo.ENOBUFS), "ENOBUFS")
+    assert_false(_goes_on(ErrNo.ENOMEM), "ENOMEM")
+    assert_false(_goes_on(ErrNo.EBADF), "EBADF")
+    assert_false(_goes_on(ErrNo.EPERM), "EPERM")
+    comptime if CompilationTarget.is_macos():
+        assert_false(_goes_on(ErrNo.EOPNOTSUPP), "EOPNOTSUPP on macOS")
+        assert_false(_goes_on(ErrNo.ENETDOWN), "ENETDOWN on macOS")
+    else:
+        assert_true(_goes_on(ErrNo.ENETDOWN), "ENETDOWN")
+        assert_true(_goes_on(ErrNo.EPROTO), "EPROTO")
+        assert_true(_goes_on(ErrNo.ENOPROTOOPT), "ENOPROTOOPT")
+        assert_true(_goes_on(ErrNo.EHOSTDOWN), "EHOSTDOWN")
+        assert_true(_goes_on(ErrNo.ENONET), "ENONET")
+        assert_true(_goes_on(ErrNo.EHOSTUNREACH), "EHOSTUNREACH")
+        assert_true(_goes_on(ErrNo.EOPNOTSUPP), "EOPNOTSUPP")
+        assert_true(_goes_on(ErrNo.ENETUNREACH), "ENETUNREACH")
 
 
 def test_the_error_names_the_call_and_its_errno() raises:

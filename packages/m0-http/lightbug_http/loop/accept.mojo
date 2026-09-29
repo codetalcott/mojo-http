@@ -12,8 +12,11 @@ runs `func` itself is the whole request.
 from lightbug_http.c.kqueue import set_nonblocking, set_tcp_nodelay
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import accept_with_peer, close
+from lightbug_http.c.socket_error import SysError
 from lightbug_http.connection import ConnectionState
 from lightbug_http.service import HTTPService
+from std.ffi import ErrNo
+from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns
 
 from lightbug_http.loop.state import LoopState, UNUSED, _arm_reads, _close_slot
@@ -163,6 +166,43 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
     return True
 
 
+def _accept_retries(err: SysError) -> Bool:
+    """Whether the accept drain goes on past a failed `accept`: True when
+    the failure cost one connection, False when it stops the pass.
+
+    Going on matters because the listen socket is edge-triggered on both
+    backends: connections a stopped drain leaves in the backlog are owed no
+    new readiness edge until some later connection arrives, so under bursty
+    load one dead connection strands the live ones behind it.
+
+    ECONNABORTED (the client gave up while queued) and EINTR are one
+    attempt's trouble everywhere. Linux's `accept` also returns a network
+    error already pending on the connection it has just taken off the
+    queue -- ENETDOWN, EPROTO, ENOPROTOOPT, EHOSTDOWN, ENONET, EHOSTUNREACH,
+    EOPNOTSUPP, ENETUNREACH -- and accept(2) says to treat those like
+    EAGAIN by retrying: each has cost a connection, not the listener, and
+    read as anything else they stopped the pass. macOS passes none of them
+    on, and its EOPNOTSUPP means a listener that cannot accept at all, so
+    there the list is the first two. Anything else (EMFILE, ENFILE,
+    ENOBUFS, ENOMEM) is the process's or the system's, and accepting harder
+    will not cure it.
+    """
+    var retry = err.connection_aborted() or err.interrupted()
+    comptime if not CompilationTarget.is_macos():
+        var e = err.errno
+        retry = retry or (
+            e == ErrNo.ENETDOWN
+            or e == ErrNo.EPROTO
+            or e == ErrNo.ENOPROTOOPT
+            or e == ErrNo.EHOSTDOWN
+            or e == ErrNo.ENONET
+            or e == ErrNo.EHOSTUNREACH
+            or e == ErrNo.EOPNOTSUPP
+            or e == ErrNo.ENETUNREACH
+        )
+    return retry
+
+
 def _accept_batch[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, budget: Int,
 ) raises -> Bool:
@@ -187,17 +227,10 @@ def _accept_batch[T: HTTPService, B: EventLoopBackend](
             # EAGAIN: backlog drained — this readiness event is done.
             if accept_err.would_block():
                 return False
-            # ECONNABORTED (the client gave up while queued) and
-            # EINTR are per-attempt transients. They MUST NOT end
-            # the drain: the listen socket is edge-triggered on
-            # both backends, so connections left in the backlog
-            # here are owed no new readiness edge until some later
-            # connection arrives — under bursty load that strands
-            # live clients behind a dead one.
-            if accept_err.connection_aborted() or accept_err.interrupted():
+            # One connection's trouble goes on to the next; anything
+            # else stops the pass and lets the loop breathe.
+            if _accept_retries(accept_err):
                 continue
-            # Anything else (EMFILE, ENFILE, ...) won't be cured
-            # by accepting harder; stop and let the loop breathe.
             return False
 
         # Accept sharing: a sibling with fewer connections takes
