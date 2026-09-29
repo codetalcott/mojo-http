@@ -612,7 +612,9 @@ shell = "python3 scripts/check_task_shells.py && python3 scripts/check_task_shel
 
 # m0-sqlite depends on nothing in this repo — it is a sibling of m0-core and
 # m0-http, not a layer on them — so it needs no -I at build time, and consumers
-# need only -I packages/m0-sqlite. It links against the system libsqlite3.
+# need only -I packages/m0-sqlite. It links NOTHING: libsqlite3 is opened with
+# dlopen at run time, from M0_LIBSQLITE3 or a search path (SPEC O17), so a
+# binary that imports this package carries no libsqlite3 dependency.
 [tool.poe.tasks.build-sqlite]
 help = "Build m0-sqlite package"
 shell = "cd packages/m0-sqlite && mojo precompile src -o m0_sqlite.mojoc"
@@ -1420,7 +1422,8 @@ python3 scripts/emit.py --covers C9 --task smoke-peer-reset
 help = "A connection that stops reading costs the event loop nothing, and a stream is one access record"
 deps = ["build-serve"]
 shell = """
-python3 scripts/slot_lifecycle_probe.py 8142 || exit 1
+. scripts/smoke/lib.sh
+python3 scripts/slot_lifecycle_probe.py $(free_port) || exit 1
 echo "smoke-slot-lifecycle OK"
 python3 scripts/emit.py --covers C10 --task smoke-slot-lifecycle
 python3 scripts/emit.py --covers F18 --task smoke-slot-lifecycle
@@ -1711,20 +1714,7 @@ python3 scripts/emit.py --covers L27 --task smoke-counter
 [tool.poe.tasks.smoke-sim-loop]
 help = "Periodic work off the loop: the steps arrive, the loop stays free, and the on-loop arm proves the measurement"
 shell = """
-port=8321
-pid=
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -f sim_off.log sim_on.log sim_two.log
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  for f in sim_off.log sim_on.log sim_two.log; do
-    [ -f "$f" ] && { echo "=== $f ==="; cat "$f"; }
-  done
-  exit 1
-}
+. scripts/smoke/lib.sh
 # 4Hz x 200ms is an 80% duty cycle. On the loop that holds every connection
 # for 200ms at a time; off it, the loop never sees the work at all. The
 # separation is ~200x for a request that lands early in a step, but only a
@@ -1732,19 +1722,14 @@ fail() {
 # them -- so the on-loop arm's margin comes from the probe's sample count,
 # not from the threshold. It took three samples, and a phase lock with the
 # probe's fixed gap hid how few that was (scripts/sim_loop_probe.py).
+# start ON_LOOP LOG [WORKERS]: every phase on a port of its own, in $port.
 start() {
-  M0_PORT=$port M0_SIM_HZ=4 M0_SIM_COST_MS=200 M0_SIM_ON_LOOP=$1 \
+  port=$(free_port)
+  spawn "$2" env M0_PORT=$port M0_SIM_HZ=4 M0_SIM_COST_MS=200 M0_SIM_ON_LOOP=$1 \
     M0_WORKERS=${3:-1} \
     mojo run -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
-    apps/sim_loop/server.mojo > "$2" 2>&1 &
-  pid=$!
-  curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail \
-    "http://127.0.0.1:$port/health" > /dev/null || fail "never became healthy ($2)"
-}
-stop() {
-  kill $pid 2>/dev/null
-  wait $pid 2>/dev/null
-  pid=
+    apps/sim_loop/server.mojo
+  wait_ready "http://127.0.0.1:$port/health" $pid
 }
 
 # --- off the loop: the shape this app recommends --------------------------
@@ -1758,7 +1743,7 @@ worst=${off##*worst_now_ms=}
 [ "$worst" -lt 100 ] \
   || fail "off the loop: a trivial request waited ${worst}ms behind a 200ms step; the work is not off the loop"
 echo "off the loop: $frames steps, no gaps, worst /now ${worst}ms"
-stop
+stop $pid
 
 # --- on the loop: the negative arm ---------------------------------------
 # Without this the gate would pass on a server doing no work at all and would
@@ -1775,18 +1760,17 @@ worst_on=${on##*worst_now_ms=}
 [ "$worst_on" -ge 100 ] \
   || fail "on the loop: a trivial request took only ${worst_on}ms behind a 200ms tick -- this gate can no longer tell the two shapes apart"
 echo "ON the loop: $frames_on steps, worst /now ${worst_on}ms"
-stop
+stop $pid
 
 # --- SIGTERM with a step in flight ---------------------------------------
 # pthread_join has no timeout, so an unbounded join here is a SIGTERM that
 # does nothing until docker stop gives up and sends SIGKILL.
-start 0 sim_off.log
+start 0 sim_term.log
 t0=$(date +%s)
 kill -TERM $pid
 wait $pid
 rc=$?
 t1=$(date +%s)
-pid=
 [ "$rc" -eq 0 ] \
   || fail "SIGTERM with a step in flight exited $rc, not 0"
 [ $(( t1 - t0 )) -lt 10 ] \
@@ -1800,9 +1784,9 @@ echo "SIGTERM with a step in flight: exit 0 in $(( t1 - t0 ))s"
 # shipped publishing to worker 0 alone under a comment saying otherwise.
 # Accept sharing spreads the held streams and each names its worker, so a
 # run that put every stream on one worker fails as vacuous rather than
-# passing on the broken fan-out. Its own port: a supervisor that has not
-# quite let go of 8321 must not answer this phase's health check.
-port=8322
+# passing on the broken fan-out. Its own port, as every phase's is: a
+# supervisor that has not quite let go of the last one must not answer this
+# phase's health check.
 start 0 sim_two.log 2
 two=$(python3 scripts/sim_loop_probe.py $port 4 --streams 4) || fail "two workers: $two"
 two_workers=${two#*workers=}
@@ -1814,7 +1798,7 @@ two_min=${two_min%% *}
 [ "$two_min" -ge 8 ] \
   || fail "two workers: a stream carried only $two_min steps in 4s at 4Hz ($two) -- the simulation publishes to fewer bus channels than there are workers"
 echo "two workers: $two"
-stop
+stop $pid
 
 echo "smoke-sim-loop OK"
 python3 scripts/emit.py sim.off_loop_now_ms "$worst" --unit ms --limit 100 --task smoke-sim-loop
@@ -2854,18 +2838,12 @@ python3 scripts/emit.py --covers M18 --task smoke-apple-silicon
 help = "--spawn-workers: exec'd workers serve, a killed one is re-exec'd, the supervisor survives SIGPIPE, SIGTERM reaps them, and on macOS the view a forked worker dies in answers"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
 SPEC="bareapp.wsgi --app-dir apps/wsgi_bare"
-spid=""
-cleanup() { rm -f sw-doctor.json sw-spawn.log sw-fork.log; [ -n "$spid" ] && kill -TERM "$spid" 2>/dev/null; }
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  for f in sw-doctor.json sw-spawn.log sw-fork.log; do
-    [ -f "$f" ] && { echo "=== $f ==="; cat "$f"; echo; }
-  done
-  exit 1
-}
+# The doctor's report is named *.log, so a failure prints it.
+doc=$SMOKE_DIR/sw-doctor.json.log
+log=$SMOKE_DIR/sw-spawn.log
 distinct_pids() {  # $1 = port: pids answering /pid under 16 concurrent clients
   python3 - "$1" <<'PY'
 import sys, urllib.request
@@ -2894,41 +2872,42 @@ wait_for_pids() {  # $1 = port, $2 = the count wanted; sets $seen
 }
 
 # 1. The doctor reports the mode from both spellings.
-"$srv" --doctor $SPEC --workers 2 --spawn-workers > sw-doctor.json 2>/dev/null || fail "the doctor refused --spawn-workers"
-python3 -c "import json; d=json.load(open('sw-doctor.json')); assert d['topology']['worker_mode']=='spawn', d['topology']" || fail "--spawn-workers is not reported as worker_mode=spawn"
-M0_SPAWN_WORKERS=1 "$srv" --doctor $SPEC --workers 2 > sw-doctor.json 2>/dev/null
-python3 -c "import json; d=json.load(open('sw-doctor.json')); assert d['topology']['worker_mode']=='spawn', d['topology']" || fail "M0_SPAWN_WORKERS=1 is not reported as worker_mode=spawn"
-"$srv" --doctor $SPEC --workers 2 > sw-doctor.json 2>/dev/null
-python3 -c "import json; d=json.load(open('sw-doctor.json')); assert d['topology']['worker_mode']=='fork', d['topology']" || fail "the default is not reported as worker_mode=fork"
+"$srv" --doctor $SPEC --workers 2 --spawn-workers > "$doc" 2>/dev/null || fail "the doctor refused --spawn-workers"
+python3 -c "import json; d=json.load(open('$doc')); assert d['topology']['worker_mode']=='spawn', d['topology']" || fail "--spawn-workers is not reported as worker_mode=spawn"
+M0_SPAWN_WORKERS=1 "$srv" --doctor $SPEC --workers 2 > "$doc" 2>/dev/null
+python3 -c "import json; d=json.load(open('$doc')); assert d['topology']['worker_mode']=='spawn', d['topology']" || fail "M0_SPAWN_WORKERS=1 is not reported as worker_mode=spawn"
+"$srv" --doctor $SPEC --workers 2 > "$doc" 2>/dev/null
+python3 -c "import json; d=json.load(open('$doc')); assert d['topology']['worker_mode']=='fork', d['topology']" || fail "the default is not reported as worker_mode=fork"
 
 # 2. Two exec'd workers serve one listener. Concurrency, because sequential
 # connections on an idle server can all land on the worker that accepted
 # first (macOS in particular), which says nothing about the second.
-"$srv" $SPEC --workers 2 --spawn-workers --port 8481 > sw-spawn.log 2>&1 &
-spid=$!
-for i in $(seq 1 100); do curl -sf -o /dev/null http://127.0.0.1:8481/ && break; sleep 0.1; done
-curl -sf http://127.0.0.1:8481/ | grep -q "bare wsgi app" || fail "a spawned server did not answer /"
-grep -q "workers=2) spawn" sw-spawn.log || fail "the banner does not say spawn"
+port=$(free_port)
+spawn sw-spawn.log "$srv" $SPEC --workers 2 --spawn-workers --port $port
+spid=$pid
+wait_ready http://127.0.0.1:$port/ $spid
+curl -sf http://127.0.0.1:$port/ | grep -q "bare wsgi app" || fail "a spawned server did not answer /"
+grep -q "workers=2) spawn" "$log" || fail "the banner does not say spawn"
 # Both images must have started before the pids are counted: one banner each.
-for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' sw-spawn.log)" -ge 2 ] && break; sleep 0.1; done
-wait_for_pids 8481 2 || fail "expected 2 worker pids answering /pid, saw $seen"
+for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' "$log")" -ge 2 ] && break; sleep 0.1; done
+wait_for_pids $port 2 || fail "expected 2 worker pids answering /pid, saw $seen"
 echo "smoke-spawn-workers: two exec'd workers serve"
 
 # 3. A killed worker is replaced by a fresh exec image that serves. The
 # banner counts how many images started: two, then three.
-victim=$(curl -sf http://127.0.0.1:8481/pid)
+victim=$(curl -sf http://127.0.0.1:$port/pid)
 kill -KILL "$victim"
-for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' sw-spawn.log)" -ge 3 ] && break; sleep 0.1; done
-grep -q "respawned worker" sw-spawn.log || fail "the killed worker was not respawned"
-[ "$(grep -c 'workers=2) spawn' sw-spawn.log)" -ge 3 ] || fail "the respawned worker never printed a banner: not a fresh image?"
-wait_for_pids 8481 2 || fail "after a respawn expected 2 worker pids, saw $seen"
+for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' "$log")" -ge 3 ] && break; sleep 0.1; done
+grep -q "respawned worker" "$log" || fail "the killed worker was not respawned"
+[ "$(grep -c 'workers=2) spawn' "$log")" -ge 3 ] || fail "the respawned worker never printed a banner: not a fresh image?"
+wait_for_pids $port 2 || fail "after a respawn expected 2 worker pids, saw $seen"
 echo "smoke-spawn-workers: a killed worker is re-exec'd"
 
 # 4. The platform-runtime view. On macOS urllib's proxy lookup enters
 # CoreFoundation, which kills a FORKED worker (the fork rule in CLAUDE.md);
 # a spawned worker answers it. On Linux both answer, and only the positive
 # half is asserted.
-curl -sf http://127.0.0.1:8481/proxies > /dev/null || fail "a spawned worker did not answer /proxies"
+curl -sf http://127.0.0.1:$port/proxies > /dev/null || fail "a spawned worker did not answer /proxies"
 echo "smoke-spawn-workers: the proxies view answers under spawn"
 
 # 5. SIGPIPE to the supervisor alone (SPEC A25). It forks before any Python
@@ -2939,19 +2918,19 @@ echo "smoke-spawn-workers: the proxies view answers under spawn"
 kill -PIPE "$spid"
 sleep 0.3
 if ! kill -0 "$spid" 2>/dev/null; then
-  wait "$spid"; rc=$?; spid=""
-  for w in $(grep -oE 'pid=[0-9]+ starting' sw-spawn.log | grep -oE '[0-9]+'); do kill -KILL "$w" 2>/dev/null; done
+  wait "$spid"; rc=$?
+  for w in $(grep -oE 'pid=[0-9]+ starting' "$log" | grep -oE '[0-9]+'); do kill -KILL "$w" 2>/dev/null; done
   fail "SIGPIPE: kill -PIPE ended the m0serve supervisor (exit $rc; 141 is the signal's default action), orphaning its workers"
 fi
-wait_for_pids 8481 2 || fail "after kill -PIPE to the supervisor expected 2 worker pids, saw $seen"
+wait_for_pids $port 2 || fail "after kill -PIPE to the supervisor expected 2 worker pids, saw $seen"
 echo "smoke-spawn-workers: the supervisor survives kill -PIPE"
 
 # 6. SIGTERM to the supervisor alone reaps every exec'd worker.
-workers=$(grep -oE 'pid=[0-9]+ starting' sw-spawn.log | grep -oE '[0-9]+' | sort -u)
-kill -TERM "$spid"; wait "$spid"; rc=$?; spid=""
+workers=$(grep -oE 'pid=[0-9]+ starting' "$log" | grep -oE '[0-9]+' | sort -u)
+kill -TERM "$spid"; wait "$spid"; rc=$?
 [ "$rc" -eq 0 ] || fail "the spawn supervisor exited $rc on SIGTERM"
 for w in $workers; do kill -0 "$w" 2>/dev/null && fail "worker $w outlived its supervisor"; done
-grep -q "exited cleanly" sw-spawn.log || fail "no spawned worker reported a clean exit"
+grep -q "exited cleanly" "$log" || fail "no spawned worker reported a clean exit"
 echo "smoke-spawn-workers: SIGTERM reaps exec'd workers"
 
 if [ "$(uname)" = Darwin ]; then
@@ -2959,14 +2938,16 @@ if [ "$(uname)" = Darwin ]; then
   # from the Objective-C runtime), the client sees a dropped connection,
   # and the supervisor respawns. Three attempts, because a view that
   # sometimes survives would make "answers under spawn" prove nothing.
-  "$srv" $SPEC --workers 2 --port 8482 > sw-fork.log 2>&1 &
-  spid=$!
-  for i in $(seq 1 100); do curl -sf -o /dev/null http://127.0.0.1:8482/ && break; sleep 0.1; done
+  fport=$(free_port)
+  spawn sw-fork.log "$srv" $SPEC --workers 2 --port $fport
+  wait_ready http://127.0.0.1:$fport/ $pid
   died=0
-  for i in 1 2 3; do curl -sf http://127.0.0.1:8482/proxies > /dev/null 2>&1 || died=$((died+1)); sleep 0.5; done
-  kill -TERM "$spid"; wait "$spid" 2>/dev/null; spid=""
+  for i in 1 2 3; do curl -sf http://127.0.0.1:$fport/proxies > /dev/null 2>&1 || died=$((died+1)); sleep 0.5; done
+  # The supervisor alone, as before: the log it writes is read below, and a
+  # signal to the whole group could put a `killed by signal` line in it.
+  kill -TERM "$pid"; wait "$pid" 2>/dev/null
   [ "$died" -eq 3 ] || fail "under fork the proxies view answered $((3-died)) of 3 times; the negative arm no longer discriminates"
-  grep -q "killed by signal" sw-fork.log || fail "no forked worker was reported killed"
+  grep -q "killed by signal" "$SMOKE_DIR/sw-fork.log" || fail "no forked worker was reported killed"
   echo "smoke-spawn-workers: the same view kills a forked worker 3 of 3 (macOS)"
 fi
 python3 scripts/emit.py --covers E15 --task smoke-spawn-workers
@@ -3021,23 +3002,22 @@ python3 scripts/emit.py --covers E16 --task smoke-accept-spread
 [tool.poe.tasks.smoke-accept-batch]
 help = "A burst of new connections does not hold the loop away from the ones it serves: a keep-alive /fast behind 120 queued requests waits at most a batch and a half of their measured cost, and on a stopped server at most a batch and a half of them are answered before it; every queued connection is answered with no two answers half a second apart; and M0_ACCEPT_BATCH=0 shows the old drain (SPEC C8)"
 shell = """
-out=$(mktemp -d)
-cleanup() {
-  pkill -KILL -f "$out/" 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -o "$out/pool_spike" || exit 1
-python3 scripts/accept_batch_probe.py "$out/pool_spike" 8651 > "$out/probe.out" 2>&1 \
-  || { cat "$out/probe.out"; exit 1; }
-cat "$out/probe.out"
-beyond=$(grep '^beyond_ms ' "$out/probe.out" | cut -d' ' -f2)
-bound=$(grep '^bound_ms ' "$out/probe.out" | cut -d' ' -f2)
-burst=$(grep '^burst_ms ' "$out/probe.out" | cut -d' ' -f2)
-gap=$(grep '^gap_ms ' "$out/probe.out" | cut -d' ' -f2)
-cost=$(grep '^cost_ms ' "$out/probe.out" | cut -d' ' -f2)
-before=$(grep '^before_fast ' "$out/probe.out" | cut -d' ' -f2)
-most=$(grep '^before_limit ' "$out/probe.out" | cut -d' ' -f2)
+# Spawned, so the servers the probe starts share its process group and the
+# lib reaps whatever it leaves. Two ports: the arm's, and the one above it
+# for the negative arm.
+spawn probe.log python3 scripts/accept_batch_probe.py "$out/pool_spike" $(free_port 2)
+wait $pid || fail "$(grep -m 1 'smoke-accept-batch: ' "$out/probe.log")"
+cat "$out/probe.log"
+beyond=$(grep '^beyond_ms ' "$out/probe.log" | cut -d' ' -f2)
+bound=$(grep '^bound_ms ' "$out/probe.log" | cut -d' ' -f2)
+burst=$(grep '^burst_ms ' "$out/probe.log" | cut -d' ' -f2)
+gap=$(grep '^gap_ms ' "$out/probe.log" | cut -d' ' -f2)
+cost=$(grep '^cost_ms ' "$out/probe.log" | cut -d' ' -f2)
+before=$(grep '^before_fast ' "$out/probe.log" | cut -d' ' -f2)
+most=$(grep '^before_limit ' "$out/probe.log" | cut -d' ' -f2)
 python3 scripts/emit.py accept_batch.fast_after_blocker_ms "$beyond" --unit ms --limit "$bound" --task smoke-accept-batch
 python3 scripts/emit.py accept_batch.burst_after_blocker_ms "$burst" --unit ms --task smoke-accept-batch
 python3 scripts/emit.py accept_batch.widest_gap_ms "$gap" --unit ms --limit 500 --task smoke-accept-batch
@@ -4537,19 +4517,13 @@ python3 scripts/emit.py --covers M21 --task smoke-hybrid
 help = "Mounts under --threads: WSGI mounts serve and isolate per lane, an ASGI mount is refused (free-threaded CPython; SPEC M23)"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 set -u
 srv=bin/m0serve
 D="--app-dir apps/hybrid_mix"
-P=8112
+P=$(free_port)
 B=http://localhost:$P
-pid=
-fail() {
-  echo "FAIL: $1"
-  [ -n "$pid" ] && kill -9 $pid 2>/dev/null
-  [ -f mounts-threads.log ] && { echo '=== server output ==='; cat mounts-threads.log; }
-  rm -f mounts-threads.log
-  exit 1
-}
+log=$SMOKE_DIR/mounts-threads.log
 
 # `--threads` needs free-threaded CPython. On a GIL-enabled interpreter --
 # every CI leg -- the one thing to check is that a mounted server is refused
@@ -4557,10 +4531,9 @@ fail() {
 # py-canary's, on 3.14t, and this says so rather than passing quietly.
 gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
 if [ "$gil_off" != "1" ]; then
-  "$srv" --mount /=shop.wsgi --mount /portal=portal.wsgi:app $D --port $P --threads 2 > mounts-threads.log 2>&1
+  "$srv" --mount /=shop.wsgi --mount /portal=portal.wsgi:app $D --port $P --threads 2 > "$SMOKE_DIR/refused.log" 2>&1
   rc=$?
   [ $rc -eq 78 ] || fail "--threads with mounts on a GIL-enabled interpreter exited $rc, expected 78"
-  rm -f mounts-threads.log
   echo "smoke-mounts-threads: GIL-enabled interpreter, so only the refusal was checked (py-canary runs the rest on 3.14t)"
   python3 scripts/emit.py --covers M24 --task smoke-mounts-threads
   exit 0
@@ -4570,10 +4543,10 @@ fi
 # Python type cannot be built on a free-threaded build (ROADMAP Known issues,
 # modular/modular#5726). Pinned, so the day it is fixed restoring the mixed
 # phase is a deliberate edit and not a phase that silently starts passing.
-"$srv" --mount /=shop.wsgi --mount /live=feed.asgi $D --port $P --threads 2 > mounts-threads.log 2>&1
+"$srv" --mount /=shop.wsgi --mount /live=feed.asgi $D --port $P --threads 2 > "$SMOKE_DIR/asgi-refused.log" 2>&1
 rc=$?
 [ $rc -eq 78 ] || fail "an ASGI mount under --threads exited $rc, expected 78"
-grep -q 'cannot run on a free-threaded CPython build' mounts-threads.log \
+grep -q 'cannot run on a free-threaded CPython build' "$SMOKE_DIR/asgi-refused.log" \
   || fail "the ASGI-under-threads refusal did not explain itself"
 "$srv" --doctor --mount /=shop.wsgi --mount /live=feed.asgi $D --port $P --threads 2 > /dev/null 2>&1
 rc=$?
@@ -4581,15 +4554,15 @@ rc=$?
 
 # Two WSGI mounts, each with its own lane in each loop: per-loop threads are
 # dealt over the lanes exactly as prefork's are.
-"$srv" --mount /=shop.wsgi --mount /portal=portal.wsgi:app $D --port $P \
-  --threads 2 --blocking-threads 4 > mounts-threads.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
-  | grep -q 'hello from django' || fail 'the Django mount did not serve under --threads'
+spawn mounts-threads.log "$srv" --mount /=shop.wsgi --mount /portal=portal.wsgi:app $D --port $P \
+  --threads 2 --blocking-threads 4
+wait_ready $B/ $pid
+curl -s --max-time 8 $B/ | grep -q 'hello from django' \
+  || fail 'the Django mount did not serve under --threads'
 curl -s --max-time 8 $B/portal/ | grep -q 'hello from flask' \
   || fail 'the Flask mount did not serve under --threads'
-grep -q 'threads=2' mounts-threads.log || fail 'the threaded banner is missing'
-grep -q 'blocking-threads=4' mounts-threads.log || fail 'the mounts got no handler pool under --threads'
+grep -q 'threads=2' "$log" || fail 'the threaded banner is missing'
+grep -q 'blocking-threads=4' "$log" || fail 'the mounts got no handler pool under --threads'
 
 # Prefixes reach each application under --threads as they do under prefork.
 portal=$(curl -s --max-time 5 $B/portal/where)
@@ -4611,10 +4584,8 @@ waited=0
 while kill -0 $pid 2>/dev/null && [ $waited -lt 20 ]; do sleep 1; waited=$((waited + 1)); done
 if kill -0 $pid 2>/dev/null; then fail 'a mounted --threads server did not exit within 20 s of SIGTERM'; fi
 wait $pid 2>/dev/null
-pid=
-n=$(grep -c 'exited cleanly' mounts-threads.log || true)
+n=$(grep -c 'exited cleanly' "$log" || true)
 [ "$n" = "2" ] || fail "expected 2 'exited cleanly' lines under --threads 2, saw $n"
-rm -f mounts-threads.log
 echo "smoke-mounts-threads OK"
 """
 
@@ -4642,23 +4613,20 @@ cmd = "python3 scripts/bench_mojo_mount.py"
 help = "A Mojo mount answers with no Python in its path, while the GIL is held"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 set -u
 srv=bin/m0serve
-P=8791
+P=$(free_port)
 B=http://localhost:$P
-pid=
-fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat mojomount.log 2>/dev/null; rm -f mojomount.log; exit 1; }
 
 # Every mount being `mojo` asks a Python host to host no Python.
 "$srv" --mount /native=mojo --app-dir apps/wsgi_bare --port $P > /dev/null 2>&1
 rc=$?
 [ $rc -eq 2 ] || fail "a mojo-only mounted server exited $rc, expected 2"
 
-"$srv" --mount /=bareapp.wsgi --mount /native=mojo \
-  --app-dir apps/wsgi_bare --port $P --blocking-threads 4 > mojomount.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail "server never became healthy"
+spawn mojomount.log "$srv" --mount /=bareapp.wsgi --mount /native=mojo \
+  --app-dir apps/wsgi_bare --port $P --blocking-threads 4
+wait_ready $B/ $pid
 
 # Both mounts answer, and the Mojo one names the pool thread that served it.
 curl -s $B/ | grep -q 'bare wsgi app' || fail "the WSGI mount did not answer"
@@ -4674,18 +4642,17 @@ code=$(curl -s -o /dev/null -w '%{http_code}' $B/nativeapp)
 # prefix the lane gave it, and a rendered link is FOLLOWED. A reverse that
 # forgot the prefix renders `/probe`, which the root application answers
 # 404 — a dead link invisible until clicked, which is what this click is.
-curl -s -o mount_index.html $B/native/ || fail "the mount's index did not answer"
-href=$(grep -o 'href="[^"]*/probe"' mount_index.html | head -1 | cut -d'"' -f2)
+curl -s -o "$SMOKE_DIR/mount_index.html" $B/native/ || fail "the mount's index did not answer"
+href=$(grep -o 'href="[^"]*/probe"' "$SMOKE_DIR/mount_index.html" | head -1 | cut -d'"' -f2)
 [ -n "$href" ] || fail "the mount's index rendered no link to its probe"
 case "$href" in /native/*) ;; *) fail "the rendered link $href does not carry the mount prefix";; esac
 curl -s "$B$href" | grep -q '"mount":"mojo"' || fail "following the rendered link $href did not reach the Mojo mount"
-href=$(grep -o 'href="[^"]*/search[^"]*"' mount_index.html | head -1 | cut -d'"' -f2 | sed 's/&amp;/\\&/g')
+href=$(grep -o 'href="[^"]*/search[^"]*"' "$SMOKE_DIR/mount_index.html" | head -1 | cut -d'"' -f2 | sed 's/&amp;/\\&/g')
 [ -n "$href" ] || fail "the mount's index rendered no link to its search"
 curl -s "$B$href" | grep -q '"top":\\[' || fail "following the rendered link $href did not reach the search"
 # The same link without its prefix is the dead one: the root mount does not know it.
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/probe)
 [ "$code" = "404" ] || fail "/probe answered $code at the root; the prefix was not what made the link live"
-rm -f mount_index.html
 
 # The claim. Two routes of one server under GIL-bound load: the Mojo mount
 # stays flat because its thread never attaches to the interpreter, and the
@@ -4700,7 +4667,6 @@ python3 scripts/mojo_mount_probe.py --port $P || fail "the Mojo mount tracked th
 kill -TERM $pid
 for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM"; fi
-pid=
 
 # The Mojo pool's threads count on their lane (SPEC M22). They did not: the
 # lane read as every thread parked whenever its one awake thread was busy, so
@@ -4708,29 +4674,27 @@ pid=
 # thread took 65k, and 20 % fewer requests on more CPU. A count, not a
 # timing: `stop` prints each lane's registered threads under M0_POOL_DEBUG,
 # lane 1 is the Mojo mount, and before the fix it said 0.
-M0_POOL_DEBUG=1 "$srv" --mount /=bareapp.wsgi --mount /native=mojo \
-  --app-dir apps/wsgi_bare --port $P --blocking-threads 4 > mojomount.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/native/probe > /dev/null \
-  || fail "the pool-debug server never became healthy"
+log=$SMOKE_DIR/mojomount-debug.log
+spawn mojomount-debug.log env M0_POOL_DEBUG=1 "$srv" --mount /=bareapp.wsgi --mount /native=mojo \
+  --app-dir apps/wsgi_bare --port $P --blocking-threads 4
+wait_ready $B/native/probe $pid
 for _ in 1 2 3 4 5 6 7 8; do curl -s --max-time 5 $B/native/probe > /dev/null; done
 kill -TERM $pid
 for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "the pool-debug server did not exit within 10s of SIGTERM"; fi
-pid=
-grep -q 'pool lane 1: .*threads 4$' mojomount.log \
-  || fail "the Mojo lane did not report its 4 threads registered: $(grep 'pool lane' mojomount.log)"
-grep -q 'pool lane 0: .*threads 4$' mojomount.log \
-  || fail "the WSGI lane did not report its 4 threads: $(grep 'pool lane' mojomount.log)"
+grep -q 'pool lane 1: .*threads 4$' "$log" \
+  || fail "the Mojo lane did not report its 4 threads registered: $(grep 'pool lane' "$log")"
+grep -q 'pool lane 0: .*threads 4$' "$log" \
+  || fail "the WSGI lane did not report its 4 threads: $(grep 'pool lane' "$log")"
 # And the Mojo lane takes the GIL-free stall rule while the WSGI lane does
 # not (SPEC M25). The rule is test_offload's; this is the wiring that gives
 # it a lane. Unmarked, the lane was held to the progress rule and its search
 # route ran on one of four threads -- which no trivial route here can show,
 # so the mark is what this asserts.
-grep -q 'pool lane 1: gil-free, ' mojomount.log \
-  || fail "the Mojo lane is not marked GIL-free: $(grep 'pool lane' mojomount.log)"
-if grep -q 'pool lane 0: gil-free' mojomount.log; then
-  fail "the WSGI lane was marked GIL-free: $(grep 'pool lane' mojomount.log)"
+grep -q 'pool lane 1: gil-free, ' "$log" \
+  || fail "the Mojo lane is not marked GIL-free: $(grep 'pool lane' "$log")"
+if grep -q 'pool lane 0: gil-free' "$log"; then
+  fail "the WSGI lane was marked GIL-free: $(grep 'pool lane' "$log")"
 fi
 
 # Beside an ASGI mount, zero-config. The pool size used to come from "is any
@@ -4738,29 +4702,24 @@ fi
 # ASGI mount served and every request to the Mojo one hung on a lane nothing
 # read (SPEC M20). Every other phase passes an explicit pool, which is how
 # this went unseen.
-"$srv" --mount /=bareapp.asgi:application --mount /native=mojo \
-  --app-dir apps/asgi_bare --port $P > mojomount.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail "the ASGI + Mojo server never became healthy"
-grep -q 'asgi-loop@/' mojomount.log || fail "the ASGI mount did not get its executor"
+spawn mojomount-asgi.log "$srv" --mount /=bareapp.asgi:application --mount /native=mojo \
+  --app-dir apps/asgi_bare --port $P
+wait_ready $B/ $pid
+grep -q 'asgi-loop@/' "$SMOKE_DIR/mojomount-asgi.log" || fail "the ASGI mount did not get its executor"
 curl -s --max-time 5 $B/native/probe | grep -q '"mount":"mojo"' \
   || fail "the Mojo mount beside an ASGI mount did not answer within 5 s"
 kill -TERM $pid
 for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "the ASGI + Mojo server did not exit within 10s of SIGTERM"; fi
-pid=
 
 # Under --workers with no --blocking-threads (SPEC M20). --workers turns the
 # zero-config pool off to keep the inline shape, which a Mojo mount does not
 # have: before the default applied here, /native was answered by the ROOT
 # application, and then refused outright. Both workers must serve it.
-"$srv" --mount /=bareapp.wsgi --mount /native=mojo \
-  --app-dir apps/wsgi_bare --port $P --workers 2 > mojomount.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail "the prefork Mojo mount server never became healthy"
-grep -q 'blocking-threads=[0-9]* (auto)' mojomount.log || fail "the prefork Mojo mount did not get the default pool"
+spawn mojomount-prefork.log "$srv" --mount /=bareapp.wsgi --mount /native=mojo \
+  --app-dir apps/wsgi_bare --port $P --workers 2
+wait_ready $B/ $pid
+grep -q 'blocking-threads=[0-9]* (auto)' "$SMOKE_DIR/mojomount-prefork.log" || fail "the prefork Mojo mount did not get the default pool"
 for _ in 1 2 3 4 5 6; do
   curl -s --max-time 5 $B/native/probe | grep -q '"mount":"mojo"' \
     || fail "a prefork worker did not answer /native from the Mojo mount"
@@ -4768,9 +4727,7 @@ done
 kill -TERM $pid
 for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "the prefork Mojo mount server did not exit within 10s of SIGTERM"; fi
-pid=
 
-rm -f mojomount.log
 echo "smoke-mojo-mount OK"
 python3 scripts/emit.py --covers M19 --task smoke-mojo-mount
 python3 scripts/emit.py --covers N9 --task smoke-mojo-mount
@@ -5085,22 +5042,19 @@ flyctl deploy --remote-only --config deploy/blobs/fly.toml .
 help = "Build the docs site and serve it with m0serve: llms.txt at the root, every sitemap URL answering"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 set -u
 srv=bin/m0serve
-P=8180
+P=$(free_port)
 B=http://localhost:$P
-out=$(mktemp -d)
-pid=
-fail() { echo "FAIL: $1"; echo '=== site.log ==='; cat site.log 2>/dev/null; [ -n "$pid" ] && kill $pid 2>/dev/null; rm -rf "$out"; exit 1; }
+out=$SMOKE_DIR/site
 
 python3 scripts/docsite.py --selftest || fail 'the site checks cannot fail'
 python3 scripts/docsite.py --out "$out" --base-url $B || fail 'the site did not build'
 
-M0_SITE_DIST="$out" "$srv" siteapp.wsgi:application --app-dir apps/site \
-  --port $P --static /="$out" > site.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/robots.txt > /dev/null \
-  || fail 'server never became healthy'
+spawn site.log env M0_SITE_DIST="$out" "$srv" siteapp.wsgi:application --app-dir apps/site \
+  --port $P --static /="$out"
+wait_ready $B/robots.txt $pid
 
 # Status and content type of one URL, as "200 text/plain; charset=utf-8".
 probe() { curl -s -o /dev/null -w '%{http_code} %{content_type}' "$1"; }
@@ -5108,11 +5062,10 @@ probe() { curl -s -o /dev/null -w '%{http_code} %{content_type}' "$1"; }
 # llms.txt at the root: text, naming this site's own pages by absolute URL,
 # and none of the repository-relative links the source file carries.
 [ "$(probe $B/llms.txt)" = "200 text/plain; charset=utf-8" ] || fail "llms.txt: $(probe $B/llms.txt)"
-curl -s $B/llms.txt > llms.out
-grep -q "]($B/docs/spec.md)" llms.out || fail 'llms.txt does not index the spec page by absolute URL'
-grep -q "]($B/quickstart.md)" llms.out || fail 'llms.txt still carries the repository-relative quickstart link'
-! grep -q '](docs/' llms.out || fail 'llms.txt carries a repository-relative link'
-rm -f llms.out
+curl -s $B/llms.txt > "$SMOKE_DIR/llms.out"
+grep -q "]($B/docs/spec.md)" "$SMOKE_DIR/llms.out" || fail 'llms.txt does not index the spec page by absolute URL'
+grep -q "]($B/quickstart.md)" "$SMOKE_DIR/llms.out" || fail 'llms.txt still carries the repository-relative quickstart link'
+! grep -q '](docs/' "$SMOKE_DIR/llms.out" || fail 'llms.txt carries a repository-relative link'
 
 # llms-full.txt carries exactly the essential pages: the ones llms.txt lists
 # under "## Documentation" (the "## More" tier is left out on purpose).
@@ -5148,8 +5101,7 @@ code=$(curl --path-as-is -s -o /dev/null -w '%{http_code}' "$B/docs/spec/../../.
 [ "$code" != "301" ] || fail 'a traversal was redirected as though it named a page'
 
 python3 scripts/emit.py --covers F13 --task smoke-site
-kill $pid; wait $pid 2>/dev/null
-rm -rf "$out"
+stop $pid
 echo "smoke-site: OK"
 """
 
@@ -6600,38 +6552,37 @@ python3 scripts/emit.py --covers I17 --task smoke-outbox-cap
 [tool.poe.tasks.smoke-mount-seam]
 help = "An application supplies its own Mojo mount by module, without copying m0serve.mojo"
 shell = """
+. scripts/smoke/lib.sh
 set -u
-P=8795
+P=$(free_port)
 B=http://localhost:$P
-srv=bin/m0serve-seam
-pid=
-fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat seam.log 2>/dev/null; rm -f seam.log seam_index.html; exit 1; }
+# Both builds go to this run's own directory, where build-serve bundles the
+# runtime beside the binary, so no binary from an earlier run can satisfy
+# the produced-nothing check below.
+srv=$SMOKE_DIR/m0serve-seam
+absent=$SMOKE_DIR/m0serve-absent
 
 # A directory with no mount module is refused by the build BEFORE mojo build
 # runs (SPEC N14's "before anything compiles"). Asserting only a non-zero
 # status cannot tell that refusal from an ordinary compile error, so the
 # guard's own message is what is matched -- delete the `-f` check in
 # build-serve and this arm goes red rather than passing on the compiler's
-# "module m0serve_mount unresolvable". A stale binary from an earlier local
-# run would satisfy the produced-nothing check falsely, so clear it first.
-rm -f bin/m0serve-absent
-out=$(M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture/absent M0SERVE_OUT=bin/m0serve-absent \
+# "module m0serve_mount unresolvable".
+out=$(M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture/absent M0SERVE_OUT=$absent \
   uv run --no-sync poe build-serve 2>&1)
 rc=$?
 [ $rc -ne 0 ] || fail "build-serve accepted a mount directory with no m0serve_mount.mojo"
 echo "$out" | grep -q 'no m0serve_mount.mojo in' \
   || fail "a missing mount module was not refused before compiling; got: $out"
-[ ! -e bin/m0serve-absent ] || fail "a refused mount directory still produced a binary"
+[ ! -e "$absent" ] || fail "a refused mount directory still produced a binary"
 
 # The seam: the same entry file, a different module on the path.
 M0SERVE_MOUNT_DIR=packages/m0-wsgi/mount_fixture M0SERVE_OUT=$srv \
   uv run --no-sync poe build-serve || fail "build-serve with the fixture mount did not build"
 
-"$srv" --mount /=bareapp.wsgi --mount /native=mojo \
-  --app-dir apps/wsgi_bare --port $P --blocking-threads 2 > seam.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail "server never became healthy"
+spawn seam.log "$srv" --mount /=bareapp.wsgi --mount /native=mojo \
+  --app-dir apps/wsgi_bare --port $P --blocking-threads 2
+wait_ready $B/ $pid
 
 # The fixture's routes answer, from a pool thread, with its own state.
 body=$(curl -s $B/native/hello/ada)
@@ -6646,8 +6597,8 @@ code=$(curl -s -o /dev/null -w '%{http_code}' $B/native/probe)
 [ "$code" = "404" ] || fail "the demo mount's /probe answered $code; the fixture did not replace it"
 
 # A link the fixture renders carries the prefix, and following it lands.
-curl -s -o seam_index.html $B/native/ || fail "the fixture's index did not answer"
-href=$(grep -o 'href="[^"]*"' seam_index.html | head -1 | cut -d'"' -f2)
+curl -s -o "$SMOKE_DIR/seam_index.html" $B/native/ || fail "the fixture's index did not answer"
+href=$(grep -o 'href="[^"]*"' "$SMOKE_DIR/seam_index.html" | head -1 | cut -d'"' -f2)
 case "$href" in /native/hello/*) ;; *) fail "the fixture rendered $href, not a link under /native";; esac
 curl -s "$B$href" | grep -q '"mount":"fixture"' || fail "following $href did not reach the fixture"
 
@@ -6657,9 +6608,7 @@ curl -s $B/ | grep -q 'bare wsgi app' || fail "the WSGI mount did not answer"
 kill -TERM $pid
 for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM"; fi
-pid=
 
-rm -f seam.log seam_index.html "$srv"
 echo "smoke-mount-seam OK"
 python3 scripts/emit.py --covers N14 --task smoke-mount-seam
 """
@@ -6672,31 +6621,18 @@ python3 scripts/emit.py --covers N14 --task smoke-mount-seam
 # followed on each, the paths outside the prefix answer what each host
 # owns, and `/x/now` stays answered on both while two connections hold
 # `/x/slow` -- with the host's bare loop as the negative arm. Its own
-# ports, and the m0serve binary in bin/ beside the runtime it needs.
+# ports, and the m0serve binary in the smoke's own directory, beside the
+# runtime build-serve bundles there.
 [tool.poe.tasks.smoke-ramp]
 help = "One views module on two hosts: byte-identical answers, a followed link, and placement on m0serve and the Mojo host alike (SPEC N20)"
 shell = """
+. scripts/smoke/lib.sh
 set -u
-out=$(mktemp -d)
-srv=bin/m0serve-ramp
-pids=
-cleanup() {
-  [ -n "$pids" ] && kill $pids 2>/dev/null
-  pkill -KILL -f "$out/" 2>/dev/null
-  rm -rf "$out" "$srv"
-}
-trap cleanup EXIT
-fail() {
-  echo "FAIL: $1"
-  for f in "$out"/*.log; do
-    [ -f "$f" ] && { echo "=== $(basename "$f") ==="; cat "$f"; }
-  done
-  exit 1
-}
+out=$SMOKE_DIR
+srv=$out/m0serve-ramp
 # One module, two binaries. The mount build REPLACES the demo mount and
 # adds the application's module root (M0SERVE_INCLUDE); the host build is
 # the ordinary app build.
-rm -f "$srv"
 M0SERVE_MOUNT_DIR=apps/ramp/mount M0SERVE_INCLUDE=apps M0SERVE_OUT=$srv \
   uv run --no-sync poe build-serve || fail "build-serve with the ramp mount did not build"
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
@@ -6704,31 +6640,31 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
 
 # m0serve: the module as a mount beside a Python application, four
 # threads on its lane; the host: the same module with a lane of four.
-"$srv" --mount /=bareapp.wsgi --mount /x=mojo --app-dir apps/wsgi_bare \
-  --port 8821 --blocking-threads 2 > "$out/m0serve.log" 2>&1 &
-pids="$!"
-env M0_PORT=8822 M0_BLOCKING_THREADS=2 "$out/ramp" > "$out/host.log" 2>&1 &
-pids="$pids $!"
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8821/x/now > /dev/null \
-  || fail "m0serve never answered the mount"
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8822/x/now > /dev/null \
-  || fail "the host never answered"
+mport=$(free_port)
+spawn m0serve.log "$srv" --mount /=bareapp.wsgi --mount /x=mojo --app-dir apps/wsgi_bare \
+  --port $mport --blocking-threads 2
+wait_ready http://127.0.0.1:$mport/x/now $pid
+pids=$pid
+hport=$(free_port)
+spawn host.log env M0_PORT=$hport M0_BLOCKING_THREADS=2 "$out/ramp"
+wait_ready http://127.0.0.1:$hport/x/now $pid
+pids="$pids $pid"
 grep -q 'handler thread(s) behind the loop' "$out/host.log" || fail "the host started no lane"
 
 # Bytes: the request set under the prefix, the followed link, and the
 # paths outside the prefix asserted per host.
-res=$(python3 scripts/ramp_probe.py bytes 8821 8822 /x 2>&1) || fail "bytes: $res"
+res=$(python3 scripts/ramp_probe.py bytes $mport $hport /x 2>&1) || fail "bytes: $res"
 echo "bytes: $res"
 
 # Placement, on each: one connection holds /x/slow?ms=200 on a lane of
 # two, and the worst of 24 /x/now samples stays under 100 ms (sim_loop's
 # bound) -- on m0serve because the lane's other thread answers, on the
 # host because the loop does.
-res=$(python3 scripts/ramp_probe.py placement 8821 /x 1 4 2>&1) || fail "placement, m0serve: $res"
+res=$(python3 scripts/ramp_probe.py placement $mport /x 1 4 2>&1) || fail "placement, m0serve: $res"
 m0_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$m0_ms" ] && [ "$m0_ms" -lt 100 ] || fail "placement, m0serve: /x/now waited ${m0_ms:-?} ms behind a slow view on a lane of two ($res)"
 echo "placement, m0serve: $res"
-res=$(python3 scripts/ramp_probe.py placement 8822 /x 1 4 2>&1) || fail "placement, host: $res"
+res=$(python3 scripts/ramp_probe.py placement $hport /x 1 4 2>&1) || fail "placement, host: $res"
 host_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$host_ms" ] && [ "$host_ms" -lt 100 ] || fail "placement, host: /x/now waited ${host_ms:-?} ms behind a slow view on a lane of two ($res)"
 echo "placement, host: $res"
@@ -6738,11 +6674,11 @@ echo "placement, host: $res"
 # m0serve's loop handler holds no Mojo table, so the same route waits for
 # a pool thread (D32, recorded rather than built). The host is bounded;
 # m0serve's number is the measurement the decision asked for, recorded.
-res=$(python3 scripts/ramp_probe.py placement 8822 /x 2 4 2>&1) || fail "full lane, host: $res"
+res=$(python3 scripts/ramp_probe.py placement $hport /x 2 4 2>&1) || fail "full lane, host: $res"
 host_full_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$host_full_ms" ] && [ "$host_full_ms" -lt 100 ] || fail "full lane, host: /x/now waited ${host_full_ms:-?} ms with every lane thread busy -- add_loop no longer keeps it on the loop ($res)"
 echo "full lane, host: $res"
-res=$(python3 scripts/ramp_probe.py placement 8821 /x 2 4 2>&1) || fail "full lane, m0serve: $res"
+res=$(python3 scripts/ramp_probe.py placement $mport /x 2 4 2>&1) || fail "full lane, m0serve: $res"
 m0_full_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$m0_full_ms" ] || fail "full lane, m0serve: no measurement in: $res"
 echo "full lane, m0serve (D32, recorded): $res"
@@ -6753,21 +6689,18 @@ for p in $pids; do
   while kill -0 $p 2>/dev/null; do i=$((i + 1)); [ $i -le 100 ] || fail "a server did not exit within 10 s of SIGTERM"; sleep 0.1; done
   wait $p || fail "a server exited non-zero on SIGTERM"
 done
-pids=
 
 # The negative arm: the host with no lane must FAIL the bound under the
 # same load, or the placement arm above proves nothing.
-env M0_PORT=8823 M0_BLOCKING_THREADS=0 "$out/ramp" > "$out/host-bare.log" 2>&1 &
-pids="$!"
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8823/x/now > /dev/null \
-  || fail "the bare host never answered"
-res=$(python3 scripts/ramp_probe.py placement 8823 /x 2 4 2>&1) || fail "placement, bare host: $res"
+bport=$(free_port)
+spawn host-bare.log env M0_PORT=$bport M0_BLOCKING_THREADS=0 "$out/ramp"
+wait_ready http://127.0.0.1:$bport/x/now $pid
+res=$(python3 scripts/ramp_probe.py placement $bport /x 2 4 2>&1) || fail "placement, bare host: $res"
 bare_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$bare_ms" ] && [ "$bare_ms" -ge 100 ] || fail "placement, bare host: /x/now answered in ${bare_ms:-?} ms with every view on the loop -- the arm no longer discriminates ($res)"
 echo "placement, bare host (negative arm): $res"
-kill -TERM $pids
-wait $pids || fail "the bare host exited non-zero on SIGTERM"
-pids=
+kill -TERM $pid
+wait $pid || fail "the bare host exited non-zero on SIGTERM"
 
 echo "smoke-ramp OK"
 python3 scripts/emit.py ramp.worst_now_ms.m0serve "$m0_ms" --unit ms --limit 100 --task smoke-ramp
@@ -6794,23 +6727,18 @@ python3 scripts/emit.py --covers N20 --task smoke-ramp
 help = "An SSE hold taken on a Mojo mount's pool thread, fed by a publish from Django"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 set -u
 srv=bin/m0serve
-P=8797
+P=$(free_port)
 B=http://localhost:$P
 D="--app-dir apps/django_realtime"
-pid=
-out=$(mktemp -d)
-fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat "$out"/server.log 2>/dev/null; rm -rf "$out"; exit 1; }
-cleanup() { [ -n "$pid" ] && kill $pid 2>/dev/null; rm -rf "$out"; }
-trap cleanup EXIT
+out=$SMOKE_DIR
 
 # --- phase 1: the hold, and a publish from Django reaching it ----------
-M0_SSE_HEARTBEAT_MS=800 "$srv" --mount /=djangoproj.wsgi:application --mount /native=mojo $D \
-  --realtime --blocking-threads 2 --health-path /health --port $P > "$out"/server.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail $B/health > /dev/null \
-  || fail "server never became healthy"
+spawn server.log env M0_SSE_HEARTBEAT_MS=800 "$srv" --mount /=djangoproj.wsgi:application --mount /native=mojo $D \
+  --realtime --blocking-threads 2 --health-path /health --port $P
+wait_ready $B/health $pid
 
 curl -s -N --max-time 4 -D "$out"/head1 "$B/native/hold?channel=news" > "$out"/body1 &
 c1=$!
@@ -6883,20 +6811,17 @@ wait $s1 $s2
 kill -TERM $pid
 for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM with a Mojo hold live"; fi
-pid=
 
 # --- phase 5: without --realtime the same view degrades, as a Django one does
-"$srv" --mount /=djangoproj.wsgi:application --mount /native=mojo $D \
-  --blocking-threads 2 --health-path /health --port $P > "$out"/server2.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail $B/health > /dev/null \
-  || fail "server never became healthy without --realtime"
+spawn server2.log "$srv" --mount /=djangoproj.wsgi:application --mount /native=mojo $D \
+  --blocking-threads 2 --health-path /health --port $P
+wait_ready $B/health $pid
 curl -s --max-time 3 -D "$out"/head5 "$B/native/hold?channel=news" > "$out"/body5 \
   || fail "without --realtime the hold view did not answer as an ordinary response"
 grep -q '^HTTP/1.1 200' "$out"/head5 || fail "the degraded answer is not a 200"
 grep -qi '^content-length:' "$out"/head5 || fail "the degraded answer was held rather than served"
 grep -q '"mount":"mojo"' "$out"/body5 || fail "the degraded answer lost the view's body"
-kill -TERM $pid; wait $pid 2>/dev/null; pid=
+stop $pid
 
 echo "smoke-mojo-mount-hold OK"
 python3 scripts/emit.py --covers N11 --task smoke-mojo-mount-hold
@@ -6918,19 +6843,16 @@ python3 scripts/emit.py --covers N11 --task smoke-mojo-mount-hold
 help = "A stream held on a Mojo pool thread against a grant Django signed"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 set -u
 srv=bin/m0serve
-P=8803
+P=$(free_port)
 B=http://localhost:$P
 D="--app-dir apps/django_realtime"
 M="--mount /=djangoproj.wsgi:application --mount /rt=hold"
 export M0_GRANT_KEY="smoke-key-0123456789abcdef0123456789abcdef"
 export M0_GRANT_KEY_PREV="smoke-prev-key-fedcba9876543210fedcba98765432"
-pid=
-out=$(mktemp -d)
-fail() { echo "FAIL: $1"; [ -n "$pid" ] && kill $pid 2>/dev/null; cat "$out"/server.log 2>/dev/null; rm -rf "$out"; exit 1; }
-cleanup() { [ -n "$pid" ] && kill $pid 2>/dev/null; rm -rf "$out"; }
-trap cleanup EXIT
+out=$SMOKE_DIR
 grant_url() { curl -s --max-time 5 "$@" | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"])'; }
 
 # --- phase 1: the refusals, and the doctor agreeing with each ----------
@@ -6946,10 +6868,8 @@ env -u M0_GRANT_KEY "$srv" --doctor $M $D --port $P --realtime --blocking-thread
 rc=$?; [ $rc -eq 2 ] || fail "--doctor disagreed with main on the missing key (exit $rc)"
 
 # --- phase 2: a bound grant admits its session, and a publish reaches it
-"$srv" $M $D --port $P --realtime --blocking-threads 2 --health-path /health > "$out"/server.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail $B/health > /dev/null \
-  || fail "server never became healthy"
+spawn server.log "$srv" $M $D --port $P --realtime --blocking-threads 2 --health-path /health
+wait_ready $B/health $pid
 url=$(grant_url -H 'Cookie: sessionid=s3cret' "$B/grant?channel=news")
 case "$url" in /rt/stream?g=v1.*) ;; *) fail "the issuer did not render a stream URL into the mount: $url";; esac
 curl -s -N --max-time 4 -H 'Cookie: sessionid=s3cret' -D "$out"/head "$B$url" > "$out"/body &
@@ -6994,7 +6914,6 @@ curl -s $B/health | grep -q '"subscribers":0' || fail "a granted slot was not re
 kill -TERM $pid
 for _ in $(seq 1 100); do kill -0 $pid 2>/dev/null || break; sleep 0.1; done
 if kill -0 $pid 2>/dev/null; then kill -9 $pid; fail "did not exit within 10s of SIGTERM"; fi
-pid=
 grep -qi 'traceback' "$out"/server.log && fail "the server logged a traceback"
 
 echo "smoke-hold-mount OK"
@@ -7200,26 +7119,9 @@ ls -1 dist/wheels/
 help = "Build the wheel, install it outside this tree, and serve a real app from it"
 deps = ["build-wheel"]
 shell = """
+. scripts/smoke/lib.sh
 set -u
-fail() { echo "smoke-wheel: $1" >&2; exit 1; }
-work=$(mktemp -d)
-# The server pid joins the trap as soon as it exists. It used to be killed
-# only on the success path, so every `fail` after the launch left a server
-# running -- and the launch itself leaked one every time (see step 6).
-srv=""
-cleanup() { [ -n "$srv" ] && kill "$srv" 2>/dev/null; rm -rf "$work"; }
-trap cleanup EXIT
-
-# The port must be free BEFORE the run, because the server sets SO_REUSEPORT
-# (prefork needs it) so the kernel adds this listener ALONGSIDE any stale one
-# and load-balances between them. A leaked server from an earlier run can
-# then answer this smoke's request and the assertions pass against a binary
-# that is not the one under test. Not hypothetical: nine of them accumulated
-# over a day of development, and one was still answering 200 OK a day later.
-if command -v lsof >/dev/null 2>&1; then
-  stale=$(lsof -nP -iTCP:8129 -sTCP:LISTEN -t 2>/dev/null | tr '\n' ' ')
-  [ -z "$stale" ] || fail "port 8129 already has a listener (pids: $stale) -- SO_REUSEPORT means this run could be answered by the wrong binary. Clear them: kill $stale"
-fi
+work=$SMOKE_DIR
 
 whl=$(ls dist/wheels/*.whl 2>/dev/null | head -1)
 [ -n "$whl" ] || fail "no wheel was built"
@@ -7306,20 +7208,17 @@ def application(environ, start_response):
     start_response("200 OK", [("Content-Type", "text/plain")])
     return [b"served from the wheel"]
 PY
-# `exec`, so the subshell BECOMES the server and $! is the server's own pid.
-# Without it, `cd ... && env ...` is a list that bash cannot exec-optimize, so
-# $! was the SUBSHELL: `kill $pid` killed the wrapper and left m0serve
-# orphaned to init. That is exactly how the stale listeners were made.
-# bench_mixed_workload.sh already does it this way.
-(cd "$work/app" && exec env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
-  -u LD_LIBRARY_PATH -u MOJO_PYTHON_LIBRARY -u VIRTUAL_ENV \
-  "$work/venv/bin/m0serve" wheelapp:application --port 8129 > "$work/wheel.log" 2>&1) &
-pid=$!
-srv=$pid
-curl --retry 25 --retry-delay 1 --retry-all-errors --silent --fail \
-  http://127.0.0.1:8129/ > "$work/body" || { cat "$work/wheel.log"; kill $pid 2>/dev/null; fail 'never became healthy'; }
-grep -q 'served from the wheel' "$work/body" || { kill $pid 2>/dev/null; fail 'wrong body'; }
-kill $pid 2>/dev/null; wait $pid 2>/dev/null; srv=""
+# From the application's directory, through `sh -c` because spawn runs a
+# command rather than a list, and `exec` so the server keeps the pid spawn
+# reported: a shell left between them was how a `kill $pid` of the wrapper
+# once left m0serve orphaned, still listening.
+port=$(free_port)
+spawn wheel.log sh -c 'cd "$1" && exec env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+  -u LD_LIBRARY_PATH -u MOJO_PYTHON_LIBRARY -u VIRTUAL_ENV "$2" wheelapp:application --port "$3"' \
+  sh "$work/app" "$work/venv/bin/m0serve" $port
+wait_ready http://127.0.0.1:$port/ $pid
+curl -s --max-time 5 http://127.0.0.1:$port/ | grep -q 'served from the wheel' || fail 'wrong body'
+stop $pid
 
 # 7. Removal sabotage, permanent. If the binary still starts once its runtime
 #    is gone, it is resolving it from somewhere else -- the build venv -- and
@@ -7395,7 +7294,8 @@ ls -1 dist/m0/*.whl
 help = "The m0 wheel outside the tree: contents equal git's manifest (the storage trees among them), m0 build/test/doctor on a copied app, SQLite opened through the wheel under m0 test, every refusal's sentence (the MAX pair's included), mojo from its own prefix"
 deps = ["build-m0-wheel"]
 shell = """
-python3 scripts/m0_wheel_smoke.py dist/m0 8931 || exit 1
+. scripts/smoke/lib.sh
+python3 scripts/m0_wheel_smoke.py dist/m0 $(free_port) || exit 1
 python3 scripts/emit.py --covers N23 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N24 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N25 --task smoke-m0-wheel
@@ -7427,7 +7327,10 @@ deps = ["build-core", "build-http", "build-datastar", "build-sqlite"]
 help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor (the scaffold matching itself, an edit named), the wire (a 422 fragment; two differing Datastar frames, and a kick lifting every bar of a later one; a login, a CSRF token on every write and the DELETE's in a header), the scaffold's own smoke.sh (live: the kick count back after a restart)"
 deps = ["build-m0-wheel"]
 shell = """
-python3 scripts/m0_scaffold_smoke.py dist/m0 8951 || exit 1
+. scripts/smoke/lib.sh
+# The driver counts its ports up from this one: a server per template (three),
+# each template's own smoke.sh ten above it, and the auth deploy twenty above.
+python3 scripts/m0_scaffold_smoke.py dist/m0 $(free_port 21) || exit 1
 python3 scripts/emit.py --covers N27 --task smoke-scaffold
 python3 scripts/emit.py --covers N29 --task smoke-scaffold
 python3 scripts/emit.py --covers N34 --task smoke-scaffold
@@ -7443,7 +7346,8 @@ python3 scripts/emit.py --covers N45 --task smoke-scaffold
 help = "uv run m0 dev outside the tree: the old server answers while a build runs and after one fails, a good build swaps pids with ONE process on the port, SIGINT stops the server and exits 0"
 deps = ["build-m0-wheel"]
 shell = """
-python3 scripts/m0_scaffold_dev_smoke.py dist/m0 8961 || exit 1
+. scripts/smoke/lib.sh
+python3 scripts/m0_scaffold_dev_smoke.py dist/m0 $(free_port) || exit 1
 python3 scripts/emit.py --covers N30 --task smoke-scaffold-dev
 """
 
@@ -7649,35 +7553,19 @@ uv run --no-project --with playwright python3 scripts/notes_login_browser.py --b
 [tool.poe.tasks.smoke-blobs]
 help = "Blobs demo: frames at cadence and well-formed, drops reach every stream clamped and capped, the newest state at open, a pause with nobody watching, the idle slow-down, a bounded drain, two workers"
 shell = """
-out=$(mktemp -d)
-pid=
-hold=
-cleanup() {
-  [ -n "$pid" ] && kill $pid 2>/dev/null
-  [ -n "$hold" ] && kill $hold 2>/dev/null
-  pkill -KILL -f "$out/" 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  for f in "$out"/*.log; do
-    [ -f "$f" ] && { echo "=== $(basename "$f") ==="; cat "$f"; }
-  done
-  exit 1
-}
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ \
   -I apps/ apps/blobs/server.mojo -o "$out/blobs" || exit 1
-# start PORT NAME [VAR=value...] -- the extra variables go through env(1),
-# because an assignment in front of a shell FUNCTION is unspecified in sh.
+# start NAME [VAR=value...] -- a port of its own in $port, the extra
+# variables through env(1), because an assignment in front of a shell
+# FUNCTION is unspecified in sh.
 start() {
-  port=$1
-  name=$2
-  shift 2
-  env M0_PORT=$port "$@" "$out/blobs" > "$out/$name.log" 2>&1 &
-  pid=$!
-  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-    "http://127.0.0.1:$port/health" > /dev/null || fail "never became healthy ($name)"
+  name=$1
+  shift
+  port=$(free_port)
+  spawn "$name.log" env M0_PORT=$port "$@" "$out/blobs"
+  wait_ready "http://127.0.0.1:$port/health" $pid
 }
 field() {
   v=${1#*$2=}
@@ -7685,8 +7573,8 @@ field() {
 }
 
 # --- the main run ---------------------------------------------------------
-start 8351 serve
-serve=$(python3 scripts/blobs_probe.py serve 8351) || fail "serve: $serve"
+start serve
+serve=$(python3 scripts/blobs_probe.py serve $port) || fail "serve: $serve"
 echo "serve: $serve"
 
 # --- HEAD is its GET's (N38) ----------------------------------------------
@@ -7694,25 +7582,25 @@ echo "serve: $serve"
 # and type and no body, and the stream's ends at its head (L27) without a
 # viewer left behind. Before N38 all three were 405.
 for p in / /health; do
-  python3 scripts/head_probe.py --port 8351 --twin $p --then /health \
+  python3 scripts/head_probe.py --port $port --twin $p --then /health \
     || fail "HEAD $p is not its GET's head (N38)"
 done
-viewers() { curl -s http://127.0.0.1:8351/stats | grep -o '"viewers":[0-9]*' | cut -d: -f2; }
+viewers() { curl -s http://127.0.0.1:$port/stats | grep -o '"viewers":[0-9]*' | cut -d: -f2; }
 before=$(viewers)
 [ -n "$before" ] || fail "/stats carried no viewer count"
-python3 scripts/head_probe.py --port 8351 --hold /events --then /health \
+python3 scripts/head_probe.py --port $port --hold /events --then /health \
   || fail "a HEAD to /events did not end at its head (N38, L27)"
 after=$(viewers)
 [ "$after" = "$before" ] || fail "a HEAD to /events left a viewer behind ($before, then $after)"
 echo "head: / and /health are their GET's heads; /events ended at its head, viewers $before then $after"
 
 # --- a drain with a stream held: the server ends it, and exits 0 in bound --
-python3 scripts/blobs_probe.py hold 8351 "$out/holding" > "$out/hold.out" 2>&1 &
+python3 scripts/blobs_probe.py hold $port "$out/holding" > "$out/hold.log" 2>&1 &
 hold=$!
 i=0
 while [ ! -f "$out/holding" ]; do
   i=$((i + 1))
-  [ $i -le 100 ] || fail "the held stream never got a frame: $(cat "$out/hold.out")"
+  [ $i -le 100 ] || fail "the held stream never got a frame: $(cat "$out/hold.log")"
   sleep 0.1
 done
 t0=$(date +%s)
@@ -7720,34 +7608,31 @@ kill -TERM $pid
 wait $pid
 rc=$?
 t1=$(date +%s)
-pid=
 [ "$rc" -eq 0 ] || fail "SIGTERM with a stream held and the producer running exited $rc, not 0"
 [ $((t1 - t0)) -lt 10 ] || fail "the drain took $((t1 - t0))s; the producer is not joined within its bound"
 # A producer never told to stop is abandoned at the 5 s join bound, which
 # the timing above lets through; the app names what it abandoned.
 grep -q 'abandoned' "$out/serve.log" && fail "the drain abandoned the producer instead of stopping it"
-wait $hold || fail "hold: $(cat "$out/hold.out")"
-hold=
-echo "drain: exit 0 in $((t1 - t0))s; $(cat "$out/hold.out")"
+wait $hold || fail "hold: $(cat "$out/hold.log")"
+echo "drain: exit 0 in $((t1 - t0))s; $(cat "$out/hold.log")"
 
 # --- the idle slow-down, on a fresh process -------------------------------
-start 8352 idle M0_BLOBS_IDLE_MS=1500
-res=$(python3 scripts/blobs_probe.py idle 8352) || fail "idle: $res"
+start idle M0_BLOBS_IDLE_MS=1500
+res=$(python3 scripts/blobs_probe.py idle $port) || fail "idle: $res"
 echo "idle: $res"
-kill $pid; wait $pid 2>/dev/null; pid=
+stop $pid
 
 # --- two workers: the host's half (streams on both, a click crossing) -----
 # Its own port. The probe fails as vacuous unless the streams land on both
 # workers, so a producer publishing to one worker's channel cannot pass on
 # a run that happened to put every stream there.
-start 8353 two M0_WORKERS=2
-two=$(python3 scripts/blobs_probe.py two 8353 2>&1) || fail "two workers: $two"
+start two M0_WORKERS=2
+two=$(python3 scripts/blobs_probe.py two $port 2>&1) || fail "two workers: $two"
 echo "two workers: $two"
 t0=$(date +%s)
 kill -TERM $pid
 wait $pid
 rc=$?
-pid=
 [ "$rc" -eq 0 ] || fail "two workers: SIGTERM to the supervisor exited $rc, not 0"
 [ $(($(date +%s) - t0)) -lt 10 ] || fail "two workers: the drain took too long"
 grep -q 'abandoned' "$out/two.log" && fail "two workers: the drain abandoned the producer"
@@ -7779,35 +7664,20 @@ cmd = "python3 scripts/blobs_sabotage.py"
 [tool.poe.tasks.smoke-host-threads]
 help = "The Mojo host under M0_THREADS: every loop's streams get every beat, N handler instances in one pid, a drain with a request in flight on every loop, loops of pools, and the refusals"
 shell = """
-out=$(mktemp -d)
-pid=
-probe=
-cleanup() {
-  [ -n "$pid" ] && kill $pid 2>/dev/null
-  [ -n "$probe" ] && kill $probe 2>/dev/null
-  pkill -KILL -f "$out/" 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  for f in "$out"/*.log "$out"/*.out; do
-    [ -f "$f" ] && { echo "=== $(basename "$f") ==="; cat "$f"; }
-  done
-  exit 1
-}
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
   apps/host_check/server.mojo -o "$out/host_check" || exit 1
+# start and sigterm are smoke-host's: a port of its own per server, and
+# SIGTERM to the process alone, timed, with a deadline.
 start() {
-  port=$1
-  name=$2
-  shift 2
-  env M0_PORT=$port "$@" "$out/host_check" > "$out/$name.log" 2>&1 &
-  pid=$!
-  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-    "http://127.0.0.1:$port/health" > /dev/null || fail "never became healthy ($name)"
+  name=$1
+  shift
+  port=$(free_port)
+  spawn "$name.log" env M0_PORT=$port "$@" "$out/host_check"
+  wait_ready "http://127.0.0.1:$port/health" $pid
 }
-stop() {
+sigterm() {
   t0=$(date +%s)
   kill -TERM $pid
   i=0
@@ -7819,27 +7689,26 @@ stop() {
   wait $pid
   rc=$?
   took=$(($(date +%s) - t0))
-  pid=
 }
 
 # --- fan-out across loops (SPEC E27) ----------------------------------------
 # One producer thread, one bus channel per LOOP: four streams spanning both
 # loops each carry every beat, contiguous, from one pid.
-start 8861 threads M0_THREADS=2
+start threads M0_THREADS=2
 grep -q 'host: 2 loops on 2 threads' "$out/threads.log" || fail "M0_THREADS=2 did not start two loops"
 grep -q '^\\[worker' "$out/threads.log" && fail "M0_THREADS=2 forked"
-res=$(python3 scripts/host_probe.py streams 8861 4 2 2 2>&1) || fail "fan-out across loops: $res"
+res=$(python3 scripts/host_probe.py streams $port 4 2 2 2>&1) || fail "fan-out across loops: $res"
 echo "fan-out across loops: $res"
 
 # --- N handler instances in one process (SPEC E29) --------------------------
-res=$(python3 scripts/host_probe.py isolation 8861 2 2>&1) || fail "isolation: $res"
+res=$(python3 scripts/host_probe.py isolation $port 2 2>&1) || fail "isolation: $res"
 echo "isolation: $res"
 
 # --- the drain, with a request in flight on every loop (SPEC E28) -----------
 # The signal lands on ONE pipe; each loop must see the stop on its own. A
 # loop that never does is still spinning its request's successor when the
 # coordinator's bound runs out, and the exit is 1, named.
-python3 scripts/host_probe.py inflight 8861 "$out/inflight" 2 1500 > "$out/inflight.out" 2>&1 &
+python3 scripts/host_probe.py inflight $port "$out/inflight" 2 1500 > "$out/inflight.log" 2>&1 &
 probe=$!
 i=0
 while [ ! -f "$out/inflight" ]; do
@@ -7848,23 +7717,22 @@ while [ ! -f "$out/inflight" ]; do
   kill -0 $probe 2>/dev/null || fail "the in-flight probe ended early"
   sleep 0.1
 done
-stop "threads drain"
+sigterm "threads drain"
 wait $probe || fail "the drain dropped a request in flight"
-probe=
 [ "$rc" -eq 0 ] || fail "threads drain: SIGTERM exited $rc, not 0"
 [ "$took" -le 8 ] || fail "threads drain: took ${took}s"
 grep -Eq 'still running|abandoned' "$out/threads.log" && fail "threads drain: a loop or the producer was left behind"
-echo "drain: $(cat "$out/inflight.out"); exit 0 in ${took}s"
+echo "drain: $(cat "$out/inflight.log"); exit 0 in ${took}s"
 drain_s=$took
 
 # --- T loops of N: a pool behind every loop ---------------------------------
-start 8862 pooled M0_THREADS=2 M0_BLOCKING_THREADS=2
+start pooled M0_THREADS=2 M0_BLOCKING_THREADS=2
 [ "$(grep -c 'handler thread(s) behind the loop' "$out/pooled.log")" -eq 2 ] || fail "two loops did not each start a pool"
-res=$(python3 scripts/host_probe.py streams 8862 4 2 2 2>&1) || fail "pooled loops, streams: $res"
-res2=$(python3 scripts/host_probe.py placement 8862 2 4 2>&1) || fail "pooled loops, placement: $res2"
+res=$(python3 scripts/host_probe.py streams $port 4 2 2 2>&1) || fail "pooled loops, streams: $res"
+res2=$(python3 scripts/host_probe.py placement $port 2 4 2>&1) || fail "pooled loops, placement: $res2"
 worst=$(echo "$res2" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
 [ "$worst" -lt 100 ] || fail "pooled loops: /health took ${worst} ms behind slow views"
-stop "pooled loops"
+sigterm "pooled loops"
 [ "$rc" -eq 0 ] || fail "pooled loops: SIGTERM exited $rc, not 0"
 echo "two loops of two: $res; $res2; exit 0 in ${took}s"
 
@@ -7876,8 +7744,7 @@ refused() {
   name=$1
   want=$2
   shift 2
-  env M0_PORT=8863 "$@" "$out/host_check" > "$out/refused.log" 2>&1 &
-  pid=$!
+  spawn refused.log env M0_PORT=$(free_port) "$@" "$out/host_check"
   i=0
   while kill -0 $pid 2>/dev/null; do
     i=$((i + 1))
@@ -7886,7 +7753,6 @@ refused() {
   done
   wait $pid
   rc=$?
-  pid=
   [ "$rc" -eq 78 ] || fail "$name exited $rc, not 78"
   grep -q "host: .*$want" "$out/refused.log" || fail "$name was refused without naming $want"
   grep -q 'listening' "$out/refused.log" && fail "$name was refused after the host bound its port"
@@ -7898,7 +7764,7 @@ refused "M0_THREADS=0" 'M0_THREADS must be at least 1' M0_THREADS=0
 # serves first: the barrier holds every loop until all have a handler.
 # The knob raises on loop 1 ALONE, 300 ms late, so loop 0 has long had its
 # handler: without the barrier it is serving by then.
-env M0_PORT=8864 M0_THREADS=2 M0_HOSTCHECK_LOOP_MAKE_RAISES=1 "$out/host_check" > "$out/make.log" 2>&1
+env M0_PORT=$(free_port) M0_THREADS=2 M0_HOSTCHECK_LOOP_MAKE_RAISES=1 "$out/host_check" > "$out/make.log" 2>&1
 rc=$?
 [ "$rc" -eq 78 ] || fail "a raising make under M0_THREADS exited $rc, not 78"
 grep -q 'host: .*M0_HOSTCHECK_LOOP_MAKE_RAISES' "$out/make.log" || fail "a raising make under M0_THREADS was not named"
@@ -7919,15 +7785,16 @@ python3 scripts/emit.py --covers E29 --task smoke-host-threads
 [tool.poe.tasks.smoke-host-doctor]
 help = "The Mojo host's flags and --doctor: flag > env > default on the wire, and the doctor exits with the server's own code for every configuration, having bound nothing"
 shell = """
-out=$(mktemp -d)
-cleanup() {
-  pkill -KILL -f "$out/" 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
   apps/host_check/server.mojo -o "$out/host_check" || exit 1
-python3 scripts/host_doctor_probe.py "$out/host_check" 8900 || exit 1
+# Spawned, so the servers the probe starts share its process group and the
+# lib reaps whatever it leaves. The probe draws a port per row, upward from
+# this one, out of a run of forty.
+spawn doctor.log python3 scripts/host_doctor_probe.py "$out/host_check" $(free_port 40)
+wait $pid || fail "$(grep -m 1 'host_doctor_probe: FAIL' "$out/doctor.log")"
+cat "$out/doctor.log"
 echo "smoke-host-doctor OK"
 python3 scripts/emit.py --covers E30 --task smoke-host-doctor
 python3 scripts/emit.py --covers E31 --task smoke-host-doctor
@@ -7947,20 +7814,18 @@ python3 scripts/emit.py --covers E31 --task smoke-host-doctor
 [tool.poe.tasks.smoke-parallel-runtime]
 help = "The Mojo host with MAX's parallel runtime linked: parallelize answers from one loop, from loops on threads and from a pool thread, and M0_WORKERS above 1 is refused with 78 before the bind, by the server and the doctor alike (SPEC E32; needs `uv sync --group max`)"
 shell = """
-out=$(mktemp -d)
-cleanup() {
-  pkill -KILL -f "$out/" 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
   apps/host_parallel/probe.mojo -o "$out/host_parallel" \
   || { echo "smoke-parallel-runtime: the build failed -- MAX's Mojo packages must sit beside the toolchain: uv sync --group max, then uv run --group max poe smoke-parallel-runtime"; exit 1; }
-python3 scripts/parallel_runtime_probe.py "$out/host_parallel" 8960 > "$out/probe.out" 2> "$out/probe.err" \
-  || { cat "$out/probe.out" "$out/probe.err"; exit 1; }
-cat "$out/probe.out"
-par=$(grep '^par_us ' "$out/probe.out" | cut -d' ' -f2)
-ser=$(grep '^ser_us ' "$out/probe.out" | cut -d' ' -f2)
+# Spawned, so the servers the probe starts share its process group and the
+# lib reaps whatever it leaves. Five ports upward from this one, a phase each.
+spawn probe.log python3 scripts/parallel_runtime_probe.py "$out/host_parallel" $(free_port 5)
+wait $pid || fail "$(grep -m 1 'parallel_runtime_probe: FAIL' "$out/probe.log")"
+cat "$out/probe.log"
+par=$(grep '^par_us ' "$out/probe.log" | cut -d' ' -f2)
+ser=$(grep '^ser_us ' "$out/probe.log" | cut -d' ' -f2)
 python3 scripts/emit.py parallel_view_us "$par" --unit us --task smoke-parallel-runtime
 python3 scripts/emit.py serial_view_us "$ser" --unit us --task smoke-parallel-runtime
 echo "smoke-parallel-runtime OK"
@@ -7984,20 +7849,18 @@ python3 scripts/emit.py --covers E32 --task smoke-parallel-runtime
 help = "m0serve with MAX's parallel runtime linked by a Mojo mount: --workers N and --reload are refused with 2 before the bind, by the server and the doctor alike; --spawn-workers serves parallelize from two exec'd workers; the shipped binary passes the check unlinked (SPEC E33; needs `uv sync --group max`)"
 deps = ["build-serve"]
 shell = """
-out=$(mktemp -d)
-cleanup() {
-  pkill -KILL -f "$out/" 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 M0SERVE_MOUNT_DIR=apps/serve_parallel/mount M0SERVE_INCLUDE=apps M0SERVE_OUT="$out/m0serve-par" \
   poe build-serve \
   || { echo "smoke-serve-parallel-runtime: the build failed -- MAX's Mojo packages must sit beside the toolchain: uv sync --group max, then uv run --group max poe smoke-serve-parallel-runtime"; exit 1; }
-python3 scripts/serve_parallel_probe.py "$out/m0serve-par" bin/m0serve 8970 > "$out/probe.out" 2> "$out/probe.err" \
-  || { cat "$out/probe.out" "$out/probe.err"; exit 1; }
-cat "$out/probe.out"
-par=$(grep '^par_us ' "$out/probe.out" | cut -d' ' -f2)
-ser=$(grep '^ser_us ' "$out/probe.out" | cut -d' ' -f2)
+# Spawned, so the servers the probe starts share its process group and the
+# lib reaps whatever it leaves. Three ports upward from this one, a phase each.
+spawn probe.log python3 scripts/serve_parallel_probe.py "$out/m0serve-par" bin/m0serve $(free_port 3)
+wait $pid || fail "$(grep -m 1 'serve_parallel_probe: FAIL' "$out/probe.log")"
+cat "$out/probe.log"
+par=$(grep '^par_us ' "$out/probe.log" | cut -d' ' -f2)
+ser=$(grep '^ser_us ' "$out/probe.log" | cut -d' ' -f2)
 python3 scripts/emit.py serve_parallel_view_us "$par" --unit us --task smoke-serve-parallel-runtime
 python3 scripts/emit.py serve_serial_view_us "$ser" --unit us --task smoke-serve-parallel-runtime
 echo "smoke-serve-parallel-runtime OK"
@@ -8031,43 +7894,25 @@ cmd = "python3 scripts/host_sabotage.py"
 [tool.poe.tasks.smoke-host]
 help = "The Mojo host: the bus at one worker, SIGPIPE survived, every worker's streams get every beat, accept sharing, a drain signalled to the supervisor, the producer's bound, the refusals, a respawned producer's ids, a raising make refused, the pool lane and the overlapping shutdown bounds"
 shell = """
-out=$(mktemp -d)
-pid=
-hold=
-# Everything this run started runs from, or names, its own temp directory,
-# so that path finds every process to reap: a supervisor that outlives its
-# SIGTERM leaves workers holding the port for the next run to talk to.
-cleanup() {
-  [ -n "$pid" ] && kill $pid 2>/dev/null
-  [ -n "$hold" ] && kill $hold 2>/dev/null
-  pkill -KILL -f "$out/" 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  for f in "$out"/*.log "$out"/*.out; do
-    [ -f "$f" ] && { echo "=== $(basename "$f") ==="; cat "$f"; }
-  done
-  exit 1
-}
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
   apps/host_check/server.mojo -o "$out/host_check" || exit 1
-# start PORT NAME [VAR=value...] -- through env(1): an assignment in front
-# of a shell FUNCTION is unspecified in sh.
+# start NAME [VAR=value...] -- a port of its own in $port, the server in
+# $pid, and the variables through env(1): an assignment in front of a shell
+# FUNCTION is unspecified in sh.
 start() {
-  port=$1
-  name=$2
-  shift 2
-  env M0_PORT=$port "$@" "$out/host_check" > "$out/$name.log" 2>&1 &
-  pid=$!
-  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-    "http://127.0.0.1:$port/health" > /dev/null || fail "never became healthy ($name)"
+  name=$1
+  shift
+  port=$(free_port)
+  spawn "$name.log" env M0_PORT=$port "$@" "$out/host_check"
+  wait_ready "http://127.0.0.1:$port/health" $pid
 }
-# stop NAME: SIGTERM to $pid alone (the supervisor, under workers), then wait
-# with a deadline, so a host that never exits fails here instead of hanging
-# the job. Sets rc and took.
-stop() {
+# sigterm NAME: SIGTERM to $pid alone (the supervisor, under workers), then
+# wait with a deadline, so a host that never exits fails here instead of
+# hanging the job. Sets rc and took. Not the lib's stop, which signals the
+# whole process group: the supervisor passing the signal on is under test.
+sigterm() {
   t0=$(date +%s)
   kill -TERM $pid
   i=0
@@ -8079,14 +7924,13 @@ stop() {
   wait $pid
   rc=$?
   took=$(($(date +%s) - t0))
-  pid=
 }
 
 # --- one worker: the bus is drained there too ------------------------------
 # The producer's only way to a stream is the bus, so a host that joined it
 # only above one worker serves streams that never beat.
-start 8781 one
-res=$(python3 scripts/host_probe.py streams 8781 2 2 1 2>&1) || fail "one worker: $res"
+start one
+res=$(python3 scripts/host_probe.py streams $port 2 2 1 2>&1) || fail "one worker: $res"
 grep -q '^\\[worker' "$out/one.log" && fail "one worker: the host forked"
 
 # --- SIGPIPE costs a connection, never the process (SPEC A25) --------------
@@ -8103,9 +7947,9 @@ if ! kill -0 $pid 2>/dev/null; then
   wait $pid
   fail "SIGPIPE: kill -PIPE ended the server (exit $?; 141 is the signal's default action)"
 fi
-curl --silent --fail --max-time 5 http://127.0.0.1:8781/health > /dev/null \
+curl --silent --fail --max-time 5 http://127.0.0.1:$port/health > /dev/null \
   || fail "SIGPIPE: no answer after kill -PIPE"
-python3 - 8781 <<'PY' || fail "SIGPIPE: the resetting client could not connect"
+python3 - $port <<'PY' || fail "SIGPIPE: the resetting client could not connect"
 import socket, struct, sys, time
 s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5)
 s.sendall(b"GET /slow?ms=300 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
@@ -8118,11 +7962,11 @@ if ! kill -0 $pid 2>/dev/null; then
   wait $pid
   fail "SIGPIPE: a client that reset before its answer was written ended the server (exit $?)"
 fi
-curl --silent --fail --max-time 5 http://127.0.0.1:8781/health > /dev/null \
+curl --silent --fail --max-time 5 http://127.0.0.1:$port/health > /dev/null \
   || fail "SIGPIPE: no answer after a client reset"
 echo "SIGPIPE: kill -PIPE and a client resetting before its answer, both survived"
 
-stop "one worker"
+sigterm "one worker"
 [ "$rc" -eq 0 ] || fail "one worker: SIGTERM exited $rc, not 0"
 grep -q 'abandoned' "$out/one.log" && fail "one worker: the drain abandoned the producer instead of stopping it"
 echo "one worker: $res; exit 0 in ${took}s"
@@ -8135,10 +7979,10 @@ echo "one worker: $res; exit 0 in ${took}s"
 # it served (measured on macOS; under M0_THREADS=2 alike, and under
 # M0_WORKERS=2 worker 0 died of it on every respawn). The EPIPE line is the
 # proof that the write was made.
-env M0_PORT=8785 M0_HOSTCHECK_PRODUCER_PIPE=1 "$out/host_check" > "$out/pipe.log" 2>&1 &
-pid=$!
+port=$(free_port)
+spawn pipe.log env M0_PORT=$port M0_HOSTCHECK_PRODUCER_PIPE=1 "$out/host_check"
 i=0
-until curl --silent --fail --max-time 1 http://127.0.0.1:8785/health > /dev/null 2>&1; do
+until curl --silent --fail --max-time 1 http://127.0.0.1:$port/health > /dev/null 2>&1; do
   if ! kill -0 $pid 2>/dev/null; then
     wait $pid
     fail "SIGPIPE: the producer's make, writing before the loop, ended the server (exit $?; 141 is the signal's default action)"
@@ -8149,13 +7993,13 @@ until curl --silent --fail --max-time 1 http://127.0.0.1:8785/health > /dev/null
 done
 grep -q "wrote to a closed pipe: EPIPE" "$out/pipe.log" \
   || fail "SIGPIPE: the producer's make did not write, or its write did not fail with EPIPE"
-stop "pipe"
+sigterm "pipe"
 [ "$rc" -eq 0 ] || fail "SIGPIPE: SIGTERM exited $rc after the producer's write, not 0"
 echo "SIGPIPE: the producer's make wrote to a closed pipe before the loop, and the server served"
 
 # --- two workers: every worker's streams get every beat, once --------------
-start 8782 two M0_WORKERS=2
-res=$(python3 scripts/host_probe.py streams 8782 4 2 2 2>&1) || fail "two workers: $res"
+start two M0_WORKERS=2
+res=$(python3 scripts/host_probe.py streams $port 4 2 2 2>&1) || fail "two workers: $res"
 echo "two workers: $res"
 
 # --- SIGPIPE to the supervisor (SPEC A25) -----------------------------------
@@ -8175,7 +8019,7 @@ echo "SIGPIPE: the supervisor survived kill -PIPE"
 # --- a drain under held streams, signalled to the supervisor alone ---------
 # What `docker stop` does. The workers must drain -- streams ended by the
 # server, each worker reporting a clean exit -- not die of the signal.
-python3 scripts/host_probe.py hold 8782 "$out/holding" 4 2 > "$out/hold.out" 2>&1 &
+python3 scripts/host_probe.py hold $port "$out/holding" 4 2 > "$out/hold.log" 2>&1 &
 hold=$!
 i=0
 while [ ! -f "$out/holding" ]; do
@@ -8183,17 +8027,16 @@ while [ ! -f "$out/holding" ]; do
   [ $i -le 100 ] || fail "the held streams never beat"
   sleep 0.1
 done
-stop "the drain"
+sigterm "the drain"
 [ "$rc" -eq 0 ] || fail "the drain: the supervisor exited $rc, not 0"
 [ "$took" -lt 10 ] || fail "the drain took ${took}s"
-wait $hold || fail "the drain: $(cat "$out/hold.out")"
-hold=
+wait $hold || fail "the drain: $(cat "$out/hold.log")"
 [ "$(grep -c 'exited cleanly' "$out/two.log")" -eq 2 ] \
   || fail "the drain: both workers did not report a clean exit"
 grep -q 'killed by signal' "$out/two.log" && fail "the drain: a worker died of the signal instead of draining"
 grep -q 'abandoned' "$out/two.log" && fail "the drain: the producer was abandoned"
 pgrep -f "$out/host_check" > /dev/null && fail "the drain: a worker outlived its supervisor"
-echo "the drain: exit 0 in ${took}s; $(cat "$out/hold.out")"
+echo "the drain: exit 0 in ${took}s; $(cat "$out/hold.log")"
 
 # --- a respawned producer continues the id space (SPEC E25) ----------------
 # Its own server, after the drain phase has stopped the two-worker one: the
@@ -8204,10 +8047,10 @@ echo "the drain: exit 0 in ${took}s; $(cat "$out/hold.out")"
 # at 1 and the loop's redelivery filter keeps those streams silent for the
 # pre-crash uptime (measured 4.21 s after 41 beats). A FRESH stream beating
 # is not the assertion; that passes on the broken host.
-start 8789 respawn M0_WORKERS=2
-res=$(python3 scripts/host_probe.py respawn 8789 4 2 2>&1) || fail "respawn: $res"
+start respawn M0_WORKERS=2
+res=$(python3 scripts/host_probe.py respawn $port 4 2 2>&1) || fail "respawn: $res"
 grep -q 'respawned worker 0' "$out/respawn.log" || fail "respawn: the supervisor never respawned worker 0"
-stop "respawn"
+sigterm "respawn"
 [ "$rc" -eq 0 ] || fail "respawn: exited $rc, not 0 after the respawn"
 echo "respawn: $res; exit 0 in ${took}s"
 
@@ -8215,15 +8058,15 @@ echo "respawn: $res; exit 0 in ${took}s"
 # E16's measurement on a host application: two rounds of a 32-connection
 # burst within 2:1, with connections actually passed between workers.
 python3 scripts/accept_spread.py --app-bin "$out/host_check" --modes fork \
-  --assert --expect-handoffs --rounds 2 --port 8783 > "$out/spread.out" 2>&1 \
+  --assert --expect-handoffs --rounds 2 --port $(free_port) > "$out/spread.log" 2>&1 \
   || fail "accept sharing: bursts did not spread"
-echo "accept sharing: $(tail -1 "$out/spread.out")"
+echo "accept sharing: $(tail -1 "$out/spread.log")"
 # The negative arm where the bare race is all but deterministic (E16's
 # reasoning): with the knob off the same probe must see the skew. Five
 # rounds, failing only if every one is within 2:1, as E16's arm does.
 if [ "$(uname)" = Darwin ]; then
   if env M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --app-bin "$out/host_check" \
-      --modes fork --assert --rounds 5 --port 8784 > "$out/spread-off.out" 2>&1; then
+      --modes fork --assert --rounds 5 --port $(free_port) > "$out/spread-off.log" 2>&1; then
     fail "accept sharing: M0_ACCEPT_SHARE=0 spread within 2:1 -- the negative arm no longer discriminates"
   fi
   echo "accept sharing: M0_ACCEPT_SHARE=0 skews (macOS negative arm)"
@@ -8233,9 +8076,9 @@ fi
 # A 60 s step: the host waits the drain's own 5 s, names what it abandons
 # and leaves -- in one process and in a forked worker alike.
 for workers in 1 2; do
-  start $((8784 + workers)) "overrun$workers" M0_WORKERS=$workers M0_HOSTCHECK_STEP_MS=60000
+  start "overrun$workers" M0_WORKERS=$workers M0_HOSTCHECK_STEP_MS=60000
   sleep 0.5
-  stop "overrun, $workers worker(s)"
+  sigterm "overrun, $workers worker(s)"
   [ "$rc" -eq 0 ] || fail "overrun, $workers worker(s): exited $rc, not 0"
   [ "$took" -le 12 ] || fail "overrun, $workers worker(s): took ${took}s to leave"
   grep -q 'abandoned a producer step' "$out/overrun$workers.log" \
@@ -8245,9 +8088,9 @@ done
 overrun_s=$took
 
 # --- a long period does not hold up the drain ------------------------------
-start 8787 long M0_HOSTCHECK_PERIOD_MS=60000
+start long M0_HOSTCHECK_PERIOD_MS=60000
 sleep 0.5
-stop "a long period"
+sigterm "a long period"
 [ "$rc" -eq 0 ] || fail "a long period: exited $rc, not 0"
 [ "$took" -lt 3 ] || fail "a long period: the drain waited ${took}s on a sleeping producer"
 grep -q 'abandoned' "$out/long.log" && fail "a long period: the producer was abandoned instead of stopped"
@@ -8265,39 +8108,39 @@ echo "a long period: exit 0 in ${took}s"
 # in a 200 ms step's first half about 0.68 of the time; 24 samples). Two
 # threads rather than four so the spinners leave a shared runner's cores
 # something for the loop.
-start 8791 pool M0_BLOCKING_THREADS=2
+start pool M0_BLOCKING_THREADS=2
 grep -q 'handler thread(s) behind the loop' "$out/pool.log" || fail "pool: the host started no pool for M0_BLOCKING_THREADS=2"
-res=$(python3 scripts/host_probe.py placement 8791 2 4 2>&1) || fail "pool placement: $res"
+res=$(python3 scripts/host_probe.py placement $port 2 4 2>&1) || fail "pool placement: $res"
 pool_ms=$(echo "$res" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$pool_ms" ] || fail "pool placement: no measurement in: $res"
 [ "$pool_ms" -lt 100 ] || fail "pool placement: /health waited ${pool_ms} ms with both pool threads inside slow views"
 # A stream opened on the LOOP works under the pool: the subscription is
 # in the registry the loop drains, and the producer's beats reach it.
-res2=$(python3 scripts/host_probe.py streams 8791 2 2 1 2>&1) || fail "pool: a stream opened in before_request under the pool: $res2"
+res2=$(python3 scripts/host_probe.py streams $port 2 2 1 2>&1) || fail "pool: a stream opened in before_request under the pool: $res2"
 # One begun in `func` on a pool thread has no producer the loop can
 # drain: refused 409, per request, named in the log -- as on a Mojo mount.
-code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/event-stream' http://127.0.0.1:8791/events-from-func)
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'Accept: text/event-stream' http://127.0.0.1:$port/events-from-func)
 [ "$code" = "409" ] || fail "pool: a stream opened from func on a pool thread answered $code, not 409"
 grep -q 'refused a streaming response from a pool thread' "$out/pool.log" \
   || fail "pool: the refused stream was not named in the log"
-stop "pool"
+sigterm "pool"
 [ "$rc" -eq 0 ] || fail "pool: SIGTERM exited $rc, not 0"
 grep -q 'still inside the application' "$out/pool.log" && fail "pool: an idle pool thread was reported as a straggler"
 echo "pool of 2, both busy: $res; streams on the loop: $res2; a stream from func refused 409; exit 0 in ${took}s"
 # Two workers, each with a pool: streams spanning both must carry every
 # beat -- the bus is drained inline at completions under offload, and
 # this is the phase that says so.
-start 8795 pool2 M0_WORKERS=2 M0_BLOCKING_THREADS=2
-res2=$(python3 scripts/host_probe.py streams 8795 4 2 2 2>&1) || fail "two pooled workers: $res2"
-stop "two pooled workers"
+start pool2 M0_WORKERS=2 M0_BLOCKING_THREADS=2
+res2=$(python3 scripts/host_probe.py streams $port 4 2 2 2>&1) || fail "two pooled workers: $res2"
+sigterm "two pooled workers"
 [ "$rc" -eq 0 ] || fail "two pooled workers: exited $rc, not 0"
 echo "two pooled workers: $res2"
-start 8792 nopool M0_BLOCKING_THREADS=0
-res=$(python3 scripts/host_probe.py placement 8792 2 4 2>&1) || fail "no pool: $res"
+start nopool M0_BLOCKING_THREADS=0
+res=$(python3 scripts/host_probe.py placement $port 2 4 2>&1) || fail "no pool: $res"
 bare_ms=$(echo "$res" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
 [ -n "$bare_ms" ] || fail "no pool: no measurement in: $res"
 [ "$bare_ms" -ge 100 ] || fail "no pool: /health answered in ${bare_ms} ms under two slow views on the bare loop -- the placement arm no longer discriminates"
-stop "no pool"
+sigterm "no pool"
 [ "$rc" -eq 0 ] || fail "no pool: SIGTERM exited $rc, not 0"
 echo "no pool (negative arm): $res"
 
@@ -8308,15 +8151,15 @@ echo "no pool (negative arm): $res"
 # left of it), the pool joins at once, and the producer is abandoned at
 # 5 s -- one bound, not two. Told to stop only after the drain, it took
 # 8.5 s (measured). The in-flight request must still be answered.
-start 8793 overlap M0_BLOCKING_THREADS=2 M0_HOSTCHECK_STEP_MS=60000
-curl -s --max-time 30 'http://127.0.0.1:8793/slow?ms=4000' > "$out/overlap-slow.out" &
+start overlap M0_BLOCKING_THREADS=2 M0_HOSTCHECK_STEP_MS=60000
+curl -s --max-time 30 "http://127.0.0.1:$port/slow?ms=4000" > "$out/overlap-slow.log" &
 slow=$!
 sleep 1
-stop "overlap"
+sigterm "overlap"
 [ "$rc" -eq 0 ] || fail "overlap: exited $rc, not 0"
 [ "$took" -le 6 ] || fail "overlap: took ${took}s to leave -- the drain and the producer's bound ran in sequence"
 wait $slow || fail "overlap: the request in flight at SIGTERM was not answered"
-grep -q '"ms":4000' "$out/overlap-slow.out" || fail "overlap: the in-flight request's answer is not whole: $(cat "$out/overlap-slow.out")"
+grep -q '"ms":4000' "$out/overlap-slow.log" || fail "overlap: the in-flight request's answer is not whole: $(cat "$out/overlap-slow.log")"
 grep -q 'abandoned a producer step' "$out/overlap.log" || fail "overlap: the abandoned producer was not named"
 overlap_s=$took
 echo "overlap: a 4 s request answered, the producer abandoned, exit 0 in ${took}s"
@@ -8325,8 +8168,7 @@ echo "overlap: a 4 s request answered, the producer abandoned, exit 0 in ${took}
 for v in M0_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0 M0_WORKERS=2; do
   # The first and the last are refused only because the app says it serves
   # one process: a loop per thread is as divided as a worker (SPEC E29).
-  env M0_PORT=8788 M0_HOSTCHECK_MAX_WORKERS=1 $v "$out/host_check" > "$out/refused.log" 2>&1 &
-  pid=$!
+  spawn refused.log env M0_PORT=$(free_port) M0_HOSTCHECK_MAX_WORKERS=1 $v "$out/host_check"
   i=0
   while kill -0 $pid 2>/dev/null; do
     i=$((i + 1))
@@ -8335,7 +8177,6 @@ for v in M0_THREADS=2 M0_SPAWN_WORKERS=1 M0_WORKERS=0 M0_WORKERS=2; do
   done
   wait $pid
   rc=$?
-  pid=
   [ "$rc" -eq 78 ] || fail "$v exited $rc, not 78"
   grep -q "${v%%=*}" "$out/refused.log" || fail "$v was refused without naming it"
   grep -q 'listening' "$out/refused.log" && fail "$v was refused after the host bound its port"
@@ -8351,8 +8192,7 @@ echo "refused before binding, with 78: M0_THREADS, M0_SPAWN_WORKERS, M0_WORKERS=
 # producer indefinitely.
 for v in M0_HOSTCHECK_MAKE_RAISES=1 M0_HOSTCHECK_PRODUCER_RAISES=1; do
   for workers in 1 2; do
-    env M0_PORT=8790 M0_WORKERS=$workers $v "$out/host_check" > "$out/make-refused.log" 2>&1 &
-    pid=$!
+    spawn make-refused.log env M0_PORT=$(free_port) M0_WORKERS=$workers $v "$out/host_check"
     i=0
     while kill -0 $pid 2>/dev/null; do
       i=$((i + 1))
@@ -8361,7 +8201,6 @@ for v in M0_HOSTCHECK_MAKE_RAISES=1 M0_HOSTCHECK_PRODUCER_RAISES=1; do
     done
     wait $pid
     rc=$?
-    pid=
     [ "$rc" -eq 78 ] || fail "$v at $workers worker(s) exited $rc, not 78"
     grep -q "host: .*${v%%=*}" "$out/make-refused.log" || fail "$v at $workers worker(s) was refused without the host naming the error"
     grep -Eq 'respawned worker|rapid crashes|crashed [(]exit_code' "$out/make-refused.log" \
@@ -8379,9 +8218,8 @@ echo "a raising make is refused with 78, one worker and two, handler and produce
 # raising `make` on a pool thread was a log line and a pool one thread
 # short. Now: 78 before the server takes a connection, no worker left.
 for workers in 1 2; do
-  env M0_PORT=8794 M0_WORKERS=$workers M0_BLOCKING_THREADS=2 M0_HOSTCHECK_POOL_MAKE_RAISES=1 \
-    "$out/host_check" > "$out/pool-make-refused.log" 2>&1 &
-  pid=$!
+  spawn pool-make-refused.log env M0_PORT=$(free_port) M0_WORKERS=$workers M0_BLOCKING_THREADS=2 \
+    M0_HOSTCHECK_POOL_MAKE_RAISES=1 "$out/host_check"
   i=0
   while kill -0 $pid 2>/dev/null; do
     i=$((i + 1))
@@ -8390,7 +8228,6 @@ for workers in 1 2; do
   done
   wait $pid
   rc=$?
-  pid=
   [ "$rc" -eq 78 ] || fail "M0_HOSTCHECK_POOL_MAKE_RAISES at $workers worker(s) exited $rc, not 78"
   grep -q 'host: .*M0_HOSTCHECK_POOL_MAKE_RAISES' "$out/pool-make-refused.log" \
     || fail "the pool thread's raising make was refused without the host naming the error"

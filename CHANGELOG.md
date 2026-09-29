@@ -324,6 +324,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   interrupt reaches the `ps` the cleanup asks whether the server is alive,
   and the empty answer was read as "exited", so the cleanup waited on the
   server for as long as it lived.
+- **Twenty-one more smokes take free ports and keep their files out of the
+  checkout**: the Mojo host's and the Mojo layer's, the Mojo mounts', and
+  the wheels' and the scaffold's. None of them now fails, or is answered
+  by another server, because something else holds its port (`smoke-wheel`
+  refused to run at all while anything listened on 8129). A probe that
+  starts servers of its own runs in one process group with them, so a
+  server it leaves behind is stopped with it. `.gitignore` drops the
+  seventeen scratch files the smokes no longer write into the checkout.
 
 - **A client that resets its connection no longer holds its slot on
   Linux** (SPEC C9). epoll reported a socket error as a failed
