@@ -79,9 +79,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
 - **CI's unit tests are two jobs.** `poe test-all` had grown to 34-35 min
   of its job's 40-minute cap on the ubuntu leg. It is now `build-all` and
   two halves, `poe test-packages` and `poe test-gates`, and CI runs each in
-  a job of its own, `unit-tests` and `unit-gates`, each capped at twice
-  its run. `poe test-all` still runs the whole locally, and `check-docs`
-  refuses a task that `test-all` reaches and no CI step does.
+  a job of its own, `unit-tests` and `unit-gates`: about 20 min each on
+  ubuntu, capped at 40. `poe test-all` still runs the whole locally, and
+  `check-docs` refuses a task that `test-all` reaches and no CI step does.
+  Both jobs keep Mojo's compile cache between a pull request's runs, which
+  took a warm re-run of `unit-tests` from 20.7 min to 9.2.
 - **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
   phase stamp, `fail()`, a server watched until it answers, a free port,
   an SSE reader and a WebSocket client, each proven by

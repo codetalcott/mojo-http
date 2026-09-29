@@ -31,21 +31,34 @@ jobs:
     # 14-18 by mid-September, 26-29 from 2026-09-24, 31-32 by 2026-09-26
     # and up to 35 on the review's trains, when train 19 (#481) was
     # cancelled at this job's 40-minute cap, green in every step it
-    # reached. Most of the growth is `test-shim`, 15 s until 2026-09-23 and
-    # ~475 s (ubuntu) and ~810 s (macOS) since, because its sabotage re-runs
-    # the 59-test suite for each of 55 mutants; then `test-http`, which
-    # compiles the package from source once per test file (62 files, ~500 s
-    # on ubuntu, 3 s of it the tests running); then gates added since (the
-    # Datastar SDK's sabotage, the scaffold's templates, the copy-back IR).
+    # reached. Most of the growth is `test-shim`: 15 s until 2026-09-23,
+    # ~490 s (ubuntu) and ~820 s (macOS) since, because its sabotage runs
+    # every test once per guard (9 tests and 10 guards then, 59 and 55
+    # now). Then `test-http`, which compiles the package from source once
+    # per test file (62 files, ~575 s on ubuntu, 3 s of it the tests
+    # running). Then the gates added since (the Datastar SDK's sabotage,
+    # the scaffold's templates, the copy-back IR).
     #
     # `poe test-all` stays the whole, run locally. CI runs its halves: this
     # job `poe test-packages`, `unit-gates` `poe test-gates`, and
     # check-docs refuses a task `test-all` reaches that no step here does.
-    # Measured on the review's runs (2026-09-28/29), the halves are about
-    # 19 and 20 min on ubuntu and 13 and 19 on macOS, and each cap is
-    # twice its job's run. `test-http` grows by 20-30 s with each event
-    # loop test, so this half is the one to lighten when it needs it;
-    # moving a task between the halves is free.
+    # Cold, on #482, this job ran 20.7 min on ubuntu and 13.9 on macOS and
+    # `unit-gates` 20.1 and 19.8, so both caps are 40: twice the run, and
+    # the slowest runner seen (1.45x, the smoke job's comment) lands a
+    # 21-minute job at 30. Two halves cannot go lower while `test-shim` is
+    # 8-14 min in one piece. `test-http` grows 20-30 s with each event
+    # loop test, so this half is the one to lighten, and moving a task
+    # between the halves is free.
+    #
+    # Mojo's compile cache is restored below and saved after the job. It
+    # holds one entry per whole program, so a warm run skips every compile
+    # its commit did not change: this job re-run warm took 9.2 min against
+    # 20.7 cold, from a 43 MB cache restored in 3 s. It is not what makes
+    # the cap fit. GitHub scopes a cache to the pull request that saved it,
+    # and `main` gets no push runs (the `automerge` label merges with the
+    # workflow's token), so a pull request's first run is always cold --
+    # 70% of runs since 2026-09-20 -- and an edit makes every program that
+    # reaches it cold again. The caps are set by cold runs.
     #
     # Without an explicit cap a hung step runs to GitHub's 6-hour default
     # while holding this ref's concurrency group, so a stall reads as
@@ -67,9 +80,10 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           apt: libsqlite3-dev patchelf
-      # EXPERIMENT (review H8), measured on this branch and then kept or
-      # removed: Mojo's compile cache, restored here and saved after the
-      # job, keyed by the commit so a re-run of one is warm throughout.
+      # Mojo's compile cache (`mojo --print-cache-location`), restored from
+      # this pull request's latest run of this job and saved after it (the
+      # job's comment has the numbers). Keyed by the lock file too, because
+      # an entry is good only for the compiler that wrote it.
       - name: Restore the Mojo compile cache
         uses: actions/cache@v6
         with:
@@ -184,15 +198,6 @@ jobs:
       # libpython discovery problem legible.
       - name: Check the embedded interpreter resolves
         run: uv run python -c "import django, sys; print(sys.version, django.__version__)"
-      # EXPERIMENT (review H8): where the compile cache is, and what the job
-      # left in it, for the size a saved cache would cost.
-      - name: Report the Mojo compile cache
-        if: always()
-        shell: bash
-        run: |
-          uv run mojo --print-cache-location || true
-          du -sk ~/.cache/modular/.mojo_cache 2>/dev/null || true
-          find ~/.cache/modular/.mojo_cache -type f 2>/dev/null | wc -l
       # Last, and `always()`, as in every job that collects: it must follow
       # every step that records, and a failed run's records are the
       # interesting ones.
@@ -205,12 +210,13 @@ jobs:
   # test-all's second half: the executor shim's rules, and the gates built
   # ON the packages -- every app, m0serve and its IR, the scaffold's
   # templates, an outside vocabulary, the trait and view probes, the
-  # keep-alive probe -- plus the Mojo pool's sabotage. `unit-tests`' comment
-  # carries the measurements that split them: about 20 min on ubuntu and 19
-  # on macOS, most of it `test-shim` (~475 s and ~810 s) and `build-apps`
-  # (~290 s and ~190 s), against a cap of twice that. A separate JOB and no
-  # `needs:`, for the smokes' reasons: the sheet refuses a cited step with
-  # an `if:`, and nothing here waits on the other half.
+  # keep-alive probe -- plus the Mojo pool's sabotage (Linux). Cold, it ran
+  # 20.1 min on ubuntu and 19.8 on macOS (#482), most of it `test-shim`
+  # (~490 s and ~820 s) and `build-apps` (~285 s and ~165 s), against a
+  # cap of twice that; `unit-tests`' comment has the rest of the
+  # measurements. A separate JOB and no `needs:`, for the smokes' reasons:
+  # the sheet refuses a cited step with an `if:`, and nothing here waits
+  # on the other half.
   unit-gates:
     strategy:
       matrix:
@@ -231,7 +237,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           apt: patchelf
-      # EXPERIMENT (review H8): as in `unit-tests`.
+      # Mojo's compile cache, as in `unit-tests`.
       - name: Restore the Mojo compile cache
         uses: actions/cache@v6
         with:
@@ -276,14 +282,6 @@ jobs:
       # Both runners, because the IR is per-target.
       - name: Sabotage the keep-alive probe the barrier check reads
         run: uv run poe sabotage-keepalive
-      # EXPERIMENT (review H8): as in `unit-tests`.
-      - name: Report the Mojo compile cache
-        if: always()
-        shell: bash
-        run: |
-          uv run mojo --print-cache-location || true
-          du -sk ~/.cache/modular/.mojo_cache 2>/dev/null || true
-          find ~/.cache/modular/.mojo_cache -type f 2>/dev/null | wc -l
       # Last, and `always()`, as in every job that collects.
       - name: Record the measurements
         if: always()
