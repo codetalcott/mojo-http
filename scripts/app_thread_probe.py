@@ -38,32 +38,20 @@ import argparse
 import http.client
 import json
 import os
-import signal
-import subprocess
 import sys
 import tempfile
 import time
 import traceback
+
+import probelib
+from probelib import phase, server, stamp
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Three shapes share one set of helpers, so an unhandled reset inside
 # `read_ticks` names the call and not the shape or the reading being taken.
 # Same stamp, same reason, as scripts/pipeline_probe.py.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("app_thread_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("app_thread_probe: FAIL")
 
 # (name, flags). Each is a shape `main` serves inline on the loop thread.
 SHAPES = [
@@ -77,38 +65,6 @@ SHAPES = [
     # the thread here is the worker's own, started after the fork.
     ("workers-2", ["--workers", "2"]),
 ]
-
-
-def start(bin_path, app_dir, port, flags, log):
-    cmd = [bin_path, "bareapp.ticker:application", "--app-dir", app_dir,
-           "--host", "127.0.0.1", "--port", str(port)] + flags
-    p = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
-                         start_new_session=True)
-    deadline = time.time() + 60
-    while time.time() < deadline:
-        if p.poll() is not None:
-            raise RuntimeError("m0serve exited %d before it answered" % p.returncode)
-        try:
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-            conn.request("GET", "/ticks")
-            conn.getresponse().read()
-            conn.close()
-            return p
-        except OSError:
-            time.sleep(0.05)
-    raise RuntimeError("m0serve did not answer on %d within 60 s" % port)
-
-
-def stop(p):
-    try:
-        os.killpg(p.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        p.wait(timeout=15)
-    except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL)
-        p.wait()
 
 
 def read_ticks(conn):
@@ -125,8 +81,13 @@ def probe(bin_path, app_dir, port, name, flags, idle, min_ticks):
     """One shape. Returns (idle ticks, failure message or None)."""
     with tempfile.TemporaryFile(mode="w+") as log:
         phase(name + ": start")
-        p = start(bin_path, app_dir, port, flags, log)
-        try:
+        # Its own process group, signalled whole on the way out: the
+        # workers-2 shape's forked workers go with their supervisor. NotServing
+        # is a RuntimeError, which main records against this shape.
+        cmd = [bin_path, "bareapp.ticker:application", "--app-dir", app_dir,
+               "--host", "127.0.0.1", "--port", str(port)] + flags
+        with server(cmd, "http://127.0.0.1:%d/ticks" % port, timeout=60, log=log,
+                    status=None, group=True):
             phase(name + ": the first reading")
             conn = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
             pid0, before = read_ticks(conn)
@@ -134,9 +95,7 @@ def probe(bin_path, app_dir, port, name, flags, idle, min_ticks):
             phase(name + ": the reading after the idle window")
             pid1, after = read_ticks(conn)
             conn.close()
-        finally:
             phase(name + ": stop")
-            stop(p)
         log.seek(0)
         output = log.read()
     banner = next((line for line in output.splitlines() if "m0serve:" in line), "")
@@ -177,8 +136,8 @@ def main():
             # A shape that errors must not stop the others being measured;
             # the stamp names where in the shape it broke.
             traceback.print_exc()
-            print("app_thread_probe: FAIL: %s: %r" % (PHASE, exc), flush=True)
-            ticks, failure = None, "%s: %r" % (PHASE, exc)
+            print("app_thread_probe: FAIL: %s: %r" % (probelib.PHASE, exc), flush=True)
+            ticks, failure = None, "%s: %r" % (probelib.PHASE, exc)
         if ticks is not None:
             print("TICKS shape=%s idle=%d" % (name, ticks), flush=True)
         if failure:

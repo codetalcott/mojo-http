@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 """Raw RFC 6455 client for smoke-asgi's WebSocket phase — stdlib only.
 
-The same hand-rolled wire format as apps/ws_echo/ws_probe.py, against the
-ASGI echo at /ws: handshake (Sec-WebSocket-Accept verified), masked text
-echo (the app prefixes "echo:"), binary echo, then "bye" → the app's
-websocket.close(1000) → close frame → TCP FIN — proving the executor's
-accept/perform split, both frame directions, and the close-after-drain.
+The same wire format as apps/ws_echo/ws_probe.py, spoken through
+scripts/probelib.py's client, against the ASGI echo at /ws: handshake
+(Sec-WebSocket-Accept verified), masked text echo (the app prefixes
+"echo:"), binary echo, then "bye" → the app's websocket.close(1000) → close
+frame → TCP FIN — proving the executor's accept/perform split, both frame
+directions, and the close-after-drain.
 """
 
-import base64
-import hashlib
 import os
 import socket
 import struct
 import sys
 import threading
 import time
-import traceback
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+from probelib import (BINARY, CLOSE, PING, PONG, TEXT, WebSocket, fail,  # noqa: E402
+                      phase, stamp)
 
 # /ws/flood's shape, kept in step with apps/asgi_bare/bareapp/asgi.py.
 FLOOD_FRAMES = 400
@@ -33,119 +35,22 @@ CLOSE_CONNS = 64
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8088"))
-GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
-# Which phase is running, for the crash handler below. The 2026-08-30 CI
-# failure was an unhandled ConnectionResetError, and its traceback named a
-# line in `recv_exact` -- a helper four phases share -- so the log said
-# which CALL reset and not which PHASE was being proven. That is the
-# difference between "the flood connection was reset while the client
-# stalled" and "something, somewhere, reset".
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    # A reset rather than a clean FIN means the server closed a socket with
-    # bytes still queued on it, which the kernel turns into an RST
-    # (CLAUDE.md, the chunked-trailer rule). Reported as a finding with its
-    # phase, because a bare traceback costs the next investigator the
-    # reproduction -- and this probe is driven N times a round by
-    # `poe stress-asgi`, where the round number alone is not enough.
-    traceback.print_exception(kind, exc, tb)
-    print("asgi ws_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("asgi ws_probe FAIL:", msg)
-    sys.exit(1)
-
-
-def recv_exact(sock, n, eof_ok=False):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            if eof_ok:
-                # The caller counts what arrived and diagnoses the shortfall
-                # itself; an abrupt close IS the finding there.
-                raise EOFError()
-            fail("connection closed wanting %d bytes (got %d)" % (n, len(buf)))
-        buf += chunk
-    return buf
-
-
-def read_frame(sock, eof_ok=False):
-    hdr = recv_exact(sock, 2, eof_ok)
-    b0, b1 = hdr[0], hdr[1]
-    if b1 & 0x80:
-        fail("server frame is masked (servers MUST NOT mask)")
-    ln = b1 & 0x7F
-    if ln == 126:
-        ln = struct.unpack(">H", recv_exact(sock, 2, eof_ok))[0]
-    elif ln == 127:
-        ln = struct.unpack(">Q", recv_exact(sock, 8, eof_ok))[0]
-    return b0 & 0x0F, recv_exact(sock, ln, eof_ok)
-
-
-def read_data_frame(sock):
-    # Skip server pings (heartbeats) transparently, answering with pongs.
-    while True:
-        op, payload = read_frame(sock)
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
-            continue
-        return op, payload
-
-
-def send_frame(sock, opcode, payload):
-    mask = os.urandom(4)
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    ln = len(payload)
-    if ln < 126:
-        hdr = struct.pack(">BB", 0x80 | opcode, 0x80 | ln)
-    elif ln < 65536:
-        hdr = struct.pack(">BBH", 0x80 | opcode, 0x80 | 126, ln)
-    else:
-        hdr = struct.pack(">BBQ", 0x80 | opcode, 0x80 | 127, ln)
-    sock.sendall(hdr + mask + masked)
-
-
-class Buffered:
-    """A socket with a pushback buffer.
-
-    The handshake read can overrun into the first frames -- an application
-    that sends immediately has its bytes coalesced with its own 101 by the
-    kernel -- and those bytes have to be parsed, not discarded. Asserting
-    they never arrive is not an option either: whether they do is a timing
-    accident, so a probe that insists on it fails for the wrong reason."""
-
-    def __init__(self, sock, initial=b""):
-        self.sock = sock
-        self.buf = initial
-
-    def recv(self, n):
-        if self.buf:
-            out, self.buf = self.buf[:n], self.buf[n:]
-            return out
-        return self.sock.recv(n)
-
-    def sendall(self, data):
-        self.sock.sendall(data)
-
-    def settimeout(self, t):
-        self.sock.settimeout(t)
-
-    def close(self):
-        self.sock.close()
+# Which phase is running, for the crash handler. The 2026-08-30 CI failure
+# was an unhandled ConnectionResetError, and its traceback named a line in
+# `recv_exact` -- a helper four phases shared -- so the log said which CALL
+# reset and not which PHASE was being proven. That is the difference between
+# "the flood connection was reset while the client stalled" and "something,
+# somewhere, reset".
+#
+# A reset rather than a clean FIN means the server closed a socket with
+# bytes still queued on it, which the kernel turns into an RST (CLAUDE.md,
+# the chunked-trailer rule). Reported as a finding with its phase, because a
+# bare traceback costs the next investigator the reproduction -- and this
+# probe is driven N times a round by `poe stress-asgi`, where the round
+# number alone is not enough.
+stamp("asgi ws_probe FAIL")
 
 
 def handshake(path, what):
@@ -153,99 +58,62 @@ def handshake(path, what):
 
     The accept value is verified in `main`'s first connection, which is
     where that property belongs; this is for the later phases, which are
-    about what happens AFTER the upgrade."""
-    sock = socket.create_connection((HOST, PORT), timeout=30)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET %s HTTP/1.1\r\n"
-            "Host: %s:%d\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Key: %s\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n" % (path, HOST, PORT, key)
-        ).encode()
-    )
-    head = b""
-    while b"\r\n\r\n" not in head:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("no handshake response on %s" % what)
-        head += chunk
-    if b" 101 " not in head.split(b"\r\n", 1)[0]:
-        fail("%s expected 101, got %r" % (what, head.split(b"\r\n", 1)[0]))
-    return Buffered(sock, head.split(b"\r\n\r\n", 1)[1])
+    about what happens AFTER the upgrade. Bytes the application sent at once
+    stay buffered for the first frame read, rather than going with the head.
+    """
+    ws = WebSocket.connect(HOST, PORT, path, timeout=30)
+    if ws.status_line is None:
+        fail("no handshake response on %s" % what)
+    if b" 101 " not in ws.status_line:
+        fail("%s expected 101, got %r" % (what, ws.status_line))
+    return ws
 
 
 def main():
     phase("the echo connection's handshake")
-    sock = socket.create_connection((HOST, PORT), timeout=10)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET /ws HTTP/1.1\r\n"
-            "Host: %s:%d\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Key: %s\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n" % (HOST, PORT, key)
-        ).encode()
-    )
-    head = b""
-    while b"\r\n\r\n" not in head:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("no handshake response")
-        head += chunk
-    if b" 101 " not in head.split(b"\r\n", 1)[0]:
-        fail("expected 101, got %r" % head.split(b"\r\n", 1)[0])
-    want = base64.b64encode(
-        hashlib.sha1((key + GUID).encode()).digest()
-    ).decode()
-    if ("sec-websocket-accept: %s" % want).encode() not in head.lower().replace(
-        want.lower().encode(), want.encode()
-    ):
-        # Case-insensitive header name, exact accept value.
-        accept_line = [
-            l for l in head.split(b"\r\n") if l.lower().startswith(b"sec-websocket-accept:")
-        ]
-        if not accept_line or accept_line[0].split(b":", 1)[1].strip() != want.encode():
-            fail("bad Sec-WebSocket-Accept")
+    ws = WebSocket.connect(HOST, PORT, "/ws", timeout=10)
+    if ws.status_line is None:
+        fail("no handshake response")
+    if b" 101 " not in ws.status_line:
+        fail("expected 101, got %r" % ws.status_line)
+    # Case-insensitive header name, exact accept value.
+    if not ws.accept_ok():
+        fail("bad Sec-WebSocket-Accept")
 
     phase("the text and binary echoes")
-    send_frame(sock, 0x1, b"hello")
-    op, payload = read_data_frame(sock)
-    if op != 0x1 or payload != b"echo:hello":
+    ws.send(TEXT, b"hello")
+    op, payload = ws.recv_data()
+    if op != TEXT or payload != b"echo:hello":
         fail("text echo wrong: op=%d payload=%r" % (op, payload))
 
-    send_frame(sock, 0x2, bytes([0, 1, 255, 128]))
-    op, payload = read_data_frame(sock)
-    if op != 0x2 or payload != bytes([0, 1, 255, 128]):
+    ws.send(BINARY, bytes([0, 1, 255, 128]))
+    op, payload = ws.recv_data()
+    if op != BINARY or payload != bytes([0, 1, 255, 128]):
         fail("binary echo wrong: op=%d payload=%r" % (op, payload))
 
     phase("the app-initiated close handshake")
-    send_frame(sock, 0x1, b"bye")
-    op, payload = read_data_frame(sock)
-    if op != 0x8:
+    ws.send(TEXT, b"bye")
+    op, payload = ws.recv_data()
+    if op != CLOSE:
         fail("expected close frame after bye, got op=%d %r" % (op, payload))
     if len(payload) >= 2 and struct.unpack(">H", payload[:2])[0] != 1000:
         fail("close code != 1000: %r" % payload[:2])
     # Close handshake reply, then the server should FIN.
-    send_frame(sock, 0x8, payload[:2])
-    sock.settimeout(5)
+    ws.send(CLOSE, payload[:2])
+    ws.settimeout(5)
     try:
-        rest = sock.recv(1024)
+        rest = ws.recv_raw(1024)
     except socket.timeout:
         fail("no FIN after close handshake")
     if rest not in (b"",):
         # Tolerate a duplicate close echo before FIN.
         try:
-            rest = sock.recv(1024)
+            rest = ws.recv_raw(1024)
         except socket.timeout:
             fail("no FIN after close echo")
         if rest != b"":
             fail("unexpected bytes after close: %r" % rest)
-    sock.close()
+    ws.close()
 
     # --- backpressure: a flooding app against a client that stalls -------
     # 400 x 4 KB with no pause, from a client that reads nothing for two
@@ -255,24 +123,24 @@ def main():
     # holes the peer had no protocol-level way to detect. The send window
     # makes the application wait instead, so the count here is exact.
     phase("the flood connection (a stalled client against a flooding app)")
-    sock = handshake("/ws/flood", "the flood connection")
+    ws = handshake("/ws/flood", "the flood connection")
     time.sleep(2.0)          # stall: the outbox is the only place to go
     got = frames = 0
     closed = False
     while True:
         try:
-            op, payload = read_frame(sock, eof_ok=True)
+            op, payload = ws.recv_frame(eof_ok=True)
         except EOFError:
             # The server hung up mid-stream: what the loud-refusal guard
             # does when the outbox overflows. Counted and diagnosed below.
             break
-        if op == 0x8:
+        if op == CLOSE:
             closed = True
             break
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
+        if op == PING:
+            ws.send(PONG, payload)
             continue
-        if op != 0x2:
+        if op != BINARY:
             fail("flood: unexpected opcode 0x%x" % op)
         if payload != b"x" * FLOOD_SIZE:
             fail("flood: frame %d is %d bytes, not %d -- the payload was "
@@ -289,7 +157,7 @@ def main():
         )
     if not closed:
         fail("flood: the app's close(1000) never arrived")
-    sock.close()
+    ws.close()
 
     # --- close order: a Close reply must not be met with an RST ---------
     # RFC 6455 §5.5.1 has the endpoint that sends Close FIRST wait to
@@ -315,14 +183,14 @@ def main():
         try:
             conn = handshake("/ws", "a close-order connection")
             gate.wait()
-            send_frame(conn, 0x1, b"bye")
-            op, body = read_data_frame(conn)
-            if op != 0x8:
+            conn.send(TEXT, b"bye")
+            op, body = conn.recv_data()
+            if op != CLOSE:
                 result = "op=0x%x, not a close frame" % op
             else:
-                send_frame(conn, 0x8, body[:2])
+                conn.send(CLOSE, body[:2])
                 conn.settimeout(10)
-                tail = conn.recv(1024)
+                tail = conn.recv_raw(1024)
                 if tail == b"":
                     result = "FIN"
                 else:
@@ -369,13 +237,13 @@ def main():
     # every time on the old server: three pings, where silence is required.
     phase("the quiet linger: nothing follows the server's Close")
     conn = handshake("/ws", "a slow-to-reply connection")
-    send_frame(conn, 0x1, b"bye")
-    op, body = read_data_frame(conn)
-    if op != 0x8:
+    conn.send(TEXT, b"bye")
+    op, body = conn.recv_data()
+    if op != CLOSE:
         fail("quiet linger: expected the app's Close, got op=0x%x" % op)
     conn.settimeout(1.0)
     try:
-        early = conn.recv(1024)
+        early = conn.recv_raw(1024)
     except socket.timeout:
         early = None
     if early == b"":
@@ -386,9 +254,9 @@ def main():
             "before our reply -- nothing may follow a Close (RFC 6455 §1.4)"
             % (early[0] & 0x0F)
         )
-    send_frame(conn, 0x8, body[:2])
+    conn.send(CLOSE, body[:2])
     conn.settimeout(10)
-    if conn.recv(1024) != b"":
+    if conn.recv_raw(1024) != b"":
         fail("quiet linger: bytes after our Close reply where the FIN was due")
     conn.close()
 
@@ -396,27 +264,12 @@ def main():
     # Second connection: vanish abruptly after the 101, no close
     # handshake — the disconnect tag must cancel the app task and the
     # server must stay healthy (the smoke checks health right after).
-    sock = socket.create_connection((HOST, PORT), timeout=10)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET /ws HTTP/1.1\r\n"
-            "Host: %s:%d\r\n"
-            "Upgrade: websocket\r\n"
-            "Connection: Upgrade\r\n"
-            "Sec-WebSocket-Key: %s\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n" % (HOST, PORT, key)
-        ).encode()
-    )
-    head = b""
-    while b"\r\n\r\n" not in head:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("no handshake response on the abrupt connection")
-        head += chunk
-    if b" 101 " not in head.split(b"\r\n", 1)[0]:
+    ws = WebSocket.connect(HOST, PORT, "/ws", timeout=10)
+    if ws.status_line is None:
+        fail("no handshake response on the abrupt connection")
+    if b" 101 " not in ws.status_line:
         fail("abrupt connection expected 101")
-    sock.close()
+    ws.close()
     print("asgi ws_probe OK")
 
 
