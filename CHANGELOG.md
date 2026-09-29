@@ -27,6 +27,116 @@ in a minor release: `m0serve`'s flags and environment variables, the
   - Any other login: state `PREFIX_SECURE` in each environment that starts
     it, the deploy's included. `apps/fragment_notes` reads
     `M0_NOTES_SECURE`, and `serve-fragment-notes` defaults it to `0`.
+
+- **`SqliteLib` and `PgLib` keep their C entry points in one table,
+  `fns`**, which each `Statement` and `Result` copies whole (SPEC O16,
+  O18). Code that called an entry point on the library itself now calls
+  it on the table: `lib.errstr(rc)` becomes `lib.fns.errstr(rc)`. `path`,
+  `open_library`, `PgLib.open`, `PgLib.libversion` and
+  `PgLib.version_text` are unchanged, and code that goes through
+  `Connection`, `Statement` and `Result` changes nothing.
+- **A sabotage that does not compile is a miss, never a catch** (SPEC
+  F17). `sabotage-pool`, `sabotage-trailers` and `sabotage-keepalive`
+  counted any failure of their gate as the rule being guarded, so a
+  sabotage that only broke the build passed as proof; `sabotage-fuzz` and
+  `sabotage-outbox-cap` skipped one and still reported every rule guarded.
+  All five now run on `scripts/sabotage_lib.py`. A catch needs the gate to
+  have run: the `mojo` driver's last line names the phase that failed, and
+  a timeout or a crash that prints nothing is settled by building the
+  sabotaged source alone. An anchor must match exactly once
+  (`sabotage-outbox-cap`'s give-up anchor matched twice and is
+  re-pointed). A rule this platform cannot observe is reported `SKIPPED`
+  and never counted as guarded. Ctrl-C or SIGTERM mid-run puts every file
+  back, then ends the harness by that signal. Each task takes `--only` and
+  `--skip`, and `sabotage-keepalive` now checks its unsabotaged probe
+  first.
+- **CI's jobs share one setup step and one measurement step.** Every job
+  in `test.yml` set up uv, installed its Debian packages, and rendered and
+  uploaded its measurements with its own copy of the same steps. Each now
+  calls `.github/actions/setup` and `.github/actions/record-measurements`.
+  `check-docs` reads an action as part of each job that calls it, so a job
+  that stops calling the record action is still named. So is a
+  `wheel-consume` job that reaches uv through the setup action, which by
+  this repository's reference needs no checkout. Dependabot now reads the
+  actions' own pins, which `directory: "/"` never did, and `check-docs`
+  holds it to that. The check also compares the file a job's `M0_RESULTS`
+  names with the file it uploads by whole name: `results.jsonl` used to
+  pass as `ci-results.jsonl`.
+- **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
+  phase stamp, `fail()`, a server watched until it answers, a free port,
+  an SSE reader and a WebSocket client, each proven by
+  `python3 scripts/probelib.py --selftest` in CI. A server that exits
+  before it answers is reported at once, with its log:
+  `smoke-exec-inherit` and `smoke-child-publish` used to wait 120 s for
+  one, and `smoke-ws-inbound` and `smoke-slot-lifecycle` 30 s.
+  `outbox_cap_probe.py` gives the connection one 20 s deadline, where a
+  per-read timeout was reset by every heartbeat, so
+  `sabotage-outbox-cap`'s two rules that leave the connection open are
+  caught by the probe's own verdict rather than by the harness killing it
+  at 180 s. `poe check-phase-stamps` accepts a probe that takes its stamp
+  from the library and holds the library to the crash handler's rules. It
+  now judges the unsabotaged tree before any sabotage, and requires every
+  rule to have a sabotage that the rule itself catches.
+- **Nineteen more probes on `scripts/probelib.py`**, among them the
+  WebSocket and SSE clients of `smoke-chat`, `smoke-fastapi`, the Django
+  and Flask realtime smokes, `smoke-idle-timeout`, `smoke-host`,
+  `smoke-sim-loop` and `smoke-todo`, and both docker probes. Each prints
+  what it printed. `stamp()` takes two options for the probes that needed
+  them: `fail_stream=`, for a failure line that goes to stderr while the
+  crash line goes to stdout, and `echo=`, for a probe that announces each
+  phase as it begins. `stress-pool`'s two probes and the held server in
+  `smoke-host-doctor` now report a server that exits before it answers at
+  once, with its log, where each polled for up to a minute. The chat and
+  realtime probes read a WebSocket against one deadline, where a per-read
+  timeout was reset by every heartbeat. `demo_probe.py` names a refused
+  WebSocket upgrade; it used to die of `ValueError('too many values to
+  unpack')`.
+- **The last twenty-one probes on `scripts/probelib.py`**: the raw-socket
+  probes of `smoke-shutdown`, `smoke-pipelining`, `smoke-early-413`,
+  `smoke-body-timeout` and the other HTTP/1.1 smokes, the response-head
+  and chunked keep-alive probes of the WSGI and ASGI smokes,
+  `smoke-ramp`'s, `probe-pool-fairness`'s, and the `pid1` job's two
+  docker probes. Each prints what it printed, on the stream it printed it
+  on. Every probe but `apps/ws_echo/ws_probe.py`, which stays inline as
+  `poe check-phase-stamps`' example of that form, now takes its phase
+  stamp from the library. `pool_fairness_probe.py` waits for its server
+  through the library's `wait_healthy`: its own poller, answered with an
+  empty body, asked again at once, about 10,700 times a second against a
+  server that answers 101, where the library's asks 19.
+- **A supervisor, and what an application runs before its loop, survive
+  SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
+  which a supervisor never enters: m0serve's under `--workers` or
+  `--reload`, and the Mojo host's under `M0_WORKERS`. `kill -PIPE` ended
+  either with status 141 and left its workers serving, orphaned (measured
+  on macOS). m0serve's supervisor forks before any Python call, so
+  CPython's own ignore never reached it. A Mojo host application's `make`,
+  producer and pool threads also run before the loop, so a write there to
+  a peer that had gone ended the server before it served (one worker, or
+  `M0_THREADS`), or killed worker 0 on every respawn (`M0_WORKERS`). The
+  listener now ignores SIGPIPE first: both hosts bind before they fork or
+  start a thread, so every process and thread they run inherits it.
+  `smoke-host` sends the supervisor `kill -PIPE` and has a producer's
+  `make` write to a closed pipe; `smoke-spawn-workers` sends m0serve's
+  supervisor `kill -PIPE`.
+
+- **A malformed accept-sharing hand-off no longer leaks its connection**
+  (SPEC E16). `recv_fd` refuses a message whose control data was cut
+  short, and its check never saw one. Linux's `MSG_CTRUNC` is 0x08, and
+  the 0x20 it tested there is `MSG_TRUNC`, set when the payload is cut
+  short. macOS's `struct msghdr` is 48 bytes, not the 56 assumed, so its
+  flags were read from a word the kernel never writes. A refused message
+  also closed nothing, though the kernel installs each passed descriptor
+  as the message arrives. So on Linux a hand-off whose payload was cut
+  short lost its connection, left open for the life of the worker with
+  its client waiting, and on both platforms a message carrying extra
+  descriptors was taken in part, the rest left open. Neither shape comes
+  from the server's own `send_fd`, which passes one descriptor and a
+  payload that fits. The flags are now read where each kernel writes
+  them, a truncated control message is refused with every descriptor it
+  delivered closed, and a payload cut short keeps its descriptor.
+  `test_accept_share.mojo` sends both shapes and checks that nothing is
+  left open.
+
 ### Removed
 
 - **Upstream `lightbug_http` code that nothing used**, about 870 lines of
@@ -84,8 +194,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `test_sigpipe.mojo` runs each until its closed shutdown pipe ends the
   loop, under a watchdog that fails the file rather than hang it. Found in
   review.
-
-### Removed
 
 - **The blocking accept loop's own code**, about 560 lines of the fork:
   `handle_connection`, `gate_streaming_response`, and
@@ -492,117 +600,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   or the end of the body. `parse_json_int` still refuses a fraction or an
   exponent, which `parse_json_number` reads. A body that relied on the
   lenient reading now gets `None`. Found in review.
-
-### Changed
-
-- **`SqliteLib` and `PgLib` keep their C entry points in one table,
-  `fns`**, which each `Statement` and `Result` copies whole (SPEC O16,
-  O18). Code that called an entry point on the library itself now calls
-  it on the table: `lib.errstr(rc)` becomes `lib.fns.errstr(rc)`. `path`,
-  `open_library`, `PgLib.open`, `PgLib.libversion` and
-  `PgLib.version_text` are unchanged, and code that goes through
-  `Connection`, `Statement` and `Result` changes nothing.
-- **A sabotage that does not compile is a miss, never a catch** (SPEC
-  F17). `sabotage-pool`, `sabotage-trailers` and `sabotage-keepalive`
-  counted any failure of their gate as the rule being guarded, so a
-  sabotage that only broke the build passed as proof; `sabotage-fuzz` and
-  `sabotage-outbox-cap` skipped one and still reported every rule guarded.
-  All five now run on `scripts/sabotage_lib.py`. A catch needs the gate to
-  have run: the `mojo` driver's last line names the phase that failed, and
-  a timeout or a crash that prints nothing is settled by building the
-  sabotaged source alone. An anchor must match exactly once
-  (`sabotage-outbox-cap`'s give-up anchor matched twice and is
-  re-pointed). A rule this platform cannot observe is reported `SKIPPED`
-  and never counted as guarded. Ctrl-C or SIGTERM mid-run puts every file
-  back, then ends the harness by that signal. Each task takes `--only` and
-  `--skip`, and `sabotage-keepalive` now checks its unsabotaged probe
-  first.
-- **CI's jobs share one setup step and one measurement step.** Every job
-  in `test.yml` set up uv, installed its Debian packages, and rendered and
-  uploaded its measurements with its own copy of the same steps. Each now
-  calls `.github/actions/setup` and `.github/actions/record-measurements`.
-  `check-docs` reads an action as part of each job that calls it, so a job
-  that stops calling the record action is still named. So is a
-  `wheel-consume` job that reaches uv through the setup action, which by
-  this repository's reference needs no checkout. Dependabot now reads the
-  actions' own pins, which `directory: "/"` never did, and `check-docs`
-  holds it to that. The check also compares the file a job's `M0_RESULTS`
-  names with the file it uploads by whole name: `results.jsonl` used to
-  pass as `ci-results.jsonl`.
-- **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
-  phase stamp, `fail()`, a server watched until it answers, a free port,
-  an SSE reader and a WebSocket client, each proven by
-  `python3 scripts/probelib.py --selftest` in CI. A server that exits
-  before it answers is reported at once, with its log:
-  `smoke-exec-inherit` and `smoke-child-publish` used to wait 120 s for
-  one, and `smoke-ws-inbound` and `smoke-slot-lifecycle` 30 s.
-  `outbox_cap_probe.py` gives the connection one 20 s deadline, where a
-  per-read timeout was reset by every heartbeat, so
-  `sabotage-outbox-cap`'s two rules that leave the connection open are
-  caught by the probe's own verdict rather than by the harness killing it
-  at 180 s. `poe check-phase-stamps` accepts a probe that takes its stamp
-  from the library and holds the library to the crash handler's rules. It
-  now judges the unsabotaged tree before any sabotage, and requires every
-  rule to have a sabotage that the rule itself catches.
-- **Nineteen more probes on `scripts/probelib.py`**, among them the
-  WebSocket and SSE clients of `smoke-chat`, `smoke-fastapi`, the Django
-  and Flask realtime smokes, `smoke-idle-timeout`, `smoke-host`,
-  `smoke-sim-loop` and `smoke-todo`, and both docker probes. Each prints
-  what it printed. `stamp()` takes two options for the probes that needed
-  them: `fail_stream=`, for a failure line that goes to stderr while the
-  crash line goes to stdout, and `echo=`, for a probe that announces each
-  phase as it begins. `stress-pool`'s two probes and the held server in
-  `smoke-host-doctor` now report a server that exits before it answers at
-  once, with its log, where each polled for up to a minute. The chat and
-  realtime probes read a WebSocket against one deadline, where a per-read
-  timeout was reset by every heartbeat. `demo_probe.py` names a refused
-  WebSocket upgrade; it used to die of `ValueError('too many values to
-  unpack')`.
-- **The last twenty-one probes on `scripts/probelib.py`**: the raw-socket
-  probes of `smoke-shutdown`, `smoke-pipelining`, `smoke-early-413`,
-  `smoke-body-timeout` and the other HTTP/1.1 smokes, the response-head
-  and chunked keep-alive probes of the WSGI and ASGI smokes,
-  `smoke-ramp`'s, `probe-pool-fairness`'s, and the `pid1` job's two
-  docker probes. Each prints what it printed, on the stream it printed it
-  on. Every probe but `apps/ws_echo/ws_probe.py`, which stays inline as
-  `poe check-phase-stamps`' example of that form, now takes its phase
-  stamp from the library. `pool_fairness_probe.py` waits for its server
-  through the library's `wait_healthy`: its own poller, answered with an
-  empty body, asked again at once, about 10,700 times a second against a
-  server that answers 101, where the library's asks 19.
-- **A supervisor, and what an application runs before its loop, survive
-  SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
-  which a supervisor never enters: m0serve's under `--workers` or
-  `--reload`, and the Mojo host's under `M0_WORKERS`. `kill -PIPE` ended
-  either with status 141 and left its workers serving, orphaned (measured
-  on macOS). m0serve's supervisor forks before any Python call, so
-  CPython's own ignore never reached it. A Mojo host application's `make`,
-  producer and pool threads also run before the loop, so a write there to
-  a peer that had gone ended the server before it served (one worker, or
-  `M0_THREADS`), or killed worker 0 on every respawn (`M0_WORKERS`). The
-  listener now ignores SIGPIPE first: both hosts bind before they fork or
-  start a thread, so every process and thread they run inherits it.
-  `smoke-host` sends the supervisor `kill -PIPE` and has a producer's
-  `make` write to a closed pipe; `smoke-spawn-workers` sends m0serve's
-  supervisor `kill -PIPE`.
-
-- **A malformed accept-sharing hand-off no longer leaks its connection**
-  (SPEC E16). `recv_fd` refuses a message whose control data was cut
-  short, and its check never saw one. Linux's `MSG_CTRUNC` is 0x08, and
-  the 0x20 it tested there is `MSG_TRUNC`, set when the payload is cut
-  short. macOS's `struct msghdr` is 48 bytes, not the 56 assumed, so its
-  flags were read from a word the kernel never writes. A refused message
-  also closed nothing, though the kernel installs each passed descriptor
-  as the message arrives. So on Linux a hand-off whose payload was cut
-  short lost its connection, left open for the life of the worker with
-  its client waiting, and on both platforms a message carrying extra
-  descriptors was taken in part, the rest left open. Neither shape comes
-  from the server's own `send_fd`, which passes one descriptor and a
-  payload that fits. The flags are now read where each kernel writes
-  them, a truncated control message is refused with every descriptor it
-  delivered closed, and a payload cut short keeps its descriptor.
-  `test_accept_share.mojo` sends both shapes and checks that nothing is
-  left open.
 
 ## [1.7.0] — 2026-09-27
 
