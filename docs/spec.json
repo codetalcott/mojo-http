@@ -954,6 +954,14 @@
       "evidence": "`test_broadcast.mojo:test_bus_publish_method_rejects_reserved_channel` (every PR)"
     },
     {
+      "id": "G18",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "...and by `take_hold` at the hold boundary, which also strips `M0-Channel` from every response it runs on \u2014 even one carrying no usable `M0-Hold` (an application's leftover header, or one the bridge dropped for a control byte), since the channel is an instruction to the server and must never reach a client \u2014 and refuses a channel in the reserved `x01` namespace as it refuses a missing one, that namespace addressing a connection slot on the loop and `%01` in a form field decoding to a real 0x01 the bridge does not drop",
+      "status": "verified",
+      "evidence": "`test_hold.mojo:test_reserved_channel_degrades_and_strips` (every PR) \u2014 with `test_channel_alone_is_stripped` for the orphan `M0-Channel` and `test_reserved_channel_degrades_a_websocket_hold` for the socket path; `Smoke test the Django realtime example` sends `M0-Channel` on a response with no `M0-Hold` and requires it stripped on the wire"
+    },
+    {
       "id": "G9",
       "section": "G",
       "category": "G. Security hardening",

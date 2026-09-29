@@ -54,7 +54,11 @@ mechanism of the same kind, and importing nothing of the framework's.
 """
 
 from lightbug_http import HTTPRequest, HTTPResponse
-from lightbug_http.broadcast import encode_bus_frame, reserved_stream_url
+from lightbug_http.broadcast import (
+    channel_is_reserved,
+    encode_bus_frame,
+    reserved_stream_url,
+)
 from lightbug_http.header import Header, Headers, HeaderKey
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.offload import send_bounded
@@ -113,9 +117,19 @@ struct HoldResult(Movable):
 def take_hold(mut resp: HTTPResponse) -> HoldResult:
     """Consume any hold instruction in `resp`, whatever its mode.
 
-    No instruction headers: the response is untouched and the mode is
-    `HOLD_NONE`. Instruction headers present but unusable — an unknown mode,
-    a status other than 200, or a missing or empty channel — the headers are
+    Both instruction headers are stripped whenever this runs, `M0-Channel`
+    included even when `M0-Hold` is absent: the channel is an instruction to
+    this server and must never reach a client. An `M0-Hold` can be absent
+    although the application sent one — `read_head` drops a response header
+    carrying CR, LF or NUL (W1, #491), so an app that put a line break in
+    `M0-Hold`, or that sent `M0-Channel` alone, would otherwise leak the
+    channel on the wire. With no `M0-Hold` the mode is `HOLD_NONE` and the
+    response is otherwise untouched.
+
+    Instruction headers present but unusable — an unknown mode, a status
+    other than 200, a missing or empty channel, or a channel in the reserved
+    control namespace (a leading 0x01 byte, which addresses a connection slot
+    on the loop and which `%01` in a form field decodes to) — the headers are
     stripped and the response is served as the ordinary buffered response it
     already is, which is also what the same application code does when it
     runs under a server that has never heard of these headers.
@@ -140,9 +154,11 @@ def take_hold(mut resp: HTTPResponse) -> HoldResult:
     `Content-Length` is left alone on purpose: the event loop strips it from
     every streaming response at encode time, and from every 101.
     """
-    if HOLD_HEADER not in resp.headers:
-        return HoldResult(HOLD_NONE, String(""))
-
+    # Read the decision, then strip BOTH headers unconditionally — before
+    # any early return. `M0-Channel` is addressed to this server, so it may
+    # not survive to the client even when `M0-Hold` never arrived (dropped
+    # for a control byte by `read_head`, or simply never sent).
+    var had_hold = HOLD_HEADER in resp.headers
     var is_stream = resp.headers.value_equals_ignore_case(HOLD_HEADER, "stream")
     var is_websocket = resp.headers.value_equals_ignore_case(
         HOLD_HEADER, "websocket"
@@ -155,7 +171,19 @@ def take_hold(mut resp: HTTPResponse) -> HoldResult:
     resp.headers.pop(HOLD_HEADER)
     resp.headers.pop(CHANNEL_HEADER)
 
+    if not had_hold:
+        return HoldResult(HOLD_NONE, String(""))
+
     if resp.status_code != 200 or channel.byte_length() == 0:
+        return HoldResult(HOLD_NONE, String(""))
+
+    # A channel in the reserved control namespace (leading 0x01) names a
+    # connection SLOT on the loop, not an application topic — the namespace
+    # every publish boundary refuses (`channel_is_reserved`). An
+    # application's channel is often user input, and `%01` in a form field
+    # decodes to a real 0x01 that `read_head` does not drop, so refuse it
+    # here as a missing channel is refused: served as the ordinary response.
+    if channel_is_reserved(channel):
         return HoldResult(HOLD_NONE, String(""))
 
     if is_websocket:

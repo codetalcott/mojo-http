@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**306 capabilities: 282 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 282 verified, 275 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**307 capabilities: 283 verified, 0 implemented, 0 planned, 24 out of scope.** Of the 283 verified, 276 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -196,6 +196,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | G6 | Percent-encoded traversal rejected (`%2e%2e`) | verified | `test_static.mojo:test_encoded_dotdot_is_rejected` (every PR) |
 | G7 | Reserved `\x01` channel namespace refused by `publish_to_channels` | verified | `test_broadcast.mojo:test_publish_rejects_reserved_channel` (every PR) |
 | G8 | ...and by `BroadcastBus.publish` | verified | `test_broadcast.mojo:test_bus_publish_method_rejects_reserved_channel` (every PR) |
+| G18 | ...and by `take_hold` at the hold boundary, which also strips `M0-Channel` from every response it runs on — even one carrying no usable `M0-Hold` (an application's leftover header, or one the bridge dropped for a control byte), since the channel is an instruction to the server and must never reach a client — and refuses a channel in the reserved `\x01` namespace as it refuses a missing one, that namespace addressing a connection slot on the loop and `%01` in a form field decoding to a real 0x01 the bridge does not drop | verified | `test_hold.mojo:test_reserved_channel_degrades_and_strips` (every PR) — with `test_channel_alone_is_stripped` for the orphan `M0-Channel` and `test_reserved_channel_degrades_a_websocket_hold` for the socket path; `Smoke test the Django realtime example` sends `M0-Channel` on a response with no `M0-Hold` and requires it stripped on the wire |
 | G9 | API key authentication, length-checked so a repeated key fails | verified | `test_auth.mojo:test_a_rotation_of_the_key_is_rejected` (every PR) |
 | G10 | CORS, configurable | verified | `Smoke test the notes API` (every PR) |
 | G11 | `X-Forwarded-*` / `Forwarded` parsing with a trusted-proxy allowlist | out of scope | the server never consults them — `REMOTE_ADDR` is the socket peer and `wsgi.url_scheme` is configuration, so there is nothing to spoof |
