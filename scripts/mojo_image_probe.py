@@ -8,10 +8,11 @@
 `--build` builds the image from the repository root exactly as `fly deploy`
 does, with `--target-cpu` chosen from the DOCKER DAEMON's architecture
 (x86-64-v2 on x86-64, generic on arm64; `M0_TARGET_CPU` overrides, never
-`native`), then runs it with a published port and probes it through that
-port. Nothing reaches into the container to make it work; `docker exec` is
-used only to READ what outside cannot see -- PID 1's command line, the
-filesystem, the RSS.
+`native`), then runs it with a published port -- a free one, drawn by
+`probelib.free_port` as the container starts, unless `--port` names one --
+and probes it through that port. Nothing reaches into the container to make
+it work; `docker exec` is used only to READ what outside cannot see -- PID
+1's command line, the filesystem, the RSS.
 
 What it asserts, for every app:
 
@@ -72,7 +73,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from emit import emit  # noqa: E402
-from probelib import fail, phase, sse_events, stamp  # noqa: E402
+from probelib import fail, free_port, phase, sse_events, stamp  # noqa: E402
 
 BINARY = "/app/server"
 HELD = 100
@@ -250,7 +251,6 @@ def build(args, tag, arch):
 
 def probe(args, tag, arch):
     name = f"m0-image-probe-{uuid.uuid4().hex[:8]}"
-    port = args.port
     held = []
     try:
         phase("what the daemon says about the image")
@@ -261,6 +261,8 @@ def probe(args, tag, arch):
         emit(f"mojo_image.{args.app}.{store}_bytes", int(size), unit="B", task=args.task)
 
         phase("start it")
+        port = args.port or free_port()
+        print(f"publishing on 127.0.0.1:{port}")
         run("docker", "run", "-d", "--name", name, "-p", f"127.0.0.1:{port}:8080", tag)
         deadline = time.monotonic() + 30
         while True:
@@ -459,7 +461,7 @@ def main():
     mode.add_argument("--url", help="probe a running deploy over HTTP(S) (blobs only)")
     ap.add_argument("--version", default="", help="--url: the version /about must name")
     ap.add_argument("--target-cpu", default="", help="default: M0_TARGET_CPU, else by the daemon's arch")
-    ap.add_argument("--port", type=int, default=18099)
+    ap.add_argument("--port", type=int, help="the host port to publish on (default: a free one)")
     ap.add_argument("--task", default="", help="the poe task the measurements are recorded under")
     ap.add_argument("--keep", action="store_true", help="leave the image and container behind")
     args = ap.parse_args()

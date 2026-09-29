@@ -6,7 +6,8 @@
     python3 scripts/demo_probe.py --url https://demo.m0serve.dev    # the live deploy
 
 `--image` builds deploy/demo/Dockerfile from the repository root exactly as
-`fly deploy` does, starts it with a published port, and adds the container
+`fly deploy` does, starts it with a published port (a free one, drawn by
+`probelib.free_port`, unless `--port` names one), and adds the container
 phases -- m0serve is PID 1 by `/proc/1/cmdline`, and `docker stop` is the
 drain's exit 0 inside its grace. `--url` runs the HTTP phases alone against
 whatever is listening there, which is how the deploy workflow verifies the
@@ -70,7 +71,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from emit import emit  # noqa: E402
-from probelib import BINARY, TEXT, SSEParser, WebSocket, fail, phase, stamp  # noqa: E402
+from probelib import BINARY, TEXT, SSEParser, WebSocket, fail, free_port, phase, stamp  # noqa: E402
 
 WHEELHOUSE = REPO / "deploy" / "demo" / "wheelhouse"
 COOKIE = "m0demo"
@@ -460,7 +461,6 @@ def probe_http(t, silence=2.0, deliver=8.0):
 def probe_image(args):
     if run("docker", "info", check=False).returncode != 0:
         fail("docker is not available (daemon not running, or not installed)")
-    base = f"http://127.0.0.1:{args.port}"
     tag = f"m0serve-demo-probe:{uuid.uuid4().hex[:8]}"
     name = f"m0serve-demo-probe-{uuid.uuid4().hex[:8]}"
     platform = ["--platform", args.platform] if args.platform else []
@@ -484,8 +484,10 @@ def probe_image(args):
         emit("demo_image.build_s", round(time.monotonic() - t0, 1), unit="s", task="smoke-demo")
 
         phase("start it")
-        run("docker", "run", "-d", *platform, "--name", name, "-p", f"127.0.0.1:{args.port}:8080", tag)
-        t = Target(base)
+        port = args.port or free_port()
+        print(f"publishing on 127.0.0.1:{port}")
+        run("docker", "run", "-d", *platform, "--name", name, "-p", f"127.0.0.1:{port}:8080", tag)
+        t = Target(f"http://127.0.0.1:{port}")
         deadline = time.monotonic() + 30
         while True:
             try:
@@ -542,7 +544,7 @@ def main():
     ap.add_argument("--wheel-dir", help="--image: install m0serve from this directory's wheel, not PyPI")
     ap.add_argument("--version", default="", help="--image: pin the PyPI release (default: newest)")
     ap.add_argument("--platform", default="", help="--image: docker --platform (linux/arm64 on colima)")
-    ap.add_argument("--port", type=int, default=8183, help="--image: published port")
+    ap.add_argument("--port", type=int, help="--image: the host port to publish on (default: a free one)")
     ap.add_argument("--keep", action="store_true", help="--image: leave the image and container behind")
     args = ap.parse_args()
     if args.image:

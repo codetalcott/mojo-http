@@ -19,6 +19,9 @@ PID 1 (`/proc/1/cmdline`, not trusted from the Dockerfile), and `docker
 stop` is the drain's exit 0 well inside its grace rather than SIGKILL at the
 deadline.
 
+The published port is a free one, drawn by `probelib.free_port` before the
+site is rendered for it, unless `--port` names one.
+
 `--wheel-dir` stages a wheel into deploy/site/wheelhouse and builds with
 `PIP_INDEX=--no-index`, so the image is proven with the server the tree has;
 `poe smoke-site-image` runs it that way behind `build-wheel`. Without it the
@@ -43,7 +46,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from emit import emit  # noqa: E402
-from probelib import fail, phase, stamp  # noqa: E402
+from probelib import fail, free_port, phase, stamp  # noqa: E402
 
 WHEELHOUSE = REPO / "deploy" / "site" / "wheelhouse"
 
@@ -95,19 +98,21 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--wheel-dir", help="install m0serve from this directory's wheel, not PyPI")
     ap.add_argument("--version", default="", help="pin the PyPI release (default: newest)")
-    ap.add_argument("--port", type=int, default=8182)
+    ap.add_argument("--port", type=int, help="the host port to publish on (default: a free one)")
     ap.add_argument("--keep", action="store_true", help="leave the image and container behind")
     args = ap.parse_args()
 
     if run("docker", "info", check=False).returncode != 0:
         fail("docker is not available (daemon not running, or not installed)")
 
-    base = f"http://127.0.0.1:{args.port}"
     tag = f"m0serve-docs-probe:{uuid.uuid4().hex[:8]}"
     name = f"m0serve-docs-probe-{uuid.uuid4().hex[:8]}"
     staged = []
     try:
         phase("render the site for the container's address")
+        port = args.port or free_port()
+        base = f"http://127.0.0.1:{port}"
+        print(f"publishing on 127.0.0.1:{port}")
         run(sys.executable, "scripts/docsite.py", "--out", "dist/site", "--base-url", base)
 
         phase("build the image")
@@ -128,7 +133,7 @@ def main():
         emit("site_image.build_s", round(time.monotonic() - t0, 1), unit="s", task="smoke-site-image")
 
         phase("start it")
-        run("docker", "run", "-d", "--name", name, "-p", f"127.0.0.1:{args.port}:8080", tag)
+        run("docker", "run", "-d", "--name", name, "-p", f"127.0.0.1:{port}:8080", tag)
         # Readiness on a real file, not /health: under a mount at `/` a
         # pre-0.17.0 server answers the health path with the mount's 404,
         # and that is a finding for the fall-through phase below, not a
