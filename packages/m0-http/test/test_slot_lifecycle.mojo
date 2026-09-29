@@ -20,19 +20,24 @@ are driven here over a `LoopState` built by its own constructor, as
 `prepare_loop` builds one, and over `FakeBackend`, which keeps one socket's
 registration the way epoll does -- ONE registration, so a read added
 replaces a pending write -- the stricter of the two, and the one a wrong
-arm is wrong on.
+arm is wrong on. Its timers are epoll's too: an expired timerfd is
+reported by every wait until it is deleted, where kqueue's one-shot fires
+once.
 """
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
-from lightbug_http.c.kqueue import EVFILT_READ, EVFILT_WRITE
+from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
+from lightbug_http.c.kqueue import EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE
 from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.socket import close, send
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
 from lightbug_http.loop.state import (
     LoopState,
+    TIMER_BODY,
+    UNUSED,
     WS_CLOSE_LINGER_NS,
     _arm_reads,
     _arm_ws_linger,
@@ -43,6 +48,7 @@ from lightbug_http.loop.state import (
     _stop_reads,
     _stream_idle,
 )
+from lightbug_http.loop.timers import _on_timer
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.server_config import ServerConfig
@@ -52,25 +58,42 @@ struct FakeBackend(EventLoopBackend):
     """One socket's registration, kept as epoll keeps it: read and write
     interest are ONE registration, so adding reads replaces a pending write
     one-shot, registering the write one-shot replaces the reads, and a
-    delete takes both."""
+    delete takes both.
+
+    Timers are kept as epoll keeps a timerfd, too: registered with EPOLLIN
+    and never read by the loop, one that has expired is readable -- level
+    triggered -- so every `wait` reports it until it is deleted or re-armed.
+    `expire` is the clock running out."""
 
     var read: Bool
     var write: Bool
     var read_adds: Int
+    var timers: List[UInt]
+    var expired: List[UInt]
+    var fired: List[UInt]
 
     def __init__(out self):
         self.read = False
         self.write = False
         self.read_adds = 0
+        self.timers = List[UInt]()
+        self.expired = List[UInt]()
+        self.fired = List[UInt]()
+
+    def expire(mut self, ident: UInt):
+        """The timer's time has come: it is readable from now on."""
+        if ident in self.timers and not ident in self.expired:
+            self.expired.append(ident)
 
     def wait(mut self, timeout_ms: Int) raises -> Int:
-        return 0
+        self.fired = self.expired.copy()
+        return len(self.fired)
 
     def event_ident(self, i: Int) -> UInt:
-        return 0
+        return self.fired[i]
 
     def event_filter(self, i: Int) -> Int16:
-        return 0
+        return EVFILT_TIMER
 
     def event_flags(self, i: Int) -> UInt16:
         return 0
@@ -110,10 +133,33 @@ struct FakeBackend(EventLoopBackend):
         self.write = False
 
     def try_add_timer(mut self, ident: UInt, timeout_ms: Int):
-        pass
+        # A re-arm resets the timerfd, which clears its expiry.
+        _drop(self.expired, ident)
+        if not ident in self.timers:
+            self.timers.append(ident)
 
     def try_delete_timer(mut self, ident: UInt):
+        _drop(self.timers, ident)
+        _drop(self.expired, ident)
+
+
+def _drop(mut idents: List[UInt], ident: UInt):
+    var kept = List[UInt]()
+    for i in range(len(idents)):
+        if idents[i] != ident:
+            kept.append(idents[i])
+    idents = kept^
+
+
+struct NoApp(HTTPService):
+    """The handler the loop's functions are generic over. Nothing here
+    reaches it."""
+
+    def __init__(out self):
         pass
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
 
 
 comptime SLOTS = 4
@@ -347,6 +393,49 @@ def test_a_stream_is_recorded_once() raises:
     assert_equal(st.metrics.requests_total, 1)
     assert_equal(st.metrics.latency_count, 1)
     assert_equal(st.metrics.bytes_sent_total, 120)
+
+
+def test_a_stale_body_expiry_is_retired() raises:
+    """#412's retire, on its own: a body timer's expiry that reaches a slot
+    no longer reading its body is DELETED, not only skipped. The body can
+    complete in the `wait` that reports its timer, read first, and a slot
+    whose request is out on a pool thread is not the timer's to end (B1's
+    guard, both of its arms here). epoll's timerfd is level triggered and
+    the loop never reads it, so an expiry left registered is reported by
+    every wait after it, each returning at once. kqueue's timers are
+    one-shots, so no macOS run could see it; the fake keeps them as epoll
+    does. The slot itself is left alone, which is B1.
+
+    covers: A23
+    """
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var ident = UInt(FD) + TIMER_BODY
+    for offloaded in range(2):
+        var slot = st.provision_pool.borrow()
+        st.slot_fds[slot] = FD
+        st.fd_to_slot[FD] = slot
+        if offloaded == 1:
+            st.provision_pool.provisions[slot].state = ConnectionState.reading_body(64)
+            st.offload.offloaded[slot] = True
+        else:
+            st.provision_pool.provisions[slot].state = ConnectionState.responding()
+        backend.try_add_timer(ident, 30_000)
+        backend.expire(ident)
+        assert_equal(backend.wait(0), 1)
+        assert_equal(backend.event_filter(0), EVFILT_TIMER)
+        _on_timer(app, backend, st, backend.event_ident(0))
+        assert_equal(st.slot_fds[slot], FD)
+        assert_equal(
+            backend.wait(0), 0,
+            "a stale body expiry stayed registered: every wait reports it",
+        )
+        st.offload.offloaded[slot] = False
+        st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+        st.slot_fds[slot] = UNUSED
+        st.fd_to_slot[FD] = UNUSED
+        st.provision_pool.release(slot)
 
 
 def main() raises:
