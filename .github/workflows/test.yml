@@ -600,7 +600,10 @@ jobs:
     # template (70 s): a 1.45x runner puts that at 31, past its cap of 30.
     # Divided three ways by those runs' step medians, the jobs come to 11.9,
     # 12.6 and 13.5 min on ubuntu and 10.7, 10.4 and 11.3 on macOS, each
-    # capped at 25. When one passes about 15, rebalance or divide again.
+    # capped at 25. Cold, on #484, they ran 10.6, 13.1 and 12.2 on ubuntu
+    # and 13.9, 13.2 and 14.1 on macOS, where every leg ran about a quarter
+    # over its steps' medians. When one passes about 15, rebalance or divide
+    # again.
     #
     # Where a step goes: a server's smokes stay in one job, because smokes
     # that compile one app share the runner's compile cache -- apps/hello's

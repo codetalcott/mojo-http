@@ -125,17 +125,23 @@ So the smokes are three jobs, divided by the step medians of those 15 runs.
 `smoke-app-layer` carries the Mojo host and the applications on it, the m0
 wheel and its scaffold. `smoke-gateway` carries the WSGI and ASGI bridges, the
 mounts, the pool and `--realtime`. They come to 11.9, 12.6 and 13.5 minutes on
-ubuntu and 10.7, 10.4 and 11.3 on macOS, each capped at 25. When one passes
-about 15, rebalance or divide again.
+ubuntu and 10.7, 10.4 and 11.3 on macOS, each capped at 25. Cold, on the pull
+request that divided them (#484), they ran 10.6, 13.1 and 12.2 minutes on
+ubuntu and 13.9, 13.2 and 14.1 on macOS, where every leg ran about a quarter
+over its steps' medians. When one passes about 15, rebalance or divide again.
 
 A third job pays the setup again, a minute and a half. It is also a run's
-seventh macOS job, and the account runs five at once, so it waits for the
-second to finish, `scaffold-dev` at 2 to 4 minutes. It still ends minutes
-before the unit jobs, which set the run's length at about 20 minutes cold.
-When several pull requests run at once, the five macOS runners are shared
-among them. Across the 76 runs since 2026-09-28 17:00, a macOS job waited a
-median of 4.4 minutes and a p90 of 34, and one more job in each run adds its
-minute of setup to that queue.
+seventh macOS job, and the account runs five at once, so two of a run's
+macOS jobs wait: one for the first to finish (`apple-silicon`, 1.5
+minutes), one for the second (`scaffold-dev`, 2 to 4). GitHub does not start
+them in file order. In the two runs with six, the job that waited was a
+smoke job once and `scaffold-dev` once. A smoke job or `scaffold-dev` that
+waits still ends before the unit jobs, which set the run's length at about
+20 minutes cold. If `unit-gates` waits, at 15 to 20 minutes on macOS, the run
+ends up to 4 minutes later. When several pull requests run at once, the five
+macOS runners are shared among them. Across the 76 runs since 2026-09-28
+17:00, a macOS job waited a median of 4.4 minutes and a p90 of 34, and one
+more job in each run adds its minute of setup to that queue.
 
 A server's smokes stay in one job, because the smokes that compile one app
 share the runner's compile cache: apps/hello's seven are in `smoke`, and so
