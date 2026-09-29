@@ -975,6 +975,23 @@ lightbug_http
         every module of `loop/`. The 3,686-line file is a 467-line door and
         eight modules of 139 to 946 lines.
 
+      - offload.mojo (2026-09-28): the hand-written move constructors of
+        `OffloadPool` and `OffloadLoopState` are deleted. Each moved every
+        field and did nothing else, which is what the compiler derives.
+        Behaviour-preserving.
+
+      - offload.mojo, hold.mojo (2026-09-28): `OffloadPool.send_ws_message`
+        is the one encoder of a pool lane's inbound WebSocket message; the
+        m0-wsgi loop handler, which carried a copy of it and of its
+        65546-byte bound, calls it, and `wake_for_datagram`, which existed
+        for that copy, is removed. The bound is `WS_DATAGRAM_MAX` alone, and
+        `ws_message_room` is the arithmetic both the encoder and the
+        handler's 1009 check refuse by. `send_bounded` is the one bounded
+        send, where these two files and the handler had 16 copies of the
+        retry loop, and `append_i64_le` and `read_i64_le` the one i64
+        codec, where they had 15 spellings. Behaviour-preserving: the same
+        bytes on every channel, and the same number of tries.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

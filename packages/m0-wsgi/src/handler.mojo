@@ -33,7 +33,10 @@ forked copy of a live interpreter is not safe — see `WSGIApp`.
 from lightbug_http.broadcast import encode_bus_frame
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
-from lightbug_http.offload import OffloadPool, STREAM_GEN_NONE
+from lightbug_http.offload import (
+    OffloadPool, STREAM_GEN_NONE, WS_DATAGRAM_MAX, ws_message_room,
+    send_bounded, append_i64_le, read_i64_le,
+)
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame, close_frame, WS_OP_TEXT, WS_OP_CLOSE,
@@ -240,7 +243,9 @@ struct WSGIHandler(ThreadHandler):
 
     An inbound WebSocket message on a held socket is delivered to the mount
     whose view gated the upgrade — `hold_lane[slot]` names it, the frame
-    that subscribed the socket carried it, and this is where it goes."""
+    that subscribed the socket carried it, and this is where it goes: set
+    for a lane a WSGI pool serves under `--realtime`, and the descriptor
+    `OffloadPool.send_ws_message` sends on for that lane."""
 
     var exec_lane: List[Int]
     """The executor lane whose `b` or `B` begin frame opened this slot's
@@ -1015,7 +1020,7 @@ struct WSGIHandler(ThreadHandler):
         var frame = encode_bus_frame(
             pool_stream_url(slot, self.lane, ack_fd), gen, Span(empty)
         )
-        if _send_frame_bounded(self.stream_fd, frame):
+        if send_bounded(self.stream_fd, Span(frame)):
             return True
         # The channel would not take ~60 bytes after 64 tries: the loop is
         # not draining it. Nothing will feed this stream; close the iterable
@@ -1401,9 +1406,7 @@ struct WSGIHandler(ThreadHandler):
                 if not self._gen_matches(slot, event_id):
                     return
                 if slot < len(self.ws_in_acked) and len(frame) >= 8:
-                    var consumed = 0
-                    for shift in range(8):
-                        consumed |= Int(frame[shift]) << (shift * 8)
+                    var consumed = read_i64_le(Span(frame), 0)
                     if consumed > self.ws_in_sent[slot]:
                         consumed = self.ws_in_sent[slot]
                     if consumed > self.ws_in_acked[slot]:
@@ -1538,24 +1541,21 @@ struct WSGIHandler(ThreadHandler):
         if slot < len(self.hold_lane) and self.hold_lane[slot] != NOT_POOL_HELD:
             var held_lane = self.hold_lane[slot]
             var at = held_lane if held_lane > 0 else 0
-            if at < len(self.ws_pool_fds) and self.ws_pool_fds[at] >= 0:
-                if not _send_ws_pool_message(
-                    self.ws_pool_fds[at], slot, opcode,
-                    self.sockets.filter_url(slot), payload,
-                ):
-                    return False
-                # The datagram is on the lane socket; a pool thread parked
-                # on its own wake channel is not watching it. Wake the one
-                # that parked last, which polls the socket first thing
-                # (`OffloadPool.wake_for_datagram`). Without this the
-                # message sat until a thread happened to spin — CI's
-                # WebSocket smoke saw "only pings arriving".
-                if self.abort_pool_addr != 0:
-                    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
-                        unsafe_from_address=self.abort_pool_addr
-                    )[]
-                    _ = pool.wake_for_datagram(at)
-                return True
+            if (
+                at < len(self.ws_pool_fds)
+                and self.ws_pool_fds[at] >= 0
+                and self.abort_pool_addr != 0
+            ):
+                # The pool's own encoder, and it wakes the thread that parked
+                # last: one parked on its own wake channel is not watching
+                # the lane socket the message rides.
+                ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+                    unsafe_from_address=self.abort_pool_addr
+                )[]
+                return pool.send_ws_message(
+                    at, slot, opcode, self.sockets.filter_url(slot),
+                    Span(payload),
+                )
             return True
         # Executor mode: the message belongs to the app's own
         # `websocket.receive` loop — forward it to the executor thread as
@@ -1621,14 +1621,14 @@ struct WSGIHandler(ThreadHandler):
 
     def _ws_datagram_room(self, slot: Int) -> Int:
         """The largest inbound payload `slot`'s channel can carry in one
-        datagram (`WS_CHANNEL_DATAGRAM_MAX` less its header), or -1 where no
+        datagram (`WS_DATAGRAM_MAX` less its header), or -1 where no
         datagram is involved (a GRIP socket served inline)."""
         if slot < len(self.hold_lane) and self.hold_lane[slot] != NOT_POOL_HELD:
-            # `_send_ws_pool_message`'s header: tag, slot, opcode, the
-            # channel's length and the channel itself.
-            return WS_CHANNEL_DATAGRAM_MAX - 12 - self.sockets.filter_url(slot).byte_length()
+            # What `OffloadPool.send_ws_message` refuses above: the same
+            # function, so this check and that encoder cannot disagree.
+            return ws_message_room(self.sockets.filter_url(slot))
         if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
-            return WS_CHANNEL_DATAGRAM_MAX - 10  # `_send_ws_message_tag`'s
+            return WS_DATAGRAM_MAX - 10  # `_send_ws_message_tag`'s
         return -1
 
     def _ws_refuse_too_big(mut self, slot: Int, size: Int, limit: Int):
@@ -1816,36 +1816,23 @@ def _upgrade_required() -> HTTPResponse:
 # `state["m0"].publish(...)` take an arbitrary string, and in the reference
 # app that string is a request field.
 
-comptime WS_CHANNEL_DATAGRAM_MAX = 65546
-
-# The INBOUND window: unacked bytes the loop may have in flight toward one
-# executor-held socket's `receive()` queue. Charged in DATAGRAM bytes
-# (`_ws_in_cost`) and acked CUMULATIVELY by the shim as the application's
-# `receive()` actually consumes ('r' frames on the chunk channel), so a
-# lost ack heals at the next one. Must mirror the clamp in the shim's
-# `_exec_on_ws_message` (64 KB) — a drift here is a window that never
-# fills or never opens. Fits the 256 KB submit channel with 4x headroom
-# (`_OFFLOAD_SOCKET_BUF`), which is what makes a mid-window channel
-# refusal rare rather than routine.
 comptime WS_IN_WINDOW = 65536
-"""The receive buffer both channel readers post for an inbound WS message.
+"""The INBOUND window: unacked bytes the loop may have in flight toward one
+executor-held socket's `receive()` queue.
 
-`blocking_pool.WS_JOB_BUFFER` and the executor shim's own read size are
-this number, and both READ WITHOUT `MSG_TRUNC`: a SOCK_DGRAM datagram
-larger than the buffer is copied up to the buffer and the remainder is
-DISCARDED, with the short count looking exactly like a short message. The
-comment at each of those buffers claimed the loop's `max_message_size` kept
-assembled messages underneath it, which is wrong by a factor of 64 --
-`max_message_size` is `max_request_body_size`, 4 MB by default, so any
-inbound frame between ~64 KB and the socket's send-buffer limit was handed
-to the application truncated and presented as complete.
+Charged in DATAGRAM bytes (`_ws_in_cost`) and acked CUMULATIVELY by the
+shim as the application's `receive()` actually consumes ('r' frames on the
+chunk channel), so a lost ack heals at the next one. Must mirror the clamp
+in the shim's `_exec_on_ws_message` (64 KB) — a drift here is a window that
+never fills or never opens. Fits the 256 KB submit channel with 4x headroom
+(`_OFFLOAD_SOCKET_BUF`), which is what makes a mid-window channel refusal
+rare rather than routine.
 
-Refusing to send is the honest answer, and refusing it for good: an
-oversized message ends its socket with a Close carrying 1009, logged once
-(`_ws_forward`, SPEC I26) -- it used to be parked and retried for ever, a
-socket gone silent with nothing in any log. It is
-declared here rather than beside either buffer because both senders live in
-this file, and a bound that is not shared with the check is not a bound.
+The datagram bound itself is the fork's `WS_DATAGRAM_MAX`, shared with the
+pool's encoder and the pool thread's buffer: a message over it ends its
+socket with a Close carrying 1009, logged once (`_ws_forward`, SPEC I26),
+where it used to be parked and retried for ever, a socket gone silent with
+nothing in any log.
 """
 
 comptime ASGI_URL_CONTROL = UInt8(1)
@@ -1922,25 +1909,7 @@ def _send_pool_disconnect(fd: Int, slot: Int):
         msg.append(UInt8((s >> UInt32(8 * i)) & 0xFF))
     for _ in range(4):
         msg.append(UInt8(0xFF))
-    for _ in range(64):
-        var rc = external_call["send", Int](
-            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
-        )
-        if rc == len(msg):
-            return
-        _ = external_call["sched_yield", c_int]()
-
-
-def _send_frame_bounded(fd: Int, frame: List[UInt8]) -> Bool:
-    """One datagram on a non-blocking channel, 64 tries with yields."""
-    for _ in range(64):
-        var rc = external_call["send", Int](
-            c_int(fd), frame.unsafe_ptr(), UInt(len(frame)), c_int(0)
-        )
-        if rc == len(frame):
-            return True
-        _ = external_call["sched_yield", c_int]()
-    return False
+    _ = send_bounded(fd, Span(msg))
 
 
 def _read_ack(fd: Int, flags: c_int, mut slot_out: Int, mut credit_out: Int) -> Int:
@@ -2029,7 +1998,7 @@ def _place_stream_frame(fd: Int, frame: List[UInt8], ack_fd: Int, slot: Int) -> 
     client's stream does not sit against a full channel until shutdown.
     Bounded at ~5 s, matching the drain: past that the loop is not
     draining at all and nothing this thread does will help."""
-    if _send_frame_bounded(fd, frame):
+    if send_bounded(fd, Span(frame)):
         return 1
     ref cpy = Python().cpython()
     var ts = cpy.PyEval_SaveThread()
@@ -2042,7 +2011,7 @@ def _place_stream_frame(fd: Int, frame: List[UInt8], ack_fd: Int, slot: Int) -> 
         if rc == 1 and got_slot == slot and credit < 0:
             result = 0
             break
-        if _send_frame_bounded(fd, frame):
+        if send_bounded(fd, Span(frame)):
             result = 1
             break
     cpy.PyEval_RestoreThread(ts)
@@ -2092,16 +2061,16 @@ def _send_bus_frame_tag(fd: Int, event_id: Int, url: String, frame: List[UInt8])
 
     A BroadcastBus frame, re-framed for the submit channel so an ASGI
     executor's loop receives what a registry slot would have: the shim's
-    `_m0_dispatch` fans it out to `state["m0"]` subscribers. Best-effort
-    with the same bounded retry as the WS tag — a dropped broadcast
-    matches the bus's own delivery posture.
+    `_m0_dispatch` fans it out to `state["m0"]` subscribers. Best-effort,
+    and given up on sooner than the tags that carry a connection's own
+    state: 16 tries where they make `SEND_TRIES` (64), since a dropped
+    broadcast matches the bus's own delivery posture, which drops on the
+    first refusal.
     """
     var url_bytes = url.as_bytes()
     var msg = List[UInt8](capacity=11 + len(url_bytes) + len(frame))
     msg.append(UInt8(3))
-    var eid = UInt64(event_id)
-    for i in range(8):
-        msg.append(UInt8((eid >> UInt64(8 * i)) & 0xFF))
+    append_i64_le(msg, event_id)
     var ulen = UInt16(len(url_bytes))
     msg.append(UInt8(ulen & 0xFF))
     msg.append(UInt8((ulen >> UInt16(8)) & 0xFF))
@@ -2109,48 +2078,7 @@ def _send_bus_frame_tag(fd: Int, event_id: Int, url: String, frame: List[UInt8])
         msg.append(b)
     for i in range(len(frame)):
         msg.append(frame[i])
-    for _ in range(16):
-        var rc = external_call["send", Int](
-            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
-        )
-        if rc == len(msg):
-            return
-        _ = external_call["sched_yield", c_int]()
-
-
-def _send_ws_pool_message(
-    fd: Int, slot: Int, opcode: Int, channel: String, payload: List[UInt8]
-) -> Bool:
-    """`TAG_WS_MESSAGE` for a pool thread: the executor's shape plus the channel.
-
-    A pool thread's registries are empty — the socket was subscribed on the
-    loop — so the name it joined with has to travel with the message. Bounded
-    retry, never a park: this runs on the event loop."""
-    var chan = channel.as_bytes()
-    # See WS_CHANNEL_DATAGRAM_MAX: past this the reader silently drops the
-    # tail, so the message must not be sent at all.
-    if 12 + len(chan) + len(payload) > WS_CHANNEL_DATAGRAM_MAX:
-        return False
-    var msg = List[UInt8](capacity=12 + len(chan) + len(payload))
-    msg.append(2)
-    var bits = UInt64(Int64(slot))
-    for shift in range(0, 64, 8):
-        msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
-    msg.append(UInt8(opcode))
-    msg.append(UInt8(len(chan) & 0xFF))
-    msg.append(UInt8((len(chan) >> 8) & 0xFF))
-    for b in chan:
-        msg.append(b)
-    for b in payload:
-        msg.append(b)
-    for _ in range(64):
-        var rc = external_call["send", Int](
-            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
-        )
-        if rc == len(msg):
-            return True
-        _ = external_call["sched_yield", c_int]()
-    return False
+    _ = send_bounded(fd, Span(msg), tries=16)
 
 
 def _ws_in_cost(payload_len: Int) -> Int:
@@ -2172,55 +2100,38 @@ def _send_ws_message_tag(
     """One `[tag=2 u8][slot i64 LE][opcode u8][payload]` datagram.
 
     The payload rides IN the datagram, so it is bounded by the channel's
-    frame size — and by WS_CHANNEL_DATAGRAM_MAX, which is what the reader
+    frame size — and by `WS_DATAGRAM_MAX`, which is what the reader
     can actually take. Over that it is refused rather than truncated;
     `_ws_forward` never sends one this large, ending the socket with 1009
     instead (SPEC I26). Retried like the disconnect tag — a lost
     inbound message is an app-visible gap."""
-    if 10 + len(payload) > WS_CHANNEL_DATAGRAM_MAX:
+    if 10 + len(payload) > WS_DATAGRAM_MAX:
         return False
     var msg = List[UInt8](capacity=10 + len(payload))
     msg.append(2)
-    var bits = UInt64(Int64(slot))
-    for shift in range(0, 64, 8):
-        msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    append_i64_le(msg, slot)
     msg.append(UInt8(opcode))
     for b in payload:
         msg.append(b)
-    for _ in range(64):
-        var rc = external_call["send", Int](
-            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
-        )
-        if rc == len(msg):
-            return True
-        _ = external_call["sched_yield", c_int]()
-    return False
+    return send_bounded(fd, Span(msg))
 
 
 def _send_disconnect_tag(fd: Int, slot: Int, code: Int = 0):
     """One `[tag=1 u8][slot i64 LE]` datagram on the submit channel, with a
     `[code u16 LE]` after it when `code` is a WebSocket's close code.
 
-    A raw libc `send` rather than the socket module's wrapper: this is
-    nine bytes on a connected SOCK_DGRAM pair, and `sse_slot_disconnected`
-    must not raise. Retried briefly rather than dropped — a lost
-    disconnect is a leaked task holding state until shutdown — but
-    bounded, because this runs on the event loop thread and must never
-    park."""
+    A raw libc `send` (`send_bounded`) rather than the socket module's
+    wrapper: this is nine bytes on a connected SOCK_DGRAM pair, and
+    `sse_slot_disconnected` must not raise. Retried briefly rather than
+    dropped — a lost disconnect is a leaked task holding state until
+    shutdown — but bounded, because this runs on the event loop thread and
+    must never park."""
     var msg = List[UInt8](capacity=11)
     msg.append(1)
-    var bits = UInt64(Int64(slot))
-    for shift in range(0, 64, 8):
-        msg.append(UInt8((bits >> UInt64(shift)) & 0xFF))
+    append_i64_le(msg, slot)
     if code > 0:
         # A WebSocket's close code (SPEC L28), u16 LE: eleven bytes where the
         # bare tag is nine, which is how the shim tells them apart.
         msg.append(UInt8(code & 0xFF))
         msg.append(UInt8((code >> 8) & 0xFF))
-    for _ in range(64):
-        var rc = external_call["send", Int](
-            c_int(fd), msg.unsafe_ptr(), UInt(len(msg)), c_int(0)
-        )
-        if rc == len(msg):
-            return
-        _ = external_call["sched_yield", c_int]()
+    _ = send_bounded(fd, Span(msg))
