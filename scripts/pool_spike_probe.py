@@ -25,22 +25,17 @@ import http.client
 import json
 import os
 import signal
-import socket
 import statistics
 import subprocess
 import sys
 import threading
 import time
 
+from probelib import free_port
+
 FAST_REQUESTS = 300  # default; override with --fast-requests
 SLOW_MS = 400
 WARMUP = 20
-
-
-def _free_port() -> int:
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
 
 
 def _wait_ready(port: int, timeout: float = 10.0) -> None:
@@ -110,7 +105,7 @@ def measure_fast(port: int, fast_requests: int) -> dict:
 
 
 def run_config(binary: str, pool_threads: int, slow: int, fast_requests: int) -> dict:
-    port = _free_port()
+    port = free_port()
     env = dict(os.environ)
     env["M0_PORT"] = str(port)
     env["M0_POOL_THREADS"] = str(pool_threads)
