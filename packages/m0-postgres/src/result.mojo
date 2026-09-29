@@ -184,9 +184,15 @@ struct Result(Movable):
         """The cell as text.
 
         In text mode this is what the server sent. In binary mode it is
-        `wire.mojo`'s decoding, rendered — so a query's columns read the
-        same either way and only the cost differs. A binary column whose
-        type has no decoder raises here, naming the type and the way out.
+        `wire.mojo`'s decoding, rendered. For `int8`, `bool`, `text`,
+        `uuid` and `jsonb` the two are the same bytes (SPEC O11), so for
+        those only the cost differs. They are not the same for the other
+        decoded types: a timestamp renders as its microseconds from
+        2000-01-01, `bytea` as its raw bytes, and `float4` and `float8` in
+        Mojo's notation for the double rather than the server's (a known
+        issue in docs/ROADMAP.md); read those in text mode. A binary column
+        whose type has no decoder raises here, naming the type and the way
+        out.
         """
         if self.is_null(row, col):
             return String("")

@@ -23,7 +23,13 @@ A run:
    post-case's shape) -- the ADR's ReadSignals table names GET and DELETE
    for the query, and the fixtures exercise only GET;
 3. judges every frame with the vendored `compare-sse.sh` itself, and every
-   `read_signals` result by byte equality with the input.
+   `read_signals` result by byte equality with the input;
+4. sends each location in `REDIRECTS` through `redirect` in the same
+   program, and requires every hostile one refused, naming why, and every
+   control sent. `redirect` is not in the SDK spec and no fixture reaches
+   it, but it assigns its location to `window.location`, where a
+   `javascript:` URL runs in the page (SPEC I29), so the check is held
+   here permanently as well as by its unit test.
 
 A fixture field this script does not map fails the run by name, so a new
 option at a new tag cannot be dropped silently.
@@ -73,7 +79,30 @@ KNOWN = {
                       "eventId", "retryDuration"},
 }
 
-MARK = re.compile(r"\n@@(FRAME|GET|DELETE|POST|END)@@([^\n]*)\n")
+# What `redirect` must do with each location: refuse it for its scheme,
+# refuse it for naming another host, or send it. Before the check a
+# `javascript:` location ran its script in Chromium, in the page's origin,
+# and `//host` left the site; a `next=` parameter after a login is where
+# either arrives. The spellings are the browser URL parser's: a leading
+# space and a tab inside the scheme are stripped, the scheme's case does
+# not matter, and `\` is a slash in an http(s) URL.
+REDIRECTS = [
+    ("javascript:alert(document.domain)", "scheme"),
+    ("JavaScript:alert(1)", "scheme"),
+    (" javascript:alert(1)", "scheme"),
+    ("java\tscript:alert(1)", "scheme"),
+    ("data:text/html,<script>alert(1)</script>", "scheme"),
+    ("//evil.example/x", "host"),
+    ("/\\evil.example/x", "host"),
+    ("\\\\evil.example/x", "host"),
+    ("/next?a=1", "sent"),
+    ("?page=2", "sent"),
+    ("#top", "sent"),
+    ("https://example.com/x", "sent"),
+]
+REFUSAL = {"scheme": "scheme is not http or https", "host": "two slashes"}
+
+MARK = re.compile(r"\n@@(FRAME|GET|DELETE|POST|REDIRECT|END)@@([^\n]*)\n")
 
 
 # --- The vendored tree ------------------------------------------------------
@@ -217,7 +246,7 @@ def program(all_cases):
         "from lightbug_http.http import HTTPRequest",
         "from lightbug_http.io.bytes import Bytes",
         "from lightbug_http.uri import URI",
-        "from src.sse import execute_script, patch_elements, patch_signals",
+        "from src.sse import execute_script, patch_elements, patch_signals, redirect",
         "from src.signals import read_signals",
         "",
         "",
@@ -247,6 +276,12 @@ def program(all_cases):
             for method in ("GET", "DELETE"):
                 lines.append(f'    print("\\n@@{method}@@{name}")')
                 lines.append(f'    print(read_signals(_query("{method}", {lit(url)})), end="")')
+    for i, (location, _) in enumerate(REDIRECTS):
+        lines.append(f'    print("\\n@@REDIRECT@@{i}")')
+        lines.append("    try:")
+        lines.append(f'        print(redirect({lit(location)}), end="")')
+        lines.append("    except e:")
+        lines.append('        print("refused:", e, end="")')
     lines.append('    print("\\n@@END@@")')
     return "\n".join(lines) + "\n"
 
@@ -301,13 +336,28 @@ def run_gate(pkg_root, quiet=False):
                         f"{name}: read_signals on a {method} returned {got!r:.80} "
                         f"where the client sent {want!r:.80}"
                     )
+        misdirected = []
+        for i, (location, want) in enumerate(REDIRECTS):
+            got = sections.get(("REDIRECT", str(i)))
+            if got is None:
+                misdirected.append(f"redirect {location!r}: no answer")
+            elif want == "sent":
+                literal = f'window.location = "{location}")'
+                if got.startswith("refused:") or literal not in got or got.count("</script>") != 1:
+                    misdirected.append(f"redirect {location!r}: not sent, got {got!r:.120}")
+            elif not got.startswith("refused:"):
+                misdirected.append(f"redirect {location!r}: SENT, where its {want} is refused")
+            elif REFUSAL[want] not in got:
+                misdirected.append(f"redirect {location!r}: refused, but not for its {want}: {got!r:.120}")
         if not quiet:
-            for f in failures:
+            for f in failures + misdirected:
                 print("FAIL  " + f)
             n = len(all_cases)
             print(f"datastar-sdk: {n - len({f.split(':')[0] for f in failures})}/{n} "
                   f"cases pass (frames by compare-sse.sh, read_signals by bytes)")
-        return not failures
+            print(f"datastar-sdk: redirect answers {len(REDIRECTS) - len(misdirected)}/"
+                  f"{len(REDIRECTS)} locations as it must (refused by scheme or host, or sent)")
+        return not failures and not misdirected
     finally:
         shutil.rmtree(work, ignore_errors=True)
 
@@ -343,6 +393,16 @@ SABOTAGES = [
     ("U+2028 is not escaped in the literal", "sse.mojo",
      "            c == UInt8(0xE2)\n",
      "            False\n", "test_frame_injection.mojo"),
+    # R12: the location check, whole and by each of its two refusals.
+    ("redirect sends any location", "sse.mojo",
+     "    _refuse_unsafe_location(location)\n",
+     "    pass\n", "harness"),
+    ("redirect sends a location whose scheme runs script", "sse.mojo",
+     '            if scheme == "http" or scheme == "https":\n',
+     "            if True:\n", "harness"),
+    ("redirect sends a location that names another host", "sse.mojo",
+     "    if k >= 2 and _is_slash(kept[0]) and _is_slash(kept[1]):\n",
+     "    if False:\n", "harness"),
     # SPEC I30: a catch-up is all or nothing.
     ("a replay that does not fit is served in part", "stream.mojo",
      "                    self.registry.unsubscribe(slot)\n"

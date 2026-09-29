@@ -215,8 +215,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   rather than a date, a `bytea`'s is its raw bytes rather than the `\x`
   escape, and a `float4` reads `0.10000000149011612` where text mode reads
   `0.1`. O11 now names the types that agree, and a Known issue records
-  what each mode returns and what a fix needs. Read those types in text
-  mode, which is the default.
+  what each mode returns and what a fix needs. `Result.text()`'s own
+  documentation made the same claim, and now names the same types. Read
+  those types in text mode, which is the default.
 
 - **A request carrying two `Host` lines, or two `Transfer-Encoding`
   lines, is answered 400** (SPEC B10, B11). The parser kept the last line
@@ -342,6 +343,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `smoke-large-request` counts the calls under `strace` on Linux: 4 over
   2000 keep-alive requests, where the old loop made 4004. macOS paid one
   `kevent` a request for the same reason, and no longer does.
+- **An upload no longer costs two `epoll_ctl` calls per read on Linux**
+  (SPEC A13). The same re-registration, on the body: the event loop
+  repeated it after every read of a request body, so an upload arriving in
+  pieces paid the refused registration and the modification behind it on
+  each one. Only a read that fills the buffer, or the client's EOF, now
+  re-registers, as for headers. `smoke-large-request` counts the calls
+  under `strace` on Linux: 3 over 101 reads of a body sent in 100 pieces,
+  where the old loop made 201. A 1 MB body sent at once is still read
+  without a stall, and one the client cuts short with a half-close is still
+  closed at once rather than at the body timeout. macOS paid one `kevent`
+  a read, and no longer does.
 - **`--workers N` no longer lets a worker's load read one connection
   high for good** (SPEC E16). Since 0.18.0 the worker that passes a
   connection to a sibling counted it in flight only after sending it, so
@@ -349,6 +361,31 @@ in a minor release: `m0serve`'s flags and environment variables, the
   retire, and the late count then stayed: that worker looked one
   connection busier than it was to every accept after. The count now goes
   up before the send, and back down if the send fails.
+- **Under `--workers N`, a worker at its open-file limit no longer
+  strands the connections passed to it** (SPEC E16). A connection one
+  worker accepts and passes to a sibling travels as a descriptor, and a
+  sibling with no descriptor free cannot take it: the kernel closes that
+  connection and delivers the message without it, on Linux at once and on
+  macOS after one failed receive. The sibling read that as an empty
+  channel and stopped admitting, and the channel only announces new
+  arrivals, so the connections queued behind it waited, their clients
+  connected and unanswered, until another connection was passed to that
+  worker; and the lost one stayed counted as in flight to it, so every
+  accept after read that worker as a connection busier than it was. It now
+  skips the lost one, admits the rest and retires its count.
+  `test_accept_share.mojo` gates it. Found in review.
+- **On Linux, a connection that fails as it is accepted no longer holds
+  up the ones queued behind it.** Linux's `accept` can return a network
+  error already pending on the connection it takes off the queue, such as
+  `EPROTO` or `EHOSTUNREACH`, and says to retry. The event loop stopped
+  taking connections for that pass on `EPROTO` and `EOPNOTSUPP`, and the
+  listener announces only new arrivals, so clients already queued waited
+  for another connection to arrive; the six others reached it as a
+  descriptor of -1, which it failed to admit and skipped, until the
+  socket errors became one error (under Removed) and they stopped the pass
+  too. All eight now cost only their own connection, as a client that
+  gave up while queued always has. `test_socket_errors.mojo` holds the
+  list. Found in review.
 - **The `auth` scaffold's session cookie is `Secure` once deployed** (SPEC
   N45). Its `deploy/fly.toml` forces HTTPS but never told the login so,
   and the login read the silence as off: a visit to the `http://` URL sent
@@ -412,12 +449,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   buffer of its own (`gmtime_r`). macOS was not affected: its `gmtime`
   keeps a buffer per thread. Found in review.
 
-- **`m0_core.json_parse.parse_json_int` no longer reads `1.9` or `1e3` as
-  1.** It returned a number's leading digits, so a fraction was cut off
-  and an exponent dropped, against its own contract of `None` for a value
-  that is not an integer. A value whose digits are followed by anything
-  but whitespace, `,`, `}` or `]` is now refused; `parse_json_number`
-  reads fractions and exponents. Found in review.
+- **`m0_core.json_parse` reads a number by JSON's grammar.**
+  `parse_json_int` returned a number's leading digits, so `1.9` and `1e3`
+  read as 1, against its own contract of `None` for a value that is not
+  an integer. It and `parse_json_number` also read `01` as 1, and
+  `parse_json_number` read `12abc` as 12, `1.5.3` as 1.5 and took `.5`
+  and `1.`. Both now return `None` for a value JSON does not parse as a
+  number: a zero before other digits, a `.` or an exponent with no digit
+  after it, and anything after the number but whitespace, `,`, `}`, `]`
+  or the end of the body. `parse_json_int` still refuses a fraction or an
+  exponent, which `parse_json_number` reads. A body that relied on the
+  lenient reading now gets `None`. Found in review.
 
 ### Changed
 

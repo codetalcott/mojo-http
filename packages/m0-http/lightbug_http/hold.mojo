@@ -53,12 +53,11 @@ sits beside `broadcast.mojo` and `offload.mojo` because it is server
 mechanism of the same kind, and importing nothing of the framework's.
 """
 
-from std.ffi import c_int, external_call
-
 from lightbug_http import HTTPRequest, HTTPResponse
 from lightbug_http.broadcast import encode_bus_frame, reserved_stream_url
 from lightbug_http.header import Header, Headers, HeaderKey
 from lightbug_http.io.bytes import Bytes
+from lightbug_http.offload import send_bounded
 from lightbug_http.uri import URI
 
 
@@ -293,11 +292,4 @@ def send_hold_frame(
         reserved_stream_url(kind, slot, lane), last_event_id,
         Span(channel.as_bytes()),
     )
-    for _ in range(64):
-        var rc = external_call["send", Int](
-            c_int(fd), datagram.unsafe_ptr(), UInt(len(datagram)), c_int(0)
-        )
-        if rc == len(datagram):
-            return True
-        _ = external_call["sched_yield", c_int]()
-    return False
+    return send_bounded(fd, Span(datagram))

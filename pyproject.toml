@@ -1487,11 +1487,13 @@ python3 scripts/emit.py --covers A20 --task smoke-early-413
 # epoll nothing else announces the rest. And on Linux a keep-alive request
 # of ordinary size re-registers NOTHING: re-registering after every read put
 # an epoll_ctl ADD, refused EEXIST, and its MOD on every request (review
-# record R2; 4004 calls for 2000 requests). `strace` counts them, so the
-# ubuntu leg installs it; macOS has no unprivileged syscall counter, and
-# kqueue's level trigger never needed the re-registration anyway.
+# record R2; 4004 calls for 2000 requests), and a read of an upload's body
+# re-registers only when it filled the buffer or met the client's EOF.
+# `strace` counts them, so the ubuntu leg installs it; macOS has no
+# unprivileged syscall counter, and kqueue's level trigger never needed the
+# re-registration anyway.
 [tool.poe.tasks.smoke-large-request]
-help = "A request bigger than one read must be answered, not stalled; on Linux, under strace, a keep-alive request costs no epoll_ctl"
+help = "A request bigger than one read must be answered, not stalled; on Linux, under strace, a keep-alive request and a short read of an upload cost no epoll_ctl"
 shell = """
 out=$(mktemp -d)
 trap 'kill $pid 2>/dev/null; rm -rf "$out"' EXIT
@@ -1507,6 +1509,8 @@ if [ "$(uname)" = Linux ]; then
   cat "$out/rearm.out"
   per=$(grep '^epoll_ctl_per_request ' "$out/rearm.out" | cut -d' ' -f2)
   python3 scripts/emit.py large_request.epoll_ctl_per_request "$per" --unit calls --limit 0.5 --task smoke-large-request
+  per_read=$(grep '^epoll_ctl_per_body_read ' "$out/rearm.out" | cut -d' ' -f2)
+  python3 scripts/emit.py large_request.epoll_ctl_per_body_read "$per_read" --unit calls --limit 0.5 --task smoke-large-request
 fi
 echo "smoke-large-request OK"
 python3 scripts/emit.py --covers A13 --task smoke-large-request

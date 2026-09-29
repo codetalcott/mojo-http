@@ -19,11 +19,12 @@ from lightbug_http.http.request import HTTPRequest
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import recv
 from lightbug_http.offload import (
-    JOB_STOP, JOB_REQUEST, JOB_NONE,
+    JOB_STOP, JOB_REQUEST, JOB_NONE, JOB_WS_MESSAGE,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
-    POOL_FREE_WAKE_AGE_NS, _WAKE_MAX_LANES,
+    POOL_FREE_WAKE_AGE_NS, _WAKE_MAX_LANES, WS_DATAGRAM_MAX, ws_message_room,
+    send_bounded, append_i64_le, read_i64_le,
 )
 from lightbug_http.uri import URI
 
@@ -228,6 +229,149 @@ def test_loop_state_reaches_the_pool_it_was_given() raises:
     var pool = OffloadPool(9)
     var state = OffloadLoopState(pool.addr(), 9)
     assert_equal(state.pool()[].capacity, 9)
+    _ = pool.capacity
+
+
+# --- the moves: derived by the compiler, pinned here ---
+
+
+def _ints(xs: List[Int]) -> String:
+    var s = String("[")
+    for i in range(len(xs)):
+        s += String(xs[i]) + ","
+    return s + "]"
+
+
+def _bools(xs: List[Bool]) -> String:
+    var s = String("[")
+    for i in range(len(xs)):
+        s += "T," if xs[i] else "F,"
+    return s + "]"
+
+
+def _pool_fields(pool: OffloadPool) -> String:
+    """Every field of `pool`, rendered: what a move has to carry whole."""
+    var s = String()
+    for i in range(len(pool.lane_prefixes)):
+        s += "'" + pool.lane_prefixes[i] + "',"
+    s += _ints(pool.lane_submit_read) + _ints(pool.lane_submit_write)
+    s += String(pool.submit_read) + "," + String(pool.submit_write) + ","
+    s += String(pool.complete_read) + "," + String(pool.complete_write) + ","
+    for i in range(len(pool.requests)):
+        s += "R" if pool.requests[i] else "-"
+    for i in range(len(pool.responses)):
+        s += "S" if pool.responses[i] else "-"
+    s += _bools(pool.errored)
+    s += String(pool.stream_chunk_read) + "," + String(pool.stream_chunk_write) + ","
+    s += String(pool.stream_ack_read) + "," + String(pool.stream_ack_write) + ","
+    s += String(pool.hold_notify_fd) + ","
+    s += _ints(pool.slot_lane) + _ints(pool.lane_ack_read) + _ints(pool.lane_ack_write)
+    s += _ints(pool.slot_ack_fd) + _ints(pool.aborts)
+    s += String(len(pool._drain_buf)) + "," + String(pool.sweep_every_pass) + ","
+    s += String(pool.capacity) + "," + String(pool.ring_enabled) + ","
+    for i in range(len(pool.job_rings)):
+        s += String(pool.job_rings[i].base) + "/" + String(pool.job_rings[i].mask) + ","
+    s += String(pool.done_ring.base) + "/" + String(pool.done_ring.mask) + ","
+    s += String(pool.wake_base) + "," + String(pool.elastic) + ","
+    s += String(pool.debug) + ","
+    s += _ints(pool.submit_ns) + _ints(pool.lane_pops) + _ints(pool.lane_progress)
+    s += String(pool.parallel) + "," + String(pool._parallel_forced) + ","
+    s += _bools(pool.lane_gil_free)
+    s += String(pool.wake_age) + "," + String(pool.spin) + ","
+    s += String(pool.thread_base) + "," + String(pool.thread_cap)
+    return s^
+
+
+def _loop_state_fields(state: OffloadLoopState) -> String:
+    """Every field of `state`, rendered, as `_pool_fields` does the pool's."""
+    var s = String(state.addr) + ","
+    s += _bools(state.offloaded) + _bools(state.is_head)
+    s += _bools(state.http11) + _bools(state.chunked)
+    s += _ints(state.ack_payload) + _ints(state.ack_owed)
+    s += String(state.ack_owed_count) + "," + String(state.inflight) + ","
+    s += _ints(state.stream_gen)
+    for i in range(len(state.pending_submit)):
+        s += _ints(state.pending_submit[i])
+    s += String(state.pending_submit_count) + "," + String(state.streaming_hint) + ","
+    s += _ints(state.done_scratch)
+    s += String(state.waits) + "," + String(state.waits_capped) + ","
+    s += String(state.waits_skipped) + "," + String(state.waits_empty) + ","
+    s += _ints(state.wait_over) + _ints(state.pass_over)
+    return s^
+
+
+def _moved_pool(var pool: OffloadPool) -> OffloadPool:
+    """A transfer through a call, so the move constructor runs whatever the
+    optimiser makes of a transfer between two locals."""
+    return pool^
+
+
+def _moved_loop_state(var state: OffloadLoopState) -> OffloadLoopState:
+    return state^
+
+
+def test_a_moved_pool_carries_every_field() raises:
+    """`OffloadPool`'s move is the one Mojo 1.1 derives: the hand-written
+    one listed all 39 fields and did nothing else. Every field is set away
+    from its default here, the pool is moved, and the moved value reads back
+    whole -- and still hands over the job it was holding."""
+    var pool = OffloadPool(8)
+    pool.add_lane(String(""))
+    pool.add_lane(String("/b"))
+    pool.enable_stream_channel()
+    pool.enable_base_stream_ack()
+    pool.enable_stream_ack(1)
+    pool.set_hold_notify(42)
+    pool.set_sweep_every_pass()
+    pool.set_lane_gil_free(1)
+    pool.set_parallel(True)
+    pool.reserve_threads(2)
+    pool.set_slot_ack_fd(3, 17)
+    pool.stamp_lane(5, 1)
+    pool.put_response(2, OK(String("x")), raised=True)
+    assert_true(pool.abort_stream(4, 9))
+    _ = pool.drain_completions()
+    _ = pool.wake_aged(12345, 1)
+    pool.park_request(6, _request("/a"))
+    assert_true(pool.submit(6, String("/a")))
+    var before = _pool_fields(pool)
+    var moved = _moved_pool(pool^)
+    assert_equal(_pool_fields(moved), before)
+    var buf = _job_buffer()
+    var job = moved.try_next_job(0, buf)
+    assert_equal(job.kind, JOB_REQUEST)
+    assert_equal(job.slot, 6)
+    assert_equal(moved.take_request(6).uri.path, "/a")
+    var aborts = moved.take_aborts()
+    assert_equal(len(aborts), 2)
+    assert_equal(aborts[0], 4)
+    assert_equal(aborts[1], 9)
+
+
+def test_a_moved_loop_state_carries_every_field() raises:
+    """The same for `OffloadLoopState`, which `LoopState` moves into itself
+    on every server start: all 20 fields set, moved, and read back whole."""
+    var pool = OffloadPool(8)
+    var state = OffloadLoopState(pool.addr(), 8)
+    state.offloaded[1] = True
+    state.is_head[2] = True
+    state.http11[3] = True
+    state.chunked[4] = True
+    state.ack_payload[5] = 55
+    state.ack_owed[6] = 66
+    state.ack_owed_count = 1
+    state.inflight = 3
+    state.stream_gen[7] = 77
+    _ = state.queue_submit(2, 1)
+    state.streaming_hint = 4
+    state.done_scratch.append(9)
+    state.note_wait(True, True, 0, 3_000_000)
+    state.note_wait(False, False, 0)
+    state.note_pass(5_000_000)
+    var before = _loop_state_fields(state)
+    var moved = _moved_loop_state(state^)
+    assert_equal(_loop_state_fields(moved), before)
+    assert_equal(moved.pool()[].capacity, 8)
     _ = pool.capacity
 
 
@@ -458,6 +602,122 @@ def test_next_job_does_not_misparse_a_job_batch() raises:
     var job = pool.next_job(0, buf)
     assert_equal(job.kind, JOB_REQUEST)
     assert_equal(job.slot, 4)
+
+
+def test_a_websocket_message_is_one_datagram_in_the_pool_shape() raises:
+    """`send_ws_message` is the one encoder of a pool lane's inbound
+    WebSocket message, the loop handler's live path included:
+    `[2][slot i64 LE][opcode][chan_len u16 LE][channel][payload]` on the
+    lane's own socket -- byte for byte what the handler's deleted copy sent
+    -- and what `next_job` on that lane takes apart. The channel is longer
+    than 255 bytes so its length's high byte is on the wire."""
+    var pool = OffloadPool(8)
+    pool.add_lane(String(""))
+    pool.add_lane(String("/b"))
+    var chan = String("")
+    for i in range(300):
+        chan += String(i % 10)
+    var payload = List[UInt8]()
+    for b in String("hello").as_bytes():
+        payload.append(b)
+    assert_true(pool.send_ws_message(1, 1027, 2, chan, Span(payload)))
+    var got = _read_datagram(pool.submit_read_fd(1))
+    var want: List[UInt8] = [2, 0x03, 0x04, 0, 0, 0, 0, 0, 0, 2, 0x2C, 0x01]
+    for b in chan.as_bytes():
+        want.append(b)
+    for b in payload:
+        want.append(b)
+    assert_equal(len(got), len(want))
+    for i in range(len(want)):
+        assert_equal(Int(got[i]), Int(want[i]))
+    # Nothing on lane 0: the message went to the lane it was addressed to.
+    assert_equal(_try_read(pool.submit_read), -1)
+    assert_true(pool.send_ws_message(1, 1027, 2, chan, Span(payload)))
+    var buf = _job_buffer()
+    var job = pool.next_job(1, buf)
+    assert_equal(job.kind, JOB_WS_MESSAGE)
+    assert_equal(job.slot, 1027)
+    assert_equal(job.opcode, 2)
+    assert_equal(job.chan_len, 300)
+    var name = String(StringSpan(
+        unsafe_from_utf8=Span(buf)[job.chan_start : job.chan_start + job.chan_len]
+    ))
+    assert_equal(name, chan)
+    assert_equal(job.payload_len, 5)
+    for i in range(5):
+        assert_equal(Int(buf[job.payload_start + i]), Int(payload[i]))
+
+
+def test_a_websocket_message_fills_its_datagram_and_not_a_byte_more() raises:
+    """The bound the loop handler's 1009 check and the encoder share
+    (`ws_message_room`, SPEC I26): a payload of exactly the room is one
+    datagram of exactly `WS_DATAGRAM_MAX` bytes, the buffer a pool thread
+    posts; one byte more is refused, and nothing is sent. Read into a
+    buffer LARGER than the bound, so a datagram past it would show its real
+    size here rather than arrive truncated."""
+    var pool = OffloadPool(8)
+    var chan = String("room/42")
+    var room = ws_message_room(chan)
+    var payload = List[UInt8](capacity=room + 1)
+    for i in range(room + 1):
+        payload.append(UInt8(i & 0xFF))
+    assert_false(pool.send_ws_message(0, 5, 1, chan, Span(payload)))
+    assert_equal(_try_read(pool.submit_read), -1)
+    _ = payload.pop()
+    assert_true(pool.send_ws_message(0, 5, 1, chan, Span(payload)))
+    var big = List[UInt8](capacity=WS_DATAGRAM_MAX + 64)
+    for _ in range(WS_DATAGRAM_MAX + 64):
+        big.append(0)
+    var n = recv(FileDescriptor(pool.submit_read), Span(big), UInt(len(big)), 0)
+    assert_equal(Int(n), WS_DATAGRAM_MAX)
+    assert_equal(Int(big[WS_DATAGRAM_MAX - 1]), (room - 1) & 0xFF)
+
+
+def _le(value: Int) -> List[UInt8]:
+    var out = List[UInt8]()
+    append_i64_le(out, value)
+    return out^
+
+
+def _assert_bytes(got: List[UInt8], want: List[UInt8]) raises:
+    assert_equal(len(got), len(want))
+    for i in range(len(want)):
+        assert_equal(Int(got[i]), Int(want[i]))
+
+
+def test_the_i64_codec_is_little_endian_twos_complement() raises:
+    """`append_i64_le` and `read_i64_le` are the one codec of every slot,
+    generation and event id on the pool's channels and the loop handler's
+    tags, where each sender and reader used to spell its own. The pill
+    (-1) and the wake (-2) are negative, so two's complement is on the
+    wire; a slot is read at an offset, after a tag byte."""
+    _assert_bytes(_le(0), [0, 0, 0, 0, 0, 0, 0, 0])
+    _assert_bytes(_le(-1), [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+    _assert_bytes(_le(-2), [0xFE, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+    _assert_bytes(_le(0x0102030405060708), [8, 7, 6, 5, 4, 3, 2, 1])
+    _assert_bytes(_le(-9223372036854775807 - 1), [0, 0, 0, 0, 0, 0, 0, 0x80])
+    for v in [0, 1027, -1, -2, 9223372036854775807, -9223372036854775807 - 1]:
+        var buf: List[UInt8] = [4]
+        append_i64_le(buf, v)
+        buf.append(9)
+        assert_equal(read_i64_le(Span(buf), 1), v)
+
+
+def test_send_bounded_reports_a_channel_that_will_not_take_it() raises:
+    """`send_bounded` is every sender's retry. A datagram the channel takes
+    goes whole; on a channel stuffed until it refuses, it gives up after
+    its tries and says so rather than parking (its senders run on the loop,
+    or attached); and once the reader takes one, the next goes."""
+    var pair = make_stream_ack_pair()
+    var msg: List[UInt8] = [1, 2, 3, 4, 5, 6, 7, 8]
+    assert_true(send_bounded(pair[1], Span(msg)))
+    var stuffed = 1
+    while send_bounded(pair[1], Span(msg), tries=1):
+        stuffed += 1
+        assert_true(stuffed < 100_000)
+    assert_false(send_bounded(pair[1], Span(msg)))
+    _assert_bytes(_read_datagram(pair[0]), msg)
+    assert_true(send_bounded(pair[1], Span(msg)))
 
 
 def test_lane_is_executor_agrees_with_slot_is_executor() raises:
@@ -1325,12 +1585,12 @@ def test_a_wake_lands_on_the_parked_threads_own_channel() raises:
 
 def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
     """A payload datagram rides the lane socket, which a thread parked on
-    its own channel is not watching: `send_ws_message` — and
-    `wake_for_datagram`, for the handler's own copy of the encoder — wake
-    the most recently parked thread, which polls the socket first thing.
-    The echo thread counts the message as served (it answers nothing for
-    it) and parks again; without the wake it would sit parked and the
-    message with it — CI's WebSocket smoke, "only pings arriving"."""
+    its own channel is not watching: `send_ws_message`, the loop handler's
+    one way to deliver a message to a pool, wakes the most recently parked
+    thread, which polls the socket first thing. The echo thread counts the
+    message as served (it answers nothing for it) and parks again; without
+    the wake it would sit parked and the message with it — CI's WebSocket
+    smoke, "only pings arriving"."""
     var pool = OffloadPool(8)
     if not pool.elastic_active():
         return
@@ -1350,10 +1610,6 @@ def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
         sleep(0.0001)
     assert_true(woke)
     _await_parked(pool, 1)
-    # The handler's path: the datagram already sent, the wake alone.
-    assert_true(pool.wake_for_datagram(0))
-    _await_parked(pool, 1)
-    assert_false(pool.wake_for_datagram(7))  # no thread on that lane
     pool.stop(1)
     threads.join_all()
     assert_true(threads.all_ok())

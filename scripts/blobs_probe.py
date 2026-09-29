@@ -550,8 +550,10 @@ def serve(port: int) -> None:
     if st2["steps"] != st["steps"]:
         fail(f"steps went from {st['steps']} to {st2['steps']} with nobody watching")
 
-    # Bad bodies are refused and do not count; a non-UTF-8 byte after a
-    # number is read, not trapped (G14); the fifth drop in a second is 429.
+    # Bad bodies are refused and do not count; a non-UTF-8 byte right after
+    # a number is refused, not trapped (G14: it trapped the loop thread,
+    # and a number must now end at a delimiter); the fifth drop in a
+    # second is 429.
     phase("bad bodies and the drop cap")
     time.sleep(1.1)
     c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
@@ -565,7 +567,7 @@ def serve(port: int) -> None:
         if code == 429:
             retry = ra
     c.close()
-    want = [400, 400] + [204] * DROPS_PER_SECOND + [429, 429]
+    want = [400, 400, 400] + [204] * DROPS_PER_SECOND + [429]
     if codes != want:
         fail(f"drop answers {codes}, want {want}")
     if retry != "1":
