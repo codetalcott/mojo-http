@@ -52,7 +52,8 @@ import socket
 import sys
 import threading
 import time
-import traceback
+
+from probelib import fail, phase, stamp
 
 SLOTS = 16
 NVERT = 48
@@ -65,25 +66,8 @@ POLY = re.compile(r"^polygon\((.*)\)$")
 # Which phase is running, for failures and for the crash handler: the
 # phases share every helper here, and a traceback names the helper, never
 # what was being proven (scripts/phase_stamp_check.py).
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("blobs_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg: str) -> None:
-    print("blobs_probe: FAIL: %s: %s" % (PHASE, msg), file=sys.stderr)
-    sys.exit(1)
+# scripts/blobs_sabotage.py reads the failure line.
+stamp("blobs_probe: FAIL", fail="blobs_probe: FAIL: {phase}: {msg}", stream=sys.stderr)
 
 
 # --- HTTP helpers --------------------------------------------------------------
@@ -119,7 +103,10 @@ def drop_json(x: float, y: float) -> bytes:
 
 
 class Stream:
-    """One held `/events` stream, parsed into frames by a reader thread."""
+    """One held `/events` stream, parsed into frames by a reader thread.
+
+    Split into blocks here rather than by probelib's SSE parser: a frame's
+    size on the wire is one of the things `check_frame` asserts."""
 
     def __init__(self, port: int, headers: dict | None = None):
         self.conn = http.client.HTTPConnection("127.0.0.1", port, timeout=60)

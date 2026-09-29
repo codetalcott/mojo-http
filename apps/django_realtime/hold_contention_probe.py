@@ -41,10 +41,12 @@ import socket
 import sys
 import threading
 import time
-import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+from probelib import SSEParser, fail, phase, stamp  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
@@ -74,28 +76,10 @@ MESSAGES = int(os.environ.get("M0_HOLD_MESSAGES", "5"))
 PUBLISH_GAP = float(os.environ.get("M0_HOLD_PUBLISH_GAP", "0.15"))
 
 
-# Which phase is running, for the crash handler below. A traceback names the
-# CALL that failed -- here that is a shared `recv` or `urlopen` inside a
-# worker thread -- and never the PHASE being proven.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("hold_contention FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("hold_contention FAIL:", msg)
-    sys.exit(1)
+# Which phase is running, for the crash handler. A traceback names the CALL
+# that failed -- here that is a shared `recv` or `urlopen` inside a worker
+# thread -- and never the PHASE being proven.
+stamp("hold_contention FAIL")
 
 
 class Holder(threading.Thread):
@@ -142,22 +126,22 @@ class Holder(threading.Thread):
             if self.status != 200:
                 return
             s.settimeout(12)
-            body = rest
+            parser = SSEParser()
+            chunk = rest
             deadline = time.time() + 12
-            while time.time() < deadline:
+            while True:
+                # The distinct messages, in the order they arrived.
+                for ev in parser.feed(chunk):
+                    v = (ev.data or "").strip()
+                    if v and v not in self.events:
+                        self.events.append(v)
+                if len(self.events) >= MESSAGES or time.time() >= deadline:
+                    break
                 try:
                     chunk = s.recv(4096)
                 except socket.timeout:
                     break
                 if not chunk:
-                    break
-                body += chunk
-                for line in body.split(b"\n"):
-                    if line.startswith(b"data: "):
-                        v = line[6:].decode("utf-8", "replace").strip()
-                        if v and v not in self.events:
-                            self.events.append(v)
-                if len(self.events) >= MESSAGES:
                     break
         except Exception as exc:            # noqa: BLE001 -- reported, not raised
             self.error = "%r" % (exc,)

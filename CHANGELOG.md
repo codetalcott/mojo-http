@@ -512,6 +512,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   from the library and holds the library to the crash handler's rules. It
   now judges the unsabotaged tree before any sabotage, and requires every
   rule to have a sabotage that the rule itself catches.
+- **Nineteen more probes on `scripts/probelib.py`**, among them the
+  WebSocket and SSE clients of `smoke-chat`, `smoke-fastapi`, the Django
+  and Flask realtime smokes, `smoke-idle-timeout`, `smoke-host`,
+  `smoke-sim-loop` and `smoke-todo`, and both docker probes. Each prints
+  what it printed. `stamp()` takes two options for the probes that needed
+  them: `fail_stream=`, for a failure line that goes to stderr while the
+  crash line goes to stdout, and `echo=`, for a probe that announces each
+  phase as it begins. `stress-pool`'s two probes and the held server in
+  `smoke-host-doctor` now report a server that exits before it answers at
+  once, with its log, where each polled for up to a minute. The chat and
+  realtime probes read a WebSocket against one deadline, where a per-read
+  timeout was reset by every heartbeat. `demo_probe.py` names a refused
+  WebSocket upgrade; it used to die of `ValueError('too many values to
+  unpack')`.
 - **A supervisor, and what an application runs before its loop, survive
   SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
   which a supervisor never enters: m0serve's under `--workers` or

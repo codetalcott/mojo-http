@@ -32,31 +32,13 @@ import os
 import signal
 import subprocess
 import sys
-import time
-import traceback
+
+from probelib import NotServing, fail, phase, server, stamp, wait_healthy
 
 # Which row is running, for failures and for the crash handler: the rows
 # share every helper here, and a traceback names the helper, never what was
 # being proven (scripts/phase_stamp_check.py).
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("host_doctor_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg: str) -> None:
-    print("host_doctor_probe: FAIL: %s: %s" % (PHASE, msg), file=sys.stderr)
-    sys.exit(1)
+stamp("host_doctor_probe: FAIL", fail="host_doctor_probe: FAIL: {phase}: {msg}", stream=sys.stderr)
 
 
 def clean_env(extra: dict) -> dict:
@@ -92,18 +74,15 @@ def run_server(binary: str, args: list, env: dict, port: int, log: str) -> tuple
     that serves is probed on `port`, SIGTERMed, and reports its drain's."""
     with open(log, "w") as out:
         p = subprocess.Popen([binary, *args], env=clean_env(env), stdout=out, stderr=out)
-        served = False
-        deadline = time.monotonic() + 30
-        while time.monotonic() < deadline:
-            if p.poll() is not None:
-                break
-            if healthy(port):
-                served = True
-                break
-            time.sleep(0.05)
-        else:
-            p.kill()
-            fail("neither exited nor became healthy on port %d in 30 s" % port)
+        try:
+            wait_healthy("http://127.0.0.1:%d/health" % port, p, timeout=30)
+            served = True
+        except NotServing:
+            # Exiting on its own is an answer; neither exiting nor serving is not.
+            if p.poll() is None:
+                p.kill()
+                fail("neither exited nor became healthy on port %d in 30 s" % port)
+            served = False
         extra = None
         if served:
             extra = after_healthy(port)
@@ -305,23 +284,13 @@ def main() -> int:
     # Nothing is bound: doctor a port a live server is holding.
     phase("the doctor binds nothing")
     held = P()
-    live = subprocess.Popen([binary, "--port", str(held)], env=clean_env({}),
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        t0 = time.monotonic()
-        while not healthy(held):
-            if time.monotonic() - t0 > 30:
-                fail("the holder never became healthy")
-            time.sleep(0.05)
+    # A holder that exits is reported at once, with its log's tail.
+    with server([binary, "--port", str(held)], "http://127.0.0.1:%d/health" % held,
+                timeout=30, log=os.path.join(out_dir, "holder.log"), grace=20,
+                env=clean_env({})):
         code, dout, derr = run_doctor(binary, ["--port", str(held)], {})
         if code != 0 or report_of(dout)["config"]["port"] != held:
             fail("doctoring a held port exited %d:\n%s%s" % (code, dout, derr))
-    finally:
-        live.send_signal(signal.SIGTERM)
-        try:
-            live.wait(timeout=20)
-        except subprocess.TimeoutExpired:
-            live.kill()
 
     print("host_doctor_probe: %d configurations agree both ways" % len(rows))
     return 0
