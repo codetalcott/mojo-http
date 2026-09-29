@@ -366,33 +366,69 @@ def test_a_nul_in_text_is_refused_never_cut_short() raises:
 
 
 def test_binary_and_text_results_agree() raises:
-    """The same query both ways, read the same.
+    """For the types SPEC O11 claims, the same query reads the same both ways.
 
     The result format is one choice for the whole query, so this is what
-    makes `binary=True` a performance decision rather than a semantic one.
+    makes `binary=True` a performance decision rather than a semantic one
+    for `int8`, `bool`, `text`, `uuid` and `jsonb`. Every cell's `text()`
+    is compared across the modes byte for byte, at each type's edges: both
+    `int8` limits, an empty text and a multi-line non-ASCII one, a uuid
+    written in capitals, and `jsonb` holding escapes, nesting, a non-ASCII
+    string and a number past `int8`, whose binary form's version byte the
+    decoder strips. `int()` and `bool()` are compared too. Until review B18
+    the test compared `int8` and `uuid` alone and found `jsonb` by
+    containment, which a kept version byte passes.
+
+    Timestamps, `bytea`, `float4` and `float8` do not read the same (a
+    known issue in docs/ROADMAP.md), but a binary `float8` still decodes
+    to the double the server holds, which the last column checks.
 
     covers: O11
     """
     var db = _db()
     var sql = String(
-        "SELECT 42::int8, 2.5::float8, true, 'ada'::text,"
-        " '12345678-9abc-def0-1234-56789abcdef0'::uuid,"
-        " '{\"a\": 1}'::jsonb"
+        "SELECT i, b, t, u, j, f FROM (VALUES"
+        " ('42'::int8, true, 'ada'::text,"
+        "  '12345678-9abc-def0-1234-56789abcdef0'::uuid, '{\"a\": 1}'::jsonb,"
+        "  '2.5'::float8),"
+        " ('-9223372036854775808'::int8, false, ''::text,"
+        "  'A0EEBC99-9C0B-4EF8-BB6D-6BB9BD380A11'::uuid,"
+        "  '[1, 2.50, \"x\\\"y\", null, {\"b\": [true]}, 1e3]'::jsonb,"
+        "  '-0.125'::float8),"
+        " ('0'::int8, true, 'naïve — ünï ✓ 🦀'::text,"
+        "  '00000000-0000-0000-0000-000000000000'::uuid,"
+        "  '\"just a string\"'::jsonb, '0'::float8),"
+        " ('9223372036854775807'::int8, false, E'two\\nlines\\there'::text,"
+        "  'ffffffff-ffff-ffff-ffff-ffffffffffff'::uuid,"
+        "  '{\"z\": 1, \"a\": {\"k\": \"é\\u00e9\"}, \"big\": 12345678901234567890}'::jsonb,"
+        "  '1048576'::float8)"
+        ") AS v(i, b, t, u, j, f)"
     )
     var as_text = db.query(sql, Params())
     var as_binary = db.query(sql, Params(), binary=True)
+    assert_equal(as_text.rows, 4)
+    assert_equal(as_binary.rows, as_text.rows)
     for c in range(as_text.cols):
         assert_equal(as_binary.oid(c), as_text.oid(c))
-    assert_equal(as_binary.text(0, 0), as_text.text(0, 0))
-    assert_equal(as_binary.int(0, 0), 42)
-    assert_equal(as_text.int(0, 0), 42)
-    assert_almost_equal(as_binary.float(0, 1), 2.5)
-    assert_true(as_binary.bool(0, 2))
-    assert_equal(as_binary.text(0, 3), "ada")
-    assert_equal(as_binary.text(0, 4), as_text.text(0, 4))
-    # jsonb's binary form carries a version byte the text form does not;
-    # the decoder strips it, so the two agree.
-    assert_true("\"a\"" in as_binary.text(0, 5))
+    for r in range(as_text.rows):
+        for c in range(5):
+            assert_equal(
+                as_binary.text(r, c),
+                as_text.text(r, c),
+                String("row ", r, ", column ", as_text.name(c)),
+            )
+        assert_equal(as_binary.int(r, 0), as_text.int(r, 0))
+        assert_equal(as_binary.bool(r, 1), as_text.bool(r, 1))
+    # The same answer twice could be the same wrong one: some are pinned.
+    assert_equal(as_text.text(1, 0), "-9223372036854775808")
+    assert_equal(as_binary.int(3, 0), 9223372036854775807)
+    assert_equal(as_text.text(1, 3), "a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11")
+    assert_equal(as_text.text(0, 4), '{"a": 1}')
+    assert_equal(as_text.text(3, 2), "two\nlines\there")
+    assert_false(as_binary.bool(1, 1))
+    assert_equal(as_binary.float(0, 5), 2.5)
+    assert_equal(as_binary.float(1, 5), -0.125)
+    assert_equal(as_binary.float(3, 5), 1048576.0)
     _drop(db)
 
 

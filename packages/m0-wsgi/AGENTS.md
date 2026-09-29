@@ -101,7 +101,12 @@ executor that never issued the credit, and denied the comment heartbeat
 that keeps it alive through a proxy. Sockets travel the same seam — the
 `H` frame a pool thread sends carries its own LANE and the loop records
 `hold_lane[slot]`, so an inbound frame is delivered back to the mount
-whose view gated the upgrade and to no other. One refusal remains:
+whose view gated the upgrade and to no other. Its inline twin is
+`hold_app[slot]`: where the loop's own handler serves every WSGI mount
+with no pool, it records the index in `apps` of the application whose view
+approved the socket as it subscribes, so `_ws_forward` hands an inbound
+message to that mount, at its own prefix, and never to `apps[0]` for being
+first. One refusal remains:
 `--realtime` on a server with no WSGI mount at all, which is asking for a
 hold nothing could take. **`--threads` gets the same
 lanes**: `_serve_one` and `_serve_offloaded` both lay them with

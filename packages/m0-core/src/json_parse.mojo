@@ -291,14 +291,70 @@ def parse_json_string(body: String, field: String) -> Optional[String]:
     return None  # unterminated string
 
 
+def _is_digit(b: UInt8) -> Bool:
+    """Check if byte is an ASCII decimal digit."""
+    return b >= 0x30 and b <= 0x39
+
+
+def _skip_digits(bytes: Span[UInt8, _], blen: Int, start: Int) -> Int:
+    """Return the offset of the first byte at or after `start` that is not a digit."""
+    var i = start
+    while i < blen and _is_digit(bytes[i]):
+        i += 1
+    return i
+
+
+def _scan_json_number(
+    bytes: Span[UInt8, _], blen: Int, start: Int, integer: Bool
+) -> Int:
+    """Return the offset just past a JSON number at `start`, or -1 if none.
+
+    RFC 8259 section 6, whole: an optional `-`; then `0` alone, or a digit
+    1-9 and the digits after it, so `01` is refused; then, unless
+    `integer`, an optional fraction (`.` and at least one digit) and an
+    optional exponent (`e` or `E`, an optional sign, at least one digit).
+    The number must end where a JSON value may -- at whitespace, `,`,
+    `}`, `]` or the end of the body -- so `12abc`, `1.5.3` and, when
+    `integer`, `1.9` and `1e3` are refused rather than read in part.
+    """
+    var i = start
+    if i < blen and bytes[i] == 0x2D:  # '-'
+        i += 1
+    if i >= blen or not _is_digit(bytes[i]):
+        return -1
+    if bytes[i] == 0x30:  # '0' stands alone; a digit after it ends nothing
+        i += 1
+    else:
+        i = _skip_digits(bytes, blen, i)
+    if not integer:
+        if i < blen and bytes[i] == 0x2E:  # '.'
+            i += 1
+            if i >= blen or not _is_digit(bytes[i]):
+                return -1
+            i = _skip_digits(bytes, blen, i)
+        if i < blen and (bytes[i] == 0x65 or bytes[i] == 0x45):  # 'e' 'E'
+            i += 1
+            if i < blen and (bytes[i] == 0x2B or bytes[i] == 0x2D):
+                i += 1
+            if i >= blen or not _is_digit(bytes[i]):
+                return -1
+            i = _skip_digits(bytes, blen, i)
+    if i < blen:
+        var c = bytes[i]
+        if not (_is_ws(c) or c == 0x2C or c == 0x7D or c == 0x5D):
+            return -1
+    return i
+
+
 def parse_json_int(body: String, field: String) -> Optional[Int]:
     """Extract an integer value for top-level `field` from a JSON object.
 
-    Returns `None` if the field is missing or not a valid integer. The
-    value must end where its digits do -- at whitespace, `,`, `}`, `]` or
-    the end of the body -- so a fraction (`1.9`), an exponent (`1e3`) or
-    anything else after the digits is refused rather than read as its
-    leading digits; `parse_json_number` reads the first two.
+    Returns `None` if the field is missing or not a valid integer: JSON's
+    grammar for one, `-` and digits with no zero before other digits
+    (`01` is refused), ending where its digits do -- at whitespace, `,`,
+    `}`, `]` or the end of the body -- so a fraction (`1.9`), an exponent
+    (`1e3`) or anything else after the digits is refused rather than read
+    as its leading digits; `parse_json_number` reads the first two.
     Overflow is not checked; callers should validate range when relevant.
     """
     var i = _find_value_start(body, field)
@@ -307,26 +363,17 @@ def parse_json_int(body: String, field: String) -> Optional[Int]:
     var bytes = body.as_bytes()
     var blen = body.byte_length()
 
-    var negative = False
-    if bytes[i] == 0x2D:  # '-'
-        negative = True
-        i += 1
-        if i >= blen:
-            return None
-
-    if bytes[i] < 0x30 or bytes[i] > 0x39:
+    var end = _scan_json_number(bytes, blen, i, integer=True)
+    if end == -1:
         return None
 
+    var negative = bytes[i] == 0x2D  # '-'
+    if negative:
+        i += 1
     var result = 0
-    while i < blen and bytes[i] >= 0x30 and bytes[i] <= 0x39:
+    while i < end:
         result = result * 10 + Int(bytes[i]) - 0x30
         i += 1
-
-    # `1.9` and `1e3` are numbers whose leading digits are not their value.
-    if i < blen:
-        var c = bytes[i]
-        if not (_is_ws(c) or c == 0x2C or c == 0x7D or c == 0x5D):
-            return None
 
     if negative:
         return Optional[Int](-result)
@@ -336,7 +383,10 @@ def parse_json_int(body: String, field: String) -> Optional[Int]:
 def parse_json_number(body: String, field: String) -> Optional[Float64]:
     """Extract a numeric value (int or float) for top-level `field`.
 
-    Returns `None` if the field is missing or not a valid JSON number.
+    Returns `None` if the field is missing or not a valid JSON number by
+    RFC 8259's grammar: no zero before other digits, a digit after `.` and
+    after an exponent's sign, and the number ending at whitespace, `,`,
+    `}`, `]` or the end of the body, so `12abc` is refused, not read as 12.
     """
     var i = _find_value_start(body, field)
     if i == -1:
@@ -345,28 +395,15 @@ def parse_json_number(body: String, field: String) -> Optional[Float64]:
     var blen = body.byte_length()
 
     var start = i
-    if i < blen and bytes[i] == 0x2D:
-        i += 1
-    while i < blen and bytes[i] >= 0x30 and bytes[i] <= 0x39:
-        i += 1
-    if i < blen and bytes[i] == 0x2E:
-        i += 1
-        while i < blen and bytes[i] >= 0x30 and bytes[i] <= 0x39:
-            i += 1
-    if i < blen and (bytes[i] == 0x65 or bytes[i] == 0x45):
-        i += 1
-        if i < blen and (bytes[i] == 0x2B or bytes[i] == 0x2D):
-            i += 1
-        while i < blen and bytes[i] >= 0x30 and bytes[i] <= 0x39:
-            i += 1
-
-    if i == start:
+    i = _scan_json_number(bytes, blen, start, integer=False)
+    if i == -1:
         return None
 
     # A byte-span slice, never `body[byte=start:i]` (SPEC G14): the body is
-    # request bytes, and the byte after a number may be anything, including
-    # a UTF-8 continuation byte, where the String slice asserts a codepoint
-    # boundary and kills the process. The span itself is ASCII digits.
+    # request bytes. The scan now ends the span at an ASCII delimiter or
+    # the end, so a String slice would hold too, but it asserts a codepoint
+    # boundary and kills the process where the scan is ever wrong; this
+    # one cannot.
     var num_str = String(unsafe_from_utf8=body.as_bytes()[start:i])
     try:
         return Optional[Float64](Float64(num_str))

@@ -215,8 +215,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   rather than a date, a `bytea`'s is its raw bytes rather than the `\x`
   escape, and a `float4` reads `0.10000000149011612` where text mode reads
   `0.1`. O11 now names the types that agree, and a Known issue records
-  what each mode returns and what a fix needs. Read those types in text
-  mode, which is the default.
+  what each mode returns and what a fix needs. `Result.text()`'s own
+  documentation made the same claim, and now names the same types. Read
+  those types in text mode, which is the default.
 
 - **A request carrying two `Host` lines, or two `Transfer-Encoding`
   lines, is answered 400** (SPEC B10, B11). The parser kept the last line
@@ -412,12 +413,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   buffer of its own (`gmtime_r`). macOS was not affected: its `gmtime`
   keeps a buffer per thread. Found in review.
 
-- **`m0_core.json_parse.parse_json_int` no longer reads `1.9` or `1e3` as
-  1.** It returned a number's leading digits, so a fraction was cut off
-  and an exponent dropped, against its own contract of `None` for a value
-  that is not an integer. A value whose digits are followed by anything
-  but whitespace, `,`, `}` or `]` is now refused; `parse_json_number`
-  reads fractions and exponents. Found in review.
+- **`m0_core.json_parse` reads a number by JSON's grammar.**
+  `parse_json_int` returned a number's leading digits, so `1.9` and `1e3`
+  read as 1, against its own contract of `None` for a value that is not
+  an integer. It and `parse_json_number` also read `01` as 1, and
+  `parse_json_number` read `12abc` as 12, `1.5.3` as 1.5 and took `.5`
+  and `1.`. Both now return `None` for a value JSON does not parse as a
+  number: a zero before other digits, a `.` or an exponent with no digit
+  after it, and anything after the number but whitespace, `,`, `}`, `]`
+  or the end of the body. `parse_json_int` still refuses a fraction or an
+  exponent, which `parse_json_number` reads. A body that relied on the
+  lenient reading now gets `None`. Found in review.
 
 ### Changed
 
