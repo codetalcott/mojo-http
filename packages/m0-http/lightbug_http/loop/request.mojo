@@ -202,12 +202,13 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     # Phase 2a: recv into per-slot staging buffer (avoids per-recv heap alloc)
     st.provision_pool.provisions[slot].recv_staging.clear()
     var fd_desc = FileDescriptor(fd_val)
+    var want = st.provision_pool.provisions[slot].recv_staging.capacity()
     var bytes_read: UInt
     try:
         bytes_read = recv(
             fd_desc,
             Span(st.provision_pool.provisions[slot].recv_staging),
-            UInt(st.provision_pool.provisions[slot].recv_staging.capacity()),
+            UInt(want),
             0,
         )
     except recv_err:
@@ -318,18 +319,29 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
         st.provision_pool.provisions[slot].state = ConnectionState.processing()
         _process_request(handler, backend, st, slot, fd_val)
 
-    # One recv per event does not drain an edge-triggered
-    # socket: a body larger than the staging buffer leaves
-    # bytes pending that will never raise another edge on
-    # their own. Re-register to regenerate readiness for
-    # them, the same reason as the arm in
-    # _handle_read_headers.
+    # One recv per event does not drain an edge-triggered socket: a body
+    # larger than the staging buffer leaves bytes pending that will never
+    # raise another edge on their own. `_handle_read_headers`' rule, for
+    # its reason: re-registered only when this read may have left
+    # something no edge will announce -- a read that FILLED the buffer, or
+    # a peer that has shut down its side, whose one edge this event spent
+    # (re-registering reports the EOF again, and the read of 0 behind it
+    # closes an upload that can never finish, where the body timer would
+    # otherwise hold it). A shorter read took everything the socket held,
+    # and the next byte raises an edge of its own. This re-registered
+    # after every read: an `epoll_ctl` ADD, refused EEXIST, and the MOD
+    # behind it on each read of an upload still arriving -- R2's pair,
+    # per read where the headers' was per request (`poe
+    # smoke-large-request` counts both on Linux).
     if (
         st.slot_fds[slot] != UNUSED
         and st.provision_pool.provisions[slot].state.kind
         == ConnectionState.READING_BODY
     ):
-        _rearm_reads(backend, st, slot, fd_val)
+        if bytes_read == UInt(want) or st.provision_pool.provisions[slot].peer_eof:
+            _rearm_reads(backend, st, slot, fd_val)
+        else:
+            _ = _arm_reads(backend, st, slot, fd_val)
     return True
 
 

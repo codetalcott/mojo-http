@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""A keep-alive request costs the event loop no `epoll_ctl` (review record R2).
+"""A keep-alive request, and a read of an upload, cost the event loop no
+`epoll_ctl` (review record R2).
 
     python3 scripts/epoll_rearm_probe.py BINARY
 
 BINARY is `apps/hello`, built. Linux only, with `strace` on PATH: the count
-is the kernel's, taken by `strace -f -e trace=epoll_ctl` over one server's
-life, so it needs no counter in the server and cannot disagree with what the
-server actually asked the kernel for.
+is the kernel's, taken by `strace -f -e trace=epoll_ctl,recvfrom` over one
+server's life, so it needs no counter in the server and cannot disagree with
+what the server actually asked the kernel for. The loop's reads are counted
+from the same trace (libc's `recv` is the `recvfrom` system call on Linux),
+with those that filled the buffer they were given.
 
 A connection's read interest is registered once and stays. A request needs a
 re-registration only when its read may have left bytes in the socket that no
@@ -34,8 +37,30 @@ That is the pair 9a6651f measured out of the hot path (docs/SERVER_PERFORMANCE.m
               one -- without it the rest sits unannounced until the header
               timeout
 
-Prints `epoll_ctl_per_request X`, `eexist_per_request X` and
-`control_per_request X` for the recorder.
+The same rule holds a request BODY, read one `recv` per event like the
+headers, and it re-registered after every read of one: R2's pair on each
+read of an upload still arriving, where the headers' was once a request.
+
+  dribble     a body of DRIBBLE pieces of DRIBBLE_PIECE bytes, each sent
+              DRIBBLE_GAP_S after the last, so each is a short read of its
+              own: at most BOUND `epoll_ctl` calls per read, counted over
+              the reads the trace shows
+  upload      UPLOADS bodies of UPLOAD_BYTES in one write each, and the
+              control of the phase above: each must be ANSWERED within
+              UPLOAD_WAIT_S (a read that fills the buffer must re-register,
+              or the rest of the body sits unannounced until the body
+              timeout), and the count must rise by at least one call for
+              each read that filled the buffer, so the meter is seen to read
+              a body's re-registration before the dribble's silence is
+              trusted
+  half-close  a body cut short, its last bytes arriving with the client's
+              FIN in one segment: the read that takes them spends the EOF's
+              one edge, and only re-registering after it reports the EOF
+              again, so the connection must be closed within
+              HALF_CLOSE_WAIT_S rather than held until the body timeout
+
+Prints `epoll_ctl_per_request X`, `eexist_per_request X`,
+`control_per_request X` and `epoll_ctl_per_body_read X` for the recorder.
 """
 
 from __future__ import annotations
@@ -66,6 +91,19 @@ LARGE_WAIT_S = 5
 # Half a call sits far from both, and still fails a loop that re-registers
 # with one call a request.
 BOUND = 0.5
+DRIBBLE = 100
+DRIBBLE_PIECE = 64
+# Far longer than the loop takes to read a piece, even under strace.
+DRIBBLE_GAP_S = 0.01
+UPLOADS = 3
+# 256 staging buffers, inside the 4 MB body cap.
+UPLOAD_BYTES = 1 << 20
+# Both far inside the 30 s body timeout that a stalled upload runs to.
+UPLOAD_WAIT_S = 10
+HALF_CLOSE_WAIT_S = 5
+# What the half-closed request declares, and the part of it sent.
+HALF_CLOSE_DECLARED = 20000
+HALF_CLOSE_SENT = 3000
 
 
 # Which phase is running, for the crash handler below: a traceback names the
@@ -100,17 +138,24 @@ def free_port() -> int:
     return port
 
 
-def count(trace: str) -> tuple[int, int]:
-    """`epoll_ctl` calls in the trace so far, and how many were refused
-    EEXIST. strace flushes a line as each call returns."""
-    calls = eexist = 0
+def count(trace: str) -> tuple[int, int, int, int]:
+    """`epoll_ctl` calls in the trace so far, how many were refused EEXIST,
+    `recvfrom` calls, and how many of those filled the buffer they were
+    given. strace flushes a line as each call returns."""
+    calls = eexist = reads = full = 0
     with open(trace) as f:
         for line in f:
             if re.search(r"\bepoll_ctl\(", line):
                 calls += 1
                 if "EEXIST" in line:
                     eexist += 1
-    return calls, eexist
+            elif re.search(r"\brecvfrom\(", line):
+                reads += 1
+                # `recvfrom(7, ""..., 4096, 0, NULL, NULL) = 4096`
+                m = re.search(r", (\d+), [^,]+, NULL, NULL\) += (\d+)", line)
+                if m and m.group(1) == m.group(2):
+                    full += 1
+    return calls, eexist, reads, full
 
 
 def settled(trace: str) -> tuple[int, int]:
@@ -179,8 +224,11 @@ def main() -> None:
                M0_MAX_KEEPALIVE_REQUESTS="0")
     env.pop("M0_ACCESS_LOG", None)
     log = open(os.path.join(work, "server.log"), "w+")
+    # `-s 0`: a read's bytes are not the point, and 3 MB of upload would
+    # otherwise be copied into the trace.
     tracer = subprocess.Popen(
-        [strace, "-f", "-qq", "-e", "trace=epoll_ctl", "-o", trace, binary],
+        [strace, "-f", "-qq", "-s", "0", "-e", "trace=epoll_ctl,recvfrom",
+         "-o", trace, binary],
         env=env, stdout=log, stderr=subprocess.STDOUT,
     )
     child = -1
@@ -236,8 +284,75 @@ def main() -> None:
         control_calls = control[0] - small[0]
         control_per_request = control_calls / LARGE
 
+        phase("dribble: a body sent a piece at a time")
+        up = socket.create_connection(("127.0.0.1", port), timeout=UPLOAD_WAIT_S)
+        up.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        up.sendall(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n"
+                   % (DRIBBLE * DRIBBLE_PIECE))
+        time.sleep(0.2)
+        for _ in range(DRIBBLE):
+            up.sendall(b"d" * DRIBBLE_PIECE)
+            time.sleep(DRIBBLE_GAP_S)
+        answer = http.client.HTTPResponse(up)
+        answer.begin()
+        body = answer.read()
+        if answer.status != 200 or body != b"hello from m0":
+            fail("the dribbled upload answered %d %r" % (answer.status, body))
+        dribble = settled(trace)
+        dribble_calls = dribble[0] - control[0]
+        dribble_reads = dribble[2] - control[2]
+        # The bound divides by the reads the trace shows, so two pieces read
+        # together cannot flatter it; this asks only that reads are seen.
+        if dribble_reads < DRIBBLE // 2:
+            fail("%d reads for a body sent in %d pieces %.0f ms apart: the "
+                 "trace is not seeing the loop's reads" % (
+                     dribble_reads, DRIBBLE, DRIBBLE_GAP_S * 1000))
+        dribble_per_read = dribble_calls / dribble_reads
+
+        phase("upload: bodies many reads long, in one write each")
+        loader = http.client.HTTPConnection("127.0.0.1", port, timeout=UPLOAD_WAIT_S)
+        payload = b"u" * UPLOAD_BYTES
+        for i in range(UPLOADS):
+            try:
+                loader.request("POST", "/", body=payload)
+                answer = loader.getresponse()
+                body = answer.read()
+            except TimeoutError:
+                fail("upload %d of %d bytes was not answered within %d s: a "
+                     "body read that filled the buffer did not re-register, and "
+                     "the rest of the body sat in the socket with no edge left "
+                     "to announce it (SPEC A13)" % (i, UPLOAD_BYTES, UPLOAD_WAIT_S))
+            if answer.status != 200 or body != b"hello from m0":
+                fail("upload %d answered %d %r" % (i, answer.status, body))
+        upload = settled(trace)
+        upload_calls = upload[0] - dribble[0]
+        upload_full = upload[3] - dribble[3]
+
+        phase("half-close: a body cut short by the client's FIN")
+        cut = socket.create_connection(("127.0.0.1", port), timeout=HALF_CLOSE_WAIT_S)
+        cut.sendall(b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n"
+                    % HALF_CLOSE_DECLARED)
+        time.sleep(0.2)
+        # Corked, the FIN rides the last data segment: one edge for both, so
+        # the read that takes the data is the one that spends the EOF's edge.
+        cut.setsockopt(socket.IPPROTO_TCP, socket.TCP_CORK, 1)
+        cut.sendall(b"h" * HALF_CLOSE_SENT)
+        cut.shutdown(socket.SHUT_WR)
+        started = time.time()
+        try:
+            while cut.recv(65536):
+                pass
+        except TimeoutError:
+            fail("a body cut short by a half-close was still open after %d s: "
+                 "the read that took its last bytes did not re-register, so "
+                 "the EOF behind them was never reported again, and the "
+                 "connection is held until the body timeout" % HALF_CLOSE_WAIT_S)
+        except ConnectionResetError:
+            pass
+        released_s = time.time() - started
+
         phase("stop the server")
-        for c in conns + [big]:
+        for c in conns + [big, loader, up, cut]:
             c.close()
     finally:
         if child <= 0 and tracer.poll() is None:
@@ -263,9 +378,15 @@ def main() -> None:
           % (calls, eexist, REQUESTS, CONNECTIONS))
     print("control: %d epoll_ctl over %d requests of %d+ bytes"
           % (control_calls, LARGE, LARGE_PAD))
+    print("dribble: %d epoll_ctl over %d reads of a body sent in %d pieces"
+          % (dribble_calls, dribble_reads, DRIBBLE))
+    print("upload: %d epoll_ctl over %d uploads of %d bytes, %d reads filling the buffer"
+          % (upload_calls, UPLOADS, UPLOAD_BYTES, upload_full))
+    print("half-close: a body cut short was closed after %.2f s" % released_s)
     print("epoll_ctl_per_request %.4f" % per_request)
     print("eexist_per_request %.4f" % (eexist / REQUESTS))
     print("control_per_request %.4f" % control_per_request)
+    print("epoll_ctl_per_body_read %.4f" % dribble_per_read)
 
     phase("verdict")
     if control_calls < LARGE:
@@ -273,11 +394,20 @@ def main() -> None:
              "read that fills it must re-register, so the meter is not reading "
              "the loop and its count of the keep-alive phase means nothing"
              % (control_calls, LARGE))
+    if upload_full == 0 or upload_calls < upload_full:
+        fail("%d epoll_ctl over %d body reads that filled the buffer: each must "
+             "re-register, so the meter is not reading the body's reads and its "
+             "count of the dribble means nothing" % (upload_calls, upload_full))
     if per_request > BOUND:
         fail("%.3f epoll_ctl per keep-alive request (bound %.1f): %d calls, %d of "
              "them refused EEXIST -- the loop is re-registering read interest a "
              "connection already holds (review record R2)"
              % (per_request, BOUND, calls, eexist))
+    if dribble_per_read > BOUND:
+        fail("%.3f epoll_ctl per read of a dribbled body (bound %.1f): %d calls "
+             "over %d reads -- the loop re-registers read interest after a body "
+             "read that took everything the socket held (review record R2)"
+             % (dribble_per_read, BOUND, dribble_calls, dribble_reads))
     shutil.rmtree(work, ignore_errors=True)
     print("epoll_rearm_probe: OK")
 

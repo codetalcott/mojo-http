@@ -331,6 +331,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `smoke-large-request` counts the calls under `strace` on Linux: 4 over
   2000 keep-alive requests, where the old loop made 4004. macOS paid one
   `kevent` a request for the same reason, and no longer does.
+- **An upload no longer costs two `epoll_ctl` calls per read on Linux**
+  (SPEC A13). The same re-registration, on the body: the event loop
+  repeated it after every read of a request body, so an upload arriving in
+  pieces paid the refused registration and the modification behind it on
+  each one. Only a read that fills the buffer, or the client's EOF, now
+  re-registers, as for headers. `smoke-large-request` counts the calls
+  under `strace` on Linux: 3 over 101 reads of a body sent in 100 pieces,
+  where the old loop made 201. A 1 MB body sent at once is still read
+  without a stall, and one the client cuts short with a half-close is still
+  closed at once rather than at the body timeout. macOS paid one `kevent`
+  a read, and no longer does.
 - **`--workers N` no longer lets a worker's load read one connection
   high for good** (SPEC E16). Since 0.18.0 the worker that passes a
   connection to a sibling counted it in flight only after sending it, so
