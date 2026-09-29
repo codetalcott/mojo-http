@@ -241,6 +241,19 @@ struct Socket[
         if not self._closed:
             self.close()
 
+    def into_fd(deinit self) -> FileDescriptor:
+        """Give up the socket without closing it, and return its descriptor.
+
+        A named destructor: neither `teardown` nor `__deinit__` runs, so
+        the number is neither shut down nor closed here. Whoever takes the
+        descriptor now owns it and closes it, once. This is how a listener
+        is given to the event loop, which closes it as its drain begins
+        (review B26): a `Socket` still holding the number would close it
+        again when destroyed, after the drain had freed it for anything
+        else in the process to take.
+        """
+        return self.fd
+
     def __enter__(var self) -> Self:
         return self^
 

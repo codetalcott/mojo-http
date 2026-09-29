@@ -1037,6 +1037,17 @@ lightbug_http
         its reads taken for the listener's, its request never read
         (review record B24).
 
+      - event_loop.mojo, server.mojo, socket.mojo, connection.mojo
+        (2026-09-29): `run_event_loop` owns the listener it is given and
+        closes it once -- at the drain, or on the way out of an error
+        before it -- and `Server.serve` and `serve_nonblocking` take the
+        listener rather than borrowing it, handing it over with
+        `NoTLSListener.into_fd` (`Socket.into_fd`), which gives up the
+        descriptor without closing it. The borrowed listener's destructor
+        closed the number again once the loop returned, when the drain had
+        freed it and something else in the process had usually been given
+        it (review record B26).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

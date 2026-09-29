@@ -265,6 +265,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `test_drain_listener.mojo` gates both steps, and on Linux the kernel's
   side. Found in review.
 
+- **A server's listener is closed once, by its drain** (SPEC D1). The
+  event loop closes its listener as the drain begins, and every owner of a
+  listener closed it again once the loop returned: `Server.listen_and_serve`
+  and `Server.serve`, the Mojo host, and m0serve with and without a
+  handler pool, under `--spawn-workers` shutting the adopted listener down
+  first. By then the number had been free for as long as the drain ran, and
+  a new descriptor takes the lowest free number, so it had usually been
+  given to something else -- in a Linux container, a `print` duplicating
+  stdout on the loop thread, and the `.pyc` files pool threads were
+  importing. The second close then failed, or closed a file or socket that
+  was not the owner's; the Mojo host made it before joining its pool and
+  producer, whose threads may still be working. The loop now owns the
+  listener it is given and closes it once, an error on the way out
+  included, and no owner keeps a copy. **A Mojo application that calls
+  `Server.serve` or `serve_nonblocking` with its own listener passes it
+  with `^`** (`server.serve(listener^, handler)`), since the loop closes
+  it. `test_listener_owner.mojo` holds each owner's number past its return
+  on both platforms, and `smoke-shutdown` traces m0serve's under strace on
+  Linux. Found in review.
+
 - **An ASGI application that installs asyncio's eager task factory is
   answered** (SPEC L30). With `asyncio.eager_task_factory` a task's first
   step runs inside `create_task`, and a response the application sent

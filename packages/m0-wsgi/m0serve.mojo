@@ -932,8 +932,10 @@ def main() raises:
         # otherwise be that read, and Mojo's destroy-at-last-use would close
         # the listening socket before the threads dup it — the dup then lands
         # on whatever descriptor number the kernel recycled, and four loops
-        # watch a pipe. Prefork never hits this because `serve_nonblocking`
-        # uses the listener itself, later.
+        # watch a pipe. Each loop closes its own dup as its drain begins, and
+        # this listener closes the original once, after the join. Prefork
+        # instead hands the listener itself to its one loop
+        # (`listener^.into_fd()`), which closes it (review B26).
         _serve_threaded(opts, listener, bus)
         if is_supervised:
             # Forked, so it must leave through `exit_worker()` — returning
@@ -1035,7 +1037,7 @@ def main() raises:
         # prefork rule is untouched — a forked child that then makes
         # threads is fine; a threaded parent that then forks is not.
         _serve_offloaded(
-            opts, listener, handler, server_config, shutdown_fd,
+            opts, listener^, handler, server_config, shutdown_fd,
             executor_mode,
             peer_bus_fd=bus.read_fd(worker),
             # Under `--realtime` a pool thread's hold reaches THIS worker's
@@ -1075,15 +1077,15 @@ def main() raises:
     # `DetachingBackend` releases the thread state around each wait and
     # restores it after, the threaded mode's shape.
     var backend = DetachingBackend[PlatformBackend](PlatformBackend())
+    # The listener is the loop's, closed once as its drain begins (review
+    # B26). It used to be kept alive past the loop with `_ = listener`, and
+    # that closed the number a second time, after the drain had freed it.
     run_event_loop(
-        listener.socket.fd, handler, backend, server.config,
+        listener^.into_fd(), handler, backend, server.config,
         server.address(), server.tcp_keep_alive,
         shutdown_fd, bus.read_fd(worker),
         accept_share=share,
     )
-    # Only the fd number crossed; without this the listener is destroyed --
-    # and its socket closed -- before the loop's first `fcntl` on it.
-    _ = listener
     handler.shutdown()
     pg.stop()
     if is_supervised:
@@ -1092,7 +1094,7 @@ def main() raises:
 
 def _serve_offloaded(
     opts: ServeOptions,
-    listener: NoTLSListener[NetworkType.tcp4],
+    var listener: NoTLSListener[NetworkType.tcp4],
     mut handler: WSGIHandler,
     config: ServerConfig,
     shutdown_fd: Int,
@@ -1128,6 +1130,12 @@ def _serve_offloaded(
     forwarded to the executors for `state["m0"]` subscribers.
     `hold_notify_fd` is how a pool thread's hold under `--realtime` reaches
     this loop's registries: a reserved frame on this loop's own bus channel.
+
+    `listener` is taken, not borrowed: the loop (the inversion's too) owns
+    it and closes it once, as its drain begins, so it is handed over with
+    `into_fd` (review B26). Borrowed, it was closed again by the caller
+    when this returned, after a drain during which the pool threads could
+    be given its number for files of their own.
     """
     var pool = OffloadPool(config.max_connections)
     # Without a GIL a parked thread beside a queued job is an idle core,
@@ -1154,7 +1162,7 @@ def _serve_offloaded(
         pool.enable_stream_channel()
         pool.enable_base_stream_ack()
         serve_inverted(
-            opts, listener.socket.fd, config, opts.address(), shutdown_fd,
+            opts, listener^.into_fd(), config, opts.address(), shutdown_fd,
             pool, peer_bus_fd, accept_share,
         )
         return
@@ -1202,7 +1210,7 @@ def _serve_offloaded(
     if not loop_attached:
         backend.set_loop_detached()
     run_event_loop(
-        listener.socket.fd, handler, backend, config, opts.address(), True,
+        listener^.into_fd(), handler, backend, config, opts.address(), True,
         shutdown_fd, stream_bus_fd, pool.addr(),
         peer_bus_fd=peer_bus_fd,
         accept_share=accept_share,

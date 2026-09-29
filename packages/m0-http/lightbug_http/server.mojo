@@ -522,24 +522,25 @@ struct Server(Movable):
         """
         self.listen_and_serve_nonblocking(address, handler)
 
-    def serve[T: HTTPService](self, ln: NoTLSListener[NetworkType.tcp4], mut handler: T) raises ServerError:
+    def serve[T: HTTPService](self, var ln: NoTLSListener[NetworkType.tcp4], mut handler: T) raises ServerError:
         """Serve an existing listener on the event loop.
 
         `serve_nonblocking` with the server's own `shutdown_read_fd`, which
         `listen_and_serve` honours too, and every other optional argument at
-        its default.
+        its default. The listener is the loop's from here, as it is there.
 
         Parameters:
             T: The type of HTTPService that handles incoming requests.
 
         Args:
-            ln: TCP server that listens for incoming connections.
+            ln: TCP server that listens for incoming connections; the loop
+                closes it, so pass it with `^`.
             handler: An object that handles incoming HTTP requests.
 
         Raises:
             ServerError: If an unrecoverable error occurs.
         """
-        self.serve_nonblocking(ln, handler, self.shutdown_read_fd)
+        self.serve_nonblocking(ln^, handler, self.shutdown_read_fd)
 
     def listen_and_serve_nonblocking[T: HTTPService](
         mut self, address: StringSpan, mut handler: T,
@@ -581,13 +582,13 @@ struct Server(Movable):
 
         try:
             self.serve_nonblocking(
-                listener, handler, effective_shutdown_fd, bus_read_fd, offload_addr
+                listener^, handler, effective_shutdown_fd, bus_read_fd, offload_addr
             )
         except server_err:
             raise server_err^
 
     def serve_nonblocking[T: HTTPService](
-        self, ln: NoTLSListener[NetworkType.tcp4], mut handler: T,
+        self, var ln: NoTLSListener[NetworkType.tcp4], mut handler: T,
         shutdown_read_fd: Int = -1,
         bus_read_fd: Int = -1,
         offload_addr: Int = 0,
@@ -595,11 +596,17 @@ struct Server(Movable):
     ) raises ServerError:
         """Serve HTTP requests using the non-blocking kqueue event loop.
 
+        The listener is handed to the loop, which closes it once, as its
+        drain begins (review B26). It used to be borrowed, and its owner
+        closed the number again after the loop returned -- by then free,
+        and often something else's.
+
         Parameters:
             T: The type of HTTPService that handles incoming requests.
 
         Args:
-            ln: TCP server that listens for incoming connections.
+            ln: TCP server that listens for incoming connections; the loop
+                closes it, so pass it with `^`.
             handler: An object that handles incoming HTTP requests.
             shutdown_read_fd: Read end of the graceful-shutdown pipe, or -1.
             bus_read_fd: This worker's `BroadcastBus` channel, or -1.
@@ -616,7 +623,7 @@ struct Server(Movable):
         try:
             var backend = PlatformBackend()
             run_event_loop(
-                ln.socket.fd,
+                ln^.into_fd(),
                 handler,
                 backend,
                 self.config,

@@ -145,7 +145,7 @@ def main() raises:
     # After fork_all — each worker arms its own pipe. See datastar_counter.
     var shutdown_fd = install_shutdown_signals()
     server.serve_nonblocking(
-        listener, handler, shutdown_read_fd=shutdown_fd, bus_read_fd=bus_read_fd
+        listener^, handler, shutdown_read_fd=shutdown_fd, bus_read_fd=bus_read_fd
     )
     if config.workers > 1:
         exit_worker()

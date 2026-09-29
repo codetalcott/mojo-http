@@ -39,6 +39,7 @@ from lightbug_http.c.kqueue import (
     set_nonblocking, EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER, EV_EOF, EV_ERROR,
 )
 from lightbug_http.accept_share import AcceptShare
+from lightbug_http.c.socket import close
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.offload import POOL_WAKE_WAIT_MS
 from lightbug_http.server_config import ServerConfig
@@ -86,6 +87,12 @@ def prepare_loop[B: EventLoopBackend](
     timer on `backend`. Split from the driver so the loop inversion can
     prepare a loop it will drive one pass at a time from an asyncio
     callback.
+
+    `listen_fd` becomes the loop's, as it does in `run_event_loop`: the
+    drain closes it (`_shutdown_begin`), so its caller must not (review
+    B26). A caller driving the passes itself closes it on an error that
+    comes before the drain, or leaves it to its process's exit, as the
+    inversion's m0serve does.
     """
     set_nonblocking(listen_fd)
 
@@ -191,6 +198,16 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     beside a step past its bound put the two 5 s budgets in sequence, which
     is `docker stop`'s whole default grace.
 
+    **The loop owns `listen_fd`** (review B26), and closes it exactly once:
+    as its drain begins (`_shutdown_begin`), or on the way out of a raise
+    that came before the drain did. A caller holding a `NoTLSListener`
+    gives it up with `listener^.into_fd()`, never `listener.socket.fd`: a
+    listener kept past the call closed the number a second time when it
+    was destroyed, after the drain had freed it and something else in the
+    process -- a `print`'s `dup(1)`, a pool thread's `.pyc`, a straggler's
+    socket -- had very likely been given it. A caller that wants its own
+    reference passes a `dup` (the threaded modes pass one per loop).
+
     Parameters:
         T: The HTTP service handler type.
         B: The IO multiplexing backend (KqueueBackend on macOS, EpollBackend on Linux).
@@ -200,22 +217,47 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     # Before the loop's first send: a client that resets is then an EPIPE
     # on its own connection, not SIGPIPE ending the process (SPEC A25).
     ignore_sigpipe()
-    var st = prepare_loop(
-        listen_fd, backend, config, server_address,
-        tcp_keep_alive, shutdown_read_fd, bus_read_fd, offload_addr,
-        peer_bus_fd, accept_share,
-    )
+    var st: LoopState
+    try:
+        st = prepare_loop(
+            listen_fd, backend, config, server_address,
+            tcp_keep_alive, shutdown_read_fd, bus_read_fd, offload_addr,
+            peer_bus_fd, accept_share,
+        )
+    except e:
+        # Nothing has closed the listener, and nothing else will.
+        _close_listener(listen_fd)
+        raise e^
     st.stop_addr = stop_addr
-    while True:
-        var n_events = _wait_for_events(backend, st, 1000)
-        var pass_start = perf_counter_ns()
-        var stop = _run_pass(handler, backend, st, n_events)
-        st.offload.note_pass(perf_counter_ns() - pass_start)
-        if stop:
-            _run_shutdown(handler, backend, st)
-            if st.offload.ring_active() and getenv("M0_POOL_DEBUG", "") != "":
-                print(st.offload.wait_report(), flush=True)
-            break
+    try:
+        while True:
+            var n_events = _wait_for_events(backend, st, 1000)
+            var pass_start = perf_counter_ns()
+            var stop = _run_pass(handler, backend, st, n_events)
+            st.offload.note_pass(perf_counter_ns() - pass_start)
+            if stop:
+                _run_shutdown(handler, backend, st)
+                if st.offload.ring_active() and getenv("M0_POOL_DEBUG", "") != "":
+                    print(st.offload.wait_report(), flush=True)
+                break
+    except e:
+        # Closed already if the drain had begun: `_shutdown_begin` forgets
+        # the number (-1) before it closes it.
+        if st.listen_fd.value >= 0:
+            backend.try_delete_read(st.listen_fd.value)
+            _close_listener(st.listen_fd)
+            st.listen_fd = FileDescriptor(-1)
+        raise e^
+
+
+def _close_listener(listen_fd: FileDescriptor):
+    """Close the loop's listener, once, whatever the close says: there is
+    no second attempt that would do better, and the number is not the
+    loop's afterwards either way."""
+    try:
+        close(listen_fd)
+    except:
+        pass
 
 
 def _wait_for_events[B: EventLoopBackend](
