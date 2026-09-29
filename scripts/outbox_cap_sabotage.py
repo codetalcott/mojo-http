@@ -36,7 +36,7 @@ REGISTRY = Path("packages/m0-http/src/sse/registry.mojo")
 PROBE = Path("scripts/outbox_cap_probe.py")
 PORT = "8156"
 
-# (label, path, old, new)
+# (label, path, old, new[, the probe must say])
 SABOTAGES = [
     (
         "the refused frame is dropped silently instead of ending the socket",
@@ -49,12 +49,16 @@ SABOTAGES = [
     (
         "the give-up claim never fires, so the socket is never ended",
         HANDLER,
-        # The `w` case's line, pinned by the one above it: the bare `if` is
-        # the `x` case's too (a Close refused), so alone it matched twice.
-        """                if self.sockets.is_slot_streaming(slot) and self._gen_matches(slot, event_id):
-                    if not self.sockets.queue_frame(slot, NO_EVENT_ID, frame):""",
-        """                if self.sockets.is_slot_streaming(slot) and self._gen_matches(slot, event_id):
-                    if False:""",
+        # The claim alone: the frame is still offered to the queue, which
+        # still refuses it, and only the `w` case's claim is gone -- the `x`
+        # case's names "websocket close frame". Replacing the queue call's
+        # `if` instead queued no frame at all, the under-cap one included,
+        # so the probe failed on the under-cap half and never reached this.
+        """                        if self._claim_lost(slot, String("websocket frame")):""",
+        """                        if False:""",
+        # What the claim is for: without it nothing ends the socket, and it
+        # sits open with the message neither delivered nor refused.
+        "neither delivered the message nor ended",
     ),
     (
         "the per-frame cap is raised, so an unqueueable message is queued",
@@ -84,7 +88,8 @@ SABOTAGES = [
 ]
 
 
-RULES = [rule(label, path, old, new) for label, path, old, new in SABOTAGES]
+RULES = [rule(label, path, old, new, expect=said[0] if said else "")
+         for label, path, old, new, *said in SABOTAGES]
 
 SERVER_LOG = Path("/tmp/outbox_cap_sabotage_server.log")
 
