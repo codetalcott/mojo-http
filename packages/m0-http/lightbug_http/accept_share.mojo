@@ -58,7 +58,9 @@ from std.atomic import Atomic
 from std.os import getenv
 from std.time import perf_counter_ns
 
-from lightbug_http.c.fdpass import send_fd, recv_fd
+from lightbug_http.c.fdpass import (
+    send_fd, recv_fd, RECV_FD_EMPTY, RECV_FD_REFUSED,
+)
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import setsockopt, SocketOption, SOL_SOCKET
 from lightbug_http.c.socketpair import socketpair_dgram
@@ -393,19 +395,31 @@ struct AcceptShare(Copyable, Movable):
 
     def receive(mut self, mut host: String, mut port: Int) -> Int:
         """Take one passed connection off this worker's channel: the new
-        fd with its peer address, or -1 when the channel is empty."""
+        fd with its peer address; `RECV_FD_EMPTY` when the channel is empty
+        (or sharing is inactive); `RECV_FD_REFUSED` when the datagram taken
+        carried no descriptor to hand over, which the caller skips.
+
+        A refused hand-off is still retired from `pending` at the end of
+        the pass (`drained`). Its sender counted it (`send_with`), and
+        nothing else takes that count back: `pick` would read this worker
+        as a connection heavier for good, R5's shape. A datagram no sender
+        counted can only make the retire overshoot, which `pass_end`
+        floors at 0.
+        """
         if not self.active():
-            return -1
+            return RECV_FD_EMPTY
         var payload = List[UInt8]()
         var fd = recv_fd(self.read_fds[self.worker], payload)
+        if fd == RECV_FD_EMPTY:
+            return RECV_FD_EMPTY
+        self.drained += 1
         if fd < 0:
-            return -1
+            return RECV_FD_REFUSED
         if len(payload) >= 2:
             port = (Int(payload[0]) << 8) | Int(payload[1])
             host = String(from_utf8_lossy=Span(payload)[2:])
         else:
             port = 0
             host = String("")
-        self.drained += 1
         self.handoffs_in += 1
         return fd

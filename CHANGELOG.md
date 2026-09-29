@@ -349,6 +349,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   retire, and the late count then stayed: that worker looked one
   connection busier than it was to every accept after. The count now goes
   up before the send, and back down if the send fails.
+- **Under `--workers N`, a worker at its open-file limit no longer
+  strands the connections passed to it** (SPEC E16). A connection one
+  worker accepts and passes to a sibling travels as a descriptor, and a
+  sibling with no descriptor free cannot take it: the kernel closes that
+  connection and delivers the message without it, on Linux at once and on
+  macOS after one failed receive. The sibling read that as an empty
+  channel and stopped admitting, and the channel only announces new
+  arrivals, so the connections queued behind it waited, their clients
+  connected and unanswered, until another connection was passed to that
+  worker; and the lost one stayed counted as in flight to it, so every
+  accept after read that worker as a connection busier than it was. It now
+  skips the lost one, admits the rest and retires its count.
+  `test_accept_share.mojo` gates it. Found in review.
 - **On Linux, a connection that fails as it is accepted no longer holds
   up the ones queued behind it.** Linux's `accept` can return a network
   error already pending on the connection it takes off the queue, such as

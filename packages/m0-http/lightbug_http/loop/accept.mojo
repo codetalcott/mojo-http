@@ -9,6 +9,7 @@ connection runs its eager read (`_admit_connection`), which on a loop that
 runs `func` itself is the whole request.
 """
 
+from lightbug_http.c.fdpass import RECV_FD_EMPTY
 from lightbug_http.c.kqueue import set_nonblocking, set_tcp_nodelay
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import accept_with_peer, close
@@ -153,15 +154,24 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
     Edge-triggered like the bus, so without a budget the channel is drained
     to EAGAIN. True when the budget ran out first: the rest is owed, and no
     edge will announce it (`ACCEPT_BATCH`).
+
+    A hand-off that arrives with no descriptor (`RECV_FD_REFUSED`: on a
+    worker out of descriptors, one the kernel could not install) is
+    skipped, and counts against the budget like any other taken. Its
+    connection is gone; the ones queued behind it are not, and read as an
+    empty channel -- which it was, a single -1 for both -- it stopped the
+    drain with them stranded until another hand-off raised an edge.
     """
     var taken = 0
     while budget == 0 or taken < budget:
         var host = String("")
         var port = 0
         var fd = st.accept_share.receive(host, port)
-        if fd < 0:
+        if fd == RECV_FD_EMPTY:
             return False
         taken += 1
+        if fd < 0:
+            continue
         _admit_connection(handler, backend, st, fd, host^, port)
     return True
 

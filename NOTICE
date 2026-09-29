@@ -984,6 +984,15 @@ lightbug_http
         ECONNABORTED and EINTR (`_accept_retries`); read as any other error,
         they stopped the pass.
 
+      - c/fdpass.mojo, accept_share.mojo, loop/accept.mojo (2026-09-28):
+        `recv_fd` tells a datagram that brought no descriptor to hand over
+        (`RECV_FD_REFUSED`) from an empty channel (`RECV_FD_EMPTY`); both
+        were -1, and the accept-share drain stopped at either, which a
+        receiver at its open-file limit gets from a sender that did nothing
+        wrong. The drain skips a refusal, `AcceptShare.receive` retires it
+        from `pending`, and a zero-length datagram's descriptor is handed
+        over rather than left open.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
