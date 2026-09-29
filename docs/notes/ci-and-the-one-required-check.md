@@ -95,44 +95,97 @@ Dependabot's or from a fork, exit 1 so the next drift is red;
 `check_dependabot_gate` in `scripts/check_docs.py` pins the source and the
 exit codes, sabotaged four ways in its selftest.
 
-## The smokes are two jobs, and no job waits on another
+## The smokes are three jobs, and no job waits on another
 
-`test.yml`'s comment on its `smoke` job carries the measurements: one job ran
+`test.yml`'s comment on its `smoke` job carries the measurements. One job ran
 30m17s green on `main` against a 35-minute cap and was cancelled at the cap
-four times on slower runners, so the work was halved and the cap left at
-roughly twice the measured run. The shards are separate JOBS, never one job
-with `if: matrix.shard`, because `scripts/spec_sheet.py` refuses a SPEC row
-whose cited step carries an `if:` — a conditional step is not evidence that
-it ran — so the matrix form would fail every cited row at once. Moving a
-step between the two jobs is free: the sheet reads step NAMES out of the file
-and does not care which job holds one.
+four times on slower runners (the slowest seen ran 1.45 times the usual), so
+on 2026-09-21 the work was halved and each cap left at about twice the
+measured run.
+
+The halves were planned on 12.0 and 13.1 minutes on ubuntu and 13.2 and 12.8
+on macOS, and no job ever ran that fast. Those figures were the smoke steps
+alone, summed from a one-job run on `main` (35551249696). A job also pays its
+own setup, `build-all` and serve CLI, about 1.4 minutes on ubuntu and 1.0 on
+macOS. And that run's `Compile every example app` had just filled Mojo's
+compile cache, so every app smoke after it compiled warm. Cold, the steps that
+compile an app took about 250 seconds more on ubuntu, against the medians of
+the sixteen one-job runs before the split, while the other smoke steps took 15
+more: the blobs smoke went from 23 seconds to 48, fragment notes from 9 to 33.
+So `smoke` ran a median of 18.5 minutes on ubuntu from its first day. By
+2026-09-29 it ran 21.4, the median of that day's 15 green runs, with 22.9 the
+slowest. Seven steps had arrived, about 3 minutes: the 413 that reaches a
+client still uploading, MAX's runtime under each host, the accept batch, the
+body timeout, the client that resets and the connections that stop reading.
+The scaffold's third template, `auth` (52950e6), added 70 seconds. A 1.45x
+runner puts 21.4 minutes at 31, past the cap of 30.
+
+So the smokes are three jobs, divided by the step medians of those 15 runs.
+`smoke` carries the server: its wire, its command line and its packaging.
+`smoke-app-layer` carries the Mojo host and the applications on it, the m0
+wheel and its scaffold. `smoke-gateway` carries the WSGI and ASGI bridges, the
+mounts, the pool and `--realtime`. They come to 11.9, 12.6 and 13.5 minutes on
+ubuntu and 10.7, 10.4 and 11.3 on macOS, each capped at 25. Cold, on the pull
+request that divided them (#484), they ran 10.6, 13.1 and 12.2 minutes on
+ubuntu and 13.9, 13.2 and 14.1 on macOS, where every leg ran about a quarter
+over its steps' medians. When one passes about 15, rebalance or divide again.
+
+A third job pays the setup again, a minute and a half. It is also a run's
+seventh macOS job, and the account runs five at once, so two of a run's
+macOS jobs wait: one for the first to finish (`apple-silicon`, 1.5
+minutes), one for the second (`scaffold-dev`, 2 to 4). GitHub does not start
+them in file order. In the two runs with six, the job that waited was a
+smoke job once and `scaffold-dev` once. A smoke job or `scaffold-dev` that
+waits still ends before the unit jobs, which set the run's length at about
+20 minutes cold. If `unit-gates` waits, at 15 to 20 minutes on macOS, the run
+ends up to 4 minutes later. When several pull requests run at once, the five
+macOS runners are shared among them. Across the 76 runs since 2026-09-28
+17:00, a macOS job waited a median of 4.4 minutes and a p90 of 34, and one
+more job in each run adds its minute of setup to that queue.
+
+A server's smokes stay in one job, because the smokes that compile one app
+share the runner's compile cache: apps/hello's seven are in `smoke`, and so
+are the counter and the accept batch, whose apps the shutdown smoke compiles
+first. The shards are separate JOBS, never one job with `if: matrix.shard`,
+because `scripts/spec_sheet.py` refuses a SPEC row whose cited step carries an
+`if:` — a conditional step is not evidence that it ran — so the matrix form
+would fail every cited row at once. Moving a step between the jobs is free:
+the sheet reads step NAMES out of the file and does not care which job holds
+one.
+
+Two costs are larger than any rebalancing, and no job's to fix by moving
+steps. Every step whose task depends on `build-serve` relinks `bin/m0serve`
+before it runs, about 8.5 seconds each, though its job built the binary
+first: 44 steps, about six minutes a leg across the jobs. And the `--doctor`
+smoke waits out an 8-second watchdog for each configuration that serves:
+seven of them, 56 of its 77 seconds.
 
 No job `needs:` another, and the smokes used to: that gate put `unit-tests`
 on the front of every run and caught nothing (the comment on `smoke` names
 the three runs). What it really protected against — a doc-fact drift, or a
 broken `build-all` lighting up every job at once — is answered by `Docs`.
 
-Neither smoke job compiles the example apps. `build-apps` builds each app
-into a mktemp directory and DISCARDS the binaries, so no smoke can consume
-it — every smoke either `mojo run`s its app, `mojo build`s its own copy, or
-serves through `bin/m0serve`. It is a compile gate, `poe test-gates` runs it
-in `unit-gates`, and it cost 4 minutes a leg twice over to re-answer a
-settled question. The reason is the discarded output, NOT the `needs:` that
-used to sit above it: the gate still runs on every pull request, it just no
-longer runs before the smokes, and nothing there was waiting on it.
+No smoke job compiles the example apps. `build-apps` builds each app into a
+mktemp directory and discards the binaries, but not the compile cache, which
+is what made the app smokes after it faster in the one job that ran it. There
+it saved most of what it cost, about 250 seconds of 300 on ubuntu. It would
+cost that again in each smoke job to warm that job's cache. It is a compile
+gate, and `poe test-gates` runs it in `unit-gates` on every pull request.
 
 ## The unit tests are two jobs too
 
 `poe test-all` was one step of the `unit-tests` job until it took 34-35
 minutes of that job's 40-minute cap on the ubuntu leg, and train 19 (#481)
 was cancelled at the cap, green in every step it reached. The step took 6-8
-minutes in late August and 14-18 by mid-September. Most of the growth is
-`test-shim`: 15 seconds until 2026-09-23, and about 8 minutes on ubuntu and
-13.5 on macOS since. Its sabotage runs every test once per guard, so it
-costs tests times guards: 9 tests and 10 guards then, 59 and 55 now. Then
-`test-http`, which compiles `m0-http` from source once per test file (62
-files, about 575 seconds on ubuntu, 3 of them spent running tests). Then
-the gates added since.
+minutes in late August and 14-18 by mid-September. Most of the growth was
+`test-shim`: 15 seconds until 2026-09-23, then about 8 minutes on ubuntu and
+13.5 on macOS. Its sabotage ran every test once per guard, so it cost tests
+times guards: 9 tests and 10 guards then, 59 and 55 by 2026-09-29. Since
+pull request #483 each guard runs only the test written for it, so it costs
+tests plus guards, and `test-shim` takes 26 seconds on ubuntu and 33 on
+macOS. Then `test-http`, which compiles `m0-http` from source once per test
+file (62 files, about 575 seconds on ubuntu, 3 of them spent running
+tests). Then the gates added since.
 
 So `test-all` is now `build-all` and two halves, and CI runs each half in a
 job of its own: `unit-tests` runs `poe test-packages` (the packages' tests,
@@ -141,8 +194,9 @@ their whole-package compiles and the harnesses beside them) and
 built on the packages). Locally `poe test-all` is still the whole. On the
 pull request that split them (#482), cold, `unit-tests` ran 20.7 minutes on
 ubuntu and 13.9 on macOS and `unit-gates` 20.1 and 19.8, against caps of
-40. Two halves cannot go lower while `test-shim` is 8-14 minutes in one
-piece. The split is measured, not thematic, and moving a task between the
+40. Two halves could not go lower while `test-shim` was 8-14 minutes in one
+piece; on #483, cold, `unit-gates` ran 12.7 minutes on ubuntu and 9.4 on
+macOS. The split is measured, not thematic, and moving a task between the
 halves is free. A task added to `test-all`'s own sequence, beside the
 halves, would run locally and in no job, so `check-docs` refuses anything
 `test-all` reaches that no unconditional step does.

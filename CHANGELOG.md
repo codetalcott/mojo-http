@@ -84,6 +84,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `check-docs` refuses a task that `test-all` reaches and no CI step does.
   Both jobs keep Mojo's compile cache between a pull request's runs, which
   took a warm re-run of `unit-tests` from 20.7 min to 9.2.
+- **`poe test-shim` proves each of the executor shim's rules with the test
+  written for it** (SPEC L7). Its sabotage reverted each of 55 rules and
+  ran all 59 tests against it, 3,304 runs, and took a rule as proven when
+  any test failed, even one written for another rule. Each rule now names
+  its test, only that runs, and a rule whose own test passes is unproven
+  whatever else fails, with the tests that did fail listed so the fix is
+  plain. The task took about 490 s on CI's ubuntu runner and 820 s on
+  macOS, and takes 26 s and 33 s; the `unit-gates` job went from 20.1 and
+  19.8 min to 12.7 and 9.4. Two rules whose tests no sabotage reverted
+  gain one: a finished request releases its slot's state, and a socket's
+  accept belongs to the socket, not its slot. `--sabotage-all` is the whole
+  run, kept for re-deriving the tests when rules change, and `--selftest`,
+  which the task runs first, shows on a real rule that a test that does
+  not catch it, a test the suite does not list and a patch that does not
+  apply each fail the run.
+- **CI's smokes are three jobs.** The `smoke` job had grown to a median of
+  21.4 min on the ubuntu leg, against a 30-minute cap that a runner 1.45
+  times slower, the slowest seen, would pass. It keeps the server's smokes
+  and takes m0serve's command-line and `--doctor` smokes from
+  `smoke-gateway`. A new job, `smoke-app-layer`, takes the Mojo host and
+  its applications, the m0 wheel and its scaffold, and MAX's runtime under
+  both hosts. By the step times of the 15 green runs of 2026-09-29, the
+  three come to 12 to 13.5 min on ubuntu, and each is capped at 25.
 - **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
   phase stamp, `fail()`, a server watched until it answers, a free port,
   an SSE reader and a WebSocket client, each proven by
