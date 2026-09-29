@@ -22,11 +22,15 @@ descriptors, or on macOS to the kernel's collector of descriptors in
 transit. On Linux a client's reset gives its slot back at once, a
 keep-alive request costs no `epoll_ctl`, and a request in flight at SIGTERM
 is answered. An ASGI application that installs asyncio's eager task factory
-is answered, and an `M0_INVERTED` server exits on SIGTERM. The served
-contract is unchanged; m0serve gains one flag. The fork loses about 4,400
-lines that nothing used or that the event loop replaced, its typed socket
-errors among them, which matters only to an application that imports them.
-The `m0` wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
+is answered, and an `M0_INVERTED` server exits on SIGTERM. Every listen
+wrote its address into a stack buffer of zero bytes, and no longer does;
+and a realtime hold never lets `M0-Channel` reach a client, and refuses a
+channel in the server's reserved namespace, which a client could otherwise
+use to aim a server write at another socket. The served contract is
+unchanged; m0serve gains one flag. The fork loses about 4,400 lines that
+nothing used or that the event loop replaced, its typed socket errors among
+them, which matters only to an application that imports them. The `m0`
+wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
 `PREFIX_SECURE`.
 
 ### Added
@@ -61,7 +65,8 @@ The `m0` wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
     WebSockets work through them. A POST's body timer no longer closes an
     idle keep-alive connection 30 s later (A23). A request with two `Host`
     lines is answered 400 (B10). A listen failure is reported in its own
-    words.
+    words, and a listen no longer writes its address into a stack buffer
+    of zero bytes.
   - Under `M0_WORKERS`, a supervisor signalled while it forks passes the
     stop on (D2), and a connection passed between workers is no longer lost
     (E16). Under `M0_THREADS` on Linux, the Date header no longer mixes two
@@ -327,6 +332,19 @@ The `m0` wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
 
 ### Fixed
 
+- **Listening no longer writes past the end of a stack buffer.** Every
+  listen -- m0serve's, the Mojo host's, `Server.listen_and_serve` -- binds
+  its socket through `inet_pton`, which converted the address into a
+  buffer of zero bytes: it was counted in `c_void`s, and `c_void` is
+  `NoneType`, whose size is 0. The four bytes of the address (sixteen for
+  IPv6) landed on whatever the stack held beside it. What that damaged
+  depends on how the compiler laid out the caller's frame: no crash is
+  known in a released server, and a test build in review crashed in
+  `ListenConfig.listen` with SIGSEGV. The buffer is now counted in bytes,
+  and `poe check-zero-alloca` (in `test-all`) refuses a zero-size stack
+  buffer that anything could write through, anywhere in m0serve. Found in
+  review.
+
 - **A client that leaves no longer kills a Mojo server** (SPEC A25). A
   built Mojo binary kept SIGPIPE's default action, which ends the
   process, and the kernel raises SIGPIPE when the server writes to a
@@ -343,6 +361,20 @@ The `m0` wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
   CPython they embed already ignores the signal. `smoke-host` sends a built
   server `kill -PIPE`, then a client that resets before its answer, on
   both CI legs.
+- **Under asyncio's eager task factory, an ASGI stream is stopped when its
+  client leaves** (SPEC L30). An application that installs
+  `asyncio.eager_task_factory` runs each request's first step before the
+  server has recorded which task serves the request, and a response that
+  began streaming in that step was marked on the wrong task.
+  - If an earlier request's task was still running on the same connection
+    slot, the stream was marked on that task. That covers a keep-alive
+    connection's previous request finishing its background work, and a
+    connection that had just closed. The new client leaving then cancelled
+    the other task, cutting the earlier request's background work short,
+    and the stream ran on until the server shut down.
+  - If the body came from a child task, as Starlette's `StreamingResponse`
+    sends it, the stream was marked on the child. When the client left,
+    the request was reported as failed after its response had begun.
 
 - **A supervisor, and what an application runs before its loop, survive
   SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
@@ -372,6 +404,23 @@ The `m0` wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
   empty, for every response, as m0-wsgi did for an application's head. On
   an eight-header head the writer measured within about 10 ns of the old
   one.
+
+- **`M0-Channel` no longer reaches a client, and a hold on a reserved
+  channel is refused** (SPEC G18). Under `--realtime` the server consumes
+  the `M0-Hold`/`M0-Channel` instruction headers before it holds a
+  connection, but it returned early when `M0-Hold` was absent — so a
+  response carrying only `M0-Channel` (a leftover header, or an `M0-Hold`
+  the server dropped for carrying a control byte) sent that internal
+  instruction header on to the client. `M0-Channel` is now stripped from
+  every response, whether or not a hold is taken. And a hold whose
+  `M0-Channel` names the reserved `\x01` control namespace is now served as
+  an ordinary response rather than held, the same as a hold with no channel.
+  That namespace is how the server addresses one connection's slot on its
+  event loop, and every publish path already refuses it: an application that
+  builds its channel from request data, such as a room name from a form
+  field, in which `%01` decodes to that byte, could have let a client aim a
+  server write at another client's socket. Applies to a WSGI view's hold, a
+  Mojo mount's hold and `--mount PREFIX=hold`.
 
 - **`reply.redirect` percent-encodes a control byte in its target** (SPEC
   G2). A target built from request data, such as
