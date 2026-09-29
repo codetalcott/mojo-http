@@ -3,6 +3,7 @@
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from src.json_parse import (
+    _scan_json_number,
     has_json_field,
     parse_json_bool,
     parse_json_field,
@@ -195,6 +196,37 @@ def test_parse_int_refuses_a_fraction_or_an_exponent() raises:
     assert_equal(parse_json_int('{"m":1.5,"n":9}', "n").value(), 9)
 
 
+def test_parse_int_refuses_a_leading_zero() raises:
+    """A zero before other digits is refused, as JSON's grammar refuses it.
+
+    RFC 8259 section 6: an integer part is `0` alone, or a digit 1-9 and
+    the digits after it, so `01` is not a JSON number at all -- every
+    browser's `JSON.parse` and Python's `json` refuse it. It was read as
+    1, and `-007` as -7. Zero itself and a negative zero are integers.
+    """
+    var refused = [
+        String('{"n":01}'),
+        String('{"n":00}'),
+        String('{"n":-01}'),
+        String('{"n":-007}'),
+        String('{"n":0123,"m":1}'),
+    ]
+    for body in refused:
+        var r = parse_json_int(body, "n")
+        assert_false(Bool(r), String("parse_json_int read ", body, " as an integer"))
+    var kept = [
+        (String('{"n":0}'), 0),
+        (String('{"n":-0}'), 0),
+        (String('{"n":10}'), 10),
+        (String('{"n":100 }'), 100),
+        (String('{"n":-205,"m":1}'), -205),
+    ]
+    for pair in kept:
+        var r = parse_json_int(pair[0], "n")
+        assert_true(Bool(r), String("parse_json_int refused ", pair[0]))
+        assert_equal(r.value(), pair[1])
+
+
 # --- Number extraction ---
 
 def test_parse_number_integer() raises:
@@ -217,8 +249,93 @@ def test_parse_number_missing() raises:
     assert_false(Bool(r))
 
 
+def test_parse_number_follows_the_json_grammar() raises:
+    """A value JSON would not parse as a number is refused, not read in part.
+
+    The scan took digits, then a fraction and an exponent if it saw them,
+    and converted what it had whatever came next: `12abc` read as 12, `01`
+    as 1 and `1.5.3` as 1.5. RFC 8259 section 6 is the rule now: an
+    optional `-`; `0` alone, or a digit 1-9 and its digits; a fraction of
+    `.` and at least one digit; an exponent of `e` or `E`, an optional
+    sign and at least one digit, leading zeros allowed there. And the
+    number must end where a JSON value may, at whitespace, `,`, `}`, `]`
+    or the end of the body.
+    """
+    var refused = [
+        String('{"n":12abc}'),
+        String('{"n":1e5x}'),
+        String('{"n":1.5.3}'),
+        String('{"n":1-2}'),
+        String('{"n":0x10}'),
+        String('{"n":1_000}'),
+        String('{"n":01}'),
+        String('{"n":-01.5}'),
+        String('{"n":00.5}'),
+        String('{"n":.5}'),
+        String('{"n":-.5}'),
+        String('{"n":1.}'),
+        String('{"n":1.e3}'),
+        String('{"n":1e}'),
+        String('{"n":1e+}'),
+        String('{"n":1e+,"m":1}'),
+        String('{"n":+1}'),
+        String('{"n":-}'),
+        String('{"n":--1}'),
+        String('{"n":Infinity}'),
+        String('{"n":-Infinity}'),
+        String('{"n":NaN}'),
+    ]
+    for body in refused:
+        var r = parse_json_number(body, "n")
+        assert_false(Bool(r), String("parse_json_number read ", body, " as a number"))
+    # Every value here is exact in binary, so equality is the right test.
+    var kept = [
+        (String('{"n":0}'), Float64(0)),
+        (String('{"n":-0}'), Float64(0)),
+        (String('{"n":0.5}'), Float64(0.5)),
+        (String('{"n":-0.25}'), Float64(-0.25)),
+        (String('{"n":10}'), Float64(10)),
+        (String('{"n":1e3}'), Float64(1000)),
+        (String('{"n":1E+2}'), Float64(100)),
+        (String('{"n":125e-3}'), Float64(0.125)),
+        (String('{"n":5e-01}'), Float64(0.5)),
+        (String('{"n":12,"m":1}'), Float64(12)),
+        (String('{"n":12 }'), Float64(12)),
+        (String('{"n":12\n}'), Float64(12)),
+        (String('{"a":[1],"n":12]'), Float64(12)),
+        (String('{"n":12'), Float64(12)),
+    ]
+    for pair in kept:
+        var r = parse_json_number(pair[0], "n")
+        assert_true(Bool(r), String("parse_json_number refused ", pair[0]))
+        assert_equal(r.value(), pair[1])
+    # The field's own trailing bytes are refused; a neighbour's do not matter.
+    assert_equal(parse_json_number('{"m":12abc,"n":3}', "n").value(), 3.0)
+
+
+def _scan(text: String) -> Int:
+    return _scan_json_number(text.as_bytes(), text.byte_length(), 0, integer=False)
+
+
+def test_scan_json_number_is_the_grammar_not_the_conversion() raises:
+    """The scan refuses what JSON refuses, whatever `Float64()` accepts.
+
+    The conversion behind `parse_json_number` is Mojo's own parser, and it
+    is laxer than JSON on this toolchain -- it reads `1.`, `.5`, `01`,
+    `+1`, `inf` and `nan` -- while it happens to refuse an exponent with
+    no digits. So `parse_json_number` cannot show whether the scan refuses
+    `1e` itself, and the scan's rule is pinned here, where no conversion
+    stands behind it.
+    """
+    for text in ["1e", "1E", "1e+", "1e-", "-2E ]", "1e,", "3e+}", "5.5e"]:
+        assert_equal(_scan(text), -1, String("scanned ", text, " as a number"))
+    assert_equal(_scan("1e0"), 3)
+    assert_equal(_scan("1E+05,"), 5)
+    assert_equal(_scan("-2.5e-1 "), 7)
+
+
 def test_parse_number_before_a_non_utf8_byte_does_not_trap() raises:
-    """A number followed by a byte that is not UTF-8 is read, not trapped.
+    """A number followed by a byte that is not UTF-8 is answered, not trapped.
 
     The value is cut out of a request body, and the byte after its last
     digit is whatever the client sent. The cut used to be
@@ -226,7 +343,8 @@ def test_parse_number_before_a_non_utf8_byte_does_not_trap() raises:
     POST of `{"x":1<0x80>}` killed the process on the loop thread. No app
     in the tree called this until `apps/blobs`' drop view, which is how
     it was found. The other extractors pass the same fuzz; this one alone
-    trapped.
+    trapped. A number must now end at a delimiter, so that body is
+    refused; one whose non-UTF-8 byte comes after the delimiter is read.
 
     covers: G14
     """
@@ -236,9 +354,15 @@ def test_parse_number_before_a_non_utf8_byte_does_not_trap() raises:
     b.append(UInt8(0x80))
     b.append(UInt8(ord("}")))
     var body = String(unsafe_from_utf8=Span(b))
-    var r = parse_json_number(body, "x")
+    assert_false(Bool(parse_json_number(body, "x")))
+    var d = List[UInt8]()
+    for c in String('{"x":1 ').as_bytes():
+        d.append(c)
+    d.append(UInt8(0x80))
+    d.append(UInt8(ord("}")))
+    var r = parse_json_number(String(unsafe_from_utf8=Span(d)), "x")
     assert_true(Bool(r))
-    assert_true(r.value() > 0.9 and r.value() < 1.1)
+    assert_equal(r.value(), 1.0)
     # A continuation byte right after the sign: nothing to read, no trap.
     var c = List[UInt8]()
     for ch in String('{"x":-').as_bytes():
