@@ -84,6 +84,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `check-docs` refuses a task that `test-all` reaches and no CI step does.
   Both jobs keep Mojo's compile cache between a pull request's runs, which
   took a warm re-run of `unit-tests` from 20.7 min to 9.2.
+- **CI's smokes are three jobs.** The `smoke` job had grown to a median of
+  21.4 min on the ubuntu leg, against a 30-minute cap that a runner 1.45
+  times slower, the slowest seen, would pass. It keeps the server's smokes
+  and takes m0serve's command-line and `--doctor` smokes from
+  `smoke-gateway`. A new job, `smoke-app-layer`, takes the Mojo host and
+  its applications, the m0 wheel and its scaffold, and MAX's runtime under
+  both hosts. By the step times of the 15 green runs of 2026-09-29, the
+  three come to 12 to 13.5 min on ubuntu, and each is capped at 25.
 - **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
   phase stamp, `fail()`, a server watched until it answers, a free port,
   an SSE reader and a WebSocket client, each proven by

@@ -2625,13 +2625,13 @@ _ACTION_LAPSES = [
 ]
 
 # A job that records must collect. By name, because which jobs record is the
-# fact under test: smoke-gateway's smokes call emit.py in their bodies, while
-# pid1's record from Python probes (`from emit import emit`) and name no
-# emit.py call at all -- a text scan of task bodies alone misses those -- and
-# unit-tests records coverage declarations and no measurement, which the
-# rule did not count until `--covers` was a record; unit-gates, its other
-# half, the same.
-_ENV_LAPSES = ["smoke-gateway", "pid1", "unit-tests", "unit-gates"]
+# fact under test: smoke-gateway's smokes call emit.py in their bodies, and
+# smoke-app-layer's, the third smoke job, the same, while pid1's record from
+# Python probes (`from emit import emit`) and name no emit.py call at all --
+# a text scan of task bodies alone misses those -- and unit-tests records
+# coverage declarations and no measurement, which the rule did not count
+# until `--covers` was a record; unit-gates, its other half, the same.
+_ENV_LAPSES = ["smoke-gateway", "smoke-app-layer", "pid1", "unit-tests", "unit-gates"]
 
 
 def _whole_file_blind(workflow, actions=()):

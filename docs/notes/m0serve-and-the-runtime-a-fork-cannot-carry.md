@@ -102,8 +102,8 @@ MAX-linked mount.
 ## What holds it
 
 `smoke-serve-parallel-runtime` (SPEC E33), every pull request, in the
-`smoke` job directly after the host's MAX step and under the same `max`
-group sync. `scripts/serve_parallel_probe.py` runs seven phases: the
+`smoke-app-layer` job (`smoke` until 2026-09-29) directly after the host's
+MAX step and under the same `max` group sync. `scripts/serve_parallel_probe.py` runs seven phases: the
 doctor refuses two workers and `--reload`; the server refuses two workers
 before the bind, bounded so a refusal that stopped refusing fails on the
 served prefork rather than hanging CI; the doctor passes both spawned
