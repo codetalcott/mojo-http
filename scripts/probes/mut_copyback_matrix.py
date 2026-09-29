@@ -498,7 +498,11 @@ def census(path: str) -> int:
             if p[: p.index("} noundef") + 1] not in returned:
                 continue
             total += 1
-            mojo_type = named[idx] if len(named) == len(params) else "?"
+            # KGEN appends what it adds -- a raising function's error slot,
+            # an out-pointer -- so the symbol's types name the IR's from the
+            # start. Fewer IR parameters than types means one was dropped
+            # (a zero-sized argument), and then nothing lines up.
+            mojo_type = named[idx] if idx < len(named) <= len(params) else "?"
             if sym.startswith(tree) and not mojo_type.startswith("::"):
                 ours.setdefault(mojo_type, []).append(sym.split("(")[0].split("[")[0])
     print(f"{path}: {total} struct arguments passed by value and returned "

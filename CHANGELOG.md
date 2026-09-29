@@ -8,6 +8,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **CI refuses the asyncio executor's state passed by value** (SPEC L31).
+  Mojo 1.1.0 copies a `mut` argument of 256 bytes or less into the call and
+  stores the copy back when it returns, which erased the two writes behind
+  the `M0_INVERTED` server that never exited on SIGTERM and the eager task
+  whose first-step answer was never sent (both under Fixed). `poe
+  check-copyback`, part of `test-all`, reads m0serve's LLVM IR and fails if
+  any function takes `ExecutorState` by value, or holds it inside an
+  argument that is, and on every run first shows it can fail on a control
+  written the way that code was. A sweep of every other struct the tree
+  reaches through an address found none that anything writes while a call
+  holds a copy (docs/notes/mut-arguments-and-raw-addresses.md).
+
 ### Changed
 
 - **`m0`: `Login.from_env` refuses an unset `PREFIX_SECURE`** (SPEC N43),
