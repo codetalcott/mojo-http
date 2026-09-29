@@ -34,17 +34,33 @@ answer `/pid` the same way, and has one worker mode, `fork` — the host
 refuses `M0_SPAWN_WORKERS`.
 
     python3 scripts/accept_spread.py --app-bin /tmp/host_check --modes fork
+
+Each server leads a process group of its own and is stopped with it,
+`probelib.stop`'s way: SIGTERM, GRACE_S for the drain, then SIGKILL, and
+reaped. A server that never listens is stopped the same way before the
+probe exits (it used to be left running in its session), and one that
+ignores SIGTERM costs GRACE_S rather than the CI job's cap. The per-mode
+logs go to a temporary directory, removed however the probe ends.
 """
 import argparse
 import collections
 import os
-import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
+from probelib import NotServing, phase, stamp, stop, wait_healthy
+
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# SIGTERM to SIGKILL. The probe has closed every connection before it stops a
+# server, so the drain has nothing to wait for; this bounds one that hangs.
+GRACE_S = 15.0
+
+# Which phase is running, for the crash handler: a traceback names the call
+# that raised, never the phase being proven (scripts/phase_stamp_check.py).
+stamp("accept_spread: FAIL")
 
 
 def start(bin_path, app_dir, port, workers, extra, log, app_bin=None):
@@ -57,27 +73,23 @@ def start(bin_path, app_dir, port, workers, extra, log, app_bin=None):
                "--workers", str(workers)] + extra
     p = subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT,
                          start_new_session=True, env=env)
-    t0 = time.time()
-    while time.time() - t0 < 60:
-        if p.poll() is not None:
-            raise SystemExit("the server exited %d before it listened" % p.returncode)
-        try:
-            socket.create_connection(("127.0.0.1", port), 1).close()
-            break
-        except OSError:
-            time.sleep(0.02)
-    else:
+    try:
+        wait_healthy(("127.0.0.1", port), p, timeout=60)
+    except NotServing:
+        exited = p.poll()
+        stop(p, GRACE_S, group=True)
+        if exited is not None:
+            raise SystemExit("the server exited %d before it listened" % exited)
         raise SystemExit("the server did not listen on %d within 60 s" % port)
+    except BaseException:
+        stop(p, GRACE_S, group=True)
+        raise
     time.sleep(0.3)  # every worker up, not just the first to accept
     return p
 
 
-def stop(p):
-    try:
-        os.killpg(p.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    p.wait()
+def stop_server(p):
+    stop(p, GRACE_S, group=True)
     time.sleep(0.3)
 
 
@@ -154,39 +166,40 @@ def main():
         modes = {"fork": []}
     failed = []
     port = args.port
-    for mode in [m.strip() for m in args.modes.split(",") if m.strip()]:
-        if mode not in modes:
-            raise SystemExit("unknown mode %r" % mode)
-        log_path = "accept-spread-%s.log" % mode
-        with open(log_path, "w") as log:
-            p = start(args.bin, args.app_dir, port, args.workers,
-                      modes[mode] + extra_common, log, args.app_bin)
-        try:
-            for r in range(args.rounds):
-                burst = spread(port, args.n, 0)
-                ramp = spread(port, args.n, 0.05)
-                small = spread(port, 8, 0)
-                ok = within(burst, args.ratio, args.workers)
-                print("%-5s burst %d: %-12s ramp %d @50ms: %-12s burst 8: %-10s %s"
-                      % (mode, args.n, burst, args.n, ramp, small,
-                         "ok" if ok else "SKEWED"), flush=True)
-                if not ok:
-                    failed.append((mode, burst))
-        finally:
-            stop(p)
-        with open(log_path) as log:
-            summary = [ln.strip() for ln in log if ln.startswith("Accept sharing:")
-                       and "passed" in ln]
-        for ln in summary:
-            print("      " + ln)
-        handed = sum(int(ln.split("passed ")[1].split()[0]) for ln in summary)
-        if args.expect_handoffs and handed == 0:
-            failed.append((mode, "no connection was passed between workers"))
-        try:
-            os.unlink(log_path)
-        except OSError:
-            pass
-        port += 1
+    with tempfile.TemporaryDirectory(prefix="accept-spread-") as logs:
+        for mode in [m.strip() for m in args.modes.split(",") if m.strip()]:
+            if mode not in modes:
+                raise SystemExit("unknown mode %r" % mode)
+            log_path = os.path.join(logs, "accept-spread-%s.log" % mode)
+            phase("%s: start the server on %d" % (mode, port))
+            with open(log_path, "w") as log:
+                p = start(args.bin, args.app_dir, port, args.workers,
+                          modes[mode] + extra_common, log, args.app_bin)
+            try:
+                for r in range(args.rounds):
+                    phase("%s: round %d of %d" % (mode, r + 1, args.rounds))
+                    burst = spread(port, args.n, 0)
+                    ramp = spread(port, args.n, 0.05)
+                    small = spread(port, 8, 0)
+                    ok = within(burst, args.ratio, args.workers)
+                    print("%-5s burst %d: %-12s ramp %d @50ms: %-12s burst 8: %-10s %s"
+                          % (mode, args.n, burst, args.n, ramp, small,
+                             "ok" if ok else "SKEWED"), flush=True)
+                    if not ok:
+                        failed.append((mode, burst))
+            finally:
+                # No phase of its own: an exception in flight keeps the
+                # round that raised it.
+                stop_server(p)
+            with open(log_path) as log:
+                summary = [ln.strip() for ln in log if ln.startswith("Accept sharing:")
+                           and "passed" in ln]
+            for ln in summary:
+                print("      " + ln)
+            handed = sum(int(ln.split("passed ")[1].split()[0]) for ln in summary)
+            if args.expect_handoffs and handed == 0:
+                failed.append((mode, "no connection was passed between workers"))
+            port += 1
     if args.assert_ and failed:
         for mode, burst in failed:
             if isinstance(burst, str):
