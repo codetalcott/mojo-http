@@ -134,6 +134,96 @@ def test_non_200_degrades() raises:
     assert_equal(String(resp.get_body()), "forbidden")
 
 
+def test_channel_alone_is_stripped() raises:
+    """`M0-Channel` without `M0-Hold` is a control header the application
+    left on the wire — served plainly, but the channel is stripped so it
+    never reaches the client (the `M0-Hold` may have been dropped by
+    `read_head` for a control byte; the channel must not survive it)."""
+    var resp = _response(
+        Headers(
+            Header("content-type", "text/html"),
+            Header("m0-channel", "news"),
+        ),
+        body="hi",
+    )
+    var hold = take_hold(resp)
+    assert_false(hold.held)
+    assert_equal(hold.mode, HOLD_NONE)
+    assert_false(resp.sse_streaming)
+    assert_false("m0-channel" in resp.headers)
+    assert_equal(resp.headers["content-type"], "text/html")
+    assert_equal(String(resp.get_body()), "hi")
+
+
+def test_channel_alone_is_stripped_stream_handler() raises:
+    """The same, through the SSE-only entry point."""
+    var resp = _response(
+        Headers(Header("m0-channel", "news")), body="hi"
+    )
+    var hold = take_stream_hold(resp)
+    assert_false(hold.held)
+    assert_false("m0-channel" in resp.headers)
+    assert_equal(String(resp.get_body()), "hi")
+
+
+def test_reserved_channel_degrades_and_strips() raises:
+    """A channel in the reserved control namespace (leading 0x01) is refused
+    the way a missing channel is: served as the ordinary response, both
+    instruction headers stripped. Such a name addresses a connection slot on
+    the loop, and `%01` in a form field decodes to a real 0x01 that
+    `read_head` does not drop.
+
+    covers: G18
+    """
+    var resp = _response(
+        Headers(
+            Header("content-type", "text/html"),
+            Header("m0-hold", "stream"),
+            Header("m0-channel", "\x01h/0/0"),
+        ),
+        body="hi",
+    )
+    var hold = take_stream_hold(resp)
+    assert_false(hold.held)
+    assert_equal(hold.mode, HOLD_NONE)
+    assert_false(resp.sse_streaming)
+    assert_false("m0-hold" in resp.headers)
+    assert_false("m0-channel" in resp.headers)
+    assert_equal(resp.headers["content-type"], "text/html")
+    assert_equal(String(resp.get_body()), "hi")
+
+
+def test_reserved_channel_degrades_a_websocket_hold() raises:
+    """A websocket hold naming a reserved channel is refused too: the socket
+    hold subscribes the loop's registry under the channel exactly as an SSE
+    hold does, so the same name would reach it."""
+    var resp = _response(
+        Headers(
+            Header("m0-hold", "websocket"),
+            Header("m0-channel", "\x01P/0/0/7"),
+        ),
+        body="hi",
+    )
+    var hold = take_hold(resp)
+    assert_false(hold.held)
+    assert_equal(hold.mode, HOLD_NONE)
+    assert_false("m0-hold" in resp.headers)
+    assert_false("m0-channel" in resp.headers)
+    assert_equal(String(resp.get_body()), "hi")
+
+
+def test_ordinary_channel_with_control_byte_inside_still_holds() raises:
+    """The refusal is a LEADING 0x01 only — a name that merely contains one
+    elsewhere is an ordinary (if unusual) channel and still holds, matching
+    `channel_is_reserved`."""
+    var resp = _response(
+        Headers(Header("m0-hold", "stream"), Header("m0-channel", "a\x01b"))
+    )
+    var hold = take_stream_hold(resp)
+    assert_true(hold.held)
+    assert_equal(hold.channel, "a\x01b")
+
+
 # --- WebSocket holds ---------------------------------------------------------
 
 

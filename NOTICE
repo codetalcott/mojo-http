@@ -1087,6 +1087,17 @@ lightbug_http
         descriptor's, a new one taking the lowest free number (review
         record B27).
 
+      - hold.mojo (2026-09-29): `take_hold` strips `M0-Channel` on every
+        response it runs on, an orphan one included -- it returned before
+        the pop when `M0-Hold` was absent, so a response carrying only
+        `M0-Channel` (a leftover, or an `M0-Hold` the bridge dropped for a
+        control byte) leaked an internal instruction header to the client;
+        and it refuses a channel in the reserved `\x01` namespace as it
+        refuses a missing one, the namespace `channel_is_reserved` guards at
+        every other publish boundary, since `%01` in a form field decodes to
+        a real 0x01 the bridge does not drop and such a name addresses a
+        connection slot on the loop (review record Hold).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
