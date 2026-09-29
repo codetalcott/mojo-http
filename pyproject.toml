@@ -1069,7 +1069,7 @@ sequence = ["build-all", "check-fork-package", "check-host-package", "test-core"
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
-# apps/hello imports only lightbug_http, but lightbug_http/event_loop.mojo
+# apps/hello imports only lightbug_http, but lightbug_http/loop/state.mojo
 # imports m0_http.log, which was built against m0-core — so both -I paths are
 # required even though server.mojo names neither.
 
@@ -3150,7 +3150,7 @@ python3 scripts/emit.py --covers E16 --task smoke-accept-spread
 
 # SPEC C8. A burst of new connections does not hold the loop away from the
 # connections it already serves: one pass admits at most ACCEPT_BATCH of
-# them (event_loop.mojo), AFTER the events of the connections it holds,
+# them (loop/accept.mojo), AFTER the events of the connections it holds,
 # and carries what the batch leaves to the next pass, whose wait does not
 # block. Measured before (Linux): a keep-alive /fast waited 625 ms behind
 # 120 queued 5 ms requests, epoll's drain running to EAGAIN. The app is

@@ -117,10 +117,11 @@ including three SQLite invariants that look like bugs and are not, is
 
 There is one cycle, and it is intentional: files throughout `m0-http/src/`
 import from `lightbug_http` — `cors`, `signal`, `auth` and `multiworker` among
-them — and ONE fork file imports back: `lightbug_http/event_loop.mojo`
-imports `m0_http.log`. Both sides live inside `packages/m0-http/`, so the
-cycle never crosses a package boundary. **That edge has a consequence:
-nothing in `src/` may reach `event_loop.mojo`, at any depth** (DECISIONS
+them — and ONE fork file imports back: `lightbug_http/loop/state.mojo`, a
+module of the event loop, imports `m0_http.log`. Both sides live inside
+`packages/m0-http/`, so the cycle never crosses a package boundary. **That
+edge has a consequence: nothing in `src/` may reach the event loop —
+`event_loop.mojo` or any module of `loop/` — at any depth** (DECISIONS
 D33). `m0_http.log` resolves through `m0_http.mojoc`, which is the file
 `build-http` is writing while it compiles `src/`, so a `src/` module that
 names `run_event_loop` fails with `invalid magic bytes` from a clean
@@ -549,8 +550,8 @@ A `.mojoc` does not bundle its dependencies, so a consumer passes every `-I` in
 the chain, and apps add `-I apps/` for their own sibling modules
 (`datastar_counter.page`). The non-obvious case: `apps/hello/server.mojo`
 imports only `lightbug_http` yet still needs `-I packages/m0-core`, because the
-back-edge pulls it in — `event_loop.mojo` → `m0_http.log` →
-`m0_core.json_escape`.
+back-edge pulls it in — `event_loop.mojo` → `loop/state.mojo` →
+`m0_http.log` → `m0_core.json_escape`.
 
 ## The handler contract
 

@@ -112,7 +112,7 @@ answered when the budget ran out rather than when it was done. The pump
 does not have the bug because its drain runs on the Mojo thread while
 asyncio keeps running on another.
 
-`_run_shutdown` is now three functions in `event_loop.mojo` —
+`_run_shutdown` is now three functions, in `loop/shutdown.mojo` —
 `_shutdown_begin` (leave accept sharing, close the listener, farewell the
 streams, stop watching the shutdown pipe, stamp the deadline),
 `_shutdown_drain_step` (ONE pass, with the blocking wait as a parameter,

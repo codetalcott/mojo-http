@@ -117,7 +117,7 @@ because on Mojo 1.0 an application's conformance to `AppHandler` and
 `Producer` behind a `.mojoc` got no witness table; Mojo 1.1.0 fixed that
 and the file left the fork on 2026-09-18 (DECISIONS D28, retired;
 docs/notes/the-host-leaves-the-fork.md). It is NOT inside `m0_http`, and
-cannot be: this file names `run_event_loop`, `event_loop.mojo` imports
+cannot be: this file names `run_event_loop`, `event_loop.mojo` reaches
 `m0_http.log`, and that resolves through `m0_http.mojoc` -- the file
 `build-http` would be writing while it compiled this one (`invalid magic
 bytes`, from a clean build and every one after; a function-local import

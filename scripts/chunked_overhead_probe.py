@@ -8,7 +8,7 @@ a body of one-byte chunks is six bytes on the wire for every byte delivered,
 and the decoded cap alone leaves the raw stream bounded only by the abuse-ratio
 guard -- which needs 100 KB of charged overhead before it can fire. The second
 bound is `chunk_decoder._total_read > 2 * max_request_body_size`, in
-`event_loop.mojo`.
+`loop/request.mojo`.
 
 Nothing exercised it. The unit suite covers the ratio guard
 (`test_a_body_that_is_mostly_framing_still_trips_the_abuse_guard`) and the

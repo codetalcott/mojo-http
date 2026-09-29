@@ -4,7 +4,8 @@
 > `smoke-accept-batch` on both CI legs, the probe is
 > `scripts/accept_batch_probe.py` against `apps/pool_spike` with `func` on
 > the loop, and the mechanism is `ACCEPT_BATCH` in
-> `packages/m0-http/lightbug_http/event_loop.mojo`.
+> `packages/m0-http/lightbug_http/loop/state.mojo` and the batches in
+> `loop/accept.mojo`.
 
 ## The finding
 
