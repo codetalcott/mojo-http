@@ -63,7 +63,9 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
 
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http.offload import OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP
+from lightbug_http.offload import (
+    OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP, ns_left, stop_deadline,
+)
 from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
 from lightbug_http.http.common_response import InternalError
 from lightbug_http.service import HTTPService
@@ -300,24 +302,29 @@ struct PoolThreads(Movable):
         peer does not wake a blocked `recv` on a connected SOCK_DGRAM pair
         (`OffloadPool.stop`). Lane 0 goes last because its `stop` also
         closes the descriptor.
+
+        The pills and the join share ONE deadline (`stop_deadline`): `stop`
+        waits for room to pill a thread on a full lane, and that wait is
+        part of `timeout_ns`, never added to it.
         """
         if not self.started:
             return 0
+        var deadline = stop_deadline(timeout_ns)
         for lane in range(1, len(pool.lane_prefixes)):
             var n = 0
             for i in range(len(self._lanes)):
                 if self._lanes[i] == lane:
                     n += 1
             if n > 0:
-                pool.stop(n, lane)
+                pool.stop(n, lane, deadline)
         var zero = 0
         for i in range(len(self._lanes)):
             if self._lanes[i] <= 0:
                 zero += 1
         if zero > 0:
-            pool.stop(zero, 0)
+            pool.stop(zero, 0, deadline)
         if timeout_ns >= 0:
-            self.stragglers = self._set.join_within(timeout_ns)
+            self.stragglers = self._set.join_within(ns_left(deadline))
         else:
             self._set.join_all()
         var failed = 0

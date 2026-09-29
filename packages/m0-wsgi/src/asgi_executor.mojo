@@ -45,7 +45,9 @@ from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
-from lightbug_http.offload import OffloadPool, stream_gen_seed, COMPLETE_BATCH_MAX
+from lightbug_http.offload import (
+    OffloadPool, stream_gen_seed, COMPLETE_BATCH_MAX, ns_left, stop_deadline,
+)
 from lightbug_http.event_loop import (
     LoopState,
     prepare_loop,
@@ -172,14 +174,19 @@ struct AsgiExecutor(Movable):
         the executor never wakes and this join hangs forever rather than
         failing. That is exactly what a mounted server's SIGTERM did
         before the pills named their lanes.
+
+        An executor never registers, so its pill rides the lane socket
+        behind any inbound WebSocket messages there, and `stop` waits for
+        room; the pills and the join share one deadline (`stop_deadline`).
         """
         if not self._started:
             return 0
+        var deadline = stop_deadline(timeout_ns)
         for i in range(len(self._lanes)):
             var lane = self._lanes[i]
-            pool.stop(1, lane if lane > 0 else 0)
+            pool.stop(1, lane if lane > 0 else 0, deadline)
         if timeout_ns >= 0:
-            self.stragglers = self._set.join_within(timeout_ns)
+            self.stragglers = self._set.join_within(ns_left(deadline))
         else:
             self._set.join_all()
         var failed = 0

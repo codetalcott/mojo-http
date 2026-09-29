@@ -152,7 +152,7 @@ channel are sized for that many.
 """
 
 from std.collections import Optional
-from std.ffi import c_int, external_call
+from std.ffi import ErrNo, c_int, external_call
 
 from lightbug_http.c.kqueue import set_nonblocking
 from lightbug_http.c.socket import (
@@ -164,7 +164,7 @@ from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.ring import Ring, atomic_at
 from std.atomic import Atomic
 from std.os import getenv
-from std.time import perf_counter_ns
+from std.time import perf_counter_ns, sleep
 
 
 comptime OFFLOAD_MAX_INFLIGHT = 256
@@ -492,6 +492,56 @@ def send_bounded(fd: Int, datagram: Span[Byte, _], tries: Int = SEND_TRIES) -> B
             return True
         _sched_yield()
     return False
+
+
+comptime PILL_WAIT_NS = 5_000_000_000
+"""How long `OffloadPool.stop` waits for room to pill a thread that parks
+on its lane's socket, when its caller gives no deadline: the 5 s of the
+join that follows it (`m0_http.mojo_pool.JOIN_TIMEOUT_NS`). A caller that
+joins shares its own deadline instead (`stop_deadline`), so the two waits
+are one bound and never stack."""
+
+
+def stop_deadline(timeout_ns: Int) -> Int:
+    """The deadline a pool's `stop_and_join` gives both its pills and its
+    join: `timeout_ns` from now, or no deadline at all for a negative
+    one, whose join is unbounded too."""
+    if timeout_ns < 0:
+        return Int.MAX
+    return perf_counter_ns() + timeout_ns
+
+
+def ns_left(deadline_ns: Int) -> Int:
+    """What is left of `deadline_ns`: never negative, so a join handed it
+    looks once and returns."""
+    var left = deadline_ns - perf_counter_ns()
+    return left if left > 0 else 0
+
+
+def _offer_until(fd: Int, datagram: List[UInt8], deadline_ns: Int) -> Bool:
+    """Offer `datagram` to `fd` until it is taken or `deadline_ns` passes;
+    whether it went. Offered once whatever the deadline.
+
+    For a datagram only its receiver can make room for, by reading: a
+    pill for a thread still inside a view, behind the inbound WebSocket
+    messages on its lane. `send_bounded`'s 64 yields are microseconds,
+    and a full lane stays full for as long as the view runs. Waits only
+    on a FULL channel -- EAGAIN, or ENOBUFS, macOS's word for a datagram
+    queue with no room -- a millisecond between offers; any other failure
+    is final at once, so a closed lane costs nothing. BLOCKS: shutdown's,
+    never the loop's."""
+    while True:
+        try:
+            _ = send(FileDescriptor(fd), Span(datagram), UInt(len(datagram)), 0)
+            return True
+        except e:
+            if not (
+                e.would_block() or e.interrupted() or e.errno == ErrNo.ENOBUFS
+            ):
+                return False
+        if perf_counter_ns() >= deadline_ns:
+            return False
+        sleep(0.001)
 
 
 def append_i64_le(mut out: List[UInt8], value: Int):
@@ -1958,7 +2008,7 @@ struct OffloadPool(Movable):
         self.responses[slot] = None
         self.errored[slot] = False
 
-    def stop(mut self, threads: Int, lane: Int = 0):
+    def stop(mut self, threads: Int, lane: Int = 0, deadline_ns: Int = 0):
         """Retire the pool: exactly one poison job per thread, then close.
 
         **The pills are the whole mechanism, and `threads` must equal the
@@ -1967,6 +2017,22 @@ struct OffloadPool(Movable):
         `BlockingPool.stop_and_join` is what makes the count structural rather
         than a coincidence between two call sites; prefer it to calling this
         directly.
+
+        **So a pill is never dropped for want of room.** A thread that
+        never registered -- a test's, an executor, every thread under the
+        eager rules or without rings -- parks on the lane socket, and its
+        pill rides the socket behind whatever is queued there: inbound
+        WebSocket messages, 64 KB each at most, which fill it while every
+        thread of the lane is inside a view. The pill used to be offered
+        once, non-blocking, and a refusal ignored; the thread came back,
+        took the messages and parked on an empty socket for good. Now each
+        is offered until it is taken (`_offer_until`) -- room appears as
+        soon as a thread reads -- or until `deadline_ns`, which a caller
+        that joins shares with its join (`stop_deadline`, `ns_left`) so
+        the two waits are one bound; 0 means `PILL_WAIT_NS` from now. A
+        thread that never reads again is the join's straggler either way.
+        This BLOCKS for as long as a view keeps its thread: call it where
+        the join is called, detached, never on the loop.
 
         The close that follows is NOT a backstop, whatever it looks like. An
         earlier version of this docstring claimed it was, and the claim cost a
@@ -2002,14 +2068,12 @@ struct OffloadPool(Movable):
             _ = send_bounded(own, Span(pill))
             pilled += 1
         var lane_write = self.submit_write_fd(lane)
+        var until = (
+            deadline_ns if deadline_ns > 0
+            else perf_counter_ns() + PILL_WAIT_NS
+        )
         for _ in range(threads - pilled):
-            try:
-                _ = send(
-                    FileDescriptor(lane_write),
-                    Span(pill), UInt(len(pill)), 0,
-                )
-            except:
-                pass
+            _ = _offer_until(lane_write, pill, until)
         # Only lane 0's descriptor is released here. A lane's write end is
         # the loop's, and the loop outlives this call for the other lanes'
         # workers; the process exit releases them.

@@ -43,8 +43,8 @@ SABOTAGES = [
     ),
     (
         "one pill too few (a thread parks forever)",
-        "        if zero > 0:\n            pool.stop(zero, 0)",
-        "        if zero > 1:\n            pool.stop(zero - 1, 0)",
+        "        if zero > 0:\n            pool.stop(zero, 0, deadline)",
+        "        if zero > 1:\n            pool.stop(zero - 1, 0, deadline)",
         True,
     ),
     (

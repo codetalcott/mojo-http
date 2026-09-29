@@ -28,7 +28,9 @@ from lightbug_http.offload import (
 )
 from lightbug_http.uri import URI
 
-from src.threads import ThreadSet, ThreadBlock, BLK_USER, BLK_STATUS, STATUS_OK
+from src.threads import (
+    ThreadSet, ThreadBlock, BLK_USER, BLK_STATUS, BLK_LANE, STATUS_OK,
+)
 
 
 def _read_ack(fd: Int) raises -> Tuple[Int, Int]:
@@ -1676,6 +1678,110 @@ def test_a_burst_into_a_parked_lane_wakes_one_thread() raises:
     var a = threads.block(0).get(_BLK_SERVED)
     var b = threads.block(1).get(_BLK_SERVED)
     assert_true(a == 4 or b == 4)
+
+
+comptime _BLK_TOOK = 13
+"""Block slot `_unregistered_thread` sets once it holds its slow job."""
+
+
+def _unregistered_thread(arg: Int) -> Int:
+    """A pool thread that never registers -- a test's, or every thread
+    under the eager rules (`M0_POOL_ELASTIC=0`) and without rings -- so it
+    parks on its lane's socket and its pill has to come through that
+    socket. Serves the lane in `BLK_LANE` until the pill; `_SLOW_SLOT`
+    holds it for `_SLOW_HOLD_S`, and anything that is not a request (an
+    inbound WebSocket message) is taken and skipped."""
+    var block = ThreadBlock(arg)
+    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+        unsafe_from_address=block.get(BLK_USER)
+    )[]
+    var lane = block.get(BLK_LANE)
+    var buf = _job_buffer()
+    while True:
+        var job = pool.next_job(lane, buf)
+        if job.kind == JOB_STOP:
+            break
+        if job.kind != JOB_REQUEST:
+            continue
+        _ = pool.take_request(job.slot)
+        if job.slot == _SLOW_SLOT:
+            block.set(_BLK_TOOK, 1)
+            sleep(_SLOW_HOLD_S)
+        pool.put_response(job.slot, OK(String("x")))
+        pool.complete(job.slot)
+    block.set(BLK_STATUS, STATUS_OK)
+    return 0
+
+
+def test_stop_pills_an_unregistered_thread_through_a_full_lane() raises:
+    """`stop` waits for room to pill a thread that never registered.
+
+    Such a thread parks on its lane's socket, so its pill rides that
+    socket, and the socket also carries inbound WebSocket messages. Here
+    the one thread of lane 1 is inside a 200 ms view while messages fill
+    the lane until it refuses one, and then the pool is stopped. `stop`
+    used to offer that pill with ONE non-blocking send and ignore a
+    refusal: the thread came back, took the messages, and parked on an
+    empty socket for good -- `pthread_join` never returned, and a
+    bounded join (`JOIN_TIMEOUT_NS`) abandoned it. On the ring and on the
+    datagram hand-off (`M0_POOL_RING=0`). Lane 1, because stopping lane
+    0 closes its write end, and the rescue below must be able to pill the
+    thread again: a lost pill fails this test inside a few seconds rather
+    than hanging it.
+    """
+    for ring_off in range(2):
+        var pool = _pool(ring_off == 1)
+        pool.add_lane(String(""))
+        pool.add_lane(String("/x"))
+        var threads = ThreadSet(1)
+        var body = _unregistered_thread
+        var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
+        threads.block(0).set(BLK_USER, pool.addr())
+        threads.block(0).set(BLK_LANE, 1)
+        threads.spawn(0, body_addr)
+        pool.park_request(_SLOW_SLOT, _request("/x/slow"))
+        assert_true(pool.submit(_SLOW_SLOT, String("/x/slow")))
+        var deadline = perf_counter_ns() + 2_000_000_000
+        while (
+            threads.block(0).get(_BLK_TOOK) == 0
+            and perf_counter_ns() < deadline
+        ):
+            sleep(0.0005)
+        var took = threads.block(0).get(_BLK_TOOK) == 1
+        # The thread is inside its view: nothing reads the lane until it
+        # comes back, so messages fill it -- large ones, then smaller, down
+        # to an empty one, which is a datagram longer than a pill: a lane
+        # full for the last of them has no room for the pill either.
+        var sent = 0
+        var refused = False
+        for size in [60000, 4096, 256, 0]:
+            var payload = List[UInt8](capacity=size)
+            for _ in range(size):
+                payload.append(0x61)
+            refused = False
+            while took and sent < 100_000:
+                if not pool.send_ws_message(
+                    1, 0, 1, String("c"), Span(payload)
+                ):
+                    refused = True
+                    break
+                sent += 1
+        pool.stop(1, 1)
+        var left = threads.join_within(3_000_000_000)
+        if left != 0:
+            # The pill was lost: the thread has taken the messages and is
+            # parked on an empty socket. Pill it again so the suite ends.
+            pool.stop(1, 1)
+            threads.join_all()
+        assert_true(took, "the thread never took its slow job")
+        assert_true(refused, "the lane never filled")
+        assert_true(sent > 0)
+        assert_equal(
+            left, 0, "a thread that never registered missed its pill"
+        )
+        var done = pool.drain_completions()
+        assert_equal(len(done), 1)
+        _ = pool.take_response(_SLOW_SLOT)
 
 
 def _ensure_descriptors(want: Int):
