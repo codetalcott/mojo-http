@@ -34,20 +34,24 @@ running the gate against a stale artifact tests a tree nobody has, in
 either direction. The app's own file needs no rebuild: the smoke compiles
 `server.mojo` itself.
 
+A sabotage that does not build -- `build-http`, or the app the smoke
+compiles -- reverted nothing, so it is a miss, never a catch; an anchor
+must match exactly once; and SIGINT or SIGTERM puts every file back
+(`sabotage_lib.py` owns everything around the table).
+
 Minutes rather than seconds, so it is pre-release rather than per-PR.
 
     python3 scripts/notes_login_sabotage.py
+    python3 scripts/notes_login_sabotage.py --only "CSRF"    rules by label substring
 """
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-from sabotage_lib import own_tmpdir
+from sabotage_lib import (DIAGNOSTIC, POE, Command, Gate, Outcome, last_line, rule,
+                          run, run_command)
 
 SESSION = Path("packages/m0-http/src/session.mojo")
 GRANT = Path("packages/m0-http/src/grant.mojo")
@@ -199,6 +203,9 @@ layer is not sabotaged on its own: with every session guard in place it
 is unreachable, which is what a layer under another one means."""
 
 
+RULES = [rule(label, path, old, new) for label, path, old, new in SABOTAGES]
+
+
 # What `m0_http.mojoc` was last built from. The app resolves `m0_http`
 # through that file, so the gate tests the tree only while this matches
 # the LAYER files on disk -- and it stops matching on the RESTORE as well as
@@ -210,25 +217,23 @@ is unreachable, which is what a layer under another one means."""
 _built_session = None
 
 
-def sync_build() -> bool:
-    """Rebuild `m0-http` if a package source has moved since the last build."""
+def sync_build() -> Outcome | None:
+    """Rebuild `m0-http` if a package source has moved since the last
+    build: None once the artifact matches the tree, else why it does not."""
     global _built_session
     have = "".join(p.read_text() for p in LAYER)
     if have == _built_session:
-        return True
-    p = subprocess.run(["uv", "run", "poe", "build-http"],
-                       capture_output=True, text=True, timeout=1800)
+        return None
+    p = run_command([POE, "build-http"], timeout=1800)
+    if p.timed_out:
+        return Outcome.unbuilt("`poe build-http` timed out", p.output)
     if p.returncode != 0:
-        return False
+        said = DIAGNOSTIC.search(p.output)
+        return Outcome.unbuilt(
+            "`poe build-http`: " + (said.group(0).strip() if said else last_line(p.output)),
+            p.output)
     _built_session = have
-    return True
-
-
-def run_gate() -> tuple[bool, str]:
-    """Run the smoke. True = it PASSED."""
-    p = subprocess.run(["uv", "run", "poe", "smoke-fragment-notes"],
-                       capture_output=True, text=True, timeout=1800)
-    return p.returncode == 0, p.stdout + p.stderr
+    return None
 
 
 def _detail(out: str) -> str:
@@ -248,61 +253,37 @@ def _detail(out: str) -> str:
     return "  (no assertion message — check the log)"
 
 
-def main() -> int:
-    originals = {p: p.read_text() for p in (*LAYER, APP)}
-    tmp = Path(tempfile.mkdtemp())
-    for p, text in originals.items():
-        (tmp / p.name).write_text(text)
+# The smoke builds the app from source, so a sabotage the app does not
+# compile with shows as the build's diagnostic: a miss, never a catch.
+SMOKE = Command([POE, "smoke-fragment-notes"], passes="smoke-fragment-notes OK",
+                builds=True, timeout=1800, detail=lambda out: _detail(out).strip())
 
-    print("baseline (unsabotaged) must PASS:")
-    if not sync_build():
-        print("  FAIL  baseline build")
-        return 1
-    ok, out = run_gate()
-    print(f"  {'ok' if ok else 'FAIL'}  baseline")
-    if not ok:
-        print(out[-1500:])
-        return 1
 
-    failures = []
-    for label, path, old, new in SABOTAGES:
-        original = originals[path]
-        if old not in original:
-            print(f"  FAIL  anchor missing: {label}")
-            failures.append(label)
-            continue
-        path.write_text(original.replace(old, new, 1))
-        try:
-            if not sync_build():
-                # A sabotage that does not build reverted nothing, and a
-                # rule nobody reverted is a rule nobody showed to be guarded.
-                print(f"  BAD   {label} (does not build)")
-                failures.append(label)
-                path.write_text(original)
-                continue
-            ok, out = run_gate()
-        except subprocess.TimeoutExpired:
-            ok, out = False, "(timed out — itself a failure)"
-        path.write_text(original)
-        good = not ok
-        print(f"  {'ok  ' if good else 'BAD '}  {label}{_detail(out) if good else ''}")
-        if not good:
-            failures.append(label)
+class NotesGate(Gate):
+    """`m0_http.mojoc` brought up to the tree, then the smoke."""
 
-    for p, text in originals.items():
-        shutil.copy(tmp / p.name, p)
-    sync_build()
+    def run(self, texts) -> Outcome:
+        return sync_build() or SMOKE.run(texts)
 
-    print()
-    if failures:
-        print(f"{len(failures)} rule(s) not covered:")
-        for f in failures:
-            print(f"  - {f}")
-        return 1
-    print(f"all {len(SABOTAGES)} notes-login rule(s) are guarded")
-    return 0
+
+def finish(interrupted: bool) -> bool:
+    """Leave `m0_http.mojoc` built from the restored tree, not the last
+    sabotage: every app outside this run resolves `m0_http` through it."""
+    if interrupted:
+        print("m0_http.mojoc may still hold a sabotage: run `uv run poe build-http`",
+              flush=True)
+        return False
+    failed = sync_build()
+    if failed is not None:
+        print(f"rebuilding m0-http from the restored tree FAILED: {failed.detail}",
+              flush=True)
+        return False
+    return True
+
+
+def main(argv: list[str]) -> int:
+    return run("sabotage-notes-login", RULES, NotesGate(), argv, finish=finish)
 
 
 if __name__ == "__main__":
-    with own_tmpdir("sabotage-notes-login"):
-        sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

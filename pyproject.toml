@@ -5080,7 +5080,8 @@ python3 scripts/emit.py --covers M27 --task smoke-blobs-image
 # rather than measured, no relocation, three footer or /about lies, and a
 # producer never told to stop -- each required to fail in the probe phase or
 # the build step it names. Builds from temporary copies; edits nothing
-# tracked. Pre-release: ten image builds, a layer or two each.
+# tracked. Pre-release: two unsabotaged baseline builds, then ten sabotaged
+# ones, a layer or two each.
 [tool.poe.tasks.sabotage-mojo-image]
 help = "PRE-RELEASE: build ten sabotaged Mojo images and insist smoke-blobs-image fails each where it should (SPEC M26, M27)"
 cmd = "python3 scripts/mojo_image_sabotage.py"
@@ -7133,7 +7134,7 @@ python3 scripts/emit.py --covers I21 --task smoke-hold-mount
 # login existed, but "would it notice if the check were gone".
 [tool.poe.tasks.sabotage-notes-login]
 help = "PRE-RELEASE: revert each session/CSRF rule and insist smoke-fragment-notes fails"
-shell = "python3 scripts/notes_login_sabotage.py"
+cmd = "python3 scripts/notes_login_sabotage.py"
 
 # PRE-RELEASE: rebuilds m0serve per sabotage, so minutes rather than seconds.
 [tool.poe.tasks.sabotage-outbox-cap]

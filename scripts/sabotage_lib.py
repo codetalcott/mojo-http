@@ -7,9 +7,13 @@ rule, insists the gate FAILS, and puts the rule back. A guard nobody has
 broken on purpose is a guard nobody knows works. Each harness keeps its own
 rule table; this module is everything around it:
 
-  - `Rule`, and `rule()` to turn a table row into one;
+  - `Rule`, and `rule()` to turn a table row into one -- an anchor of None
+    PLANTS a file that must not exist, and the restore removes it;
   - anchors that must match EXACTLY ONCE, overlapping matches counted: zero
     or two is an error naming the file and the anchor;
+  - two gates: `MojoRun`, a `mojo run` judged by the driver's own words,
+    and `Command`, a smoke or a probe judged by its exit status and pass
+    text;
   - a backup of every file a run edits, keyed by its RELATIVE path, and a
     restore after every rule and again on the way out, in `finally`, with
     SIGINT, SIGTERM and SIGHUP turned into an exception so that path runs,
@@ -34,7 +38,8 @@ Verdicts
                                never ran and proved nothing (B15)
     MISSED (failed elsewhere)  the gate failed, but not in its own words: not
                                on the text the rule names, or with no sign
-                               that it ran at all
+                               that it ran at all; the last lines it printed
+                               follow
     NOT APPLICABLE             an anchor matches zero times or more than
                                once, or the edit changes nothing: the table
                                is stale, so re-point the anchor with the line
@@ -159,10 +164,12 @@ _WIDTH = max(len(v) for v in _VERDICTS) + 2
 
 @dataclass(frozen=True)
 class Edit:
-    """One replacement: `old` must occur exactly once in `path`."""
+    """One replacement: `old` must occur exactly once in `path`. An `old` of
+    None PLANTS the file instead: it must not exist, `new` is its whole
+    text, and putting the tree back removes it."""
 
     path: Path
-    old: str
+    old: str | None
     new: str
 
 
@@ -225,15 +232,22 @@ def _shown(anchor: str) -> str:
     return repr(first.strip()[:90]) + (f" (+{more} more line(s))" if more else "")
 
 
-def apply(r: Rule, texts: Mapping[Path, str]) -> dict[Path, str]:
-    """The texts of `r`'s files with the rule broken, or AnchorError."""
-    out: dict[Path, str] = {}
+def apply(r: Rule, texts: Mapping[Path, str | None]) -> dict[Path, str]:
+    """The texts of `r`'s files with the rule broken, or AnchorError. A file
+    that does not exist is missing from `texts`, or None in it."""
+    out: dict[Path, str | None] = {}
     for e in r.edits:
         if e.path not in out:
-            if e.path not in texts:
+            have = texts.get(e.path)
+            if have is None and e.old is not None:
                 raise AnchorError(f"{e.path}: no such file")
-            out[e.path] = texts[e.path]
+            out[e.path] = have
     for e in r.edits:
+        if e.old is None:
+            if out[e.path] is not None:
+                raise AnchorError(f"{e.path}: the rule plants this file, and it exists")
+            out[e.path] = e.new
+            continue
         if not e.old:
             raise AnchorError(f"{e.path}: the anchor is empty")
         n = occurrences(out[e.path], e.old)
@@ -242,7 +256,7 @@ def apply(r: Rule, texts: Mapping[Path, str]) -> dict[Path, str]:
                 f"{e.path}: the anchor matches {n} time{'' if n == 1 else 's'}, "
                 f"not exactly once: {_shown(e.old)}")
         out[e.path] = out[e.path].replace(e.old, e.new, 1)
-    if all(out[p] == texts[p] for p in out):
+    if all(out[p] == texts.get(p) for p in out):
         raise AnchorError(f"{r.edits[0].path}: the edit changes nothing")
     return out
 
@@ -436,8 +450,9 @@ class Outcome:
 class Gate:
     """What a harness runs to judge the tree: `run(texts)` gets the text of
     every file the rule touches -- sabotaged, or the originals for the
-    baseline. A gate that reads the tree from disk ignores it; one that
-    compiles a copy (`run(..., write=False)`) reads it."""
+    baseline, where a file a rule plants is None. A gate that reads the tree
+    from disk ignores it; one that compiles a copy (`run(..., write=False)`)
+    reads it."""
 
     def run(self, texts: Mapping[Path, str]) -> Outcome:  # pragma: no cover
         raise NotImplementedError
@@ -564,6 +579,67 @@ class MojoRun(Gate):
                                f"diagnostic: {last_line(built.output)}", built.output)
 
 
+class Command(Gate):
+    """A command the harness runs as its gate -- a poe smoke, a probe --
+    judged by its exit status and its own pass text. It reads the tree from
+    disk, so it ignores the texts it is handed.
+
+      passed   exit 0, with `passes` in the output.
+      unbuilt  only with `builds=True`, for a command that compiles what the
+               rules edit (`poe smoke-host` building `apps/host_check`): a
+               Mojo diagnostic in the output. The sabotaged source did not
+               build, so nothing after the build ran.
+      failed   any other failure, with `detail(output)` as the line that
+               says why -- a smoke's own assertion, which a rule's `expect`
+               can insist on. A timeout is one too (`hung: ...`): a smoke
+               owns its build and its timeouts, so a hang is the sabotaged
+               tree's answer, as the harnesses before this one counted it.
+      unclear  exit 0 without `passes`: the gate neither passed nor said
+               what failed.
+
+    `env` is laid over this process's environment as the command starts, so
+    the command sees the TMPDIR `own_tmpdir` set; a value of None removes
+    the name.
+    """
+
+    def __init__(self, argv: Sequence, *, passes: str,
+                 env: Mapping[str, str | None] | None = None, timeout: float = 600,
+                 builds: bool = False, detail: Callable[[str], str] = last_line):
+        self.argv = [str(a) for a in argv]
+        self.passes = passes
+        self.env = dict(env or {})
+        self.timeout = timeout
+        self.builds = builds
+        self.detail = detail
+
+    def _environment(self) -> dict | None:
+        if not self.env:
+            return None
+        env = dict(os.environ)
+        for k, v in self.env.items():
+            if v is None:
+                env.pop(k, None)
+            else:
+                env[k] = v
+        return env
+
+    def run(self, texts: Mapping[Path, str] | None = None) -> Outcome:
+        ran = run_command(self.argv, timeout=self.timeout, env=self._environment())
+        out = ran.output
+        if not ran.timed_out and ran.returncode == 0 and self.passes in out:
+            return Outcome.passed(out)
+        if self.builds:
+            diagnostic = DIAGNOSTIC.search(out)
+            if diagnostic:
+                return Outcome.unbuilt(diagnostic.group(0).strip(), out)
+        if ran.timed_out:
+            return Outcome.failed(f"hung: timed out after {self.timeout:g} s", out)
+        if ran.returncode == 0:
+            return Outcome.unclear(f"exited 0 without {self.passes!r}: {last_line(out)}",
+                                   out)
+        return Outcome.failed(self.detail(out), out)
+
+
 def verdict(r: Rule, o: Outcome) -> tuple[str, str]:
     """(verdict, the line that explains it) for one sabotaged run."""
     if o.kind == "passed":
@@ -586,12 +662,15 @@ def verdict(r: Rule, o: Outcome) -> tuple[str, str]:
 
 class _Tree:
     """The files a run edits: the originals in memory and on disk, keyed by
-    RELATIVE path, written back after every rule and again on the way out."""
+    RELATIVE path, written back after every rule and again on the way out.
+    A file a rule plants is None among the originals, and is removed."""
 
-    def __init__(self, name: str, originals: Mapping[Path, str]):
+    def __init__(self, name: str, originals: Mapping[Path, str | None]):
         self.originals = dict(originals)
         self.backup = Path(tempfile.mkdtemp(prefix=f"{name}-backup-"))
         for path, text in self.originals.items():
+            if text is None:
+                continue
             dest = self.backup / _relative(path)
             dest.parent.mkdir(parents=True, exist_ok=True)
             write(dest, text)
@@ -604,8 +683,12 @@ class _Tree:
     def restore(self, paths=None) -> None:
         with _signals_held():
             for path in self.originals if paths is None else paths:
-                if _read_or_none(path) != self.originals[path]:
-                    write(path, self.originals[path])
+                want = self.originals[path]
+                if _read_or_none(path) != want:
+                    if want is None:
+                        path.unlink(missing_ok=True)
+                    else:
+                        write(path, want)
 
     def verified(self) -> bool:
         """Is every file back? Drops the backup if so; names it if not."""
@@ -613,9 +696,12 @@ class _Tree:
         if not wrong:
             shutil.rmtree(self.backup, ignore_errors=True)
             return True
-        print("\nTHE TREE IS NOT RESTORED. Copy these back by hand:", flush=True)
+        print("\nTHE TREE IS NOT RESTORED. Put these back by hand:", flush=True)
         for p in wrong:
-            print(f"  {self.backup / _relative(p)} -> {p}", flush=True)
+            if self.originals[p] is None:
+                print(f"  remove {p}", flush=True)
+            else:
+                print(f"  {self.backup / _relative(p)} -> {p}", flush=True)
         return False
 
 
@@ -668,6 +754,14 @@ def _line(v: str, label: str, why: str) -> None:
     print(f"  {v:<{_WIDTH}}{label}" + (f"\n      {why}" if why else ""), flush=True)
 
 
+def _said_instead(output: str, n: int = 12) -> None:
+    """The last lines of a gate that failed elsewhere, so the miss can be
+    read without a rerun."""
+    lines = [ln[:200] for ln in output.strip().splitlines()[-n:]]
+    if lines:
+        print("      ... " + "\n      ... ".join(lines), flush=True)
+
+
 def _baseline(rules, gates, originals) -> bool:
     print("baseline (unsabotaged) must PASS:", flush=True)
     for name in dict.fromkeys(r.gate for r in rules):
@@ -706,7 +800,9 @@ def execute(name: str, rules: Sequence[Rule], gates, argv: Sequence[str] = (), *
           + (f" ({filters})" if filters else ""), flush=True)
 
     files = list(dict.fromkeys(e.path for r in chosen for e in r.edits))
-    originals = {p: t for p in files if (t := _read_or_none(p)) is not None}
+    planted = {e.path for r in chosen for e in r.edits if e.old is None}
+    originals = {p: t for p in files
+                 if (t := _read_or_none(p)) is not None or p in planted}
     results: dict[Rule, tuple[str, str]] = {}
     plans: dict[Rule, dict[Path, str]] = {}
     for r in chosen:
@@ -743,6 +839,8 @@ def execute(name: str, rules: Sequence[Rule], gates, argv: Sequence[str] = (), *
                         tree.restore(list(texts))
                 results[r] = verdict(r, outcome)
                 _line(results[r][0], r.label, results[r][1])
+                if results[r][0] == ELSEWHERE:
+                    _said_instead(outcome.output)
         except Interrupted as exc:
             interrupted = exc
         finally:
@@ -1185,6 +1283,70 @@ def _selftest() -> int:
         rep, _ = ran([both])
         check(rep.results[0][1] == CAUGHT and read(A) == _SOURCE and read(B) == _SOURCE,
               "a rule across two files is caught and puts both back")
+
+        print("a command as the gate:")
+
+        def sh(script, **kw):
+            return Command(["sh", "-c", script], passes="gate OK", **kw)
+
+        for script, kw, want, what in (
+            ("echo gate OK", {}, "passed", "exit 0 with its pass text: passed"),
+            ("echo done", {}, "unclear",
+             "exit 0 without its pass text: neither a pass nor a catch"),
+            ("echo 'x.mojo:3:4: error: no'; exit 1", {"builds": True}, "unbuilt",
+             "a diagnostic from a command that builds the rule's source: does not compile"),
+            ("echo 'x.mojo:3:4: error: no'; exit 1", {}, "failed",
+             "the same where the compile IS the gate: a failure"),
+        ):
+            check(sh(script, **kw).run({}).kind == want, what)
+        hung = sh("sleep 30", timeout=1).run({})
+        check(hung.kind == "failed" and hung.detail.startswith("hung"),
+              "a command that hangs: the gate's failure, saying so")
+        said = sh("echo the assertion; echo '=== a.log ==='; echo booted; exit 1",
+                  detail=lambda out: out.splitlines()[0]).run({})
+        check(said.kind == "failed" and said.detail == "the assertion",
+              "a failure is explained in the gate's own words")
+        os.environ["SABOTAGE_SELFTEST_B"] = "inherited"
+        try:
+            said = sh('echo "$SABOTAGE_SELFTEST_A-${SABOTAGE_SELFTEST_B-unset}"; exit 1',
+                      env={"SABOTAGE_SELFTEST_A": "set", "SABOTAGE_SELFTEST_B": None}).run({})
+        finally:
+            del os.environ["SABOTAGE_SELFTEST_B"]
+        check(said.detail == "set-unset", f"env sets one name and removes another: {said.detail!r}")
+        on_disk = sh("grep -q 'keep_a()' a/src.mojo && echo gate OK || "
+                     "{ echo 'rule_a is gone'; exit 1; }")
+        rep, _ = ran([rule("on disk", A, "keep_a()", "gone()", expect="rule_a is gone")],
+                     gates=on_disk)
+        check(rep.results[0][1] == CAUGHT and read(A) == _SOURCE,
+              "a command reads the sabotaged tree from disk: caught, and put back")
+        rep, out = ran([rule("elsewhere", A, "keep_a()", "gone()", expect="not this")],
+                       gates=on_disk)
+        check(rep.results[0][1] == ELSEWHERE and "... rule_a is gone" in out,
+              "a gate that failed elsewhere: what it said instead is shown")
+
+        print("a rule that plants a file:")
+        planted = Path("a/planted.mojo")
+        absent = sh("test -e a/planted.mojo && { echo 'a stray file'; exit 1; } "
+                    "|| echo gate OK")
+        plant = rule("plant", planted, None, "def stray(): pass\n")
+
+        def verdict_of(rep):
+            return {label: v for label, v, _ in rep.results}.get("plant")
+
+        rep, _ = ran([plant], gates=absent)
+        check(verdict_of(rep) == CAUGHT and not planted.exists(),
+              "a planted file is caught, then removed")
+        write(planted, "already here\n")
+        rep, out = ran([plant], gates=absent)
+        check(verdict_of(rep) == NOT_APPLICABLE and "it exists" in out
+              and read(planted) == "already here\n",
+              "a file the rule would plant exists: NOT APPLICABLE, and left alone")
+        planted.unlink()
+        try:
+            ran([plant], gates=_Raises(absent, Interrupted(signal.SIGTERM)))
+            check(False, "an interruption mid-plant is re-raised")
+        except Interrupted:
+            check(not planted.exists(), "an interruption mid-plant removes the file")
 
         print("a TMPDIR of the run's own:")
         # This process's temporary directory moves into `work` for the

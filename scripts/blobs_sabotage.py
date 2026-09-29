@@ -7,8 +7,11 @@ block) in `apps/blobs/`, runs its gate, and restores the file. The gate is
 `smoke-blobs` for what the wire shows, or the kernel's unit tests for the
 kernel's own rules, which the wire cannot see precisely (a fragmenting
 march still draws something). Both build from source, so nothing else
-needs rebuilding. An anchor that no longer matches is a failure —
-re-point it with the line.
+needs rebuilding. An anchor that does not match exactly once is NOT
+APPLICABLE, a failure -- re-point it with the line -- and a sabotage the
+app does not compile with is a miss, never a catch: `sabotage_lib.py`
+owns everything around the table, the restore on SIGINT or SIGTERM among
+it.
 
 Not here, and why: the G14 fix in `m0_core.json_parse` needs the `.mojoc`
 chain rebuilt and is sabotaged by its own unit test; `send_latest`'s rules
@@ -28,20 +31,10 @@ app's: the viewer sum and a board every worker shares.
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-from sabotage_lib import own_tmpdir
-
-# The venv's own poe and mojo, never `uv run`: a child `uv run` re-syncs the
-# venv (pool_sabotage.py records why that matters under the nightly canary).
-_SIBLING = Path(sys.executable).with_name("poe")
-POE = str(_SIBLING) if _SIBLING.exists() else (shutil.which("poe") or "poe")
-_MOJO = Path(sys.executable).with_name("mojo")
-MOJO = str(_MOJO) if _MOJO.exists() else (shutil.which("mojo") or "mojo")
+from sabotage_lib import POE, Command, MojoRun, rule, run
 
 SMOKE = "smoke"
 UNIT = "unit"
@@ -303,26 +296,8 @@ SABOTAGES = [
 ]
 
 
-def run_smoke() -> tuple[bool, str]:
-    p = subprocess.run(
-        [POE, "smoke-blobs"], capture_output=True, text=True, timeout=600
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and "smoke-blobs OK" in out), out
-
-
-def run_unit() -> tuple[bool, str]:
-    p = subprocess.run(
-        [MOJO, "run", "-I", "packages/m0-core", "-I", "packages/m0-http",
-         "-I", "packages/m0-datastar", "-I", "apps/",
-         "apps/blobs/test/test_kernel.mojo"],
-        capture_output=True, text=True, timeout=600,
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and " 0 failed" in out), out
-
-
-GATES = {SMOKE: run_smoke, UNIT: run_unit}
+RULES = [rule(label, path, old, new, gate=gate)
+         for label, gate, path, old, new in SABOTAGES]
 
 
 def why(out: str) -> str:
@@ -330,6 +305,7 @@ def why(out: str) -> str:
     # A sabotage that does not compile is caught for the wrong reason. A
     # compiler diagnostic names its file, line and column; `mojo run`'s own
     # "error: execution exited with a non-zero result" is a failing test.
+    # (The smoke's gate reports one as does-not-compile before asking here.)
     errors = [
         ln.strip() for ln in out.splitlines()
         if re.search(r"\.mojo:\d+:\d+: error:", ln)
@@ -347,72 +323,20 @@ def why(out: str) -> str:
     return out.strip().splitlines()[-1][:140] if out.strip() else "(no output)"
 
 
-def main() -> int:
-    sys.stdout.reconfigure(line_buffering=True)
-    only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else ""
-    chosen = [e for e in SABOTAGES if only in e[0] or only == e[1]]
-    if not chosen:
-        print(f"no sabotage label contains {only!r}")
-        return 1
-    files = sorted({f for _, _, f, _, _ in SABOTAGES})
-    backup_dir = Path(tempfile.mkdtemp())
-    originals = {}
-    for f in files:
-        originals[f] = f.read_text()
-        shutil.copy(f, backup_dir / f.name)
+# `smoke-blobs` builds the app from source, so a sabotage that does not
+# compile shows as the build's diagnostic: a miss, never a catch.
+GATES = {
+    SMOKE: Command([POE, "smoke-blobs"], passes="smoke-blobs OK", builds=True,
+                   detail=why),
+    UNIT: MojoRun("apps/blobs/test/test_kernel.mojo",
+                  includes=("packages/m0-core", "packages/m0-http",
+                            "packages/m0-datastar", "apps/")),
+}
 
-    print("baseline (unsabotaged) must PASS:")
-    for gate in sorted({g for _, g, _, _, _ in chosen}):
-        ok, out = GATES[gate]()
-        print(f"  {'ok' if ok else 'FAIL'}  baseline ({gate})")
-        if not ok:
-            print(out[-2000:])
-            return 1
 
-    missed = []
-    try:
-        for label, gate, path, old, new in chosen:
-            original = originals[path]
-            olds = old if isinstance(old, tuple) else (old,)
-            news = new if isinstance(new, tuple) else (new,)
-            if any(original.count(o) != 1 for o in olds):
-                print(f"  FAIL  anchor missing or ambiguous: {label}")
-                missed.append(label)
-                continue
-            broken = original
-            for o, n in zip(olds, news):
-                broken = broken.replace(o, n, 1)
-            path.write_text(broken)
-            try:
-                ok, out = GATES[gate]()
-            except subprocess.TimeoutExpired:
-                ok, out = False, "(timed out -- itself a failure)"
-            finally:
-                path.write_text(original)
-            reason = why(out)
-            if ok:
-                print(f"  MISSED  [{gate}] {label}")
-                missed.append(label)
-            elif reason.startswith("COMPILE ERROR"):
-                print(f"  BROKEN  [{gate}] {label}\n          {reason}")
-                missed.append(label + " (the sabotage does not compile)")
-            else:
-                print(f"  CAUGHT  [{gate}] {label}\n          {reason}")
-    finally:
-        for f in files:
-            shutil.copy(backup_dir / f.name, f)
-
-    print()
-    if missed:
-        print(f"{len(missed)} rule(s) no gate guards:")
-        for m in missed:
-            print(f"  - {m}")
-        return 1
-    print(f"all {len(chosen)} rules are guarded"
-          + ("" if len(chosen) == len(SABOTAGES) else f" (of {len(SABOTAGES)}; --only {only!r})"))
-    return 0
+def main(argv: list[str]) -> int:
+    return run("sabotage-blobs", RULES, GATES, argv)
 
 
 if __name__ == "__main__":
-    with own_tmpdir("sabotage-blobs"):
-        sys.exit(main())
+    sys.exit(main(sys.argv[1:]))
