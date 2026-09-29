@@ -115,11 +115,44 @@ broken `build-all` lighting up every job at once — is answered by `Docs`.
 Neither smoke job compiles the example apps. `build-apps` builds each app
 into a mktemp directory and DISCARDS the binaries, so no smoke can consume
 it — every smoke either `mojo run`s its app, `mojo build`s its own copy, or
-serves through `bin/m0serve`. It is a compile gate, `poe test-all` runs it in
-`unit-tests`, and it cost 4 minutes a leg twice over to re-answer a settled
-question. The reason is the discarded output, NOT the `needs:` that used to
-sit above it: the gate still runs on every pull request, it just no longer
-runs before the smokes, and nothing there was waiting on it.
+serves through `bin/m0serve`. It is a compile gate, `poe test-gates` runs it
+in `unit-gates`, and it cost 4 minutes a leg twice over to re-answer a
+settled question. The reason is the discarded output, NOT the `needs:` that
+used to sit above it: the gate still runs on every pull request, it just no
+longer runs before the smokes, and nothing there was waiting on it.
+
+## The unit tests are two jobs too
+
+`poe test-all` was one step of the `unit-tests` job until it took 34-35
+minutes of that job's 40-minute cap on the ubuntu leg, and train 19 (#481)
+was cancelled at the cap, green in every step it reached. The step took 6-8
+minutes in late August and 14-18 by mid-September. Most of the growth is
+`test-shim`, 15 seconds until 2026-09-23 and about 8 minutes on ubuntu and
+13.5 on macOS since, because its sabotage re-runs the whole 59-test suite
+for each of 55 mutants. Then `test-http`, which compiles `m0-http` from
+source once per test file (62 files, about 500 seconds on ubuntu, 3 of them
+spent running tests). Then the gates added since.
+
+So `test-all` is now `build-all` and two halves, and CI runs each half in a
+job of its own: `unit-tests` runs `poe test-packages` (the packages' tests,
+their whole-package compiles and the harnesses beside them) and
+`unit-gates` runs `poe test-gates` (the shim's rules and the compile gates
+built on the packages). Locally `poe test-all` is still the whole. The
+split is measured, not thematic, and moving a task between the halves is
+free. A task added to `test-all`'s own sequence, beside the halves, would
+run locally and in no job, so `check-docs` refuses anything `test-all`
+reaches that no unconditional step does.
+
+Mojo's compile cache was the cheaper lever, and it is not enough on its own.
+The cache holds one entry per whole program, keyed by everything the program
+compiles, and a warm test file runs 4-5 times faster. But GitHub scopes a
+cache to the pull request that saved it, and `main`, the only scope every
+pull request can read, gets no push runs: the `automerge` label merges with
+the workflow token, which starts no workflow. So a pull request's first run
+is always cold, and a cap has to hold a cold run. An edit makes every
+program that reaches the edited file cold again, a one-line comment
+included, and most of the review's pull requests edit the fork that every
+event-loop test reaches.
 
 ## The warning floor
 

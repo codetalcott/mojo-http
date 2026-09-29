@@ -1048,9 +1048,33 @@ python3 scripts/emit.py --covers O15 --task test-postgres-server
 python3 scripts/emit.py --covers O16 --task test-postgres-server
 """
 
+# test-all is the whole, and CI runs it as its two halves, one per job
+# (test.yml's `unit-tests` and `unit-gates`): as one step it took 34-35 min
+# of a 40-minute cap on the ubuntu leg. Add a new task to ONE HALF, never to
+# this sequence beside them: CI runs the halves, so a task here would run
+# locally and nowhere else, which `check-docs` refuses. Moving a task
+# between the halves is free; the job comments in test.yml carry the
+# measurements that balance them.
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "check-copyback", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "test-packages", "test-gates"]
+default_item_type = "ref"
+
+# The packages' own tests, their whole-package compiles (the fork, the host)
+# and the conformance and sabotage harnesses beside them. CI's `unit-tests`
+# job, after its own `build-all`.
+[tool.poe.tasks.test-packages]
+help = "test-all's first half: the packages' tests and the harnesses beside them (CI's unit-tests job)"
+sequence = ["check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "test-wsgi", "check-phase-stamps", "sabotage-trailers", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres"]
+default_item_type = "ref"
+
+# What is built ON the packages: the executor shim's rules, and the
+# compile gates -- every app, m0serve and its IR, the scaffold's templates,
+# an outside vocabulary, the trait and view probes, the keep-alive probe.
+# CI's `unit-gates` job, after its own `build-all`.
+[tool.poe.tasks.test-gates]
+help = "test-all's second half: the shim's rules and the compile gates (CI's unit-gates job)"
+sequence = ["test-shim", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "check-copyback", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

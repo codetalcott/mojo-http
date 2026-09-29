@@ -25,27 +25,33 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    # Green runs finish in 13-18 min (2026-09-21; 11-15 on 2026-09-03, and
-    # 4-6 when the cap was first set). Without an explicit cap a hung step
-    # runs to GitHub's 6-hour default while holding this ref's concurrency
-    # group, so a stall reads as "still running" for hours instead of
-    # failing. See the apt step in .github/actions/setup for the stall that
-    # motivated this.
+    # THE UNIT TESTS ARE TWO JOBS, this one and `unit-gates`, and the split
+    # is a cap, not taste, as the smokes' is. `Run unit tests` ran all of
+    # `poe test-all`, and on the ubuntu leg took 6-8 min in late August,
+    # 14-18 by mid-September, 26-29 from 2026-09-24, 31-32 by 2026-09-26
+    # and up to 35 on the review's trains, when train 19 (#481) was
+    # cancelled at this job's 40-minute cap, green in every step it
+    # reached. Most of the growth is `test-shim`, 15 s until 2026-09-23 and
+    # ~475 s (ubuntu) and ~810 s (macOS) since, because its sabotage re-runs
+    # the 59-test suite for each of 55 mutants; then `test-http`, which
+    # compiles the package from source once per test file (62 files, ~500 s
+    # on ubuntu, 3 s of it the tests running); then gates added since (the
+    # Datastar SDK's sabotage, the scaffold's templates, the copy-back IR).
     #
-    # 30 was too close. `Run unit tests` is ONE step (`poe test-all`), and
-    # the same slow ubuntu runners that cancelled the smoke job ran this
-    # leg at 22m0s and 26m1s against 18m0s on `main` — 87% of the cap,
-    # with nothing in the tree changed. A cap a green run can reach is a
-    # coin toss, so this one was left at roughly twice the measured run,
-    # like the two smoke jobs below.
+    # `poe test-all` stays the whole, run locally. CI runs its halves: this
+    # job `poe test-packages`, `unit-gates` `poe test-gates`, and
+    # check-docs refuses a task `test-all` reaches that no step here does.
+    # Measured on the review's runs (2026-09-28/29), the halves are about
+    # 19 and 20 min on ubuntu and 13 and 19 on macOS, and each cap is
+    # twice its job's run. `test-http` grows by 20-30 s with each event
+    # loop test, so this half is the one to lighten when it needs it;
+    # moving a task between the halves is free.
     #
-    # 40 has since become that coin toss. The step, 14 minutes when the
-    # above was written, measured 31-32 min on the ubuntu leg by
-    # 2026-09-26, and the review plan's new gates took it to 34-35: train
-    # 19 (#481) was cancelled at 40m01s, green in every step it reached.
-    # 60 is a stopgap, not twice the run. The growth is being measured and
-    # the job split, so each half runs well inside twice its time again.
-    timeout-minutes: 60
+    # Without an explicit cap a hung step runs to GitHub's 6-hour default
+    # while holding this ref's concurrency group, so a stall reads as
+    # "still running" for hours instead of failing. See the apt step in
+    # .github/actions/setup for the stall that motivated this.
+    timeout-minutes: 40
     # The coverage this job's steps declare (SPEC F12: check-docs, the unit
     # tests, the recorder's selftest, the fuzzer) is recorded here, and
     # rendered and kept by the job's last step, as every job's is.
@@ -61,6 +67,16 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           apt: libsqlite3-dev patchelf
+      # EXPERIMENT (review H8), measured on this branch and then kept or
+      # removed: Mojo's compile cache, restored here and saved after the
+      # job, keyed by the commit so a re-run of one is warm throughout.
+      - name: Restore the Mojo compile cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/modular/.mojo_cache
+          key: mojo-cache-${{ github.job }}-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mojo-cache-${{ github.job }}-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
       # The doc-fact ratchet, before anything is built: prose numbers with
       # a machine source (warning counts, smoke coverage in THIS file, the
       # generated bench table) must match it. Runs here and not in the
@@ -85,22 +101,22 @@ jobs:
       # Both steps tee into one log so the ratchet below sees every warning:
       # build-all covers the packages, and test-all is the only thing that
       # compiles test/ sources, where most of the residual warnings live.
+      # Each half's job ratchets its own log. The baseline is zero, so a
+      # warning fails the job whose half compiled it, and together the two
+      # logs hold every site one log of `test-all` did.
       # pipefail keeps a build failure fatal despite the pipe into tee.
       - name: Build packages (cross-package deps need .mojoc)
         shell: bash
         run: |
           set -o pipefail
           uv run poe build-all 2>&1 | tee -a compile.log
+      # test-all's first half; `unit-gates` runs the second.
       - name: Run unit tests
         shell: bash
         run: |
-          python3 scripts/emit.py --covers L7 --task step
-          python3 scripts/emit.py --covers L20 --task step
-          python3 scripts/emit.py --covers N28 --task step
           python3 scripts/emit.py --covers I27 --task step
-          python3 scripts/emit.py --covers L31 --task step
           set -o pipefail
-          uv run poe test-all 2>&1 | tee -a compile.log
+          uv run poe test-packages 2>&1 | tee -a compile.log
       # Holds the residual warning count at scripts/warning_baseline.json.
       # mojo has no per-warning suppression, so without this a new warning
       # just joins ~68 existing ones and nobody sees it.
@@ -140,32 +156,17 @@ jobs:
         run: python3 scripts/probelib.py --selftest
       - name: Check the compiler warning count has not grown
         run: uv run poe check-warnings compile.log
-      # The Mojo pool's guards, proven able to fail: each rule in
-      # mojo_pool.mojo is reverted in turn and test_mojo_pool must go red for
-      # every one. Deterministic, so it belongs in CI (the shim sabotage's
-      # argument); ubuntu only because the one-pill-per-thread rule is
-      # invisible on macOS -- closing the submit channel wakes a blocked recv
-      # there and does not on Linux (OffloadPool.stop's documented lesson).
-      - name: Sabotage the Mojo pool's rules (Linux observes every one)
-        if: matrix.os == 'ubuntu-latest'
-        run: uv run poe sabotage-pool
+      # The Mojo pool's sabotage runs in `unit-gates`, for time alone: it is
+      # ~160 s on the ubuntu leg and nothing on macOS, which is what that
+      # job's ubuntu leg has room for.
 
       # The chunked decoder's trailer states: reverting each rule must fail
       # test_parsing. They were the decoder's untested region -- the
       # round-trip tests set `consume_trailer` over a wire with no trailer
-      # section, so no test reached them (SPEC A10).
+      # section, so no test reached them (SPEC A10). In this job because
+      # `test-packages` runs the same sabotage, whose compiles it reuses.
       - name: Sabotage the chunked trailer rules
         run: uv run poe sabotage-trailers
-
-      # `check-keepalive-barrier` runs inside test-all above and asserts that
-      # a bare `_ = x` after an FFI call still pins the buffer that call reads
-      # -- and that deleting it still frees EARLY, without which the gate
-      # would pass on a toolchain where the line does nothing. This is the
-      # half that matters when the gate is green, which is the normal result:
-      # it reverts each rule in the probe and insists the check reports it.
-      # Both runners, because the IR is per-target.
-      - name: Sabotage the keep-alive probe the barrier check reads
-        run: uv run poe sabotage-keepalive
 
       # SPEC G13. The request decoder is a pure function over bytes, so the
       # fuzz harness needs no socket: mutate a seed corpus, assert the
@@ -183,6 +184,15 @@ jobs:
       # libpython discovery problem legible.
       - name: Check the embedded interpreter resolves
         run: uv run python -c "import django, sys; print(sys.version, django.__version__)"
+      # EXPERIMENT (review H8): where the compile cache is, and what the job
+      # left in it, for the size a saved cache would cost.
+      - name: Report the Mojo compile cache
+        if: always()
+        shell: bash
+        run: |
+          uv run mojo --print-cache-location || true
+          du -sk ~/.cache/modular/.mojo_cache 2>/dev/null || true
+          find ~/.cache/modular/.mojo_cache -type f 2>/dev/null | wc -l
       # Last, and `always()`, as in every job that collects: it must follow
       # every step that records, and a failed run's records are the
       # interesting ones.
@@ -191,6 +201,95 @@ jobs:
         uses: ./.github/actions/record-measurements
         with:
           name: ci-results-unit-tests-${{ matrix.os }}
+
+  # test-all's second half: the executor shim's rules, and the gates built
+  # ON the packages -- every app, m0serve and its IR, the scaffold's
+  # templates, an outside vocabulary, the trait and view probes, the
+  # keep-alive probe -- plus the Mojo pool's sabotage. `unit-tests`' comment
+  # carries the measurements that split them: about 20 min on ubuntu and 19
+  # on macOS, most of it `test-shim` (~475 s and ~810 s) and `build-apps`
+  # (~290 s and ~190 s), against a cap of twice that. A separate JOB and no
+  # `needs:`, for the smokes' reasons: the sheet refuses a cited step with
+  # an `if:`, and nothing here waits on the other half.
+  unit-gates:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    # The coverage this job's test step declares (SPEC F12: the shim's
+    # rows, the templates', the copy-back guard's) is recorded here, and
+    # rendered and kept by the job's last step, as every job's is.
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: unit-gates-${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      # patchelf for the rpath build-ffi and build-serve set on Linux. The
+      # sqlite development package is `unit-tests`' alone: nothing here
+      # compiles against sqlite3.h.
+      - uses: ./.github/actions/setup
+        with:
+          apt: patchelf
+      # EXPERIMENT (review H8): as in `unit-tests`.
+      - name: Restore the Mojo compile cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/modular/.mojo_cache
+          key: mojo-cache-${{ github.job }}-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          restore-keys: |
+            mojo-cache-${{ github.job }}-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
+      # Tee'd into this job's own log for its own ratchet, as in
+      # `unit-tests`.
+      - name: Build packages (cross-package deps need .mojoc)
+        shell: bash
+        run: |
+          set -o pipefail
+          uv run poe build-all 2>&1 | tee -a compile.log
+      - name: Run the shim tests and the compile gates
+        shell: bash
+        run: |
+          python3 scripts/emit.py --covers L7 --task step
+          python3 scripts/emit.py --covers L20 --task step
+          python3 scripts/emit.py --covers N28 --task step
+          python3 scripts/emit.py --covers L31 --task step
+          set -o pipefail
+          uv run poe test-gates 2>&1 | tee -a compile.log
+      - name: Check the compiler warning count has not grown
+        run: uv run poe check-warnings compile.log
+      # The Mojo pool's guards, proven able to fail: each rule in
+      # mojo_pool.mojo is reverted in turn and test_mojo_pool must go red for
+      # every one. Deterministic, so it belongs in CI (the shim sabotage's
+      # argument); ubuntu only because the one-pill-per-thread rule is
+      # invisible on macOS -- closing the submit channel wakes a blocked recv
+      # there and does not on Linux (OffloadPool.stop's documented lesson).
+      - name: Sabotage the Mojo pool's rules (Linux observes every one)
+        if: matrix.os == 'ubuntu-latest'
+        run: uv run poe sabotage-pool
+
+      # `check-keepalive-barrier` runs inside test-gates above and asserts that
+      # a bare `_ = x` after an FFI call still pins the buffer that call reads
+      # -- and that deleting it still frees EARLY, without which the gate
+      # would pass on a toolchain where the line does nothing. This is the
+      # half that matters when the gate is green, which is the normal result:
+      # it reverts each rule in the probe and insists the check reports it.
+      # Both runners, because the IR is per-target.
+      - name: Sabotage the keep-alive probe the barrier check reads
+        run: uv run poe sabotage-keepalive
+      # EXPERIMENT (review H8): as in `unit-tests`.
+      - name: Report the Mojo compile cache
+        if: always()
+        shell: bash
+        run: |
+          uv run mojo --print-cache-location || true
+          du -sk ~/.cache/modular/.mojo_cache 2>/dev/null || true
+          find ~/.cache/modular/.mojo_cache -type f 2>/dev/null | wc -l
+      # Last, and `always()`, as in every job that collects.
+      - name: Record the measurements
+        if: always()
+        uses: ./.github/actions/record-measurements
+        with:
+          name: ci-results-unit-gates-${{ matrix.os }}
 
   # aarch64, on every pull request rather than only at release time.
   #
@@ -498,10 +597,10 @@ jobs:
       # app into a mktemp dir and DISCARDS the binaries, so nothing in this
       # job could consume it even in principle: every row either `mojo run`s
       # its app, `mojo build`s its own copy, or serves through bin/m0serve.
-      # It is a compile gate, `poe test-all` runs it in the unit-tests job,
-      # and it cost 4 min a leg -- twice over, once per shard -- to
+      # It is a compile gate, `poe test-gates` runs it in the unit-gates
+      # job, and it cost 4 min a leg -- twice over, once per shard -- to
       # re-answer a settled question. The discarded output is the reason,
-      # not any ordering against unit-tests, which now runs in parallel.
+      # not any ordering against the unit tests, which run in parallel.
 
       # The serve CLI. Most of this job's rows are Mojo, but the timeout,
       # keep-alive, sendfile and site rows all serve through it, and the
