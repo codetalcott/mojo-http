@@ -24,14 +24,13 @@ import argparse
 import http.client
 import json
 import os
-import subprocess
 import sys
 import tempfile
-import time
-import traceback
+
+from probelib import phase, server, stamp
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PHASE = "startup"
+stamp("exec_inherit_probe FAIL")
 
 WSGI = "bareapp.inherit:application"
 SHAPES = [
@@ -42,33 +41,6 @@ SHAPES = [
     ("realtime", WSGI, ["--realtime"]),
     ("asgi", "bareapp.inherit:asgi", []),
 ]
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("exec_inherit_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def wait_healthy(port, log):
-    deadline = time.time() + 120
-    while time.time() < deadline:
-        try:
-            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
-            conn.request("GET", "/nope")
-            conn.getresponse().read()
-            conn.close()
-            return
-        except OSError:
-            time.sleep(0.5)
-    sys.exit("server never answered; it said:\n" + open(log).read())
 
 
 def run_shape(port, shape, problems):
@@ -117,21 +89,14 @@ def main():
             if shape not in wanted:
                 continue
             port = args.port + i
-            log = os.path.join(tmp, shape + ".log")
             phase("%s: starting" % shape)
-            srv = subprocess.Popen(
-                [args.bin, spec, "--app-dir", os.path.join(REPO, "apps", "wsgi_bare"),
-                 "--port", str(port)] + flags,
-                stdout=open(log, "w"), stderr=subprocess.STDOUT, cwd=REPO)
-            try:
-                wait_healthy(port, log)
+            # Any answer is ready, a 404 included; a server that exits first
+            # is reported then, not after the 120 s a slow runner is given.
+            argv = [args.bin, spec, "--app-dir", os.path.join(REPO, "apps", "wsgi_bare"),
+                    "--port", str(port)] + flags
+            with server(argv, "http://127.0.0.1:%d/nope" % port, timeout=120, status=None,
+                        log=os.path.join(tmp, shape + ".log"), cwd=REPO):
                 run_shape(port, shape, problems)
-            finally:
-                srv.terminate()
-                try:
-                    srv.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    srv.kill()
     if problems:
         print("exec_inherit_probe FAIL:")
         for p in problems:

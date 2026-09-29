@@ -27,41 +27,21 @@ build whose cap never fires would pass phases 1 and 2 having tested nothing.
 
 Usage: keepalive_cap_probe.py PORT
 """
-import base64
-import os
 import socket
-import struct
 import sys
-import traceback
+
+from probelib import TEXT, WebSocket, fail, phase, stamp, upgrade_request, ws_key
 
 # The phase stamp. Every phase here shares `Conn`'s socket helpers, so a
 # raise inside `read_head` or `read_exactly` names the CALL and never the
 # claim being proven -- and the two claims fail in visibly similar ways
 # (an empty body, an absent frame), which is exactly when being told the
 # phase matters. See scripts/phase_stamp_check.py.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("keepalive_cap_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("keepalive_cap_probe: FAIL", fail="keepalive-cap: {msg}")
 
 CAP = 100  # ServerConfig.max_keepalive_requests
 STREAM_BYTES = 256 * 1024
 HOST = "127.0.0.1"
-
-
-def fail(msg):
-    print("keepalive-cap: " + msg)
-    sys.exit(1)
 
 
 class Conn:
@@ -153,35 +133,21 @@ def reuse(conn, n):
 
 
 def ws_handshake(conn, path="/ws"):
-    key = base64.b64encode(os.urandom(16)).decode()
-    conn.request(
-        path,
-        "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-        "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n" % key,
-    )
-    return conn.read_head()
+    """Upgrade `conn` where it stands: (status, headers, WebSocket). The
+    socket carries on from the connection's own buffer, so nothing read
+    with the head is lost."""
+    conn.sock.sendall(upgrade_request(path, ws_key(), "localhost"))
+    status, headers = conn.read_head()
+    return status, headers, WebSocket(conn.sock, conn.buf)
 
 
-def ws_send_text(conn, text):
-    payload = text.encode()
-    mask = os.urandom(4)
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    header = b"\x81" + bytes([0x80 | len(payload)])
-    conn.sock.sendall(header + mask + masked)
-
-
-def ws_read_frame(conn):
-    """Return (opcode, payload) for one unmasked server frame."""
-    head = conn.read_exactly(2)
-    if len(head) < 2:
+def ws_read_frame(ws):
+    """(opcode, payload) for the server's next frame other than a heartbeat
+    ping, or (None, b"") when the connection ends first."""
+    try:
+        return ws.recv_data(eof_ok=True, pong=False)
+    except EOFError:
         return None, b""
-    opcode = head[0] & 0x0F
-    length = head[1] & 0x7F
-    if length == 126:
-        length = struct.unpack("!H", conn.read_exactly(2))[0]
-    elif length == 127:
-        length = struct.unpack("!Q", conn.read_exactly(8))[0]
-    return opcode, conn.read_exactly(length)
 
 
 def phase1_stream(port):
@@ -230,12 +196,12 @@ def phase2_upgrade(port):
     """A WebSocket upgrade on the cap request must yield a live socket."""
     phase("upgrade-control")
     c = Conn(port)
-    status, headers = ws_handshake(c)
+    status, headers, ws = ws_handshake(c)
     if status is None or "101" not in status:
         fail("control upgrade (request 1): %r -- upgrades are broken "
              "independently of the cap" % (status,))
-    ws_send_text(c, "control")
-    opcode, payload = ws_read_frame(c)
+    ws.send(TEXT, b"control")
+    opcode, payload = ws_read_frame(ws)
     c.close()
     if payload != b"echo:control":
         fail("control upgrade (request 1): echoed %r" % payload)
@@ -243,13 +209,13 @@ def phase2_upgrade(port):
     phase("upgrade-on-the-cap-request")
     c = Conn(port)
     reuse(c, CAP - 1)
-    status, headers = ws_handshake(c)
+    status, headers, ws = ws_handshake(c)
     if status is None:
         fail("upgrade on the cap request (%d): no response at all" % CAP)
     if "101" not in status:
         fail("upgrade on the cap request (%d): %r" % (CAP, status))
-    ws_send_text(c, "hi")
-    opcode, payload = ws_read_frame(c)
+    ws.send(TEXT, b"hi")
+    opcode, payload = ws_read_frame(ws)
     c.close()
     if payload != b"echo:hi":
         fail(
