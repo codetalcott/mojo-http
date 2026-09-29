@@ -157,6 +157,25 @@ per connection that changes hands. Built.
   publishes what a worker has received and not yet retired, and the
   worker that takes the index subtracts it (`start`).
   `test_handoff_leaving.mojo` forces each interleaving.
+
+  **Correction, 2026-09-29: the kernel's collector (macOS).** A hand-off
+  whose sender has closed its copy, which is every hand-off, is held only
+  by the message in flight until the receiver takes it, and macOS's
+  collector of descriptors in flight (XNU's `unp_gc`) flushed it whenever
+  it ran: the request discarded, the receive side shut, so the receiver
+  read EOF and closed the connection unanswered. The collector follows
+  only descriptors that are themselves in flight, so a channel that was
+  merely open protected nothing, and any AF_UNIX socket closed on the
+  machine, by any process, schedules a run. With another process doing
+  only that, `--workers 2` lost 179 of 1600 requests made in bursts of 32,
+  about half of the 361 hand-offs; with this fix, none. The macOS CI runner
+  met it in two unit tests. Each channel's read end is now kept in flight
+  in a pair of its own (`_anchor_channels`), so the collector follows the
+  channel. The collector's scan holds the channel's buffer lock, and a
+  receive made with MSG_DONTWAIT failed EAGAIN against it with a datagram
+  queued, so `recv_fd` receives there without the flag, on a non-blocking
+  channel, and waits out the scan. Linux's collector takes only sockets
+  held by nothing but messages in flight, and none of this happens there.
 - **One worker pays nothing.** The default `AcceptShare()` is inactive;
   every entry point is one Bool check. `M0_ACCEPT_SHARE=0` keeps the bare
   race under `--workers N` for an A/B.

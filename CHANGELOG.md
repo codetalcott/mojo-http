@@ -275,6 +275,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `test_handoff_leaving.mojo` forces each order of events. Found in
   review.
 
+- **Under `--workers N` on macOS, a connection passed between workers is
+  no longer lost when another process closes a local socket** (SPEC E16).
+  Accept sharing passes a new connection to a less busy worker over a
+  Unix-domain socket. macOS's kernel runs a collector of descriptors in
+  transit whenever any process on the Mac closes a Unix-domain socket, and
+  it flushed every passed connection it found in transit: the request the
+  client had sent was thrown away, and the worker that received the
+  connection read nothing and closed it, so the client got an empty reply
+  or a reset. With one other process opening and closing Unix-domain
+  sockets, 179 of 1,600 requests made in bursts of 32 against
+  `--workers 2` failed this way, about half of the 361 passed between
+  workers; none fail now. The server now holds each worker's channel in a
+  way the collector follows. Linux was never affected. Found in review,
+  when the macOS CI runner failed two accept-sharing tests.
+
 - **An ASGI application that installs asyncio's eager task factory is
   answered** (SPEC L30). With `asyncio.eager_task_factory` a task's first
   step runs inside `create_task`, and a response the application sent

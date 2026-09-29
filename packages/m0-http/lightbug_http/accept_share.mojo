@@ -50,6 +50,15 @@ where it is; a datagram queued to a worker that crashed waits in the
 channel for the respawn, which inherits the same fd by index and drains
 it at its first pass.
 
+The kernel is the other party that could lose one. On macOS a connection
+in flight whose sender has closed its copy, which every hand-off is, was
+flushed by the collector of descriptors in flight whenever it ran: its
+request discarded, its receive side shut, so the receiver read EOF and
+closed it unanswered. Any AF_UNIX socket closed on the machine schedules a
+run. Each channel's read end is kept in flight for the life of the
+process (`_anchor_channels`), which makes the collector reach what the
+channel holds.
+
 A worker that LEAVES is the case a check of `state` cannot settle alone:
 the sender reads the word and then sends, the leaver stores `STATE_LEFT`
 and then drains its channel, and nothing ordered the send before the
@@ -91,6 +100,7 @@ worker maps the page by fd with the same slot count.
 
 from std.atomic import Atomic
 from std.os import getenv
+from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns
 
 from lightbug_http.c.fdpass import (
@@ -221,6 +231,10 @@ struct AcceptShare(Copyable, Movable):
     """Connections this worker received from a sibling, for the record."""
     var handoffs_forwarded: Int
     """Of `handoffs_out`, those passed on after `leave` (`forward`)."""
+    var anchor_fds: List[Int]
+    """On macOS, the pair whose buffer holds every channel's read end in
+    flight for the life of the process (`_anchor_channels`); empty
+    elsewhere."""
 
     def __init__(out self):
         self.worker = -1
@@ -232,6 +246,7 @@ struct AcceptShare(Copyable, Movable):
         self.handoffs_out = 0
         self.handoffs_in = 0
         self.handoffs_forwarded = 0
+        self.anchor_fds = List[Int]()
 
     def __init__(out self, workers: Int) raises:
         """Create the channels for `workers` workers, pre-fork."""
@@ -250,6 +265,56 @@ struct AcceptShare(Copyable, Movable):
             )
             self.read_fds.append(pair[0])
             self.write_fds.append(pair[1])
+        comptime if CompilationTarget.is_macos():
+            self._anchor_channels()
+
+    def _anchor_channels(mut self) raises:
+        """On macOS, put every channel's read end in flight, in the buffer of
+        a pair of its own that is never read, for the life of the process
+        (review record B25).
+
+        A connection whose sender has closed its copy is held by the message
+        in flight alone until the receiver takes it off the channel, and the
+        kernel collects descriptors in flight that nothing reaches. XNU's
+        collector (`unp_gc`, bsd/kern/uipc_usrreq.c) walks only the list of
+        descriptors in flight: it marks the ones still open somewhere as
+        reachable and follows what their buffers hold. A channel that is
+        merely open is not on that list, so nothing it held was ever
+        reached, and every run of the collector flushed it: the receive side
+        shut, what the client had sent discarded. The receiver then read EOF
+        and closed the connection unanswered. Any AF_UNIX socket closed on
+        the machine, by any process, schedules a run: with another process
+        doing nothing else, all 200 of 200 hand-offs left in flight 5 ms
+        were flushed, and with this anchor none were.
+
+        Held here, each read end is in flight and open at once, so every run
+        marks it and reaches what its buffer holds. Linux's collector takes
+        only a socket whose every reference is in flight, which an open
+        channel never is, and measured nothing there. The pair is
+        close-on-exec (SPEC G16) and a spawned worker's exec does not keep
+        it, and needs not to: the process that made the channels holds it,
+        and the read ends in flight in it are the open files the worker
+        adopts by number. Raises if a read end cannot be anchored: 342
+        fitted in the 64 KB buffers, measured, so a worker count that runs
+        out is far past any a machine serves.
+        """
+        var pair = socketpair_dgram()
+        setsockopt(
+            FileDescriptor(pair[1]), Int32(SOL_SOCKET),
+            SocketOption.SO_SNDBUF.value, Int32(_CHANNEL_BUF),
+        )
+        setsockopt(
+            FileDescriptor(pair[0]), Int32(SOL_SOCKET),
+            SocketOption.SO_RCVBUF.value, Int32(_CHANNEL_BUF),
+        )
+        self.anchor_fds.append(pair[0])
+        self.anchor_fds.append(pair[1])
+        for i in range(len(self.read_fds)):
+            if not send_fd(pair[1], self.read_fds[i], List[UInt8]()):
+                raise Error(
+                    "accept sharing: the channel of worker ", i,
+                    " could not be anchored",
+                )
 
     def __init__(out self, *, read_fds: List[Int], write_fds: List[Int]):
         """Adopt channels another process image created (`--spawn-workers`)."""

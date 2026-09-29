@@ -1055,6 +1055,19 @@ lightbug_http
         (`start`): those connections died with it, and a count left
         behind would hold every later drain at the index to its budget.
 
+      - accept_share.mojo, c/fdpass.mojo (2026-09-29): on macOS each
+        accept-share channel's read end is kept in flight, in a socket pair
+        of its own, for the life of the process (`_anchor_channels`). XNU's
+        collector of descriptors in flight (`unp_gc`) follows only what is
+        in flight, so it never followed a channel that was merely open,
+        and it flushed every hand-off queued in one whenever any AF_UNIX
+        socket on the machine was closed: the request discarded, the
+        connection closed unanswered at its first read. And `recv_fd`
+        receives there without MSG_DONTWAIT, on a non-blocking channel, so
+        a receive waits out the collector's scan of the channel, which
+        holds the buffer's lock, instead of failing EAGAIN with a datagram
+        queued (review record B25).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
