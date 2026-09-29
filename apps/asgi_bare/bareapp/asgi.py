@@ -40,6 +40,10 @@ Routes:
 Lifespan shutdown writes the file named by ``M0_SHUTDOWN_MARKER`` when that
 variable is set, so a smoke can assert the application was shut down (and
 not merely killed) after a request outlived the server's drain.
+
+``M0_ASGI_EAGER_TASKS`` makes lifespan startup install asyncio's eager task
+factory, as an application may, so every request's first step runs inside
+the server's spawn (SPEC L30).
 """
 
 import asyncio
@@ -84,6 +88,14 @@ async def application(scope, receive, send):
             message = await receive()
             if message["type"] == "lifespan.startup":
                 _LIFESPAN["started"] = True
+                if os.environ.get("M0_ASGI_EAGER_TASKS"):
+                    # asyncio's own opt-in (3.12+): a task's first step runs
+                    # inside create_task, so a request that answers before
+                    # its first await is answered while the server is still
+                    # inside the spawn that made its task (SPEC L30).
+                    asyncio.get_running_loop().set_task_factory(
+                        asyncio.eager_task_factory
+                    )
                 # state is per-server-lifetime, shallow-copied into each
                 # request scope; /lifespan asserts this arrived.
                 scope.get("state", {})["bare_started"] = True

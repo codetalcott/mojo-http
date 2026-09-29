@@ -334,11 +334,15 @@ struct ExecutorState(Movable):
     call, so the compiler may pass this struct BY VALUE and store the
     callee's copy back when it returns, and on 1.1.0 it does. The port is
     re-entered from inside its own calls, and what the inner call writes
-    goes to the struct by address, so a store-back erases it:
+    goes to the struct by address, so a store-back erases it. Twice:
     `_flush_inverted` took this struct that way, its pass read the shutdown
     pipe and began the drain through `_pass_with`, and the store-back reset
     `stopping` and `drain_start` -- an inverted server that never exited
-    on SIGTERM (CI, macOS, about 2 in 100; SPEC L8).
+    on SIGTERM (CI, macOS, about 2 in 100; SPEC L8); and `dispatch_job`
+    did, and a task an eager task factory started inside its spawn parked
+    its response through `_dispatch`, which the store-back erased -- every
+    request answered in its first step went unanswered, on the pump as
+    well (SPEC L30).
     """
 
     var methods: List[String]
@@ -673,7 +677,9 @@ struct ExecutorPort(Movable, Writable):
         var kind = String(py=ev[0])
         var slot = Int(py=ev[1])
         if kind == "job":
-            return dispatch_job(pool, handler, st, self.lane, slot)
+            return dispatch_job(
+                self.pool_addr, self.handler_addr, self.state_addr, self.lane, slot
+            )
         elif kind == "done":
             # The head as the application sent it -- an int status and its
             # own (bytes, bytes) list -- read through the C API. `ev[2]` is
@@ -938,16 +944,34 @@ struct ExecutorPort(Movable, Writable):
 
 
 def dispatch_job(
-    mut pool: OffloadPool, mut handler: WSGIHandler, mut st: ExecutorState,
-    lane: Int, slot: Int,
+    pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int, slot: Int,
 ) raises -> Bool:
     """One `('job', slot)`: take the parked request and start it.
 
     The port's job branch, as a function, because the loop inversion has a
     second caller: `WSGIHandler.direct_job`, invoked by the event loop on
     this same thread with the request already parked, which is exactly
-    what the datagram path delivered. Returns True for the pill.
+    what the datagram path delivered. It is that handler's `direct_fn`
+    as it stands, which is one reason it takes addresses: `handler.mojo`
+    needs no import of this module. Returns True for the pill.
+
+    The other reason is `ExecutorState`'s rule. The spawn can run the
+    application INSIDE this call -- an eager task factory starts a task's
+    first step in `create_task` -- and what that step sends re-enters the
+    port and writes the state by address. Taken as a `mut` argument the
+    state was a copy stored back as this returned, so a response sent in
+    that first step was parked and then erased, and the request was never
+    answered (SPEC L30).
     """
+    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
+        unsafe_from_address=pool_addr
+    )[]
+    ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
+        unsafe_from_address=handler_addr
+    )[]
+    ref st = Pointer[ExecutorState, MutUntrackedOrigin](
+        unsafe_from_address=state_addr
+    )[]
     if slot < 0:
         st.stopping = True
         return True
@@ -1005,24 +1029,6 @@ def dispatch_job(
     return False
 
 
-def _direct_job_thunk(
-    pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int, slot: Int,
-) raises -> Bool:
-    """`WSGIHandler.direct_fn` under `M0_INVERTED`: the port's job branch,
-    reached through addresses so `handler.mojo` needs no import of this
-    module. Same function the datagram path runs (`dispatch_job`)."""
-    ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
-        unsafe_from_address=pool_addr
-    )[]
-    ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
-        unsafe_from_address=handler_addr
-    )[]
-    ref st = Pointer[ExecutorState, MutUntrackedOrigin](
-        unsafe_from_address=state_addr
-    )[]
-    return dispatch_job(pool, handler, st, lane, slot)
-
-
 def serve_inverted(
     opts: ServeOptions,
     listen_fd: FileDescriptor,
@@ -1072,7 +1078,7 @@ def serve_inverted(
     var state_ptr = Pointer(to=state)
     var handler_addr = Pointer(to=handler_ptr).unsafe_bitcast[Int]()[]
     var state_addr = Pointer(to=state_ptr).unsafe_bitcast[Int]()[]
-    handler.set_direct_executor(pool.addr(), state_addr, lane, _direct_job_thunk)
+    handler.set_direct_executor(pool.addr(), state_addr, lane, dispatch_job)
 
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
 

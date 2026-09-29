@@ -6428,6 +6428,23 @@ wait_exit 'background-forever'
 [ -f "$out/bgforever.marker" ] \
   || fail 'lifespan shutdown did not run: an endless background task held the drain'
 
+# An application that installs asyncio's eager task factory (SPEC L30): a
+# task's first step then runs inside the executor's spawn, so a response sent
+# before the first await is parked while the job that spawned it is still
+# running. That job held the executor's state as a copy and stored it back as
+# it returned, erasing the parked completion: every such request went
+# unanswered, on the pump and inverted alike, a plain answer and a stream's
+# head both. /slow awaits before it answers, so it is the readiness check.
+spawn asgi-eager.log env M0_ASGI_EAGER_TASKS=1 "$srv" $SPEC
+wait_ready "$B/slow?ms=1" $pid
+got=$(curl -s --max-time 5 $B/)
+[ "$got" = "hello from asgi_bare" ] \
+  || fail "under an eager task factory a response sent in the first step was not answered: '$got' (L30)"
+got=$(curl -s --max-time 5 $B/chunks)
+[ "$got" = "one-two-three" ] \
+  || fail "under an eager task factory a stream begun in the first step was not answered: '$got' (L30)"
+stop $pid
+
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.
@@ -6560,6 +6577,7 @@ python3 scripts/emit.py --covers L25 --task smoke-asgi
 python3 scripts/emit.py --covers L26 --task smoke-asgi
 python3 scripts/emit.py --covers L28 --task smoke-asgi
 python3 scripts/emit.py --covers L29 --task smoke-asgi
+python3 scripts/emit.py --covers L30 --task smoke-asgi
 python3 scripts/emit.py --covers I26 --task smoke-asgi
 """
 
