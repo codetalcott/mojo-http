@@ -47,6 +47,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from sabotage_lib import own_tmpdir
+
 SESSION = Path("packages/m0-http/src/session.mojo")
 GRANT = Path("packages/m0-http/src/grant.mojo")
 FRAGMENT = Path("packages/m0-http/src/fragment.mojo")
@@ -302,4 +304,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with own_tmpdir("sabotage-notes-login"):
+        sys.exit(main())
