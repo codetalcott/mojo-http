@@ -99,7 +99,8 @@ per connection that changes hands. Built.
   with three words — `state` (0 parked, a pass's start time in ns while
   inside one, −1 once it is leaving), `active` (open connections,
   published at the end of every pass) and `pending` (connections passed
-  to it and not yet admitted).
+  to it and not yet admitted). A fourth, `taken`, was added on
+  2026-09-29 (the correction under Leaving).
 - **The pick.** On every accept the winner reads each sibling's line and
   names the least `active + pending`, ties to itself, scanning from a
   rotating start so equal siblings take turns; a sibling that has left or
@@ -134,6 +135,28 @@ per connection that changes hands. Built.
   over the per-pass stores, or the drain's own passes would un-announce
   it. A crashed worker's queued datagrams wait for the respawn, which
   inherits the channel by index.
+
+  **Correction, 2026-09-29.** Draining once more did not close the
+  window: nothing ordered a sibling's send before that last drain (review
+  record B25). With the gap between `pick` and the send widened, an idle
+  leaver exited about 50 ms after SIGTERM and a sibling's `sendmsg`
+  succeeded 255 ms after that, into a channel nothing would read again,
+  and its client got nothing until the whole server stopped. A hand-off
+  that reached a leaver's drain before its first byte was admitted and
+  closed 1.6 ms later as idle between requests, and its client read EOF.
+  Both reproduced on Linux and macOS. Since then the two sides shake hands
+  on the page, each writing its own word before it reads the other's. The
+  sender raises `pending`, then reads the target's `state` again, and
+  keeps the connection if the target has left. The leaver stores −1, then
+  its drain runs on while `pending`, less what it has received, is above
+  0. And a worker that has left passes what its channel delivers on to a
+  sibling that has not (`AcceptShare.forward`), admitting it only when
+  none is left. The wait trusts `pending` not to stay high, and a worker
+  that died between taking a hand-off and retiring it at the end of its
+  pass left it high for good, so a fourth word on each line, `taken`,
+  publishes what a worker has received and not yet retired, and the
+  worker that takes the index subtracts it (`start`).
+  `test_handoff_leaving.mojo` forces each interleaving.
 - **One worker pays nothing.** The default `AcceptShare()` is inactive;
   every entry point is one Bool check. `M0_ACCEPT_SHARE=0` keeps the bare
   race under `--workers N` for an A/B.

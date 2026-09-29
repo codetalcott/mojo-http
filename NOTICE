@@ -1037,6 +1037,24 @@ lightbug_http
         its reads taken for the listener's, its request never read
         (review record B24).
 
+      - accept_share.mojo, loop/accept.mojo, loop/shutdown.mojo
+        (2026-09-29): no accept-sharing hand-off is lost to a worker that
+        is leaving. The sender reads the target's `state` again after
+        raising its `pending` and keeps a connection whose target has left
+        (`send_with`); the leaver's drain runs on while `pending`, less
+        what it has received, is above 0 (`awaiting_handoffs`); a worker
+        that has left passes what its channel delivers on to a sibling
+        that has not (`forward`, `pick_for_leaver`), admitting it only when
+        none is left; and the drain's tail retires what the shutdown took
+        off the channel without a pass. A hand-off sent after an idle
+        leaver's drain had ended was never read, and one admitted by a
+        drain before its first byte was closed as idle (review record
+        B25). A fourth word on each worker's line, `taken`, publishes what
+        the worker has received and not yet retired, and the worker that
+        takes the index of one that died subtracts it from `pending`
+        (`start`): those connections died with it, and a count left
+        behind would hold every later drain at the index to its budget.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -93,11 +93,12 @@ request goes first, and what is left is the one batch the blocker started:
   nothing its next edge will not announce, and an error accepting harder
   will not cure (EMFILE, ENFILE) is never owed — carried over, it would be
   retried every pass with a wait that no longer blocks.
-- **The shutdown path is unchanged.** `_shutdown_begin` still admits every
-  connection a sibling handed over before it closes the listener, because
-  the drain answers what was handed over, and it clears both flags: the
-  drain's passes must neither accept on a closed descriptor nor spin for
-  it.
+- **The shutdown path is unchanged.** `_shutdown_begin` still takes every
+  connection a sibling handed over before it closes the listener, and it
+  clears both flags: the drain's passes must neither accept on a closed
+  descriptor nor spin for it. Since review record B25 it passes each on to
+  a sibling that has not left, and admits it only when none is
+  ([accept-sharing](accept-sharing.md), the correction under Leaving).
 - **The inversion takes owed batches inside its callback.** Under
   `M0_INVERTED=1` a pass runs on the backend fd's readiness, on the flush
   the shim schedules after it, and on a 1 Hz tick, and an owed batch is

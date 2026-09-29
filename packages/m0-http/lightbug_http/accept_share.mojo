@@ -21,8 +21,9 @@ one `sendmsg` and one `recvmsg` per connection that changes hands, and
 nothing at all with one worker (`active()` is false, and every entry
 point is a Bool check away from being skipped).
 
-The load a sibling advertises is three words on its own cache line of the
-shared page, so the per-pass stores contend with nothing:
+A worker's words sit on its own cache line of the shared page, so the
+per-pass stores contend with nothing. Three are the load it advertises,
+and a fourth is its own bookkeeping:
 
 - `state`: 0 while parked in its wait, the pass's start time (ns) while
   it is inside one, `STATE_LEFT` once it is shutting down. A sibling
@@ -37,15 +38,49 @@ shared page, so the per-pass stores contend with nothing:
   send fails), decremented by the receiver at the end of the pass that
   admitted them. Without it an acceptor draining a burst sees a sibling's
   stale count of zero thirty-two times over and hands it everything.
+- `taken`: of those, the ones it has received and not yet retired from
+  `pending`, written as it receives each and zeroed as it retires them. A
+  worker that dies between the two leaves here the count of connections
+  that died with it, which nothing else would take back from `pending`,
+  and the worker that takes its index subtracts it (`start`).
 
 What can never happen: a lost connection. A send that fails for any
 reason (the sibling's channel full, a sibling gone) keeps the connection
 where it is; a datagram queued to a worker that crashed waits in the
 channel for the respawn, which inherits the same fd by index and drains
-it at its first pass. The one window is a sibling that exits at SIGTERM
-between the acceptor's check of its `state` and the `sendmsg` — a few
-hundred nanoseconds, closed on the receiver's side by draining the
-channel once more as its shutdown begins.
+it at its first pass.
+
+A worker that LEAVES is the case a check of `state` cannot settle alone:
+the sender reads the word and then sends, the leaver stores `STATE_LEFT`
+and then drains its channel, and nothing ordered the send before the
+leaver's last drain. Draining once more as the shutdown began did not
+close it. With the gap between `pick` and the send widened in a Linux
+container, a sibling's `sendmsg` succeeded 255 ms after the idle leaver
+had exited, into a channel nothing would read again: no respawn follows a
+clean exit. The client got nothing until the whole server stopped (review
+record B25). A handshake on the page closes it, each side writing its own
+word before it reads the other's:
+
+- the sender raises the target's `pending`, then reads its `state` again.
+  If the target has left, the sender takes the count back and keeps the
+  connection (`send_with`), the rule for any send that fails;
+- the leaver stores `STATE_LEFT`, then its drain runs until `pending`,
+  less what it has received, is 0 (`awaiting_handoffs`), within the
+  drain's budget.
+
+Every access is sequentially consistent, so one of the two reads sees the
+other side's write: the sender sees `STATE_LEFT` and never sends, or the
+leaver sees the count and waits for the datagram it stands for.
+
+A worker that has left also does not admit what its channel delivers. It
+passes each connection on to a sibling that has not left, by the same
+`send` (`forward`), because its drain closes a connection whose first
+byte has not arrived as idle: 1.6 ms after it was received, in the same
+container, and the client read EOF (B25's other shape). Only when no
+sibling is left, because the whole server is stopping, is the connection
+admitted, and the drain treats it as its own. Each hop is to a worker
+that had not left, and a worker leaves once, so a connection moves at
+most `workers - 1` times.
 
 Page layout, in Int64 slots of the `SharedAtomics` page `m0serve` creates
 pre-fork: slot 0 is the SSE event id (not ours), slot 1 the rotation
@@ -87,16 +122,20 @@ three."""
 comptime ACCEPT_SHARE_FIRST_WORKER_SLOT = 8
 """Worker 0's line begins here — the second 64-byte line of the page."""
 comptime ACCEPT_SHARE_WORKER_STRIDE = 8
-"""Slots per worker: one cache line each, three of the eight used."""
+"""Slots per worker: one cache line each, four of the eight used."""
 comptime _WORD_STATE = 0
 comptime _WORD_ACTIVE = 1
 comptime _WORD_PENDING = 2
+comptime _WORD_TAKEN = 3
 
 comptime ACCEPT_SHARE_BUSY_NS: Int = 2_000_000
 """A sibling inside one pass for longer than this is running something
 slow inline and is not handed a connection."""
 comptime STATE_LEFT: Int = -1
 """A `state` word meaning the worker is shutting down: never send to it."""
+comptime _ANY_LOAD: Int = 1 << 62
+"""An own load every sibling's is below: `pick_for_leaver`'s, whose own
+line is never a place for the connection."""
 comptime _CHANNEL_BUF = 65536
 """Send and receive buffer for a worker's channel. A passed descriptor's
 datagram is under a hundred bytes, so this holds hundreds of connections
@@ -180,6 +219,8 @@ struct AcceptShare(Copyable, Movable):
     """Connections this worker accepted and gave away, for the record."""
     var handoffs_in: Int
     """Connections this worker received from a sibling, for the record."""
+    var handoffs_forwarded: Int
+    """Of `handoffs_out`, those passed on after `leave` (`forward`)."""
 
     def __init__(out self):
         self.worker = -1
@@ -190,6 +231,7 @@ struct AcceptShare(Copyable, Movable):
         self.drained = 0
         self.handoffs_out = 0
         self.handoffs_in = 0
+        self.handoffs_forwarded = 0
 
     def __init__(out self, workers: Int) raises:
         """Create the channels for `workers` workers, pre-fork."""
@@ -248,11 +290,24 @@ struct AcceptShare(Copyable, Movable):
         `pending` is deliberately NOT reset — a respawned worker inherits
         its predecessor's channel, and the datagrams queued there are
         connections it will admit and account for at its first pass.
+
+        What the predecessor had taken off that channel and not yet retired
+        (`taken`) IS taken back: those connections died with it, and left in
+        `pending` they would count against this worker in every `pick` and
+        hold its drain to the budget waiting for them (`awaiting_handoffs`).
+        Under `--reload`, whose deadline for a drain is the drain's own
+        budget, that would end each reload of the index in SIGKILL, which
+        leaves the count behind again. `taken` is zeroed first: a death between the
+        two leaves `pending` high, never low.
         """
         if not self.active():
             return
         _store(self._word(self.worker, _WORD_STATE), 0)
         _store(self._word(self.worker, _WORD_ACTIVE), 0)
+        var taken = _load(self._word(self.worker, _WORD_TAKEN))
+        if taken > 0:
+            _store(self._word(self.worker, _WORD_TAKEN), 0)
+            _ = _fetch_add(self._word(self.worker, _WORD_PENDING), -taken)
 
     def pass_begin(mut self, now: Int):
         """The loop is inside a pass that started at `now` (ns)."""
@@ -268,6 +323,9 @@ struct AcceptShare(Copyable, Movable):
         var me = self.worker
         _store(self._word(me, _WORD_ACTIVE), active)
         if self.drained > 0:
+            # `taken` first, as in `start`: a death between the two leaves
+            # `pending` high, never low.
+            _store(self._word(me, _WORD_TAKEN), 0)
             var before = _fetch_add(self._word(me, _WORD_PENDING), -self.drained)
             if before - self.drained < 0:
                 # A floor, and one that no longer fires: the sender raises
@@ -282,11 +340,45 @@ struct AcceptShare(Copyable, Movable):
             _store(self._word(me, _WORD_STATE), 0)
 
     def leave(mut self):
-        """Shutting down: siblings must stop sending here."""
+        """Shutting down: siblings must stop sending here.
+
+        The leaver's write in the handshake (the module docstring): stored
+        before the drain reads `pending` (`awaiting_handoffs`), and never
+        undone by the drain's own passes (`left`).
+        """
         if not self.active():
             return
         self.left = True
         _store(self._word(self.worker, _WORD_STATE), STATE_LEFT)
+
+    def awaiting_handoffs(self) -> Bool:
+        """After `leave`: whether a hand-off a sibling has counted to this
+        worker has not reached it yet, which is `pending` less what this
+        pass has received (`drained`, not yet retired) above 0.
+
+        The leaver's read in the handshake (review record B25). `leave`
+        stored `STATE_LEFT` before this reads `pending`, and a sender raises
+        `pending` before it reads `state` again (`send_with`), so a sender
+        that missed the leave is counted here, and the drain runs on until
+        its datagram is off the channel, or its send failed and took the
+        count back. The drain used to end as soon as nothing was in flight,
+        and a hand-off sent after that was never read.
+
+        It reads the word the two ordering rules already keep: raised by the
+        sender before its datagram exists (R5), retired by the receiver only
+        once it has taken the datagram (at the end of that pass, or of the
+        drain for what the shutdown took before its first pass), so it is
+        never below what is in flight. It can be above: a predecessor that
+        died between taking a hand-off and retiring it left the count high,
+        which `start` takes back from what it published in `taken`. A death
+        in the instructions between a receive and that publication is the
+        remainder, and it holds this worker's drain to its budget, which is
+        what bounds the wait. False when sharing is inactive or this worker
+        has not left.
+        """
+        if not self.left or not self.active():
+            return False
+        return _load(self._word(self.worker, _WORD_PENDING)) - self.drained > 0
 
     def load_of(self, worker: Int) -> Int:
         """A worker's advertised load: open connections plus those in
@@ -308,11 +400,41 @@ struct AcceptShare(Copyable, Movable):
         """
         if not self.active():
             return self.worker
+        return self._least_loaded(
+            own_active + _load(self._word(self.worker, _WORD_PENDING)),
+            now,
+            take_busy=False,
+        )
+
+    def pick_for_leaver(self, now: Int) -> Int:
+        """Where a worker that has left passes on a connection its channel
+        delivered: the least-loaded sibling that has not left, or this
+        worker when none is, because the whole server is stopping.
+
+        Unlike `pick`, this worker's own load never wins, and a sibling
+        inside a long pass is taken when every sibling that has not left
+        is: it will answer the connection once its slow view is done, and
+        the alternative is this worker's drain, which closes a connection
+        whose first byte has not arrived (review record B25).
+        """
+        if not self.active():
+            return self.worker
+        var target = self._least_loaded(_ANY_LOAD, now, take_busy=False)
+        if target == self.worker:
+            target = self._least_loaded(_ANY_LOAD, now, take_busy=True)
+        return target
+
+    def _least_loaded(self, own_load: Int, now: Int, take_busy: Bool) -> Int:
+        """The sibling with the least `active + pending` below `own_load`,
+        or this worker when none is below it. The scan starts at the
+        rotation counter, so equal loads take turns. A sibling that has
+        left is never taken, and one inside a pass for longer than
+        `ACCEPT_SHARE_BUSY_NS` only when `take_busy`."""
         var n = self.workers()
         var me = self.worker
         var start = _fetch_add(self.page + 8 * ACCEPT_SHARE_RR_SLOT, 1) % n
         var best = me
-        var best_load = own_active + _load(self._word(me, _WORD_PENDING))
+        var best_load = own_load
         for k in range(n):
             var i = (start + k) % n
             if i == me:
@@ -320,7 +442,7 @@ struct AcceptShare(Copyable, Movable):
             var state = _load(self._word(i, _WORD_STATE))
             if state == STATE_LEFT:
                 continue
-            if state > 0 and now - state > ACCEPT_SHARE_BUSY_NS:
+            if not take_busy and state > 0 and now - state > ACCEPT_SHARE_BUSY_NS:
                 continue
             var load = (
                 _load(self._word(i, _WORD_ACTIVE))
@@ -335,11 +457,26 @@ struct AcceptShare(Copyable, Movable):
         """Pass the accepted `fd` to worker `target` with its peer address.
 
         True once the datagram is queued — the caller then closes its own
-        `fd`. False leaves the caller owning the connection: the target's
-        channel is full, or the send failed some other way.
+        `fd`. False leaves the caller owning the connection: the target has
+        left since it was picked, its channel is full, or the send failed
+        some other way.
         """
         var post = SendFdPost()
         return self.send_with(post, target, fd, host, port)
+
+    def forward(mut self, fd: Int, host: String, port: Int, now: Int) -> Bool:
+        """After `leave`: pass on a connection this worker's channel
+        delivered, to `pick_for_leaver`'s sibling, by `send`.
+
+        True once it is queued there, and the caller closes its own `fd`.
+        False when no sibling is left or the send failed: the caller admits
+        the connection, the rule for any send that fails (review B25).
+        """
+        var target = self.pick_for_leaver(now)
+        if target == self.worker or not self.send(target, fd, host, port):
+            return False
+        self.handoffs_forwarded += 1
+        return True
 
     def send_with[P: HandoffPost](
         mut self, mut post: P, target: Int, fd: Int, host: String, port: Int
@@ -357,6 +494,11 @@ struct AcceptShare(Copyable, Movable):
         that worker as a connection busier than it was (review record R5).
         Raised first, a datagram the receiver can see was counted before it
         existed, and the count is never below what is in flight.
+
+        The target's `state` is read again after the raise, and a target
+        that has left is not sent to: the count is taken back and the
+        caller keeps the connection (review record B25). This is the
+        sender's half of the handshake in the module docstring.
         """
         if target < 0 or target >= self.workers() or target == self.worker:
             return False
@@ -367,6 +509,17 @@ struct AcceptShare(Copyable, Movable):
             payload.append(b)
         var pending = self._word(target, _WORD_PENDING)
         _ = _fetch_add(pending, 1)
+        # `pick` read the target's `state` before this raise, and a worker
+        # that has left since never reads the channel again once its drain
+        # is over. So the word is read again AFTER the raise. A leave this
+        # load sees is refused like a failed send. A leave it misses was
+        # stored after the load, so its drain reads `pending` after the
+        # raise, counts this hand-off, and waits for the datagram
+        # (`awaiting_handoffs`). Both sides are sequentially consistent;
+        # weaker orderings would let both reads miss.
+        if _load(self._word(target, _WORD_STATE)) == STATE_LEFT:
+            _ = _fetch_add(pending, -1)
+            return False
         if not post.post(self.write_fds[target], fd, payload):
             _ = _fetch_add(pending, -1)
             return False
@@ -393,6 +546,9 @@ struct AcceptShare(Copyable, Movable):
         if fd == RECV_FD_EMPTY:
             return RECV_FD_EMPTY
         self.drained += 1
+        # Published for the worker that takes this index if this one dies
+        # before `pass_end` retires it (`start`).
+        _store(self._word(self.worker, _WORD_TAKEN), self.drained)
         if fd < 0:
             return RECV_FD_REFUSED
         if len(payload) >= 2:
