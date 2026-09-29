@@ -148,11 +148,17 @@ halves, would run locally and in no job, so `check-docs` refuses anything
 `test-all` reaches that no unconditional step does.
 
 Both jobs restore Mojo's compile cache and save it after. The cache holds
-one entry per whole program, keyed by everything the program compiles, so a
-warm run skips every compile its commit left alone: `unit-tests` re-run
-warm on ubuntu took 9.2 minutes against 20.7 cold (`test-http` 138 seconds
-against 574), from a 43 MB cache restored in 3 seconds. The four jobs' caches
-come to about 145 MB a run, compressed. But the cache is not what makes the
+one entry per whole program, keyed by everything the program compiles and
+by the CPU it compiles for, which for `mojo run` is the host. So a warm run
+skips every compile its commit left alone, on a CPU the cache has met:
+`unit-tests` re-run warm on ubuntu took 9.2 minutes against 20.7 cold
+(`test-http` 138 seconds against 574), from a 43 MB cache restored in 3
+seconds, and 7.3 against 13.9 on macOS. GitHub's ubuntu runners come in
+more than one CPU model. The pull request's third run landed on another and
+missed every entry (19.4 minutes). A one-file probe shows the same thing:
+`mojo build --target-cpu` for another CPU adds new entries beside the
+host's. The four jobs' caches come to about 145 MB a run, compressed, and a
+cache that has met two CPUs holds both. But the cache is not what makes the
 caps fit. GitHub scopes a cache to the pull request that saved it, and
 `main`, the only scope every pull request can read, gets no push runs: the
 `automerge` label merges with the workflow token, which starts no workflow.

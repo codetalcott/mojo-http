@@ -51,14 +51,18 @@ jobs:
     # between the halves is free.
     #
     # Mojo's compile cache is restored below and saved after the job. It
-    # holds one entry per whole program, so a warm run skips every compile
-    # its commit did not change: this job re-run warm took 9.2 min against
-    # 20.7 cold, from a 43 MB cache restored in 3 s. It is not what makes
-    # the cap fit. GitHub scopes a cache to the pull request that saved it,
-    # and `main` gets no push runs (the `automerge` label merges with the
-    # workflow's token), so a pull request's first run is always cold --
-    # 70% of runs since 2026-09-20 -- and an edit makes every program that
-    # reaches it cold again. The caps are set by cold runs.
+    # holds one entry per whole program and host CPU, so a warm run skips
+    # every compile its commit did not change, on a CPU the cache has met:
+    # this job re-run warm took 9.2 min against 20.7 cold, from a 43 MB
+    # cache restored in 3 s, and 7.3 against 13.9 on macOS. GitHub's
+    # ubuntu runners come in more than one CPU model, and #482's third run
+    # landed on another and missed every entry (19.4 min); the cache it
+    # saved then served both. It is not what makes the cap fit. GitHub
+    # scopes a cache to the pull request that saved it, and `main` gets no
+    # push runs (the `automerge` label merges with the workflow's token),
+    # so a pull request's first run is always cold -- 70% of runs since
+    # 2026-09-20 -- and an edit makes every program that reaches it cold
+    # again. The caps are set by cold runs.
     #
     # Without an explicit cap a hung step runs to GitHub's 6-hour default
     # while holding this ref's concurrency group, so a stall reads as
