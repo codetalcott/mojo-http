@@ -375,7 +375,7 @@
       "category": "D. Graceful shutdown and restart",
       "capability": "SIGTERM drains in-flight requests",
       "status": "verified",
-      "evidence": "`Smoke test graceful shutdown` (every PR) \u2014 including a request whose event is ready in the same batch as the stop, behind it: the pass that reads the shutdown pipe handles its whole batch, and admits no new connection. It stopped at the pipe, and on Linux, where such an event is reported once, a request whose handler raised SIGTERM on the ASGI executor went unanswered while the drain waited out its 5 s, 20 of 32 tries with the server on one CPU (review record B22). `test_shutdown_pass.mojo` puts a read, a completion, a write, a bus frame and a timer behind the stop over a backend that reports each once, and `smoke-asgi` sends that request on the pump, eight times pinned to one CPU where `taskset` exists"
+      "evidence": "`Smoke test graceful shutdown` (every PR)"
     },
     {
       "id": "D2",
@@ -1709,9 +1709,9 @@
       "id": "L31",
       "section": "L",
       "category": "L. ASGI 3.0",
-      "capability": "No function in m0serve takes the asyncio executor's state by value, nor holds it inside an argument that is: Mojo 1.1.0 copies a `mut` argument of 256 bytes or less in and stores the copy back, which erased the drain L8's SIGTERM had begun and the completion L30's first step had parked, so `ExecutorState` travels by address",
+      "capability": "Under the loop inversion a pass never runs inside another: every event a pass reads beside a request whose first step fills the chunk channel is acted on",
       "status": "verified",
-      "evidence": "`Run unit tests` (every PR) \u2014 `poe check-copyback` reads m0serve's LLVM IR, compiled as `build-serve` compiles the binary, and matches the type's layout, read from its own constructor, against every argument passed by value, so a raising function whose parameter types the census cannot name is still caught. On every run it first requires a control that takes the type in B20's two shapes and inside a copied struct to be seen, and stops with 2 when it is not; a selftest over canned IR holds the judgement. Putting `mut st` back in `_flush_inverted` or `dispatch_job` fails it, naming the function. The rule, and the sweep that found no other type needing it: [mut-arguments-and-raw-addresses](notes/mut-arguments-and-raw-addresses.md)"
+      "evidence": "`Smoke test the ASGI executor under the loop inversion` (every PR) \u2014 `scripts/nested_pass_probe.py`, against the bare app with its eager task factory installed: a blocker holds the thread while a request whose first step sends 32,768 one-byte frames arrives, and then a second event, so one pass reads both, the stream's first. The second event, a new connection and then a keep-alive request, must be answered. The executor made room in the full channel by running a pass inside that pass, and the wait there overwrote the events the outer pass had not reached: the new connection was accepted only when another arrived, and on epoll the keep-alive request was never read. With the fix reverted the probe fails every run on both platforms (the read case on Linux only: kqueue reports a readable socket again). A pass asked for inside another is refused and named in the log, which the phase also reads; nothing in the tree asks for one now, so no gate fails without the refusal"
     },
     {
       "id": "M1",

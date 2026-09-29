@@ -263,6 +263,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   entry above, found while fixing it; `smoke-asgi` now runs the bare app
   with the eager factory installed.
 
+- **Under `M0_INVERTED=1`, a connection that arrives beside a streamed
+  response is answered** (SPEC L32). With the loop inversion and an eager
+  task factory, a task's first step runs inside the event-loop pass that
+  read its request, and a stream that sends many small pieces there fills
+  the executor's chunk channel. The executor made room by running a pass
+  of its own, inside the first one, and its wait overwrote the events the
+  first pass had read and not yet reached. A new connection read in the
+  same batch was not accepted until another one arrived. On Linux, a
+  request on a keep-alive connection in that batch was never read, and its
+  client waited for its own timeout. A full channel is now handed to the
+  loop in order, as the pass would have handed it, and a pass never runs
+  inside another. `smoke-asgi` builds that batch on every run under the
+  inversion.
+
 - **m0serve reads a command-line argument that is not UTF-8 instead of
   crashing on it.** It cut `--name=value`, the positional `MODULE:ATTR`,
   and the `PREFIX=` of `--static` and `--mount` with a slice that asserts

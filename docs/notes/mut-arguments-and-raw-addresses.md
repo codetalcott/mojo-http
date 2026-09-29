@@ -183,6 +183,17 @@ one is reading, whatever the compiler does. The compiler's share of it:
   which the first step runs. A nested `spawn_asgi` rewrites the bridge's
   two scratch lists, which the outer call uses only before that call.
 
+**Since B23 (#471, SPEC L32), no pass runs inside another.**
+`_place_frame_with` is gone. A full chunk channel's frames are handed to
+the loop's handler instead of a pass making room. The port also refuses
+loop work while some is on the stack, through `ExecutorState.in_pass`,
+which is reached by address as M1 requires.
+
+So the writers the three points above describe no longer run inside those
+calls. `ExecutorState` grew by two `Bool` fields and stays under 256
+bytes, still resolved by address in every frame and still guarded by
+`check-copyback`.
+
 **M2.** A scan of both programs' IR for M2's shape (a local whose address
 escapes into memory, then a `tail call`, then a load or store of the local)
 finds six sites, all in `_executor_serve` and `serve_inverted`, and every
