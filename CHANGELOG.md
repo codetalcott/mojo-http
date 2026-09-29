@@ -315,6 +315,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `--no-sync`, or take the build as a poe dependency. A new step on the
   Linux leg, `poe check-task-shells`, parses every task under dash and
   refuses such a call.
+- **Twenty-six more smokes take a free port and keep their files out of
+  the checkout**: the WSGI and ASGI gateway's, and the CLI's and execution
+  modes', so smokes that shared a port (8099 was four tasks') run beside
+  each other and beside anything else on the machine. `free_port N` finds
+  N ports in a row, for the probes that serve one shape per port. And an
+  interrupted smoke no longer waits on a server that ignores TERM: the
+  interrupt reaches the `ps` the cleanup asks whether the server is alive,
+  and the empty answer was read as "exited", so the cleanup waited on the
+  server for as long as it lived.
 
 - **A client that resets its connection no longer holds its slot on
   Linux** (SPEC C9). epoll reported a socket error as a failed

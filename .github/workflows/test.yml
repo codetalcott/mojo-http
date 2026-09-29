@@ -792,8 +792,6 @@ jobs:
           path: |
             ${{ runner.temp }}/m0-smoke.*/*.log
             notes.log
-            serve.log
-            threads.log
           if-no-files-found: ignore
 
   smoke-gateway:
@@ -1047,8 +1045,4 @@ jobs:
           name: server-logs-${{ matrix.os }}-gateway
           path: |
             ${{ runner.temp }}/m0-smoke.*/*.log
-            wsgi.log
-            flask.log
-            serve.log
-            threads.log
           if-no-files-found: ignore
