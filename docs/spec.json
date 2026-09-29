@@ -1527,7 +1527,7 @@
       "category": "L. ASGI 3.0",
       "capability": "The event loop running inside asyncio (`M0_INVERTED`)",
       "status": "verified",
-      "evidence": "`Smoke test the ASGI executor under the loop inversion` (every PR)"
+      "evidence": "`Smoke test the ASGI executor under the loop inversion` (every PR) \u2014 including its drain, whichever of its passes reads the SIGTERM: a request raising SIGTERM in its first step, sent on a connection already answered, makes it the pass a completion flush runs, every time, and the process must answer it and exit 0. That flush had stored a copy of the executor's state taken before its pass back over the drain's record, and the server never exited (CI's macOS runners, about 2 in 100 runs of the live-stream shutdown). `poe test-shim` holds the shim's half: a drain the flush reports starts at once"
     },
     {
       "id": "L9",
@@ -1696,6 +1696,14 @@
       "capability": "Nothing follows this side's Close: a socket lingering for the peer's reply is skipped by the heartbeat, so the reply is met by a FIN and never by a ping (RFC 6455 \u00a71.4, \u00a75.5.1)",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `ws_probe.py` holds its Close reply for a second, three heartbeat periods inside the two-second linger, and requires silence and then a FIN; on the server before the fix three pings arrive in that second. Found by `stress-asgi` (pre-release): the 300 ms heartbeat landed inside the window between the Close going out and the reply being read, which CPU hogs widen, in 3 rounds of 30, and the close-order phase read `0x89 0x02 \"hb\"` where it expected the FIN -- reported, until the probe learned to name a frame, as the RST it was not"
+    },
+    {
+      "id": "L30",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An application may install asyncio's eager task factory: a response it sends in a task's first step, before any await, is answered",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `M0_ASGI_EAGER_TASKS=1` makes the bare app install `asyncio.eager_task_factory` at lifespan startup, and a plain answer and a stream begun in the first step must both arrive; the same task runs in the inverted step. The first step runs inside the executor's spawn, and the job that spawned it held the executor's state as a copy and stored it back as it returned, erasing the completion the step had parked: every such request went unanswered, on the pump and inverted alike"
     },
     {
       "id": "M1",
