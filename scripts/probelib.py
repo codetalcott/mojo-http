@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """What every smoke probe needs, written once: the phase stamp, `fail`, a
 server watched while it starts, a free port, an SSE reader and a WebSocket
-client. Standard library only.
+client. Standard library only. The free port comes from below the kernel's
+ephemeral range, whose ports go to whatever connects next (`free_port`).
 
     from probelib import WebSocket, fail, phase, stamp
 
@@ -33,9 +34,11 @@ because sabotage harnesses match those lines.
 import base64
 import collections
 import contextlib
+import errno
 import hashlib
 import http.client
 import os
+import random
 import re
 import signal
 import socket
@@ -270,12 +273,83 @@ def server(argv, target, timeout=30.0, log=None, status=200, grace=15.0,
             opened.close()
 
 
-def free_port(host="127.0.0.1"):
-    """A port nothing listens on, for a server a probe starts itself: a fixed
-    port is shared with every other run on the machine."""
+PORT_FLOOR = 10000
+"""The lowest port `free_port` gives: below it sit fixed-port services."""
+
+
+def ephemeral_start():
+    """Where the ports connect() and bind(0) hand out begin: /proc on Linux,
+    sysctl on macOS, and 32768, the lower of their defaults, when neither
+    says."""
+    try:
+        with open("/proc/sys/net/ipv4/ip_local_port_range") as fh:
+            return int(fh.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    for exe in ("sysctl", "/usr/sbin/sysctl"):
+        try:
+            out = subprocess.run([exe, "-n", "net.inet.ip.portrange.first"],
+                                 capture_output=True, text=True, timeout=10)
+            return int(out.stdout.split()[0])
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            pass
+    return 32768
+
+
+def _port_free(port):
+    """Free on the IPv4 AND the IPv6 wildcard: `localhost` may reach an IPv6
+    listener first, and that would be somebody else's server."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((host, 0))
-        return s.getsockname()[1]
+        try:
+            s.bind(("", port))
+        except OSError:
+            return False
+    try:
+        s = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    except OSError:
+        return True  # no IPv6 here, so nobody can answer localhost on it
+    with s:
+        try:
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind(("::", port))
+        except OSError as e:
+            return e.errno != errno.EADDRINUSE  # anything else cannot be held
+    return True
+
+
+def _free_run(count, low, high):
+    """The first of `count` consecutive free ports from a base drawn at random
+    from low..high, or None when no base there has its whole run free."""
+    for base in random.sample(range(low, high + 1), min(100, high - low + 1)):
+        if all(_port_free(p) for p in range(base, base + count)):
+            return base
+    return None
+
+
+def free_port(count=1):
+    """A port nothing holds, for a server a probe starts itself: a fixed port
+    is shared with every other run on the machine. With `count`, the first of
+    that many consecutive ports, for a probe that serves one shape per port.
+
+    Each port is free on IPv4 and IPv6, and the run is drawn at random from
+    PORT_FLOOR up to the kernel's ephemeral range, never inside it. Every
+    connect() and bind(0) on the machine takes its port from that range, and
+    macOS hands them out in sequence, so the ports just above one bind(0)
+    returned go to the next connections anyone makes, the probe's own
+    included; a socket on a port then refuses a server's bind of it (on
+    Linux any socket, on macOS past SO_REUSEADDR one owned by another user).
+    Nothing is handed out below the range. scripts/smoke/lib.sh's
+    `free_port` keeps the same rule for the shell tasks.
+    """
+    first = ephemeral_start()
+    if first - count < PORT_FLOOR:
+        raise RuntimeError("free_port: the ephemeral range starts at %d, leaving no run of "
+                           "%d ports between %d and it" % (first, count, PORT_FLOOR))
+    base = _free_run(count, PORT_FLOOR, first - count)
+    if base is None:
+        raise RuntimeError("free_port: no run of %d ports was free on both IPv4 and IPv6"
+                           % count)
+    return base
 
 
 # --- server-sent events ------------------------------------------------------------
@@ -727,6 +801,68 @@ def _selftest():
     port = free_port()
     check("free_port gives a port nothing listens on",
           not _answers(("127.0.0.1", port), None, 0.5))
+
+    def range_start():
+        # Read apart from ephemeral_start, which is under test.
+        try:
+            if sys.platform.startswith("linux"):
+                with open("/proc/sys/net/ipv4/ip_local_port_range") as fh:
+                    return int(fh.read().split()[0])
+            if sys.platform == "darwin":
+                return int(subprocess.run(
+                    ["/usr/sbin/sysctl", "-n", "net.inet.ip.portrange.first"],
+                    capture_output=True, text=True, timeout=10).stdout)
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            pass
+        return None
+
+    def binds(port):
+        # On the IPv4 and IPv6 wildcards, as a server binds it.
+        for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+            try:
+                s = socket.socket(family, socket.SOCK_STREAM)
+            except OSError:
+                continue  # no IPv6 here: nothing can answer localhost on it
+            with s:
+                try:
+                    if family == socket.AF_INET6:
+                        s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    s.bind((addr, port))
+                except OSError:
+                    return False
+        return True
+
+    # Inside the ephemeral range a port goes to whatever connects next -- on
+    # macOS in sequence, so a run counted up from one bind(0) returned was
+    # the next connections' -- and each can refuse the server's bind.
+    first = range_start()
+    check("...below the kernel's ephemeral range (which starts at %s), where "
+          "nothing is handed out" % first, first is not None and PORT_FLOOR <= port < first)
+    run = free_port(3)
+    check("free_port(3) is three ports in a row below the range, each binding on "
+          "the IPv4 and IPv6 wildcards", first is not None
+          and PORT_FLOOR <= run <= first - 3 and all(binds(p) for p in range(run, run + 3)))
+    # The run is checked whole, on both families, with the bases pinned (drawn
+    # from all of them, a run of three would miss a trap nearly every time):
+    # from bases b..b+2 every run holds b+2, so a listener there leaves no
+    # answer, and from bases b..b+3 the one clear run is b+3's.
+    b = next((c for c in (random.randint(PORT_FLOOR, (first or 32768) - 6)
+                          for _ in range(200)) if all(binds(p) for p in range(c, c + 6))), None)
+    check("six ports in a row are free below the range, for the traps", b is not None)
+    for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")) if b else ():
+        try:
+            trap = socket.socket(family, socket.SOCK_STREAM)
+        except OSError:
+            continue
+        with trap:
+            if family == socket.AF_INET6:
+                trap.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            trap.bind((addr, b + 2))
+            trap.listen(1)
+            check("with a listener on %s, no run of three from bases b..b+2 is free, "
+                  "since each holds it" % addr, _free_run(3, b, b + 2) is None)
+            check("...and from bases b..b+3 the answer is the one clear run, b+3's",
+                  _free_run(3, b, b + 3) == b + 3)
 
     dead = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(3)"])
     t0 = time.monotonic()

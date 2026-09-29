@@ -30,7 +30,7 @@ found: `fail`'s output as both sabotage harnesses parse it, `wait_ready`
 failing fast on a server that died, `stop` and the exit trap reaping a whole
 process group, an interrupted task killing its servers well inside the
 1.6 s poe allows before it SIGKILLs the task, and `free_port` finding a run
-of free ports.
+of free ports below the kernel's ephemeral range.
 
     python3 scripts/check_task_shells.py              # every task body
     python3 scripts/check_task_shells.py --selftest   # the rules, and the lib
@@ -305,6 +305,56 @@ def _interrupt(shell: str, then: str, delay: float, env: dict | None = None) -> 
     return rc, took, child, running
 
 
+PORT_FLOOR = 10000
+"""The lowest port `free_port` may print: below it sit fixed-port services."""
+
+
+def ephemeral_start() -> int | None:
+    """Where the kernel's ephemeral port range begins, read here apart from
+    the lib's own reading, which is under test: /proc on Linux, sysctl on
+    macOS, and None anywhere else or when neither answers."""
+    try:
+        if sys.platform.startswith("linux"):
+            return int(Path("/proc/sys/net/ipv4/ip_local_port_range").read_text().split()[0])
+        if sys.platform == "darwin":
+            return int(subprocess.run(["/usr/sbin/sysctl", "-n", "net.inet.ip.portrange.first"],
+                                      capture_output=True, text=True, timeout=10).stdout)
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def _unbindable(port: int) -> str:
+    """Why `port` does not bind on the IPv4 and IPv6 wildcards, as a server
+    binds it, or '' if it does. No IPv6 at all counts as bindable, as it
+    does in the lib: nothing can answer `localhost` there."""
+    for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+        try:
+            s = socket.socket(family, socket.SOCK_STREAM)
+        except OSError:
+            continue
+        try:
+            if family == socket.AF_INET6:
+                s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            s.bind((addr, port))
+        except OSError as e:
+            return f"{addr} port {port} does not bind: {e}"
+        finally:
+            s.close()
+    return ""
+
+
+def _free_stretch(first: int, n: int) -> int | None:
+    """A base b below the ephemeral range whose b..b+n-1 all bind, or None."""
+    import random
+
+    for _ in range(200):
+        b = random.randint(PORT_FLOOR, first - n)
+        if not any(_unbindable(p) for p in range(b, b + n)):
+            return b
+    return None
+
+
 def _lib_cases(shell: str) -> list[str]:
     """Each claim scripts/smoke/lib.sh makes, run under `shell`."""
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -451,57 +501,59 @@ def _lib_cases(shell: str) -> list[str]:
                        f"and the server {'gone' if gone else 'LEFT RUNNING'}")
         _kill_group(child)
 
-    # free_port: free on every IPv4 and IPv6 address, as a server binds it.
-    p = _run_lib(shell, "free_port")
-    port = int(p.stdout.strip()) if p.stdout.strip().isdigit() else 0
-    try:
-        for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
-            s = socket.socket(family, socket.SOCK_STREAM)
-            try:
-                if family == socket.AF_INET6:
-                    s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-                s.bind((addr, port))
-            finally:
-                s.close()
-    except OSError as e:
-        bad.append(f"free_port printed {p.stdout.strip()!r}, which does not bind: {e}")
+    # free_port [N]: a run of N ports between PORT_FLOOR and the kernel's
+    # ephemeral range, every one free on the IPv4 and IPv6 wildcards, as a
+    # server binds it. A port inside the range goes to whatever connects
+    # next -- on macOS in sequence, so a run counted up from one bind(0)
+    # returned was the next connections' -- and each can refuse the bind.
+    first = ephemeral_start()
+    if first is None:
+        bad.append(f"the kernel's ephemeral port range could not be read on {sys.platform}, "
+                   "so free_port's place below it is unchecked")
+    for n in (1, 3):
+        p = _run_lib(shell, "free_port" if n == 1 else f"free_port {n}")
+        out = p.stdout.strip()
+        if not out.isdigit():
+            bad.append(f"free_port {n} printed {out!r} (exit {p.returncode}): "
+                       f"{p.stderr.strip()[-300:]}")
+            continue
+        base = int(out)
+        if first is not None and not PORT_FLOOR <= base <= first - n:
+            bad.append(f"free_port {n} printed {base}: its run must lie between {PORT_FLOOR} "
+                       f"and the ephemeral range, which starts at {first}")
+        why = next((w for w in map(_unbindable, range(base, base + n)) if w), "")
+        if why:
+            bad.append(f"free_port {n} printed {base}, and {why}")
 
-    # free_port N: the first of N consecutive ports, every one of them free
-    # on both families, for a probe that takes one port per shape upward from
-    # the one it is given. Where bind(0) counts up, as macOS's does, the port
-    # free_port starts from is the one after `q`, so a listener one past THAT
-    # sits where a free_port that checked its first port alone would put its
-    # second -- and, held through the check, fails that answer. Where the
-    # kernel picks at random (Linux) the listener is only in the way by luck.
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.bind(("", 0))
-    q = probe.getsockname()[1]
-    probe.close()
-    trap = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        trap.bind(("", q + 2))
-        trap.listen(1)
-    except OSError:
-        trap.close()
-        trap = None
-    try:
-        p = _run_lib(shell, "free_port 3")
-        base = int(p.stdout.strip()) if p.stdout.strip().isdigit() else 0
+    # The run is checked whole, on both families. The bases are pinned
+    # through the snippet's own arguments (free_port passes only its first):
+    # drawn from all of them, a run of three would miss a trap nearly every
+    # time. From bases b..b+2 every run holds b+2, so a listener there leaves
+    # no answer -- a helper that checked its first port alone would print b
+    # or b+1, and one that checked IPv4 alone would print one of them past an
+    # IPv6 listener -- and from bases b..b+3 the one clear run is b+3's.
+    b = _free_stretch(first or 32768, 6)
+    if b is None:
+        bad.append("no six ports in a row were free below the ephemeral range, for the traps")
+    for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")) if b else ():
         try:
-            for port in range(base, base + 3):
-                for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
-                    s = socket.socket(family, socket.SOCK_STREAM)
-                    try:
-                        if family == socket.AF_INET6:
-                            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
-                        s.bind((addr, port))
-                    finally:
-                        s.close()
-        except OSError as e:
-            bad.append(f"free_port 3 printed {p.stdout.strip()!r}, and port {port} of its "
-                       f"run does not bind: {e}")
-    finally:
-        if trap is not None:
+            trap = socket.socket(family, socket.SOCK_STREAM)
+        except OSError:
+            continue  # no IPv6 here: nothing to trap, and the lib counts it free
+        try:
+            if family == socket.AF_INET6:
+                trap.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            trap.bind((addr, b + 2))
+            trap.listen(1)
+            for top, want in ((b + 2, None), (b + 3, b + 3)):
+                p = _run_lib(shell, f'python3 -S -c "$_smoke_free_port" 3 {b} {top}')
+                out = p.stdout.strip()
+                ok = (out == str(want)) if want else (p.returncode != 0 and not out)
+                if not ok:
+                    bad.append(f"with a listener on {addr} port {b + 2}, free_port 3 from bases "
+                               f"{b}-{top} printed {out or 'nothing'} (exit {p.returncode}); "
+                               f"the answer is {want or 'none: every run holds the listener'}")
+        finally:
             trap.close()
     p = _run_lib(shell, "free_port 0")
     if p.returncode == 0 or "usage" not in p.stdout + p.stderr:
