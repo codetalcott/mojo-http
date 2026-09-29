@@ -153,13 +153,18 @@ by the CPU it compiles for, which for `mojo run` is the host. So a warm run
 skips every compile its commit left alone, on a CPU the cache has met:
 `unit-tests` re-run warm on ubuntu took 9.2 minutes against 20.7 cold
 (`test-http` 138 seconds against 574), from a 43 MB cache restored in 3
-seconds, and 7.3 against 13.9 on macOS. GitHub's ubuntu runners come in
-more than one CPU model. The pull request's third run landed on another and
-missed every entry (19.4 minutes). A one-file probe shows the same thing:
-`mojo build --target-cpu` for another CPU adds new entries beside the
-host's. The four jobs' caches come to about 145 MB a run, compressed, and a
-cache that has met two CPUs holds both. But the cache is not what makes the
-caps fit. GitHub scopes a cache to the pull request that saved it, and
+seconds, and 5.7-7.3 against 13.9 on macOS. GitHub's ubuntu runners are
+not all one CPU model. Keyed without the CPU, two later ubuntu runs of
+`unit-tests` missed every entry of the cache they restored (19.4 and 20.4
+minutes, on the same sources, image and toolchain as the warm re-run),
+while `unit-gates` hit both times. A one-file probe shows the key includes
+the CPU compiled for: `mojo build --target-cpu apple-m1`, then `apple-m2`,
+each add entries beside the host's. So the cache's key names the runner's
+CPU model. A runner on a model the pull request has not met then says so in
+its restore's log, instead of restoring entries it cannot use, and a cache
+no longer accumulates every model's entries. The four jobs' caches come to
+about 145 MB a run, compressed. But the cache is not what makes the caps
+fit. GitHub scopes a cache to the pull request that saved it, and
 `main`, the only scope every pull request can read, gets no push runs: the
 `automerge` label merges with the workflow token, which starts no workflow.
 So a pull request's first run, 70% of runs since 2026-09-20, is always

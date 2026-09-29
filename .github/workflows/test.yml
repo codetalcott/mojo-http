@@ -51,18 +51,19 @@ jobs:
     # between the halves is free.
     #
     # Mojo's compile cache is restored below and saved after the job. It
-    # holds one entry per whole program and host CPU, so a warm run skips
-    # every compile its commit did not change, on a CPU the cache has met:
-    # this job re-run warm took 9.2 min against 20.7 cold, from a 43 MB
-    # cache restored in 3 s, and 7.3 against 13.9 on macOS. GitHub's
-    # ubuntu runners come in more than one CPU model, and #482's third run
-    # landed on another and missed every entry (19.4 min); the cache it
-    # saved then served both. It is not what makes the cap fit. GitHub
-    # scopes a cache to the pull request that saved it, and `main` gets no
-    # push runs (the `automerge` label merges with the workflow's token),
-    # so a pull request's first run is always cold -- 70% of runs since
-    # 2026-09-20 -- and an edit makes every program that reaches it cold
-    # again. The caps are set by cold runs.
+    # holds one entry per whole program and CPU compiled for (`mojo run`
+    # compiles for the host), so a warm run skips every compile its commit
+    # did not change: this job re-run warm on ubuntu took 9.2 min against
+    # 20.7 cold, from a 43 MB cache restored in 3 s, and 5.7-7.3 against
+    # 13.9 on macOS. GitHub's ubuntu runners are not all one CPU, and two
+    # later ubuntu runs of this job missed every entry of a cache keyed
+    # without it (19.4 and 20.4 min), so the key names the runner's CPU.
+    # It is not what makes the cap fit. GitHub scopes a cache to the pull
+    # request that saved it, and `main` gets no push runs (the `automerge`
+    # label merges with the workflow's token), so a pull request's first
+    # run is always cold -- 70% of runs since 2026-09-20 -- and an edit
+    # makes every program that reaches it cold again. The caps are set by
+    # cold runs.
     #
     # Without an explicit cap a hung step runs to GitHub's 6-hour default
     # while holding this ref's concurrency group, so a stall reads as
@@ -85,16 +86,27 @@ jobs:
         with:
           apt: libsqlite3-dev patchelf
       # Mojo's compile cache (`mojo --print-cache-location`), restored from
-      # this pull request's latest run of this job and saved after it (the
-      # job's comment has the numbers). Keyed by the lock file too, because
-      # an entry is good only for the compiler that wrote it.
+      # this pull request's latest run of this job on the same CPU model and
+      # saved after it (the job's comment has the numbers). An entry is good
+      # only for the compiler that wrote it and the CPU it compiled for, so
+      # the lock file and the runner's CPU are in the key: a runner on a
+      # model this pull request has not met says so in the restore's log
+      # and compiles cold, rather than restoring entries it cannot use.
+      - name: Name the runner's CPU for the compile cache
+        id: cpu
+        shell: bash
+        run: |
+          model=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 || true)
+          [ -n "$model" ] || model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
+          echo "CPU:$model"
+          echo "model=$(printf '%s' "$model" | tr -cs 'A-Za-z0-9' '-' | sed 's/^-//; s/-$//')" >> "$GITHUB_OUTPUT"
       - name: Restore the Mojo compile cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/modular/.mojo_cache
-          key: mojo-cache-${{ github.job }}-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          key: mojo-cache-${{ github.job }}-${{ runner.os }}-${{ steps.cpu.outputs.model }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
           restore-keys: |
-            mojo-cache-${{ github.job }}-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
+            mojo-cache-${{ github.job }}-${{ runner.os }}-${{ steps.cpu.outputs.model }}-${{ hashFiles('uv.lock') }}-
       # The doc-fact ratchet, before anything is built: prose numbers with
       # a machine source (warning counts, smoke coverage in THIS file, the
       # generated bench table) must match it. Runs here and not in the
@@ -241,14 +253,22 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           apt: patchelf
-      # Mojo's compile cache, as in `unit-tests`.
+      # Mojo's compile cache, keyed by the runner's CPU, as in `unit-tests`.
+      - name: Name the runner's CPU for the compile cache
+        id: cpu
+        shell: bash
+        run: |
+          model=$(grep -m1 'model name' /proc/cpuinfo 2>/dev/null | cut -d: -f2 || true)
+          [ -n "$model" ] || model=$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)
+          echo "CPU:$model"
+          echo "model=$(printf '%s' "$model" | tr -cs 'A-Za-z0-9' '-' | sed 's/^-//; s/-$//')" >> "$GITHUB_OUTPUT"
       - name: Restore the Mojo compile cache
         uses: actions/cache@v6
         with:
           path: ~/.cache/modular/.mojo_cache
-          key: mojo-cache-${{ github.job }}-${{ runner.os }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
+          key: mojo-cache-${{ github.job }}-${{ runner.os }}-${{ steps.cpu.outputs.model }}-${{ hashFiles('uv.lock') }}-${{ github.sha }}
           restore-keys: |
-            mojo-cache-${{ github.job }}-${{ runner.os }}-${{ hashFiles('uv.lock') }}-
+            mojo-cache-${{ github.job }}-${{ runner.os }}-${{ steps.cpu.outputs.model }}-${{ hashFiles('uv.lock') }}-
       # Tee'd into this job's own log for its own ratchet, as in
       # `unit-tests`.
       - name: Build packages (cross-package deps need .mojoc)
