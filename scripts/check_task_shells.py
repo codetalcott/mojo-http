@@ -28,8 +28,9 @@ comments and here-documents:
 `--selftest` proves each rule can fail, then runs the lib under every shell
 found: `fail`'s output as both sabotage harnesses parse it, `wait_ready`
 failing fast on a server that died, `stop` and the exit trap reaping a whole
-process group, and an interrupted task killing its servers well inside the
-1.6 s poe allows before it SIGKILLs the task.
+process group, an interrupted task killing its servers well inside the
+1.6 s poe allows before it SIGKILLs the task, and `free_port` finding a run
+of free ports.
 
     python3 scripts/check_task_shells.py              # every task body
     python3 scripts/check_task_shells.py --selftest   # the rules, and the lib
@@ -268,7 +269,7 @@ _READY = ("until grep -q ready \"$SMOKE_DIR/{log}\" 2>/dev/null; do sleep 0.05; 
 exec'd it, a signal reaches the shim instead, and the case tests nothing."""
 
 
-def _interrupt(shell: str, then: str, delay: float) -> tuple:
+def _interrupt(shell: str, then: str, delay: float, env: dict | None = None) -> tuple:
     """Spawn a server that ignores TERM, run `then` (which prints $pid), and
     SIGINT the task's own group `delay` seconds later, as poe does. Returns
     (exit status or None, seconds from the SIGINT to the exit, server pid);
@@ -280,7 +281,7 @@ def _interrupt(shell: str, then: str, delay: float) -> tuple:
         [shell, "-c", f". {LIB}\nspawn stubborn.log sh -c 'trap \"\" TERM; echo ready; exec sleep 60'\n"
                       + _READY.format(log="stubborn.log") + then],
         cwd=ROOT, stdout=subprocess.PIPE, text=True, start_new_session=True,
-        env=_lib_env())
+        env=env or _lib_env())
     child, rc, took, running = "", None, 0.0, False
     try:
         child = proc.stdout.readline().strip()
@@ -427,6 +428,28 @@ def _lib_cases(shell: str) -> list[str]:
         bad.append(f"an interrupt during cleanup: exit {rc} after {took:.1f}s, and the "
                    f"server {'gone' if gone else 'LEFT RUNNING'}")
     _kill_group(child)
+    # The same again, landing while the reap is asking `ps` whether the server
+    # is alive -- the likeliest moment, since that is most of each pass. The
+    # interrupt reaches the task's whole group, `ps` included, and a `ps`
+    # killed before it answered says nothing: read as "exited", it sent the
+    # reap to `wait` on a server that ignores TERM, for as long as it lived.
+    # A `ps` slowed to seconds puts the interrupt there every time.
+    real_ps = shutil.which("ps")
+    if real_ps:
+        shim = Path(_SCRATCH) / "slow-ps"
+        shim.mkdir(exist_ok=True)
+        (shim / "ps").write_text(f'#!/bin/sh\nsleep 5\nexec {real_ps} "$@"\n')
+        (shim / "ps").chmod(0o755)
+        env = _lib_env()
+        env["PATH"] = f"{shim}{os.pathsep}{env.get('PATH', '')}"
+        rc, took, child, running = _interrupt(shell, "echo $pid; exit 0", 1.0, env)
+        gone = child.isdigit() and _wait_gone(int(child), 0.2)
+        if not running:
+            bad.append("with a slow ps, the exit trap did not wait out the grace")
+        elif rc is None or took > 1.2 or not gone:
+            bad.append(f"an interrupt that killed the reap's ps: exit {rc} after {took:.1f}s, "
+                       f"and the server {'gone' if gone else 'LEFT RUNNING'}")
+        _kill_group(child)
 
     # free_port: free on every IPv4 and IPv6 address, as a server binds it.
     p = _run_lib(shell, "free_port")
@@ -442,6 +465,48 @@ def _lib_cases(shell: str) -> list[str]:
                 s.close()
     except OSError as e:
         bad.append(f"free_port printed {p.stdout.strip()!r}, which does not bind: {e}")
+
+    # free_port N: the first of N consecutive ports, every one of them free
+    # on both families, for a probe that takes one port per shape upward from
+    # the one it is given. Where bind(0) counts up, as macOS's does, the port
+    # free_port starts from is the one after `q`, so a listener one past THAT
+    # sits where a free_port that checked its first port alone would put its
+    # second -- and, held through the check, fails that answer. Where the
+    # kernel picks at random (Linux) the listener is only in the way by luck.
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("", 0))
+    q = probe.getsockname()[1]
+    probe.close()
+    trap = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        trap.bind(("", q + 2))
+        trap.listen(1)
+    except OSError:
+        trap.close()
+        trap = None
+    try:
+        p = _run_lib(shell, "free_port 3")
+        base = int(p.stdout.strip()) if p.stdout.strip().isdigit() else 0
+        try:
+            for port in range(base, base + 3):
+                for family, addr in ((socket.AF_INET, "0.0.0.0"), (socket.AF_INET6, "::")):
+                    s = socket.socket(family, socket.SOCK_STREAM)
+                    try:
+                        if family == socket.AF_INET6:
+                            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                        s.bind((addr, port))
+                    finally:
+                        s.close()
+        except OSError as e:
+            bad.append(f"free_port 3 printed {p.stdout.strip()!r}, and port {port} of its "
+                       f"run does not bind: {e}")
+    finally:
+        if trap is not None:
+            trap.close()
+    p = _run_lib(shell, "free_port 0")
+    if p.returncode == 0 or "usage" not in p.stdout + p.stderr:
+        bad.append(f"free_port 0 exited {p.returncode}, printing {p.stdout.strip()!r}: "
+                   "a count below 1 must be refused")
     return [f"{shell}: {b}" for b in bad]
 
 

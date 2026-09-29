@@ -234,17 +234,11 @@ shell = "python3 scripts/shim_ownership.py --sabotage"
 [tool.poe.tasks.smoke-pg-notify]
 help = "A Postgres NOTIFY reaches a held SSE stream, and does not without the flag"
 shell = """
-out=$(mktemp -d)
-pid=""
-# Both inside the guard: an unguarded `wait $pid` with $pid empty is a bare
-# `wait`, which waits for EVERY background job and hangs the gate rather
-# than ending it.
-cleanup() {
-  if [ -n "$pid" ]; then kill $pid 2>/dev/null; wait $pid 2>/dev/null; fi
-  rm -rf "$out"
-}
-trap cleanup EXIT
-fail() { echo "smoke-pg-notify: $1"; [ -f "$out/srv.log" ] && tail -25 "$out/srv.log"; exit 1; }
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+# One port for every server here: each arm's server is stopped before the
+# next one starts.
+port=$(free_port)
 
 url="${M0_PG_TEST_URL:-postgres:///postgres}"
 command -v psql > /dev/null || fail 'psql is not on PATH, and this gate publishes with it'
@@ -257,12 +251,10 @@ notify() {
 }
 
 # --- arm 1 and 2: the listener on ---------------------------------------
-bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
-  --port 8231 --realtime --blocking-threads 2 --health-path /health \
-  --pg-listen "$url" > "$out/srv.log" 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-  http://127.0.0.1:8231/health > /dev/null || fail 'the server never became healthy'
+spawn srv.log bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port $port --realtime --blocking-threads 2 --health-path /health \
+  --pg-listen "$url"
+wait_ready http://127.0.0.1:$port/health $pid
 # Waited for, not sampled: the listener connects on its own thread while the
 # loop is already answering, so /health can be up before the subscription is.
 # Sampling once here failed about as often as it passed.
@@ -273,7 +265,7 @@ done
 grep -q 'pg-listen: listening on' "$out/srv.log" \
   || fail 'the listener never reported a subscription -- the flag did nothing'
 
-curl -sN --max-time 6 'http://127.0.0.1:8231/events?channel=room1&token=letmein' \
+curl -sN --max-time 6 "http://127.0.0.1:$port/events?channel=room1&token=letmein" \
   > "$out/held.txt" &
 held=$!
 sleep 1
@@ -307,7 +299,7 @@ grep -q 'not for room1' "$out/held.txt" \
 #
 # Malformed payloads ride along: the listener must survive them, and the
 # proof that it did is the good event after them.
-curl -sN --max-time 8 'http://127.0.0.1:8231/events?channel=room3&token=letmein' \
+curl -sN --max-time 8 "http://127.0.0.1:$port/events?channel=room3&token=letmein" \
   > "$out/reserved.txt" &
 guard=$!
 sleep 1
@@ -338,21 +330,18 @@ grep -q 'event: rowdata' "$out/reserved.txt" \
 grep -q 'event: evil' "$out/reserved.txt" \
   && { echo '--- reserved.txt ---'; cat "$out/reserved.txt"; fail 'a reserved channel name from the database was honoured'; }
 
-kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+stop $pid
 
 # --- arm 3: the null case ------------------------------------------------
 # The same publish against a server with no --pg-listen. Without this the
 # gate would pass against anything that happened to deliver the event.
-bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
-  --port 8232 --realtime --blocking-threads 2 --health-path /health \
-  > "$out/null.log" 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-  http://127.0.0.1:8232/health > /dev/null || fail 'the no-listener server never became healthy'
+spawn null.log bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port $port --realtime --blocking-threads 2 --health-path /health
+wait_ready http://127.0.0.1:$port/health $pid
 grep -q 'pg-listen' "$out/null.log" \
   && fail 'a server without the flag started a listener anyway'
 
-curl -sN --max-time 4 'http://127.0.0.1:8232/events?channel=room1&token=letmein' \
+curl -sN --max-time 4 "http://127.0.0.1:$port/events?channel=room1&token=letmein" \
   > "$out/quiet.txt" &
 quiet=$!
 sleep 1
@@ -362,7 +351,7 @@ wait $quiet
 grep -q 'event: greeting' "$out/quiet.txt" \
   && { echo '--- quiet.txt ---'; cat "$out/quiet.txt"; fail 'an event arrived with no listener configured -- this gate cannot tell the flag apart from nothing'; }
 
-kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+stop $pid
 
 # The listener's own account, which it prints as it stops, asserted as the
 # exact COUNTS: three delivered (arm 1's two -- the one for someone-else
@@ -382,14 +371,12 @@ grep -q '^pg-listen: stopping after 3 delivered, 5 refused$' "$out/srv.log" \
 # psql runs it, and the same held stream receives it. Without this the
 # function could drift from the listener's three-field contract and nothing
 # would notice until someone tried it in production.
-bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
-  --port 8234 --realtime --blocking-threads 2 --health-path /health \
-  --pg-listen "$url" > "$out/py.log" 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-  http://127.0.0.1:8234/health > /dev/null || fail 'the third server never became healthy'
+spawn py.log bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port $port --realtime --blocking-threads 2 --health-path /health \
+  --pg-listen "$url"
+wait_ready http://127.0.0.1:$port/health $pid
 
-curl -sN --max-time 6 'http://127.0.0.1:8234/events?channel=room2&token=letmein' \
+curl -sN --max-time 6 "http://127.0.0.1:$port/events?channel=room2&token=letmein" \
   > "$out/py.txt" &
 pyclient=$!
 sleep 1
@@ -412,7 +399,7 @@ grep -q 'event: ops' "$out/py.txt" \
 grep -q 'data: from a management command' "$out/py.txt" \
   || { echo '--- py.txt ---'; cat "$out/py.txt"; fail 'the payload m0pub built did not survive'; }
 
-kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+stop $pid
 
 # --- worker 0 only -------------------------------------------------------
 # Without this rule every worker opens its own connection and delivers its
@@ -430,12 +417,10 @@ kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
 # gate an error message; running the spawned one on Linux would leave the
 # forked path, the one that deploys, untested.
 if [ "$(uname -s)" = "Darwin" ]; then workershape="--workers 2 --spawn-workers"; else workershape="--workers 2"; fi
-bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
-  --port 8235 $workershape --realtime --blocking-threads 2 --health-path /health \
-  --pg-listen "$url" > "$out/w2.log" 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-  http://127.0.0.1:8235/health > /dev/null || fail 'the two-worker server never became healthy'
+spawn w2.log bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port $port $workershape --realtime --blocking-threads 2 --health-path /health \
+  --pg-listen "$url"
+wait_ready http://127.0.0.1:$port/health $pid
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
   grep -q 'pg-listen: listening on' "$out/w2.log" && break
   sleep 0.5
@@ -449,7 +434,7 @@ listeners=$(grep -c 'pg-listen: listening on' "$out/w2.log" || true)
 grep -q 'killed by signal' "$out/w2.log" \
   && { tail -20 "$out/w2.log"; fail 'a worker was killed -- a platform runtime was touched in a forked child'; }
 
-curl -sN --max-time 6 'http://127.0.0.1:8235/events?channel=room4&token=letmein' \
+curl -sN --max-time 6 "http://127.0.0.1:$port/events?channel=room4&token=letmein" \
   > "$out/w2.txt" &
 across=$!
 sleep 1
@@ -461,7 +446,7 @@ events=$(grep -c '^id: ' "$out/w2.txt" || true)
 [ "$events" = "1" ] \
   || { echo '--- w2.txt ---'; cat "$out/w2.txt"; fail "one NOTIFY was delivered $events times -- the worker-0 rule is not holding"; }
 
-kill $pid 2>/dev/null; wait $pid 2>/dev/null; pid=""
+stop $pid
 
 # --- the forked-worker refusal, and --reload is a forked worker ----------
 # On macOS libpq's connect in a child forked without exec is killed, so the
@@ -483,15 +468,15 @@ for shape in "--workers 2" "--reload"; do
   [ "$want" -eq 2 ] || continue
   grep -q 'pg-listen-vs-fork' "$out/doctor.json" \
     || { cat "$out/doctor.json"; fail "--doctor for --pg-listen $shape refused for some other reason"; }
-  bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
-    --port 8236 --realtime $shape --pg-listen "$url" > "$out/fork.log" 2>&1 &
-  fpid=$!
+  spawn fork.log bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+    --port $port --realtime $shape --pg-listen "$url"
+  fpid=$pid
   for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     kill -0 $fpid 2>/dev/null || break
     sleep 0.5
   done
   if kill -0 $fpid 2>/dev/null; then
-    kill $fpid 2>/dev/null; wait $fpid 2>/dev/null
+    stop $fpid
     cat "$out/fork.log"; fail "--pg-listen $shape was not refused on macOS -- it started serving"
   fi
   wait $fpid; st=$?
@@ -503,7 +488,7 @@ done
 
 # --- the refusal ---------------------------------------------------------
 bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
-  --port 8233 --pg-listen "$url" > "$out/refuse.log" 2>&1
+  --port $port --pg-listen "$url" > "$out/refuse.log" 2>&1
 status=$?
 [ "$status" -eq 2 ] \
   || { cat "$out/refuse.log"; fail "--pg-listen without --realtime exited $status, not 2"; }
@@ -517,17 +502,12 @@ python3 scripts/emit.py --covers I22 --task smoke-pg-notify
 [tool.poe.tasks.smoke-realtime-holds]
 help = "N concurrent --realtime holds from a pool, and a publish into all of them"
 shell = """
-out=$(mktemp -d)
-cleanup() { kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf "$out"; }
-trap cleanup EXIT
-fail() { echo "smoke-realtime-holds: $1"; [ -f "$out/srv.log" ] && tail -25 "$out/srv.log"; exit 1; }
-
-bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
-  --port 8216 --realtime --blocking-threads 4 --health-path /health \
-  > "$out/srv.log" 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-  http://127.0.0.1:8216/health > /dev/null || fail 'the realtime server never became healthy'
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+port=$(free_port)
+spawn srv.log bin/m0serve djangoproj.wsgi:application --app-dir apps/django_realtime \
+  --port $port --realtime --blocking-threads 4 --health-path /health
+wait_ready http://127.0.0.1:$port/health $pid
 
 # The POOL is what this row is about, and the probe alone cannot see it: 32
 # concurrent holds pass IDENTICALLY with --blocking-threads 0, because taking
@@ -541,10 +521,10 @@ grep -q 'realtime' "$out/srv.log" \
   || fail 'the banner does not report --realtime'
 
 # The instrument, before its result is believed.
-python3 apps/django_realtime/hold_contention_probe.py 8216 --selftest \
+python3 apps/django_realtime/hold_contention_probe.py $port --selftest \
   || fail 'the probe cannot detect its own failure modes -- its clean run means nothing'
 
-python3 apps/django_realtime/hold_contention_probe.py 8216 \
+python3 apps/django_realtime/hold_contention_probe.py $port \
   || fail 'concurrent holds regressed'
 
 echo "smoke-realtime-holds OK"
@@ -589,18 +569,12 @@ python3 scripts/emit.py --covers L17 --task smoke-ws-inbound
 [tool.poe.tasks.smoke-expect-continue]
 help = "Expect: 100-continue is honoured case-insensitively, and withheld where it must be"
 shell = """
-out=$(mktemp -d)
-cleanup() { kill $pid 2>/dev/null; wait $pid 2>/dev/null; rm -rf "$out"; }
-trap cleanup EXIT
-fail() { echo "smoke-expect-continue: $1"; [ -f "$out/srv.log" ] && tail -20 "$out/srv.log"; exit 1; }
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn srv.log bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port
+wait_ready http://127.0.0.1:$port/ $pid
 
-bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8408 \
-  > "$out/srv.log" 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail \
-  http://127.0.0.1:8408/ > /dev/null || fail 'the server never became healthy'
-
-python3 scripts/expect_continue_probe.py 8408 || fail 'Expect: 100-continue regressed'
+python3 scripts/expect_continue_probe.py $port || fail 'Expect: 100-continue regressed'
 
 echo "smoke-expect-continue OK"
 python3 scripts/emit.py --covers A11 --task smoke-expect-continue
@@ -2801,32 +2775,27 @@ python3 scripts/emit.py --covers I26 --task smoke-django-realtime-ws
 help = "macOS: --doctor's performance-core count matches sysctl, --qos serves, and the native build flavor names its host"
 deps = ["build-serve", "build-serve-native"]
 shell = """
+. scripts/smoke/lib.sh
 # Runs from test.yml's apple-silicon job (job-level runs-on: macos-latest),
 # the pid1 shape with the OS swapped: the spec checker rejects a cited
 # step carrying an `if:`, so the platform condition lives on the job.
 [ "$(uname)" = Darwin ] || { echo "smoke-apple-silicon: this checks Darwin facts and this is $(uname); run it from the apple-silicon job"; exit 1; }
 srv=bin/m0serve
 SPEC="bareapp.wsgi --app-dir apps/wsgi_bare"
-spid=""
-cleanup() { rm -f as-doctor.json as-doctor-qos.json as-native.json as-serve.log; [ -n "$spid" ] && kill -TERM "$spid" 2>/dev/null; }
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  for f in as-doctor.json as-doctor-qos.json as-native.json as-serve.log; do
-    [ -f "$f" ] && { echo "=== $f ==="; cat "$f"; echo; }
-  done
-  exit 1
-}
+# The doctor's reports are named .log so that a failure prints them.
+doctor=$SMOKE_DIR/as-doctor.json.log
+doctor_qos=$SMOKE_DIR/as-doctor-qos.json.log
+native=$SMOKE_DIR/as-native.json.log
 
 # 1. The doctor's performance-core count, against a SECOND source. The
 # stdlib reads hw.perflevel0.logicalcpu and falls back to the physical
 # count where a machine (a VM, say) has no performance levels; the probe
 # mirrors that fallback so the two can only agree for the right reason.
-"$srv" --doctor $SPEC > as-doctor.json 2>/dev/null || fail "the doctor refused a configuration the server accepts"
+"$srv" --doctor $SPEC > "$doctor" 2>/dev/null || fail "the doctor refused a configuration the server accepts"
 perf=$(sysctl -n hw.perflevel0.logicalcpu 2>/dev/null || sysctl -n hw.physicalcpu)
-python3 - "$perf" <<'PY' || fail "the doctor's topology disagrees with sysctl, or the wheel flavor does not name m1"
+python3 - "$perf" "$doctor" <<'PY' || fail "the doctor's topology disagrees with sysctl, or the wheel flavor does not name m1"
 import json, sys
-d = json.load(open("as-doctor.json")); t = d["topology"]; b = d["build"]
+d = json.load(open(sys.argv[2])); t = d["topology"]; b = d["build"]
 perf = int(sys.argv[1])
 assert 1 <= t["performance_cpus"] <= t["cpus"], t
 assert t["performance_cpus"] == perf, (t["performance_cpus"], perf)
@@ -2838,16 +2807,16 @@ echo "smoke-apple-silicon: performance_cpus=$perf agrees with sysctl; the wheel 
 
 # 2. --qos and M0_QOS are reported, and a server under --qos serves both a
 # loop-answered route and a pool-thread view.
-"$srv" --doctor $SPEC --qos > as-doctor-qos.json 2>/dev/null
-python3 -c "import json; d=json.load(open('as-doctor-qos.json')); assert d['topology']['qos'] is True, d" || fail "--qos is not reported by the doctor"
-M0_QOS=1 "$srv" --doctor $SPEC > as-doctor-qos.json 2>/dev/null
-python3 -c "import json; d=json.load(open('as-doctor-qos.json')); assert d['topology']['qos'] is True, d" || fail "M0_QOS=1 is not reported by the doctor"
-"$srv" $SPEC --qos --blocking-threads 2 --port 8471 > as-serve.log 2>&1 &
-spid=$!
-for i in $(seq 1 50); do curl -sf -o /dev/null http://127.0.0.1:8471/ && break; sleep 0.1; done
-curl -sf http://127.0.0.1:8471/ | grep -q "bare wsgi app" || fail "a --qos server did not answer /"
-curl -sf "http://127.0.0.1:8471/busy?ms=1" | grep -q "^busy" || fail "a --qos server did not answer a pool-thread view"
-kill -TERM "$spid"; wait "$spid"; spid=""
+"$srv" --doctor $SPEC --qos > "$doctor_qos" 2>/dev/null
+python3 -c "import json; d=json.load(open('$doctor_qos')); assert d['topology']['qos'] is True, d" || fail "--qos is not reported by the doctor"
+M0_QOS=1 "$srv" --doctor $SPEC > "$doctor_qos" 2>/dev/null
+python3 -c "import json; d=json.load(open('$doctor_qos')); assert d['topology']['qos'] is True, d" || fail "M0_QOS=1 is not reported by the doctor"
+port=$(free_port)
+spawn as-serve.log "$srv" $SPEC --qos --blocking-threads 2 --port $port
+wait_ready http://127.0.0.1:$port/ $pid
+curl -sf http://127.0.0.1:$port/ | grep -q "bare wsgi app" || fail "a --qos server did not answer /"
+curl -sf "http://127.0.0.1:$port/busy?ms=1" | grep -q "^busy" || fail "a --qos server did not answer a pool-thread view"
+stop $pid
 echo "smoke-apple-silicon: --qos serves"
 
 # 3. The native flavor launches and names ITS HOST's generation, where the
@@ -2861,11 +2830,11 @@ echo "smoke-apple-silicon: --qos serves"
 # reads m1 on a host that is not an M1 (sabotaged that way on the M4:
 # caught). On an M1 host, real or virtual, the two flavors are not
 # distinguishable by this line, and the smoke says so.
-"$srv-native" --doctor $SPEC > as-native.json 2>/dev/null || fail "the native build's doctor refused"
+"$srv-native" --doctor $SPEC > "$native" 2>/dev/null || fail "the native build's doctor refused"
 host=$(sysctl -n machdep.cpu.brand_string | sed -nE 's/.*Apple M([0-9]+).*/m\\1/p')
-python3 - "$host" <<'PY' || fail "the native build does not name its host"
+python3 - "$host" "$native" <<'PY' || fail "the native build does not name its host"
 import json, sys
-d = json.load(open("as-native.json")); got = d["build"]["apple_target"]; host = sys.argv[1]
+d = json.load(open(sys.argv[2])); got = d["build"]["apple_target"]; host = sys.argv[1]
 assert host, "could not read the host generation from machdep.cpu.brand_string"
 assert got in (host, "other"), (got, host)
 if host != "m1":
@@ -2874,7 +2843,7 @@ else:
     print("smoke-apple-silicon: host is an M1 (real or virtual); wheel and native flavors are not distinguishable here")
 PY
 file bin/m0serve-native | grep -q arm64 || fail "the native build is not an arm64 binary"
-echo "smoke-apple-silicon: the native flavor reports $(python3 -c "import json; print(json.load(open('as-native.json'))['build']['apple_target'])") on an $host host (the wheel said m1)"
+echo "smoke-apple-silicon: the native flavor reports $(python3 -c "import json; print(json.load(open('$native'))['build']['apple_target'])") on an $host host (the wheel said m1)"
 python3 scripts/emit.py --covers E13 --task smoke-apple-silicon
 python3 scripts/emit.py --covers E14 --task smoke-apple-silicon
 python3 scripts/emit.py --covers M18 --task smoke-apple-silicon
@@ -3007,11 +2976,13 @@ python3 scripts/emit.py --covers A25 --task smoke-spawn-workers
 help = "--workers 2 share a burst of keep-alive connections within 2:1, forked and spawned (SPEC E16)"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 # The probe is the measurement that found the defect (docs/notes/accept-sharing.md):
 # 32 keep-alive connections opened in a burst, /pid asked on each while all
 # are open. Two rounds per mode, so a single lucky split cannot pass it, and
-# both worker modes, because a spawned worker adopts the channels by fd.
-python3 scripts/accept_spread.py --assert --expect-handoffs --rounds 2 --port 8631 || exit 1
+# both worker modes, because a spawned worker adopts the channels by fd. One
+# port per mode, upward from the one it is given.
+python3 scripts/accept_spread.py --assert --expect-handoffs --rounds 2 --port $(free_port 2) || exit 1
 echo "smoke-accept-spread: bursts spread within 2:1 across two workers, fork and spawn"
 # The negative arm on macOS, where the bare race is all but deterministic:
 # with the knob off the same probe must see the skew, or the gate is not
@@ -3021,19 +2992,16 @@ echo "smoke-accept-spread: bursts spread within 2:1 across two workers, fork and
 # asserting a single race, and a CI runner landed it balanced once (10 of
 # 10 skew on an M4, 30:2 the closest).
 if [ "$(uname)" = Darwin ]; then
-  if M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --assert --rounds 5 --modes fork --port 8635 > as-neg.log 2>&1; then
-    cat as-neg.log; rm -f as-neg.log
-    echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 spread within 2:1 five rounds of five -- the negative arm no longer discriminates"; exit 1
+  if M0_ACCEPT_SHARE=0 python3 scripts/accept_spread.py --assert --rounds 5 --modes fork --port $(free_port) > "$SMOKE_DIR/as-neg.log" 2>&1; then
+    fail "smoke-accept-spread: M0_ACCEPT_SHARE=0 spread within 2:1 five rounds of five -- the negative arm no longer discriminates"
   fi
-  rm -f as-neg.log
   echo "smoke-accept-spread: M0_ACCEPT_SHARE=0 skews as before (macOS negative arm)"
 fi
 # The doctor reports the decision from both worker counts.
-bin/m0serve --doctor bareapp.wsgi --app-dir apps/wsgi_bare --workers 2 > as-doctor.json 2>/dev/null
-python3 -c "import json; d=json.load(open('as-doctor.json')); assert d['topology']['accept_sharing'] is True, d['topology']" || { echo "the doctor does not report accept_sharing for --workers 2"; rm -f as-doctor.json; exit 1; }
-bin/m0serve --doctor bareapp.wsgi --app-dir apps/wsgi_bare > as-doctor.json 2>/dev/null
-python3 -c "import json; d=json.load(open('as-doctor.json')); assert d['topology']['accept_sharing'] is False, d['topology']" || { echo "the doctor reports accept_sharing for one worker"; rm -f as-doctor.json; exit 1; }
-rm -f as-doctor.json
+bin/m0serve --doctor bareapp.wsgi --app-dir apps/wsgi_bare --workers 2 > "$SMOKE_DIR/as-doctor.json" 2>/dev/null
+python3 -c "import json; d=json.load(open('$SMOKE_DIR/as-doctor.json')); assert d['topology']['accept_sharing'] is True, d['topology']" || fail "the doctor does not report accept_sharing for --workers 2"
+bin/m0serve --doctor bareapp.wsgi --app-dir apps/wsgi_bare > "$SMOKE_DIR/as-doctor.json" 2>/dev/null
+python3 -c "import json; d=json.load(open('$SMOKE_DIR/as-doctor.json')); assert d['topology']['accept_sharing'] is False, d['topology']" || fail "the doctor reports accept_sharing for one worker"
 echo "smoke-accept-spread: the doctor reports accept_sharing"
 python3 scripts/emit.py --covers E16 --task smoke-accept-spread
 """
@@ -3078,16 +3046,14 @@ python3 scripts/emit.py --covers C8 --task smoke-accept-batch
 help = "--doctor reports valid JSON and exits with the code the server itself would use"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
 SPEC="bareapp.wsgi --app-dir apps/wsgi_bare"
-cleanup() { rm -f doctor.json doctor.log doctor.served; }
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f doctor.json ]; then echo '=== doctor.json ==='; cat doctor.json; fi
-  if [ -f doctor.log ]; then echo '=== server output ==='; cat doctor.log; fi
-  exit 1
-}
+port=$(free_port)
+# The doctor's report is named .log so that a failure prints it, beside the
+# server's own output in doctor.log.
+json=$SMOKE_DIR/doctor.json.log
+served=$SMOKE_DIR/doctor.served
 
 # The property that gives --doctor its value: for the SAME arguments, the
 # doctor's exit code equals the server's. A diagnostic that reports "fine"
@@ -3109,29 +3075,29 @@ fail() {
 # development machine). Nothing else in this file uses `timeout`.
 equiv() {
   desc="$1"; shift
-  "$srv" --doctor "$@" > doctor.json 2>/dev/null; doc=$?
-  rm -f doctor.served
-  "$srv" "$@" --port 8399 > doctor.log 2>&1 &
-  spid=$!
+  "$srv" --doctor "$@" > "$json" 2>/dev/null; doc=$?
+  rm -f "$served"
+  spawn doctor.log "$srv" "$@" --port $port
+  spid=$pid
   # The watchdog fires only if the server is STILL ALIVE at the deadline.
   # A refused configuration has exited and been reaped by the `wait` below
   # long before then, so the marker is never written for one.
   ( sleep 8
     if kill -0 "$spid" 2>/dev/null; then
-      : > doctor.served
+      : > "$served"
       kill -TERM "$spid" 2>/dev/null
     fi ) &
   wpid=$!
   wait "$spid"; real=$?
   kill "$wpid" 2>/dev/null
   wait "$wpid" 2>/dev/null || true
-  [ -f doctor.served ] && real=0
+  [ -f "$served" ] && real=0
   [ "$doc" = "$real" ] || fail "$desc: doctor exits $doc, server exits $real"
-  python3 -c "import json,sys; json.load(open('doctor.json'))" \
+  python3 -c "import json,sys; json.load(open('$json'))" \
     || fail "$desc: --doctor did not print valid JSON"
   python3 -c "
 import json, sys
-d = json.load(open('doctor.json'))
+d = json.load(open('$json'))
 if d['exit'] != $doc:
     sys.exit('reported exit %r but the process exited %d' % (d['exit'], $doc))
 if d['ok'] != ($doc == 0):
@@ -3180,7 +3146,7 @@ refuses 78 'asgi beside wsgi, explicit no pool' --mount /=portal.wsgi:app --moun
 refuses 0  'mojo mount, prefork, no pool flag'  --mount /=bareapp.wsgi --mount /native=mojo $W --workers 2
 python3 -c "
 import json, sys
-t = json.load(open('doctor.json'))['topology']
+t = json.load(open('$json'))['topology']
 assert t['blocking_threads'] >= 1 and t['blocking_threads_source'] == 'default', t
 " || fail 'a Mojo mount under --workers did not get the default pool in the doctor'
 refuses 0  'asgi beside wsgi, prefork'          --mount /=portal.wsgi:app --mount /feed=feed.asgi $H --workers 2
@@ -3217,10 +3183,10 @@ equiv 'asgi app + realtime'          bareapp.asgi:application --app-dir apps/asg
 
 # A bare --doctor answers without an application: the "is this environment
 # sane at all" call, which must not be a failure just because no app was named.
-"$srv" --doctor > doctor.json 2>/dev/null || fail 'bare --doctor did not exit 0'
+"$srv" --doctor > "$json" 2>/dev/null || fail 'bare --doctor did not exit 0'
 python3 -c "
 import json, sys
-d = json.load(open('doctor.json'))
+d = json.load(open('$json'))
 assert d['ok'] is True, d
 assert d['application']['requested'] is False, d
 # The facts an install-failure report is written from.
@@ -3233,10 +3199,10 @@ assert d['topology']['cpus'] >= 1, d
 
 # Resolution reaches the report: a bare MODULE reports the spec discovery
 # actually chose, and the protocol it classified as.
-"$srv" --doctor $SPEC > doctor.json 2>/dev/null || fail 'doctor on the bare app did not exit 0'
+"$srv" --doctor $SPEC > "$json" 2>/dev/null || fail 'doctor on the bare app did not exit 0'
 python3 -c "
 import json, sys
-d = json.load(open('doctor.json'))
+d = json.load(open('$json'))
 app = d['application']
 assert app['spec'] == 'bareapp.wsgi:application', app
 assert app['protocol'] == 'wsgi', app
@@ -3257,24 +3223,20 @@ python3 scripts/emit.py --covers M28 --task smoke-doctor
 help = "The m0serve CLI: help/version/usage exit codes, flag-over-env precedence, a static mount, --max-body, --metrics, graceful stop"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
 SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare"
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -f serve.log serve_hdr.txt serve_body.txt
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f serve.log ]; then echo '=== serve.log ==='; cat serve.log; fi
-  exit 1
-}
+# Two ports in a row: the one the flag names, and the next for the
+# environment variable the flag must beat, which nothing may answer on.
+port=$(free_port 2)
+envport=$((port + 1))
+log=$SMOKE_DIR/serve.log
 
 # --help and --version exit 0 and say what they must. The version is read
 # from pyproject so the two cannot drift apart silently.
-"$srv" --help > serve.log 2>&1 || fail '--help did not exit 0'
+"$srv" --help > "$log" 2>&1 || fail '--help did not exit 0'
 for flag in --app-dir --static --max-body --workers --host --port --metrics; do
-  grep -q -- "$flag" serve.log || fail "--help does not mention $flag"
+  grep -q -- "$flag" "$log" || fail "--help does not mention $flag"
 done
 ver=$("$srv" --version) || fail '--version did not exit 0'
 want="m0serve $(grep -m1 '^version = ' pyproject.toml | sed 's/version = //; s/"//g')"
@@ -3282,40 +3244,40 @@ want="m0serve $(grep -m1 '^version = ' pyproject.toml | sed 's/version = //; s/"
 
 # Usage errors exit 2 and print usage. A flag typo is told, not defaulted —
 # unlike M0_PORT=80eighty, which the environment loader silently ignores.
-"$srv" > serve.log 2>&1; rc=$?
+"$srv" > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "no positional: exit $rc, want 2"
-grep -q '^usage: m0serve' serve.log || fail 'no positional: usage not printed'
-"$srv" x.wsgi --bogus > serve.log 2>&1; rc=$?
+grep -q '^usage: m0serve' "$log" || fail 'no positional: usage not printed'
+"$srv" x.wsgi --bogus > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "--bogus: exit $rc, want 2"
-"$srv" x.wsgi --port 80eighty > serve.log 2>&1; rc=$?
+"$srv" x.wsgi --port 80eighty > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "--port 80eighty: exit $rc, want 2"
-grep -q 'must be a number' serve.log || fail '--port 80eighty: the message does not say why'
+grep -q 'must be a number' "$log" || fail '--port 80eighty: the message does not say why'
 
 # Startup failures exit 1 and name the thing. The directory checks run before
 # any interpreter starts; the module and attribute ones are Python's own words.
-"$srv" x.wsgi --app-dir /no/such/dir > serve.log 2>&1; rc=$?
+"$srv" x.wsgi --app-dir /no/such/dir > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "bad --app-dir: exit $rc, want 1"
-grep -q 'app dir does not exist: /no/such/dir' serve.log || fail 'bad --app-dir: message does not name it'
-"$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+grep -q 'app dir does not exist: /no/such/dir' "$log" || fail 'bad --app-dir: message does not name it'
+"$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "bad module: exit $rc, want 1"
-grep -q 'could not load nosuch.wsgi:application' serve.log || fail 'bad module: message does not name it'
-grep -q 'Traceback' serve.log && fail 'bad module: a traceback for a module that does not exist is noise'
-"$srv" bareapp.wsgi:nosuch --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+grep -q 'could not load nosuch.wsgi:application' "$log" || fail 'bad module: message does not name it'
+grep -q 'Traceback' "$log" && fail 'bad module: a traceback for a module that does not exist is noise'
+"$srv" bareapp.wsgi:nosuch --app-dir apps/wsgi_bare > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "bad attribute: exit $rc, want 1"
-grep -q 'nosuch' serve.log || fail 'bad attribute: message does not name it'
-grep -q 'Traceback' serve.log && fail 'bad attribute: a traceback for a missing attribute is noise'
+grep -q 'nosuch' "$log" || fail 'bad attribute: message does not name it'
+grep -q 'Traceback' "$log" && fail 'bad attribute: a traceback for a missing attribute is noise'
 # An application whose import RAISES is a different failure from one that
 # does not exist: the message names the spec and carries the Python
 # traceback, down to the file that raised (apps/wsgi_bare/deep_fail/inner.py,
 # two frames below the module). And nothing said "Ready" first: the listener
 # is quiet, and m0serve's own startup line prints only after the load.
-"$srv" deep_fail:application --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+"$srv" deep_fail:application --app-dir apps/wsgi_bare > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "deep import failure: exit $rc, want 1"
-grep -q 'could not load deep_fail:application' serve.log || fail 'deep import failure: message does not name the spec'
-grep -q 'DATABASE_URL is not set' serve.log || fail 'deep import failure: the exception text is missing'
-grep -q 'Traceback (most recent call last)' serve.log || fail 'deep import failure: no traceback'
-grep -q 'inner.py' serve.log || fail 'deep import failure: the traceback does not name the raising file'
-grep -q 'Ready to accept' serve.log && fail 'a failed load printed a ready banner first'
+grep -q 'could not load deep_fail:application' "$log" || fail 'deep import failure: message does not name the spec'
+grep -q 'DATABASE_URL is not set' "$log" || fail 'deep import failure: the exception text is missing'
+grep -q 'Traceback (most recent call last)' "$log" || fail 'deep import failure: no traceback'
+grep -q 'inner.py' "$log" || fail 'deep import failure: the traceback does not name the raising file'
+grep -q 'Ready to accept' "$log" && fail 'a failed load printed a ready banner first'
 # Discovery takes a candidate that RAISES as the answer, for a mount exactly
 # as for the positional spec: `split_fail.asgi` raises on import beside a
 # `split_fail.wsgi` that imports cleanly. Both forms must exit 1 with the
@@ -3323,8 +3285,7 @@ grep -q 'Ready to accept' serve.log && fail 'a failed load printed a ready banne
 # which the mount form did, having no re-raise of its own. Bounded, because
 # the failure it catches is a server that starts serving instead of exiting.
 for shape in split_fail "--mount /=split_fail"; do
-  "$srv" $shape --app-dir apps/wsgi_bare --port 8116 > serve.log 2>&1 &
-  pid=$!
+  spawn serve-split.log "$srv" $shape --app-dir apps/wsgi_bare --port $port
   waited=0
   while [ $waited -lt 12 ]; do
     st=$(ps -o stat= -p $pid 2>/dev/null)
@@ -3332,32 +3293,33 @@ for shape in split_fail "--mount /=split_fail"; do
     sleep 1; waited=$((waited + 1))
   done
   if [ $waited -ge 12 ]; then
-    kill $pid 2>/dev/null; wait $pid 2>/dev/null
+    stop $pid
     fail "$shape: still running after 12 s -- it served split_fail.wsgi instead of reporting that split_fail.asgi raised"
   fi
   wait $pid; rc=$?
   [ "$rc" = "1" ] || fail "$shape: exit $rc, want 1"
-  grep -q 'REDIS_URL is not set' serve.log || fail "$shape: the exception text is missing"
-  grep -q 'Traceback (most recent call last)' serve.log || fail "$shape: no traceback"
-  grep -q 'split_fail/asgi.py' serve.log || fail "$shape: the traceback does not name the file that raised"
+  grep -q 'REDIS_URL is not set' "$SMOKE_DIR/serve-split.log" || fail "$shape: the exception text is missing"
+  grep -q 'Traceback (most recent call last)' "$SMOKE_DIR/serve-split.log" || fail "$shape: no traceback"
+  grep -q 'split_fail/asgi.py' "$SMOKE_DIR/serve-split.log" || fail "$shape: the traceback does not name the file that raised"
 done
 # And the doctor, which resolves through the same function.
-"$srv" --doctor --mount /=split_fail --app-dir apps/wsgi_bare > serve.log 2>&1; rc=$?
+"$srv" --doctor --mount /=split_fail --app-dir apps/wsgi_bare > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "--doctor --mount /=split_fail: exit $rc, want 1, as the server exits"
-grep -q 'REDIS_URL is not set' serve.log || fail '--doctor --mount /=split_fail does not report the import failure'
+grep -q 'REDIS_URL is not set' "$log" || fail '--doctor --mount /=split_fail does not report the import failure'
 # Under --workers the supervisor must not report success for an application
 # that never loaded: every worker dies at once, the breaker trips, exit 1.
-"$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare --workers 2 > serve.log 2>&1; rc=$?
+"$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare --workers 2 > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "bad module under --workers 2: exit $rc, want 1 (0 means the supervisor hid the failure)"
 
-# Precedence: a typed flag beats the environment. M0_PORT says 8099 and
-# M0_HOST says everywhere; --port 8098 --host 127.0.0.1 win.
-M0_PORT=8099 M0_HOST=0.0.0.0 "$srv" $SPEC --host 127.0.0.1 --port 8098 > serve.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ | grep -q 'bare wsgi app' \
+# Precedence: a typed flag beats the environment. M0_PORT names one port and
+# M0_HOST says everywhere; --port names another and --host 127.0.0.1 wins.
+# The request that waits for the server is the assertion, so it is kept: a
+# server that took M0_PORT is healthy, on the other port.
+spawn serve-precedence.log env M0_PORT=$envport M0_HOST=0.0.0.0 "$srv" $SPEC --host 127.0.0.1 --port $port
+curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:$port/ | grep -q 'bare wsgi app' \
   || fail '--host/--port did not win over M0_HOST/M0_PORT'
-curl --silent --fail http://localhost:8099/ > /dev/null 2>&1 && fail 'the server also answered on the env port'
-grep -q 'm0serve: bareapp.wsgi:application on http://127.0.0.1:8098' serve.log || fail 'startup line does not report the effective address'
+curl --silent --fail http://localhost:$envport/ > /dev/null 2>&1 && fail 'the server also answered on the env port'
+grep -q "m0serve: bareapp.wsgi:application on http://127.0.0.1:$port" "$SMOKE_DIR/serve-precedence.log" || fail 'startup line does not report the effective address'
 kill $pid
 wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0 (the graceful drain)"
@@ -3368,13 +3330,14 @@ wait $pid; rc=$?
 # process's 5 s drain still succeeds -- and exit 1 naming the address, while
 # the first keeps answering. Before: it bound, printed "Ready", and on Linux
 # took a share of the connections (17 of 40, measured from the wheel).
-"$srv" $SPEC --port 8113 > serve.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://localhost:8113/ > /dev/null \
-  || fail 'first server on 8113 did not answer'
-second=$(mktemp)
-"$srv" $SPEC --port 8113 > "$second" 2>&1 &
-pid2=$!
+bport=$(free_port)
+spawn serve-busy.log "$srv" $SPEC --port $bport
+wait_ready http://localhost:$bport/ $pid
+first=$pid
+second=$SMOKE_DIR/serve-second.log
+spawn serve-second.log "$srv" $SPEC --port $bport
+pid2=$pid
+pid=$first
 waited=0
 while [ $waited -lt 12 ]; do
   st=$(ps -o stat= -p $pid2 2>/dev/null)
@@ -3382,17 +3345,16 @@ while [ $waited -lt 12 ]; do
   sleep 1; waited=$((waited + 1))
 done
 if [ $waited -ge 12 ]; then
-  kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
+  stop $pid2
   fail 'second server on a busy port was still running after 12 s: it bound (SO_REUSEPORT?) or hung'
 fi
 wait $pid2 2>/dev/null; rc2=$?
 [ "$rc2" = "1" ] || fail "second server on a busy port: exit $rc2, want 1"
-grep -q 'address already in use: 0.0.0.0:8113' "$second" || fail 'busy port: the message does not name the address'
+grep -q "address already in use: 0.0.0.0:$bport" "$second" || fail 'busy port: the message does not name the address'
 grep -q 'Ready to accept' "$second" && fail 'busy port: the second server printed a ready banner'
-curl --silent --fail http://localhost:8113/ > /dev/null || fail 'the first server stopped answering after the refused second bind'
+curl --silent --fail http://localhost:$bport/ > /dev/null || fail 'the first server stopped answering after the refused second bind'
 kill -TERM $pid; wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "first server after the busy-port probe: exit $rc, want 0"
-rm -f "$second"
 
 # Only an address IN USE is waited out. Any other bind failure is refused at
 # once, in its own words: an address that is not on this machine (192.0.2.1,
@@ -3401,47 +3363,47 @@ rm -f "$second"
 # notice and the time are asserted, so a slow runner cannot pass a retrying
 # build.
 t0=$(date +%s)
-"$srv" $SPEC --host 192.0.2.1 --port 8116 > serve.log 2>&1; rc=$?
+"$srv" $SPEC --host 192.0.2.1 --port $port > "$log" 2>&1; rc=$?
 took=$(( $(date +%s) - t0 ))
 [ "$rc" = "1" ] || fail "an address not on this machine: exit $rc, want 1"
-grep -q 'address already in use' serve.log && fail 'an address not on this machine was reported as in use'
-grep -q 'cannot listen on 192.0.2.1:8116' serve.log || fail 'the listen failure does not name the address'
-grep -q 'Retrying' serve.log && fail 'a bind failure that waiting cannot cure was retried'
+grep -q 'address already in use' "$log" && fail 'an address not on this machine was reported as in use'
+grep -q "cannot listen on 192.0.2.1:$port" "$log" || fail 'the listen failure does not name the address'
+grep -q 'Retrying' "$log" && fail 'a bind failure that waiting cannot cure was retried'
 [ "$took" -lt 3 ] || fail "an address not on this machine took ${took}s to be refused: it was retried"
 
 # A static mount is answered in Mojo with the freshness policy given; a path
 # outside it still reaches the app; --max-body and --metrics reach the server.
-"$srv" $SPEC --port 8098 --static /assets/=apps/django_realtime/static \
-  --static-cache-control 'public, max-age=60' --max-body 1024 --metrics > serve.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null \
-  || fail 'the mounted server never became healthy'
-curl -s -D serve_hdr.txt http://127.0.0.1:8098/assets/app.css -o serve_body.txt
-grep -q 'font-family' serve_body.txt || fail 'the static file did not serve'
-grep -iq '^cache-control: public, max-age=60' serve_hdr.txt || fail '--static-cache-control was not applied'
-grep -iq '^etag' serve_hdr.txt || fail 'the static response carries no ETag'
-code=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:8098/assets/../../wsgi_bare/bareapp/wsgi.py)
+spawn serve-mount.log "$srv" $SPEC --port $port --static /assets/=apps/django_realtime/static \
+  --static-cache-control 'public, max-age=60' --max-body 1024 --metrics
+wait_ready http://127.0.0.1:$port/ $pid
+hdr=$SMOKE_DIR/serve_hdr.txt
+curl -s -D "$hdr" http://127.0.0.1:$port/assets/app.css -o "$SMOKE_DIR/serve_body.txt"
+grep -q 'font-family' "$SMOKE_DIR/serve_body.txt" || fail 'the static file did not serve'
+grep -iq '^cache-control: public, max-age=60' "$hdr" || fail '--static-cache-control was not applied'
+grep -iq '^etag' "$hdr" || fail 'the static response carries no ETag'
+code=$(curl -s -o /dev/null -w '%{http_code}' --path-as-is http://127.0.0.1:$port/assets/../../wsgi_bare/bareapp/wsgi.py)
 [ "$code" = "404" ] || fail "traversal expected 404, got $code"
-curl -s http://127.0.0.1:8098/ | grep -q 'bare wsgi app' || fail 'a path outside the mount no longer reaches the app'
-code=$(python3 -c "print('a' * 2048, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+curl -s http://127.0.0.1:$port/ | grep -q 'bare wsgi app' || fail 'a path outside the mount no longer reaches the app'
+code=$(python3 -c "print('a' * 2048, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
 [ "$code" = "413" ] || fail "--max-body 1024: a 2 KB body expected 413, got $code"
-code=$(python3 -c "print('b' * 512, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+code=$(python3 -c "print('b' * 512, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
 [ "$code" = "200" ] || fail "--max-body 1024: a 512 B body expected 200, got $code"
 # A chunked body is bounded TWICE: decoded size, and raw bytes consumed. The
 # second bound has to exist separately because framing is dropped as it is
 # decoded, so one-byte chunks cost six wire bytes per delivered byte and the
 # decoded cap alone leaves the connection unbounded. The probe's middle case
 # is decoded-legal and raw-illegal, so only the raw bound can refuse it.
-python3 scripts/chunked_overhead_probe.py 8098 1024 || fail 'the raw chunked-byte ceiling is not enforced'
-code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8098/__metrics)
+python3 scripts/chunked_overhead_probe.py $port 1024 || fail 'the raw chunked-byte ceiling is not enforced'
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/__metrics)
 [ "$code" = "200" ] || fail "--metrics: /__metrics expected 200, got $code"
 # The BODY, not just the status. A 200 carrying nothing a scraper understands
 # is a dashboard that goes blank without anything going red -- the endpoint
 # answering is the easy half. Prometheus text exposition names its own version
 # in the content type, and every family must arrive with its HELP and TYPE
 # lines or the scrape drops it.
-mbody=$(curl -s -D metrics_hdr.txt http://127.0.0.1:8098/__metrics)
-grep -iq 'version=0.0.4' metrics_hdr.txt || fail "--metrics: not Prometheus exposition 0.0.4: $(grep -i '^content-type' metrics_hdr.txt)"
+mhdr=$SMOKE_DIR/metrics_hdr.txt
+mbody=$(curl -s -D "$mhdr" http://127.0.0.1:$port/__metrics)
+grep -iq 'version=0.0.4' "$mhdr" || fail "--metrics: not Prometheus exposition 0.0.4: $(grep -i '^content-type' "$mhdr")"
 for fam in http_requests_total http_responses_total http_active_connections \
            http_bytes_sent_total http_accepts_total http_closes_total \
            http_pool_available http_pool_capacity; do
@@ -3459,9 +3421,7 @@ echo "$mbody" | grep -q 'http_responses_total{status="2xx"}' || fail '--metrics:
 python3 scripts/histogram_check.py --selftest || fail 'histogram_check cannot report failure'
 echo "$mbody" | python3 scripts/histogram_check.py --min-count 5 \
   || fail '--metrics: the latency histogram is missing or incoherent'
-rm -f metrics_hdr.txt
-kill $pid
-wait $pid 2>/dev/null
+stop $pid
 
 # The other direction: a body the cap ALLOWS must arrive. The receive buffer
 # had its own 2 MB ceiling that --max-body never raised, so every upload
@@ -3469,24 +3429,20 @@ wait $pid 2>/dev/null
 # a 413 -- under the default 4 MB cap too. Three real Django projects' image
 # uploads found it (docs/REAL_APP_VALIDATION.md). Sizes straddle the old
 # ceiling on purpose: 3 MB under the default, 7 MB under --max-body 8m.
-"$srv" $SPEC --port 8098 > serve.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
-code=$(python3 -c "import sys; sys.stdout.write('c' * (3 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+spawn serve-cap.log "$srv" $SPEC --port $port
+wait_ready http://127.0.0.1:$port/ $pid
+code=$(python3 -c "import sys; sys.stdout.write('c' * (3 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
 [ "$code" = "200" ] || fail "default cap: a 3 MB body expected 200, got $code (the receive buffer, not --max-body, refused it)"
-code=$(python3 -c "import sys; sys.stdout.write('c' * (5 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+code=$(python3 -c "import sys; sys.stdout.write('c' * (5 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
 [ "$code" = "413" ] || fail "default cap: a 5 MB body expected 413, got $code"
-kill $pid
-wait $pid 2>/dev/null
-"$srv" $SPEC --port 8098 --max-body 8m > serve.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
-code=$(python3 -c "import sys; sys.stdout.write('d' * (7 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+stop $pid
+spawn serve-8m.log "$srv" $SPEC --port $port --max-body 8m
+wait_ready http://127.0.0.1:$port/ $pid
+code=$(python3 -c "import sys; sys.stdout.write('d' * (7 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
 [ "$code" = "200" ] || fail "--max-body 8m: a 7 MB body expected 200, got $code"
-code=$(python3 -c "import sys; sys.stdout.write('d' * (9 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:8098/input/read)
+code=$(python3 -c "import sys; sys.stdout.write('d' * (9 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
 [ "$code" = "413" ] || fail "--max-body 8m: a 9 MB body expected 413, got $code"
-kill $pid
-wait $pid 2>/dev/null
+stop $pid
 
 # --app-dir goes to the FRONT of sys.path, like gunicorn, uvicorn and
 # runserver -- not the back, which is what it did until 2026-08-26 and which
@@ -3494,8 +3450,10 @@ wait $pid 2>/dev/null
 # installed package. `django` is installed in this venv (it is a dev
 # dependency for the Django rows), so a module of that name under --app-dir
 # is the decisive case: appended, the real package wins and the server exits
-# 1 having found no application in it.
-shadow=$(mktemp -d)
+# 1 having found no application in it. The request that waits for the
+# server is the assertion, so it is kept.
+shadow=$SMOKE_DIR/shadow
+mkdir "$shadow"
 cat > "$shadow/django.py" <<'PYSHADOW'
 def application(environ, start_response):
     body = b"served from --app-dir"
@@ -3503,43 +3461,35 @@ def application(environ, start_response):
                               ("Content-Length", str(len(body)))])
     return [body]
 PYSHADOW
-"$srv" django --app-dir "$shadow" --port 8098 > serve.log 2>&1 &
-pid=$!
-got=$(curl --retry 20 --retry-delay 1 --retry-all-errors --silent --max-time 5 http://127.0.0.1:8098/)
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
-rm -rf "$shadow"
+spawn serve-shadow.log "$srv" django --app-dir "$shadow" --port $port
+got=$(curl --retry 20 --retry-delay 1 --retry-all-errors --silent --max-time 5 http://127.0.0.1:$port/)
+stop $pid
 [ "$got" = "served from --app-dir" ] \
   || fail "--app-dir did not shadow the installed package of the same name: got '$got'"
 
 # Without --metrics the path is the application's to answer (here: its 404).
-"$srv" $SPEC --port 8098 > serve.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
-code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8098/__metrics)
+spawn serve-nometrics.log "$srv" $SPEC --port $port
+wait_ready http://127.0.0.1:$port/ $pid
+code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/__metrics)
 [ "$code" = "404" ] || fail "without --metrics, /__metrics expected the app's 404, got $code"
 # Same request, no --access-log: the record must NOT appear. This half is what
 # makes the pair a test -- a server that always logs would pass the other one.
-grep -q '"msg":"access"' serve.log && fail 'an access record appeared without --access-log'
-kill $pid
-wait $pid 2>/dev/null
+grep -q '"msg":"access"' "$SMOKE_DIR/serve-nometrics.log" && fail 'an access record appeared without --access-log'
+stop $pid
 
 # --access-log, which until now was exercised by nothing at all: only the
 # record FORMAT was unit-tested, and no gate ever set the flag. The record is
 # one JSON object per response, which is what a log shipper parses.
-"$srv" $SPEC --port 8098 --access-log > serve.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8098/ > /dev/null || fail 'never became healthy'
-curl -s -o /dev/null http://127.0.0.1:8098/method
+spawn serve-access.log "$srv" $SPEC --port $port --access-log
+wait_ready http://127.0.0.1:$port/ $pid
+curl -s -o /dev/null http://127.0.0.1:$port/method
 sleep 1
-rec=$(grep '"msg":"access"' serve.log | tail -1)
+rec=$(grep '"msg":"access"' "$SMOKE_DIR/serve-access.log" | tail -1)
 [ -n "$rec" ] || fail '--access-log produced no access record'
 echo "$rec" | grep -q '"path":"/method"' || fail "the access record names no path: $rec"
 echo "$rec" | grep -q '"method":"GET"' || fail "the access record names no method: $rec"
 echo "$rec" | grep -q '"status":"200"' || fail "the access record carries no status: $rec"
 python3 -c "import json,sys; json.loads(sys.argv[1])" "$rec" || fail "the access record is not valid JSON: $rec"
-kill $pid
-wait $pid 2>/dev/null
 echo "smoke-serve OK"
 python3 scripts/emit.py --covers C1 --task smoke-serve
 python3 scripts/emit.py --covers C3 --task smoke-serve
@@ -3573,18 +3523,13 @@ python3 scripts/emit.py --covers F5 --task smoke-serve
 help = "--reload: a changed .py is served by a NEW worker pid within seconds, at one worker and at two"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
-out=$(mktemp -d)
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -rf "$out" reload.log
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f reload.log ]; then echo '=== reload.log ==='; cat reload.log; fi
-  exit 1
-}
+port=$(free_port)
+# The application's own directory, which --reload watches: the logs are
+# written beside it, never into it.
+out=$SMOKE_DIR/app
+mkdir "$out"
 
 write_app() {
   cat > "$out/myapp.py" <<PYAPP
@@ -3599,22 +3544,23 @@ PYAPP
 }
 
 # A directory that does not exist is caught before any interpreter starts.
+log=$SMOKE_DIR/reload.log
 "$srv" myapp:application --app-dir "$out" --reload --reload-dir /no/such/dir \
-  > reload.log 2>&1; rc=$?
+  > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "--reload-dir /no/such/dir: exit $rc, want 1"
-grep -q 'reload dir does not exist' reload.log || fail 'the message does not name the missing reload dir'
+grep -q 'reload dir does not exist' "$log" || fail 'the message does not name the missing reload dir'
 
 # Phase 1: one worker. --reload forces a supervisor even here, which is the
 # whole point -- something has to outlive the process it restarts.
 write_app one
-"$srv" myapp:application --app-dir "$out" --port 8095 --reload > reload.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8095/ > "$out/before" \
+spawn reload.log "$srv" myapp:application --app-dir "$out" --port $port --reload
+wait_ready http://127.0.0.1:$port/ $pid
+curl --silent --fail http://127.0.0.1:$port/ > "$out/before" \
   || fail 'the reloading server never became healthy'
 grep -q '^one ' "$out/before" || fail "expected version one, got $(cat "$out/before")"
 before_pid=$(cut -d= -f2 "$out/before")
-grep -q 'supervising 1 workers' reload.log || fail '--reload did not force a supervisor at one worker'
-grep -q 'watching .* for changes' reload.log || fail 'the watcher did not announce itself'
+grep -q 'supervising 1 workers' "$log" || fail '--reload did not force a supervisor at one worker'
+grep -q 'watching .* for changes' "$log" || fail 'the watcher did not announce itself'
 
 # The edit. A new worker must be serving the new body within ~2s of the
 # 300ms scan noticing it.
@@ -3622,7 +3568,7 @@ write_app two
 served=
 for i in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.5
-  served=$(curl -s --max-time 5 http://127.0.0.1:8095/ || true)
+  served=$(curl -s --max-time 5 http://127.0.0.1:$port/ || true)
   case "$served" in "two "*) break ;; esac
 done
 case "$served" in
@@ -3633,7 +3579,7 @@ after_pid=$(echo "$served" | cut -d= -f2)
 [ -n "$after_pid" ] || fail "no pid in the reloaded response: '$served'"
 [ "$after_pid" != "$before_pid" ] \
   || fail "the same worker pid $after_pid served the change -- nothing was re-forked"
-grep -q 'reload 1 complete' reload.log || fail 'the supervisor did not report the reload'
+grep -q 'reload 1 complete' "$log" || fail 'the supervisor did not report the reload'
 
 # The versions above are the same length and are written in the same second,
 # which is the case that catches a reloader out: CPython validates a cached
@@ -3646,8 +3592,8 @@ grep -q 'reload 1 complete' reload.log || fail 'the supervisor did not report th
 
 # A reload is a graceful shutdown followed by a fork, so the drained workers
 # must not have been counted as crashes: the respawn path never ran.
-grep -q 'crashed' reload.log && fail 'a reloaded worker was accounted as a crash'
-grep -q 'respawned worker' reload.log && fail 'a reload went through the respawn path'
+grep -q 'crashed' "$log" && fail 'a reloaded worker was accounted as a crash'
+grep -q 'respawned worker' "$log" && fail 'a reload went through the respawn path'
 
 # And the supervisor still stops on SIGTERM, reaping the reloaded worker.
 kill $pid
@@ -3671,16 +3617,15 @@ pid=
 # generation gone, and the answering pids are then tied to the ones the
 # supervisor logged as re-forked.
 write_app three
-"$srv" myapp:application --app-dir "$out" --port 8095 --reload --workers 2 > reload.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8095/ > /dev/null \
-  || fail 'the two-worker reloading server never became healthy'
+log=$SMOKE_DIR/reload2.log
+spawn reload2.log "$srv" myapp:application --app-dir "$out" --port $port --reload --workers 2
+wait_ready http://127.0.0.1:$port/ $pid
 write_app four
 served=
 for i in 1 2 3 4 5 6 7 8 9 10; do
   sleep 0.5
-  served=$(curl -s --max-time 5 http://127.0.0.1:8095/ || true)
-  reforked=$(grep -c 'starting (reload 1)' reload.log || true)
+  served=$(curl -s --max-time 5 http://127.0.0.1:$port/ || true)
+  reforked=$(grep -c 'starting (reload 1)' "$log" || true)
   case "$served" in "four "*) [ "$reforked" = "2" ] && break ;; esac
 done
 case "$served" in
@@ -3690,7 +3635,7 @@ esac
 [ "$reforked" = "2" ] || fail "expected both workers re-forked for reload 1, the log shows $reforked"
 first_pid=$(echo "$served" | cut -d= -f2)
 kill -STOP "$first_pid" || fail "could not stop worker $first_pid"
-other=$(for n in 1 2 3 4 5 6 7 8; do curl -s --max-time 5 http://127.0.0.1:8095/; echo; done)
+other=$(for n in 1 2 3 4 5 6 7 8; do curl -s --max-time 5 http://127.0.0.1:$port/; echo; done)
 kill -CONT "$first_pid"
 fours=$(echo "$other" | grep -c '^four ' || true)
 [ "$fours" = "8" ] \
@@ -3698,12 +3643,12 @@ fours=$(echo "$other" | grep -c '^four ' || true)
 second_pid=$(echo "$other" | cut -d= -f2 | sort -u)
 [ "$(echo "$second_pid" | wc -l | tr -d ' ')" = "1" ] || fail "more than one pid answered with $first_pid stopped: $second_pid"
 [ "$second_pid" != "$first_pid" ] || fail "the stopped worker $first_pid answered -- SIGSTOP did not take"
-reloaded=$(grep -o 'pid=[0-9]* starting (reload 1)' reload.log | cut -d= -f2 | cut -d' ' -f1 | sort)
+reloaded=$(grep -o 'pid=[0-9]* starting (reload 1)' "$log" | cut -d= -f2 | cut -d' ' -f1 | sort)
 for p in $first_pid $second_pid; do
   echo "$reloaded" | grep -qx "$p" \
     || fail "worker $p served the new module but was not re-forked by reload 1 (re-forked: $(echo $reloaded))"
 done
-grep -q 'reload 1 complete' reload.log || fail 'the two-worker supervisor did not report the reload'
+grep -q 'reload 1 complete' "$log" || fail 'the two-worker supervisor did not report the reload'
 
 kill $pid
 wait $pid; rc=$?
@@ -3720,22 +3665,22 @@ pid=
 gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
 if [ "$gil_off" = "1" ]; then
   write_app five
-  "$srv" myapp:application --app-dir "$out" --port 8095 --reload --threads 2 \
-    > reload.log 2>&1 &
-  pid=$!
-  curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8095/ > "$out/t_before" \
+  log=$SMOKE_DIR/reload3.log
+  spawn reload3.log "$srv" myapp:application --app-dir "$out" --port $port --reload --threads 2
+  wait_ready http://127.0.0.1:$port/ $pid
+  curl --silent --fail http://127.0.0.1:$port/ > "$out/t_before" \
     || fail 'the threaded reloading server never became healthy'
   grep -q '^five ' "$out/t_before" || fail "expected version five, got $(cat "$out/t_before")"
-  grep -q 'supervising 1 workers' reload.log \
+  grep -q 'supervising 1 workers' "$log" \
     || fail '--reload did not put a supervisor in front of --threads'
-  grep -q 'threaded: 2 loops' reload.log || fail 'the supervised child did not start 2 loops'
+  grep -q 'threaded: 2 loops' "$log" || fail 'the supervised child did not start 2 loops'
   t_before_pid=$(cut -d= -f2 "$out/t_before")
 
   write_app six
   served=
   for i in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.5
-    served=$(curl -s --max-time 5 http://127.0.0.1:8095/ || true)
+    served=$(curl -s --max-time 5 http://127.0.0.1:$port/ || true)
     case "$served" in "six "*) break ;; esac
   done
   case "$served" in
@@ -3746,7 +3691,7 @@ if [ "$gil_off" = "1" ]; then
   [ "$t_after_pid" != "$t_before_pid" ] \
     || fail "the same process $t_after_pid served the change under --threads"
   # The replacement is a whole new interpreter with its own N loops.
-  n=$(grep -c 'threaded: 2 loops' reload.log)
+  n=$(grep -c 'threaded: 2 loops' "$log")
   [ "$n" = "2" ] || fail "expected 2 'threaded: 2 loops' lines (one per generation), saw $n"
 
   kill $pid
@@ -3756,7 +3701,6 @@ if [ "$gil_off" = "1" ]; then
   echo "phase 3: --reload in front of --threads 2 re-forked the interpreter"
 fi
 
-rm -f reload.log
 echo "smoke-reload OK (1 worker, then 2, each re-forked onto the changed module)"
 python3 scripts/emit.py --covers D5 --task smoke-reload
 """
@@ -3765,25 +3709,17 @@ python3 scripts/emit.py --covers D5 --task smoke-reload
 help = "Threaded mode: refuses a GIL-enabled interpreter (exit 78); on free-threaded CPython serves across threads and drains cleanly"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
-SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8096"
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -f threads.log
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f threads.log ]; then echo '=== threads.log ==='; cat threads.log; fi
-  exit 1
-}
+port=$(free_port)
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port"
+log=$SMOKE_DIR/threads.log
 gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
 
 # Phase 1: the guard, and the conflict. Both must be quick — a refusal that
 # hangs is the bug this phase exists for.
 if [ "$gil_off" != "1" ]; then
-  M0_THREADS=2 "$srv" $SPEC > threads.log 2>&1 &
-  pid=$!
+  spawn threads.log env M0_THREADS=2 "$srv" $SPEC
   for i in 1 2 3 4 5 6 7 8 9 10; do
     kill -0 $pid 2>/dev/null || break
     sleep 1
@@ -3791,12 +3727,12 @@ if [ "$gil_off" != "1" ]; then
   kill -0 $pid 2>/dev/null && fail 'M0_THREADS=2 did not decide within 10s'
   wait $pid; rc=$?
   [ "$rc" = "78" ] || fail "M0_THREADS=2 on a GIL build: exit $rc, want 78"
-  grep -q 'requires free-threaded CPython' threads.log || fail 'refusal does not name the requirement'
-  grep -q 'M0_WORKERS' threads.log || fail 'refusal does not point at the prefork alternative'
+  grep -q 'requires free-threaded CPython' "$log" || fail 'refusal does not name the requirement'
+  grep -q 'M0_WORKERS' "$log" || fail 'refusal does not point at the prefork alternative'
 fi
-"$srv" $SPEC --threads 2 --workers 2 > threads.log 2>&1; rc=$?
+"$srv" $SPEC --threads 2 --workers 2 > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "--threads 2 --workers 2: exit $rc, want 2"
-grep -q 'mutually exclusive' threads.log || fail 'the conflict message is missing'
+grep -q 'mutually exclusive' "$log" || fail 'the conflict message is missing'
 
 if [ "$gil_off" != "1" ]; then
   echo "smoke-threads OK (phase 1: the guard holds on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
@@ -3804,28 +3740,29 @@ if [ "$gil_off" != "1" ]; then
 fi
 
 # Phase 2: free-threaded CPython. Four loops, one process, one interpreter.
-"$srv" $SPEC --threads 4 > threads.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8096/ | grep -q 'bare wsgi app' \
+spawn threads.log "$srv" $SPEC --threads 4
+wait_ready http://127.0.0.1:$port/ $pid
+curl --silent --fail http://127.0.0.1:$port/ | grep -q 'bare wsgi app' \
   || fail 'the threaded server never became healthy'
-grep -q 'threaded: 4 loops' threads.log || fail 'startup did not report 4 loops'
+grep -q 'threaded: 4 loops' "$log" || fail 'startup did not report 4 loops'
 # The conformance routes the bare app carries, through a threaded loop.
-curl -s http://127.0.0.1:8096/write | grep -q 'written-body' || fail 'write() route broke under threads'
+curl -s http://127.0.0.1:$port/write | grep -q 'written-body' || fail 'write() route broke under threads'
 # /reentrant issues a request back into this server from inside a view:
 # under prefork a second WORKER answers it; here a second THREAD does. The
 # url is percent-encoded, which is what every browser form sends anyway;
 # smoke-wsgi carries the unencoded twin, since that is the shape URI.parse
 # used to misread as a scheme.
-got=$(curl -s --max-time 20 'http://127.0.0.1:8096/reentrant?url=http%3A%2F%2F127.0.0.1%3A8096')
+got=$(curl -s --max-time 20 "http://127.0.0.1:$port/reentrant?url=http%3A%2F%2F127.0.0.1%3A$port")
 [ "$got" = "reentrant: subview" ] || fail "/reentrant did not get an answer from another thread: got '$got'"
 # Spread: 16 keep-alive connections opened in a burst must land on >= 2
 # threads (X-Thread is the owning loop's index).
-python3 - <<'PYCHK'
+python3 - "$port" <<'PYCHK'
 import http.client, sys, threading
+PORT = int(sys.argv[1])
 seen = set(); lock = threading.Lock(); errors = []
 def one():
     try:
-        c = http.client.HTTPConnection("127.0.0.1", 8096, timeout=15)
+        c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=15)
         c.request("GET", "/"); r = c.getresponse(); r.read()
         t = r.getheader("x-thread")
         with lock: seen.add(t)
@@ -3842,7 +3779,7 @@ PYCHK
 kill $pid
 wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --threads 4: exit $rc, want 0"
-n=$(grep -c 'exited cleanly' threads.log)
+n=$(grep -c 'exited cleanly' "$log")
 [ "$n" = "4" ] || fail "expected 4 'exited cleanly' lines, saw $n"
 echo "smoke-threads OK (phase 2: 4 threads on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
 python3 scripts/emit.py --covers E6 --task smoke-threads
@@ -3864,6 +3801,7 @@ cmd = "bin/m0serve flaskproj.wsgi:application --app-dir apps/flask_wsgi --port 8
 help = "A GIL-releasing view parallelises across the pool; a GIL-holding one does not"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 # The other half of C5. That row proves a slow view does not stall the
 # connections behind it -- isolation. This proves whether the pool's N threads
 # actually do N things at once, which is decided inside the view and not by
@@ -3871,24 +3809,13 @@ shell = """
 # handler thread and on two, because `MLModel.predict` never drops the lock
 # (docs/notes/gil-and-the-handler-pool.md).
 srv=bin/m0serve
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -f par.log
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f par.log ]; then echo '=== par.log ==='; cat par.log; fi
-  exit 1
-}
+port=$(free_port)
 
-$srv bareapp.wsgi:application --app-dir apps/wsgi_bare \
-  --host 127.0.0.1 --port 8093 --workers 1 --blocking-threads 2 > par.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail \
-  http://127.0.0.1:8093/ > /dev/null || fail 'server never answered'
+spawn par.log $srv bareapp.wsgi:application --app-dir apps/wsgi_bare \
+  --host 127.0.0.1 --port $port --workers 1 --blocking-threads 2
+wait_ready http://127.0.0.1:$port/ $pid
 
-out=$(python3 scripts/pool_parallelism_probe.py 8093) || { echo "$out"; fail 'pool parallelism probe failed'; }
+out=$(python3 scripts/pool_parallelism_probe.py $port) || { echo "$out"; fail 'pool parallelism probe failed'; }
 echo "$out"
 
 # Recorded rather than echoed into an expiring log: the gate is the probe's
@@ -3907,6 +3834,7 @@ python3 scripts/emit.py --covers E19 --task smoke-pool-parallelism
 help = "A thread the application starts runs while a pool-less server is idle (SPEC E20)"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 # #310: with no handler pool the loop calls the application itself, and it
 # used to wait for I/O still holding the GIL it has held since Py_Initialize.
 # A thread the app started then ran only when a request happened to run some
@@ -3914,8 +3842,10 @@ shell = """
 # `--blocking-threads 0` and `--workers 2` alike. The probe serves
 # `bareapp.ticker` in each of those shapes, counts its thread's ticks over an
 # idle window on one keep-alive connection, and refuses a shape whose banner
-# names a pool, which would pass by a different route.
-out=$(python3 scripts/app_thread_probe.py --port 8641 2>&1) || { echo "$out"; exit 1; }
+# names a pool, which would pass by a different route. One port per shape,
+# upward from this one: the probe's three.
+port=$(free_port 3)
+out=$(python3 scripts/app_thread_probe.py --port $port 2>&1) || { echo "$out"; exit 1; }
 echo "$out"
 for shape in realtime no-pool workers-2; do
   n=$(echo "$out" | awk -v s="shape=$shape" '$1 == "TICKS" && $2 == s {split($3,a,"="); print a[2]}')
@@ -3929,6 +3859,7 @@ python3 scripts/emit.py --covers E20 --task smoke-app-threads
 help = "A child process a view starts publishes onto the bus without crashing, numbered when handed the page (SPEC I23)"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 # #322: a child that inherited M0_SHARED_ID_ADDR took an id at an address in
 # its parent's memory -- SIGSEGV on Linux, and on macOS eight bytes of its
 # own memory incremented and published as an event id. The probe serves
@@ -3940,7 +3871,9 @@ shell = """
 # libm0core a plain Python child can load.
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
 [ -f "packages/m0-core/libm0core.$ext" ] || uv run --no-sync poe build-ffi || exit 1
-out=$(python3 scripts/child_publish_probe.py --port 8671 2>&1) || { echo "$out"; exit 1; }
+# One port per shape, upward from this one: the probe's three.
+port=$(free_port 3)
+out=$(python3 scripts/child_publish_probe.py --port $port 2>&1) || { echo "$out"; exit 1; }
 echo "$out"
 echo "smoke-child-publish OK"
 python3 scripts/emit.py --covers I23 --task smoke-child-publish
@@ -3950,12 +3883,14 @@ python3 scripts/emit.py --covers I23 --task smoke-child-publish
 help = "A child process the application starts inherits no connection, listener or channel of the server's (SPEC G16)"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 # Every shape the server's descriptors come from: the pool, the loop, forked
 # and spawned workers, the realtime bus, the executor. The child is run with
 # close_fds=False and lists what it holds above fd 2; the server started
 # with nothing there, so each is the server's, and a connection the server
-# closes would stay open in it.
-out=$(python3 scripts/exec_inherit_probe.py --port 8681 2>&1) || { echo "$out"; exit 1; }
+# closes would stay open in it. One port per shape, upward: the probe's six.
+port=$(free_port 6)
+out=$(python3 scripts/exec_inherit_probe.py --port $port 2>&1) || { echo "$out"; exit 1; }
 echo "$out"
 echo "smoke-exec-inherit OK"
 python3 scripts/emit.py --covers G16 --task smoke-exec-inherit
@@ -3965,18 +3900,11 @@ python3 scripts/emit.py --covers G16 --task smoke-exec-inherit
 help = "Stage B: a slow view must not stall the connections pinned behind it"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
 SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare"
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -f pool.log
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f pool.log ]; then echo '=== pool.log ==='; cat pool.log; fi
-  exit 1
-}
+port=$(free_port)
+log=$SMOKE_DIR/pool.log
 
 # `--blocking-threads` with `--realtime` used to be refused: the streaming
 # hooks run on the LOOP's handler while `func` ran on a pool thread with
@@ -3984,10 +3912,10 @@ fail() {
 # loop as a reserved bus frame -- smoke-django-realtime phase 5 proves the
 # delivery -- and what stays refused is the executor and --mount. Quick and
 # free, so first: the composition is accepted, and the doctor keeps both.
-"$srv" --doctor $SPEC --port 8099 --blocking-threads 4 --realtime > pool.log 2>&1; rc=$?
+"$srv" --doctor $SPEC --port $port --blocking-threads 4 --realtime > "$log" 2>&1; rc=$?
 [ "$rc" = "0" ] || fail "--blocking-threads with --realtime: doctor exit $rc, want 0 (the pair composes now)"
-grep -q '"blocking_threads":4' pool.log || fail 'the doctor dropped the pool beside --realtime'
-grep -q '"realtime":true' pool.log || fail 'the doctor dropped --realtime beside the pool'
+grep -q '"blocking_threads":4' "$log" || fail 'the doctor dropped the pool beside --realtime'
+grep -q '"realtime":true' "$log" || fail 'the doctor dropped --realtime beside the pool'
 
 # The measurement this whole mode exists for. `apps/wsgi_bare`'s /slow sleeps
 # 1.5 s, so two of them in flight is 3 s of handler time. A loop that runs
@@ -3996,17 +3924,15 @@ grep -q '"realtime":true' pool.log || fail 'the doctor dropped --realtime beside
 # The gate is deliberately loose (250 ms against a 1.5 s hold) because CI
 # machines are shared and slow: the failure this catches is 1500 ms and up,
 # and anything in between would be a flake rather than a finding.
-"$srv" $SPEC --port 8099 --blocking-threads 4 > pool.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8099/ > /dev/null \
-  || fail 'never became healthy'
+spawn pool.log "$srv" $SPEC --port $port --blocking-threads 4
+wait_ready http://127.0.0.1:$port/ $pid
 
-curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow &
+curl -s -o /dev/null --max-time 20 http://127.0.0.1:$port/slow &
 slow1=$!
-curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow &
+curl -s -o /dev/null --max-time 20 http://127.0.0.1:$port/slow &
 slow2=$!
 sleep 0.4
-took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 20 http://127.0.0.1:8099/)
+took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 20 http://127.0.0.1:$port/)
 # `wait $slow1 $slow2`, never a bare `wait`: the server is a background job of
 # this shell too, and waiting on it waits forever.
 wait $slow1 $slow2
@@ -4017,38 +3943,37 @@ python3 scripts/emit.py pool.fast_request_s "$took" --unit s --limit 0.25 --task
 
 # The abandoned-slot path: a client that vanishes mid-job must not leak the
 # provision it borrowed. Every slot has to come back once the jobs finish.
-before=$(curl -s http://127.0.0.1:8099/ -o /dev/null -w '%{http_code}')
+before=$(curl -s http://127.0.0.1:$port/ -o /dev/null -w '%{http_code}')
 [ "$before" = "200" ] || fail "server not serving before the abandon test"
-for i in 1 2 3 4; do curl -s -o /dev/null --max-time 0.3 http://127.0.0.1:8099/slow 2>/dev/null & done
+for i in 1 2 3 4; do curl -s -o /dev/null --max-time 0.3 http://127.0.0.1:$port/slow 2>/dev/null & done
 sleep 4
-curl -s --fail --max-time 10 http://127.0.0.1:8099/ > /dev/null \
+curl -s --fail --max-time 10 http://127.0.0.1:$port/ > /dev/null \
   || fail 'server stopped serving after four clients vanished mid-request'
 echo "four abandoned in-flight requests left the server healthy"
 
 # HEAD, which the pool path has to remember on the loop's behalf: by the time
 # the response comes back the request belongs to another thread.
-len=$(curl -s -I --max-time 10 http://127.0.0.1:8099/ | tr -d '\\r' | awk -F': ' '/^content-length:/ {print $2}')
+len=$(curl -s -I --max-time 10 http://127.0.0.1:$port/ | tr -d '\\r' | awk -F': ' '/^content-length:/ {print $2}')
 [ "$len" = "13" ] || fail "HEAD lost its content-length through the pool: got '$len'"
-body=$(curl -s -I --max-time 10 http://127.0.0.1:8099/ | tail -1 | tr -d '\\r')
+body=$(curl -s -I --max-time 10 http://127.0.0.1:$port/ | tail -1 | tr -d '\\r')
 [ -z "$body" ] || fail "HEAD returned a body through the pool: '$body'"
 
 # A handler that raises must still answer 500 and close, not hang the slot.
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:8099/start-twice)
+code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 http://127.0.0.1:$port/start-twice)
 [ -n "$code" ] || fail 'a raising handler produced no response at all'
-curl -s --fail --max-time 10 http://127.0.0.1:8099/ > /dev/null \
+curl -s --fail --max-time 10 http://127.0.0.1:$port/ > /dev/null \
   || fail 'server died after a raising handler'
 
 # SIGTERM with a job in flight: the in-flight request is answered, not dropped.
-curl -s --max-time 20 -o slowbody.txt -w '%{http_code}' http://127.0.0.1:8099/slow > slowcode.txt &
+curl -s --max-time 20 -o "$SMOKE_DIR/slowbody.txt" -w '%{http_code}' http://127.0.0.1:$port/slow > "$SMOKE_DIR/slowcode.txt" &
 inflight=$!
 sleep 0.4
 kill -TERM $pid
 wait $inflight
 wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM with a job in flight: exit $rc, want 0"
-grep -q 'slow done' slowbody.txt || fail 'a request in flight at SIGTERM was dropped'
-[ "$(cat slowcode.txt)" = "200" ] || fail "in-flight request at SIGTERM answered $(cat slowcode.txt), want 200"
-rm -f slowbody.txt slowcode.txt
+grep -q 'slow done' "$SMOKE_DIR/slowbody.txt" || fail 'a request in flight at SIGTERM was dropped'
+[ "$(cat "$SMOKE_DIR/slowcode.txt")" = "200" ] || fail "in-flight request at SIGTERM answered $(cat "$SMOKE_DIR/slowcode.txt"), want 200"
 
 # SIGTERM with jobs that will NEVER finish: exit anyway, and say so. A
 # response that never ends -- an SSE generator under WSGI is the real case;
@@ -4057,12 +3982,12 @@ rm -f slowbody.txt slowcode.txt
 # did nothing and `docker stop` ended in SIGKILL. The drain has a 5 s budget
 # and the join now has the same; 20 s here is both plus slack, and the old
 # behaviour is not slow but infinite.
-"$srv" $SPEC --port 8099 --blocking-threads 2 > pool.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8099/ > /dev/null || fail 'never became healthy'
-curl -s -o /dev/null --max-time 60 http://127.0.0.1:8099/stuck &
+log=$SMOKE_DIR/pool-stuck.log
+spawn pool-stuck.log "$srv" $SPEC --port $port --blocking-threads 2
+wait_ready http://127.0.0.1:$port/ $pid
+curl -s -o /dev/null --max-time 60 http://127.0.0.1:$port/stuck &
 stuck1=$!
-curl -s -o /dev/null --max-time 60 http://127.0.0.1:8099/stuck &
+curl -s -o /dev/null --max-time 60 http://127.0.0.1:$port/stuck &
 stuck2=$!
 sleep 0.5
 t0=$(date +%s)
@@ -4073,7 +3998,7 @@ kill $stuck1 $stuck2 2>/dev/null
 wait $stuck1 $stuck2 2>/dev/null
 [ "$took" -lt 20 ] || fail "SIGTERM with two stuck views: ${took}s to exit; the join is waiting for threads that will never come back"
 [ "$rc" = "0" ] || fail "SIGTERM with two stuck views: exit $rc, want 0"
-grep -q 'still inside the application' pool.log || fail 'the exit did not say which threads it left behind'
+grep -q 'still inside the application' "$log" || fail 'the exit did not say which threads it left behind'
 echo "SIGTERM with two stuck views exited in ${took}s"
 echo "smoke-blocking-threads OK (phase 1: prefork, 4 handler threads)"
 
@@ -4084,10 +4009,9 @@ echo "smoke-blocking-threads OK (phase 1: prefork, 4 handler threads)"
 gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", lambda: True)()))')
 [ "$gil_off" = "1" ] || exit 0
 
-"$srv" $SPEC --port 8099 --threads 2 --blocking-threads 4 > pool.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8099/ > /dev/null \
-  || fail 'never became healthy under --threads 2 --blocking-threads 4'
+log=$SMOKE_DIR/pool-threads.log
+spawn pool-threads.log "$srv" $SPEC --port $port --threads 2 --blocking-threads 4
+wait_ready http://127.0.0.1:$port/ $pid
 
 # TWO slow views against four handler threads PER LOOP. Deliberately not
 # enough to saturate a pool: past that a request queues for a thread, which is
@@ -4095,12 +4019,12 @@ curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.
 # that survives the worst placement -- both landing on the same loop still
 # leaves that loop two free threads -- so the row is not a coin flip on which
 # loop accepted what.
-curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow &
+curl -s -o /dev/null --max-time 20 http://127.0.0.1:$port/slow &
 slow1=$!
-curl -s -o /dev/null --max-time 20 http://127.0.0.1:8099/slow &
+curl -s -o /dev/null --max-time 20 http://127.0.0.1:$port/slow &
 slow2=$!
 sleep 0.4
-took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 20 http://127.0.0.1:8099/)
+took=$(curl -s -o /dev/null -w '%{time_total}' --max-time 20 http://127.0.0.1:$port/)
 # By pid, as phase 1 does. This used to wait on `jobs -p` filtered of the
 # server's pid, read through a command substitution: that runs in a subshell,
 # which dash -- Linux's sh -- gives no job table, so the list came back empty
@@ -4116,7 +4040,7 @@ python3 scripts/emit.py threads_pool.fast_request_s "$took" --unit s --limit 0.4
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --threads 2 --blocking-threads 4: exit $rc, want 0"
-n=$(grep -c 'exited cleanly' pool.log)
+n=$(grep -c 'exited cleanly' "$log")
 [ "$n" = "2" ] || fail "expected 2 'exited cleanly' lines from the loops, saw $n"
 echo "smoke-blocking-threads OK (phase 2: 2 loops x 4 handler threads on $(python3 -c 'import sys; print(sys.version.split()[0])'))"
 python3 scripts/emit.py --covers C5 --task smoke-blocking-threads
@@ -4126,30 +4050,19 @@ python3 scripts/emit.py --covers C5 --task smoke-blocking-threads
 help = "Run the WSGI framework contract against Flask (skips if flask is absent)"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 python3 -c 'import flask' 2>/dev/null || { echo "flask not installed - skipping smoke-flask"; exit 0; }
 
-out=$(mktemp -d)
+port=$(free_port)
 # bin/m0serve is built by the deps entry above; SPEC is what the row serves.
 srv=bin/m0serve
-SPEC="flaskproj.wsgi:application --app-dir apps/flask_wsgi --port 8087"
+SPEC="flaskproj.wsgi:application --app-dir apps/flask_wsgi --port $port"
 
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
+spawn flask.log "$srv" $SPEC
+wait_ready http://localhost:$port/ $pid
 
-"$srv" $SPEC > flask.log 2>&1 &
-pid=$!
+bash scripts/wsgi_framework_contract.sh http://localhost:$port 'hello from flask on mojo-http' flask || fail
 
-if ! bash scripts/wsgi_framework_contract.sh http://localhost:8087 'hello from flask on mojo-http' flask; then
-  echo '=== flask.log ==='; cat flask.log
-  exit 1
-fi
-
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
-rm -f flask.log
 echo "smoke-flask OK"
 python3 scripts/emit.py --covers K10 --task smoke-flask
 """
@@ -4169,11 +4082,12 @@ python3 scripts/emit.py --covers K10 --task smoke-flask
 help = "The quickstart's Flask views held by m0serve: SSE and WebSockets across two workers, driven by the realtime probe"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 python3 -c 'import flask' 2>/dev/null || { echo "flask not installed - skipping smoke-flask-realtime"; exit 0; }
 
-out=$(mktemp -d)
+out=$SMOKE_DIR
 srv=bin/m0serve
-port=8091
+port=$(free_port)
 
 # The app: docs/QUICKSTART_NEXT.md's heredoc, verbatim. An empty extraction is a doc
 # edit that moved the block, and must fail here rather than serve nothing.
@@ -4189,27 +4103,11 @@ core_lib="$PWD/packages/m0-core/libm0core.$ext"
 
 SPEC="realtime_flask:app --app-dir $out --port $port --realtime --health-path /health"
 
-cleanup() {
-  kill -CONT $w_a 2>/dev/null
-  kill $pid $worker_pids 2>/dev/null
-  rm -rf "$out" fr1.log fr2.log
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  for log in fr1.log fr2.log; do
-    if [ -f "$log" ]; then echo "=== $log ==="; cat "$log"; fi
-  done
-  exit 1
-}
-
 # Phase 1: one worker. A message sent on a socket reaches the Flask view as
 # a POST and comes back to every socket on the channel, another channel
 # hears none of it, and a Flask publish reaches sockets.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC > fr1.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:$port/health \
-  || fail 'server never became healthy'
+spawn fr1.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC
+wait_ready http://localhost:$port/health $pid
 REALTIME_GATED=0 M0_PORT=$port python3 apps/django_realtime/realtime_probe.py \
   || fail 'realtime_probe failed against Flask (single worker)'
 kill $pid
@@ -4219,12 +4117,11 @@ wait $pid; rc=$?
 # Phase 2: two workers. One SSE stream pinned on EACH worker (the first
 # worker paused while the second connects; accept is not fair), then ONE
 # Flask-handled publish must reach both -- the far one over the bus. Then
-# the probe's cross-worker socket shape on the same server.
-M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --workers 2 > fr2.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 3 --retry-all-errors --silent --fail http://localhost:$port/health \
-  || fail 'two-worker server never became healthy'
-worker_pids=$(grep -oE 'pid=[0-9]+' fr2.log | cut -d= -f2 | sort -u)
+# the probe's cross-worker socket shape on the same server. The workers
+# share the server's process group, which the lib reaps whole on any exit
+# (resuming a stopped one first).
+spawn fr2.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --workers 2
+wait_ready http://localhost:$port/health $pid
 
 curl -sN --max-time 60 -D "$out/hdr_1" "http://localhost:$port/events?channel=news" > "$out/sse_1" &
 sse_1=$!
@@ -4269,30 +4166,26 @@ python3 scripts/emit.py --covers I20 --task smoke-flask-realtime
 help = "Serve a Django ASGI project through the asyncio executor"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 python3 -c 'import django' 2>/dev/null || { echo "django not installed - skipping smoke-django-asgi"; exit 0; }
 
 srv=bin/m0serve
-SPEC="djasgi --app-dir apps/django_asgi --port 8095"
-B=http://localhost:8095
+port=$(free_port)
+SPEC="djasgi --app-dir apps/django_asgi --port $port"
+B=http://localhost:$port
+log=$SMOKE_DIR/djasgi.log
+jar=$SMOKE_DIR/dj.jar
 
-cleanup() { kill $pid 2>/dev/null; rm -f dj.jar; }
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  [ -f djasgi.log ] && { echo '=== djasgi.log ==='; cat djasgi.log; }
-  exit 1
-}
+spawn djasgi.log "$srv" $SPEC
+wait_ready $B/ $pid
 
-"$srv" $SPEC > djasgi.log 2>&1 &
-pid=$!
-
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+curl --silent --fail $B/ \
   | grep -q 'hello from django-asgi' || fail 'the Django ASGI app did not serve'
 # A bare `djasgi` must have discovered djasgi.asgi:application and taken
 # the executor -- the same zero-config a FastHTML app gets.
-grep -q 'djasgi.asgi:application' djasgi.log || fail 'discovery missed djasgi.asgi'
-grep -q 'protocol=asgi' djasgi.log || fail 'Django ASGI was not detected as ASGI'
-grep -q 'asgi-loop' djasgi.log || fail 'the executor did not engage'
+grep -q 'djasgi.asgi:application' "$log" || fail 'discovery missed djasgi.asgi'
+grep -q 'protocol=asgi' "$log" || fail 'Django ASGI was not detected as ASGI'
+grep -q 'asgi-loop' "$log" || fail 'the executor did not engage'
 
 # scope["client"]: Django must see the real peer, not an address-less one.
 meta=$(curl -s --max-time 8 $B/meta)
@@ -4303,12 +4196,13 @@ echo "$meta" | grep -qE '"remote_port": [1-9][0-9]*' \
 
 # Await-concurrency on Django's own handler: 4 overlapping 400ms views in
 # ~1x, not 4x.
-overlap=$(python3 - <<'PY'
-import time, threading, urllib.request
+overlap=$(python3 - "$port" <<'PY'
+import sys, time, threading, urllib.request
+PORT = sys.argv[1]
 t0 = time.time()
 ts = [threading.Thread(
     target=lambda: urllib.request.urlopen(
-        "http://localhost:8095/slow?ms=400", timeout=10).read())
+        "http://localhost:%s/slow?ms=400" % PORT, timeout=10).read())
     for _ in range(4)]
 for t in ts: t.start()
 for t in ts: t.join()
@@ -4319,10 +4213,10 @@ python3 -c "import sys; sys.exit(0 if float('$overlap') < 1.2 else 1)" \
   || fail "4 concurrent 400ms views took ${overlap}s -- not overlapping"
 
 # StreamingHttpResponse must STREAM: first and last events ~0.75s apart.
-python3 - <<'PY' || exit 1
+python3 - "$port" <<'PY' || exit 1
 import sys, time, urllib.request
 t0 = time.time(); events = []
-with urllib.request.urlopen("http://localhost:8095/stream", timeout=10) as r:
+with urllib.request.urlopen("http://localhost:%s/stream" % sys.argv[1], timeout=10) as r:
     while True:
         line = r.readline()
         if not line: break
@@ -4335,10 +4229,9 @@ PY
 [ $? -eq 0 ] || fail 'StreamingHttpResponse did not stream live'
 
 # Sessions: the counter cannot advance unless cookies survive BOTH ways.
-rm -f dj.jar
-c1=$(curl -s -c dj.jar -b dj.jar --max-time 5 $B/session/bump)
-c2=$(curl -s -c dj.jar -b dj.jar --max-time 5 $B/session/bump)
-c3=$(curl -s -c dj.jar -b dj.jar --max-time 5 $B/session/bump)
+c1=$(curl -s -c "$jar" -b "$jar" --max-time 5 $B/session/bump)
+c2=$(curl -s -c "$jar" -b "$jar" --max-time 5 $B/session/bump)
+c3=$(curl -s -c "$jar" -b "$jar" --max-time 5 $B/session/bump)
 [ "$c3" = "count=3" ] || fail "session counter: $c1 / $c2 / $c3, want count=3"
 
 # SIGTERM drains clean.
@@ -4350,7 +4243,6 @@ done
 kill -0 $pid 2>/dev/null && { kill -9 $pid; fail 'SIGTERM did not stop the server'; }
 wait $pid 2>/dev/null
 
-rm -f djasgi.log dj.jar
 echo "smoke-django-asgi OK"
 python3 scripts/emit.py --covers L10 --task smoke-django-asgi
 """
@@ -4364,24 +4256,18 @@ python3 scripts/emit.py --covers L10 --task smoke-django-asgi
 help = "ASGI cross-worker pub/sub over the BroadcastBus (state['m0'])"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
 D="--app-dir apps/hybrid_mix"
-B=http://localhost:8152
-
-cleanup() { kill $pid 2>/dev/null; }
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  [ -f fanout.log ] && { echo '=== fanout.log ==='; cat fanout.log; }
-  exit 1
-}
+port=$(free_port)
+B=http://localhost:$port
 
 # --- phase 1: two workers -- spread, delivery, distinct ids -------------
-M0_WORKERS=2 "$srv" feed.asgi $D --port 8152 > fanout.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+spawn fanout.log env M0_WORKERS=2 "$srv" feed.asgi $D --port $port
+wait_ready $B/ $pid
+curl --silent --fail $B/ \
   | grep -q 'hello from feed' || fail 'the feed app did not serve'
-M0_PORT=8152 FANOUT_WORKERS=2 python3 apps/hybrid_mix/feed/fanout_probe.py \
+M0_PORT=$port FANOUT_WORKERS=2 python3 apps/hybrid_mix/feed/fanout_probe.py \
   || fail 'cross-worker fan-out failed'
 
 # --- phase 2: supervisor SIGTERM with a live subscriber stream ----------
@@ -4400,15 +4286,11 @@ kill $streampid 2>/dev/null
 # --- phase 3: one worker -- the app's own loop still delivers -----------
 # A single worker publishing to its own subscribers rides its own bus
 # channel; there is no separate local-delivery path to keep in sync.
-"$srv" feed.asgi $D --port 8152 > fanout.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
-  > /dev/null || fail 'the single-worker feed app did not serve'
-M0_PORT=8152 FANOUT_WORKERS=1 python3 apps/hybrid_mix/feed/fanout_probe.py \
+spawn fanout-one.log "$srv" feed.asgi $D --port $port
+wait_ready $B/ $pid
+M0_PORT=$port FANOUT_WORKERS=1 python3 apps/hybrid_mix/feed/fanout_probe.py \
   || fail 'single-worker pub/sub failed'
-kill $pid 2>/dev/null; wait $pid 2>/dev/null
 
-rm -f fanout.log
 echo "smoke-asgi-fanout OK"
 python3 scripts/emit.py --covers L12 --task smoke-asgi-fanout
 """
@@ -4422,34 +4304,28 @@ python3 scripts/emit.py --covers L12 --task smoke-asgi-fanout
 help = "Serve two applications at different prefixes from one m0serve process"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 python3 -c 'import django, flask' 2>/dev/null || { echo "django/flask not installed - skipping smoke-hybrid"; exit 0; }
 
 srv=bin/m0serve
 D="--app-dir apps/hybrid_mix"
-B=http://localhost:8099
-B2=http://localhost:8100
-B3=http://localhost:8110
-
-cleanup() { kill $pid $pid2 $pid3 2>/dev/null; }
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  for log in hybrid.log hybrid2.log hybrid3.log; do
-    [ -f $log ] && { echo "=== $log ==="; cat $log; }
-  done
-  exit 1
-}
+port=$(free_port)
+port2=$(free_port)
+port3=$(free_port)
+port4=$(free_port)
+B=http://localhost:$port
+B2=http://localhost:$port2
+B3=http://localhost:$port3
 
 # --- phase 1: a root mount beside a prefixed one -----------------------
-"$srv" --mount /=shop.wsgi --mount /portal=portal.wsgi:app $D --port 8099 \
-  > hybrid.log 2>&1 &
-pid=$!
+spawn hybrid.log "$srv" --mount /=shop.wsgi --mount /portal=portal.wsgi:app $D --port $port
+wait_ready $B/ $pid
 
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+curl --silent --fail $B/ \
   | grep -q 'hello from django' || fail 'the root mount did not serve Django'
 curl -s --max-time 5 $B/portal/ | grep -q 'hello from flask' \
   || fail 'the /portal mount did not serve Flask'
-grep -q '/=shop.wsgi:application,/portal=portal.wsgi:app' hybrid.log \
+grep -q '/=shop.wsgi:application,/portal=portal.wsgi:app' "$SMOKE_DIR/hybrid.log" \
   || fail 'the banner did not name both mounts'
 
 # Both mounts report their own bridge's view of the prefix. The generated
@@ -4466,17 +4342,17 @@ echo "$portal" | grep -q '"script_name": "/portal"' || fail "portal SCRIPT_NAME 
 echo "$portal" | grep -q '"path_info": "/where"' || fail "portal PATH_INFO wrong: $portal"
 echo "$portal" | grep -q '"url_for_where": "/portal/where"' \
   || fail "portal url_for() lost the prefix: $portal"
-echo "$portal" | grep -q '"base_url": "http://localhost:8099/portal/where"' \
+echo "$portal" | grep -q '"base_url": "http://localhost:'"$port"'/portal/where"' \
   || fail "portal base_url lost the prefix: $portal"
 
-kill $pid 2>/dev/null; wait $pid 2>/dev/null
+stop $pid
 
 # --- phase 2: no root mount, so unmatched paths are ours to answer ------
-"$srv" --mount /shop=shop.wsgi --mount /portal=portal.wsgi:app $D --port 8100 \
-  > hybrid2.log 2>&1 &
-pid2=$!
+spawn hybrid2.log "$srv" --mount /shop=shop.wsgi --mount /portal=portal.wsgi:app $D --port $port2
+pid2=$pid
+wait_ready $B2/shop $pid2
 
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B2/shop \
+curl --silent --fail $B2/shop \
   | grep -q 'hello from django' || fail '/shop did not serve Django'
 
 # Answered in Mojo, never entering Python.
@@ -4502,7 +4378,7 @@ echo "$shop" | grep -q '"request_path": "/shop/where"' \
 code=$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' $B2/portal)
 [ "$code" = "308" ] || fail "the exact mount point answered $code, expected 308"
 
-kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
+stop $pid2
 
 # --- phase 2b: the miss when the FIRST mount is not WSGI (SPEC M21) -----
 # Phase 2 passed while the rule it names was broken: the loop sends a path
@@ -4510,13 +4386,13 @@ kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
 # table again. With an ASGI app first, `/zzz` was that app's 200; with a
 # Mojo mount first, the Mojo pool's; and a WebSocket upgrade took the same
 # road into the application. The miss is now decided on the loop before a
-# lane is chosen, so every shape answers the server's own 404.
+# lane is chosen, so every shape answers the server's own 404. Each shape
+# logs to a file named for its label, which is what a failure to start names.
 unmatched() {  # label, then the server's arguments
   label="$1"; shift
-  "$srv" "$@" $D --port 8100 --blocking-threads 2 > hybrid2b.log 2>&1 &
-  pid2=$!
-  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail -o /dev/null $B2/b/ \
-    || fail "$label: the server never answered its own mount"
+  spawn "hybrid2b-$(echo "$label" | tr ' ' '-').log" "$srv" "$@" $D --port $port2 --blocking-threads 2
+  pid2=$pid
+  wait_ready $B2/b/ $pid2
   body=$(curl -s --max-time 5 $B2/zzz)
   code=$(curl -s -o /dev/null --max-time 5 -w '%{http_code}' $B2/zzz)
   [ "$code" = "404" ] || fail "$label: /zzz answered $code ($body), expected the server's 404"
@@ -4526,23 +4402,23 @@ unmatched() {  # label, then the server's arguments
     -H 'Connection: Upgrade' -H 'Upgrade: websocket' -H 'Sec-WebSocket-Version: 13' \
     -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' $B2/zzz)
   [ "$code" = "404" ] || fail "$label: a WebSocket upgrade to /zzz answered $code, expected 404"
-  kill $pid2 2>/dev/null; wait $pid2 2>/dev/null
+  stop $pid2
 }
 unmatched 'asgi first'  --mount /a=feed.asgi --mount /b=portal.wsgi:app
 unmatched 'mojo first'  --mount /native=mojo --mount /b=portal.wsgi:app
 unmatched 'asgi alone'  --mount /b=feed.asgi
-rm -f hybrid2b.log
 
 # --- phase 3: mixed protocols, each in its native mode ------------------
 # The stage-2 claim: Django (sync, on handler-pool threads) and FastHTML
 # (async, on the asyncio executor) in ONE process, each keeping its own
 # concurrency. Skipped where fasthtml is absent, like the FastHTML row.
 if python3 -c 'import fasthtml' 2>/dev/null; then
-  "$srv" --mount /=shop.wsgi --mount /app=live.asgi --mount /live=feed.asgi \
-    $D --port 8110 --blocking-threads 4 > hybrid3.log 2>&1 &
-  pid3=$!
+  spawn hybrid3.log "$srv" --mount /=shop.wsgi --mount /app=live.asgi --mount /live=feed.asgi \
+    $D --port $port3 --blocking-threads 4
+  pid3=$pid
+  wait_ready $B3/ $pid3
 
-  curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B3/ \
+  curl --silent --fail $B3/ \
     | grep -q 'hello from django' || fail 'the sync mount did not serve Django'
   curl -s --max-time 8 $B3/app/ | grep -q 'hello from fasthtml' \
     || fail 'the async mount did not serve FastHTML'
@@ -4550,25 +4426,26 @@ if python3 -c 'import fasthtml' 2>/dev/null; then
     || fail 'the second async mount did not serve'
   # The banner names WHICH mounts the executors took; without the @ the
   # mounts are sharing a mode and the isolation below is meaningless.
-  grep -q 'asgi-loop@/app,/live' hybrid3.log \
+  grep -q 'asgi-loop@/app,/live' "$SMOKE_DIR/hybrid3.log" \
     || fail 'the executors were not bound per ASGI mount'
-  grep -q 'blocking-threads=4' hybrid3.log \
+  grep -q 'blocking-threads=4' "$SMOKE_DIR/hybrid3.log" \
     || fail 'the sync mount got no handler pool'
 
   # Two executors, one chunk channel, per-lane credit. 256 KB is four
   # credit windows, so NEITHER body can complete unless drain acks reach
   # the executor that owns the slot -- credit misrouted to the other lane
   # is a send() that awaits forever, not an error. Concurrent on purpose.
-  curl -s --max-time 25 -o big_app.bin $B3/app/big &
+  big_app=$SMOKE_DIR/big_app.bin
+  big_live=$SMOKE_DIR/big_live.bin
+  curl -s --max-time 25 -o "$big_app" $B3/app/big &
   bigpid1=$!
-  curl -s --max-time 25 -o big_live.bin $B3/live/big &
+  curl -s --max-time 25 -o "$big_live" $B3/live/big &
   bigpid2=$!
   wait $bigpid1 $bigpid2
-  [ "$(wc -c < big_app.bin | tr -d ' ')" = "262144" ] \
-    || fail "the /app stream truncated: $(wc -c < big_app.bin) of 262144 bytes"
-  [ "$(wc -c < big_live.bin | tr -d ' ')" = "262144" ] \
-    || fail "the /live stream truncated: $(wc -c < big_live.bin) of 262144 bytes"
-  rm -f big_app.bin big_live.bin
+  [ "$(wc -c < "$big_app" | tr -d ' ')" = "262144" ] \
+    || fail "the /app stream truncated: $(wc -c < "$big_app") of 262144 bytes"
+  [ "$(wc -c < "$big_live" | tr -d ' ')" = "262144" ] \
+    || fail "the /live stream truncated: $(wc -c < "$big_live") of 262144 bytes"
 
   # A client that vanishes mid-stream on ONE async mount: the disconnect
   # tag (routed by the lane in the reserved channel name) must cancel that
@@ -4584,7 +4461,7 @@ if python3 -c 'import fasthtml' 2>/dev/null; then
   # over the 64 KB outbox): its disconnect must still reach that executor,
   # routed by the lane the socket's begin frame recorded -- the end erased
   # the channel name the lane is otherwise read from (SPEC L21).
-  M0_PORT=8110 python3 apps/hybrid_mix/feed/ws_end_probe.py /live \
+  M0_PORT=$port3 python3 apps/hybrid_mix/feed/ws_end_probe.py /live \
     || fail 'a socket the server ended on /live never told its application'
 
   # ASGI's `path` includes root_path (the framework strips it), which is the
@@ -4595,7 +4472,7 @@ if python3 -c 'import fasthtml' 2>/dev/null; then
     || fail "asgi path was trimmed; it must carry root_path: $live"
   echo "$live" | grep -q '/app/where"}' || fail "url_for lost the prefix: $live"
 
-  M0_PORT=8110 python3 scripts/hybrid_isolation.py || fail 'the mounts did not isolate'
+  M0_PORT=$port3 python3 scripts/hybrid_isolation.py || fail 'the mounts did not isolate'
 
   # SIGTERM must reach BOTH worker kinds. The executor sleeps on its own
   # mount's submit channel, so a shutdown pill sent to lane 0 poisons the
@@ -4613,7 +4490,6 @@ if python3 -c 'import fasthtml' 2>/dev/null; then
     fail 'a mixed mounted server did not exit on SIGTERM (executor pill went to the wrong lane?)'
   fi
   wait $pid3 2>/dev/null
-  rm -f hybrid3.log
 else
   echo "fasthtml not installed - skipping the mixed-protocol phase"
 fi
@@ -4632,18 +4508,17 @@ fi
 # 409 from the handler, asserted in smoke-django-realtime phase 6) and this:
 # a mounted realtime server with NO WSGI mount is asking for a hold nothing
 # could ever take.
-out=$("$srv" --mount /a=live.asgi --realtime $D --port 8101 2>&1); rc=$?
+out=$("$srv" --mount /a=live.asgi --realtime $D --port $port4 2>&1); rc=$?
 [ $rc -ne 0 ] || fail '--realtime with only ASGI mounts was accepted'
 echo "$out" | grep -q 'requires a WSGI application' \
   || fail "the --realtime refusal did not explain itself: $out"
 
-out=$("$srv" --mount /a=shop.wsgi shop.wsgi $D --port 8101 2>&1); rc=$?
+out=$("$srv" --mount /a=shop.wsgi shop.wsgi $D --port $port4 2>&1); rc=$?
 [ $rc -eq 2 ] || fail "--mount beside a positional spec exited $rc, expected 2"
 
-out=$("$srv" --mount /a=shop.wsgi --mount /a/=portal.wsgi:app $D --port 8101 2>&1); rc=$?
+out=$("$srv" --mount /a=shop.wsgi --mount /a/=portal.wsgi:app $D --port $port4 2>&1); rc=$?
 [ $rc -eq 2 ] || fail "a duplicate mount prefix exited $rc, expected 2"
 
-rm -f hybrid.log hybrid2.log hybrid3.log hybrid3t.log
 echo "smoke-hybrid OK"
 python3 scripts/emit.py --covers M1 --task smoke-hybrid
 python3 scripts/emit.py --covers M21 --task smoke-hybrid
@@ -4902,26 +4777,21 @@ python3 scripts/emit.py --covers M22 --task smoke-mojo-mount
 help = "Serve a FastHTML app through the ASGI bridge (skips if fasthtml is absent)"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 python3 -c 'import fasthtml' 2>/dev/null || { echo "fasthtml not installed - skipping smoke-fasthtml"; exit 0; }
 
 srv=bin/m0serve
-SPEC="main:app --app-dir apps/fasthtml_demo --port 8097"
-B=http://localhost:8097
+port=$(free_port)
+SPEC="main:app --app-dir apps/fasthtml_demo --port $port"
+B=http://localhost:$port
+log=$SMOKE_DIR/fasthtml.log
 
-cleanup() { kill $pid 2>/dev/null; }
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f fasthtml.log ]; then echo '=== fasthtml.log ==='; cat fasthtml.log; fi
-  exit 1
-}
+spawn fasthtml.log "$srv" $SPEC
+wait_ready $B/ $pid
 
-"$srv" $SPEC > fasthtml.log 2>&1 &
-pid=$!
-
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+curl --silent --fail $B/ \
   | grep -q 'm0serve-fasthtml-demo' || fail 'the FastHTML page did not render'
-grep -q 'protocol=asgi' fasthtml.log || fail 'FastHTML was not detected as ASGI'
+grep -q 'protocol=asgi' "$log" || fail 'FastHTML was not detected as ASGI'
 curl -s $B/plain | grep -q 'plain text from fasthtml' || fail '/plain did not answer'
 
 # FastHTML's EventStream actually streams now: ticks arrive live, the
@@ -4932,7 +4802,7 @@ n=$(curl -sN --max-time 3 $B/sse | grep -c 'tick')
 # request task, or its done-callback unpacks None and leaves one traceback
 # per streamed response in the log. The ticks above arrive either way,
 # which is why this line exists.
-grep -q 'Exception in callback' fasthtml.log && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
+grep -q 'Exception in callback' "$log" && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
 curl -s --fail $B/ > /dev/null || fail 'server died after the EventStream client vanished'
 
 # A BackgroundTask runs AFTER its response: the response is answered at its
@@ -4943,26 +4813,24 @@ curl -s $B/bg-log | grep -q 'empty' || fail 'the background task finished before
 sleep 2.5
 curl -s $B/bg-log | grep -q 'done' || fail 'the background task never ran'
 # The application's own error response, and the traceback in the log (L23).
-boom=$(mktemp)
+boom=$SMOKE_DIR/boom.html
 code=$(curl -s -o "$boom" -w '%{http_code}' $B/boom)
 [ "$code" = "500" ] || fail "/boom answered $code, want 500"
 grep -q 'Internal Server Error' "$boom" || fail "/boom's body was not the application's own 500"
-rm -f "$boom"
 # The executor logs the exception when the request's task finishes, which is
 # AFTER its response was answered (L22), so a grep that races the log write
 # missed it on a slow runner while the line was on its way. Wait, bounded.
-for _ in $(seq 1 50); do grep -q 'fasthtml-demo kaboom' fasthtml.log && break; sleep 0.1; done
-grep -q 'fasthtml-demo kaboom' fasthtml.log || fail "/boom's error never reached the log"
-grep -q 'Traceback (most recent call last)' fasthtml.log || fail "/boom's error was logged without its traceback"
+for _ in $(seq 1 50); do grep -q 'fasthtml-demo kaboom' "$log" && break; sleep 0.1; done
+grep -q 'fasthtml-demo kaboom' "$log" || fail "/boom's error never reached the log"
+grep -q 'Traceback (most recent call last)' "$log" || fail "/boom's error was logged without its traceback"
 
 # And app.ws: FastHTML's WebSocket handler echoes through the executor.
-M0_PORT=8097 python3 apps/fasthtml_demo/ws_probe.py || fail 'the FastHTML WebSocket probe failed'
+M0_PORT=$port python3 apps/fasthtml_demo/ws_probe.py || fail 'the FastHTML WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
 
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
-rm -f fasthtml.log
 echo "smoke-fasthtml OK"
 python3 scripts/emit.py --covers L11 --task smoke-fasthtml
 python3 scripts/emit.py --covers L22 --task smoke-fasthtml
@@ -4983,26 +4851,21 @@ python3 scripts/emit.py --covers L23 --task smoke-fasthtml
 help = "Serve a FastAPI app through the ASGI bridge (skips if fastapi is absent)"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 python3 -c 'import fastapi' 2>/dev/null || { echo "fastapi not installed - skipping smoke-fastapi"; exit 0; }
 
 srv=bin/m0serve
-SPEC="main:app --app-dir apps/fastapi_demo --port 8099"
-B=http://localhost:8099
+port=$(free_port)
+SPEC="main:app --app-dir apps/fastapi_demo --port $port"
+B=http://localhost:$port
+log=$SMOKE_DIR/fastapi.log
 
-cleanup() { kill $pid 2>/dev/null; }
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f fastapi.log ]; then echo '=== fastapi.log ==='; cat fastapi.log; fi
-  exit 1
-}
+spawn fastapi.log "$srv" $SPEC
+wait_ready $B/ $pid
 
-"$srv" $SPEC > fastapi.log 2>&1 &
-pid=$!
-
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+curl --silent --fail $B/ \
   | grep -q 'm0serve-fastapi-demo' || fail 'the FastAPI page did not render'
-grep -q 'protocol=asgi' fastapi.log || fail 'FastAPI was not detected as ASGI'
+grep -q 'protocol=asgi' "$log" || fail 'FastAPI was not detected as ASGI'
 curl -s $B/plain | grep -q 'plain text from fastapi' || fail '/plain did not answer'
 
 # StreamingResponse streams for real: ticks arrive live, the client walks
@@ -5013,32 +4876,31 @@ n=$(curl -sN --max-time 3 $B/stream | grep -c 'tick')
 # so the shim must mark the slot's owning task. Marking the child left one
 # traceback per streamed response in the log with the body intact, which is
 # why this line exists and the tick count above is not enough.
-grep -q 'Exception in callback' fastapi.log && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
+grep -q 'Exception in callback' "$log" && fail 'a streamed response left a traceback in the log (see test_a_stream_sent_from_a_child_task_marks_the_owner)'
 # The client walking away is not an application error: nothing may be
 # logged as one (checked here, before the chat phases log a real one).
-grep -q 'raised' fastapi.log && fail 'a vanished streaming client was logged as an application error'
+grep -q 'raised' "$log" && fail 'a vanished streaming client was logged as an application error'
 curl -s --fail $B/ > /dev/null || fail 'server died after the streaming client vanished'
 
 # And the WebSocket: echo, then FastAPI's own close(1000) ending in a FIN.
-M0_PORT=8099 python3 apps/fastapi_demo/ws_probe.py || fail 'the FastAPI WebSocket probe failed'
+M0_PORT=$port python3 apps/fastapi_demo/ws_probe.py || fail 'the FastAPI WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
 
 # FastAPI's documented chat room: a departed client's own cleanup runs and
 # can tell the room (L20, L21); a recycled slot never receives another
 # client's messages (L20); a raising socket closes with 1011 (L24) and its
 # traceback reaches the log (L23).
-M0_PORT=8099 python3 apps/fastapi_demo/chat_probe.py || fail 'the FastAPI chat probe failed'
+M0_PORT=$port python3 apps/fastapi_demo/chat_probe.py || fail 'the FastAPI chat probe failed'
 # Logged when the socket's task finishes, after the close the probe saw:
 # wait for the line, bounded, as smoke-fasthtml does for /boom.
-for _ in $(seq 1 50); do grep -q 'fastapi-demo ws kaboom' fastapi.log && break; sleep 0.1; done
-grep -q 'fastapi-demo ws kaboom' fastapi.log || fail "the raising socket's error never reached the log"
-grep -q 'Traceback (most recent call last)' fastapi.log || fail 'an application error was logged without its traceback'
+for _ in $(seq 1 50); do grep -q 'fastapi-demo ws kaboom' "$log" && break; sleep 0.1; done
+grep -q 'fastapi-demo ws kaboom' "$log" || fail "the raising socket's error never reached the log"
+grep -q 'Traceback (most recent call last)' "$log" || fail 'an application error was logged without its traceback'
 curl -s --fail $B/ > /dev/null || fail 'server died after the chat probe'
 
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
-rm -f fastapi.log
 echo "smoke-fastapi OK"
 python3 scripts/emit.py --covers L19 --task smoke-fastapi
 python3 scripts/emit.py --covers L21 --task smoke-fastapi
@@ -5295,28 +5157,17 @@ cmd = "bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8086
 help = "PEP 3333 conformance: write(), start_response, wsgi.input, CGI environ, validator"
 deps = ["build-serve"]
 shell = """
-out=$(mktemp -d)
+. scripts/smoke/lib.sh
+port=$(free_port)
 # bin/m0serve is built by the deps entry above; SPEC is what the row serves.
 srv=bin/m0serve
-SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8086"
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port"
 
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
+B=http://localhost:$port
+spawn wsgi-conformance.log env M0_WORKERS=2 "$srv" $SPEC
+wait_ready $B/ $pid
 
-fail() {
-  echo "$1"
-  if [ -f wsgi.log ]; then echo '=== wsgi.log ==='; cat wsgi.log; fi
-  exit 1
-}
-
-B=http://localhost:8086
-M0_WORKERS=2 "$srv" $SPEC > wsgi.log 2>&1 &
-pid=$!
-
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+curl --silent --fail $B/ \
   | grep -q 'bare wsgi app' || fail 'GET / did not answer'
 
 # --- the write() callable -----------------------------------------------------
@@ -5344,9 +5195,9 @@ got=$(curl -s $B/chunks)
 # down ONE keep-alive connection: the worker that accepted it owns it for its
 # lifetime. Three separate curls race two workers and read a counter that was
 # never incremented in the process that answered.
-python3 - <<'PYEOF'
+python3 - "$port" <<'PYEOF'
 import http.client, sys
-c = http.client.HTTPConnection("localhost", 8086, timeout=10)
+c = http.client.HTTPConnection("localhost", int(sys.argv[1]), timeout=10)
 def get(path):
     c.request("GET", path)
     return c.getresponse().read()
@@ -5432,7 +5283,7 @@ echo "$hdrs" | grep -qi '^HTTP/1.1 200' || fail 'the injecting route did not ans
 # on the same connection, so a body that leaked past a head misparses it. In
 # the UNVALIDATED pass because wsgiref.validate refuses a 303 with no
 # Content-Type.
-python3 scripts/head_probe.py --port 8086 --app wsgi || fail 'the response head is not the one the application sent (K12, A21)'
+python3 scripts/head_probe.py --port $port --app wsgi || fail 'the response head is not the one the application sent (K12, A21)'
 
 # --- wsgi.input ---------------------------------------------------------------
 got=$(printf 'hello' | curl -s --data-binary @- $B/input/read)
@@ -5457,9 +5308,9 @@ got=$(printf 'hi' | curl -s --data-binary @- $B/input/overread)
 # HTTP/1.1, and one request's body must not leak into the next on a reused
 # connection. Two POSTs of different lengths down one socket catch a parser
 # that keeps stale body state.
-python3 - <<'PYEOF'
+python3 - "$port" <<'PYEOF'
 import http.client, sys
-c = http.client.HTTPConnection("localhost", 8086, timeout=10)
+c = http.client.HTTPConnection("localhost", int(sys.argv[1]), timeout=10)
 c.request("POST", "/input/read", b"aaaa")
 r1 = c.getresponse()
 b1 = r1.read()
@@ -5482,14 +5333,14 @@ PYEOF
 # views synchronously on the event loop, so with one worker the only process
 # that could accept the sub-request is the one blocked in the view that made
 # it -- measured at a 10s timeout and a 504. Two workers answer in ~14ms.
-got=$(curl -s "$B/reentrant?url=http%3A%2F%2Flocalhost%3A8086")
+got=$(curl -s "$B/reentrant?url=http%3A%2F%2Flocalhost%3A$port")
 [ "$got" = "reentrant: subview" ] || fail "re-entrant request failed: got '$got'"
 
 # The same request with the url NOT percent-encoded, which is the shape that
 # used to answer 400: URI.parse searched the whole target for `://` and read
 # `/reentrant?url=http` as a scheme. It now accepts a `://` only when what
 # precedes it is a scheme per RFC 3986 3.1, and a query string cannot be one.
-got=$(curl -s --path-as-is "$B/reentrant?url=http://localhost:8086")
+got=$(curl -s --path-as-is "$B/reentrant?url=http://localhost:$port")
 [ "$got" = "reentrant: subview" ] \
   || fail "an unencoded url in the query is still misparsed: got '$got'"
 
@@ -5504,16 +5355,15 @@ env=$(curl -s --path-as-is -X POST -d v=1 "$B/environ?x=a:b@c")
 case "$env" in *"PATH_INFO='/environ'"*"QUERY_STRING='x=a:b@c'"*"REQUEST_METHOD='POST'"*) ;;
   *) fail "a POST with a raw @ in the query was misrouted: got '$env'" ;; esac
 
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
+stop $pid
 
 # --- the same app under wsgiref.validate --------------------------------------
 # The stdlib's PEP 3333 checker, over routes chosen to exercise the spec rather
 # than the conventional slice a framework happens to use.
-M0_WSGI_VALIDATE=1 M0_WORKERS=2 "$srv" $SPEC > wsgi.log 2>&1 &
-pid=$!
+spawn wsgi.log env M0_WSGI_VALIDATE=1 M0_WORKERS=2 "$srv" $SPEC
+wait_ready $B/ $pid
 
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+curl --silent --fail $B/ \
   | grep -q 'bare wsgi app' || fail 'GET / failed under M0_WSGI_VALIDATE'
 
 for path in write write/mixed chunks close input/read; do
@@ -5525,7 +5375,7 @@ got=$(curl -s $B/write)
 curl -s "$B/environ?q=%D1%82" | grep -qF "QUERY_STRING='q=%D1%82'" \
   || fail 'QUERY_STRING failed validation'
 
-grep -qiE 'assertionerror|not being closed' wsgi.log \
+grep -qiE 'assertionerror|not being closed' "$SMOKE_DIR/wsgi.log" \
   && fail 'the validator reported a violation out of band (see wsgi.log)'
 
 # Last, because it is the one request meant to fail: /no-content-type is an
@@ -5537,10 +5387,6 @@ code=$(curl -s -o /dev/null -w '%{http_code}' $B/no-content-type)
 
 curl -s --fail $B/ > /dev/null || fail 'server died after a validation failure'
 
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
-
-rm -f wsgi.log
 echo "smoke-wsgi OK"
 python3 scripts/emit.py --covers G2 --task smoke-wsgi
 python3 scripts/emit.py --covers K1 --task smoke-wsgi
@@ -5567,26 +5413,15 @@ python3 scripts/emit.py --covers L25 --task smoke-wsgi
 help = "Streamed WSGI bodies: a generator streams from a pool thread, chunked, keep-alive kept; lists still buffer"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 srv=bin/m0serve
-SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8081"
-B=http://127.0.0.1:8081
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -f stream.log
-}
-trap cleanup EXIT
-fail() {
-  echo "$1"
-  if [ -f stream.log ]; then echo '=== stream.log ==='; cat stream.log; fi
-  exit 1
-}
-ready() {
-  curl --retry 30 --retry-delay 1 --retry-all-errors --silent --fail "$1" > /dev/null || fail "never became healthy: $1"
-}
+port=$(free_port)
+SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port"
+B=http://127.0.0.1:$port
+log=$SMOKE_DIR/stream-wsgi.log
 
-"$srv" $SPEC --blocking-threads 4 > stream.log 2>&1 &
-pid=$!
-ready $B/
+spawn stream-wsgi.log "$srv" $SPEC --blocking-threads 4
+wait_ready $B/ $pid
 
 # --- what buffers -------------------------------------------------------------
 # A list body, a generator the application sized with Content-Length, and a
@@ -5605,9 +5440,9 @@ done
 # produced. The ceiling is loose (1 s against a 600 ms body) because CI
 # machines are shared; the failure it catches is the whole body arriving at
 # once after 600 ms, which is what joining looks like.
-python3 - <<'PYEOF' || fail 'the generator did not stream: pieces arrived together'
+python3 - "$port" <<'PYEOF' || fail 'the generator did not stream: pieces arrived together'
 import socket, time, sys
-s = socket.create_connection(("127.0.0.1", 8081), timeout=10)
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=10)
 t0 = time.time()
 s.sendall(b"GET /stream?n=3&delay=0.3 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
 data, stamps = b"", []
@@ -5633,7 +5468,7 @@ PYEOF
 # The raw-socket probe the ASGI row uses: a 1 MB body hand-decoded and
 # compared byte for byte, a second request on the same connection, and the
 # HTTP/1.0 refusal to frame.
-M0_PORT=8081 M0_STREAM_PATH='/stream?n=64&size=16384&delay=0' M0_STREAM_LEN=1048576 M0_SECOND_PATH=/ \
+M0_PORT=$port M0_STREAM_PATH='/stream?n=64&size=16384&delay=0' M0_STREAM_LEN=1048576 M0_SECOND_PATH=/ \
   python3 scripts/chunked_keepalive.py || fail 'the chunked keep-alive probe failed against a streamed WSGI body'
 
 # write() from inside the generator, between its yields: production order.
@@ -5643,9 +5478,9 @@ M0_PORT=8081 M0_STREAM_PATH='/stream?n=64&size=16384&delay=0' M0_STREAM_LEN=1048
 # A generator that raises after its head: the pieces it produced arrive,
 # then the connection closes WITHOUT the chunked terminator -- a truncated
 # body, which is the truth, never a short body under a clean ending.
-python3 - <<'PYEOF' || fail '/stream-raises did not truncate honestly'
+python3 - "$port" <<'PYEOF' || fail '/stream-raises did not truncate honestly'
 import socket, sys
-s = socket.create_connection(("127.0.0.1", 8081), timeout=15)
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=15)
 s.sendall(b"GET /stream-raises HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
 data = b""
 while True:
@@ -5659,7 +5494,7 @@ if body.endswith(b"0\\r\\n\\r\\n"):
     print("a raising generator got a clean terminator:", body); sys.exit(1)
 print("stream-raises: pieces delivered, then closed without a terminator")
 PYEOF
-grep -q 'streamed response raised after its head' stream.log \
+grep -q 'streamed response raised after its head' "$log" \
   || fail 'the raise inside the generator was not reported'
 
 # A stream whose head cannot be built is a 500, and its iterable is still
@@ -5680,14 +5515,14 @@ done
 # Sixteen 1 MB streams at once on four threads: every byte, in order, and
 # the server answers afterwards. This is the channel's shared capacity
 # under pressure -- a dropped chunk here is a short body.
-python3 - <<'PYEOF' || fail '16 concurrent 1 MB streams were not byte-exact'
+python3 - "$port" <<'PYEOF' || fail '16 concurrent 1 MB streams were not byte-exact'
 import socket, threading, sys
 EXP = b"".join((b"%d" % (k % 10)) * 16384 for k in range(64))
 out = [None] * 16
 def one(i):
     # Read to the chunked terminator, not to EOF: a framed stream leaves
     # the connection open afterwards, which is the point of the framing.
-    s = socket.create_connection(("127.0.0.1", 8081), timeout=60)
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=60)
     s.sendall(b"GET /stream?n=64&size=16384&delay=0 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
     data = b""
     while not data.endswith(b"\\r\\n0\\r\\n\\r\\n"):
@@ -5730,7 +5565,7 @@ echo "five abandoned never-ending streams; fast request answered in ${ms}ms"
 # this one, never -- so the request hung and held its thread until shutdown.
 # The probe proves the head and a whole connection after it; five HEADs on
 # the four-thread pool, then a fast request, prove the threads come back.
-python3 scripts/head_probe.py --port 8081 --hold /stream-forever --then / \
+python3 scripts/head_probe.py --port $port --hold /stream-forever --then / \
   || fail 'a HEAD to a never-ending WSGI stream is not its head alone (K13)'
 for i in 1 2 3 4 5; do
   code=$(curl -s -I -o /dev/null -w '%{http_code}' --max-time 5 $B/stream-forever)
@@ -5755,14 +5590,14 @@ kill $client 2>/dev/null; wait $client 2>/dev/null
 [ "$rc" = "0" ] || fail "SIGTERM with a live stream: exit $rc, want 0"
 python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) < 3.0 else 1)" "$took" \
   || fail "SIGTERM with a live stream took ${took}s: the producer did not come back"
-grep -q 'still inside the application' stream.log && fail 'a live stream was abandoned as a straggler at shutdown'
+grep -q 'still inside the application' "$log" && fail 'a live stream was abandoned as a straggler at shutdown'
 echo "SIGTERM with a live stream exited in ${took}s"
 
 # A generator ASLEEP between events cannot notice the disconnect until it
 # wakes; that thread is still the bounded straggler, and the exit says so.
-"$srv" $SPEC --blocking-threads 2 > stream.log 2>&1 &
-pid=$!
-ready $B/
+log=$SMOKE_DIR/stream-asleep.log
+spawn stream-asleep.log "$srv" $SPEC --blocking-threads 2
+wait_ready $B/ $pid
 curl -s -N --max-time 60 "$B/stream-forever?delay=30" > /dev/null 2>&1 &
 client=$!
 sleep 0.5
@@ -5773,7 +5608,7 @@ took=$(( $(date +%s) - t0 ))
 kill $client 2>/dev/null; wait $client 2>/dev/null
 [ "$rc" = "0" ] || fail "SIGTERM with a sleeping generator: exit $rc, want 0"
 [ "$took" -lt 20 ] || fail "SIGTERM with a sleeping generator took ${took}s"
-grep -q 'still inside the application' stream.log || fail 'the sleeping generator was not reported as a straggler'
+grep -q 'still inside the application' "$log" || fail 'the sleeping generator was not reported as a straggler'
 echo "SIGTERM with a generator asleep for 30 s exited in ${took}s, naming the straggler"
 
 # --- wsgiref.validate, on a pool ---------------------------------------------------
@@ -5781,14 +5616,14 @@ echo "SIGTERM with a generator asleep for 30 s exited in ${took}s, naming the st
 # streams -- and it asserts close() is called on the ORIGINAL iterable and
 # never iterated after. smoke-wsgi's own validator phase runs M0_WORKERS=2,
 # which is explicit topology and so has no pool; this is the pool's turn.
-M0_WSGI_VALIDATE=1 "$srv" $SPEC --blocking-threads 4 > stream.log 2>&1 &
-pid=$!
-ready $B/
+log=$SMOKE_DIR/stream.log
+spawn stream.log env M0_WSGI_VALIDATE=1 "$srv" $SPEC --blocking-threads 4
+wait_ready $B/ $pid
 [ "$(curl -s $B/chunks)" = "one-two-three" ] || fail 'validator: /chunks body wrong on a pool'
 [ "$(curl -s $B/write/mixed)" = "firstsecondthird" ] || fail 'validator: write()/iterable order wrong on a pool'
-python3 - <<'PYEOF' || fail 'validator: close() was not called on a streamed iterable'
+python3 - "$port" <<'PYEOF' || fail 'validator: close() was not called on a streamed iterable'
 import http.client, sys
-c = http.client.HTTPConnection("127.0.0.1", 8081, timeout=10)
+c = http.client.HTTPConnection("127.0.0.1", int(sys.argv[1]), timeout=10)
 def get(p):
     c.request("GET", p); return c.getresponse().read()
 before = int(get("/close/count")); get("/close"); after = int(get("/close/count"))
@@ -5796,25 +5631,23 @@ sys.exit(0 if after > before else 1)
 PYEOF
 code=$(curl -s -o /dev/null -w '%{http_code}' $B/no-content-type)
 [ "$code" = "500" ] || fail "validator not engaged on a pool: /no-content-type answered $code"
-grep -qiE 'assertionerror|not being closed' stream.log \
+grep -qiE 'assertionerror|not being closed' "$log" \
   && fail 'the validator reported a violation from a streamed iterable (see stream.log)'
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
+stop $pid
 
 # --- Django ---------------------------------------------------------------------
 # StreamingHttpResponse, the shape every Django SSE tutorial uses, on the
 # zero-config pool: events arrive as they are yielded, chunked, and the
 # connection is reusable after; an ordinary page still carries its
 # Content-Length and no Transfer-Encoding.
-"$srv" djangoproj.wsgi:application --app-dir apps/django_wsgi --port 8081 > stream.log 2>&1 &
-pid=$!
-ready $B/
+spawn stream-django.log "$srv" djangoproj.wsgi:application --app-dir apps/django_wsgi --port $port
+wait_ready $B/ $pid
 hdr=$(curl -s -D - -o /dev/null $B/ | tr -d '\\r')
 echo "$hdr" | grep -qi '^content-length:' || fail 'Django / lost its content-length'
 echo "$hdr" | grep -qi '^transfer-encoding' && fail 'Django / was chunked; HttpResponse must buffer'
-python3 - <<'PYEOF' || fail 'Django StreamingHttpResponse did not stream'
+python3 - "$port" <<'PYEOF' || fail 'Django StreamingHttpResponse did not stream'
 import socket, time, sys
-s = socket.create_connection(("127.0.0.1", 8081), timeout=10)
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=10)
 t0 = time.time()
 s.sendall(b"GET /events?n=3&delay=0.3 HTTP/1.1\\r\\nHost: x\\r\\n\\r\\n")
 data, stamps = b"", []
@@ -5832,10 +5665,7 @@ if b"200 OK" not in s.recv(4096):
     print("keep-alive lost after the stream"); sys.exit(1)
 print("django events: first at %.2fs, last at %.2fs, connection reused" % (min(stamps), max(stamps)))
 PYEOF
-kill $pid 2>/dev/null
-wait $pid 2>/dev/null
 
-rm -f stream.log
 echo "smoke-wsgi-stream OK"
 python3 scripts/emit.py --covers A9 --task smoke-wsgi-stream
 python3 scripts/emit.py --covers D3 --task smoke-wsgi-stream
@@ -6298,28 +6128,18 @@ cmd = "bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8088
 help = "ASGI conformance: detection, scope shape, lifespan, streaming guard, zero-config defaults"
 deps = ["build-serve"]
 shell = """
-out=$(mktemp -d)
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
 srv=bin/m0serve
-SPEC="bareapp.asgi:application --app-dir apps/asgi_bare --port 8088"
-B=http://localhost:8088
-
-cleanup() {
-  kill $pid 2>/dev/null
-  rm -rf "$out"
-}
-trap cleanup EXIT
-
-fail() {
-  echo "$1"
-  if [ -f asgi.log ]; then echo '=== asgi.log ==='; cat asgi.log; fi
-  exit 1
-}
+port=$(free_port)
+SPEC="bareapp.asgi:application --app-dir apps/asgi_bare --port $port"
+B=http://localhost:$port
 
 # A server still alive long after SIGTERM is a hang, not a slow drain: the
 # drain is 5 s and the thread join another 5, so 30 s is generous. Unbounded,
 # `wait $pid` here ate the smoke job's whole 20 min cap once (macOS,
 # 2026-09-02: an inverted server that never exited) and left no log to read.
-# Bounded, the failure names its phase and prints asgi.log.
+# Bounded, the failure names its phase and prints the servers' logs.
 wait_exit() {
   waited=0
   while kill -0 $pid 2>/dev/null && [ $waited -lt 300 ]; do
@@ -6338,14 +6158,15 @@ wait_exit() {
 # the executor IS the concurrency, so no x-thread header either. The short
 # heartbeat cadence arms the split-event assert below: ASGI streams must
 # never see a comment injected mid-frame, whatever the cadence.
-M0_SSE_HEARTBEAT_MS=300 "$srv" $SPEC > asgi.log 2>&1 &
-pid=$!
+log=$SMOKE_DIR/asgi-executor.log
+spawn asgi-executor.log env M0_SSE_HEARTBEAT_MS=300 "$srv" $SPEC
+wait_ready $B/ $pid
 
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+curl --silent --fail $B/ \
   | grep -q 'hello from asgi_bare' || fail 'GET / did not answer'
-grep -q 'protocol=asgi' asgi.log || fail 'the banner does not report protocol=asgi'
-grep -q 'asgi-loop' asgi.log || fail 'zero-config ASGI did not pick the asyncio executor'
-grep -q 'blocking-threads' asgi.log && fail 'zero-config ASGI started a handler pool beside the executor'
+grep -q 'protocol=asgi' "$log" || fail 'the banner does not report protocol=asgi'
+grep -q 'asgi-loop' "$log" || fail 'zero-config ASGI did not pick the asyncio executor'
+grep -q 'blocking-threads' "$log" && fail 'zero-config ASGI started a handler pool beside the executor'
 curl -s -D "$out/hdr" $B/ -o /dev/null
 grep -qi '^x-thread' "$out/hdr" && fail 'x-thread present: a pool is serving where the executor should be'
 
@@ -6369,10 +6190,10 @@ echo "$scope" | grep -qF '"content-length"' && fail "a GET's scope carries a con
 echo "$scope" | grep -qF '"connection"' && fail "a GET's scope carries a connection header curl never sent (L25): $scope"
 
 # The request body arrives as ONE http.request message, byte for byte.
-python3 - <<'PYEOF'
+python3 - "$port" <<'PYEOF'
 import http.client, sys
 body = bytes(range(256)) * 4
-c = http.client.HTTPConnection("localhost", 8088, timeout=10)
+c = http.client.HTTPConnection("localhost", int(sys.argv[1]), timeout=10)
 c.request("POST", "/echo", body=body)
 got = c.getresponse().read()
 c.close()
@@ -6408,7 +6229,7 @@ curl -s --max-time 5 $B/ | grep -q 'hello from asgi_bare' || fail 'the server di
 # a request on the same connection, so a body that leaked past a head
 # misparses it: the executor used to write all 10,000 bytes of HEAD /stream
 # after the head.
-python3 scripts/head_probe.py --port 8088 --app asgi || fail 'the response head is not the one the application sent (K12, A21, L27)'
+python3 scripts/head_probe.py --port $port --app asgi || fail 'the response head is not the one the application sent (K12, A21, L27)'
 
 # Lifespan ran at startup and its state reached the request scope.
 curl -s $B/lifespan | grep -qF '"started": true' || fail 'lifespan startup did not run'
@@ -6417,10 +6238,10 @@ curl -s $B/lifespan | grep -qF '"state_flag": true' || fail 'lifespan state did 
 # Await-concurrency: EIGHT 1.5s awaits must overlap on ONE loop with NO
 # threads — the executor multiplexes them on the application's own awaits.
 # A pool of 4 would take ~3s; the buffered bridge would take 12s.
-python3 - <<'PYEOF'
+python3 - "$port" <<'PYEOF'
 import http.client, sys, threading, time
 def one():
-    c = http.client.HTTPConnection("localhost", 8088, timeout=15)
+    c = http.client.HTTPConnection("localhost", int(sys.argv[1]), timeout=15)
     c.request("GET", "/slow?ms=1500"); c.getresponse().read(); c.close()
 t0 = time.time()
 threads = [threading.Thread(target=one) for _ in range(8)]
@@ -6433,10 +6254,10 @@ PYEOF
 # The RSS guard, same shape and same limit as smoke-django's: the ASGI path
 # adds a Python-side scope build per request and must still not leak.
 rss0=$(ps -o rss= -p $pid | tr -d ' ')
-python3 - <<'PYEOF'
-import http.client
+python3 - "$port" <<'PYEOF'
+import http.client, sys
 done = attempts = 0
-conn = http.client.HTTPConnection("localhost", 8088)
+conn = http.client.HTTPConnection("localhost", int(sys.argv[1]))
 while done < 10000 and attempts < 20000:
     attempts += 1
     try:
@@ -6445,7 +6266,7 @@ while done < 10000 and attempts < 20000:
         done += 1
     except Exception:
         conn.close()
-        conn = http.client.HTTPConnection("localhost", 8088)
+        conn = http.client.HTTPConnection("localhost", int(sys.argv[1]))
 conn.close()
 raise SystemExit(0 if done >= 10000 else 1)
 PYEOF
@@ -6489,7 +6310,7 @@ hb_got=$(curl -sN --max-time 10 $B/stream-events | md5sum | cut -d' ' -f1)
 # size or a missing terminator that a lenient client would paper over),
 # and then reuses the connection. Verified load-bearing against a
 # close-delimited build, where it fails on the missing header.
-M0_PORT=8088 python3 scripts/chunked_keepalive.py \
+M0_PORT=$port python3 scripts/chunked_keepalive.py \
   || fail 'a streamed response did not leave its connection reusable'
 
 # --- WebSockets (Phase 3b) ---------------------------------------------------
@@ -6497,15 +6318,15 @@ M0_PORT=8088 python3 scripts/chunked_keepalive.py \
 # echo, binary echo, app-initiated close(1000) through to the FIN — then a
 # second connection that vanishes abruptly after the 101, whose disconnect
 # must cancel the app task and leave the server healthy.
-M0_PORT=8088 python3 apps/asgi_bare/ws_probe.py || fail 'the ASGI WebSocket probe failed'
+M0_PORT=$port python3 apps/asgi_bare/ws_probe.py || fail 'the ASGI WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after an abrupt WebSocket disconnect'
 # What the application is told when its client leaves (L28): the client's
 # own close code, 1005 for a Close with none, 1006 only when no Close came --
 # it used to be 1006 for all three. And an inbound message larger than the
 # executor channel's datagram (I26) is refused with a Close carrying 1009,
 # named in the log, where it used to be parked for ever in silence.
-python3 scripts/ws_close_probe.py --port 8088 || fail 'the WebSocket disconnect code or the oversized-message refusal is wrong (L28, I26)'
-grep -q 'exceeds the channel' asgi.log || fail 'the oversized inbound message was refused without a log line (I26)'
+python3 scripts/ws_close_probe.py --port $port || fail 'the WebSocket disconnect code or the oversized-message refusal is wrong (L28, I26)'
+grep -q 'exceeds the channel' "$log" || fail 'the oversized inbound message was refused without a log line (I26)'
 
 # Graceful stop with a live stream in flight: drains and exits 0.
 curl -sN --max-time 10 $B/stream-forever > /dev/null &
@@ -6524,10 +6345,9 @@ kill $stream_pid 2>/dev/null; wait $stream_pid 2>/dev/null
 # is the discriminator (it is written by the app's lifespan.shutdown), the
 # log line the tell. Buffered request tasks are not cancelled by the
 # farewell (only stream tasks are), which is what keeps them in flight.
-M0_SHUTDOWN_MARKER="$out/shutdown.marker" "$srv" $SPEC > asgi.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail 'restart for the outlive-the-drain phase did not answer'
+log=$SMOKE_DIR/asgi-outlive.log
+spawn asgi-outlive.log env M0_SHUTDOWN_MARKER="$out/shutdown.marker" "$srv" $SPEC
+wait_ready $B/ $pid
 curl -s -m 15 "$B/slow?ms=5800" -o /dev/null &
 c1=$!
 curl -s -m 15 "$B/slow?ms=6800" -o /dev/null &
@@ -6537,7 +6357,7 @@ kill -TERM $pid
 wait $c1 $c2 2>/dev/null
 wait_exit 'SIGTERM with two requests outliving the drain'
 [ "$rc" = "0" ] || fail "SIGTERM with two requests outliving the drain: exit $rc, want 0"
-grep -q 'stopped before Future completed' asgi.log \
+grep -q 'stopped before Future completed' "$log" \
   && fail 'the post-pill gather was cut short by the pump stop'
 [ -f "$out/shutdown.marker" ] \
   || fail 'lifespan shutdown did not reach the application after the drain'
@@ -6556,10 +6376,8 @@ grep -q 'stopped before Future completed' asgi.log \
 # The bound is deliberately loose -- 3 s, against a 1.5 s request and a 5 s
 # budget -- because what it discriminates is "finished" from "gave up", and
 # a shared runner should not fail on a slow second.
-M0_SHUTDOWN_MARKER="$out/drain2.marker" "$srv" $SPEC > asgi.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail 'restart for the answered-inside-the-drain phase did not answer'
+spawn asgi-drain.log env M0_SHUTDOWN_MARKER="$out/drain2.marker" "$srv" $SPEC
+wait_ready $B/ $pid
 started=$(python3 -c 'import time; print(time.time())')
 curl -s -m 20 -o "$out/drain2.body" -w '%{http_code}' "$B/slow?ms=1500" > "$out/drain2.code" &
 c3=$!
@@ -6583,10 +6401,8 @@ python3 scripts/emit.py asgi.drain_inflight_s "$elapsed" --unit s --limit 3.0 --
 # behind it runs. The post-pill gather used to bound sockets only, so it
 # waited on this task until the 5 s thread join gave up, and the process
 # left without shutting the application down.
-M0_SHUTDOWN_MARKER="$out/bgforever.marker" "$srv" $SPEC > asgi.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail 'restart for the background-forever phase did not answer'
+spawn asgi-bgforever.log env M0_SHUTDOWN_MARKER="$out/bgforever.marker" "$srv" $SPEC
+wait_ready $B/ $pid
 [ "$(curl -s --max-time 5 $B/background-forever)" = "ok" ] \
   || fail 'the background-forever route did not answer ok'
 kill -TERM $pid
@@ -6598,13 +6414,12 @@ wait_exit 'background-forever'
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.
-M0_BLOCKING_THREADS=3 "$srv" $SPEC > asgi.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail 'M0_BLOCKING_THREADS=3 server never became healthy'
-grep -q 'blocking-threads=3' asgi.log || fail 'the explicit pool size is not in the banner'
-grep -q 'blocking-threads=3 (auto)' asgi.log && fail 'an explicit pool is marked (auto)'
-grep -q 'asgi-loop' asgi.log && fail 'the executor started despite an explicit pool'
+log=$SMOKE_DIR/asgi-pool.log
+spawn asgi-pool.log env M0_BLOCKING_THREADS=3 "$srv" $SPEC
+wait_ready $B/ $pid
+grep -q 'blocking-threads=3' "$log" || fail 'the explicit pool size is not in the banner'
+grep -q 'blocking-threads=3 (auto)' "$log" && fail 'an explicit pool is marked (auto)'
+grep -q 'asgi-loop' "$log" && fail 'the executor started despite an explicit pool'
 curl -s -D "$out/hdr" $B/ -o /dev/null
 grep -qi '^x-thread' "$out/hdr" || fail 'no x-thread: the explicit pool is not serving'
 # The buffered pool path keeps its watchdog: an infinite stream is a
@@ -6615,7 +6430,7 @@ curl -s --fail $B/ > /dev/null || fail 'server died after the buffered watchdog 
 # The same heads through the buffered bridge (A21, K12). It joins a stream
 # before answering, so the executor's streaming HEAD (L27) has nothing to
 # leak here.
-python3 scripts/head_probe.py --port 8088 --app asgi --no-stream-case || fail 'the buffered bridge did not send the head the application sent (K12, A21)'
+python3 scripts/head_probe.py --port $port --app asgi --no-stream-case || fail 'the buffered bridge did not send the head the application sent (K12, A21)'
 # The buffered bridge builds its scope from the WSGI environ, not from the
 # request's headers directly: the same two cases through that path (L25).
 scope=$(printf 'chunked' | curl -s -H 'Transfer-Encoding: chunked' --data-binary @- "$B/scope")
@@ -6624,71 +6439,69 @@ echo "$scope" | grep -qiF 'transfer-encoding' && fail "buffered: a de-chunked re
 scope=$(curl -s "$B/scope")
 echo "$scope" | grep -qF '"content-length"' && fail "buffered: a GET's scope carries a content-length the client never sent (L25): $scope"
 echo "$scope" | grep -qF '"connection"' && fail "buffered: a GET's scope carries a connection header curl never sent (L25): $scope"
-kill -TERM $pid
-wait $pid 2>/dev/null
+stop $pid
 
 # And the WSGI half of zero-config: no topology flags against the WSGI bare
 # app must pick the auto pool.
-"$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8088 > asgi.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail 'zero-config WSGI server never became healthy'
-grep -q 'protocol=wsgi' asgi.log || fail 'the WSGI banner does not report protocol=wsgi'
-grep -q 'blocking-threads=.* (auto)' asgi.log || fail 'zero-config WSGI did not pick an auto pool'
+log=$SMOKE_DIR/asgi-wsgi.log
+spawn asgi-wsgi.log "$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port
+wait_ready $B/ $pid
+grep -q 'protocol=wsgi' "$log" || fail 'the WSGI banner does not report protocol=wsgi'
+grep -q 'blocking-threads=.* (auto)' "$log" || fail 'zero-config WSGI did not pick an auto pool'
 curl -s -D "$out/hdr" $B/ -o /dev/null
 grep -qi '^x-thread' "$out/hdr" || fail 'no x-thread: the zero-config WSGI pool is not serving'
-kill -TERM $pid
-wait $pid 2>/dev/null
+stop $pid
 
 # --- phase 3: discovery and the forced protocol -------------------------------
 # A bare MODULE finds bareapp.asgi:application by convention.
-"$srv" bareapp --app-dir apps/asgi_bare --port 8088 > asgi.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
+log=$SMOKE_DIR/asgi-discovery.log
+spawn asgi-discovery.log "$srv" bareapp --app-dir apps/asgi_bare --port $port
+wait_ready $B/ $pid
+curl --silent --fail $B/ \
   | grep -q 'hello from asgi_bare' || fail 'discovery did not find bareapp.asgi:application'
-grep -q 'm0serve: bareapp.asgi:application' asgi.log || fail 'the banner does not name the discovered spec'
-kill -TERM $pid
-wait $pid 2>/dev/null
+grep -q 'm0serve: bareapp.asgi:application' "$log" || fail 'the banner does not name the discovered spec'
+stop $pid
 
-"$srv" $SPEC --protocol bogus > asgi.log 2>&1; rc=$?
+log=$SMOKE_DIR/asgi.log
+"$srv" $SPEC --protocol bogus > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "--protocol bogus: exit $rc, want 2"
 
 # --- phase 4: refusals --------------------------------------------------------
 # Not callable at all: a startup error naming BOTH expected signatures and
 # every discovery spec tried.
 echo 'application = 42' > "$out/notcallable.py"
-"$srv" notcallable --app-dir "$out" --port 8088 > asgi.log 2>&1; rc=$?
+"$srv" notcallable --app-dir "$out" --port $port > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "non-callable app: exit $rc, want 1"
-grep -q 'app(environ, start_response)' asgi.log || fail 'the error does not name the WSGI signature'
-grep -q 'app(scope, receive, send)' asgi.log || fail 'the error does not name the ASGI signature'
-grep -q 'tried notcallable:application' asgi.log || fail 'the error does not list the specs tried'
+grep -q 'app(environ, start_response)' "$log" || fail 'the error does not name the WSGI signature'
+grep -q 'app(scope, receive, send)' "$log" || fail 'the error does not name the ASGI signature'
+grep -q 'tried notcallable:application' "$log" || fail 'the error does not list the specs tried'
 
 # Work scheduled at import (L26): FastHTML's first official example calls
 # asyncio.create_task at module level, and m0serve imports an application
 # outside any running loop, as uvicorn does without --reload. Refused by
 # name with the fix, exit 1, the traceback kept, nothing served -- and the
 # same from --doctor, and through discovery, which must not hide it.
-"$srv" import_task:app --app-dir apps/asgi_bare --port 8088 > asgi.log 2>&1; rc=$?
+"$srv" import_task:app --app-dir apps/asgi_bare --port $port > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "import-time asyncio work: exit $rc, want 1 (L26)"
-grep -q 'scheduled asyncio work at import' asgi.log || fail 'import-time asyncio work is not refused by name (L26)'
-grep -q 'lifespan' asgi.log || fail 'the import-time refusal does not name the fix (L26)'
-grep -q 'Traceback (most recent call last)' asgi.log || fail 'the import-time refusal lost the traceback (L26)'
-grep -q 'Ready to accept' asgi.log && fail 'the refused application printed a ready banner (L26)'
+grep -q 'scheduled asyncio work at import' "$log" || fail 'import-time asyncio work is not refused by name (L26)'
+grep -q 'lifespan' "$log" || fail 'the import-time refusal does not name the fix (L26)'
+grep -q 'Traceback (most recent call last)' "$log" || fail 'the import-time refusal lost the traceback (L26)'
+grep -q 'Ready to accept' "$log" && fail 'the refused application printed a ready banner (L26)'
 "$srv" --doctor import_task:app --app-dir apps/asgi_bare > "$out/doctor.json" 2>/dev/null; rc=$?
 [ "$rc" = "1" ] || fail "--doctor on import-time asyncio work: exit $rc, want 1 (L26)"
 grep -q 'scheduled asyncio work at import' "$out/doctor.json" || fail 'the doctor does not name the import-time refusal (L26)'
-"$srv" import_task --app-dir apps/asgi_bare --port 8088 > asgi.log 2>&1; rc=$?
+"$srv" import_task --app-dir apps/asgi_bare --port $port > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "import-time asyncio work, bare MODULE: exit $rc, want 1 (L26)"
-grep -q 'scheduled asyncio work at import' asgi.log || fail 'discovery hid the import-time refusal (L26)'
+grep -q 'scheduled asyncio work at import' "$log" || fail 'discovery hid the import-time refusal (L26)'
 
 # ASGI and --realtime: refused before the bind when forced, at load when
 # detected — same sentence both ways.
-"$srv" $SPEC --protocol asgi --realtime > asgi.log 2>&1; rc=$?
+"$srv" $SPEC --protocol asgi --realtime > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "--protocol asgi --realtime: exit $rc, want 2"
-grep -q 'realtime requires a WSGI application' asgi.log || fail 'forced refusal message wrong'
-"$srv" $SPEC --realtime > asgi.log 2>&1; rc=$?
+grep -q 'realtime requires a WSGI application' "$log" || fail 'forced refusal message wrong'
+"$srv" $SPEC --realtime > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "detected asgi + --realtime: exit $rc, want 1"
-grep -q 'realtime requires a WSGI application' asgi.log || fail 'detected refusal message wrong'
+grep -q 'realtime requires a WSGI application' "$log" || fail 'detected refusal message wrong'
 
 # --- the validated pass: the wsgiref.validate that ASGI never got -------
 # M0_ASGI_VALIDATE=1 wraps the app in bareapp/validate.py, which asserts
@@ -6697,10 +6510,8 @@ grep -q 'realtime requires a WSGI application' asgi.log || fail 'detected refusa
 # and one app-side rule so the canary below can exist. A violation raises
 # out of the app and answers 500, so conformance failure is a failing
 # status, never a quiet pass.
-M0_ASGI_VALIDATE=1 "$srv" $SPEC > asgi.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ \
-  > /dev/null || fail 'the validated server never became healthy'
+spawn asgi.log env M0_ASGI_VALIDATE=1 "$srv" $SPEC
+wait_ready $B/ $pid
 for r in /scope /lifespan "/slow?ms=50"; do
   code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' "$B$r")
   [ "$code" = "200" ] || fail "validated $r answered $code -- the server violated the ASGI contract (see asgi.log)"
@@ -6713,9 +6524,7 @@ echo -n 'ab' | curl -s --max-time 8 --data-binary @- $B/echo | grep -q 'ab' \
 # a second unvalidated run that always succeeds.
 code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' $B/validate/canary)
 [ "$code" = "500" ] || fail "the validator canary answered $code, want 500 -- the wrapper is not engaged"
-kill $pid 2>/dev/null; wait $pid 2>/dev/null
 
-rm -f asgi.log
 echo "smoke-asgi OK"
 python3 scripts/emit.py --covers L1 --task smoke-asgi
 python3 scripts/emit.py --covers L2 --task smoke-asgi
@@ -8760,11 +8569,13 @@ python3 scripts/emit.py --covers N17 --task smoke-todo
 help = "Serve a file larger than every buffer without holding it in memory"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 set -u
 srv=bin/m0serve
-B=http://localhost:8140
-dir=$(mktemp -d)
-fail() { echo "FAIL: $1"; echo '=== sendfile.log ==='; cat sendfile.log 2>/dev/null; kill $pid 2>/dev/null; rm -rf "$dir"; exit 1; }
+port=$(free_port)
+B=http://localhost:$port
+dir=$SMOKE_DIR/files
+mkdir "$dir"
 
 # 64 MB: far past the socket buffer, the 4KB staging read, and the
 # encode buffer. A path that read the file into memory to serve it would
@@ -8773,11 +8584,9 @@ dd if=/dev/urandom of="$dir/big.bin" bs=1048576 count=64 2>/dev/null
 want=$(md5sum < "$dir/big.bin" | cut -d' ' -f1)
 printf 'hello static' > "$dir/small.txt"
 
-"$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8140 \
-  --static /assets/="$dir" > sendfile.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail 'server never became healthy'
+spawn sendfile.log "$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port \
+  --static /assets/="$dir"
+wait_ready $B/ $pid
 
 rss_before=$(ps -o rss= -p $pid | tr -d ' ')
 
@@ -8798,21 +8607,23 @@ python3 scripts/emit.py sendfile.rss_growth_kb "$growth" --unit KB --limit 16384
 [ "$growth" -lt 16384 ] || fail "RSS grew ${growth}KB serving 64MB files - the body is being buffered"
 
 # Range: served by giving sendfile an offset, so this reads mid-file.
-code=$(curl -s -o part.bin -w '%{http_code}' -H 'Range: bytes=1048576-1048583' $B/assets/big.bin)
+part=$SMOKE_DIR/part.bin
+code=$(curl -s -o "$part" -w '%{http_code}' -H 'Range: bytes=1048576-1048583' $B/assets/big.bin)
 [ "$code" = "206" ] || fail "range expected 206, got $code"
-[ "$(wc -c < part.bin | tr -d ' ')" = "8" ] || fail 'range served the wrong length'
+[ "$(wc -c < "$part" | tr -d ' ')" = "8" ] || fail 'range served the wrong length'
 want_part=$(dd if="$dir/big.bin" bs=1 skip=1048576 count=8 2>/dev/null | md5sum | cut -d' ' -f1)
-got_part=$(md5sum < part.bin | cut -d' ' -f1)
+got_part=$(md5sum < "$part" | cut -d' ' -f1)
 [ "$want_part" = "$got_part" ] || fail 'range served the wrong bytes'
 
 # HEAD: the headers a GET would send, and no body at all.
-curl -s -I --max-time 20 $B/assets/big.bin > head.txt
-grep -qi '^content-length: 67108864' head.txt || fail 'HEAD lost the real Content-Length'
+head=$SMOKE_DIR/head.txt
+curl -s -I --max-time 20 $B/assets/big.bin > "$head"
+grep -qi '^content-length: 67108864' "$head" || fail 'HEAD lost the real Content-Length'
 n=$(curl -s -o - -I --max-time 20 $B/assets/big.bin | wc -c | tr -d ' ')
 [ "$n" -lt 4096 ] || fail 'HEAD sent a body'
 
 # The validator is now derived from stat, and must still round-trip.
-etag=$(grep -i '^etag:' head.txt | tr -d '\r' | cut -d' ' -f2-)
+etag=$(grep -i '^etag:' "$head" | tr -d '\r' | cut -d' ' -f2-)
 [ -n "$etag" ] || fail 'no ETag on a sendfile response'
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" $B/assets/small.txt)
 # small.txt has its own ETag; a mismatched one must NOT 304.
@@ -8820,7 +8631,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" $B/asset
 code=$(curl -s -o /dev/null -w '%{http_code}' -H "If-None-Match: $etag" $B/assets/big.bin)
 [ "$code" = "304" ] || fail "the file's own ETag produced $code, want 304"
 
-kill $pid 2>/dev/null; wait $pid 2>/dev/null
+stop $pid
 
 # SPEC J10: a file response whose HEAD the socket cannot take at once still
 # sends its file. The write-ready path finished such a head and reset the
@@ -8831,17 +8642,13 @@ kill $pid 2>/dev/null; wait $pid 2>/dev/null
 # HEAD check above keeps its 4 KB bound; no keep-alive cap, so one
 # connection carries all of them.
 long=$(python3 -c "print('public, max-age=60, x-pad=' + 'p' * 12000)")
-"$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8140 \
+spawn sendfile-pipelined.log "$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port \
   --static /assets/="$dir" --static-cache-control "$long" \
-  --max-keepalive-requests 0 > sendfile.log 2>&1 &
-pid=$!
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail $B/ > /dev/null \
-  || fail 'the pipelining server never became healthy'
-python3 scripts/pipelined_files_probe.py 8140 /assets/small.txt "$dir/small.txt" 1000 \
+  --max-keepalive-requests 0
+wait_ready $B/ $pid
+python3 scripts/pipelined_files_probe.py $port /assets/small.txt "$dir/small.txt" 1000 \
   || fail 'a pipelined file response lost its file'
 
-kill $pid 2>/dev/null; wait $pid 2>/dev/null
-rm -rf "$dir" part.bin head.txt sendfile.log
 echo "smoke-sendfile OK"
 python3 scripts/emit.py --covers J1 --task smoke-sendfile
 python3 scripts/emit.py --covers J10 --task smoke-sendfile
@@ -9793,6 +9600,7 @@ echo "PY-CANARY PASSED against $(.venv/bin/python3 --version 2>&1) (free-threade
 help = "A request whose body is still arriving at SIGTERM is read on and answered; the drain exits promptly"
 deps = ["build-serve"]
 shell = """
+. scripts/smoke/lib.sh
 # SPEC D9. The soak driver's uploads population found this on
 # color-separation: with 9.7 MB POSTs in flight every drain took exactly
 # its 5 s budget, because the drain loop dispatched writes only and never
@@ -9803,22 +9611,17 @@ shell = """
 # /input/read (the length it read comes back). Sabotage: restore the old
 # write-only drain loop; the probe reports the reset at ~5 s in both.
 srv=bin/m0serve
-cleanup() { kill $pid 2>/dev/null; rm -f drain-upload.log; }
-trap cleanup EXIT
-fail() { echo "$1"; [ -f drain-upload.log ] && cat drain-upload.log; exit 1; }
 
-"$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port 8114 --max-body 64m > drain-upload.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8114/ > /dev/null \
-  || fail 'the ASGI server never became healthy'
-python3 scripts/drain_upload_probe.py --port 8114 --pid $pid \
+port=$(free_port)
+spawn drain-asgi.log "$srv" bareapp.asgi:application --app-dir apps/asgi_bare --port $port --max-body 64m
+wait_ready http://127.0.0.1:$port/ $pid
+python3 scripts/drain_upload_probe.py --port $port --pid $pid \
   || fail 'ASGI executor: the drain did not finish an upload in flight'
 
-"$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port 8115 --max-body 64m > drain-upload.log 2>&1 &
-pid=$!
-curl --retry 20 --retry-delay 1 --retry-all-errors --silent --fail http://127.0.0.1:8115/ > /dev/null \
-  || fail 'the WSGI server never became healthy'
-python3 scripts/drain_upload_probe.py --port 8115 --pid $pid --path /input/read --answer-contains len=10485760 \
+port=$(free_port)
+spawn drain-wsgi.log "$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port --max-body 64m
+wait_ready http://127.0.0.1:$port/ $pid
+python3 scripts/drain_upload_probe.py --port $port --pid $pid --path /input/read --answer-contains len=10485760 \
   || fail 'WSGI pool thread: the drain did not finish an upload in flight'
 
 python3 scripts/emit.py --covers D9 --task smoke-drain-upload

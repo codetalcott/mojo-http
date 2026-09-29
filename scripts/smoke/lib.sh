@@ -37,13 +37,16 @@
 #                           never reached -- wait up to 10 s for all of it
 #                           to exit, KILL whatever is left, and reap PID.
 #                           Returns PID's exit status.
-#   free_port               Print a TCP port that is free on IPv4 AND IPv6:
+#   free_port [N]           Print a TCP port that is free on IPv4 AND IPv6:
 #                           `localhost` may reach an IPv6 listener first, and
 #                           that would be somebody else's server. For a server
 #                           whose number nothing outside the task depends on.
 #                           A fixed port is shared machine-wide, and the
 #                           listener sets SO_REUSEPORT, so two runs on one
-#                           port both bind and split the connections.
+#                           port both bind and split the connections. With N,
+#                           the first of N consecutive ports that all are,
+#                           for a probe that serves one shape per port from
+#                           the one it is given upward.
 #   fail [MSG]              Print MSG, then every $SMOKE_DIR/*.log under a
 #                           `=== name ===` header, and exit 1. The message is
 #                           the line before the first header on purpose:
@@ -83,7 +86,7 @@ for name in ("SIGPIPE", "SIGXFSZ"):
         signal.signal(getattr(signal, name), signal.SIG_DFL)
 os.execvp(sys.argv[1], sys.argv[1:])'
 
-_smoke_free_port='import errno, socket
+_smoke_free_port='import errno, socket, sys
 
 def free_on_ipv6(port):
     try:
@@ -99,11 +102,27 @@ def free_on_ipv6(port):
         s.close()
     return True
 
+def free_on_ipv4(port):
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("", port))
+    except OSError:
+        return False
+    finally:
+        s.close()
+    return True
+
+arg = sys.argv[1] if len(sys.argv) > 1 else "1"
+if not arg.isdigit() or int(arg) < 1:
+    raise SystemExit("free_port: usage: free_port [N], N a count of ports")
+count = int(arg)
 for _ in range(100):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.bind(("", 0))
     port = s.getsockname()[1]
-    ok = free_on_ipv6(port)
+    rest = range(port + 1, port + count)
+    ok = (port + count - 1 <= 65535 and free_on_ipv6(port)
+          and all(free_on_ipv4(p) and free_on_ipv6(p) for p in rest))
     s.close()
     if ok:
         print(port)
@@ -122,7 +141,7 @@ spawn() {
 }
 
 free_port() {
-  python3 -S -c "$_smoke_free_port"
+  python3 -S -c "$_smoke_free_port" "$@"
 }
 
 fail() {
@@ -140,14 +159,17 @@ fail() {
 # Alive, and not a zombie: an exited child stays in the process table until
 # it is reaped, and dash reaps only while it waits for something. Where
 # there is no `ps` (a minimal container), `kill -0`, which counts a zombie.
+# `kill -0` says whether the process is there at all, and `ps` only whether
+# it is a zombie: a `ps` that answers nothing has not said "gone". An
+# interrupt reaches the task's whole group, `ps` among it, and an empty
+# answer read as "exited" sent the reap to `wait` on a live server -- for
+# as long as it lived, when it ignored TERM.
 if command -v ps > /dev/null 2>&1; then _smoke_ps=1; else _smoke_ps=; fi
 _smoke_running() {
-  if [ -z "$_smoke_ps" ]; then
-    kill -0 "$1" 2>/dev/null
-    return
-  fi
+  kill -0 "$1" 2>/dev/null || return 1
+  [ -n "$_smoke_ps" ] || return 0
   case $(ps -o stat= -p "$1" 2>/dev/null | tr -d ' ') in
-    '' | Z*) return 1 ;;
+    Z*) return 1 ;;
   esac
   return 0
 }
