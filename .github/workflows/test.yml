@@ -31,13 +31,14 @@ jobs:
     # 14-18 by mid-September, 26-29 from 2026-09-24, 31-32 by 2026-09-26
     # and up to 35 on the review's trains, when train 19 (#481) was
     # cancelled at this job's 40-minute cap, green in every step it
-    # reached. Most of the growth is `test-shim`: 15 s until 2026-09-23,
-    # ~490 s (ubuntu) and ~820 s (macOS) since, because its sabotage runs
+    # reached. Most of the growth was `test-shim`: 15 s until 2026-09-23,
+    # then ~490 s (ubuntu) and ~820 s (macOS), because its sabotage ran
     # every test once per guard (9 tests and 10 guards then, 59 and 55
-    # now). Then `test-http`, which compiles the package from source once
-    # per test file (62 files, ~575 s on ubuntu, 3 s of it the tests
-    # running). Then the gates added since (the Datastar SDK's sabotage,
-    # the scaffold's templates, the copy-back IR).
+    # later), until #483 had each guard run only the test written for it:
+    # 26 s and 33 s. Then `test-http`, which compiles the package from
+    # source once per test file (62 files, ~575 s on ubuntu, 3 s of it the
+    # tests running). Then the gates added since (the Datastar SDK's
+    # sabotage, the scaffold's templates, the copy-back IR).
     #
     # `poe test-all` stays the whole, run locally. CI runs its halves: this
     # job `poe test-packages`, `unit-gates` `poe test-gates`, and
@@ -45,10 +46,10 @@ jobs:
     # Cold, on #482, this job ran 20.7 min on ubuntu and 13.9 on macOS and
     # `unit-gates` 20.1 and 19.8, so both caps are 40: twice the run, and
     # the slowest runner seen (1.45x, the smoke job's comment) lands a
-    # 21-minute job at 30. Two halves cannot go lower while `test-shim` is
-    # 8-14 min in one piece. `test-http` grows 20-30 s with each event
-    # loop test, so this half is the one to lighten, and moving a task
-    # between the halves is free.
+    # 21-minute job at 30. `unit-gates` ran 12.7 min and 9.4 on #483,
+    # cold, its `test-shim` down to seconds. `test-http` grows 20-30 s with
+    # each event loop test, so this half is the one to lighten, and moving
+    # a task between the halves is free.
     #
     # Mojo's compile cache is restored below and saved after the job. It
     # holds one entry per whole program and CPU compiled for (`mojo run`
@@ -228,11 +229,15 @@ jobs:
   # templates, an outside vocabulary, the trait and view probes, the
   # keep-alive probe -- plus the Mojo pool's sabotage (Linux). Cold, it ran
   # 20.1 min on ubuntu and 19.8 on macOS (#482), most of it `test-shim`
-  # (~490 s and ~820 s) and `build-apps` (~285 s and ~165 s), against a
-  # cap of twice that; `unit-tests`' comment has the rest of the
-  # measurements. A separate JOB and no `needs:`, for the smokes' reasons:
-  # the sheet refuses a cited step with an `if:`, and nothing here waits
-  # on the other half.
+  # (~490 s and ~820 s) and `build-apps` (~285 s and ~165 s), and the cap
+  # of 40 is twice that. `test-shim` now runs only the test written for
+  # each of its guards (#483): 26 s on ubuntu and 33 on macOS, and this
+  # job 12.7 min and 9.4, cold, on that pull request, most of it
+  # `build-apps` (~290 s and ~275 s) and on ubuntu the pool's sabotage
+  # (~180 s). `unit-tests`' comment has the rest of the measurements. A
+  # separate JOB and no `needs:`, for the smokes' reasons: the sheet
+  # refuses a cited step with an `if:`, and nothing here waits on the
+  # other half.
   unit-gates:
     strategy:
       matrix:

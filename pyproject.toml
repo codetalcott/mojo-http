@@ -181,13 +181,16 @@ shell = "for f in packages/m0-wsgi/test/test_*.mojo; do mojo run -I packages/m0-
 # and driven through real socketpairs exactly as the loop drives it — which
 # makes the slot-ownership race a deterministic test rather than a
 # reproducer that needed twelve CPU hogs and eleven tries. `--sabotage`
-# reverts each rule in the extracted source and insists the suite fails for
-# every one, so the repo's sabotage rule holds permanently rather than by
-# memory; a patch that no longer applies is itself a failure, because that
-# means a guarded line was renamed or deleted.
+# reverts each rule in the extracted source and insists that the test
+# written for it fails, so the repo's sabotage rule holds permanently rather
+# than by memory; a patch that no longer applies, or a test the rule names
+# that the suite does not list, is itself a failure, because that means a
+# guarded line or its test was renamed or deleted. `--selftest` runs first:
+# those verdicts can fail. `--sabotage-all` (every test against every rule,
+# the audit that re-derives each rule's tests) is not run here.
 [tool.poe.tasks.test-shim]
 help = "Test the ASGI executor shim's slot-ownership rules, and sabotage-prove them"
-shell = "python3 scripts/shim_ownership.py --sabotage"
+shell = "python3 scripts/shim_ownership.py --selftest && python3 scripts/shim_ownership.py --sabotage"
 
 # Every probe names the PHASE it was proving when it crashed. The 2026-08-30
 # CI failure was an unhandled ConnectionResetError whose traceback named

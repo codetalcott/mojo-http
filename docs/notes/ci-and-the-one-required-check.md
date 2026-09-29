@@ -126,13 +126,15 @@ longer runs before the smokes, and nothing there was waiting on it.
 `poe test-all` was one step of the `unit-tests` job until it took 34-35
 minutes of that job's 40-minute cap on the ubuntu leg, and train 19 (#481)
 was cancelled at the cap, green in every step it reached. The step took 6-8
-minutes in late August and 14-18 by mid-September. Most of the growth is
-`test-shim`: 15 seconds until 2026-09-23, and about 8 minutes on ubuntu and
-13.5 on macOS since. Its sabotage runs every test once per guard, so it
-costs tests times guards: 9 tests and 10 guards then, 59 and 55 now. Then
-`test-http`, which compiles `m0-http` from source once per test file (62
-files, about 575 seconds on ubuntu, 3 of them spent running tests). Then
-the gates added since.
+minutes in late August and 14-18 by mid-September. Most of the growth was
+`test-shim`: 15 seconds until 2026-09-23, then about 8 minutes on ubuntu and
+13.5 on macOS. Its sabotage ran every test once per guard, so it cost tests
+times guards: 9 tests and 10 guards then, 59 and 55 by 2026-09-29. Since
+pull request #483 each guard runs only the test written for it, so it costs
+tests plus guards, and `test-shim` takes 26 seconds on ubuntu and 33 on
+macOS. Then `test-http`, which compiles `m0-http` from source once per test
+file (62 files, about 575 seconds on ubuntu, 3 of them spent running
+tests). Then the gates added since.
 
 So `test-all` is now `build-all` and two halves, and CI runs each half in a
 job of its own: `unit-tests` runs `poe test-packages` (the packages' tests,
@@ -141,8 +143,9 @@ their whole-package compiles and the harnesses beside them) and
 built on the packages). Locally `poe test-all` is still the whole. On the
 pull request that split them (#482), cold, `unit-tests` ran 20.7 minutes on
 ubuntu and 13.9 on macOS and `unit-gates` 20.1 and 19.8, against caps of
-40. Two halves cannot go lower while `test-shim` is 8-14 minutes in one
-piece. The split is measured, not thematic, and moving a task between the
+40. Two halves could not go lower while `test-shim` was 8-14 minutes in one
+piece; on #483, cold, `unit-gates` ran 12.7 minutes on ubuntu and 9.4 on
+macOS. The split is measured, not thematic, and moving a task between the
 halves is free. A task added to `test-all`'s own sequence, beside the
 halves, would run locally and in no job, so `check-docs` refuses anything
 `test-all` reaches that no unconditional step does.

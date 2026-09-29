@@ -498,9 +498,11 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     file, execs it, and drives it through real
     socketpairs exactly as the loop does — no server, no Mojo, no
     threads. Four of its six tests fail on the pre-fix shim, and
-    `--sabotage` reverts each rule in the source and insists
-    the suite fails for every one, so a renamed or deleted guard line is
-    itself a failure. Edit the `.py`, run `poe render-shim`, commit both;
+    `--sabotage` reverts each rule in the source and insists that the
+    test the rule names, the one written for it, fails, so a renamed or
+    deleted guard line is itself a failure; a new rule names its test
+    (`--sabotage-all` lists what fails for each). Edit the `.py`, run
+    `poe render-shim`, commit both;
     `poe lint-shim` is pyflakes over it, which is why it is a file at
     all (docs/notes/shim-language.md says why it stays Python). `poe stress-asgi` is the timing half and is
     deliberately NOT in CI (round 5 of 15 on the broken build, 45 of 45
