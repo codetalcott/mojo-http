@@ -433,8 +433,11 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     request, so a `dispatch` can be inside a pass. That is why a full
     chunk channel is handed to the loop's handler (`_deliver_bus_frames`,
     in channel order) and never made room in by running a pass, and why
-    `_pass_with` refuses a pass while one is on the stack
-    (`ExecutorState.in_pass`) and names it in the log.
+    the port refuses loop work (a pass, a drain step, a flush's
+    completions) while some is on the stack and names it in the log. The
+    flag is `ExecutorState.in_pass`, reached by address: the port and the
+    backend are copied into each call and stored back, so a flag on
+    either would be invisible to the nested call and erased by the outer.
     `scripts/nested_pass_probe.py` builds that batch in the inverted
     `smoke-asgi`.
     **A slot's per-slot state in the shim belongs to the slot's CURRENT

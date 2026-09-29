@@ -375,15 +375,19 @@ struct ExecutorState(Movable):
     to completion inside one callback, so its deadline has to outlive the
     call that started it. 0 until `_shutdown_begin` has run."""
     var in_pass: Bool
-    """Inverted mode only: a loop pass this port runs is on the stack.
+    """Inverted mode only: loop work this port runs is on the stack -- a
+    pass, a drain step, or a flush answering its completions.
 
-    A pass is never run inside another (`ExecutorPort._pass_with`, SPEC
-    L31). The backend keeps ONE event buffer, and the outer pass is still
-    walking it by index: a wait inside overwrote the events it had not
-    reached yet -- a new connection's accept, or a keep-alive request that
-    epoll reports once -- and the pass inside accepts connections, so an
-    event the outer pass still holds could name a descriptor that now
-    belongs to a new connection."""
+    None of them is run inside another (`ExecutorPort._refuse_nested_pass`,
+    SPEC L31). The backend keeps ONE event buffer, and the outer pass is
+    still walking it by index: a wait inside overwrote the events it had
+    not reached yet -- a new connection's accept, or a keep-alive request
+    that epoll reports once -- and the pass inside accepts connections, so
+    an event the outer pass still holds could name a descriptor that now
+    belongs to a new connection. Here, in the state the port reaches by
+    address, because the port and the backend are copied into each call
+    and stored back: a flag on either would be invisible to the nested
+    call, and the outer copy-back would erase what it wrote."""
     var nested_named: Bool
     """Whether a refused nested pass has been named in the log (once)."""
 
@@ -561,15 +565,18 @@ struct ExecutorPort(Movable, Writable):
         return over
 
     def _refuse_nested_pass(mut self):
-        """A pass asked for while one is on the stack: refused, and named
-        once (SPEC L31; `ExecutorState.in_pass` says what it would break).
+        """Loop work asked for while some is on the stack: refused, and
+        named once (SPEC L31; `ExecutorState.in_pass` says what it would
+        break).
 
-        Nothing in the tree asks for one since `_place_frame` stopped
+        Nothing in the tree asks for any since `_place_frame` stopped
         running passes. This is what keeps a caller that does -- an
         application running the asyncio loop re-entrantly, a future seam --
-        from walking over the batch the outer pass holds: the pass it
-        wanted runs when the outer one has returned (the backend's fd is
-        still readable, and every caller asks again)."""
+        from walking over the batch and the state the outer work holds. A
+        refused pass runs once the outer one has returned (the backend's fd
+        is still readable, and every caller asks again); a refused flush
+        leaves its completions parked for the flush the next dispatch
+        arms."""
         ref xs = Pointer[ExecutorState, MutUntrackedOrigin](
             unsafe_from_address=self.state_addr
         )[]
@@ -677,9 +684,18 @@ struct ExecutorPort(Movable, Writable):
         # argument it was a copy from before the pass, stored back over the
         # drain's record (`ExecutorState`'s docstring).
         #
-        # Refused if a pass is already on the stack (SPEC L31); the
-        # completions are still safe to answer then, because `_complete_one`
-        # drains the chunk channel itself before it finishes a streaming head.
+        # Refused WHOLE while loop work is on the stack (SPEC L31), which
+        # only an application running the asyncio loop re-entrantly could
+        # arrange: the completions write the loop's state as much as a pass
+        # does, and the frame below holds it across the call that led here.
+        # They stay parked for the flush the next dispatch arms. And the
+        # answering is loop work itself, marked like a pass, because a
+        # response it finishes can start the request pipelined behind it.
+        if Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[].in_pass:
+            self._refuse_nested_pass()
+            return
         _ = self._pass_with[B]()
         ref st = Pointer[ExecutorState, MutUntrackedOrigin](
             unsafe_from_address=self.state_addr
@@ -697,7 +713,13 @@ struct ExecutorPort(Movable, Writable):
         )[]
         var slots = st.pending_done.copy()
         st.pending_done.clear()
-        service_direct_completions(handler, backend, loop, slots)
+        st.in_pass = True
+        try:
+            service_direct_completions(handler, backend, loop, slots)
+        except e:
+            st.in_pass = False
+            raise e
+        st.in_pass = False
 
     @staticmethod
     def dispatch(py_self: PythonObject, ev: PythonObject) raises -> PythonObject:
