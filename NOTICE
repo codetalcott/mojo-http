@@ -993,6 +993,9 @@ lightbug_http
         from `pending`, and a zero-length datagram's descriptor is handed
         over rather than left open.
 
+      - loop/state.mojo (2026-09-28): `MAX_EVENTS`, which nothing read
+        (each backend sizes its own event buffer), is removed.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
