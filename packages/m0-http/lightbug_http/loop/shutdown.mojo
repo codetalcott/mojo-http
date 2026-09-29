@@ -102,9 +102,27 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
         # Every one, not a batch: the drain answers what was handed over.
         _ = _admit_handoffs(handler, backend, st)
 
-    # Graceful shutdown: close listener, drain in-flight, close SSE
+    # Graceful shutdown: close listener, drain in-flight, close SSE.
+    #
+    # Stop watching the listener and forget its number FIRST, then close
+    # (review B24). On epoll a close does not take a descriptor out of the
+    # interest list while another reference to its open file description
+    # lives, and under `--workers N` the supervisor and every sibling hold
+    # the listener's: the registration stayed, and a connection waiting for
+    # a sibling to accept it woke this loop, tagged with a number this
+    # process had just freed (with the siblings slow to accept, 50
+    # connections made 50 `accept` calls here fail EBADF). The next
+    # descriptor the drain was given -- a connection a sibling handed over
+    # -- took that number, its reads matched `listen_fd` and went to the
+    # accept path, and its request was never read. The delete is looked up
+    # by the number, so it must come while the number still names the
+    # listener; kqueue drops the filter at the close anyway, and the delete
+    # costs it nothing.
+    var listen_fd = st.listen_fd
+    backend.try_delete_read(listen_fd.value)
+    st.listen_fd = FileDescriptor(-1)
     try:
-        close(st.listen_fd)
+        close(listen_fd)
     except:
         pass
     # Nothing is owed from a listener that is gone: the drain's passes

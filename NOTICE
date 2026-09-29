@@ -1027,6 +1027,16 @@ lightbug_http
         a completion there left its request unanswered and the drain
         waiting out its 5 s (review record B22).
 
+      - loop/shutdown.mojo (2026-09-29): the drain deregisters the listener
+        and forgets its number before it closes it. On epoll a closed
+        descriptor stays in the interest list while another process holds
+        its open file description, which under `--workers N` the
+        supervisor and every sibling do: the draining worker kept waking
+        for connections waiting for its siblings, and a connection handed
+        over during the drain that took the listener's freed number had
+        its reads taken for the listener's, its request never read
+        (review record B24).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

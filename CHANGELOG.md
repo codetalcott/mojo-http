@@ -236,6 +236,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   repeats the request on Linux with the server pinned to one CPU. Found
   in review.
 
+- **A worker draining under `--workers N` on Linux no longer takes a
+  connection for the listener** (SPEC D1). A worker's drain closes its
+  reference to the shared listener, but on Linux epoll goes on watching a
+  descriptor that another process still holds open, and the supervisor and
+  every sibling hold the listener. So the draining worker kept waking for
+  connections waiting for its siblings to accept them, and the next
+  descriptor it opened took the listener's freed number. When that was a connection a sibling
+  handed over during the drain, the rest of its request was read as
+  activity on the listener and never answered: the client was reset when
+  the drain's 5 s ran out (measured in a Linux container, with the
+  hand-off delayed into the drain). The drain now stops watching the
+  listener before it closes it, and forgets the number.
+  `test_drain_listener.mojo` gates both steps, and on Linux the kernel's
+  side. Found in review.
+
 - **An ASGI application that installs asyncio's eager task factory is
   answered** (SPEC L30). With `asyncio.eager_task_factory` a task's first
   step runs inside `create_task`, and a response the application sent
