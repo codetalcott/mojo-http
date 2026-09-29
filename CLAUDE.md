@@ -925,6 +925,9 @@ for `tv_subsec`, `Hasher.update` taking a `Span[UInt8]`, `Array` for
    refused (the `ImplicitlyCopyable` constraint that first motivated them is
    gone); the fork's private `OwningList` was retired on 2026-09-05 at
    measured parity (NOTICE) — do not reintroduce a private list
+10. **A `mut` argument is not a reference**: from `-O1` one of ≤256 B, `self`
+   included, is copied in and stored back — pass a struct that is written by
+   address as its address (docs/notes/mut-arguments-and-raw-addresses.md)
 
 ## Design principles
 
