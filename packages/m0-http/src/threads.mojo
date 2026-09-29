@@ -236,8 +236,8 @@ def read_one_byte_blocking(fd: Int) -> Int:
 struct ShutdownFanout(Movable):
     """One shutdown pipe per thread, and one call that pokes all of them.
 
-    The event loop never drains its shutdown pipe — it sees the byte, sets
-    `should_shutdown`, and breaks — so N loops cannot share one pipe
+    The event loop never drains its shutdown pipe — it sees the byte and
+    sets `should_shutdown` — so N loops cannot share one pipe
     reliably. Each gets its own; the coordinator, woken by the process-wide
     signal pipe, calls `notify_all()`.
     """

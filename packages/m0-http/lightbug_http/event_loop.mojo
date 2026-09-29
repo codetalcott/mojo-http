@@ -277,7 +277,9 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     owed acks; the outbox drain; the buffered submits; the elastic pool's
     age check; the deadline sweep; the handler's own WebSocket closes and
     resumes. Returns True when the shutdown pipe fired, and the caller
-    then runs `_run_shutdown` once.
+    then runs `_run_shutdown` once. The pass that reads the stop is an
+    ordinary pass but for one thing: it dispatches its whole batch, the
+    events behind the pipe included, and admits no new connection.
 
     Each block is a function over the loop's state -- `handler`,
     `backend` and `st`, and the slot and descriptor it acts on -- so this
@@ -314,10 +316,17 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
         if (backend.event_flags(i) & EV_ERROR) != 0:
             continue
 
-        # Phase 4a: shutdown pipe — write end closed, exit cleanly
+        # The shutdown pipe. The stop is noted and the batch goes on: each
+        # event behind the pipe is reported once, here -- epoll's reads,
+        # channels and writes are edge triggered, kqueue's writes and
+        # timers one-shots -- and one this pass skipped was never reported
+        # again. It used to `break`: a completion behind the pipe left its
+        # request unanswered and the drain waiting out its 5 s (B22). The
+        # stop's one effect on this pass is below the batch: no new
+        # connection is admitted.
         if st.shutdown_read_fd >= 0 and Int(backend.event_ident(i)) == st.shutdown_read_fd:
             should_shutdown = True
-            break
+            continue
 
         # --- Cross-worker broadcast channel ---
         # Registration is edge-triggered, so every waiting datagram must
