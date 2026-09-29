@@ -896,10 +896,14 @@ def _selftest():
         t.start()
         return lsock.getsockname()[1], t
 
-    def upgrade(conn, extra=b""):
+    def upgrade(conn, extra=b"", record=None):
         req = b""
         while b"\r\n\r\n" not in req:
             req += conn.recv(4096)
+        # Recorded BEFORE the 101 goes out: the client returns as soon as it
+        # reads the 101, so a record made after the send raced the check.
+        if record is not None:
+            record["request"] = req
         key = re.search(rb"Sec-WebSocket-Key: (\S+)", req).group(1).decode()
         conn.sendall(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\n"
                      b"Connection: Upgrade\r\nsec-websocket-accept: "
@@ -911,7 +915,7 @@ def _selftest():
     def echo(conn):
         # The first frame is coalesced with the 101, as a kernel does to an
         # application that sends at once.
-        seen["request"] = upgrade(conn, extra=b"\x81\x05early")
+        upgrade(conn, extra=b"\x81\x05early", record=seen)
         buf = b""
         while True:
             got = parse_frame(buf)
