@@ -284,6 +284,44 @@ in a minor release: `m0serve`'s flags and environment variables, the
   it. `test_listener_owner.mojo` holds each owner's number past its return
   on both platforms, and `smoke-shutdown` traces m0serve's under strace on
   Linux. Found in review.
+- **A connection accept sharing passes to a worker that is shutting down
+  is answered** (SPEC E16, D1). Under `--workers N` the worker that
+  accepts a connection may pass it to a lighter sibling. When that sibling
+  was stopping on its own, as when one worker is sent SIGTERM, the
+  connection could be lost two ways. A worker with nothing in flight exits
+  within about 50 ms, and a connection passed to it just after it had
+  checked for them waited in a channel nobody would read again: its client
+  got no answer, and was reset only when the whole server stopped. A
+  connection that reached a stopping worker before its client had sent a
+  byte was closed within 2 ms as idle, and its client read EOF. Now the
+  worker passing a connection checks again, after counting it, whether
+  its sibling has begun to stop, and keeps the connection if it has; a
+  stopping worker waits, within its 5 s drain, for any connection counted
+  to it; and a stopping worker passes what it receives on to a sibling
+  that is still serving, keeping it only when every sibling is stopping.
+  A worker restarted after a crash no longer inherits the count of
+  connections that died with its predecessor. That count made its
+  siblings pass it fewer connections for the rest of the server's life,
+  and with the wait above it would have held each of its shutdowns, and
+  each `--reload`, to the full 5 s. Both losses were reproduced on Linux
+  and macOS with the hand-off delayed on purpose.
+  `test_handoff_leaving.mojo` forces each order of events. Found in
+  review.
+
+- **Under `--workers N` on macOS, a connection passed between workers is
+  no longer lost when another process closes a local socket** (SPEC E16).
+  Accept sharing passes a new connection to a less busy worker over a
+  Unix-domain socket. macOS's kernel runs a collector of descriptors in
+  transit whenever any process on the Mac closes a Unix-domain socket, and
+  it flushed every passed connection it found in transit: the request the
+  client had sent was thrown away, and the worker that received the
+  connection read nothing and closed it, so the client got an empty reply
+  or a reset. With one other process opening and closing Unix-domain
+  sockets, 179 of 1,600 requests made in bursts of 32 against
+  `--workers 2` failed this way, about half of the 361 passed between
+  workers; none fail now. The server now holds each worker's channel in a
+  way the collector follows. Linux was never affected. Found in review,
+  when the macOS CI runner failed two accept-sharing tests.
 
 - **An ASGI application that installs asyncio's eager task factory is
   answered** (SPEC L30). With `asyncio.eager_task_factory` a task's first
