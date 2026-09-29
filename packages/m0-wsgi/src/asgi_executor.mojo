@@ -51,6 +51,7 @@ from lightbug_http.event_loop import (
     prepare_loop,
     run_pass_once,
     service_direct_completions,
+    _deliver_bus_frames,
     _run_shutdown,
     _shutdown_begin,
     _shutdown_drain_step,
@@ -82,6 +83,14 @@ from .handler import (
 )
 from .response import build_asgi_response
 from .thread_handler import ThreadContext
+
+
+comptime _HAND_OVER_TRIES = 3
+"""Inverted mode: how many times a frame the full chunk channel refused is
+offered again, each after the channel's frames were handed to the loop's
+handler (`ExecutorPort._place_frame`). On one thread nothing else writes the
+channel, so the first retry goes into an empty one; the rest are for a
+datagram the kernel refused for a moment, not for a channel refilling."""
 
 
 struct AsgiExecutor(Movable):
@@ -365,6 +374,22 @@ struct ExecutorState(Movable):
     only: the drain is stepped from the asyncio loop there rather than run
     to completion inside one callback, so its deadline has to outlive the
     call that started it. 0 until `_shutdown_begin` has run."""
+    var in_pass: Bool
+    """Inverted mode only: loop work this port runs is on the stack -- a
+    pass, a drain step, or a flush answering its completions.
+
+    None of them is run inside another (`ExecutorPort._refuse_nested_pass`,
+    SPEC L32). The backend keeps ONE event buffer, and the outer pass is
+    still walking it by index: a wait inside overwrote the events it had
+    not reached yet -- a new connection's accept, or a keep-alive request
+    that epoll reports once -- and the pass inside accepts connections, so
+    an event the outer pass still holds could name a descriptor that now
+    belongs to a new connection. Here, in the state the port reaches by
+    address, because the port and the backend are copied into each call
+    and stored back: a flag on either would be invisible to the nested
+    call, and the outer copy-back would erase what it wrote."""
+    var nested_named: Bool
+    """Whether a refused nested pass has been named in the log (once)."""
 
     def __init__(out self, lane: Int, capacity: Int):
         self.methods = List[String](capacity=capacity)
@@ -384,6 +409,8 @@ struct ExecutorState(Movable):
         self.pending_done = List[Int](capacity=COMPLETE_BATCH_MAX)
         self.stopping = False
         self.drain_start = 0
+        self.in_pass = False
+        self.nested_named = False
 
 
 struct ExecutorPort(Movable, Writable):
@@ -469,7 +496,17 @@ struct ExecutorPort(Movable, Writable):
         )[]
         if xs.stopping:
             return True
-        var shutdown = run_pass_once(handler, backend, st)
+        if xs.in_pass:
+            self._refuse_nested_pass()
+            return False
+        xs.in_pass = True
+        var shutdown: Bool
+        try:
+            shutdown = run_pass_once(handler, backend, st)
+        except e:
+            xs.in_pass = False
+            raise e
+        xs.in_pass = False
         if shutdown:
             # BEGIN the drain only. Running it to completion here -- which
             # is what this did until 2026-09-08 -- blocks the asyncio
@@ -514,7 +551,43 @@ struct ExecutorPort(Movable, Writable):
         ref backend = Pointer[B, MutUntrackedOrigin](
             unsafe_from_address=self.backend_addr
         )[]
-        return _shutdown_drain_step(handler, backend, st, xs.drain_start, 0)
+        if xs.in_pass:
+            self._refuse_nested_pass()
+            return False
+        xs.in_pass = True
+        var over: Bool
+        try:
+            over = _shutdown_drain_step(handler, backend, st, xs.drain_start, 0)
+        except e:
+            xs.in_pass = False
+            raise e
+        xs.in_pass = False
+        return over
+
+    def _refuse_nested_pass(mut self):
+        """Loop work asked for while some is on the stack: refused, and
+        named once (SPEC L32; `ExecutorState.in_pass` says what it would
+        break).
+
+        Nothing in the tree asks for any since `_place_frame` stopped
+        running passes. This is what keeps a caller that does -- an
+        application running the asyncio loop re-entrantly, a future seam --
+        from walking over the batch and the state the outer work holds. A
+        refused pass runs once the outer one has returned (the backend's fd
+        is still readable, and every caller asks again); a refused flush
+        leaves its completions parked for the flush the next dispatch
+        arms."""
+        ref xs = Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[]
+        if not xs.nested_named:
+            xs.nested_named = True
+            print(
+                "inverted executor: a loop pass was asked for inside another"
+                " pass and refused; it would have overwritten the events the"
+                " outer pass had not reached",
+                flush=True,
+            )
 
     @staticmethod
     def drain_finish(py_self: PythonObject) raises -> PythonObject:
@@ -541,40 +614,59 @@ struct ExecutorPort(Movable, Writable):
         _shutdown_finish(handler, backend, st)
 
     def _place_frame(mut self, mut pool: OffloadPool, frame: Span[Byte, _]) -> Bool:
-        """Place one chunk datagram: `_send_chunk_frame` on the pump, or the
-        pump-the-loop-yourself version under inversion.
+        """Place one chunk datagram: `_send_chunk_frame` on the pump; under
+        inversion, a full channel is handed to the loop's handler first.
 
         `_send_chunk_frame` waits DETACHED for the event loop to drain the
         channel, which on the pump is another thread. Inverted, the loop is
         THIS thread, and that wait is a self-deadlock until its 5 s give-up
         — which the ASGI smoke found on its first inverted run as a 237 KB
-        stream that stopped mid-body (the three-piece one just before it
-        fit the channel and passed). The shim suspends only on credit, 64 KB
-        per stream, and a Unix datagram pair holds far less than that, so
-        the producer fills it synchronously. The answer is the design's own
-        argument taken one step further: the producer is the loop, so when
-        the channel is full it runs a pass — drain, write, ack — and retries.
-        Bounded like the original: past that the client is not reading and
-        the outbox is what is full, which no pass can help.
+        stream that stopped mid-body. The shim suspends only on credit, 64 KB
+        per stream, and the channel fills long before that (small frames:
+        the kernel charges each datagram's overhead as well as its bytes),
+        so the producer fills it synchronously.
+
+        This used to run a pass -- drain, write, ack -- and retry. That was
+        a pass INSIDE a pass whenever the producer had been called from one,
+        which an eager task factory makes the ordinary case: a task's first
+        step runs inside the spawn the pass made, and a stream it began
+        filled the channel inside the pass that read its request. The wait
+        in there overwrote the backend's one event buffer while the outer
+        pass was still walking it, so an accept later in the same batch was
+        never taken, and on epoll a keep-alive request behind it was never
+        read (SPEC L32).
+
+        So a full channel gets only the part of a pass it needs: the frames
+        it holds go to the loop's handler (`_deliver_bus_frames`, the pass's
+        own drain), and this one goes in behind them. The order is the
+        channel's, so a begin frame still reaches the handler before the
+        rest of its stream, and before its head, which `_complete_one`
+        finishes only after draining the channel itself. The handler takes
+        whatever the credit windows let a producer send (a slot's outbox is
+        one window), so the hand-over is never refused; what it queued
+        reaches the wire in the next pass, the one the flush that every
+        dispatch arms runs at the end of this loop iteration. Bounded: a
+        frame that will not go into an emptied channel never will.
         """
         if self.inverted == 0:
             return _send_chunk_frame(pool, frame)
-        return self._place_frame_with[PlatformBackend](pool, frame)
-
-    def _place_frame_with[B: EventLoopBackend](
-        mut self, mut pool: OffloadPool, frame: Span[Byte, _]
-    ) -> Bool:
         if pool.send_stream_chunk(frame):
             return True
-        for _ in range(25000):
+        ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
+            unsafe_from_address=self.handler_addr
+        )[]
+        for _ in range(_HAND_OVER_TRIES):
             try:
-                _ = self._pass_with[B]()
+                _deliver_bus_frames(handler, pool.stream_chunk_read)
             except e:
-                print("inverted executor: pass inside a frame wait raised: " + String(e), flush=True)
+                print(
+                    "inverted executor: handing the chunk channel to the loop raised: "
+                    + String(e),
+                    flush=True,
+                )
                 return False
             if pool.send_stream_chunk(frame):
                 return True
-            sleep(0.0002)
         return False
 
     def _flush_inverted[B: EventLoopBackend](mut self) raises:
@@ -591,6 +683,19 @@ struct ExecutorPort(Movable, Writable):
         # is read HERE, after the pass, by address: taken as a `mut`
         # argument it was a copy from before the pass, stored back over the
         # drain's record (`ExecutorState`'s docstring).
+        #
+        # Refused WHOLE while loop work is on the stack (SPEC L32), which
+        # only an application running the asyncio loop re-entrantly could
+        # arrange: the completions write the loop's state as much as a pass
+        # does, and the frame below holds it across the call that led here.
+        # They stay parked for the flush the next dispatch arms. And the
+        # answering is loop work itself, marked like a pass, because a
+        # response it finishes can start the request pipelined behind it.
+        if Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[].in_pass:
+            self._refuse_nested_pass()
+            return
         _ = self._pass_with[B]()
         ref st = Pointer[ExecutorState, MutUntrackedOrigin](
             unsafe_from_address=self.state_addr
@@ -608,7 +713,13 @@ struct ExecutorPort(Movable, Writable):
         )[]
         var slots = st.pending_done.copy()
         st.pending_done.clear()
-        service_direct_completions(handler, backend, loop, slots)
+        st.in_pass = True
+        try:
+            service_direct_completions(handler, backend, loop, slots)
+        except e:
+            st.in_pass = False
+            raise e
+        st.in_pass = False
 
     @staticmethod
     def dispatch(py_self: PythonObject, ev: PythonObject) raises -> PythonObject:

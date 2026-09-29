@@ -1050,7 +1050,7 @@ python3 scripts/emit.py --covers O16 --task test-postgres-server
 
 [tool.poe.tasks.test-all]
 help = "Run all package tests (builds .mojoc files first)"
-sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
+sequence = ["build-all", "check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "test-wsgi", "test-shim", "check-phase-stamps", "sabotage-trailers", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-templates", "check-keepalive-barrier", "check-copyback", "fuzz-request", "test-sqlite", "sabotage-vtab", "test-postgres", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -1148,6 +1148,14 @@ cmd = "python3 scripts/keepalive_barrier_check.py"
 [tool.poe.tasks.sabotage-keepalive]
 help = "Revert each rule of the keep-alive probe; check-keepalive-barrier must catch every one"
 cmd = "python3 scripts/keepalive_barrier_check.py --sabotage"
+
+# SPEC L31. Mojo 1.1.0 copies a `mut` argument of 256 bytes or less in and
+# stores it back, which erased two writes B20 found (#463); this reads
+# m0serve's IR and fails if the executor's state is ever passed by value
+# again. It needs the .mojoc files, which test-all builds first.
+[tool.poe.tasks.check-copyback]
+help = "No struct written through its address (the asyncio executor's state) is passed by value in m0serve's IR"
+cmd = "python3 scripts/copyback_guard.py"
 
 [tool.poe.tasks.check-app-vocabulary]
 help = "An app OUTSIDE the repo defines a Vocabulary (htmx 4): attributes asserted in both tiers, read by the vendored hxlint (SPEC N21)"
@@ -6486,6 +6494,28 @@ got=$(curl -s --max-time 5 $B/chunks)
   || fail "under an eager task factory a stream begun in the first step was not answered: '$got' (L30)"
 stop $pid
 
+# A loop pass never runs inside another (SPEC L32). Inverted, that first step
+# runs inside the PASS that read its request, and a stream it begins can fill
+# the executor's chunk channel there. The executor used to make room by
+# running a pass of its own, whose wait overwrote the event buffer the outer
+# pass was still walking: a new connection in the same batch was not accepted
+# until another arrived, and on epoll a keep-alive request behind it was never
+# read. The probe builds that batch (a blocker holds the thread while the
+# stream's request and then the other event arrive) and asks for both
+# answers; a refused nested pass would be named in the log.
+if [ "${M0_INVERTED:-}" = "1" ]; then
+  log=$SMOKE_DIR/asgi-nested.log
+  spawn asgi-nested.log env M0_ASGI_EAGER_TASKS=1 "$srv" $SPEC
+  wait_ready "$B/slow?ms=1" $pid
+  grep -q '^inverted: the event loop runs inside asyncio' "$log" \
+    || fail 'M0_INVERTED=1 but the server is not inverted: the nested-pass phase would prove nothing'
+  python3 scripts/nested_pass_probe.py --port $port \
+    || fail 'an event in the same batch as a stream begun inside the pass was lost (L32)'
+  grep -q 'asked for inside another pass' "$log" \
+    && fail 'a loop pass was asked for inside another pass (L32)'
+  stop $pid
+fi
+
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.
@@ -6620,6 +6650,7 @@ python3 scripts/emit.py --covers L26 --task smoke-asgi
 python3 scripts/emit.py --covers L28 --task smoke-asgi
 python3 scripts/emit.py --covers L29 --task smoke-asgi
 python3 scripts/emit.py --covers L30 --task smoke-asgi
+python3 scripts/emit.py --covers L32 --task smoke-asgi
 python3 scripts/emit.py --covers I26 --task smoke-asgi
 """
 

@@ -128,15 +128,122 @@ These were read against the source:
   `call`, not a `tail call`, so the read is fresh. That rests on how KGEN
   marks the call rather than on anything the source says.
 
-Not swept: every other `mut self` of a small address-reached struct against
-every re-entrant or concurrent path that could write it, and M3 for the
-large ones. The event loop holds `LoopState` and the handler as `noalias`
-across handler calls, and under the inverted executor a handler call can
-reach the port, which runs passes of its own. Whether to sweep
-those site by site, or to change the shape so that a copy-back cannot lose
-anything, is an open decision. One such shape is a struct reached by
-address whose inline fields never change after construction, with its
-mutable state behind a pointer.
+The rest of the census, M3 for the large types included, was swept after
+this: the next section.
+
+## Who writes them: the sweep
+
+A copy loses a write only when something writes the struct while the call
+holds it. The sweep (A2) took every type of the tree's own in two
+censuses, m0serve's and that of the Mojo host's gate application,
+`apps/host_check`, which adds the host's pool, producer and loop threads.
+For each it listed the inline fields that change after construction and
+looked for a writer of them that can run during the call: another thread,
+a signal handler, or code the call re-enters. A field behind a pointer is
+out of a copy's reach, since the store-back writes the same pointer back.
+A `List`'s header is not: its data pointer, length and capacity are
+inline.
+
+| struct | passed | what changes inline, and who writes it during a call | verdict |
+|---|---|---|---|
+| `ExecutorState` | M1, when taken as `mut` | `stopping`, `drain_start` and the list headers, by the port re-entered from inside its own calls | live: B20's two sites, fixed in #463 and now guarded |
+| the backend: `KqueueBackend` 24, `EpollBackend` 32, `DetachingBackend` | M1, in 35 loop functions and `DetachingBackend.wait` | `_n_ready` alone. Under `M0_INVERTED` a pass run inside a pass calls `wait` through the backend's address, and the outer frames store their own count back over it | latent: the count restored is never read before the next `wait` rewrites it |
+| `ExecutorPort` 56 | M1, in six methods | nothing: every field is set in `__init__` | safe |
+| `AcceptShare` 96 | M1, in five methods | `drained`, `handoffs_in`, `handoffs_out` and `left`, only by its own methods, which call `sendmsg`, `recvmsg` and atomics. Siblings write the shared page, behind `page` | latent |
+| `SSERegistry` 104 | M1, in five mutators | four list headers and a count, only by the mutators, which call nothing | latent |
+| `WorkerSupervisor` 240 | M1 in three methods, `ptr noalias` in the rest | `child_pids` and the counters, only by the supervisor's own flow. Its signal handler writes global words (`global_slot.mojo`), never the struct | latent |
+| `ThreadSet` 24 | M1, in `spawn`, `join_all` and `join_within` | nothing: a count and two `malloc`'d addresses. Its threads write their blocks, behind them | safe |
+| `PoolThreads`, `MojoPool` 88, `BlockingPool`, `ProducerThread`, `AsgiExecutor` | M1, in their `deal`, `start` and `stop_and_join`, and `MojoPool` into the host's `_start_pool` and `_join_pool` | `started`, `stragglers` and the lanes, only by the owning thread. Pool, producer and executor threads write `malloc`'d blocks and atomics | latent |
+| `ProvisionPool`, `WSState`, `HTTPChunkedDecoder`, `Socket`, `ServerMetrics` | M1 | per-connection state, by callees that call nothing or one syscall | latent |
+| `OffloadPool` 584 | M3 | scalars, set before any thread starts or after the loop ends; the `aborts` and `_drain_buf` headers, by the loop thread alone. Pool and executor threads write list elements and ring words, behind pointers | latent |
+| `LoopState` 1136, `WSGIHandler` 808, `PyBridge` 288 | M3 | under `M0_INVERTED`, a nested pass writes them by address while outer frames hold them `noalias`: see below | latent, not measured |
+| `HostContext` 248, `LoopShared` 488, `ThreadedServer` 200, `ServeOptions` 544, `PgListenSpec` 80, `Ring` 16, the demo mount's `Corpus` | read-only, M1 or M3 | nothing after construction: other threads only read them | safe |
+
+Latent means a mutable inline field that nothing writes during the call
+today, or whose lost value nothing reads. Sizes are bytes on macOS arm64.
+
+**The nested pass.** The one path on which code a call re-enters writes a
+struct through its address, beyond the executor's own state, is under
+`M0_INVERTED`. An eager task's first step runs inside
+`WSGIHandler.direct_job`, and a frame it places through `_place_frame_with`
+can run a pass inside the pass. Review record B23 takes that path on for
+its own sake, since the inner pass overwrites the event buffer the outer
+one is reading, whatever the compiler does. The compiler's share of it:
+
+- M1: the outer frames hold the backend by value and store back only
+  `_n_ready`, a dead value. A field added to the backend or to
+  `ExecutorPort` for this path would be restored the same way: state a
+  nested call must see belongs in `ExecutorState`, reached by address.
+- M3: `_process_request` holds `LoopState` as `noalias` across
+  `handler.direct_job(slot)`, which receives no pointer to it. It adds to
+  `st.offload.inflight` before the call and returns after it, so nothing is
+  read stale; a store the optimizer moved past the call would overwrite
+  what the nested pass wrote there. Whether it moves one was not measured.
+- M3: `spawn_asgi` holds `PyBridge` as `noalias` across the Python call in
+  which the first step runs. A nested `spawn_asgi` rewrites the bridge's
+  two scratch lists, which the outer call uses only before that call.
+
+**Since B23 (#471, SPEC L32), no pass runs inside another.**
+`_place_frame_with` is gone. A full chunk channel's frames are handed to
+the loop's handler instead of a pass making room. The port also refuses
+loop work while some is on the stack, through `ExecutorState.in_pass`,
+which is reached by address as M1 requires.
+
+So the writers the three points above describe no longer run inside those
+calls. `ExecutorState` grew by two `Bool` fields and stays under 256
+bytes, still resolved by address in every frame and still guarded by
+`check-copyback`.
+
+**M2.** A scan of both programs' IR for M2's shape (a local whose address
+escapes into memory, then a `tail call`, then a load or store of the local)
+finds six sites, all in `_executor_serve` and `serve_inverted`, and every
+tail call among them is one of `OffloadPool`'s descriptor getters, which
+write nothing. `run_forever` and `run_forever_inverted`, during which the
+port writes those locals, are called on a sub-object of a local, a pointer
+into the frame, so neither is a `tail call`.
+
+**C callbacks.** m0-sqlite's virtual-table callbacks read and write only
+`malloc`'d words (the vtab, the cursor and the stored entry points), and
+m0-postgres polls `PQnotifies`, so libpq calls back into nothing.
+
+**On Linux.** The matrix in the Linux container (aarch64, the same Mojo
+1.1.0 build) prints the tables above cell for cell: the 256-byte threshold
+and all three mechanisms. The census of m0serve's Linux IR counts 459
+arguments to macOS's 458, with the same types of the tree's own:
+`EpollBackend`, in six functions, in place of `KqueueBackend`, in five.
+
+## The guard
+
+`poe check-copyback` (`scripts/copyback_guard.py`, SPEC L31, in `test-all`)
+fails when a listed type is passed by value anywhere in m0serve's IR,
+emitted with `build-serve`'s flags. The list holds one type,
+`ExecutorState`, the only one the sweep found written by address while a
+call holds it. A type belongs on it once that is true of it.
+
+- It matches a type by its layout, read from the type's own constructor,
+  not by the name the census prints. KGEN appends a raising function's
+  error slot to its parameters, and the census printed the type of B20's
+  `_flush_inverted(mut self, mut st)` as `?`. The census now names such a
+  function's parameters from the start, which leaves `?` for a symbol one
+  of whose zero-sized arguments KGEN dropped.
+- It flags a copy whether it is returned (M1) or not (a read-only copy,
+  stale for the same reason), and a layout held inline by another
+  argument's, whatever that argument is called.
+- It shows it can fail on every run. A control program takes the type in
+  B20's two shapes and inside a copied struct, and all three copies must be
+  seen. When they are not (the census is blind, or the type has grown past
+  256 bytes, onto M3's side, which this cannot see), it stops with 2. A
+  `--selftest` over canned IR holds the judgement itself.
+
+Sabotaged in a copy of `m0-wsgi/src`, precompiled beside a copy of the
+entry file: `mut st` put back in `_flush_inverted` fails it, naming that
+function, and put back in `dispatch_job`, naming the body it delegates to;
+an `ExecutorState` inside a struct taken `mut` fails it too; the unsabotaged
+copy passes. The copied entry file matters. Its own directory is searched
+before any `-I`, so a sabotaged `.mojoc` elsewhere on the path is ignored
+without a word, and the first attempt judged the real one and passed.
+
+Both IRs compile in 7 s on an M4, and in 12 s in the Linux container.
 
 ## The rule meanwhile
 
@@ -144,7 +251,8 @@ Never hold a struct as a `mut`, `ref` or read-only argument across a call
 during which something may write it by address. Resolve it by address in
 the frame that uses it (`ref st = Pointer[T, MutUntrackedOrigin](unsafe_from_address=addr)[]`),
 pass the address rather than the struct, and read it again after any call
-that can re-enter. `ExecutorState`'s docstring states it for the executor.
+that can re-enter. `ExecutorState`'s docstring states it for the executor,
+and `poe check-copyback` holds it there.
 
 M2 adds one case the address does not cure: the frame that OWNS such a
 struct as a local, and computed its `Int`, reads a stale value after a

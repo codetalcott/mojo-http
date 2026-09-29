@@ -8,6 +8,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **CI refuses the asyncio executor's state passed by value** (SPEC L31).
+  Mojo 1.1.0 copies a `mut` argument of 256 bytes or less into the call and
+  stores the copy back when it returns, which erased the two writes behind
+  the `M0_INVERTED` server that never exited on SIGTERM and the eager task
+  whose first-step answer was never sent (both under Fixed). `poe
+  check-copyback`, part of `test-all`, reads m0serve's LLVM IR and fails if
+  any function takes `ExecutorState` by value, or holds it inside an
+  argument that is, and on every run first shows it can fail on a control
+  written the way that code was. A sweep of every other struct the tree
+  reaches through an address found none that anything writes while a call
+  holds a copy (docs/notes/mut-arguments-and-raw-addresses.md).
+
 ### Changed
 
 - **`m0`: `Login.from_env` refuses an unset `PREFIX_SECURE`** (SPEC N43),
@@ -248,6 +262,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `set_task_factory(asyncio.eager_task_factory)`. The same cause as the
   entry above, found while fixing it; `smoke-asgi` now runs the bare app
   with the eager factory installed.
+
+- **Under `M0_INVERTED=1`, a connection that arrives beside a streamed
+  response is answered** (SPEC L32). With the loop inversion and an eager
+  task factory, a task's first step runs inside the event-loop pass that
+  read its request, and a stream that sends many small pieces there fills
+  the executor's chunk channel. The executor made room by running a pass
+  of its own, inside the first one, and its wait overwrote the events the
+  first pass had read and not yet reached. A new connection read in the
+  same batch was not accepted until another one arrived. On Linux, a
+  request on a keep-alive connection in that batch was never read, and its
+  client waited for its own timeout. A full channel is now handed to the
+  loop in order, as the pass would have handed it, and a pass never runs
+  inside another. `smoke-asgi` builds that batch on every run under the
+  inversion.
 
 - **m0serve reads a command-line argument that is not UTF-8 instead of
   crashing on it.** It cut `--name=value`, the positional `MODULE:ATTR`,
