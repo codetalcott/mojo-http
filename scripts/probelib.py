@@ -757,8 +757,18 @@ def _selftest():
               and "\n" not in repr(raised))
 
         port = free_port()
-        http_server = [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1",
-                       "--directory", tmp]
+        # socketserver.TCPServer, not `python -m http.server`: HTTPServer's
+        # server_bind() calls socket.getfqdn() between bind and listen, a
+        # reverse lookup that took over 30 s on a macOS CI runner, which then
+        # refused every connection while the process stayed alive.
+        http_server = [sys.executable, "-c",
+                       "import functools, http.server, socketserver, sys\n"
+                       "socketserver.TCPServer.allow_reuse_address = True\n"
+                       "h = functools.partial(http.server.SimpleHTTPRequestHandler,"
+                       " directory=sys.argv[2])\n"
+                       "socketserver.TCPServer(('127.0.0.1', int(sys.argv[1])), h)"
+                       ".serve_forever()\n",
+                       str(port), tmp]
         with server(http_server, "http://127.0.0.1:%d/" % port, timeout=30, log=log) as proc:
             check("server() yields once the target answers",
                   proc.poll() is None and _answers("http://127.0.0.1:%d/" % port, 200, 2))
