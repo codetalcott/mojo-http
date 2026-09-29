@@ -75,6 +75,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from sabotage_lib import own_tmpdir
+
 # The venv's own poe and mojo, never `uv run`: a child `uv run` re-syncs the
 # venv (pool_sabotage.py records why that matters under the nightly canary).
 _SIBLING = Path(sys.executable).with_name("poe")
@@ -788,4 +790,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    with own_tmpdir("sabotage-host"):
+        sys.exit(main())

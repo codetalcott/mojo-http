@@ -480,14 +480,23 @@ struct Socket[
         self._connected = False
 
     def close(mut self) raises SysError -> None:
-        """Mark the socket closed.
-        Once that happens, all future operations on the socket object will fail.
+        """Close the socket's descriptor, once.
         The remote end will receive no more data (after queued data is flushed).
+
+        A closed number is free, and the next descriptor the process opens
+        takes the lowest free one, so the socket leaves it alone from here
+        on (review B27): a second `close` does nothing, and the socket is no
+        longer connected, so its destructor does not shut the number down.
+        A socket made from a descriptor it was given (`Socket(fd=...)`) is
+        born connected, and destroyed after `close` it shut down whatever
+        held the number by then.
 
         Raises:
             SysError: If closing the socket fails, except EBADF, which means
                 it is already closed.
         """
+        if self._closed:
+            return
         try:
             close(self.fd)
         except close_err:
@@ -495,6 +504,7 @@ struct Socket[
                 raise close_err
 
         self._closed = True
+        self._connected = False
 
     def set_timeout(self, seconds: Int) raises SysError:
         """Set the receive timeout for the socket.

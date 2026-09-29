@@ -19,6 +19,9 @@ rule table; this module is everything around it:
   - gates run in a process group of their own, so a timeout or an
     interruption ends a smoke's server and a build's compiler, not only the
     command that started them;
+  - a TMPDIR of the run's own for everything its gates start, removed on
+    the way out (`own_tmpdir`), so the logs a failed smoke keeps do not
+    pile up in `$TMPDIR`;
   - `--only` / `--skip`;
   - verdicts that cannot be mistaken for one another, and a tally in which
     nothing that did not run is summarised as guarded.
@@ -101,6 +104,7 @@ Writing a harness
     def main(argv):
         return run("sabotage-x", RULES, MojoRun(TEST), argv)
 
+A harness with a loop of its own, not `run`, enters `own_tmpdir` itself.
 Run from the repository root, as every poe task is.
 
     python3 scripts/sabotage_lib.py --selftest
@@ -814,13 +818,47 @@ def die_by(signum: int):
     os._exit(128 + signum)  # only if the signal did not end the process
 
 
+@contextmanager
+def own_tmpdir(name: str):
+    """Point TMPDIR at a directory of this run's own, and remove it on the
+    way out, however the body ends.
+
+    `scripts/smoke/lib.sh` keeps a failed smoke's `$SMOKE_DIR` (its logs)
+    for CI to upload, and a harness fails its gate once per rule by design,
+    so one local `sabotage-host` run left about forty `m0-smoke.*`
+    directories in `$TMPDIR`. The lib's rule stands; what a harness runs
+    gets a TMPDIR of its own instead, and `RUNNER_TEMP` goes for the same
+    children, because the lib prefers it. What a failing gate prints is
+    unchanged: the lib's `fail` prints each log it keeps. This process's own
+    temporary files stay where they were -- a harness's backup must outlive
+    a restore that failed -- because `tempfile` fixes its directory the first
+    time it is asked, which making the scratch directory here does if nothing
+    has yet.
+    """
+    scratch = Path(tempfile.mkdtemp(prefix=f"{name}."))
+    saved = {k: os.environ.get(k) for k in ("TMPDIR", "RUNNER_TEMP")}
+    os.environ["TMPDIR"] = str(scratch)
+    os.environ.pop("RUNNER_TEMP", None)
+    try:
+        yield scratch
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(scratch, ignore_errors=True)
+
+
 def run(name: str, rules: Sequence[Rule], gates, argv: Sequence[str] = (), *,
         write: bool = True, finish: Callable[[bool], bool] | None = None) -> int:
-    """`execute`, for a harness's `main`: returns the exit status, or -- when
-    SIGINT, SIGTERM or SIGHUP arrives -- puts the tree back and dies by it."""
+    """`execute`, for a harness's `main`, in a TMPDIR of its own
+    (`own_tmpdir`): returns the exit status, or -- when SIGINT, SIGTERM or
+    SIGHUP arrives -- puts the tree back and dies by it."""
     sys.stdout.reconfigure(line_buffering=True)
     try:
-        return execute(name, rules, gates, argv, write=write, finish=finish).status
+        with own_tmpdir(name):
+            return execute(name, rules, gates, argv, write=write, finish=finish).status
     except Interrupted as exc:
         die_by(exc.signum)
 
@@ -1147,6 +1185,46 @@ def _selftest() -> int:
         rep, _ = ran([both])
         check(rep.results[0][1] == CAUGHT and read(A) == _SOURCE and read(B) == _SOURCE,
               "a rule across two files is caught and puts both back")
+
+        print("a TMPDIR of the run's own:")
+        # This process's temporary directory moves into `work` for the
+        # section, so an `own_tmpdir` that leaks leaks nothing real.
+        lib = Path(__file__).resolve().parent / "smoke" / "lib.sh"
+        home, runner = work / "tmp", work / "runner"
+        home.mkdir()
+        runner.mkdir()
+        env_before = {k: os.environ.get(k) for k in ("TMPDIR", "RUNNER_TEMP")}
+        tempdir_before = tempfile.tempdir
+        os.environ["TMPDIR"], os.environ["RUNNER_TEMP"] = str(home), str(runner)
+        tempfile.tempdir = None  # a harness that has not asked for it yet
+        try:
+            with own_tmpdir("selftest") as scratch:
+                smoke = subprocess.run(["sh", "-c", f". {lib}\nexit 1"],
+                                       capture_output=True, text=True, timeout=60)
+                kept = list(scratch.glob("m0-smoke.*"))
+                own = Path(tempfile.mkdtemp(prefix="backup-"))
+            check(smoke.returncode == 1 and len(kept) == 1,
+                  "a lib smoke that fails keeps its directory in the run's own")
+            check(not list(home.glob("m0-smoke.*")) and not list(runner.glob("m0-smoke.*")),
+                  "not in TMPDIR, nor in RUNNER_TEMP, which the lib prefers")
+            check(not scratch.exists(), "the run's directory is gone once it ends")
+            check(own.parent == home and own.exists(),
+                  "this process's own temporary files stay outside it, and outlive it")
+            check(os.environ.get("TMPDIR") == str(home)
+                  and os.environ.get("RUNNER_TEMP") == str(runner),
+                  "TMPDIR and RUNNER_TEMP are put back")
+            try:
+                with own_tmpdir("selftest") as scratch:
+                    raise RuntimeError("a harness with a bug in it")
+            except RuntimeError:
+                check(not scratch.exists(), "the directory goes when the run raises, too")
+        finally:
+            tempfile.tempdir = tempdir_before
+            for k, v in env_before.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
 
         print("the tree is put back whatever stops the run:")
         try:
