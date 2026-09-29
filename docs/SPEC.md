@@ -108,7 +108,7 @@ that found, is in [the traceability note](notes/traceability.md).
 
 | id | capability | status | evidence |
 |---|---|---|---|
-| D1 | SIGTERM drains in-flight requests | verified | `Smoke test graceful shutdown` (every PR) |
+| D1 | SIGTERM drains in-flight requests | verified | `Smoke test graceful shutdown` (every PR) — including a request whose event is ready in the same batch as the stop, behind it: the pass that reads the shutdown pipe handles its whole batch, and admits no new connection. It stopped at the pipe, and on Linux, where such an event is reported once, a request whose handler raised SIGTERM on the ASGI executor went unanswered while the drain waited out its 5 s, 20 of 32 tries with the server on one CPU (review record B22). `test_shutdown_pass.mojo` puts a read, a completion, a write, a bus frame and a timer behind the stop over a backend that reports each once, and `smoke-asgi` sends that request on the pump, eight times pinned to one CPU where `taskset` exists |
 | D2 | SIGTERM to the supervisor alone reaps workers | verified | `Smoke test graceful shutdown` (every PR) |
 | D3 | Bounded drain, naming what it abandoned | verified | `Smoke test streamed WSGI bodies` (every PR) |
 | D4 | SIGTERM reaches a shutdown pipe rather than killing the process | verified | `test_lifecycle.mojo:test_sigterm_reaches_the_shutdown_pipe` (every PR) |

@@ -6308,16 +6308,9 @@ kill $stream_pid 2>/dev/null; wait $stream_pid 2>/dev/null
 # it could land in a flush's pass instead, and the task's first step came a
 # turn later, behind the backend callback (1 of 5 on Linux).
 #
-# The inversion's alone, and checked by its banner: the pump runs no flush
-# pass. And on Linux the pump meets a different defect with this request,
-# not yet fixed: the pass that reads the shutdown pipe stops at it, and a
-# completion behind it in the same epoll batch is never reported again, so
-# the request waits out the drain (every time with the server on one CPU).
-if [ "${M0_INVERTED:-}" = "1" ]; then
-  spawn asgi-flushstop.log "$srv" $SPEC
-  wait_ready $B/ $pid
-  grep -q '^inverted: the event loop runs inside asyncio' "$SMOKE_DIR/asgi-flushstop.log" \
-    || fail 'M0_INVERTED=1 but the server is not inverted: the flush-stop phase would prove nothing'
+# That half is the inversion's, and checked by its banner: the pump runs no
+# flush pass. The pump runs the same request for a defect of its own, below.
+raise_sigterm() {
   python3 - "$port" <<'PYEOF'
 import http.client, sys
 c = http.client.HTTPConnection("localhost", int(sys.argv[1]), timeout=10)
@@ -6326,9 +6319,43 @@ c.getresponse().read()
 c.request("GET", "/raise-sigterm")
 sys.exit(0 if c.getresponse().read() == b"sigterm raised" else 1)
 PYEOF
-  [ $? = 0 ] || fail 'the request that raised SIGTERM was not answered on its keep-alive connection'
-  wait_exit 'SIGTERM read by the pass a flush runs'
-  [ "$rc" = "0" ] || fail "SIGTERM read by the pass a flush runs: exit $rc, want 0"
+  [ $? = 0 ] || fail "$1: the request that raised SIGTERM was not answered on its keep-alive connection"
+  wait_exit "$1"
+  [ "$rc" = "0" ] || fail "$1: exit $rc, want 0"
+}
+if [ "${M0_INVERTED:-}" = "1" ]; then
+  spawn asgi-flushstop.log "$srv" $SPEC
+  wait_ready $B/ $pid
+  grep -q '^inverted: the event loop runs inside asyncio' "$SMOKE_DIR/asgi-flushstop.log" \
+    || fail 'M0_INVERTED=1 but the server is not inverted: the flush-stop phase would prove nothing'
+  raise_sigterm 'SIGTERM read by the pass a flush runs'
+else
+  # On the pump the executor raises SIGTERM and then completes the request,
+  # so the shutdown pipe's byte and the completion datagram can reach the
+  # loop in one epoll batch, the pipe first (SPEC D1). The pass that read
+  # the pipe stopped there, and the completion's edge was never reported
+  # again: the request went unanswered and the drain waited out its 5 s
+  # (review B22). Where `taskset` exists the server is pinned to one CPU,
+  # so the executor usually makes both writes before the loop wakes -- in a
+  # Linux container 20 of 32 pinned rounds lost the answer, and none of 24
+  # unpinned -- and a round is a chance, not a certainty, so there are
+  # eight. kqueue reports the completion again, so macOS runs one round and
+  # passes either way; `test_shutdown_pass.mojo` is the deterministic gate.
+  pin=
+  rounds=1
+  if command -v taskset > /dev/null 2>&1; then
+    # The first CPU this process may use, not CPU 0: under a cpuset that
+    # leaves 0 out, `taskset -c 0` fails and the server never starts.
+    pin="taskset -c $(python3 -c 'import os; print(min(os.sched_getaffinity(0)))')"
+    rounds=8
+  fi
+  round=1
+  while [ $round -le $rounds ]; do
+    spawn asgi-pumpstop.log $pin "$srv" $SPEC
+    wait_ready $B/ $pid
+    raise_sigterm "SIGTERM raised by a request on the pump, round $round of $rounds"
+    round=$((round + 1))
+  done
 fi
 
 # Two requests that outlive the 5 s drain and finish in DIFFERENT loop
@@ -6544,6 +6571,7 @@ python3 scripts/emit.py --covers L4 --task smoke-asgi
 python3 scripts/emit.py --covers L5 --task smoke-asgi
 python3 scripts/emit.py --covers L6 --task smoke-asgi
 python3 scripts/emit.py --covers L8 --task smoke-asgi
+python3 scripts/emit.py --covers D1 --task smoke-asgi
 python3 scripts/emit.py --covers L15 --task smoke-asgi
 python3 scripts/emit.py --covers M3 --task smoke-asgi
 python3 scripts/emit.py --covers K12 --task smoke-asgi

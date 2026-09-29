@@ -1019,6 +1019,14 @@ lightbug_http
       - loop/state.mojo (2026-09-28): `MAX_EVENTS`, which nothing read
         (each backend sizes its own event buffer), is removed.
 
+      - event_loop.mojo (2026-09-29): the pass that reads the shutdown pipe
+        dispatches the rest of its batch, where it stopped at the pipe's
+        event; it still admits no new connection. Each event behind the
+        pipe is reported once -- epoll's reads, channels and writes are
+        edge triggered, kqueue's writes and timers one-shots -- so on Linux
+        a completion there left its request unanswered and the drain
+        waiting out its 5 s (review record B22).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

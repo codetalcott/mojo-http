@@ -220,6 +220,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
   puts the signal in the flush's pass every time; `poe test-shim` holds the
   shim's half.
 
+- **A request in flight when SIGTERM arrives is answered on Linux, not left
+  to the drain's deadline** (SPEC D1). The event loop reads the stop as
+  one of the events that are ready together, and it stopped handling that
+  batch at the stop. On Linux each of the others is reported only once --
+  a request's bytes, the answer a handler thread or the ASGI executor has
+  just finished, a response's next write -- so one that came in beside
+  the stop went unanswered, and the drain waited out its 5 s before the
+  process exited. A request whose handler raised SIGTERM on the ASGI
+  executor met it in 20 of 32 tries with the server on one CPU. On macOS
+  the same could strand a response waiting to send the rest of itself,
+  and the application's tick. The loop now handles the whole batch, and
+  admits no new connection in it. `test_shutdown_pass.mojo` puts each
+  kind of event behind the stop, on both platforms, and `smoke-asgi`
+  repeats the request on Linux with the server pinned to one CPU. Found
+  in review.
+
 - **An ASGI application that installs asyncio's eager task factory is
   answered** (SPEC L30). With `asyncio.eager_task_factory` a task's first
   step runs inside `create_task`, and a response the application sent

@@ -145,9 +145,10 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
     # timeout has the same shape.
     #
     # The shutdown pipe is deregistered first: its byte is never read, so
-    # a registered pipe stays readable and every pass would break at it,
-    # skipping the events behind it in that batch. A second SIGTERM
-    # during the drain is ignored, as it always was.
+    # on kqueue a registered pipe stays readable, and every drain pass
+    # would read the stop again and admit nothing a sibling handed over
+    # during the drain. A second SIGTERM during the drain is ignored, as
+    # it always was.
     #
     # `offload.inflight` is in the condition as well as `active_count`,
     # and not redundantly: a client that vanished while its request was
