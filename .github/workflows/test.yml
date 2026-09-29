@@ -138,7 +138,7 @@ jobs:
       # argument); ubuntu only because the one-pill-per-thread rule is
       # invisible on macOS -- closing the submit channel wakes a blocked recv
       # there and does not on Linux (OffloadPool.stop's documented lesson).
-      - name: Sabotage the Mojo pool's rules (Linux observes all four)
+      - name: Sabotage the Mojo pool's rules (Linux observes every one)
         if: matrix.os == 'ubuntu-latest'
         run: uv run poe sabotage-pool
 
@@ -933,10 +933,11 @@ jobs:
       - name: Smoke test the serve CLI
         run: uv run poe smoke-serve
       # --doctor's whole value is that its exit code equals the one m0serve
-      # itself would produce for the same arguments, and the two are kept in
-      # step by hand: the doctor mirrors main's check order rather than
-      # sharing its control flow. This runs BOTH over every refusal and
-      # compares, which is the only way that stays true.
+      # itself would produce for the same arguments. Both read one ordered
+      # list of refusals (packages/m0-wsgi/src/checks.mojo): main stops at
+      # the first failure, the doctor reports them all. This runs BOTH over
+      # every refusal and compares, and pins each code, which is what
+      # notices when the two, or the list, drift.
       - name: Smoke test --doctor against the server's own exit codes
         run: uv run poe smoke-doctor
       # The threaded mode's guard: on these GIL-enabled runners M0_THREADS>1
