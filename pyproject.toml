@@ -1224,7 +1224,7 @@ python3 scripts/emit.py --covers G14 --task smoke-hello
 # were left orphaned and still holding the port. That is why smoke-counter and
 # smoke-chat have to scrape worker pids out of their logs to reap them.
 [tool.poe.tasks.smoke-shutdown]
-help = "SIGTERM drains the loop, and reaches the workers when only the supervisor is signalled"
+help = "SIGTERM drains the loop, and reaches the workers when only the supervisor is signalled; on Linux, under strace, m0serve's drain is the only close of its listener"
 shell = """
 . scripts/smoke/lib.sh
 port=$(free_port)
@@ -1321,6 +1321,29 @@ mojo build -I packages/m0-http -I packages/m0-core apps/pool_spike/server.mojo -
 spawn shutdown4.log env M0_PORT=$port M0_POOL_THREADS=2 "$SMOKE_DIR/pool_spike"
 wait_ready http://localhost:$port/fast $pid
 python3 scripts/drain_inflight_probe.py $port $pid   || fail
+
+# The drain closes the listener, and nothing may close its number after it
+# (review B26). Every owner closed it again once the loop returned, when the
+# number had been free for the drain's length and something else had been
+# given it -- a print's dup(1), a pool thread's .pyc. test_listener_owner.mojo
+# holds the fork's Server and the Mojo host on both legs; m0serve's owners live
+# in its entry file, so they are metered here, under strace, which only Linux
+# has: its inline loop, its offloaded one (a pool, the ASGI executor, the
+# inversion) and the listener a spawned worker adopts. Built here rather than
+# as a dep, so the macOS leg does not build a binary it never runs.
+if [ "$(uname)" = Linux ]; then
+  uv run --no-sync poe build-serve || fail "build-serve did not build"
+  lcfail=0
+  lc() { python3 scripts/listener_close_probe.py "$@" || lcfail=1; }
+  S='bareapp.wsgi:application --app-dir apps/wsgi_bare --port {port}'
+  A='bareapp.asgi:application --app-dir apps/asgi_bare --port {port}'
+  lc inline -- bin/m0serve $S --blocking-threads 0
+  lc pool -- bin/m0serve $S --blocking-threads 2
+  lc executor -- bin/m0serve $A
+  lc inverted M0_INVERTED=1 -- bin/m0serve $A
+  lc spawned --serving 2 -- bin/m0serve $S --workers 2 --spawn-workers --blocking-threads 0
+  [ "$lcfail" -eq 0 ] || fail "an m0serve listener was closed again after its drain"
+fi
 echo "smoke-shutdown OK"
 python3 scripts/emit.py --covers D1 --task smoke-shutdown
 python3 scripts/emit.py --covers D2 --task smoke-shutdown

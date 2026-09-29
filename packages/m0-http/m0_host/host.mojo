@@ -1116,9 +1116,10 @@ def serve[H: AppHandler, P: Producer = NoProducer](
 
     # `run_event_loop` directly rather than through `Server`, for the two
     # things `Server.serve_nonblocking` cannot pass: the pool, and the stop
-    # word the loop stamps as its drain begins (docstring, 12).
+    # word the loop stamps as its drain begins (docstring, 12). The listener
+    # goes with it, to be closed once, by the drain.
     _run_loop(
-        listener,
+        listener^,
         handler,
         server_config,
         config.address(),
@@ -1219,7 +1220,7 @@ def _start_pool[H: AppHandler](
 
 
 def _run_loop[H: AppHandler](
-    listener: NoTLSListener[NetworkType.tcp4],
+    var listener: NoTLSListener[NetworkType.tcp4],
     mut handler: H,
     config: ServerConfig,
     address: String,
@@ -1229,18 +1230,21 @@ def _run_loop[H: AppHandler](
     var accept_share: AcceptShare,
     stop_addr: Int,
 ) raises:
-    """The serve, with the listener BORROWED for its whole duration.
+    """The serve, the listener handed to the loop that closes it.
 
-    Not inlined into `serve` on purpose: `listener.socket.fd` as a call
-    argument is a value, and the expression that reads it was the
-    listener's last use -- Mojo destroyed it there, its destructor closed
-    the socket, and the loop's first `fcntl` on the fd failed with EBADF
-    before a connection was taken (measured on 2026-09-17, both with and
-    without a pool). A read parameter lives for the call.
+    The loop closes the listener as its drain begins, and owns it for that
+    reason (review B26): `listener^.into_fd()` gives the number up without
+    the destructor that would close it again. The listener used to be
+    borrowed here, which kept it alive for the call -- reading
+    `listener.socket.fd` inline in `serve` had been its last use, and Mojo
+    destroyed it there, closing the socket before the loop's first `fcntl`
+    (EBADF, measured on 2026-09-17) -- and then destroyed in `serve` once
+    this returned: a second close of the number, before `_join_pool` and
+    the producer's join, when a straggler thread may hold it.
     """
     var backend = PlatformBackend()
     run_event_loop(
-        listener.socket.fd,
+        listener^.into_fd(),
         handler,
         backend,
         config,
