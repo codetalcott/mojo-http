@@ -379,16 +379,19 @@ change runs nothing, and never reaches the auto-merge workflows. Its jobs
 open with `.github/actions/setup` and, where they collect, close with
 `.github/actions/record-measurements`.
 
-- **The smokes are TWO jobs**, a cap rather than taste (the measurements are
-  in `test.yml`'s comment on `smoke`): `smoke` carries the server and the
-  Mojo layer, `smoke-gateway` the WSGI and ASGI bridges, the mounts, the pool
-  and `--realtime`. Shards are separate JOBS, never one job with
-  `if: matrix.shard`, since the sheet refuses a cited step with an `if:`;
-  moving a step between the two is free.
+- **The smokes are TWO jobs, and so are the unit tests**, a cap rather than
+  taste (the measurements are in `test.yml`'s comments on `smoke` and
+  `unit-tests`): `smoke` carries the server and the Mojo layer,
+  `smoke-gateway` the WSGI and ASGI bridges, the mounts, the pool and
+  `--realtime`; `unit-tests` runs `poe test-packages` and `unit-gates` `poe
+  test-gates`, the halves of `poe test-all`. A new task goes in one half,
+  never beside them (`check-docs` refuses it). Shards are separate JOBS,
+  never one job with `if: matrix.shard`, since the sheet refuses a cited
+  step with an `if:`; moving a step or task between the two is free.
 - **No job `needs:` another** — the serialization cost minutes and caught
   nothing `Docs` does not.
 - **Neither smoke job compiles the example apps**: `build-apps` discards its
-  binaries, so it is a compile gate, run in `unit-tests` by `poe test-all`.
+  binaries, so it is a compile gate, run in `unit-gates` by `poe test-gates`.
 - **Smokes on `scripts/smoke/lib.sh` take free ports** and write their logs
   to `$SMOKE_DIR` (a mktemp directory), kept only on failure. Smokes not yet
   migrated still use fixed ports and the repo root; run those under a port

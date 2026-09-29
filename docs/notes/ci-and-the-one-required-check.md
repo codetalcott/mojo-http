@@ -115,11 +115,63 @@ broken `build-all` lighting up every job at once — is answered by `Docs`.
 Neither smoke job compiles the example apps. `build-apps` builds each app
 into a mktemp directory and DISCARDS the binaries, so no smoke can consume
 it — every smoke either `mojo run`s its app, `mojo build`s its own copy, or
-serves through `bin/m0serve`. It is a compile gate, `poe test-all` runs it in
-`unit-tests`, and it cost 4 minutes a leg twice over to re-answer a settled
-question. The reason is the discarded output, NOT the `needs:` that used to
-sit above it: the gate still runs on every pull request, it just no longer
-runs before the smokes, and nothing there was waiting on it.
+serves through `bin/m0serve`. It is a compile gate, `poe test-gates` runs it
+in `unit-gates`, and it cost 4 minutes a leg twice over to re-answer a
+settled question. The reason is the discarded output, NOT the `needs:` that
+used to sit above it: the gate still runs on every pull request, it just no
+longer runs before the smokes, and nothing there was waiting on it.
+
+## The unit tests are two jobs too
+
+`poe test-all` was one step of the `unit-tests` job until it took 34-35
+minutes of that job's 40-minute cap on the ubuntu leg, and train 19 (#481)
+was cancelled at the cap, green in every step it reached. The step took 6-8
+minutes in late August and 14-18 by mid-September. Most of the growth is
+`test-shim`: 15 seconds until 2026-09-23, and about 8 minutes on ubuntu and
+13.5 on macOS since. Its sabotage runs every test once per guard, so it
+costs tests times guards: 9 tests and 10 guards then, 59 and 55 now. Then
+`test-http`, which compiles `m0-http` from source once per test file (62
+files, about 575 seconds on ubuntu, 3 of them spent running tests). Then
+the gates added since.
+
+So `test-all` is now `build-all` and two halves, and CI runs each half in a
+job of its own: `unit-tests` runs `poe test-packages` (the packages' tests,
+their whole-package compiles and the harnesses beside them) and
+`unit-gates` runs `poe test-gates` (the shim's rules and the compile gates
+built on the packages). Locally `poe test-all` is still the whole. On the
+pull request that split them (#482), cold, `unit-tests` ran 20.7 minutes on
+ubuntu and 13.9 on macOS and `unit-gates` 20.1 and 19.8, against caps of
+40. Two halves cannot go lower while `test-shim` is 8-14 minutes in one
+piece. The split is measured, not thematic, and moving a task between the
+halves is free. A task added to `test-all`'s own sequence, beside the
+halves, would run locally and in no job, so `check-docs` refuses anything
+`test-all` reaches that no unconditional step does.
+
+Both jobs restore Mojo's compile cache and save it after. The cache holds
+one entry per whole program, keyed by everything the program compiles and
+by the CPU it compiles for, which for `mojo run` is the host. So a warm run
+skips every compile its commit left alone, on a CPU the cache has met:
+`unit-tests` re-run warm on ubuntu took 9.2 minutes against 20.7 cold
+(`test-http` 138 seconds against 574), from a 43 MB cache restored in 3
+seconds, and 5.7-7.3 against 13.9 on macOS. GitHub's ubuntu runners are
+not all one CPU model. Keyed without the CPU, two later ubuntu runs of
+`unit-tests` missed every entry of the cache they restored (19.4 and 20.4
+minutes, on the same sources, image and toolchain as the warm re-run),
+while `unit-gates` hit both times. A one-file probe shows the key includes
+the CPU compiled for: `mojo build --target-cpu apple-m1`, then `apple-m2`,
+each add entries beside the host's. So the cache's key names the runner's
+CPU model. A runner on a model the pull request has not met then says so in
+its restore's log, instead of restoring entries it cannot use, and a cache
+no longer accumulates every model's entries. The four jobs' caches come to
+about 145 MB a run, compressed. But the cache is not what makes the caps
+fit. GitHub scopes a cache to the pull request that saved it, and
+`main`, the only scope every pull request can read, gets no push runs: the
+`automerge` label merges with the workflow token, which starts no workflow.
+So a pull request's first run, 70% of runs since 2026-09-20, is always
+cold. An edit also makes every program that reaches the edited file cold
+again, a one-line comment included, and most of the review's pull requests
+edit the fork that every event-loop test reaches. A cap has to hold a cold
+run.
 
 ## The warning floor
 

@@ -132,10 +132,11 @@ def check_test_coverage():
 
     `check_smoke_coverage`'s twin, for the other half of CI. Smokes are
     listed one by one in test.yml and so are checked against it; the Mojo
-    and shim tests are run as ONE step (`uv run poe test-all`), so a test
-    task drops out of CI simply by leaving that sequence -- no ghost step,
-    no red tick, nothing to notice. Sequences nest (`test-sqlite` refers to
-    `test-sqlite-mojo`), so this follows them.
+    and shim tests are run as `poe test-all`'s two halves, one step in each
+    of two jobs, so a test task drops out of CI simply by leaving those
+    sequences -- no ghost step, no red tick, nothing to notice. Sequences
+    nest (`test-sqlite` refers to `test-sqlite-mojo`), so this follows them,
+    and what `test-all` reaches must be what the steps reach.
 
     Reachable from `test-all` is the usual route and NAMED BY A STEP in
     test.yml is the other, which carries the same guarantee by a different
@@ -173,14 +174,31 @@ def test_coverage_problems(pyproject, workflow):
     stepped = set()
     for step_tasks, _conditional, _body in spec_sheet.workflow_steps(workflow).values():
         stepped |= {t for t in step_tasks if t.startswith("test-")}
+    problems = []
     missing = sorted(tasks - reached - stepped)
     if missing:
-        return [
+        problems.append(
             "test task(s) defined but neither reachable from `poe test-all` "
             "nor run by a named step in test.yml, "
-            "which is what CI runs: " + ", ".join(missing)
-        ]
-    return []
+            "which is what CI runs: " + ", ".join(missing))
+    # CI runs `test-all` as its two halves, one per job (`unit-tests` and
+    # `unit-gates`), not as itself, so reachable from `test-all` means run
+    # by CI only while the halves are what it holds. A task added to its
+    # own sequence beside them would run locally and in no job. So what
+    # `test-all` reaches, an unconditional step of test.yml must reach: a
+    # half run under an `if:` runs on one leg.
+    ci = set()
+    for job in spec_sheet.workflow_jobs(workflow).values():
+        for _name, conditional, body in spec_sheet.job_steps(job):
+            if not conditional:
+                ci |= set(re.findall(r"poe ([a-z0-9-]+)", body))
+    unrun = sorted(reached - {"test-all"} - spec_sheet.reachable_tasks(table, *ci))
+    if unrun:
+        problems.append(
+            "`poe test-all` reaches task(s) no unconditional step in test.yml "
+            "reaches -- CI runs test-all's halves, not test-all, so put each "
+            "in one of them: " + ", ".join(unrun))
+    return problems
 
 
 def check_release_branches_cleaned():
@@ -2611,8 +2629,9 @@ _ACTION_LAPSES = [
 # pid1's record from Python probes (`from emit import emit`) and name no
 # emit.py call at all -- a text scan of task bodies alone misses those -- and
 # unit-tests records coverage declarations and no measurement, which the
-# rule did not count until `--covers` was a record.
-_ENV_LAPSES = ["smoke-gateway", "pid1", "unit-tests"]
+# rule did not count until `--covers` was a record; unit-gates, its other
+# half, the same.
+_ENV_LAPSES = ["smoke-gateway", "pid1", "unit-tests", "unit-gates"]
 
 
 def _whole_file_blind(workflow, actions=()):
@@ -2720,6 +2739,47 @@ def _test_step_only_in_a_comment(workflow, pyproject):
         return (workflow[:m.start()] + f"{pad}run: echo needs a server\n"
                 f"{pad}# was: uv run poe {task}" + workflow[m.end():], task)
     return None, None
+
+
+def _test_all_lapses(workflow, pyproject):
+    """(label, workflow, pyproject) for each way `test-all` can come to reach
+    what no job runs, now that CI runs its halves rather than itself. Each
+    finds its target by shape -- test-all's own sequence, the step running
+    a half -- so renaming a half or its step cannot turn a case off; a case
+    that cannot be built is returned with None texts and reported MISSED."""
+    import spec_sheet
+
+    table = spec_sheet.poe_tasks(pyproject)
+    halves = [t for t in table.get("test-all", ("", []))[1] if t != "build-all"]
+    ci = set()
+    for job in spec_sheet.workflow_jobs(workflow).values():
+        for _name, _cond, body in spec_sheet.job_steps(job):
+            ci |= set(re.findall(r"poe ([a-z0-9-]+)", body))
+    ran = spec_sheet.reachable_tasks(table, *ci)
+    spare = sorted(t for t in table if t not in ran and t.startswith("check-"))
+    beside = None
+    m = re.search(r'^\[tool\.poe\.tasks\.test-all\]\n(?:[^\[\n][^\n]*\n)*?sequence = \[[^\]\n]*\]',
+                  pyproject, re.M)
+    if m and spare:
+        beside = pyproject[:m.end() - 1] + f', "{spare[0]}"]' + pyproject[m.end():]
+    lines = workflow.split("\n")
+    run = next((i for i, line in enumerate(lines) for h in halves
+                if re.match(r"^ +uv run poe " + re.escape(h) + r"(?![a-z0-9-])", line)), None)
+    other = gated = None
+    if run is not None:
+        other = "\n".join(lines[:run] + [re.sub(r"poe [a-z0-9-]+", "poe build-all", lines[run], count=1)]
+                          + lines[run + 1:])
+        head = next((i for i in range(run, -1, -1) if re.match(r"^ +- name: ", lines[i])), None)
+        if head is not None:
+            pad = re.match(r"^( +)", lines[head]).group(1)
+            gated = "\n".join(lines[:head + 1] + [pad + "  if: matrix.os == 'ubuntu-latest'"]
+                              + lines[head + 1:])
+    return [
+        ("a task added to test-all beside its halves is reported unrun",
+         workflow if beside else None, beside),
+        ("a half's step running something else is reported", other, pyproject if other else None),
+        ("a half's step under an `if:` is reported", gated, pyproject if gated else None),
+    ]
 
 
 def _required_context_cases(real):
@@ -3071,6 +3131,17 @@ def selftest():
         got = check(real_toml, text)
         good = any(task in g for g in got)
         print(f"  {'caught' if good else 'MISSED'}          {label} ({task})"
+              + ("" if good else f" -- got {got}"))
+        ok &= good
+    # CI runs test-all as its halves: what test-all reaches, a step must.
+    for label, wf, toml in _test_all_lapses(real_wf, real_toml):
+        if wf is None or toml is None:
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the lapse could not be built")
+            ok = False
+            continue
+        got = test_coverage_problems(toml, wf)
+        good = any("no unconditional step" in g for g in got)
+        print(f"  {'caught' if good else 'MISSED'}          {label}"
               + ("" if good else f" -- got {got}"))
         ok &= good
     # Measurements, per job (B16), each job read with the record action it

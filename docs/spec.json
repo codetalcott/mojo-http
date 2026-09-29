@@ -1519,7 +1519,7 @@
       "category": "L. ASGI 3.0",
       "capability": "Slot ownership across recycled connections, sabotage-proven",
       "status": "verified",
-      "evidence": "`Run unit tests` (every PR) \u2014 `poe test-shim` drives the extracted shim through real socketpairs and reverts each rule"
+      "evidence": "`Run the shim tests and the compile gates` (every PR) \u2014 `poe test-shim` drives the extracted shim through real socketpairs and reverts each rule"
     },
     {
       "id": "L8",
@@ -1623,7 +1623,7 @@
       "category": "L. ASGI 3.0",
       "capability": "A send is judged by the connection it addresses, never the task making it: one connection's task reaches another's live socket, and a send kept for a client that has gone never reaches the client given its slot",
       "status": "verified",
-      "evidence": "`Run unit tests` (every PR) \u2014 `poe test-shim` recycles a slot under a kept WebSocket send and under a kept stream send, with and WITHOUT a disconnect tag (a socket its application closed, which the loop never tagged), sends from a gone socket's own task to the sockets still connected, answers after the application returned, and sabotages each rule; FastAPI's documented chat room checks the same on the wire in L21's gate"
+      "evidence": "`Run the shim tests and the compile gates` (every PR) \u2014 `poe test-shim` recycles a slot under a kept WebSocket send and under a kept stream send, with and WITHOUT a disconnect tag (a socket its application closed, which the loop never tagged), sends from a gone socket's own task to the sockets still connected, answers after the application returned, and sabotages each rule; FastAPI's documented chat room checks the same on the wire in L21's gate"
     },
     {
       "id": "L21",
@@ -1711,7 +1711,7 @@
       "category": "L. ASGI 3.0",
       "capability": "No function in m0serve takes the asyncio executor's state by value, nor holds it inside an argument that is: Mojo 1.1.0 copies a `mut` argument of 256 bytes or less in and stores the copy back, which erased the drain L8's SIGTERM had begun and the completion L30's first step had parked, so `ExecutorState` travels by address",
       "status": "verified",
-      "evidence": "`Run unit tests` (every PR) \u2014 `poe check-copyback` reads m0serve's LLVM IR, compiled as `build-serve` compiles the binary, and matches the type's layout, read from its own constructor, against every argument passed by value, so a raising function whose parameter types the census cannot name is still caught. On every run it first requires a control that takes the type in B20's two shapes and inside a copied struct to be seen, and stops with 2 when it is not; a selftest over canned IR holds the judgement. Putting `mut st` back in `_flush_inverted` or `dispatch_job` fails it, naming the function. The rule, and the sweep that found no other type needing it: [mut-arguments-and-raw-addresses](notes/mut-arguments-and-raw-addresses.md)"
+      "evidence": "`Run the shim tests and the compile gates` (every PR) \u2014 `poe check-copyback` reads m0serve's LLVM IR, compiled as `build-serve` compiles the binary, and matches the type's layout, read from its own constructor, against every argument passed by value, so a raising function whose parameter types the census cannot name is still caught. On every run it first requires a control that takes the type in B20's two shapes and inside a copied struct to be seen, and stops with 2 when it is not; a selftest over canned IR holds the judgement. Putting `mut st` back in `_flush_inverted` or `dispatch_job` fails it, naming the function. The rule, and the sweep that found no other type needing it: [mut-arguments-and-raw-addresses](notes/mut-arguments-and-raw-addresses.md)"
     },
     {
       "id": "L32",
@@ -2167,7 +2167,7 @@
       "category": "N. Writing an application in Mojo",
       "capability": "The scaffold's templates are real source files that compile UNSUBSTITUTED against the tree: the application's name appears only where a compiler does not look \u2014 inside string literals, TOML and Markdown \u2014 so a change to the layer that breaks a template fails in the pull request that made it, not in the next person's first build. Every file under `templates/` is named by `new.py`'s manifest and every name there is a file; the two version tokens appear in `pyproject.toml` alone; and no other token of that shape exists, since a misspelled one would be written verbatim",
       "status": "verified",
-      "evidence": "`Run unit tests` (every PR) \u2014 `poe check-templates`, inside `test-all`: `mojo build` of each template's `src/server.mojo` in place with the artifact thrown away, `mojo run` of each test file, then the manifest compared both ways with the files on disk and every token checked against the closed three"
+      "evidence": "`Run the shim tests and the compile gates` (every PR) \u2014 `poe check-templates`, inside `test-all`: `mojo build` of each template's `src/server.mojo` in place with the artifact thrown away, `mojo run` of each test file, then the manifest compared both ways with the files on disk and every token checked against the closed three"
     },
     {
       "id": "N29",
