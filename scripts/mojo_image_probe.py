@@ -60,13 +60,11 @@ import argparse
 import http.client
 import json
 import os
-import re
 import socket
 import subprocess
 import sys
 import tempfile
 import time
-import traceback
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -74,6 +72,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from emit import emit  # noqa: E402
+from probelib import fail, phase, sse_events, stamp  # noqa: E402
 
 BINARY = "/app/server"
 HELD = 100
@@ -82,26 +81,11 @@ DRAIN_BOUND_S = 10
 
 # The probe phase stamp (scripts/phase_stamp_check.py): every phase goes
 # through the same docker and HTTP helpers, so an unhandled error inside one
-# would name the helper and never the phase being proven.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-    print(f"--- {name}", flush=True)
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("mojo_image_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    sys.exit(f"mojo_image_probe: FAIL: {PHASE}: {msg}")
+# would name the helper and never the phase being proven. Each phase is also
+# announced as it begins (`--- name`), and a failure goes to stderr --
+# scripts/mojo_image_sabotage.py reads both streams for `FAIL: <phase>`.
+stamp("mojo_image_probe: FAIL", fail="mojo_image_probe: FAIL: {phase}: {msg}",
+      fail_stream=sys.stderr, echo="--- {phase}")
 
 
 def run(*argv, check=True, timeout=900, **kw):
@@ -402,7 +386,6 @@ def probe(args, tag, arch):
             run("docker", "rm", "-f", name, check=False)
 
 
-FRAME_ID = re.compile(rb"(?:^|\n)id: (\d+)")
 SLOTS = 16
 
 
@@ -429,30 +412,31 @@ def probe_url(args):
     phase("a stream gets frames")
     conn = _connect(base, 15)
     conn.request("GET", "/events", headers={"Accept": "text/event-stream"})
+    # Taken before getresponse: a response that will close detaches the
+    # socket from the connection, which then reads as None.
+    sock = conn.sock
     resp = conn.getresponse()
     if resp.status != 200 or not (resp.getheader("content-type") or "").startswith("text/event-stream"):
         fail(f"/events answered {resp.status} {resp.getheader('content-type')!r}")
-    buf = b""
     ids = []
     deadline = time.monotonic() + 15
-    while len(ids) < 3:
-        if time.monotonic() > deadline:
+    # Read through the response, not its socket file: its readline decodes a
+    # chunked body, which a proxy in front of the deploy may send.
+    for ev in sse_events(resp, sock=sock, deadline=deadline):
+        if ev.event != "datastar-patch-signals":
+            continue
+        if ev.id is None:
+            fail(f"a frame with no id: {ev!r:.120}")
+        missing = [k for k in range(SLOTS) if f'"_b{k}"' not in (ev.data or "")]
+        if missing:
+            fail(f"frame {ev.id} lacks slots {missing}: a delta, not a state")
+        ids.append(int(ev.id))
+        if len(ids) == 3:
+            break
+    if len(ids) < 3:
+        if time.monotonic() >= deadline:
             fail(f"{len(ids)} frames in 15 s")
-        chunk = resp.read1(65536)
-        if not chunk:
-            fail(f"the stream ended after {len(ids)} frames")
-        buf += chunk
-        while b"\n\n" in buf:
-            block, buf = buf.split(b"\n\n", 1)
-            if b"event: datastar-patch-signals" not in block:
-                continue
-            m = FRAME_ID.search(block)
-            if not m:
-                fail(f"a frame with no id: {block[:120]!r}")
-            missing = [k for k in range(SLOTS) if f'"_b{k}"'.encode() not in block]
-            if missing:
-                fail(f"frame {m.group(1).decode()} lacks slots {missing}: a delta, not a state")
-            ids.append(int(m.group(1)))
+        fail(f"the stream ended after {len(ids)} frames")
     conn.close()
     if ids != sorted(ids) or len(set(ids)) != len(ids):
         fail(f"frame ids are not increasing: {ids}")

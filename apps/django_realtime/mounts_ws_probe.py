@@ -15,152 +15,66 @@ The synthetic path under each mount stays the server's: a POST to
 reaches no view, forged `M0-Channel` header and all.
 """
 
-import base64
-import hashlib
 import http.client
 import json
 import os
 import socket
-import struct
 import sys
 import time
-import traceback
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+from probelib import TEXT, WebSocket, fail, phase, stamp  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8080"))
-GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
-# Which phase is running, for the crash handler below: the helpers every
-# phase shares (`recv_exact`, `read_text`) name the CALL that failed and
-# never the PHASE being proven. `realtime_probe.py` carries the original of
-# this; `scripts/phase_stamp_check.py` holds every probe to it.
-PHASE = "startup"
+# Which phase is running, for the crash handler: the frame reads every phase
+# shares name the CALL that failed and never the PHASE being proven.
+# `realtime_probe.py` carries the original of this; `scripts/phase_stamp_check.py`
+# holds every probe to it. The failure line names the phase too: a helper's
+# own failure ("connection closed wanting 2 bytes") reads the same in every
+# phase.
+stamp("mounts_ws_probe FAIL", fail="mounts_ws_probe FAIL: {phase}: {msg}")
 
 
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("mounts_ws_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    # The phase too: a helper's own failure ("connection closed wanting 2
-    # bytes") reads the same in every phase.
-    print("mounts_ws_probe FAIL: %s: %s" % (PHASE, msg))
-    sys.exit(1)
-
-
-def recv_exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            fail("connection closed wanting %d bytes" % n)
-        buf += chunk
-    return buf
-
-
-def read_frame(sock):
-    b0, b1 = recv_exact(sock, 2)
-    n = b1 & 0x7F
-    if n == 126:
-        n = struct.unpack(">H", recv_exact(sock, 2))[0]
-    elif n == 127:
-        n = struct.unpack(">Q", recv_exact(sock, 8))[0]
-    return b0 & 0x0F, recv_exact(sock, n)
-
-
-def send_frame(sock, opcode, payload):
-    mask = os.urandom(4)
-    n = len(payload)
-    if n <= 125:
-        header = bytes([0x80 | opcode, 0x80 | n])
-    else:
-        header = bytes([0x80 | opcode, 0x80 | 126]) + struct.pack(">H", n)
-    masked = bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
-    sock.sendall(header + mask + masked)
-
-
-def read_text(sock, timeout=8.0):
+def read_text(ws, timeout=8.0):
     """The next text frame; heartbeat pings are answered and skipped."""
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        sock.settimeout(max(0.1, deadline - time.monotonic()))
-        try:
-            op, payload = read_frame(sock)
-        except (socket.timeout, TimeoutError):
-            break
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
-            continue
-        if op == 0x1:
-            return payload
+    try:
+        op, payload = ws.recv_data(deadline=time.monotonic() + timeout)
+    except socket.timeout:
+        fail("no reply within %.0f s: the message reached no view that answered" % timeout)
+    if op != TEXT:
         fail("unexpected frame op=%d while waiting for a reply" % op)
-    fail("no reply within %.0f s: the message reached no view that answered" % timeout)
+    return payload
 
 
-def expect_silence(sock, name, seconds=1.0):
+def expect_silence(ws, name, seconds=1.0):
     """Nothing but heartbeats for `seconds`: no second delivery, no stray."""
-    deadline = time.monotonic() + seconds
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return
-        sock.settimeout(remaining)
-        try:
-            op, payload = read_frame(sock)
-        except (socket.timeout, TimeoutError):
-            return
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
-            continue
-        fail("the %s socket heard op=%d %r where it expected silence" % (name, op, payload))
+    try:
+        op, payload = ws.recv_data(deadline=time.monotonic() + seconds)
+    except socket.timeout:
+        return
+    fail("the %s socket heard op=%d %r where it expected silence" % (name, op, payload))
 
 
 def open_socket(path, channel):
     """Upgrade `path?channel=...`; the 101 must carry a correct accept key."""
-    sock = socket.create_connection((HOST, PORT), timeout=10)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET %s?channel=%s HTTP/1.1\r\nHost: %s:%d\r\n"
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-            "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"
-            % (path, channel, HOST, PORT, key)
-        ).encode()
-    )
-    resp = b""
-    while b"\r\n\r\n" not in resp:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("connection closed during the handshake for %s" % path)
-        resp += chunk
-    head = resp.partition(b"\r\n\r\n")[0].decode("latin-1")
-    lines = head.split("\r\n")
-    if " 101 " not in lines[0] + " ":
-        fail("the upgrade at %s was refused: %s" % (path, lines[0]))
-    accept = None
-    for line in lines[1:]:
-        if line.lower().startswith("sec-websocket-accept:"):
-            accept = line.split(":", 1)[1].strip()
-    want = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
-    if accept != want:
+    ws = WebSocket.connect(HOST, PORT, "%s?channel=%s" % (path, channel), timeout=10)
+    if ws.status_line is None:
+        fail("connection closed during the handshake for %s" % path)
+    status = ws.status_line.decode("latin-1")
+    if " 101 " not in status + " ":
+        fail("the upgrade at %s was refused: %s" % (path, status))
+    if not ws.accept_ok():
         fail("bad accept key at %s: the handshake was not really performed" % path)
-    return sock
+    return ws
 
 
-def reply_to(sock, text):
+def reply_to(ws, text):
     """Send `text`, and return the view's JSON reply to it."""
-    send_frame(sock, 0x1, text.encode())
-    raw = read_text(sock)
+    ws.send_text(text)
+    raw = read_text(ws)
     try:
         return json.loads(raw)
     except ValueError:
@@ -219,10 +133,10 @@ expect_silence(on_first, "first")
 expect_silence(on_second, "second")
 
 phase("closing both sockets")
-for sock in (on_first, on_second):
+for ws in (on_first, on_second):
     try:
-        send_frame(sock, 0x8, struct.pack(">H", 1000))
-        sock.close()
+        ws.send_close(1000)
+        ws.close()
     except OSError:
         pass
 print("mounts_ws_probe OK: each mount's socket reached its own mount's view, at its own path")

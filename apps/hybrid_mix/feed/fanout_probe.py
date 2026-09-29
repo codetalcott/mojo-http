@@ -29,46 +29,35 @@ import os
 import sys
 import threading
 import time
-import traceback
 import urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..",
+                                "scripts"))
+from probelib import fail, phase, sse_events, stamp  # noqa: E402
 
 BASE = "http://127.0.0.1:" + os.environ.get("M0_PORT", "8150")
 WANT_WORKERS = int(os.environ.get("FANOUT_WORKERS", "2"))
 ATTEMPTS = int(os.environ.get("FANOUT_ATTEMPTS", "4"))
 
 
-# Which phase is running, for the crash handler below. A traceback names the
-# CALL that raised -- here `read_stream`, shared by every attempt -- and never the PHASE being proven.
-# apps/asgi_bare/ws_probe.py carries the original of this comment and the
-# 2026-08-30 failure that motivated it.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("fanout FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+# Which phase is running, for the crash handler. A traceback names the CALL
+# that raised -- here `read_stream`, shared by every attempt -- and never the
+# PHASE being proven. apps/asgi_bare/ws_probe.py carries the original of this
+# comment and the 2026-08-30 failure that motivated it.
+stamp("fanout FAIL", fail="FAIL: {msg}")
 
 
 def read_stream(streams, i):
     got = []
     try:
+        # The response, not its socket: its readline decodes a chunked body.
         with urllib.request.urlopen(BASE + "/events", timeout=25) as r:
-            while True:
-                line = r.readline()
-                if not line:
+            for ev in sse_events(r):
+                if ev.data is None:
+                    continue
+                got.append(ev.data.strip())
+                if got[-1] == "stop":
                     break
-                if line.startswith(b"data: "):
-                    got.append(line[6:].strip().decode())
-                    if got[-1] == "stop":
-                        break
     except Exception as exc:  # noqa: BLE001 - the evidence IS the point
         got.append("ERR:" + str(exc))
     streams[i] = got
@@ -121,8 +110,7 @@ def main():
         # catch. Never retry it: a retry that passes would turn a genuine
         # delivery bug into an intermittent one.
         if delivered != count:
-            print("FAIL: a stream missed the broadcast")
-            sys.exit(1)
+            fail("a stream missed the broadcast")
 
         if len(pids) >= WANT_WORKERS:
             break
@@ -137,11 +125,7 @@ def main():
             )
             time.sleep(1.0)
     else:
-        print(
-            "FAIL: streams never spanned %d workers in %d attempts"
-            % (WANT_WORKERS, ATTEMPTS)
-        )
-        sys.exit(1)
+        fail("streams never spanned %d workers in %d attempts" % (WANT_WORKERS, ATTEMPTS))
 
     phase("the publish ids, which must be distinct")
     ids = []
@@ -150,8 +134,7 @@ def main():
             if part.startswith("id="):
                 ids.append(int(part[3:]))
     if -1 not in ids and len(set(ids)) != len(ids):
-        print("FAIL: publish ids were not distinct: %r" % ids)
-        sys.exit(1)
+        fail("publish ids were not distinct: %r" % ids)
 
 
 if __name__ == "__main__":

@@ -22,8 +22,6 @@ Modelled on `apps/ws_chat/chat_probe.py`, which pins the same accept-race
 problem the same way; see its comments for why SIGSTOP rather than retries.
 """
 
-import base64
-import hashlib
 import http.client
 import json
 import os
@@ -32,12 +30,13 @@ import socket
 import struct
 import sys
 import time
-import traceback
 import urllib.parse
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+from probelib import BINARY, CLOSE, PING, TEXT, WebSocket, fail, phase, stamp  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8080"))
-GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 TOKEN = "letmein"
 EXPECT_WORKERS = int(os.environ.get("REALTIME_EXPECT_WORKERS", "1"))
 # The quickstart's views take no token, by design (its auth is the reader's
@@ -45,111 +44,43 @@ EXPECT_WORKERS = int(os.environ.get("REALTIME_EXPECT_WORKERS", "1"))
 GATED = os.environ.get("REALTIME_GATED", "1") == "1"
 
 
-# Which phase is running, for the crash handler below. The phases are
-# already named in the comments; this puts the name in the FAILURE, which is
-# where it is needed. Every one of them reaches the socket through
-# `recv_exact`/`read_text`, so a traceback out of those says which CALL
-# raised and never which PHASE was being proven -- two investigations of the
-# 2026-08-30 CI failure were lost to that distinction, and
-# apps/asgi_bare/ws_probe.py carries the original of this comment.
-PHASE = "startup"
+# Which phase is running, for the crash handler. The phases are already
+# named in the comments; this puts the name in the FAILURE, which is where
+# it is needed. Every one of them reaches the socket through the same frame
+# reads, so a traceback out of those says which CALL raised and never which
+# PHASE was being proven -- two investigations of the 2026-08-30 CI failure
+# were lost to that distinction, and apps/asgi_bare/ws_probe.py carries the
+# original of this comment.
+stamp("realtime_probe FAIL")
 
 
-def phase(name):
-    global PHASE
-    PHASE = name
+def read_text(ws, timeout=8.0):
+    """Next text frame's payload; heartbeat pings get pongs and are skipped.
 
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("realtime_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("realtime_probe FAIL:", msg)
-    sys.exit(1)
-
-
-def recv_exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            fail("connection closed wanting %d bytes" % n)
-        buf += chunk
-    return buf
-
-
-def read_frame(sock):
-    hdr = recv_exact(sock, 2)
-    b0, b1 = hdr[0], hdr[1]
-    if b1 & 0x80:
-        fail("server frame is masked")
-    ln = b1 & 0x7F
-    if ln == 126:
-        ln = struct.unpack(">H", recv_exact(sock, 2))[0]
-    elif ln == 127:
-        ln = struct.unpack(">Q", recv_exact(sock, 8))[0]
-    return b0 & 0x0F, recv_exact(sock, ln)
-
-
-def send_frame(sock, opcode, payload, fin=True):
-    b0 = (0x80 if fin else 0) | opcode
-    mask = os.urandom(4)
-    n = len(payload)
-    header = bytes([b0])
-    if n <= 125:
-        header += bytes([0x80 | n])
-    elif n <= 0xFFFF:
-        header += bytes([0x80 | 126]) + struct.pack(">H", n)
-    else:
-        header += bytes([0x80 | 127]) + struct.pack(">Q", n)
-    masked = bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
-    sock.sendall(header + mask + masked)
-
-
-def read_text(sock, timeout=8.0):
-    """Next text frame's payload; heartbeat pings get pongs and are skipped."""
-    sock.settimeout(timeout)
-    for _ in range(20):
-        op, payload = read_frame(sock)
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
-            continue
-        if op == 0x1:
-            return payload
+    One deadline for the whole read: a per-read timeout is reset by every
+    heartbeat, which is why this used to give up after twenty pings."""
+    op, payload = ws.recv_data(deadline=time.monotonic() + timeout)
+    if op != TEXT:
         fail("unexpected frame op=%d while waiting for text" % op)
-    fail("only pings arriving; the message never came")
+    return payload
 
 
-def expect_silence(sock, seconds=2.0):
+def expect_silence(ws, seconds=2.0):
     """Assert nothing but heartbeats arrives — the channel-isolation check.
 
     Bounded by a deadline rather than by the socket timeout alone: heartbeat
     pings arrive faster than any timeout worth waiting, so a loop that only
     resets on recv would answer pings forever.
     """
-    deadline = time.monotonic() + seconds
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return
-        sock.settimeout(remaining)
-        try:
-            op, payload = read_frame(sock)
-        except (socket.timeout, TimeoutError):
-            return
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
-            continue
-        fail("socket heard op=%d %r on a channel it never joined" % (op, payload))
+    try:
+        op, payload = ws.recv_data(deadline=time.monotonic() + seconds)
+    except socket.timeout:
+        return
+    fail("socket heard op=%d %r on a channel it never joined" % (op, payload))
 
 
 def handshake(channel, token=TOKEN):
-    """Open one socket and return (socket, worker) — or (None, status, body).
+    """Open one socket and return (WebSocket, worker) — or (None, status, body).
 
     Nothing here is Mojo-aware: it is the opening handshake exactly as a
     browser sends it, which is the point. The framework sees a normal GET.
@@ -157,85 +88,52 @@ def handshake(channel, token=TOKEN):
     query = {"channel": channel}
     if token is not None:
         query["token"] = token
-    target = "/ws?" + urllib.parse.urlencode(query)
-    sock = socket.create_connection((HOST, PORT), timeout=10)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET %s HTTP/1.1\r\nHost: %s:%d\r\n"
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-            "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"
-            % (target, HOST, PORT, key)
-        ).encode()
-    )
-    resp = b""
-    while b"\r\n\r\n" not in resp:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("connection closed during handshake")
-        resp += chunk
-    head, _, rest = resp.partition(b"\r\n\r\n")
-    lines = head.decode("latin-1").split("\r\n")
-    status = lines[0]
+    ws = WebSocket.connect(HOST, PORT, "/ws?" + urllib.parse.urlencode(query), timeout=10)
+    if ws.status_line is None:
+        fail("connection closed during handshake")
+    status = ws.status_line.decode("latin-1")
     if " 101 " not in status + " ":
-        sock.close()
-        return None, status, rest
+        ws.close()
+        return None, status, bytes(ws.buf)
 
-    accept = worker = None
-    for line in lines[1:]:
+    for line in ws.head.decode("latin-1").split("\r\n")[1:]:
         low = line.lower()
-        if low.startswith("sec-websocket-accept:"):
-            accept = line.split(":", 1)[1].strip()
-        if low.startswith("x-worker:"):
-            worker = line.split(":", 1)[1].strip()
         if low.startswith("m0-hold:") or low.startswith("m0-channel:"):
             fail("instruction header leaked to the client: " + line)
-    expected = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
-    if accept != expected:
+    if not ws.accept_ok():
         fail("bad accept key — the handshake was not really performed")
+    worker = ws.header("X-Worker")
     if worker is None:
         fail("no X-Worker header on the upgrade response")
-    return sock, worker
+    return ws, worker
 
 
-def expect_end(sock, within=5.0, skip_close=False):
+def expect_end(ws, within=5.0, skip_close=False):
     """EOF from the server, with nothing before it but heartbeat pings (and,
     when `skip_close`, the server's own Close, which this client leaves
-    unanswered)."""
-    deadline = time.time() + within
-    while time.time() < deadline:
-        sock.settimeout(max(0.1, deadline - time.time()))
+    unanswered). A reset at a frame's boundary is an end too; the connection
+    ending INSIDE a frame is not."""
+    deadline = time.monotonic() + within
+    while True:
         try:
-            op, payload = read_frame_or_eof(sock)
+            op, payload = ws.recv_frame(deadline=deadline, eof_ok=True)
         except socket.timeout:
             break
-        if op is None:
-            sock.close()
+        except EOFError as exc:
+            if ws.buf:
+                fail(str(exc))
+            ws.close()
             return
-        if op == 0x9 or op == 0x1 or (op == 0x8 and skip_close):
-            skip_close = False if op == 0x8 else skip_close
+        except ConnectionResetError:
+            if ws.buf:
+                raise
+            ws.close()
+            return
+        if op == PING or op == TEXT or (op == CLOSE and skip_close):
+            skip_close = False if op == CLOSE else skip_close
             continue
         fail("after the closing handshake the server sent op=%d" % op)
     fail("the connection was still open %.0f s after the closing handshake" % within)
-
-
-def read_frame_or_eof(sock):
-    """`read_frame`, but (None, b'') at a clean EOF or a reset."""
-    try:
-        hdr = sock.recv(2)
-    except ConnectionResetError:
-        return None, b""
-    if len(hdr) == 0:
-        return None, b""
-    if len(hdr) == 1:
-        hdr += recv_exact(sock, 1)
-    b0, b1 = hdr[0], hdr[1]
-    ln = b1 & 0x7F
-    if ln == 126:
-        ln = struct.unpack(">H", recv_exact(sock, 2))[0]
-    elif ln == 127:
-        ln = struct.unpack(">Q", recv_exact(sock, 8))[0]
-    return b0 & 0x0F, recv_exact(sock, ln)
 
 
 def open_socket(channel):
@@ -275,11 +173,11 @@ def publish(channel, msg):
         fail("publish did not answer JSON: %r" % text)
 
 
-def close_all(socks):
-    for s in socks:
+def close_all(sockets):
+    for ws in sockets:
         try:
-            send_frame(s, 0x8, struct.pack(">H", 1000))
-            s.close()
+            ws.send_close(1000)
+            ws.close()
         except OSError:
             pass
 
@@ -308,7 +206,7 @@ if EXPECT_WORKERS <= 1:
     sock_other, _ = open_socket("other")
 
     msg = b"hello from a websocket"
-    send_frame(sock_a, 0x1, msg)
+    sock_a.send(TEXT, msg)
 
     # The trip: ws_message -> ws_message_request -> POST /ws/message -> a plain
     # synchronous view -> m0pub.publish -> the bus -> both sockets. Nothing
@@ -339,30 +237,22 @@ if EXPECT_WORKERS <= 1:
     # A message right behind the oversized one: RFC 6455 §7.1.7, nothing
     # is processed after the connection is failed, so the channel's other
     # socket must hear none of it.
-    send_frame(sock_big, 0x2, b"o" * 70000)
-    send_frame(sock_big, 0x1, b"after-the-refused-one")
+    sock_big.send(BINARY, b"o" * 70000)
+    sock_big.send(TEXT, b"after-the-refused-one")
     # Heartbeat pings are answered and the channel's own text skipped, for
     # up to five seconds; anything else is the answer.
-    deadline = time.time() + 5.0
-    op = None
-    while time.time() < deadline:
-        sock_big.settimeout(max(0.1, deadline - time.time()))
+    deadline = time.monotonic() + 5.0
+    while True:
         try:
-            op, payload = read_frame(sock_big)
+            op, payload = sock_big.recv_data(deadline=deadline)
         except socket.timeout:
             op = None
             break
-        if op == 0x9:
-            send_frame(sock_big, 0xA, payload)
-            op = None
-            continue
-        if op == 0x1:
-            op = None
-            continue
-        break
+        if op != TEXT:
+            break
     if op is None:
         fail("no answer but heartbeats to a 70,000-byte message in 5 s: parked, not refused")
-    if op != 0x8:
+    if op != CLOSE:
         fail("a 70,000-byte message was answered with op=%d, not a Close" % op)
     code = struct.unpack(">H", payload[:2])[0] if len(payload) >= 2 else None
     if code != 1009:
@@ -370,12 +260,12 @@ if EXPECT_WORKERS <= 1:
     # The client answers the Close, as a browser does: the server must end
     # the connection, with no second Close -- which Chromium reports as a
     # failed connection (1006), not the 1009 it was sent.
-    send_frame(sock_big, 0x8, struct.pack(">H", 1009))
+    sock_big.send_close(1009)
     expect_end(sock_big)
     expect_silence(sock_listen)
     # And a client that never answers is let go when the linger runs out.
     sock_quiet, _ = open_socket("news")
-    send_frame(sock_quiet, 0x2, b"o" * 70000)
+    sock_quiet.send(BINARY, b"o" * 70000)
     expect_end(sock_quiet, within=8.0, skip_close=True)
     close_all([sock_listen])
 
@@ -414,7 +304,7 @@ for sock, worker in conns:
 # And a message SENT on one worker's socket reaches the other worker's too:
 # ws_message -> the view -> m0pub -> every channel -> every worker's registry.
 phase("a message sent on one worker reaching the other")
-send_frame(sock_a, 0x1, b"cross-worker-msg")
+sock_a.send(TEXT, b"cross-worker-msg")
 for sock, worker in conns:
     got = read_text(sock)
     if got != b"cross-worker-msg":

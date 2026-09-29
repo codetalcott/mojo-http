@@ -29,29 +29,12 @@ import sqlite3
 import sys
 import threading
 import time
-import traceback
+
+from probelib import fail, phase, sse_events, stamp
 
 TOKEN = re.compile(rb"w[01]-t\d{3}")
 
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("todo_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg: str) -> None:
-    print("todo_probe: FAIL: %s: %s" % (PHASE, msg), file=sys.stderr)
-    sys.exit(1)
+stamp("todo_probe: FAIL", fail="todo_probe: FAIL: {phase}: {msg}", stream=sys.stderr)
 
 
 class Stream:
@@ -71,20 +54,13 @@ class Stream:
         self.thread.start()
 
     def _read(self) -> None:
-        buf = b""
-        while True:
-            try:
-                chunk = self.resp.read1(65536)
-            except (OSError, ValueError, http.client.HTTPException):
-                break
-            if not chunk:
-                break
-            buf += chunk
-            while b"\n\n" in buf:
-                block, buf = buf.split(b"\n\n", 1)
-                if b"datastar-patch-elements" in block:
+        try:
+            for ev in sse_events(self.resp):
+                if ev.event == "datastar-patch-elements":
                     with self.lock:
-                        self.sets.append(set(TOKEN.findall(block)))
+                        self.sets.append(set(TOKEN.findall((ev.data or "").encode())))
+        except (OSError, ValueError, http.client.HTTPException):
+            pass
 
     def best(self) -> int:
         with self.lock:
