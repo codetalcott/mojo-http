@@ -30,8 +30,9 @@ from lightbug_http.c.process import (
 )
 
 from .global_slot import (
-    publish_child_pids, child_pid_count, child_pid_at, MAX_TRACKED_CHILDREN,
-    set_supervisor_stopping, supervisor_stopping,
+    publish_child_pids, child_pid_count, child_pid_at, child_pids_owner,
+    record_supervisor_stop, clear_supervisor_stop, supervisor_stopping,
+    supervisor_stop_signal,
 )
 from .reload import MtimeScanner
 
@@ -172,22 +173,34 @@ def shared_store(addr: Int, value: Int):
 def _on_supervisor_signal(sig: c_int):
     """Signal handler for the supervising parent: pass the signal on.
 
-    Async-signal-safe: reads two immortal words per child and calls `kill(2)`,
-    which POSIX lists as safe. Everything else — reaping, deciding not to
-    respawn — happens back in `_supervise`, which needs no change at all,
-    because a worker that drained and exited 0 already retires cleanly there.
+    Async-signal-safe: reads immortal words, and calls `getpid(2)` and
+    `kill(2)`, which POSIX lists as safe. Everything else — reaping,
+    deciding not to respawn — happens back in `_supervise`, which needs no
+    change at all, because a worker that drained and exited 0 already
+    retires cleanly there.
 
     A PID of 0 means a vacant index, and is skipped: `kill(0, sig)` signals the
     caller's whole process group, which from inside the parent would mean
     signalling itself.
 
-    It records the stop FIRST (one word store, also safe): a worker that
-    dies of anything but a clean exit while it drains is then not respawned
-    (`_try_respawn`). A respawned worker is sent no signal, so the
-    supervisor would serve it forever and `docker stop` would end in
-    SIGKILL -- found when a sabotaged Mojo host worker crashed on exit.
+    It records the stop FIRST, and by which signal (one word store, also
+    safe): a worker that dies of anything but a clean exit while it drains
+    is then not respawned (`_try_respawn`), no worker is forked after it
+    (`fork_all`), and a child forked before it whose PID it could not yet
+    read is sent the same signal once published (`_publish_children`). A
+    respawned worker is sent no signal, so the supervisor would serve it
+    forever and `docker stop` would end in SIGKILL -- found when a
+    sabotaged Mojo host worker crashed on exit.
+
+    It is armed before the first fork, so each child inherits it until
+    `_forget_supervisor_signals` restores the default, and with it its
+    parent's list of siblings. It passes a signal on only in the process
+    that published the list it reads: in a child it records the stop,
+    which `_forget_supervisor_signals` then acts on, and signals no one.
     """
-    set_supervisor_stopping(True)
+    record_supervisor_stop(Int(sig))
+    if child_pids_owner() != getpid():
+        return
     var count = child_pid_count()
     for i in range(count):
         var pid = child_pid_at(i)
@@ -215,18 +228,61 @@ def exit_worker():
 
 
 def _forget_supervisor_signals():
-    """Restore default SIGTERM/SIGINT in a freshly forked child.
+    """Restore default SIGTERM/SIGINT in a freshly forked child, or leave if told to stop.
 
-    A respawned worker is forked *after* the parent armed itself, so it
-    inherits both the parent's handler and its list of sibling PIDs — one
-    SIGTERM and it would try to kill its own siblings. Every child clears the
-    inheritance before it returns from `fork_all`; the app then installs the
-    worker handler with `install_shutdown_signals`.
+    Every worker is forked *after* the parent armed itself (`fork_all`), so
+    it inherits the parent's handler, its list of sibling PIDs and any stop
+    the parent has recorded. Every child clears the inheritance before it
+    returns from `fork_all`; the app then installs the worker handler with
+    `install_shutdown_signals`.
+
+    A stop recorded before the reset below ends the child here, with 0: the
+    inherited handler ran in it (and swallowed the signal, passing nothing
+    on), or the parent was told to stop as it forked it. Either way the
+    worker was told to stop before it had anything to drain. After the
+    reset a SIGTERM takes the default action, so no stop is lost.
     """
     _ = install_signal_handler(SIGTERM, 0)
     _ = install_signal_handler(SIGINT, 0)
+    var told = supervisor_stopping()
     publish_child_pids(List[Int]())
-    set_supervisor_stopping(False)
+    clear_supervisor_stop()
+    if told:
+        process_exit(0)
+
+
+comptime _FORK_GAP_ENV = "M0_TEST_FORK_GAP_MS"
+"""A pause between one fork and the next: a gate's instrument, not a setting.
+
+`smoke-shutdown` sets it so the supervisor is still forking when it is
+signalled, the window B21 once hit by chance; see `_fork_gap_ns`."""
+
+
+def _fork_gap_ns() -> Int:
+    """`M0_TEST_FORK_GAP_MS` in nanoseconds; 0 when unset, not a count, or not above 0.
+
+    Holds the supervisor between its forks, where a worker already forked
+    is serving and the rest are not yet forked -- the one window in which a
+    signal to the supervisor used to take the default action (B21). The
+    gate that sets it signals the supervisor once the first worker answers,
+    so the signal lands inside the pause on every run instead of once in a
+    hundred.
+    """
+    var raw = getenv(_FORK_GAP_ENV, "")
+    if raw.byte_length() == 0:
+        return 0
+    try:
+        var ms = Int(raw)
+        return ms * 1_000_000 if ms > 0 else 0
+    except:
+        return 0
+
+
+def _pause_unless_stopped(ns: Int):
+    """Sleep `ns` in short slices, returning as soon as a stop is recorded."""
+    var until = perf_counter_ns() + ns
+    while perf_counter_ns() < until and not supervisor_stopping():
+        sleep(0.01)
 
 
 # _try_respawn outcomes. A plain Bool cannot express the case that matters:
@@ -248,6 +304,9 @@ the server as the refusal it is rather than as ten crashes and an exit 1."""
 
 comptime _RELOAD_DRAIN_NS = 5_000_000_000
 """How long a reload waits for workers to drain before it uses SIGKILL."""
+
+comptime _SLOT_PROBE_PID = 0x6D30_5F32  # "m0_2"
+"""What `_arm_signal_propagation` writes into the child-PID block and reads back."""
 
 
 struct WorkerSupervisor:
@@ -393,8 +452,25 @@ struct WorkerSupervisor:
         Every child — initial or respawned — returns from this call to run the
         caller's normal server startup path. The parent never returns: it
         supervises until all children are gone, then exits the process.
+
+        The parent arms the handler that passes a signal on BEFORE its first
+        fork, and publishes each child's PID as soon as it has it. Armed
+        after the last fork, a SIGTERM aimed at the supervisor alone while
+        it was still forking took the default action: the supervisor died
+        where it stood, and every worker already forked was left serving,
+        holding the port. The window was real because a worker answers once
+        its loop starts, which can be before the next worker is forked; CI's
+        `smoke-shutdown` hit it once in about a hundred runs (B21). A stop
+        that arrives while it forks ends the forking: the workers already
+        forked are signalled and supervised to the end, and no more are.
         """
+        self._arm_signal_propagation()
+        var gap_ns = _fork_gap_ns()
         for i in range(self.num_workers):
+            if i > 0 and gap_ns > 0:
+                _pause_unless_stopped(gap_ns)
+            if supervisor_stopping():
+                break
             self.last_fork_ns = perf_counter_ns()
             var pid = fork()
             if pid == 0:
@@ -405,10 +481,18 @@ struct WorkerSupervisor:
                 self._exec_if_spawning(i)
                 return
             self.child_pids.append(pid)
+            self._publish_children()
 
         # Parent process: supervise children
-        self._arm_signal_propagation()
-        print("[parent] pid={} supervising {} workers".format(getpid(), self.num_workers))
+        if len(self.child_pids) < self.num_workers:
+            print(
+                "[parent] pid={} told to stop after forking {} of {} workers;"
+                " forking no more".format(
+                    getpid(), len(self.child_pids), self.num_workers
+                )
+            )
+        else:
+            print("[parent] pid={} supervising {} workers".format(getpid(), self.num_workers))
         var reloading = Bool(self._scanner)
         if reloading:
             # Prime the baseline here, in the parent, AFTER the fork: the
@@ -443,7 +527,9 @@ struct WorkerSupervisor:
         `fork_all`'s caller rather than keep supervising. Returns False in the
         parent once supervision is over.
         """
-        var remaining = self.num_workers
+        # The workers forked, which is fewer than asked when a stop ended
+        # the forking (`fork_all`).
+        var remaining = self._alive_count()
         while remaining > 0:
             var result = waitpid_blocking(-1)
             var child_pid = result[0]
@@ -513,7 +599,7 @@ struct WorkerSupervisor:
         sleep the interval, scan. `waitpid_nonblocking` answering -1 means
         no children remain, which for a poller is an ordinary end.
         """
-        var remaining = self.num_workers
+        var remaining = self._alive_count()
         while remaining > 0:
             while True:
                 var result = waitpid_nonblocking()
@@ -642,7 +728,7 @@ struct WorkerSupervisor:
                 self._exec_if_spawning(i)
                 return True
             self.child_pids[i] = pid
-        publish_child_pids(self.child_pids)
+        self._publish_children()
         # Rebaseline AFTER the fork: a worker's own startup can write files
         # (`__pycache__` is skipped, but a project may write others), and
         # counting those as a change would reload forever.
@@ -699,7 +785,7 @@ struct WorkerSupervisor:
             return _RESPAWN_CHILD
         if respawn_index >= 0 and respawn_index < len(self.child_pids):
             self.child_pids[respawn_index] = new_pid
-            publish_child_pids(self.child_pids)
+            self._publish_children()
         print("[parent] respawned worker {} as pid={}".format(respawn_index, new_pid))
         return _RESPAWN_PARENT
 
@@ -716,21 +802,39 @@ struct WorkerSupervisor:
                 publish_child_pids(self.child_pids)
                 return
 
+    def _publish_children(self):
+        """Publish the child PIDs, then pass on a stop the handler recorded first.
+
+        The handler signals the PIDs published when it runs, so a stop that
+        lands between a `fork` and the publish of its PID would never reach
+        that child. The handler records the stop before it reads the list,
+        so reading the stop after the publish closes the gap: either the
+        stop is seen here, or the handler finds the PID. A worker signalled
+        twice drains once.
+        """
+        publish_child_pids(self.child_pids)
+        var sig = supervisor_stop_signal()
+        if sig != 0:
+            self._kill_all(sig)
+
     def _arm_signal_propagation(self):
         """Make a SIGTERM/SIGINT aimed at the parent alone reach the workers.
 
-        Publishes the child PIDs where `_on_supervisor_signal` can read them,
-        then verifies the publish round-tripped before installing anything. A
-        handler over a slot that does not work would swallow SIGTERM and leave
-        no way to stop the supervisor at all — strictly worse than the default
+        Called before the first fork (`fork_all`). Publishes the child PIDs
+        (none yet: `_publish_children` adds each as it is forked) where
+        `_on_supervisor_signal` can read them, after verifying that the block
+        round-trips, and only then installs the handler. A handler over a
+        block that does not work would swallow SIGTERM and leave no way to
+        stop the supervisor at all — strictly worse than the default
         behaviour, which is what declining leaves in place. See
-        `src/global_slot.mojo` for when that can happen.
+        `src/global_slot.mojo` for when that can happen. The check writes a
+        probe PID and reads it back, because an empty list reads back as the
+        zero a dead block reads too; nothing is installed yet to act on it.
         """
+        publish_child_pids([_SLOT_PROBE_PID])
+        var live = child_pid_count() == 1 and child_pid_at(0) == _SLOT_PROBE_PID
         publish_child_pids(self.child_pids)
-        var expected = len(self.child_pids)
-        if expected > MAX_TRACKED_CHILDREN:
-            expected = MAX_TRACKED_CHILDREN
-        if child_pid_count() != expected:
+        if not live:
             print("[parent] signal propagation unavailable; workers will not"
                   " be reaped if the supervisor alone is signalled")
             return
