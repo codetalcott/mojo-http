@@ -24,7 +24,8 @@ from lightbug_http.offload import (
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
     POOL_FREE_WAKE_AGE_NS, _WAKE_MAX_LANES, WS_DATAGRAM_MAX, ws_message_room,
-    send_bounded, append_i64_le, read_i64_le,
+    send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
+    encode_ack, decode_ack,
 )
 from lightbug_http.uri import URI
 
@@ -34,18 +35,14 @@ from src.threads import (
 
 
 def _read_ack(fd: Int) raises -> Tuple[Int, Int]:
-    """One `(slot i32, credit i32)` datagram off an ack pair's read end."""
-    var buf = List[UInt8](capacity=8)
-    for _ in range(8):
+    """One ack datagram off an ack pair's read end, through the codec's
+    own reader (`decode_ack`)."""
+    var buf = List[UInt8](capacity=ACK_BYTES)
+    for _ in range(ACK_BYTES):
         buf.append(0)
-    var n = recv(FileDescriptor(fd), Span(buf), UInt(8), 0)
-    assert_equal(Int(n), 8)
-    var s = UInt32(0)
-    var c = UInt32(0)
-    for i in range(4):
-        s |= UInt32(buf[i]) << UInt32(8 * i)
-        c |= UInt32(buf[4 + i]) << UInt32(8 * i)
-    return (Int(s), Int(c))
+    var n = recv(FileDescriptor(fd), Span(buf), UInt(ACK_BYTES), 0)
+    assert_equal(Int(n), ACK_BYTES)
+    return decode_ack(Span(buf))
 
 
 def _job_buffer() -> List[UInt8]:
@@ -703,6 +700,39 @@ def test_the_i64_codec_is_little_endian_twos_complement() raises:
         append_i64_le(buf, v)
         buf.append(9)
         assert_equal(read_i64_le(Span(buf), 1), v)
+
+
+def test_the_ack_codec_is_i32_little_endian_and_sign_extends() raises:
+    """`encode_ack` and `decode_ack` are the one codec of a drain ack,
+    `(slot: i32 LE, credit: i32 LE)`, where the loop's credit
+    (`ack_stream`), its disconnect to a pool thread
+    (`_send_pool_disconnect`, `ACK_DISCONNECT`) and the thread's reader
+    (`_read_ack`) each used to spell their own. The shim reads an
+    executor's with `int.from_bytes(..., 'little')`, so the byte order is
+    pinned here, and the disconnect's -1 must come back as -1: a credit of
+    4294967295 is a stream that never learns its client left."""
+    _assert_bytes(encode_ack(3, 70000), [3, 0, 0, 0, 0x70, 0x11, 0x01, 0])
+    _assert_bytes(
+        encode_ack(42, ACK_DISCONNECT), [42, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF]
+    )
+    _assert_bytes(encode_ack(0x01020304, 0), [4, 3, 2, 1, 0, 0, 0, 0])
+    assert_equal(len(encode_ack(1023, 65536)), ACK_BYTES)
+    for pair in [
+        (0, 0), (1023, 65536), (42, ACK_DISCONNECT), (7, 2147483647),
+        (7, -2147483648),
+    ]:
+        var wire = encode_ack(pair[0], pair[1])
+        var got = decode_ack(Span(wire))
+        assert_equal(got[0], pair[0])
+        assert_equal(got[1], pair[1])
+    # What `ack_stream` writes is what the codec reads.
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    pool.enable_base_stream_ack()
+    assert_true(pool.ack_stream(5, 4096))
+    var got = _read_ack(pool.stream_ack_read)
+    assert_equal(got[0], 5)
+    assert_equal(got[1], 4096)
 
 
 def test_send_bounded_reports_a_channel_that_will_not_take_it() raises:

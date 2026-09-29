@@ -12,7 +12,9 @@ without a `WSGIApp` is the handler's frame dispatch and the pump itself;
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
 from lightbug_http.broadcast import decode_bus_frame
-from lightbug_http.offload import make_stream_ack_pair, drain_ack_fd
+from lightbug_http.offload import (
+    make_stream_ack_pair, drain_ack_fd, encode_ack, ACK_DISCONNECT,
+)
 
 from src.handler import (
     pool_stream_url,
@@ -22,7 +24,6 @@ from src.handler import (
     _send_pool_disconnect,
     _read_ack,
     _poll_acks,
-    _i32,
 )
 from std.ffi import c_int
 from std.sys.info import CompilationTarget
@@ -49,18 +50,11 @@ def test_only_a_p_name_answers_an_ack_fd() raises:
     assert_equal(pool_stream_ack_fd(String("")), -1)
 
 
-def test_i32_sign_extends_the_wire_value() raises:
-    """`Int(Int32(UInt32(0xFFFFFFFF)))` is 4294967295 on this toolchain, not
-    -1; the disconnect ack depends on getting -1 back."""
-    assert_equal(_i32(UInt32(0xFFFFFFFF)), -1)
-    assert_equal(_i32(UInt32(16384)), 16384)
-    assert_equal(_i32(UInt32(0)), 0)
-    assert_equal(_i32(UInt32(0x80000000)), -2147483648)
-
-
 def test_disconnect_ack_round_trips_as_minus_one_for_the_slot() raises:
     """What `sse_slot_disconnected` sends down a pool thread's pair is what
-    the thread's own reader decodes: `(slot, -1)`, and nothing else."""
+    the thread's own reader decodes: `(slot, -1)`, and nothing else. The
+    codec itself is the fork's (`encode_ack`, `decode_ack`), pinned byte
+    for byte in `test_offload.mojo`."""
     var pair = make_stream_ack_pair()
     _send_pool_disconnect(pair[1], 42)
     var slot = -1
@@ -68,7 +62,7 @@ def test_disconnect_ack_round_trips_as_minus_one_for_the_slot() raises:
     var rc = _read_ack(pair[0], _MSG_DONTWAIT, slot, credit)
     assert_equal(rc, 1)
     assert_equal(slot, 42)
-    assert_equal(credit, -1)
+    assert_equal(credit, ACK_DISCONNECT)
     # Nothing more queued: the non-blocking read says so rather than parking.
     assert_equal(_read_ack(pair[0], _MSG_DONTWAIT, slot, credit), 0)
 
@@ -79,14 +73,7 @@ def test_poll_acks_accumulates_credit_and_stops_at_a_disconnect() raises:
     # disconnect for slot 5 — the poll must add the first two, skip the
     # stranger, and answer -1 at the disconnect.
     for pieces in [(5, 100), (5, 200), (9, 999)]:
-        var s = UInt32(pieces[0])
-        var c = UInt32(pieces[1])
-        var msg = List[UInt8]()
-        for i in range(4):
-            msg.append(UInt8((s >> UInt32(8 * i)) & 0xFF))
-        for i in range(4):
-            msg.append(UInt8((c >> UInt32(8 * i)) & 0xFF))
-        _ = _send_bytes(pair[1], msg)
+        _ = _send_bytes(pair[1], encode_ack(pieces[0], pieces[1]))
     var total = _poll_acks(pair[0], 5, 16384)
     assert_equal(total, 16384 + 300)
     _send_pool_disconnect(pair[1], 5)

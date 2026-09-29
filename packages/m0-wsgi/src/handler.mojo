@@ -35,7 +35,8 @@ from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
 from lightbug_http.offload import (
     OffloadPool, STREAM_GEN_NONE, WS_DATAGRAM_MAX, ws_message_room,
-    send_bounded, append_i64_le, read_i64_le,
+    send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
+    encode_ack, decode_ack,
 )
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
@@ -1901,38 +1902,30 @@ def pool_stream_ack_fd(url: String) -> Int:
 
 
 def _send_pool_disconnect(fd: Int, slot: Int):
-    """`(slot: i32, -1: i32)` on a pool thread's ack pair: the client is
-    gone. The same shape as a credit ack, so the thread's one blocking
-    read learns both. Bounded retry, never a park: this runs on the loop."""
-    var msg = List[UInt8](capacity=8)
-    var s = UInt32(slot)
-    for i in range(4):
-        msg.append(UInt8((s >> UInt32(8 * i)) & 0xFF))
-    for _ in range(4):
-        msg.append(UInt8(0xFF))
+    """`(slot, ACK_DISCONNECT)` on a pool thread's ack pair: the client is
+    gone. The same shape as a credit ack (`encode_ack`), so the thread's
+    one blocking read learns both. Bounded retry, never a park: this runs
+    on the loop."""
+    var msg = encode_ack(slot, ACK_DISCONNECT)
     _ = send_bounded(fd, Span(msg))
 
 
 def _read_ack(fd: Int, flags: c_int, mut slot_out: Int, mut credit_out: Int) -> Int:
-    """One `(slot i32, credit i32)` datagram off an ack pair.
+    """One ack (`decode_ack`) off an ack pair.
 
     Returns 1 with the fields filled, 0 for nothing there (non-blocking
     only), -1 for EOF or an error other than EINTR (retried inside)."""
-    var buf = List[UInt8](capacity=8)
-    for _ in range(8):
+    var buf = List[UInt8](capacity=ACK_BYTES)
+    for _ in range(ACK_BYTES):
         buf.append(0)
     while True:
         var rc = external_call["recv", Int](
-            c_int(fd), buf.unsafe_ptr(), UInt(8), flags
+            c_int(fd), buf.unsafe_ptr(), UInt(ACK_BYTES), flags
         )
-        if rc == 8:
-            var s = UInt32(0)
-            var c = UInt32(0)
-            for i in range(4):
-                s |= UInt32(buf[i]) << UInt32(8 * i)
-                c |= UInt32(buf[4 + i]) << UInt32(8 * i)
-            slot_out = _i32(s)
-            credit_out = _i32(c)
+        if rc == ACK_BYTES:
+            var ack = decode_ack(Span(buf))
+            slot_out = ack[0]
+            credit_out = ack[1]
             return 1
         if rc < 0:
             var err = get_errno()
@@ -1958,16 +1951,6 @@ def _poll_acks(fd: Int, slot: Int, credit: Int) -> Int:
         if amount < 0:
             return -1
         total += amount
-
-
-def _i32(v: UInt32) -> Int:
-    """Sign-extend a wire `i32`. `Int(Int32(UInt32(0xFFFFFFFF)))` is
-    4294967295 on Mojo 1.0, not -1 — the conversion does not wrap — so the
-    disconnect ack (`-1`) has to be recovered by hand."""
-    var n = Int(v)
-    if n >= 0x80000000:
-        n -= 0x100000000
-    return n
 
 
 def _wait_ack(fd: Int, slot: Int) -> Int:

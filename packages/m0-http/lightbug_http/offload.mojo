@@ -561,6 +561,54 @@ def read_i64_le(bytes: Span[Byte, _], at: Int) -> Int:
     return Int(Int64(bits))
 
 
+comptime ACK_BYTES = 8
+"""A drain ack: `(slot: i32 LE, credit: i32 LE)`, the one datagram on
+every ack pair -- an executor's and a pool thread's. `encode_ack` is its
+only writer and `decode_ack` its only reader in Mojo; the shim reads the
+executor's with `int.from_bytes(..., 'little')`, where a credit is never
+negative."""
+
+comptime ACK_DISCONNECT = -1
+"""The credit of the ack that tells a pool thread its client is gone
+(`m0_wsgi.handler`'s `_send_pool_disconnect`): the same shape as a
+credit, so the thread's one blocking read learns both."""
+
+
+def append_i32_le(mut out: List[UInt8], value: Int):
+    """Append `value` as four little-endian bytes, two's complement: the
+    words of a drain ack."""
+    var bits = UInt32(value & 0xFFFFFFFF)
+    for shift in range(0, 32, 8):
+        out.append(UInt8((bits >> UInt32(shift)) & 0xFF))
+
+
+def read_i32_le(bytes: Span[Byte, _], at: Int) -> Int:
+    """The four little-endian bytes at `at`, sign-extended, as
+    `append_i32_le` wrote them. By hand: `Int(Int32(UInt32(0xFFFFFFFF)))`
+    was 4294967295 on Mojo 1.0, not -1 -- the conversion did not wrap --
+    and the disconnect ack (`ACK_DISCONNECT`) depends on getting -1 back."""
+    var bits = 0
+    for i in range(4):
+        bits |= Int(bytes[at + i]) << (i * 8)
+    if bits >= 0x80000000:
+        bits -= 0x100000000
+    return bits
+
+
+def encode_ack(slot: Int, credit: Int) -> List[UInt8]:
+    """One drain ack (`ACK_BYTES`): the loop's credit for `slot`
+    (`OffloadPool.ack_stream`), or its disconnect (`ACK_DISCONNECT`)."""
+    var out = List[UInt8](capacity=ACK_BYTES)
+    append_i32_le(out, slot)
+    append_i32_le(out, credit)
+    return out^
+
+
+def decode_ack(bytes: Span[Byte, _]) -> Tuple[Int, Int]:
+    """`(slot, credit)` from an `ACK_BYTES` datagram `encode_ack` wrote."""
+    return (read_i32_le(bytes, 0), read_i32_le(bytes, 4))
+
+
 def _encode_job(slot: Int) -> List[UInt8]:
     var out = List[UInt8](capacity=_JOB_BYTES)
     append_i64_le(out, slot)
@@ -1234,13 +1282,7 @@ struct OffloadPool(Movable):
             ack_fd = self.slot_ack_fd[slot]
         elif lane < len(self.lane_ack_write) and self.lane_ack_write[lane] >= 0:
             ack_fd = self.lane_ack_write[lane]
-        var msg = List[UInt8](capacity=8)
-        var s = UInt32(slot)
-        var b = UInt32(bytes_flushed)
-        for i in range(4):
-            msg.append(UInt8((s >> UInt32(8 * i)) & 0xFF))
-        for i in range(4):
-            msg.append(UInt8((b >> UInt32(8 * i)) & 0xFF))
+        var msg = encode_ack(slot, bytes_flushed)
         return send_bounded(ack_fd, Span(msg))
 
     def addr(mut self) -> Int:
