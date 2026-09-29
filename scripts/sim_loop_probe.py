@@ -49,31 +49,17 @@ import socket
 import sys
 import threading
 import time
-import traceback
 
+from probelib import phase, sse_events, stamp
 
-# Which phase is running, for the crash handler below. This probe's phases
-# fail for opposite reasons -- OPENING the stream failing is a server that
-# never came up, while READING it failing is the producer not reaching the
-# loop, which is the thing the gate exists to catch -- and both live inside
-# an http.client call a traceback names identically.
-# scripts/drain_idle_probe.py carries the shape of this stamp.
-PHASE = "startup"
+# Which phase is running, for the crash handler. This probe's phases fail
+# for opposite reasons -- OPENING the stream failing is a server that never
+# came up, while READING it failing is the producer not reaching the loop,
+# which is the thing the gate exists to catch -- and both live inside an
+# http.client call a traceback names identically.
+stamp("sim_loop_probe: FAIL", stream=sys.stderr)
 
 SAMPLES = 24
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("sim_loop_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
 
 
 def sample_now(port, out):
@@ -105,22 +91,16 @@ def open_stream(port, secs):
     return conn, resp, sock
 
 
-def read_ids(resp, deadline, ids):
-    """Append each frame's step id to `ids` until the deadline or EOF."""
-    buf = b""
-    while time.perf_counter() < deadline:
-        try:
-            chunk = resp.read(1)
-        except (TimeoutError, OSError, ValueError):
-            break
-        if not chunk:
-            break
-        buf += chunk
-        while b"\n" in buf:
-            line, buf = buf.split(b"\n", 1)
-            text = line.decode("utf-8", "replace").strip()
-            if text.startswith("id: "):
-                ids.append(int(text[4:]))
+def read_ids(resp, sock, deadline, ids):
+    """Append each frame's step id to `ids` until the deadline (a
+    `time.monotonic()` value) or EOF. The deadline is the socket's: a
+    heartbeat cannot reset it."""
+    try:
+        for ev in sse_events(resp, sock=sock, deadline=deadline):
+            if ev.id is not None:
+                ids.append(int(ev.id))
+    except (OSError, ValueError):
+        pass
 
 
 def refuse_gaps(ids, which):
@@ -134,7 +114,7 @@ def refuse_gaps(ids, which):
 
 def one_stream(port, secs):
     phase("opening the stream")
-    conn, resp, _ = open_stream(port, secs)
+    conn, resp, sock = open_stream(port, secs)
 
     # Sample while the stream is held, so the two overlap in time.
     worst = []
@@ -143,7 +123,7 @@ def one_stream(port, secs):
 
     phase("reading simulation frames")
     ids = []
-    read_ids(resp, time.perf_counter() + secs, ids)
+    read_ids(resp, sock, time.monotonic() + secs, ids)
     conn.close()
     sampler.join()
 
@@ -170,16 +150,16 @@ def many_streams(port, secs, k):
         time.sleep(0.2)
 
     phase("reading simulation frames on %d streams" % k)
-    deadline = time.perf_counter() + secs
+    deadline = time.monotonic() + secs
     readers = [
-        threading.Thread(target=read_ids, args=(resp, deadline, ids))
-        for _, resp, _, ids, _ in streams
+        threading.Thread(target=read_ids, args=(resp, sock, deadline, ids))
+        for _, resp, _, ids, sock in streams
     ]
     for r in readers:
         r.start()
-    time.sleep(max(0.0, deadline - time.perf_counter()))
-    # A starved stream is blocked inside read(1) with nothing coming; shutting
-    # its socket down is what ends that read at the deadline.
+    time.sleep(max(0.0, deadline - time.monotonic()))
+    # Each reader ends at the deadline by its socket's timeout; the shutdown
+    # is the backstop for one caught between two reads of a chunked line.
     for _, _, _, _, sock in streams:
         try:
             sock.shutdown(socket.SHUT_RDWR)

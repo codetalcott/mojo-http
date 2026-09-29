@@ -48,33 +48,16 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
-import traceback
+
+import probelib
+from probelib import NotServing, fail, phase, stamp, wait_healthy
 
 TIMEOUT = 15.0
 
 # Which phase is running, for failures and for the crash handler: the phases
 # share every helper here, and a traceback names the helper, never what was
 # being proven (scripts/phase_stamp_check.py).
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("parallel_runtime_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg: str) -> None:
-    print("parallel_runtime_probe: FAIL: %s: %s" % (PHASE, msg), file=sys.stderr)
-    sys.exit(1)
+stamp("parallel_runtime_probe: FAIL", fail="parallel_runtime_probe: FAIL: {phase}: {msg}", stream=sys.stderr)
 
 
 def clean_env() -> dict:
@@ -91,13 +74,6 @@ def get(port: int, path: str, timeout: float = TIMEOUT):
         return r.status, body, r.getheader("x-thread")
     finally:
         c.close()
-
-
-def healthy(port: int) -> bool:
-    try:
-        return get(port, "/health", timeout=1.0)[0] == 200
-    except OSError:
-        return False
 
 
 def report_of(stdout: str) -> dict:
@@ -143,15 +119,14 @@ def start(binary: str, args: list, port: int, log: str) -> subprocess.Popen:
     """Run for real and wait for /health; a process that exits first is the failure."""
     out = open(log, "w")
     p = subprocess.Popen([binary, *args], env=clean_env(), stdout=out, stderr=out)
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
+    try:
+        wait_healthy("http://127.0.0.1:%d/health" % port, p, timeout=30)
+    except NotServing:
         if p.poll() is not None:
             fail("%s exited %d before serving:\n%s" % (args, p.returncode, open(log).read()[-2000:]))
-        if healthy(port):
-            return p
-        time.sleep(0.05)
-    p.kill()
-    fail("%s not healthy on port %d after 30 s" % (args, port))
+        p.kill()
+        fail("%s not healthy on port %d after 30 s" % (args, port))
+    return p
 
 
 def expect_route(port: int, path: str, prefix: str, thread: str | None) -> int:
@@ -194,22 +169,18 @@ def main() -> int:
             [binary, "--port", str(port), "--workers", "2"],
             env=clean_env(), stdout=lf, stderr=lf,
         )
-        deadline = time.monotonic() + 30
-        served = False
-        while time.monotonic() < deadline and p.poll() is None:
-            if healthy(port):
-                served = True
-                break
-            time.sleep(0.05)
-        if served:
+        try:
+            wait_healthy("http://127.0.0.1:%d/health" % port, p, timeout=30)
+        except NotServing:
+            if p.poll() is None:
+                p.kill()
+                p.wait()
+                fail("--workers 2 neither exited nor served in 30 s")
+        else:
             # Never ask this server for /par: that is the hang the refusal
             # exists to prevent. Stop it by pid, bounded, and fail.
             stop(p, "the served prefork")
             fail("M0_WORKERS=2 was SERVED with the parallel runtime linked; the refusal is gone")
-        if p.poll() is None:
-            p.kill()
-            p.wait()
-            fail("--workers 2 neither exited nor served in 30 s")
     text = open(log).read()
     if p.returncode != 78:
         fail("--workers 2 exited %d, wanted 78:\n%s" % (p.returncode, text[-1500:]))
@@ -237,7 +208,7 @@ def main() -> int:
         try:
             expect_route(port, "/par", "par=", None)
         except SystemExit:
-            errors.append(PHASE)
+            errors.append(probelib.PHASE)
         except Exception as e:  # a timeout here is the hang, reported not raised
             errors.append(repr(e))
 

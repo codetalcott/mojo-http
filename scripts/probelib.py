@@ -59,11 +59,15 @@ PHASE = "startup"
 _LABEL = "probe: FAIL"
 _FAIL = None
 _STREAM = None
+_FAIL_STREAM = None
+_ECHO = None
 
 
 def phase(name):
     global PHASE
     PHASE = name
+    if _ECHO is not None:
+        print(_ECHO.format(phase=name), flush=True)
 
 
 def _stamped(kind, exc, tb):
@@ -73,21 +77,25 @@ def _stamped(kind, exc, tb):
     print("%s: %s: %r" % (_LABEL, PHASE, exc), file=_STREAM or sys.stdout)
 
 
-def stamp(label, fail=None, stream=None):
+def stamp(label, fail=None, stream=None, fail_stream=None, echo=None):
     """Install the crash handler, naming this probe.
 
     An unhandled exception prints its traceback and then
     `"<label>: <phase>: <repr>"`. `fail` is the template `fail()` prints,
     with `{msg}` and `{phase}` filled in; without one it is `"<label>:
     {msg}"`. `stream` is where both lines go, stdout unless given: the
-    probes this replaced differ, and each keeps its own.
+    probes this replaced differ, and each keeps its own. `fail_stream`
+    moves the `fail()` line alone, for a probe that failed through
+    `sys.exit(msg)` -- stderr -- while its crash line went to stdout.
+    `echo`, a template with `{phase}`, is printed to stdout as each phase
+    begins, for a probe whose phases were also its progress lines.
 
     Called at the top of the probe, before anything can raise: a handler
     installed after the body that raises names nothing (the checker's
     dynamic half fails a probe that does that).
     """
-    global _LABEL, _FAIL, _STREAM
-    _LABEL, _FAIL, _STREAM = label, fail, stream
+    global _LABEL, _FAIL, _STREAM, _FAIL_STREAM, _ECHO
+    _LABEL, _FAIL, _STREAM, _FAIL_STREAM, _ECHO = label, fail, stream, fail_stream, echo
     sys.excepthook = _stamped
 
 
@@ -95,7 +103,7 @@ def fail(msg):
     """Print this probe's failure line for `msg`, and exit 1."""
     template = _FAIL if _FAIL is not None else _LABEL + ": {msg}"
     line = template.format(msg=msg, phase=PHASE)
-    print(line, file=_STREAM or sys.stdout)
+    print(line, file=_FAIL_STREAM or _STREAM or sys.stdout)
     sys.exit(1)
 
 
@@ -687,6 +695,26 @@ def _selftest():
           (done.stdout, done.returncode) == ("x-probe: p2: it broke {braces} and all\n", 1))
     done = child("from probelib import fail, stamp\nstamp('x FAIL')\nfail('m')\n")
     check("fail() without a template prints '<label>: <msg>'", done.stdout == "x FAIL: m\n")
+    split = ("import sys\nfrom probelib import fail, phase, stamp\n"
+             "stamp('x FAIL', fail='x: {phase}: {msg}', fail_stream=sys.stderr)\n"
+             "phase('p3')\n")
+    done = child(split + "fail('m')\n")
+    check("fail_stream= moves the fail() line alone",
+          (done.stdout, done.stderr, done.returncode) == ("", "x: p3: m\n", 1))
+    done = child(split + "raise ValueError('v')\n")
+    check("...and leaves the crash line on its own stream",
+          done.stdout == "x FAIL: p3: ValueError('v')\n" and "Traceback" in done.stderr
+          and "x FAIL:" not in done.stderr)
+    done = child("from probelib import phase, stamp\n"
+                 "stamp('x FAIL', echo='--- {phase}')\n"
+                 "phase('one')\nprint('between')\nphase('two')\n")
+    check("echo= prints each phase as it begins, in order with the probe's own lines",
+          done.stdout == "--- one\nbetween\n--- two\n")
+    done = child("import os\nfrom probelib import phase, stamp\n"
+                 "stamp('x FAIL', echo='--- {phase}')\n"
+                 "phase('one')\nos._exit(3)\n")
+    check("...flushed as it is printed: a probe that dies next has still said it",
+          (done.stdout, done.returncode) == ("--- one\n", 3))
     # (Printed through a list: phase_stamp_check reads a print naming the
     # stamp's global on one line as the crash handler naming the phase, and
     # this line must not stand in for the handler's own.)

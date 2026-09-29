@@ -38,7 +38,8 @@ Exits 0 on success, 1 naming the rule that broke.
 import socket
 import sys
 import time
-import traceback
+
+from probelib import fail, phase, stamp
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8404
 PATH = "/input/read"
@@ -47,25 +48,8 @@ PATH = "/input/read"
 WAIT = 1.5
 
 
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("expect_continue FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("expect_continue FAIL:", msg)
-    sys.exit(1)
+# `fail()` prints `expect_continue FAIL: <msg>`, the stamp's own shape.
+stamp("expect_continue FAIL")
 
 
 def ask(expect_hdr, proto="HTTP/1.1", body=b"hello", declared=None):

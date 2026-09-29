@@ -39,7 +39,8 @@ import socket
 import struct
 import sys
 import time
-import traceback
+
+from probelib import phase, stamp
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8141
@@ -53,29 +54,17 @@ RELEASE = 3.0
 # filled both socket buffers and parked on its write registration.
 STALL = 1.0
 
-# Which phase is running, for the crash handler below. Every shape reads the
-# count through the same scrape connection, so a traceback out of `active()`
-# names the same line whichever shape was being built or released.
+# Which phase is running, for the crash handler. Every shape reads the count
+# through the same scrape connection, so a traceback out of `active()` names
+# the same line whichever shape was being built or released.
 # apps/asgi_bare/ws_probe.py carries the original of this comment.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("peer_reset_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("peer_reset_probe: FAIL")
 
 failures = []
 
 
 def fail(where, msg):
+    """Record a failure against its shape; the probe reports them all."""
     failures.append("%s: %s" % (where, msg))
 
 
