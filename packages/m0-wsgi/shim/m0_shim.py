@@ -1319,11 +1319,12 @@ class _Cycle:
     # executor thread's per-request path, which is the bound at low
     # concurrency. THE OWNERSHIP RULES DO NOT MOVE with the shape: the
     # streaming mark and the cancellable stream task go on the slot's
-    # OWNER task (`_exec_slot_task[slot]`), never asyncio.current_task();
-    # cleanup runs only if the finishing task is the owner; every "am I
-    # gone" check asks `_task_gone(self.task)` about this request's own
-    # task; the credit windows are per slot. `poe test-shim` sabotages each
-    # of them.
+    # OWNER, this request's own task (`self.task`), never
+    # asyncio.current_task() and never what the slot's owner record names
+    # in an eager first step (B29); cleanup runs only if the finishing task
+    # is the owner; every "am I gone" check asks `_task_gone(self.task)`
+    # about this request's own task; the credit windows are per slot.
+    # `poe test-shim` sabotages each of them.
     #
     # Buffered until the application proves it is streaming (its first
     # more_body=True chunk), then a credit-gated chunk producer. A
@@ -1422,6 +1423,12 @@ class _Cycle:
         view = memoryview(data)
         for start in range(0, len(view), _ASGI_CHUNK_SPLIT):
             piece = bytes(view[start : start + _ASGI_CHUNK_SPLIT])
+            # Asked before the slot is read, not only after the wait: a gone
+            # stream's task can still be running (a finally awaiting its
+            # cleanup), which `send`'s check lets through, and once the
+            # slot's next request is answered its task, the owner by then,
+            # has cleaned the slot. Unasked, the read below raised KeyError
+            # into whoever sent. `poe test-shim` holds this line.
             if _task_gone(owner):
                 return await _dropped()
             evt = _exec_credit_evts[slot]
@@ -1525,15 +1532,23 @@ class _Cycle:
 
                 slot = self.slot
                 self.streaming = True
-                # The slot's OWNER, never `asyncio.current_task()`: Starlette
-                # (so FastAPI and FastHTML) runs a StreamingResponse's body
-                # inside an anyio task group, so this `send` arrives from a
-                # CHILD task. Marking the child left the request task's
-                # done-callback thinking it had a buffered result to unpack
-                # -- one `TypeError` traceback in the log per streamed
-                # response -- and pointed disconnect cancellation at a task
-                # the app's task group would simply restart around.
-                task = _exec_slot_task.get(slot) or asyncio.current_task()
+                # This request's OWN task, the slot's owner: never
+                # `asyncio.current_task()`, and never read back from the
+                # slot's owner record. Starlette (so FastAPI and FastHTML)
+                # runs a StreamingResponse's body inside an anyio task group,
+                # so this `send` arrives from a CHILD task. Marking the child
+                # left the request task's done-callback thinking it had a
+                # buffered result to unpack -- one `TypeError` traceback in
+                # the log per streamed response -- and pointed disconnect
+                # cancellation at a task the app's task group would simply
+                # restart around. And under an eager task factory this can
+                # run inside `spawn`'s create_task, before `spawn` records
+                # the owner: the record named the previous connection's task
+                # or nothing, so the mark went to that task, and this stream
+                # outlived its client, or to the child, and the request was
+                # reported failed after its head (B29). `run` sets
+                # `self.task` before the application starts.
+                task = self.task
                 task._m0_streaming = True
                 _exec_stream_tasks[slot] = task
                 _exec_credits[slot] = _ASGI_CREDIT_WINDOW
@@ -1590,7 +1605,8 @@ class _Cycle:
         if self.task is None:
             # asyncio.eager_task_factory runs a task's first step INSIDE
             # create_task, before `spawn` can record it; every "am I gone"
-            # would then ask about None and a stream would never end.
+            # would then ask about None and a stream would never end, and
+            # the switch to streaming would have no task to mark.
             import asyncio
 
             self.task = asyncio.current_task()

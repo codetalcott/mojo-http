@@ -1703,7 +1703,7 @@
       "category": "L. ASGI 3.0",
       "capability": "An application may install asyncio's eager task factory: a response it sends in a task's first step, before any await, is answered",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `M0_ASGI_EAGER_TASKS=1` makes the bare app install `asyncio.eager_task_factory` at lifespan startup, and a plain answer and a stream begun in the first step must both arrive; the same task runs in the inverted step. The first step runs inside the executor's spawn, and the job that spawned it held the executor's state as a copy and stored it back as it returned, erasing the completion the step had parked: every such request went unanswered, on the pump and inverted alike"
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `M0_ASGI_EAGER_TASKS=1` makes the bare app install `asyncio.eager_task_factory` at lifespan startup, and a plain answer and a stream begun in the first step must both arrive; the same task runs in the inverted step. The first step runs inside the executor's spawn, and the job that spawned it held the executor's state as a copy and stored it back as it returned, erasing the completion the step had parked: every such request went unanswered, on the pump and inverted alike. `poe test-shim` holds the stream such a step begins to its own task, which its client's departure ends, on a slot recycled from a stream still ending (`test_an_eager_stream_does_not_take_the_previous_connections_task`, B29)"
     },
     {
       "id": "L31",

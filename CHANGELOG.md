@@ -99,6 +99,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
   which the task runs first, shows on a real rule that a test that does
   not catch it, a test the suite does not list and a patch that does not
   apply each fail the run.
+- **`poe test-shim` guards five more of the executor shim's rules, each a
+  line whose removal failed no test** (SPEC L7). None changes what the
+  server does: each rule now has a test written for it, and the sabotage
+  reverts it.
+  - `spawn` drops the slot's disconnect future before a request's task
+    exists. Without that, a request parked in `receive()` on a slot
+    recycled from a stream heard the stream's disconnect at once, and
+    under Starlette's `StreamingResponse` the next client's stream ended
+    as it began.
+  - It drops it before `create_task`, not after. Under an eager task
+    factory, a request parked in `receive()` in its first step otherwise
+    lost its own disconnect future, and never heard its client leave.
+  - A WebSocket's inbox belongs to its own task. Kept by slot, a socket
+    whose client left while it was not in `receive()` passed that
+    disconnect, close code and all, to the next socket on the slot.
+  - A stream's send asks whether its client has gone before it reads the
+    slot's credit state. Without that, a push to a stream whose client had
+    gone, while the stream's task was still in a `finally`, raised
+    `KeyError` once the slot's next request had finished and cleaned the
+    slot, where it must be a quiet no-op.
+  - A stream whose client leaves, and a socket, clean their slot's state
+    when they finish. Without that, their credit windows, stream task and
+    inbox stayed on the slot until its next connection.
 - **CI's smokes are three jobs.** The `smoke` job had grown to a median of
   21.4 min on the ubuntu leg, against a 30-minute cap that a runner 1.45
   times slower, the slowest seen, would pass. It keeps the server's smokes
@@ -256,6 +279,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
   as above. NOTICE lists each.
 
 ### Fixed
+
+- **Under asyncio's eager task factory, an ASGI stream is stopped when its
+  client leaves** (SPEC L30). An application that installs
+  `asyncio.eager_task_factory` runs each request's first step before the
+  server has recorded which task serves the request, and a response that
+  began streaming in that step was marked on the wrong task.
+  - If an earlier request's task was still running on the same connection
+    slot, the stream was marked on that task. That covers a keep-alive
+    connection's previous request finishing its background work, and a
+    connection that had just closed. The new client leaving then cancelled
+    the other task, cutting the earlier request's background work short,
+    and the stream ran on until the server shut down.
+  - If the body came from a child task, as Starlette's `StreamingResponse`
+    sends it, the stream was marked on the child. When the client left,
+    the request was reported as failed after its response had begun.
+
+  A stream is now marked on its own request's task. `poe test-shim` holds
+  both shapes.
 
 - **An `M0_INVERTED=1` server exits on SIGTERM wherever the signal lands**
   (SPEC L8). Under the loop inversion a SIGTERM is read by whichever pass
