@@ -161,15 +161,12 @@ somebody else's Django projects inside the pull request that trips it.
     `nan` where text mode has `100000`, `-0`, `Infinity` and `NaN`.
 
   Past the notation, a number can differ too, because Mojo 1.1's `Float64`
-  printing and parsing are not correctly rounded. Stepping through the
-  bit patterns of every exponent, 23 of 75,388 doubles, all between about
-  2e16 and 6e19, printed as a neighbouring double: binary `text()` of
-  `6.0146505155939864e16` is `6.014650515593986e+16`. And the shortest
-  forms of 47 of 60,000 random doubles parsed one unit in the last place
-  away, so text mode's `float()` can differ from binary `float()`, which
-  decodes exactly. `Float32` printing has the same defect, which is why
-  `float4` is not rendered through it. SPEC O11 claims only the types that
-  agree.
+  printing and parsing are not correctly rounded (the next entry): binary
+  `text()` of `6.0146505155939864e16` is `6.014650515593986e+16`, a
+  neighbouring double, and text mode's `float()` can differ from binary
+  `float()`, which decodes exactly. `Float32` printing has the same
+  defect, which is why `float4` is not rendered through it. SPEC O11
+  claims only the types that agree.
 
   **Closed by:** none — a design round retires it: a calendar and the
   session's `TimeZone` for timestamps, `float4out` and `float8out`'s
@@ -177,6 +174,35 @@ somebody else's Django projects inside the pull request that trips it.
   `bytea_output` for `bytea`. An application that reads these types in
   binary mode is what would schedule it; until then, read them in text
   mode.
+
+- **Mojo 1.1's `Float64` printing and parsing are not correctly rounded.**
+  Every miss is one unit in the last place, in both directions. Printing:
+  stepping through the bit patterns of every exponent, 23 of 75,388
+  doubles printed as text naming a neighbouring double, all between about
+  2e16 and 6e19, where about one random double in twenty misses; `String()`
+  of `2.0502092240948628e16` is `2.050209224094863e+16`. Parsing: the
+  shortest forms of 47 of 60,000 random doubles parsed to a neighbour, at
+  magnitudes from 1e-295 to 1e22, and 55 of another 60,000, most between
+  1e16 and 1e22 and a few from 1e-297 to 1e276;
+  `Float64("2.3914322253667574e+17")` is one below the double it names.
+  Measured on Mojo 1.1.0 against CPython's correctly rounded `float()` and
+  `repr()`.
+
+  Two readers here parse with it. m0-postgres's text-mode `float()` parses
+  the server's shortest form, so it and binary `float()`, which decodes
+  the bits exactly, answered different doubles for 7 of 3,000 random
+  `float8` rows in one run and 2 of 3,000 in another. m0-core's
+  `parse_json_number` reads a JSON number the same way, one below on
+  `2.3914322253667574e+17`. Printing matters where printed text is read
+  back as a number, as binary `text()` of a `float8` is (the entry above).
+
+  **Closed by:** none — an upstream defect. A Mojo release whose
+  conversions round correctly retires it, and
+  `scripts/probes/float64_rounding_probe.mojo` is the re-test after a
+  toolchain bump: it exits 1 while its known misses still miss, and a
+  clean exit is the cue to sweep again. If an application needs exact
+  round trips before then, an in-tree correctly rounded parser and printer
+  would retire it for the readers here.
 
 ## Planned
 
