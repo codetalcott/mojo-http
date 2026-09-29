@@ -6422,6 +6422,28 @@ got=$(curl -s --max-time 5 $B/chunks)
   || fail "under an eager task factory a stream begun in the first step was not answered: '$got' (L30)"
 stop $pid
 
+# A loop pass never runs inside another (SPEC L31). Inverted, that first step
+# runs inside the PASS that read its request, and a stream it begins can fill
+# the executor's chunk channel there. The executor used to make room by
+# running a pass of its own, whose wait overwrote the event buffer the outer
+# pass was still walking: a new connection in the same batch was not accepted
+# until another arrived, and on epoll a keep-alive request behind it was never
+# read. The probe builds that batch (a blocker holds the thread while the
+# stream's request and then the other event arrive) and asks for both
+# answers; a refused nested pass would be named in the log.
+if [ "${M0_INVERTED:-}" = "1" ]; then
+  log=$SMOKE_DIR/asgi-nested.log
+  spawn asgi-nested.log env M0_ASGI_EAGER_TASKS=1 "$srv" $SPEC
+  wait_ready "$B/slow?ms=1" $pid
+  grep -q '^inverted: the event loop runs inside asyncio' "$log" \
+    || fail 'M0_INVERTED=1 but the server is not inverted: the nested-pass phase would prove nothing'
+  python3 scripts/nested_pass_probe.py --port $port \
+    || fail 'an event in the same batch as a stream begun inside the pass was lost (L31)'
+  grep -q 'asked for inside another pass' "$log" \
+    && fail 'a loop pass was asked for inside another pass (L31)'
+  stop $pid
+fi
+
 # --- phase 2: explicit topology wins ------------------------------------------
 # The escape hatch: an explicit pool keeps the Phase-1 buffered bridge —
 # x-thread on responses, no asgi-loop in the banner.
@@ -6555,6 +6577,7 @@ python3 scripts/emit.py --covers L26 --task smoke-asgi
 python3 scripts/emit.py --covers L28 --task smoke-asgi
 python3 scripts/emit.py --covers L29 --task smoke-asgi
 python3 scripts/emit.py --covers L30 --task smoke-asgi
+python3 scripts/emit.py --covers L31 --task smoke-asgi
 python3 scripts/emit.py --covers I26 --task smoke-asgi
 """
 

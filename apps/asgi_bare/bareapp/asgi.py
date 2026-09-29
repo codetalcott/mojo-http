@@ -17,7 +17,11 @@ Routes:
                     one; pins the response cookie jar)
     /status/NNN     answers with status NNN
     /slow?ms=N      awaits N milliseconds before answering
+    /block?ms=N     blocks the serving thread for N milliseconds, then
+                    answers: what arrives meanwhile is one batch
     /lifespan       reports whether lifespan startup ran (state flag)
+    /task-factory   ``eager`` when lifespan startup installed asyncio's
+                    eager task factory, ``default`` otherwise
     /ws-last-close  the code the last /ws/record socket's disconnect
                     carried (SPEC L28, I26); /ws-texts, every text message
                     those sockets received
@@ -242,6 +246,20 @@ async def application(scope, receive, send):
                 ms = int(pair[3:] or 0)
         await asyncio.sleep(ms / 1000.0)
         await _text(send, 200, b"slept %d" % ms)
+    elif path == "/block":
+        # Holds the serving THREAD, not just this request: a synchronous
+        # sleep in the application's own step, as a CPU-bound or blocking
+        # call in an async view does. Whatever arrives meanwhile --
+        # requests, new connections -- is read by the loop's next pass as
+        # one batch, in the order it arrived (scripts/nested_pass_probe.py).
+        import time
+
+        ms = 0
+        for pair in scope["query_string"].decode("latin-1").split("&"):
+            if pair.startswith("ms="):
+                ms = int(pair[3:] or 0)
+        time.sleep(ms / 1000.0)
+        await _text(send, 200, b"blocked %d" % ms)
     elif path == "/validate/canary":
         # The engagement canary, mirroring /pep3333/canary on the WSGI
         # row: a message type the spec does not define. This server
@@ -251,6 +269,13 @@ async def application(scope, receive, send):
         # by a misspelled variable.
         await send({"type": "http.response.bogus"})
         await _text(send, 200, b"canary was not caught")
+    elif path == "/task-factory":
+        # Whether lifespan startup installed the eager task factory: a probe
+        # that needs requests run inside the server's spawn asks first,
+        # rather than passing vacuously on a server without it.
+        factory = asyncio.get_running_loop().get_task_factory()
+        await _text(send, 200,
+                    b"eager" if factory is asyncio.eager_task_factory else b"default")
     elif path == "/lifespan":
         payload = json.dumps({
             "started": _LIFESPAN["started"],

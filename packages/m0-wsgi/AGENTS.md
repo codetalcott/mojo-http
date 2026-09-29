@@ -422,6 +422,21 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     again, so a task left behind that answered then was a segmentation
     fault. `smoke-asgi`'s outlive-the-drain and background-forever phases
     and its 10k-request RSS guard pin the shape.
+    **Under `M0_INVERTED` the port runs the loop's passes, and never one
+    inside another** (SPEC L31). The backend keeps ONE event buffer, which
+    the outer pass is still walking by index, and a pass accepts
+    connections: a wait inside a pass overwrote the events the outer one
+    had not reached (a new connection's accept, and on epoll a keep-alive
+    request, never reported again), and an event it still held could name
+    a descriptor a new connection had since been given. An eager task
+    factory puts a task's first step inside the pass that read its
+    request, so a `dispatch` can be inside a pass. That is why a full
+    chunk channel is handed to the loop's handler (`_deliver_bus_frames`,
+    in channel order) and never made room in by running a pass, and why
+    `_pass_with` refuses a pass while one is on the stack
+    (`ExecutorState.in_pass`) and names it in the log.
+    `scripts/nested_pass_probe.py` builds that batch in the inverted
+    `smoke-asgi`.
     **A slot's per-slot state in the shim belongs to the slot's CURRENT
     task** (`_exec_slot_task`), never to the slot: the loop recycles a
     slot the instant it closes a connection, and the previous task is
