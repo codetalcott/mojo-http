@@ -418,7 +418,7 @@ jobs:
   # to m0 dev alone stops the server and exits 0.
   #
   # A job of its own, on both platforms, rather than a step in `smoke`: that
-  # job is capped at 35 minutes and its macOS leg ran 33:00 on main the day
+  # job was capped at 35 minutes and its macOS leg ran 33:00 on main the day
   # this was added, and this gate needs nothing `smoke` builds -- the m0
   # wheel is pure Python and the scaffold compiles from the SOURCE it
   # carries, so there is no `build-all` here and it starts with the run.
@@ -582,28 +582,49 @@ jobs:
     # broken `build-all` lighting up every job at once -- is answered by
     # `Docs`, which is unfiltered, always reports, and is the ONE required
     # check on `main` (see CLAUDE.md).
-    # THE SMOKES ARE TWO JOBS, and the split is a cap, not taste. One job
-    # ran 30m17s green on `main` and the ubuntu leg was cancelled at the
-    # 35-minute cap four times across two pull requests -- always mid
-    # `Smoke test the Django realtime example over WebSockets`, the last
-    # long step, on a runner that was simply slower (its unit-tests leg
-    # took 26m1s against the usual 18m0s). A cap a green run reaches is a
-    # coin toss, so the work is halved AND the cap left at roughly twice
-    # the measured run: this job and `smoke-gateway` divide `main`'s own
-    # step times into 12.0 and 13.1 min on ubuntu, 13.2 and 12.8 on macOS,
-    # against 30. The slowest runner observed
-    # so far was 1.45x (that 26m1s unit-tests leg), which lands a 14 min
-    # job at 21; 30 still turns a wedged server into a failure rather than
-    # a six-hour hang, and the cap is not the thing that has to be right
-    # to the minute.
+    # THE SMOKES ARE THREE JOBS, and the split is a cap, not taste. This one
+    # carries the server: its wire, its command line and its packaging.
+    # `smoke-app-layer` carries the Mojo host and the applications on it,
+    # the m0 wheel and its scaffold; `smoke-gateway` the WSGI and ASGI
+    # bridges, the mounts, the pool and --realtime. One job ran 30m17s green
+    # on `main` and its ubuntu leg was cancelled at the 35-minute cap four
+    # times across two pull requests, on runners that were simply slower
+    # (one's unit-tests leg took 26m1s against the usual 18m0s: 1.45x, the
+    # slowest runner seen). A cap a green run reaches is a coin toss, so the
+    # work is divided and each cap left at about twice its job's run.
+    #
+    # The two jobs of 2026-09-21 were planned on 12.0 and 13.1 min on
+    # ubuntu, 13.2 and 12.8 on macOS: the smoke steps alone, summed from a
+    # one-job run on `main` (35551249696) whose `Compile every example app`
+    # had just filled Mojo's compile cache. A job also pays its own setup,
+    # build-all and serve CLI (about 1.4 min on ubuntu, 1.0 on macOS), and
+    # with a cold cache an app smoke compiles its app (blobs 23 s to 48,
+    # fragment notes 9 to 33). So this job ran 18.5 min on ubuntu from its
+    # first day, and 21.4 by 2026-09-29 (the median of 15 green runs, 22.9
+    # the slowest) after seven new steps (3 min) and the scaffold's third
+    # template (70 s): a 1.45x runner puts that at 31, past its cap of 30.
+    # Divided three ways by those runs' step medians, the jobs come to 11.9,
+    # 12.6 and 13.5 min on ubuntu and 10.7, 10.4 and 11.3 on macOS, each
+    # capped at 25. Cold, on #484, they ran 10.6, 13.1 and 12.2 on ubuntu
+    # and 13.9, 13.2 and 14.1 on macOS, where every leg ran about a quarter
+    # over its steps' medians. When one passes about 15, rebalance or divide
+    # again.
+    #
+    # Where a step goes: a server's smokes stay in one job, because smokes
+    # that compile one app share the runner's compile cache -- apps/hello's
+    # seven here, and the counter and the accept batch with the shutdown
+    # smoke that compiles their apps first; host_check's three in
+    # `smoke-app-layer`. Each job builds the packages and the serve CLI
+    # before its first smoke, and every step whose task depends on
+    # build-serve then relinks bin/m0serve anyway, about 8.5 s of it.
     #
     # Shards are SEPARATE JOBS, never one job with `if: matrix.shard`:
     # scripts/spec_sheet.py refuses a SPEC row whose cited step carries an
     # `if:`, because a conditional step is not evidence that it ran.
-    # Moving a step between the two jobs is free -- the sheet reads step
-    # NAMES out of this file and does not care which job holds one -- but
+    # Moving a step between the jobs is free -- the sheet reads step NAMES
+    # out of this file and does not care which job holds one -- but
     # renaming or deleting one is what it is there to catch.
-    timeout-minutes: 30
+    timeout-minutes: 25
     env:
       # Where `scripts/emit.py` appends the measurements the smokes already
       # compute (RSS growth, fast-request latency). Unset locally, which makes
@@ -621,18 +642,17 @@ jobs:
       - name: Build all packages
         run: uv run poe build-all
       # `Compile every example app` is deliberately NOT here. It builds each
-      # app into a mktemp dir and DISCARDS the binaries, so nothing in this
-      # job could consume it even in principle: every row either `mojo run`s
-      # its app, `mojo build`s its own copy, or serves through bin/m0serve.
-      # It is a compile gate, `poe test-gates` runs it in the unit-gates
-      # job, and it cost 4 min a leg -- twice over, once per shard -- to
-      # re-answer a settled question. The discarded output is the reason,
-      # not any ordering against the unit tests, which run in parallel.
+      # app into a mktemp dir and discards the binaries, but not Mojo's
+      # compile cache: in the one job that ran it before the smokes, every
+      # app smoke after it compiled warm (blobs 23 s, 48 cold), which saved
+      # most of what it cost (about 250 s of 300 on ubuntu). Here it would
+      # cost that again in each smoke job to warm that job's cache. It is a
+      # compile gate, and `poe test-gates` runs it in the unit-gates job.
 
-      # The serve CLI. Most of this job's rows are Mojo, but the timeout,
-      # keep-alive, sendfile and site rows all serve through it, and the
-      # tasks declare it as a poe dep -- building it as a step keeps that
-      # cost out of whichever smoke happens to run first.
+      # The serve CLI. The command-line, timeout, keep-alive, sendfile and
+      # site rows all serve through it, and the tasks declare it as a poe
+      # dep -- building it as a step keeps that cost out of whichever smoke
+      # happens to run first.
       - name: Build the serve CLI
         run: uv run poe build-serve
       # Emits libm0core.so (.dylib on macOS) and drives it through ctypes —
@@ -672,6 +692,19 @@ jobs:
       # quickstart, or a quickstart edit that breaks the path, fails here.
       - name: Execute the quickstart
         run: uv run poe smoke-quickstart
+      # The CLI as a user meets it: --help/--version, usage (2) and startup
+      # (1) exit codes — including a supervisor that gives up — a typed flag
+      # beating the environment, a static mount, --max-body, --metrics.
+      - name: Smoke test the serve CLI
+        run: uv run poe smoke-serve
+      # --doctor's whole value is that its exit code equals the one m0serve
+      # itself would produce for the same arguments. Both read one ordered
+      # list of refusals (packages/m0-wsgi/src/checks.mojo): main stops at
+      # the first failure, the doctor reports them all. This runs BOTH over
+      # every refusal and compares, and pins each code, which is what
+      # notices when the two, or the list, drift.
+      - name: Smoke test --doctor against the server's own exit codes
+        run: uv run poe smoke-doctor
       - name: Smoke test the hello server
         run: uv run poe smoke-hello
       # Both stop paths: SIGTERM draining a single process, and a SIGTERM aimed
@@ -788,19 +821,6 @@ jobs:
       # negotiation, ETag/304, problem+json, CORS, and M0_PORT config.
       - name: Smoke test the notes API
         run: uv run poe smoke-notes
-      # The same resource as a server-rendered htmx app, gated on wire output
-      # only: one URL answering a fragment under HX-Request and a document
-      # without it with Vary on both, a urlencoded form round-tripping a
-      # multi-byte title and a repeated checkbox key, a markup title
-      # rendered inert, a non-form body refused, and 405 with Allow.
-      # Plus N13, the login the notes now sit behind: a server that
-      # refuses to start without its key or its password, an
-      # unauthenticated page and swap, forged and expired cookies (each
-      # signed by scripts/notes_session.py, so the verifier is never
-      # checked against itself), the cookie's attributes, a write without
-      # the CSRF token and with another session's, and logout.
-      - name: Smoke test the fragment notes app
-        run: uv run poe smoke-fragment-notes
       # The zero-copy claim, which only a real transfer can make: a 64MB
       # file served three times must arrive byte-exact while RSS stays
       # flat. Both platforms, because sendfile(2)'s signature and its
@@ -848,6 +868,68 @@ jobs:
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter
         run: uv run poe smoke-counter
+      - name: Record the measurements
+        if: always()
+        uses: ./.github/actions/record-measurements
+        with:
+          name: ci-results-${{ matrix.os }}
+
+      # A smoke on scripts/smoke/lib.sh keeps its logs, and only its logs,
+      # in $RUNNER_TEMP/m0-smoke.* when it fails; the rest still write to
+      # the repo root.
+      - name: Upload server log on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: server-logs-${{ matrix.os }}
+          path: |
+            ${{ runner.temp }}/m0-smoke.*/*.log
+            notes.log
+          if-no-files-found: ignore
+
+  smoke-app-layer:
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    # No `needs:`, for the reason spelled out on `smoke` above.
+    # The application layer's smokes: the Mojo host and the applications on
+    # it, the m0 wheel and its scaffold, and MAX's parallel runtime under
+    # both hosts. `smoke` above explains why there are three jobs at all.
+    timeout-minutes: 25
+    env:
+      # Where `scripts/emit.py` appends the measurements the smokes already
+      # compute (RSS growth, fast-request latency). Unset locally, which makes
+      # every call site a no-op there; the script also always exits 0, so a
+      # recording failure can never turn a green gate red.
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+        with:
+          apt: libsqlite3-dev patchelf
+      - name: Build all packages
+        run: uv run poe build-all
+      # The serve CLI, before the first smoke as in the other two jobs. Only
+      # the last step serves through it, but building it here, before the
+      # `max` group is synced, keeps that step as it ran in `smoke`.
+      - name: Build the serve CLI
+        run: uv run poe build-serve
+      # The notes resource as a server-rendered htmx app, the layer's
+      # reference, gated on wire output only: one URL answering a fragment
+      # under HX-Request and a document without it with Vary on both, a
+      # urlencoded form round-tripping a multi-byte title and a repeated
+      # checkbox key, a markup title rendered inert, a non-form body
+      # refused, and 405 with Allow.
+      # Plus N13, the login the notes now sit behind: a server that
+      # refuses to start without its key or its password, an
+      # unauthenticated page and swap, forged and expired cookies (each
+      # signed by scripts/notes_session.py, so the verifier is never
+      # checked against itself), the cookie's attributes, a write without
+      # the CSRF token and with another session's, and logout.
+      - name: Smoke test the fragment notes app
+        run: uv run poe smoke-fragment-notes
       # Periodic work with a real budget does not belong on the event loop,
       # and this is where that stops being an assertion. apps/sim_loop runs
       # the identical step in two places behind one variable: off the loop a
@@ -922,19 +1004,17 @@ jobs:
         if: always()
         uses: ./.github/actions/record-measurements
         with:
-          name: ci-results-${{ matrix.os }}
+          name: ci-results-${{ matrix.os }}-app-layer
 
-      # A smoke on scripts/smoke/lib.sh keeps its logs, and only its logs,
-      # in $RUNNER_TEMP/m0-smoke.* when it fails; the rest still write to
-      # the repo root.
+      # See the smoke job's upload. Every smoke here is on the lib, so its
+      # logs are all under $RUNNER_TEMP.
       - name: Upload server log on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: server-logs-${{ matrix.os }}
+          name: server-logs-${{ matrix.os }}-app-layer
           path: |
             ${{ runner.temp }}/m0-smoke.*/*.log
-            notes.log
           if-no-files-found: ignore
 
   smoke-gateway:
@@ -943,10 +1023,10 @@ jobs:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     # No `needs:`, for the reason spelled out on `smoke` above.
-    # The gateway half of the smokes: the WSGI and ASGI bridges, the mounts,
-    # the pool and the --realtime rows. `smoke` above carries the server and
-    # the Mojo layer and explains why there are two jobs at all.
-    timeout-minutes: 30
+    # The gateway's smokes: the WSGI and ASGI bridges, the mounts, the pool
+    # and the --realtime rows. `smoke` above carries the server, m0serve's
+    # command line among it, and explains why there are three jobs at all.
+    timeout-minutes: 25
     env:
       # Where `scripts/emit.py` appends the measurements the smokes already
       # compute (RSS growth, fast-request latency). Unset locally, which makes
@@ -961,8 +1041,9 @@ jobs:
           apt: libsqlite3-dev patchelf
       - name: Build all packages
         run: uv run poe build-all
-      # The serve CLI: one binary for every WSGI row. Built here once; the
-      # smoke-wsgi/django/flask tasks below depend on it and reuse it.
+      # The serve CLI: one binary for every WSGI row. Built here once, so
+      # the tasks below that depend on it only relink it (about 8.5 s each)
+      # and the first build's cost is no one smoke's.
       - name: Build the serve CLI
         run: uv run poe build-serve
       # PEP 3333 conformance against a bare WSGI callable -- no framework, so a
@@ -1061,19 +1142,6 @@ jobs:
       # with a live stream, and the single-worker degenerate case.
       - name: ASGI cross-worker fan-out over the BroadcastBus
         run: uv run poe smoke-asgi-fanout
-      # The CLI as a user meets it: --help/--version, usage (2) and startup
-      # (1) exit codes — including a supervisor that gives up — a typed flag
-      # beating the environment, a static mount, --max-body, --metrics.
-      - name: Smoke test the serve CLI
-        run: uv run poe smoke-serve
-      # --doctor's whole value is that its exit code equals the one m0serve
-      # itself would produce for the same arguments. Both read one ordered
-      # list of refusals (packages/m0-wsgi/src/checks.mojo): main stops at
-      # the first failure, the doctor reports them all. This runs BOTH over
-      # every refusal and compares, and pins each code, which is what
-      # notices when the two, or the list, drift.
-      - name: Smoke test --doctor against the server's own exit codes
-        run: uv run poe smoke-doctor
       # The threaded mode's guard: on these GIL-enabled runners M0_THREADS>1
       # must refuse to start with exit 78 and a sentence naming the
       # requirement. The mode itself is proven weekly by py-canary on 3.14t.
