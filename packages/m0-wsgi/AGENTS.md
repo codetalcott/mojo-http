@@ -479,7 +479,10 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     nothing (a leftover task answered the slot's NEXT request) and
     `receive()` says `http.disconnect` at once; and
     the STREAMING mark and the cancellable stream task go on the slot's
-    owner (`_exec_slot_task[slot]`), never `asyncio.current_task()` —
+    owner, the request's own task (`_Cycle.task`), never
+    `asyncio.current_task()` and never read back from `_exec_slot_task`,
+    which an eager task factory's first step, run inside `spawn`, finds
+    naming the previous connection's task or nothing (B29) —
     Starlette (so FastAPI and FastHTML) produces a `StreamingResponse`
     body inside an anyio task group, so `send` arrives from a child task,
     and marking the child left one `TypeError` traceback in the log per

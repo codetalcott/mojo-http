@@ -1023,6 +1023,43 @@ def test_a_stream_sent_from_a_child_task_marks_the_owner(h):
     _assert_global_window_whole(h)
 
 
+def test_an_eager_stream_sent_from_a_child_task_marks_the_owner(h):
+    """B29, the child's shape: the rule above under an eager task factory.
+
+    Starlette's StreamingResponse sends its body from a child task. Under
+    an eager task factory that child's first step runs inside the request
+    task's first step, which runs inside `spawn`'s `create_task`, before
+    `spawn` records any owner for the slot, so the switch fell back to
+    `asyncio.current_task()`: the child. Marked there, a client's
+    departure cancelled the child, the owner ended with it, and its
+    done-callback, finding no stream on it, reported an error for the
+    slot after the stream's head."""
+    h.loop.set_task_factory(asyncio.eager_task_factory)
+    h.job(1, "childhold")
+    h.settle()
+    assert h.kinds(1)[:1] == ["stream_start"], (
+        "the held child-produced stream did not start: %r" % (h.kinds(1),))
+    owner = h.ns["_exec_slot_task"].get(1)
+    assert owner is not None, "slot 1 has no owning task"
+    head = len(h.events)
+    marked = getattr(owner, "_m0_streaming", False)
+    recorded = h.ns["_exec_stream_tasks"].get(1)
+    assert marked and recorded is owner, (
+        "in an eager first step the streaming mark %s on the owner, and the "
+        "stream task is %s" % (
+            "is" if marked else "is not",
+            "the owner" if recorded is owner else "none" if recorded is None
+            else "the child that sent the body"))
+    h.disconnect(1)
+    h.settle()
+    late = [e[0] for e in h.events[head:]
+            if len(e) > 1 and e[1] == 1 and e[0] in ("err", "done")]
+    assert not late, (
+        "the slot was answered after its stream's head: %r" % (late,))
+    assert owner.done(), "the owner outlived its client's disconnect"
+    _assert_global_window_whole(h)
+
+
 def test_a_websocket_send_waits_for_its_window(h):
     """`websocket.send` is credit-gated, so a flooding app waits.
 
@@ -1959,6 +1996,69 @@ def test_an_eager_long_poll_still_hears_its_disconnect(h):
     _assert_global_window_whole(h)
 
 
+def test_an_eager_stream_does_not_take_the_previous_connections_task(h):
+    """B29: a stream begun in an eager first step is its own task's.
+
+    Under an eager task factory that step runs inside `spawn`'s
+    `create_task`, before `spawn` records the new task as the slot's owner,
+    and the switch to streaming took the task to mark from that record. On
+    a slot recycled in one batch the record still named the previous
+    connection's task, still ending. So the new stream's streaming mark and
+    cancellable task went to that task: the new stream's own client left
+    and nothing ended it, and when the shutdown drain cancelled it at last,
+    its done-callback, finding no stream on it, reported an error for the
+    slot after the stream's head. All three are checked, and named
+    together when they fail."""
+    h.loop.set_task_factory(asyncio.eager_task_factory)
+    h.job(0, "bytes1024")
+    h.settle()
+    first = h.ns["_exec_slot_task"].get(0)
+    assert first is not None and h.kinds(0)[:1] == ["stream_start"], (
+        "the first stream did not start: %r" % (h.kinds(0),))
+    # One batch: the first stream's client leaves, and the next connection's
+    # request, which streams in its first step, lands on the recycled slot
+    # while the first stream's task is still ending.
+    h.disconnect(0)
+    h.job(0, "bytes1024")
+    h.settle()
+    assert h.kinds(0).count("stream_start") == 2, (
+        "the second stream did not start on the slot: %r" % (h.kinds(0),))
+    second = h.ns["_exec_slot_task"].get(0)
+    assert second is not None and second is not first, (
+        "the slot's owner record does not name the second stream's task: %r"
+        % (second,))
+    head = len(h.events)
+    wrong = []
+    marked = getattr(second, "_m0_streaming", False)
+    recorded = h.ns["_exec_stream_tasks"].get(0)
+    if not marked or recorded is not second:
+        wrong.append("its streaming mark %s on its own task and its stream "
+                     "task is %s" % (
+                         "is" if marked else "is not",
+                         "its own" if recorded is second
+                         else "the previous connection's" if recorded is first
+                         else "none" if recorded is None else repr(recorded)))
+    h.disconnect(0)
+    h.settle()
+    if not second.done():
+        wrong.append("it outlived its own client's disconnect")
+    # What the shutdown drain does to a task still running.
+    h.ns["_WS_DRAIN_GRACE"] = 0.01
+    h.ns["_HTTP_DRAIN_GRACE"] = 0.05
+    h.ns["_CANCEL_GRACE"] = 0.05
+    h.run(asyncio.wait_for(h.ns["_gather_in_flight"](), 3.0))
+    h.settle(passes=5)
+    late = [e[0] for e in h.events[head:]
+            if len(e) > 1 and e[1] == 0 and e[0] in ("err", "done")]
+    if late:
+        wrong.append("the slot was answered after its stream's head: %r"
+                     % (late,))
+    assert not wrong, (
+        "a stream begun in an eager first step on a recycled slot: "
+        + "; ".join(wrong))
+    _assert_global_window_whole(h)
+
+
 def test_an_application_error_is_described_once(h):
     """PR 6 review M6: an application's exception class is qualified by its
     module in the traceback's last line, and a note follows it; neither is
@@ -2114,6 +2214,7 @@ TESTS = [
     test_a_websocket_recycle_forgets_the_predecessors_accept,
     test_a_websocket_send_waits_for_its_window,
     test_a_stream_sent_from_a_child_task_marks_the_owner,
+    test_an_eager_stream_sent_from_a_child_task_marks_the_owner,
     test_a_gone_sockets_hook_can_send_to_the_others,
     test_a_stale_socket_send_never_reaches_the_slots_next_client,
     test_a_send_from_a_finished_socket_is_refused,
@@ -2164,6 +2265,7 @@ TESTS = [
     test_the_drain_runs_once,
     test_an_eager_stream_is_still_cancelled_at_its_disconnect,
     test_an_eager_long_poll_still_hears_its_disconnect,
+    test_an_eager_stream_does_not_take_the_previous_connections_task,
     test_an_application_error_is_described_once,
     test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write,
 ]
@@ -2188,8 +2290,10 @@ TESTS = [
 SABOTAGES = [
     (
         "the streaming mark goes on the current task, not the slot's owner",
-        "                task = _exec_slot_task.get(slot) or asyncio.current_task()",
-        "                task = asyncio.current_task()",
+        "                task = self.task\n"
+        "                task._m0_streaming = True\n",
+        "                task = asyncio.current_task()\n"
+        "                task._m0_streaming = True\n",
         ("test_a_stream_sent_from_a_child_task_marks_the_owner",),
     ),
     (
@@ -2688,6 +2792,18 @@ SABOTAGES = [
         "        # Still the slot's owner: the per-slot state is this task's.\n"
         "        _exec_slot_task.pop(slot, None)\n",
         ("test_a_disconnected_owner_does_clean_its_slot",),
+    ),
+    (
+        # B29, reverted to the shape that shipped it: the owner read back
+        # from the slot's record, which an eager first step finds naming
+        # the previous connection's task, or nothing.
+        "an eager stream takes the slot's previous owner for its own",
+        "                task = self.task\n"
+        "                task._m0_streaming = True\n",
+        "                task = _exec_slot_task.get(slot) or asyncio.current_task()\n"
+        "                task._m0_streaming = True\n",
+        ("test_an_eager_stream_does_not_take_the_previous_connections_task",
+         "test_an_eager_stream_sent_from_a_child_task_marks_the_owner"),
     ),
 ]
 

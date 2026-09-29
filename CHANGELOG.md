@@ -272,6 +272,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **Under asyncio's eager task factory, an ASGI stream is stopped when its
+  client leaves** (SPEC L30). An application that installs
+  `asyncio.eager_task_factory` runs each request's first step before the
+  server has recorded which task serves the request, and a response that
+  began streaming in that step was marked on the wrong task.
+  - If an earlier request's task was still running on the same connection
+    slot, the stream was marked on that task. That covers a keep-alive
+    connection's previous request finishing its background work, and a
+    connection that had just closed. The new client leaving then cancelled
+    the other task, cutting the earlier request's background work short,
+    and the stream ran on until the server shut down.
+  - If the body came from a child task, as Starlette's `StreamingResponse`
+    sends it, the stream was marked on the child. When the client left,
+    the request was reported as failed after its response had begun.
+
+  A stream is now marked on its own request's task. `poe test-shim` holds
+  both shapes.
+
 - **An `M0_INVERTED=1` server exits on SIGTERM wherever the signal lands**
   (SPEC L8). Under the loop inversion a SIGTERM is read by whichever pass
   of the event loop reaches the shutdown pipe first. When that was the pass
