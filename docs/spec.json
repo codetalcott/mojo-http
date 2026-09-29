@@ -1527,7 +1527,7 @@
       "category": "L. ASGI 3.0",
       "capability": "The event loop running inside asyncio (`M0_INVERTED`)",
       "status": "verified",
-      "evidence": "`Smoke test the ASGI executor under the loop inversion` (every PR) \u2014 including its drain, whichever of its passes reads the SIGTERM: a request raising SIGTERM in its first step makes it the pass a completion flush runs, every time, and the process must answer it and exit 0. That flush had stored a copy of the executor's state taken before its pass back over the drain's record, and the server never exited (CI's macOS runners, about 2 in 100 runs of the live-stream shutdown). `poe test-shim` holds the shim's half: a drain the flush reports starts at once"
+      "evidence": "`Smoke test the ASGI executor under the loop inversion` (every PR) \u2014 including its drain, whichever of its passes reads the SIGTERM: a request raising SIGTERM in its first step, sent on a connection already answered, makes it the pass a completion flush runs, every time, and the process must answer it and exit 0. That flush had stored a copy of the executor's state taken before its pass back over the drain's record, and the server never exited (CI's macOS runners, about 2 in 100 runs of the live-stream shutdown). `poe test-shim` holds the shim's half: a drain the flush reports starts at once"
     },
     {
       "id": "L9",
