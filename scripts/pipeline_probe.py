@@ -19,7 +19,8 @@ usage: pipeline_probe.py PORT
 """
 import socket
 import sys
-import traceback
+
+from probelib import phase, stamp
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 ROUNDS = 10
@@ -32,26 +33,13 @@ CHUNKED = (b"POST /health HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
            b"\r\n%x\r\n%s\r\n0\r\n\r\n" % (len(BODY), BODY))
 
 
-# Which phase is running, for the crash handler below. A traceback names the
-# CALL that raised -- here `count_responses`, which every `check` below shares
-# -- and never the PHASE being proven. The 2026-08-30 CI failure cost two
+# Which phase is running, for the crash handler. A traceback names the CALL
+# that raised -- here `count_responses`, which every `check` below shares --
+# and never the PHASE being proven. The 2026-08-30 CI failure cost two
 # investigations to exactly that distinction; apps/asgi_bare/ws_probe.py
 # carries the original of this comment. Eight shapes share one helper here,
 # so an unhandled reset in it names none of them without this.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("pipeline_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("pipeline_probe: FAIL")
 
 
 def count_responses(payload, want, half_close=False, timeout=6.0):

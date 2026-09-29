@@ -65,29 +65,12 @@ import socket
 import sys
 import threading
 import time
-import traceback
+
+from probelib import fail, phase, sse_events, stamp
 
 PERIOD_S = 0.1
 
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("host_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg: str) -> None:
-    print("host_probe: FAIL: %s: %s" % (PHASE, msg), file=sys.stderr)
-    sys.exit(1)
+stamp("host_probe: FAIL", fail="host_probe: FAIL: {phase}: {msg}", stream=sys.stderr)
 
 
 class Stream:
@@ -109,32 +92,18 @@ class Stream:
         self.thread.start()
 
     def _read(self) -> None:
-        buf = b""
-        while True:
-            try:
-                chunk = self.resp.read1(65536)
-            except (OSError, ValueError, http.client.HTTPException):
-                break
-            if not chunk:
-                self.ended = True
-                break
-            buf += chunk
-            while b"\n\n" in buf:
-                block, buf = buf.split(b"\n\n", 1)
-                ident = None
-                event = None
-                pid = None
-                for line in block.decode("utf-8").split("\n"):
-                    if line.startswith("id: "):
-                        ident = int(line[4:])
-                    elif line.startswith("event: "):
-                        event = line[7:]
-                    elif line.startswith("data: "):
-                        pid = json.loads(line[6:]).get("pid")
-                if event == "beat" and ident is not None:
+        # Through the response, whose readline decodes a chunked body; a
+        # read that fails ends the stream without calling it ended.
+        try:
+            for ev in sse_events(self.resp):
+                if ev.event == "beat" and ev.id is not None:
+                    pid = None if ev.data is None else json.loads(ev.data).get("pid")
                     with self.lock:
-                        self.ids.append(ident)
+                        self.ids.append(int(ev.id))
                         self.pids.add(pid)
+        except (OSError, ValueError, http.client.HTTPException):
+            return
+        self.ended = True
 
     def snapshot(self) -> list[int]:
         with self.lock:

@@ -19,130 +19,63 @@ tells those apart.
 The under-cap message is the other half. A server that ended every connection
 carrying a large message would pass a test that only looked for the ending.
 
+The drain has ONE deadline, not a timeout per read. The server pings every
+heartbeat (15 s by default), and each ping reset the per-read timeout this
+used to rely on, so a connection that neither delivered the message nor
+ended was never judged here: two of `sabotage-outbox-cap`'s catches came
+from its harness killing the probe at 180 s. A read timeout also used to
+count as the connection ending, which would have passed a server that went
+quiet instead. Now the deadline passing is "not ended", and the verdict is
+this probe's own.
+
 Run against `apps/asgi_bare` under `m0serve`.
 
 Usage: outbox_cap_probe.py PORT
 """
-import base64
-import os
 import socket
-import struct
 import sys
-import traceback
+import time
 
-# The phase stamp: both phases share `recv_message`, so a raise inside it
+from probelib import CLOSE, TEXT, WebSocket, fail, phase, stamp
+
+# The phase stamp: both phases share the frame reads, so a raise inside one
 # names the call and not the claim. See scripts/phase_stamp_check.py.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("outbox_cap_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("outbox_cap_probe: FAIL", fail="outbox-cap: {msg}")
 
 # Kept in step with apps/asgi_bare/bareapp/asgi.py.
 OVERSIZED_UNDER = 32 * 1024
 OVERSIZED_OVER = 66 * 1024
 OVERSIZED_MARKER = b"after-the-oversized-message"
 HOST = "127.0.0.1"
+# How long a connection has to deliver what it will and end: the whole
+# exchange takes milliseconds, and this was the per-read timeout before.
+DRAIN_SECONDS = 20
 
 
-def fail(msg):
-    print("outbox-cap: " + msg)
-    sys.exit(1)
+def connect(port, path):
+    """(WebSocket, status line) -- the status None if no head arrived."""
+    ws = WebSocket.connect(HOST, port, path, timeout=20, host_header="localhost")
+    status = ws.status_line
+    return ws, None if status is None else status.decode("latin-1")
 
 
-class Sock:
-    """One connection with a single buffered reader.
+def drain_messages(ws, limit=16):
+    """Every frame the server sends until it stops. Returns (frames, closed).
 
-    Reading the handshake with `makefile()` and the frames with `recv()`
-    loses whatever the reader buffered, which reads as "the server sent
-    nothing" -- the same false negative this probe exists to distinguish
-    from a real one.
+    Closed means the server ended the connection: a Close frame, EOF, or a
+    reset. The deadline passing is NOT closed -- it is the connection
+    staying open, which is the finding.
     """
-
-    def __init__(self, port, timeout=20):
-        self.s = socket.create_connection((HOST, port), timeout=timeout)
-        self.buf = b""
-        self.eof = False
-
-    def close(self):
-        try:
-            self.s.close()
-        except OSError:
-            pass
-
-    def _fill(self):
-        try:
-            chunk = self.s.recv(65536)
-        except (ConnectionResetError, socket.timeout):
-            self.eof = True
-            return False
-        if not chunk:
-            self.eof = True
-            return False
-        self.buf += chunk
-        return True
-
-    def read_exactly(self, n):
-        while len(self.buf) < n:
-            if not self._fill():
-                break
-        out, self.buf = self.buf[:n], self.buf[n:]
-        return out
-
-    def handshake(self, path):
-        key = base64.b64encode(os.urandom(16)).decode()
-        self.s.sendall(
-            ("GET %s HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
-             "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
-             "Sec-WebSocket-Version: 13\r\n\r\n" % (path, key)).encode()
-        )
-        while b"\r\n\r\n" not in self.buf:
-            if not self._fill():
-                return None
-        head, _, rest = self.buf.partition(b"\r\n\r\n")
-        self.buf = rest
-        return head.split(b"\r\n")[0].decode("latin-1")
-
-    def recv_message(self):
-        """One frame: (opcode, payload). (None, b'') at EOF or close."""
-        head = self.read_exactly(2)
-        if len(head) < 2:
-            return None, b""
-        opcode = head[0] & 0x0F
-        length = head[1] & 0x7F
-        if length == 126:
-            ext = self.read_exactly(2)
-            if len(ext) < 2:
-                return None, b""
-            length = struct.unpack("!H", ext)[0]
-        elif length == 127:
-            ext = self.read_exactly(8)
-            if len(ext) < 8:
-                return None, b""
-            length = struct.unpack("!Q", ext)[0]
-        payload = self.read_exactly(length)
-        if len(payload) < length:
-            return None, payload
-        return opcode, payload
-
-
-def drain_messages(sock, limit=16):
-    """Every frame the server sends until it stops. Returns (frames, closed)."""
     frames = []
+    deadline = time.monotonic() + DRAIN_SECONDS
     for _ in range(limit):
-        opcode, payload = sock.recv_message()
-        if opcode is None:
+        try:
+            opcode, payload = ws.recv_frame(deadline=deadline, eof_ok=True)
+        except (EOFError, ConnectionResetError):
             return frames, True
-        if opcode == 0x8:  # close
+        except socket.timeout:
+            return frames, False
+        if opcode == CLOSE:
             return frames, True
         frames.append((opcode, payload))
     return frames, False
@@ -152,12 +85,11 @@ def main():
     port = int(sys.argv[1])
 
     phase("oversized-message-ends-the-connection")
-    sock = Sock(port)
-    status = sock.handshake("/ws/oversized")
+    ws, status = connect(port, "/ws/oversized")
     if status is None or "101" not in status:
         fail("handshake on /ws/oversized: %r" % (status,))
-    frames, closed = drain_messages(sock)
-    sock.close()
+    frames, closed = drain_messages(ws)
+    ws.close()
 
     payloads = [p for _, p in frames]
     under = [p for p in payloads if len(p) == OVERSIZED_UNDER]
@@ -196,16 +128,17 @@ def main():
     # An ordinary socket on the same server must be unaffected -- the cap is
     # a per-message rule, not a reason to distrust the connection.
     phase("an-ordinary-socket-still-works")
-    sock = Sock(port)
-    status = sock.handshake("/ws")
+    ws, status = connect(port, "/ws")
     if status is None or "101" not in status:
         fail("handshake on /ws: %r" % (status,))
-    payload = b"hello"
-    mask = os.urandom(4)
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    sock.s.sendall(b"\x81" + bytes([0x80 | len(payload)]) + mask + masked)
-    opcode, got = sock.recv_message()
-    sock.close()
+    ws.send(TEXT, b"hello")
+    try:
+        # A heartbeat ping may land first; it is not the answer.
+        opcode, got = ws.recv_data(deadline=time.monotonic() + DRAIN_SECONDS,
+                                   eof_ok=True, pong=False)
+    except (EOFError, ConnectionResetError, socket.timeout):
+        got = b""
+    ws.close()
     if got != b"echo:hello":
         fail("an ordinary echo after the cap case returned %r" % got)
     print("  an ordinary socket on the same server: unaffected")

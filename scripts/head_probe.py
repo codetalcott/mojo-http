@@ -38,22 +38,12 @@ HEAD must be its GET's twin: the same status, the GET's `Content-Length` and
 import argparse
 import socket
 import sys
-import traceback
 
-PHASE = "startup"
+import probelib
+from probelib import phase, stamp
 
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("head_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+# A case's failure names the phase it failed in (`probelib.PHASE`, read live).
+stamp("head_probe FAIL")
 
 # What `GET /` answers on each bare app: the follow-up must parse to this.
 ROOT_TEXT = {"wsgi": b"bare wsgi app", "asgi": b"hello from asgi_bare"}
@@ -192,7 +182,7 @@ def check(port, app, case):
                             "the case's bytes did not end at its head"
                             % (status, body[:60]))
     except (OSError, EOFError, ValueError) as exc:
-        problems.append("%s: %r" % (PHASE, exc))
+        problems.append("%s: %r" % (probelib.PHASE, exc))
     finally:
         if c is not None:
             c.close()
@@ -220,7 +210,7 @@ def check_hold(port, path, then):
             problems.append("the next response on the connection was %d %r"
                             % (status, body[:60]))
     except (OSError, EOFError, ValueError) as exc:
-        problems.append("%s: %r" % (PHASE, exc))
+        problems.append("%s: %r" % (probelib.PHASE, exc))
     finally:
         if c is not None:
             c.close()
@@ -259,7 +249,7 @@ def check_twin(port, path, then):
             problems.append("the next response on the connection was %d %r"
                             % (status, body[:60]))
     except (OSError, EOFError, ValueError) as exc:
-        problems.append("%s: %r" % (PHASE, exc))
+        problems.append("%s: %r" % (probelib.PHASE, exc))
     finally:
         if c is not None:
             c.close()

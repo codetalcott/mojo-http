@@ -16,141 +16,59 @@ BroadcastBus.
 
 import os
 import signal
-import socket
-import struct
 import sys
-import traceback
-import base64
-import hashlib
+import time
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "scripts"))
+from probelib import TEXT, WebSocket, fail, phase, stamp  # noqa: E402
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("M0_PORT", "8080"))
-GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 EXPECT_WORKERS = int(os.environ.get("CHAT_EXPECT_WORKERS", "1"))
 
 
-# Which phase is running, for the crash handler below. Every phase here
-# reaches the socket through `recv_exact`/`read_text`, so a traceback out of
-# one says which CALL raised and never which PHASE was being proven -- and
-# this probe's phases mean different things (a handshake that never
-# completed, versus a message that never crossed the bus). Two
-# investigations of the 2026-08-30 CI failure were lost to that distinction;
+# Which phase is running, for the crash handler. Every phase here reaches
+# the socket through the same frame reads, so a traceback out of one says
+# which CALL raised and never which PHASE was being proven -- and this
+# probe's phases mean different things (a handshake that never completed,
+# versus a message that never crossed the bus). Two investigations of the
+# 2026-08-30 CI failure were lost to that distinction;
 # apps/asgi_bare/ws_probe.py carries the original of this comment.
-PHASE = "startup"
+stamp("chat_probe FAIL")
 
 
-def phase(name):
-    global PHASE
-    PHASE = name
+def read_text(ws, timeout=6.0):
+    """Next text frame's payload; heartbeat pings get pongs and are skipped.
 
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("chat_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("chat_probe FAIL:", msg)
-    sys.exit(1)
-
-
-def recv_exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            fail("connection closed wanting %d bytes" % n)
-        buf += chunk
-    return buf
-
-
-def read_frame(sock):
-    hdr = recv_exact(sock, 2)
-    b0, b1 = hdr[0], hdr[1]
-    if b1 & 0x80:
-        fail("server frame is masked")
-    ln = b1 & 0x7F
-    if ln == 126:
-        ln = struct.unpack(">H", recv_exact(sock, 2))[0]
-    elif ln == 127:
-        ln = struct.unpack(">Q", recv_exact(sock, 8))[0]
-    return b0 & 0x0F, recv_exact(sock, ln)
-
-
-def send_frame(sock, opcode, payload, fin=True):
-    b0 = (0x80 if fin else 0) | opcode
-    mask = os.urandom(4)
-    n = len(payload)
-    header = bytes([b0])
-    if n <= 125:
-        header += bytes([0x80 | n])
-    elif n <= 0xFFFF:
-        header += bytes([0x80 | 126]) + struct.pack(">H", n)
-    else:
-        header += bytes([0x80 | 127]) + struct.pack(">Q", n)
-    masked = bytes(c ^ mask[i % 4] for i, c in enumerate(payload))
-    sock.sendall(header + mask + masked)
-
-
-def read_text(sock, timeout=6.0):
-    """Next text frame's payload; heartbeat pings get pongs and are skipped."""
-    sock.settimeout(timeout)
-    for _ in range(20):
-        op, payload = read_frame(sock)
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
-            continue
-        if op == 0x1:
-            return payload
+    One deadline for the whole read: a per-read timeout is reset by every
+    heartbeat, which is why this used to give up after twenty pings."""
+    op, payload = ws.recv_data(deadline=time.monotonic() + timeout)
+    if op != TEXT:
         fail("unexpected frame op=%d while waiting for text" % op)
-    fail("only pings arriving; the chat message never came")
+    return payload
 
 
 def connect_ws():
-    """Open one chat socket; returns (socket, owning worker id)."""
-    sock = socket.create_connection((HOST, PORT), timeout=10)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET /ws HTTP/1.1\r\nHost: %s:%d\r\n"
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-            "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n"
-            % (HOST, PORT, key)
-        ).encode()
-    )
-    resp = b""
-    while b"\r\n\r\n" not in resp:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("connection closed during handshake")
-        resp += chunk
-    head = resp.split(b"\r\n\r\n")[0].decode("latin-1")
-    lines = head.split("\r\n")
-    if " 101 " not in lines[0] + " ":
-        fail("expected 101, got: " + lines[0])
-    accept = worker = None
-    for line in lines[1:]:
-        low = line.lower()
-        if low.startswith("sec-websocket-accept:"):
-            accept = line.split(":", 1)[1].strip()
-        if low.startswith("x-worker:"):
-            worker = line.split(":", 1)[1].strip()
-    expected = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
-    if accept != expected:
+    """Open one chat socket; returns (WebSocket, owning worker id)."""
+    ws = WebSocket.connect(HOST, PORT, "/ws", timeout=10)
+    if ws.status_line is None:
+        fail("connection closed during handshake")
+    status = ws.status_line.decode("latin-1")
+    if " 101 " not in status + " ":
+        fail("expected 101, got: " + status)
+    if not ws.accept_ok():
         fail("bad accept key")
+    worker = ws.header("X-Worker")
     if worker is None:
         fail("no X-Worker header on the upgrade response")
-    return sock, worker
+    return ws, worker
 
 
-def close_all(socks):
-    for s in socks:
+def close_all(sockets):
+    for ws in sockets:
         try:
-            send_frame(s, 0x8, struct.pack(">H", 1000))
-            s.close()
+            ws.send_close(1000)
+            ws.close()
         except OSError:
             pass
 
@@ -159,7 +77,7 @@ if EXPECT_WORKERS <= 1:
     phase("two sockets on one worker, and a message reaching both")
     a = connect_ws()
     b = connect_ws()
-    send_frame(a[0], 0x1, b"hello room")
+    a[0].send_text("hello room")
     for name, (sock, _) in (("sender", a), ("other", b)):
         got = read_text(sock)
         if got != b"hello room":
@@ -197,7 +115,7 @@ if len(workers) < 2:
 phase("one message reaching both workers over the bus")
 sender_sock, sender_worker = conns[0]
 msg = b"hello from " + sender_worker.encode()
-send_frame(sender_sock, 0x1, msg)
+sender_sock.send(TEXT, msg)
 
 cross_checked = 0
 for sock, worker in conns:

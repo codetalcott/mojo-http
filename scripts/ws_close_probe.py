@@ -25,106 +25,30 @@ Stdlib only; exits 0 when every case holds.
 """
 
 import argparse
-import base64
-import hashlib
 import os
 import socket
 import struct
-import sys
 import time
-import traceback
 
-GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+from probelib import BINARY, CLOSE, PING, TEXT, WebSocket, encode_frame, fail, phase, stamp
+
 PORT = 8088
 
 # Which case is running, for the crash handler: a reset or a timeout inside a
 # helper four cases share says nothing without it.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("ws_close_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("ws_close_probe FAIL: %s: %s" % (PHASE, msg))
-    sys.exit(1)
-
-
-def recv_exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            raise EOFError("connection closed wanting %d bytes (got %d)" % (n, len(buf)))
-        buf += chunk
-    return buf
-
-
-def read_frame(sock):
-    b0, b1 = recv_exact(sock, 2)
-    ln = b1 & 0x7F
-    if ln == 126:
-        ln = struct.unpack(">H", recv_exact(sock, 2))[0]
-    elif ln == 127:
-        ln = struct.unpack(">Q", recv_exact(sock, 8))[0]
-    return b0 & 0x0F, recv_exact(sock, ln)
-
-
-def read_data_or_close(sock):
-    # Pings (the heartbeat) are answered and skipped.
-    while True:
-        op, payload = read_frame(sock)
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
-            continue
-        return op, payload
-
-
-def send_frame(sock, opcode, payload):
-    mask = os.urandom(4)
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    ln = len(payload)
-    if ln < 126:
-        hdr = struct.pack(">BB", 0x80 | opcode, 0x80 | ln)
-    elif ln < 65536:
-        hdr = struct.pack(">BBH", 0x80 | opcode, 0x80 | 126, ln)
-    else:
-        hdr = struct.pack(">BBQ", 0x80 | opcode, 0x80 | 127, ln)
-    sock.sendall(hdr + mask + masked)
+stamp("ws_close_probe FAIL", fail="ws_close_probe FAIL: {phase}: {msg}")
 
 
 def connect():
-    sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET /ws/record HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\n"
-            "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n" % key
-        ).encode()
-    )
-    head = b""
-    while b"\r\n\r\n" not in head:
-        chunk = sock.recv(1)
-        if not chunk:
-            fail("closed during the handshake")
-        head += chunk
-    if b" 101 " not in head.split(b"\r\n", 1)[0]:
-        fail("handshake answered %r" % head.split(b"\r\n", 1)[0])
-    want = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest())
-    if want not in head:
+    ws = WebSocket.connect("127.0.0.1", PORT, "/ws/record", timeout=10,
+                           host_header="localhost")
+    if ws.status_line is None:
+        fail("closed during the handshake")
+    if b" 101 " not in ws.status_line:
+        fail("handshake answered %r" % ws.status_line)
+    if not ws.accept_ok():
         fail("bad Sec-WebSocket-Accept")
-    return sock
+    return ws
 
 
 def http_get(path):
@@ -154,39 +78,38 @@ def heard(want, within=5.0):
     fail("the application heard %r, want %d" % (seen, want))
 
 
-def expect_end(sock, within=5.0):
+def expect_end(ws, within=5.0):
     """The server's end of a closing connection: EOF, and nothing before it
     but heartbeat pings."""
-    deadline = time.time() + within
-    while time.time() < deadline:
-        sock.settimeout(max(0.1, deadline - time.time()))
+    deadline = time.monotonic() + within
+    while True:
         try:
-            op, payload = read_frame(sock)
+            op, payload = ws.recv_frame(deadline=deadline, eof_ok=True)
         except (EOFError, ConnectionResetError):
-            sock.close()
+            ws.close()
             return
         except socket.timeout:
             break
-        if op == 0x9:
+        if op == PING:
             continue
         fail("after the closing handshake the server sent opcode %d" % op)
     fail("the connection was still open %.0f s after the closing handshake" % within)
 
 
 def close_with(payload):
-    sock = connect()
-    send_frame(sock, 0x1, b"hi")
-    op, got = read_data_or_close(sock)
-    if (op, got) != (0x1, b"hi"):
+    ws = connect()
+    ws.send(TEXT, b"hi")
+    op, got = ws.recv_data(eof_ok=True)
+    if (op, got) != (TEXT, b"hi"):
         fail("echo was %r" % ((op, got),))
-    send_frame(sock, 0x8, payload)
+    ws.send(CLOSE, payload)
     try:
-        op, _ = read_data_or_close(sock)
-        if op != 0x8:
+        op, _ = ws.recv_data(eof_ok=True)
+        if op != CLOSE:
             fail("the server answered a Close with opcode %d" % op)
     except (EOFError, OSError):
         pass
-    sock.close()
+    ws.close()
 
 
 def main():
@@ -204,85 +127,69 @@ def main():
     heard(1005)
 
     phase("no Close at all")
-    sock = connect()
-    send_frame(sock, 0x1, b"hi")
-    read_data_or_close(sock)
-    sock.shutdown(socket.SHUT_RDWR)
-    sock.close()
+    ws = connect()
+    ws.send(TEXT, b"hi")
+    ws.recv_data(eof_ok=True)
+    ws.sock.shutdown(socket.SHUT_RDWR)
+    ws.close()
     heard(1006)
 
     phase("a Close and a hang-up in the same instant")
     # The client's Close and its FIN arrive together, so the loop sees
     # EV_EOF with the Close still unread: it used to close the socket
     # before reading it, and the application heard 1006.
-    sock = connect()
-    send_frame(sock, 0x1, b"hi")
-    read_data_or_close(sock)
-    send_frame(sock, 0x8, struct.pack(">H", 4001))
-    sock.close()
+    ws = connect()
+    ws.send(TEXT, b"hi")
+    ws.recv_data(eof_ok=True)
+    ws.send_close(4001)
+    ws.close()
     heard(4001)
 
     phase("a last message and a hang-up in the same instant")
-    sock = connect()
-    send_frame(sock, 0x1, b"hi")
-    read_data_or_close(sock)
-    send_frame(sock, 0x1, b"last-words-before-the-hang-up")
-    sock.close()
+    ws = connect()
+    ws.send(TEXT, b"hi")
+    ws.recv_data(eof_ok=True)
+    ws.send(TEXT, b"last-words-before-the-hang-up")
+    ws.close()
     heard(1006)
     _, texts = http_get("/ws-texts")
     if "last-words-before-the-hang-up" not in texts:
         fail("a message sent just before the hang-up never reached the application")
 
     phase("a message at the channel's cap")
-    sock = connect()
+    ws = connect()
     at_cap = os.urandom(65536)
-    send_frame(sock, 0x2, at_cap)
-    op, got = read_data_or_close(sock)
-    if (op, got) != (0x1, b"len:65536"):
+    ws.send(BINARY, at_cap)
+    op, got = ws.recv_data(eof_ok=True)
+    if (op, got) != (TEXT, b"len:65536"):
         fail("the 65,536-byte message was answered %r" % ((op, got[:40]),))
     # A conforming client waits for the echo before closing TCP (RFC 6455
     # §7.1.1). One that hangs up in the same instant loses its code: the
     # loop closes a socket at EOF without reading what is buffered (tracked).
-    send_frame(sock, 0x8, struct.pack(">H", 1000))
+    ws.send_close(1000)
     try:
-        read_data_or_close(sock)
+        ws.recv_data(eof_ok=True)
     except (EOFError, OSError):
         pass
-    sock.close()
+    ws.close()
     heard(1000)
 
     phase("a message the channel cannot carry")
-    sock = connect()
+    ws = connect()
     # A message right behind it, in the same write: RFC 6455 §7.1.7, no
     # data is processed after the connection is failed.
-    mask = os.urandom(4)
     behind = b"after-the-refused-one"
-    sock.sendall(
-        struct.pack(">BBQ", 0x82, 0x80 | 127, 70000) + mask
-        + bytes(b ^ mask[i % 4] for i, b in enumerate(b"o" * 70000))
-        + struct.pack(">BB", 0x81, 0x80 | len(behind)) + mask
-        + bytes(b ^ mask[i % 4] for i, b in enumerate(behind))
-    )
+    ws.sock.sendall(encode_frame(BINARY, b"o" * 70000) + encode_frame(TEXT, behind))
     # A deadline, not a per-read timeout: heartbeat pings every 300 ms would
     # keep a per-read timeout from ever firing, and a regression would hang
     # the smoke instead of failing it.
-    deadline = time.time() + 5.0
-    op = None
-    while time.time() < deadline:
-        sock.settimeout(max(0.1, deadline - time.time()))
-        try:
-            op, got = read_frame(sock)
-        except socket.timeout:
-            op = None
-            break
-        if op == 0x9:
-            send_frame(sock, 0xA, got)
-            op = None
-            continue
-        break
+    try:
+        op, got = ws.recv_data(deadline=time.monotonic() + 5.0, eof_ok=True)
+    except socket.timeout:
+        op = None
     if op is None:
         fail("no answer but heartbeats to a 70,000-byte message in 5 s: parked, not refused")
-    if op != 0x8:
+    if op != CLOSE:
         fail("a 70,000-byte message was answered with opcode %d, not a Close" % op)
     code = struct.unpack(">H", got[:2])[0] if len(got) >= 2 else None
     if code != 1009:
@@ -290,8 +197,8 @@ def main():
     # The client answers the Close, as a browser does: the server must end
     # the connection -- no second Close, which Chromium reports as a
     # failed connection (1006) rather than the 1009 it was sent.
-    send_frame(sock, 0x8, struct.pack(">H", 1009))
-    expect_end(sock)
+    ws.send_close(1009)
+    expect_end(ws)
     heard(1009)
     _, texts = http_get("/ws-texts")
     if behind.decode() in texts:

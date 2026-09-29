@@ -60,11 +60,9 @@ import re
 import shutil
 import socket
 import ssl
-import struct
 import subprocess
 import sys
 import time
-import traceback
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -72,33 +70,17 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from emit import emit  # noqa: E402
+from probelib import BINARY, TEXT, SSEParser, WebSocket, fail, phase, stamp  # noqa: E402
 
 WHEELHOUSE = REPO / "deploy" / "demo" / "wheelhouse"
-GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 COOKIE = "m0demo"
 
 # The probe phase stamp (scripts/phase_stamp_check.py): every phase reaches
 # the server through the same helpers, so an unhandled error inside one would
-# name the call that failed and never the phase being proven.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-    print(f"--- {name}")
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("demo_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    sys.exit(f"demo_probe: FAIL: {PHASE}: {msg}")
+# name the call that failed and never the phase being proven. Each phase is
+# also announced as it begins (`--- name`), and a failure goes to stderr.
+stamp("demo_probe: FAIL", fail="demo_probe: FAIL: {phase}: {msg}", fail_stream=sys.stderr,
+      echo="--- {phase}")
 
 
 def run(*argv, check=True, timeout=600, **kw):
@@ -188,13 +170,14 @@ class Stream:
                         (ln.split(":", 1) for ln in lines[1:] if ":" in ln)}
         self.chunked = "chunked" in self.headers.get("transfer-encoding", "").lower()
         self.worker = self.headers.get("x-worker")
-        self.buf = b""
+        self.parser = SSEParser()
+        self.events = []
         self._decode()
 
     def _decode(self):
-        """Move what is decodable from the wire buffer into the body buffer."""
+        """Move what is decodable from the wire buffer into the parser."""
         if not self.chunked:
-            self.buf += self.raw
+            self._feed(self.raw)
             self.raw = b""
             return
         while b"\r\n" in self.raw:
@@ -204,8 +187,12 @@ class Stream:
                 fail("the held stream was ended by the server (terminating chunk)")
             if len(rest) < size + 2:
                 return
-            self.buf += rest[:size]
+            self._feed(rest[:size])
             self.raw = rest[size + 2:]
+
+    def _feed(self, body):
+        # A block with no data -- a heartbeat's comment -- is not an event.
+        self.events += [ev for ev in self.parser.feed(body) if ev.data is not None]
 
     def next_event(self, timeout):
         """The next event's parsed JSON `data`, or None on silence.
@@ -215,11 +202,8 @@ class Stream:
         """
         deadline = time.monotonic() + timeout
         while True:
-            while b"\n\n" in self.buf:
-                frame, self.buf = self.buf.split(b"\n\n", 1)
-                data = [ln[5:].lstrip(b" ") for ln in frame.split(b"\n") if ln.startswith(b"data:")]
-                if data:
-                    return json.loads(b"\n".join(data).decode("utf-8"))
+            if self.events:
+                return json.loads(self.events.pop(0).data)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return None
@@ -249,102 +233,47 @@ def visitor(t):
     return m.group(1), body, h
 
 
-# --- WebSocket helpers (RFC 6455 spoken raw, as in realtime_probe.py) ----------
+# --- WebSocket helpers (probelib's client, over the target's own socket) --------
 
 
 def ws_open(t, cookie, origin=None):
-    """Handshake; returns (sock, worker) on 101 or (None, status_line, body)."""
-    sock = t.raw_socket()
-    key = base64.b64encode(os.urandom(16)).decode()
-    lines = ["GET /ws HTTP/1.1", f"Host: {t.hostport}", "Upgrade: websocket", "Connection: Upgrade",
-             f"Sec-WebSocket-Key: {key}", "Sec-WebSocket-Version: 13"]
+    """Handshake; returns (WebSocket, worker) on 101 or (None, status_line, body)."""
+    ws = WebSocket(t.raw_socket())
+    headers = []
     if cookie:
-        lines.append(f"Cookie: {COOKIE}={cookie}")
+        headers.append(("Cookie", f"{COOKIE}={cookie}"))
     if origin:
-        lines.append(f"Origin: {origin}")
-    sock.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
-    resp = b""
-    while b"\r\n\r\n" not in resp:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("connection closed during the WebSocket handshake")
-        resp += chunk
-    head, _, rest = resp.partition(b"\r\n\r\n")
-    hlines = head.decode("latin-1").split("\r\n")
-    status = hlines[0]
+        headers.append(("Origin", origin))
+    if ws.handshake("/ws", t.hostport, headers) is None:
+        fail("connection closed during the WebSocket handshake")
+    status = ws.status_line.decode("latin-1")
     if " 101 " not in status + " ":
-        sock.close()
-        return None, status, rest
-    accept = worker = None
-    for ln in hlines[1:]:
+        ws.close()
+        return None, status, bytes(ws.buf)
+    for ln in ws.head.decode("latin-1").split("\r\n")[1:]:
         low = ln.lower()
-        if low.startswith("sec-websocket-accept:"):
-            accept = ln.split(":", 1)[1].strip()
-        if low.startswith("x-worker:"):
-            worker = ln.split(":", 1)[1].strip()
         if low.startswith("m0-hold:") or low.startswith("m0-channel:"):
             fail("instruction header leaked to the client: " + ln)
-    expected = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
-    if accept != expected:
+    if not ws.accept_ok():
         fail("bad Sec-WebSocket-Accept: the handshake was not really performed")
-    return sock, worker
+    return ws, ws.header("X-Worker")
 
 
-def ws_send(sock, opcode, payload):
-    mask = os.urandom(4)
-    n = len(payload)
-    header = bytes([0x80 | opcode])
-    if n <= 125:
-        header += bytes([0x80 | n])
-    elif n <= 0xFFFF:
-        header += bytes([0x80 | 126]) + struct.pack(">H", n)
-    else:
-        header += bytes([0x80 | 127]) + struct.pack(">Q", n)
-    sock.sendall(header + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(payload)))
-
-
-def _recv_exact(sock, n):
-    buf = b""
-    while len(buf) < n:
-        chunk = sock.recv(n - len(buf))
-        if not chunk:
-            fail("WebSocket closed wanting %d bytes" % n)
-        buf += chunk
-    return buf
-
-
-def ws_read_text(sock, timeout):
+def ws_read_text(ws, timeout):
     """Next text frame as parsed JSON; pings are answered; None on silence."""
-    deadline = time.monotonic() + timeout
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            return None
-        sock.settimeout(remaining)
-        try:
-            hdr = _recv_exact(sock, 2)
-        except (socket.timeout, TimeoutError):
-            return None
-        op, ln = hdr[0] & 0x0F, hdr[1] & 0x7F
-        if hdr[1] & 0x80:
-            fail("server frame is masked")
-        if ln == 126:
-            ln = struct.unpack(">H", _recv_exact(sock, 2))[0]
-        elif ln == 127:
-            ln = struct.unpack(">Q", _recv_exact(sock, 8))[0]
-        payload = _recv_exact(sock, ln)
-        if op == 0x9:
-            ws_send(sock, 0xA, payload)
-            continue
-        if op == 0x1:
-            return json.loads(payload.decode("utf-8"))
-        fail("unexpected WebSocket frame op=%d" % op)
-
-
-def ws_close(sock):
     try:
-        ws_send(sock, 0x8, struct.pack(">H", 1000))
-        sock.close()
+        op, payload = ws.recv_data(deadline=time.monotonic() + timeout)
+    except socket.timeout:
+        return None
+    if op != TEXT:
+        fail("unexpected WebSocket frame op=%d" % op)
+    return json.loads(payload.decode("utf-8"))
+
+
+def ws_close(ws):
+    try:
+        ws.send_close(1000)
+        ws.close()
     except OSError:
         pass
 
@@ -447,11 +376,12 @@ def probe_http(t, silence=2.0, deliver=8.0):
           f"the stranger on worker {s3.worker} heard nothing for {silence:.0f}s")
 
     phase("a WebSocket is held, and a frame sent on it reaches every tab")
-    sock, ws_worker = ws_open(t, token)
-    if sock is None:
-        fail(f"upgrade refused: {ws_worker}")
+    opened = ws_open(t, token)
+    if opened[0] is None:
+        fail(f"upgrade refused: {opened[1]}")
+    sock, ws_worker = opened
     marker = "ws-" + uuid.uuid4().hex[:8]
-    ws_send(sock, 0x1, marker.encode())
+    sock.send(TEXT, marker.encode())
     echo = ws_read_text(sock, deliver)
     if not echo or echo.get("text") != marker or echo.get("via") != "websocket":
         fail(f"the socket heard {echo!r}, wanted its own message back via websocket")
@@ -466,7 +396,7 @@ def probe_http(t, silence=2.0, deliver=8.0):
     # The page's envelope: its echo must carry the tab id and name the worker
     # holding THIS socket, or the page's "held by worker" line is wrong.
     marker = "ws-" + uuid.uuid4().hex[:8]
-    ws_send(sock, 0x1, json.dumps({"text": marker, "tab": "5e5e0002"}).encode())
+    sock.send(TEXT, json.dumps({"text": marker, "tab": "5e5e0002"}).encode())
     echo = ws_read_text(sock, deliver)
     if not echo or echo.get("text") != marker or echo.get("tab") != "5e5e0002":
         fail(f"the envelope came back as {echo!r}, wanted text {marker!r} from tab 5e5e0002")
@@ -477,13 +407,13 @@ def probe_http(t, silence=2.0, deliver=8.0):
         if not ev or ev.get("text") != marker or ev.get("tab") != "5e5e0002":
             fail(f"the {name} stream heard {ev!r}, wanted the envelope's {marker!r} with its tab")
     raw_json = '{"not": "the envelope"}'
-    ws_send(sock, 0x1, raw_json.encode())
+    sock.send(TEXT, raw_json.encode())
     echo = ws_read_text(sock, deliver)
     if not echo or echo.get("text") != raw_json:
         fail(f"JSON that is not the envelope came back as {echo!r}, wanted it verbatim")
     for s in (s1, s2):
         s.next_event(deliver)
-    ws_send(sock, 0x2, b"\x00\x01")  # a binary frame: dropped by the view, heard by nobody
+    sock.send(BINARY, b"\x00\x01")  # a binary frame: dropped by the view, heard by nobody
     if ws_read_text(sock, silence) is not None:
         fail("a binary frame was rebroadcast")
     print(f"socket held by worker {ws_worker}; its message came back to the socket and both streams")

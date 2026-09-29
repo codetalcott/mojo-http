@@ -529,6 +529,47 @@ in a minor release: `m0serve`'s flags and environment variables, the
   holds it to that. The check also compares the file a job's `M0_RESULTS`
   names with the file it uploads by whole name: `results.jsonl` used to
   pass as `ci-results.jsonl`.
+- **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
+  phase stamp, `fail()`, a server watched until it answers, a free port,
+  an SSE reader and a WebSocket client, each proven by
+  `python3 scripts/probelib.py --selftest` in CI. A server that exits
+  before it answers is reported at once, with its log:
+  `smoke-exec-inherit` and `smoke-child-publish` used to wait 120 s for
+  one, and `smoke-ws-inbound` and `smoke-slot-lifecycle` 30 s.
+  `outbox_cap_probe.py` gives the connection one 20 s deadline, where a
+  per-read timeout was reset by every heartbeat, so
+  `sabotage-outbox-cap`'s two rules that leave the connection open are
+  caught by the probe's own verdict rather than by the harness killing it
+  at 180 s. `poe check-phase-stamps` accepts a probe that takes its stamp
+  from the library and holds the library to the crash handler's rules. It
+  now judges the unsabotaged tree before any sabotage, and requires every
+  rule to have a sabotage that the rule itself catches.
+- **Nineteen more probes on `scripts/probelib.py`**, among them the
+  WebSocket and SSE clients of `smoke-chat`, `smoke-fastapi`, the Django
+  and Flask realtime smokes, `smoke-idle-timeout`, `smoke-host`,
+  `smoke-sim-loop` and `smoke-todo`, and both docker probes. Each prints
+  what it printed. `stamp()` takes two options for the probes that needed
+  them: `fail_stream=`, for a failure line that goes to stderr while the
+  crash line goes to stdout, and `echo=`, for a probe that announces each
+  phase as it begins. `stress-pool`'s two probes and the held server in
+  `smoke-host-doctor` now report a server that exits before it answers at
+  once, with its log, where each polled for up to a minute. The chat and
+  realtime probes read a WebSocket against one deadline, where a per-read
+  timeout was reset by every heartbeat. `demo_probe.py` names a refused
+  WebSocket upgrade; it used to die of `ValueError('too many values to
+  unpack')`.
+- **The last twenty-one probes on `scripts/probelib.py`**: the raw-socket
+  probes of `smoke-shutdown`, `smoke-pipelining`, `smoke-early-413`,
+  `smoke-body-timeout` and the other HTTP/1.1 smokes, the response-head
+  and chunked keep-alive probes of the WSGI and ASGI smokes,
+  `smoke-ramp`'s, `probe-pool-fairness`'s, and the `pid1` job's two
+  docker probes. Each prints what it printed, on the stream it printed it
+  on. Every probe but `apps/ws_echo/ws_probe.py`, which stays inline as
+  `poe check-phase-stamps`' example of that form, now takes its phase
+  stamp from the library. `pool_fairness_probe.py` waits for its server
+  through the library's `wait_healthy`: its own poller, answered with an
+  empty body, asked again at once, about 10,700 times a second against a
+  server that answers 101, where the library's asks 19.
 - **A supervisor, and what an application runs before its loop, survive
   SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
   which a supervisor never enters: m0serve's under `--workers` or

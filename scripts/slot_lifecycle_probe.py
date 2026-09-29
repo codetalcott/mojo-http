@@ -52,16 +52,16 @@ usage: slot_lifecycle_probe.py PORT
   with `--access-log` and `--static`; see `poe smoke-slot-lifecycle`
 """
 
-import base64
 import os
-import struct
 import shutil
 import socket
 import subprocess
 import sys
 import tempfile
 import time
-import traceback
+
+import probelib
+from probelib import BINARY, CLOSE, TEXT, WebSocket, phase, server, stamp
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8142
@@ -81,30 +81,18 @@ SETTLE = 0.7
 # job is still out for the whole window.
 SLOW_MS = 4000
 
-# Which phase is running, for the crash handler below. Every shape ends in
-# the same `recv` helpers, so a traceback names the same lines whichever
-# shape was being proven.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("slot_lifecycle_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+# Which phase is running, for the crash handler. Every shape ends in the
+# same `recv` helpers, so a traceback names the same lines whichever shape
+# was being proven.
+stamp("slot_lifecycle_probe: FAIL")
 
 failures = []
 worst = [0.0]
 
 
 def fail(msg):
-    failures.append("%s: %s" % (PHASE, msg))
+    """A finding, kept: every shape is measured before the verdict."""
+    failures.append("%s: %s" % (probelib.PHASE, msg))
 
 
 def cpu_seconds(pid):
@@ -282,46 +270,25 @@ def read_chunked_to_end(sock):
 
 
 def ws_handshake(sock, path):
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(("GET %s HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
-                  "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
-                  "Sec-WebSocket-Version: 13\r\n\r\n" % (path, key)).encode())
-    head, rest = read_head(sock, b"")
-    if b" 101 " not in head.split(b"\r\n", 1)[0]:
-        raise RuntimeError("expected 101, got %r" % head[:80])
-    return rest
+    ws = WebSocket(sock)
+    if ws.handshake(path, "x") is None:
+        raise RuntimeError("closed before a response head (%d bytes)" % len(ws.buf))
+    if b" 101 " not in ws.status_line:
+        raise RuntimeError("expected 101, got %r" % ws.head[:80])
+    return ws
 
 
-def ws_read_until_close(sock, buf):
+def ws_read_until_close(ws):
     """Count data frames until the server's Close; returns the count."""
     frames = 0
     while True:
-        while len(buf) < 2:
-            part = sock.recv(1 << 20)
-            if not part:
-                raise RuntimeError("closed before the Close frame")
-            buf += part
-        ln = buf[1] & 0x7F
-        hdr = {126: 4, 127: 10}.get(ln, 2)
-        while len(buf) < hdr:
-            part = sock.recv(1 << 20)
-            if not part:
-                raise RuntimeError("closed inside a frame header")
-            buf += part
-        if ln == 126:
-            ln = struct.unpack(">H", buf[2:4])[0]
-        elif ln == 127:
-            ln = struct.unpack(">Q", buf[2:10])[0]
-        while len(buf) < hdr + ln:
-            part = sock.recv(1 << 20)
-            if not part:
-                raise RuntimeError("closed inside a frame")
-            buf += part
-        opcode = buf[0] & 0x0F
-        buf = buf[hdr + ln:]
-        if opcode == 0x8:
+        try:
+            opcode, _ = ws.recv_frame(eof_ok=True)
+        except EOFError as exc:
+            raise RuntimeError("closed before the Close frame: %s" % exc)
+        if opcode == CLOSE:
             return frames
-        if opcode in (0x1, 0x2):
+        if opcode in (TEXT, BINARY):
             frames += 1
 
 
@@ -343,13 +310,12 @@ def one_record_each(log_path):
     sock.close()
 
     phase("one access record for a WebSocket sent through the write-ready path")
-    sock = connect_armed()
-    rest = ws_handshake(sock, "/ws/flood")
+    ws = ws_handshake(connect_armed(), "/ws/flood")
     time.sleep(1.5)
-    frames = ws_read_until_close(sock, rest)
+    frames = ws_read_until_close(ws)
     if frames < 100:
         fail("the flood delivered only %d frames before its Close" % frames)
-    sock.close()
+    ws.close()
 
     phase("counting the access records")
     time.sleep(0.5)
@@ -372,49 +338,32 @@ def main():
     with open(os.path.join(tmp, "big.bin"), "wb") as fh:
         fh.write(b"m0" * (BIG // 2))
     log_path = os.path.join(tmp, "server.log")
-    log = open(log_path, "w")
-    srv = subprocess.Popen(
-        [BIN, "bareapp.asgi:application", "--app-dir", "apps/asgi_bare",
-         "--port", str(PORT), "--idle-timeout", "30", "--max-body", "32m",
-         "--access-log", "--static", "/files=" + tmp],
-        stdout=log, stderr=subprocess.STDOUT,
-    )
     try:
         phase("waiting for the server")
-        for _ in range(300):
-            try:
-                socket.create_connection((HOST, PORT), timeout=0.5).close()
-                break
-            except OSError:
-                time.sleep(0.1)
-        else:
-            raise RuntimeError("the server never accepted a connection")
-        time.sleep(1.0)
+        with server([BIN, "bareapp.asgi:application", "--app-dir", "apps/asgi_bare",
+                     "--port", str(PORT), "--idle-timeout", "30", "--max-body", "32m",
+                     "--access-log", "--static", "/files=" + tmp],
+                    (HOST, PORT), timeout=30, log=log_path, grace=10) as srv:
+            time.sleep(1.0)
 
-        phase("the idle server's baseline")
-        base = metered(srv.pid, WINDOW)
-        if base > LIMIT:
-            fail("the server used %.2f CPU seconds in %.1f with no connection "
-                 "at all -- nothing below can be told apart from that" % (base, WINDOW))
-        print("  idle: %.2f CPU seconds in %.1f" % (base, WINDOW))
+            phase("the idle server's baseline")
+            base = metered(srv.pid, WINDOW)
+            if base > LIMIT:
+                fail("the server used %.2f CPU seconds in %.1f with no connection "
+                     "at all -- nothing below can be told apart from that" % (base, WINDOW))
+            print("  idle: %.2f CPU seconds in %.1f" % (base, WINDOW))
 
-        phase("a response in memory, its client half-closed")
-        shape_memory(srv.pid)
-        phase("a file response, the next request pipelined behind it")
-        shape_file_pipelined(srv.pid)
-        phase("a request on the executor, its client half-closed")
-        shape_slow(srv.pid, pipelined=False)
-        phase("a request on the executor, the next request pipelined behind it")
-        shape_slow(srv.pid, pipelined=True)
+            phase("a response in memory, its client half-closed")
+            shape_memory(srv.pid)
+            phase("a file response, the next request pipelined behind it")
+            shape_file_pipelined(srv.pid)
+            phase("a request on the executor, its client half-closed")
+            shape_slow(srv.pid, pipelined=False)
+            phase("a request on the executor, the next request pipelined behind it")
+            shape_slow(srv.pid, pipelined=True)
 
-        one_record_each(log_path)
+            one_record_each(log_path)
     finally:
-        srv.terminate()
-        try:
-            srv.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            srv.kill()
-        log.close()
         if failures:
             with open(log_path) as fh:
                 tail = fh.readlines()[-20:]

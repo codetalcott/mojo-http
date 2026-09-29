@@ -46,14 +46,14 @@ usage: idle_timeout_probe.py PORT IDLE_TIMEOUT_SECONDS
   DIR holding `big.bin` (16 MiB); see `poe smoke-idle-timeout`
 """
 
-import base64
-import os
 import socket
-import struct
 import sys
 import threading
 import time
 import traceback
+
+import probelib
+from probelib import CLOSE, TEXT, WebSocket, phase, stamp
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
@@ -71,31 +71,20 @@ SWEEP_SLACK = 2.0
 # "immediately", not to measure the clock.
 EARLY_SLACK = 0.5
 
-# Which phase is running, for the crash handler below. Every phase here ends
-# in a bare `recv` waiting out a deadline, so a traceback names the same line
+# Which phase is running, for the crash handler. Every phase here ends in a
+# bare `recv` waiting out a deadline, so a traceback names the same line
 # whichever assertion was being proven -- and these phases assert OPPOSITE
 # things, which is the case a shared traceback is least able to tell apart.
-# apps/asgi_bare/ws_probe.py carries the original of this comment.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("idle_timeout_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+# apps/asgi_bare/ws_probe.py carries the original of this comment. The
+# library's own failure line (a masked server frame) is this probe's shape.
+stamp("idle_timeout_probe: FAIL", fail="idle_timeout_probe: FAIL: {phase}: {msg}")
 
 failures = []
 
 
 def fail(msg):
-    failures.append("%s: %s" % (PHASE, msg))
+    """Record a failure against the running phase; the probe reports them all."""
+    failures.append("%s: %s" % (probelib.PHASE, msg))
 
 
 def wait_for_close(sock, budget):
@@ -141,62 +130,24 @@ def get(sock, path="/"):
 
 
 def ws_handshake(path="/ws"):
-    sock = socket.create_connection((HOST, PORT), timeout=15)
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        ("GET %s HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
-         "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
-         "Sec-WebSocket-Version: 13\r\n\r\n" % (path, key)).encode()
-    )
-    head = b""
-    while b"\r\n\r\n" not in head:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("connection closed during the WebSocket handshake")
-            return None
-        head += chunk
-    if b" 101 " not in head.split(b"\r\n", 1)[0] + b" ":
-        fail("expected 101, got %r" % head.split(b"\r\n", 1)[0])
+    ws = WebSocket.connect(HOST, PORT, path, timeout=15, host_header="x")
+    if ws.status_line is None:
+        fail("connection closed during the WebSocket handshake")
         return None
-    return sock
+    if b" 101 " not in ws.status_line + b" ":
+        fail("expected 101, got %r" % ws.status_line)
+        return None
+    return ws
 
 
-def send_frame(sock, opcode, payload):
-    mask = os.urandom(4)
-    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
-    sock.sendall(bytes([0x80 | opcode, 0x80 | len(payload)]) + mask + masked)
-
-
-def read_frame(sock, timeout=15):
-    sock.settimeout(timeout)
-    head = b""
-    while len(head) < 2:
-        chunk = sock.recv(2 - len(head))
-        if not chunk:
-            return None, b""
-        head += chunk
-    ln = head[1] & 0x7F
-    if ln == 126:
-        ln = struct.unpack(">H", sock.recv(2))[0]
-    elif ln == 127:
-        ln = struct.unpack(">Q", sock.recv(8))[0]
-    body = b""
-    while len(body) < ln:
-        chunk = sock.recv(ln - len(body))
-        if not chunk:
-            return None, body
-        body += chunk
-    return head[0] & 0x0F, body
-
-
-def read_data_frame(sock):
-    """Skip the server's heartbeat pings, answering each as a client must."""
-    while True:
-        op, payload = read_frame(sock)
-        if op == 0x9:
-            send_frame(sock, 0xA, payload)
-            continue
-        return op, payload
+def read_data_frame(ws, timeout=15):
+    """The next frame that is not a ping, each ping answered as a client
+    must; (None, b"") if the server closed first."""
+    ws.settimeout(timeout)
+    try:
+        return ws.recv_data(eof_ok=True)
+    except EOFError:
+        return None, b""
 
 
 # --- 1. an idle keep-alive connection is closed, at the deadline -------------
@@ -256,14 +207,14 @@ sock.close()
 # closing EARLY is the RFC 6455 5.5.1 violation that release fixed, and never
 # closing is the leak its own comments say the linger exists to avoid.
 phase("a WebSocket peer that receives Close and never answers")
-sock = ws_handshake()
-if sock is not None:
-    send_frame(sock, 0x1, b"bye")
-    op, payload = read_data_frame(sock)
-    if op != 0x8:
+ws = ws_handshake()
+if ws is not None:
+    ws.send(TEXT, b"bye")
+    op, payload = read_data_frame(ws)
+    if op != CLOSE:
         fail("expected the app's Close frame after 'bye', got op=%s" % op)
     else:
-        took = wait_for_close(sock, LINGER + SWEEP_SLACK + 8.0)
+        took = wait_for_close(ws.sock, LINGER + SWEEP_SLACK + 8.0)
         if took is None:
             fail("still open %.1fs after this side sent Close, with no reply "
                  "from the peer -- the %.0fs linger is not bounded, so the "
@@ -279,19 +230,19 @@ if sock is not None:
         else:
             print("  silent WebSocket peer reclaimed after %.2fs "
                   "(linger %.0fs)" % (took, LINGER))
-    sock.close()
+    ws.close()
 
 # --- 4. ...and one that does answer is closed at once -----------------------
 phase("a WebSocket peer that answers Close, which must close at once")
-sock = ws_handshake()
-if sock is not None:
-    send_frame(sock, 0x1, b"bye")
-    op, payload = read_data_frame(sock)
-    if op != 0x8:
+ws = ws_handshake()
+if ws is not None:
+    ws.send(TEXT, b"bye")
+    op, payload = read_data_frame(ws)
+    if op != CLOSE:
         fail("expected the app's Close frame after 'bye', got op=%s" % op)
     else:
-        send_frame(sock, 0x8, payload[:2])
-        took = wait_for_close(sock, LINGER + SWEEP_SLACK + 5.0)
+        ws.send(CLOSE, payload[:2])
+        took = wait_for_close(ws.sock, LINGER + SWEEP_SLACK + 5.0)
         if took is None:
             fail("still open after the peer answered Close -- the linger is "
                  "being waited out rather than ended by the reply")
@@ -300,7 +251,7 @@ if sock is not None:
                  "should end the linger, not be waited out" % took)
         else:
             print("  answering WebSocket peer closed after %.2fs" % took)
-    sock.close()
+    ws.close()
 
 
 # --- 5-7. the deadline governs idleness, not a request in flight (B2) --------

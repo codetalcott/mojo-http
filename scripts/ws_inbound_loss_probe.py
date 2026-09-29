@@ -38,16 +38,14 @@ it is only late.
 Exits 0 on success, 1 naming the shortfall.
 """
 
-import base64
 import errno
 import os
 import socket
-import struct
-import subprocess
 import sys
 import threading
 import time
-import traceback
+
+from probelib import TEXT, WebSocket, encode_frame, fail, parse_frames, phase, server, stamp
 
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 3000
 SIZE = int(sys.argv[2]) if len(sys.argv) > 2 else 4096
@@ -59,109 +57,36 @@ LOG = os.environ.get("M0_WSIN_LOG", "ws_inbound.log")
 STALL_LIMIT_FRACTION = 0.5
 
 
-# Which phase is running, for the crash handler below. A traceback names the
-# CALL that failed -- here a `send` or `recv` two phases share -- and never
-# the PHASE being proven.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("ws_inbound FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("ws_inbound FAIL:", msg)
-    sys.exit(1)
-
-
-def ws_frame(opcode, payload):
-    mask = os.urandom(4)
-    hdr = bytes([0x80 | opcode])
-    if len(payload) < 126:
-        hdr += bytes([0x80 | len(payload)])
-    elif len(payload) < 65536:
-        hdr += bytes([0x80 | 126]) + struct.pack(">H", len(payload))
-    else:
-        hdr += bytes([0x80 | 127]) + struct.pack(">Q", len(payload))
-    return hdr + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+# Which phase is running, for the crash handler. A traceback names the CALL
+# that failed -- here a `send` or `recv` two phases share -- and never the
+# PHASE being proven.
+stamp("ws_inbound FAIL")
 
 
 def count_text_frames(buf):
     """(complete text frames, bytes consumed) from a server frame stream."""
-    seen = at = 0
-    while at + 2 <= len(buf):
-        ln = buf[at + 1] & 0x7F
-        hdr = 2
-        if ln == 126:
-            if at + 4 > len(buf):
-                break
-            ln = struct.unpack(">H", buf[at + 2:at + 4])[0]
-            hdr = 4
-        elif ln == 127:
-            if at + 10 > len(buf):
-                break
-            ln = struct.unpack(">Q", buf[at + 2:at + 10])[0]
-            hdr = 10
-        if at + hdr + ln > len(buf):
-            break
-        if buf[at] & 0x0F == 0x1:
-            seen += 1
-        at += hdr + ln
-    return seen, at
-
-
-def handshake(sock):
-    key = base64.b64encode(os.urandom(16)).decode()
-    sock.sendall(
-        (
-            "GET /ws HTTP/1.1\r\nHost: x\r\nUpgrade: websocket\r\n"
-            "Connection: Upgrade\r\nSec-WebSocket-Key: %s\r\n"
-            "Sec-WebSocket-Version: 13\r\n\r\n" % key
-        ).encode()
-    )
-    head = b""
-    while b"\r\n\r\n" not in head:
-        chunk = sock.recv(4096)
-        if not chunk:
-            fail("no handshake response")
-        head += chunk
-    if b" 101 " not in head.split(b"\r\n", 1)[0]:
-        fail("expected 101, got %r" % head.split(b"\r\n", 1)[0])
+    frames, at = parse_frames(buf)
+    return sum(1 for f in frames if f.opcode == TEXT), at
 
 
 def main():
-    log = open(LOG, "w")
-    srv = subprocess.Popen(
-        ["./bin/m0serve", "bareapp.asgi:application",
-         "--app-dir", "apps/asgi_bare", "--port", str(PORT)],
-        stdout=log, stderr=subprocess.STDOUT, env=dict(os.environ),
-    )
-    try:
-        phase("waiting for the server")
-        for _ in range(300):
-            try:
-                socket.create_connection(("127.0.0.1", PORT), timeout=0.5).close()
-                break
-            except OSError:
-                time.sleep(0.1)
-        else:
-            fail("the server never accepted a connection")
+    phase("waiting for the server")
+    # The listener is what is waited for; a server that exits first is
+    # reported at once, with its log.
+    with server(["./bin/m0serve", "bareapp.asgi:application",
+                 "--app-dir", "apps/asgi_bare", "--port", str(PORT)],
+                ("127.0.0.1", PORT), timeout=30, log=LOG, grace=10):
         time.sleep(0.5)
 
         phase("the handshake")
-        sock = socket.create_connection(("127.0.0.1", PORT), timeout=60)
-        handshake(sock)
+        ws = WebSocket.connect("127.0.0.1", PORT, "/ws", timeout=60, host_header="x")
+        if ws.status_line is None:
+            fail("no handshake response")
+        if b" 101 " not in ws.status_line:
+            fail("expected 101, got %r" % ws.status_line)
+        sock = ws.sock
 
-        frames = [ws_frame(0x1, b"m" * SIZE) for _ in range(N)]
+        frames = [encode_frame(TEXT, b"m" * SIZE) for _ in range(N)]
         total = sum(len(f) for f in frames)
 
         phase("phase A: sending WITHOUT reading, until the socket stops taking")
@@ -206,7 +131,7 @@ def main():
         got = [0]
 
         def reader():
-            buf = b""
+            buf = bytes(ws.buf)
             end = time.time() + 120
             while got[0] < N and time.time() < end:
                 try:
@@ -240,17 +165,7 @@ def main():
 
         lost = N - got[0]
         print("  phase B: sent %d, echoed %d, lost %d" % (N, got[0], lost))
-        try:
-            sock.close()
-        except OSError:
-            pass
-    finally:
-        srv.terminate()
-        try:
-            srv.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            srv.kill()
-        log.close()
+        ws.close()
 
     dropped = [ln for ln in open(LOG) if "it is lost" in ln]
     if dropped:

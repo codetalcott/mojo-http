@@ -9,27 +9,18 @@ on the loop, never a pool job), opens N SSE holds one at a time, and after each
 asks /health how many subscribers the loop has. A hold whose head went out
 before its frame was read is swept closed and never counts.
 """
-import json, os, socket, subprocess, sys, threading, time, traceback, urllib.request
+import json, os, socket, subprocess, sys, threading, time, urllib.request
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from probelib import NotServing, phase, stamp, wait_healthy  # noqa: E402
+from probelib import stop as stop_server  # noqa: E402
 
 NAME = "hold_race_probe"
 PORT = 8080
 
 # Which phase is running, for the crash handler: a traceback names the socket
 # helper that failed, never the phase being proven (scripts/phase_stamp_check.py).
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("%s: FAIL: %s: %r" % (NAME, PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("%s: FAIL" % NAME)
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 40
 env = dict(os.environ, M0_CORE_LIB=f"{os.getcwd()}/packages/m0-core/libm0core.so", M0_SSE_HEARTBEAT_MS="500")
 cmd = ["bin/m0serve", "djangoproj.wsgi:application", "--app-dir", "apps/django_realtime",
@@ -43,14 +34,11 @@ def health():
     with urllib.request.urlopen(f"http://127.0.0.1:{PORT}/health", timeout=5) as r:
         return json.loads(r.read())
 
-t0 = time.time()
-while True:
-    try:
-        health(); break
-    except Exception:
-        if time.time() - t0 > 60:
-            print("never healthy"); srv.kill(); sys.exit(2)
-        time.sleep(0.2)
+# A server that exits is reported at once, with its log's tail, not after 60 s.
+try:
+    wait_healthy(f"http://127.0.0.1:{PORT}/health", srv, timeout=60, log="/tmp/probe_srv.log")
+except NotServing as exc:
+    print("never healthy"); print(exc); stop_server(srv); sys.exit(2)
 
 stop = False
 def hammer():
@@ -95,9 +83,7 @@ for s in holds:
     except Exception:
         dead += 1
     s.close()
-srv.terminate()
-try: srv.wait(10)
-except subprocess.TimeoutExpired: srv.kill()
+stop_server(srv, grace=10)
 verdict = "PASS" if final == N and not misses else "FAIL"
 print(f"{verdict}: {N} holds opened, {final} registered at the end, {len(misses)} checks short, {dead} sockets closed by the server; first misses {misses[:5]}")
 sys.exit(0 if verdict == "PASS" else 1)

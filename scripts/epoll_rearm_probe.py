@@ -76,7 +76,8 @@ import subprocess
 import sys
 import tempfile
 import time
-import traceback
+
+from probelib import NotServing, fail, free_port, phase, stamp, wait_healthy
 
 CONNECTIONS = 4
 REQUESTS = 2000
@@ -106,36 +107,11 @@ HALF_CLOSE_DECLARED = 20000
 HALF_CLOSE_SENT = 3000
 
 
-# Which phase is running, for the crash handler below: a traceback names the
-# CALL that raised (a helper every phase shares) and never the PHASE being
-# proven. scripts/phase_stamp_check.py holds every probe to it.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("epoll_rearm_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg: str) -> None:
-    print("epoll_rearm_probe: %s: FAIL: %s" % (PHASE, msg), file=sys.stderr)
-    sys.exit(1)
-
-
-def free_port() -> int:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("127.0.0.1", 0))
-    port = s.getsockname()[1]
-    s.close()
-    return port
+# Which phase is running, for the crash handler: a traceback names the CALL
+# that raised (a helper every phase shares) and never the PHASE being proven.
+# scripts/phase_stamp_check.py holds every probe to it.
+stamp("epoll_rearm_probe: FAIL", fail="epoll_rearm_probe: {phase}: FAIL: {msg}",
+      stream=sys.stderr)
 
 
 def count(trace: str) -> tuple[int, int, int, int]:
@@ -233,22 +209,11 @@ def main() -> None:
     )
     child = -1
     try:
-        deadline = time.time() + 60
-        while True:
-            if tracer.poll() is not None:
-                log.seek(0)
-                fail("strace exited %s before the server answered /health:\n%s"
-                     % (tracer.returncode, log.read()[-2000:]))
-            try:
-                c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-                get(c, "/health")
-                c.close()
-                break
-            except OSError:
-                if time.time() > deadline:
-                    log.seek(0)
-                    fail("no answer on :%d within 60 s:\n%s" % (port, log.read()[-2000:]))
-                time.sleep(0.1)
+        # strace is the process watched: it exits with the server it traces.
+        try:
+            wait_healthy("http://127.0.0.1:%d/health" % port, tracer, timeout=60, log=log)
+        except NotServing as exc:
+            fail(str(exc))
         child = server_child(tracer.pid)
         setup = settled(trace)
         if setup[0] == 0:

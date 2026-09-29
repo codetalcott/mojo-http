@@ -31,27 +31,10 @@ import re
 import sys
 import threading
 import time
-import traceback
 
-PHASE = "startup"
+from probelib import fail, phase, stamp
 
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("ramp_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg: str) -> None:
-    print("ramp_probe: FAIL: %s: %s" % (PHASE, msg), file=sys.stderr)
-    sys.exit(1)
+stamp("ramp_probe: FAIL", fail="ramp_probe: FAIL: {phase}: {msg}", stream=sys.stderr)
 
 
 def fetch(port: int, method: str, path: str):
