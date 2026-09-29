@@ -280,6 +280,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **Listening no longer writes past the end of a stack buffer.** Every
+  listen -- m0serve's, the Mojo host's, `Server.listen_and_serve` -- binds
+  its socket through `inet_pton`, which converted the address into a
+  buffer of zero bytes: it was counted in `c_void`s, and `c_void` is
+  `NoneType`, whose size is 0. The four bytes of the address (sixteen for
+  IPv6) landed on whatever the stack held beside it. What that damaged
+  depends on how the compiler laid out the caller's frame: no crash is
+  known in a released server, and a test build in review crashed in
+  `ListenConfig.listen` with SIGSEGV. The buffer is now counted in bytes,
+  and `poe check-zero-alloca` (in `test-all`) refuses a zero-size stack
+  buffer that anything could write through, anywhere in m0serve. Found in
+  review.
 - **Under asyncio's eager task factory, an ASGI stream is stopped when its
   client leaves** (SPEC L30). An application that installs
   `asyncio.eager_task_factory` runs each request's first step before the
