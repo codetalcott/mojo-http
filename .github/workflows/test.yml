@@ -733,6 +733,11 @@ jobs:
         run: uv run poe smoke-shutdown
       - name: Smoke test spawned workers
         run: uv run poe smoke-spawn-workers
+      # SPEC E35: a spawned worker execs the path the OS gives for the
+      # binary, and only one installed under a directory whose name is not
+      # ASCII takes that path through the bytes-to-path step (B10).
+      - name: Smoke test spawned workers under a non-ASCII install path
+        run: uv run poe smoke-spawn-nonascii-path
       # SPEC E16: the worker that wins an accept passes the connection to
       # the least-loaded sibling, so a burst of keep-alive connections
       # spreads across --workers instead of landing on one (32 of 32 on

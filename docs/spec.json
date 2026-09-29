@@ -591,7 +591,7 @@
       "category": "E. Process and worker model",
       "capability": "`--spawn-workers` re-execs a binary installed under a path that is not ASCII: the path it execs is the bytes the OS returned",
       "status": "verified",
-      "evidence": "`test_respawn.mojo:test_a_path_above_ascii_keeps_its_bytes_for_the_exec` (every PR) \u2014 `executable_path` rebuilt the path a byte at a time with `chr()`, which encodes a byte above 0x7F as two, so under `/Users/jos\u00e9/` every spawned worker's exec failed with ENOENT and m0serve refused to serve (78). The test holds the bytes-to-path step on UTF-8 and on bytes that are not UTF-8 at all; `executable_path`'s own call to it is reached only by a binary under such a path, which no gate builds"
+      "evidence": "`Smoke test spawned workers under a non-ASCII install path` (every PR) \u2014 m0serve's flat release bundle, assembled under a directory named `jos\u00e9`, serves with `--workers 2 --spawn-workers`, both workers exec'd from there. `executable_path` rebuilt the path a byte at a time with `chr()`, which encodes a byte above 0x7F as two, so under `/Users/jos\u00e9/` every spawned worker's exec failed with ENOENT and m0serve refused to serve (78); with that loop put back, the smoke's server exits before its first answer, its log naming `jos\u00c3\u00a9`. The bytes-to-path step alone, on UTF-8 and on bytes that are not UTF-8 at all: `test_respawn.mojo:test_a_path_above_ascii_keeps_its_bytes_for_the_exec`"
     },
     {
       "id": "E17",

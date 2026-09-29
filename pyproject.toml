@@ -3055,6 +3055,42 @@ python3 scripts/emit.py --covers E15 --task smoke-spawn-workers
 python3 scripts/emit.py --covers A25 --task smoke-spawn-workers
 """
 
+[tool.poe.tasks.smoke-spawn-nonascii-path]
+help = "--spawn-workers re-execs an m0serve installed under a directory whose name is not ASCII (SPEC E35)"
+deps = ["build-serve"]
+shell = """
+. scripts/smoke/lib.sh
+# A spawned worker execs the path the OS gives for the running binary
+# (`executable_path`), and a binary installed under a directory whose name
+# is not ASCII is the only shape that takes that path through the
+# bytes-to-path step. Before B10's fix `/Users/jos\\xc3\\xa9/` came back as
+# `jos\\xc3\\x83\\xc2\\xa9`, every worker's exec failed with ENOENT and the
+# supervisor refused to serve (78). The release bundle's flat shape -- the
+# binary and the runtime it finds beside itself -- is assembled under such a
+# directory and served from there. The name is written as octal bytes, so no
+# locale or file encoding stands between this task and the bytes on disk.
+dir="$SMOKE_DIR/$(printf 'jos\\303\\251')"
+python3 scripts/bundle_artifact.py bin/m0serve "$dir" > "$SMOKE_DIR/bundle.log" 2>&1 \
+  || fail "could not assemble m0serve under $dir"
+[ -x "$dir/m0serve" ] || fail "no m0serve under $dir"
+log=$SMOKE_DIR/sw-nonascii.log
+port=$(free_port)
+spawn sw-nonascii.log "$dir/m0serve" bareapp.wsgi --app-dir apps/wsgi_bare --workers 2 --spawn-workers --port $port
+spid=$pid
+# A worker whose exec found no file takes the supervisor with it (78), so a
+# server that never answers is the failure this smoke exists for; its log
+# names the path the exec was given.
+wait_ready http://127.0.0.1:$port/ $spid
+curl -sf http://127.0.0.1:$port/ | grep -q "bare wsgi app" || fail "the server under $dir did not answer /"
+# Each exec'd image prints a banner: two of them, both from under $dir.
+for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' "$log")" -ge 2 ] && break; sleep 0.1; done
+[ "$(grep -c 'workers=2) spawn' "$log")" -ge 2 ] || fail "fewer than two workers were exec'd from under $dir"
+grep -q "exec of" "$log" && fail "a worker's exec failed under $dir"
+stop $spid || fail "the supervisor under $dir did not exit cleanly on SIGTERM"
+echo "smoke-spawn-nonascii-path: two workers exec'd from under a non-ASCII directory serve"
+python3 scripts/emit.py --covers E35 --task smoke-spawn-nonascii-path
+"""
+
 [tool.poe.tasks.smoke-accept-spread]
 help = "--workers 2 share a burst of keep-alive connections within 2:1, forked and spawned (SPEC E16)"
 deps = ["build-serve"]
