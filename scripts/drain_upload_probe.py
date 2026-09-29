@@ -26,26 +26,14 @@ import signal
 import socket
 import sys
 import time
-import traceback
 
-# Which phase is running, for the crash handler below: a reset inside
-# `recv` names the CALL that failed, and the phase is what says whether the
-# body was still being sent, the response being read, or the exit awaited
+from probelib import fail, phase, stamp
+
+# Which phase is running, for the crash handler: a reset inside `recv` names
+# the CALL that failed, and the phase is what says whether the body was still
+# being sent, the response being read, or the exit awaited
 # (`scripts/phase_stamp_check.py` is the rule and its sabotage).
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("drain_upload_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("drain_upload_probe FAIL", fail="drain-upload FAIL: {msg}")
 
 
 def main():
@@ -114,18 +102,15 @@ def main():
         except ProcessLookupError:
             break
         if time.time() - t0 > 30:
-            print("drain-upload FAIL: still alive 30 s after SIGTERM")
-            return 1
+            fail("still alive 30 s after SIGTERM")
     exited = time.time() - t0
     print("drain-upload: process exited %.2fs after SIGTERM" % exited)
     if not answered:
-        print("drain-upload FAIL: the body that arrived during the drain was "
-              "never read; the request was reset instead of answered")
-        return 1
+        fail("the body that arrived during the drain was never read; the "
+             "request was reset instead of answered")
     if exited > args.budget:
-        print("drain-upload FAIL: answered, but the drain still ran %.2fs "
-              "(budget %.1fs)" % (exited, args.budget))
-        return 1
+        fail("answered, but the drain still ran %.2fs (budget %.1fs)"
+             % (exited, args.budget))
     print("drain-upload ok")
     return 0
 

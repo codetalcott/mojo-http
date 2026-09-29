@@ -24,7 +24,8 @@ import signal
 import socket
 import sys
 import time
-import traceback
+
+from probelib import fail, phase, stamp
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1])
@@ -36,25 +37,13 @@ LIMIT = 3.0
 REQUEST = b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n\r\n"
 
 
-# Which phase is running, for the crash handler below. This probe's phases
-# have very different meanings -- failing to SET UP the idle connections is
-# a broken server, failing to WAIT OUT the drain is the regression it pins
-# -- and both live inside a recv/kill that a traceback names identically.
-# apps/asgi_bare/ws_probe.py carries the original of this comment.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("drain_idle_probe: FAIL: %s: %r" % (PHASE, exc), file=sys.stderr)
-
-
-sys.excepthook = _stamped
+# Which phase is running, for the crash handler. This probe's phases have
+# very different meanings -- failing to SET UP the idle connections is a
+# broken server, failing to WAIT OUT the drain is the regression it pins --
+# and both live inside a recv/kill that a traceback names identically.
+# apps/asgi_bare/ws_probe.py carries the original of this comment. A
+# `fail()` line is the finding alone, on stderr beside the crash line.
+stamp("drain_idle_probe: FAIL", fail="{msg}", stream=sys.stderr)
 
 
 def main() -> int:
@@ -66,8 +55,7 @@ def main() -> int:
         # Read the response so the connection is idle *between* requests --
         # the state the fix keys on -- rather than mid-request.
         if not s.recv(65536):
-            print(f"connection {i} got no response", file=sys.stderr)
-            return 1
+            fail(f"connection {i} got no response")
         held.append(s)
     print(f"holding {len(held)} idle keep-alive connections")
 
@@ -94,16 +82,11 @@ def main() -> int:
     except OSError:
         pass
     else:
-        print(f"server still alive {elapsed:.2f}s after SIGTERM", file=sys.stderr)
-        return 1
+        fail(f"server still alive {elapsed:.2f}s after SIGTERM")
 
     if elapsed > LIMIT:
-        print(
-            f"drain took {elapsed:.2f}s with {N} idle keep-alive connections,"
-            f" limit {LIMIT}s -- idle connections are holding the drain open",
-            file=sys.stderr,
-        )
-        return 1
+        fail(f"drain took {elapsed:.2f}s with {N} idle keep-alive connections,"
+             f" limit {LIMIT}s -- idle connections are holding the drain open")
     print(f"drained in {elapsed:.2f}s with {N} idle keep-alive connections")
     return 0
 

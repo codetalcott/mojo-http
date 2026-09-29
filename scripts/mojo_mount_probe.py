@@ -19,27 +19,15 @@ import http.client
 import sys
 import threading
 import time
-import traceback
+
+from probelib import fail, phase, stamp
 
 
-# Which phase is running, for the crash handler below. The load threads, the
-# two samplers and the verdict all go through `http.client`, so a traceback
-# out of one says which CALL raised and never which PHASE was being proven.
+# Which phase is running, for the crash handler. The load threads, the two
+# samplers and the verdict all go through `http.client`, so a traceback out
+# of one says which CALL raised and never which PHASE was being proven.
 # apps/asgi_bare/ws_probe.py carries the original of this comment.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("mojo_mount_probe FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("mojo_mount_probe FAIL", fail="FAIL: {msg}")
 
 
 def _quantile(values, q):
@@ -124,8 +112,7 @@ def main():
 
     phase("comparing the two tails")
     if len(mojo) < 20 or len(python) < 20:
-        print(f"FAIL: too few samples (mojo {len(mojo)}, python {len(python)})")
-        return 1
+        fail(f"too few samples (mojo {len(mojo)}, python {len(python)})")
 
     m99, p99 = _quantile(mojo, 0.99), _quantile(python, 0.99)
     m50, p50 = _quantile(mojo, 0.50), _quantile(python, 0.50)
@@ -137,6 +124,7 @@ def main():
         f"tail ratio {ratio:.1f}x"
     )
 
+    # Both bounds are reported before the exit, so neither is `fail()`.
     failed = False
     if m99 > args.budget_ms:
         print(f"FAIL: mojo mount p99 {m99:.2f}ms over the {args.budget_ms}ms budget")

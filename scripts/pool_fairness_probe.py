@@ -64,7 +64,8 @@ import http.client
 import sys
 import threading
 import time
-import traceback
+
+from probelib import fail, phase, stamp, wait_healthy
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else 8080
 EXPECT_CONVOY = "--expect-convoy" in sys.argv
@@ -98,37 +99,10 @@ LONG_WAIT = 100
 LONG_WAITS_ALLOWED = 5
 MOST_PASSED_OVER = 1000
 
-# Which phase is running, for the crash handler below: a traceback names the
-# CALL that raised (an http.client method every phase shares) and never the
-# PHASE being proven. See apps/asgi_bare/ws_probe.py for the original.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("pool_fairness_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def wait_healthy(deadline=30.0):
-    t0 = time.time()
-    while time.time() - t0 < deadline:
-        try:
-            c = http.client.HTTPConnection("127.0.0.1", PORT, timeout=2)
-            c.request("GET", "/")
-            if c.getresponse().read():
-                c.close()
-                return
-        except OSError:
-            time.sleep(0.2)
-    raise RuntimeError("server on :%d never became healthy" % PORT)
+# Which phase is running, for the crash handler: a traceback names the CALL
+# that raised (an http.client method every phase shares) and never the PHASE
+# being proven. See apps/asgi_bare/ws_probe.py for the original.
+stamp("pool_fairness_probe: FAIL")
 
 
 def hammer(seconds, conns):
@@ -198,7 +172,8 @@ def pct(sorted_ms, p):
 
 def main():
     phase("health")
-    wait_healthy()
+    # The task starts the server and runs this at once: ready is `/` answering 200.
+    wait_healthy("http://127.0.0.1:%d/" % PORT, timeout=30.0)
     phase("warm-up")
     hammer(1.0, CONNS)
     if EXPECT_CONVOY:
@@ -233,26 +208,22 @@ def main():
     print("most_passed_over %d" % most)
     print("most_passed_over_bound %d" % MOST_PASSED_OVER)
     if n < CONNS * 10:
-        print("pool_fairness_probe: FAIL: too few samples (%d) to judge an order" % n)
-        return 1
+        fail("too few samples (%d) to judge an order" % n)
     if errors:
-        print("pool_fairness_probe: FAIL: %d errors" % errors)
-        return 1
+        fail("%d errors" % errors)
     if EXPECT_CONVOY or EXPECT_STARVATION:
         what = "the convoy it exists to catch" if EXPECT_CONVOY else "the starvation the keep rule prevents"
         if in_order:
-            print("pool_fairness_probe: FAIL: with %s disabled the pool still answered in order "
-                  "(%d requests passed over by more than %d, the most by %d) -- the probe cannot "
-                  "see %s" % ("the turn" if EXPECT_CONVOY else "the keep rule", long_waits,
-                               LONG_WAIT, most, what))
-            return 1
+            fail("with %s disabled the pool still answered in order (%d requests passed over "
+                 "by more than %d, the most by %d) -- the probe cannot see %s"
+                 % ("the turn" if EXPECT_CONVOY else "the keep rule", long_waits,
+                    LONG_WAIT, most, what))
         print("pool_fairness_probe: PASS: %s is visible" % ("the convoy" if EXPECT_CONVOY else "the starvation"))
         return 0
     if not in_order:
-        print("pool_fairness_probe: FAIL: %d requests passed over by more than %d later answers "
-              "(at most %d), the most by %d (at most %d) -- pool threads are not taking the GIL "
-              "in job order" % (long_waits, LONG_WAIT, LONG_WAITS_ALLOWED, most, MOST_PASSED_OVER))
-        return 1
+        fail("%d requests passed over by more than %d later answers (at most %d), the most by "
+             "%d (at most %d) -- pool threads are not taking the GIL in job order"
+             % (long_waits, LONG_WAIT, LONG_WAITS_ALLOWED, most, MOST_PASSED_OVER))
     print("pool_fairness_probe: PASS: in job order under a CPU-bound view")
     return 0
 

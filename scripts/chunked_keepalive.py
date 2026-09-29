@@ -20,7 +20,8 @@ import hashlib
 import os
 import socket
 import sys
-import traceback
+
+from probelib import fail, phase, stamp
 
 HOST = os.environ.get("M0_HOST", "127.0.0.1")
 PORT = int(os.environ.get("M0_PORT", "8088"))
@@ -30,32 +31,15 @@ SECOND_PATH = os.environ.get("M0_SECOND_PATH", "/")
 EXPECT_LEN = int(os.environ.get("M0_STREAM_LEN", "1048576"))
 
 
-def fail(msg):
-    print(f"chunked-keepalive: {msg}", file=sys.stderr)
-    sys.exit(1)
-
-
-# Which phase is running, for the crash handler at the bottom. A traceback
-# names the CALL that raised -- here that is `Reader._fill` or `read_head`,
-# which every phase below shares -- and never the PHASE being proven. The
-# 2026-08-30 CI failure cost two investigations to exactly that distinction;
+# Which phase is running, for the crash handler. A traceback names the CALL
+# that raised -- here that is `Reader._fill` or `read_head`, which every
+# phase below shares -- and never the PHASE being proven. The 2026-08-30 CI
+# failure cost two investigations to exactly that distinction;
 # apps/asgi_bare/ws_probe.py carries the original of this comment. This
 # probe is driven every round by `poe stress-asgi`, where the round number
-# alone does not say which half of the round broke.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print(f"chunked-keepalive: {PHASE}: {exc!r}", file=sys.stderr)
-
-
-sys.excepthook = _stamped
+# alone does not say which half of the round broke. Its crash line and its
+# `fail()` line (`chunked-keepalive: <msg>`) both go to stderr.
+stamp("chunked-keepalive", stream=sys.stderr)
 
 
 class Reader:

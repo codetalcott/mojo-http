@@ -51,7 +51,9 @@ import socket
 import sys
 import threading
 import time
-import traceback
+
+import probelib
+from probelib import phase, stamp
 
 HOST = "127.0.0.1"
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8092
@@ -69,26 +71,14 @@ LATE_SLACK = 1.5
 HELLO = b"hello"
 WORLD = b"world"
 
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("body_timeout_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+stamp("body_timeout_probe: FAIL")
 
 failures = []
 
 
 def fail(msg):
-    failures.append("%s: %s" % (PHASE, msg))
+    """Record a failure against the running phase; the probe reports them all."""
+    failures.append("%s: %s" % (probelib.PHASE, msg))
 
 
 def post(path, length, body=b""):

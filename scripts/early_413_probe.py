@@ -34,7 +34,8 @@ import socket
 import sys
 import threading
 import time
-import traceback
+
+from probelib import fail, phase, stamp
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
 LIMIT = int(sys.argv[2]) if len(sys.argv) > 2 else 4 * 1024 * 1024
@@ -44,28 +45,10 @@ ROUNDS = 5
 CONCURRENT = 8
 TIMEOUT_S = 30
 
-# Which phase is running, for the crash handler below. A traceback names
-# the call that raised, which several phases share; the phase is what says
-# which property failed (apps/asgi_bare/ws_probe.py has the original).
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("early_413_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    print("early_413_probe: FAIL: %s: %s" % (PHASE, msg))
-    sys.exit(1)
+# Which phase is running, for the crash handler and `fail()`. A traceback
+# names the call that raised, which several phases share; the phase is what
+# says which property failed (apps/asgi_bare/ws_probe.py has the original).
+stamp("early_413_probe: FAIL", fail="early_413_probe: FAIL: {phase}: {msg}")
 
 
 def connect():

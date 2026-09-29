@@ -35,7 +35,6 @@ import shutil
 import subprocess
 import sys
 import time
-import traceback
 import urllib.error
 import urllib.request
 import uuid
@@ -44,31 +43,18 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from emit import emit  # noqa: E402
+from probelib import fail, phase, stamp  # noqa: E402
 
 WHEELHOUSE = REPO / "deploy" / "site" / "wheelhouse"
 
 # The probe phase stamp (scripts/phase_stamp_check.py): the docker and HTTP
 # helpers are shared by every phase, so an unhandled error inside one would
-# name the call that failed and never the phase being proven.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-    print(f"--- {name}")
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("site_image_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
-
-
-def fail(msg):
-    sys.exit(f"site_image_probe: FAIL: {PHASE}: {msg}")
+# name the call that failed and never the phase being proven. Each phase is
+# announced as a `--- <phase>` line as it begins; the crash line goes to
+# stdout and `fail()`'s to stderr, where the `sys.exit(msg)` it replaced
+# wrote it.
+stamp("site_image_probe: FAIL", fail="site_image_probe: FAIL: {phase}: {msg}",
+      fail_stream=sys.stderr, echo="--- {phase}")
 
 
 def run(*argv, check=True, timeout=600, **kw):

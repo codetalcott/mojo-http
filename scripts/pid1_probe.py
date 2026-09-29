@@ -41,30 +41,19 @@ import subprocess
 import sys
 import tempfile
 import time
-import traceback
 import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from emit import emit  # noqa: E402
+from probelib import fail, phase, stamp  # noqa: E402
 
 # The probe phase stamp (scripts/phase_stamp_check.py): the docker helpers
 # are shared by every phase, so an unhandled error inside one would name the
-# call that failed and never the phase being proven.
-PHASE = "startup"
-
-
-def phase(name):
-    global PHASE
-    PHASE = name
-
-
-def _stamped(kind, exc, tb):
-    traceback.print_exception(kind, exc, tb)
-    print("pid1_probe: FAIL: %s: %r" % (PHASE, exc))
-
-
-sys.excepthook = _stamped
+# call that failed and never the phase being proven. The crash line goes to
+# stdout and `fail()`'s to stderr, where the `sys.exit(msg)` it replaced
+# wrote it.
+stamp("pid1_probe: FAIL", fail="pid1_probe: FAIL: {phase}: {msg}", fail_stream=sys.stderr)
 
 APP = (
     'def application(environ, start_response):\n'
@@ -95,10 +84,6 @@ COUNT_PROCS = (
 )
 
 
-def fail(msg):
-    sys.exit(f"pid1_probe: FAIL: {PHASE}: {msg}")
-
-
 def run(*argv, check=True, timeout=120):
     proc = subprocess.run(
         argv, capture_output=True, text=True, timeout=timeout
@@ -113,7 +98,10 @@ def docker_exec(name, *argv, check=True):
 
 
 def wait_healthy(name, deadline_s):
-    """Poll the app through `docker exec` until it answers, or fail with logs."""
+    """Poll the app through `docker exec` until it answers, or fail with logs.
+
+    Not probelib's `wait_healthy`: the server is a container, not a Popen,
+    and it is reached from inside (`--network none`)."""
     deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline:
         state = run(
