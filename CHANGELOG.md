@@ -292,6 +292,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and `poe check-zero-alloca` (in `test-all`) refuses a zero-size stack
   buffer that anything could write through, anywhere in m0serve. Found in
   review.
+- **`M0-Channel` no longer reaches a client, and a hold on a reserved
+  channel is refused** (SPEC G18). Under `--realtime` the server consumes
+  the `M0-Hold`/`M0-Channel` instruction headers before it holds a
+  connection, but it returned early when `M0-Hold` was absent — so a
+  response carrying only `M0-Channel` (a leftover header, or an `M0-Hold`
+  the server dropped for carrying a control byte) sent that internal
+  instruction header on to the client. `M0-Channel` is now stripped from
+  every response, whether or not a hold is taken. And a hold whose
+  `M0-Channel` names the reserved `\x01` control namespace — which every
+  publish path already refuses, and which `%01` in a form field decodes to
+  — is now served as an ordinary response rather than held, the same as a
+  hold with no channel. Applies to a WSGI view's hold, a Mojo mount's hold
+  and `--mount PREFIX=hold`.
+
 - **Under asyncio's eager task factory, an ASGI stream is stopped when its
   client leaves** (SPEC L30). An application that installs
   `asyncio.eager_task_factory` runs each request's first step before the

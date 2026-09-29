@@ -68,6 +68,19 @@ def events(request):
     return response
 
 
+def channel_no_hold(request):
+    """An ordinary page that carries `M0-Channel` but NOT `M0-Hold`.
+
+    A mistake a real app can make — a leftover header, or an `M0-Hold` the
+    server dropped for carrying a control byte (`read_head` refuses CR/LF/NUL).
+    `M0-Channel` is an instruction to the server, never meant for a client, so
+    under `--realtime` the server must strip it even though no hold is taken.
+    """
+    response = HttpResponse("plain body\n", content_type="text/plain")
+    response["M0-Channel"] = request.GET.get("channel", "news")
+    return response
+
+
 def websocket(request):
     """Gate a WebSocket connection — the same decision, a different hold.
 
@@ -210,6 +223,7 @@ def slow(request):
 urlpatterns = [
     path("", index),
     path("events", events),
+    path("channel-no-hold", channel_no_hold),
     path("slow", slow),
     path("ws", websocket),
     path("ws/message", ws_message),

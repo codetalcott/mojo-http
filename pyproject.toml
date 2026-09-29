@@ -2254,6 +2254,14 @@ gil_off=$(python3 -c 'import sys; print(int(not getattr(sys, "_is_gil_enabled", 
 spawn rt.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC"
 wait_ready http://localhost:$port/health $pid
 
+# M0-Channel without M0-Hold is a control header the application left on an
+# ordinary response (or an M0-Hold the server dropped for a control byte). It
+# is addressed to the server, so under --realtime take_hold strips it even
+# though no hold is taken: it must never reach the client.
+curl -s -D "$out/nohold_hdr" -o /dev/null "http://localhost:$port/channel-no-hold?channel=news"
+grep -iq '^m0-channel' "$out/nohold_hdr" && fail 'M0-Channel leaked to the client without an M0-Hold'
+grep -iq '^content-type: text/plain' "$out/nohold_hdr" || fail 'the channel-no-hold response was rewritten'
+
 # Django gates the subscription: no token means a plain 403 — and no hold, so
 # nothing may appear in the registry.
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$port/events?channel=news")
