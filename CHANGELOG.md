@@ -215,8 +215,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   rather than a date, a `bytea`'s is its raw bytes rather than the `\x`
   escape, and a `float4` reads `0.10000000149011612` where text mode reads
   `0.1`. O11 now names the types that agree, and a Known issue records
-  what each mode returns and what a fix needs. Read those types in text
-  mode, which is the default.
+  what each mode returns and what a fix needs. `Result.text()`'s own
+  documentation made the same claim, and now names the same types. Read
+  those types in text mode, which is the default.
 
 - **A request carrying two `Host` lines, or two `Transfer-Encoding`
   lines, is answered 400** (SPEC B10, B11). The parser kept the last line
