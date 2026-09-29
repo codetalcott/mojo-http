@@ -161,6 +161,12 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
     connection is gone; the ones queued behind it are not, and read as an
     empty channel -- which it was, a single -1 for both -- it stopped the
     drain with them stranded until another hand-off raised an edge.
+
+    Once this worker has left (its drain), each connection is passed on to
+    a sibling that has not, and admitted here only when none is left or
+    the send fails (`AcceptShare.forward`; review record B25). Admitted by
+    a draining worker, a connection whose first byte had not arrived was
+    closed as idle between requests 1.6 ms later, and its client read EOF.
     """
     var taken = 0
     while budget == 0 or taken < budget:
@@ -171,6 +177,15 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
             return False
         taken += 1
         if fd < 0:
+            continue
+        if st.accept_share.left and st.accept_share.forward(
+            fd, host, port, perf_counter_ns()
+        ):
+            # The sibling's channel holds its own reference now.
+            try:
+                close(FileDescriptor(fd))
+            except:
+                pass
             continue
         _admit_connection(handler, backend, st, fd, host^, port)
     return True
@@ -246,7 +261,9 @@ def _accept_batch[T: HTTPService, B: EventLoopBackend](
         # Accept sharing: a sibling with fewer connections takes
         # this one. `pick` answers this worker when no sibling is
         # lighter (or all are busy or gone), and a send that fails
-        # keeps the connection here -- nothing is ever dropped.
+        # keeps the connection here -- nothing is ever dropped. So
+        # does a sibling that left after `pick` read it (`send`
+        # reads its state again, review B25).
         if st.accept_share.active():
             var target = st.accept_share.pick(st.active_count, perf_counter_ns())
             if (

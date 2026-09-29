@@ -95,11 +95,14 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
         atomic_at(st.stop_addr)[].store(Int64(perf_counter_ns()))
 
     # Accept sharing: siblings stop sending here the moment they read the
-    # word; what they sent before that is admitted now, so the drain
-    # answers it rather than the kernel closing it unread at exit.
+    # word. What they sent before that is passed on now to a sibling that
+    # has not left, or admitted when none is (`_admit_handoffs`), rather
+    # than closed unread at exit. A sibling that counted a hand-off before
+    # the word and has not sent it yet is waited for by the drain below
+    # (`awaiting_handoffs`; review record B25).
     if st.accept_share.active():
         st.accept_share.leave()
-        # Every one, not a batch: the drain answers what was handed over.
+        # Every one, not a batch.
         _ = _admit_handoffs(handler, backend, st)
 
     # Graceful shutdown: close listener, drain in-flight, close SSE.
@@ -173,6 +176,9 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
     # in a pool thread has already been subtracted from `active_count`,
     # but its slot stays borrowed until the completion arrives. Without
     # the second term a shutdown could leave that job unclaimed.
+    #
+    # And under accept sharing, a hand-off a sibling has counted to this
+    # worker and not yet delivered (`awaiting_handoffs`) is in flight too.
     if st.shutdown_read_fd >= 0:
         backend.try_delete_read(st.shutdown_read_fd)
     return perf_counter_ns()
@@ -191,11 +197,23 @@ def _shutdown_drain_step[T: HTTPService, B: EventLoopBackend](
     inversion passes 0, because this runs inside an asyncio callback there
     and the in-flight application tasks live on that same loop -- blocking
     here is blocking them, which is the bug this split exists to fix.
+
+    In flight includes a hand-off a sibling has counted to this worker
+    and not yet sent (review record B25). The drain waits for it within
+    the same budget, and the pass that takes it off the channel passes it
+    on (`_admit_handoffs`). Ending first left it in a channel nothing
+    would read again once this worker had exited. The pass's wait is
+    woken by the channel, so the datagram ends it as it arrives; a count
+    the sender took back instead is seen when the wait times out.
     """
     # The `while` condition this replaces, then the deadline it broke on:
     # same order, so a drain with nothing left never waits, and one that
     # ran out of budget stops before another pass.
-    if not (st.active_count > 0 or st.offload.inflight > 0):
+    if not (
+        st.active_count > 0
+        or st.offload.inflight > 0
+        or st.accept_share.awaiting_handoffs()
+    ):
         return True
     if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
         return True
@@ -226,6 +244,12 @@ def _shutdown_finish[T: HTTPService, B: EventLoopBackend](
     # every job — a job still buffered here would arrive after the
     # pill and never run.
     _flush_submits(handler, backend, st)
+    # Retire from `pending` what the drain took off the channel without a
+    # pass to retire it: `_shutdown_begin`'s own drain, when nothing was
+    # left in flight after it. A clean exit leaves the count exact, as any
+    # pass does, rather than leaving it to the take-back a worker forked
+    # again at this index (`--reload`) makes for one that died (`start`).
+    st.accept_share.pass_end(st.active_count)
     # The record of what accept sharing did in this worker's life, in the
     # shape `scripts/accept_spread.py` reads: a balanced split with zero
     # passed would be luck, not the mechanism.
@@ -234,7 +258,9 @@ def _shutdown_finish[T: HTTPService, B: EventLoopBackend](
             "Accept sharing: worker " + String(st.accept_share.worker)
             + " passed " + String(st.accept_share.handoffs_out)
             + " connections to siblings, received "
-            + String(st.accept_share.handoffs_in),
+            + String(st.accept_share.handoffs_in)
+            + ", forwarded " + String(st.accept_share.handoffs_forwarded)
+            + " after it left",
             flush=True,
         )
 

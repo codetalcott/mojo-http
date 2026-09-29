@@ -146,7 +146,8 @@ def send_fd(channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
 
 
 def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
-    """Receive one passed descriptor from `channel`, without blocking.
+    """Receive one passed descriptor from the non-blocking `channel`,
+    without blocking for one to arrive.
 
     Returns the new fd (this process's own reference), with the datagram's
     data bytes in `payload`; `RECV_FD_EMPTY` when nothing was taken off the
@@ -194,8 +195,23 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
     # Close-on-exec (SPEC G16): a handed-over connection is a client's like
     # any other. Born that way on Linux; macOS has no MSG_CMSG_CLOEXEC and
     # marks it right after, below.
-    var recv_flags = MSG_DONTWAIT
-    comptime if not CompilationTarget.is_macos():
+    #
+    # macOS receives without MSG_DONTWAIT, on a channel that must be
+    # non-blocking, as every caller's is (`set_nonblocking`). XNU's receive
+    # takes the buffer's lock first, and MSG_DONTWAIT makes it fail EAGAIN
+    # when the lock is held rather than wait; being non-blocking only makes
+    # an EMPTY buffer fail. Accept sharing keeps each channel's read end in
+    # flight (`AcceptShare._anchor_channels`), so the kernel's collector of
+    # descriptors in flight scans the channel's buffer, holding that lock,
+    # and a receive that met a scan failed with a datagram queued: 5 in
+    # 3000 hand-offs, measured with another process closing AF_UNIX sockets
+    # throughout, and none without the flag. A drain read the failure as an
+    # empty channel. Waiting for the lock is waiting out a scan, never for
+    # data.
+    var recv_flags: c_int
+    comptime if CompilationTarget.is_macos():
+        recv_flags = c_int(0)
+    else:
         recv_flags = MSG_DONTWAIT | c_int(_MSG_CMSG_CLOEXEC_LINUX)
     var rc = _recvmsg(c_int(channel), Pointer(to=hdr), recv_flags)
     var got = RECV_FD_EMPTY

@@ -15,7 +15,7 @@ from std.ffi import c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
 from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
-from std.time import perf_counter_ns
+from std.time import perf_counter_ns, sleep
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.accept_share import (
@@ -640,6 +640,166 @@ def test_a_full_channel_refuses_the_send_and_the_acceptor_keeps_it() raises:
     assert_equal(page.load(_word_slot(1, 2)), sent, "pending counts only what was queued")
     close(FileDescriptor(conn[0]))
     close(FileDescriptor(conn[1]))
+
+
+comptime _MSG_PEEK = c_int(0x2)
+"""`MSG_PEEK`, the same on both platforms."""
+
+
+def _schedule_the_collector() raises:
+    """Close an AF_UNIX socket pair: on macOS each such close schedules a run
+    of the kernel's collector of descriptors in flight (XNU's `unp_gc`)."""
+    var t = _stream_pair()
+    close(FileDescriptor(t[0]))
+    close(FileDescriptor(t[1]))
+
+
+def _request_intact(fd: Int) -> Bool:
+    """Whether what the client sent before the hand-off is still there to
+    read. A connection the collector flushed has lost it: its receive side
+    is shut and what was queued is discarded, so it reads EOF."""
+    var buf = List[UInt8](capacity=1)
+    buf.append(0)
+    try:
+        return Int(
+            recv(FileDescriptor(fd), Span(buf), UInt(1), _MSG_PEEK | MSG_DONTWAIT)
+        ) == 1
+    except:
+        return False
+
+
+def test_a_handoff_in_flight_is_beyond_the_kernels_collector() raises:
+    """A connection in flight whose sender has closed its copy, as every
+    hand-off's sender does, survives the kernel's collector of descriptors
+    in flight.
+
+    On macOS it did not (review record B25). XNU's collector walks only the
+    descriptors in flight, marks the ones still open somewhere, and follows
+    what their buffers hold, so a channel that was merely open was never
+    followed, and every hand-off queued in one was flushed by each run: its
+    receive side shut, the request it carried discarded, and the receiver
+    closed it unanswered at its first read. Any AF_UNIX socket closed on
+    the machine schedules a run. `AcceptShare` keeps each channel's read end
+    in flight in a pair of its own, which puts the channel in the walk.
+
+    Each round puts a hand-off on an accept-share channel and a control
+    connection on a plain socket pair, both with a request queued and both
+    senders' copies closed, then schedules a run. A flushed control shows a
+    run happened while both were in flight; the hand-off must come through
+    it with its request. Linux's collector never takes a socket that is
+    open somewhere, so there no control is flushed and the rounds show
+    nothing; the rule is macOS's.
+
+    covers: E16
+    """
+    var page = SharedAtomics(accept_share_slots(2))
+    var share = AcceptShare(2)
+    var w0 = share.copy()
+    w0.bind(0, page.addr(0))
+    var w1 = share.copy()
+    w1.bind(1, page.addr(0))
+    var plain = _nonblocking_pair()
+    var runs_seen = 0
+    for _ in range(20):
+        var conn = _stream_pair()
+        var ctl = _stream_pair()
+        var request = _bytes("GET / HTTP/1.1\r\n")
+        _ = send(FileDescriptor(conn[1]), Span(request), UInt(len(request)), 0)
+        _ = send(FileDescriptor(ctl[1]), Span(request), UInt(len(request)), 0)
+        assert_true(w0.send(1, conn[0], "10.0.0.8", 8008))
+        assert_true(send_fd(plain[1], ctl[0], _bytes("c")))
+        close(FileDescriptor(conn[0]))  # only the messages in flight hold them now
+        close(FileDescriptor(ctl[0]))
+        _schedule_the_collector()
+        sleep(0.01)
+        var payload = List[UInt8]()
+        var ctl_fd = recv_fd(plain[0], payload)
+        assert_true(ctl_fd >= 0, "the control connection did not arrive")
+        var host = String("")
+        var port = 0
+        var got = w1.receive(host, port)
+        assert_true(got >= 0, "the hand-off did not arrive")
+        var ran = not _request_intact(ctl_fd)
+        var intact = _request_intact(got)
+        w1.pass_end(0)
+        for fd in [ctl_fd, got, conn[1], ctl[1]]:
+            close(FileDescriptor(fd))
+        if ran:
+            runs_seen += 1
+            assert_true(
+                intact,
+                "the kernel's collector flushed a hand-off in flight: its"
+                + " request was discarded and the receiver reads EOF",
+            )
+            if runs_seen == 3:
+                break
+    comptime if CompilationTarget.is_macos():
+        if runs_seen == 0:
+            print(
+                "note: no collector run flushed the control in 20 rounds;"
+                + " this kernel no longer does what the anchor guards against"
+            )
+    close(FileDescriptor(plain[0]))
+    close(FileDescriptor(plain[1]))
+
+
+def test_a_receive_that_meets_a_collector_scan_still_takes_the_datagram() raises:
+    """Draining a channel whose buffer the kernel's collector is scanning
+    takes every hand-off queued in it: an empty channel is the only EMPTY.
+
+    Keeping a channel's read end in flight (the test above) puts its buffer
+    in the collector's walk on macOS, and XNU holds the buffer's lock while
+    it scans it. A receive made with MSG_DONTWAIT fails EAGAIN on a held
+    lock, with the datagram still queued: 5 in 3000 measured with another
+    process closing AF_UNIX sockets throughout, none without the flag. A
+    drain read the failure as the end of the channel, so `recv_fd` receives
+    there without it, on a channel that is non-blocking, which waits out a
+    scan and never waits for data.
+
+    As many hand-offs as the channel holds are queued, up to two hundred,
+    so each scan of the channel takes the longest it can, and a run is
+    scheduled before every receive. macOS holds all two hundred; Linux caps
+    a datagram queue at `net.unix.max_dgram_qlen` (10 in a fresh network
+    namespace), and the acceptor keeps what a full channel refuses.
+
+    covers: E16
+    """
+    var page = SharedAtomics(accept_share_slots(2))
+    var share = AcceptShare(2)
+    var w0 = share.copy()
+    w0.bind(0, page.addr(0))
+    var w1 = share.copy()
+    w1.bind(1, page.addr(0))
+    var clients = List[Int]()
+    var queued = 0
+    for _ in range(200):
+        var conn = _stream_pair()
+        var sent = w0.send(1, conn[0], "10.0.0.9", 9009)
+        close(FileDescriptor(conn[0]))
+        clients.append(conn[1])
+        if not sent:
+            break
+        queued += 1
+    assert_true(queued > 0, "the channel took no hand-off at all")
+    var taken = 0
+    var host = String("")
+    var port = 0
+    while True:
+        _schedule_the_collector()
+        var fd = w1.receive(host, port)
+        if fd == RECV_FD_EMPTY:
+            break
+        assert_true(fd >= 0)
+        taken += 1
+        close(FileDescriptor(fd))
+    assert_equal(
+        taken, queued,
+        "a receive read the channel as empty with hand-offs still queued in it",
+    )
+    w1.pass_end(0)
+    assert_equal(page.load(_word_slot(1, 2)), 0)
+    for fd in clients:
+        close(FileDescriptor(fd))
 
 
 def main() raises:

@@ -1048,6 +1048,37 @@ lightbug_http
         freed it and something else in the process had usually been given
         it (review record B26).
 
+      - accept_share.mojo, loop/accept.mojo, loop/shutdown.mojo
+        (2026-09-29): no accept-sharing hand-off is lost to a worker that
+        is leaving. The sender reads the target's `state` again after
+        raising its `pending` and keeps a connection whose target has left
+        (`send_with`); the leaver's drain runs on while `pending`, less
+        what it has received, is above 0 (`awaiting_handoffs`); a worker
+        that has left passes what its channel delivers on to a sibling
+        that has not (`forward`, `pick_for_leaver`), admitting it only when
+        none is left; and the drain's tail retires what the shutdown took
+        off the channel without a pass. A hand-off sent after an idle
+        leaver's drain had ended was never read, and one admitted by a
+        drain before its first byte was closed as idle (review record
+        B25). A fourth word on each worker's line, `taken`, publishes what
+        the worker has received and not yet retired, and the worker that
+        takes the index of one that died subtracts it from `pending`
+        (`start`): those connections died with it, and a count left
+        behind would hold every later drain at the index to its budget.
+
+      - accept_share.mojo, c/fdpass.mojo (2026-09-29): on macOS each
+        accept-share channel's read end is kept in flight, in a socket pair
+        of its own, for the life of the process (`_anchor_channels`). XNU's
+        collector of descriptors in flight (`unp_gc`) follows only what is
+        in flight, so it never followed a channel that was merely open,
+        and it flushed every hand-off queued in one whenever any AF_UNIX
+        socket on the machine was closed: the request discarded, the
+        connection closed unanswered at its first read. And `recv_fd`
+        receives there without MSG_DONTWAIT, on a non-blocking channel, so
+        a receive waits out the collector's scan of the channel, which
+        holds the buffer's lock, instead of failing EAGAIN with a datagram
+        queued (review record B25).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
