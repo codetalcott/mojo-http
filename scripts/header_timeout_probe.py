@@ -47,8 +47,9 @@ def silent_connection_is_closed() -> None:
 
     if elapsed > LIMIT:
         fail(f"header timeout took {elapsed:.1f}s (limit {LIMIT}s)")
-    if data and b"408" not in data.split(b"\r\n", 1)[0]:
-        fail(f"expected 408, got {data.split(b'~n')[0][:80]!r}")
+    status = data.split(b"\r\n", 1)[0]
+    if data and b"408" not in status:
+        fail(f"expected 408, got {status[:80]!r}")
     if not data:
         fail("connection closed with no 408 response")
     print(f"  silent connection answered 408 and closed after {elapsed:.1f}s")

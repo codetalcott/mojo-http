@@ -4,7 +4,7 @@ from lightbug_http.http import HTTPRequest, HTTPResponse
 trait HTTPService:
     """The handler contract. `func` is the only method you must write.
 
-    The other eight carry default bodies — the same empty implementations
+    The other thirteen carry default bodies — the same empty implementations
     every handler used to spell out by hand — so a handler declares only the
     hooks it actually uses. Overriding one is ordinary: define it and yours
     wins.
