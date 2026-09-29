@@ -992,7 +992,8 @@ trap 'rm -rf "$out"' EXIT
 # off the subsystem that faults and nothing else -- with the WAL retry in
 # `open` removed the test still fails 12 of 12, and as `exit 1`, the lock
 # loss O1 is about -- so the gate keeps its meaning. A run by hand
-# (CLAUDE.md's `mojo build ... && /tmp/t`) wants the variable too.
+# (`OS_ACTIVITY_MODE=disable uv run mojo run -I packages/m0-sqlite <test>`)
+# wants the variable too.
 for f in packages/m0-sqlite/test/test_*.mojo; do
   name=$(basename "$f" .mojo)
   if [ "$name" = "test_file" ]; then

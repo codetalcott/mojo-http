@@ -1,13 +1,14 @@
-"""The `HTTPService` contract: `func` is required, the other eight default.
+"""The `HTTPService` contract: `func` is required, the other thirteen default.
 
 This file is the guard for the trait's default bodies. `MinimalService`
 implements `func` and nothing else — **it not compiling is the failure**, so
 the assertions below are secondary to the file existing at all. Revert any
 default in `service.mojo` to `...` and `poe test-http` fails naming this file.
 
-The defaults are not cosmetic. The event loop calls all nine methods on every
-handler regardless of what the handler cares about (`event_loop.mojo` is
-parameterized on `[T: HTTPService, B: EventLoopBackend]`), so a default that
+The defaults are not cosmetic. The event loop calls all fourteen methods on
+every handler regardless of what the handler cares about (`event_loop.mojo`
+is parameterized on `[T: HTTPService, B: EventLoopBackend]`, and it reaches
+`ws_message` through `ws_message_take`'s default), so a default that
 returned the wrong thing would be a silent behaviour change across every app
 rather than a compile error. That is what the value assertions pin: an empty
 drain, a non-streaming slot, and a `before_request` that does not
@@ -80,7 +81,7 @@ def test_default_sse_is_streaming_is_false() raises:
 
 
 def test_default_hooks_are_callable_and_inert() raises:
-    """The four `pass` defaults must exist and change nothing observable."""
+    """The six `pass` defaults must exist and change nothing observable."""
     var s = MinimalService(0)
     var resp = OK("ok", "text/plain")
     s.after_response(String("GET"), String("/"), resp)

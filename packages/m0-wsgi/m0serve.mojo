@@ -865,8 +865,10 @@ def main() raises:
     # Bind before forking; every worker accepts from this one socket.
     var listener = _listen_or_fail(opts)
 
-    # Then everything `--realtime` shares, still before the fork and still
-    # before the first Python call. Inert without the flag.
+    # Then everything the workers share -- the page, the bus and their
+    # exports -- still before the fork and still before the first Python
+    # call. Made with or without `--realtime`: an ASGI application's
+    # `state["m0"]` rides the bus too (`_prepare_realtime` says why).
     var channels = opts.threads if opts.threads > 1 else opts.workers
     var bus = _prepare_realtime(opts, channels)
     var share = prefork_accept_share(opts.workers)
@@ -1056,11 +1058,12 @@ def main() raises:
         return
 
     var server = Server(server_config^)
-    # `bus.read_fd` answers -1 off the flag, which is what "no bus" means to
-    # the loop. Passed unconditionally under `--realtime`, single worker
-    # included: draining our own channel IS local delivery, because `m0pub`
-    # writes every channel including the publisher's. There is no second
-    # delivery path to keep in sync with this one.
+    # `bus.read_fd` answers this worker's channel whatever the flags (-1,
+    # "no bus" to the loop, only for an index the bus has no channel for).
+    # Passed unconditionally, single worker included: draining our own
+    # channel IS local delivery, because `m0pub` writes every channel
+    # including the publisher's. There is no second delivery path to keep
+    # in sync with this one.
     if opts.qos:
         _ = request_qos_class(QOS_CLASS_USER_INTERACTIVE)
     # The handler runs inline here, so the loop stays attached while it
@@ -1231,7 +1234,7 @@ def _serve_threaded(
     from `opts` via `WSGIHandler.make` and wires its pool as prefork's
     worker does (`wire_offload`). No fork, so `main` returns normally.
 
-    Under `--realtime` each thread also drains its own bus channel, exactly
+    Each thread also drains its own bus channel, `--realtime` or not, exactly
     as a worker drains its own. `bus` was built on the main thread before
     any of this, so `M0_BUS_WRITE_FDS` is already in the environment the
     interpreter is about to snapshot, and `m0pub` reaches N threads with the
