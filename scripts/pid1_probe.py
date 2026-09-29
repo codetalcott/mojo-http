@@ -2,9 +2,10 @@
 
 `docker stop` is SIGTERM to PID 1 and nothing else, and PID 1 gets no
 default signal dispositions from the kernel: a SIGTERM arriving with no
-handler installed is *discarded*, not fatal. This server installs its
-handlers post-fork by design (`install_shutdown_signals`, and the
-supervisor's `_arm_signal_propagation` inside `fork_all`), so every
+handler installed is *discarded*, not fatal. This server installs a
+worker's handlers post-fork by design (`install_shutdown_signals`), and the
+supervisor's before its first fork (`_arm_signal_propagation`, in
+`fork_all`), so every
 in-process SIGTERM gate — `smoke-shutdown` first among them — proves the
 handler works *once installed* while proving nothing about the one
 environment where the default disposition cannot paper over a missing
