@@ -171,13 +171,6 @@ struct Connection(Movable):
         self._next_statement = 0
         self.url_for_logs = safe^
 
-    def __init__(out self, *, deinit move: Self):
-        self._handle = move._handle
-        self._lib = move._lib^
-        self._listening = move._listening^
-        self._next_statement = move._next_statement
-        self.url_for_logs = move.url_for_logs^
-
     def __deinit__(deinit self):
         if self._handle != 0:
             self._lib.fns.finish(self._handle)

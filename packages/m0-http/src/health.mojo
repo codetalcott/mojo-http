@@ -27,11 +27,6 @@ struct HealthRegistry(Movable):
         self.check_values = List[Bool]()
         self.shutting_down = False
 
-    def __init__(out self, *, deinit move: Self):
-        self.check_names = move.check_names^
-        self.check_values = move.check_values^
-        self.shutting_down = move.shutting_down
-
     def register(mut self, name: String, healthy: Bool = True):
         """Register or update a named health check."""
         for i in range(len(self.check_names)):

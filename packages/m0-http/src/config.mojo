@@ -99,42 +99,6 @@ struct AppConfig(Copyable, Movable):
         else:
             self.base_url = "http://localhost:" + String(self.port)
 
-    def __init__(out self, *, copy: Self):
-        self.host = copy.host
-        self.port = copy.port
-        self.base_url = copy.base_url
-        self.api_key = copy.api_key
-        self.workers = copy.workers
-        self.threads = copy.threads
-        self.blocking_threads = copy.blocking_threads
-        self.workers_set = copy.workers_set
-        self.threads_set = copy.threads_set
-        self.blocking_threads_set = copy.blocking_threads_set
-        self.access_log = copy.access_log
-        self.sse_heartbeat_ms = copy.sse_heartbeat_ms
-        self.app_tick_ms = copy.app_tick_ms
-        self.qos = copy.qos
-        self.spawn_workers = copy.spawn_workers
-        self.max_keepalive_requests = copy.max_keepalive_requests
-
-    def __init__(out self, *, deinit move: Self):
-        self.host = move.host^
-        self.port = move.port
-        self.base_url = move.base_url^
-        self.api_key = move.api_key^
-        self.workers = move.workers
-        self.threads = move.threads
-        self.blocking_threads = move.blocking_threads
-        self.workers_set = move.workers_set
-        self.threads_set = move.threads_set
-        self.blocking_threads_set = move.blocking_threads_set
-        self.access_log = move.access_log
-        self.sse_heartbeat_ms = move.sse_heartbeat_ms
-        self.app_tick_ms = move.app_tick_ms
-        self.qos = move.qos
-        self.spawn_workers = move.spawn_workers
-        self.max_keepalive_requests = move.max_keepalive_requests
-
     def address(self) -> String:
         """Return listen address string (e.g. '0.0.0.0:8080')."""
         return self.host + ":" + String(self.port)

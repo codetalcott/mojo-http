@@ -143,6 +143,29 @@ def test_seed_is_kept_when_no_flag_names_it() raises:
     assert_true(opts.access_log)
 
 
+def test_a_copy_of_the_options_owns_its_lists() raises:
+    """`parse_args` starts from `seed.copy()` and appends to the copy's lists,
+    so a copy must own them: rewriting or growing one leaves the original
+    alone. The copy and the move are the compiler's."""
+    var seed = _seed()
+    seed.mount_prefixes.append(String("/api"))
+    seed.reload_dirs.append(String("/src"))
+    var copied = seed.copy()
+    assert_equal(len(copied.mount_prefixes), 1)
+    assert_equal(len(copied.reload_dirs), 1)
+    copied.mount_prefixes[0] = String("/other")
+    copied.reload_dirs.append(String("/more"))
+    copied.host = String("10.0.0.9")
+    assert_equal(seed.mount_prefixes[0], "/api")
+    assert_equal(len(seed.reload_dirs), 1)
+    assert_equal(seed.host, "0.0.0.0")
+    var moved = copied^
+    assert_equal(len(moved.mount_prefixes), 1)
+    assert_equal(moved.mount_prefixes[0], "/other")
+    assert_equal(len(moved.reload_dirs), 2)
+    assert_equal(moved.host, "10.0.0.9")
+
+
 def test_equals_form_is_accepted() raises:
     var opts = _parse([String("m.wsgi"), String("--port=9000"), String("--host=127.0.0.1")])
     assert_equal(opts.port, 9000)

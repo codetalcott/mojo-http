@@ -81,20 +81,6 @@ struct Params(Movable, Copyable, Sized):
         self._oids = List[Int]()
         self._formats = List[Int]()
 
-    def __init__(out self, *, deinit move: Self):
-        self._bytes = move._bytes^
-        self._offsets = move._offsets^
-        self._lengths = move._lengths^
-        self._oids = move._oids^
-        self._formats = move._formats^
-
-    def __init__(out self, *, copy: Self):
-        self._bytes = copy._bytes.copy()
-        self._offsets = copy._offsets.copy()
-        self._lengths = copy._lengths.copy()
-        self._oids = copy._oids.copy()
-        self._formats = copy._formats.copy()
-
     def __len__(self) -> Int:
         return len(self._oids)
 
@@ -218,12 +204,6 @@ struct ParamArrays(Movable):
             self.lengths.append(Int32(params._lengths[i]))
             self.oids.append(Int32(params._oids[i]))
             self.formats.append(Int32(params._formats[i]))
-
-    def __init__(out self, *, deinit move: Self):
-        self.values = move.values^
-        self.lengths = move.lengths^
-        self.oids = move.oids^
-        self.formats = move.formats^
 
     def values_addr(self) -> Int:
         return Int(self.values.unsafe_ptr()) if len(self.values) else 0

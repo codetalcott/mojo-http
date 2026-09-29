@@ -68,32 +68,6 @@ struct Report(Copyable, Movable):
         self.check_fixes = List[String]()
         self.check_codes = List[Int]()
 
-    def __init__(out self, *, copy: Self):
-        self.version = copy.version
-        self.product = copy.product
-        self.groups = copy.groups.copy()
-        self.keys = copy.keys.copy()
-        self.values = copy.values.copy()
-        self.raws = copy.raws.copy()
-        self.check_names = copy.check_names.copy()
-        self.check_ok = copy.check_ok.copy()
-        self.check_details = copy.check_details.copy()
-        self.check_fixes = copy.check_fixes.copy()
-        self.check_codes = copy.check_codes.copy()
-
-    def __init__(out self, *, deinit move: Self):
-        self.version = move.version^
-        self.product = move.product^
-        self.groups = move.groups^
-        self.keys = move.keys^
-        self.values = move.values^
-        self.raws = move.raws^
-        self.check_names = move.check_names^
-        self.check_ok = move.check_ok^
-        self.check_details = move.check_details^
-        self.check_fixes = move.check_fixes^
-        self.check_codes = move.check_codes^
-
     def add_fact(mut self, group: String, key: String, value: String):
         """A string-valued fact; the value is JSON-escaped on render."""
         self.groups.append(group)

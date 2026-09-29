@@ -197,15 +197,6 @@ struct Client(Copyable, Movable):
         self._idle_host = String()
         self._idle_port = 0
 
-    def __init__(out self, *, deinit move: Self):
-        self.timeout_s = move.timeout_s
-        self.max_response_bytes = move.max_response_bytes
-        self.keep_alive = move.keep_alive
-        self.connections_opened = move.connections_opened
-        self._idle = move._idle^
-        self._idle_host = move._idle_host^
-        self._idle_port = move._idle_port
-
     def close(mut self):
         """Drop the warm connection, if any. Requests still work after —
         the next one simply dials fresh."""

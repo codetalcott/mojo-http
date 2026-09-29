@@ -225,10 +225,6 @@ struct DetachingBackend[B: EventLoopBackend & Movable & Deinitable](EventLoopBac
         self.inner = inner^
         self.loop_detached = False
 
-    def __init__(out self, *, deinit move: Self):
-        self.inner = move.inner^
-        self.loop_detached = move.loop_detached
-
     def set_loop_detached(mut self):
         """The owning thread holds no thread state; `wait` must not restore one."""
         self.loop_detached = True
@@ -336,15 +332,6 @@ struct ThreadedServer(Movable):
         self.bus_write_fds = List[Int]()
         self.blocking_threads = 0
         self.asgi_executor = False
-
-    def __init__(out self, *, deinit move: Self):
-        self.config = move.config^
-        self.address = move.address^
-        self.listen_fd = move.listen_fd
-        self.bus_read_fds = move.bus_read_fds^
-        self.bus_write_fds = move.bus_write_fds^
-        self.blocking_threads = move.blocking_threads
-        self.asgi_executor = move.asgi_executor
 
     def serve[
         T: ThreadHandler

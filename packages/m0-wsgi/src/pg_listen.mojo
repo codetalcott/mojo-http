@@ -156,12 +156,6 @@ struct PgListenSpec(Movable):
         self.write_fds = write_fds^
         self.shared_id_addr = shared_id_addr
 
-    def __init__(out self, *, deinit move: Self):
-        self.url = move.url^
-        self.channel = move.channel^
-        self.write_fds = move.write_fds^
-        self.shared_id_addr = move.shared_id_addr
-
 
 def _say(message: String):
     """One line to stdout, flushed.
@@ -361,12 +355,6 @@ struct PgListener(Movable):
         self._threads = ThreadSet(0)
         self._stop = ShutdownHandle(-1)
         self.active = False
-
-    def __init__(out self, *, deinit move: Self):
-        self._specs = move._specs^
-        self._threads = move._threads^
-        self._stop = move._stop^
-        self.active = move.active
 
     @staticmethod
     def start(
