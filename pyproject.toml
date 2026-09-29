@@ -1242,21 +1242,58 @@ for p in $(grep -oE 'pid=[0-9]+' "$SMOKE_DIR/shutdown2.log" | cut -d= -f2 | sort
 done
 [ -n "$workers" ] || fail 'no worker pids in the log'
 
-# The supervisor ALONE. Nothing signals the workers directly.
+# Every worker of the group the supervisor $1 leads still running after it
+# has gone, in $alive, for up to 10 s. The group as well as the pids the log
+# named: a worker forked just before a supervisor died need not be in the
+# log yet when it is read, as worker 1 was not in CI's run (B21).
+orphans() {
+  alive='x'
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    alive=''
+    for w in $workers; do kill -0 "$w" 2>/dev/null && alive="$alive $w"; done
+    [ -z "$alive" ] && kill -0 "-$1" 2>/dev/null && alive=" (group $1)"
+    [ -z "$alive" ] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# The supervisor ALONE. Nothing signals the workers directly. It passes the
+# signal on and exits 0 once they have drained; 143 is the signal's default
+# action, the supervisor dead before it passed anything on.
 kill -TERM $pid
-wait $pid 2>/dev/null
-alive='x'
-for i in 1 2 3 4 5 6 7 8 9 10; do
-  alive=''
-  for w in $workers; do kill -0 "$w" 2>/dev/null && alive="$alive $w"; done
-  [ -z "$alive" ] && break
-  sleep 1
-done
-[ -z "$alive" ]   || fail "orphaned workers after signalling the supervisor:$alive"
+rc=0
+wait $pid 2>/dev/null || rc=$?
+orphans $pid   || fail "orphaned workers after signalling the supervisor:$alive (it exited $rc)"
+[ "$rc" -eq 0 ]   || fail "the supervisor exited $rc, want 0"
 # A worker that drained but then fell off the end of main would die in the Mojo
 # runtime's teardown, and the supervisor would read that as a crash.
 grep -q 'exited cleanly' "$SMOKE_DIR/shutdown2.log"   || fail 'no worker reported a clean exit'
 grep -q 'respawn' "$SMOKE_DIR/shutdown2.log" && fail 'a worker was respawned during shutdown'
+
+# The same signal while the supervisor is still forking (B21). It armed the
+# handler that passes a signal on only after its last fork, and a worker
+# answers once its loop runs, which can be before the next is forked: a
+# SIGTERM between the two took the default action, and every worker already
+# forked was left serving, holding the port. CI hit it once in about a
+# hundred runs of the phase above. M0_TEST_FORK_GAP_MS holds the supervisor
+# between its first fork and its second, so the signal lands there on every
+# run, and the log line says it did: a signal that missed the pause would
+# pass without testing anything.
+spawn shutdown2b.log env M0_PORT=$port M0_WORKERS=2 M0_TEST_FORK_GAP_MS=5000 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/   apps/datastar_counter/server.mojo
+wait_ready http://localhost:$port/health $pid
+workers=''
+for p in $(grep -oE 'pid=[0-9]+' "$SMOKE_DIR/shutdown2b.log" | cut -d= -f2 | sort -u); do
+  [ "$p" != "$pid" ] && workers="$workers $p"
+done
+kill -TERM $pid
+rc=0
+wait $pid 2>/dev/null || rc=$?
+orphans $pid   || fail "orphaned workers after signalling the supervisor while it forked:$alive (it exited $rc)"
+[ "$rc" -eq 0 ]   || fail "signalled while forking, the supervisor exited $rc, want 0"
+grep -q 'told to stop after forking 1 of 2 workers' "$SMOKE_DIR/shutdown2b.log" \
+  || fail 'the signal did not land while the supervisor was forking, or it forked on'
+grep -q 'exited cleanly' "$SMOKE_DIR/shutdown2b.log"   || fail 'the worker it had forked did not drain and exit cleanly'
 
 # Idle keep-alive connections must not hold the drain open. `active_count`
 # counts a merely-open connection the same as one mid-request, so before the

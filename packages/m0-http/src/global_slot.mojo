@@ -54,6 +54,8 @@ stdlib import. Both are deliberate, and both are covered by tests in
 
 from std.collections.string.string_span import _get_kgen_string
 
+from lightbug_http.c.process import getpid
+
 
 comptime MAX_TRACKED_CHILDREN = 64
 """Child PIDs the supervisor's signal handler can propagate to.
@@ -83,13 +85,18 @@ def _shutdown_fd_slot() -> Pointer[Int, MutUntrackedOrigin]:
     }
 
 
+comptime _OWNER_WORD = MAX_TRACKED_CHILDREN + 1
+"""The child-PID block's last word: the PID of the process that published it."""
+
+
 @no_inline
 def _child_pid_slot() -> Pointer[Int, MutUntrackedOrigin]:
     """Return the block holding the supervisor's child PIDs.
 
-    Word 0 is the count; words 1..`MAX_TRACKED_CHILDREN` are the PIDs.
-    `@no_inline` is required for the address to be stable — see this file's
-    header.
+    Word 0 is the count; words 1..`MAX_TRACKED_CHILDREN` are the PIDs; the
+    word after them (`_OWNER_WORD`) is the PID of the process that
+    published them. `@no_inline` is required for the address to be stable —
+    see this file's header.
 
     Returns:
         A pointer to this module image's child-PID block.
@@ -97,7 +104,7 @@ def _child_pid_slot() -> Pointer[Int, MutUntrackedOrigin]:
     return {
         _mlir_value = __mlir_op.`pop.global_alloc`[
             name = _get_kgen_string["m0_http_child_pids"](),
-            count = Int(MAX_TRACKED_CHILDREN + 1).__mlir_index__(),
+            count = Int(_OWNER_WORD + 1).__mlir_index__(),
             _type = Pointer[Int, MutUntrackedOrigin]._mlir_type,
             alignment = Int(8).__mlir_index__(),
         ]()
@@ -108,8 +115,8 @@ def _child_pid_slot() -> Pointer[Int, MutUntrackedOrigin]:
 def _supervisor_stopping_slot() -> Pointer[Int, MutUntrackedOrigin]:
     """Return the one-word slot the supervisor's handler sets on SIGTERM/SIGINT.
 
-    `@no_inline` is required for the address to be stable — see this file's
-    header.
+    It holds the signal number, 0 until a stop is recorded. `@no_inline` is
+    required for the address to be stable — see this file's header.
 
     Returns:
         A pointer to this module image's supervisor-stopping slot.
@@ -124,17 +131,32 @@ def _supervisor_stopping_slot() -> Pointer[Int, MutUntrackedOrigin]:
     }
 
 
-def set_supervisor_stopping(stopping: Bool):
-    """Record that the supervisor has been told to stop, or clear it.
+def record_supervisor_stop(sig: Int):
+    """Record that the supervisor has been told to stop, and by which signal.
 
-    Async-signal-safe: one aligned word store.
+    Async-signal-safe: one aligned word store. The number is kept so the
+    supervisor can send a child the handler could not reach the same signal
+    it passed on to the rest (`WorkerSupervisor._publish_children`).
+
+    Args:
+        sig: The signal received, SIGTERM or SIGINT; never 0.
     """
-    _supervisor_stopping_slot()[] = 1 if stopping else 0
+    _supervisor_stopping_slot()[] = sig
+
+
+def clear_supervisor_stop():
+    """Forget a recorded stop: a forked child starts with none of its own."""
+    _supervisor_stopping_slot()[] = 0
 
 
 def supervisor_stopping() -> Bool:
     """Whether the supervisor has been told to stop (SIGTERM or SIGINT)."""
     return _supervisor_stopping_slot()[] != 0
+
+
+def supervisor_stop_signal() -> Int:
+    """The signal the supervisor was told to stop by, or 0 if it has not been."""
+    return _supervisor_stopping_slot()[]
 
 
 def set_shutdown_write_fd(fd: Int):
@@ -190,12 +212,17 @@ def publish_child_pids(pids: List[Int]):
     Handing -1 to `kill(2)` would signal *every process the caller can reach*,
     so the reader guards against it too.
 
+    The block also records WHO published it (`child_pids_owner`): a forked
+    child inherits its parent's block with its parent's handler, and the
+    handler passes a signal on only in the process whose list it is.
+
     Args:
         pids: Child PIDs by worker index, -1 or 0 for a vacant one. Beyond
             `MAX_TRACKED_CHILDREN` the tail is dropped — the supervisor's
             ordinary `_kill_all` still reaches every child.
     """
     var block = _child_pid_slot()
+    block[unsafe_offset = _OWNER_WORD] = getpid()
     var n = len(pids)
     if n > MAX_TRACKED_CHILDREN:
         n = MAX_TRACKED_CHILDREN
@@ -234,3 +261,15 @@ def child_pid_at(index: Int) -> Int:
         return 0
     var pid = _child_pid_slot()[unsafe_offset = index + 1]
     return pid if pid > 0 else 0
+
+
+def child_pids_owner() -> Int:
+    """Return the PID of the process that last published the child PIDs.
+
+    Async-signal-safe: one aligned word load, no allocation.
+
+    Returns:
+        That PID, or 0 before any `publish_child_pids` call. In a child forked
+        since, it is still the parent's until the child publishes its own.
+    """
+    return _child_pid_slot()[unsafe_offset = _OWNER_WORD]

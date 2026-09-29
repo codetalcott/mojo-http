@@ -485,6 +485,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   exponent, which `parse_json_number` reads. A body that relied on the
   lenient reading now gets `None`. Found in review.
 
+- **A supervisor signalled while it is still starting its workers passes
+  the signal on instead of dying and leaving them running** (SPEC D2).
+  Under `--workers N`, and in a Mojo host application with `M0_WORKERS`
+  above 1, the supervisor installed the handler that passes SIGTERM and
+  SIGINT on to its workers only after it had forked the last one. A
+  worker answers as soon as its loop starts, which can be before the next
+  worker is forked, so a stop sent to the supervisor's PID alone in that
+  moment (by a process manager or a deploy script, say, as soon as the
+  server answered) took the default action: the supervisor died, no
+  worker was signalled, and every worker already forked went on serving
+  and holding the port. The supervisor now installs the handler before
+  its first fork and signals each worker as soon as it has its PID; told
+  to stop while forking, it forks no more workers and waits for the ones
+  it has; and a worker the stop reaches before it has set up its own
+  signals leaves at once rather than serving on. `smoke-shutdown` gates
+  it by holding the supervisor between its first two forks and signalling
+  it there, and the phase that caught it in CI, once in about a hundred
+  runs, now also checks the supervisor's exit status and every process in
+  the server's group rather than only the worker PIDs in the log. Found
+  by CI.
+
 ### Changed
 
 - **`SqliteLib` and `PgLib` keep their C entry points in one table,
