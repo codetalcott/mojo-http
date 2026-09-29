@@ -328,6 +328,17 @@ struct ExecutorState(Movable):
     WebSocket handshake until the application's `websocket.accept` comes
     back, each stream's generation, and the completions parked since the
     last flush. Only ever touched by this thread.
+
+    **Never pass it to a function as a `mut` argument; resolve it by address
+    in the frame that uses it.** A `mut` argument is exclusive for the
+    call, so the compiler may pass this struct BY VALUE and store the
+    callee's copy back when it returns, and on 1.1.0 it does. The port is
+    re-entered from inside its own calls, and what the inner call writes
+    goes to the struct by address, so a store-back erases it:
+    `_flush_inverted` took this struct that way, its pass read the shutdown
+    pipe and began the drain through `_pass_with`, and the store-back reset
+    `stopping` and `drain_start` -- an inverted server that never exited
+    on SIGTERM (CI, macOS, about 2 in 100; SPEC L8).
     """
 
     var methods: List[String]
@@ -562,13 +573,24 @@ struct ExecutorPort(Movable, Writable):
             sleep(0.0002)
         return False
 
-    def _flush_inverted[B: EventLoopBackend](mut self, mut st: ExecutorState) raises:
+    def _flush_inverted[B: EventLoopBackend](mut self) raises:
         # A PASS first, then the completions — a streamed response's begin
         # frame rides the chunk channel and is drained by the pass, so a
         # head completed before it would precede its own begin frame, the
         # recycled-slot hazard the streaming rules exist for. On one thread
         # the order is the order of these two calls.
+        #
+        # The pass may be the one that reads the shutdown pipe, and then it
+        # has begun the drain (`_pass_with` records it in the state). Its
+        # result is not this function's to act on -- `_flush` reads the
+        # state afterwards and the shim starts the drain -- but the state
+        # is read HERE, after the pass, by address: taken as a `mut`
+        # argument it was a copy from before the pass, stored back over the
+        # drain's record (`ExecutorState`'s docstring).
         _ = self._pass_with[B]()
+        ref st = Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[]
         if len(st.pending_done) == 0:
             return
         ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
@@ -593,26 +615,37 @@ struct ExecutorPort(Movable, Writable):
     @staticmethod
     def flush(py_self: PythonObject) raises -> PythonObject:
         """`_port.flush()`: poke the loop for every completion parked since
-        the last flush -- once per loop iteration, scheduled by the shim."""
+        the last flush -- once per loop iteration, scheduled by the shim.
+        True once the drain has begun (inverted mode only): the shim starts
+        its half of the drain on it."""
         var port = py_self.downcast_value_ptr[ExecutorPort]()
-        port[]._flush()
-        return PythonObject(None)
+        return PythonObject(port[]._flush())
 
-    def _flush(mut self):
+    def _flush(mut self) -> Bool:
         ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
             unsafe_from_address=self.pool_addr
         )[]
-        ref st = Pointer[ExecutorState, MutUntrackedOrigin](
-            unsafe_from_address=self.state_addr
-        )[]
         if self.inverted == 0:
+            ref st = Pointer[ExecutorState, MutUntrackedOrigin](
+                unsafe_from_address=self.state_addr
+            )[]
             _flush_completions(pool, st.pending_done)
-            return
+            return False
         # Inverted: no datagram; see `_flush_inverted` for the ordering.
         try:
-            self._flush_inverted[PlatformBackend](st)
+            self._flush_inverted[PlatformBackend]()
         except e:
             print("inverted executor: flush raised: " + String(e), flush=True)
+        # Whether the drain has begun, read by address after everything the
+        # flush ran. The pass inside it may be the one that read the
+        # shutdown pipe, and that pass closed the listener and stopped
+        # watching the pipe: no later pass will see the stop, so unless it
+        # is reported here the drain waits for the next backend readiness
+        # or the 1 Hz tick, and before the state was read by address it
+        # waited for ever (SPEC L8).
+        return Pointer[ExecutorState, MutUntrackedOrigin](
+            unsafe_from_address=self.state_addr
+        )[].stopping
 
     def _dispatch(mut self, ev: PythonObject) raises -> Bool:
         """One event of the shim's, in the order the pass used to see it.

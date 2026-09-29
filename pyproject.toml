@@ -6337,6 +6337,23 @@ wait_exit 'SIGTERM with a live stream'
 kill $stream_pid 2>/dev/null; wait $stream_pid 2>/dev/null
 [ "$rc" = "0" ] || fail "SIGTERM with a live stream: exit $rc, want 0"
 
+# SIGTERM read by the pass a flush runs (SPEC L8). Inverted, whichever pass
+# reads the shutdown pipe first begins the drain -- listener closed, pipe no
+# longer watched -- and on CI's macOS runners about 2 in 100 runs of the phase
+# above that was the pass `_flush_inverted` runs. The flush held the
+# executor's state as a copy from before its pass and stored it back after,
+# erasing the drain's record, so no later pass saw the stop and the process
+# never exited. /raise-sigterm puts the byte there every time: the
+# application raises SIGTERM on the serving thread in its first step, after
+# the pass that parked it and before the flush that pass queued. On the pump
+# it is an ordinary SIGTERM.
+spawn asgi-flushstop.log "$srv" $SPEC
+wait_ready $B/ $pid
+got=$(curl -s --max-time 10 $B/raise-sigterm)
+[ "$got" = "sigterm raised" ] || fail "the request that raised SIGTERM was not answered: '$got'"
+wait_exit 'SIGTERM read by the pass a flush runs'
+[ "$rc" = "0" ] || fail "SIGTERM read by the pass a flush runs: exit $rc, want 0"
+
 # Two requests that outlive the 5 s drain and finish in DIFFERENT loop
 # iterations after the pill: the executor's post-pill gather must run both
 # to completion and lifespan shutdown must still reach the application.

@@ -96,6 +96,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **An `M0_INVERTED=1` server exits on SIGTERM wherever the signal lands**
+  (SPEC L8). Under the loop inversion a SIGTERM is read by whichever pass
+  of the event loop reaches the shutdown pipe first. When that was the pass
+  a completion flush runs, the drain began -- the listener closed, streams
+  told goodbye -- and was then lost: the flush had taken the executor's
+  state as a copy before its pass and stored the copy back after it, so
+  the record that the drain had begun was erased, no later pass saw the
+  stop, and the process served nothing and never exited; `docker stop`
+  ended it with SIGKILL. CI's macOS runners met it in about 2 of 100 runs
+  of `smoke-asgi`'s live-stream shutdown. The state is now read by address
+  after the pass, and a flush that began the drain says so and the drain
+  starts at once, not at the next event or the 1 Hz tick. `smoke-asgi`
+  gates it with a request that raises SIGTERM in its first step, which
+  puts the signal in the flush's pass every time; `poe test-shim` holds the
+  shim's half.
+
 - **m0serve reads a command-line argument that is not UTF-8 instead of
   crashing on it.** It cut `--name=value`, the positional `MODULE:ATTR`,
   and the `PREFIX=` of `--static` and `--mount` with a slice that asserts

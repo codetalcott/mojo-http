@@ -1104,6 +1104,13 @@ _exec_submit_reader = [None]
 # steps this loop again, so a task left behind that finished then reached
 # freed memory (a segmentation fault, 3 of 3). Its events are dropped.
 _exec_closed = [False]
+# M0_INVERTED's drain starter, set by run_forever_inverted. The pass a flush
+# runs can be the one that reads the shutdown pipe, and that pass has begun
+# the drain: the listener is closed and the pipe no longer watched, so no
+# later pass will see the stop. `_port.flush()` says so, and the drain starts
+# from there -- not from the backend's next readiness or the 1 Hz tick,
+# neither of which is the drain's trigger (SPEC L8).
+_exec_start_drain = [None]
 
 
 def set_port(port):
@@ -1135,8 +1142,10 @@ def _exec_put(ev):
 
 def _flush():
     _flush_armed[0] = False
-    if not _exec_closed[0]:
-        _port.flush()
+    if _exec_closed[0]:
+        return
+    if _port.flush() and not _exec_draining[0] and _exec_start_drain[0] is not None:
+        _exec_start_drain[0]()
 
 
 async def _gather_in_flight():
@@ -1243,6 +1252,9 @@ def run_forever_inverted(backend_fd):
     # are parked as ever and handed straight to the loop by _port.flush,
     # which in this mode runs a pass first (see the port). A 1 Hz tick
     # runs a pass for the sweeps and caches that assume one wake a second.
+    # Any of the three passes can be the one that reads the shutdown pipe,
+    # so each reports it and each starts the drain: the flush's through
+    # _exec_start_drain.
 
     tick = [None]
 
@@ -1274,6 +1286,7 @@ def run_forever_inverted(backend_fd):
             return
         tick[0] = _loop.call_later(1.0, _tick)
 
+    _exec_start_drain[0] = _start_drain
     _loop.add_reader(backend_fd, _on_backend)
     tick[0] = _loop.call_later(1.0, _tick)
     _loop.run_forever()
