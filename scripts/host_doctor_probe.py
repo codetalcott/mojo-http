@@ -268,8 +268,6 @@ def main() -> int:
         for key in ("banner", "log"):
             if key in expect and expect[key] not in slog:
                 fail("the server's log lacks %r:\n%s" % (expect[key], slog))
-        if "api_key" in json.dumps(doc):
-            fail("the report names the API key")
 
     # --help: the usage, 0, nothing started -- with and without --doctor.
     phase("--help")

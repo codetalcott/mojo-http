@@ -98,7 +98,6 @@ from .ffi import (
     SQLITE_OPEN_FULLMUTEX,
 )
 from .stmt import Statement
-from .reduce import ColumnStats, sum_ints, min_ints, max_ints, stats_ints
 from .conn import (
     Connection,
     open,

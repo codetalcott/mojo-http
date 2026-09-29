@@ -10,7 +10,6 @@ Env vars:
                     would need DNS the server deliberately does not do.
     M0_PORT       — HTTP listen port (default: 8080)
     M0_BASE_URL   — Public base URL (default: http://localhost:{port})
-    M0_API_KEY    — API key for mutation auth (default: "" = disabled)
     M0_WORKERS    — Worker count for multi-worker mode (default: 1)
     M0_THREADS    — Serving threads in ONE process, free-threaded CPython
                     only (default: 1). Mutually exclusive with M0_WORKERS>1;
@@ -51,7 +50,6 @@ struct AppConfig(Copyable, Movable):
     var host: String
     var port: Int
     var base_url: String
-    var api_key: String
     var workers: Int
     var threads: Int
     var blocking_threads: Int
@@ -71,7 +69,6 @@ struct AppConfig(Copyable, Movable):
         """Load configuration from M0_-prefixed env vars with defaults."""
         self.host = _parse_host(getenv("M0_HOST", ""))
         self.port = _parse_int_env("M0_PORT", default_port)
-        self.api_key = getenv("M0_API_KEY", "")
         self.workers = _parse_int_env("M0_WORKERS", 1)
         self.threads = _parse_int_env("M0_THREADS", 1)
         self.blocking_threads = _parse_int_env("M0_BLOCKING_THREADS", 0)

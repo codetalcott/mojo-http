@@ -195,10 +195,11 @@ is what the benchmark's fastest column does.
 ## Aggregates: SQL is not automatically the fast side
 
 `Statement.fetch_ints` was written to hand back a column-major `List` because
-that "is what a SIMD pass over the results wants". `m0_sqlite.stats_ints` and
-friends are that pass, and measuring them turned up something worth writing
-down: **pulling a column out and reducing it here beats asking SQLite to
-aggregate it.**
+that "is what a SIMD pass over the results wants". `stats_ints` is that pass
+— `m0_sqlite.stats_ints` until 2026-09-29, when it moved into
+`bench_sqlite.mojo`, its one user — and measuring it turned up something
+worth writing down: **pulling a column out and reducing it here beats asking
+SQLite to aggregate it.**
 
 200,000 integer rows, in-memory database, `sum` + `min` + `max`, values
 checked against SQLite's own answers before timing (`bench_reduce` in
@@ -230,8 +231,8 @@ Integers only, deliberately. A vector sum reassociates the additions, and
 floating point is not associative — a `Float64` version would disagree with a
 scalar loop in the last ulp with no single right answer to test against.
 Integer addition reassociates exactly, so these agree bit for bit at every
-length, which `test_reduce.mojo` asserts from 0 to 80 elements and against
-SQLite over 1,000 rows.
+length, and `bench_reduce` refuses to time an answer that differs from
+SQLite's own.
 
 ## The WSGI-bridge techniques, checked against this package
 
@@ -365,11 +366,10 @@ each closed-set rule, and insists on a failure for every one.
 ## Reproducing
 
 The benchmarks were written as standalone Mojo programs against `-I
-packages/m0-sqlite`, in the same shape as `packages/m0-core/run_benchmarks.mojo`.
-They are not checked in; the measurements above are the deliverable. To redo
-them, the four workloads are: N-row fetch by the four strategies above; 20k
-random point reads under each pragma set; 10k inserts under each transaction
-mode; and prepare-versus-reset for one trivial query.
+packages/m0-sqlite`. They are not checked in; the measurements above are the
+deliverable. To redo them, the four workloads are: N-row fetch by the four
+strategies above; 20k random point reads under each pragma set; 10k inserts
+under each transaction mode; and prepare-versus-reset for one trivial query.
 
 The read-out rows (blob, text, borrowed span, ingest, reduce) are the
 exception: `uv run poe bench-sqlite` is checked in and prints them. The

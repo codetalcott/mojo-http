@@ -332,15 +332,6 @@ def test_the_doctor_leaves_with_the_servers_code() raises:
     )
 
 
-def test_the_doctor_never_prints_the_api_key() raises:
-    _ = setenv("M0_API_KEY", "hunter2-do-not-print", True)
-    var f = _parse()
-    _ = unsetenv("M0_API_KEY")
-    assert_equal(f.config.api_key, "hunter2-do-not-print")
-    var text = host_report[Plain](f, f.config.server_config()).render()
-    assert_false("hunter2" in text, text)
-
-
 def test_the_usage_names_every_flag_and_its_variable() raises:
     var text = host_usage("server")
     var flags = _args(
