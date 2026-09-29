@@ -40,13 +40,14 @@
 #   free_port [N]           Print a TCP port that is free on IPv4 AND IPv6:
 #                           `localhost` may reach an IPv6 listener first, and
 #                           that would be somebody else's server. For a server
-#                           whose number nothing outside the task depends on.
-#                           A fixed port is shared machine-wide, and the
-#                           listener sets SO_REUSEPORT, so two runs on one
-#                           port both bind and split the connections. With N,
-#                           the first of N consecutive ports that all are,
-#                           for a probe that serves one shape per port from
-#                           the one it is given upward.
+#                           whose number nothing outside the task depends on:
+#                           a fixed port is shared machine-wide, so a second
+#                           run on it fails to bind. With N, the first of N
+#                           consecutive ports that all are, for a probe that
+#                           serves one shape per port from the one it is given
+#                           upward. The run is picked at random between 10000
+#                           and the kernel's ephemeral range, never inside it
+#                           (below).
 #   fail [MSG]              Print MSG, then every $SMOKE_DIR/*.log under a
 #                           `=== name ===` header, and exit 1. The message is
 #                           the line before the first header on purpose:
@@ -55,6 +56,15 @@
 #                           say which assertion caught a sabotage. Without
 #                           MSG that line is whatever printed last -- a
 #                           probe's own reason, after `probe || fail`.
+#
+# Why free_port stays below the ephemeral range: every connect() and bind(0)
+# on the machine takes its port from that range, and macOS hands them out in
+# sequence, so the ports just above one that bind(0) returned go to the next
+# connections anyone makes, the probe's own included. A socket on the port
+# then refuses the server's bind: on Linux any socket, on macOS (past
+# m0serve's SO_REUSEADDR) one owned by another user. That was a rare
+# "address in use" in smoke-child-publish on the macOS runner. Nothing is
+# handed out below the range, so a run there is taken only by a bind.
 #
 # On exit, however the task ends, every group spawn started and stop did not
 # is stopped the same way, and $SMOKE_DIR is removed -- unless the task
@@ -86,7 +96,28 @@ for name in ("SIGPIPE", "SIGXFSZ"):
         signal.signal(getattr(signal, name), signal.SIG_DFL)
 os.execvp(sys.argv[1], sys.argv[1:])'
 
-_smoke_free_port='import errno, socket, sys
+# The run is drawn from bases FLOOR to where the ephemeral range starts less
+# N, at random so two tasks at once rarely draw the same one. A selftest may
+# pin the bases with two more arguments; free_port passes only its first.
+_smoke_free_port='import errno, random, socket, subprocess, sys
+
+FLOOR = 10000  # below it sit the ports fixed-port services take
+
+def ephemeral_start():
+    """Where the ports connect() and bind(0) hand out begin."""
+    try:
+        with open("/proc/sys/net/ipv4/ip_local_port_range") as f:
+            return int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        pass
+    for exe in ("sysctl", "/usr/sbin/sysctl"):
+        try:
+            out = subprocess.run([exe, "-n", "net.inet.ip.portrange.first"],
+                                 capture_output=True, text=True, timeout=10)
+            return int(out.stdout.split()[0])
+        except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+            pass
+    return 32768  # neither said: the lower of the Linux and macOS defaults
 
 def free_on_ipv6(port):
     try:
@@ -116,19 +147,19 @@ arg = sys.argv[1] if len(sys.argv) > 1 else "1"
 if not arg.isdigit() or int(arg) < 1:
     raise SystemExit("free_port: usage: free_port [N], N a count of ports")
 count = int(arg)
-for _ in range(100):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(("", 0))
-    port = s.getsockname()[1]
-    rest = range(port + 1, port + count)
-    ok = (port + count - 1 <= 65535 and free_on_ipv6(port)
-          and all(free_on_ipv4(p) and free_on_ipv6(p) for p in rest))
-    s.close()
-    if ok:
+first = ephemeral_start()
+low, high = FLOOR, first - count
+if len(sys.argv) > 3:
+    low, high = int(sys.argv[2]), int(sys.argv[3])
+if high < low:
+    raise SystemExit("free_port: the ephemeral range starts at %d, leaving no run of %d "
+                     "ports between %d and it" % (first, count, FLOOR))
+for port in random.sample(range(low, high + 1), min(100, high - low + 1)):
+    if all(free_on_ipv4(p) and free_on_ipv6(p) for p in range(port, port + count)):
         print(port)
         break
 else:
-    raise SystemExit("free_port: no port was free on both IPv4 and IPv6")'
+    raise SystemExit("free_port: no run of %d ports was free on both IPv4 and IPv6" % count)'
 
 spawn() {
   [ $# -ge 2 ] || fail "spawn: usage: spawn LOG COMMAND [ARG...]"
@@ -141,7 +172,7 @@ spawn() {
 }
 
 free_port() {
-  python3 -S -c "$_smoke_free_port" "$@"
+  python3 -S -c "$_smoke_free_port" "${1:-1}"
 }
 
 fail() {
