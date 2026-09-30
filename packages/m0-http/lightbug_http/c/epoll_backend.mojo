@@ -25,6 +25,7 @@ from lightbug_http.c.epoll import (
     EV_EOF,
     EPOLL_EVENT_WORDS, epoll_event_mask, epoll_event_data,
     epoll_create1, epoll_ctl_add, epoll_ctl_mod, epoll_ctl_del, epoll_wait,
+    epoll_pwait2_ns,
     timerfd_create, set_timerfd_ms,
 )
 from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
@@ -83,6 +84,9 @@ struct EpollBackend(ConstructibleBackend):
     var _n_ready: Int
     # _timer_fds[_timer_slot(ident)] = timerfd value, or -1 if no timer.
     var _timer_fds: Pointer[Int32, MutUntrackedOrigin]
+    # The kernel refused `epoll_pwait2` once; `wait_ns` rounds up to
+    # `epoll_wait`'s milliseconds from then on.
+    var _no_pwait2: Bool
 
     def __init__(out self) raises:
         var epfd_raw = epoll_create1(EPOLL_CLOEXEC)
@@ -96,6 +100,7 @@ struct EpollBackend(ConstructibleBackend):
         for i in range(_TIMER_FD_MAP_SIZE):
             self._timer_fds[unsafe_offset=i] = -1
         self._n_ready = 0
+        self._no_pwait2 = False
     # Note: _events and _timer_fds are process-lifetime allocations.
     # No __del__ needed; the OS reclaims them on process exit.
 
@@ -107,6 +112,20 @@ struct EpollBackend(ConstructibleBackend):
     def wait(mut self, timeout_ms: Int) raises -> Int:
         self._n_ready = epoll_wait(self.epfd, self._events, _MAX_EVENTS, timeout_ms)
         return self._n_ready
+
+    def wait_ns(mut self, timeout_ns: Int) raises -> Int:
+        """`epoll_pwait2`, whose timespec keeps the nanoseconds; on a
+        kernel that refuses it (before 5.11, or a seccomp profile without
+        it) `epoll_wait` rounded UP to the millisecond, for this call and
+        every later one -- the pool's cadence before its looks were timed,
+        never a spin."""
+        if not self._no_pwait2:
+            var n = epoll_pwait2_ns(self.epfd, self._events, _MAX_EVENTS, timeout_ns)
+            if n >= 0:
+                self._n_ready = n
+                return n
+            self._no_pwait2 = True
+        return self.wait((timeout_ns + 999_999) // 1_000_000)
 
     def event_ident(self, i: Int) -> UInt:
         var data = epoll_event_data(self._events, i)

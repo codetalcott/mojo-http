@@ -16,17 +16,22 @@ from std.time import perf_counter_ns, sleep
 
 from lightbug_http.http import HTTPResponse, OK
 from lightbug_http.http.request import HTTPRequest
-from lightbug_http.c.platform import MSG_DONTWAIT
+from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.socket import recv
+from lightbug_http.event_loop import _wait_for_events
+from lightbug_http.event_loop_backend import EventLoopBackend
+from lightbug_http.loop.state import LoopState
 from lightbug_http.offload import (
     JOB_STOP, JOB_REQUEST, JOB_NONE, JOB_WS_MESSAGE,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
-    POOL_FREE_WAKE_AGE_NS, _WAKE_MAX_LANES, WS_DATAGRAM_MAX, ws_message_room,
+    POOL_FREE_WAKE_AGE_NS, POOL_WAKE_WAIT_MS, _WAKE_MAX_LANES,
+    WS_DATAGRAM_MAX, ws_message_room,
     send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
     encode_ack, decode_ack,
 )
+from lightbug_http.server_config import ServerConfig
 from lightbug_http.uri import URI
 
 from src.threads import (
@@ -274,6 +279,7 @@ def _pool_fields(pool: OffloadPool) -> String:
     s += String(pool.wake_base) + "," + String(pool.elastic) + ","
     s += String(pool.debug) + ","
     s += _ints(pool.submit_ns) + _ints(pool.lane_pops) + _ints(pool.lane_progress)
+    s += String(pool.last_look) + ","
     s += String(pool.parallel) + "," + String(pool._parallel_forced) + ","
     s += _bools(pool.lane_gil_free)
     s += String(pool.wake_age) + "," + String(pool.spin) + ","
@@ -1186,6 +1192,275 @@ def test_the_wait_is_bounded_only_while_a_job_is_pending() raises:
     assert_true(pool.jobs_pending())
     assert_equal(_next_slot(pool), 3)
     assert_false(pool.jobs_pending())
+
+
+def test_the_loop_looks_when_a_heads_threshold_runs_out() raises:
+    """The look's timing (`OffloadPool.next_look`). A job pushed beside a
+    busy thread wakes nobody at the push -- the elastic rule -- and the
+    loop's next look must come when that head's threshold runs out: its
+    push plus `POOL_FREE_WAKE_AGE_NS` on a GIL-free lane, plus the GIL
+    threshold on a GIL lane. It came at the next pass instead, and an idle
+    loop passed once per `POOL_WAKE_WAIT_MS`, so a fast request that met
+    one slow view waited 1.3 ms whatever its threshold.
+
+    Each deadline is offered ONCE: a look before it wakes nobody and
+    leaves it standing, the look at it wakes the parked sibling, and a
+    judged deadline is not offered again while its head stands -- or a
+    lane whose threads are all busy would turn every wait into a spin. A
+    ring a GIL lane is draining is offered a look one threshold after
+    now, since the look will count the move as progress. And no look is
+    offered where no wake is owed: under the eager rules
+    (`M0_POOL_ELASTIC=0`) the push woke a thread itself, and a head the
+    lane's spinner took leaves nothing to look at -- the look scheduled
+    for it wakes nobody. The clock is simulated from one real origin,
+    far enough apart that real time between calls cannot cross a
+    boundary.
+
+    covers: E37
+    """
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    comptime T = 100_000_000
+    pool.add_lane(String(""))
+    pool.add_lane(String("/native"))
+    pool.set_lane_gil_free(1)
+    for lane in range(2):
+        pool.note_thread(lane, 2)
+        pool.note_parked(lane, 1)
+    var t0 = perf_counter_ns()
+    assert_equal(pool.wake_aged(t0, T), 0)
+    # Nothing pending: nothing to look at.
+    assert_equal(pool.next_look(t0, T), 0)
+    pool.park_request(1, _request("/q"))
+    assert_true(pool.submit(1, String("/q")))
+    pool.park_request(2, _request("/native/q"))
+    assert_true(pool.submit(2, String("/native/q")))
+    # Beside a busy thread the push wakes nobody, on either lane.
+    assert_equal(pool.wakes_in_flight(0), 0)
+    assert_equal(pool.wakes_in_flight(1), 0)
+    var gil_due = pool.submitted_ns(1) + T
+    var free_due = pool.submitted_ns(2) + POOL_FREE_WAKE_AGE_NS
+    assert_true(free_due < gil_due)
+    # The earliest deadline is the GIL-free head's: its push plus 10 µs.
+    assert_equal(pool.next_look(t0, T), free_due)
+    # A look before it wakes nobody, and the deadline stands.
+    assert_equal(pool.wake_aged(free_due - 1, T), 0)
+    assert_equal(pool.next_look(free_due - 1, T), free_due)
+    # The look at it wakes the parked sibling.
+    assert_equal(pool.wake_aged(free_due, T), 1)
+    assert_equal(pool.wakes_in_flight(1), 1)
+    # Judged: not offered again, though its head stands until the woken
+    # thread takes it. The GIL lane's deadline is next, and the same.
+    assert_equal(pool.next_look(free_due + 1, T), gil_due)
+    assert_equal(pool.wake_aged(gil_due, T), 1)
+    assert_equal(pool.wakes_in_flight(0), 1)
+    assert_equal(pool.next_look(gil_due + 1, T), 0)
+    # The woken threads take their jobs; each one's socket poll retires
+    # its wake.
+    for lane in range(2):
+        pool.note_parked(lane, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool, 1), 2)
+    assert_equal(_next_slot(pool, 0), 1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    assert_equal(pool.wakes_in_flight(1), 0)
+    for lane in range(2):
+        pool.note_thread(lane, -2)
+
+    # A GIL lane being drained: looked at one threshold after now, where
+    # the look will see the move and count the wait from itself.
+    var drained = OffloadPool(8)
+    drained.note_thread(0, 2)
+    drained.note_parked(0, 1)
+    var t1 = perf_counter_ns()
+    assert_equal(drained.wake_aged(t1, T), 0)
+    for slot in range(2):
+        drained.park_request(slot, _request("/q"))
+        assert_true(drained.submit(slot))
+    assert_equal(_next_slot(drained), 0)
+    var t2 = t1 + 50_000_000
+    assert_equal(drained.next_look(t2, T), t2 + T)
+    assert_equal(drained.wake_aged(t2, T), 0)
+    assert_equal(drained.next_look(t2 + 1, T), t2 + T)
+    assert_equal(_next_slot(drained), 1)
+    drained.note_parked(0, -1)
+    drained.note_thread(0, -2)
+
+    # The lane's spinner takes the head itself: the look scheduled for it
+    # finds nothing and wakes nobody.
+    var spun = OffloadPool(8)
+    spun.set_lane_gil_free(0)
+    spun.note_thread(0, 3)
+    spun.note_parked(0, 1)
+    spun.note_spinning(0, 1)
+    var t3 = perf_counter_ns()
+    assert_equal(spun.wake_aged(t3, T), 0)
+    spun.park_request(4, _request("/q"))
+    assert_true(spun.submit(4))
+    assert_equal(spun.wakes_in_flight(0), 0)
+    var spun_due = spun.submitted_ns(4) + POOL_FREE_WAKE_AGE_NS
+    assert_equal(spun.next_look(t3, T), spun_due)
+    assert_equal(_next_slot(spun), 4)
+    assert_equal(spun.next_look(spun_due, T), 0)
+    assert_equal(spun.wake_aged(spun_due, T), 0)
+    assert_equal(spun.wakes_in_flight(0), 0)
+    spun.note_spinning(0, -1)
+    spun.note_parked(0, -1)
+    spun.note_thread(0, -3)
+
+    # The eager rules: the push wakes the parked thread itself, and the
+    # loop is offered no look.
+    _ = setenv("M0_POOL_ELASTIC", "0", True)
+    var eager = OffloadPool(8)
+    _ = setenv("M0_POOL_ELASTIC", "", True)
+    assert_false(eager.elastic_active())
+    eager.note_parked(0, 1)
+    eager.park_request(1, _request("/a"))
+    assert_true(eager.submit(1))
+    assert_equal(eager.wakes_in_flight(0), 1)
+    assert_equal(eager.next_look(perf_counter_ns(), T), 0)
+    eager.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(eager), 1)
+
+
+struct WaitRecordingBackend(EventLoopBackend):
+    """A backend that reports no events and records how each wait was
+    asked for: `wait`'s milliseconds, or `wait_ns`'s nanoseconds."""
+
+    var ms: List[Int]
+    var ns: List[Int]
+
+    def __init__(out self):
+        self.ms = List[Int]()
+        self.ns = List[Int]()
+
+    def wait(mut self, timeout_ms: Int) raises -> Int:
+        self.ms.append(timeout_ms)
+        return 0
+
+    def wait_ns(mut self, timeout_ns: Int) raises -> Int:
+        self.ns.append(timeout_ns)
+        return 0
+
+    def event_ident(self, i: Int) -> UInt:
+        return 0
+
+    def event_filter(self, i: Int) -> Int16:
+        return 0
+
+    def event_flags(self, i: Int) -> UInt16:
+        return 0
+
+    def event_data(self, i: Int) -> Int:
+        return 0
+
+    def add_read_listen(mut self, fd: Int) raises:
+        pass
+
+    def add_read(mut self, fd: Int) raises:
+        pass
+
+    def try_add_read(mut self, fd: Int):
+        pass
+
+    def add_write_oneshot(mut self, fd: Int) raises:
+        pass
+
+    def try_add_write_oneshot(mut self, fd: Int):
+        pass
+
+    def try_delete_read(mut self, fd: Int):
+        pass
+
+    def try_delete_write(mut self, fd: Int):
+        pass
+
+    def try_add_timer(mut self, ident: UInt, timeout_ms: Int):
+        pass
+
+    def try_delete_timer(mut self, ident: UInt):
+        pass
+
+
+def test_an_idle_loop_waits_for_a_pending_heads_deadline() raises:
+    """`_wait_for_events` is where the look's timing reaches the kernel.
+    Rings empty, the wait is the caller's, in milliseconds. A job pending
+    beside a busy thread of a GIL-free lane: the wait is `wait_ns`, ending
+    at the head's deadline, no later than `POOL_FREE_WAKE_AGE_NS` after its
+    push -- where it was `POOL_WAKE_WAIT_MS`. Once the look has judged that
+    deadline (it woke the parked sibling), the wait falls back to
+    `POOL_WAKE_WAIT_MS` rather than being offered the same deadline, a
+    wait of nothing, on every pass."""
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    pool.set_lane_gil_free(0)
+    pool.note_thread(0, 2)
+    pool.note_parked(0, 1)
+    var config = ServerConfig()
+    config.max_connections = 8
+    var st = LoopState(
+        FileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+    )
+    var backend = WaitRecordingBackend()
+    _ = _wait_for_events(backend, st, 1000)
+    assert_equal(len(backend.ms), 1)
+    assert_equal(backend.ms[0], 1000)
+    assert_equal(len(backend.ns), 0)
+    # A job beside the busy thread: nobody woken at the push, and the
+    # pass's look finds it fresh.
+    pool.park_request(1, _request("/a"))
+    assert_true(pool.submit(1))
+    assert_equal(pool.wakes_in_flight(0), 0)
+    assert_equal(st.offload.wake_aged(perf_counter_ns()), 0)
+    var before = perf_counter_ns()
+    _ = _wait_for_events(backend, st, 1000)
+    assert_equal(len(backend.ms), 1, "the wait was not timed to the head")
+    assert_equal(len(backend.ns), 1)
+    var left = pool.submitted_ns(1) + POOL_FREE_WAKE_AGE_NS - before
+    assert_true(backend.ns[0] <= (left if left > 0 else 0))
+    # The look at the deadline wakes the sibling; judged, the deadline is
+    # not offered again, and the wait is the pool's fallback cadence.
+    sleep(0.0001)
+    assert_equal(st.offload.wake_aged(perf_counter_ns()), 1)
+    _ = _wait_for_events(backend, st, 1000)
+    assert_equal(len(backend.ns), 1, "a judged deadline was offered again")
+    assert_equal(len(backend.ms), 2)
+    assert_equal(backend.ms[1], POOL_WAKE_WAIT_MS)
+    pool.note_parked(0, -1)
+    sleep(0.0002)
+    assert_equal(_next_slot(pool), 1)
+    assert_equal(pool.wakes_in_flight(0), 0)
+    _ = _wait_for_events(backend, st, 1000)
+    assert_equal(backend.ms[2], 1000)
+    pool.note_thread(0, -2)
+
+
+def test_the_platform_backend_waits_in_nanoseconds() raises:
+    """`wait_ns` on the backend this build serves on keeps its
+    nanoseconds: the best of twenty 100 µs waits is at least 90 µs (not
+    rounded to nothing, a spin) and under 900 µs (not rounded up to
+    `epoll_wait`'s millisecond, the timing the look exists for). On Linux
+    this is `epoll_pwait2` by syscall number, and nothing else runs it
+    before a request does: an argument out of place is a refusal the
+    backend answers by falling back, which serves, silently, at the old
+    cadence. A kernel older than 5.11 fails the second bound by design."""
+    var backend = PlatformBackend()
+    var best = 1_000_000_000
+    for _ in range(20):
+        var t0 = perf_counter_ns()
+        var n = backend.wait_ns(100_000)
+        var took = perf_counter_ns() - t0
+        assert_equal(n, 0)
+        if took < best:
+            best = took
+    assert_true(best >= 90_000, "a 100 µs wait returned in " + String(best) + " ns")
+    assert_true(
+        best < 900_000,
+        "a 100 µs wait took " + String(best) + " ns: rounded up to a millisecond",
+    )
 
 
 def test_elastic_off_restores_the_chained_wake() raises:

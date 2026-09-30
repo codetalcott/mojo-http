@@ -1,7 +1,7 @@
 """Linux epoll FFI wrappers for non-blocking IO multiplexing.
 
-Provides epoll_create1(), epoll_ctl(), epoll_wait(), timerfd_create(),
-and timerfd_settime() wrappers following the same FFI pattern as kqueue.mojo.
+Provides epoll_create1(), epoll_ctl(), epoll_wait(), epoll_pwait2(),
+timerfd_create() and timerfd_settime() wrappers following the same FFI pattern as kqueue.mojo.
 Used by EpollBackend to implement a single-threaded, non-blocking HTTP server.
 
 Filter constants use kqueue semantics as canonical names (EVFILT_READ etc.)
@@ -19,7 +19,7 @@ from lightbug_http.c.aliases import ExternalMutPointer
 # import everything they need from this module on Linux.
 from lightbug_http.c.kqueue import (
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
-    EV_EOF, EV_ERROR,
+    EV_EOF, EV_ERROR, timespec_t,
 )
 
 # --- epoll event flags ---
@@ -181,6 +181,50 @@ def epoll_wait(
             return 0
         raise Error("epoll_wait failed, errno: ", errno)
     return Int(result)
+
+
+comptime SYS_EPOLL_PWAIT2 = 441
+"""`epoll_pwait2`'s number, the same on x86_64 and aarch64: it came after
+the syscall tables were unified (Linux 5.11)."""
+
+
+def epoll_pwait2_ns(
+    epfd: FileDescriptor,
+    events: ExternalMutPointer[UInt32],
+    max_events: Int,
+    timeout_ns: Int,
+) -> Int:
+    """`epoll_wait` with a timeout in nanoseconds: `epoll_pwait2` (Linux
+    5.11), whose timeout is a timespec where `epoll_wait`'s is whole
+    milliseconds. Returns the ready count, 0 on EINTR, or -1 when the
+    call failed any other way -- ENOSYS on an older kernel, EPERM under a
+    seccomp profile that predates it -- and the caller falls back to
+    `epoll_wait`.
+
+    Through `syscall(2)` by number, not glibc's wrapper: the wrapper is a
+    GLIBC_2.35 symbol, and naming it would raise the glibc floor of every
+    binary that links the loop, the wheel's measured platform tag among
+    them. `syscall` itself is variadic, and on both Linux ABIs this repo
+    builds for an integer or pointer argument travels in the same
+    register (or stack slot) whether the callee is variadic or not.
+    No signal mask: NULL makes it `epoll_wait`'s semantics."""
+    var ts = stack_allocation[1, timespec_t]()
+    var ns = timeout_ns if timeout_ns > 0 else 0
+    ts[] = timespec_t(Int64(ns // 1_000_000_000), Int64(ns % 1_000_000_000))
+    var result = external_call[
+        "syscall", Int,
+        Int, c_int, ExternalMutPointer[UInt32], c_int,
+        ExternalMutPointer[timespec_t], Int, Int,
+    ](
+        SYS_EPOLL_PWAIT2, c_int(epfd.value), events, c_int(max_events),
+        ts, 0, 0,
+    )
+    if result == -1:
+        var errno = get_errno()
+        if errno == errno.EINTR:
+            return 0
+        return -1
+    return result
 
 
 def timerfd_create(clockid: c_int, flags: c_int) -> c_int:

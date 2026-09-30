@@ -102,9 +102,16 @@ rules of 2026-09-05):
   counter: moved since the last look, the ring is being drained, however
   deep; unmoved, the head has waited since the later of its push and the
   last look that saw the ring move or empty, and past `POOL_WAKE_AGE_NS`
-  of that one parked thread is woken. `_wait_for_events` caps its
-  timeout at `POOL_WAKE_WAIT_MS` while any job is pending, so an idle
-  loop looks within a millisecond. On a free-threaded interpreter
+  of that one parked thread is woken. **The loop looks when the head's
+  threshold runs out, not at its next pass** (`next_look`): an idle
+  loop with a job pending waits exactly until the earliest unjudged
+  deadline (`wait_ns`, a wait's timeout rather than a registered timer,
+  so nothing is ever left armed), and only once every deadline has been
+  judged does it fall back to `POOL_WAKE_WAIT_MS`. With the cadence
+  alone, a fast request that met one busy thread at low traffic waited
+  for the next 1 ms pass however low its threshold -- 1.3 ms against
+  0.07 with the eager wakes (2026-09-30); eager wakes are not the fix,
+  for the reasons the next sentences give. On a free-threaded interpreter
   (`parallel`) `submit` wakes a parked thread whenever there is one and
   the wait counts from the push whatever the progress: a parked thread
   beside a queued job is an idle core there. A lane whose threads never
@@ -272,7 +279,15 @@ The age check runs once per pass, and under load a pass is every 10–30
 would be a job behind a slow view waiting a second for its sibling.
 `_wait_for_events` bounds the timeout to this whenever `jobs_pending`, so
 the wait costs nothing while the rings are empty and a pending job is
-looked at within a millisecond, the backends' timer granularity."""
+looked at within a millisecond, the granularity of `epoll_wait`.
+
+Since 2026-09-30 it is the fallback cadence, not the look: while a head's
+deadline is still to come the loop waits exactly until it
+(`OffloadPool.next_look`, `wait_ns`), and this bounds only the waits
+after every deadline has been judged -- a head a woken thread has not
+popped yet, or a lane whose threads are all busy -- which is where it
+re-sends a wake a socket poll consumed. A millisecond there was a
+millisecond on every request that met a busy thread at low traffic."""
 
 comptime _WAKE_BYTES = 8192
 """The wake words: the loop's parked flag at +0, the registered-thread
@@ -869,6 +884,12 @@ struct OffloadPool(Movable):
     last saw the count move (or the ring empty): the last moment the
     lane is known to have been draining. Loop-only."""
 
+    var last_look: Int
+    """The clock `wake_aged` last looked at, 0 before its first look.
+    `next_look` offers only a deadline later than this: one the look has
+    already judged -- woken for, or found nobody parked to wake -- is not
+    offered again, so each head's deadline is looked at once. Loop-only."""
+
     var parallel: Bool
     """The FREE-THREADED rule: `submit` wakes a parked thread whenever
     there is one (a parked thread beside a queued job is an idle core,
@@ -971,6 +992,7 @@ struct OffloadPool(Movable):
         self.lane_progress = List[Int]()
         self.lane_pops.append(0)
         self.lane_progress.append(0)
+        self.last_look = 0
         self.lane_gil_free = List[Bool]()
         self.lane_gil_free.append(False)
         self.parallel = False
@@ -1671,9 +1693,14 @@ struct OffloadPool(Movable):
         `POOL_FREE_WAKE_AGE_NS` when that is lower than `age_ns`. Under the
         progress rule a compute route of 40–100 µs a job was served by ONE
         of four threads, because the thread draining it moved the pop
-        counter every job."""
+        counter every job.
+
+        WHEN it looks is `next_look`'s: the loop waits until the earliest
+        head's deadline rather than for its next event, so a job behind a
+        busy thread is judged when its threshold runs out."""
         if not self.elastic:
             return 0
+        self.last_look = now
         var woken = 0
         for lane in range(len(self.job_rings)):
             ref ring = self.job_rings[lane]
@@ -1683,25 +1710,95 @@ struct OffloadPool(Movable):
                 self.lane_pops[lane] = pops
                 self.lane_progress[lane] = now
                 continue
-            var free = self.is_lane_gil_free(lane)
-            var from_push = self.parallel or free
+            var from_push = self._counts_from_push(lane)
             if pops != self.lane_pops[lane]:
                 self.lane_pops[lane] = pops
                 self.lane_progress[lane] = now
                 if not from_push:
                     continue
-            var since = 0 if from_push else self.lane_progress[lane]
-            if slot >= 0 and slot < len(self.submit_ns) and self.submit_ns[slot] > since:
-                since = self.submit_ns[slot]
-            var threshold = age_ns
-            if free and POOL_FREE_WAKE_AGE_NS < threshold:
-                threshold = POOL_FREE_WAKE_AGE_NS
-            if now - since < threshold:
+            var since = self._waited_since(lane, slot, from_push)
+            if now - since < self._stall_threshold(lane, age_ns):
                 continue
             if self._wake_one(lane):
                 _ = atomic_at(self._aged_wakes_addr(lane))[].fetch_add(1)
                 woken += 1
         return woken
+
+    def next_look(self, now: Int, age_ns: Int) -> Int:
+        """When the loop must next run `wake_aged` for a pending job to be
+        judged on time: the earliest deadline -- a head's wait start, as
+        `wake_aged` counts it, plus its lane's threshold -- that the last
+        look has not already judged. 0 when there is none: the rings are
+        empty, or every head's deadline was looked at already (a wake was
+        sent, or nobody was parked to take one), and the loop keeps the
+        `POOL_WAKE_WAIT_MS` cadence it had before. A deadline between the
+        last look and `now` is returned as it is, due at once.
+
+        This is the look's timing, not its rule. `submit` wakes nobody
+        beside a busy thread, and `wake_aged` ran once per pass; an idle
+        loop with a job pending passed once per `POOL_WAKE_WAIT_MS`, so a
+        fast request arriving while one thread sat in a slow view waited
+        for that pass, whatever its threshold -- 1.3 ms at the median on
+        a GIL-free Mojo lane whose threshold is 10 µs, and on a WSGI lane
+        whose threshold is 200 µs (measured 2026-09-30, Apple M4: the
+        eager wakes answered in 0.07 and 0.12 ms). `_wait_for_events` now
+        waits until this deadline instead (`wait_ns`), which makes the
+        threshold the wait. It is a wait's timeout, not a registered
+        timer: nothing is armed, so nothing is left armed, and a deadline
+        is offered only while it is later than the last look -- one look
+        per head, however many passes the head stands through. A ring a
+        GIL lane is draining is offered one look a threshold from now,
+        because the look will call its move progress; while it drains, its
+        completions wake the loop sooner anyway.
+
+        Why not wake at the push: that is the eager rule, which cost the
+        trivial `/native/probe` a fifth of its rate (`POOL_FREE_WAKE_AGE_NS`),
+        and on a GIL lane a sibling beside a busy thread queues for the
+        GIL. Why not a timer registered at the push: a push is on every
+        request's path and a registration is a syscall, where this costs
+        nothing until the loop is about to wait with a job pending."""
+        if not self.elastic:
+            return 0
+        var best = 0
+        for lane in range(len(self.job_rings)):
+            ref ring = self.job_rings[lane]
+            var slot = 0
+            if not ring.peek(slot):
+                continue
+            var from_push = self._counts_from_push(lane)
+            var since: Int
+            if not from_push and ring.pops() != self.lane_pops[lane]:
+                # Moved since the last look, which will call that progress
+                # and count the wait from itself: no earlier than now.
+                since = now
+            else:
+                since = self._waited_since(lane, slot, from_push)
+            var due = since + self._stall_threshold(lane, age_ns)
+            if due <= self.last_look:
+                continue
+            if best == 0 or due < best:
+                best = due
+        return best
+
+    def _counts_from_push(self, lane: Int) -> Bool:
+        """Whether `lane`'s head waits from its push whatever the ring
+        does: the free-threaded rule, and every GIL-free lane."""
+        return self.parallel or self.is_lane_gil_free(lane)
+
+    def _waited_since(self, lane: Int, slot: Int, from_push: Bool) -> Int:
+        """When `lane`'s head `slot` began to wait: its push, or under the
+        progress rule the later of its push and the lane's last progress."""
+        var since = 0 if from_push else self.lane_progress[lane]
+        if slot >= 0 and slot < len(self.submit_ns) and self.submit_ns[slot] > since:
+            since = self.submit_ns[slot]
+        return since
+
+    def _stall_threshold(self, lane: Int, age_ns: Int) -> Int:
+        """The wait past which `lane`'s head is stalled: `age_ns`, or
+        `POOL_FREE_WAKE_AGE_NS` on a GIL-free lane when that is lower."""
+        if self.is_lane_gil_free(lane) and POOL_FREE_WAKE_AGE_NS < age_ns:
+            return POOL_FREE_WAKE_AGE_NS
+        return age_ns
 
     def wakes_in_flight(self, lane: Int) -> Int:
         """Wake datagrams sent to `lane` and not yet read. Test surface."""
@@ -2701,6 +2798,14 @@ struct OffloadLoopState(Movable):
         ref pool = self.pool()[]
         var age = pool.wake_age_ns()
         return pool.wake_aged(now, age)
+
+    def next_look(self, now: Int) -> Int:
+        """`OffloadPool.next_look` at the pool's threshold, 0 when the pool
+        is disabled."""
+        if not self.enabled():
+            return 0
+        ref pool = self.pool()[]
+        return pool.next_look(now, pool.wake_age_ns())
 
     def set_loop_parked(self, flag: Bool):
         """`OffloadPool.set_loop_parked`, inert when the pool is disabled."""

@@ -1199,6 +1199,22 @@ lightbug_http
         `close_with`, `LibcClose` the socket's own, so a test can report
         EINTR and EIO.
 
+      - offload.mojo, event_loop.mojo, event_loop_backend.mojo,
+        c/kqueue.mojo, c/kqueue_backend.mojo, c/epoll.mojo,
+        c/epoll_backend.mojo (2026-09-30): while a pool job is pending the
+        loop waits exactly until the earliest head's deadline -- its wait
+        start, as `wake_aged` counts it, plus its lane's threshold --
+        rather than until its next pass, which an idle loop took once per
+        `POOL_WAKE_WAIT_MS` (`OffloadPool.next_look`; `last_look`, so each
+        deadline is offered once and a judged one falls back to the
+        millisecond). The wait is a timeout, not a registered timer:
+        `EventLoopBackend.wait_ns`, whose default rounds up to `wait`'s
+        milliseconds; `kevent_poll_ns` on kqueue; on epoll
+        `epoll_pwait2_ns`, `epoll_pwait2` by syscall number, falling back
+        to `epoll_wait` for good when the kernel refuses it. A fast request
+        behind one slow view had waited 1.3-1.5 ms for that pass whatever
+        its threshold (review record PW).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

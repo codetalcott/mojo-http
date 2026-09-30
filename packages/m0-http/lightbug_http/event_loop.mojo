@@ -277,10 +277,13 @@ def _wait_for_events[B: EventLoopBackend](
 
     With the elastic rules a job may sit on a lane's ring with nobody
     woken for it — the loop's age check (`wake_aged`, at the bottom of
-    every pass) is what wakes a sibling once it has waited
-    `POOL_WAKE_AGE_NS` — so while any job is pending the wait is bounded
-    to `POOL_WAKE_WAIT_MS`, or an idle loop would sleep its full second
-    on top of a slow view. Rings empty, the timeout is the caller's.
+    every pass) is what wakes a sibling once it has waited its lane's
+    threshold — so while a job is pending the loop waits until the
+    earliest head's deadline that no look has judged yet
+    (`OffloadPool.next_look`), to the nanosecond (`wait_ns`), and once
+    every deadline has been judged, `POOL_WAKE_WAIT_MS` at most, or an
+    idle loop would sleep its full second on top of a slow view. Rings
+    empty, the timeout is the caller's.
 
     A batch left owed (`ACCEPT_BATCH`) makes the wait non-blocking: the
     listener and the hand-off channel are edge-triggered, so what is still
@@ -290,18 +293,35 @@ def _wait_for_events[B: EventLoopBackend](
     if not st.offload.ring_active():
         return backend.wait(timeout)
     var capped = False
-    if timeout > POOL_WAKE_WAIT_MS and st.offload.jobs_pending():
-        timeout = POOL_WAKE_WAIT_MS
-        capped = True
+    # The look's deadline, when one comes before the wait would end: a
+    # wait in nanoseconds instead of `timeout`. -1 for none.
+    var look_ns = -1
+    if timeout > 0 and st.offload.jobs_pending():
+        var bound = POOL_WAKE_WAIT_MS if timeout > POOL_WAKE_WAIT_MS else timeout
+        var now = perf_counter_ns()
+        var due = st.offload.next_look(now)
+        if due != 0 and due - now < bound * 1_000_000:
+            look_ns = due - now if due > now else 0
+            capped = True
+        elif timeout > POOL_WAKE_WAIT_MS:
+            timeout = POOL_WAKE_WAIT_MS
+            capped = True
     st.offload.set_loop_parked(True)
     if st.offload.done_pending():
         st.offload.set_loop_parked(False)
         st.offload.note_wait(capped, True, 0)
         return 0
     var t0 = perf_counter_ns()
-    var n = backend.wait(timeout)
+    var n: Int
+    var asked: Int
+    if look_ns >= 0:
+        n = backend.wait_ns(look_ns)
+        asked = look_ns
+    else:
+        n = backend.wait(timeout)
+        asked = timeout * 1_000_000
     st.offload.set_loop_parked(False)
-    st.offload.note_wait(capped, False, n, perf_counter_ns() - t0 - timeout * 1_000_000)
+    st.offload.note_wait(capped, False, n, perf_counter_ns() - t0 - asked)
     return n
 
 
@@ -470,8 +490,9 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
     # has sat at the head of a lane's ring for `POOL_WAKE_AGE_NS` is
     # behind a thread that is not coming back — a slow view — and gets a
     # parked sibling woken for it. Once per pass, after every submit of
-    # the pass is on its ring; `_wait_for_events` keeps the pass cadence
-    # under a millisecond while anything is pending. A peek per lane and
+    # the pass is on its ring; `_wait_for_events` wakes the loop for the
+    # next head's deadline, and within a millisecond while anything is
+    # pending once every deadline has been judged. A peek per lane and
     # one clock read when the rings are empty, which is the common case.
     if st.offload.ring_active():
         _ = st.offload.wake_aged(perf_counter_ns())
