@@ -146,13 +146,46 @@ Mac with no daemon running the task provisions its own: it starts a 4 GiB
 colima VM and stops that VM when the run ends, pass or fail — a daemon
 that was already up is used as found and left running, because only what
 the run started is the run's to reap (a forgotten 8 GiB VM reservation was
-half of a 16 GB machine, measured 2026-09-01). The
+half of a 16 GB machine, measured 2026-09-01).
 Run it with docker otherwise idle, and that includes the gate before it:
 twice a section has come back thin ("a thin section proves nothing") while
 something else used the VM -- once a `docker exec` into `m0lin`, and in the
 1.4.0 run `bench-linux-conclusions` stopping that container as `autobahn`
 started, where the rerun alone passed 247 of 247. Run it first, or leave a
-gap after the other container gates. The
+gap after the other container gates. **Idle docker is not the whole of
+it.** The 1.8.0 run found section 6 thin 5 times in 18 with docker idle,
+the 1.6.0 binary and the tree's alike. Each time wstest had said
+`Connection to ws://host.docker.internal:9301 failed (User timeout caused
+connection failure.)` beside a live server with a clean log. wstest runs
+no more cases after a connect it cannot make, and still exits 0. The
+connect is the route's, not the server's. Measured 2026-09-29 on colima at
+4 CPUs:
+
+- A plain Python listener in m0serve's place, dialled from a container at
+  autobahn's pace (about ten connects a second), left 7 of 2000 connects
+  unanswered after 5 s.
+- The Mac showed no socket at all on the port through the whole of a
+  stalled connect.
+
+At that rate a section of 145 cases runs thin about a third of the time:
+6 of 20 section-6 runs here.
+
+So the runner retries a thin section ONCE, on the same server, when wstest
+reported that failure and the server is alive and answering. It says so
+in the run's last line.
+
+- A thin retry fails the run, and so does a thin section with any other
+  cause.
+- Every thin attempt prints wstest's line and the server's log, and keeps
+  both under `bin/logs/autobahn/`.
+- What the cut-short attempt scored is still judged.
+
+**One retry is not enough to make the gate reliable.** In those 20 runs,
+5 of the 6 retries ran whole and one ran thin again, so 1 run in 20
+still failed, having found nothing. Read a failure's kept `wstest said:`
+lines before believing it. A failure that is the same connect message
+twice is the route again: rerun the task. The
+runner drives the sections separately (a single pass wedges on the slot a
 runner drives the sections separately (a single pass wedges on the slot a
 cap-killed connection just released), skips 9 (performance: every case
 exceeds the cap) and 12/13 (`permessage-deflate`, I14), and compares in

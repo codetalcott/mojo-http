@@ -64,6 +64,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   installed m0serve runs on the runtime its wheel ships by asking the
   loader which file it loaded: it used to remove that runtime and let the
   loader abort the process, which on macOS wrote a crash report every run.
+- **`poe autobahn` runs a section again, once, when the container could not
+  connect** (SPEC I13). The suite's client stops at the first case it cannot
+  connect for and still reports success. Under colima that happens to about
+  1 connect in 300, whatever server answers, so one section in three ran
+  thin and the run failed with no cause given.
+  - The runner now retries a thin section on the same server when the
+    client printed `Connection to ... failed` and the server still
+    answers, and it says so.
+  - Any other thin section fails, and so does a thin retry.
+  - What the cut-short attempt scored is still judged.
+  - The client's output and the server's log are printed and kept under
+    `bin/logs/autobahn/`.
 
 ### Removed
 
