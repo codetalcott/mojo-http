@@ -21,7 +21,9 @@ from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
 from std.os import getenv, setenv
-from lightbug_http.accept_share import AcceptShare, mark_reaped
+from lightbug_http.accept_share import (
+    AcceptShare, close_reaped_handoffs, mark_reaped,
+)
 from lightbug_http.c.fcntl import clear_cloexec
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
@@ -295,6 +297,33 @@ def _arm_gap_ns() -> Int:
     return _test_gap_ns(_ARM_GAP_ENV)
 
 
+comptime _MAX_RESPAWNS_ENV = "M0_TEST_MAX_RESPAWNS"
+"""A respawn budget in place of `num_workers * 10`: a gate's instrument, not a setting.
+
+`accept_spread.py --reaped` sets it to 0 so the supervisor gives up on the
+first worker that dies, the one the probe has left connections queued to
+(review record RB); see `_test_max_respawns`."""
+
+
+def _test_max_respawns() -> Int:
+    """`M0_TEST_MAX_RESPAWNS` as a count; -1 when unset or not a count of 0 or more.
+
+    Replaces `num_workers * 10`, the window unchanged. A probe that must
+    decide which death is the one the supervisor gives up on could
+    otherwise reach it only through the rapid-crash breaker's fifth death
+    inside a second of its fork, and the connections it leaves queued to
+    that worker must be handed over inside the same second.
+    """
+    var raw = getenv(_MAX_RESPAWNS_ENV, "")
+    if raw.byte_length() == 0:
+        return -1
+    try:
+        var n = Int(raw)
+        return n if n >= 0 else -1
+    except:
+        return -1
+
+
 def _test_gap_ns(name: String) -> Int:
     """The variable `name`, in milliseconds, as nanoseconds; 0 unless a count above 0."""
     var raw = getenv(name, "")
@@ -334,8 +363,33 @@ the server as the refusal it is rather than as ten crashes and an exit 1."""
 comptime _RELOAD_DRAIN_NS = 5_000_000_000
 """How long a reload waits for workers to drain before it uses SIGKILL."""
 
+comptime _REAPED_DRAIN_NS = 250_000_000
+"""How long the supervisor waits, once, for a hand-off counted to a worker
+it gave up on to reach that worker's channel (`close_reaped_handoffs`)."""
+
 comptime _SLOT_PROBE_PID = 0x6D30_5F32  # "m0_2"
 """What `_arm_signal_propagation` writes into the child-PID block and reads back."""
+
+comptime RESPAWN_WINDOW_NS = 3_600_000_000_000
+"""The window the respawn budget is counted over: an hour (SPEC E36).
+
+The budget ends a crash loop the rapid-crash breaker cannot see: a worker
+that starts, serves for more than a second and crashes again, because a
+request that kills it keeps arriving or a leak kills it every few minutes.
+Replaced forever, that loop hides; given up on, the supervisor exits 1 once
+the workers are gone, which a platform restarts and reports.
+
+What tells a loop from bad luck is how OFTEN a server crashes, not how many
+times it has, so the budget is a rate: at most `max_respawns` respawns in
+any window of this length. Counted over the whole life, it ran out on rare
+crashes too -- at one a day on four workers, after about forty days -- and
+the server then served on fewer workers, with no error, until none was left.
+
+An hour at `num_workers * 10` changes nothing for a loop whose whole budget
+fits inside it, which is every loop faster than one crash per worker every
+six minutes: the supervisor gives up exactly when it did before. A server
+that crashes more rarely than that is replaced for as long as it runs, and
+each crash is still logged."""
 
 
 struct WorkerSupervisor:
@@ -357,7 +411,15 @@ struct WorkerSupervisor:
     """
     var num_workers: Int
     var max_respawns: Int
+    """The respawn budget: at most this many respawns in any
+    `respawn_window_ns`. `num_workers * 10`; a test sets it lower."""
+    var respawn_window_ns: Int
+    """The window `max_respawns` is counted over: `RESPAWN_WINDOW_NS`, an
+    hour; a test sets it short so the proof runs in seconds."""
     var respawn_count: Int
+    """Every respawn in the supervisor's life: reported, never a budget."""
+    var _respawn_times: List[Int]
+    """When each respawn inside the window was forked, oldest first."""
     var rapid_crash_count: Int
     var last_fork_ns: Int
     var _last_freed_index: Int
@@ -377,6 +439,9 @@ struct WorkerSupervisor:
     """The accept-share page's address in this process when the workers
     share accepts (SPEC E16), else 0: where `_remove_pid` marks each worker
     it reaps as gone (`share_accepts`)."""
+    var _accept_channels: List[Int]
+    """Each worker's accept-share channel, the read end, in this process:
+    what `_give_up` drains for a worker it gave up on."""
     var _spawn_path: String
     """Under `--spawn-workers`, the binary every worker execs; empty means fork."""
     var _spawn_args: List[String]
@@ -400,7 +465,12 @@ struct WorkerSupervisor:
         self.worker_index = -1
         self.num_workers = num_workers
         self.max_respawns = num_workers * 10
+        var budget = _test_max_respawns()
+        if budget >= 0:
+            self.max_respawns = budget
+        self.respawn_window_ns = RESPAWN_WINDOW_NS
         self.respawn_count = 0
+        self._respawn_times = List[Int]()
         self.rapid_crash_count = 0
         self.last_fork_ns = 0
         self._last_freed_index = -1
@@ -408,6 +478,7 @@ struct WorkerSupervisor:
         self.reload_interval_ms = 300
         self.reloads = 0
         self._accept_page = 0
+        self._accept_channels = List[Int]()
         self._spawn_path = String("")
         self._spawn_args = List[String]()
         self._gave_up = False
@@ -431,6 +502,7 @@ struct WorkerSupervisor:
         """
         if share.workers() > 1 and page != 0:
             self._accept_page = page
+            self._accept_channels = share.read_fds.copy()
 
     def enable_spawn(mut self, var path: String, var args: List[String]):
         """Make every worker an exec'd process rather than a forked one.
@@ -846,16 +918,28 @@ struct WorkerSupervisor:
 
         Returns `_RESPAWN_PARENT` in the parent on success, `_RESPAWN_CHILD` in
         the freshly forked child (which must unwind out to `fork_all`'s
-        caller), and `_RESPAWN_FAILED` when the respawn budget is spent.
+        caller), and `_RESPAWN_FAILED` when the respawn budget is spent:
+        `max_respawns` respawns already inside the last `respawn_window_ns`
+        (`RESPAWN_WINDOW_NS`). The index is then left vacant for good, and
+        the exit is 1.
+
+        Only crashes come here. A reload's replacements are forked by
+        `_reload` itself and spend nothing.
         """
         if supervisor_stopping():
             print("[parent] stopping: a worker that failed during the drain is not respawned")
             self._failed_stopping = True
             return _RESPAWN_FAILED
-        if self.respawn_count >= self.max_respawns:
-            print("[parent] max respawns ({}) reached, not respawning".format(self.max_respawns))
-            self._gave_up = True
-            return _RESPAWN_FAILED
+        var since = perf_counter_ns() - self.respawn_window_ns
+        while len(self._respawn_times) > 0 and self._respawn_times[0] <= since:
+            _ = self._respawn_times.pop(0)
+        if len(self._respawn_times) >= self.max_respawns:
+            print(
+                "[parent] max respawns ({}) within {} s reached, not respawning".format(
+                    self.max_respawns, Float64(self.respawn_window_ns) / 1e9
+                )
+            )
+            return self._give_up()
 
         # Rapid crash detection: if child died within 1 second of last fork
         var now = perf_counter_ns()
@@ -864,13 +948,13 @@ struct WorkerSupervisor:
             self.rapid_crash_count += 1
             if self.rapid_crash_count >= 5:
                 print("[parent] 5 rapid crashes detected, stopping respawn")
-                self._gave_up = True
-                return _RESPAWN_FAILED
+                return self._give_up()
         else:
             self.rapid_crash_count = 0
 
         self.respawn_count += 1
         self.last_fork_ns = perf_counter_ns()
+        self._respawn_times.append(self.last_fork_ns)
         var respawn_index = self._last_freed_index
         var new_pid = fork()
         if new_pid == 0:
@@ -886,6 +970,36 @@ struct WorkerSupervisor:
             self._publish_children()
         print("[parent] respawned worker {} as pid={}".format(respawn_index, new_pid))
         return _RESPAWN_PARENT
+
+    def _give_up(mut self) -> Int:
+        """Leave the index just reaped vacant for good: `_RESPAWN_FAILED`.
+
+        The exit becomes 1 (`_gave_up`), and every connection handed to that
+        worker and not yet received is closed (review record RB).
+        `_remove_pid` has marked the index gone, so no sibling sends there
+        again; what was sent before waits in the channel, and with no
+        replacement to read it, each client held an accepted connection that
+        was never answered until the server stopped. Each is closed instead,
+        and its client can retry (`close_reaped_handoffs`, which also waits
+        out a send that raced the mark). Nothing more when accepts are not
+        shared.
+        """
+        self._gave_up = True
+        var index = self._last_freed_index
+        if self._accept_page == 0 or index < 0:
+            return _RESPAWN_FAILED
+        if index >= len(self._accept_channels):
+            return _RESPAWN_FAILED
+        var closed = close_reaped_handoffs(
+            self._accept_page, index, self._accept_channels[index],
+            _REAPED_DRAIN_NS,
+        )
+        if closed > 0:
+            print(
+                "[parent] closed {} connection(s) handed to worker {} and"
+                " never taken".format(closed, index)
+            )
+        return _RESPAWN_FAILED
 
     def _remove_pid(mut self, pid: Int):
         """Vacate a dead worker's index, remembering it for the respawn.

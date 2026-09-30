@@ -25,6 +25,7 @@ The OK marker exists if and only if the respawned worker made it back to the
 caller.
 """
 
+from std.ffi import external_call
 from std.os import makedirs, path, remove, rmdir, setenv
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from std.time import perf_counter_ns, sleep
@@ -32,12 +33,14 @@ from std.time import perf_counter_ns, sleep
 from src.multiworker import SharedAtomics, WorkerSupervisor, _forget_supervisor_signals
 from src.global_slot import record_supervisor_stop
 from src.signal import install_shutdown_signals
-from src.threads import read_one_byte_blocking
+from src.threads import _OpaqueMut, read_one_byte_blocking
 from lightbug_http.accept_share import (
     ACCEPT_SHARE_FIRST_WORKER_SLOT, ACCEPT_SHARE_WORKER_STRIDE, AcceptShare,
     STATE_LEFT, STATE_PARKED, accept_share_slots,
 )
-from lightbug_http.c.pipe import close_fd
+from lightbug_http.c.fdpass import send_fd
+from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
     was_signaled, term_signal, exit_code, kill_process, SIGTERM, SIGKILL,
@@ -134,6 +137,106 @@ def test_supervisor_exits_nonzero_when_respawn_budget_is_spent() raises:
     var status = result[1]
     assert_false(was_signaled(status), "supervisor process died on a signal")
     assert_equal(exit_code(status), 1)
+
+
+# --- The respawn budget is a rate (SPEC E36) ----------------------------------
+#
+# `max_respawns` used to be compared against a count of every respawn in the
+# supervisor's life, so a server whose workers crashed rarely stopped
+# replacing them after `workers * 10` crashes, however far apart. It is now
+# counted over `respawn_window_ns`, an hour, which the first test sets short.
+# The crashes are spaced past the rapid-crash breaker's second, so neither
+# test is about the breaker.
+
+
+comptime _SPACED_CRASH_LIFE_S = 1.1
+"""How long each crashing incarnation serves before it crashes: past the
+rapid-crash breaker's second, so every crash is an ordinary one."""
+
+
+def _spaced_crash_scenario(budget: Int, window_ns: Int, crashes: Int, tag: String):
+    """One worker whose first `crashes` incarnations each serve for
+    `_SPACED_CRASH_LIFE_S` and crash (exit 9); the next leaves the `ok`
+    marker and exits 0. `budget` respawns are allowed in any `window_ns`,
+    or in the supervisor's own window when `window_ns` is 0."""
+    try:
+        var supervisor = WorkerSupervisor(1)
+        supervisor.max_respawns = budget
+        if window_ns > 0:
+            supervisor.respawn_window_ns = window_ns
+        supervisor.fork_all()
+        var k = 0
+        while path.exists(tag + String(k)):
+            k += 1
+        if k >= crashes:
+            with open(tag + "ok", "w") as f:
+                f.write(String("the incarnation after the last crash started"))
+            process_exit(0)
+        with open(tag + String(k), "w") as f:
+            f.write(String("crashing"))
+        sleep(_SPACED_CRASH_LIFE_S)
+        process_exit(9)
+    except:
+        process_exit(7)
+
+
+def _spaced_crashes(
+    budget: Int, window_ns: Int, crashes: Int
+) raises -> Tuple[Int, Int, Bool]:
+    """Run the scenario and answer the supervisor's exit code, how many
+    incarnations crashed, and whether one started after the last crash."""
+    var tag = "/tmp/m0_spaced_" + String(getpid()) + "_"
+    var markers = List[String]()
+    markers.append(tag + "ok")
+    for k in range(crashes + 1):
+        markers.append(tag + String(k))
+    for m in markers:
+        if path.exists(m):
+            remove(m)
+    var pid = fork()
+    if pid == 0:
+        _spaced_crash_scenario(budget, window_ns, crashes, tag)
+        process_exit(99)  # unreachable
+    var result = waitpid_blocking(pid)
+    var crashed = 0
+    while path.exists(tag + String(crashed)):
+        crashed += 1
+    var started = path.exists(tag + "ok")
+    for m in markers:
+        if path.exists(m):
+            remove(m)
+    assert_false(was_signaled(result[1]), "supervisor process died on a signal")
+    return (exit_code(result[1]), crashed, started)
+
+
+def test_a_budget_spent_over_a_longer_window_is_not_spent() raises:
+    """Crashes rarer than the budget's rate are replaced however many there
+    have been: two respawns allowed in any 1.5 s, and three crashes 1.1 s
+    apart, so the window never holds more than one respawn when the next
+    crash comes. The third crash is replaced and the supervisor exits 0.
+    Counted over the supervisor's life, the budget ran out at the third:
+    `max respawns (2) reached, not respawning`, and an exit 1 (measured).
+
+    covers: E36
+    """
+    var got = _spaced_crashes(budget=2, window_ns=1_500_000_000, crashes=3)
+    assert_equal(got[1], 3, "the scenario did not crash three times")
+    assert_true(got[2], "the worker was not replaced after its third crash")
+    assert_equal(got[0], 0)
+
+
+def test_a_budget_spent_inside_the_window_is_spent() raises:
+    """The same three crashes inside the supervisor's own window, an hour:
+    the third finds two respawns already in it, is not replaced, and the
+    supervisor exits 1, as it did for a budget counted over its life. A
+    rate still ends a crash loop the rapid-crash breaker cannot see.
+
+    covers: E36
+    """
+    var got = _spaced_crashes(budget=2, window_ns=0, crashes=3)
+    assert_equal(got[1], 3, "the scenario did not crash three times")
+    assert_false(got[2], "the worker was replaced with its budget spent")
+    assert_equal(got[0], 1)
 
 
 def _refusing_scenario(first_marker: String, again_marker: String):
@@ -697,6 +800,11 @@ def _state_slot(worker: Int) -> Int:
     return ACCEPT_SHARE_FIRST_WORKER_SLOT + ACCEPT_SHARE_WORKER_STRIDE * worker
 
 
+def _pending_slot(worker: Int) -> Int:
+    """The slot of worker `worker`'s `pending` word (`accept_share.mojo`)."""
+    return _state_slot(worker) + 2
+
+
 def _reaped_scenario(
     page_addr: Int, share: AcceptShare, exit_with: Int, budget: Int,
     reload_dir: String, ready: String, again: String, go: String,
@@ -842,6 +950,178 @@ def test_the_polling_supervisor_marks_a_worker_it_will_not_replace() raises:
     assert_equal(got[1], STATE_PARKED)
     assert_equal(got[2], 0, "a sibling would hand a connection to the reaped worker")
     assert_equal(got[3], 1)
+
+
+def _queued_scenario(
+    page_addr: Int, share: AcceptShare, ready: String, die: String, go: String
+):
+    """Two workers over one accept-share page, parked as a started loop is,
+    with no respawns allowed. Worker 1 leaves `ready`, waits for `die` and
+    crashes (exit 9) without reading its channel; worker 0 waits for `go`,
+    then exits 0."""
+    try:
+        var supervisor = WorkerSupervisor(2)
+        supervisor.max_respawns = 0
+        supervisor.share_accepts(share, page_addr)
+        supervisor.fork_all()
+        var mine = share.copy()
+        mine.bind(supervisor.worker_index, page_addr)
+        mine.start()
+        var until = go
+        if supervisor.worker_index == 1:
+            with open(ready, "w") as f:
+                f.write(String("parked"))
+            until = die
+        var waited = 0
+        while not path.exists(until) and waited < 1000:
+            sleep(0.01)
+            waited += 1
+        process_exit(9 if supervisor.worker_index == 1 else 0)
+    except:
+        process_exit(7)
+
+
+def _reads_eof_within(fd: Int, bound_s: Float64) -> Bool:
+    """Whether the non-blocking pipe read end `fd` reads EOF (every write
+    end closed) within `bound_s` seconds."""
+    var buf = external_call["malloc", Int, Int](8)
+    var ptr = _OpaqueMut(unsafe_from_address=buf)
+    var until = perf_counter_ns() + Int(bound_s * 1_000_000_000.0)
+    var eof = False
+    while perf_counter_ns() < until:
+        if external_call["read", Int, Int, _OpaqueMut, Int](fd, ptr, 1) == 0:
+            eof = True
+            break
+        sleep(0.005)
+    external_call["free", NoneType, Int](buf)
+    return eof
+
+
+comptime _RACED_POST_S = 0.05
+"""How long after worker 1 is told to die a raced hand-off is posted: well
+inside the supervisor's wait for it (`_REAPED_DRAIN_NS`, 250 ms), and after
+the supervisor's drain has begun whenever it reaps inside 50 ms."""
+
+
+def _queue_to_a_worker_given_up_on(raced: Bool) raises -> List[Int]:
+    """Queue one connection to worker 1 of `_queued_scenario`, have it die
+    with no respawns allowed, and answer: whether the hand-off was queued,
+    worker 1's `pending` once it was, whether the connection read a close
+    within 1 s of the death, `pending` once the supervisor had exited, and
+    the supervisor's exit code (1 for yes, 0 for no, where a Bool).
+
+    The connection is a pipe's write end; this process keeps the read end,
+    which reads EOF once the last copy of the write end is closed. It is
+    handed over by worker 0's side of the protocol, run from this process.
+    `raced`: the sender raised `pending` and read worker 1's `state` before
+    the supervisor's mark, and its datagram lands `_RACED_POST_S` after the
+    death, as a sender preempted between the two does; otherwise the whole
+    of `send` runs while worker 1 is parked."""
+    var tag = String(getpid())
+    var ready = "/tmp/m0_queued_ready_" + tag
+    var die = "/tmp/m0_queued_die_" + tag
+    var go = "/tmp/m0_queued_go_" + tag
+    for m in [ready, die, go]:
+        if path.exists(m):
+            remove(m)
+    var page = SharedAtomics(accept_share_slots(2))
+    var share = AcceptShare(2)
+    var pid = fork()
+    if pid == 0:
+        _queued_scenario(page.addr(0), share, ready, die, go)
+        process_exit(99)  # unreachable
+    var waited = 0
+    while waited < 500:
+        if path.exists(ready) and page.load(_state_slot(1)) == STATE_PARKED:
+            break
+        sleep(0.01)
+        waited += 1
+    # Made after the fork, so no process of the scenario holds either end.
+    var ends = create_shutdown_pipe()
+    var read_end = ends[0]
+    set_nonblocking(FileDescriptor(read_end))
+    var sent: Bool
+    if raced:
+        # `send_with`'s raise, and its second read of `state`, which finds
+        # worker 1 parked: the mark has not been stored.
+        _ = page.fetch_add(_pending_slot(1), 1)
+        sent = page.load(_state_slot(1)) == STATE_PARKED
+    else:
+        var view = share.copy()
+        view.bind(0, page.addr(0))
+        sent = view.send(1, ends[1].fd, String("127.0.0.1"), 1)
+    var queued = page.load(_pending_slot(1))
+    with open(die, "w") as f:
+        f.write(String("die"))
+    if raced:
+        sleep(_RACED_POST_S)
+        sent = sent and send_fd(share.write_fds[1], ends[1].fd, List[UInt8]())
+    ends[1].signal()  # the sender's own copy, closed as the server's is
+    var closed = _reads_eof_within(read_end, 1.0)
+    with open(go, "w") as f:
+        f.write(String("go"))
+    var result = waitpid_blocking(pid)
+    var left = page.load(_pending_slot(1))
+    close_fd(read_end)
+    for m in [ready, die, go]:
+        if path.exists(m):
+            remove(m)
+    for fd in share.read_fds:
+        close_fd(fd)
+    for fd in share.write_fds:
+        close_fd(fd)
+    for fd in share.anchor_fds:
+        close_fd(fd)
+    assert_false(was_signaled(result[1]), "the supervisor died on a signal")
+    return [
+        1 if sent else 0, queued, 1 if closed else 0, left, exit_code(result[1])
+    ]
+
+
+def test_a_connection_queued_to_a_worker_given_up_on_is_closed() raises:
+    """A hand-off that reached a worker's channel before the worker died,
+    and that no replacement will read, is closed by the supervisor as it
+    gives up, so its client reads a close at once (review record RB).
+    Before, the channel held it -- every sibling and the supervisor keep a
+    copy of the channel, so the dead worker's exit released nothing -- and
+    the client of such a connection waited, accepted and unanswered, until
+    the server stopped (measured: still open 1 s after the give-up). The
+    hand-off's count in `pending` is retired with it, so a worker a reload
+    later forks into the index does not wait in its own drain for it.
+
+    covers: E16
+    """
+    var got = _queue_to_a_worker_given_up_on(raced=False)
+    assert_equal(got[0], 1, "the hand-off to the parked worker was not queued")
+    assert_equal(got[1], 1, "the hand-off was not counted to worker 1")
+    assert_equal(
+        got[2], 1,
+        "a connection queued to the worker the supervisor gave up on was"
+        " still open 1 s after the give-up",
+    )
+    assert_equal(got[3], 0, "the closed hand-off is still counted to worker 1")
+    assert_equal(got[4], 1)
+
+
+def test_a_handoff_that_raced_the_give_up_is_closed_too() raises:
+    """A sender that read the worker's `state` before the supervisor's mark
+    posts its hand-off after the mark, and the drain must not have finished
+    first. It raised `pending` before that read, so the drain runs on while
+    `pending` is above what it has received, within its bound, and takes
+    the late datagram too (the leaver's handshake, `close_reaped_handoffs`).
+
+    covers: E16
+    """
+    var got = _queue_to_a_worker_given_up_on(raced=True)
+    assert_equal(got[0], 1, "the raced hand-off was not posted")
+    assert_equal(got[1], 1, "the raced hand-off was not counted to worker 1")
+    assert_equal(
+        got[2], 1,
+        "a hand-off posted after the give-up began was left open in the"
+        " channel of the worker the supervisor gave up on",
+    )
+    assert_equal(got[3], 0, "the closed hand-off is still counted to worker 1")
+    assert_equal(got[4], 1)
 
 
 def test_a_replacement_is_picked_again_after_the_mark() raises:
