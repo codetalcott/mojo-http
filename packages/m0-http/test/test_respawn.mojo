@@ -25,9 +25,9 @@ The OK marker exists if and only if the respawned worker made it back to the
 caller.
 """
 
-from std.os import path, remove, setenv
+from std.os import makedirs, path, remove, rmdir, setenv
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
-from std.time import sleep
+from std.time import perf_counter_ns, sleep
 
 from src.multiworker import WorkerSupervisor, _forget_supervisor_signals
 from src.global_slot import record_supervisor_stop
@@ -392,6 +392,117 @@ def test_a_stop_before_a_pid_is_published_still_reaches_that_child() raises:
     assert_equal(
         exit_code(status), 0, "a stop recorded before the publish never reached the child"
     )
+
+
+# --- A stop that reaches a worker before it arms (S1) -------------------------
+#
+# A worker is at SIGTERM's default action from `_forget_supervisor_signals`
+# until its caller arms its own handler, so a stop that reaches it there kills
+# it. When that death was the first the supervisor reaped, it passed the signal
+# on and reaped the rest blind: a sibling that then failed its drain went
+# unreported and the supervisor exited 0, against D10. CI's `smoke-shutdown`
+# signalled into that window once (train 22). Worker 1 here waits a second on
+# the byte before it leaves, so worker 0's death is the first reaped.
+
+
+def _unarmed_sibling_scenario(
+    ready0: String, ready1: String, drain_exit: Int, reload_dir: String
+):
+    """Two workers. Worker 0 never arms, so the forwarded SIGTERM kills it;
+    worker 1 arms, and a second after the byte leaves with `drain_exit`, or
+    by SIGKILL when that is -1. A `reload_dir` supervises by polling, which is
+    `--reload`'s loop."""
+    try:
+        var supervisor = WorkerSupervisor(2)
+        if reload_dir.byte_length() > 0:
+            supervisor.enable_reload([reload_dir], String(".m0-never"))
+        supervisor.fork_all()
+        if supervisor.worker_index == 0:
+            with open(ready0, "w") as f:
+                f.write(String("unarmed"))
+            sleep(10.0)
+            process_exit(0)
+        var fd = install_shutdown_signals()
+        with open(ready1, "w") as f:
+            f.write(String("armed"))
+        _ = read_one_byte_blocking(fd)
+        # A deadline, not one `sleep`: the signal passed on again after
+        # worker 0's death interrupts a sleep, and this wait is what makes
+        # that death the first reaped.
+        var until = perf_counter_ns() + 1_000_000_000
+        while perf_counter_ns() < until:
+            sleep(0.05)
+        if drain_exit < 0:
+            _ = kill_process(getpid(), SIGKILL)
+        process_exit(drain_exit)
+    except:
+        process_exit(7)
+
+
+def _stop_beside_an_unarmed_worker(drain_exit: Int, polling: Bool) raises -> Int:
+    """Run the scenario, signal its supervisor alone once both workers are
+    ready, and answer the supervisor's exit code."""
+    var tag = String(getpid())
+    var ready0 = "/tmp/m0_unarmed_ready0_" + tag
+    var ready1 = "/tmp/m0_unarmed_ready1_" + tag
+    var dir = String("")
+    if polling:
+        dir = "/tmp/m0_unarmed_reload_" + tag
+        makedirs(dir, exist_ok=True)
+    for m in [ready0, ready1]:
+        if path.exists(m):
+            remove(m)
+    var pid = fork()
+    if pid == 0:
+        _unarmed_sibling_scenario(ready0, ready1, drain_exit, dir)
+        process_exit(99)  # unreachable
+    var waited = 0
+    while not (path.exists(ready0) and path.exists(ready1)) and waited < 500:
+        sleep(0.01)
+        waited += 1
+    var ready = path.exists(ready0) and path.exists(ready1)
+    _ = kill_process(pid, SIGTERM)
+    var result = waitpid_blocking(pid)
+    for m in [ready0, ready1]:
+        if path.exists(m):
+            remove(m)
+    if polling:
+        rmdir(dir)
+    assert_true(ready, "the workers never came up")
+    assert_false(was_signaled(result[1]), "the supervisor died on the signal")
+    return exit_code(result[1])
+
+
+def test_a_sibling_failing_its_drain_after_an_unarmed_death_makes_the_exit_1() raises:
+    """The first worker reaped died of the forwarded SIGTERM before it armed,
+    and its sibling then fails its drain (exit 9). The supervisor must judge
+    that sibling as it judges any worker failing a drain, and exit 1; it used
+    to reap it without a look and exit 0.
+
+    covers: D10
+    """
+    assert_equal(_stop_beside_an_unarmed_worker(9, polling=False), 1)
+
+
+def test_an_unarmed_death_beside_a_clean_drain_is_a_clean_stop() raises:
+    """A worker killed by the SIGTERM it was forwarded, before it armed its
+    handler, is a stop and not a failure: it had started no loop, and a
+    worker that has armed catches the signal, so the death names exactly that
+    case. Beside a sibling that drains and exits 0, the supervisor exits 0.
+
+    covers: D2
+    """
+    assert_equal(_stop_beside_an_unarmed_worker(0, polling=False), 0)
+
+
+def test_the_polling_supervisor_judges_the_rest_after_an_unarmed_death() raises:
+    """`--reload`'s supervisor reaps the same way: after an unarmed worker's
+    death it passed the signal on and reaped the rest blind, so a sibling
+    killed by SIGKILL in its drain went unseen and the exit was 0. It is 1.
+
+    covers: D10
+    """
+    assert_equal(_stop_beside_an_unarmed_worker(-1, polling=True), 1)
 
 
 def main() raises:

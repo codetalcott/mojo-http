@@ -268,7 +268,35 @@ def _fork_gap_ns() -> Int:
     so the signal lands inside the pause on every run instead of once in a
     hundred.
     """
-    var raw = getenv(_FORK_GAP_ENV, "")
+    return _test_gap_ns(_FORK_GAP_ENV)
+
+
+comptime _ARM_GAP_ENV = "M0_TEST_ARM_GAP_MS"
+"""A pause in every worker but the first, before it arms: a gate's instrument.
+
+`smoke-shutdown` sets it so a worker is still unarmed while worker 0
+answers, the window its phase once signalled into by chance; see
+`_arm_gap_ns`."""
+
+
+def _arm_gap_ns() -> Int:
+    """`M0_TEST_ARM_GAP_MS` in nanoseconds; 0 when unset, not a count, or not above 0.
+
+    Holds each worker after the first between `_forget_supervisor_signals`
+    and its return to the caller, which is what arms its own handler: the
+    worker is there at SIGTERM's default action, so a stop that reaches it
+    kills it where a drain was meant. Worker 0 already answers, which is
+    all a readiness probe sees. CI's `smoke-shutdown` signalled into this
+    window once (train 22), and a worker killed there went unreported;
+    the gate that sets it waits for every worker's `armed` line before it
+    signals, and the pause makes that wait load-bearing on every run.
+    """
+    return _test_gap_ns(_ARM_GAP_ENV)
+
+
+def _test_gap_ns(name: String) -> Int:
+    """The variable `name`, in milliseconds, as nanoseconds; 0 unless a count above 0."""
+    var raw = getenv(name, "")
     if raw.byte_length() == 0:
         return 0
     try:
@@ -466,6 +494,7 @@ struct WorkerSupervisor:
         """
         self._arm_signal_propagation()
         var gap_ns = _fork_gap_ns()
+        var arm_gap_ns = _arm_gap_ns()
         for i in range(self.num_workers):
             if i > 0 and gap_ns > 0:
                 _pause_unless_stopped(gap_ns)
@@ -478,6 +507,9 @@ struct WorkerSupervisor:
                 self.worker_index = i
                 _forget_supervisor_signals()
                 print("[worker {}] pid={} starting".format(i, getpid()), flush=True)
+                if i > 0 and arm_gap_ns > 0:
+                    # Unarmed, at SIGTERM's default action, on purpose.
+                    sleep(Float64(arm_gap_ns) / 1_000_000_000.0)
                 self._exec_if_spawning(i)
                 return
             self.child_pids.append(pid)
@@ -540,17 +572,15 @@ struct WorkerSupervisor:
 
             if was_signaled(status):
                 var sig = term_signal(status)
-                print("[parent] worker pid={} killed by signal {}".format(child_pid, sig))
                 if sig == SIGTERM or sig == SIGINT:
-                    # Propagate to all remaining children and shut down
+                    # A stop, reaching a worker before it armed: propagate
+                    # to the rest, and judge each as it goes.
+                    self._judge_stopped(child_pid, status)
                     print("[parent] propagating signal {} to remaining workers".format(sig))
                     self._kill_all(sig)
-                    remaining -= 1
-                    # Wait for remaining children to exit
-                    while remaining > 0:
-                        _ = waitpid_blocking(-1)
-                        remaining -= 1
+                    self._reap_the_rest()
                     return False
+                print("[parent] worker pid={} killed by signal {}".format(child_pid, sig))
                 # Other signal (e.g., SIGKILL) — treat as crash, try respawn
                 var outcome = self._try_respawn()
                 if outcome == _RESPAWN_CHILD:
@@ -574,9 +604,7 @@ struct WorkerSupervisor:
                     if remaining > 0:
                         print("[parent] stopping the remaining workers: a refused configuration is not served by the rest")
                         self._kill_all(SIGTERM)
-                        while remaining > 0:
-                            _ = waitpid_blocking(-1)
-                            remaining -= 1
+                        self._reap_the_rest()
                     return False
                 elif code != 0:
                     print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
@@ -640,12 +668,13 @@ struct WorkerSupervisor:
         self._remove_pid(child_pid)
         if was_signaled(status):
             var sig = term_signal(status)
-            print("[parent] worker pid={} killed by signal {}".format(child_pid, sig))
             if sig == SIGTERM or sig == SIGINT:
+                self._judge_stopped(child_pid, status)
                 print("[parent] propagating signal {} to remaining workers".format(sig))
                 self._kill_all(sig)
-                self._drain_children()
+                self._reap_the_rest()
                 return _EXIT_SHUTDOWN
+            print("[parent] worker pid={} killed by signal {}".format(child_pid, sig))
             return self._try_respawn()
         var code = exit_code(status)
         if code == EX_CONFIG:
@@ -654,7 +683,7 @@ struct WorkerSupervisor:
             # As in `_supervise`: the siblings are ended with the refusal.
             print("[parent] stopping the remaining workers: a refused configuration is not served by the rest")
             self._kill_all(SIGTERM)
-            self._drain_children()
+            self._reap_the_rest()
             return _EXIT_SHUTDOWN
         if code != 0:
             print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
@@ -662,18 +691,63 @@ struct WorkerSupervisor:
         print("[parent] worker pid={} exited cleanly".format(child_pid))
         return _RESPAWN_FAILED
 
-    def _drain_children(mut self) raises:
-        """Reap every tracked child, blocking. Used on the shutdown path."""
-        while True:
-            var result = waitpid_nonblocking()
-            if result[0] <= 0:
-                if result[0] == -1:
-                    return
-                # Alive but not yet exited: block for the next one.
-                var blocked = waitpid_blocking(-1)
-                self._remove_pid(blocked[0])
-                continue
+    def _reap_the_rest(mut self) raises:
+        """Reap every worker still running once supervision is ending, judging each.
+
+        The paths that end supervision -- a worker killed by SIGTERM or
+        SIGINT, which passes the signal on, and a refused configuration,
+        which ends the siblings -- used to reap the rest blind, printing
+        nothing. A sibling that then crashed in its drain, or was killed by
+        another signal, went unreported and the supervisor exited 0, against
+        D10; and a sibling's clean exit was not reported either, which is
+        how `smoke-shutdown` read a supervisor that had drained worker 0
+        as one where no worker reported a clean exit (S1).
+        """
+        while self._alive_count() > 0:
+            var result = waitpid_blocking(-1)
             self._remove_pid(result[0])
+            self._judge_stopped(result[0], result[1])
+
+    def _judge_stopped(mut self, child_pid: Int, status: Int):
+        """Report one worker reaped while supervision ends, and judge its exit.
+
+        A clean exit is the drain done. A worker killed BY the SIGTERM or
+        SIGINT it was sent is a stop too, not a failure: a worker that has
+        armed its own handler catches both, so dying of one means it had not
+        armed yet (or could not: a degraded install keeps the default on
+        purpose, `install_shutdown_signals`), and every entry point arms
+        before it starts its loop, so it had no request in flight to cut.
+        The default action is the stop it was asked for. Anything else --
+        a non-zero exit, another signal -- is a failed drain, and the
+        supervisor exits 1 once the rest are gone (D10); an exit 78 is a
+        refusal, and the exit is 78 (E10).
+        """
+        if was_signaled(status):
+            var sig = term_signal(status)
+            if sig == SIGTERM or sig == SIGINT:
+                print(
+                    "[parent] worker pid={} killed by signal {} before it armed"
+                    " its handler: a stop, not a failure".format(child_pid, sig)
+                )
+                return
+            print(
+                "[parent] worker pid={} killed by signal {} while stopping:"
+                " a failed drain".format(child_pid, sig)
+            )
+            self._failed_stopping = True
+            return
+        var code = exit_code(status)
+        if code == 0:
+            print("[parent] worker pid={} exited cleanly".format(child_pid))
+        elif code == EX_CONFIG:
+            print("[parent] worker pid={} refused its configuration (exit_code=78)".format(child_pid))
+            self._config_refused = True
+        else:
+            print(
+                "[parent] worker pid={} crashed (exit_code={}) while stopping:"
+                " a failed drain".format(child_pid, code)
+            )
+            self._failed_stopping = True
 
     def _reload(mut self) raises -> Bool:
         """Stop every worker, then fork replacements into the same indices.
