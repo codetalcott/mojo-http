@@ -61,19 +61,34 @@ import re
 import subprocess
 import sys
 
+from probelib import free_port
 from sabotage_lib import POE, Command, Gate, Outcome, last_line, rule, run, run_command
 
 M0 = "packaging/m0/src/m0/"
 T = M0 + "templates/"
 WIRE, TEST, NEW, DEV, IMAGE = "wire", "test", "new", "dev", "image"
-PORT = "8971"
 DEV_SMOKE = "scripts/m0_scaffold_dev_smoke.py"
 IMAGE_SMOKE = "scripts/m0_scaffold_image_smoke.py"
 
-# holder -> (the smoke's argv after `python3`, the prefix of its failure line)
+
+class Ports:
+    """A run of `count` free ports, drawn each time a gate runs: a fixed port
+    is shared with every other run on the machine, and one drawn as the
+    table is read could be taken by the time a rule an hour in used it."""
+
+    def __init__(self, count):
+        self.count = count
+
+
+# smoke-scaffold counts up from its port: a server per template, each
+# template's smoke.sh ten above it, and the auth deploy twenty above.
+PORTS = Ports(21)
+
+# holder -> (the smoke's argv after `python3`, the prefix of its failure line).
+# The image smoke draws its own port as the container starts.
 SMOKES = {
-    DEV: ([DEV_SMOKE, "dist/m0", "8972"], "smoke-scaffold-dev:"),
-    IMAGE: ([IMAGE_SMOKE, "dist/m0", "18371"], "smoke-scaffold-image:"),
+    DEV: ([DEV_SMOKE, "dist/m0", Ports(1)], "smoke-scaffold-dev:"),
+    IMAGE: ([IMAGE_SMOKE, "dist/m0"], "smoke-scaffold-image:"),
 }
 
 # (label, template, file, old, new, the smoke must say, what holds it)
@@ -456,8 +471,9 @@ class Scaffold(Gate):
     (`prune_build_cache`), except when a signal is ending the run."""
 
     def __init__(self, argv, prefix, skip_test, image):
+        self.argv = [sys.executable, *argv]
         self.smoke = Command(
-            [sys.executable, *argv], passes=prefix[:-1] + " OK",
+            self.argv, passes=prefix[:-1] + " OK",
             env={"M0_SCAFFOLD_SKIP_TEST": "1" if skip_test else None},
             timeout=3600, detail=_own_line(prefix))
         self.image = image
@@ -469,6 +485,8 @@ class Scaffold(Gate):
         if built.returncode != 0:
             return Outcome.unbuilt("the wheel would not build: " + last_line(built.output),
                                    built.output)
+        self.smoke.argv = [str(free_port(a.count)) if isinstance(a, Ports) else str(a)
+                           for a in self.argv]
         outcome = self.smoke.run(texts)
         if self.image:
             print("    (pruned %d build-cache records of this run's)"
@@ -484,7 +502,7 @@ def gates():
         name = gate_name(holder, template)
         if name not in out:
             argv, prefix = SMOKES.get(
-                holder, (["scripts/m0_scaffold_smoke.py", "dist/m0", PORT, template],
+                holder, (["scripts/m0_scaffold_smoke.py", "dist/m0", PORTS, template],
                          "smoke-scaffold:"))
             out[name] = Scaffold(argv, prefix, skip_test=holder == WIRE,
                                  image=holder == IMAGE)

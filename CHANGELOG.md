@@ -40,6 +40,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   code, and a new control row, an application that answers once and then
   exits 3, fails the smoke if the watchdog ever reads it as served. The
   task went from 70 s to 33 on an Apple-silicon Mac.
+- **No gate binds a fixed port.** `sabotage-scaffold`,
+  `sabotage-outbox-cap`, `autobahn`, the three browser checks and the
+  executed quickstarts take a free port each run, so two runs on one
+  machine no longer collide, and `poe check-task-shells` refuses a fixed
+  port in any task but a `serve-*` one.
 
 ### Removed
 

@@ -393,9 +393,10 @@ open with `.github/actions/setup` and, where they collect, close with
 - **No smoke job compiles the example apps**: `build-apps` is a compile
   gate, run in `unit-gates` by `poe test-gates`.
 - **Smokes on `scripts/smoke/lib.sh` take free ports** and write their logs
-  to `$SMOKE_DIR` (a mktemp directory), kept only on failure. Smokes not yet
-  migrated still use fixed ports and the repo root; run those under a port
-  lock locally.
+  to `$SMOKE_DIR` (a mktemp directory), kept only on failure. No task body
+  but a `serve-*` one names a fixed port (`poe check-task-shells` refuses
+  it), and a probe, sabotage or quickstart page that starts a server takes a
+  free one; only the bench scripts keep fixed ports, and a bench runs alone.
 - **`fail`'s `=== name ===` log output is a contract** with
   `scripts/host_sabotage.py` and `scripts/notes_login_sabotage.py`, which
   parse it: `lib.sh` owns it, and `poe check-task-shells --selftest` pins it.

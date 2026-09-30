@@ -13,7 +13,7 @@ Rebuilds `bin/m0serve` per sabotage, so this is minutes rather than seconds
 and belongs beside the other pre-release-shaped checks rather than in the
 per-PR path. A sabotage that does not build is a miss, never a catch, and a
 catch is the probe failing in its own words (`sabotage_lib.py` owns
-everything around the table). Binds a fixed port: run it alone.
+everything around the table). Each round's server takes a free port.
 
     python3 scripts/outbox_cap_sabotage.py
     python3 scripts/outbox_cap_sabotage.py --only "under-cap"
@@ -28,13 +28,13 @@ import time
 import urllib.request
 from pathlib import Path
 
+from probelib import free_port
 from sabotage_lib import (DIAGNOSTIC, POE, Gate, Outcome, end_group, last_line,
                           rule, run, run_command)
 
 HANDLER = Path("packages/m0-wsgi/src/handler.mojo")
 REGISTRY = Path("packages/m0-http/src/sse/registry.mojo")
 PROBE = Path("scripts/outbox_cap_probe.py")
-PORT = "8156"
 
 # (label, path, old, new[, the probe must say])
 SABOTAGES = [
@@ -123,16 +123,17 @@ def run_probe() -> Outcome:
     line, or its excepthook's `outbox_cap_probe: FAIL:` (a read that timed
     out waiting for a frame). A server that does not come up has not been
     asked anything about the cap, so that is not a catch."""
+    port = str(free_port())
     with open(SERVER_LOG, "w") as log:
         srv = subprocess.Popen(
             ["bin/m0serve", "bareapp.asgi:application",
-             "--app-dir", "apps/asgi_bare", "--port", PORT],
+             "--app-dir", "apps/asgi_bare", "--port", port],
             stdout=log, stderr=subprocess.STDOUT, start_new_session=True,
         )
         try:
             for _ in range(40):
                 try:
-                    urllib.request.urlopen("http://127.0.0.1:%s/" % PORT, timeout=1).read()
+                    urllib.request.urlopen("http://127.0.0.1:%s/" % port, timeout=1).read()
                     break
                 except Exception:
                     if srv.poll() is not None:
@@ -142,7 +143,7 @@ def run_probe() -> Outcome:
             else:
                 return Outcome.unclear("the server never became healthy: "
                                        + last_line(SERVER_LOG.read_text(errors="replace")))
-            p = run_command([sys.executable, str(PROBE), PORT], timeout=180)
+            p = run_command([sys.executable, str(PROBE), port], timeout=180)
         finally:
             if srv.poll() is None:
                 srv.send_signal(signal.SIGTERM)

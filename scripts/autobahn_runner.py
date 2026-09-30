@@ -50,11 +50,12 @@ import urllib.request
 import uuid
 from pathlib import Path
 
+from probelib import free_port
+
 # Pinned by version, which is what lets the per-section case counts be
 # asserted exactly. 25.10.1 is digest-identical to the image the 2026-08-30
 # baseline was measured with (sha256:519915fb...).
 IMAGE = "crossbario/autobahn-testsuite:25.10.1"
-PORT = 9301
 
 # I17's seven: the >=64 KB outbox cap, deliberate and documented. Nothing
 # else may fail, and every one of these MUST — see the module docstring.
@@ -198,14 +199,14 @@ def run(*argv, check=True, timeout=120):
     return proc
 
 
-def wait_healthy(deadline_s, server):
+def wait_healthy(deadline_s, server, port):
     deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline:
         if server.poll() is not None:
             fail(f"the server exited {server.returncode} before becoming healthy")
         try:
             body = urllib.request.urlopen(
-                f"http://127.0.0.1:{PORT}/", timeout=1).read()
+                f"http://127.0.0.1:{port}/", timeout=1).read()
             if b"autobahn echo ok" in body:
                 return
         except Exception:
@@ -214,7 +215,7 @@ def wait_healthy(deadline_s, server):
     fail(f"the echo server never became healthy in {deadline_s}s")
 
 
-def run_section(name, cases, workdir, token):
+def run_section(name, cases, workdir, token, port):
     """One wstest invocation via create/cp/start/cp — no bind mounts."""
     cfgdir = workdir / f"cfg-{name}"
     cfgdir.mkdir()
@@ -222,7 +223,7 @@ def run_section(name, cases, workdir, token):
         "options": {"failByDrop": False},
         "outdir": "/reports",
         "servers": [{"agent": "m0serve",
-                     "url": f"ws://host.docker.internal:{PORT}"}],
+                     "url": f"ws://host.docker.internal:{port}"}],
         "cases": cases,
         "exclude-cases": [],
         "exclude-agent-cases": {},
@@ -280,14 +281,17 @@ def main():
         fail("docker is not available (daemon not running, or not installed)")
     if not Path(args.serve).exists():
         fail(f"{args.serve} does not exist — run `poe build-serve` first")
-    # SO_REUSEPORT means a stale listener would silently answer a share of
-    # the suite's connections (smoke-wheel's lesson, verbatim).
+    # A port of this run's own: the echo server listens on the host, where
+    # a fixed one is shared with every other run on the machine. SO_REUSEPORT
+    # means a stale listener would silently answer a share of the suite's
+    # connections (smoke-wheel's lesson, verbatim), so it is asked again.
+    port = free_port()
     if shutil.which("lsof"):
-        stale = run("lsof", "-nP", f"-iTCP:{PORT}", "-sTCP:LISTEN", "-t",
+        stale = run("lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-t",
                     check=False).stdout.split()
         if stale:
             fail(
-                f"port {PORT} already has a listener (pids: {' '.join(stale)})"
+                f"port {port} already has a listener (pids: {' '.join(stale)})"
                 f" — SO_REUSEPORT would let it answer this run's connections"
             )
 
@@ -298,13 +302,13 @@ def main():
         (workdir / "echoapp.py").write_text(ECHO_APP)
         server = subprocess.Popen(
             [args.serve, "echoapp:application", "--app-dir", str(workdir),
-             "--port", str(PORT)],
+             "--port", str(port)],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
         )
         try:
-            wait_healthy(60, server)
+            wait_healthy(60, server, port)
             for name, cases, expected_count in sections:
-                section = run_section(name, cases, workdir, token)
+                section = run_section(name, cases, workdir, token, port)
                 if len(section) != expected_count:
                     fail(
                         f"[section {name}] ran {len(section)} cases, the "
