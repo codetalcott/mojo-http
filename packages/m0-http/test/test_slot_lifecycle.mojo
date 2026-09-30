@@ -22,7 +22,9 @@ registration the way epoll does -- ONE registration, so a read added
 replaces a pending write -- the stricter of the two, and the one a wrong
 arm is wrong on. Its timers are epoll's too: an expired timerfd is
 reported by every wait until it is deleted, where kqueue's one-shot fires
-once.
+once. The close echo (review record R6) is driven over both: `FakeBackend`
+for the registration it takes, and the real multiplexer for the events
+that send it.
 """
 
 from std.ffi import c_int, external_call, get_errno
@@ -32,13 +34,18 @@ from std.time import perf_counter_ns
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.kqueue import (
-    EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
+    EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
 )
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.socket import close, recv, send
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
+from lightbug_http.loop.request import _on_read
 from lightbug_http.loop.response import _on_write
+from lightbug_http.loop.streams import _read_websocket
+from lightbug_http.websocket import (
+    WS_OP_CLOSE, close_frame, encode_ws_frame_masked,
+)
 from lightbug_http.loop.state import (
     LoopState,
     TIMER_BODY,
@@ -498,6 +505,255 @@ def test_a_send_deadline_leaves_a_websockets_close_linger() raises:
     assert_equal(st.slot_idle_deadline[slot], linger)
     close(FileDescriptor(fd))
     close(FileDescriptor(peer))
+
+
+def test_a_close_echo_the_kernel_refused_goes_out_before_the_close() raises:
+    """A peer's Close is answered by its echo WHOLE, and the socket closes
+    only once the echo has gone (review record R6, the close half).
+
+    The echo is the last reply, so whether the send buffer toward the peer
+    is still full when it is sent is not the client's to arrange, and no
+    wire gate can force it. Here it is arranged: the loop's end of a real
+    stream pair has filled its send buffer, a byte at a time at the end, so
+    the kernel refuses the echo whole. `_read_websocket` must queue it as
+    the slot's response and mark the close owed (`should_close`) rather
+    than close; the write-ready path sends it once the peer reads, and
+    `_after_send` closes. The peer then reads the filler, the echo with its
+    own code, and EOF. Closing at once, or dropping the part the kernel
+    refused, ends the connection with no Close at all, which a client
+    reports as 1006 rather than the code it sent.
+
+    Over `FakeBackend`, epoll's shape, with the write-ready path called
+    directly; `test_a_close_echo_waits_for_the_multiplexer` drives the same
+    close through this OS's own.
+
+    covers: I31
+    """
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var setup = _a_websocket_owed_a_close_echo(st)
+    var fd = setup[0]
+    var peer = setup[1]
+    var slot = setup[2]
+    var filler = setup[3]
+    assert_true(_arm_reads(backend, st, slot, fd))
+
+    _read_websocket(app, backend, st, slot, fd, False)
+    _assert_the_echo_is_owed(st, slot, fd)
+    # The echo holds the socket's one registration until it lands.
+    assert_true(backend.write)
+    assert_false(backend.read)
+
+    var got = List[UInt8]()
+    var rounds = 0
+    while (
+        st.slot_fds[slot] != UNUSED
+        and st.provision_pool.provisions[slot].state.kind
+        == ConnectionState.RESPONDING
+        and rounds < 1000
+    ):
+        _ = _read_available(peer, got)
+        _on_write(app, backend, st, fd)
+        rounds += 1
+    assert_equal(
+        st.slot_fds[slot], UNUSED, "the echo went out and the slot stayed open",
+    )
+    assert_false(backend.read)
+    assert_false(backend.write)
+    assert_true(
+        _read_available(peer, got), "the peer read no EOF after the echo",
+    )
+    _assert_the_peer_read_the_echo_last(got, filler)
+    close(FileDescriptor(peer))
+
+
+def test_a_close_echo_waits_for_the_multiplexer() raises:
+    """The same close over this OS's multiplexer, kqueue on macOS and epoll
+    on Linux, each step taken on the event the wait reports, as `_run_pass`
+    dispatches it: the peer's Close is a read event (`_on_read`), and the
+    echo waits for a write event (`_on_write`), which does not come until
+    the peer reads. `FakeBackend` keeps a registration as epoll does and
+    never reports a socket ready, so only this one shows that each OS
+    reports the write that sends the echo, and nothing before it.
+
+    covers: I31
+    """
+    var app = NoApp()
+    var backend = PlatformBackend()
+    var st = _loop(_config())
+    var setup = _a_websocket_owed_a_close_echo(st)
+    var fd = setup[0]
+    var peer = setup[1]
+    var slot = setup[2]
+    var filler = setup[3]
+    assert_true(_arm_reads(backend, st, slot, fd))
+
+    var n = backend.wait(1000)
+    assert_equal(n, 1, "the peer's Close was not reported readable")
+    assert_equal(Int(backend.event_ident(0)), fd)
+    assert_equal(backend.event_filter(0), EVFILT_READ)
+    _on_read(app, backend, st, fd, (backend.event_flags(0) & EV_EOF) != 0)
+    _assert_the_echo_is_owed(st, slot, fd)
+    assert_equal(
+        backend.wait(50), 0,
+        "the socket was reported ready while its peer had read nothing",
+    )
+
+    var got = List[UInt8]()
+    var rounds = 0
+    while (
+        st.slot_fds[slot] != UNUSED
+        and st.provision_pool.provisions[slot].state.kind
+        == ConnectionState.RESPONDING
+        and rounds < 100
+    ):
+        _ = _read_available(peer, got)
+        n = backend.wait(1000)
+        var writes = 0
+        for i in range(n):
+            if (
+                Int(backend.event_ident(i)) == fd
+                and backend.event_filter(i) == EVFILT_WRITE
+            ):
+                writes += 1
+        assert_equal(
+            writes, 1, "the peer read, and the socket was not reported writable",
+        )
+        _on_write(app, backend, st, fd)
+        rounds += 1
+    assert_equal(
+        st.slot_fds[slot], UNUSED, "the echo went out and the slot stayed open",
+    )
+    assert_true(
+        _read_available(peer, got), "the peer read no EOF after the echo",
+    )
+    _assert_the_peer_read_the_echo_last(got, filler)
+    close(FileDescriptor(peer))
+
+
+# An application's close code (4000-4999), so an echo carrying it cannot be
+# one the server made up.
+comptime CLOSE_CODE = 4321
+comptime FILLER: UInt8 = 0x61
+
+
+def _a_websocket_owed_a_close_echo(
+    mut st: LoopState,
+) raises -> Tuple[Int, Int, Int, Int]:
+    """A WebSocket slot in frame mode over a real stream pair, its send
+    buffer toward the peer full, and the peer's masked Close, carrying
+    `CLOSE_CODE`, waiting to be read. Returns the loop's end, the peer's,
+    the slot, and how many filler bytes the kernel took."""
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.slot_ws[slot] = True
+    st.slot_ws_state[slot].reset()
+    st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+    var filler = _fill_send_buffer(fd)
+    assert_true(filler > 0)
+
+    var code = List[UInt8]()
+    code.append(UInt8(CLOSE_CODE >> 8))
+    code.append(UInt8(CLOSE_CODE & 0xFF))
+    var mask = List[UInt8]()
+    mask.append(0x37)
+    mask.append(0xFA)
+    mask.append(0x21)
+    mask.append(0x3D)
+    var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(code), mask)
+    var sent = send(FileDescriptor(peer), Span(frame), UInt(len(frame)), 0)
+    assert_equal(Int(sent), len(frame))
+    return (fd, peer, slot, filler)
+
+
+def _fill_send_buffer(fd: Int) raises -> Int:
+    """Send filler from `fd` until the kernel takes nothing more, and return
+    how much it took. Large writes first, then smaller, down to one byte, so
+    the last refusal is of a single byte and no frame fits after it."""
+    var chunk = List[UInt8](length=65536, fill=FILLER)
+    var total = 0
+    var size = 65536
+    while size >= 1:
+        while True:
+            var sent: UInt
+            try:
+                sent = send(FileDescriptor(fd), Span(chunk)[:size], UInt(size), 0)
+            except err:
+                if err.would_block():
+                    break
+                raise Error("filling the send buffer: ", err)
+            if sent == 0:
+                break
+            total += Int(sent)
+        size //= 16
+    return total
+
+
+def _read_available(fd: Int, mut got: List[UInt8]) raises -> Bool:
+    """Read what is waiting on `fd` into `got` without blocking; True once
+    the peer's EOF has been read."""
+    var buf = List[UInt8](length=65536, fill=0)
+    while True:
+        var n: UInt
+        try:
+            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+        except err:
+            if err.would_block():
+                return False
+            raise Error("reading the peer's end: ", err)
+        if n == 0:
+            return True
+        got.extend(Span(buf)[: Int(n)])
+
+
+def _assert_the_echo_is_owed(st: LoopState, slot: Int, fd: Int) raises:
+    """After the read that parsed the Close: the echo is the slot's queued
+    response, whole, with bytes still owed, and the close waits for it."""
+    var echo = close_frame(CLOSE_CODE)
+    assert_equal(
+        len(st.slot_response[slot]), len(echo),
+        "the close echo was dropped, not queued",
+    )
+    for i in range(len(echo)):
+        assert_equal(Int(st.slot_response[slot][i]), Int(echo[i]))
+    assert_true(st.slot_send_offset[slot] < len(echo))
+    assert_equal(
+        st.slot_fds[slot], fd, "the slot closed with its close echo owed",
+    )
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind,
+        ConnectionState.RESPONDING,
+    )
+    assert_true(
+        st.provision_pool.provisions[slot].should_close,
+        "the close is not waiting for the echo",
+    )
+    assert_false(st.slot_read_armed[slot])
+
+
+def _assert_the_peer_read_the_echo_last(got: List[UInt8], filler: Int) raises:
+    """The peer read every filler byte, then the Close echo whole, carrying
+    its own code."""
+    var echo = close_frame(CLOSE_CODE)
+    assert_equal(
+        len(got), filler + len(echo),
+        "the peer did not read the filler and the whole echo",
+    )
+    for i in range(filler):
+        if got[i] != FILLER:
+            raise Error("byte ", i, " of the filler arrived altered")
+    assert_equal(Int(got[filler]), 0x88, "the last frame is not a Close")
+    assert_equal(Int(got[filler + 1]), 2, "the Close carries no code")
+    assert_equal(
+        (Int(got[filler + 2]) << 8) | Int(got[filler + 3]), CLOSE_CODE,
+        "the Close does not echo the peer's code",
+    )
 
 
 def _stream_pair() raises -> Tuple[Int, Int]:
