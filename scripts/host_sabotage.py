@@ -332,8 +332,55 @@ SABOTAGES = [
         "one worker's refusal leaves its siblings serving",
         RESPAWN,
         MULTIWORKER_SRC,
-        "                        self._kill_all(SIGTERM)\n                        while remaining > 0:\n",
-        "                        while remaining > 0:\n",
+        "                        self._kill_all(SIGTERM)\n                        self._reap_the_rest()\n",
+        "                        self._reap_the_rest()\n",
+    ),
+    # --- a stop that reaches a worker before it arms (S1) ----------------------
+    # The first worker reaped died of the forwarded SIGTERM before it armed;
+    # the rest used to be reaped blind, so a sibling failing its drain was
+    # unseen and the supervisor exited 0 against D10.
+    (
+        "after an unarmed worker's death the rest are reaped blind",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        "                    self._kill_all(sig)\n                    self._reap_the_rest()\n",
+        "                    self._kill_all(sig)\n"
+        "                    while self._alive_count() > 0:\n"
+        "                        self._remove_pid(waitpid_blocking(-1)[0])\n",
+    ),
+    (
+        "the polling supervisor reaps the rest blind after an unarmed death",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        "                self._kill_all(sig)\n                self._reap_the_rest()\n",
+        "                self._kill_all(sig)\n"
+        "                while self._alive_count() > 0:\n"
+        "                    self._remove_pid(waitpid_blocking(-1)[0])\n",
+    ),
+    (
+        "a worker killed by the stop before it armed is judged a failure",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        '                    " its handler: a stop, not a failure".format(child_pid, sig)\n'
+        "                )\n                return\n",
+        '                    " its handler: a stop, not a failure".format(child_pid, sig)\n'
+        "                )\n                self._failed_stopping = True\n                return\n",
+    ),
+    (
+        "a sibling's non-zero exit while stopping is not a failure",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        '                " a failed drain".format(child_pid, code)\n'
+        "            )\n            self._failed_stopping = True\n",
+        '                " a failed drain".format(child_pid, code)\n            )\n',
+    ),
+    (
+        "a sibling killed by another signal while stopping is not a failure",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        '                " a failed drain".format(child_pid, sig)\n'
+        "            )\n            self._failed_stopping = True\n",
+        '                " a failed drain".format(child_pid, sig)\n            )\n',
     ),
     # --- loops on threads (SPEC E27-E29), against smoke-host-threads ----------
     (
