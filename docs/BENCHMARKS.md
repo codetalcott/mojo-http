@@ -227,8 +227,8 @@ to <!-- num:isolation-nopool-slow2-ms@0 -->195<!-- /num --> ms as slow views
 are added — most of the <!-- num:isolation-hold-ms@0 -->200<!-- /num --> ms
 hold, which is what "the connections pinned behind it" means
 arithmetically. With the pool it stays at
-<!-- num:isolation-pool-slow2-ms@1 -->1.6<!-- /num --> ms. **That is a
-<!-- num:isolation-ratio@0 -->121<!-- /num -->x change and the largest
+<!-- num:isolation-pool-slow2-ms@1 -->1.5<!-- /num --> ms. **That is a
+<!-- num:isolation-ratio@0 -->131<!-- /num -->x change and the largest
 effect recorded anywhere in this repository**, and it holds in both
 execution modes, which is the part that matters: prefork and threads fail
 identically and are fixed identically.
@@ -237,17 +237,17 @@ The control is the point. Both halves run in one pass, so the rows without
 the flag have to keep failing for the rows with it to mean anything.
 
 <!-- generated: mixed-workload -- edit bench/results, not this table -->
-Source: [`mixed-workload-20260929T234121Z.json`](../bench/results/mixed-workload-20260929T234121Z.json) — 2026-09-29T23:41:21+00:00, commit `be647c0`.
+Source: [`mixed-workload-20260930T000807Z.json`](../bench/results/mixed-workload-20260930T000807Z.json) — 2026-09-30T00:08:07+00:00, commit `2159274`.
 Environment: Python 3.14.7 free-threading build; granian 2.8.3; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0 (26A428); AC Power; wrk -c16 -d10s, 3 rounds, medians.
 
 | configuration | slow=0 | slow=1 | slow=2 |
 |---|---|---|---|
-| `--workers 4` | 0.7 ms (0.7–0.7) | 190.1 ms (189.9–190.4) | 195.3 ms (194.7–195.7) |
-| `--threads 4` | 0.7 ms (0.7–0.8) | 192.3 ms (190.3–193.0) | 197.7 ms (195.6–198.1) |
-| `--workers 4 +bt=4` | 1.6 ms (1.6–1.7) | 1.6 ms (1.5–2.0) | 1.6 ms (1.6–2.0) |
-| `--threads 4 +bt=4` | 1.0 ms (1.0–1.1) | 1.1 ms (0.9–1.1) | 1.0 ms (1.0–2.0) |
-| `--workers 1 +bt=4` | 0.5 ms (0.5–0.6) | 0.6 ms (0.5–0.6) | 0.5 ms (0.5–1.7) |
-| `granian bt=4` | 0.6 ms (0.6–0.6) | 0.6 ms (0.6–0.6) | 0.6 ms (0.6–0.7) |
+| `--workers 4` | 0.7 ms (0.7–0.7) | 190.6 ms (189.1–191.0) | 194.7 ms (194.3–195.2) |
+| `--threads 4` | 0.8 ms (0.7–0.8) | 193.0 ms (192.2–194.1) | 197.4 ms (197.2–199.8) |
+| `--workers 4 +bt=4` | 1.6 ms (1.6–1.7) | 1.5 ms (1.5–1.5) | 1.5 ms (1.5–1.5) |
+| `--threads 4 +bt=4` | 0.9 ms (0.9–0.9) | 0.9 ms (0.9–1.0) | 0.9 ms (0.9–1.0) |
+| `--workers 1 +bt=4` | 0.5 ms (0.5–0.6) | 0.5 ms (0.5–0.5) | 0.5 ms (0.5–0.6) |
+| `granian bt=4` | 0.6 ms (0.6–0.6) | 0.6 ms (0.6–0.6) | 0.6 ms (0.5–0.6) |
 
 Fast-route p99 as concurrent slow requests are added: the median across 3 rounds, with the min–max across those rounds in parentheses. A row that stays flat isolated the slow work; a row that climbs toward the slow view's hold time had its connections stranded behind it. Both halves run in one pass, because a control that stops failing has stopped measuring anything.
 <!-- /generated: mixed-workload -->
