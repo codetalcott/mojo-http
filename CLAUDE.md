@@ -135,10 +135,11 @@ check-mojoc-trait` guards the fix, and `build-apps` compiling
   from source.
 
 **Two entry files sit at package roots, outside `src/`, on purpose.**
-`m0-core/ffi_exports.mojo` holds the C-ABI exports (`poe build-ffi` →
-`libm0core.so`/`.dylib`; `poe smoke-ffi` loads it through `ctypes` in CI). It
-must stay the shared-lib entry file: relative imports don't compile there,
-and `@export` symbols are only emitted from the entry module (its docstring
+`m0-core/ffi_exports.mojo` holds the C-ABI export `m0pub` calls
+(`poe build-ffi` → `libm0core.so`/`.dylib`, shipped inside the m0serve wheel
+and never as a release asset, D56; `poe smoke-ffi` loads it through `ctypes`).
+It must stay the shared-lib entry file: relative imports don't compile
+there, and `@export` symbols are only emitted from the entry module (its docstring
 records the dead ends). `@export` cannot take a parametric function, so an
 entry point names concrete types (`m0_shared_fetch_add` takes its address as
 a `UInt64`). `m0-wsgi/m0serve.mojo` is the `m0serve` binary (`poe

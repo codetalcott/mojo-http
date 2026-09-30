@@ -709,20 +709,14 @@ jobs:
       # happens to run first.
       - name: Build the serve CLI
         run: uv run poe build-serve
-      # Emits libm0core.so (.dylib on macOS) and drives it through ctypes —
-      # the same dlopen path Bun or N-API takes — against public hash vectors.
+      # Emits libm0core.so (.dylib on macOS) and calls its one export through
+      # ctypes, the path m0pub takes to number the events it publishes. The
+      # copy that ships is the one in the wheel's _lib/, which stage-wheel,
+      # inside the wheel smoke below, refuses unless it is self-contained.
       - name: Smoke test the C-ABI shared library
         run: uv run poe smoke-ffi
-      # The property smoke-ffi cannot test: that the artifact loads somewhere
-      # OTHER than the machine that built it. smoke-ffi dlopens it in the
-      # build tree, where the venv it linked against still exists, so it
-      # passes on exactly the machine where the defect cannot appear — which
-      # is how a broken asset shipped in seven releases. This asserts the
-      # bundle is self-contained, and fails if it ever regresses.
-      - name: Assert the C-ABI bundle is self-contained
-        run: uv run poe bundle-ffi
-      # The same gate for the CLI binary, which shipped without one. Every
-      # bin/m0serve ever built recorded a search path into its build venv;
+      # A self-containment gate for the CLI binary, which shipped without one.
+      # Every bin/m0serve ever built recorded a search path into its build venv;
       # this asserts the bundled artifact resolves the runtime beside itself
       # instead, and that the licences it must carry travel with it.
       - name: Assert the m0serve bundle is self-contained

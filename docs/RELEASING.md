@@ -1,9 +1,9 @@
 # Releasing
 
 Releases are tag-driven: pushing a `v*` tag runs the `Release` workflow
-(`.github/workflows/release.yml`), which builds `libm0core` on Linux and
-macOS, proves each artifact through the same `ctypes` smoke that CI runs on
-every commit, and publishes a GitHub release with both attached.
+(`.github/workflows/release.yml`), which builds the m0serve wheel for each
+platform, installs and serves each one on a machine that did not build it,
+and publishes a GitHub release with the wheels attached.
 
 **Before any of it: `uv run poe stress-asgi`.** The one check CI cannot
 run. Each round drives `chunked_keepalive.py` and then
@@ -442,13 +442,12 @@ The steps, in order:
      hand either. It went unremembered four times before that check
      existed.
 
-5. **The C-ABI bundle is gated, not checked by hand.** CI runs
-   `poe bundle-ffi` on every commit and the release workflow runs it again,
-   and it refuses to finish unless the bundle is genuinely self-contained —
-   so a release cannot ship a `libm0core` that only loads on the runner,
-   which is what every release through v0.7.0 did. Nothing to do here;
-   `poe bundle-ffi` locally if you want to see what ships.
-   [FFI_DISTRIBUTION.md](FFI_DISTRIBUTION.md) has the history and the
+5. **`libm0core` is not a release asset.** It ships inside the wheel's
+   `_lib/`, where `m0pub` loads it, and `stage-wheel` (every pull request)
+   and the release's `wheel-inspect` refuse a copy that is not
+   self-contained, so there is nothing to do here. Releases up to and
+   including v1.8.0 also attached it on its own ([DECISIONS](DECISIONS.md)
+   D56); [FFI_DISTRIBUTION.md](FFI_DISTRIBUTION.md) has the history and the
    licensing position.
 
 6. The workflow does the rest. If a build or the artifact proof fails, no

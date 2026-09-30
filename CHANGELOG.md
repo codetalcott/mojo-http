@@ -138,7 +138,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   FNV-1a and xxHash32 (`fnv1a`, `fnv1a_step`, `fnv1a_batch`, `xxhash32`,
   `xxhash32_batch`) with `format_hash32`. `libm0core` exports
   `m0_shared_fetch_add` alone, the call `m0pub` makes: `m0_fnv1a`,
-  `m0_xxhash32` and `m0_format_hash` are gone from the release asset.
+  `m0_xxhash32` and `m0_format_hash` are gone.
   `m0_sqlite.stats_ints`, `sum_ints`, `min_ints`, `max_ints` and
   `ColumnStats` left the package, `stats_ints` living on in
   `bench_sqlite.mojo`, its one user; and `poe bench-core` went with the
@@ -150,6 +150,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   served changes. An application built with the `m0` wheel that used it
   needs its own; a client comes back as a design of its own that answers
   TLS and where the call runs. SPEC M14 is now `out of scope`.
+
+- **The `libm0core` release assets.** Releases no longer attach
+  `libm0core-linux-x86_64.so`, `libm0core-macos-arm64.dylib` or their
+  `.tar.gz` bundles, and `poe bundle-ffi` went with them (DECISIONS D56).
+  The library ships inside the m0serve wheel, where `m0pub` uses it to
+  number the events it publishes, so nothing changes for an m0serve user.
+  Releases up to and including 1.8.0 keep their assets.
 
 ### Fixed
 

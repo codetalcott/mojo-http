@@ -194,31 +194,16 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | wyhash64, SHA-256 and HMAC-SHA256, SIMD JSON escape, HTML escape, JSON field parser, a C-ABI export | 82 |
-| `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 930 |
+| `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 932 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 95 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 181 |
 | `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 118 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 78 |
-| **Total** | | **1484** |
+| **Total** | | **1486** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
-`m0-core` also builds a C-ABI shared library: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS), whose one export, `m0_shared_fetch_add`, is how `m0pub` numbers the events it publishes, through Python's `ctypes` — `poe smoke-ffi` proves that path in CI, and prebuilt Linux/macOS artifacts ship with each [GitHub release](https://github.com/codetalcott/mojo-http/releases).
-
-> Each release ships **two macOS assets**: `libm0core-macos-arm64.dylib`, the
-> bare library for anyone who already has a Mojo install, and
-> `libm0core-macos-arm64.dylib.tar.gz`, a **self-contained bundle** (1.65 MB)
-> that carries the three Mojo runtime libraries it loads, plus both licences.
-> Extract it and `dlopen` the `.dylib` — nothing else needed. The Linux `.so`
-> is statically linked and self-contained on its own.
->
-> `poe bundle-ffi` builds that bundle and refuses to finish unless the result
-> is genuinely self-contained; CI runs it on every commit, so a release cannot
-> ship an asset that only loads on the build machine.
->
-> **Releases up to and including v0.7.0 predate this** and record the CI
-> runner's own directory, so their macOS asset does not load anywhere else.
-> Build locally with `poe build-ffi` for a usable one, or use v0.8.0 onward.
+`m0-core` also builds a C-ABI shared library: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS), whose one export, `m0_shared_fetch_add`, is how `m0pub` numbers the events it publishes, through Python's `ctypes` — `poe smoke-ffi` proves that path in CI. It is internal to the m0serve wheel, which carries it in `_lib/` beside the binary, and is not a published artifact with an ABI of its own ([DECISIONS](docs/DECISIONS.md) D56). Releases up to and including v1.8.0 also attached it as a standalone download; those assets stay where they are, and [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md) has their history.
 
 Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
@@ -896,7 +881,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1484 unit tests, then compiles every example
+uv run poe test-all         # 1486 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

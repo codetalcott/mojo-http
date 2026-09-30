@@ -62,7 +62,7 @@ For building on mojo-http directly rather than serving a Python application.
 
 | page | contents |
 |---|---|
-| [FFI distribution](FFI_DISTRIBUTION.md) | What the C-ABI bundle ships, and its licensing position. |
+| [FFI distribution](FFI_DISTRIBUTION.md) | The C-ABI library the m0serve wheel carries, and its licensing position. |
 | [SQLite performance](SQLITE_PERFORMANCE.md) | m0-sqlite: batch writes, `mmap_size`, `json_each`. |
 | [SQLite virtual tables](sqlite-vtab-feasibility.md) | Whether virtual tables are reachable from Mojo. |
 
