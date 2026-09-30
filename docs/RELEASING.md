@@ -612,6 +612,27 @@ names an `m0` the index lacks.
   interpreter.
 - Step 6: 8 blocks passed against the published package.
 
+`m0 0.4.0`: tag `m0-v0.4.0` at `b1dca5b`, 2026-09-29, cut beside m0serve
+1.8.0 and pushed first, as 0.3.0 was.
+- Step 1: `sabotage-m0-wheel` 25 of 25, `sabotage-scaffold` 66 of 66 (93
+  minutes).
+- Step 3: the local wheel was `m0-0.4.0-py3-none-any.whl`, 641,393 bytes,
+  and a scaffold from it pinned `m0==0.4.0`.
+- Step 4: `build` green at the first attempt ("m0 0.4.0, cut from
+  b1dca5b…"), and `publish-pypi` green after approval; the file on the
+  index is 641,393 bytes, equal to the local wheel. The `automerge` label
+  made the merge, so "Tests passed on" named the pull request head it
+  merges (`5d159e9`), which is the path step 1 describes.
+- Step 5 on macOS arm64: the scaffold pinned `m0==0.4.0`, and `uv.lock`
+  named it from pypi.org. The first build took 23.3 s and printed no
+  warning, `smoke.sh` passed, `m0 test` ran six tests green, and every
+  `m0 doctor` check passed, `scaffold` naming no file.
+- `m0 image` built in 586 s from a cold cache. The builder's `uv sync
+  --frozen` installed `m0==0.4.0` and mojo 1.1.0 from the index. The image
+  is 103.5 MB, 2.92 MB of it the app, with `libsqlite3-0` installed and no
+  interpreter.
+- Step 6: 8 blocks passed against the published package.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
