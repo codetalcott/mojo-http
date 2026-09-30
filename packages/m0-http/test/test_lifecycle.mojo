@@ -1,7 +1,7 @@
-"""Tests for the per-request context, the shutdown pipe, and the supervisor.
+"""Tests for the shutdown pipe and the supervisor.
 
-Three small modules that had no coverage, grouped because none of them fills a
-file on its own.
+Two small modules that had no coverage, grouped because neither fills a file
+on its own.
 
 **The signal tests really do signal this process.** `kill(getpid(), SIGTERM)`
 with a handler installed is the only honest way to prove the handler is
@@ -25,8 +25,6 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.c.process import getpid, kill_process, SIGTERM, SIGINT
 
-from src.content_negotiation import AcceptResult, parse_accept
-from src.request_context import RequestContext
 from src.signal import (
     create_shutdown_pipe, install_shutdown_signals, shutdown_signals_active,
 )
@@ -35,50 +33,6 @@ from src.global_slot import (
     publish_child_pids, child_pid_count, child_pid_at, MAX_TRACKED_CHILDREN,
 )
 from src.multiworker import WorkerSupervisor
-
-
-# --- RequestContext ----------------------------------------------------------
-
-
-def test_context_carries_the_parsed_accept_result() raises:
-    """The point of the struct: parse Accept once, read it in after_response."""
-    var accept = parse_accept("application/json")
-    var ctx = RequestContext(7, accept, UInt(1000))
-    assert_equal(ctx.request_id, 7)
-    assert_equal(ctx.start_ns, UInt(1000))
-    assert_true(ctx.accept.wants_json)
-
-
-def test_context_starts_with_no_response_status() raises:
-    """0 means "not yet answered" — after_response fills it in."""
-    var ctx = RequestContext(1, parse_accept("*/*"), UInt(0))
-    assert_equal(ctx.response_status, 0)
-
-
-def test_context_status_is_mutable_after_construction() raises:
-    var ctx = RequestContext(1, parse_accept("*/*"), UInt(0))
-    ctx.response_status = 404
-    assert_equal(ctx.response_status, 404)
-
-
-def test_context_copy_is_independent() raises:
-    """It is Copyable and passed through hooks; a copy must not alias."""
-    var a = RequestContext(1, parse_accept("text/html"), UInt(5))
-    var b = a.copy()
-    b.response_status = 500
-    assert_equal(a.response_status, 0)
-    assert_equal(b.response_status, 500)
-    assert_equal(b.request_id, 1)
-
-
-def test_context_move_preserves_every_field() raises:
-    var a = RequestContext(9, parse_accept("application/json"), UInt(42))
-    a.response_status = 201
-    var b = a^
-    assert_equal(b.request_id, 9)
-    assert_equal(b.start_ns, UInt(42))
-    assert_equal(b.response_status, 201)
-    assert_true(b.accept.wants_json)
 
 
 # --- Shutdown pipe -----------------------------------------------------------

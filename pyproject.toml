@@ -7163,28 +7163,6 @@ shell = "python3 scripts/notes_login_sabotage.py"
 help = "PRE-RELEASE: revert each outbox-cap rule and insist the probe fails"
 cmd = "python3 scripts/outbox_cap_sabotage.py"
 
-# Both ends of the wire in Mojo: the client dials, sends, and parses against
-# the notes API — GET, POST with body, negotiation, problem+json, a refused
-# connection, and the https rejection. client_check.mojo raises on any miss.
-[tool.poe.tasks.smoke-client]
-help = "Start the notes API, run the Mojo HTTP client against it, stop"
-shell = """
-M0_PORT=8091 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo > notes.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8091/health \
-  || { echo '=== notes.log ==='; cat notes.log; exit 1; }
-mojo run -I packages/m0-http/ -I packages/m0-core/ packages/m0-http/client_check.mojo \
-  || { echo '=== notes.log ==='; cat notes.log; exit 1; }
-rm -f notes.log
-echo "smoke-client OK"
-python3 scripts/emit.py --covers M14 --task smoke-client
-"""
-
-# The foreign-caller half of the C-ABI story: the emitted shared object must
-# load and answer through ctypes — the same dlopen path Bun or N-API takes.
-# Vectors are the public known answers test_hashing.mojo also pins, so the
-# .so is checked against the algorithm, not against itself.
 [tool.poe.tasks.bundle-ffi]
 help = "Assemble a self-contained, redistributable libm0core bundle under dist/"
 deps = ["build-ffi"]
@@ -7663,8 +7641,10 @@ python3 scripts/emit.py --covers M10 --task smoke-quickstart
 python3 scripts/emit.py --covers K11 --task smoke-quickstart
 python3 scripts/emit.py --covers M16 --task smoke-quickstart
 """
+# The foreign-caller half of the C-ABI story: the emitted shared object must
+# load and answer through ctypes, the path m0pub takes to number its events.
 [tool.poe.tasks.smoke-ffi]
-help = "Load the C-ABI shared library via ctypes and assert known vectors"
+help = "Load the C-ABI shared library via ctypes and call its one export"
 deps = ["build-ffi"]
 shell = """
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
@@ -7684,26 +7664,6 @@ python3 - "packages/m0-core/libm0core.$ext" <<'PYEOF'
 import ctypes, sys
 
 lib = ctypes.CDLL(sys.argv[1])
-u32, buf_t = ctypes.c_uint32, ctypes.c_char_p
-lib.m0_fnv1a.restype = u32
-lib.m0_fnv1a.argtypes = [buf_t, u32]
-lib.m0_xxhash32.restype = u32
-lib.m0_xxhash32.argtypes = [buf_t, u32, u32]
-lib.m0_format_hash.restype = u32
-lib.m0_format_hash.argtypes = [u32, ctypes.c_char_p, u32]
-
-# FNV-1a and xxHash32 public vectors, the same ones test_hashing.mojo pins.
-assert lib.m0_fnv1a(b"a", 1) == 0xE40C292C, "fnv1a('a')"
-assert lib.m0_fnv1a(b"foobar", 6) == 0xBF9CF968, "fnv1a('foobar')"
-assert lib.m0_xxhash32(b"", 0, 0) == 0x02CC5D05, "xxhash32('')"
-h0 = lib.m0_xxhash32(b"hello world", 11, 0)
-h7 = lib.m0_xxhash32(b"hello world", 11, 7)
-assert h0 != h7, "seed had no effect"
-
-out = ctypes.create_string_buffer(8)
-n = lib.m0_format_hash(0xBF9CF968, out, 8)
-assert n == 8 and out.raw == b"bf9cf968", f"format_hash wrote {n}: {out.raw}"
-assert lib.m0_format_hash(1, out, 4) == 0, "short buffer must write nothing"
 
 # m0_shared_fetch_add is the export apps/django_realtime's m0pub.py calls to
 # number the events it publishes: the ONE thing Python cannot do for itself,
@@ -9344,12 +9304,8 @@ python3 scripts/emit.py --covers N44 --task smoke-fragment-notes
 
 # --- Benchmarks ------------------------------------------------------------
 
-[tool.poe.tasks.bench-core]
-help = "Benchmark m0-core hot paths"
-cmd = "mojo packages/m0-core/run_benchmarks.mojo"
-
 # Built and run rather than `mojo run`, for the same libsqlite3 linking reason
-# as test-sqlite above. Not part of test-all — neither is bench-core.
+# as test-sqlite above. Not part of test-all.
 [tool.poe.tasks.bench-sqlite]
 help = "Benchmark m0-sqlite read-out (opens libsqlite3 at run time)"
 shell = """

@@ -253,9 +253,8 @@ optimising the HTTP layer buys nothing here.
   of the layer's time. `mojo-framework/packages/m0-data` has an SoA arena
   to start from.
 - **Automatic `Vary` tracking and dynamic compression.** Negotiation covers
-  `Accept`, `Accept-Encoding` (`negotiate_encoding`, codec-agnostic, for
-  callers with precompressed variants) and `Accept-Language`
-  (`negotiate_language`, RFC 4647 matching). The framework ships no
+  `Accept`; the `Accept-Encoding` and `Accept-Language` negotiators nothing
+  called were removed on 2026-09-29 (DECISIONS D54). The framework ships no
   compressor.
 
 ## Recently resolved

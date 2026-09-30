@@ -283,6 +283,34 @@ wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
 
 ### Removed
 
+- **Framework names nothing in the tree used**, from the packages the `m0`
+  wheel ships (DECISIONS D54). Nothing served changes: `m0serve` and the
+  Mojo host reached none of them, and `M0_API_KEY` was read into
+  `AppConfig` and never checked, so no request was ever refused by it. An
+  application built with the `m0` wheel (a `0.x` preview) that imported one
+  of these needs its own copy: `m0_http.RequestContext`;
+  `m0_http.check_api_key`, `AppConfig.api_key` and `M0_API_KEY`, whose
+  capability, SPEC G9, is now `out of scope`; `m0_http.ResponseCache`;
+  `m0_http.PatchJournal` and `JournalResult` (`DatastarStream`'s own replay
+  journal stays); `negotiate_encoding`, `negotiate_language`, and the free
+  functions `wants_html` and `wants_event_stream`, where
+  `parse_accept(...).wants_html` is the same answer; and m0-core's
+  FNV-1a and xxHash32 (`fnv1a`, `fnv1a_step`, `fnv1a_batch`, `xxhash32`,
+  `xxhash32_batch`) with `format_hash32`. `libm0core` exports
+  `m0_shared_fetch_add` alone, the call `m0pub` makes: `m0_fnv1a`,
+  `m0_xxhash32` and `m0_format_hash` are gone from the release asset.
+  `m0_sqlite.stats_ints`, `sum_ints`, `min_ints`, `max_ints` and
+  `ColumnStats` left the package, `stats_ints` living on in
+  `bench_sqlite.mojo`, its one user; and `poe bench-core` went with the
+  m0-core benchmark it ran, which no longer compiled.
+
+- **The Mojo HTTP client, `m0_http.Client`**, with `poe smoke-client`
+  (DECISIONS D55). No application called it, it spoke no TLS, and a call
+  from a view on the loop blocked every connection the loop held. Nothing
+  served changes. An application built with the `m0` wheel that used it
+  needs its own; a client comes back as a design of its own that answers
+  TLS and where the call runs. SPEC M14 is now `out of scope`.
+
 - **Upstream `lightbug_http` code that nothing used**, about 870 lines of
   the fork, found by the 2026-09-28 review. None of it was reachable from
   `m0serve` or the application layer, but the `m0` wheel ships the fork's

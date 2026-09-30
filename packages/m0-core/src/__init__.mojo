@@ -1,19 +1,16 @@
 """
 `m0-core`: Zero-dependency foundation for the M0 framework.
 
-Provides hashing (FNV-1a, xxHash32, wyhash64), SHA-256 and HMAC-SHA256
-with a constant-time compare, SIMD-accelerated JSON string escaping, HTML
-text escaping, and lightweight JSON field parsing.
+Provides wyhash64 (the ETag hash), SHA-256 and HMAC-SHA256 with a
+constant-time compare, SIMD-accelerated JSON string escaping, HTML text
+escaping, and lightweight JSON field parsing.
 C-ABI FFI exports live in ffi_exports.mojo at the package root — outside
 src/ because it is the `mojo build --emit shared-lib` entry point (see its
 docstring); `poe build-ffi` emits the shared object.
 """
 
 from .hashing import (
-    fnv1a, fnv1a_step, format_hash32, format_hash64,
-    xxhash32, fnv1a_batch, xxhash32_batch,
-    wyhash64, wyhash64_string, hex_nibble, hex_digest,
-    _fnv1a_ptr, _xxhash32_ptr, _read_u32_le,
+    format_hash64, wyhash64, wyhash64_string, hex_nibble, hex_digest,
 )
 from .sha256 import Sha256, sha256, sha256_hex, SHA256_DIGEST_SIZE, SHA256_BLOCK_SIZE
 from .hmac import HmacSha256, hmac_sha256, constant_time_equal

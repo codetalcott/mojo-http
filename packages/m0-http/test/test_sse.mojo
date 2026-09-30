@@ -1,4 +1,4 @@
-"""Tests for SSE format, registry, and journal."""
+"""Tests for SSE format and registry."""
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
@@ -10,7 +10,6 @@ from src.sse.format import (
     NO_EVENT_ID,
 )
 from src.sse.registry import SSERegistry, MAX_PENDING_BYTES
-from src.sse.journal import PatchJournal
 
 
 # --- SSE Format ---
@@ -493,138 +492,6 @@ def test_backpressure_slots_independent() raises:
     # Slot 1 should have both events (if they fit)
     assert_true(reg.has_pending(1), "slot 1 should still accept events")
 
-
-# --- Patch Journal ---
-
-def _bytes2(a: UInt8, b: UInt8) -> List[UInt8]:
-    var v = List[UInt8]()
-    v.append(a); v.append(b)
-    return v^
-
-
-def _byte(a: UInt8) -> List[UInt8]:
-    var v = List[UInt8]()
-    v.append(a)
-    return v^
-
-
-def test_journal_append_since() raises:
-    """Single event since lastEventId should return patch."""
-    var j = PatchJournal()
-    var eid = j.append("/orders/1", "e0", "e1", _bytes2(1, 2), _bytes2(10, 20))
-    assert_equal(eid, 1)
-    var r = j.since("/orders/1", 0)
-    assert_equal(r.type, "patch")
-    assert_equal(r.event_id, 1)
-    assert_equal(len(r.data), 2)
-
-
-def test_journal_append_at_records_peer_id() raises:
-    """Journals at a caller-supplied id — the `sse_peer_frame` case.
-
-    A reconnect to THIS worker with a Last-Event-ID must be able to replay
-    an event that originated on a peer; before append_at existed (#119)
-    that entry simply could not be recorded on the public journal.
-    """
-    var j = PatchJournal()
-    j.append_at(7, "/orders/1", "e0", "e1", _byte(1), _byte(10))
-    var r = j.since("/orders/1", 0)
-    assert_equal(r.type, "patch")
-    assert_equal(r.event_id, 7)
-
-
-def test_journal_append_at_advances_next_id() raises:
-    """A local append after a peer record must not re-issue the peer's id."""
-    var j = PatchJournal()
-    j.append_at(7, "/a", "e0", "e1", _byte(1), _byte(10))
-    var eid = j.append("/a", "e1", "e2", _byte(2), _byte(20))
-    assert_equal(eid, 8)
-
-
-def test_journal_append_at_inserts_in_id_order() raises:
-    """An out-of-order peer frame lands in id order, as _record does.
-
-    Replay advances a slot's last-seen id as it walks the journal, so an
-    entry stored behind a higher id would be skipped, not replayed late.
-    """
-    var j = PatchJournal()
-    j.append_at(9, "/a", "e0", "e1", _byte(1), _byte(10))
-    j.append_at(4, "/a", "ex", "ey", _byte(2), _byte(20))
-    assert_equal(j.event_ids[0], 4)
-    assert_equal(j.event_ids[1], 9)
-    # And a reconnect that saw 4 gets exactly the newer one.
-    var r = j.since("/a", 4)
-    assert_equal(r.type, "patch")
-    assert_equal(r.event_id, 9)
-
-
-def test_journal_append_at_low_id_does_not_regress_counter() raises:
-    """Recording an OLD peer id must not wind next_id backwards."""
-    var j = PatchJournal()
-    _ = j.append("/a", "e0", "e1", _byte(1), _byte(10))  # takes id 1, next 2
-    _ = j.append("/a", "e1", "e2", _byte(2), _byte(20))  # takes id 2, next 3
-    j.append_at(1, "/b", "e0", "e1", _byte(3), _byte(30))
-    var eid = j.append("/a", "e2", "e3", _byte(4), _byte(40))
-    assert_equal(eid, 3)
-
-
-def test_journal_multiple_returns_snapshot() raises:
-    """Multiple events since lastEventId should return snapshot."""
-    var j = PatchJournal()
-    _ = j.append("/orders/1", "e0", "e1", _byte(1), _byte(10))
-    var snap = List[UInt8]()
-    snap.append(20); snap.append(30)
-    _ = j.append("/orders/1", "e1", "e2", _byte(2), snap)
-    var r = j.since("/orders/1", 0)
-    assert_equal(r.type, "snapshot")
-    assert_equal(len(r.data), 2)  # latest snapshot
-
-
-def test_journal_no_events() raises:
-    """No events since lastEventId should return none."""
-    var j = PatchJournal()
-    _ = j.append("/orders/1", "e0", "e1", _byte(1), _byte(10))
-    var r = j.since("/orders/1", 1)
-    assert_equal(r.type, "none")
-
-
-def test_journal_filters_by_url() raises:
-    """`since()` should only return events for the requested URL."""
-    var j = PatchJournal()
-    _ = j.append("/orders/1", "e0", "e1", _byte(1), _byte(10))
-    _ = j.append("/orders/2", "e0", "e1", _byte(2), _byte(20))
-    var r = j.since("/orders/2", 0)
-    assert_equal(r.type, "patch")
-    assert_equal(r.data[0], 2)
-
-
-def test_journal_latest_id() raises:
-    """`latest_id` should return the most recent event ID."""
-    var j = PatchJournal()
-    assert_equal(j.latest_id(), 0)
-    _ = j.append("/a", "", "", List[UInt8](), List[UInt8]())
-    assert_equal(j.latest_id(), 1)
-    _ = j.append("/b", "", "", List[UInt8](), List[UInt8]())
-    assert_equal(j.latest_id(), 2)
-
-
-def test_journal_has_etag() raises:
-    """`has_etag` should find matching entries."""
-    var j = PatchJournal()
-    _ = j.append("/orders/1", "e0", "e1", List[UInt8](), List[UInt8]())
-    assert_equal(j.has_etag("/orders/1", "e1"), 1)
-    assert_equal(j.has_etag("/orders/1", "e0"), 0)
-
-
-def test_journal_compact() raises:
-    """`compact` should remove all entries for a URL."""
-    var j = PatchJournal()
-    _ = j.append("/a", "", "", List[UInt8](), List[UInt8]())
-    _ = j.append("/a", "", "", List[UInt8](), List[UInt8]())
-    _ = j.append("/b", "", "", List[UInt8](), List[UInt8]())
-    j.compact("/a")
-    assert_equal(j.since("/a", 0).type, "none")
-    assert_equal(j.since("/b", 0).type, "patch")
 
 # --- sse_data_payload: the inverse, for cross-transport delivery ---
 

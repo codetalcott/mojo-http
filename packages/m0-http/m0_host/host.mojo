@@ -928,8 +928,8 @@ def host_report[H: AppHandler](
     cannot be built, is reported by the run. The application's own
     configuration is not rendered either; its checks run in its `main`
     before `serve` and so fire under `--doctor` exactly as they do without.
-    `M0_API_KEY` is never printed. `parallel_runtime` is `host_checks`'
-    own optional, for the test that pins the fact.
+    `parallel_runtime` is `host_checks`' own optional, for the test that
+    pins the fact.
     """
     ref config = flags.config
     var report = Report(String(DOCTOR_FORMAT), String("m0_host"))

@@ -1,22 +1,17 @@
 """
-Hash Algorithms — FNV-1a, xxHash32, wyhash64, and hex formatting.
+Hashing — wyhash64 and hex formatting.
 
-Three non-cryptographic hashes. None are suitable for security decisions.
-
-- FNV-1a 32-bit: Element ID generation from DOM paths.
-- xxHash32: Fast effect deduplication in runtime queues.
-- wyhash64: Vectorized 64-bit hash for ETag computation.
-
-Internal _*_ptr functions operate on raw byte pointers and are shared
-by both the String-based API and C-ABI FFI exports.
+wyhash64 is a non-cryptographic 64-bit hash, used for ETag computation; it
+is not suitable for security decisions (`sha256` and `hmac` are the
+cryptographic primitives). The hex formatters print a 64-bit hash
+(`format_hash64`) and a digest of any length (`hex_digest`).
 """
 
-from std.bit import rotate_bits_left
 from std.memory import Pointer
 
 
 # ============================================================================
-# Hex Formatting (shared by all hash algorithms)
+# Hex Formatting
 # ============================================================================
 
 def hex_nibble(val: Int) -> UInt8:
@@ -47,11 +42,6 @@ def _format_hex(val: UInt64, nibbles: Int) -> String:
     return String(unsafe_from_utf8=Span(out))
 
 
-def format_hash32(hash: UInt32) -> String:
-    """Format a 32-bit hash as an 8-character zero-padded hex string."""
-    return _format_hex(UInt64(hash), 8)
-
-
 def format_hash64(val: UInt64) -> String:
     """Format a 64-bit hash as a 16-character zero-padded hex string."""
     return _format_hex(val, 16)
@@ -74,137 +64,6 @@ def hex_digest(digest: Span[UInt8, _]) -> String:
         out.append(hex_nibble(Int(b) >> 4))
         out.append(hex_nibble(Int(b) & 0xF))
     return String(StringSpan(unsafe_from_utf8=Span(out)))
-
-
-# ============================================================================
-# FNV-1a 32-bit Hash
-# ============================================================================
-
-comptime FNV_OFFSET_BASIS: UInt32 = 2166136261
-comptime FNV_PRIME: UInt32 = 16777619
-
-
-def fnv1a_step(hash: UInt32, char_code: UInt32) -> UInt32:
-    """Perform a single FNV-1a hash step for one character code."""
-    var h = hash ^ char_code
-    h = h + (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)
-    return h
-
-
-def _fnv1a_ptr(data: Pointer[UInt8, _], length: Int) -> UInt32:
-    """Compute FNV-1a 32-bit hash over a raw byte buffer.
-
-    Shared implementation used by both the String API and C-ABI exports.
-    """
-    var hash = FNV_OFFSET_BASIS
-    for i in range(length):
-        hash = fnv1a_step(hash, UInt32(data[unsafe_offset=i]))
-    return hash
-
-
-def fnv1a(s: String) -> UInt32:
-    """Compute FNV-1a 32-bit hash for a string.
-
-    Non-cryptographic hash with excellent distribution. Used for generating
-    stable element IDs from DOM paths.
-    """
-    var bytes = s.as_bytes()
-    return _fnv1a_ptr(bytes.unsafe_ptr(), len(bytes))
-
-
-# ============================================================================
-# xxHash32
-# ============================================================================
-
-comptime PRIME32_1: UInt32 = 0x9E3779B1
-comptime PRIME32_2: UInt32 = 0x85EBCA77
-comptime PRIME32_3: UInt32 = 0xC2B2AE3D
-comptime PRIME32_4: UInt32 = 0x27D4EB2F
-comptime PRIME32_5: UInt32 = 0x165667B1
-
-
-def _read_u32_le(data: Pointer[UInt8, _], offset: Int) -> UInt32:
-    """Load an unaligned little-endian UInt32 at `offset` bytes past `data`.
-
-    Every target is little-endian (osx-arm64, linux x86_64 and arm64), so a
-    bitcast load produces the value. alignment=1, as `_load_u64` asks: the
-    address is the caller's -- a byte offset into a String, or whatever a
-    foreign caller hands `m0_xxhash32` -- and the `[]` dereference this
-    replaced told the compiler it was 4-aligned (`load i32, align 4`),
-    which on a target that faults on a misaligned load is a fault, and
-    anywhere is an assumption the optimizer may act on.
-    """
-    return data.unsafe_offset(offset).unsafe_bitcast[UInt32]().unsafe_load[
-        alignment=1
-    ]()
-
-
-def _xxhash32_round(acc: UInt32, input: UInt32) -> UInt32:
-    """Perform a single xxHash32 accumulation round."""
-    var a = acc + input * PRIME32_2
-    a = rotate_bits_left[shift=13](a)
-    return a * PRIME32_1
-
-
-def _xxhash32_ptr(data: Pointer[UInt8, _], length: Int, seed: UInt32) -> UInt32:
-    """Compute xxHash32 over a raw byte buffer.
-
-    Shared implementation used by both the String API and C-ABI exports.
-    """
-    var h32: UInt32
-    var i: Int = 0
-
-    if length >= 16:
-        var v1 = seed + PRIME32_1 + PRIME32_2
-        var v2 = seed + PRIME32_2
-        var v3 = seed
-        var v4 = seed - PRIME32_1
-
-        var limit = length - 16
-        while i <= limit:
-            v1 = _xxhash32_round(v1, _read_u32_le(data, i))
-            v2 = _xxhash32_round(v2, _read_u32_le(data, i + 4))
-            v3 = _xxhash32_round(v3, _read_u32_le(data, i + 8))
-            v4 = _xxhash32_round(v4, _read_u32_le(data, i + 12))
-            i += 16
-
-        h32 = (
-            rotate_bits_left[shift=1](v1)
-            + rotate_bits_left[shift=7](v2)
-            + rotate_bits_left[shift=12](v3)
-            + rotate_bits_left[shift=18](v4)
-        )
-    else:
-        h32 = seed + PRIME32_5
-
-    h32 = h32 + UInt32(length)
-
-    while i <= length - 4:
-        var k = _read_u32_le(data, i)
-        h32 = rotate_bits_left[shift=17](h32 + k * PRIME32_3) * PRIME32_4
-        i += 4
-
-    while i < length:
-        h32 = rotate_bits_left[shift=11](h32 + UInt32(data[unsafe_offset=i]) * PRIME32_5) * PRIME32_1
-        i += 1
-
-    h32 ^= h32 >> 15
-    h32 = h32 * PRIME32_2
-    h32 ^= h32 >> 13
-    h32 = h32 * PRIME32_3
-    h32 ^= h32 >> 16
-
-    return h32
-
-
-def xxhash32(input: String, seed: UInt32 = 0) -> UInt32:
-    """Compute xxHash32 for a string input.
-
-    Faster than JSON-based hashing with fewer collisions. Used for effect
-    deduplication in runtime queues.
-    """
-    var input_bytes = input.as_bytes()
-    return _xxhash32_ptr(input_bytes.unsafe_ptr(), len(input_bytes), seed)
 
 
 # ============================================================================
@@ -314,81 +173,3 @@ def wyhash64_string(s: String) -> UInt64:
     """Compute wyhash64 for a string."""
     return wyhash64(s.as_bytes())
 
-
-# ============================================================================
-# SIMD Batch Hashing
-# ============================================================================
-
-
-def fnv1a_batch(strings: List[String]) -> List[UInt32]:
-    """Compute FNV-1a for multiple strings using SIMD parallelism.
-
-    Processes 4 strings simultaneously using SIMD lanes. Each lane
-    independently computes FNV-1a up to its string's length, with
-    the min-length prefix processed in lockstep SIMD and remaining
-    bytes handled per-lane.
-    """
-    var count = len(strings)
-    var results = List[UInt32]()
-
-    var i = 0
-    while i + 4 <= count:
-        var s0 = strings[i].as_bytes()
-        var s1 = strings[i + 1].as_bytes()
-        var s2 = strings[i + 2].as_bytes()
-        var s3 = strings[i + 3].as_bytes()
-        var len0 = len(s0)
-        var len1 = len(s1)
-        var len2 = len(s2)
-        var len3 = len(s3)
-
-        var min_len = len0
-        if len1 < min_len: min_len = len1
-        if len2 < min_len: min_len = len2
-        if len3 < min_len: min_len = len3
-
-        var hash = SIMD[DType.uint32, 4](FNV_OFFSET_BASIS)
-        for j in range(min_len):
-            var bytes_vec = SIMD[DType.uint32, 4](
-                UInt32(Int(s0[j])), UInt32(Int(s1[j])),
-                UInt32(Int(s2[j])), UInt32(Int(s3[j]))
-            )
-            var xored = hash ^ bytes_vec
-            hash = xored + (xored << 1) + (xored << 4) + (xored << 7) + (xored << 8) + (xored << 24)
-
-        var h0 = hash[0]
-        var h1 = hash[1]
-        var h2 = hash[2]
-        var h3 = hash[3]
-        for j in range(min_len, len0):
-            h0 = fnv1a_step(h0, UInt32(Int(s0[j])))
-        for j in range(min_len, len1):
-            h1 = fnv1a_step(h1, UInt32(Int(s1[j])))
-        for j in range(min_len, len2):
-            h2 = fnv1a_step(h2, UInt32(Int(s2[j])))
-        for j in range(min_len, len3):
-            h3 = fnv1a_step(h3, UInt32(Int(s3[j])))
-
-        results.append(h0)
-        results.append(h1)
-        results.append(h2)
-        results.append(h3)
-        i += 4
-
-    while i < count:
-        results.append(fnv1a(strings[i]))
-        i += 1
-
-    return results^
-
-
-def xxhash32_batch(strings: List[String], seed: UInt32 = 0) -> List[UInt32]:
-    """Compute xxHash32 for multiple strings.
-
-    Uses scalar xxhash32 per string. The primary win comes from batching
-    calls and reducing interpreter overhead.
-    """
-    var results = List[UInt32]()
-    for i in range(len(strings)):
-        results.append(xxhash32(strings[i], seed))
-    return results^

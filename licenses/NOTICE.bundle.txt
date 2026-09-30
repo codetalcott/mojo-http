@@ -1,4 +1,4 @@
-libm0core — C-ABI hash functions from mojo-http's m0-core package
+libm0core — the C-ABI export of mojo-http's m0-core package
 Copyright (c) 2025-2026 Wm Talcott
 Licensed under the MIT License; see LICENSE.mojo-http.txt.
 

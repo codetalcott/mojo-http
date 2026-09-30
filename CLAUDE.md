@@ -41,7 +41,7 @@ private monorepo ([PROVENANCE.md](PROVENANCE.md)).
 
 ```
 m0-core     (zero deps)   hashing, JSON escape, JSON parse, crypto
-└── m0-http               router, negotiation, ETag, cache, SSE, auth, CORS, health
+└── m0-http               router, negotiation, ETag, SSE, CORS, views, sessions
     └── lightbug_http     the forked HTTP server (lives inside m0-http)
 m0-datastar               Datastar wire format (zero deps) + server glue (m0-http)
 m0-wsgi                   WSGI/ASGI gateway — embeds CPython, layers on m0-http
@@ -96,7 +96,7 @@ direction, and that no libpython reaches the link line.
   [packages/m0-sqlite/AGENTS.md](packages/m0-sqlite/AGENTS.md).
 
 **One import cycle, on purpose (DECISIONS D33).** `src/` imports
-`lightbug_http` throughout (`cors`, `signal`, `auth`, `multiworker` …), and
+`lightbug_http` throughout (`cors`, `signal`, `multiworker` …), and
 ONE fork module imports back: `lightbug_http/loop/state.mojo` imports
 `m0_http.log`; both sides are inside `packages/m0-http/`. **Nothing in
 `src/` may reach the event loop — `event_loop.mojo` or any module of `loop/`
@@ -139,13 +139,12 @@ check-mojoc-trait` guards the fix, and `build-apps` compiling
 `libm0core.so`/`.dylib`; `poe smoke-ffi` loads it through `ctypes` in CI). It
 must stay the shared-lib entry file: relative imports don't compile there,
 and `@export` symbols are only emitted from the entry module (its docstring
-records the dead ends). `@export` cannot take a parametric function, so the
-entry points name a concrete pointer origin and Mojo callers erase it
-explicitly (`test_ffi_exports.mojo`). `m0-wsgi/m0serve.mojo` is the
-`m0serve` binary (`poe build-serve` → `bin/m0serve`): `precompile src` must
-never see it, and it imports `m0_wsgi` through the `.mojoc`. The WSGI
-example apps are Python-only projects it serves; there is no `server.mojo`
-in them.
+records the dead ends). `@export` cannot take a parametric function, so an
+entry point names concrete types (`m0_shared_fetch_add` takes its address as
+a `UInt64`). `m0-wsgi/m0serve.mojo` is the `m0serve` binary (`poe
+build-serve` → `bin/m0serve`): `precompile src` must never see it, and it
+imports `m0_wsgi` through the `.mojoc`. The WSGI example apps are
+Python-only projects it serves; there is no `server.mojo` in them.
 
 **Holds, from the server side.** The application contract (`M0-Hold` and
 `M0-Channel`, `m0pub.publish()`, inbound WebSocket messages as a POST) is
@@ -869,9 +868,9 @@ Properties of the design, not defects to fix in passing. Each names its note.
 ## Configuration
 
 Env vars, all `M0_`-prefixed: `M0_HOST`, `M0_PORT`, `M0_BASE_URL`,
-`M0_API_KEY`, `M0_WORKERS`, `M0_THREADS` (mutually exclusive with
-`M0_WORKERS>1`; free-threaded CPython only), `M0_BLOCKING_THREADS` (handler
-threads per loop; composes with either and with `--realtime`),
+`M0_WORKERS`, `M0_THREADS` (mutually exclusive with `M0_WORKERS>1`;
+free-threaded CPython only), `M0_BLOCKING_THREADS` (handler threads per
+loop; composes with either and with `--realtime`),
 `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`, `M0_APP_TICK_MS`, `M0_QOS` (macOS:
 keeps the loop and its workers on performance cores; accepted and ignored
 elsewhere), `M0_MAX_KEEPALIVE_REQUESTS` (the keep-alive cap; 0 = never close
@@ -926,9 +925,9 @@ for `tv_subsec`, `Hasher.update` taking a `Span[UInt8]`, `Array` for
 8. **`Optional[T]` and `List[T]` take Movable-only elements** — a struct
    that is not `Copyable` can be appended, popped and wrapped (verified on
    1.0.0); do not add `Copyable` to a handle type just to store it
-9. **Parallel arrays (SoA)** — `SSERegistry` and `PatchJournal` keep parallel
-   `List` fields for cheap per-field scans, not because `List[Struct]` is
-   refused (the `ImplicitlyCopyable` constraint that first motivated them is
+9. **Parallel arrays (SoA)** — `SSERegistry` keeps parallel `List` fields
+   for cheap per-field scans, not because `List[Struct]` is refused (the
+   `ImplicitlyCopyable` constraint that first motivated them is
    gone); the fork's private `OwningList` was retired on 2026-09-05 at
    measured parity (NOTICE) — do not reintroduce a private list
 10. **A `mut` argument is not a reference**: from `-O1` one of ≤256 B, `self`

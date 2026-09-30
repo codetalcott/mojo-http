@@ -25,7 +25,6 @@ def _clear():
         String("M0_HOST"),
         String("M0_PORT"),
         String("M0_BASE_URL"),
-        String("M0_API_KEY"),
         String("M0_WORKERS"),
         String("M0_THREADS"),
         String("M0_ACCESS_LOG"),
@@ -47,7 +46,6 @@ def test_defaults_when_nothing_is_set() raises:
     var c = AppConfig()
     assert_equal(c.port, 8080)
     assert_equal(c.workers, 1)
-    assert_equal(c.api_key, "")
     assert_false(c.access_log)
     assert_equal(c.base_url, "http://localhost:8080")
 
@@ -105,11 +103,6 @@ def test_threads_and_workers_conflict_only_when_both_exceed_one() raises:
     assert_true(msg.value().find("mutually exclusive") >= 0)
     assert_true(msg.value().find("workers=2") >= 0)
     assert_true(msg.value().find("threads=3") >= 0)
-
-
-def test_api_key_is_taken_verbatim() raises:
-    var c = _with("M0_API_KEY", "  sk-with-spaces  ")
-    assert_equal(c.api_key, "  sk-with-spaces  ")
 
 
 def test_base_url_overrides_the_derived_default() raises:

@@ -3,8 +3,8 @@
 
 Depends on: m0-core (hashing for ETags)
 
-Provides routing, content negotiation, ETag computation, response caching,
-SSE (Server-Sent Events) support, and multi-worker fork supervision.
+Provides routing, content negotiation, ETag computation, SSE (Server-Sent
+Events) support, and multi-worker fork supervision.
 """
 
 from .router import Mount, Query, Router, MatchResult, reverse, url_for
@@ -29,14 +29,7 @@ from .session import (
     session_refused, verify_session, CSRF_MESSAGE_PREFIX, SESSION_SIG_CHARS,
     SESSION_SUBJECT_MAX, SESSION_VERSION,
 )
-from .content_negotiation import (
-    AcceptResult,
-    negotiate_encoding,
-    negotiate_language,
-    parse_accept,
-    wants_html,
-    wants_event_stream,
-)
+from .content_negotiation import AcceptResult, parse_accept
 from .etag import compute_etag, etag_matches
 from .reply import (
     accept_header,
@@ -53,7 +46,6 @@ from .reply import (
 )
 from .reload import MtimeScanner, ScanResult
 from .static import StaticFiles, content_type_for
-from .response_cache import ResponseCache
 from .sse import (
     format_sse_event,
     format_sse_heartbeat,
@@ -61,8 +53,6 @@ from .sse import (
     sse_data_payload,
     NO_EVENT_ID,
     SSERegistry,
-    PatchJournal,
-    JournalResult,
     sse_response,
     SSE_CONTENT_TYPE,
 )
@@ -81,8 +71,6 @@ from .threads import (
 )
 from .ws import WSHub
 from .cors import CorsConfig, apply_cors_headers
-from .auth import check_api_key
-from .request_context import RequestContext
 from .log import LogEntry, log_json, log_access
 from .signal import (
     create_shutdown_pipe, ShutdownHandle,
@@ -91,4 +79,3 @@ from .signal import (
 from .health import HealthRegistry
 from .config import AppConfig, threads_conflict
 from .mojo_pool import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler
-from .client import Client
