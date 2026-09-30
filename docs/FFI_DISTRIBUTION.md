@@ -1,5 +1,10 @@
 # The C-ABI artifact does not load off the machine that built it
 
+> Releases after v1.8.0 do not attach `libm0core`. It ships inside the
+> m0serve wheel, where `m0pub` loads it, and releases v0.1.0 through v1.8.0
+> keep the assets this page describes. The last section, "2026-09-30: no
+> longer published", records why.
+
 `libm0core` is published with every GitHub release for "Bun's `dlopen`,
 Node's N-API, or Python's `ctypes`". **It does not work for any of them.**
 Every release from v0.1.0 to v0.7.0 ships an asset that a consumer cannot
@@ -557,3 +562,37 @@ comparison. `libm0core` now exports `m0_shared_fetch_add` alone, the call
 `m0pub` makes through `ctypes` to number the events it publishes, and
 `smoke-ffi` makes that call. The bundling, the portability checks and the
 licensing position above are unchanged.
+
+## 2026-09-30: no longer published
+
+Releases after v1.8.0 attach no `libm0core` asset, bare or bundled:
+`release.yml`'s `build-artifacts` job and `poe bundle-ffi` were removed
+([DECISIONS](DECISIONS.md) D56). The library is still built. `poe build-ffi`
+emits it, `stage-wheel` copies it into the m0serve wheel's `_lib/` beside
+the binary, and the wheel's launcher points `m0pub` at that copy through
+`M0_CORE_LIB`. It is m0serve's private runtime, with no ABI promised to
+anyone else.
+
+The evidence, as of 2026-09-30:
+
+- Across the 32 releases from v0.1.0 to v1.8.0, the 114 `libm0core`
+  assets were downloaded 32 times in all, and 0 times on each of the seven
+  releases from v1.2.0 on (GitHub's releases API, `download_count`).
+- No project outside this repository names `libm0core` or
+  `m0_shared_fetch_add`, apart from a vendored copy of this repository.
+- `m0pub` is the one caller of its one export, `m0_shared_fetch_add`,
+  which it passes the address of the event-id word on the shared page
+  m0serve maps at startup (`M0_SHARED_ID_ADDR`). No caller through Bun's
+  `dlopen` or Node's N-API, the two this page opened by naming, is known.
+
+What carries over to the wheel's copy: the relocation above
+(`bundle_artifact.py --also`), the licensing position (the wheel carries
+`licenses/NOTICE.m0serve.txt`), and the self-containment check `bundle-ffi`
+ran on the standalone bundle, which now runs on the wheel's
+`_lib/libm0core` in `stage-wheel`, on every pull request, and again in the
+release's `wheel-inspect` job. `licenses/NOTICE.bundle.txt`, the notice
+that travelled inside the bundle, left the tree with it. Past releases keep
+their assets and their notices; nothing was deleted.
+
+Publishing resumes, with a versioned ABI, when a named caller outside this
+repository asks for a C ABI.

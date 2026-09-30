@@ -1,5 +1,7 @@
-# Publishes a GitHub release: builds libm0core on both platforms, proves
-# each artifact through the same ctypes smoke CI runs, and attaches them.
+# Publishes a GitHub release: builds the m0serve wheel on each platform,
+# proves each one on a machine that did not build it, and attaches them.
+# Releases up to 1.8.0 also attached libm0core; it now ships only inside the
+# wheel, where m0pub calls it (docs/DECISIONS.md D56).
 #
 # Three triggers, one job graph:
 #   - tag push (v*): release an existing tag, the ordinary path.
@@ -39,55 +41,6 @@ permissions:
   contents: write
 
 jobs:
-  build-artifacts:
-    strategy:
-      matrix:
-        include:
-          - os: ubuntu-latest
-            artifact: libm0core.so
-            asset: libm0core-linux-x86_64.so
-          - os: macos-latest
-            artifact: libm0core.dylib
-            asset: libm0core-macos-arm64.dylib
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.sha || github.ref }}
-      - uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-      - name: Build the C-ABI shared library
-        run: uv run poe build-ffi
-      # The same proof CI runs on every commit: dlopen the artifact through
-      # ctypes and assert the public FNV-1a/xxHash32 vectors. A release
-      # asset that fails this must not ship.
-      - name: Prove the artifact through ctypes
-        run: uv run poe smoke-ffi
-      # A bare .dylib is not usable on macOS: it resolves the Mojo runtime
-      # beside itself, so the runtime has to travel with it. `bundle-ffi`
-      # assembles that (discovering the dependency closure rather than naming
-      # it) with both licences, and refuses to finish unless the result is
-      # self-contained — so a release cannot ship an asset that only loads on
-      # the runner. See docs/FFI_DISTRIBUTION.md.
-      - name: Assemble the self-contained bundle
-        run: uv run poe bundle-ffi
-      - name: Stage the bundle under its platform name
-        run: |
-          dir=$(ls -d dist/libm0core-*)
-          tar -czf "${{ matrix.asset }}.tar.gz" -C "$(dirname "$dir")" "$(basename "$dir")"
-          # The bare library stays a separate asset: it is what anyone
-          # building against a Mojo install already has, and removing it
-          # would break existing download URLs.
-          cp packages/m0-core/${{ matrix.artifact }} ${{ matrix.asset }}
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.asset }}
-          path: |
-            ${{ matrix.asset }}
-            ${{ matrix.asset }}.tar.gz
-          if-no-files-found: error
-
   # ---------------------------------------------------------------------
   # The wheel, and the only proof that matters for it.
   #
@@ -178,6 +131,11 @@ jobs:
             # turns "the executable links the Mojo runtime" from an
             # assumption into a measurement.
             python3 scripts/ffi_portability_check.py --require-self-contained "$bin"
+            # And the library m0pub loads: releases no longer attach it on its
+            # own (docs/DECISIONS.md D56), so this copy is the one that ships.
+            lib=$(find "$d" -path '*/m0serve/_lib/libm0core.*')
+            [ -n "$lib" ] || { echo "::error::no libm0core in $whl"; exit 1; }
+            python3 scripts/ffi_portability_check.py --require-self-contained "$lib"
           done
           [ "$found" -gt 0 ] || { echo "::error::no wheels to inspect"; exit 1; }
           echo "inspected $found wheel(s)"
@@ -306,7 +264,7 @@ jobs:
   publish:
     # The wheel consume jobs gate this, so a release cannot carry a wheel
     # that was never installed anywhere but the machine that built it.
-    needs: [build-artifacts, wheel-inspect, wheel-consume-linux, wheel-consume-macos]
+    needs: [wheel-inspect, wheel-consume-linux, wheel-consume-macos]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -316,9 +274,9 @@ jobs:
         with:
           path: assets
           merge-multiple: true
-      # The wheels ride along as release assets too, so anyone can pin to a
-      # specific build without going through PyPI, and the sha256s are
-      # recorded with them.
+      # The wheels are the release's assets, so anyone can pin to a specific
+      # build without going through PyPI, and the sha256s are recorded with
+      # them.
       - name: Record asset checksums
         run: |
           cd assets && sha256sum * > SHA256SUMS.txt && cat SHA256SUMS.txt

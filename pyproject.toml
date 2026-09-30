@@ -7344,32 +7344,6 @@ cmd = "python3 scripts/notes_login_sabotage.py"
 help = "PRE-RELEASE: revert each outbox-cap rule and insist the probe fails"
 cmd = "python3 scripts/outbox_cap_sabotage.py"
 
-[tool.poe.tasks.bundle-ffi]
-help = "Assemble a self-contained, redistributable libm0core bundle under dist/"
-deps = ["build-ffi"]
-shell = """
-ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
-case "$(uname)-$(uname -m)" in
-  Darwin-arm64) plat=macos-arm64 ;;
-  Darwin-*)     plat=macos-x86_64 ;;
-  *-aarch64)    plat=linux-aarch64 ;;
-  *)            plat=linux-x86_64 ;;
-esac
-out="dist/libm0core-$plat"
-rm -rf "$out"
-python3 scripts/bundle_artifact.py "packages/m0-core/libm0core.$ext" "$out" || exit 1
-# Apache-2.0 with LLVM Exceptions governs the Mojo runtime shipped alongside
-# on macOS; sections 4(a) and 4(d) want the licence text and attribution to
-# travel with it. Included unconditionally so the bundle is self-describing
-# on both platforms.
-cp licenses/LICENSE.mojo-runtime.txt "$out/LICENSE.mojo-runtime.txt" || exit 1
-cp LICENSE "$out/LICENSE.mojo-http.txt" || exit 1
-cp licenses/NOTICE.bundle.txt "$out/NOTICE.txt" || exit 1
-python3 scripts/ffi_portability_check.py --require-self-contained \
-  "$out/libm0core.$ext" || exit 1
-echo "bundle ready: $out"
-"""
-
 [tool.poe.tasks.check-ffi-portable]
 help = "Assert the C-ABI artifact does not depend on the machine that built it"
 shell = """
@@ -7379,10 +7353,10 @@ lib=${FFI_LIB:-packages/m0-core/libm0core.$ext}
 python3 scripts/ffi_portability_check.py "$lib"
 """
 
-# The same treatment for the CLI binary, which never had any. bin/m0serve
+# A self-contained bundle of the CLI binary, which never had one. bin/m0serve
 # statically embeds the lightbug fork, so unlike libm0core it carries an MIT
 # attribution obligation into every artifact it ships in -- hence a licence
-# set of its own rather than the bundle's. Deliberately NOT named smoke-*:
+# set of its own, NOTICE.m0serve.txt. Deliberately NOT named smoke-*:
 # scripts/check_docs.py requires every smoke-* task to be run by test.yml,
 # and this one is a release-path task.
 [tool.poe.tasks.bundle-serve]
@@ -7484,6 +7458,10 @@ done
 
 python3 scripts/ffi_portability_check.py --require-self-contained \
   "$pkg/_bin/m0serve" || exit 1
+# And the library m0pub loads, which releases no longer attach on its own
+# (docs/DECISIONS.md D56): the copy in _lib/ is the only one that ships.
+python3 scripts/ffi_portability_check.py --require-self-contained \
+  "$pkg/_lib/libm0core.$ext" || exit 1
 echo "staged $pkg"
 """
 

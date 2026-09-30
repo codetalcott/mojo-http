@@ -1797,7 +1797,7 @@
       "id": "M9",
       "section": "M",
       "category": "M. Deployment and operations",
-      "capability": "C-ABI shared library loadable by `dlopen`/`ctypes`",
+      "capability": "`libm0core`, the C-ABI shared library the m0serve wheel carries for `m0pub`, loads through `ctypes` and answers its one export, `m0_shared_fetch_add`. Not published on its own: [DECISIONS](DECISIONS.md) D56",
       "status": "verified",
       "evidence": "`Smoke test the C-ABI shared library` (every PR)"
     },
