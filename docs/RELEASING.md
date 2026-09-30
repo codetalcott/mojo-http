@@ -168,24 +168,45 @@ connect is the route's, not the server's. Measured 2026-09-29 on colima at
   stalled connect.
 
 At that rate a section of 145 cases runs thin about a third of the time:
-6 of 20 section-6 runs here.
+9 of 30 section-6 runs.
 
-So the runner retries a thin section ONCE, on the same server, when wstest
-reported that failure and the server is alive and answering. It says so
-in the run's last line.
+So the runner RESUMES a thin section, up to three times, on the same
+server, when wstest reported that failure and the server is alive and
+answering. A resume runs only the cases no attempt has scored yet
+(wstest's `exclude-cases` takes exact case ids), so each makes fewer
+connects than the attempt before it. The run's last line says how many
+sections were resumed.
 
-- A thin retry fails the run, and so does a thin section with any other
-  cause.
+- The attempts' verdicts are merged, and the merge must hold each of the
+  section's pinned cases exactly once. A case scored twice fails the run:
+  wstest did not take the exclusions, and the second verdict would hide
+  the first.
+- A thin section with any other cause fails the run, and so does one still
+  thin after three resumes.
 - Every thin attempt prints wstest's line and the server's log, and keeps
   both under `bin/logs/autobahn/`.
-- What the cut-short attempt scored is still judged.
+- Every verdict any attempt scored is judged, so a failure scored before a
+  drop is not hidden by the resume.
+- After the tally the run lists the ids of every case not scored OK, so a
+  tally that moves between runs can be traced to a case.
 
-**One retry is not enough to make the gate reliable.** In those 20 runs,
-5 of the 6 retries ran whole and one ran thin again, so 1 run in 20
-still failed, having found nothing. Read a failure's kept `wstest said:`
-lines before believing it. A failure that is the same connect message
-twice is the route again: rerun the task. The
-runner drives the sections separately (a single pass wedges on the slot a
+The runner used to run the whole section again, once, and that was not
+enough: of those 30 section-6 runs, 9 ran thin, and 1 of the 9 retries ran
+thin again and failed its run, having found nothing. The resume was
+measured 2026-09-30 on colima at 4 CPUs, with the route dropping less that
+day:
+
+- Section 6 alone, 30 runs: 1 ran thin (at 54 of 145), and its one resume
+  ran the other 91. None failed.
+- Four full runs of the task: two resumed section 7 once (at 3 and at 6 of
+  37), and all four ended at 247 cases.
+- Drops made on purpose, by a proxy on the Mac that refused the next
+  connect: one section went through three resumes to 145 of 145, and a
+  fourth drop failed it.
+
+A failure is still possible, so read its kept `wstest said:` lines before
+believing it: four of the same connect message is the route again, and the
+task is worth one rerun. The
 runner drives the sections separately (a single pass wedges on the slot a
 cap-killed connection just released), skips 9 (performance: every case
 exceeds the cap) and 12/13 (`permessage-deflate`, I14), and compares in
