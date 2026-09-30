@@ -252,7 +252,7 @@ rules, about thirty minutes) and then `uv run --group max poe
 sabotage-host --only parallel`, and follow both with a plain `uv sync`,
 which takes `max-core` back out; a build made while it is installed reads
 as linked. A sabotage that
-does not compile is reported as BROKEN
+does not compile is reported as MISSED (does not compile)
 and counted as a miss, not a catch. Pre-release because each rule reruns
 the whole smoke, about fifteen minutes; `--only unit` is about a minute.
 
@@ -262,7 +262,8 @@ of the `m0` wheel's recipe and CLI in `packaging/m0/` and requires
 somewhere else is reported MISSED. The rules a refusal arm claims run with
 the smoke's unit phase off, so the arm and not a unit test is what must
 fail. Pre-release because each rule rebuilds the wheel and reruns the
-smoke, a minute or two apiece; `--only LABEL` runs one. Nothing here
+smoke, a minute or two apiece, after the unsabotaged smoke (the baseline)
+passes once per phase setting; `--only LABEL` runs one. Nothing here
 publishes the wheel; "Releasing m0" below does.
 
 **And `uv run poe sabotage-scaffold`** (SPEC N27, N29) — breaks each rule of
@@ -278,7 +279,9 @@ aborted the docker volume's journal, and what that looks like is a column
 of MISSED. The rules the wire holds run with the template's own tests
 switched off, so the wire assertion and not `m0 test` is what must fail;
 one rule runs the other way round, to show the template's test goes red.
-About a minute a rule; `--only LABEL` runs one.
+About a minute a rule, after a baseline for each smoke the chosen rules
+use (nine in a full run, the image's a cold build of its own); `--only
+LABEL` runs one.
 
 **And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
 and insists the I17 probe fails; pre-release because its harness rebuilds
@@ -300,8 +303,9 @@ sabotaged images from a copy of the build context and requires
 `smoke-blobs-image` to fail each one in the phase it names: a shell at PID
 1, a stop signal the server ignores, a size written rather than measured, a
 page without its footer, and so on, plus the rules the Dockerfile refuses
-itself. Nothing tracked is edited. Pre-release because it is ten image
-builds, most of them a layer or two from the cache; docker otherwise idle,
+itself. Nothing tracked is edited. Pre-release because it is twelve image
+builds, the unsabotaged baseline of each gate and then the ten, most of
+them a layer or two from the cache; docker otherwise idle,
 as above. Both rows cited it as `(pre-release)` from the day it landed, and
 this page did not name it until the 1.5.0 run.
 

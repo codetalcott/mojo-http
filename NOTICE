@@ -1104,6 +1104,25 @@ lightbug_http
         a real 0x01 the bridge does not drop and such a name addresses a
         connection slot on the loop (review record Hold).
 
+      - socket.mojo (2026-09-29): `Socket.close()` leaves the socket
+        holding -1 in place of the number it closed, so every later call
+        -- `send`, `receive`, `bind`, `listen`, `connect`, the socket
+        options -- fails with EBADF, `shutdown` does nothing and `into_fd`
+        returns -1, where each acted on whatever descriptor had taken the
+        number since (review record B27b).
+
+      - offload.mojo (2026-09-29): `OffloadPool.stop` waits for room to
+        pill a thread that parks on its lane's socket -- an executor, a
+        test's thread, every pool thread under `M0_POOL_ELASTIC=0` or
+        without rings -- rather than offering the pill once and ignoring a
+        refusal (`_offer_until`, `PILL_WAIT_NS`). Inbound WebSocket
+        messages fill that socket while every thread of the lane is inside
+        a view; the thread came back, took them, and parked on an empty
+        socket for good, which a bounded join abandoned and an unbounded
+        one never returned from. The wait shares its caller's join
+        deadline (`stop_deadline`, `ns_left`), so the two are one bound
+        (review record C9b-c).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

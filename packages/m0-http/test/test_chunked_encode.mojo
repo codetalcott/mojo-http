@@ -1,10 +1,10 @@
 """Tests for the chunked transfer-encoding ENCODER.
 
-The decoder in the same module is the client's half and already had
-coverage through `test_client.mojo`; these pin the server's half, and the
-round-trip tests deliberately feed the encoder's output to that decoder —
-the two are the only readers of each other's rules, so a framing mistake
-that both halves shared would otherwise pass unnoticed.
+The decoder in the same module reads request bodies and has coverage of
+its own in `test_parsing.mojo`; these pin the encoder, the server's half,
+and the round-trip tests deliberately feed the encoder's output to that
+decoder — the two are the only readers of each other's rules, so a framing
+mistake that both halves shared would otherwise pass unnoticed.
 """
 
 from std.testing import assert_equal, assert_true, TestSuite

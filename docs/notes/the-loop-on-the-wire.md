@@ -214,6 +214,17 @@ moved it into the fork's head writers, where every response passes (SPEC
 G1, G2). Dropping rather than raising: the application has already run and
 its body is real.
 
+What m0-wsgi still refuses as it reads an application's head
+(`PyBridge.read_head`, on the fork's own scanner since 2026-09-29) is what
+the gateway acts on before any writer runs: `take_hold` takes `M0-Hold` and
+`M0-Channel`, and a HEAD's or a 304's answer keeps the application's
+`Content-Length`. Unrefused, a channel carrying a line break became a hold's
+channel, and a HEAD kept a length its writer then dropped;
+`test_read_head.mojo` fails without the refusal, where `smoke-wsgi`'s
+injecting route passes. `split_status`'s refusal of the reason phrase had no
+such reader left -- the encoders are `status_text`'s only readers -- and was
+deleted, with m0-wsgi's byte-loop copy of the scanner.
+
 **An application's `Set-Cookie` goes to the wire verbatim.** A `Cookie` is
 what the server builds for itself; a line a WSGI/ASGI application returned
 IS the header, and `ResponseCookieJar.add_raw` transmits it unparsed —

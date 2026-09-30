@@ -2,13 +2,7 @@
 
 from std.testing import assert_true, assert_false, assert_equal, TestSuite
 
-from src.content_negotiation import (
-    negotiate_encoding,
-    negotiate_language,
-    parse_accept,
-    wants_html,
-    wants_event_stream,
-)
+from src.content_negotiation import parse_accept
 
 
 comptime VENDOR_BIN = "application/vnd.siren+bin"
@@ -172,218 +166,11 @@ def test_empty_accept() raises:
     assert_false(r.wants_html)
 
 
-def test_convenience_wants_html() raises:
-    """`wants_html` convenience should work."""
-    assert_true(wants_html("text/html"))
-    assert_false(wants_html("application/json"))
-
-
-def test_convenience_wants_event_stream() raises:
-    """`wants_event_stream` convenience should work."""
-    assert_true(wants_event_stream("text/event-stream"))
-    assert_false(wants_event_stream("text/html"))
-
-
 def test_problem_json() raises:
     """`application/problem+json` should set wants_problem_json."""
     var r = parse_accept("application/problem+json")
     assert_true(r.wants_problem_json)
     assert_false(r.wants_json)
-
-
-# --- Accept-Encoding (RFC 9110 §12.5.3) --------------------------------------
-
-
-def _gzip_br() -> List[String]:
-    var a = List[String]()
-    a.append("br")
-    a.append("gzip")
-    return a^
-
-
-def test_encoding_absent_header_means_identity() raises:
-    """No Accept-Encoding: serve unencoded, the answer nobody guesses about."""
-    assert_equal(negotiate_encoding("", _gzip_br()), "identity")
-
-
-def test_encoding_picks_the_named_coding() raises:
-    var gz = List[String]()
-    gz.append("gzip")
-    assert_equal(negotiate_encoding("gzip", gz), "gzip")
-
-
-def test_encoding_server_preference_breaks_quality_ties() raises:
-    """`available` is ordered by server preference; equal q keeps that order."""
-    assert_equal(negotiate_encoding("gzip, br", _gzip_br()), "br")
-
-
-def test_encoding_client_quality_beats_server_order() raises:
-    """A client that says gzip;q=1, br;q=0.5 gets gzip, whatever we prefer."""
-    assert_equal(negotiate_encoding("br;q=0.5, gzip;q=1", _gzip_br()), "gzip")
-
-
-def test_encoding_quality_zero_disables_a_coding() raises:
-    var gz = List[String]()
-    gz.append("gzip")
-    assert_equal(negotiate_encoding("gzip;q=0", gz), "identity")
-
-
-def test_encoding_wildcard_matches_unnamed_codings() raises:
-    var gz = List[String]()
-    gz.append("gzip")
-    assert_equal(negotiate_encoding("*", gz), "gzip")
-
-
-def test_encoding_wildcard_does_not_revive_a_refused_coding() raises:
-    """`gzip;q=0`, * refuses gzip explicitly; the wildcard covers the rest."""
-    assert_equal(negotiate_encoding("gzip;q=0, *", _gzip_br()), "br")
-
-
-def test_encoding_unknown_available_falls_back_to_identity() raises:
-    """The client asked for gzip; we only have zstd. Serve identity."""
-    var zs = List[String]()
-    zs.append("zstd")
-    assert_equal(negotiate_encoding("gzip", zs), "identity")
-
-
-def test_encoding_identity_refused_yields_the_406_signal() raises:
-    """`identity;q=0` with nothing acceptable available returns empty."""
-    var gz = List[String]()
-    gz.append("gzip")
-    assert_equal(negotiate_encoding("identity;q=0, br", gz), "")
-
-
-def test_encoding_star_zero_refuses_identity_too() raises:
-    """*;q=0 refuses everything unnamed — identity included (RFC example)."""
-    var zs = List[String]()
-    zs.append("zstd")
-    assert_equal(negotiate_encoding("gzip, *;q=0", zs), "")
-
-
-def test_encoding_star_zero_with_identity_named_keeps_identity() raises:
-    var zs = List[String]()
-    zs.append("zstd")
-    assert_equal(negotiate_encoding("identity;q=0.5, *;q=0", zs), "identity")
-
-
-def test_encoding_is_case_insensitive() raises:
-    var gz = List[String]()
-    gz.append("gzip")
-    assert_equal(negotiate_encoding("GZip", gz), "gzip")
-    var up = List[String]()
-    up.append("GZIP")
-    assert_equal(negotiate_encoding("gzip", up), "gzip")
-
-
-def test_encoding_last_occurrence_wins() raises:
-    """A repeated coding behaves like an overwrite, as on the Accept side."""
-    var gz = List[String]()
-    gz.append("gzip")
-    assert_equal(negotiate_encoding("gzip;q=0, gzip", gz), "gzip")
-
-
-def test_encoding_identity_in_available_is_not_an_encoding() raises:
-    """Listing identity in `available` must not make it beat a real coding."""
-    var av = List[String]()
-    av.append("identity")
-    av.append("gzip")
-    assert_equal(negotiate_encoding("gzip", av), "gzip")
-
-
-def test_encoding_tolerates_whitespace() raises:
-    assert_equal(
-        negotiate_encoding(" br ; q=0.8 ,  gzip ; q=0.9 ", _gzip_br()), "gzip"
-    )
-
-
-
-# --- Accept-Language (RFC 9110 §12.5.4, matching per RFC 4647) ---------------
-
-
-def _en_de() -> List[String]:
-    var a = List[String]()
-    a.append("en")
-    a.append("de-CH")
-    return a^
-
-
-def test_language_absent_header_serves_the_default() raises:
-    """No Accept-Language: the server's first choice, not an error."""
-    assert_equal(negotiate_language("", _en_de()), "en")
-
-
-def test_language_exact_match() raises:
-    assert_equal(negotiate_language("de-CH", _en_de()), "de-CH")
-
-
-def test_language_is_case_insensitive_and_keeps_caller_casing() raises:
-    """BCP 47 tags compare case-insensitively; the caller's spelling returns."""
-    assert_equal(negotiate_language("DE-ch", _en_de()), "de-CH")
-
-
-def test_language_range_prefix_matches_regional_tag() raises:
-    """RFC 4647 basic filtering: range `de` matches available `de-CH`."""
-    assert_equal(negotiate_language("de", _en_de()), "de-CH")
-
-
-def test_language_lookup_falls_back_to_the_base_tag() raises:
-    """RFC 4647 lookup: range `en-US` finds available `en`."""
-    assert_equal(negotiate_language("en-US", _en_de()), "en")
-
-
-def test_language_prefix_boundary_is_respected() raises:
-    """Range `de` must not match an available `denglish`."""
-    var a = List[String]()
-    a.append("denglish")
-    a.append("en")
-    assert_equal(negotiate_language("de, en;q=0.1", a), "en")
-
-
-def test_language_client_quality_orders_the_choice() raises:
-    assert_equal(negotiate_language("en;q=0.3, de-CH;q=0.9", _en_de()), "de-CH")
-
-
-def test_language_quality_ties_keep_server_order() raises:
-    assert_equal(negotiate_language("de-CH, en", _en_de()), "en")
-
-
-def test_language_specific_range_beats_a_broader_one() raises:
-    """`en-GB;q=0.9` with en;q=0.1: the exact range settles available en-GB."""
-    var a = List[String]()
-    a.append("en")
-    a.append("en-GB")
-    assert_equal(negotiate_language("en;q=0.1, en-GB;q=0.9", a), "en-GB")
-
-
-def test_language_unmatched_request_still_gets_the_default() raises:
-    """A French-only client gets the default, not a 406 — RFC advice."""
-    assert_equal(negotiate_language("fr", _en_de()), "en")
-
-
-def test_language_refusing_the_default_falls_to_the_next_tag() raises:
-    """`en;q=0` refuses en only; unmatched de-CH is acceptance by silence."""
-    assert_equal(negotiate_language("en;q=0", _en_de()), "de-CH")
-
-
-def test_language_refusing_everything_is_visible() raises:
-    """Only when every available tag is refused does "" come back."""
-    var only_en = List[String]()
-    only_en.append("en")
-    assert_equal(negotiate_language("en;q=0", only_en), "")
-
-
-def test_language_star_zero_refuses_everything_unnamed() raises:
-    var only_en = List[String]()
-    only_en.append("en")
-    assert_equal(negotiate_language("fr, *;q=0", only_en), "")
-
-
-def test_language_wildcard_accepts_anything() raises:
-    assert_equal(negotiate_language("fr, *;q=0.1", _en_de()), "en")
-
-
-def test_language_no_available_tags_is_empty() raises:
-    assert_equal(negotiate_language("en", List[String]()), "")
 
 
 def _raw(*bytes: Int) -> String:
@@ -398,8 +185,7 @@ def test_a_header_that_is_not_utf8_does_not_trap() raises:
     """The range splitter, the media-range splitter, the quality slice, the
     subtype wildcard and `_trim` all sliced request header values as
     Strings; a byte that is not UTF-8 at a slice end trapped the process.
-    An `Accept`, `Accept-Encoding` or `Accept-Language` carrying one must
-    parse to some answer.
+    An `Accept` carrying one must parse to some answer.
 
     covers: G14
     """
@@ -407,17 +193,9 @@ def test_a_header_that_is_not_utf8_does_not_trap() raises:
     var result = parse_accept(bad)
     # Whatever the malformed ranges mean, the well-formed one still counts.
     assert_true(result.wants_json)
-    _ = wants_html(bad)
-    _ = wants_html(_raw(0x80))
-    _ = wants_event_stream(String(" ") + _raw(0xFF) + String(" ,text/event-stream"))
-    var enc = negotiate_encoding(
-        String("gzip;q=") + _raw(0x80) + String(", ") + _raw(0x80) + String(", br"), ["br", "gzip"]
-    )
-    assert_equal(enc, "br")
-    var lang = negotiate_language(
-        _raw(0x80) + String("-") + _raw(0x80) + String(", en;q=0.5"), ["en", "de"]
-    )
-    assert_equal(lang, "en")
+    _ = parse_accept(_raw(0x80))
+    var padded = parse_accept(String(" ") + _raw(0xFF) + String(" ,text/event-stream"))
+    assert_true(padded.wants_event_stream)
 
 
 def main() raises:

@@ -35,7 +35,8 @@ from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.process import getpid
 from lightbug_http.offload import (
     OffloadPool, STREAM_GEN_NONE, WS_DATAGRAM_MAX, ws_message_room,
-    send_bounded, append_i64_le, read_i64_le,
+    send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
+    encode_ack, decode_ack,
 )
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.websocket import (
@@ -1628,7 +1629,7 @@ struct WSGIHandler(ThreadHandler):
             # function, so this check and that encoder cannot disagree.
             return ws_message_room(self.sockets.filter_url(slot))
         if self.asgi_notify_fd >= 0 and self.sockets.is_slot_streaming(slot):
-            return WS_DATAGRAM_MAX - 10  # `_send_ws_message_tag`'s
+            return WS_DATAGRAM_MAX - WS_TAG_HEADER
         return -1
 
     def _ws_refuse_too_big(mut self, slot: Int, size: Int, limit: Int):
@@ -1822,8 +1823,9 @@ executor-held socket's `receive()` queue.
 
 Charged in DATAGRAM bytes (`_ws_in_cost`) and acked CUMULATIVELY by the
 shim as the application's `receive()` actually consumes ('r' frames on the
-chunk channel), so a lost ack heals at the next one. Must mirror the clamp
-in the shim's `_exec_on_ws_message` (64 KB) — a drift here is a window that
+chunk channel), so a lost ack heals at the next one. Mirrored by the clamp
+in the shim's `_exec_on_ws_message`, `_WS_IN_WINDOW`, which
+`render_shim.py --check` holds equal to this — a drift is a window that
 never fills or never opens. Fits the 256 KB submit channel with 4x headroom
 (`_OFFLOAD_SOCKET_BUF`), which is what makes a mid-window channel refusal
 rare rather than routine.
@@ -1900,38 +1902,30 @@ def pool_stream_ack_fd(url: String) -> Int:
 
 
 def _send_pool_disconnect(fd: Int, slot: Int):
-    """`(slot: i32, -1: i32)` on a pool thread's ack pair: the client is
-    gone. The same shape as a credit ack, so the thread's one blocking
-    read learns both. Bounded retry, never a park: this runs on the loop."""
-    var msg = List[UInt8](capacity=8)
-    var s = UInt32(slot)
-    for i in range(4):
-        msg.append(UInt8((s >> UInt32(8 * i)) & 0xFF))
-    for _ in range(4):
-        msg.append(UInt8(0xFF))
+    """`(slot, ACK_DISCONNECT)` on a pool thread's ack pair: the client is
+    gone. The same shape as a credit ack (`encode_ack`), so the thread's
+    one blocking read learns both. Bounded retry, never a park: this runs
+    on the loop."""
+    var msg = encode_ack(slot, ACK_DISCONNECT)
     _ = send_bounded(fd, Span(msg))
 
 
 def _read_ack(fd: Int, flags: c_int, mut slot_out: Int, mut credit_out: Int) -> Int:
-    """One `(slot i32, credit i32)` datagram off an ack pair.
+    """One ack (`decode_ack`) off an ack pair.
 
     Returns 1 with the fields filled, 0 for nothing there (non-blocking
     only), -1 for EOF or an error other than EINTR (retried inside)."""
-    var buf = List[UInt8](capacity=8)
-    for _ in range(8):
+    var buf = List[UInt8](capacity=ACK_BYTES)
+    for _ in range(ACK_BYTES):
         buf.append(0)
     while True:
         var rc = external_call["recv", Int](
-            c_int(fd), buf.unsafe_ptr(), UInt(8), flags
+            c_int(fd), buf.unsafe_ptr(), UInt(ACK_BYTES), flags
         )
-        if rc == 8:
-            var s = UInt32(0)
-            var c = UInt32(0)
-            for i in range(4):
-                s |= UInt32(buf[i]) << UInt32(8 * i)
-                c |= UInt32(buf[4 + i]) << UInt32(8 * i)
-            slot_out = _i32(s)
-            credit_out = _i32(c)
+        if rc == ACK_BYTES:
+            var ack = decode_ack(Span(buf))
+            slot_out = ack[0]
+            credit_out = ack[1]
             return 1
         if rc < 0:
             var err = get_errno()
@@ -1957,16 +1951,6 @@ def _poll_acks(fd: Int, slot: Int, credit: Int) -> Int:
         if amount < 0:
             return -1
         total += amount
-
-
-def _i32(v: UInt32) -> Int:
-    """Sign-extend a wire `i32`. `Int(Int32(UInt32(0xFFFFFFFF)))` is
-    4294967295 on Mojo 1.0, not -1 — the conversion does not wrap — so the
-    disconnect ack (`-1`) has to be recovered by hand."""
-    var n = Int(v)
-    if n >= 0x80000000:
-        n -= 0x100000000
-    return n
 
 
 def _wait_ack(fd: Int, slot: Int) -> Int:
@@ -2083,15 +2067,26 @@ def _send_bus_frame_tag(fd: Int, event_id: Int, url: String, frame: List[UInt8])
 
 def _ws_in_cost(payload_len: Int) -> Int:
     """What one inbound message charges against `WS_IN_WINDOW`: the DATAGRAM
-    bytes (`_send_ws_message_tag`'s 10-byte header plus payload), clamped to
-    the window so a single maximal message can still travel. Mirrored by the
-    shim's `_exec_on_ws_message`, which acks these exact bytes back — charge
-    payload here and be acked datagrams there and the window drifts by ten
-    bytes on every message."""
-    var cost = 10 + payload_len
+    bytes (`WS_TAG_HEADER` plus payload), clamped to the window so a single
+    maximal message can still travel. Mirrored by the shim's
+    `_exec_on_ws_message`, which acks these exact bytes back — charge
+    payload here and be acked datagrams there and the window drifts by the
+    header on every message."""
+    var cost = WS_TAG_HEADER + payload_len
     if cost > WS_IN_WINDOW:
         return WS_IN_WINDOW
     return cost
+
+
+comptime WS_TAG_HEADER = 10
+"""The header `_send_ws_message_tag` writes before an inbound message's
+payload on an EXECUTOR lane: `[tag=2 u8][slot i64 LE][opcode u8]`. The
+room left for the payload in one datagram is `WS_DATAGRAM_MAX` less this
+(`_ws_datagram_room`), and what a message charges against `WS_IN_WINDOW`
+is this plus its payload (`_ws_in_cost`). The shim reads the same header
+as `_WS_TAG_HEADER`, which `render_shim.py --check` holds equal to this.
+A pool lane's message carries its channel too, a different header
+(`lightbug_http.offload.ws_message_room`)."""
 
 
 def _send_ws_message_tag(
@@ -2105,9 +2100,9 @@ def _send_ws_message_tag(
     `_ws_forward` never sends one this large, ending the socket with 1009
     instead (SPEC I26). Retried like the disconnect tag — a lost
     inbound message is an app-visible gap."""
-    if 10 + len(payload) > WS_DATAGRAM_MAX:
+    if WS_TAG_HEADER + len(payload) > WS_DATAGRAM_MAX:
         return False
-    var msg = List[UInt8](capacity=10 + len(payload))
+    var msg = List[UInt8](capacity=WS_TAG_HEADER + len(payload))
     msg.append(2)
     append_i64_le(msg, slot)
     msg.append(UInt8(opcode))

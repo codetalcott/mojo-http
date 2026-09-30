@@ -153,9 +153,9 @@ A count is refused the same way whether it came from a flag or a variable.
 binds nothing. It holds the resolved configuration, where each value came
 from (`flag`, `env` or `default`), the topology that adds up to, what the
 application declares (`max_workers`, `max_threads`, `page_slots`), and a
-`checks` array in which every failure carries its `fix`. The API key is
-never printed. It exits with the code serving would exit with for the same
-arguments, because `serve` and the doctor read the same list of checks.
+`checks` array in which every failure carries its `fix`. It exits with the
+code serving would exit with for the same arguments, because `serve` and the
+doctor read the same list of checks.
 
 `uv run m0 doctor` runs the toolchain's checks first (`platform`,
 `mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `project`), then this one.

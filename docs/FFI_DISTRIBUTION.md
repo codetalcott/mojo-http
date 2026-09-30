@@ -546,3 +546,14 @@ neither is worth it for identical bytes.
 
 If that ever changes, the honest order is: measure the delta first with the
 diff above, then decide on a mechanism — not the reverse.
+
+## 2026-09-29: one export left
+
+The hash exports the sections above call through (`m0_fnv1a`,
+`m0_xxhash32`, `m0_format_hash`) were removed with m0-core's FNV-1a and
+xxHash32, which nothing in the tree called ([DECISIONS](DECISIONS.md) D54),
+and so was `run_benchmarks.mojo`, the "core benchmarks" of the disassembly
+comparison. `libm0core` now exports `m0_shared_fetch_add` alone, the call
+`m0pub` makes through `ctypes` to number the events it publishes, and
+`smoke-ffi` makes that call. The bundling, the portability checks and the
+licensing position above are unchanged.

@@ -18,7 +18,10 @@ compile `src.*` directly, so nothing needs rebuilding -- with one
 exception: a rule against `src/` gated on a SMOKE would need `build-http`
 first, and none is written that way (`views.mojo`'s placement rule is
 gated on `test_views.mojo`, a unit gate, for that reason). An anchor that
-no longer matches is a failure -- re-point it with the line. A rule that
+does not match exactly once is NOT APPLICABLE, a failure -- re-point it
+with the line -- and a sabotage that does not compile is a miss, never a
+catch: `sabotage_lib.py` owns everything around the table, the restore on
+SIGINT or SIGTERM among it. A rule that
 takes edits in MORE THAN ONE FILE names a tuple of paths beside its tuples
 of anchors: the producer's stop has two writers since the pool lane (the
 loop's stamp in `loop/shutdown.mojo` and the join's fallback in `host.mojo`),
@@ -58,6 +61,9 @@ tell, so it is not claimed as a guarded rule.
                                                    needs `uv sync --group max`)
     uv run poe sabotage-host --skip parallel       every rule but one GATE's
 
+`--only` and `--skip` take a gate's name, which selects that gate's rules,
+or else part of a label.
+
 On macOS the whole run cannot share one venv: a build beside `max-core` links
 the parallel runtime into every binary (ROADMAP Known issues), so E32 refuses
 the prefork baselines there with 78, the doctor's first. Run `--skip parallel`
@@ -69,20 +75,10 @@ Linux a build links the runtime only where the source names it, and the one
 from __future__ import annotations
 
 import re
-import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
-from sabotage_lib import own_tmpdir
-
-# The venv's own poe and mojo, never `uv run`: a child `uv run` re-syncs the
-# venv (pool_sabotage.py records why that matters under the nightly canary).
-_SIBLING = Path(sys.executable).with_name("poe")
-POE = str(_SIBLING) if _SIBLING.exists() else (shutil.which("poe") or "poe")
-_MOJO = Path(sys.executable).with_name("mojo")
-MOJO = str(_MOJO) if _MOJO.exists() else (shutil.which("mojo") or "mojo")
+from sabotage_lib import POE, Command, MojoRun, rule, run
 
 SMOKE = "smoke"
 NOTES = "notes"
@@ -564,125 +560,8 @@ SABOTAGES = [
 ]
 
 
-def run_smoke() -> tuple[bool, str]:
-    p = subprocess.run(
-        [POE, "smoke-host"], capture_output=True, text=True, timeout=600
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and "smoke-host OK" in out), out
-
-
-def run_threads() -> tuple[bool, str]:
-    p = subprocess.run(
-        [POE, "smoke-host-threads"], capture_output=True, text=True, timeout=600
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and "smoke-host-threads OK" in out), out
-
-
-def run_notes() -> tuple[bool, str]:
-    p = subprocess.run(
-        [POE, "smoke-fragment-notes"], capture_output=True, text=True, timeout=600
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and "smoke-fragment-notes OK" in out), out
-
-
-def run_unit() -> tuple[bool, str]:
-    p = subprocess.run(
-        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
-         "packages/m0-http/test/test_host.mojo"],
-        capture_output=True, text=True, timeout=600,
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and " 0 failed" in out), out
-
-
-def run_prefork() -> tuple[bool, str]:
-    p = subprocess.run(
-        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
-         "packages/m0-http/test/test_prefork.mojo"],
-        capture_output=True, text=True, timeout=600,
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and " 0 failed" in out), out
-
-
-def run_views() -> tuple[bool, str]:
-    p = subprocess.run(
-        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
-         "packages/m0-http/test/test_views.mojo"],
-        capture_output=True, text=True, timeout=600,
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and " 0 failed" in out), out
-
-
-def run_respawn() -> tuple[bool, str]:
-    p = subprocess.run(
-        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
-         "packages/m0-http/test/test_respawn.mojo"],
-        capture_output=True, text=True, timeout=600,
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and " 0 failed" in out), out
-
-
-def run_doctor() -> tuple[bool, str]:
-    p = subprocess.run(
-        [POE, "smoke-host-doctor"], capture_output=True, text=True, timeout=900
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and "smoke-host-doctor OK" in out), out
-
-
-def run_parallel() -> tuple[bool, str]:
-    """`smoke-parallel-runtime` (SPEC E32). Needs MAX's Mojo packages in the
-    venv (`uv sync --group max`); without them the baseline fails at the
-    build, which the report shows as a baseline failure, never as a catch."""
-    p = subprocess.run(
-        [POE, "smoke-parallel-runtime"], capture_output=True, text=True, timeout=900
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and "smoke-parallel-runtime OK" in out), out
-
-
-def run_cmdline() -> tuple[bool, str]:
-    """The shared reader's own test, compiled from `src/`: the host resolves
-    `m0_http.cmdline` through the `.mojoc`, so `test_host_flags.mojo` would
-    not see an edit there until `build-http` ran."""
-    p = subprocess.run(
-        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
-         "packages/m0-http/test/test_cmdline.mojo"],
-        capture_output=True, text=True, timeout=600,
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and " 0 failed" in out), out
-
-
-def run_flags() -> tuple[bool, str]:
-    p = subprocess.run(
-        [MOJO, "run", "-I", "packages/m0-http", "-I", "packages/m0-core",
-         "packages/m0-http/test/test_host_flags.mojo"],
-        capture_output=True, text=True, timeout=600,
-    )
-    out = p.stdout + p.stderr
-    return (p.returncode == 0 and " 0 failed" in out), out
-
-
-GATES = {
-    SMOKE: run_smoke, NOTES: run_notes, UNIT: run_unit, PREFORK: run_prefork,
-    RESPAWN: run_respawn, VIEWS: run_views, THREADS: run_threads,
-    DOCTOR: run_doctor, FLAGS: run_flags, CMDLINE: run_cmdline,
-    PARALLEL: run_parallel,
-}
-
-
-def _paths_of(entry) -> tuple:
-    """The file(s) a rule edits, one per anchor."""
-    _, _, path, old, _ = entry
-    n = len(old) if isinstance(old, tuple) else 1
-    return tuple(path) if isinstance(path, tuple) else (path,) * n
+RULES = [rule(label, path, old, new, gate=gate)
+         for label, gate, path, old, new in SABOTAGES]
 
 
 def why(out: str) -> str:
@@ -711,84 +590,42 @@ def why(out: str) -> str:
     return out.strip().splitlines()[-1][:140] if out.strip() else "(no output)"
 
 
-def main() -> int:
-    sys.stdout.reconfigure(line_buffering=True)
-    only = sys.argv[sys.argv.index("--only") + 1] if "--only" in sys.argv else ""
-    # A gate's name, never a label substring: the parallel rule's label says
-    # "prefork", so a substring would skip rules that are not the gate's.
-    skip = sys.argv[sys.argv.index("--skip") + 1] if "--skip" in sys.argv else ""
-    if skip and skip not in GATES:
-        print(f"--skip takes a gate's name, one of {sorted(GATES)}; not {skip!r}")
-        return 1
-    chosen = [e for e in SABOTAGES if (only in e[0] or only == e[1]) and e[1] != skip]
-    if not chosen:
-        print(f"no sabotage label contains {only!r}")
-        return 1
-    files = sorted({f for e in SABOTAGES for f in _paths_of(e)})
-    backup_dir = Path(tempfile.mkdtemp())
-    originals = {}
-    for f in files:
-        originals[f] = f.read_text()
-        shutil.copy(f, backup_dir / f.name)
+def _smoke(task: str, timeout: float = 600) -> Command:
+    """A `poe` smoke. It builds its app from source, so a sabotage that does
+    not compile shows as the build's diagnostic: a miss, never a catch."""
+    return Command([POE, task], passes=f"{task} OK", builds=True, timeout=timeout,
+                   detail=why)
 
-    print("baseline (unsabotaged) must PASS:")
-    for gate in sorted({g for _, g, _, _, _ in chosen}):
-        ok, out = GATES[gate]()
-        print(f"  {'ok' if ok else 'FAIL'}  baseline ({gate})")
-        if not ok:
-            print(out[-2000:])
-            return 1
 
-    missed = []
-    try:
-        for entry in chosen:
-            label, gate, _, old, new = entry
-            paths = _paths_of(entry)
-            olds = old if isinstance(old, tuple) else (old,)
-            news = new if isinstance(new, tuple) else (new,)
-            if any(originals[p].count(o) != 1 for p, o in zip(paths, olds)):
-                print(f"  FAIL  anchor missing or ambiguous: {label}")
-                missed.append(label)
-                continue
-            broken = {p: originals[p] for p in set(paths)}
-            for p, o, n in zip(paths, olds, news):
-                broken[p] = broken[p].replace(o, n, 1)
-            for p, text in broken.items():
-                p.write_text(text)
-            try:
-                ok, out = GATES[gate]()
-            except subprocess.TimeoutExpired:
-                ok, out = False, "(timed out -- itself a failure)"
-            finally:
-                for p in broken:
-                    p.write_text(originals[p])
-            reason = why(out)
-            if ok:
-                print(f"  MISSED  [{gate}] {label}")
-                missed.append(label)
-            elif reason.startswith("COMPILE ERROR"):
-                print(f"  BROKEN  [{gate}] {label}\n          {reason}")
-                missed.append(label + " (the sabotage does not compile)")
-            else:
-                print(f"  CAUGHT  [{gate}] {label}\n          {reason}")
-    finally:
-        for f in files:
-            shutil.copy(backup_dir / f.name, f)
+def _unit(test: str) -> MojoRun:
+    return MojoRun(f"packages/m0-http/test/{test}")
 
-    print()
-    if missed:
-        print(f"{len(missed)} rule(s) no gate guards:")
-        for m in missed:
-            print(f"  - {m}")
-        return 1
-    print(f"all {len(chosen)} rules are guarded"
-          + ("" if len(chosen) == len(SABOTAGES) else
-             f" (of {len(SABOTAGES)}; " + ", ".join(
-                 ([f"--only {only!r}"] if only else []) + ([f"--skip {skip!r}"] if skip else [])
-             ) + ")"))
-    return 0
+
+GATES = {
+    SMOKE: _smoke("smoke-host"),
+    NOTES: _smoke("smoke-fragment-notes"),
+    THREADS: _smoke("smoke-host-threads"),
+    # `smoke-host-doctor` runs the app under each flag shape in turn.
+    DOCTOR: _smoke("smoke-host-doctor", timeout=900),
+    # SPEC E32. Needs MAX's Mojo packages in the venv (`uv sync --group
+    # max`); without them the baseline fails at the build, which the report
+    # shows as a baseline failure, never as a catch.
+    PARALLEL: _smoke("smoke-parallel-runtime", timeout=900),
+    UNIT: _unit("test_host.mojo"),
+    PREFORK: _unit("test_prefork.mojo"),
+    VIEWS: _unit("test_views.mojo"),
+    RESPAWN: _unit("test_respawn.mojo"),
+    # The shared reader's own test, compiled from `src/`: the host resolves
+    # `m0_http.cmdline` through the `.mojoc`, so `test_host_flags.mojo`
+    # would not see an edit there until `build-http` ran.
+    CMDLINE: _unit("test_cmdline.mojo"),
+    FLAGS: _unit("test_host_flags.mojo"),
+}
+
+
+def main(argv: list[str]) -> int:
+    return run("sabotage-host", RULES, GATES, argv)
 
 
 if __name__ == "__main__":
-    with own_tmpdir("sabotage-host"):
-        sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

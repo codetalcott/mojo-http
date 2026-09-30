@@ -8,6 +8,93 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **Three rules of the event loop and of `--spawn-workers` that no gate
+  held now each have one** (SPEC A23, L16, E35). None changes what the
+  server does.
+  - A body timer that expires on a connection no longer reading its body
+    is deleted, not only skipped. On Linux an expiry left registered is
+    reported by every wait after it, and the loop spins.
+  - A WebSocket this side has closed keeps its two-second wait for the
+    peer's Close while its last frames go out slowly. Each send that moves
+    bytes would otherwise restart that wait as `--idle-timeout`.
+  - CI serves `--workers 2 --spawn-workers` from a copy of m0serve under a
+    directory named `josé`, the one shape that reaches the fix that lets a
+    binary under a non-ASCII path re-exec itself.
+
+### Changed
+
+- **The other six sabotage harnesses run on `scripts/sabotage_lib.py`**
+  (`sabotage-blobs`, `-host`, `-notes-login`, `-m0-wheel`, `-scaffold` and
+  `-mojo-image`): a SIGINT or SIGTERM mid-rule now puts every file back,
+  ends the gate's process group, removes the scratch directory and dies by
+  the signal, where it used to leave the sabotaged source in the tree.
+  Every anchor must match exactly once, a sabotage that only breaks a build
+  is a miss, and each gate must pass on the unsabotaged tree first.
+  `sabotage-outbox-cap`'s give-up rule now breaks the claim alone.
+- **`poe smoke-doctor` takes half as long.** To tell a configuration the
+  server accepts from one it refuses, it waited a fixed 8 s for each of the
+  seven that serve. It now polls until the server answers and allows it 2 s
+  more, so a server that answers and then dies is still read as its exit
+  code, and a new control row, an application that answers once and then
+  exits 3, fails the smoke if the watchdog ever reads it as served. The
+  task went from 70 s to 33 on an Apple-silicon Mac.
+
+### Removed
+
+- **Framework names nothing in the tree used**, from the packages the `m0`
+  wheel ships (DECISIONS D54). Nothing served changes: `m0serve` and the
+  Mojo host reached none of them, and `M0_API_KEY` was read into
+  `AppConfig` and never checked, so no request was ever refused by it. An
+  application built with the `m0` wheel (a `0.x` preview) that imported one
+  of these needs its own copy: `m0_http.RequestContext`;
+  `m0_http.check_api_key`, `AppConfig.api_key` and `M0_API_KEY`, whose
+  capability, SPEC G9, is now `out of scope`; `m0_http.ResponseCache`;
+  `m0_http.PatchJournal` and `JournalResult` (`DatastarStream`'s own replay
+  journal stays); `negotiate_encoding`, `negotiate_language`, and the free
+  functions `wants_html` and `wants_event_stream`, where
+  `parse_accept(...).wants_html` is the same answer; and m0-core's
+  FNV-1a and xxHash32 (`fnv1a`, `fnv1a_step`, `fnv1a_batch`, `xxhash32`,
+  `xxhash32_batch`) with `format_hash32`. `libm0core` exports
+  `m0_shared_fetch_add` alone, the call `m0pub` makes: `m0_fnv1a`,
+  `m0_xxhash32` and `m0_format_hash` are gone from the release asset.
+  `m0_sqlite.stats_ints`, `sum_ints`, `min_ints`, `max_ints` and
+  `ColumnStats` left the package, `stats_ints` living on in
+  `bench_sqlite.mojo`, its one user; and `poe bench-core` went with the
+  m0-core benchmark it ran, which no longer compiled.
+
+- **The Mojo HTTP client, `m0_http.Client`**, with `poe smoke-client`
+  (DECISIONS D55). No application called it, it spoke no TLS, and a call
+  from a view on the loop blocked every connection the loop held. Nothing
+  served changes. An application built with the `m0` wheel that used it
+  needs its own; a client comes back as a design of its own that answers
+  TLS and where the call runs. SPEC M14 is now `out of scope`.
+
+### Fixed
+
+- **A closed `Socket` refuses every call, not only `close()`** (SPEC D1).
+  After `close()` a socket went on passing its old number to the kernel,
+  so a late `send` wrote into whatever the process had opened on that
+  number since, a `receive` took its bytes, a `shutdown` ended its
+  connection, `bind`, `listen`, `connect` or a socket option acted on it,
+  and `into_fd` gave it to an owner that would close it. `close()` now
+  leaves the socket holding -1: those calls fail with EBADF, as they would
+  on a number nobody holds, `shutdown` does nothing, and `into_fd` returns
+  -1. Nothing in m0serve or the Mojo host uses a socket after closing it; a
+  Mojo application that does no longer reaches another descriptor.
+  `test_socket_close.mojo` gates each call. Found in review.
+- **A thread busy with a WebSocket's messages at shutdown still stops.**
+  When every thread of a lane was inside a view at SIGTERM while inbound
+  WebSocket messages filled that lane, the stop signal for a thread that
+  reads the lane directly could be refused for want of room and was
+  dropped. That covers the asyncio executor, and pool threads under
+  `M0_POOL_ELASTIC=0` or `M0_POOL_RING=0`. The thread finished its view,
+  took the messages and waited for work for good: m0serve gave up on it
+  after the 5 s join and exited naming a thread "still inside the
+  application". The stop now waits for the lane to have room, inside that
+  same 5 s.
+
 ## [1.8.0] — 2026-09-29
 
 Most of this release is what a review of the whole tree found on
@@ -235,9 +322,11 @@ wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
   the ubuntu leg, against `unit-gates`' 12.6, so five tasks moved from `poe
   test-packages` to `poe test-gates`: the Datastar SDK's conformance and its
   sabotage, the probes' phase-stamp check, and m0-sqlite's tests and layout
-  guard. By their measured times that puts both jobs at about 16.5 min cold
-  on ubuntu, and each is capped at 35. `poe test-all` still runs the whole
-  locally, the same tasks as before, and `check-docs` refuses a task that
+  guard. Measured cold on the eight runs that followed, `unit-tests` ran
+  10.4 to 17.5 min on ubuntu and `unit-gates` 13.3 to 17.6, the two about
+  even on runners of the same CPU, and each is capped at 35. `poe
+  test-all` still runs the whole locally, the same tasks as before, and
+  `check-docs` refuses a task that
   `test-all` reaches and no CI step does. Both jobs keep Mojo's compile
   cache between a pull request's runs, which took a warm re-run of
   `unit-tests` from 20.7 min to 9.2.

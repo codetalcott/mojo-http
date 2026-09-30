@@ -4,7 +4,7 @@ Licensed under the MIT License; see LICENSE.mojo-http.txt.
 
 This notice describes what the m0serve ARTIFACT contains, which is not the
 same set as the repository's NOTICE (that one describes the source tree) or
-NOTICE.txt in a libm0core bundle (that one describes a hash library with no
+NOTICE.txt in a libm0core bundle (that one describes a C-ABI library with no
 dependencies). Each notice covers the thing it ships with.
 
 --------------------------------------------------------------------------------

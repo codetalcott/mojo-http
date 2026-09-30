@@ -2285,7 +2285,10 @@ TESTS = [
 # the test written for it. When every test that fails was written for
 # something else, the rule has no test of its own yet, and naming one of
 # them anyway hides that. The table's were derived that way on 2026-09-29,
-# and every rule's own test was among the tests that fail for it.
+# and every rule's own test was among the tests that fail for it. The two
+# sources may be tuples, taken pairwise: a guard that is several checks,
+# reverted together (`_combined`, below the table). Every test in TESTS is
+# some entry's catcher.
 
 SABOTAGES = [
     (
@@ -2805,7 +2808,81 @@ SABOTAGES = [
         ("test_an_eager_stream_does_not_take_the_previous_connections_task",
          "test_an_eager_stream_sent_from_a_child_task_marks_the_owner"),
     ),
+    # The disconnect tag is applied as `_on_submit` reads it, so it stamps
+    # the task that owns the slot THEN -- the connection it closed -- and
+    # never the next connection's, whose job follows it in the same read
+    # (the loop recycles a slot the instant it closes one). Deferred past
+    # that read, it lands on the successor: an HTTP successor's stream is
+    # cut before its end, and a socket's accept is swallowed as "already
+    # gone". The shape the two successor tests were written against, a
+    # disconnect kept on the SLOT, left in be2cd4c; this is the same bug
+    # from the ordering side, and each test fails at its own assertion.
+    (
+        "a disconnect is applied after the job behind it has spawned",
+        "                _exec_on_disconnect(\n"
+        "                    int.from_bytes(data[1:9], 'little', signed=True),\n",
+        "                _loop.call_soon(\n"
+        "                    _exec_on_disconnect,\n"
+        "                    int.from_bytes(data[1:9], 'little', signed=True),\n",
+        ("test_a_successor_does_not_inherit_its_predecessors_disconnect",),
+    ),
 ]
+
+
+def _combined(name, rules, catchers):
+    """One entry reverting every rule in `rules` together: a guard that is
+    several checks, each of which alone keeps its test passing. Built from
+    the entries it combines, so each anchor is spelled once and a
+    re-pointed rule carries the combination with it."""
+    by_name = {entry[0]: entry for entry in SABOTAGES}
+    olds, news = [], []
+    for rule in rules:
+        _, old, new, _ = by_name[rule]
+        olds += [old] if isinstance(old, str) else list(old)
+        news += [new] if isinstance(new, str) else list(new)
+    return (name, tuple(olds), tuple(news), catchers)
+
+
+SABOTAGES += [
+    # The socket half of the rule above: the same reversion, and the test
+    # written for its WebSocket consequence.
+    _combined(
+        "a disconnect applied after its successor's spawn swallows an accept",
+        ("a disconnect is applied after the job behind it has spawned",),
+        ("test_a_websocket_successor_does_not_inherit_its_predecessors_disconnect",),
+    ),
+    # A stale `send` to a stream whose slot has a new response is dropped
+    # by three checks, each with a rule and a test of its own above: the
+    # send asks `_task_gone` before it reads the slot, a response that is
+    # over answers nothing, and a gone stream is charged no credit. The
+    # test written for the whole -- the push hub that wrote another
+    # client's private message into yara's stream -- fails only when all
+    # three are reverted: each alone and each pair pass it (2026-09-29).
+    _combined(
+        "a stale stream send is stopped by none of its three checks",
+        ("a send to a gone stream reads the slot before it asks",
+         "a send after the response is over still answers",
+         "a stream is charged for credit after it has gone"),
+        ("test_a_stale_stream_send_never_reaches_the_slots_next_response",),
+    ),
+]
+
+
+def patched(source, old, new):
+    """`source` with one entry's patch applied, or None when it does not
+    apply. `old` and `new` are strings, or tuples of them taken pairwise
+    for a rule reverted in several places at once (`_combined`); every
+    part must match exactly once, in the source as the parts before it
+    left it."""
+    olds = (old,) if isinstance(old, str) else tuple(old)
+    news = (new,) if isinstance(new, str) else tuple(new)
+    if not olds or len(olds) != len(news):
+        return None
+    for part_old, part_new in zip(olds, news):
+        if source.count(part_old) != 1:
+            return None
+        source = source.replace(part_old, part_new)
+    return source
 
 
 def run_suite(source, verbose=True, tests=None, first=False):
@@ -2856,7 +2933,8 @@ def run_sabotages(source, whole=False, sabotages=None, tests=None):
         if isinstance(catchers, str):
             # `("test_x")` is a string, not a tuple of one.
             catchers = (catchers,)
-        if source.count(old) != 1:
+        broken = patched(source, old, new)
+        if broken is None:
             print("SABOTAGE PATCH DOES NOT APPLY: %s" % name)
             print("  the guarded lines were renamed, reformatted or removed; "
                   "update SABOTAGES in this file, or the guard is untested")
@@ -2870,7 +2948,6 @@ def run_sabotages(source, whole=False, sabotages=None, tests=None):
                   "or the guard is untested")
             unproven.append(name)
             continue
-        broken = source.replace(old, new)
         if whole:
             failed = [n for n, _ in run_suite(broken, verbose=False,
                                               tests=tests)]
@@ -2918,6 +2995,9 @@ def selftest():
     old, new = [(o, n) for name, o, n, _ in SABOTAGES if name == rule][0]
     writ = "test_an_error_is_described_once"
     other = "test_a_wsgi_head_to_a_body_that_produces_nothing_measures_write"
+    # A line the shim holds once, for a part of a patch that changes
+    # nothing: the other part is what the verdict turns on.
+    whole_line = "def _task_gone(owner):\n"
     ran = []
 
     def spied(name):
@@ -2951,6 +3031,13 @@ def selftest():
          ["SABOTAGE CATCHER NOT IN TESTS: %s: test_nobody_wrote" % rule], []),
         ("a patch that does not apply is refused, and nothing runs",
          "--sabotage", (rule, "a line the shim has not got\n", new, (writ,)),
+         1, ["SABOTAGE PATCH DOES NOT APPLY: %s" % rule], []),
+        ("a patch of several parts reverts every part, and is proven as one",
+         "--sabotage", (rule, (whole_line, old), (whole_line, new), (writ,)),
+         0, [proven], [writ]),
+        ("a patch of several parts is refused when one part does not apply",
+         "--sabotage",
+         (rule, (old, "a line the shim has not got\n"), (new, new), (writ,)),
          1, ["SABOTAGE PATCH DOES NOT APPLY: %s" % rule], []),
         ("a rule that nothing catches is UNPROVEN",
          "--sabotage", (rule, old, old, (writ,)), 1,

@@ -20,19 +20,29 @@ are driven here over a `LoopState` built by its own constructor, as
 `prepare_loop` builds one, and over `FakeBackend`, which keeps one socket's
 registration the way epoll does -- ONE registration, so a read added
 replaces a pending write -- the stricter of the two, and the one a wrong
-arm is wrong on.
+arm is wrong on. Its timers are epoll's too: an expired timerfd is
+reported by every wait until it is deleted, where kqueue's one-shot fires
+once.
 """
 
+from std.ffi import c_int, external_call, get_errno
+from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
-from lightbug_http.c.kqueue import EVFILT_READ, EVFILT_WRITE
-from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.c.socket import close, send
+from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
+from lightbug_http.c.kqueue import (
+    EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
+)
+from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
+from lightbug_http.c.socket import close, recv, send
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
+from lightbug_http.loop.response import _on_write
 from lightbug_http.loop.state import (
     LoopState,
+    TIMER_BODY,
+    UNUSED,
     WS_CLOSE_LINGER_NS,
     _arm_reads,
     _arm_ws_linger,
@@ -43,6 +53,7 @@ from lightbug_http.loop.state import (
     _stop_reads,
     _stream_idle,
 )
+from lightbug_http.loop.timers import _on_timer
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.server_config import ServerConfig
@@ -52,25 +63,42 @@ struct FakeBackend(EventLoopBackend):
     """One socket's registration, kept as epoll keeps it: read and write
     interest are ONE registration, so adding reads replaces a pending write
     one-shot, registering the write one-shot replaces the reads, and a
-    delete takes both."""
+    delete takes both.
+
+    Timers are kept as epoll keeps a timerfd, too: registered with EPOLLIN
+    and never read by the loop, one that has expired is readable -- level
+    triggered -- so every `wait` reports it until it is deleted or re-armed.
+    `expire` is the clock running out."""
 
     var read: Bool
     var write: Bool
     var read_adds: Int
+    var timers: List[UInt]
+    var expired: List[UInt]
+    var fired: List[UInt]
 
     def __init__(out self):
         self.read = False
         self.write = False
         self.read_adds = 0
+        self.timers = List[UInt]()
+        self.expired = List[UInt]()
+        self.fired = List[UInt]()
+
+    def expire(mut self, ident: UInt):
+        """The timer's time has come: it is readable from now on."""
+        if ident in self.timers and not ident in self.expired:
+            self.expired.append(ident)
 
     def wait(mut self, timeout_ms: Int) raises -> Int:
-        return 0
+        self.fired = self.expired.copy()
+        return len(self.fired)
 
     def event_ident(self, i: Int) -> UInt:
-        return 0
+        return self.fired[i]
 
     def event_filter(self, i: Int) -> Int16:
-        return 0
+        return EVFILT_TIMER
 
     def event_flags(self, i: Int) -> UInt16:
         return 0
@@ -110,10 +138,33 @@ struct FakeBackend(EventLoopBackend):
         self.write = False
 
     def try_add_timer(mut self, ident: UInt, timeout_ms: Int):
-        pass
+        # A re-arm resets the timerfd, which clears its expiry.
+        _drop(self.expired, ident)
+        if not ident in self.timers:
+            self.timers.append(ident)
 
     def try_delete_timer(mut self, ident: UInt):
+        _drop(self.timers, ident)
+        _drop(self.expired, ident)
+
+
+def _drop(mut idents: List[UInt], ident: UInt):
+    var kept = List[UInt]()
+    for i in range(len(idents)):
+        if idents[i] != ident:
+            kept.append(idents[i])
+    idents = kept^
+
+
+struct NoApp(HTTPService):
+    """The handler the loop's functions are generic over. Nothing here
+    reaches it."""
+
+    def __init__(out self):
         pass
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
 
 
 comptime SLOTS = 4
@@ -347,6 +398,137 @@ def test_a_stream_is_recorded_once() raises:
     assert_equal(st.metrics.requests_total, 1)
     assert_equal(st.metrics.latency_count, 1)
     assert_equal(st.metrics.bytes_sent_total, 120)
+
+
+def test_a_stale_body_expiry_is_retired() raises:
+    """#412's retire, on its own: a body timer's expiry that reaches a slot
+    no longer reading its body is DELETED, not only skipped. The body can
+    complete in the `wait` that reports its timer, read first, and a slot
+    whose request is out on a pool thread is not the timer's to end (B1's
+    guard, both of its arms here). epoll's timerfd is level triggered and
+    the loop never reads it, so an expiry left registered is reported by
+    every wait after it, each returning at once. kqueue's timers are
+    one-shots, so no macOS run could see it; the fake keeps them as epoll
+    does. The slot itself is left alone, which is B1.
+
+    covers: A23
+    """
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var ident = UInt(FD) + TIMER_BODY
+    for offloaded in range(2):
+        var slot = st.provision_pool.borrow()
+        st.slot_fds[slot] = FD
+        st.fd_to_slot[FD] = slot
+        if offloaded == 1:
+            st.provision_pool.provisions[slot].state = ConnectionState.reading_body(64)
+            st.offload.offloaded[slot] = True
+        else:
+            st.provision_pool.provisions[slot].state = ConnectionState.responding()
+        backend.try_add_timer(ident, 30_000)
+        backend.expire(ident)
+        assert_equal(backend.wait(0), 1)
+        assert_equal(backend.event_filter(0), EVFILT_TIMER)
+        _on_timer(app, backend, st, backend.event_ident(0))
+        assert_equal(st.slot_fds[slot], FD)
+        assert_equal(
+            backend.wait(0), 0,
+            "a stale body expiry stayed registered: every wait reports it",
+        )
+        st.offload.offloaded[slot] = False
+        st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+        st.slot_fds[slot] = UNUSED
+        st.fd_to_slot[FD] = UNUSED
+        st.provision_pool.release(slot)
+
+
+def test_a_send_deadline_leaves_a_websockets_close_linger() raises:
+    """`_arm_send_deadline` skips a stream, and the skip is what keeps a
+    WebSocket's close linger. A socket the handler closed itself
+    (`take_ws_closes`) has its linger armed while its Close is still
+    queued, and when that Close, or a frame ahead of it, goes out through
+    the write-ready path, every send that moves bytes restarts the send
+    deadline. Without the skip that re-stamped the linger as `idle_timeout`
+    from the last progress. `_stream_idle` does not hide it: it keeps a
+    closing socket's deadline when the bytes land
+    (`test_a_frame_keeps_a_websockets_close_linger`), so the sweep would
+    have reaped a peer that never answers by the idle timeout, not by
+    `WS_CLOSE_LINGER_NS`.
+
+    covers: L16
+    """
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.slot_ws[slot] = True
+    st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+    _arm_ws_linger(st, slot)
+    var linger = st.slot_idle_deadline[slot]
+    assert_true(linger > 0)
+    # Queued bytes bigger than the socket takes in one send, on their way
+    # out through the write-ready path, as the outbox drain leaves them.
+    st.slot_response[slot] = Bytes(length=8 << 20, fill=0x61)
+    st.slot_send_offset[slot] = 0
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    _on_write(app, backend, st, fd)
+    assert_true(st.slot_send_offset[slot] > 0)
+    assert_true(st.slot_send_offset[slot] < len(st.slot_response[slot]))
+    assert_equal(
+        st.slot_idle_deadline[slot], linger,
+        "a send that moved bytes re-stamped the close linger",
+    )
+    # The peer reads the rest: the bytes land and the slot lingers in frame
+    # mode, by the deadline it was given when the Close was queued.
+    var rounds = 0
+    while (
+        st.provision_pool.provisions[slot].state.kind == ConnectionState.RESPONDING
+        and rounds < 100_000
+    ):
+        _discard_all(peer)
+        _on_write(app, backend, st, fd)
+        rounds += 1
+    assert_equal(st.provision_pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
+    assert_equal(st.slot_idle_deadline[slot], linger)
+    close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+
+
+def _stream_pair() raises -> Tuple[Int, Int]:
+    """An `AF_UNIX` `SOCK_STREAM` pair, non-blocking at both ends: the first
+    end is the server's side of a connection, the second the client's."""
+    var fds = unsafe_alloc[c_int](count=2)
+    var rc = external_call[
+        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
+    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
+    if rc != 0:
+        var errno = get_errno()
+        fds.unsafe_free()
+        raise Error("socketpair() failed, errno: ", errno)
+    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
+    fds.unsafe_free()
+    set_nonblocking(FileDescriptor(pair[0]))
+    set_nonblocking(FileDescriptor(pair[1]))
+    return pair
+
+
+def _discard_all(fd: Int):
+    """Read and drop everything waiting on `fd`, without blocking."""
+    var buf = List[UInt8](length=65536, fill=0)
+    while True:
+        var n: UInt
+        try:
+            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+        except:
+            break
+        if n == 0:
+            break
 
 
 def main() raises:

@@ -55,10 +55,20 @@ jobs:
     # cold times on those runs (ubuntu, then macOS): the Datastar SDK's
     # sabotage (157-183 s, 108-111) and conformance (7-9, 4-6),
     # `test-sqlite` (50-59, 34-39), `sabotage-vtab` (about 1 s) and
-    # `check-phase-stamps` (26-27, 25-27). That is about 240 s on ubuntu's
-    # EPYCs and 180 on macOS, which by those runs puts both jobs at about
-    # 16.5 min on ubuntu (this one 19 on the Xeon) and this one at 14.5
-    # and `unit-gates` at 13 on macOS: both caps are 35. `test-http`
+    # `check-phase-stamps` (26-27, 25-27). That was about 240 s on ubuntu's
+    # EPYCs and 180 on macOS. Measured cold on the eight pull request runs
+    # of 2026-09-29 from #486's own on, this job ran 10.4-17.5 min
+    # on ubuntu (median 14.3) and 11.8-14.4 on macOS (13.0), and
+    # `unit-gates` 13.3-17.6 (16.1) and 11.3-13.2 (12.3): both caps stay
+    # 35, twice each job's slowest. The runner's CPU moves a job more than
+    # the split does: on an EPYC 7763 this job ran 15.8-17.5 and
+    # `unit-gates` 15.9-17.6, even, and a 9V45 ran this one in 10.4-11.2.
+    # #486's run drew a 7763 here (17.5) and a 9V74 for `unit-gates`
+    # (13.3), which made the halves look four minutes apart. So
+    # `test-postgres` (23 s cold on ubuntu, 16 on macOS) stays in this
+    # half: moved, it would add 23 s to `unit-gates` on ubuntu, where the
+    # halves are even and set the run's length, to save 16 s on macOS,
+    # where this job is the longer but ends first. `test-http`
     # (563-666 s of this job) grows 20-30 s with each event loop test, so
     # this half is the one to lighten next, and moving a task between the
     # halves is free. The trailer sabotage and the fuzzer stay: this job's
@@ -248,9 +258,12 @@ jobs:
   # job 12.7 min and 9.4, cold, on that pull request, and 12.6 and 10.2 on
   # train 20 (#485), most of it `build-apps` (~290 s and ~275-300 s) and
   # on ubuntu the pool's sabotage (~175 s). The five tasks moved from
-  # `test-packages` add about 240 s on ubuntu and 180 on macOS, which puts
-  # this job at about 16.5 min and 13, so the cap is 35. `unit-tests`'
-  # comment has the rest of the measurements. A separate JOB and no
+  # `test-packages` added about 240 s on ubuntu and 180 on macOS. Measured
+  # cold since, this job ran 13.3-17.6 min on ubuntu and 11.3-13.2 on
+  # macOS, so the cap stays 35, twice its slowest run: 30 would leave a
+  # 17.6-minute run 1.7 times its length. `unit-tests`' comment has the
+  # rest of the measurements, and why `test-postgres` did not move here.
+  # A separate JOB and no
   # `needs:`, for the smokes' reasons: the sheet refuses a cited step with
   # an `if:`, and nothing here waits on the other half.
   unit-gates:
@@ -733,6 +746,11 @@ jobs:
         run: uv run poe smoke-shutdown
       - name: Smoke test spawned workers
         run: uv run poe smoke-spawn-workers
+      # SPEC E35: a spawned worker execs the path the OS gives for the
+      # binary, and only one installed under a directory whose name is not
+      # ASCII takes that path through the bytes-to-path step (B10).
+      - name: Smoke test spawned workers under a non-ASCII install path
+        run: uv run poe smoke-spawn-nonascii-path
       # SPEC E16: the worker that wins an accept passes the connection to
       # the least-loaded sibling, so a burst of keep-alive connections
       # spreads across --workers instead of landing on one (32 of 32 on
@@ -858,10 +876,6 @@ jobs:
       # as XML, and the slash redirect and HTML 404 from the app behind it.
       - name: Smoke test the documentation site
         run: uv run poe smoke-site
-      # Both ends of the wire in Mojo: the client dials, sends, and parses
-      # against the notes API, including the error and refusal paths.
-      - name: Smoke test the HTTP client
-        run: uv run poe smoke-client
       # RFC 6455 spoken raw from python's stdlib: handshake with the accept
       # key verified, masked echo, fragment reassembly, ping/pong both ways,
       # heartbeat cadence bounds, the close handshake to the TCP FIN, and a

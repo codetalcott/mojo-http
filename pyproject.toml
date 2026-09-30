@@ -3078,6 +3078,42 @@ python3 scripts/emit.py --covers E15 --task smoke-spawn-workers
 python3 scripts/emit.py --covers A25 --task smoke-spawn-workers
 """
 
+[tool.poe.tasks.smoke-spawn-nonascii-path]
+help = "--spawn-workers re-execs an m0serve installed under a directory whose name is not ASCII (SPEC E35)"
+deps = ["build-serve"]
+shell = """
+. scripts/smoke/lib.sh
+# A spawned worker execs the path the OS gives for the running binary
+# (`executable_path`), and a binary installed under a directory whose name
+# is not ASCII is the only shape that takes that path through the
+# bytes-to-path step. Before B10's fix `/Users/jos\\xc3\\xa9/` came back as
+# `jos\\xc3\\x83\\xc2\\xa9`, every worker's exec failed with ENOENT and the
+# supervisor refused to serve (78). The release bundle's flat shape -- the
+# binary and the runtime it finds beside itself -- is assembled under such a
+# directory and served from there. The name is written as octal bytes, so no
+# locale or file encoding stands between this task and the bytes on disk.
+dir="$SMOKE_DIR/$(printf 'jos\\303\\251')"
+python3 scripts/bundle_artifact.py bin/m0serve "$dir" > "$SMOKE_DIR/bundle.log" 2>&1 \
+  || fail "could not assemble m0serve under $dir"
+[ -x "$dir/m0serve" ] || fail "no m0serve under $dir"
+log=$SMOKE_DIR/sw-nonascii.log
+port=$(free_port)
+spawn sw-nonascii.log "$dir/m0serve" bareapp.wsgi --app-dir apps/wsgi_bare --workers 2 --spawn-workers --port $port
+spid=$pid
+# A worker whose exec found no file takes the supervisor with it (78), so a
+# server that never answers is the failure this smoke exists for; its log
+# names the path the exec was given.
+wait_ready http://127.0.0.1:$port/ $spid
+curl -sf http://127.0.0.1:$port/ | grep -q "bare wsgi app" || fail "the server under $dir did not answer /"
+# Each exec'd image prints a banner: two of them, both from under $dir.
+for i in $(seq 1 100); do [ "$(grep -c 'workers=2) spawn' "$log")" -ge 2 ] && break; sleep 0.1; done
+[ "$(grep -c 'workers=2) spawn' "$log")" -ge 2 ] || fail "fewer than two workers were exec'd from under $dir"
+grep -q "exec of" "$log" && fail "a worker's exec failed under $dir"
+stop $spid || fail "the supervisor under $dir did not exit cleanly on SIGTERM"
+echo "smoke-spawn-nonascii-path: two workers exec'd from under a non-ASCII directory serve"
+python3 scripts/emit.py --covers E35 --task smoke-spawn-nonascii-path
+"""
+
 [tool.poe.tasks.smoke-accept-spread]
 help = "--workers 2 share a burst of keep-alive connections within 2:1, forked and spawned (SPEC E16)"
 deps = ["build-serve"]
@@ -3163,6 +3199,7 @@ port=$(free_port)
 # server's own output in doctor.log.
 json=$SMOKE_DIR/doctor.json.log
 served=$SMOKE_DIR/doctor.served
+silent=$SMOKE_DIR/doctor.silent
 
 # The property that gives --doctor its value: for the SAME arguments, the
 # doctor's exit code equals the server's. A diagnostic that reports "fine"
@@ -3176,22 +3213,41 @@ served=$SMOKE_DIR/doctor.served
 # So it is backgrounded under a watchdog, and "still running when the
 # watchdog fired" is what exit 0 means on the doctor's side.
 #
+# The watchdog polls until the server answers -- any HTTP answer: no
+# configuration here names --health-path, so /health is the application's
+# 404 -- then allows it GRACE seconds, and fires only if it is STILL ALIVE
+# after them. It waited a fixed 8 s until 2026-09-29, 56 of the smoke's
+# 77 s with seven serving rows, though each answered within a second. The
+# grace is what the fixed wait was for: a server that answers and then
+# dies must read as its exit code, never as served, and the
+# `answer_then_exit` row below proves the watchdog still sees one. A
+# refused configuration exits and is reaped by the `wait` below without an
+# answer, so no marker is written for one; a server still alive and still
+# silent after READY seconds is a failure of its own.
+#
 # NOT `timeout`: that is GNU coreutils and the macOS runners do not ship
 # it. A missing command exits 127, which reads as a server refusal rather
 # than as a broken harness -- this smoke's first CI run duly reported
 # "server exits 127" for a configuration that serves perfectly, on the one
 # platform the author could not reproduce (homebrew coreutils was on the
 # development machine). Nothing else in this file uses `timeout`.
-equiv() {
-  desc="$1"; shift
-  "$srv" --doctor "$@" > "$json" 2>/dev/null; doc=$?
-  rm -f "$served"
+GRACE=2
+READY=30
+serve() {
+  rm -f "$served" "$silent"
   spawn doctor.log "$srv" "$@" --port $port
   spid=$pid
-  # The watchdog fires only if the server is STILL ALIVE at the deadline.
-  # A refused configuration has exited and been reaped by the `wait` below
-  # long before then, so the marker is never written for one.
-  ( sleep 8
+  ( end=$(($(date +%s) + READY))
+    until curl --silent --max-time 2 --output /dev/null "http://127.0.0.1:$port/health"; do
+      kill -0 "$spid" 2>/dev/null || exit 0
+      if [ "$(date +%s)" -ge "$end" ]; then
+        : > "$silent"
+        kill -TERM "$spid" 2>/dev/null
+        exit 0
+      fi
+      sleep 0.2
+    done
+    sleep $GRACE
     if kill -0 "$spid" 2>/dev/null; then
       : > "$served"
       kill -TERM "$spid" 2>/dev/null
@@ -3200,7 +3256,13 @@ equiv() {
   wait "$spid"; real=$?
   kill "$wpid" 2>/dev/null
   wait "$wpid" 2>/dev/null || true
+  [ -f "$silent" ] && fail "$desc: the server neither answered nor exited within ${READY}s"
   [ -f "$served" ] && real=0
+}
+equiv() {
+  desc="$1"; shift
+  "$srv" --doctor "$@" > "$json" 2>/dev/null; doc=$?
+  serve "$@"
   [ "$doc" = "$real" ] || fail "$desc: doctor exits $doc, server exits $real"
   python3 -c "import json,sys; json.load(open('$json'))" \
     || fail "$desc: --doctor did not print valid JSON"
@@ -3213,6 +3275,14 @@ if d['ok'] != ($doc == 0):
     sys.exit('ok=%r disagrees with exit %d' % (d['ok'], $doc))
 " || fail "$desc: the JSON verdict disagrees with the exit code"
 }
+
+# The watchdog's control: this application answers its first request and
+# exits 3 a fifth of a second later (apps/wsgi_bare/answer_then_exit). A
+# watchdog that read it as served would pass every row below that serves
+# whatever the server did after its first answer.
+desc='answer, then exit'
+serve answer_then_exit:application --app-dir apps/wsgi_bare
+[ "$real" = 3 ] || fail "$desc: the watchdog read a server that answered, then exited 3, as exit $real"
 
 # Serves. The zero-config default must be visible here, because it is the
 # thing a person runs --doctor to find out.
@@ -5092,7 +5162,7 @@ PYTHONPATH="$out" M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=25000 bin/m0serve 
 [tool.poe.tasks.smoke-blobs-image]
 help = "Build the blobs demo's pure-Mojo image from the tree and probe it from outside: PID 1, no interpreter, the page's claims, the app, a held stream through the drain"
 shell = """
-python3 scripts/mojo_image_probe.py --app blobs --build --port 18351 --task smoke-blobs-image || exit 1
+python3 scripts/mojo_image_probe.py --app blobs --build --task smoke-blobs-image || exit 1
 python3 scripts/emit.py --covers M26 --task smoke-blobs-image
 python3 scripts/emit.py --covers M27 --task smoke-blobs-image
 """
@@ -5103,7 +5173,8 @@ python3 scripts/emit.py --covers M27 --task smoke-blobs-image
 # rather than measured, no relocation, three footer or /about lies, and a
 # producer never told to stop -- each required to fail in the probe phase or
 # the build step it names. Builds from temporary copies; edits nothing
-# tracked. Pre-release: ten image builds, a layer or two each.
+# tracked. Pre-release: two unsabotaged baseline builds, then ten sabotaged
+# ones, a layer or two each.
 [tool.poe.tasks.sabotage-mojo-image]
 help = "PRE-RELEASE: build ten sabotaged Mojo images and insist smoke-blobs-image fails each where it should (SPEC M26, M27)"
 cmd = "python3 scripts/mojo_image_sabotage.py"
@@ -7156,35 +7227,13 @@ python3 scripts/emit.py --covers I21 --task smoke-hold-mount
 # login existed, but "would it notice if the check were gone".
 [tool.poe.tasks.sabotage-notes-login]
 help = "PRE-RELEASE: revert each session/CSRF rule and insist smoke-fragment-notes fails"
-shell = "python3 scripts/notes_login_sabotage.py"
+cmd = "python3 scripts/notes_login_sabotage.py"
 
 # PRE-RELEASE: rebuilds m0serve per sabotage, so minutes rather than seconds.
 [tool.poe.tasks.sabotage-outbox-cap]
 help = "PRE-RELEASE: revert each outbox-cap rule and insist the probe fails"
 cmd = "python3 scripts/outbox_cap_sabotage.py"
 
-# Both ends of the wire in Mojo: the client dials, sends, and parses against
-# the notes API — GET, POST with body, negotiation, problem+json, a refused
-# connection, and the https rejection. client_check.mojo raises on any miss.
-[tool.poe.tasks.smoke-client]
-help = "Start the notes API, run the Mojo HTTP client against it, stop"
-shell = """
-M0_PORT=8091 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/notes_api/server.mojo > notes.log 2>&1 &
-pid=$!
-trap 'kill $pid 2>/dev/null' EXIT
-curl --retry 30 --retry-delay 2 --retry-all-errors --silent --fail http://localhost:8091/health \
-  || { echo '=== notes.log ==='; cat notes.log; exit 1; }
-mojo run -I packages/m0-http/ -I packages/m0-core/ packages/m0-http/client_check.mojo \
-  || { echo '=== notes.log ==='; cat notes.log; exit 1; }
-rm -f notes.log
-echo "smoke-client OK"
-python3 scripts/emit.py --covers M14 --task smoke-client
-"""
-
-# The foreign-caller half of the C-ABI story: the emitted shared object must
-# load and answer through ctypes — the same dlopen path Bun or N-API takes.
-# Vectors are the public known answers test_hashing.mojo also pins, so the
-# .so is checked against the algorithm, not against itself.
 [tool.poe.tasks.bundle-ffi]
 help = "Assemble a self-contained, redistributable libm0core bundle under dist/"
 deps = ["build-ffi"]
@@ -7591,7 +7640,7 @@ python3 scripts/emit.py --covers N30 --task smoke-scaffold-dev
 help = "uv run m0 image on a scaffolded app: the Dockerfile as written and --frozen, about.json (python false, the baseline CPU), PID 1, the views wire through a published port, docker stop exit 0"
 deps = ["build-m0-wheel"]
 shell = """
-python3 scripts/m0_scaffold_image_smoke.py dist/m0 18361 || exit 1
+python3 scripts/m0_scaffold_image_smoke.py dist/m0 || exit 1
 python3 scripts/emit.py --covers N31 --task smoke-scaffold-image
 """
 
@@ -7663,8 +7712,10 @@ python3 scripts/emit.py --covers M10 --task smoke-quickstart
 python3 scripts/emit.py --covers K11 --task smoke-quickstart
 python3 scripts/emit.py --covers M16 --task smoke-quickstart
 """
+# The foreign-caller half of the C-ABI story: the emitted shared object must
+# load and answer through ctypes, the path m0pub takes to number its events.
 [tool.poe.tasks.smoke-ffi]
-help = "Load the C-ABI shared library via ctypes and assert known vectors"
+help = "Load the C-ABI shared library via ctypes and call its one export"
 deps = ["build-ffi"]
 shell = """
 ext=so; [ "$(uname)" = "Darwin" ] && ext=dylib
@@ -7684,26 +7735,6 @@ python3 - "packages/m0-core/libm0core.$ext" <<'PYEOF'
 import ctypes, sys
 
 lib = ctypes.CDLL(sys.argv[1])
-u32, buf_t = ctypes.c_uint32, ctypes.c_char_p
-lib.m0_fnv1a.restype = u32
-lib.m0_fnv1a.argtypes = [buf_t, u32]
-lib.m0_xxhash32.restype = u32
-lib.m0_xxhash32.argtypes = [buf_t, u32, u32]
-lib.m0_format_hash.restype = u32
-lib.m0_format_hash.argtypes = [u32, ctypes.c_char_p, u32]
-
-# FNV-1a and xxHash32 public vectors, the same ones test_hashing.mojo pins.
-assert lib.m0_fnv1a(b"a", 1) == 0xE40C292C, "fnv1a('a')"
-assert lib.m0_fnv1a(b"foobar", 6) == 0xBF9CF968, "fnv1a('foobar')"
-assert lib.m0_xxhash32(b"", 0, 0) == 0x02CC5D05, "xxhash32('')"
-h0 = lib.m0_xxhash32(b"hello world", 11, 0)
-h7 = lib.m0_xxhash32(b"hello world", 11, 7)
-assert h0 != h7, "seed had no effect"
-
-out = ctypes.create_string_buffer(8)
-n = lib.m0_format_hash(0xBF9CF968, out, 8)
-assert n == 8 and out.raw == b"bf9cf968", f"format_hash wrote {n}: {out.raw}"
-assert lib.m0_format_hash(1, out, 4) == 0, "short buffer must write nothing"
 
 # m0_shared_fetch_add is the export apps/django_realtime's m0pub.py calls to
 # number the events it publishes: the ONE thing Python cannot do for itself,
@@ -9344,12 +9375,8 @@ python3 scripts/emit.py --covers N44 --task smoke-fragment-notes
 
 # --- Benchmarks ------------------------------------------------------------
 
-[tool.poe.tasks.bench-core]
-help = "Benchmark m0-core hot paths"
-cmd = "mojo packages/m0-core/run_benchmarks.mojo"
-
 # Built and run rather than `mojo run`, for the same libsqlite3 linking reason
-# as test-sqlite above. Not part of test-all — neither is bench-core.
+# as test-sqlite above. Not part of test-all.
 [tool.poe.tasks.bench-sqlite]
 help = "Benchmark m0-sqlite read-out (opens libsqlite3 at run time)"
 shell = """

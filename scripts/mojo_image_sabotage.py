@@ -20,15 +20,20 @@ edits the copy -- the Dockerfile or a source file -- and builds that. The
 layers before the edited one come from the build cache, so most entries
 rebuild a layer or two. An anchor that does not match
 exactly once is NOT APPLICABLE and counted as a miss -- re-point it with
-the line. Pre-release: ten image builds, most of them a layer or two.
+the line. A `probe` entry whose image does not build is a miss, never a
+catch. `sabotage_lib.py` owns everything around the table: each gate's
+baseline, the unsabotaged image, must pass first, and SIGINT or SIGTERM
+ends the build and removes the copy and the image before the harness dies
+by the signal. Pre-release: ten sabotaged image builds after the two
+baselines, most of them a layer or two.
 
     uv run poe sabotage-mojo-image
-    uv run poe sabotage-mojo-image --only pid        one entry, by label substring
+    uv run poe sabotage-mojo-image --only "PID 1"      entries by label substring
+    uv run poe sabotage-mojo-image --only build        the Dockerfile's own refusals
 """
 
 from __future__ import annotations
 
-import argparse
 import shutil
 import subprocess
 import sys
@@ -36,7 +41,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from sabotage_lib import own_tmpdir
+from sabotage_lib import Gate, Outcome, rule, run, run_command
 
 REPO = Path(__file__).resolve().parent.parent
 DOCKERFILE = Path("deploy/mojo/Dockerfile")
@@ -147,11 +152,14 @@ SABOTAGES = [
 ]
 
 
-def _edits(entry):
-    _, _, files, olds, news, _ = entry
-    if isinstance(olds, tuple):
-        return list(zip(files, olds, news))
-    return [(files, olds, news)]
+PROBE, BUILD = "probe", "build"
+
+# A probe entry's catch is the probe failing in the phase it names, in the
+# probe's own words: its phase stamp also ANNOUNCES each phase as it begins
+# (`--- name`), so the bare phase name would match a failure in a later one.
+RULES = [rule(label, f, old, new, gate=kind,
+              expect=f"FAIL: {expect}" if kind == PROBE else expect)
+         for label, kind, f, old, new, expect in SABOTAGES]
 
 
 def _copy_context(dest: Path) -> None:
@@ -166,71 +174,77 @@ def _copy_context(dest: Path) -> None:
             shutil.copy2(src, out)
 
 
-def _run(argv, cwd, timeout=1800):
-    return subprocess.run(argv, cwd=cwd, capture_output=True, text=True, timeout=timeout)
+def _last(text: str) -> str:
+    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
+    return lines[-1][:200] if lines else "(no output)"
 
 
-def _tail(text: str, n: int = 12) -> str:
-    return "\n".join("      " + ln for ln in text.strip().splitlines()[-n:])
+class Image(Gate):
+    """A copy of the build context holding the texts it is handed, built
+    into an image: a `build` gate passes when the image builds, a `probe`
+    gate when `mojo_image_probe.py` passes against it. The copy and the
+    image go however the run ends -- a signal included, which ends the
+    build's process group first (`run_command`)."""
+
+    _target_cpu = ""
+
+    def __init__(self, kind: str):
+        self.kind = kind
+
+    @classmethod
+    def target_cpu(cls) -> str:
+        """The daemon's baseline, asked once: never a host-tuned build. Its
+        stdout alone: a warning on stderr is not the architecture."""
+        if not cls._target_cpu:
+            arch = subprocess.run(["docker", "info", "--format", "{{.Architecture}}"],
+                                  cwd=REPO, capture_output=True, text=True,
+                                  timeout=60).stdout.strip()
+            cls._target_cpu = "x86-64-v2" if arch in ("x86_64", "amd64") else "generic"
+        return cls._target_cpu
+
+    def run(self, texts) -> Outcome:
+        target_cpu = self.target_cpu()
+        with tempfile.TemporaryDirectory(prefix="m0-image-sabotage-") as tmp:
+            ctx = Path(tmp) / "ctx"
+            _copy_context(ctx)
+            for f, text in texts.items():
+                (ctx / f).write_text(text)
+            tag = f"m0-image-sabotage:{uuid.uuid4().hex[:8]}"
+            try:
+                build = run_command(
+                    ["docker", "build", "-f", str(DOCKERFILE), "--build-arg", "APP=blobs",
+                     "--build-arg", f"TARGET_CPU={target_cpu}", "-t", tag, "."],
+                    timeout=1800, cwd=ctx)
+                if self.kind == BUILD:
+                    if build.returncode == 0:
+                        return Outcome.passed(build.output)
+                    if build.timed_out:
+                        return Outcome.unclear("the build timed out", build.output)
+                    return Outcome.failed("the build refused: " + _last(build.output),
+                                          build.output)
+                if build.returncode != 0:
+                    return Outcome.unbuilt("the image did not build: " + _last(build.output),
+                                           build.output)
+                probe = run_command(
+                    [sys.executable, str(REPO / "scripts" / "mojo_image_probe.py"),
+                     "--app", "blobs", "--image", tag, "--target-cpu", target_cpu],
+                    timeout=1800, cwd=REPO)
+                said = probe.output
+                if probe.returncode == 0:
+                    return Outcome.passed(said)
+                line = next((ln for ln in said.splitlines() if "FAIL:" in ln), "")
+                if probe.timed_out and not line:
+                    return Outcome.unclear("the probe timed out without failing a phase",
+                                           said)
+                return Outcome.failed(line.strip()[:200] or _last(said), said)
+            finally:
+                run_command(["docker", "rmi", "-f", tag], timeout=120, cwd=REPO)
 
 
-def attempt(entry, target_cpu: str) -> tuple[str, str]:
-    label, kind, _, _, _, expect = entry
-    with tempfile.TemporaryDirectory(prefix="m0-image-sabotage-") as tmp:
-        ctx = Path(tmp) / "ctx"
-        _copy_context(ctx)
-        for f, old, new in _edits(entry):
-            path = ctx / f
-            text = path.read_text()
-            if text.count(old) != 1:
-                return "NOT APPLICABLE", f"anchor matched {text.count(old)} times in {f}"
-            path.write_text(text.replace(old, new))
-        tag = f"m0-image-sabotage:{uuid.uuid4().hex[:8]}"
-        build = _run(["docker", "build", "-f", str(DOCKERFILE), "--build-arg", "APP=blobs",
-                      "--build-arg", f"TARGET_CPU={target_cpu}", "-t", tag, "."], cwd=ctx)
-        try:
-            out = build.stdout + build.stderr
-            if kind == "build":
-                if build.returncode == 0:
-                    return "MISSED", "the build succeeded"
-                if expect not in out:
-                    return "MISSED", f"the build failed, but not with {expect!r}:\n{_tail(out)}"
-                return "CAUGHT", f"the build refused ({expect!r})"
-            if build.returncode != 0:
-                return "BROKEN", f"the sabotaged image did not build:\n{_tail(out)}"
-            probe = _run([sys.executable, str(REPO / "scripts" / "mojo_image_probe.py"), "--app", "blobs",
-                          "--image", tag, "--target-cpu", target_cpu, "--port", "18361"], cwd=REPO)
-            said = probe.stdout + probe.stderr
-            if probe.returncode == 0:
-                return "MISSED", "the probe passed"
-            if f"FAIL: {expect}" not in said:
-                return "MISSED", f"the probe failed, but not in {expect!r}:\n{_tail(said)}"
-            line = next((ln for ln in said.splitlines() if "FAIL:" in ln), "")
-            return "CAUGHT", line.strip()[:200]
-        finally:
-            _run(["docker", "rmi", "-f", tag], cwd=REPO)
-
-
-def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--only", default="", help="run the entries whose label contains this")
-    args = ap.parse_args()
-    arch = _run(["docker", "info", "--format", "{{.Architecture}}"], cwd=REPO).stdout.strip()
-    target_cpu = "x86-64-v2" if arch in ("x86_64", "amd64") else "generic"
-    chosen = [e for e in SABOTAGES if args.only in e[0]]
-    if not chosen:
-        print(f"no sabotage matches {args.only!r}")
-        return 2
-    caught = 0
-    for entry in chosen:
-        verdict, why = attempt(entry, target_cpu)
-        print(f"{verdict:14} {entry[0]}\n      {why}", flush=True)
-        caught += verdict == "CAUGHT"
-    print(f"\n{caught} of {len(chosen)} caught"
-          + ("" if len(chosen) == len(SABOTAGES) else f" (of {len(SABOTAGES)}; --only {args.only!r})"))
-    return 0 if caught == len(chosen) else 1
+def main(argv: list[str]) -> int:
+    return run("sabotage-mojo-image", RULES, {PROBE: Image(PROBE), BUILD: Image(BUILD)},
+               argv, write=False)
 
 
 if __name__ == "__main__":
-    with own_tmpdir("sabotage-mojo-image"):
-        sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

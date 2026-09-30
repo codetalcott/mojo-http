@@ -96,14 +96,13 @@ from std.python._cpython import (
 
 from lightbug_http import HTTPRequest, Headers, HeaderKey
 from lightbug_http.cookie import ResponseCookieJar
-from lightbug_http.header import name_is
+from lightbug_http.header import name_is, span_breaks_header_line
 
 from .environ import (
     all_ascii,
     append_cgi_name_as_utf8,
     append_latin1_as_utf8,
     header_is_excluded,
-    span_has_control_bytes,
 )
 from .shim_source import SHIM_SOURCE
 
@@ -978,8 +977,7 @@ struct PyBridge(Movable):
         to UTF-8 only when a byte above 0x7F makes that necessary, so
         `write_latin1_to` puts the application's own bytes back. Set-Cookie
         takes the verbatim jar path, and a name or value carrying CR, LF
-        or NUL is refused before anything is copied — the rules
-        `build_response` applied, on the same bytes.
+        or NUL is refused before anything is copied (below).
         """
         ref cpy = Python().cpython()
         var list_ptr = headers._obj_ptr
@@ -1016,10 +1014,19 @@ struct PyBridge(Movable):
             var value = self._head_span(
                 cpy, _pair_item(cpy, pair, 1), bytes_pairs
             )
-            # Response splitting: refused here, on the application's own
-            # bytes, and dropped rather than raised — the application has
-            # already run and its body is real. Applies to Set-Cookie too.
-            if span_has_control_bytes(name) or span_has_control_bytes(value):
+            # CR, LF or NUL in a name or value: dropped here, before the
+            # gateway reads the head. The WIRE no longer depends on it --
+            # the fork's head writers refuse the same bytes for every
+            # response (SPEC G1, G2) -- but the gateway acts on what it
+            # reads before any writer runs: `take_hold` takes `M0-Hold`
+            # and `M0-Channel`, and a HEAD's or a 304's answer keeps the
+            # application's `Content-Length` (`_assemble`). Unrefused, a
+            # channel carrying a line break became a hold's channel and a
+            # HEAD kept a length its writer then dropped
+            # (`test_read_head.mojo`). The fork's scanner, so the two
+            # refusals cannot disagree about a byte. Dropped rather than
+            # raised: the application has already run and its body is real.
+            if span_breaks_header_line(name) or span_breaks_header_line(value):
                 continue
             if bytes_pairs and not (all_ascii(name) and all_ascii(value)):
                 # The rare latin-1 byte above 0x7F: the blob holds UTF-8,

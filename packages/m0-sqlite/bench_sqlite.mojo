@@ -4,10 +4,15 @@ Measures the two things the bulk read-out API changed: the `unsafe_memcpy`
 rewrite of `column_blob`, and the SoA `fetch_*` loops against the per-row
 `while stmt.step():` idiom they are shorthand for.
 
-Deliberately hand-timed rather than built on `std.benchmark` like
-`m0-core/run_benchmarks.mojo`: these are millisecond-scale scans over a fixed
-row count, so a wall-clock total per scan is the number worth reading, and an
-autotuned per-op figure would hide how much of it is SQLite's own floor.
+Deliberately hand-timed rather than built on `std.benchmark`: these are
+millisecond-scale scans over a fixed row count, so a wall-clock total per
+scan is the number worth reading, and an autotuned per-op figure would hide
+how much of it is SQLite's own floor.
+
+`stats_ints`, the vector reduction the aggregate row times, lives here
+rather than in the package: it was `m0_sqlite.stats_ints` until 2026-09-29,
+and this file was its one user. `bench_reduce` checks its answer against
+SQLite's own before timing it, and refuses to time a wrong one.
 
 Usage:  uv run poe bench-sqlite
 """
@@ -17,11 +22,83 @@ from std.ffi import c_int
 from std.memory import Pointer
 from std.time import perf_counter_ns
 
-from src import Connection, Statement, open_memory, stats_ints
+from std.math import min as vmin, max as vmax
+
+from src import Connection, Statement, open_memory
 from src.ffi import CharPtr
 
 comptime ROWS: Int = 100_000
 comptime REPS: Int = 5
+
+
+# --- The reduction the aggregate row times -----------------------------------
+#
+# Integers only: a vector sum reassociates the additions, and integer
+# addition reassociates exactly, so this agrees with a scalar loop bit for
+# bit (floating point would not, in the last ulp). It wraps on overflow, as
+# a scalar Int64 loop does; SQLite's own `sum()` raises past 2^63 instead.
+
+# Eight lanes is wider than any one vector register on the targets here; the
+# compiler splits it and the extra independent accumulators hide the add
+# latency, which is where most of the win comes from.
+comptime _W = 8
+
+
+struct ColumnStats(Copyable, Movable):
+    """Sum, minimum and maximum of a column, from one pass."""
+
+    var count: Int
+    var sum: Int
+    var min: Int
+    var max: Int
+
+    def __init__(out self, count: Int, sum: Int, min: Int, max: Int):
+        self.count = count
+        self.sum = sum
+        self.min = min
+        self.max = max
+
+
+def stats_ints(data: Span[Int, _]) raises -> ColumnStats:
+    """Sum, min and max in one pass — the shape `SELECT sum(v), min(v), max(v)`
+    returns, computed here instead. Raises on an empty column."""
+    var n = len(data)
+    if n == 0:
+        raise Error("stats_ints: empty column has no minimum or maximum")
+    var p = data.unsafe_ptr().unsafe_bitcast[Int64]()
+    var total: Int
+    var lo: Int
+    var hi: Int
+    var i: Int
+    if n >= _W:
+        var first = p.unsafe_load[width=_W]()
+        var acc = first
+        var vlo = first
+        var vhi = first
+        i = _W
+        while i + _W <= n:
+            var c = p.unsafe_offset(i).unsafe_load[width=_W]()
+            acc += c
+            vlo = vmin(vlo, c)
+            vhi = vmax(vhi, c)
+            i += _W
+        total = Int(acc.reduce_add())
+        lo = Int(vlo.reduce_min())
+        hi = Int(vhi.reduce_max())
+    else:
+        total = data[0]
+        lo = data[0]
+        hi = data[0]
+        i = 1
+    while i < n:
+        var v = data[i]
+        total += v
+        if v < lo:
+            lo = v
+        if v > hi:
+            hi = v
+        i += 1
+    return ColumnStats(n, total, lo, hi)
 
 
 # --- The pre-memcpy implementation, kept here for the A/B ---------------------
