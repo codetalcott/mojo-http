@@ -16,7 +16,9 @@ pool, the loop's own thread, forked workers (the page, the bus and the
 accept-share channels), spawned workers (which adopt those by number), the
 realtime bus, and the ASGI executor's channels.
 
-    python3 scripts/exec_inherit_probe.py --port 8681
+    python3 scripts/exec_inherit_probe.py [--port BASE]
+
+One port per shape, upward from `--port`; without it, a free run of them.
 
 Prints one line per shape.
 """
@@ -27,7 +29,7 @@ import os
 import sys
 import tempfile
 
-from probelib import phase, server, stamp
+from probelib import free_port, phase, server, stamp
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 stamp("exec_inherit_probe FAIL")
@@ -78,9 +80,11 @@ def run_shape(port, shape, problems):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=os.path.join(REPO, "bin", "m0serve"))
-    ap.add_argument("--port", type=int, default=8681)
+    ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--shapes", default=",".join(s[0] for s in SHAPES))
     args = ap.parse_args()
+    if args.port is None:
+        args.port = free_port(len(SHAPES))
     wanted = args.shapes.split(",")
 
     problems = []

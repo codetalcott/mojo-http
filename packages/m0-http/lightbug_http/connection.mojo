@@ -1,7 +1,16 @@
 from std.sys.info import CompilationTarget
 from std.time import sleep
 
-from lightbug_http.address import HostPort, NetworkType, ParseError, TCPAddr, parse_address
+from lightbug_http.address import (
+    HostPort,
+    NetworkType,
+    ParseError,
+    TCPAddr,
+    is_ipv6_literal,
+    join_host_port,
+    parse_address,
+)
+from lightbug_http.c.address import AddressFamily
 from lightbug_http.c.process import ignore_sigpipe
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.io.bytes import Bytes
@@ -99,8 +108,15 @@ def bind_in_use(err: SocketBindError) -> Bool:
     return err.value.isa[SysError]() and err.value[SysError].address_in_use()
 
 
-struct NoTLSListener[network: NetworkType = NetworkType.tcp4](Movable):
-    """A bound, listening TCP socket; the event loop accepts from its descriptor."""
+struct NoTLSListener[network: NetworkType = NetworkType.tcp](Movable):
+    """A bound, listening TCP socket; the event loop accepts from its descriptor.
+
+    `tcp`, the default, is the family its address names, which the socket
+    holds as a value (`Socket.family`): `::` and `0.0.0.0` listeners are
+    one type, so nothing that holds a listener is generic over a family
+    (review R15). It was `tcp4`, whose sockets were IPv4 whatever the
+    address.
+    """
 
     var socket: TCPSocket[TCPAddr[Self.network]]
 
@@ -108,7 +124,10 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp4](Movable):
         self.socket = socket^
 
     def __init__(out self) raises SysError:
-        self.socket = Socket[TCPAddr[Self.network]]()
+        comptime if Self.network == NetworkType.tcp6:
+            self.socket = Socket[TCPAddr[Self.network]](family=AddressFamily.AF_INET6)
+        else:
+            self.socket = Socket[TCPAddr[Self.network]](family=AddressFamily.AF_INET)
 
     def close(mut self) raises SysError -> None:
         """Close the listener socket.
@@ -188,7 +207,7 @@ struct ListenConfig:
         self.quiet = quiet
 
     def listen[
-        network: NetworkType = NetworkType.tcp4
+        network: NetworkType = NetworkType.tcp
     ](self, address: StringSpan) raises ListenerError -> NoTLSListener[network]:
         """Create a TCP listener on the specified address.
 
@@ -199,8 +218,15 @@ struct ListenConfig:
         application runs before its loop does -- a handler's or a producer's
         `make`, the producer's first steps, a pool.
 
+        An IPv6 address is written in brackets, `[::]:8080`. Under `tcp`,
+        the default, it makes an IPv6 listener -- `[::]` dual-stack, so
+        IPv4 clients reach it too, and `[::1]` the IPv6 loopback alone --
+        and any other address an IPv4 one, as every listener was. Under
+        `tcp6` an IPv6 listener takes IPv6 alone, and under `tcp4` an IPv6
+        address does not bind.
+
         Parameters:
-            network: The network type (tcp4 or tcp6).
+            network: `tcp` (the family the address names), `tcp4` or `tcp6`.
 
         Args:
             address: The address to listen on (host:port).
@@ -218,11 +244,31 @@ struct ListenConfig:
         except ParseError:
             raise AddressParseError()
 
+        # The family is the address's (review R15). Every listener was
+        # IPv4 whatever it was given, and AF_INET6 held OpenBSD's number,
+        # so an IPv6 address could not be listened on at all.
+        var family = AddressFamily.AF_INET
+        comptime if network == NetworkType.tcp6:
+            family = AddressFamily.AF_INET6
+        elif network == NetworkType.tcp:
+            if is_ipv6_literal(local.host):
+                family = AddressFamily.AF_INET6
+
         var socket: Socket[TCPAddr[network]]
         try:
-            socket = Socket[TCPAddr[network]]()
+            socket = Socket[TCPAddr[network]](family=family)
         except socket_err:
             raise socket_err
+
+        # Dual-stack on `::` under `tcp`, set rather than left to the
+        # system's default, which differs by host (`Socket.set_ipv6_only`).
+        # Fatal, unlike the options below: a listener that cannot say which
+        # families it takes would serve whichever the host chose.
+        if family == AddressFamily.AF_INET6:
+            try:
+                socket.set_ipv6_only(network == NetworkType.tcp6)
+            except v6only_err:
+                raise v6only_err
 
         # SO_REUSEADDR: allow rapid restart after TIME_WAIT
         try:
@@ -261,8 +307,7 @@ struct ListenConfig:
                     raise bind_err^
                 if not bind_fail_logged:
                     print(
-                        "Bind failed on " + String(addr.ip) + ":"
-                        + String(addr.port)
+                        "Bind failed on " + join_host_port(addr.ip, String(addr.port))
                         + " (address in use: another server on the port,"
                         + " or a previous one still draining)"
                     )
@@ -286,9 +331,7 @@ struct ListenConfig:
         var msg = String(
             "\n🔥🐝 Lightbug is listening on ",
             "http://",
-            addr.ip,
-            ":",
-            String(addr.port),
+            join_host_port(addr.ip, String(addr.port)),
         )
         if not self.quiet:
             print(msg)
@@ -331,9 +374,10 @@ struct ConnectionState(Copyable):
         return ConnectionState(Self.READING_HEADERS)
 
     @staticmethod
-    def reading_body(content_length: Int) -> Self:
-        """`content_length` is not kept here: the provision's `BodyReadState`
-        holds the body's length and progress, and is what the loop reads."""
+    def reading_body() -> Self:
+        """The body's length is not kept here: the provision's
+        `BodyReadState` holds its length and progress, and is what the loop
+        reads."""
         return ConnectionState(Self.READING_BODY)
 
     @staticmethod

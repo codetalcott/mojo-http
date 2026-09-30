@@ -10,6 +10,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **IPv6** (SPEC M29). `m0serve --host ::` listens on IPv6 and IPv4 at
+  once, and `--host ::1` on the IPv6 loopback alone; the same goes for the
+  Mojo host's `M0_HOST` and `--host`, and for `Server.listen_and_serve` on
+  `"[::]:8080"`. A host may be written in brackets, `[::1]`, as in a URL;
+  `0.0.0.0`, `127.0.0.1` and `localhost` listen as before. A client is
+  reported in its own family, in `REMOTE_ADDR`, ASGI's `scope["client"]`
+  and the access log's new `remote_addr` field, and an IPv4 client of `::`
+  is reported as IPv4 (`127.0.0.1`), not as `::ffff:127.0.0.1` as gunicorn
+  and uvicorn report it, so moving a server from `0.0.0.0` to `::` changes
+  no address your application sees. Until now no IPv6 address could be
+  listened on at all. For a Fly.io application, `--host ::` is what makes
+  it reachable on the private network's `.internal` addresses.
+  `ListenConfig.listen` and `NoTLSListener` default to
+  `NetworkType.tcp`, the family the address names; `Server.serve` takes a
+  listener of any network.
+
 - **Three rules of the event loop and of `--spawn-workers` that no gate
   held now each have one** (SPEC A23, L16, E35). None changes what the
   server does.
@@ -40,8 +56,35 @@ in a minor release: `m0serve`'s flags and environment variables, the
   code, and a new control row, an application that answers once and then
   exits 3, fails the smoke if the watchdog ever reads it as served. The
   task went from 70 s to 33 on an Apple-silicon Mac.
+- **No gate binds a fixed port.** `sabotage-scaffold`,
+  `sabotage-outbox-cap`, `autobahn`, the three browser checks and the
+  executed quickstarts take a free port each run, so two runs on one
+  machine no longer collide, and `poe check-task-shells` refuses a fixed
+  port in any task but a `serve-*` one. `poe smoke-wheel` proves the
+  installed m0serve runs on the runtime its wheel ships by asking the
+  loader which file it loaded: it used to remove that runtime and let the
+  loader abort the process, which on macOS wrote a crash report every run.
+- **`poe autobahn` runs a section again, once, when the container could not
+  connect** (SPEC I13). The suite's client stops at the first case it cannot
+  connect for and still reports success. Under colima that happens to about
+  1 connect in 300, whatever server answers, so one section in three ran
+  thin and the run failed with no cause given.
+  - The runner now retries a thin section on the same server when the
+    client printed `Connection to ... failed` and the server still
+    answers, and it says so.
+  - Any other thin section fails, and so does a thin retry.
+  - What the cut-short attempt scored is still judged.
+  - The client's output and the server's log are printed and kept under
+    `bin/logs/autobahn/`.
 
 ### Removed
+
+- **The last upstream `lightbug_http` names nothing used**:
+  `NetworkType.udp4` and `udp6`, the free functions `is_ip_protocol`,
+  `is_ipv4` and `is_ipv6` (the `NetworkType` methods of those names stay),
+  the `TCP4Socket` and `TCP6Socket` aliases, `O_ACCMODE`, and the argument
+  `ConnectionState.reading_body` ignored. Nothing served changes; an
+  application built with the `m0` wheel that named one needs its own copy.
 
 - **Framework names nothing in the tree used**, from the packages the `m0`
   wheel ships (DECISIONS D54). Nothing served changes: `m0serve` and the

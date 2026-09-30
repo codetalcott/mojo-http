@@ -7518,21 +7518,56 @@ wait_ready http://127.0.0.1:$port/ $pid
 curl -s --max-time 5 http://127.0.0.1:$port/ | grep -q 'served from the wheel' || fail 'wrong body'
 stop $pid
 
-# 7. Removal sabotage, permanent. If the binary still starts once its runtime
-#    is gone, it is resolving it from somewhere else -- the build venv -- and
-#    the bundle is a placebo. This is the blind spot, checked from the machine
-#    where it hides.
+# 7. The runtime the installed binary runs on is the wheel's own. The loader
+#    names the file it loaded for every image, with the environment scrubbed,
+#    and each one must be a system library or in the installed `_lib` -- and
+#    at least one must be there. A runtime found anywhere else (the build
+#    venv, through a stale search path) is a bundle that is a placebo: this is
+#    the blind spot, checked from the machine where it hides. That no search
+#    path outside the artifact is RECORDED is the static half, stage-wheel's
+#    ffi_portability_check.py --require-self-contained.
+#    It was proved by moving `_lib` away and requiring the start to fail,
+#    which on macOS is dyld aborting the process: SIGABRT and a crash report
+#    on every run. Asking the loader fails the same way without a crash.
 # Both platforms: the m0serve EXECUTABLE links the Mojo runtime dynamically
 # on Linux too, which is not true of libm0core.so and was assumed away until
-# CI refused to bundle it. So the sabotage is meaningful on both.
+# CI refused to bundle it.
 site=$("$work/venv/bin/python" -c 'import m0serve,os;print(os.path.dirname(m0serve.__file__))')
-mv "$site/_lib" "$work/_lib_moved" || fail "could not move _lib"
-if (cd "$work" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
-    -u LD_LIBRARY_PATH "$work/venv/bin/m0serve" --version >/dev/null 2>&1); then
-  mv "$work/_lib_moved" "$site/_lib"
-  fail "m0serve still ran with its bundled runtime removed - it is resolving it elsewhere, so the bundle proves nothing"
+if [ "$(uname)" = "Darwin" ]; then
+  # dyld prints `dyld[PID]: <UUID> PATH` per image, the executable first.
+  loaded=$(cd "$work" && env -u DYLD_LIBRARY_PATH -u DYLD_FALLBACK_LIBRARY_PATH \
+    -u DYLD_INSERT_LIBRARIES DYLD_PRINT_LIBRARIES=1 "$site/_bin/m0serve" --version 2>&1) \
+    || fail "m0serve --version failed with dyld listing its images: $loaded"
+else
+  # ld.so lists `NAME => PATH (0x...)` per library and does not run main.
+  loaded=$(cd "$work" && env -u LD_LIBRARY_PATH -u LD_PRELOAD LD_TRACE_LOADED_OBJECTS=1 \
+    "$site/_bin/m0serve" 2>&1) || fail "the loader could not list m0serve's libraries: $loaded"
 fi
-mv "$work/_lib_moved" "$site/_lib" || fail "could not restore _lib"
+printf '%s\n' "$loaded" > "$work/loaded.txt"
+python3 - "$site" "$work/loaded.txt" <<'PY' || fail "m0serve's runtime is not the one the wheel ships"
+import os, re, sys
+site, text = sys.argv[1], open(sys.argv[2]).read()
+real = os.path.realpath
+lib, exe = real(os.path.join(site, "_lib")) + os.sep, real(os.path.join(site, "_bin", "m0serve"))
+if sys.platform == "darwin":
+    paths, missing = re.findall(r"^dyld\\[\\d+\\]: (?:<[^>]*> )?(/.*)$", text, re.M), []
+else:
+    paths = re.findall(r"^\\s+(?:\\S+ => )?(/\\S+) \\(0x", text, re.M)
+    missing = re.findall(r"^\\s+(\\S+) => not found", text, re.M)
+system = ("/usr/lib/", "/System/", "/lib/", "/lib64/", "/usr/lib64/")
+images = [p for p in paths if real(p) != exe]
+ours = [p for p in images if real(p).startswith(lib)]
+elsewhere = [p for p in images if not real(p).startswith(lib) and not p.startswith(system)]
+if missing:
+    sys.exit("the loader found no file for " + ", ".join(missing))
+if elsewhere:
+    sys.exit("m0serve loaded %s from outside the wheel's _lib: it resolves its runtime "
+             "elsewhere, so the bundle proves nothing" % elsewhere[0])
+if not ours:
+    sys.exit("m0serve loaded nothing from the wheel's _lib (%d images listed): the bundle "
+             "is a placebo, or the loader's list was not read:\\n%s" % (len(images), text[-1500:]))
+print("runtime from the wheel: " + ", ".join(sorted(os.path.basename(p) for p in ours)))
+PY
 
 # The listener ships in the wheel, and an absent libpq must be a REFUSAL
 # rather than a server that runs with no listener. It used to be the
@@ -8080,6 +8115,28 @@ cat "$out/doctor.log"
 echo "smoke-host-doctor OK"
 python3 scripts/emit.py --covers E30 --task smoke-host-doctor
 python3 scripts/emit.py --covers E31 --task smoke-host-doctor
+"""
+
+# IPv6 (SPEC M29, review R15): `--host ::` takes both families, `::1` IPv6
+# alone, and a client is reported in its own family -- an IPv4 client of
+# `::` as IPv4 -- through m0serve (WSGI, ASGI, --workers, --spawn-workers,
+# --reload, the doctor) and the Mojo host (M0_HOST, --host, the doctor).
+# The probe's first phase fails on a runner with no IPv6 loopback rather
+# than skipping: a gate that skipped there would be green having tested
+# nothing. Its servers' logs land in $SMOKE_DIR, printed if it fails.
+[tool.poe.tasks.smoke-ipv6]
+help = "IPv6: --host :: listens on both families and ::1 on IPv6 alone, each client reported in its own family, through m0serve and the Mojo host (SPEC M29)"
+deps = ["build-serve"]
+shell = """
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
+  apps/host_check/server.mojo -o "$out/host_check" || exit 1
+spawn probe.log env SMOKE_DIR="$out" python3 scripts/ipv6_probe.py bin/m0serve "$out/host_check" $(free_port 12)
+wait $pid || fail "$(grep -m 1 'ipv6_probe: FAIL' "$out/probe.log")"
+cat "$out/probe.log"
+echo "smoke-ipv6 OK"
+python3 scripts/emit.py --covers M29 --task smoke-ipv6
 """
 
 # The Mojo host with MAX's parallel runtime linked (SPEC E32). The app

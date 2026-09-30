@@ -125,10 +125,17 @@ has the Flask version of the whole thing, and CI drives that exact file.
   with `sendfile`, ETags and byte ranges, never entering Python; a miss falls
   through to the application. `--static-cache-control V` sets the header.
 - **Health.** `--health-path PATH` answers a liveness JSON in the server.
+- **IPv6.** `--host ::` listens on IPv6 and IPv4 at once, and `--host ::1`
+  on the IPv6 loopback alone (`[::1]`, as a URL writes it, is read the same).
+  Fly's private network reaches an app on its `.internal` address only over
+  IPv6, so an app a sibling calls there listens on `::`. An IPv4 client of
+  `::` is reported as IPv4 (`127.0.0.1`), as a `0.0.0.0` listener reports
+  it.
 
 ## Observability
 
-- `--access-log` prints one JSON line per response.
+- `--access-log` prints one JSON line per response, the client's address
+  among its fields (`remote_addr`).
 - `--metrics` serves Prometheus exposition at `/__metrics`, with latency
   histograms.
 - `--doctor` prints the whole resolved configuration as JSON and starts

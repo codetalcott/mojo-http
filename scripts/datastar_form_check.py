@@ -38,6 +38,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from probelib import free_port
+
 
 def wait_healthy(url: str, deadline_s: float = 30.0) -> None:
     end = time.monotonic() + deadline_s
@@ -137,10 +139,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--url", help="a running demo; otherwise --bin is started on --port")
     ap.add_argument("--bin", help="the built todo binary to start")
-    ap.add_argument("--port", type=int, default=8094)
+    ap.add_argument("--port", type=int, default=None, help="default: a free one")
     args = ap.parse_args()
     if not args.url and not args.bin:
         ap.error("--url or --bin")
+    if args.port is None:
+        args.port = free_port()
 
     proc = None
     url = args.url

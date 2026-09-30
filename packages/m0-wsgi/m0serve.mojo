@@ -68,7 +68,8 @@ from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
 from lightbug_http.accept_share import AcceptShare, accept_sharing_wanted
 from lightbug_http.connection import ListenConfig, NoTLSListener
-from lightbug_http.address import NetworkType, TCPAddr, parse_address
+from lightbug_http.address import NetworkType, TCPAddr, is_ipv6_literal, parse_address
+from lightbug_http.c.address import AddressFamily
 from lightbug_http.socket import Socket
 from lightbug_http.c.process import process_exit, executable_path
 from lightbug_http.c.fcntl import set_cloexec
@@ -360,7 +361,7 @@ def _import_and_check(
     )
 
 
-def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
+def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp]:
     """The listener a spawned worker inherited, by fd number (`M0_LISTEN_FD`)."""
     var raw = getenv("M0_LISTEN_FD", "")
     var fd: Int
@@ -372,15 +373,22 @@ def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4
     # Kept across this worker's own exec only (`_exec_if_spawning`); the
     # application's children must not inherit it (SPEC G16).
     set_cloexec(fd)
-    var local = parse_address[NetworkType.tcp4](opts.address())
-    var sock = Socket[TCPAddr[NetworkType.tcp4]](
-        fd=FileDescriptor(fd),
-        local_address=TCPAddr[NetworkType.tcp4](ip=local.host, port=local.port),
+    var local = parse_address[NetworkType.tcp](opts.address())
+    # The family the supervisor's listener was made in, as `ListenConfig`
+    # chose it from the same address; the descriptor crossed the exec by
+    # number, whatever its family (review R15).
+    var family = (
+        AddressFamily.AF_INET6 if is_ipv6_literal(local.host) else AddressFamily.AF_INET
     )
-    return NoTLSListener[NetworkType.tcp4](sock^)
+    var sock = Socket[TCPAddr[NetworkType.tcp]](
+        fd=FileDescriptor(fd),
+        local_address=TCPAddr[NetworkType.tcp](ip=local.host, port=local.port),
+        family=family,
+    )
+    return NoTLSListener[NetworkType.tcp](sock^)
 
 
-def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4]:
+def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp]:
     """Bind, or say why not and exit `EXIT_STARTUP`.
 
     Five attempts a second apart on an address IN USE: a restart racing the
@@ -399,7 +407,7 @@ def _listen_or_fail(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp4
     """
     if spawned_worker_index() >= 0:
         return _adopt_listener(opts)
-    var listener: NoTLSListener[NetworkType.tcp4]
+    var listener: NoTLSListener[NetworkType.tcp]
     try:
         listener = ListenConfig(max_bind_retries=5, quiet=True).listen(
             opts.address()
@@ -1094,7 +1102,7 @@ def main() raises:
 
 def _serve_offloaded(
     opts: ServeOptions,
-    var listener: NoTLSListener[NetworkType.tcp4],
+    var listener: NoTLSListener[NetworkType.tcp],
     mut handler: WSGIHandler,
     config: ServerConfig,
     shutdown_fd: Int,
@@ -1226,7 +1234,7 @@ def _serve_offloaded(
 
 def _serve_threaded(
     mut opts: ServeOptions,
-    listener: NoTLSListener[NetworkType.tcp4],
+    listener: NoTLSListener[NetworkType.tcp],
     bus: BroadcastBus,
 ) raises:
     """`--threads N`: N event loops on N threads, one interpreter.

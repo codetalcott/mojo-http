@@ -1,8 +1,15 @@
 from std.ffi import c_int, c_size_t, c_ssize_t, c_uchar, external_call, get_errno
+from std.memory import stack_allocation
 from std.sys.info import CompilationTarget, size_of
 
 from lightbug_http.c.aliases import c_void
-from lightbug_http.c.network import SocketAddress, sockaddr, sockaddr_in, socklen_t
+from lightbug_http.c.network import (
+    SOCKADDR_STORAGE_SIZE,
+    SocketAddress,
+    sockaddr,
+    sockaddr_host_port,
+    socklen_t,
+)
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
 
@@ -71,9 +78,16 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
         return String(self)
 
 
+# The IPv6 level and the one option set there (macOS SDK <netinet6/in6.h>,
+# Linux <linux/in6.h>): whether an AF_INET6 socket takes IPv6 alone or IPv4
+# too, as `::ffff:a.b.c.d`. Its default is a system setting on both
+# (`net.inet6.ip6.v6only`, `net.ipv6.bindv6only`), so a listener sets it.
+comptime IPPROTO_IPV6 = 41
+comptime IPV6_V6ONLY = 27 if _IS_MACOS else 26
+
+
 # File open option flags (platform-specific)
 comptime O_NONBLOCK = 4 if CompilationTarget.is_macos() else 2048
-comptime O_ACCMODE = 3
 comptime O_CLOEXEC = 16777216 if CompilationTarget.is_macos() else 524288
 
 
@@ -281,10 +295,11 @@ def getsockname(socket: FileDescriptor, mut address: SocketAddress) raises SysEr
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/getsockname.3p.html .
     """
-    var sockaddr_size = address.SIZE
+    var sockaddr_size = SocketAddress.CAPACITY
     var result = _getsockname(Int32(socket.value), address.unsafe_ptr(), Pointer(to=sockaddr_size))
     if result == -1:
         raise SysError("getsockname", get_errno())
+    address.length = sockaddr_size
 
 
 def _getpeername[
@@ -335,7 +350,7 @@ def getpeername(file_descriptor: FileDescriptor) raises SysError -> SocketAddres
     * Reference: https://man7.org/linux/man-pages/man2/getpeername.2.html .
     """
     var remote_address = SocketAddress()
-    var sockaddr_size = remote_address.SIZE
+    var sockaddr_size = SocketAddress.CAPACITY
     var result = _getpeername(
         Int32(file_descriptor.value),
         remote_address.unsafe_ptr(),
@@ -343,11 +358,12 @@ def getpeername(file_descriptor: FileDescriptor) raises SysError -> SocketAddres
     )
     if result == -1:
         raise SysError("getpeername", get_errno())
+    remote_address.length = sockaddr_size
 
     return remote_address^
 
 
-def _bind[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
+def _bind[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr, origin], address_len: socklen_t) -> c_int:
     """Libc POSIX `bind` function. Assigns the address specified by `address` to the socket referred to by
        the file descriptor `socket`.
 
@@ -391,7 +407,7 @@ def bind(socket: FileDescriptor, mut address: SocketAddress) raises SysError:
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/bind.3p.html .
     """
-    var result = _bind(Int32(socket.value), Pointer(to=address.as_sockaddr_in()), address.SIZE)
+    var result = _bind(Int32(socket.value), address.unsafe_ptr(), address.length)
     if result == -1:
         raise SysError("bind", get_errno())
 
@@ -487,49 +503,33 @@ def accept_with_peer(
 ) raises SysError -> Tuple[FileDescriptor, String, Int]:
     """Libc POSIX `accept`, keeping the peer address the kernel handed over.
 
-    Returns `(fd, host, port)`; a non-IPv4 peer (or a truncated address)
-    yields `("", 0)` rather than a guess. The kernel fills the sockaddr
-    whether or not a caller reads it, and upstream's `accept` not only
-    discarded it but passed a 4-byte `addrlen` (`sizeof(socklen_t)`), so
-    the kernel truncated the address before the IP bytes and it was
-    unreadable even in principle.
-
-    Layout note: `sa_family_t` here is u16, but macOS's real struct opens
-    `[sin_len u8][sin_family u8]`, so the u16 read is `len | family << 8`
-    there and plain `family` on Linux — the same single-definition ABI
-    hazard `set_nonblocking`'s padded fcntl documents. Port and address
-    bytes sit at the same offsets on both.
+    Returns `(fd, host, port)`, read by `sockaddr_host_port`: an IPv4 peer
+    dotted, an IPv6 one as `inet_ntop` writes it, and an IPv4 peer of a
+    dual-stack listener as IPv4, not `::ffff:a.b.c.d`. Anything else, or a
+    truncated address, yields `("", 0)` rather than a guess. The address
+    lands in `sockaddr_storage`-sized room: in one 16-byte `sockaddr` the
+    kernel truncated an IPv6 peer before its address (review R15), as
+    upstream's 4-byte `addrlen` once truncated every peer.
 
     Raises:
         SysError: If the call fails, whatever its errno. The accept drain
             reads `would_block()`, `connection_aborted()` and
             `interrupted()`.
     """
-    var remote_address = sockaddr()
-    var buffer_size = socklen_t(size_of[sockaddr]())
-    var result = _accept(Int32(socket.value), Pointer(to=remote_address), Pointer(to=buffer_size))
+    var storage = stack_allocation[SOCKADDR_STORAGE_SIZE, UInt8]()
+    var buffer_size = socklen_t(SOCKADDR_STORAGE_SIZE)
+    var result = _accept(
+        Int32(socket.value),
+        storage.unsafe_bitcast[sockaddr](),
+        Pointer(to=buffer_size),
+    )
     if result == -1:
         raise SysError("accept", get_errno())
-
-    var family: Int
-    comptime if CompilationTarget.is_macos():
-        family = Int(remote_address.sa_family) >> 8
-    else:
-        family = Int(remote_address.sa_family)
-    if family != 2 or Int(buffer_size) < 8:  # AF_INET, with port+addr present
-        return (FileDescriptor(Int(result)), String(""), 0)
-    # sockaddr_in after the 2 family bytes: port (network order), then the
-    # four address octets. sa_data is c_char, so mask to unsigned.
-    var d = remote_address.sa_data
-    var port = (Int(d[0]) & 0xFF) << 8 | (Int(d[1]) & 0xFF)
-    var host = (
-        String(Int(d[2]) & 0xFF) + "." + String(Int(d[3]) & 0xFF) + "."
-        + String(Int(d[4]) & 0xFF) + "." + String(Int(d[5]) & 0xFF)
-    )
-    return (FileDescriptor(Int(result)), host^, port)
+    var peer = sockaddr_host_port(storage, Int(buffer_size))
+    return (FileDescriptor(Int(result)), peer[0], peer[1])
 
 
-def _connect[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr_in, origin], address_len: socklen_t) -> c_int:
+def _connect[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr, origin], address_len: socklen_t) -> c_int:
     """Libc POSIX `connect` function.
 
     Args:
@@ -575,7 +575,7 @@ def connect(socket: FileDescriptor, mut address: SocketAddress) raises SysError:
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/connect.3p.html .
     """
-    var result = _connect(c_int(socket.value), Pointer(to=address.as_sockaddr_in()), address.SIZE)
+    var result = _connect(c_int(socket.value), address.unsafe_ptr(), address.length)
     if result == -1:
         raise SysError("connect", get_errno())
 

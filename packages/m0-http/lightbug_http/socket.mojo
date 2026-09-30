@@ -5,15 +5,13 @@ from lightbug_http.c.aliases import c_void
 
 from lightbug_http.address import (
     Addr,
-    NetworkType,
-    TCPAddr,
-    binary_ip_to_string,
-    binary_port_to_int,
     get_ip_address,
 )
 from lightbug_http.c.address import AddressFamily, AddressLength
 from lightbug_http.c.network import InetNtopError, InetPtonError, SocketAddress, inet_pton
 from lightbug_http.c.socket import (
+    IPPROTO_IPV6,
+    IPV6_V6ONLY,
     SOL_SOCKET,
     ShutdownOption,
     SocketOption,
@@ -84,7 +82,10 @@ struct SocketRecvError(Movable, Writable):
 struct SocketNameError(Movable, Writable):
     """Error variant for `get_sock_name` and `get_peer_name`.
     Can be a SysError from getsockname or getpeername (its `op` says which),
-    SocketClosedError, or InetNtopError from binary_ip_to_string.
+    or SocketClosedError. The InetNtopError arm is kept for callers that
+    match it; nothing raises it since the address is read by
+    `SocketAddress.host_port`, which reports an address it cannot format as
+    `("", 0)`.
     """
 
     comptime type = Variant[SysError, SocketClosedError, InetNtopError]
@@ -170,7 +171,8 @@ struct Socket[
     Parameters:
         address: The type of address the socket uses.
         sock_type: The type of socket (SOCK_STREAM for TCP).
-        address_family: The address family (e.g., AF_INET for IPv4, AF_INET6 for IPv6).
+        address_family: The address family a socket is made with when none
+            is given (`family`).
 
     Args:
         local_address: The local address of the socket (local address if bound).
@@ -187,6 +189,12 @@ struct Socket[
     """Whether the socket is closed."""
     var _connected: Bool
     """Whether the socket is connected."""
+    var family: AddressFamily
+    """The family the socket was made in, which `bind` builds its address
+    for. A value, not only the `address_family` parameter: a listener's
+    family is the address it is given, `AF_INET6` for `::` and `AF_INET`
+    for `0.0.0.0`, known only once the address is (review R15). A parameter
+    would make every signature that holds a listener generic over it."""
 
     def __init__(
         out self,
@@ -202,19 +210,43 @@ struct Socket[
         Raises:
             SysError: If the socket creation fails.
         """
-        # TODO: Tried unspec for both address family and protocol, and inet for both but that doesn't seem to work.
-        # I guess for now, I'll leave protocol as unspec.
-        self.fd = FileDescriptor(Int(socket(Self.address_family.value, Self.sock_type.value, 0)))
+        self = Self(
+            family=Self.address_family,
+            local_address=local_address,
+            remote_address=remote_address,
+        )
+
+    def __init__(
+        out self,
+        *,
+        family: AddressFamily,
+        local_address: Self.address = Self.address(),
+        remote_address: Self.address = Self.address(),
+    ) raises SysError:
+        """Create a new socket in `family`, whatever `address_family` says.
+
+        Args:
+            family: `AF_INET` or `AF_INET6`.
+            local_address: The local address of the socket (local address if bound).
+            remote_address: The remote address of the socket (peer's address if connected).
+
+        Raises:
+            SysError: If the socket creation fails.
+        """
+        # Protocol 0: the family's default for the type, TCP for a stream.
+        self.fd = FileDescriptor(Int(socket(family.value, Self.sock_type.value, 0)))
         self.local_address = local_address
         self.remote_address = remote_address
         self._closed = False
         self._connected = False
+        self.family = family
 
     def __init__(
         out self,
         fd: FileDescriptor,
         local_address: Self.address,
         remote_address: Self.address = Self.address(),
+        family: AddressFamily = Self.address_family,
     ):
         """
         Create a new socket object when you already have a socket file descriptor, such as a listener another process bound.
@@ -223,12 +255,14 @@ struct Socket[
             fd: The file descriptor of the socket.
             local_address: The local address of the socket (local address if bound).
             remote_address: The remote address of the socket (peer's address if connected).
+            family: The family the descriptor's socket was made in.
         """
         self.fd = fd
         self.local_address = local_address
         self.remote_address = remote_address
         self._closed = False
         self._connected = True
+        self.family = family
 
     def teardown(deinit self) raises SysError:
         """Close the socket and free the file descriptor."""
@@ -279,7 +313,7 @@ struct Socket[
             "Socket[",
             Self.address._type,
             ", ",
-            Self.address_family,
+            self.family,
             "]",
             "(",
             "fd=",
@@ -326,13 +360,15 @@ struct Socket[
             SocketBindError: If IP conversion fails, bind fails, or getting socket name fails.
                 A closed socket's bind fails with EBADF (see `close`).
         """
-        var binary_ip = inet_pton[Self.address_family](ip_address)
-
-        var local_address = SocketAddress(
-            address_family=Self.address_family,
-            port=port,
-            binary_ip=binary_ip,
-        )
+        var local_address: SocketAddress
+        if self.family == AddressFamily.AF_INET6:
+            local_address = SocketAddress(
+                AddressFamily.AF_INET6, port, inet_pton[AddressFamily.AF_INET6](ip_address)
+            )
+        else:
+            local_address = SocketAddress(
+                AddressFamily.AF_INET, port, inet_pton[AddressFamily.AF_INET](ip_address)
+            )
         bind(self.fd, local_address)
 
         var local = self.get_sock_name()
@@ -353,12 +389,8 @@ struct Socket[
         # TODO: Add check to see if the socket is bound and error if not.
         var local_address = SocketAddress()
         getsockname(self.fd, local_address)
-
-        ref local_sockaddr_in = local_address.as_sockaddr_in()
-        return (
-            binary_ip_to_string[Self.address_family](local_sockaddr_in.sin_addr.s_addr),
-            UInt16(binary_port_to_int(local_sockaddr_in.sin_port)),
-        )
+        var named = local_address.host_port()
+        return (named[0], UInt16(named[1]))
 
     def get_peer_name(self) raises SocketNameError -> Tuple[String, UInt16]:
         """Return the address of the peer connected to the socket.
@@ -374,12 +406,8 @@ struct Socket[
 
         # TODO: Add check to see if the socket is bound and error if not.
         var peer_address = getpeername(self.fd)
-
-        ref peer_sockaddr_in = peer_address.as_sockaddr_in()
-        return (
-            binary_ip_to_string[Self.address_family](peer_sockaddr_in.sin_addr.s_addr),
-            UInt16(binary_port_to_int(peer_sockaddr_in.sin_port)),
-        )
+        var named = peer_address.host_port()
+        return (named[0], UInt16(named[1]))
 
     def set_socket_option(self, option_name: SocketOption, var option_value: Int = 1) raises SysError:
         """Set the given socket option.
@@ -393,6 +421,24 @@ struct Socket[
                 closed socket (see `close`).
         """
         setsockopt(self.fd, Int32(SOL_SOCKET), option_name.value, Int32(option_value))
+
+    def set_ipv6_only(self, ipv6_only: Bool) raises SysError:
+        """Whether an `AF_INET6` socket takes IPv6 alone (`IPV6_V6ONLY`), or
+        IPv4 too, which arrives as `::ffff:a.b.c.d`.
+
+        Set, never left to the default, which is a system setting
+        (`net.inet6.ip6.v6only` on macOS, `net.ipv6.bindv6only` on Linux):
+        a listener on `::` meant for both families served IPv6 alone on a
+        host configured that way (review R15). Before `bind`.
+
+        Args:
+            ipv6_only: True for IPv6 alone.
+
+        Raises:
+            SysError: If setting the option fails; ENOPROTOOPT or EINVAL on
+                a socket that is not `AF_INET6`, EBADF on a closed one.
+        """
+        setsockopt(self.fd, Int32(IPPROTO_IPV6), Int32(IPV6_V6ONLY), Int32(1 if ipv6_only else 0))
 
     def connect(mut self, mut ip_address: String, port: UInt16) raises -> None:
         """Connect to a remote socket at address.
@@ -574,5 +620,3 @@ comptime TCPSocket[address: Addr] = Socket[
     sock_type = SocketType.SOCK_STREAM,
     address_family = AddressFamily.AF_INET,
 ]
-comptime TCP4Socket = TCPSocket[TCPAddr[NetworkType.tcp4]]
-comptime TCP6Socket = TCPSocket[TCPAddr[NetworkType.tcp6]]

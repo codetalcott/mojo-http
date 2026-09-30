@@ -269,12 +269,28 @@ struct URI(Copyable, Writable):
             reader.increment(userinfo_at + 1 - reader.read_pos)
 
         # TODOs (@thatstoasty)
-        # Handle ipv4 and ipv6 literal
         # Handle string host
         # A query right after the domain is a valid uri, but it's equivalent to example.com/?query
         # so we should add the normalization of paths
         var host_and_port = reader.read_until(UInt8(ord(URIDelimiters.PATH)))
-        var colon = host_and_port.find(UInt8(ord(URIDelimiters.SCHEME)))
+        # An IPv6 literal is bracketed (RFC 3986 section 3.2.2), and its
+        # colons are not the port's: `[::1]:8080`. The port's colon is the
+        # first after the `]`, and the brackets stay in `host`, as a `Host`
+        # header built from it needs them. A server on `::` puts its own
+        # address in front of every target that carries a query, so the
+        # first colon of `[::]:8080` was read as the port's, `atol` failed on
+        # `:]`, and every such request was answered 400 (review R15).
+        var port_from = 0
+        if len(host_and_port) > 0 and host_and_port[0] == UInt8(ord("[")):
+            var close = host_and_port.find(UInt8(ord("]")))
+            if close == -1:
+                raise URIParseError(
+                    String("URI.parse: an IPv6 host with no closing ']': ", uri)
+                )
+            port_from = close + 1
+        var colon = host_and_port[port_from:].find(UInt8(ord(URIDelimiters.SCHEME)))
+        if colon != -1:
+            colon += port_from
         var host: String
         var port: Optional[UInt16] = None
         if colon != -1:

@@ -73,12 +73,23 @@ def log_json(entry: LogEntry):
     print(format_json(entry, Int(perf_counter_ns() // 1_000_000)))
 
 
-def log_access(method: String, path: String, status: Int, dur_us: Int, body_size: Int):
-    """Convenience: emit a structured access log line."""
+def log_access(
+    method: String, path: String, status: Int, dur_us: Int, body_size: Int,
+    remote_addr: String = "",
+):
+    """Convenience: emit a structured access log line.
+
+    `remote_addr` is the client's address as the server reports it to the
+    application (WSGI's `REMOTE_ADDR`): an IPv6 peer as `::1`, an IPv4 peer
+    of a `::` listener as `127.0.0.1`. Left out of the line when empty, as
+    it is for a peer the server could not read.
+    """
     var entry = LogEntry("INFO", "access")
     entry.add("method", method)
     entry.add("path", path)
     entry.add_int("status", status)
     entry.add_int("dur_us", dur_us)
     entry.add_int("bytes", body_size)
+    if remote_addr.byte_length() > 0:
+        entry.add("remote_addr", remote_addr)
     log_json(entry)

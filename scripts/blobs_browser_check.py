@@ -38,6 +38,8 @@ import time
 import urllib.parse
 import urllib.request
 
+from probelib import free_port
+
 
 def wait_healthy(url: str, deadline_s: float = 30.0) -> None:
     end = time.monotonic() + deadline_s
@@ -199,9 +201,9 @@ def run(binary: str, port: int) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--bin", required=True, help="the built blobs binary")
-    ap.add_argument("--port", type=int, default=8354)
+    ap.add_argument("--port", type=int, default=None, help="default: a free one")
     args = ap.parse_args()
-    failures = run(args.bin, args.port)
+    failures = run(args.bin, args.port if args.port is not None else free_port())
     for f in failures:
         print(f"FAIL  {f}")
     if failures:

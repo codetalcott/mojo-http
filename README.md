@@ -194,12 +194,12 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | Package | Description | Tests |
 | --- | --- | --- |
 | `m0-core` | wyhash64, SHA-256 and HMAC-SHA256, SIMD JSON escape, HTML escape, JSON field parser, a C-ABI export | 82 |
-| `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 911 |
+| `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 922 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 95 |
-| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 180 |
+| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 181 |
 | `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 118 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 78 |
-| **Total** | | **1464** |
+| **Total** | | **1476** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -620,37 +620,37 @@ values returns unchanged.
   the same seam: a pool thread performs the 101, and inbound frames come
   back to the mount whose view gated the upgrade.
 
-  Benchmarked against gunicorn at 1.4–1.5x its throughput on a GIL-enabled
-  3.13 container and ~3.5x on free-threaded 3.14.7t, with
-  comparable-or-better p99 in both keep-alive and close-per-request modes.
+  <!-- observed: docs/WSGI_PERFORMANCE.md -->Benchmarked against gunicorn
+  at 1.4–1.5x its throughput on a GIL-enabled 3.13 container and ~3.5x on
+  free-threaded 3.14.7t, with comparable-or-better p99 in both keep-alive
+  and close-per-request modes.
   Against **Granian**, whose own `--blocking-threads` is the architecture
-  copied above, m0serve is **behind on raw WSGI throughput and the gap is
-  located**: one worker and one handler thread each, <!-- num:m0-w1-rps-k@1 -->196.4<!-- /num -->k
+  copied above, m0serve is **level on raw WSGI throughput**: one worker and
+  one handler thread each, <!-- num:m0-w1-rps-k@1 -->196.4<!-- /num -->k
   against <!-- num:granian-w1-rps-k@1 -->192.9<!-- /num -->k rps on a bare callable, <!-- num:m0-wsgi-rps-k@1 -->112.2<!-- /num -->k
-  against <!-- num:granian-rps-k@1 -->109.0<!-- /num -->k per measured core — about <!-- num:m0-per-granian@2 -->1.03<!-- /num -->x. The
+  against <!-- num:granian-rps-k@1 -->109.0<!-- /num -->k per measured core, <!-- num:m0-per-granian@2 -->1.03<!-- /num -->x,
+  inside the spread between recordings. The
   split prices each layer. `apps/hello`, the same server with no Python
   in the path, runs at <!-- num:hello-rps-k@1 -->227.9<!-- /num -->k rps/core; the bare app run
   inline on that loop, one thread, runs at
   <!-- num:m0-loop-rps-k@1 -->134.9<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.69<!-- /num -->x.
-  Which layer bounds the one-handler-thread row is a per-thread question,
-  and measured per thread it was the event-loop thread, at about 7.2 µs of
-  CPU per request against 5.3 for Granian's tokio thread
-  ([docs/notes/loop-thread-bound.md](docs/notes/loop-thread-bound.md)) —
-  while the bridge itself was cheaper per request than Granian's. The
-  in-memory pool handoff and the rebuilt header path since brought the
-  loop to the tokio thread's cost, 5.1 µs per request at 16 connections,
-  and the row to within 3 % of Granian's in the same session
-  ([docs/notes/loop-user-space.md](docs/notes/loop-user-space.md)).
+  <!-- observed: docs/notes/loop-thread-bound.md, docs/notes/loop-user-space.md -->Measured
+  per thread, the event-loop thread bounded the one-handler-thread row, at
+  about 7.2 µs of CPU per request against 5.3 for Granian's tokio thread
+  ([docs/notes/loop-thread-bound.md](docs/notes/loop-thread-bound.md)),
+  and the bridge was cheaper per request than Granian's. The in-memory pool
+  handoff and the rebuilt header path brought the loop to the tokio
+  thread's cost, 5.1 µs per request at 16 connections
+  ([docs/notes/loop-user-space.md](docs/notes/loop-user-space.md)); the two
+  rows are now <!-- num:w1-rps-gap-pct@1 -->1.8<!-- /num --> % apart in throughput.
 
   Per *core*, because the comparator was not running one: Granian's
-  `--workers 1` was measured at ~1.75 cores across its runtime's I/O
-  threads, so raw-rps ratios had been comparing 1.75 cores against one.
-  Every number here cites a dated artifact —
+  `--workers 1` was measured at <!-- num:granian-w1-cores@2 -->1.77<!-- /num --> cores across its
+  runtime's I/O threads. Every number here cites a dated artifact:
   [docs/BENCHMARKS.md](docs/BENCHMARKS.md) is the page, and it states the
-  ASGI comparison against uvicorn (also a loss) beside this one;
-  [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md) is the working record,
-  including the leak that once made this paragraph less flattering and the
-  re-measurement that retired its previous numbers.
+  ASGI comparison against uvicorn beside this one;
+  [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md) is the working
+  record.
 - **Unsized WSGI bodies stream; sized ones buffer.** A generator or
   iterator the application did not size — Django's
   `StreamingHttpResponse`, a Flask `Response(generator)` — streams from a
@@ -892,7 +892,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1464 unit tests, then compiles every example
+uv run poe test-all         # 1476 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

@@ -45,7 +45,9 @@ import time
 import urllib.parse
 import urllib.request
 
-KEY = "browser-check-key-0123456789abcdef"
+from probelib import free_port
+
+KEY ="browser-check-key-0123456789abcdef"
 PASSWORD = "hunter2-correct-horse"
 
 
@@ -207,10 +209,12 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--url", help="a running app; otherwise --bin is started on --port")
     ap.add_argument("--bin", help="the built fragment_notes binary to start")
-    ap.add_argument("--port", type=int, default=8096)
+    ap.add_argument("--port", type=int, default=None, help="default: a free one")
     args = ap.parse_args()
     if not args.url and not args.bin:
         ap.error("--url or --bin")
+    if args.port is None:
+        args.port = free_port()
 
     proc = None
     url = args.url

@@ -25,7 +25,16 @@ comments and here-documents:
     ...`), which bash's POSIX mode keeps after the call returns, so every
     later command inherits it on macOS alone.
 
-`--selftest` proves each rule can fail, then runs the lib under every shell
+A fourth reads the whole body, quotes and here-documents included, since a
+URL is usually quoted: a fixed port (`--port 8080`, `M0_PORT=8080`,
+`127.0.0.1:8080`, a Python socket's `("localhost", 8080)`, docker's `-p
+8080:80`) in any task but a `serve-*` one, `cmd` tasks read too. A fixed
+port is shared with every other run on the machine, so two runs, or two
+tasks on one number, fail with "address in use" or reach the wrong server;
+the lib's `free_port` is the port a task takes.
+
+`--selftest` proves each rule can fail, and the port rule on the real file
+with one smoke's free port made fixed; then it runs the lib under every shell
 found: `fail`'s output as both sabotage harnesses parse it, `wait_ready`
 failing fast on a server that died, `stop` and the exit trap reaping a whole
 process group, an interrupted task killing its servers well inside the
@@ -171,8 +180,48 @@ ASSIGN_BEFORE_LIB = re.compile(
     r"(" + "|".join(LIB_FUNCTIONS) + r")\b", re.M)
 
 
-def lint(body: str) -> list[str]:
-    """What `-n` cannot see, read from the body's code alone."""
+FIXED_PORT = re.compile(
+    r"(?:--port(?:=|[ \t]+)['\"]?"                                 # --port 8080
+    r"|\b(?:\w*_)?port\d*[ \t]*=[ \t]*['\"]?"                      # M0_PORT=8080
+    r"|(?:127\.0\.0\.1|localhost|0\.0\.0\.0|\[[0-9A-Fa-f:]*\]"
+    r"|host\.docker\.internal):"                                   # 127.0.0.1:8080
+    r"|['\"](?:127\.0\.0\.1|localhost|::1?|0\.0\.0\.0)['\"],[ \t]*"  # ("127.0.0.1", 8080)
+    r"|(?:^|[ \t])-p[ \t]+['\"]?(?=\d+:))"                         # docker -p 8080:80
+    r"(\d+)(?!\w)",
+    re.I)
+
+
+def fixed_ports(body: str) -> list[str]:
+    """A literal port a task binds or reaches, where its body spells one as
+    a port. A fixed port is shared with every other run on the machine, so a
+    second run of the task, or another task on the same number, fails with
+    "address in use" or talks to the wrong server; scripts/smoke/lib.sh's
+    `free_port` (probelib's in Python) is the port a task takes. Read line by
+    line, quotes and here-documents included, since a URL is usually quoted
+    and a port may be a Python socket's; a line that is a comment is not.
+    Port 0 is the kernel's to choose, and a bare positional argument is
+    beyond this: only the script it is passed to knows it is a port."""
+    problems = []
+    for n, line in enumerate(body.split("\n"), 1):
+        if line.lstrip().startswith("#"):
+            continue
+        for m in FIXED_PORT.finditer(line):
+            if int(m.group(1)) != 0:
+                problems.append(f"line {n}: `{m.group(0).strip()}` is a fixed port; take "
+                                "one from `free_port`")
+                break
+    return problems
+
+
+def fixed_port_allowed(name: str) -> bool:
+    """A `serve-*` task starts an application for a person to open, so its
+    port is the address they type; every other task takes a free one."""
+    return name.startswith("serve-")
+
+
+def lint(body: str, fixed_port_ok: bool = False) -> list[str]:
+    """What `-n` cannot see, read from the body's code alone -- and, unless
+    the task may keep one, a fixed port, read from the whole body."""
     code = code_only(body)
     expanded = code_only(body, keep_double_quoted=True)
     problems = []
@@ -193,7 +242,30 @@ def lint(body: str) -> list[str]:
         problems.append(f"line {line}: an assignment in front of `{m.group(1)}` "
                         "outlives the call under bash's POSIX mode; put it in the "
                         "command (`spawn x.log env A=1 cmd`)")
+    if not fixed_port_ok:
+        problems += fixed_ports(body)
     return problems
+
+
+def cmd_tasks(pyproject_text: str) -> dict[str, str]:
+    """Task name -> command line, for every `cmd` task (a bare string is one)
+    and `cmd` item of a sequence: no shell reads these, but a port in one
+    binds all the same. A sequence's bare strings name other tasks."""
+    import tomllib  # 3.11+
+
+    tasks = tomllib.loads(pyproject_text).get("tool", {}).get("poe", {}).get("tasks", {})
+    out = {}
+    for name, spec in tasks.items():
+        if isinstance(spec, str):
+            out[name] = spec
+            continue
+        items = [spec] if isinstance(spec, dict) else []
+        if isinstance(spec, dict):
+            items += [i for i in spec.get("sequence") or [] if isinstance(i, dict)]
+        for n, item in enumerate(items):
+            if isinstance(item.get("cmd"), str):
+                out[name if n == 0 else f"{name}[{n}]"] = item["cmd"]
+    return out
 
 
 def check(pyproject_text: str, use: list[str]) -> list[str]:
@@ -206,7 +278,10 @@ def check(pyproject_text: str, use: list[str]) -> list[str]:
             err = parse_errors(body, sh)
             if err:
                 failures.append(f"{name}: does not parse under {sh}: {err}")
-        failures += [f"{name}: {p}" for p in lint(body)]
+        failures += [f"{name}: {p}" for p in lint(body, fixed_port_allowed(name))]
+    for name, cmd in cmd_tasks(pyproject_text).items():
+        if not fixed_port_allowed(name):
+            failures += [f"{name}: {p}" for p in fixed_ports(cmd)]
     return failures
 
 
@@ -588,6 +663,18 @@ def selftest() -> int:
         ("an assignment before spawn", "M0_WORKERS=2 spawn a.log mojo run x", True),
         ("an assignment before stop, after &&", "true && X=1 stop $pid", True),
         ("(control) env inside spawn", "spawn a.log env M0_WORKERS=2 mojo run x", False),
+        ("a fixed --port", "spawn a.log bin/m0serve app:application --port 8080", True),
+        ("a fixed M0_PORT", "spawn a.log env M0_PORT=8080 mojo run apps/hello/server.mojo", True),
+        ("a fixed port in a quoted URL", "curl -s 'http://127.0.0.1:8080/health'", True),
+        ("a fixed port in a heredoc's socket",
+         "python3 - <<'PY'\nsocket.create_connection((\"localhost\", 8080))\nPY", True),
+        ("a fixed port published by docker", "docker run -d -p 8080:8080 img", True),
+        ("(control) a free port", "port=$(free_port)\nspawn a.log bin/m0serve x --port $port\n"
+                                  "curl -s \"http://127.0.0.1:$port/slow?ms=4000\"", False),
+        ("(control) a port in a comment", "# M0_PORT=8080 was the default: --port 8080", False),
+        ("(control) numbers beside ports", "grep -q '\"ms\":4000' f; --max-body 1024; "
+                                           "M0_SUPPORT=1 x; --port 80eighty", False),
+        ("(control) port 0, the kernel's choice", "bin/m0serve x --port 0", False),
     ]
     for label, body, want in cases:
         got = bool(lint(body)) or (dash is not None and bool(parse_errors(body, dash)))
@@ -595,6 +682,27 @@ def selftest() -> int:
             failures.append(f"rule case {label!r}: flagged={got}, want {want}")
     if dash is None:
         print("check_task_shells: SKIP the dash cases (no dash on PATH)")
+
+    # The port rule over the real file: one smoke's free port made fixed is
+    # refused by the task's name, and the tree as it stands is not.
+    real = (ROOT / "pyproject.toml").read_text()
+    if [f for f in check(real, []) if "fixed port" in f]:
+        failures.append("the tree already has a fixed port, so the sabotage below proves nothing")
+    at = real.find("--port $port", real.find("[tool.poe.tasks.smoke-"))
+    name = re.findall(r"^\[tool\.poe\.tasks\.([\w-]+)\]", real[:at], re.M)[-1] if at > 0 else ""
+    broken = real[:at] + "--port 8080" + real[at + len("--port $port"):] if at > 0 else real
+    if not [f for f in check(broken, []) if f.startswith(name + ": ") and "fixed port" in f]:
+        failures.append(f"{name or 'no smoke task'}'s `--port $port` made `--port 8080` "
+                        "was not refused")
+    # Only `serve-*` may keep one, and a `cmd` task is read as well as a shell.
+    toml = ('[tool.poe.tasks.serve-x]\nshell = "bin/m0serve a --port 8080"\n'
+            '[tool.poe.tasks.smoke-x]\nshell = "bin/m0serve a --port 8080"\n'
+            '[tool.poe.tasks.probe-x]\ncmd = "python3 scripts/x_probe.py --port 8080"\n'
+            '[tool.poe.tasks.bench-x]\nsequence = [{cmd = "x --port=8080"}, "smoke-x"]\n')
+    got = sorted({f.split(":")[0] for f in check(toml, []) if "fixed port" in f})
+    if got != ["bench-x[1]", "probe-x", "smoke-x"]:
+        failures.append(f"fixed ports were refused in {got}; want bench-x[1], probe-x and "
+                        "smoke-x, and serve-x kept")
     if not shell_tasks('[tool.poe.tasks.x]\nshell = """\n  echo a\n  echo b\n"""\n') == {"x": "echo a\necho b"}:
         failures.append("the reader does not unindent a body the way poe does")
 
