@@ -219,8 +219,8 @@ PAGES = [
          "Project", optional=True),
     # The Mojo packages, for people building on them directly.
     Page("docs/FFI_DISTRIBUTION.md", "/docs/ffi-distribution/", "FFI distribution",
-         "What the C-ABI bundle built from m0-core contains, how a foreign "
-         "caller loads it, and its licensing position.",
+         "The C-ABI library built from m0-core that the m0serve wheel "
+         "carries, and its licensing position.",
          "Mojo packages", optional=True),
     Page("docs/SQLITE_PERFORMANCE.md", "/docs/sqlite-performance/", "SQLite performance",
          "m0-sqlite findings: transactions around batch writes, mmap_size "

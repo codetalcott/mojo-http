@@ -203,22 +203,7 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
-`m0-core` also builds a C-ABI shared library: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS), whose one export, `m0_shared_fetch_add`, is how `m0pub` numbers the events it publishes, through Python's `ctypes` — `poe smoke-ffi` proves that path in CI, and prebuilt Linux/macOS artifacts ship with each [GitHub release](https://github.com/codetalcott/mojo-http/releases).
-
-> Each release ships **two macOS assets**: `libm0core-macos-arm64.dylib`, the
-> bare library for anyone who already has a Mojo install, and
-> `libm0core-macos-arm64.dylib.tar.gz`, a **self-contained bundle** (1.65 MB)
-> that carries the three Mojo runtime libraries it loads, plus both licences.
-> Extract it and `dlopen` the `.dylib` — nothing else needed. The Linux `.so`
-> is statically linked and self-contained on its own.
->
-> `poe bundle-ffi` builds that bundle and refuses to finish unless the result
-> is genuinely self-contained; CI runs it on every commit, so a release cannot
-> ship an asset that only loads on the build machine.
->
-> **Releases up to and including v0.7.0 predate this** and record the CI
-> runner's own directory, so their macOS asset does not load anywhere else.
-> Build locally with `poe build-ffi` for a usable one, or use v0.8.0 onward.
+`m0-core` also builds a C-ABI shared library: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS), whose one export, `m0_shared_fetch_add`, is how `m0pub` numbers the events it publishes, through Python's `ctypes` — `poe smoke-ffi` proves that path in CI. It is internal to the m0serve wheel, which carries it in `_lib/` beside the binary, and is not a published artifact with an ABI of its own ([DECISIONS](docs/DECISIONS.md) D56). Releases up to and including v1.8.0 also attached it as a standalone download; those assets stay where they are, and [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md) has their history.
 
 Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 

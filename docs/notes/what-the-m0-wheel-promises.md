@@ -1,7 +1,8 @@
 # What the m0 wheel promises — 2026-09-29
 
 A design note from the engineering record. D54 and D55 are the decisions;
-SPEC G9 and M14 move to `out of scope`.
+SPEC G9 and M14 move to `out of scope`. D56 joined them on 2026-09-30,
+under "libm0core" below.
 
 ## The question
 
@@ -75,9 +76,29 @@ kept alive by a gate on a client nobody used. That design answers TLS,
 where the call runs, and connection reuse. The fork is untouched: the
 pieces the client assembled stay where they were.
 
+## libm0core, 2026-09-30
+
+D54 kept `libm0core` for `m0_shared_fetch_add`, the call `m0pub` makes
+through `ctypes` to number the events it publishes. Every release still
+attached it as a standalone download, bare and as a self-contained bundle,
+though no caller outside m0serve was known. **It is m0serve's private
+runtime and not a published artifact** (D56). The release workflow stopped
+attaching it, `poe bundle-ffi` and its CI step left, and the library ships
+inside the m0serve wheel only, in `_lib/` beside the binary, where the
+wheel's launcher points `m0pub` at it. Nothing changes for an m0serve user.
+
+The evidence: across 32 releases its 114 assets were downloaded 32 times,
+and 0 times on each of the seven releases from v1.2.0 to v1.8.0; no project
+outside this repository names it, apart from a vendored copy of this
+repository; and `m0pub` is the only caller of its only export.
+`docs/FFI_DISTRIBUTION.md` has the history of the bundle and what carried
+over to the wheel's copy, including the self-containment check.
+
 ## What would retire it
 
 For D54: Siren/GRAIL returning as a product aim on m0, which brings its
 supports back with it; or an application on the layer that needs one of
 these names and cannot keep its own copy. For D55: an application on the
-layer that needs outbound calls.
+layer that needs outbound calls. For D56: a named caller outside this
+repository that asks for a C ABI, at which point publishing resumes with a
+versioned ABI.
