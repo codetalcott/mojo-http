@@ -1220,7 +1220,7 @@ def _start_pool[H: AppHandler](
 
 
 def _run_loop[H: AppHandler](
-    var listener: NoTLSListener[NetworkType.tcp4],
+    var listener: NoTLSListener[NetworkType.tcp],
     mut handler: H,
     config: ServerConfig,
     address: String,

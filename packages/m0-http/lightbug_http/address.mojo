@@ -1,13 +1,11 @@
 from std.ffi import c_char, c_int, c_uchar, external_call
 from std.sys.info import CompilationTarget
 
-from lightbug_http.c.address import AddressFamily, AddressLength
+from lightbug_http.c.address import AddressFamily
 from lightbug_http.c.aliases import ExternalImmutPointer, ExternalMutPointer, c_void
 from lightbug_http.c.network import (
-    InetNtopError,
     InetPtonError,
     in_addr_t,
-    inet_ntop,
     ntohs,
     sockaddr,
     sockaddr_in,
@@ -77,6 +75,10 @@ struct NetworkType(Equatable, ImplicitlyCopyable):
 
     comptime empty = Self(0)
     comptime tcp = Self(1)
+    """TCP in the family the address names, as Go's "tcp" is: a listener
+    on `::` or `::1` is IPv6 -- `::` dual-stack, taking IPv4 too -- and one
+    on `0.0.0.0` IPv4 (review R15). `tcp4` and `tcp6` are one family
+    only."""
     comptime tcp4 = Self(2)
     comptime tcp6 = Self(3)
     comptime udp = Self(4)
@@ -148,19 +150,23 @@ struct TCPAddr[network: NetworkType = NetworkType.tcp4](Addr, ImplicitlyCopyable
 
     @always_inline
     def address_family(self) -> Int:
-        if Self.network == NetworkType.tcp4:
+        if self.is_v4():
             return Int(AddressFamily.AF_INET.value)
-        elif Self.network == NetworkType.tcp6:
+        elif self.is_v6():
             return Int(AddressFamily.AF_INET6.value)
         else:
             return Int(AddressFamily.AF_UNSPEC.value)
 
     @always_inline
     def is_v4(self) -> Bool:
+        comptime if Self.network == NetworkType.tcp:
+            return not is_ipv6_literal(self.ip)
         return Self.network == NetworkType.tcp4
 
     @always_inline
     def is_v6(self) -> Bool:
+        comptime if Self.network == NetworkType.tcp:
+            return is_ipv6_literal(self.ip)
         return Self.network == NetworkType.tcp6
 
     @always_inline
@@ -678,10 +684,11 @@ def parse_address[
 
     if address == AddressConstants.LOCALHOST:
 
-        comptime if network.is_ipv4():
-            return HostPort(AddressConstants.IPV4_LOCALHOST, DEFAULT_IP_PORT)
-        elif network.is_ipv6():
+        comptime if network.is_ipv6():
             return HostPort(AddressConstants.IPV6_LOCALHOST, DEFAULT_IP_PORT)
+        else:
+            # `tcp` too: `localhost` is the IPv4 loopback, as it always was.
+            return HostPort(AddressConstants.IPV4_LOCALHOST, DEFAULT_IP_PORT)
 
     comptime if network.is_ip_protocol():
         if network == NetworkType.ip6 and address.find(":") != -1:
@@ -714,17 +721,24 @@ def parse_address[
     port = parse_port(address[byte=colon_index + 1 :])
     if host == AddressConstants.LOCALHOST:
 
-        comptime if network.is_ipv4():
-            return HostPort(AddressConstants.IPV4_LOCALHOST, port)
-        elif network.is_ipv6():
+        comptime if network.is_ipv6():
             return HostPort(AddressConstants.IPV6_LOCALHOST, port)
+        else:
+            return HostPort(AddressConstants.IPV4_LOCALHOST, port)
 
     return HostPort(String(host), port)
 
 
-# TODO: Support IPv6 long form.
+def is_ipv6_literal(host: StringSpan) -> Bool:
+    """Whether `host` is an IPv6 address rather than an IPv4 one or a name:
+    only an IPv6 literal carries a `:`."""
+    return host.find(":") != -1
+
+
 def join_host_port(host: String, port: String) -> String:
-    if host.find(":") != -1:  # must be IPv6 literal
+    """`host:port`, an IPv6 literal bracketed (`[::1]:8080`), as a URL and
+    `parse_address` both need it."""
+    if is_ipv6_literal(host):
         return String("[", host, "]:", port)
     return String(host, ":", port)
 
@@ -739,25 +753,6 @@ def binary_port_to_int(port: UInt16) -> Int:
         The port as an integer.
     """
     return Int(ntohs(port))
-
-
-def binary_ip_to_string[address_family: AddressFamily](ip_address: UInt32) raises InetNtopError -> String:
-    """Convert a binary IP address to a string by calling `inet_ntop`.
-
-    Parameters:
-        address_family: The address family of the IP address.
-
-    Args:
-        ip_address: The binary IP address.
-
-    Returns:
-        The IP address as a string.
-    """
-
-    comptime if address_family == AddressFamily.AF_INET:
-        return inet_ntop[address_family, AddressLength.INET_ADDRSTRLEN](ip_address)
-    else:
-        return inet_ntop[address_family, AddressLength.INET6_ADDRSTRLEN](ip_address)
 
 
 def freeaddrinfo[T: AnAddrInfo, //](ptr: ExternalMutPointer[T]):

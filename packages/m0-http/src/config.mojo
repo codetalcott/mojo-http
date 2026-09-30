@@ -4,10 +4,12 @@ Provides sensible defaults for all fields. No config file parsing —
 env vars are the container convention.
 
 Env vars:
-    M0_HOST       — Listen address: an IPv4 literal, or "localhost" for
-                    127.0.0.1 (default: 0.0.0.0 — every interface). Not
-                    resolved: the listener is IPv4-only, and a hostname
-                    would need DNS the server deliberately does not do.
+    M0_HOST       — Listen address: an IPv4 literal, an IPv6 one (`::`
+                    listens on both families, `::1` is the IPv6 loopback;
+                    brackets, `[::1]`, are accepted), or "localhost" for
+                    127.0.0.1 (default: 0.0.0.0 — every IPv4 interface).
+                    Not resolved: a hostname would need DNS the server
+                    deliberately does not do.
     M0_PORT       — HTTP listen port (default: 8080)
     M0_BASE_URL   — Public base URL (default: http://localhost:{port})
     M0_WORKERS    — Worker count for multi-worker mode (default: 1)
@@ -42,6 +44,7 @@ Env vars:
 
 from std.os import getenv
 
+from lightbug_http.address import join_host_port
 from lightbug_http.server_config import ServerConfig
 
 
@@ -97,8 +100,8 @@ struct AppConfig(Copyable, Movable):
             self.base_url = "http://localhost:" + String(self.port)
 
     def address(self) -> String:
-        """Return listen address string (e.g. '0.0.0.0:8080')."""
-        return self.host + ":" + String(self.port)
+        """Return listen address string (e.g. '0.0.0.0:8080', '[::]:8080')."""
+        return join_host_port(self.host, String(self.port))
 
     def server_config(self) -> ServerConfig:
         """A `ServerConfig` carrying every field this config shares with it.
@@ -140,18 +143,30 @@ def threads_conflict(workers: Int, threads: Int) -> Optional[String]:
 
 
 def _parse_host(raw: String) -> String:
-    """Normalize a listen address; empty means every interface.
-
-    `localhost` becomes `127.0.0.1` because the listener is IPv4-only and
-    does no name resolution — a user who types the word expects the loopback
-    bind it names everywhere else, not a bind failure. Anything else is
-    passed through verbatim for the socket layer to accept or reject.
-    """
+    """Normalize a listen address; empty means every interface
+    (`listen_host` for the rest)."""
     var host = raw.strip()
     if host.byte_length() == 0:
         return String("0.0.0.0")
+    return listen_host(host)
+
+
+def listen_host(host: StringSpan) -> String:
+    """A listen address as the listener takes it: `M0_HOST`, and the
+    `--host` of m0serve and of the Mojo host, all read it through here.
+
+    `localhost` becomes `127.0.0.1` because the listener does no name
+    resolution — a user who types the word expects the loopback bind it
+    names everywhere else, not a bind failure. An IPv6 literal in brackets,
+    as it is written in a URL, loses them: `[::1]` is `::1`. Anything else
+    is passed through verbatim for the socket layer to accept or reject.
+    """
     if host == "localhost":
         return String("127.0.0.1")
+    var bytes = host.as_bytes()
+    var n = len(bytes)
+    if n >= 2 and bytes[0] == UInt8(ord("[")) and bytes[n - 1] == UInt8(ord("]")):
+        return String(unsafe_from_utf8=bytes[1 : n - 1])
     return String(host)
 
 

@@ -10,6 +10,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **IPv6** (SPEC M29). `m0serve --host ::` listens on IPv6 and IPv4 at
+  once, and `--host ::1` on the IPv6 loopback alone; the same goes for the
+  Mojo host's `M0_HOST` and `--host`, and for `Server.listen_and_serve` on
+  `"[::]:8080"`. A host may be written in brackets, `[::1]`, as in a URL;
+  `0.0.0.0`, `127.0.0.1` and `localhost` listen as before. A client is
+  reported in its own family, in `REMOTE_ADDR`, ASGI's `scope["client"]`
+  and the access log's new `remote_addr` field, and an IPv4 client of `::`
+  is reported as IPv4 (`127.0.0.1`), not as `::ffff:127.0.0.1` as gunicorn
+  and uvicorn report it, so moving a server from `0.0.0.0` to `::` changes
+  no address your application sees. Until now no IPv6 address could be
+  listened on at all. For a Fly.io application, `--host ::` is what makes
+  it reachable on the private network's `.internal` addresses.
+  `ListenConfig.listen` and `NoTLSListener` default to
+  `NetworkType.tcp`, the family the address names; `Server.serve` takes a
+  listener of any network.
+
 - **Three rules of the event loop and of `--spawn-workers` that no gate
   held now each have one** (SPEC A23, L16, E35). None changes what the
   server does.

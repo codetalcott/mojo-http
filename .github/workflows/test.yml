@@ -997,6 +997,12 @@ jobs:
       # smoke-doctor's shape, for the Mojo host.
       - name: Smoke test the Mojo host's flags and doctor
         run: uv run poe smoke-host-doctor
+      # SPEC M29: `--host ::` takes IPv6 and IPv4, `::1` IPv6 alone, and a
+      # client is reported in its own family, through m0serve and the Mojo
+      # host (here, beside host_check's other smokes, for their compile
+      # cache). Its first phase fails a runner with no IPv6 loopback.
+      - name: Smoke test IPv6 listeners
+        run: uv run poe smoke-ipv6
       # The `m0` wheel, outside the tree: its contents against git's own
       # manifest, then fragment_notes built, tested and doctored by the CLI
       # from an installed wheel, and every refusal's sentence with no

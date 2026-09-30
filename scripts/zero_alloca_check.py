@@ -18,7 +18,7 @@ It reads two programs' unoptimized IR (`mojo build --emit llvm`):
                             reaches them. Catches the next site anywhere
                             m0serve runs, not only in `inet_pton`.
     zero_alloca_probe.mojo  the fork's `inet_pton` for BOTH address
-                            families (m0serve listens on IPv4 only), and the
+                            families, whatever m0serve reaches, and the
                             bare arm: the old shape, which must be refused.
 
 A package precompile (what `check-fork-package` runs) emits no IR at all:
@@ -473,8 +473,8 @@ SABOTAGES = [
      "    var buffer = stack_allocation[4, UInt8]().unsafe_bitcast[c_void]()\n",
      "was NOT refused"),
     ("the probe stops instantiating IPv6", PROBE,
-     '        return UInt32(inet_pton[AddressFamily.AF_INET6](String("::1")))\n',
-     '        return UInt32(inet_pton[AddressFamily.AF_INET](String("::1")))\n',
+     '        return UInt32(inet_pton[AddressFamily.AF_INET6](String("::1")).bytes[15])\n',
+     '        return UInt32(inet_pton[AddressFamily.AF_INET](String("::1")).bytes[15])\n',
      "one per address family"),
 ]
 

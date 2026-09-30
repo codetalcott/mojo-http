@@ -26,9 +26,10 @@ from std.sys.info import CompilationTarget, num_performance_cores
 
 from lightbug_http.offload import match_path_prefix, _WAKE_MAX_LANES
 from lightbug_http.c.platform import SC_NPROCESSORS_ONLN
+from lightbug_http.address import join_host_port
 from lightbug_http.server_config import ServerConfig
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
-from m0_http.config import AppConfig
+from m0_http.config import AppConfig, listen_host
 
 
 comptime M0SERVE_VERSION = "1.8.0"
@@ -332,8 +333,9 @@ struct ServeOptions(Copyable, Movable):
         return opts^
 
     def address(self) -> String:
-        """The listen address, `host:port`."""
-        return self.host + ":" + String(self.port)
+        """The listen address, `host:port`, an IPv6 host bracketed
+        (`[::]:8000`)."""
+        return join_host_port(self.host, String(self.port))
 
     def spec(self) -> String:
         """The `module:attribute` pair as the user would write it."""
@@ -1187,7 +1189,7 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         var host = String(value.strip())
         if host.byte_length() == 0:
             raise Error("--host must not be empty")
-        opts.host = String("127.0.0.1") if host == "localhost" else host
+        opts.host = listen_host(host)
     elif name == "--port":
         var port = parse_int(value, "--port")
         if port < 1 or port > 65535:
@@ -1416,7 +1418,8 @@ def usage() -> String:
         "MODULE also tries MODULE.asgi, MODULE.wsgi, MODULE:app and\n"
         "MODULE.main:app. Flags override M0_* environment variables.\n"
         "\n"
-        "  --host ADDR                 bind address (default 0.0.0.0; M0_HOST)\n"
+        "  --host ADDR                 bind address (default 0.0.0.0; M0_HOST);\n"
+        "                              :: takes IPv6 and IPv4, ::1 IPv6 alone\n"
         "  --port N                    port (default 8000; M0_PORT)\n"
         "  --workers N                 prefork worker processes (default 1; M0_WORKERS)\n"
         "  --threads N                 serving threads in ONE process, free-threaded\n"

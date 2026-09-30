@@ -15,7 +15,7 @@ refusing to start.
 from std.os import setenv
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.config import AppConfig, threads_conflict
+from src.config import AppConfig, listen_host, threads_conflict
 from lightbug_http.server_config import ServerConfig
 
 
@@ -183,10 +183,28 @@ def test_host_is_read_from_the_environment() raises:
 
 
 def test_host_localhost_means_loopback() raises:
-    """The listener is IPv4-only and resolves nothing; the one name everyone
-    types is mapped by hand so it binds rather than fails."""
+    """The listener resolves nothing; the one name everyone types is mapped
+    by hand to the loopback it has always meant, so it binds rather than
+    fails."""
     var c = _with("M0_HOST", "localhost")
     assert_equal(c.host, "127.0.0.1")
+
+
+def test_an_ipv6_host_is_bracketed_in_the_address() raises:
+    """`M0_HOST=::` is an IPv6 listener, and its address is `[::]:8081`:
+    `:::8081` is what the listener's parser refuses as too many colons
+    (review R15). A host written in brackets, as in a URL, loses them."""
+    var c = _with("M0_HOST", "::")
+    assert_equal(c.host, "::")
+    assert_equal(c.address(), "[::]:8080")
+    c = _with("M0_HOST", "[::1]")
+    assert_equal(c.host, "::1")
+    assert_equal(c.address(), "[::1]:8080")
+    assert_equal(listen_host("[::]"), "::")
+    assert_equal(listen_host("::1"), "::1")
+    assert_equal(listen_host("localhost"), "127.0.0.1")
+    assert_equal(listen_host("[::1"), "[::1", "an unmatched bracket is left for the listener to refuse")
+    assert_equal(listen_host("0.0.0.0"), "0.0.0.0")
 
 
 def test_host_is_trimmed_and_otherwise_verbatim() raises:
