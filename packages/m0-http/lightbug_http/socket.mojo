@@ -160,6 +160,27 @@ struct SocketBindError(Movable, Writable):
         return String(self)
 
 
+trait DescriptorClose:
+    """How `Socket.close_with` closes its descriptor. The socket's own is
+    `LibcClose`; a test's conformance reports the failures a real `close(2)`
+    returns only under a signal or a failing device, which no test can
+    produce on demand."""
+
+    def close(mut self, fd: FileDescriptor) raises SysError:
+        """Close `fd`, raising the `SysError` the call reports."""
+        ...
+
+
+struct LibcClose(DescriptorClose):
+    """The close itself: one `close(2)`."""
+
+    def __init__(out self):
+        pass
+
+    def close(mut self, fd: FileDescriptor) raises SysError:
+        close(fd)
+
+
 @fieldwise_init
 struct Socket[
     address: Addr,
@@ -575,21 +596,46 @@ struct Socket[
         One guard here rather than one in each method, so a method added
         later, and a caller that reads `fd` itself, are covered too.
 
+        A close that fails has released the number all the same, and the
+        socket is closed afterwards whatever it reports (review AR): the
+        failure is raised, and the number is never closed again. POSIX
+        leaves a descriptor's state after EINTR unspecified; Linux and
+        macOS both deallocate it before anything that can fail, so EINTR (a
+        signal interrupting a lingering close) and EIO arrive with the
+        number already free, and a retry, a second `close` or the
+        destructor would close whatever another thread had opened on it
+        meanwhile. The socket used to raise with the number still held.
+
         Raises:
             SysError: If closing the socket fails, except EBADF, which means
-                it is already closed.
+                it is already closed. The socket is closed either way.
+        """
+        var closer = LibcClose()
+        self.close_with(closer)
+
+    def close_with[C: DescriptorClose](mut self, mut closer: C) raises SysError -> None:
+        """`close`, with the `close(2)` itself a parameter (`DescriptorClose`),
+        so a test can report the failures a real one returns only under a
+        signal or a failing device.
+
+        The socket gives up its number BEFORE the call, so no failure the
+        call reports can leave it holding a number the kernel has released.
+
+        Raises:
+            SysError: What `closer` raises, except EBADF. The socket is
+                closed either way.
         """
         if self._closed:
             return
-        try:
-            close(self.fd)
-        except close_err:
-            if close_err.errno != ErrNo.EBADF:
-                raise close_err
-
+        var fd = self.fd
         self._closed = True
         self._connected = False
         self.fd = FileDescriptor(-1)
+        try:
+            closer.close(fd)
+        except close_err:
+            if close_err.errno != ErrNo.EBADF:
+                raise close_err
 
     def set_timeout(self, seconds: Int) raises SysError:
         """Set the receive timeout for the socket.

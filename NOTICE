@@ -1166,6 +1166,16 @@ lightbug_http
         waited out its startup and died with it when a stop reached it
         before it armed (review record AR).
 
+      - socket.mojo (2026-09-30): `Socket.close()` gives up the number
+        before its `close(2)`, so a failure the call reports (anything but
+        EBADF, which is swallowed as before, and still raised) leaves the
+        socket closed. It raised with the number still held, which Linux
+        and macOS had already released, so a second `close()` or the
+        destructor closed whatever had taken it since (review record AR,
+        after B27b). The call is a `DescriptorClose` parameter of
+        `close_with`, `LibcClose` the socket's own, so a test can report
+        EINTR and EIO.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

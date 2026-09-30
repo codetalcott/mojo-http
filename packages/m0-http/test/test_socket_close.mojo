@@ -52,7 +52,7 @@ from lightbug_http.c.socket import (
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.connection import ListenConfig, TCPConnection
 from lightbug_http.io.bytes import Bytes
-from lightbug_http.socket import Socket
+from lightbug_http.socket import DescriptorClose, Socket
 
 
 comptime Adopted = Socket[TCPAddr[NetworkType.tcp4]]
@@ -261,6 +261,74 @@ def test_a_second_close_leaves_what_took_its_number_open() raises:
     close_fd(number)
     close_fd(newcomer[1])
     close_fd(old[1])
+
+
+struct _ReleasedThenFailed(DescriptorClose):
+    """A `close(2)` that releases the number and then reports `errno`, as
+    Linux and macOS both do: each deallocates the descriptor before
+    anything that can fail, so an EINTR from a signal that interrupted a
+    lingering close, or an EIO from a device, arrives with the number
+    already free."""
+
+    var errno: ErrNo
+
+    def __init__(out self, errno: ErrNo):
+        self.errno = errno
+
+    def close(mut self, fd: FileDescriptor) raises SysError:
+        close_fd(fd.value)
+        raise SysError("close", self.errno)
+
+
+def test_a_close_that_fails_leaves_what_took_its_number_open() raises:
+    """A close that fails with an errno other than EBADF has released the
+    number all the same, so the socket holds none afterwards: the failure
+    is still raised, and neither a second `close()` nor the destructor
+    closes or shuts down what took the number since. The socket used to
+    raise with its number still in `fd` and itself still open, so a
+    second `close()` or its destructor closed the number again, by then
+    possibly another thread's descriptor (review AR, after B27b). POSIX
+    leaves the descriptor's state after EINTR unspecified, and a close is
+    never retried: a number another thread has taken meanwhile would be
+    the one closed.
+
+    covers: D1
+    """
+    for errno in [ErrNo.EINTR, ErrNo.EIO]:
+        var old = _stream_pair()
+        var number = old[0]
+        var sock = _adopt(number)
+        # Made while the socket still holds its number, so neither end is it.
+        var newcomer = _stream_pair()
+        var closer = _ReleasedThenFailed(errno)
+        var raised = -1
+        try:
+            sock.close_with(closer)
+        except e:
+            raised = _errno_of(e)
+        assert_equal(raised, Int(errno.value), "the failed close was not reported as itself")
+        assert_equal(
+            sock.fd.value, -1,
+            "a socket whose close failed still holds the number it released",
+        )
+        _move_to(newcomer[0], number)
+        sock.close()
+        assert_true(
+            _is_open(number), "a close() after a failed one closed the descriptor that took the number"
+        )
+        _ = sock^  # the destructor runs here, with the newcomer on the number
+        assert_true(_is_open(number), "the destructor closed the descriptor that took the number")
+        assert_false(
+            _reads_eof(newcomer[1]),
+            "the destructor shut down the socket that took the number",
+        )
+        # The same reading sees a shutdown when there is one.
+        shutdown(FileDescriptor(number), ShutdownOption.SHUT_RDWR)
+        assert_true(_reads_eof(newcomer[1]), "a shutdown made on purpose read as none")
+
+        close_fd(number)
+        close_fd(newcomer[1])
+        close_fd(old[1])
 
 
 def test_a_closed_socket_sends_nothing_to_what_took_its_number() raises:

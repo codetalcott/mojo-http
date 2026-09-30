@@ -170,6 +170,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   those connections, closed unanswered while the server exited 0. A
   worker is now handed connections only once it serves; a respawned one
   is handed nothing until it has started again. Found in review.
+- **A `Socket` whose `close()` fails is closed all the same** (SPEC D1).
+  A close that failed with anything but EBADF, such as EINTR from a signal
+  or EIO, raised with the socket still holding its number, although the
+  kernel had already released it; a second `close()`, or the socket's
+  destructor, then closed whatever the process had opened on that number
+  since, possibly another thread's connection. The failure is still
+  raised, and the number is never closed twice. Nothing in m0serve or the
+  Mojo host closes a socket twice; a Mojo application's own sockets are
+  covered. Found in review.
 
 ## [1.8.0] — 2026-09-29
 
