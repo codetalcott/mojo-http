@@ -189,7 +189,7 @@
       "id": "A24",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "A response its client stops reading is reaped after `--idle-timeout` with no send progress (nginx's `send_timeout`), and one read slowly but steadily is not",
+      "capability": "A response its client stops reading is reaped after `--idle-timeout` with no send progress (nginx's `send_timeout`), and one read slowly but steadily is not. A stream, SSE or WebSocket, has no send deadline and keeps its slot until its client leaves, by decision: [DECISIONS](DECISIONS.md) D57",
       "status": "verified",
       "evidence": "`Smoke test the idle connection timeout` (every PR) \u2014 a client that stops reading a 16 MiB response is closed, and one that takes it in slow reads for longer than the timeout gets every byte, for a response in memory and for a `--static` file sent with `sendfile`, which refresh the deadline on separate paths. Nothing bounded such a client before: m0serve zeroes the deadline of a request it hands to a pool thread or an executor, so a client that asked for a large response and never read it held its slot for good"
     },
