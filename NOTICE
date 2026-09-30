@@ -1123,6 +1123,15 @@ lightbug_http
         deadline (`stop_deadline`, `ns_left`), so the two are one bound
         (review record C9b-c).
 
+      - address.mojo, socket.mojo, c/socket.mojo, connection.mojo
+        (2026-09-29): the rest of the upstream surface no caller used,
+        removed as the 2026-09-28 removal was: `NetworkType.udp4` and
+        `udp6`, the free functions `is_ip_protocol`, `is_ipv4` and
+        `is_ipv6` (the `NetworkType` methods of those names stay), the
+        `TCP4Socket` and `TCP6Socket` aliases, `O_ACCMODE`, and the
+        argument `ConnectionState.reading_body` took and ignored (review
+        record C2).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -80,8 +80,6 @@ struct NetworkType(Equatable, ImplicitlyCopyable):
     comptime tcp4 = Self(2)
     comptime tcp6 = Self(3)
     comptime udp = Self(4)
-    comptime udp4 = Self(5)
-    comptime udp6 = Self(6)
     comptime ip = Self(7)
     comptime ip4 = Self(8)
     comptime ip6 = Self(9)
@@ -92,8 +90,6 @@ struct NetworkType(Equatable, ImplicitlyCopyable):
         Self.tcp4,
         Self.tcp6,
         Self.udp,
-        Self.udp4,
-        Self.udp6,
         Self.ip,
         Self.ip4,
         Self.ip6,
@@ -105,8 +101,6 @@ struct NetworkType(Equatable, ImplicitlyCopyable):
     ]
     comptime UDP_TYPES = [
         Self.udp,
-        Self.udp4,
-        Self.udp6,
     ]
     comptime IP_TYPES = [
         Self.ip,
@@ -123,11 +117,11 @@ struct NetworkType(Equatable, ImplicitlyCopyable):
 
     def is_ipv4(self) -> Bool:
         """Check if the network type is IPv4."""
-        return self in (NetworkType.tcp4, NetworkType.udp4, NetworkType.ip4)
+        return self in (NetworkType.tcp4, NetworkType.ip4)
 
     def is_ipv6(self) -> Bool:
         """Check if the network type is IPv6."""
-        return self in (NetworkType.tcp6, NetworkType.udp6, NetworkType.ip6)
+        return self in (NetworkType.tcp6, NetworkType.ip6)
 
 
 # @fieldwise_init
@@ -339,23 +333,6 @@ def get_ip_address(
             .unsafe_origin_cast[origin_of(result)]()[]
             .sin_addr.s_addr
         )
-
-
-def is_ip_protocol(network: NetworkType) -> Bool:
-    """Check if the network type is an IP protocol."""
-    return network in (NetworkType.ip, NetworkType.ip4, NetworkType.ip6)
-
-
-def is_ipv4(network: NetworkType) -> Bool:
-    """Check if the network type is IPv4."""
-    return network in (NetworkType.tcp4, NetworkType.udp4, NetworkType.ip4)
-
-
-def is_ipv6(network: NetworkType) -> Bool:
-    """Check if the network type is IPv6."""
-    return network in (NetworkType.tcp6, NetworkType.udp6, NetworkType.ip6)
-
-
 
 
 @fieldwise_init

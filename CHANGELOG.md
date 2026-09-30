@@ -43,6 +43,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Removed
 
+- **The last upstream `lightbug_http` names nothing used**:
+  `NetworkType.udp4` and `udp6`, the free functions `is_ip_protocol`,
+  `is_ipv4` and `is_ipv6` (the `NetworkType` methods of those names stay),
+  the `TCP4Socket` and `TCP6Socket` aliases, `O_ACCMODE`, and the argument
+  `ConnectionState.reading_body` ignored. Nothing served changes; an
+  application built with the `m0` wheel that named one needs its own copy.
+
 - **Framework names nothing in the tree used**, from the packages the `m0`
   wheel ships (DECISIONS D54). Nothing served changes: `m0serve` and the
   Mojo host reached none of them, and `M0_API_KEY` was read into

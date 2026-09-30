@@ -331,9 +331,10 @@ struct ConnectionState(Copyable):
         return ConnectionState(Self.READING_HEADERS)
 
     @staticmethod
-    def reading_body(content_length: Int) -> Self:
-        """`content_length` is not kept here: the provision's `BodyReadState`
-        holds the body's length and progress, and is what the loop reads."""
+    def reading_body() -> Self:
+        """The body's length is not kept here: the provision's
+        `BodyReadState` holds its length and progress, and is what the loop
+        reads."""
         return ConnectionState(Self.READING_BODY)
 
     @staticmethod

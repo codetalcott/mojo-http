@@ -73,7 +73,6 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
 
 # File open option flags (platform-specific)
 comptime O_NONBLOCK = 4 if CompilationTarget.is_macos() else 2048
-comptime O_ACCMODE = 3
 comptime O_CLOEXEC = 16777216 if CompilationTarget.is_macos() else 524288
 
 

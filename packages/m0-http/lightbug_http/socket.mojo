@@ -5,8 +5,6 @@ from lightbug_http.c.aliases import c_void
 
 from lightbug_http.address import (
     Addr,
-    NetworkType,
-    TCPAddr,
     binary_ip_to_string,
     binary_port_to_int,
     get_ip_address,
@@ -574,5 +572,3 @@ comptime TCPSocket[address: Addr] = Socket[
     sock_type = SocketType.SOCK_STREAM,
     address_family = AddressFamily.AF_INET,
 ]
-comptime TCP4Socket = TCPSocket[TCPAddr[NetworkType.tcp4]]
-comptime TCP6Socket = TCPSocket[TCPAddr[NetworkType.tcp6]]
