@@ -18,6 +18,12 @@ wrong thing entirely: CPU work parallelises with `std.runtime.asyncrt`'s
 `TaskGroup` at no plumbing cost (measured 3.6x on four tasks), so a pool is
 not the answer to it. A pool exists for threads parked in a syscall.
 
+The pool's lane is marked GIL-free (`set_lane_gil_free`), as the Mojo host
+marks its own (`m0_host.host._start_pool`): these threads never attach to
+an interpreter, so the loop wakes a parked sibling once a job has waited
+the spin, not the GIL threshold. `poe probe-pool` measures this app, and
+without the mark it measured a lane no shipped server has.
+
     M0_PORT=8080 M0_POOL_THREADS=0 ./pool_spike     # loop serves func
     M0_PORT=8080 M0_POOL_THREADS=4 ./pool_spike     # pool serves func
 """
@@ -122,6 +128,10 @@ def main() raises:
     # answer through it, so it is constructed here and torn down after
     # `listen_and_serve_nonblocking` returns.
     var pool = OffloadPool(config.server_config().max_connections)
+    # Its threads never attach to an interpreter, so the lane takes the
+    # GIL-free wake rule -- the line the Mojo host's `_start_pool` has, so
+    # that `probe-pool` measures the pool an application ships with.
+    pool.set_lane_gil_free(0)
     var threads = MojoPool(pool_threads)
     threads.start[SpikeHandler](pool.addr())
     print(

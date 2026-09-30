@@ -6,7 +6,7 @@ can be parameterized over the backend type.
 
 from lightbug_http.c.kqueue import (
     kevent_t, ev_set, kqueue, kevent_register_one, kevent_register_pair,
-    kevent_poll, set_nonblocking,
+    kevent_poll, kevent_poll_ns, set_nonblocking,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT, EV_EOF, EV_ERROR,
 )
@@ -40,6 +40,11 @@ struct KqueueBackend(ConstructibleBackend):
 
     def wait(mut self, timeout_ms: Int) raises -> Int:
         self._n_ready = kevent_poll(self.kq, self._events, _MAX_EVENTS, timeout_ms)
+        return self._n_ready
+
+    def wait_ns(mut self, timeout_ns: Int) raises -> Int:
+        """`kevent`'s timespec takes nanoseconds, so nothing is rounded."""
+        self._n_ready = kevent_poll_ns(self.kq, self._events, _MAX_EVENTS, timeout_ns)
         return self._n_ready
 
     def event_ident(self, i: Int) -> UInt:

@@ -181,6 +181,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   after the 5 s join and exited naming a thread "still inside the
   application". The stop now waits for the lane to have room, inside that
   same 5 s.
+- **A fast request that meets a busy handler thread no longer waits a
+  millisecond for the loop to notice** (SPEC E37). With `--blocking-threads`,
+  a Mojo mount or the Mojo host's `M0_BLOCKING_THREADS`, a request that
+  arrives while one pool thread is inside a slow view wakes no second thread
+  at once, because the busy one usually comes back first; the loop wakes a
+  sibling once the request has waited long enough. At low traffic the loop
+  checked that only once a millisecond, so such a request took about
+  1.5 ms where 0.1 ms was the answer with no slow view in flight. The loop
+  now waits exactly until the request's wait runs out (10 µs on a Mojo
+  lane, 200 µs on a WSGI lane) and wakes the sibling then: measured on an
+  Apple M4 at 0.10–0.14 ms on a Mojo pool and 0.43–0.56 ms on a WSGI pool,
+  against 1.45–1.55 ms before. Throughput under load is unchanged. On Linux
+  the shorter waits need `epoll_pwait2` (kernel 5.11 or later); an older
+  kernel keeps the millisecond.
 ### Fixed
 
 - **Under `--workers N` or `M0_WORKERS`, a worker that fails while the

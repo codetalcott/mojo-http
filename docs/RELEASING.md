@@ -31,15 +31,17 @@ pre-release for the same reason stress-asgi is: a p99 table from a shared
 runner is noise. The pooled row must hold single-digit milliseconds at
 `slow=1` and `slow=2` (the loop-only row collapsing to ~the blocking
 duration is expected and is the point). On an M4 that row measured
-0.2–0.3 ms through the 1.3.0 artifact and 1.5–1.6 ms at 1.4.0 and 1.5.0,
-the p50 moving with it. The step is a64d370, first in 1.4.0: Mojo pool
-threads register on their lane (SPEC M22), which makes the lane elastic
-(M25) where it had read as all-parked and woken on every push, so a fast
-job behind a busy thread now waits for the loop's stall check, whose wait
-is capped at `POOL_WAKE_WAIT_MS` (1 ms) — the price M25 records paying for
-the trivial route's throughput. Dated by the artifacts rather than
-bisected; a figure well past 1.6 ms is a change to look at. And
-the final column is the deliberate saturation boundary — more blockers
+0.2–0.3 ms through the 1.3.0 artifact and 1.5–1.6 ms from 1.4.0 through
+1.8.0, the p50 moving with it. The step was a64d370, first in 1.4.0: Mojo
+pool threads register on their lane (SPEC M22), which makes the lane
+elastic (M25) where it had read as all-parked and woken on every push, so
+a fast job behind a busy thread waited for the loop's stall check, and an
+idle loop looked once per `POOL_WAKE_WAIT_MS` (1 ms). Since E37 the loop
+looks when the job's threshold runs out, and the pooled cells measured
+0.10–0.14 ms p50 at `slow=1` and `slow=2` against 1.45–1.55 for the
+previous binary, interleaved in one session (2026-09-30, an M4); a p50
+back near a millisecond is the timed look lost, not the band. And the
+final column is the deliberate saturation boundary — more blockers
 than threads — where the pooled row is EXPECTED to collapse too. The
 deterministic halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
 

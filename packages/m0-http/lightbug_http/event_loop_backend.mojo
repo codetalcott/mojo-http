@@ -17,6 +17,21 @@ trait EventLoopBackend:
         """Block until events arrive or timeout. Returns number of ready events."""
         ...
 
+    def wait_ns(mut self, timeout_ns: Int) raises -> Int:
+        """`wait` with a timeout in nanoseconds, for the pool's look at a
+        pending job's deadline (`OffloadPool.next_look`), which is tens of
+        microseconds away where `wait` counts milliseconds.
+
+        kqueue: the `kevent` timespec, whole
+        epoll:  `epoll_pwait2`, falling back to `epoll_wait` rounded UP to
+                the millisecond where the kernel refuses it (before 5.11,
+                or a seccomp profile without it)
+
+        The default rounds up to milliseconds, never down: a wait that ends
+        early is a look that finds nothing due and waits again, and a
+        rounding to zero would be a spin."""
+        return self.wait((timeout_ns + 999_999) // 1_000_000)
+
     def event_ident(self, i: Int) -> UInt:
         """Return the fd/ident for event at index i."""
         ...

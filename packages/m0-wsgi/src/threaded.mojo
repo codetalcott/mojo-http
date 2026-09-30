@@ -243,6 +243,22 @@ struct DetachingBackend[B: EventLoopBackend & Movable & Deinitable](EventLoopBac
         cpy.PyEval_RestoreThread(ts)
         return n
 
+    def wait_ns(mut self, timeout_ns: Int) raises -> Int:
+        """`wait`, in nanoseconds (the pool's timed look); forwarded
+        whole, or the trait's default would round it up to a millisecond."""
+        if self.loop_detached:
+            return self.inner.wait_ns(timeout_ns)
+        ref cpy = Python().cpython()
+        var ts = cpy.PyEval_SaveThread()
+        var n: Int
+        try:
+            n = self.inner.wait_ns(timeout_ns)
+        except e:
+            cpy.PyEval_RestoreThread(ts)
+            raise e^
+        cpy.PyEval_RestoreThread(ts)
+        return n
+
     def event_ident(self, i: Int) -> UInt:
         return self.inner.event_ident(i)
 

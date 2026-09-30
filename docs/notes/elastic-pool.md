@@ -115,7 +115,11 @@ sibling for the rest — the rules of the day before.
    the ring move or empty, and past `T` of that one parked thread is
    woken. `_wait_for_events` caps its timeout at `POOL_WAKE_WAIT_MS`
    (1 ms) while any job is pending, so an idle loop looks within a
-   millisecond. This replaced the chained wake
+   millisecond. (Since 2026-09-30 it waits exactly until the earliest
+   head's deadline instead, and falls back to the millisecond only once
+   every deadline has been looked at: the millisecond was the whole
+   cost of a fast request behind one slow view at low traffic, 1.3 ms
+   against 0.1. `OffloadPool.next_look`, SPEC E37.) This replaced the chained wake
    ([pool-ring-handoff.md](pool-ring-handoff.md), a thread that took a
    job poking a sibling for the rest): the hole the chain filled — a
    woken thread's socket poll consuming a sibling's wake, a hold

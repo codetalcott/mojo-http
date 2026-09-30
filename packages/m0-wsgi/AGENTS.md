@@ -662,8 +662,12 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       every thread is parked; and a ring that holds a job and has NOT
       been drained for `POOL_WAKE_AGE_NS` (200 µs) is behind a slow
       view, so the LOOP wakes a parked sibling for it — `wake_aged`,
-      once per pass, with `_wait_for_events` capped at
-      `POOL_WAKE_WAIT_MS` while any job is pending. Progress, not age,
+      once per pass, with `_wait_for_events` waiting exactly until the
+      earliest pending head's deadline (`next_look`, `wait_ns`; SPEC
+      E37), and `POOL_WAKE_WAIT_MS` at most once every deadline has
+      been looked at. A wait capped at the millisecond alone was a
+      millisecond on every fast request that met one slow view at low
+      traffic, whatever the threshold. Progress, not age,
       and the ring's pop counter is the signal: a ring 256 deep behind
       one thread has a head a millisecond old and moving every 4 µs, and
       waking for its age put eight threads on the GIL for a queue one

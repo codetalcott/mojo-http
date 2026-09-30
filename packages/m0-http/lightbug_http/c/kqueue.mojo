@@ -168,10 +168,22 @@ def kevent_poll(
     timeout_ms: Int,
 ) raises -> Int:
     """Poll kqueue for events with a timeout."""
+    return kevent_poll_ns(kq, eventlist, max_events, timeout_ms * 1_000_000)
+
+
+def kevent_poll_ns(
+    kq: FileDescriptor,
+    eventlist: ExternalMutPointer[kevent_t],
+    max_events: Int,
+    timeout_ns: Int,
+) raises -> Int:
+    """Poll kqueue for events with a timeout in nanoseconds: `kevent`'s
+    timespec carries them whole (measured on an Apple M4 at about 13 µs
+    for a 10 µs timeout and 1.14 ms for 1 ms, the kernel's leeway)."""
     var ts = unsafe_alloc[timespec_t](count=1)
     ts[] = timespec_t(
-        Int64(timeout_ms // 1000),
-        Int64((timeout_ms % 1000) * 1_000_000),
+        Int64(timeout_ns // 1_000_000_000),
+        Int64(timeout_ns % 1_000_000_000),
     )
     var result = _kevent(
         Int32(kq.value), None, c_int(0), eventlist, c_int(max_events), ts,
