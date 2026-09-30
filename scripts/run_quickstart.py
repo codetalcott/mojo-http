@@ -65,7 +65,7 @@ import tempfile
 
 from probelib import free_port
 
-FENCE =re.compile(r"^```bash (setup|serve|verify)\s*$")
+FENCE = re.compile(r"^```bash (setup|serve|verify)\s*$")
 
 PRELUDE = """set -euo pipefail
 SERVER_PID=""
