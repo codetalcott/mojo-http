@@ -88,6 +88,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   - What the cut-short attempt scored is still judged.
   - The client's output and the server's log are printed and kept under
     `bin/logs/autobahn/`.
+- **Each m0serve worker says when a SIGTERM will drain it**:
+  `[worker N] pid=P armed for a graceful stop`, the line the Mojo host's
+  workers print, in every process shape, and before the `🔥 m0serve:`
+  banner, which used to come first. A worker catches SIGTERM only once it
+  has imported the application, so one worker answering says nothing of
+  the others: a script that stops the server soon after starting it
+  should wait for this line from every worker, or a worker still importing
+  dies of the signal instead of draining.
 
 ### Removed
 
@@ -164,6 +172,25 @@ in a minor release: `m0serve`'s flags and environment variables, the
   it had started up is logged as stopped, not as a failure: it had not yet
   taken any request. Found when CI's shutdown smoke signalled a supervisor
   whose second worker was still starting.
+- **Under `--workers N` or `M0_WORKERS`, no connection is handed to a
+  worker that is still starting up** (SPEC E16). The worker that accepts a
+  connection passes it to the least-loaded sibling, and a sibling still
+  starting — for m0serve, still importing the application — looked idle,
+  so it was handed connections it could not answer until its startup
+  ended: with a worker held 3 s, 16 of a burst of 32 each waited the 3 s.
+  A stop that reached that worker before it had started up ended it with
+  those connections, closed unanswered while the server exited 0. A
+  worker is now handed connections only once it serves; a respawned one
+  is handed nothing until it has started again. Found in review.
+- **A `Socket` whose `close()` fails is closed all the same** (SPEC D1).
+  A close that failed with anything but EBADF, such as EINTR from a signal
+  or EIO, raised with the socket still holding its number, although the
+  kernel had already released it; a second `close()`, or the socket's
+  destructor, then closed whatever the process had opened on that number
+  since, possibly another thread's connection. The failure is still
+  raised, and the number is never closed twice. Nothing in m0serve or the
+  Mojo host closes a socket twice; a Mojo application's own sockets are
+  covered. Found in review.
 
 ## [1.8.0] — 2026-09-29
 

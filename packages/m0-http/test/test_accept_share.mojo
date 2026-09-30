@@ -21,7 +21,7 @@ from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.accept_share import (
     AcceptShare, accept_share_slots, ACCEPT_SHARE_FIRST_WORKER_SLOT,
     ACCEPT_SHARE_WORKER_STRIDE, ACCEPT_SHARE_BUSY_NS, STATE_LEFT,
-    HandoffPost,
+    STATE_NOT_STARTED, STATE_PARKED, HandoffPost,
 )
 from lightbug_http.c.fdpass import (
     send_fd, recv_fd, FDPASS_MAX_PAYLOAD, RECV_FD_EMPTY, RECV_FD_REFUSED,
@@ -499,6 +499,8 @@ def test_pick_names_the_least_loaded_sibling_or_itself() raises:
     var page = SharedAtomics(accept_share_slots(3))
     var me = AcceptShare(3)
     me.bind(0, page.addr(0))
+    page.store(_word_slot(1, 0), STATE_PARKED)
+    page.store(_word_slot(2, 0), STATE_PARKED)
     var now = perf_counter_ns()
     # Siblings idle and empty, this worker holding two: a sibling.
     var target = me.pick(2, now)
@@ -524,10 +526,64 @@ def test_pick_names_the_least_loaded_sibling_or_itself() raises:
     assert_equal(me.pick(2, now), 0)
     # Equal loads: this worker keeps the connection (ties favour the
     # acceptor, so a hand-off always buys a strictly lighter worker).
-    page.store(_word_slot(1, 0), 0)
+    page.store(_word_slot(1, 0), STATE_PARKED)
     page.store(_word_slot(1, 1), 2)
     page.store(_word_slot(2, 1), 2)
     assert_equal(me.pick(2, now), 0)
+
+
+def test_a_sibling_that_has_not_started_is_never_picked() raises:
+    """A sibling whose loop has not started is refused as one that has left
+    is: nothing reads its channel until its `start()`, which in m0serve
+    follows the application's import, and a stop that reaches it first
+    kills it unarmed with every connection it was handed (review AR). A
+    fresh page reads not started with nothing written; a replacement marks
+    its index so again as it binds, whatever its predecessor last wrote,
+    and keeps the predecessor's hand-offs in flight; and a leaver passes
+    nothing on to a sibling that has not started.
+
+    covers: E16
+    """
+    var page = SharedAtomics(accept_share_slots(3))
+    var share = AcceptShare(3)
+    var me = share.copy()
+    me.bind(0, page.addr(0))
+    me.start()
+    var w1 = share.copy()
+    w1.bind(1, page.addr(0))
+    var w2 = share.copy()
+    w2.bind(2, page.addr(0))
+    var now = perf_counter_ns()
+    assert_equal(page.load(_word_slot(1, 0)), STATE_NOT_STARTED)
+    # Two siblings bound, neither started, this worker holding fifty.
+    assert_equal(
+        me.pick(50, now), 0,
+        "a sibling that has not started its loop was handed a connection",
+    )
+    w1.start()
+    assert_equal(me.pick(50, now), 1, "a started sibling was not picked")
+
+    # Worker 1 dies parked with two hand-offs in flight, and a replacement
+    # takes its index: not started until its own `start()`.
+    page.store(_word_slot(1, 2), 2)
+    var r1 = share.copy()
+    r1.bind(1, page.addr(0))
+    assert_equal(page.load(_word_slot(1, 0)), STATE_NOT_STARTED)
+    assert_equal(page.load(_word_slot(1, 2)), 2, "binding dropped the predecessor's hand-offs")
+    assert_equal(me.pick(50, now), 0, "a replacement was picked before its loop started")
+    r1.start()
+    assert_equal(me.pick(50, now), 1)
+    assert_equal(page.load(_word_slot(1, 2)), 2)
+
+    # A leaver: the started sibling, and when it leaves too, itself rather
+    # than the sibling that has not started.
+    me.leave()
+    assert_equal(me.pick_for_leaver(now), 1)
+    r1.leave()
+    assert_equal(
+        me.pick_for_leaver(now), 0,
+        "a leaver passed a connection on to a sibling that has not started",
+    )
 
 
 def test_a_burst_spreads_across_siblings_through_pending() raises:
@@ -538,6 +594,10 @@ def test_a_burst_spreads_across_siblings_through_pending() raises:
     var share = AcceptShare(3)
     var me = share.copy()
     me.bind(0, page.addr(0))
+    for i in range(1, 3):
+        var sibling = share.copy()
+        sibling.bind(i, page.addr(0))
+        sibling.start()
     var now = perf_counter_ns()
     var kept = 0
     var to = List[Int]()
@@ -590,7 +650,7 @@ def test_leaving_wins_over_the_pass_bookkeeping() raises:
     w1.pass_begin(now)
     assert_equal(page.load(_word_slot(1, 0)), now)
     w1.pass_end(3)
-    assert_equal(page.load(_word_slot(1, 0)), 0)
+    assert_equal(page.load(_word_slot(1, 0)), STATE_PARKED)
     w1.leave()
     assert_equal(page.load(_word_slot(1, 0)), STATE_LEFT)
     # The shutdown drain still runs passes; they must not un-announce it.
@@ -611,7 +671,7 @@ def test_start_resets_the_state_and_count_but_not_pending() raises:
     var w1 = AcceptShare(2)
     w1.bind(1, page.addr(0))
     w1.start()
-    assert_equal(page.load(_word_slot(1, 0)), 0)
+    assert_equal(page.load(_word_slot(1, 0)), STATE_PARKED)
     assert_equal(page.load(_word_slot(1, 1)), 0)
     assert_equal(page.load(_word_slot(1, 2)), 2)
 

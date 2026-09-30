@@ -27,7 +27,11 @@ The workers shape is `smoke-shutdown`'s supervisor claim moved into the
 container: the supervisor alone is signalled, and it must reap both workers
 (their "exited cleanly" lines in the log — a worker killed by a propagated
 signal it had no handler for prints "killed by signal" instead) and leave
-promptly. "signal propagation unavailable" in the log is the degraded arm
+promptly. Each shape is stopped only once every worker has printed
+`armed for a graceful stop`. One worker answering says nothing of the
+other, which arms after the application's import: signalled at the first
+answer, a sibling still importing died of the signal where a drain was
+meant (review AR; on macOS, 5 to 19 rounds of 20 against the bare app). "signal propagation unavailable" in the log is the degraded arm
 announcing itself (`_arm_signal_propagation` declining a dead slot), which
 is the honesty check available from outside the process.
 
@@ -123,6 +127,28 @@ def wait_healthy(name, deadline_s):
         f"[{name}] never became healthy in {deadline_s}s\n"
         f"{logs.stdout}{logs.stderr}"
     )
+
+
+ARMED = " armed for a graceful stop"
+"""What each m0serve worker prints once SIGTERM drains it (review AR)."""
+
+
+def wait_armed(name, workers, deadline_s):
+    """Until `workers` workers have printed `ARMED` in the container's log,
+    or fail with the log: the stop must reach armed workers, or a death by
+    the signal is the probe's race rather than the server's defect."""
+    deadline = time.monotonic() + deadline_s
+    while True:
+        logs = run("docker", "logs", name, check=False)
+        text = logs.stdout + logs.stderr
+        if text.count(ARMED) >= workers:
+            return
+        if time.monotonic() > deadline:
+            fail(
+                f"[{name}] {text.count(ARMED)} of {workers} worker(s) armed for "
+                f"a graceful stop within {deadline_s}s\n{text}"
+            )
+        time.sleep(0.25)
 
 
 def assert_pid1_is_m0serve(name):
@@ -243,6 +269,7 @@ def main():
                 names.append(single)
                 start(single, args.image, stage, [])
                 wait_healthy(single, args.healthy_timeout)
+                wait_armed(single, 1, args.healthy_timeout)
                 assert_pid1_is_m0serve(single)
                 phase("single: docker stop")
                 code, elapsed, _ = stop_and_measure(single, args.grace)
@@ -262,6 +289,7 @@ def main():
             names.append(workers)
             start(workers, args.image, stage, ["M0_WORKERS=2"])
             wait_healthy(workers, args.healthy_timeout)
+            wait_armed(workers, 2, args.healthy_timeout)
             assert_pid1_is_m0serve(workers)
             procs = int(docker_exec(workers, "python", "-c", COUNT_PROCS).stdout)
             if procs < 3:

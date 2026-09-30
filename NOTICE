@@ -1155,6 +1155,27 @@ lightbug_http
         port after a bracketed IPv6 host, and the access log names the
         client (`remote_addr`) (review record R15).
 
+      - accept_share.mojo (2026-09-30): a worker's `state` word reads
+        `STATE_NOT_STARTED` (0, what a fresh page holds before the fork)
+        until its loop's `start()`, which writes `STATE_PARKED` (-2), as
+        the end of every pass does; `bind` writes the mark again for a
+        replacement, keeping `pending` and `taken`. `pick` and
+        `pick_for_leaver` skip a sibling that has not started as they skip
+        one that has left. 0 was parked, so a sibling still starting (in
+        m0serve, importing the application) was handed connections that
+        waited out its startup and died with it when a stop reached it
+        before it armed (review record AR).
+
+      - socket.mojo (2026-09-30): `Socket.close()` gives up the number
+        before its `close(2)`, so a failure the call reports (anything but
+        EBADF, which is swallowed as before, and still raised) leaves the
+        socket closed. It raised with the number still held, which Linux
+        and macOS had already released, so a second `close()` or the
+        destructor closed whatever had taken it since (review record AR,
+        after B27b). The call is a `DescriptorClose` parameter of
+        `close_with`, `LibcClose` the socket's own, so a test can report
+        EINTR and EIO.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

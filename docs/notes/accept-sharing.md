@@ -97,7 +97,8 @@ per connection that changes hands. Built.
   `accept_share_slots(workers)`: slot 0 stays the event id, slot 1 is a
   rotation counter, and worker `i` owns the cache line at slot `8 + 8i`
   with three words — `state` (0 parked, a pass's start time in ns while
-  inside one, −1 once it is leaving), `active` (open connections,
+  inside one, −1 once it is leaving; 0 became "not started" and parked
+  −2 on 2026-09-30, the correction under The pick), `active` (open connections,
   published at the end of every pass) and `pending` (connections passed
   to it and not yet admitted). A fourth, `taken`, was added on
   2026-09-29 (the correction under Leaving).
@@ -107,6 +108,27 @@ per connection that changes hands. Built.
   has been inside one pass for over 2 ms (a slow view running inline) is
   skipped, because the old race, for all its unfairness, sent such
   connections to the idle worker and this must not do worse.
+
+  **Correction, 2026-09-30.** A worker's words read 0 until its loop's
+  `start()`, and 0 was parked, so a sibling still starting was picked as
+  an idle one with nothing to do. Nothing reads its channel until then,
+  and in m0serve that is after the application's import (review record
+  AR, from S1). With worker 1 held 3 s before its start
+  (`M0_TEST_ARM_GAP_MS`), 16 of a burst of 32 went to it and each was
+  answered 3.0 s late; with a SIGTERM inside the hold the supervisor
+  exited 0 and every connection handed to the held worker was closed
+  unanswered. Now 0 is `STATE_NOT_STARTED`, which a fresh page holds from
+  before the fork with nothing written, `start()` and the end of every
+  pass write `STATE_PARKED` (−2), and `pick` and `pick_for_leaver` skip a
+  sibling that has not started as they skip one that has left. A
+  replacement (a respawn, a reload's new worker) marks its index not
+  started as it binds, its first act after the fork, keeping the
+  predecessor's `pending` and `taken`; between the death and that bind a
+  sibling reads what the dead worker last wrote, a stale pass (skipped as
+  busy after 2 ms) or parked, and a connection sent then waits in the
+  channel for the replacement, as one queued before the death does.
+  `smoke-accept-spread` holds worker 1 and requires the burst answered by
+  worker 0 within 1 s with nothing passed.
 - **The hand-off.** `send_fd` with the peer address in the payload (the
   receiver need not `getpeername`), `pending` incremented on success, the
   acceptor's own reference closed. On any failure — the channel full, a
