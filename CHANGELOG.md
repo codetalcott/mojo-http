@@ -255,6 +255,86 @@ wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
   - A stream whose client leaves, and a socket, clean their slot's state
     when they finish. Without that, their credit windows, stream task and
     inbox stayed on the slot until its next connection.
+- **CI's smokes are three jobs.** The `smoke` job had grown to a median of
+  21.4 min on the ubuntu leg, against a 30-minute cap that a runner 1.45
+  times slower, the slowest seen, would pass. It keeps the server's smokes
+  and takes m0serve's command-line and `--doctor` smokes from
+  `smoke-gateway`. A new job, `smoke-app-layer`, takes the Mojo host and
+  its applications, the m0 wheel and its scaffold, and MAX's runtime under
+  both hosts. By the step times of the 15 green runs of 2026-09-29, the
+  three come to 12 to 13.5 min on ubuntu, and each is capped at 25.
+- **CI's two unit-test jobs are balanced.** With `test-shim` down to
+  seconds, `unit-tests` was every run's longest job, 20.6 to 23.8 min cold
+  on the ubuntu leg, against `unit-gates`' 12.6. Five tasks move from `poe
+  test-packages` to `poe test-gates`: the Datastar SDK's conformance and
+  its sabotage, the probes' phase-stamp check, and m0-sqlite's tests and
+  layout guard. Measured cold on the eight runs that followed, `unit-tests`
+  ran 10.4 to 17.5 min on ubuntu and `unit-gates` 13.3 to 17.6, the two
+  about even on runners of the same CPU, and each is capped at 35. `poe test-all` runs the same
+  tasks as before.
+- **`poe smoke-doctor` takes half as long.** To tell a configuration the
+  server accepts from one it refuses, it waited a fixed 8 s for each of the
+  seven that serve. It now polls until the server answers and allows it 2 s
+  more, so a server that answers and then dies is still read as its exit
+  code, and a new control row, an application that answers once and then
+  exits 3, fails the smoke if the watchdog ever reads it as served. The
+  task went from 70 s to 33 on an Apple-silicon Mac.
+- **Thirteen smoke probes share one library, `scripts/probelib.py`**: the
+  phase stamp, `fail()`, a server watched until it answers, a free port,
+  an SSE reader and a WebSocket client, each proven by
+  `python3 scripts/probelib.py --selftest` in CI. A server that exits
+  before it answers is reported at once, with its log:
+  `smoke-exec-inherit` and `smoke-child-publish` used to wait 120 s for
+  one, and `smoke-ws-inbound` and `smoke-slot-lifecycle` 30 s.
+  `outbox_cap_probe.py` gives the connection one 20 s deadline, where a
+  per-read timeout was reset by every heartbeat, so
+  `sabotage-outbox-cap`'s two rules that leave the connection open are
+  caught by the probe's own verdict rather than by the harness killing it
+  at 180 s. `poe check-phase-stamps` accepts a probe that takes its stamp
+  from the library and holds the library to the crash handler's rules. It
+  now judges the unsabotaged tree before any sabotage, and requires every
+  rule to have a sabotage that the rule itself catches.
+- **Nineteen more probes on `scripts/probelib.py`**, among them the
+  WebSocket and SSE clients of `smoke-chat`, `smoke-fastapi`, the Django
+  and Flask realtime smokes, `smoke-idle-timeout`, `smoke-host`,
+  `smoke-sim-loop` and `smoke-todo`, and both docker probes. Each prints
+  what it printed. `stamp()` takes two options for the probes that needed
+  them: `fail_stream=`, for a failure line that goes to stderr while the
+  crash line goes to stdout, and `echo=`, for a probe that announces each
+  phase as it begins. `stress-pool`'s two probes and the held server in
+  `smoke-host-doctor` now report a server that exits before it answers at
+  once, with its log, where each polled for up to a minute. The chat and
+  realtime probes read a WebSocket against one deadline, where a per-read
+  timeout was reset by every heartbeat. `demo_probe.py` names a refused
+  WebSocket upgrade; it used to die of `ValueError('too many values to
+  unpack')`.
+- **The last twenty-one probes on `scripts/probelib.py`**: the raw-socket
+  probes of `smoke-shutdown`, `smoke-pipelining`, `smoke-early-413`,
+  `smoke-body-timeout` and the other HTTP/1.1 smokes, the response-head
+  and chunked keep-alive probes of the WSGI and ASGI smokes,
+  `smoke-ramp`'s, `probe-pool-fairness`'s, and the `pid1` job's two
+  docker probes. Each prints what it printed, on the stream it printed it
+  on. Every probe but `apps/ws_echo/ws_probe.py`, which stays inline as
+  `poe check-phase-stamps`' example of that form, now takes its phase
+  stamp from the library. `pool_fairness_probe.py` waits for its server
+  through the library's `wait_healthy`: its own poller, answered with an
+  empty body, asked again at once, about 10,700 times a second against a
+  server that answers 101, where the library's asks 19.
+- **A supervisor, and what an application runs before its loop, survive
+  SIGPIPE too** (SPEC A25). The ignore above arrived with the event loop,
+  which a supervisor never enters: m0serve's under `--workers` or
+  `--reload`, and the Mojo host's under `M0_WORKERS`. `kill -PIPE` ended
+  either with status 141 and left its workers serving, orphaned (measured
+  on macOS). m0serve's supervisor forks before any Python call, so
+  CPython's own ignore never reached it. A Mojo host application's `make`,
+  producer and pool threads also run before the loop, so a write there to
+  a peer that had gone ended the server before it served (one worker, or
+  `M0_THREADS`), or killed worker 0 on every respawn (`M0_WORKERS`). The
+  listener now ignores SIGPIPE first: both hosts bind before they fork or
+  start a thread, so every process and thread they run inherits it.
+  `smoke-host` sends the supervisor `kill -PIPE` and has a producer's
+  `make` write to a closed pipe; `smoke-spawn-workers` sends m0serve's
+  supervisor `kill -PIPE`.
 
 - **CI's unit tests are two jobs.** `poe test-all` had grown to 34-35 min of
   its job's 40-minute cap on the ubuntu leg. It is now `build-all` and two

@@ -136,11 +136,12 @@ macOS jobs wait: one for the first to finish (`apple-silicon`, 1.5
 minutes), one for the second (`scaffold-dev`, 2 to 4). GitHub does not start
 them in file order. In the two runs with six, the job that waited was a
 smoke job once and `scaffold-dev` once. A job that waits ends up to 4
-minutes late. The unit jobs set the run's length, at about 17 minutes cold
-on ubuntu once their halves were balanced (the next section), so a waiting
-smoke job (13 to 14 minutes on macOS) or `unit-tests` (14.5) ends the run
-up to 2 minutes later, and `scaffold-dev` or `unit-gates` (13) about when
-it would have ended anyway. When several pull requests run at once, the five
+minutes late. The unit jobs set the run's length: the longer of the two ran
+a median of 16.4 minutes cold on ubuntu once their halves were balanced
+(the next section), so a waiting smoke job (13 to 14 minutes on macOS) or
+`unit-tests` (a median of 13.0) ends the run up to 2 minutes later, and
+`scaffold-dev` or `unit-gates` (12.3) about when it would have ended
+anyway. When several pull requests run at once, the five
 macOS runners are shared among them. Across the 76 runs since 2026-09-28
 17:00, a macOS job waited a median of 4.4 minutes and a p90 of 34, and one
 more job in each run adds its minute of setup to that queue.
@@ -158,9 +159,12 @@ one.
 Two costs are larger than any rebalancing, and no job's to fix by moving
 steps. Every step whose task depends on `build-serve` relinks `bin/m0serve`
 before it runs, about 8.5 seconds each, though its job built the binary
-first: 44 steps, about six minutes a leg across the jobs. And the `--doctor`
-smoke waits out an 8-second watchdog for each configuration that serves:
-seven of them, 56 of its 77 seconds.
+first: 44 steps, about six minutes a leg across the jobs. The `--doctor`
+smoke waited out an 8-second watchdog for each configuration that serves,
+seven of them, 56 of its 77 seconds, until review record CI1: it now polls
+until the server answers and allows it 2 seconds more, and an application
+that answers once and then exits proves on every run that the watchdog
+still reads such a server as its exit code, not as served.
 
 No job `needs:` another, and the smokes used to: that gate put `unit-tests`
 on the front of every run and caught nothing (the comment on `smoke` names
@@ -210,11 +214,28 @@ with a task that stayed, and `unit-gates` now installs `libsqlite3-dev`,
 for the layout guard's `sqlite3.h`. What stayed is the packages' Mojo tests
 but m0-sqlite's, the fork's and the host's whole-package compiles, and the
 chunked decoder's trailer sabotage and fuzzer, whose compiles the
-`unit-tests` steps that run them again reuse. By those runs, both jobs come
-to about 16.5 minutes cold on ubuntu's EPYCs, and `unit-tests` to 14.5 and
-`unit-gates` to 13 on macOS, so both are capped at 35. `test-http` is most
-of `unit-tests` (563-666 seconds) and grows 20-30 seconds with each event
-loop test, so that half is the one to lighten next. The split is measured,
+`unit-tests` steps that run them again reuse. Those runs predicted both jobs
+at about 16.5 minutes cold on ubuntu's EPYCs, and `unit-tests` at 14.5 and
+`unit-gates` at 13 on macOS. Measured cold on the eight pull request runs
+of 2026-09-29 from the one that moved them (#486) on, `unit-tests`
+ran 10.4 to 17.5 minutes on ubuntu, a median of 14.3, and 11.8 to 14.4 on
+macOS (13.0); `unit-gates` ran 13.3 to 17.6 (16.1) and 11.3 to 13.2 (12.3).
+Both stay capped at 35, twice the slowest of each. `unit-gates` at 30 would
+leave its 17.6-minute run 1.7 times its length, where every cap here is
+about twice.
+
+The runner's CPU moves a job more than the split does. On an EPYC 7763 the
+two ran 15.8-17.5 and 15.9-17.6 minutes, even, and an EPYC 9V45 ran
+`unit-tests` in 10.4-11.2. #486's own run drew a 7763 for `unit-tests`
+(17.5) and a 9V74 for `unit-gates` (13.3), which made the halves look four
+minutes apart when they were not. So `test-postgres`, 23 seconds cold on
+ubuntu and 16 on macOS, stayed in `unit-tests` (review record CI1): moved,
+it would add 23 seconds to `unit-gates` on ubuntu, where the halves are even
+and set the run's length, to save 16 on macOS, where `unit-tests` is the
+longer but ends first. Compare the halves on one CPU
+model, never across a run's two draws. `test-http` is most of `unit-tests`
+(563-666 seconds) and grows 20-30 seconds with each event loop test, so
+that half is the one to lighten next. The split is measured,
 not thematic, and moving a task between the halves is free. A task added to
 `test-all`'s own sequence, beside the halves, would run locally and in no
 job, so `check-docs` refuses anything `test-all` reaches that no
