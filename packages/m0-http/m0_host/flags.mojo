@@ -44,7 +44,7 @@ from lightbug_http.c.process import process_exit
 from lightbug_http.server_config import ServerConfig
 
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
-from m0_http.config import AppConfig
+from m0_http.config import AppConfig, listen_host
 
 
 comptime EX_USAGE = 2
@@ -165,7 +165,7 @@ def _apply(mut config: AppConfig, name: String, value: String) raises:
         var host = String(value.strip())
         if host.byte_length() == 0:
             raise Error("--host must not be empty")
-        config.host = String("127.0.0.1") if host == "localhost" else host
+        config.host = listen_host(host)
     elif name == "--port":
         var port = parse_int(value, "--port")
         if port < 1 or port > 65535:
@@ -250,7 +250,8 @@ def host_usage(program: String = "server") -> String:
         "\n"
         "Each option overrides its M0_ variable, which overrides the default.\n"
         "\n"
-        "  --host ADDR                 listen address (M0_HOST; 0.0.0.0)\n"
+        "  --host ADDR                 listen address (M0_HOST; 0.0.0.0);\n"
+        "                              :: takes IPv6 and IPv4, ::1 IPv6 alone\n"
         "  --port N                    listen port (M0_PORT; 8080)\n"
         "  --workers N                 processes, forked (M0_WORKERS; 1)\n"
         "  --threads N                 loops on threads of one process; not\n"

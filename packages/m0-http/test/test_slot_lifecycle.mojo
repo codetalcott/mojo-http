@@ -422,7 +422,7 @@ def test_a_stale_body_expiry_is_retired() raises:
         st.slot_fds[slot] = FD
         st.fd_to_slot[FD] = slot
         if offloaded == 1:
-            st.provision_pool.provisions[slot].state = ConnectionState.reading_body(64)
+            st.provision_pool.provisions[slot].state = ConnectionState.reading_body()
             st.offload.offloaded[slot] = True
         else:
             st.provision_pool.provisions[slot].state = ConnectionState.responding()

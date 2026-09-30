@@ -1954,6 +1954,14 @@
       "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR) \u2014 127 mounts under the zero-config pool and under `--blocking-threads 0`, each required to agree with the doctor and to exit 78, and 128 with a Mojo mount given no thread, where the mount refusal (2) must come first. Before: the zero-config server bound, imported every mount and exited 1 with `lane 127 has no wake words` from `add_lane`, while the doctor reported 0. The unit half is `test_checks.mojo:test_more_mounts_than_a_pool_has_lanes_are_refused_with_78`"
     },
     {
+      "id": "M29",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "IPv6: `--host ::` (and `M0_HOST=::`, and a `Server.listen_and_serve` on `[::]:PORT`) listens on IPv6 and IPv4, with `IPV6_V6ONLY` set to 0 rather than left to a system default that differs by host; `--host ::1` listens on the IPv6 loopback alone; `[::1]`, as a URL writes it, is accepted wherever a host is read; `0.0.0.0`, `127.0.0.1` and `localhost` listen as they always did. A client is reported in its own family -- `REMOTE_ADDR`, ASGI's `scope[\"client\"]`, the access log's `remote_addr` -- and an IPv4 client of `::` as IPv4 (`127.0.0.1`, where gunicorn and uvicorn report `::ffff:127.0.0.1`), so moving a server from `0.0.0.0` to `::` changes no address an application sees",
+      "status": "verified",
+      "evidence": "`Smoke test IPv6 listeners` (every PR) \u2014 m0serve on `::` (WSGI and ASGI, a query string answered, `--workers 2` with connections handed between workers, `--workers 2 --spawn-workers`, `--reload`, the doctor), on `[::1]` refusing IPv4 and on `127.0.0.1` refusing IPv6, and the Mojo host on `M0_HOST=::` and `--host ::1` and its doctor's `[::]:PORT`; its first phase fails a runner with no IPv6 loopback. Before: `AF_INET6` was OpenBSD's 24, which macOS refuses and Linux reads as `AF_PPPOX`, `inet_pton` kept four of an IPv6 address's sixteen bytes, and every listener was IPv4. The unit half is `test_ipv6.mojo:test_dual_stack_is_set_not_inherited`"
+    },
+    {
       "id": "N1",
       "section": "N",
       "category": "N. Writing an application in Mojo",

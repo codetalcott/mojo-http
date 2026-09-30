@@ -255,6 +255,17 @@ def test_host_localhost_means_loopback() raises:
     assert_equal(_parse([String("m.wsgi"), String("--host"), String("localhost")]).host, "127.0.0.1")
 
 
+def test_an_ipv6_host_and_its_address() raises:
+    """`--host ::` listens on both families, and its address is bracketed:
+    `:::81` does not parse (review R15). `[::1]`, as in a URL, is `::1`."""
+    var opts = _parse([String("m.wsgi"), String("--host"), String("::"), String("--port"), String("81")])
+    assert_equal(opts.host, "::")
+    assert_equal(opts.address(), "[::]:81")
+    opts = _parse([String("m.wsgi"), String("--host"), String("[::1]"), String("--port"), String("81")])
+    assert_equal(opts.host, "::1")
+    assert_equal(opts.address(), "[::1]:81")
+
+
 def test_app_dir_defaults_to_dot() raises:
     """The default uvicorn uses, and a necessary one: an embedded interpreter
     has no '' on sys.path, so without it `m0serve myproject.wsgi` from the

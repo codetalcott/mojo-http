@@ -18,8 +18,8 @@ crashed the process.
 
   - `zero_alloca_probe_inet4` and `zero_alloca_probe_inet6` call the fork's
     real `inet_pton` for each address family, so both instantiations are in
-    the IR whatever m0serve reaches (it listens on IPv4 only). The check
-    refuses a zero-size buffer in either.
+    the IR whatever m0serve reaches (`Socket.bind` reaches both since
+    review R15). The check refuses a zero-size buffer in either.
   - `zero_alloca_probe_bare` is the old shape, spelled the way `inet_pton`
     spelled it, handed to the same C function. The check REQUIRES it to be
     refused. Without that half the gate would pass on a toolchain where
@@ -40,7 +40,7 @@ from lightbug_http.c.network import inet_pton
 def zero_alloca_probe_inet4() abi("C") -> UInt32:
     """The fork's `inet_pton` for IPv4, as `Socket.bind` calls it."""
     try:
-        return UInt32(inet_pton[AddressFamily.AF_INET](String("127.0.0.1")))
+        return UInt32(inet_pton[AddressFamily.AF_INET](String("127.0.0.1")).in_addr())
     except:
         return 0
 
@@ -49,7 +49,7 @@ def zero_alloca_probe_inet4() abi("C") -> UInt32:
 def zero_alloca_probe_inet6() abi("C") -> UInt32:
     """The fork's `inet_pton` for IPv6."""
     try:
-        return UInt32(inet_pton[AddressFamily.AF_INET6](String("::1")))
+        return UInt32(inet_pton[AddressFamily.AF_INET6](String("::1")).bytes[15])
     except:
         return 0
 

@@ -522,7 +522,9 @@ struct Server(Movable):
         """
         self.listen_and_serve_nonblocking(address, handler)
 
-    def serve[T: HTTPService](self, var ln: NoTLSListener[NetworkType.tcp4], mut handler: T) raises ServerError:
+    def serve[
+        network: NetworkType, //, T: HTTPService
+    ](self, var ln: NoTLSListener[network], mut handler: T) raises ServerError:
         """Serve an existing listener on the event loop.
 
         `serve_nonblocking` with the server's own `shutdown_read_fd`, which
@@ -530,6 +532,9 @@ struct Server(Movable):
         its default. The listener is the loop's from here, as it is there.
 
         Parameters:
+            network: The listener's network, inferred: `tcp` (what
+                `ListenConfig.listen` makes unless told otherwise), `tcp4` or
+                `tcp6`. The loop reads only its descriptor.
             T: The type of HTTPService that handles incoming requests.
 
         Args:
@@ -569,7 +574,7 @@ struct Server(Movable):
         Raises:
             ServerError: If listener setup fails or an unrecoverable error occurs.
         """
-        var listener: NoTLSListener[NetworkType.tcp4]
+        var listener: NoTLSListener[NetworkType.tcp]
         try:
             listener = ListenConfig().listen(address)
         except listener_err:
@@ -587,8 +592,8 @@ struct Server(Movable):
         except server_err:
             raise server_err^
 
-    def serve_nonblocking[T: HTTPService](
-        self, var ln: NoTLSListener[NetworkType.tcp4], mut handler: T,
+    def serve_nonblocking[network: NetworkType, //, T: HTTPService](
+        self, var ln: NoTLSListener[network], mut handler: T,
         shutdown_read_fd: Int = -1,
         bus_read_fd: Int = -1,
         offload_addr: Int = 0,
@@ -602,6 +607,7 @@ struct Server(Movable):
         and often something else's.
 
         Parameters:
+            network: The listener's network, inferred (see `serve`).
             T: The type of HTTPService that handles incoming requests.
 
         Args:

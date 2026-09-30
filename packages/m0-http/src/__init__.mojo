@@ -77,5 +77,5 @@ from .signal import (
     install_shutdown_signals, shutdown_signals_active,
 )
 from .health import HealthRegistry
-from .config import AppConfig, threads_conflict
+from .config import AppConfig, listen_host, threads_conflict
 from .mojo_pool import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler

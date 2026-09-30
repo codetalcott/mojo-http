@@ -8117,6 +8117,28 @@ python3 scripts/emit.py --covers E30 --task smoke-host-doctor
 python3 scripts/emit.py --covers E31 --task smoke-host-doctor
 """
 
+# IPv6 (SPEC M29, review R15): `--host ::` takes both families, `::1` IPv6
+# alone, and a client is reported in its own family -- an IPv4 client of
+# `::` as IPv4 -- through m0serve (WSGI, ASGI, --workers, --spawn-workers,
+# --reload, the doctor) and the Mojo host (M0_HOST, --host, the doctor).
+# The probe's first phase fails on a runner with no IPv6 loopback rather
+# than skipping: a gate that skipped there would be green having tested
+# nothing. Its servers' logs land in $SMOKE_DIR, printed if it fails.
+[tool.poe.tasks.smoke-ipv6]
+help = "IPv6: --host :: listens on both families and ::1 on IPv6 alone, each client reported in its own family, through m0serve and the Mojo host (SPEC M29)"
+deps = ["build-serve"]
+shell = """
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
+  apps/host_check/server.mojo -o "$out/host_check" || exit 1
+spawn probe.log env SMOKE_DIR="$out" python3 scripts/ipv6_probe.py bin/m0serve "$out/host_check" $(free_port 12)
+wait $pid || fail "$(grep -m 1 'ipv6_probe: FAIL' "$out/probe.log")"
+cat "$out/probe.log"
+echo "smoke-ipv6 OK"
+python3 scripts/emit.py --covers M29 --task smoke-ipv6
+"""
+
 # The Mojo host with MAX's parallel runtime linked (SPEC E32). The app
 # imports `max.algorithm`, so it builds only where MAX's Mojo packages sit
 # beside the toolchain: the `max` dependency group, synced by this smoke's

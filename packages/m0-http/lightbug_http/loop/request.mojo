@@ -512,7 +512,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             st.provision_pool.provisions[slot].request_end = (
                 0 if is_chunked else header_end_offset + content_length
             )
-            st.provision_pool.provisions[slot].state = ConnectionState.reading_body(effective_length)
+            st.provision_pool.provisions[slot].state = ConnectionState.reading_body()
 
             # Phase 1b: decode whatever of the body arrived with the headers,
             # through the CONNECTION's decoder — the same one

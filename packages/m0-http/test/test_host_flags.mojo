@@ -102,6 +102,10 @@ def test_both_spellings_of_a_value_are_read() raises:
     # `localhost` is the loopback literal, as `M0_HOST=localhost` is.
     assert_equal(spaced.config.host, "127.0.0.1")
     assert_equal(inline.config.host, "127.0.0.1")
+    # An IPv6 host, bracketed or not, and its bracketed address (review R15).
+    var v6 = _parse("--host", "[::]", "--port", "9003")
+    assert_equal(v6.config.host, "::")
+    assert_equal(v6.config.address(), "[::]:9003")
 
 
 def test_a_flag_is_as_explicit_as_its_variable() raises:

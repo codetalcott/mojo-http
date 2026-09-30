@@ -1123,6 +1123,38 @@ lightbug_http
         deadline (`stop_deadline`, `ns_left`), so the two are one bound
         (review record C9b-c).
 
+      - address.mojo, socket.mojo, c/socket.mojo, connection.mojo
+        (2026-09-29): the rest of the upstream surface no caller used,
+        removed as the 2026-09-28 removal was: `NetworkType.udp4` and
+        `udp6`, the free functions `is_ip_protocol`, `is_ipv4` and
+        `is_ipv6` (the `NetworkType` methods of those names stay), the
+        `TCP4Socket` and `TCP6Socket` aliases, `O_ACCMODE`, and the
+        argument `ConnectionState.reading_body` took and ignored (review
+        record C2).
+
+      - c/address.mojo, c/network.mojo, c/socket.mojo, socket.mojo,
+        address.mojo, connection.mojo, server.mojo, uri.mojo,
+        loop/state.mojo (2026-09-29): IPv6 listening, which could not work.
+        `AF_INET6` was OpenBSD's 24, which macOS refuses and Linux reads as
+        `AF_PPPOX`; it is 30 on macOS and 10 on Linux. `inet_pton` returns
+        every byte it wrote (`InetAddress`, sixteen for IPv6) where it read
+        four back as a `c_uint`, and `inet_ntop` takes them. `SocketAddress`
+        is `sockaddr_storage`-sized with a length, where one 16-byte
+        `sockaddr` truncated an IPv6 address, and `sockaddr_host_port` is
+        the one reader of an address the kernel filled -- `accept_with_peer`,
+        `get_sock_name` and `get_peer_name` go through it, and it reports an
+        IPv4-mapped peer (`::ffff:a.b.c.d`) as IPv4. `binary_ip_to_string`,
+        whose IPv6 arm handed `inet_ntop` four bytes, is removed. A `Socket`
+        holds its family as a value (`family`), and `ListenConfig.listen`
+        and `NoTLSListener` default to `NetworkType.tcp`, the family the
+        address names: `[::]` is IPv6 with `IPV6_V6ONLY` set to 0
+        (`Socket.set_ipv6_only`), `[::1]` the IPv6 loopback, anything else
+        IPv4, and `tcp6` IPv6 alone. `Server.serve` and `serve_nonblocking`
+        take a listener of any network. `sockaddr_in` writes its family
+        where macOS reads it, the byte after `sin_len`. `URI.parse` finds a
+        port after a bracketed IPv6 host, and the access log names the
+        client (`remote_addr`) (review record R15).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
