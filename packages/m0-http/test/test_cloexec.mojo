@@ -66,11 +66,14 @@ def test_a_socket_is_close_on_exec() raises:
 
 def test_an_accepted_connection_is_close_on_exec() raises:
     """What a child held for 10 s under FastHTML's terminal example."""
+    # Port 0, and the kernel's choice read back: a fixed port collided when
+    # two checkouts ran the suite at once.
     var listener = ListenConfig(max_bind_retries=1, quiet=True).listen(
-        "127.0.0.1:18697"
+        "127.0.0.1:0"
     )
+    var port = Int(listener.socket.get_sock_name()[1])
     var host = String("127.0.0.1")
-    var client = create_connection(host, 18697)
+    var client = create_connection(host, UInt16(port))
     var accepted = accept_with_peer(listener.socket.fd)
     assert_true(is_cloexec(accepted[0].value))
     close_fd(accepted[0].value)
