@@ -94,6 +94,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   after the 5 s join and exited naming a thread "still inside the
   application". The stop now waits for the lane to have room, inside that
   same 5 s.
+### Fixed
+
+- **Under `--workers N` or `M0_WORKERS`, a worker that fails while the
+  server stops makes the supervisor exit 1, whichever worker it reaps
+  first** (SPEC D10). A worker catches SIGTERM only once it has started
+  up — for m0serve, once the application is imported — and a stop that
+  reaches one before then ends it at once. When that was the first worker
+  the supervisor reaped, it passed the signal on and then waited for the
+  rest without looking at how they exited: a sibling that crashed in its
+  drain went unreported and the supervisor exited 0, and even a sibling's
+  clean exit went unlogged. Each worker is now reported and judged as it
+  exits, the same way under `--reload`. A worker the stop reached before
+  it had started up is logged as stopped, not as a failure: it had not yet
+  taken any request. Found when CI's shutdown smoke signalled a supervisor
+  whose second worker was still starting.
 
 ## [1.8.0] — 2026-09-29
 
