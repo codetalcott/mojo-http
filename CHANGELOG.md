@@ -210,7 +210,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   worker that has died and was not replaced** (SPEC E16). The supervisor
   does not replace a worker once it is stopping, once it has used up its
   respawns (five crashes in a row, each within a second of its start, or
-  ten times the worker count in all), or when the worker exited 0 or 78.
+  ten times the worker count within an hour), or when the worker exited 0
+  or 78.
   The worker's
   siblings went on reading the load it last published, which for one
   killed while idle read as idle with no connections, so the least-loaded
@@ -221,6 +222,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
   alike. The supervisor now marks every worker it reaps as gone, so no
   sibling picks it; a replacement is picked again once it has started.
   Found in review.
+- **Under `--workers N` or `M0_WORKERS`, a long-running server goes on
+  replacing workers that crash now and then** (SPEC E36). The supervisor
+  stopped replacing crashed workers after ten times the worker count of
+  crashes over its whole life, however far apart they were: at one crash a
+  day on four workers, after about forty days. From then on each crash left
+  the server one worker short, with no error, until none was left and it
+  exited 1. The limit is now ten times the worker count within any hour,
+  so a worker that keeps crashing is still given up on as soon as before,
+  and the rule for a worker that cannot start (five crashes in a row, each
+  within a second of its start) is unchanged. m0serve and the Mojo host
+  share the supervisor; a `--reload` restart counts as no crash, as before.
+  Found in review.
+- **Under `--workers N` or `M0_WORKERS`, a connection handed to a worker
+  just before it died is closed when the worker is not replaced** (SPEC
+  E16). The worker that accepts a connection may pass it to a sibling, and
+  one passed in the moment before that sibling died waited, accepted and
+  unanswered, until the whole server stopped once the supervisor had used
+  up its respawns. The supervisor now closes each such connection, so the
+  client sees it close at once and can retry; none had been read. Found in
+  review.
 - **A `Socket` whose `close()` fails is closed all the same** (SPEC D1).
   A close that failed with anything but EBADF, such as EINTR from a signal
   or EIO, raised with the socket still holding its number, although the
