@@ -72,8 +72,12 @@ jobs:
     # where this job is the longer but ends first. `test-http` was 459-666 s
     # of this job, 20-30 s more with each event loop test, until TH built
     # its files as one program; since then `unit-gates` is the longer half,
-    # and moving a task between the halves is free. The trailer sabotage
-    # and the fuzzer stay: this job's own steps that run them again reuse
+    # and moving a task between the halves is free. TH's own run
+    # (36673452770) put this job at 9.0 min on ubuntu and 7.6 on macOS
+    # against `unit-gates`' 16.7 and 14.2, so three tasks came back here:
+    # the Datastar SDK's conformance and sabotage (the sabotage 157 s on that
+    # ubuntu run) and the scaffold's templates (70 s). The trailer sabotage and the
+    # fuzzer stay: this job's own steps that run them again reuse
     # `test-packages`' compiles.
     #
     # Mojo's compile cache is restored below and saved after the job. It
@@ -263,8 +267,10 @@ jobs:
   # `test-packages` added about 240 s on ubuntu and 180 on macOS. Measured
   # cold since, this job ran 13.3-17.6 min on ubuntu and 11.3-13.2 on
   # macOS, so the cap stays 35, twice its slowest run: 30 would leave a
-  # 17.6-minute run 1.7 times its length. `unit-tests`' comment has the
-  # rest of the measurements, and why `test-postgres` did not move here.
+  # 17.6-minute run 1.7 times its length. Once TH made `unit-tests` the
+  # shorter half, the Datastar SDK's two tasks and the scaffold's templates
+  # went back to it. `unit-tests`' comment has the rest of the
+  # measurements, and why `test-postgres` did not move here.
   # A separate JOB and no
   # `needs:`, for the smokes' reasons: the sheet refuses a cited step with
   # an `if:`, and nothing here waits on the other half.
