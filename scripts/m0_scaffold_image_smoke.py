@@ -1,6 +1,6 @@
 """smoke-scaffold-image: `uv run m0 image` on a scaffolded app, then the image.
 
-    python3 scripts/m0_scaffold_image_smoke.py dist/m0 PORT
+    python3 scripts/m0_scaffold_image_smoke.py dist/m0 [PORT]
 
 What `m0 new` writes under `deploy/` is built AS WRITTEN -- the Dockerfile
 byte for byte, `uv sync --frozen` and all -- by the user's own command, and
@@ -35,11 +35,13 @@ every layer after `FROM`, and `builder` below does not take that on trust.
             libraries the storage packages open), and `cpu` -- what the
             builder's release build said it compiled for -- the BASELINE
   builder   the builder stage's installed m0 is byte-equal to the wheel
-  serve     run with a published port: /health, PID 1 is /app/server, the
-            file in the image is the line `m0 image` printed, no interpreter
-            anywhere (asked as root), libsqlite3 present for m0_sqlite to
-            open, and `smoke-scaffold`'s whole views wire
-            -- the 422 fragment included -- through the published port
+  serve     run with a published port (PORT, else a free one drawn by
+            `probelib.free_port` as the container starts): /health, PID 1
+            is /app/server, the file in the image is the line `m0 image`
+            printed, no interpreter anywhere (asked as root), libsqlite3
+            present for m0_sqlite to open, and `smoke-scaffold`'s whole
+            views wire -- the 422 fragment included -- through the
+            published port
   stop      `docker stop` is exit 0 inside the drain's bound
   cpu       `m0 image --target-cpu CPU` compiles for CPU (built, not run)
 """
@@ -58,6 +60,7 @@ from pathlib import Path
 
 from m0_scaffold_smoke import check_installed_is_the_wheel, clean_env, sh, wire_views
 from m0_wheel_smoke import ROOT, healthy, phase
+from probelib import free_port
 
 BASE_IMAGE = "python:3.13-slim"
 DRAIN_BOUND_S = 10
@@ -147,6 +150,8 @@ def serve(tag, port, printed, arch):
     name = "m0-scaffold-image-%s" % uuid.uuid4().hex[:8]
     try:
         phase("serve")
+        port = port or free_port()
+        print("serve: publishing on 127.0.0.1:%d" % port)
         docker("run", "-d", "--name", name, "-p", "127.0.0.1:%d:8080" % port, tag)
         if not healthy(port, tries=120):
             fail("the container never answered /health:\n" + docker("logs", name, check=False).stderr[-3000:])
@@ -258,8 +263,8 @@ def run(work, whl, port, tags):
 
 
 def main():
-    if len(sys.argv) != 3:
-        fail("usage: m0_scaffold_image_smoke.py DIST_DIR PORT")
+    if len(sys.argv) not in (2, 3):
+        fail("usage: m0_scaffold_image_smoke.py DIST_DIR [PORT]")
     wheels = sorted(Path(sys.argv[1]).glob("*.whl"))
     if len(wheels) != 1:
         fail("want exactly one wheel in %s, found %d" % (sys.argv[1], len(wheels)))
@@ -271,7 +276,7 @@ def main():
     work = Path(tempfile.mkdtemp(prefix="m0-scaffold-image-")).resolve()
     tags = []
     try:
-        run(work, whl, int(sys.argv[2]), tags)
+        run(work, whl, int(sys.argv[2]) if len(sys.argv) == 3 else None, tags)
     finally:
         if os.environ.get("M0_SCAFFOLD_IMAGE_KEEP") != "1":
             for t in tags:

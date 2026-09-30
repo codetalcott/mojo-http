@@ -199,7 +199,7 @@ def attempt(entry, target_cpu: str) -> tuple[str, str]:
             if build.returncode != 0:
                 return "BROKEN", f"the sabotaged image did not build:\n{_tail(out)}"
             probe = _run([sys.executable, str(REPO / "scripts" / "mojo_image_probe.py"), "--app", "blobs",
-                          "--image", tag, "--target-cpu", target_cpu, "--port", "18361"], cwd=REPO)
+                          "--image", tag, "--target-cpu", target_cpu], cwd=REPO)
             said = probe.stdout + probe.stderr
             if probe.returncode == 0:
                 return "MISSED", "the probe passed"
