@@ -9,9 +9,19 @@ that holds it.
 `m0_wheel_sabotage.py`'s shape, from the TEMPLATE side: each entry replaces
 one EXACT block in a template, in `new.py` or in the layer, rebuilds the
 wheel from the edited source, runs the smoke for the one template the rule
-belongs to, and restores the file. CAUGHT means the smoke failed AND said
-the expected thing. MISSED and NOT APPLICABLE (an anchor that no longer
-matches) both exit 1; re-point the anchor with the line.
+belongs to, and restores the file. Caught means the smoke failed AND said
+the expected thing; a wheel that does not build is a miss, never a catch.
+Every MISSED and NOT APPLICABLE (an anchor that does not match exactly
+once) exits 1; re-point the anchor with the line. `sabotage_lib.py` owns
+everything around the table: the restore on SIGINT or SIGTERM, a planted
+file removed, and a baseline each gate must pass on the unsabotaged tree
+before any rule runs -- nine in a full run, eight of them a wheel build and
+a smoke, the image's a cold build of its own.
+
+A gate is named for what it runs: `smoke-scaffold TEMPLATE`, the same with
+` (wire)` for the template's own tests switched off, `smoke-scaffold-dev`,
+`smoke-scaffold-image` and `check-templates`; `--only` and `--skip` take one
+of those, or else part of a label.
 
 Rules the WIRE holds run with `M0_SCAFFOLD_SKIP_TEST=1`. A template's own
 `m0 test` comes first in the smoke and catches several of these by itself
@@ -42,20 +52,17 @@ Not here, and why:
   wire it would be a fourth build for a line of `dev.py`.
 
     uv run poe sabotage-scaffold
-    uv run poe sabotage-scaffold --only 422       one rule, by label substring
+    uv run poe sabotage-scaffold --only "a bad form is a 200"   one rule, by label substring
     uv run poe sabotage-scaffold --only dev:      one smoke's rules (dev:, image:)
 """
 
 import datetime
-import os
 import re
 import subprocess
 import sys
-from pathlib import Path
 
-from sabotage_lib import own_tmpdir
+from sabotage_lib import POE, Command, Gate, Outcome, last_line, rule, run, run_command
 
-ROOT = Path(__file__).resolve().parents[1]
 M0 = "packaging/m0/src/m0/"
 T = M0 + "templates/"
 WIRE, TEST, NEW, DEV, IMAGE = "wire", "test", "new", "dev", "image"
@@ -70,7 +77,7 @@ SMOKES = {
 }
 
 # (label, template, file, old, new, the smoke must say, what holds it)
-RULES = [
+SABOTAGES = [
     # --- m0 new ---------------------------------------------------------------
     ("new: any name is accepted", "views", M0 + "new.py",
      "    if not NAME.match(app) or len(app) > NAME_MAX:\n",
@@ -362,7 +369,7 @@ RULES = [
 
 # Held by check-templates, not by the smoke: (label, file, old, new, it must say).
 # An `old` of None PLANTS the file instead.
-TEMPLATE_RULES = [
+TEMPLATE_SABOTAGES = [
     ("check-templates: a file in no manifest", T + "views/src/extra.mojo",
      None, "def f():\n    pass\n", "is in no manifest"),
     ("check-templates: a misspelled token", T + "_common/README.md",
@@ -412,100 +419,98 @@ def prune_build_cache(since):
     return pruned
 
 
-def run_template_rules(only):
-    verdicts = []
-    for label, rel, old, new, want in TEMPLATE_RULES:
-        if only is not None and only not in label:
-            continue
-        path = ROOT / rel
-        original = None if old is None else path.read_text()
-        if old is None and path.exists():
-            sys.exit("%s exists; it is this rule's to plant" % rel)
-        if old is not None and original.count(old) != 1:
-            print("NOT APPLICABLE  %s: the anchor matches %d times in %s"
-                  % (label, original.count(old), rel), flush=True)
-            verdicts.append(("NOT APPLICABLE", label))
-            continue
-        try:
-            path.write_text(new if old is None else original.replace(old, new))
-            done = subprocess.run(["uv", "run", "python3", "scripts/check_templates.py"],
-                                  cwd=ROOT, capture_output=True, text=True)
-        finally:
-            if old is None:
-                path.unlink(missing_ok=True)
-            else:
-                path.write_text(original)
-        said = done.stdout + done.stderr
-        verdict = ("MISSED" if done.returncode == 0
-                   else "caught" if want in said else "MISSED (failed elsewhere)")
-        print("%-26s %s" % (verdict, label), flush=True)
-        verdicts.append((verdict, label))
-    return verdicts
+CHECK_TEMPLATES = "check-templates"
 
 
-def main():
-    only = None
-    if "--only" in sys.argv:
-        only = sys.argv[sys.argv.index("--only") + 1]
-    rules = [r for r in RULES if only is None or only in r[0]]
-    verdicts = run_template_rules(only)
-    if not rules and not verdicts:
-        sys.exit("no rule matches --only %r" % only)
+def gate_name(holder, template):
+    """The gate a rule runs, named for what it runs."""
+    if holder in SMOKES:
+        return SMOKES[holder][1][:-1]
+    return "smoke-scaffold %s%s" % (template, " (wire)" if holder == WIRE else "")
 
-    started = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-    for label, template, rel, old, new, want, holder in rules:
-        path = ROOT / rel
-        original = path.read_text()
-        if original.count(old) != 1:
-            print("NOT APPLICABLE  %s: the anchor matches %d times in %s"
-                  % (label, original.count(old), rel), flush=True)
-            verdicts.append(("NOT APPLICABLE", label))
-            continue
-        env = dict(os.environ)
-        env.pop("M0_SCAFFOLD_SKIP_TEST", None)
-        if holder == WIRE:
-            env["M0_SCAFFOLD_SKIP_TEST"] = "1"
-        try:
-            path.write_text(original.replace(old, new))
-            built = subprocess.run(["uv", "run", "poe", "build-m0-wheel"], cwd=ROOT,
-                                   capture_output=True, text=True)
-            if built.returncode != 0:
-                sys.exit("the wheel would not build under %r:\n%s" % (label, built.stderr[-2000:]))
+
+RULES = ([rule(label, rel, old, new, gate=CHECK_TEMPLATES, expect=want)
+          for label, rel, old, new, want in TEMPLATE_SABOTAGES]
+         + [rule(label, rel, old, new, gate=gate_name(holder, template), expect=want)
+            for label, template, rel, old, new, want, holder in SABOTAGES])
+
+# When this run began, for `prune_build_cache`; set by `main`.
+_started = ""
+# Whether this run has built `dist/m0` from a sabotaged tree.
+_wheel_built = False
+
+
+def _own_line(prefix):
+    """A smoke's own last word: its last line opening with `prefix`."""
+    def said(out):
+        line = [ln for ln in out.splitlines() if ln.startswith(prefix)]
+        return line[-1][:200] if line else "(no line of the smoke's own)"
+    return said
+
+
+class Scaffold(Gate):
+    """The wheel rebuilt from the tree as it stands, then one smoke.
+
+    A wheel that does not build is a sabotage nothing was asked about: a
+    miss, never a catch. An image smoke's build cache is pruned after it
+    (`prune_build_cache`), except when a signal is ending the run."""
+
+    def __init__(self, argv, prefix, skip_test, image):
+        self.smoke = Command(
+            [sys.executable, *argv], passes=prefix[:-1] + " OK",
+            env={"M0_SCAFFOLD_SKIP_TEST": "1" if skip_test else None},
+            timeout=3600, detail=_own_line(prefix))
+        self.image = image
+
+    def run(self, texts):
+        global _wheel_built
+        _wheel_built = True
+        built = run_command([POE, "build-m0-wheel"], timeout=1800)
+        if built.returncode != 0:
+            return Outcome.unbuilt("the wheel would not build: " + last_line(built.output),
+                                   built.output)
+        outcome = self.smoke.run(texts)
+        if self.image:
+            print("    (pruned %d build-cache records of this run's)"
+                  % prune_build_cache(_started), flush=True)
+        return outcome
+
+
+def gates():
+    out = {CHECK_TEMPLATES: Command([sys.executable, "scripts/check_templates.py"],
+                                    passes="compile unsubstituted and their tests pass",
+                                    timeout=3600)}
+    for _, template, _, _, _, _, holder in SABOTAGES:
+        name = gate_name(holder, template)
+        if name not in out:
             argv, prefix = SMOKES.get(
                 holder, (["scripts/m0_scaffold_smoke.py", "dist/m0", PORT, template],
                          "smoke-scaffold:"))
-            done = subprocess.run(["uv", "run", "python3", *argv],
-                                  cwd=ROOT, env=env, capture_output=True, text=True)
-        finally:
-            path.write_text(original)
-        said = done.stdout + done.stderr
-        if done.returncode == 0:
-            verdict = "MISSED"
-        elif want not in said:
-            verdict = "MISSED (failed elsewhere)"
-        else:
-            verdict = "caught"
-        line = [l for l in said.splitlines() if l.startswith(prefix)]
-        shown = line[-1][:200] if line else (
-            "(the smoke passed)" if done.returncode == 0
-            else "(exit %d with no line of the smoke's own)" % done.returncode)
-        print("%-26s %s\n    %s" % (verdict, label, shown), flush=True)
-        if verdict != "caught":
-            # What it said instead, so a miss can be read without a rerun.
-            print("    ... " + "\n    ... ".join(said.strip().splitlines()[-12:]), flush=True)
-        verdicts.append((verdict, label))
-        if holder == IMAGE:
-            print("    (pruned %d build-cache records of this run's)" % prune_build_cache(started),
-                  flush=True)
+            out[name] = Scaffold(argv, prefix, skip_test=holder == WIRE,
+                                 image=holder == IMAGE)
+    return out
 
-    subprocess.run(["uv", "run", "poe", "build-m0-wheel"], cwd=ROOT, capture_output=True)
-    bad = [v for v in verdicts if v[0] != "caught"]
-    print("\n%d rules, %d caught, %d not" % (len(verdicts), len(verdicts) - len(bad), len(bad)))
-    for verdict, label in bad:
-        print("  %s: %s" % (verdict, label))
-    sys.exit(1 if bad else 0)
+
+def finish(interrupted):
+    """Leave `dist/m0` holding a wheel of the restored tree, when this run
+    built one from a sabotaged source."""
+    if not _wheel_built:
+        return True
+    if interrupted:
+        print("dist/m0 may still hold a sabotaged wheel: run `uv run poe build-m0-wheel`",
+              flush=True)
+        return False
+    if run_command([POE, "build-m0-wheel"], timeout=1800).returncode != 0:
+        print("rebuilding the wheel from the restored tree FAILED", flush=True)
+        return False
+    return True
+
+
+def main(argv):
+    global _started
+    _started = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    return run("sabotage-scaffold", RULES, gates(), argv, finish=finish)
 
 
 if __name__ == "__main__":
-    with own_tmpdir("sabotage-scaffold"):
-        main()
+    sys.exit(main(sys.argv[1:]))

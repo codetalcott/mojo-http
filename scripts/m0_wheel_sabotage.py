@@ -3,10 +3,14 @@
 
 `host_sabotage.py`'s shape: each entry replaces one EXACT source block,
 runs `poe smoke-m0-wheel` (which rebuilds the wheel from the edited source),
-and restores the file. A rule is CAUGHT only if the smoke fails AND says
+and restores the file. A rule is caught only if the smoke fails AND says
 the expected thing -- a smoke that fails somewhere else has not shown that
-the arm claiming the rule holds it. MISSED and NOT APPLICABLE (an anchor
-that no longer matches) both exit 1; re-point the anchor with the line.
+the arm claiming the rule holds it, and is MISSED (failed elsewhere). Every
+MISSED and NOT APPLICABLE (an anchor that does not match exactly once)
+exits 1; re-point the anchor with the line. `sabotage_lib.py` owns
+everything around the table: the baseline each gate must pass first, the
+restore on SIGINT or SIGTERM, and the wheel rebuilt from the restored tree
+at the end.
 
 Rules the smoke's ARMS hold run with `M0_SMOKE_SKIP_UNIT=1`: the unit tests
 come first in the smoke and would catch several of these on their own,
@@ -37,22 +41,18 @@ Not here, and why:
   The call stays because it is the image recipe's, not because it is gated.
 
     uv run poe sabotage-m0-wheel
-    uv run poe sabotage-m0-wheel --only prefix      one rule, by label substring
+    uv run poe sabotage-m0-wheel --only "own prefix"    one rule, by label substring
 """
 
-import os
-import subprocess
 import sys
-from pathlib import Path
 
-from sabotage_lib import own_tmpdir
+from sabotage_lib import POE, Command, run, run_command, rule
 
-ROOT = Path(__file__).resolve().parents[1]
 M0 = "packaging/m0/src/m0/"
 ARM, UNIT = "arm", "unit"
 
 # (label, file, old, new, the smoke must say, which phase holds it)
-RULES = [
+SABOTAGES = [
     ("own prefix: mojo from PATH",
      M0 + "paths.py",
      '    return prefix() / "bin" / "mojo"\n',
@@ -184,53 +184,46 @@ RULES = [
 ]
 
 
-def main():
-    only = None
-    if "--only" in sys.argv:
-        only = sys.argv[sys.argv.index("--only") + 1]
-    rules = [r for r in RULES if only is None or only in r[0]]
-    if not rules:
-        sys.exit("no rule matches --only %r" % only)
+def _said(out: str) -> str:
+    """The smoke's own last word: its last `smoke-m0-wheel:` line."""
+    line = [ln for ln in out.splitlines() if ln.startswith("smoke-m0-wheel:")]
+    return line[-1][:200] if line else "(no line of the smoke's own)"
 
-    verdicts = []
-    for label, rel, old, new, want, holder in rules:
-        path = ROOT / rel
-        original = path.read_text()
-        if original.count(old) != 1:
-            print("NOT APPLICABLE  %s: the anchor matches %d times in %s"
-                  % (label, original.count(old), rel), flush=True)
-            verdicts.append(("NOT APPLICABLE", label))
-            continue
-        env = dict(os.environ)
-        if holder == ARM:
-            env["M0_SMOKE_SKIP_UNIT"] = "1"
-        else:
-            env.pop("M0_SMOKE_SKIP_UNIT", None)
-        try:
-            path.write_text(original.replace(old, new))
-            done = subprocess.run(["uv", "run", "poe", "smoke-m0-wheel"], cwd=ROOT, env=env,
-                                  capture_output=True, text=True)
-        finally:
-            path.write_text(original)
-        said = done.stdout + done.stderr
-        if done.returncode == 0:
-            verdict = "MISSED"
-        elif want not in said:
-            verdict = "MISSED (failed elsewhere)"
-        else:
-            verdict = "caught"
-        line = [l for l in said.splitlines() if l.startswith("smoke-m0-wheel:")]
-        print("%-26s %s\n    %s" % (verdict, label, line[-1][:200] if line else "(the smoke passed)"),
+
+# Named for what they run, so `--only unit` still selects by label: the
+# three unit-held rules say "(unit)". A rule the smoke's ARMS hold runs with
+# the unit phase off; one only a unit test can hold, with it on.
+GATES = {
+    ARM: "smoke-m0-wheel",
+    UNIT: "smoke-m0-wheel (unit phase on)",
+}
+_SKIP_UNIT = {ARM: "1", UNIT: None}
+
+RULES = [rule(label, rel, old, new, gate=GATES[holder], expect=want)
+         for label, rel, old, new, want, holder in SABOTAGES]
+
+
+def finish(interrupted: bool) -> bool:
+    """Leave `dist/m0` holding a wheel of the restored tree: the smoke built
+    the last one from a sabotaged source."""
+    if interrupted:
+        print("dist/m0 may still hold a sabotaged wheel: run `uv run poe build-m0-wheel`",
               flush=True)
-        verdicts.append((verdict, label))
+        return False
+    built = run_command([POE, "build-m0-wheel"], timeout=1800)
+    if built.returncode != 0:
+        print("rebuilding the wheel from the restored tree FAILED", flush=True)
+        return False
+    return True
 
-    bad = [v for v in verdicts if v[0] != "caught"]
-    print("\n%d rules, %d caught, %d not" % (len(verdicts), len(verdicts) - len(bad), len(bad)))
-    for verdict, label in bad:
-        print("  %s: %s" % (verdict, label))
-    sys.exit(1 if bad else 0)
+
+def main(argv: list[str]) -> int:
+    gates = {GATES[h]: Command([POE, "smoke-m0-wheel"], passes="smoke-m0-wheel OK",
+                               env={"M0_SMOKE_SKIP_UNIT": _SKIP_UNIT[h]}, timeout=3600,
+                               detail=_said)
+             for h in GATES}
+    return run("sabotage-m0-wheel", RULES, gates, argv, finish=finish)
 
 
 if __name__ == "__main__":
-    with own_tmpdir("sabotage-m0-wheel"):
-        main()
+    sys.exit(main(sys.argv[1:]))

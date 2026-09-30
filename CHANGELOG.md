@@ -176,6 +176,24 @@ wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
   `--skip`, and `sabotage-keepalive` now checks its unsabotaged probe
   first.
 
+- **The other six sabotage harnesses run on `scripts/sabotage_lib.py`
+  too**: `sabotage-blobs`, `sabotage-host`, `sabotage-notes-login`,
+  `sabotage-m0-wheel`, `sabotage-scaffold` and `sabotage-mojo-image`. A
+  SIGINT or SIGTERM mid-rule used to leave the sabotaged file in the tree
+  (`sabotage-notes-login` had no `finally` at all), the run's scratch
+  directory in `$TMPDIR`, and the gate still running against the sabotaged
+  source; now every file is put back, the gate's process group ended, the
+  scratch directory removed, and the harness dies by the signal. Every
+  anchor must match exactly once (`sabotage-notes-login` took one that
+  matched twice), a sabotage that only breaks a build — the app a smoke
+  compiles, `build-http`, the wheel — is a miss, never a catch, and each
+  gate must pass on the unsabotaged tree before any rule runs, which
+  `sabotage-m0-wheel`, `sabotage-scaffold` and `sabotage-mojo-image` never
+  checked. `sabotage-m0-wheel` now leaves `dist/m0` built from the restored
+  tree, as `sabotage-scaffold` did. `sabotage-outbox-cap`'s "the give-up
+  claim never fires" removed the queue call along with the claim, and was
+  caught by the probe's under-cap half; it now breaks the claim alone, and
+  its catch must be the connection left open.
 - **CI's jobs share one setup step and one measurement step.** Every job
   in `test.yml` set up uv, installed its Debian packages, and rendered and
   uploaded its measurements with its own copy of the same steps. Each now
