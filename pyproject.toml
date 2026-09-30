@@ -3145,6 +3145,12 @@ shell = """
 # port per mode, upward from the one it is given.
 python3 scripts/accept_spread.py --assert --expect-handoffs --rounds 2 --port $(free_port 2) || exit 1
 echo "smoke-accept-spread: bursts spread within 2:1 across two workers, fork and spawn"
+# A worker whose loop has not started is handed nothing (review AR): with
+# worker 1 held 3 s before its loop starts, a burst of 32 must be answered
+# by worker 0 within 1 s, and worker 0 must pass none on. Handed to the held
+# worker, 16 of 32 each waited out the hold, and a stop inside it closed
+# them unanswered.
+python3 scripts/accept_spread.py --unstarted-gap 3000 --port $(free_port) || exit 1
 # The negative arm on macOS, where the bare race is all but deterministic:
 # with the knob off the same probe must see the skew, or the gate is not
 # testing the mechanism. Linux's race sometimes lands within 2:1 on its own,

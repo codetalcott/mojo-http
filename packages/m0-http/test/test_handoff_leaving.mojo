@@ -44,6 +44,7 @@ from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.accept_share import (
     AcceptShare, HandoffPost, accept_share_slots, ACCEPT_SHARE_BUSY_NS,
     ACCEPT_SHARE_FIRST_WORKER_SLOT, ACCEPT_SHARE_WORKER_STRIDE, STATE_LEFT,
+    STATE_PARKED,
 )
 from lightbug_http.c.fdpass import RECV_FD_EMPTY, send_fd
 from lightbug_http.c.kqueue import EVFILT_READ, set_nonblocking
@@ -282,8 +283,10 @@ def test_a_sender_keeps_a_connection_for_a_worker_that_left() raises:
     var share = AcceptShare(2)
     var w0 = share.copy()
     w0.bind(0, page.addr(0))
+    w0.start()
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
+    w1.start()
     var conn = _stream_pair()
 
     assert_equal(w0.pick(3, perf_counter_ns()), 1, "the acceptor did not pick the idle sibling")
@@ -317,8 +320,10 @@ def test_a_leaver_waits_for_a_handoff_counted_before_it_left() raises:
     var share = AcceptShare(2)
     var w0 = share.copy()
     w0.bind(0, page.addr(0))
+    w0.start()
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
+    w1.start()
     var st0 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w0)
     var b0 = PushedBackend()
     var h0 = Recorder()
@@ -375,8 +380,10 @@ def test_a_leaver_passes_a_handoff_on_before_its_first_byte() raises:
     var share = AcceptShare(2)
     var w0 = share.copy()
     w0.bind(0, page.addr(0))
+    w0.start()
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
+    w1.start()
     var st0 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w0)
     var b0 = PushedBackend()
     var h0 = Recorder()
@@ -438,8 +445,10 @@ def test_a_handoff_queued_before_the_leave_is_passed_on() raises:
     var share = AcceptShare(2)
     var w0 = share.copy()
     w0.bind(0, page.addr(0))
+    w0.start()
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
+    w1.start()
     var st0 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w0)
     var b0 = PushedBackend()
     var h0 = Recorder()
@@ -484,8 +493,10 @@ def test_a_leaver_with_no_sibling_left_admits_and_serves() raises:
     var share = AcceptShare(2)
     var w0 = share.copy()
     w0.bind(0, page.addr(0))
+    w0.start()
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
+    w1.start()
     var st1 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w1)
     var b1 = PushedBackend()
     var h1 = Recorder()
@@ -571,7 +582,10 @@ def test_a_leaver_picks_any_sibling_that_has_not_left() raises:
     var page = SharedAtomics(accept_share_slots(3))
     var me = AcceptShare(3)
     me.bind(0, page.addr(0))
+    me.start()
     me.leave()
+    page.store(_state_slot(1), STATE_PARKED)
+    page.store(_state_slot(2), STATE_PARKED)
     var now = perf_counter_ns()
     # Sibling 1 has left; sibling 2 is loaded far past anything: still it.
     page.store(_state_slot(1), STATE_LEFT)
@@ -582,7 +596,7 @@ def test_a_leaver_picks_any_sibling_that_has_not_left() raises:
     assert_equal(me.pick_for_leaver(now), 2)
     # A sibling that has not left and is not busy wins over a busy one,
     # however light the busy one is.
-    page.store(_state_slot(1), 0)
+    page.store(_state_slot(1), STATE_PARKED)
     page.store(_active_slot(1), 900)
     page.store(_active_slot(2), 0)
     assert_equal(me.pick_for_leaver(now), 1)

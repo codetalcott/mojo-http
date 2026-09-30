@@ -152,6 +152,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   it had started up is logged as stopped, not as a failure: it had not yet
   taken any request. Found when CI's shutdown smoke signalled a supervisor
   whose second worker was still starting.
+- **Under `--workers N` or `M0_WORKERS`, no connection is handed to a
+  worker that is still starting up** (SPEC E16). The worker that accepts a
+  connection passes it to the least-loaded sibling, and a sibling still
+  starting — for m0serve, still importing the application — looked idle,
+  so it was handed connections it could not answer until its startup
+  ended: with a worker held 3 s, 16 of a burst of 32 each waited the 3 s.
+  A stop that reached that worker before it had started up ended it with
+  those connections, closed unanswered while the server exited 0. A
+  worker is now handed connections only once it serves; a respawned one
+  is handed nothing until it has started again. Found in review.
 
 ## [1.8.0] — 2026-09-29
 

@@ -36,9 +36,10 @@ exactly the unarmed case, and no entry point starts its loop before it
 arms, so the worker had taken no request. The supervisor judges it so, and
 judges every other worker it reaps as supervision ends (`_reap_the_rest`),
 where it used to reap the rest blind once such a death came first — so a
-sibling failing its drain went unseen and the exit was 0 (review S1). One
-caveat stands: under accept sharing a sibling may already have handed the
-unstarted worker a connection, which dies with it. A gate that signals a
+sibling failing its drain went unseen and the exit was 0 (review S1). Under
+accept sharing a sibling used to hand the unstarted worker connections,
+which died with it; since review AR a worker is handed nothing until its
+loop starts ([accept-sharing](accept-sharing.md)). A gate that signals a
 Mojo host's supervisor waits for every worker's `armed for a graceful stop`
 line, never for one worker answering; `M0_TEST_ARM_GAP_MS` holds each
 worker but the first in the window so `smoke-shutdown` proves that wait on

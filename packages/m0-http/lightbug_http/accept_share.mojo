@@ -25,12 +25,13 @@ A worker's words sit on its own cache line of the shared page, so the
 per-pass stores contend with nothing. Three are the load it advertises,
 and a fourth is its own bookkeeping:
 
-- `state`: 0 while parked in its wait, the pass's start time (ns) while
-  it is inside one, `STATE_LEFT` once it is shutting down. A sibling
-  inside a pass for longer than `ACCEPT_SHARE_BUSY_NS` is skipped — that
-  is a worker running a slow view inline, and handing it a connection
-  would queue the client behind that view where the old race, for all
-  its unfairness, would have sent it to the idle worker. A worker
+- `state`: `STATE_NOT_STARTED` (0, what a fresh page holds) until its
+  loop starts, `STATE_PARKED` while parked in its wait, the pass's start
+  time (ns) while it is inside one, `STATE_LEFT` once it is shutting
+  down. A sibling inside a pass for longer than `ACCEPT_SHARE_BUSY_NS` is
+  skipped — that is a worker running a slow view inline, and handing it a
+  connection would queue the client behind that view where the old race,
+  for all its unfairness, would have sent it to the idle worker. A worker
   mid-pass for a few microseconds is fine to send to.
 - `active`: its open connections, published at the bottom of every pass.
 - `pending`: connections passed to it that it has not yet admitted —
@@ -91,6 +92,35 @@ admitted, and the drain treats it as its own. Each hop is to a worker
 that had not left, and a worker leaves once, so a connection moves at
 most `workers - 1` times.
 
+A worker that has not STARTED is refused as one that has left is. Until
+its loop's `start()` nothing reads its channel, and in m0serve that comes
+after the application's import, seconds for a Django project. Its words
+used to read 0 until then, which `pick` took for parked with no load: a
+connection handed to it waited out the startup, and died with it when a
+stop reached it before it had armed its handler (review record AR, from
+S1). Measured with worker 1 held 3 s before its start, 8 of a burst of 16
+went to it and each was answered 3.0 s late; with a SIGTERM 0.5 s into the
+hold, all 8 were closed unanswered while the server exited 0. So 0 is
+`STATE_NOT_STARTED`, which a fresh page holds from before the fork with
+nothing written, and a parked worker writes a word of its own.
+
+A replacement -- a respawn, or a reload's new worker -- takes its
+predecessor's index, and with it the channel, `pending` and `taken`,
+which `start` accounts for. It marks the index not started again as it
+binds, its first act after the fork, before any import, because the
+predecessor's `state` says what that worker last did and nothing reads the
+channel until the replacement's `start()`. Between the death and that bind
+a sibling reads what the dead worker last wrote: a pass, which is busy and
+skipped once `ACCEPT_SHARE_BUSY_NS` has passed (a view that crashes dies
+inside one), or parked, if it was killed while waiting. A connection sent
+in that window waits in the channel for the replacement, as one queued
+before the death does, and is admitted at its first pass. The window is
+the supervisor's own reaction: it reaps in a blocking `waitpid` and forks
+at once, plus the exec and the start of `main` under `--spawn-workers`;
+under `--reload` the poll interval bounds it. `send` itself does not
+refuse a worker that has not started: a hand-off there is late, never
+lost while the worker lives, and the choice is `pick`'s.
+
 Page layout, in Int64 slots of the `SharedAtomics` page `m0serve` creates
 pre-fork: slot 0 is the SSE event id (not ours), slot 1 the rotation
 counter, slot 2 the page's magic word (`SHARED_PAGE_MAGIC`, not ours
@@ -143,6 +173,14 @@ comptime ACCEPT_SHARE_BUSY_NS: Int = 2_000_000
 slow inline and is not handed a connection."""
 comptime STATE_LEFT: Int = -1
 """A `state` word meaning the worker is shutting down: never send to it."""
+comptime STATE_NOT_STARTED: Int = 0
+"""A `state` word meaning the worker's loop has not started: never pick it.
+
+Zero, so a fresh page holds it for every worker before the fork with
+nothing written; `bind` writes it again for a replacement, and `start`
+replaces it with `STATE_PARKED`."""
+comptime STATE_PARKED: Int = -2
+"""A `state` word meaning the worker is parked in its wait: willing."""
 comptime _ANY_LOAD: Int = 1 << 62
 """An own load every sibling's is below: `pick_for_leaver`'s, whose own
 line is never a place for the connection."""
@@ -326,9 +364,22 @@ struct AcceptShare(Copyable, Movable):
         return len(self.read_fds)
 
     def bind(mut self, worker: Int, page: Int):
-        """Make this the view of worker `worker`, over the page at `page`."""
+        """Make this the view of worker `worker`, over the page at `page`,
+        and mark the worker not started until its loop's `start()`.
+
+        A fresh page reads `STATE_NOT_STARTED` already. A replacement's
+        does not: its predecessor's `state` says what that worker last did,
+        parked perhaps, while nothing reads the channel until this worker's
+        `start()`, which in m0serve follows the application's import. So the
+        mark is written here, the first thing a worker does after the fork
+        (the module docstring says what a sibling reads before it). Only
+        `state`: `pending` and `taken` are the predecessor's in-flight
+        hand-offs, which `start` accounts for.
+        """
         self.worker = worker
         self.page = page
+        if self.active():
+            _store(self._word(worker, _WORD_STATE), STATE_NOT_STARTED)
 
     def active(self) -> Bool:
         """Whether accepts are shared at all: two or more workers, bound."""
@@ -350,7 +401,9 @@ struct AcceptShare(Copyable, Movable):
         )
 
     def start(self):
-        """At loop start: this worker is parked with no connections.
+        """At loop start: this worker is parked with no connections, and
+        siblings may pick it from here on (until now it read
+        `STATE_NOT_STARTED`).
 
         `pending` is deliberately NOT reset — a respawned worker inherits
         its predecessor's channel, and the datagrams queued there are
@@ -367,7 +420,7 @@ struct AcceptShare(Copyable, Movable):
         """
         if not self.active():
             return
-        _store(self._word(self.worker, _WORD_STATE), 0)
+        _store(self._word(self.worker, _WORD_STATE), STATE_PARKED)
         _store(self._word(self.worker, _WORD_ACTIVE), 0)
         var taken = _load(self._word(self.worker, _WORD_TAKEN))
         if taken > 0:
@@ -402,7 +455,7 @@ struct AcceptShare(Copyable, Movable):
                 _store(self._word(me, _WORD_PENDING), 0)
             self.drained = 0
         if not self.left:
-            _store(self._word(me, _WORD_STATE), 0)
+            _store(self._word(me, _WORD_STATE), STATE_PARKED)
 
     def leave(mut self):
         """Shutting down: siblings must stop sending here.
@@ -461,7 +514,8 @@ struct AcceptShare(Copyable, Movable):
         `own_active` is the acceptor's live connection count (its own
         published word may be a pass stale). Ties go to whoever the
         rotating scan reaches first, and a sibling that is parked, or
-        inside a pass for under `ACCEPT_SHARE_BUSY_NS`, is willing.
+        inside a pass for under `ACCEPT_SHARE_BUSY_NS`, is willing. One
+        that has not started its loop, or has left, never is.
         """
         if not self.active():
             return self.worker
@@ -480,7 +534,10 @@ struct AcceptShare(Copyable, Movable):
         inside a long pass is taken when every sibling that has not left
         is: it will answer the connection once its slow view is done, and
         the alternative is this worker's drain, which closes a connection
-        whose first byte has not arrived (review record B25).
+        whose first byte has not arrived (review record B25). A sibling
+        that has not started is never taken: the stop that made this
+        worker leave may kill it before it arms, and the connection with
+        it, where this worker's drain answers what it admits.
         """
         if not self.active():
             return self.worker
@@ -493,8 +550,8 @@ struct AcceptShare(Copyable, Movable):
         """The sibling with the least `active + pending` below `own_load`,
         or this worker when none is below it. The scan starts at the
         rotation counter, so equal loads take turns. A sibling that has
-        left is never taken, and one inside a pass for longer than
-        `ACCEPT_SHARE_BUSY_NS` only when `take_busy`."""
+        left or has not started is never taken, and one inside a pass for
+        longer than `ACCEPT_SHARE_BUSY_NS` only when `take_busy`."""
         var n = self.workers()
         var me = self.worker
         var start = _fetch_add(self.page + 8 * ACCEPT_SHARE_RR_SLOT, 1) % n
@@ -505,7 +562,7 @@ struct AcceptShare(Copyable, Movable):
             if i == me:
                 continue
             var state = _load(self._word(i, _WORD_STATE))
-            if state == STATE_LEFT:
+            if state == STATE_LEFT or state == STATE_NOT_STARTED:
                 continue
             if not take_busy and state > 0 and now - state > ACCEPT_SHARE_BUSY_NS:
                 continue
