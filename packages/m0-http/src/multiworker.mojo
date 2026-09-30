@@ -268,7 +268,35 @@ def _fork_gap_ns() -> Int:
     so the signal lands inside the pause on every run instead of once in a
     hundred.
     """
-    var raw = getenv(_FORK_GAP_ENV, "")
+    return _test_gap_ns(_FORK_GAP_ENV)
+
+
+comptime _ARM_GAP_ENV = "M0_TEST_ARM_GAP_MS"
+"""A pause in every worker but the first, before it arms: a gate's instrument.
+
+`smoke-shutdown` sets it so a worker is still unarmed while worker 0
+answers, the window its phase once signalled into by chance; see
+`_arm_gap_ns`."""
+
+
+def _arm_gap_ns() -> Int:
+    """`M0_TEST_ARM_GAP_MS` in nanoseconds; 0 when unset, not a count, or not above 0.
+
+    Holds each worker after the first between `_forget_supervisor_signals`
+    and its return to the caller, which is what arms its own handler: the
+    worker is there at SIGTERM's default action, so a stop that reaches it
+    kills it where a drain was meant. Worker 0 already answers, which is
+    all a readiness probe sees. CI's `smoke-shutdown` signalled into this
+    window once (train 22), and a worker killed there went unreported;
+    the gate that sets it waits for every worker's `armed` line before it
+    signals, and the pause makes that wait load-bearing on every run.
+    """
+    return _test_gap_ns(_ARM_GAP_ENV)
+
+
+def _test_gap_ns(name: String) -> Int:
+    """The variable `name`, in milliseconds, as nanoseconds; 0 unless a count above 0."""
+    var raw = getenv(name, "")
     if raw.byte_length() == 0:
         return 0
     try:
@@ -466,6 +494,7 @@ struct WorkerSupervisor:
         """
         self._arm_signal_propagation()
         var gap_ns = _fork_gap_ns()
+        var arm_gap_ns = _arm_gap_ns()
         for i in range(self.num_workers):
             if i > 0 and gap_ns > 0:
                 _pause_unless_stopped(gap_ns)
@@ -478,6 +507,9 @@ struct WorkerSupervisor:
                 self.worker_index = i
                 _forget_supervisor_signals()
                 print("[worker {}] pid={} starting".format(i, getpid()), flush=True)
+                if i > 0 and arm_gap_ns > 0:
+                    # Unarmed, at SIGTERM's default action, on purpose.
+                    sleep(Float64(arm_gap_ns) / 1_000_000_000.0)
                 self._exec_if_spawning(i)
                 return
             self.child_pids.append(pid)

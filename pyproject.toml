@@ -1293,8 +1293,23 @@ rc=0
 wait $pid || rc=$?
 [ "$rc" -eq 0 ]   || fail "hello exited $rc, want 0 (143 means the signal killed it outright)"
 
-spawn shutdown2.log env M0_PORT=$port M0_WORKERS=2 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/   apps/datastar_counter/server.mojo
+# Worker 0 answering /health says nothing of worker 1, which is at SIGTERM's
+# default action until it arms its own handler: a signal passed on to it
+# there killed it where a drain was meant, and the supervisor, having reaped
+# that death first, reported nothing more -- CI's `no worker reported a clean
+# exit` (train 22, S1). So the phase waits for every worker's `armed` line.
+# M0_TEST_ARM_GAP_MS holds worker 1 unarmed for 2 s after its fork, which
+# makes that wait load-bearing on every run: signalled at /health alone, the
+# phase fails here every time.
+spawn shutdown2.log env M0_PORT=$port M0_WORKERS=2 M0_TEST_ARM_GAP_MS=2000 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/   apps/datastar_counter/server.mojo
 wait_ready http://localhost:$port/health $pid
+i=0
+until [ "$(grep -c ' armed for a graceful stop' "$SMOKE_DIR/shutdown2.log" || true)" -ge 2 ]; do
+  i=$((i + 1))
+  [ $i -le 300 ] || fail 'not every worker armed its shutdown handler within 30 s'
+  kill -0 $pid 2>/dev/null || fail 'the supervisor exited before every worker armed'
+  sleep 0.1
+done
 workers=''
 for p in $(grep -oE 'pid=[0-9]+' "$SMOKE_DIR/shutdown2.log" | cut -d= -f2 | sort -u); do
   [ "$p" != "$pid" ] && workers="$workers $p"
@@ -1326,8 +1341,12 @@ wait $pid 2>/dev/null || rc=$?
 orphans $pid   || fail "orphaned workers after signalling the supervisor:$alive (it exited $rc)"
 [ "$rc" -eq 0 ]   || fail "the supervisor exited $rc, want 0"
 # A worker that drained but then fell off the end of main would die in the Mojo
-# runtime's teardown, and the supervisor would read that as a crash.
-grep -q 'exited cleanly' "$SMOKE_DIR/shutdown2.log"   || fail 'no worker reported a clean exit'
+# runtime's teardown, and the supervisor would read that as a crash. Every
+# worker armed, so every worker drains: both report a clean exit, and none
+# died of the signal.
+[ "$(grep -c 'exited cleanly' "$SMOKE_DIR/shutdown2.log")" -eq 2 ] \
+  || fail 'both workers did not report a clean exit'
+grep -q 'killed by signal' "$SMOKE_DIR/shutdown2.log" && fail 'a worker died of the signal instead of draining'
 grep -q 'respawn' "$SMOKE_DIR/shutdown2.log" && fail 'a worker was respawned during shutdown'
 
 # The same signal while the supervisor is still forking (B21). It armed the
