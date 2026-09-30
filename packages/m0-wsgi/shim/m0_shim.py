@@ -566,6 +566,19 @@ _TAG_WS_MESSAGE = 2
 _TAG_BUS_FRAME = 3
 _TAG_JOB_BATCH = 4
 
+# Numbers the Mojo side owns, mirrored because this file cannot import
+# them; `render_shim.py --check` (in the docs gate) holds each equal to its
+# source, named beside it. The largest datagram a submit lane carries, and
+# so the read that takes one whole (`WS_DATAGRAM_MAX`, lightbug_http's
+# offload.mojo):
+_WS_DATAGRAM_MAX = 65546
+# The header before an inbound WebSocket message's payload, tag, slot and
+# opcode (`WS_TAG_HEADER`, m0_wsgi's handler.mojo):
+_WS_TAG_HEADER = 10
+# The loop's inbound window per socket, the most one message is charged
+# (`WS_IN_WINDOW`, m0_wsgi's handler.mojo):
+_WS_IN_WINDOW = 65536
+
 _m0_subs = {}
 '''channel -> set of asyncio.Queue: this loop's live subscriptions.
 
@@ -906,18 +919,19 @@ def _exec_on_ws_message(slot, opcode, payload):
     # validated UTF-8), 2 is binary.
     #
     # Each entry carries its COST against the loop's inbound window
-    # (`WS_IN_WINDOW`): the datagram bytes -- the tag header is 10 --
-    # clamped to 64 KB exactly as the handler's `_ws_in_cost` clamps its
-    # charge. `receive()` acks the running total as it consumes, which is
-    # what refills the window and resumes a suspended read; queue entries
-    # that were never consumed are simply never acked, and the loop's
-    # per-slot state is reset at the next socket's begin.
+    # (`WS_IN_WINDOW`): the datagram bytes -- the tag header and the
+    # payload -- clamped to the window exactly as the handler's
+    # `_ws_in_cost` clamps its charge. `receive()` acks the running total
+    # as it consumes, which is what refills the window and resumes a
+    # suspended read; queue entries that were never consumed are simply
+    # never acked, and the loop's per-slot state is reset at the next
+    # socket's begin.
     inbox = _exec_ws_inbox.get(slot)
     if inbox is None:
         return
-    cost = 10 + len(payload)
-    if cost > 65536:
-        cost = 65536
+    cost = _WS_TAG_HEADER + len(payload)
+    if cost > _WS_IN_WINDOW:
+        cost = _WS_IN_WINDOW
     if opcode == 1:
         inbox.put_nowait(
             (
@@ -967,7 +981,7 @@ def asgi_executor_init(fd, ack_fd):
     def _on_submit():
         while True:
             try:
-                data = os.read(fd, 65546)
+                data = os.read(fd, _WS_DATAGRAM_MAX)
             except (BlockingIOError, InterruptedError):
                 return
             except OSError:
@@ -998,10 +1012,12 @@ def asgi_executor_init(fd, ack_fd):
                     int.from_bytes(data[1:9], 'little', signed=True),
                     int.from_bytes(data[9:11], 'little') if len(data) == 11 else 0,
                 )
-            elif len(data) >= 10 and data[0] == _TAG_WS_MESSAGE:
+            elif len(data) >= _WS_TAG_HEADER and data[0] == _TAG_WS_MESSAGE:
                 # [tag u8][slot i64 LE][opcode u8][payload...]
                 _exec_on_ws_message(
-                    int.from_bytes(data[1:9], 'little', signed=True), data[9], data[10:]
+                    int.from_bytes(data[1:9], 'little', signed=True),
+                    data[9],
+                    data[_WS_TAG_HEADER:],
                 )
             elif len(data) >= 11 and data[0] == _TAG_BUS_FRAME:
                 # [tag u8][event_id i64 LE][url_len u16 LE][url][frame...]

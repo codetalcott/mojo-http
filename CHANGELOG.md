@@ -389,6 +389,17 @@ wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
   CPython they embed already ignores the signal. `smoke-host` sends a built
   server `kill -PIPE`, then a client that resets before its answer, on
   both CI legs.
+- **A thread busy with a WebSocket's messages at shutdown still stops.**
+  When every thread of a lane was inside a view at SIGTERM while inbound
+  WebSocket messages filled that lane, the stop signal for a thread that
+  reads the lane directly could be refused for want of room and was
+  dropped. That covers the asyncio executor, and pool threads under
+  `M0_POOL_ELASTIC=0` or `M0_POOL_RING=0`. The thread finished its view,
+  took the messages and waited for work for good: m0serve gave up on it
+  after the 5 s join and exited naming a thread "still inside the
+  application". The stop now waits for the lane to have room, inside that
+  same 5 s.
+
 - **Under asyncio's eager task factory, an ASGI stream is stopped when its
   client leaves** (SPEC L30). An application that installs
   `asyncio.eager_task_factory` runs each request's first step before the

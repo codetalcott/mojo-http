@@ -1117,6 +1117,18 @@ lightbug_http
         written past a buffer of no bytes onto the caller's stack; found
         crashing `ListenConfig.listen` (review record B27b).
 
+      - offload.mojo (2026-09-29): `OffloadPool.stop` waits for room to
+        pill a thread that parks on its lane's socket -- an executor, a
+        test's thread, every pool thread under `M0_POOL_ELASTIC=0` or
+        without rings -- rather than offering the pill once and ignoring a
+        refusal (`_offer_until`, `PILL_WAIT_NS`). Inbound WebSocket
+        messages fill that socket while every thread of the lane is inside
+        a view; the thread came back, took them, and parked on an empty
+        socket for good, which a bounded join abandoned and an unbounded
+        one never returned from. The wait shares its caller's join
+        deadline (`stop_deadline`, `ns_left`), so the two are one bound
+        (review record C9b-c).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

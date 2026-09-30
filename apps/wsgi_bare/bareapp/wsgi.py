@@ -495,11 +495,12 @@ def stream_hold(environ, start_response):
 def header_injection(environ, start_response):
     """Application headers carrying CR/LF and NUL, beside a clean one.
 
-    Response splitting. `write_latin1_to` emits `name: value\r\n` with no
-    inspection, so an application that builds a header out of user input could
-    end the header block and append headers -- or a whole body -- of its own.
-    `has_control_bytes` in m0-wsgi's `response.mojo` DROPS such a header rather
-    than raising, because by then the application has run and its body is real.
+    Response splitting. An application that builds a header out of user input
+    could end the header block and append headers -- or a whole body -- of its
+    own. The server DROPS such a header rather than raising, because by then the
+    application has run and its body is real: the fork's head writer
+    (`write_latin1_to`, SPEC G2) for every response, and m0-wsgi's
+    `PyBridge.read_head` before the gateway reads the head.
 
     `X-Clean` is the load-bearing half of the route: without it the smoke
     cannot tell "dropped the dangerous header" from "dropped every header".

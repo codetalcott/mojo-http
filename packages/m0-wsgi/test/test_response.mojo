@@ -1,16 +1,17 @@
-"""Tests for the WSGI response assembly — status parsing and header hygiene.
+"""Tests for the WSGI response assembly — status parsing.
 
 No interpreter here, same charter as `test_hold` and `test_environ`:
-`split_status` and `has_control_bytes` are pure functions over Mojo values,
-so every branch is reachable without embedding CPython. What is NOT
-reachable here is `build_response` itself, which needs a live `PyBridge` and
-real `PythonObject` headers — `smoke-wsgi` drives that against a running
-server, and the response-splitting half of it is pinned there too.
+`split_status` is a pure function over Mojo values, so every branch is
+reachable without embedding CPython. What is NOT reachable here is
+`build_response` itself, which needs a live `PyBridge` and real
+`PythonObject` headers: `test_read_head.mojo` drives it through an
+interpreter, and `smoke-wsgi` against a running server, where the
+response-splitting half is pinned too.
 """
 
-from std.testing import assert_equal, assert_false, assert_true, TestSuite
+from std.testing import assert_equal, TestSuite
 
-from src.response import has_control_bytes, split_status
+from src.response import split_status
 
 
 # --- split_status ------------------------------------------------------------
@@ -41,50 +42,18 @@ def test_split_status_multiword_reason_survives() raises:
     assert_equal(got[1], "I'm a teapot")
 
 
-# --- control bytes -----------------------------------------------------------
+# --- an injected status ------------------------------------------------------
 
 
-def test_has_control_bytes_finds_the_framing_bytes() raises:
-    assert_true(has_control_bytes(String("a\r\nInjected: 1")))
-    assert_true(has_control_bytes(String("plain\r")))
-    assert_true(has_control_bytes(String("plain\n")))
-    assert_true(has_control_bytes(String("nul\0here")))
-
-
-def test_has_control_bytes_passes_ordinary_values() raises:
-    """Header values legitimately carry spaces, punctuation, and high bytes;
-    refusing those would break real applications."""
-    assert_false(has_control_bytes(String("text/html; charset=utf-8")))
-    assert_false(has_control_bytes(String("sid=abc; Path=/; SameSite=Lax")))
-    assert_false(has_control_bytes(String("")))
-    assert_false(has_control_bytes(String("W/\"tag-123\"")))
-    # A tab is legal inside a header value (RFC 9110 field-content).
-    assert_false(has_control_bytes(String("a\tb")))
-    # Bytes above 0x7F reach the wire latin-1 encoded, and are not framing.
-    assert_false(has_control_bytes(String("café")))
-
-
-def test_status_reason_with_crlf_is_emptied_not_transmitted() raises:
-    """The reason phrase is written verbatim into the status line, and is
-    the part frameworks that validate header PAIRS still leave unchecked:
-    `start_response("200 OK\\r\\nSet-Cookie: x=1", ...)` would otherwise put
-    a header on the wire that the application never listed.
-
-    The code survives — only the injected text is dropped.
-
-    covers: G1
-    """
-    var got = split_status("200 OK\r\nSet-Cookie: hijack=1")
-    assert_equal(got[0], 200)
-    assert_equal(got[1], "")
-    assert_false(has_control_bytes(got[1]))
-
-
-def test_status_reason_with_bare_lf_is_emptied() raises:
-    """Bare LF ends a line for most parsers, so it is refused with CRLF."""
-    var got = split_status("302 Found\nLocation: http://evil.example")
-    assert_equal(got[0], 302)
-    assert_equal(got[1], "")
+def test_an_injected_status_keeps_its_code() raises:
+    """`start_response("200 OK\\r\\nSet-Cookie: hijack=1", ...)` is still a
+    200: the code is the application's choice and survives. The phrase is
+    passed on as written, and the fork's encoders write an empty one in its
+    place (SPEC G1, `test_response_splitting.mojo`): they are the only
+    readers of `status_text`, so a refusal here was a second copy with
+    nothing left to protect, and was deleted on 2026-09-29."""
+    assert_equal(split_status("200 OK\r\nSet-Cookie: hijack=1")[0], 200)
+    assert_equal(split_status("302 Found\nLocation: http://evil.example")[0], 302)
 
 
 def main() raises:
