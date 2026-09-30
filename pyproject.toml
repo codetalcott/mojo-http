@@ -714,10 +714,24 @@ out="${M0SERVE_OUT:-bin/m0serve}"
 for pkg in core http postgres wsgi; do
   [ -f "packages/m0-$pkg/m0_$pkg.mojoc" ] || uv run --no-sync poe "build-$pkg" || exit 1
 done
-mojo build --target-cpu "$tcpu" \
-  -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I "$mount_dir" \
+# The compiler's arguments, set once: the stamp is handed the same words.
+# Every smoke that serves through m0serve names this task as a dep, so a CI
+# leg ran it about 44 times on an unchanged tree, 8.5 s a relink (review
+# record CI2). `serve_stamp.py check` exits 0 only when `$out.stamp` proves
+# the binary current: every input the build reads unchanged since the last
+# build that got to the end -- these arguments, the sources under each -I
+# root (the .mojoc it links, and the fork and m0_host, which are resolved
+# from source), the toolchain and the venv beside it, this body and the
+# scripts it runs -- and every output it left, the binary and the runtime
+# beside it, still byte for byte what that build left. Anything else builds,
+# and `write` stamps only a build that got to its last step. The script's
+# docstring has the rest; `python3 scripts/serve_stamp.py --selftest` runs
+# this body against a stub toolchain and changes each input in turn.
+set -- -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-postgres/ -I packages/m0-wsgi/ -I "$mount_dir" \
   ${M0SERVE_INCLUDE:+-I "$M0SERVE_INCLUDE"} \
-  packages/m0-wsgi/m0serve.mojo -o "$out" || exit 1
+  packages/m0-wsgi/m0serve.mojo -o "$out"
+if python3 scripts/serve_stamp.py check --target-cpu "$tcpu" "$@"; then exit 0; fi
+mojo build --target-cpu "$tcpu" "$@" || exit 1
 
 # Same post-link surgery build-ffi does, and for the same reason: `mojo
 # build` records the build venv as a search path. It was missing here, so
@@ -736,8 +750,20 @@ python3 scripts/relocate.py --no-id \
 # development workflow. Every serve-*/smoke-* task runs bin/m0serve
 # directly, so they now exercise the artifact a user actually gets.
 python3 scripts/bundle_artifact.py "$out" "$(dirname "$out")" || exit 1
+python3 scripts/serve_stamp.py write --target-cpu "$tcpu" "$@"
 echo "built $out (mount: $mount_dir)"
 """
+
+# build-serve's stamp, proven (review record CI2). A stamp that skipped a
+# build it owed would hand every smoke after it a stale binary, and they
+# would pass. The selftest runs build-serve's own body against a stub
+# toolchain under `sh`, changes each input and output in turn and insists
+# the next call builds and names what changed, and the call after skips; the
+# sabotage breaks each rule in a copy and insists the selftest fails. No
+# compiler, about a minute. scripts/serve_stamp.py says what is covered.
+[tool.poe.tasks.check-serve-stamp]
+help = "build-serve's stamp: each input and output it covers makes the next call build, and each rule is sabotage-proven"
+cmd = "python3 scripts/serve_stamp.py --sabotage"
 
 # The C-ABI surface. ffi_exports.mojo sits at the package root because a
 # shared-lib entry file cannot use relative imports and @export symbols are
