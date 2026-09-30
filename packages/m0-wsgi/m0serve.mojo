@@ -71,7 +71,7 @@ from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType, TCPAddr, is_ipv6_literal, parse_address
 from lightbug_http.c.address import AddressFamily
 from lightbug_http.socket import Socket
-from lightbug_http.c.process import process_exit, executable_path
+from lightbug_http.c.process import getpid, process_exit, executable_path
 from lightbug_http.c.fcntl import set_cloexec
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.header import Header, Headers, HeaderKey
@@ -220,6 +220,28 @@ def _fail(message: String, code: Int):
     """
     print("m0serve: " + message, flush=True)
     process_exit(code)
+
+
+def _announce_armed(worker: Int, shutdown_fd: Int):
+    """Say that this worker drains on SIGTERM from here on, in the Mojo host's words.
+
+    Until `install_shutdown_signals` a SIGTERM takes the default action:
+    between the fork and the arm, which here follows the application's
+    import (seconds for a Django project), a stop kills the worker where a
+    drain was meant, and one worker answering says nothing of the others.
+    So a gate that stops the server waits for this line from every worker
+    (review AR, as `smoke-shutdown` does for the host since S1;
+    docs/notes/workers-signals-and-the-fork.md). The same line in every
+    shape -- a forked or spawned worker, the one process, `--threads` --
+    so the gate need not know which it started. Nothing is printed when the
+    signals could not be armed (`shutdown_fd` is -1): that worker dies of
+    the signal, and a gate waiting for the line should time out saying so.
+    """
+    if shutdown_fd >= 0:
+        print(
+            "[worker {}] pid={} armed for a graceful stop".format(worker, getpid()),
+            flush=True,
+        )
 
 
 def _discover_core_lib() -> String:
@@ -988,6 +1010,14 @@ def main() raises:
         )
         return
 
+    # After fork_all -- each worker arms its own pipe -- and after the
+    # application's import, which is the process's first Python call, so
+    # an interpreter's own SIGINT handler cannot replace ours. Before the
+    # banner, which said "serving" while a SIGTERM still took the default
+    # action; the `armed` line is what a gate that stops the server waits
+    # for, from every worker (`_announce_armed`).
+    var shutdown_fd = install_shutdown_signals()
+    _announce_armed(worker, shutdown_fd)
     print(
         "🔥 m0serve: " + opts.served() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
@@ -1009,8 +1039,6 @@ def main() raises:
         flush=True,
     )
     var server_config = opts.server_config(AppConfig(default_port=DEFAULT_PORT))
-    # After fork_all — each worker arms its own pipe.
-    var shutdown_fd = install_shutdown_signals()
 
     # The Postgres listener, worker 0 only: every worker running one would
     # open its own connection and deliver its own copy of every
@@ -1298,6 +1326,9 @@ def _serve_threaded(
     opts.asgi_streaming = executor_mode or opts.blocking_threads > 0
 
     var shutdown_fd = install_shutdown_signals()
+    # One process, so one line; worker 0 is the index a `--reload`
+    # supervisor gives it.
+    _announce_armed(0, shutdown_fd)
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
     print(

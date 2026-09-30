@@ -38,6 +38,12 @@ An application that fails to import prints its traceback and exits 1 before
 that line. For orchestration, use `--health-path /health` (answered in the
 server, before Python) or a TCP check, not the banner.
 
+Just before its banner each worker prints `[worker N] pid=P armed for a
+graceful stop`, the Mojo host's line: a SIGTERM drains it from then on, and
+kills it before then. A script that stops the server soon after starting it
+waits for that line from every worker, since one worker answering says
+nothing of another still importing the application.
+
 ## Which mode
 
 With no topology flag or `M0_*` topology variable, the protocol chooses:

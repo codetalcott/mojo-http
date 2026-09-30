@@ -76,6 +76,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   - What the cut-short attempt scored is still judged.
   - The client's output and the server's log are printed and kept under
     `bin/logs/autobahn/`.
+- **Each m0serve worker says when a SIGTERM will drain it**:
+  `[worker N] pid=P armed for a graceful stop`, the line the Mojo host's
+  workers print, in every process shape, and before the `🔥 m0serve:`
+  banner, which used to come first. A worker catches SIGTERM only once it
+  has imported the application, so one worker answering says nothing of
+  the others: a script that stops the server soon after starting it
+  should wait for this line from every worker, or a worker still importing
+  dies of the signal instead of draining.
 
 ### Removed
 

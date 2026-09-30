@@ -429,6 +429,10 @@ Do not scrape it from an orchestrator, though: readiness there is
 `--health-path /health` (a probe endpoint answered in Mojo, before the
 application) or a plain TCP check on the port, and `m0serve --doctor` for a
 configuration report that exits with the code the server itself would use.
+Just before its banner each worker prints `[worker N] pid=P armed for a
+graceful stop`: a SIGTERM drains it from then on, and a script that stops the
+server soon after starting it waits for that line from every worker, since
+one answering says nothing of another still importing.
 
 `MODULE[:ATTR]` names the callable (`ATTR` defaults to `application`, and a
 bare `MODULE` also tries `MODULE.asgi`, `MODULE.wsgi`, `MODULE:app` and
