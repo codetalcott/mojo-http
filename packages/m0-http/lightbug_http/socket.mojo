@@ -251,6 +251,10 @@ struct Socket[
         (review B26): a `Socket` still holding the number would close it
         again when destroyed, after the drain had freed it for anything
         else in the process to take.
+
+        A closed socket has no descriptor to give, and returns -1 (review
+        B27b): the number it closed may be another descriptor's by now, and
+        its new owner would close that one.
         """
         return self.fd
 
@@ -298,7 +302,8 @@ struct Socket[
             backlog: The maximum number of queued connections. Should be at least 0, and the maximum is system-dependent (usually 5).
 
         Raises:
-            SysError: If listening for a connection fails.
+            SysError: If listening for a connection fails; EBADF on a
+                closed socket, which listens on nothing (see `close`).
         """
         listen(self.fd, Int32(backlog))
 
@@ -319,6 +324,7 @@ struct Socket[
 
         Raises:
             SocketBindError: If IP conversion fails, bind fails, or getting socket name fails.
+                A closed socket's bind fails with EBADF (see `close`).
         """
         var binary_ip = inet_pton[Self.address_family](ip_address)
 
@@ -383,7 +389,8 @@ struct Socket[
             option_value: The value to set the socket option to. Defaults to 1 (True).
 
         Raises:
-            SysError: If setting the socket option fails.
+            SysError: If setting the socket option fails; EBADF on a
+                closed socket (see `close`).
         """
         setsockopt(self.fd, Int32(SOL_SOCKET), option_name.value, Int32(option_value))
 
@@ -395,7 +402,8 @@ struct Socket[
             port: The port number to connect to.
 
         Raises:
-            Error: If connecting to the remote socket fails.
+            Error: If connecting to the remote socket fails; the SysError
+                of an EBADF on a closed socket (see `close`).
         """
         var ip = get_ip_address(ip_address, Self.address_family, Self.sock_type)
         var remote_address = SocketAddress(address_family=Self.address_family, port=port, binary_ip=ip)
@@ -405,6 +413,18 @@ struct Socket[
         self.remote_address = Self.address(remote[0], remote[1])
 
     def send(self, buffer: Span[Byte, _]) raises SysError -> UInt:
+        """Send what `buffer` holds, or as much of it as the socket takes.
+
+        Args:
+            buffer: The bytes to send.
+
+        Returns:
+            The number of bytes sent.
+
+        Raises:
+            SysError: If the send fails; EBADF on a closed socket, which
+                sends nothing (see `close`).
+        """
         return send(self.fd, buffer, UInt(len(buffer)), 0)
 
     def _receive(self, mut buffer: Bytes) raises SocketRecvError -> UInt:
@@ -417,8 +437,9 @@ struct Socket[
             The number of bytes received.
 
         Raises:
-            SocketRecvError: A SysError if reading from the socket fails, or
-                EOF if 0 bytes are received.
+            SocketRecvError: A SysError if reading from the socket fails --
+                EBADF on a closed socket, which reads nothing (see `close`)
+                -- or EOF if 0 bytes are received.
         """
         var bytes_received: UInt
         var size = len(buffer)
@@ -466,6 +487,11 @@ struct Socket[
     def shutdown(mut self) raises SysError -> None:
         """Shut down the socket. The remote end will receive no more data (after queued data is flushed).
 
+        On a closed socket it does nothing: there is nothing of its own left
+        to shut down, and the number it closed may be another descriptor's
+        by now (review B27b; see `close`). The kernel's EBADF for the -1 it
+        holds is one of the failures that mean exactly that.
+
         Raises:
             SysError: EINVAL only. Any other failure means the socket is
                 already closed or its descriptor is gone, which is shut
@@ -491,6 +517,18 @@ struct Socket[
         born connected, and destroyed after `close` it shut down whatever
         held the number by then.
 
+        Nor does any other method reach it (review B27b): the socket keeps
+        no number once it is closed, holding -1 in its place, which the
+        kernel refuses with EBADF whatever the call. `send`, `receive`,
+        `bind`, `listen`, `connect` and the options each raise that EBADF
+        as their own failure, `shutdown` does nothing, and `into_fd` hands
+        over -1. Each of those passed the old number on, by then usually
+        another descriptor's: a `send` wrote into it, a `receive` took its
+        bytes, a `shutdown` ended its connection, a `bind`, `listen` or
+        option landed on it, and the owner `into_fd` handed it to closed it.
+        One guard here rather than one in each method, so a method added
+        later, and a caller that reads `fd` itself, are covered too.
+
         Raises:
             SysError: If closing the socket fails, except EBADF, which means
                 it is already closed.
@@ -505,6 +543,7 @@ struct Socket[
 
         self._closed = True
         self._connected = False
+        self.fd = FileDescriptor(-1)
 
     def set_timeout(self, seconds: Int) raises SysError:
         """Set the receive timeout for the socket.
@@ -513,7 +552,8 @@ struct Socket[
             seconds: The timeout duration in seconds.
 
         Raises:
-            SysError: If setting the socket option fails.
+            SysError: If setting the socket option fails; EBADF on a
+                closed socket (see `close`).
         """
         # SO_RCVTIMEO requires a timeval struct: {tv_sec: Int64, tv_usec: Int64}
         # (16 bytes on both macOS and Linux 64-bit).

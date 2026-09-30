@@ -667,6 +667,25 @@ wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
   `test_drain_listener.mojo` gates both steps, and on Linux the kernel's
   side. Found in review.
 
+- **A closed `Socket` refuses every call, not only `close()`** (SPEC D1).
+  After `close()` a socket went on passing its old number to the kernel,
+  so a late `send` wrote into whatever the process had opened on that
+  number since, a `receive` took its bytes, a `shutdown` ended its
+  connection, `bind`, `listen`, `connect` or a socket option acted on it,
+  and `into_fd` gave it to an owner that would close it. `close()` now
+  leaves the socket holding -1: those calls fail with EBADF, as they would
+  on a number nobody holds, `shutdown` does nothing, and `into_fd` returns
+  -1. Nothing in m0serve or the Mojo host uses a socket after closing it; a
+  Mojo application that does no longer reaches another descriptor.
+  `test_socket_close.mojo` gates each call. Found in review.
+- **Binding a socket no longer writes past the end of a stack buffer.**
+  `Socket.bind`, and so every server's `ListenConfig.listen`, converts the
+  address with `inet_pton` into a buffer counted in `NoneType`s, whose size
+  is zero: nothing was reserved, and the 4 bytes of the address landed on
+  whatever the stack held beside it. Most layouts left that harmless; one
+  that the new socket tests produced corrupted a string `listen` was
+  building and crashed with SIGSEGV. The buffer is now counted in bytes.
+  Found in review.
 - **A connection accept sharing passes to a worker that is shutting down
   is answered** (SPEC E16, D1). Under `--workers N` the worker that
   accepts a connection may pass it to a lighter sibling. When that sibling
