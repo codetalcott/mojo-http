@@ -1176,6 +1176,16 @@ lightbug_http
         started because the sender's second read of `state` refuses only
         left. `_word_at` is the page arithmetic `_word` now calls.
 
+      - accept_share.mojo (2026-09-30): `close_reaped_handoffs(page,
+        worker, channel, bound_ns)`, the supervisor's drain of a worker it
+        gave up on (`WorkerSupervisor._give_up`): each connection still
+        queued on that worker's channel is received and closed, the drain
+        running on while `pending`, less the dead worker's `taken` and what
+        it has received, is above 0, within the bound, and what it took is
+        retired from `pending`. The supervisor's copy of the channel was
+        never the last, so those connections stayed open, unanswered, until
+        the server stopped (review record RB).
+
       - socket.mojo (2026-09-30): `Socket.close()` gives up the number
         before its `close(2)`, so a failure the call reports (anything but
         EBADF, which is swallowed as before, and still raised) leaves the

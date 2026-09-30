@@ -204,16 +204,27 @@ per connection that changes hands. Built.
   writes not started over it as it binds. After the fix the same burst is
   answered 32 of 32 by worker 0, which passes none on.
 
-  What is still lost is what a sender queued between the death and the
-  reap, in `_supervise` the time for `waitpid` to return, in `--reload`'s
-  polling supervisor up to its 300 ms interval: it waits in the channel
-  until the server stops. The supervisor holds every channel's read end
-  and could take those off and pass them on, but to be complete it would
-  need the leaver's half of the handshake, a wait until the index's
-  `pending` less what the dead worker had `taken` is drained, run by a
-  process that otherwise only waits and forks, to cover a window that is
-  one `waitpid`'s return outside `--reload`. Not built; the connections a
-  worker held when it died are lost with it in any case.
+  What a sender queued between the death and the reap (in `_supervise`
+  the time for `waitpid` to return, in `--reload`'s polling supervisor up
+  to its 300 ms interval) waited in the channel until the server stopped:
+  the supervisor's copy of the read end is not the last, every sibling
+  and the macOS anchor holding one. **Closed since 2026-09-30 where the
+  supervisor gives up on the index (review record RB).** It takes each
+  connection off the dead worker's channel and closes it
+  (`close_reaped_handoffs`, from `WorkerSupervisor._give_up`), running the
+  leaver's half of the handshake: the drain goes on while the index's
+  `pending`, less what the dead worker had `taken` and what the drain has
+  received, is above 0, within 250 ms, and what it took is retired from
+  `pending` as a replacement's `start` would, so a worker a reload later
+  forks into the index waits for nothing. Closed rather than passed on:
+  none had been read, so a client that retries loses nothing. With worker
+  1 stopped (SIGSTOP) while parked, 16 of a burst of 32 were queued to it;
+  after its SIGKILL, with no respawns allowed (`M0_TEST_MAX_RESPAWNS=0`),
+  all 16 were still open 1 s later before the fix, and all 16 read a close
+  within 3 ms after it, forked, spawned and on the Mojo host. A worker
+  that exits 0 while the server serves is not replaced either, and what
+  was queued to it still waits; not built. The connections a worker held
+  when it died are lost with it in any case.
 
   **Correction, 2026-09-29: the kernel's collector (macOS).** A hand-off
   whose sender has closed its copy, which is every hand-off, is held only

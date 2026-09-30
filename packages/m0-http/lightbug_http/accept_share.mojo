@@ -116,10 +116,13 @@ followed -- the supervisor stopping, out of respawns, or the worker
 having exited 0 or 78 -- was handed about half of every burst after its
 death, each into a channel nothing would read again (review record RP).
 What was sent before the mark waits in the channel: for the replacement
-when one follows, admitted at its first pass; unanswered until the server
-stops when none does, as the connections the dead worker held are lost
-with it. The window is the supervisor's own reaction: it reaps in a
-blocking `waitpid`; under `--reload` the poll interval bounds it.
+when one follows, admitted at its first pass. When the supervisor gives
+up on the index instead (out of respawns), it takes each one off the
+channel and closes it (`close_reaped_handoffs`), so its client reads a
+close at once rather than waiting, unanswered, until the server stops
+(review record RB); the connections the dead worker held are lost with
+it. The window is the supervisor's own reaction: it reaps in a blocking
+`waitpid`; under `--reload` the poll interval bounds it.
 
 A replacement -- a respawn, or a reload's new worker -- takes its
 predecessor's index, and with it the channel, `pending` and `taken`,
@@ -140,12 +143,13 @@ worker maps the page by fd with the same slot count.
 from std.atomic import Atomic
 from std.os import getenv
 from std.sys.info import CompilationTarget
-from std.time import perf_counter_ns
+from std.time import perf_counter_ns, sleep
 
 from lightbug_http.c.fdpass import (
     send_fd, recv_fd, RECV_FD_EMPTY, RECV_FD_REFUSED,
 )
 from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.socket import setsockopt, SocketOption, SOL_SOCKET
 from lightbug_http.c.socketpair import socketpair_dgram
 
@@ -261,6 +265,67 @@ def mark_reaped(page: Int, worker: Int):
     if page == 0 or worker < 0:
         return
     _store(_word_at(page, worker, _WORD_STATE), STATE_LEFT)
+
+
+def close_reaped_handoffs(
+    page: Int, worker: Int, channel: Int, bound_ns: Int
+) -> Int:
+    """The supervisor's drain of a worker it reaped and gave up on: take
+    every connection off that worker's channel, `channel` in the
+    supervisor, and close it, so each client reads a close at once and can
+    retry. Returns how many were closed (review record RB).
+
+    What was handed to the worker before `mark_reaped` waits in its
+    channel, and nothing reads the channel once no replacement follows:
+    each client held an accepted connection that was never answered until
+    the whole server stopped. The supervisor's copy of the read end is not
+    the last (every sibling holds one, and on macOS so does the anchor,
+    `_anchor_channels`), so closing it would release nothing; receiving
+    each descriptor and closing it does.
+
+    The leaver's handshake closes the race with a sender that picked the
+    worker before the mark (the module docstring): the mark is stored
+    first, and the drain runs on while `pending`, less what the dead worker
+    had taken (`taken`) and what this drain has received, is above 0, a
+    sender having raised `pending` before it read `state` again. A count
+    the dead worker left high (it died between a receive and publishing
+    `taken`) holds the drain to `bound_ns`, once. What it took and what
+    the dead worker had taken are then retired from `pending`, as `start`
+    retires the second, so a worker a reload later forks into the index is
+    not read as busier than it is, nor waits in its own drain for
+    hand-offs that will never come. The connections are closed, not
+    passed to a sibling: none was ever read, so a client that retries
+    loses nothing.
+    """
+    if page == 0 or worker < 0 or channel < 0:
+        return 0
+    var pending = _word_at(page, worker, _WORD_PENDING)
+    var taken = _word_at(page, worker, _WORD_TAKEN)
+    var received = 0
+    var closed = 0
+    var until = perf_counter_ns() + bound_ns
+    while True:
+        var payload = List[UInt8]()
+        var fd = recv_fd(channel, payload)
+        if fd != RECV_FD_EMPTY:
+            received += 1
+            if fd >= 0:
+                close_fd(fd)
+                closed += 1
+            continue
+        if _load(pending) - _load(taken) - received <= 0:
+            break
+        if perf_counter_ns() >= until:
+            break
+        sleep(0.001)
+    var dead_took = _load(taken)
+    _store(taken, 0)
+    var retire = dead_took + received
+    if retire > 0:
+        var before = _fetch_add(pending, -retire)
+        if before - retire < 0:
+            _store(pending, 0)
+    return closed
 
 
 trait HandoffPost:

@@ -62,6 +62,19 @@ because it is the death that leaves the page as the worker last wrote it
 and writes no crash report; one mode per `--modes` entry, `--app-bin`
 included.
 
+`--reaped` then measures what was handed to such a worker BEFORE it died
+(review RB), on a second server per mode, on a free port of its own, with
+`M0_TEST_MAX_RESPAWNS=0` so the supervisor gives up on the first death. It
+stops worker 1 with SIGSTOP once its loop has started, parked, sends a
+burst of keep-alive `/pid` requests, and waits `--queued-wait` for worker
+0's answers: what worker 0 handed to the stopped worker is left queued in
+that worker's channel. Then it kills worker 1 with SIGKILL, and every
+queued connection must read a close, EOF or a reset, within
+`--queued-wait` of the kill, so its client can retry. Before the
+supervisor closed them, each stayed open and unanswered until the server
+stopped. A burst that queued nothing is a failure, the measurement having
+measured nothing.
+
     python3 scripts/accept_spread.py --reaped --modes fork,spawn
 
 Every server is measured once all its workers have started, which each
@@ -80,6 +93,7 @@ import argparse
 import collections
 import os
 import re
+import select
 import signal
 import socket
 import subprocess
@@ -378,6 +392,114 @@ def reaped(args, logs, mode, extra, port):
     return failed
 
 
+def queued(args, logs, mode, extra):
+    """The `--reaped` measurement's second half for one worker mode: what
+    was handed to a worker before it died, and was never received, is
+    closed once the supervisor gives up on it (review RB). Returns a list
+    of failures."""
+    name = "queued " + mode
+    port = free_port()
+    log_path = os.path.join(logs, "accept-queued-%s.log" % mode)
+    phase("%s: start the server on %d, no respawns allowed" % (name, port))
+    with open(log_path, "w") as log:
+        p = start(args.bin, args.app_dir, port, 2, extra, log, args.app_bin,
+                  env_extra={"M0_TEST_MAX_RESPAWNS": "0"})
+    failed = []
+    victim = None
+    conns = []
+    try:
+        wait_started(p, log_path, 2)
+        text = read_log(log_path)
+        victim = incarnations(text, 1)[-1]
+        worker0 = incarnations(text, 0)[-1]
+        if os.getpgid(victim) != p.pid:
+            raise SystemExit("%s: pid %d is not in the server's group"
+                             % (name, victim))
+        phase("%s: stop worker 1, parked, and send a burst of %d" % (name, args.n))
+        os.kill(victim, signal.SIGSTOP)
+        conns = [socket.create_connection(("127.0.0.1", port), 5)
+                 for _ in range(args.n)]
+        for c in conns:
+            c.sendall(b"GET /pid HTTP/1.1\r\nHost: x\r\n\r\n")
+        answers = [None] * len(conns)
+
+        def ask(i):
+            conns[i].settimeout(args.queued_wait)
+            try:
+                answers[i] = pid_over(conns[i], send=False)
+            except socket.timeout:
+                answers[i] = "queued"
+            except (OSError, SystemExit):
+                answers[i] = "closed"
+
+        askers = [threading.Thread(target=ask, args=(i,)) for i in range(len(conns))]
+        for t in askers:
+            t.start()
+        for t in askers:
+            t.join()
+        waiting = [i for i, a in enumerate(answers) if a == "queued"]
+        kept = sum(1 for a in answers if a == str(worker0))
+        if not waiting or kept + len(waiting) != len(conns):
+            failed.append((name, "the burst of %d did not split between worker 0 "
+                           "and the stopped worker 1: %d answered by worker 0, "
+                           "%d waiting, the rest %s" % (
+                               len(conns), kept, len(waiting),
+                               sorted(set(a for a in answers
+                                          if a not in ("queued", str(worker0)))))))
+            return failed
+        phase("%s: kill the stopped worker 1 with %d connections queued to it"
+              % (name, len(waiting)))
+        killed = time.monotonic()
+        os.kill(victim, signal.SIGKILL)
+        victim = None
+        deadline = killed + args.queued_wait
+        open_ = {conns[i]: i for i in waiting}
+        closed_after = {}
+        hung = []
+        while open_:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            ready, _, _ = select.select(list(open_), [], [], remaining)
+            now = time.monotonic()
+            for s in ready:
+                i = open_.pop(s)
+                try:
+                    data = s.recv(4096)
+                except OSError:  # a reset is a close
+                    data = b""
+                if data:
+                    hung.append("answered %r" % data[:40])
+                else:
+                    closed_after[i] = now - killed
+        hung += ["open"] * len(open_)
+        slowest = max(closed_after.values()) if closed_after else 0.0
+        print("%s: burst %d with worker 1 stopped: %d answered by worker 0, %d "
+              "queued to worker 1; after its SIGKILL %d closed (slowest %.3f s), "
+              "%d not within %g s" % (name, len(conns), kept, len(waiting),
+                                      len(closed_after), slowest, len(hung),
+                                      args.queued_wait), flush=True)
+        if hung:
+            failed.append((name, "%d of %d connections queued to the worker the "
+                           "supervisor gave up on were not closed within %g s of "
+                           "its death (%s)" % (len(hung), len(waiting),
+                                               args.queued_wait, hung[0])))
+        text = read_log(log_path)
+        if not any(g in text for g in GAVE_UP):
+            failed.append((name, "the supervisor did not give up on worker 1"))
+    finally:
+        # A stopped worker would hold the drain until SIGKILL anyway.
+        if victim is not None:
+            try:
+                os.kill(victim, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        for c in conns:
+            c.close()
+        stop_server(p)
+    return failed
+
+
 def within(counts, ratio, workers):
     """True when every worker took a share and the largest is at most
     `ratio` times the smallest."""
@@ -421,6 +543,10 @@ def main():
     ap.add_argument("--reaped-wait", type=float, default=3.0, metavar="S",
                     help="with --reaped: how long each connection waits for "
                          "its answer")
+    ap.add_argument("--queued-wait", type=float, default=1.0, metavar="S",
+                    help="with --reaped: how long worker 0's answers are "
+                         "waited for, and then how long a connection queued "
+                         "to the dead worker may stay open after its death")
     args = ap.parse_args()
     if args.workers < 2:
         raise SystemExit("--workers must be >= 2: one worker has nothing to share")
@@ -441,12 +567,14 @@ def main():
             for mode in chosen:
                 failed += reaped(args, logs, mode, modes[mode] + extra_common, port)
                 port += 1
+                failed += queued(args, logs, mode, modes[mode] + extra_common)
         for mode, why in failed:
             print("accept_spread: %s: %s" % (mode, why))
         if failed:
             sys.exit(1)
         print("accept_spread: a worker the supervisor reaped and did not "
-              "replace was handed nothing")
+              "replace was handed nothing, and what it had been handed was "
+              "closed")
         return
     if args.unstarted_gap > 0:
         if args.app_bin:

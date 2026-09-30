@@ -227,6 +227,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   within a second of its start) is unchanged. m0serve and the Mojo host
   share the supervisor; a `--reload` restart counts as no crash, as before.
   Found in review.
+- **Under `--workers N` or `M0_WORKERS`, a connection handed to a worker
+  just before it died is closed when the worker is not replaced** (SPEC
+  E16). The worker that accepts a connection may pass it to a sibling, and
+  one passed in the moment before that sibling died waited, accepted and
+  unanswered, until the whole server stopped once the supervisor had used
+  up its respawns. The supervisor now closes each such connection, so the
+  client sees it close at once and can retry; none had been read. Found in
+  review.
 - **A `Socket` whose `close()` fails is closed all the same** (SPEC D1).
   A close that failed with anything but EBADF, such as EINTR from a signal
   or EIO, raised with the socket still holding its number, although the

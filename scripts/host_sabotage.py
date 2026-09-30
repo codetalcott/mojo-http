@@ -12,8 +12,9 @@ apps would only see after a `.mojoc` rebuild, which a test run of `src.*`
 does not need), `test_cmdline.mojo` for the command-line reader both hosts
 share (`m0_http.cmdline`, the same arrangement), or `test_respawn.mojo` for
 the supervisor's part of the host's contract (a refusal ending the
-siblings, and the respawn budget counted over a window, in
-`multiworker.mojo`).
+siblings, the respawn budget counted over a window, and what a worker it
+gave up on was handed closed, in `multiworker.mojo` and
+`accept_share.mojo`).
 The fork is resolved from source by the smokes, and the unit gates
 compile `src.*` directly, so nothing needs rebuilding -- with one
 exception: a rule against `src/` gated on a SMOKE would need `build-http`
@@ -402,6 +403,31 @@ SABOTAGES = [
         MULTIWORKER_SRC,
         "        self._respawn_times.append(self.last_fork_ns)\n",
         "",
+    ),
+    # --- what was handed to a worker given up on is closed (review RB) ---------
+    # The supervisor's copy of the channel is not the last, so the dead
+    # worker's queued connections stayed open, unanswered, until the server
+    # stopped.
+    (
+        "the supervisor leaves what a worker it gave up on was handed",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        "            self._accept_page, index, self._accept_channels[index],\n",
+        "            0, index, self._accept_channels[index],\n",
+    ),
+    (
+        "the give-up's drain does not wait for a hand-off that raced the mark",
+        RESPAWN,
+        ACCEPT_SHARE_SRC,
+        "        if _load(pending) - _load(taken) - received <= 0:\n",
+        "        if True:\n",
+    ),
+    (
+        "a hand-off the give-up closed stays counted to the index",
+        RESPAWN,
+        ACCEPT_SHARE_SRC,
+        "    var retire = dead_took + received\n",
+        "    var retire = 0\n",
     ),
     # --- loops on threads (SPEC E27-E29), against smoke-host-threads ----------
     (
