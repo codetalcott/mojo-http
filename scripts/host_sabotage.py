@@ -142,6 +142,13 @@ SABOTAGES = [
         "",
     ),
     (
+        "a worker the supervisor reaps is never marked gone",
+        SMOKE,
+        HOST,
+        "        supervisor.share_accepts(share, shared_id_addr())\n",
+        "",
+    ),
+    (
         "signals armed before the fork",
         SMOKE,
         HOST,

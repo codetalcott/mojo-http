@@ -48,6 +48,22 @@ all unanswered.
 
     python3 scripts/accept_spread.py --unstarted-gap 3000
 
+`--reaped` measures the third: that a worker the supervisor reaps and does
+not replace is handed nothing (review RP). It starts `--workers 2`, kills
+worker 1 with SIGKILL once its loop has started -- parked, idle -- and
+again as each replacement's loop starts, until the supervisor stops
+respawning it (five deaths inside a second of their fork, or the respawn
+budget), then opens a burst of keep-alive connections and asks `/pid` on
+each at once. Every one must be answered, by worker 0. Before the
+supervisor marked the index, the dead worker's page still read parked
+with no load, and `pick` handed it about half of every burst, each into a
+channel nothing would read again: accepted, and never answered. SIGKILL
+because it is the death that leaves the page as the worker last wrote it
+and writes no crash report; one mode per `--modes` entry, `--app-bin`
+included.
+
+    python3 scripts/accept_spread.py --reaped --modes fork,spawn
+
 Every server is measured once all its workers have started, which each
 announces with its `Accept sharing: worker I of N` line: a worker that
 has not started is handed nothing, so a burst sent before then measures
@@ -63,6 +79,8 @@ logs go to a temporary directory, removed however the probe ends.
 import argparse
 import collections
 import os
+import re
+import signal
 import socket
 import subprocess
 import sys
@@ -84,6 +102,12 @@ stamp("accept_spread: FAIL")
 
 STARTED = "Accept sharing: worker %d of %d passes"
 """What `prepare_loop` prints once a worker's loop has started."""
+
+GAVE_UP = ("reached, not respawning", "rapid crashes detected, stopping respawn")
+"""What the supervisor prints when it stops respawning (`_try_respawn`)."""
+
+INCARNATION = re.compile(r"^\[worker (?:respawn )?(\d+)\] pid=(\d+) starting", re.M)
+"""The line each worker prints as it is forked, first or respawned."""
 
 
 def started_workers(log_path, workers):
@@ -246,6 +270,114 @@ def unstarted(args, logs):
     return failed
 
 
+def read_log(log_path):
+    with open(log_path, errors="replace") as log:
+        return log.read()
+
+
+def incarnations(text, index):
+    """The pids worker `index` has run as, in order, from the server's log."""
+    return [int(m.group(2)) for m in INCARNATION.finditer(text)
+            if int(m.group(1)) == index]
+
+
+def kill_until_not_respawned(p, log_path, name):
+    """SIGKILL worker 1 each time its loop has started, until the supervisor
+    says it will not respawn it. Returns the pids killed.
+
+    Only a pid the log names for index 1, never one already killed, and
+    only while it is still in the server's process group: a number the
+    kernel handed on since is not ours to signal."""
+    killed = []
+    deadline = time.monotonic() + 90
+    while True:
+        text = read_log(log_path)
+        if any(g in text for g in GAVE_UP):
+            return killed
+        if p.poll() is not None:
+            raise SystemExit("%s: the server exited %d while worker 1 was "
+                             "being killed" % (name, p.returncode))
+        if time.monotonic() > deadline or len(killed) > 40:
+            raise SystemExit("%s: the supervisor was still respawning worker 1 "
+                             "after %d deaths" % (name, len(killed)))
+        pids = incarnations(text, 1)
+        loops = text.count(STARTED % (1, 2))
+        if not pids or pids[-1] in killed or loops < len(pids):
+            time.sleep(0.01)
+            continue
+        try:
+            if os.getpgid(pids[-1]) != p.pid:
+                raise SystemExit("%s: pid %d is not in the server's group"
+                                 % (name, pids[-1]))
+            os.kill(pids[-1], signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        killed.append(pids[-1])
+
+
+def reaped(args, logs, mode, extra, port):
+    """The `--reaped` measurement for one worker mode: a worker the
+    supervisor reaps and does not replace is handed nothing. Returns a
+    list of failures."""
+    name = "reaped " + mode
+    log_path = os.path.join(logs, "accept-reaped-%s.log" % mode)
+    phase("%s: start the server on %d" % (name, port))
+    with open(log_path, "w") as log:
+        p = start(args.bin, args.app_dir, port, 2, extra, log, args.app_bin)
+    failed = []
+    try:
+        wait_started(p, log_path, 2)
+        phase("%s: kill worker 1 until the supervisor stops respawning it" % name)
+        killed = kill_until_not_respawned(p, log_path, name)
+        # Each death was after its loop's start line, with nothing sent to
+        # the server, so the last one left its page parked with no load.
+        text = read_log(log_path)
+        worker0 = incarnations(text, 0)
+        if len(worker0) != 1:
+            raise SystemExit("%s: worker 0 did not stay one process: %s"
+                             % (name, worker0))
+        phase("%s: a burst of %d with worker 1 gone" % (name, args.n))
+        conns = [socket.create_connection(("127.0.0.1", port), 5)
+                 for _ in range(args.n)]
+        began = time.monotonic()
+        for c in conns:
+            c.sendall(b"GET /pid HTTP/1.1\r\nHost: x\r\n\r\n")
+        answers = [None] * len(conns)
+
+        def ask(i):
+            conns[i].settimeout(args.reaped_wait)
+            try:
+                who = pid_over(conns[i], send=False)
+            except (OSError, SystemExit):
+                who = None
+            answers[i] = (who, time.monotonic() - began)
+
+        askers = [threading.Thread(target=ask, args=(i,)) for i in range(len(conns))]
+        for t in askers:
+            t.start()
+        for t in askers:
+            t.join()
+        for c in conns:
+            c.close()
+        unanswered = sum(1 for who, _ in answers if who is None)
+        pids = sorted({who for who, _ in answers if who is not None})
+        print("%s: worker 1 killed %d times, then not respawned; burst %d: "
+              "%d answered by %s, %d unanswered within %g s"
+              % (name, len(killed), args.n, args.n - unanswered, pids,
+                 unanswered, args.reaped_wait), flush=True)
+        if unanswered or pids != [str(worker0[0])]:
+            failed.append((name, "%d of %d connections were never answered "
+                           "(answered by %s; worker 0 is %d): they went to the "
+                           "worker the supervisor had reaped"
+                           % (unanswered, args.n, pids, worker0[0])))
+    finally:
+        stop_server(p)
+    passed = [ln.strip() for ln in read_log(log_path).splitlines()
+              if ln.startswith("Accept sharing: worker 0 passed ")]
+    print("      " + (passed[0] if passed else "(worker 0 printed no summary)"))
+    return failed
+
+
 def within(counts, ratio, workers):
     """True when every worker took a share and the largest is at most
     `ratio` times the smallest."""
@@ -283,9 +415,39 @@ def main():
                     help="with --assert: each server's shutdown must report "
                          "at least one connection passed between workers, "
                          "so a balanced split is the mechanism, not luck")
+    ap.add_argument("--reaped", action="store_true",
+                    help="measure instead that a worker the supervisor reaps "
+                         "and does not replace is handed nothing")
+    ap.add_argument("--reaped-wait", type=float, default=3.0, metavar="S",
+                    help="with --reaped: how long each connection waits for "
+                         "its answer")
     args = ap.parse_args()
     if args.workers < 2:
         raise SystemExit("--workers must be >= 2: one worker has nothing to share")
+    extra_common = args.extra.split() if args.extra else []
+    modes = {"fork": [], "spawn": ["--spawn-workers"]}
+    if args.app_bin:
+        modes = {"fork": []}
+    chosen = [m.strip() for m in args.modes.split(",") if m.strip()]
+    for mode in chosen:
+        if mode not in modes:
+            raise SystemExit("unknown mode %r" % mode)
+    if args.reaped:
+        if args.workers != 2:
+            raise SystemExit("--reaped measures two workers")
+        failed = []
+        port = args.port if args.port is not None else free_port(max(1, len(chosen)))
+        with tempfile.TemporaryDirectory(prefix="accept-spread-") as logs:
+            for mode in chosen:
+                failed += reaped(args, logs, mode, modes[mode] + extra_common, port)
+                port += 1
+        for mode, why in failed:
+            print("accept_spread: %s: %s" % (mode, why))
+        if failed:
+            sys.exit(1)
+        print("accept_spread: a worker the supervisor reaped and did not "
+              "replace was handed nothing")
+        return
     if args.unstarted_gap > 0:
         if args.app_bin:
             raise SystemExit("--unstarted-gap measures m0serve, not --app-bin")
@@ -297,17 +459,10 @@ def main():
             sys.exit(1)
         print("accept_spread: a worker that had not started was handed nothing")
         return
-    extra_common = args.extra.split() if args.extra else []
-    modes = {"fork": [], "spawn": ["--spawn-workers"]}
-    if args.app_bin:
-        modes = {"fork": []}
     failed = []
-    chosen = [m.strip() for m in args.modes.split(",") if m.strip()]
     port = args.port if args.port is not None else free_port(max(1, len(chosen)))
     with tempfile.TemporaryDirectory(prefix="accept-spread-") as logs:
         for mode in chosen:
-            if mode not in modes:
-                raise SystemExit("unknown mode %r" % mode)
             log_path = os.path.join(logs, "accept-spread-%s.log" % mode)
             phase("%s: start the server on %d" % (mode, port))
             with open(log_path, "w") as log:

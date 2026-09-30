@@ -940,6 +940,9 @@ def main() raises:
         _ = setenv("PYTHONDONTWRITEBYTECODE", "1", True)
     if is_supervised:
         var supervisor = WorkerSupervisor(opts.workers)
+        # A worker it reaps is marked gone on the page, so no sibling hands
+        # it a connection nothing would read (review RP).
+        supervisor.share_accepts(share, shared_id_addr())
         if opts.reload:
             supervisor.enable_reload(_reload_dirs(opts), String(".py"))
         if opts.spawn_workers:

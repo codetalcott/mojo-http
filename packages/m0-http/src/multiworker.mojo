@@ -21,6 +21,7 @@ from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
 from std.os import getenv, setenv
+from lightbug_http.accept_share import AcceptShare, mark_reaped
 from lightbug_http.c.fcntl import clear_cloexec
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
@@ -372,6 +373,10 @@ struct WorkerSupervisor:
     """How many reloads have happened; reported, and read by the smoke."""
     var _config_refused: Bool
     """Whether a worker exited `EX_CONFIG`. Never respawned; propagated."""
+    var _accept_page: Int
+    """The accept-share page's address in this process when the workers
+    share accepts (SPEC E16), else 0: where `_remove_pid` marks each worker
+    it reaps as gone (`share_accepts`)."""
     var _spawn_path: String
     """Under `--spawn-workers`, the binary every worker execs; empty means fork."""
     var _spawn_args: List[String]
@@ -402,11 +407,30 @@ struct WorkerSupervisor:
         self._scanner = None
         self.reload_interval_ms = 300
         self.reloads = 0
+        self._accept_page = 0
         self._spawn_path = String("")
         self._spawn_args = List[String]()
         self._gave_up = False
         self._failed_stopping = False
         self._config_refused = False
+
+    def share_accepts(mut self, share: AcceptShare, page: Int):
+        """Mark each worker this supervisor reaps as gone on the accept-share
+        page at `page`, its address in this process (SPEC E16, review RP).
+
+        Call before `fork_all`, with the channels and the page made before
+        the fork (`m0_http.prefork`). Nothing when `share` has no channels:
+        one worker, or `M0_ACCEPT_SHARE=0`.
+
+        A worker that dies writes nothing more to its line, and its
+        siblings' `pick` read what it last wrote -- parked with no load, if
+        it was killed waiting -- and handed it connections that nothing
+        would read when no replacement followed. The supervisor is the one
+        process that learns of the death, so it writes the mark
+        (`mark_reaped`) as it reaps, on every path, in `_remove_pid`.
+        """
+        if share.workers() > 1 and page != 0:
+            self._accept_page = page
 
     def enable_spawn(mut self, var path: String, var args: List[String]):
         """Make every worker an exec'd process rather than a forked one.
@@ -868,11 +892,19 @@ struct WorkerSupervisor:
 
         The slot is set to -1 rather than removed: position is the worker
         index (see `child_pids`), so the list must never compact.
+
+        Every reap passes here -- `_supervise`, `_supervise_polling`
+        (`_account_for_exit`), `_reap_the_rest` and `_reload` -- so this is
+        where the index is marked gone on the accept-share page
+        (`share_accepts`), before anything decides whether to replace it.
+        A replacement is forked after the mark and overwrites it in its
+        `bind`.
         """
         for i in range(len(self.child_pids)):
             if self.child_pids[i] == pid:
                 self.child_pids[i] = -1
                 self._last_freed_index = i
+                mark_reaped(self._accept_page, i)
                 publish_child_pids(self.child_pids)
                 return
 

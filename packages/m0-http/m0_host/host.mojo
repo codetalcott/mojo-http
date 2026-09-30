@@ -203,6 +203,7 @@ from m0_http.prefork import (
     prefork_accept_share,
     prefork_bus,
     prefork_page,
+    shared_id_addr,
     spawned_worker_index,
 )
 from m0_http.signal import install_shutdown_signals
@@ -1077,6 +1078,10 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     var forked = workers > 1
     if forked:
         var supervisor = WorkerSupervisor(workers)
+        # A worker it reaps is marked gone on the page, so no sibling hands
+        # it a connection nothing would read (review RP). The address by
+        # its export, as m0serve's: `prefork_page` set it.
+        supervisor.share_accepts(share, shared_id_addr())
         supervisor.fork_all()
         worker = supervisor.worker_index
     # Inactive with one worker or under the knob; binding is harmless there.
