@@ -22,6 +22,12 @@ Every executed block runs in ONE bash process, so `cd`, an activated venv,
 and variables (`FIRST_ID`) carry across blocks exactly as they do for a
 human in one terminal.
 
+Each port a page serves on (a `--port N` in an executed block) is moved to a
+free one of the run's own wherever a block spells it as a port (`--port N`,
+`HOST:N`): the page shows the port a reader types, and a fixed one is shared
+with every other run on the machine. A block naming it any other way is
+refused rather than left on the fixed port.
+
 `M0SERVE_WHEEL=/path/to.whl` substitutes the local wheel for the `m0serve`
 PyPI package on `pip install` lines. CI sets it: a pull request must prove
 the TREE's wheel, and must pass with no network dependence on what is
@@ -57,7 +63,9 @@ import subprocess
 import sys
 import tempfile
 
-FENCE = re.compile(r"^```bash (setup|serve|verify)\s*$")
+from probelib import free_port
+
+FENCE =re.compile(r"^```bash (setup|serve|verify)\s*$")
 
 PRELUDE = """set -euo pipefail
 SERVER_PID=""
@@ -126,6 +134,28 @@ def substitute_m0_wheel(body, wheel, repo):
             continue
         out.append(line)
     return "\n".join(out)
+
+
+_PAGE_PORT = re.compile(r"--port[ =](\d+)(?!\d)")
+
+
+def page_ports(blocks):
+    """The ports the pages serve on: every `--port N` an executed block names."""
+    return sorted({int(p) for _, body in blocks for p in _PAGE_PORT.findall(body)})
+
+
+def move_ports(body, moves):
+    """Each page port, wherever a block spells it as a port (`--port N`,
+    `--port=N`, `HOST:N`), becomes this run's own. A page port left in any
+    other spelling is refused: it would bind or reach the fixed one."""
+    for page, own in moves.items():
+        body = re.sub(r"(?:(?<=--port )|(?<=--port=)|(?<=:))%d(?!\d)" % page, str(own), body)
+        left = re.search(r"(?<![\w.])%d(?!\d)" % page, body)
+        if left:
+            line = body[body.rfind("\n", 0, left.start()) + 1:].split("\n", 1)[0]
+            raise SystemExit(f"run-quickstart: a block names the page's port {page} in a "
+                             f"spelling this runner does not move to its own: {line.strip()!r}")
+    return body
 
 
 def bare_env(wheel):
@@ -214,8 +244,12 @@ def main():
             'if command -v mojo || command -v m0 || [ -n "${VIRTUAL_ENV:-}" ]; then\n'
             '  echo "run-quickstart: a toolchain or a venv is reachable before '
             'the page installed one" >&2; exit 1\nfi')
+    ports = page_ports(blocks)
+    base = free_port(len(ports)) if ports else 0
+    moves = {page: base + n for n, page in enumerate(ports)}
     substituted = set()
     for i, (tag, body) in enumerate(blocks, 1):
+        body = move_ports(body, moves)
         if wheel:
             body = substitute_wheel(body, wheel)
         if m0_wheel:
@@ -240,7 +274,8 @@ def main():
     scratch = tempfile.mkdtemp(prefix="m0serve-quickstart-")
     print(f"run-quickstart: {len(blocks)} blocks {counts} in {scratch}"
           + (f" (local wheel: {wheel or m0_wheel})" if wheel or m0_wheel
-             else " (published package)"))
+             else " (published package)")
+          + "".join(f", port {page} as {own}" for page, own in moves.items()))
     proc = subprocess.run(["bash", "-c", "\n".join(script)], cwd=scratch,
                           env=bare_env(m0_wheel) if m0_wheel else None)
     if args.keep or proc.returncode != 0:

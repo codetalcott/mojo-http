@@ -26,7 +26,8 @@ pass by construction — the probe demands N >= 2.
     python3 scripts/accept_spread.py --modes fork --bin ./bin/m0serve
 
 `--bin` defaults to `bin/m0serve` relative to the repository, `--app-dir`
-to `apps/wsgi_bare`. Ports are taken from `--port` upward, one per mode.
+to `apps/wsgi_bare`. Ports are taken from `--port` upward, one per mode,
+and without `--port` from a free run of them.
 
 `--app-bin PATH` measures a Mojo application on the Mojo host instead
 (SPEC E22): the binary is started with `M0_PORT` and `M0_WORKERS`, must
@@ -51,7 +52,7 @@ import sys
 import tempfile
 import time
 
-from probelib import NotServing, phase, stamp, stop, wait_healthy
+from probelib import NotServing, free_port, phase, stamp, stop, wait_healthy
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # SIGTERM to SIGKILL. The probe has closed every connection before it stops a
@@ -144,7 +145,8 @@ def main():
     ap.add_argument("--modes", default="fork,spawn",
                     help="comma-separated: fork, spawn")
     ap.add_argument("--n", type=int, default=32, help="burst and ramp size")
-    ap.add_argument("--port", type=int, default=8621)
+    ap.add_argument("--port", type=int, default=None,
+                    help="the first of one port per mode (default: a free run)")
     ap.add_argument("--ratio", type=float, default=2.0,
                     help="largest share may be at most this times the smallest")
     ap.add_argument("--assert", dest="assert_", action="store_true",
@@ -165,9 +167,10 @@ def main():
     if args.app_bin:
         modes = {"fork": []}
     failed = []
-    port = args.port
+    chosen = [m.strip() for m in args.modes.split(",") if m.strip()]
+    port = args.port if args.port is not None else free_port(max(1, len(chosen)))
     with tempfile.TemporaryDirectory(prefix="accept-spread-") as logs:
-        for mode in [m.strip() for m in args.modes.split(",") if m.strip()]:
+        for mode in chosen:
             if mode not in modes:
                 raise SystemExit("unknown mode %r" % mode)
             log_path = os.path.join(logs, "accept-spread-%s.log" % mode)

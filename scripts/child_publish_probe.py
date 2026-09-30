@@ -33,7 +33,9 @@ the probe lays the library out the way the wheel's `_lib/` does, beside the
 runtime `build-serve` bundles into `bin/`, and names it in `M0_CORE_LIB`.
 Every numbered mode then asserts the child really took an id.
 
-    python3 scripts/child_publish_probe.py --port 8671
+    python3 scripts/child_publish_probe.py [--port BASE]
+
+One port per shape, upward from `--port`; without it, a free run of them.
 
 Prints one `CHILD shape=... mode=... id=... exit=...` line per case.
 """
@@ -47,7 +49,7 @@ import subprocess
 import sys
 import tempfile
 
-from probelib import phase, server, sse_events, stamp
+from probelib import free_port, phase, server, sse_events, stamp
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 stamp("child_publish_probe FAIL")
@@ -177,9 +179,11 @@ def run_case(port, shape, mode, problems):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bin", default=os.path.join(REPO, "bin", "m0serve"))
-    ap.add_argument("--port", type=int, default=8671)
+    ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--modes", default="inherit,scrub,stale_fd,stale_bus,stale_bus_socket,malformed_bus,handoff")
     args = ap.parse_args()
+    if args.port is None:
+        args.port = free_port(len(SHAPES))
 
     problems = []
     with tempfile.TemporaryDirectory() as tmp:

@@ -207,8 +207,9 @@ carries its CSRF token as an `X-CSRF-Token` header with no `csrf` in its
 URL, htmx 4 sending a DELETE's fields in the query string with no setting to
 change it; and a 401 answered to a swap lands where the list was. Only
 a browser can prove where the token went. `uv run poe sabotage-notes-login`
-reverts each of the fourteen session, CSRF and htmx 4 rules (three of them
-rebuild `m0-http` for `fragment.mojo`, on the way in and out) and insists
+reverts each session, CSRF and htmx 4 rule, in the app and in the layer's
+`grant.mojo`, `session.mojo`, `login.mojo`, `html.mojo` and `fragment.mojo`
+(a rule in the layer rebuilds `m0-http` on the way in and out), and insists
 the gate catches every one. Both were missing from this page until the 1.3.0 run, which is
 how a pre-release gate becomes decorative: the row says `(pre-release)` and
 nothing here tells the person cutting the release to run it.
@@ -220,35 +221,36 @@ tabs must reopen the stream after the server restarts, which Datastar's
 default retry does not do after a clean close. It prints the body the
 bundle sent. Pre-release for the reason `browser-datastar-form` is: it
 needs Chromium, and the bundle is pinned (D20). Ten seconds. `uv run poe
-sabotage-blobs` breaks each of thirty-one rules in `apps/blobs/` and
-requires a gate to fail for every one: seventeen against `smoke-blobs`,
-among them a twist and both kinds of pop reaching the wire, and the
-kernel's fourteen against its unit tests. Each rule rebuilds the app and
-reruns its gate, about six minutes in all (`--only unit` runs the
-kernel's fourteen in about fifteen seconds).
+sabotage-blobs` breaks each rule in `apps/blobs/` and requires a gate to
+fail for every one: `smoke-blobs` for what reaches the wire, a twist and
+both kinds of pop among them, and the kernel's unit tests for the kernel's.
+Each rule rebuilds the app and reruns its gate, about six minutes in all
+(`--only unit` runs the kernel's in about fifteen seconds).
 
 **And `uv run --group max poe sabotage-host`** (SPEC E21–E32, N18, N19) —
-breaks each of fifty-nine rules in `m0_host/host.mojo`, `m0_host/flags.mojo`,
-`src/prefork.mojo`, `accept_share.mojo`, `multiworker.mojo` and
-`views.mojo` and requires a
-gate to fail for every one: twenty-three against `smoke-host`, seven
-against `smoke-host-threads` (the loops on threads; `--only threads`, about
-six minutes), two against `smoke-fragment-notes` (the `ViewsApp` adapter's
-worker and loop limits), six against `test_host.mojo`, six against
-`test_prefork.mojo` (the pre-fork pieces both hosts share), one each
-against `test_respawn.mojo` and `test_views.mojo`, the command line's
-twelve: seven against `smoke-host-doctor` (`--only doctor`, about five
-minutes) and five against `test_host_flags.mojo` (`--only flags`), and one
-against `smoke-parallel-runtime` (`--only parallel`), which builds against
-MAX — the reason for `--group max`. On Linux every other gate holds in
+breaks each rule of the host, in `m0_host/host.mojo` and `m0_host/flags.mojo`
+and in the shared pieces under it (`src/prefork.mojo`, `src/cmdline.mojo`,
+`src/multiworker.mojo`, `src/views.mojo`, `accept_share.mojo` and the loop's
+shutdown), and requires a gate to fail for every one: `smoke-host` for what
+the wire shows, `smoke-host-threads` for the loops on threads (`--only
+threads`, about six minutes), `smoke-fragment-notes` for the `ViewsApp`
+adapter's worker and loop limits, `test_host.mojo`, `test_prefork.mojo`
+(the pre-fork pieces both hosts share), `test_respawn.mojo` (the
+supervisor's part) and `test_views.mojo`; the command line's against
+`smoke-host-doctor` (`--only doctor`, about five minutes),
+`test_host_flags.mojo` (`--only flags`) and `test_cmdline.mojo`; and the
+parallel-runtime refusal against `smoke-parallel-runtime` (`--only
+parallel`), which builds against MAX — the reason for `--group max`. The
+harness's docstring lists every `--only`, and a run's last line counts the
+rules it proved. On Linux every other gate holds in
 that venv too: the unit tests supply the parallel runtime's fact rather
 than read the one `mojo run` gives them beside MAX (ROADMAP Known issues),
 which until 2026-09-26 failed `test_host.mojo`'s baseline there. **On the
 reference Mac the run splits in two.** A macOS build beside `max-core`
 links the runtime into every binary, so E32 refuses the prefork baselines
 with 78; the 1.7.0 run failed at the doctor's baseline that way before
-any rule ran. There, run `uv run poe sabotage-host --skip parallel` (58
-rules, about thirty minutes) and then `uv run --group max poe
+any rule ran. There, run `uv run poe sabotage-host --skip parallel` (every
+rule but that one, about thirty minutes) and then `uv run --group max poe
 sabotage-host --only parallel`, and follow both with a plain `uv sync`,
 which takes `max-core` back out; a build made while it is installed reads
 as linked. A sabotage that

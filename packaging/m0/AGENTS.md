@@ -99,7 +99,9 @@ one home; `0.x` until the layer soak). Rules:
   `packaging/` on purpose: `test.yml` ignores `docs/**` and root `*.md`,
   so there an edit to the page alone still runs it. Its `uvx m0 new` and
   bare `uv sync` lines are what `run_quickstart.py` re-points at the
-  tree's wheel — reword either and the runner refuses the page — and its
+  tree's wheel — reword either and the runner refuses the page — its
+  `--port 8080` becomes a free port wherever a block spells it as one (a
+  port named any other way is refused too), and its
   block counts are pinned in the task AND read by `check-docs`. The host
   page's refusal and flag tables, the index's command table and the two
   loop times are held to `host.mojo`, `flags.mojo`, `cli.py`, `checks.py`

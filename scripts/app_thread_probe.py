@@ -30,7 +30,9 @@ banner check is what turned that default change into a failure here rather
 than a silently narrower gate.
 
     python3 scripts/app_thread_probe.py                 # the gate
-    python3 scripts/app_thread_probe.py --bin ./bin/m0serve --port 8641
+    python3 scripts/app_thread_probe.py --bin ./bin/m0serve --port BASE
+
+One port per shape, upward from `--port`; without it, a free run of them.
 
 Prints one `TICKS shape=... idle=N` line per shape for the recorder.
 """
@@ -121,10 +123,12 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--bin", default=os.path.join(REPO, "bin", "m0serve"))
     ap.add_argument("--app-dir", default=os.path.join(REPO, "apps", "wsgi_bare"))
-    ap.add_argument("--port", type=int, default=8641)
+    ap.add_argument("--port", type=int, default=None)
     ap.add_argument("--idle", type=float, default=3.0)
     ap.add_argument("--min-ticks", type=int, default=20)
     args = ap.parse_args()
+    if args.port is None:
+        args.port = probelib.free_port(len(SHAPES))
 
     failures = []
     for i, (name, flags) in enumerate(SHAPES):
