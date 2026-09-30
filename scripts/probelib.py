@@ -985,7 +985,12 @@ def _selftest():
 
     # Heartbeats for 3 s against a 2 s read timeout, then silence: a reader
     # that ignored its deadline ends at about 5 s, not hanging the selftest,
-    # and fails the bound below.
+    # and fails the `took < 2` bound below -- that bound is the check.
+    # The first heartbeat rides the event's own write, so "a heartbeat
+    # arrived" needs the beats thread scheduled once, as `first` already
+    # does: counting the 50 ms beats inside the 0.4 s window failed on a
+    # macOS runner that starved this thread ~300 ms (release run
+    # 36648988834), with the deadline working.
     listener = socket.socket()
     listener.bind(("127.0.0.1", 0))
     listener.listen(4)
@@ -995,7 +1000,7 @@ def _selftest():
         conn, _ = listener.accept()
         until = time.monotonic() + 3
         with contextlib.suppress(OSError):
-            conn.sendall(b"data: first\n\n")
+            conn.sendall(b"data: first\n\n: heartbeat\n\n")
             while not stop_beats.wait(0.05) and time.monotonic() < until:
                 conn.sendall(b": heartbeat\n\n")
             stop_beats.wait(30)
@@ -1011,7 +1016,7 @@ def _selftest():
             got.append(ev)
     took = time.monotonic() - t0
     check("a deadline ends a stream whose heartbeats reset every read timeout (%.2f s)"
-          % took, 0.3 < took < 2 and got[0].data == "first" and len(got) > 2)
+          % took, 0.3 < took < 2 and len(got) >= 2 and got[0].data == "first")
     check("...and puts the socket's own timeout back", sock.gettimeout() == 2)
     stop_beats.set()
     sock.close()

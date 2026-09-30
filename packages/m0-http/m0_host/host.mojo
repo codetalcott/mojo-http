@@ -178,7 +178,7 @@ from lightbug_http.accept_share import AcceptShare
 from lightbug_http.address import NetworkType
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.c.process import process_exit
+from lightbug_http.c.process import getpid, process_exit
 from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
@@ -1082,6 +1082,12 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     # Inactive with one worker or under the knob; binding is harmless there.
     bind_accept_share(share, worker, host_page.addr(0))
     var shutdown_fd = install_shutdown_signals()
+    if forked and shutdown_fd >= 0:
+        # Until here a SIGTERM took the default action, and a worker it
+        # reached died without draining; from here it drains. A gate that
+        # signals the supervisor waits for this line from every worker,
+        # since one worker answering says nothing of the rest (S1).
+        print("[worker {}] pid={} armed for a graceful stop".format(worker, getpid()), flush=True)
 
     var ctx = HostContext(
         worker, workers, server_config.max_connections, app_page,
