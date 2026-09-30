@@ -9,8 +9,8 @@ built server could die of it while every test passed, so each test here
 puts the default back first: a missing ignore then kills the test process
 (status 141) where a test provokes the signal, or leaves the default for
 the test to read back where it does not, and `poe test-http`, which runs
-each file with `|| exit 1`, fails either way. `smoke-host` holds the same
-on a built binary.
+each file in a process of its own and reads a death by signal as a
+failure, fails either way. `smoke-host` holds the same on a built binary.
 """
 
 from std.ffi import c_int, c_uint, external_call, get_errno

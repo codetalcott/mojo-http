@@ -162,7 +162,11 @@ echo "all apps built; datastar_todo links no libsqlite3"
 # how test-wsgi once came to need its own package listed first). Every test/
 # now carries the marker, every task below still lists its package first as
 # a second layer, and each package's `test_resolution.mojo` fails loudly if
-# either protection erodes.
+# either protection erodes. The package test tasks build through
+# scripts/mojo_suite.py, whose runner cannot sit inside a package (a
+# package refuses `main()`), so it links the package's own `src` beside
+# itself instead: the same guarantee, whatever the -I order, which
+# `sabotage-mojo-suite` proves with a decoy `src` first.
 # Tests of an APPLICATION's own modules, as opposed to a package's: an app
 # under apps/ keeps them in apps/<app>/test/ and imports its modules the way
 # its server does (`from blobs.board import ...`), through -I apps/. No
@@ -172,9 +176,11 @@ echo "all apps built; datastar_todo links no libsqlite3"
 help = "Test the example apps' own modules (apps/*/test/test_*.mojo)"
 shell = "for f in apps/*/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http -I packages/m0-datastar -I apps/ \"$f\" || exit 1; done"
 
+# Built as one program and run once per file, as `test-http` is (its
+# comment says why).
 [tool.poe.tasks.test-wsgi]
 help = "Test m0-wsgi (mapping logic only; needs no interpreter)"
-shell = "for f in packages/m0-wsgi/test/test_*.mojo; do mojo run -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
+shell = "python3 scripts/mojo_suite.py packages/m0-wsgi -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http"
 
 # The executor shim's ownership rules, with no server and no Mojo. The shim
 # is a Python program inside a Mojo string, so it can be extracted, exec'd,
@@ -912,17 +918,33 @@ shell = "find packages \\( -name '*.mojoc' -o -name '*.mojopkg' -o -name 'libm0c
 
 # --- Test ------------------------------------------------------------------
 
+# The packages' tests are each built as one program and run once per file;
+# `test-http`'s comment says why and what the runner checks.
 [tool.poe.tasks.test-core]
 help = "Test m0-core"
-shell = "for f in packages/m0-core/test/test_*.mojo; do mojo run -I packages/m0-core \"$f\" || exit 1; done"
+shell = "python3 scripts/mojo_suite.py packages/m0-core -I packages/m0-core"
 
+# m0-http's 61 test files are built as ONE program and run once per file,
+# each file in a process of its own (review record TH). `mojo run` per file
+# compiled m0-http from source 61 times: 459-579 s of the cold `unit-tests`
+# job on ubuntu, 7 s of it the tests running. scripts/mojo_suite.py says
+# how, and why the runner registers each file's tests itself: it prints
+# every file's tests run beside the tests it defines and fails on any
+# difference, on a failing test, a death by signal, a build that fails, and
+# a file that does not compile on its own (`mojo doc`, which elaborates the
+# code no test reaches). `mojo run` of one file is still how to run one.
+# `sabotage-mojo-suite` proves each of those against a tiny package.
 [tool.poe.tasks.test-http]
-help = "Test m0-http"
-shell = "for f in packages/m0-http/test/test_*.mojo; do mojo run -I packages/m0-http -I packages/m0-core \"$f\" || exit 1; done"
+help = "Test m0-http: every test file built as one program, each run in a process of its own"
+shell = "python3 scripts/mojo_suite.py --selftest && python3 scripts/mojo_suite.py packages/m0-http -I packages/m0-http -I packages/m0-core"
+
+[tool.poe.tasks.sabotage-mojo-suite]
+help = "Break a tiny package one way per arm; the packages' test runner must fail each in its own words"
+shell = "python3 scripts/mojo_suite.py --sabotage"
 
 [tool.poe.tasks.test-datastar]
 help = "Test m0-datastar"
-shell = "for f in packages/m0-datastar/test/test_*.mojo; do mojo run -I packages/m0-datastar -I packages/m0-core -I packages/m0-http \"$f\" || exit 1; done"
+shell = "python3 scripts/mojo_suite.py packages/m0-datastar -I packages/m0-datastar -I packages/m0-core -I packages/m0-http"
 
 # The Datastar SDK's OWN conformance cases, vendored from the tag
 # consts.VERSION pins (packages/m0-datastar/test/sdk/, hashed in MANIFEST):
@@ -1092,11 +1114,12 @@ default_item_type = "ref"
 # The packages' Mojo tests, all but m0-sqlite's; their whole-package
 # compiles (the fork, the host); and the chunked decoder's trailer sabotage
 # and fuzzer, whose compiles the job's own steps that run them again reuse.
-# `test-http` is most of it and grows with each event loop test. CI's
-# `unit-tests` job, after its own `build-all`.
+# `test-http` builds its package's tests as one program, and
+# `sabotage-mojo-suite` beside it proves that runner. CI's `unit-tests`
+# job, after its own `build-all`.
 [tool.poe.tasks.test-packages]
 help = "test-all's first half: the packages' tests but m0-sqlite's, the fork and host compiles, the decoder's sabotage and fuzzer (CI's unit-tests job)"
-sequence = ["check-fork-package", "check-host-package", "test-core", "test-http", "test-datastar", "test-apps", "test-wsgi", "sabotage-trailers", "fuzz-request", "test-postgres"]
+sequence = ["check-fork-package", "check-host-package", "test-core", "test-http", "sabotage-mojo-suite", "test-datastar", "test-apps", "test-wsgi", "sabotage-trailers", "fuzz-request", "test-postgres"]
 default_item_type = "ref"
 
 # The executor shim's rules; five tasks moved here from the first half to

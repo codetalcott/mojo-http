@@ -35,9 +35,10 @@ jobs:
     # then ~490 s (ubuntu) and ~820 s (macOS), because its sabotage ran
     # every test once per guard (9 tests and 10 guards then, 59 and 55
     # later), until #483 had each guard run only the test written for it:
-    # 26 s and 33 s. Then `test-http`, which compiles the package from
+    # 26 s and 33 s. Then `test-http`, which compiled the package from
     # source once per test file (62 files, ~575 s on ubuntu, 3 s of it the
-    # tests running). Then the gates added since (the Datastar SDK's
+    # tests running) until review record TH built them as one program
+    # (scripts/mojo_suite.py). Then the gates added since (the Datastar SDK's
     # sabotage, the scaffold's templates, the copy-back IR).
     #
     # `poe test-all` stays the whole, run locally. CI runs its halves: this
@@ -68,11 +69,12 @@ jobs:
     # `test-postgres` (23 s cold on ubuntu, 16 on macOS) stays in this
     # half: moved, it would add 23 s to `unit-gates` on ubuntu, where the
     # halves are even and set the run's length, to save 16 s on macOS,
-    # where this job is the longer but ends first. `test-http`
-    # (563-666 s of this job) grows 20-30 s with each event loop test, so
-    # this half is the one to lighten next, and moving a task between the
-    # halves is free. The trailer sabotage and the fuzzer stay: this job's
-    # own steps that run them again reuse `test-packages`' compiles.
+    # where this job is the longer but ends first. `test-http` was 459-666 s
+    # of this job, 20-30 s more with each event loop test, until TH built
+    # its files as one program; since then `unit-gates` is the longer half,
+    # and moving a task between the halves is free. The trailer sabotage
+    # and the fuzzer stay: this job's own steps that run them again reuse
+    # `test-packages`' compiles.
     #
     # Mojo's compile cache is restored below and saved after the job. It
     # holds one entry per whole program and CPU compiled for (`mojo run`
