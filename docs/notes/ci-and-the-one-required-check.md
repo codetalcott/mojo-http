@@ -201,9 +201,10 @@ minutes in late August and 14-18 by mid-September. Most of the growth was
 times guards: 9 tests and 10 guards then, 59 and 55 by 2026-09-29. Since
 pull request #483 each guard runs only the test written for it, so it costs
 tests plus guards, and `test-shim` takes 26 seconds on ubuntu and 33 on
-macOS. Then `test-http`, which compiles `m0-http` from source once per test
+macOS. Then `test-http`, which compiled `m0-http` from source once per test
 file (62 files, about 575 seconds on ubuntu, 3 of them spent running
-tests). Then the gates added since.
+tests) until review record TH built them as one program (below). Then the
+gates added since.
 
 So `test-all` is now `build-all` and two halves, and CI runs each half in a
 job of its own: `unit-tests` runs `poe test-packages` and `unit-gates` runs
@@ -245,9 +246,10 @@ ubuntu and 16 on macOS, stayed in `unit-tests` (review record CI1): moved,
 it would add 23 seconds to `unit-gates` on ubuntu, where the halves are even
 and set the run's length, to save 16 on macOS, where `unit-tests` is the
 longer but ends first. Compare the halves on one CPU
-model, never across a run's two draws. `test-http` is most of `unit-tests`
-(563-666 seconds) and grows 20-30 seconds with each event loop test, so
-that half is the one to lighten next. The split is measured,
+model, never across a run's two draws. `test-http` was most of
+`unit-tests` (563-666 seconds), 20-30 seconds more with each event loop
+test, until review record TH built its files as one program (below). The
+split is measured,
 not thematic, and moving a task between the halves is free. A task added to
 `test-all`'s own sequence, beside the halves, would run locally and in no
 job, so `check-docs` refuses anything `test-all` reaches that no
@@ -278,6 +280,63 @@ cold. An edit also makes every program that reaches the edited file cold
 again, a one-line comment included, and most of the review's pull requests
 edit the fork that every event-loop test reaches. A cap has to hold a cold
 run.
+
+## A package's tests are one program
+
+`test-http` ran `mojo run` on each of m0-http's 61 test files, and each run
+compiled m0-http from source again: 459 to 579 seconds of a cold
+`unit-tests` job on ubuntu across the eight runs before review record TH,
+7 of them running tests. A compile keeps about one and a third cores busy,
+and each of the 61 programs elaborated and generated much the same library
+code. `scripts/mojo_suite.py` builds a package's test files as one program
+and runs it once per file, `SUITE_FILE` naming the file, so each file
+still runs in a process of its own: what one file does to its process (a
+signal disposition, an environment variable, a thread, a fork) never
+reaches the next. Cold on an Apple-silicon Mac busy with other work (a
+load average of 10 to 14 on ten cores), the per-file loop took 390 seconds
+and the one program 107, its build 99; with the per-file check below
+running beside the build, and a load of 5 to 12, 66. Both counted 922
+tests in 61 files.
+
+Three facts about Mojo 1.1.0 shaped it, each measured:
+
+- A module inside a package may not define `main()`, and
+  `test/__init__.mojo` makes each `test/` a package. So the runner is built
+  in `bin/suite/<package>/`, beside a symlink to each test file, where each
+  is a top-level module, and a symlink `src` to the package's own `src`,
+  which the entry file's directory puts ahead of every `-I` root. That link
+  does for the one program what `test/__init__.mojo` does for `mojo run` of
+  one file: the package's own `src` wins whatever the `-I` order.
+- `__functions_in_module()` does not survive evaluation in an imported
+  module. Calling each file's `main()` registered no tests for 3 of the 61
+  files, and with one of them built alone the compiler crashed. So the
+  runner registers each `def test_*(` at column 0 by name, refuses a file
+  whose `main()` is anything but the discovery line, and refuses a
+  `def test_` or `fn test_` at column 0 that it cannot read. A test is never
+  dropped silently: each file's count of tests run must equal what the file
+  defines.
+- An imported module is elaborated only as far as something reaches it.
+  A helper nothing calls, an import nothing uses, or the file's own
+  `main()` builds with an error in it, where `mojo run` of that file fails.
+  So each file is also checked as a file of its own with `mojo doc`, which
+  elaborates every body and generates no code: about a second a file, two
+  at a time beside the build on a four-vCPU runner. `mojo doc` does not
+  warn, though, so a warning in code no test reaches no longer reaches the
+  warning ratchet's log.
+
+`poe sabotage-mojo-suite`, beside `test-http` in `unit-tests`, breaks a
+small package ten ways — a failing test, a death by SIGKILL, a type error
+in a test, three errors in code no test reaches, a test it cannot
+register, a `main()` that does more, the runner without its `src` link
+with a decoy `src` first, and the runner dropping a test — and requires
+each to fail the run in the runner's own words, while the package
+unbroken passes. The runner's directory keeps one path, so the compile
+cache hits on a re-run. But the one program is one cache entry: an edit to
+anything it compiles makes the whole build cold, where the loop recompiled
+only the programs the edit reached. `test-core`, `test-datastar` and
+`test-wsgi` run the same way (cold on the same Mac, 16 seconds to 4, 17 to
+8 and 33 to 12). `test-apps` stays a loop: its files belong to several
+applications, none of them a package.
 
 ## The warning floor
 

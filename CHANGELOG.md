@@ -99,6 +99,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the others: a script that stops the server soon after starting it
   should wait for this line from every worker, or a worker still importing
   dies of the signal instead of draining.
+- **`poe test-http` compiles m0-http's tests once, not once per file**,
+  and `test-core`, `test-datastar` and `test-wsgi` do the same. Each task
+  ran `mojo run` on every test file, and each run compiled the package from
+  source again: `test-http` took 459 to 579 s of CI's cold `unit-tests` job
+  on ubuntu, 7 s of it running tests. `scripts/mojo_suite.py` builds a
+  package's test files as one program and runs it once per file, so each
+  file still runs in a process of its own. Beside the build it checks each
+  file on its own with `mojo doc`, so an error in code no test calls still
+  fails the task. It prints each file's count of tests run beside the
+  tests the file defines, and fails on any difference, a failing test, a
+  death by signal, or a file that does not compile. Cold on a busy
+  Apple-silicon Mac, `test-http` went from 390 s to 66-107 s.
+  `poe sabotage-mojo-suite` breaks a small package ten ways and requires
+  each to fail. To run one file, `mojo run` it as before.
 
 ### Removed
 
