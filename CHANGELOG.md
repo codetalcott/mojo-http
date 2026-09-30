@@ -90,6 +90,18 @@ wheel ships as `m0 0.4.0`, whose `Login.from_env` refuses an unset
   written the way that code was. A sweep of every other struct the tree
   reaches through an address found none that anything writes while a call
   holds a copy (docs/notes/mut-arguments-and-raw-addresses.md).
+- **Three rules of the event loop and of `--spawn-workers` that no gate
+  held now each have one** (SPEC A23, L16, E35). None changes what the
+  server does.
+  - A body timer that expires on a connection no longer reading its body
+    is deleted, not only skipped. On Linux an expiry left registered is
+    reported by every wait after it, and the loop spins.
+  - A WebSocket this side has closed keeps its two-second wait for the
+    peer's Close while its last frames go out slowly. Each send that moves
+    bytes would otherwise restart that wait as `--idle-timeout`.
+  - CI serves `--workers 2 --spawn-workers` from a copy of m0serve under a
+    directory named `josé`, the one shape that reaches the fix that lets a
+    binary under a non-ASCII path re-exec itself.
 
 ### Changed
 
