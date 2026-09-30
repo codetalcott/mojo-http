@@ -1111,12 +1111,6 @@ lightbug_http
         returns -1, where each acted on whatever descriptor had taken the
         number since (review record B27b).
 
-      - c/network.mojo (2026-09-29): `inet_pton` counts its address buffer
-        in bytes. It was `stack_allocation[4, c_void]` (16 for AF_INET6),
-        and `c_void` is `NoneType`, whose size is zero, so the address was
-        written past a buffer of no bytes onto the caller's stack; found
-        crashing `ListenConfig.listen` (review record B27b).
-
       - offload.mojo (2026-09-29): `OffloadPool.stop` waits for room to
         pill a thread that parks on its lane's socket -- an executor, a
         test's thread, every pool thread under `M0_POOL_ELASTIC=0` or
