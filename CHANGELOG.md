@@ -44,7 +44,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `sabotage-outbox-cap`, `autobahn`, the three browser checks and the
   executed quickstarts take a free port each run, so two runs on one
   machine no longer collide, and `poe check-task-shells` refuses a fixed
-  port in any task but a `serve-*` one.
+  port in any task but a `serve-*` one. `poe smoke-wheel` proves the
+  installed m0serve runs on the runtime its wheel ships by asking the
+  loader which file it loaded: it used to remove that runtime and let the
+  loader abort the process, which on macOS wrote a crash report every run.
 
 ### Removed
 

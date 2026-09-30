@@ -360,7 +360,8 @@ jobs:
   # release path.
   #
   # Scoped to the arch-specific part -- build plus the wheel smoke, which
-  # installs outside the tree and runs the removal sabotage -- rather than
+  # installs outside the tree and asks the loader where the runtime came
+  # from -- rather than
   # the whole smoke suite. What differs by architecture is codegen and
   # linking, not HTTP semantics. Widen it if this ever catches something
   # the wheel smoke misses.
