@@ -184,9 +184,10 @@ per connection that changes hands. Built.
   writes its line no more, and "a crashed worker's queued datagrams wait
   for the respawn" held only when a respawn came. The supervisor replaces
   nobody once it is stopping (D10), once it has spent its respawns (five
-  deaths inside a second of their fork, or ten times the worker count), or
-  after an exit 0 or 78, and a worker killed while parked read as parked
-  with no load for the rest of the server's life: `pick` handed it
+  deaths inside a second of their fork, or ten times the worker count
+  within an hour; SPEC E36), or after an exit 0 or 78, and a worker
+  killed while parked read as parked with no load for the rest of the
+  server's life: `pick` handed it
   connections until its `pending` outgrew the acceptor's load, each into
   a channel nothing would read (review record RP). With `--workers 2` and
   worker 1 killed with SIGKILL until the supervisor stopped respawning

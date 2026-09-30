@@ -136,6 +136,106 @@ def test_supervisor_exits_nonzero_when_respawn_budget_is_spent() raises:
     assert_equal(exit_code(status), 1)
 
 
+# --- The respawn budget is a rate (SPEC E36) ----------------------------------
+#
+# `max_respawns` used to be compared against a count of every respawn in the
+# supervisor's life, so a server whose workers crashed rarely stopped
+# replacing them after `workers * 10` crashes, however far apart. It is now
+# counted over `respawn_window_ns`, an hour, which the first test sets short.
+# The crashes are spaced past the rapid-crash breaker's second, so neither
+# test is about the breaker.
+
+
+comptime _SPACED_CRASH_LIFE_S = 1.1
+"""How long each crashing incarnation serves before it crashes: past the
+rapid-crash breaker's second, so every crash is an ordinary one."""
+
+
+def _spaced_crash_scenario(budget: Int, window_ns: Int, crashes: Int, tag: String):
+    """One worker whose first `crashes` incarnations each serve for
+    `_SPACED_CRASH_LIFE_S` and crash (exit 9); the next leaves the `ok`
+    marker and exits 0. `budget` respawns are allowed in any `window_ns`,
+    or in the supervisor's own window when `window_ns` is 0."""
+    try:
+        var supervisor = WorkerSupervisor(1)
+        supervisor.max_respawns = budget
+        if window_ns > 0:
+            supervisor.respawn_window_ns = window_ns
+        supervisor.fork_all()
+        var k = 0
+        while path.exists(tag + String(k)):
+            k += 1
+        if k >= crashes:
+            with open(tag + "ok", "w") as f:
+                f.write(String("the incarnation after the last crash started"))
+            process_exit(0)
+        with open(tag + String(k), "w") as f:
+            f.write(String("crashing"))
+        sleep(_SPACED_CRASH_LIFE_S)
+        process_exit(9)
+    except:
+        process_exit(7)
+
+
+def _spaced_crashes(
+    budget: Int, window_ns: Int, crashes: Int
+) raises -> Tuple[Int, Int, Bool]:
+    """Run the scenario and answer the supervisor's exit code, how many
+    incarnations crashed, and whether one started after the last crash."""
+    var tag = "/tmp/m0_spaced_" + String(getpid()) + "_"
+    var markers = List[String]()
+    markers.append(tag + "ok")
+    for k in range(crashes + 1):
+        markers.append(tag + String(k))
+    for m in markers:
+        if path.exists(m):
+            remove(m)
+    var pid = fork()
+    if pid == 0:
+        _spaced_crash_scenario(budget, window_ns, crashes, tag)
+        process_exit(99)  # unreachable
+    var result = waitpid_blocking(pid)
+    var crashed = 0
+    while path.exists(tag + String(crashed)):
+        crashed += 1
+    var started = path.exists(tag + "ok")
+    for m in markers:
+        if path.exists(m):
+            remove(m)
+    assert_false(was_signaled(result[1]), "supervisor process died on a signal")
+    return (exit_code(result[1]), crashed, started)
+
+
+def test_a_budget_spent_over_a_longer_window_is_not_spent() raises:
+    """Crashes rarer than the budget's rate are replaced however many there
+    have been: two respawns allowed in any 1.5 s, and three crashes 1.1 s
+    apart, so the window never holds more than one respawn when the next
+    crash comes. The third crash is replaced and the supervisor exits 0.
+    Counted over the supervisor's life, the budget ran out at the third:
+    `max respawns (2) reached, not respawning`, and an exit 1 (measured).
+
+    covers: E36
+    """
+    var got = _spaced_crashes(budget=2, window_ns=1_500_000_000, crashes=3)
+    assert_equal(got[1], 3, "the scenario did not crash three times")
+    assert_true(got[2], "the worker was not replaced after its third crash")
+    assert_equal(got[0], 0)
+
+
+def test_a_budget_spent_inside_the_window_is_spent() raises:
+    """The same three crashes inside the supervisor's own window, an hour:
+    the third finds two respawns already in it, is not replaced, and the
+    supervisor exits 1, as it did for a budget counted over its life. A
+    rate still ends a crash loop the rapid-crash breaker cannot see.
+
+    covers: E36
+    """
+    var got = _spaced_crashes(budget=2, window_ns=0, crashes=3)
+    assert_equal(got[1], 3, "the scenario did not crash three times")
+    assert_false(got[2], "the worker was replaced with its budget spent")
+    assert_equal(got[0], 1)
+
+
 def _refusing_scenario(first_marker: String, again_marker: String):
     """Every incarnation exits 78 -- the shape of a worker refusing a mode
     its interpreter cannot run. A second incarnation would mean a respawn

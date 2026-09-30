@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**308 capabilities: 282 verified, 0 implemented, 0 planned, 26 out of scope.** Of the 282 verified, 275 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**309 capabilities: 283 verified, 0 implemented, 0 planned, 26 out of scope.** Of the 283 verified, 276 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -127,6 +127,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | E1 | Multi-process prefork with a supervising parent | verified | `Smoke test the Django WSGI example` (every PR) |
 | E2 | Crashed workers respawned | verified | `test_respawn.mojo:test_respawned_worker_returns_to_the_callers_startup_path` (every PR) |
 | E3 | A spent respawn budget exits nonzero rather than looping | verified | `test_respawn.mojo:test_supervisor_exits_nonzero_when_respawn_budget_is_spent` (every PR) |
+| E36 | The respawn budget is a rate, not a total: at most `workers × 10` respawns in any hour, so a server whose workers crash rarely replaces every one for as long as it runs, while a crash loop the rapid-crash breaker cannot see (a worker that serves past its first second, then crashes again) still spends the window and ends in E3's exit 1 | verified | `test_respawn.mojo:test_a_budget_spent_over_a_longer_window_is_not_spent` (every PR) — two respawns allowed in any 1.5 s and three crashes 1.1 s apart: the third is replaced and the supervisor exits 0. Counted over the supervisor's life, the budget ran out at the third, `max respawns (2) reached`, and the exit was 1 (measured before the fix): a server whose four workers crashed once a day stopped replacing them after about forty days, and served on fewer, with no error, until none was left. The other direction is `test_respawn.mojo:test_a_budget_spent_inside_the_window_is_spent`, the same crashes inside the hour spending it and exiting 1. `sabotage-host` (pre-release) counts the budget over the supervisor's life and leaves a respawn out of the window, each caught by its test (review RB) |
 | E4 | Handler thread pool behind each event loop | verified | `Smoke test the Mojo handler pool` (every PR) |
 | E5 | Free-threaded CPython, N loops on N threads | verified | `py-canary` (weekly) |
 | E6 | A GIL-enabled interpreter is refused, never warned-and-run | verified | `Smoke test the threaded mode's guard` (every PR) |

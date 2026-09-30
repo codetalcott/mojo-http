@@ -12,7 +12,8 @@ apps would only see after a `.mojoc` rebuild, which a test run of `src.*`
 does not need), `test_cmdline.mojo` for the command-line reader both hosts
 share (`m0_http.cmdline`, the same arrangement), or `test_respawn.mojo` for
 the supervisor's part of the host's contract (a refusal ending the
-siblings, in `multiworker.mojo`).
+siblings, and the respawn budget counted over a window, in
+`multiworker.mojo`).
 The fork is resolved from source by the smokes, and the unit gates
 compile `src.*` directly, so nothing needs rebuilding -- with one
 exception: a rule against `src/` gated on a SMOKE would need `build-http`
@@ -384,6 +385,23 @@ SABOTAGES = [
         '                " a failed drain".format(child_pid, sig)\n'
         "            )\n            self._failed_stopping = True\n",
         '                " a failed drain".format(child_pid, sig)\n            )\n',
+    ),
+    # --- the respawn budget is a rate (SPEC E36) ---------------------------------
+    # Counted over the supervisor's life, the budget ran out on rare crashes
+    # too, and the server served on fewer workers until none was left.
+    (
+        "the respawn budget is counted over the supervisor's life",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        "        if len(self._respawn_times) >= self.max_respawns:\n",
+        "        if self.respawn_count >= self.max_respawns:\n",
+    ),
+    (
+        "a respawn is left out of the window it spends",
+        RESPAWN,
+        MULTIWORKER_SRC,
+        "        self._respawn_times.append(self.last_fork_ns)\n",
+        "",
     ),
     # --- loops on threads (SPEC E27-E29), against smoke-host-threads ----------
     (

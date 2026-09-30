@@ -482,6 +482,14 @@
       "evidence": "`test_respawn.mojo:test_supervisor_exits_nonzero_when_respawn_budget_is_spent` (every PR)"
     },
     {
+      "id": "E36",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "The respawn budget is a rate, not a total: at most `workers \u00d7 10` respawns in any hour, so a server whose workers crash rarely replaces every one for as long as it runs, while a crash loop the rapid-crash breaker cannot see (a worker that serves past its first second, then crashes again) still spends the window and ends in E3's exit 1",
+      "status": "verified",
+      "evidence": "`test_respawn.mojo:test_a_budget_spent_over_a_longer_window_is_not_spent` (every PR) \u2014 two respawns allowed in any 1.5 s and three crashes 1.1 s apart: the third is replaced and the supervisor exits 0. Counted over the supervisor's life, the budget ran out at the third, `max respawns (2) reached`, and the exit was 1 (measured before the fix): a server whose four workers crashed once a day stopped replacing them after about forty days, and served on fewer, with no error, until none was left. The other direction is `test_respawn.mojo:test_a_budget_spent_inside_the_window_is_spent`, the same crashes inside the hour spending it and exiting 1. `sabotage-host` (pre-release) counts the budget over the supervisor's life and leaves a respawn out of the window, each caught by its test (review RB)"
+    },
+    {
       "id": "E4",
       "section": "E",
       "category": "E. Process and worker model",

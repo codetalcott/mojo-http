@@ -337,6 +337,27 @@ comptime _RELOAD_DRAIN_NS = 5_000_000_000
 comptime _SLOT_PROBE_PID = 0x6D30_5F32  # "m0_2"
 """What `_arm_signal_propagation` writes into the child-PID block and reads back."""
 
+comptime RESPAWN_WINDOW_NS = 3_600_000_000_000
+"""The window the respawn budget is counted over: an hour (SPEC E36).
+
+The budget ends a crash loop the rapid-crash breaker cannot see: a worker
+that starts, serves for more than a second and crashes again, because a
+request that kills it keeps arriving or a leak kills it every few minutes.
+Replaced forever, that loop hides; given up on, the supervisor exits 1 once
+the workers are gone, which a platform restarts and reports.
+
+What tells a loop from bad luck is how OFTEN a server crashes, not how many
+times it has, so the budget is a rate: at most `max_respawns` respawns in
+any window of this length. Counted over the whole life, it ran out on rare
+crashes too -- at one a day on four workers, after about forty days -- and
+the server then served on fewer workers, with no error, until none was left.
+
+An hour at `num_workers * 10` changes nothing for a loop whose whole budget
+fits inside it, which is every loop faster than one crash per worker every
+six minutes: the supervisor gives up exactly when it did before. A server
+that crashes more rarely than that is replaced for as long as it runs, and
+each crash is still logged."""
+
 
 struct WorkerSupervisor:
     """Supervises forked worker processes with crash respawn."""
@@ -357,7 +378,15 @@ struct WorkerSupervisor:
     """
     var num_workers: Int
     var max_respawns: Int
+    """The respawn budget: at most this many respawns in any
+    `respawn_window_ns`. `num_workers * 10`; a test sets it lower."""
+    var respawn_window_ns: Int
+    """The window `max_respawns` is counted over: `RESPAWN_WINDOW_NS`, an
+    hour; a test sets it short so the proof runs in seconds."""
     var respawn_count: Int
+    """Every respawn in the supervisor's life: reported, never a budget."""
+    var _respawn_times: List[Int]
+    """When each respawn inside the window was forked, oldest first."""
     var rapid_crash_count: Int
     var last_fork_ns: Int
     var _last_freed_index: Int
@@ -400,7 +429,9 @@ struct WorkerSupervisor:
         self.worker_index = -1
         self.num_workers = num_workers
         self.max_respawns = num_workers * 10
+        self.respawn_window_ns = RESPAWN_WINDOW_NS
         self.respawn_count = 0
+        self._respawn_times = List[Int]()
         self.rapid_crash_count = 0
         self.last_fork_ns = 0
         self._last_freed_index = -1
@@ -846,14 +877,27 @@ struct WorkerSupervisor:
 
         Returns `_RESPAWN_PARENT` in the parent on success, `_RESPAWN_CHILD` in
         the freshly forked child (which must unwind out to `fork_all`'s
-        caller), and `_RESPAWN_FAILED` when the respawn budget is spent.
+        caller), and `_RESPAWN_FAILED` when the respawn budget is spent:
+        `max_respawns` respawns already inside the last `respawn_window_ns`
+        (`RESPAWN_WINDOW_NS`). The index is then left vacant for good, and
+        the exit is 1.
+
+        Only crashes come here. A reload's replacements are forked by
+        `_reload` itself and spend nothing.
         """
         if supervisor_stopping():
             print("[parent] stopping: a worker that failed during the drain is not respawned")
             self._failed_stopping = True
             return _RESPAWN_FAILED
-        if self.respawn_count >= self.max_respawns:
-            print("[parent] max respawns ({}) reached, not respawning".format(self.max_respawns))
+        var since = perf_counter_ns() - self.respawn_window_ns
+        while len(self._respawn_times) > 0 and self._respawn_times[0] <= since:
+            _ = self._respawn_times.pop(0)
+        if len(self._respawn_times) >= self.max_respawns:
+            print(
+                "[parent] max respawns ({}) within {} s reached, not respawning".format(
+                    self.max_respawns, Float64(self.respawn_window_ns) / 1e9
+                )
+            )
             self._gave_up = True
             return _RESPAWN_FAILED
 
@@ -871,6 +915,7 @@ struct WorkerSupervisor:
 
         self.respawn_count += 1
         self.last_fork_ns = perf_counter_ns()
+        self._respawn_times.append(self.last_fork_ns)
         var respawn_index = self._last_freed_index
         var new_pid = fork()
         if new_pid == 0:
