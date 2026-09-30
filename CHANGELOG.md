@@ -49,6 +49,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Every anchor must match exactly once, a sabotage that only breaks a build
   is a miss, and each gate must pass on the unsabotaged tree first.
   `sabotage-outbox-cap`'s give-up rule now breaks the claim alone.
+- **`poe build-serve` skips the link when `bin/m0serve` is already
+  current.** Every smoke that serves through m0serve builds it first, so a
+  run of several smokes relinked an unchanged binary each time, 4 s on an
+  Apple-silicon Mac and about 8.5 on a CI runner. The build now writes
+  `bin/m0serve.stamp`, a digest of everything it read (its arguments, every
+  source under its include roots, the `.mojoc` artifacts, the toolchain and
+  what is installed beside it, the task itself and the scripts it runs) and
+  of the binary and runtime it left, and a later call whose digests all
+  match says `bin/m0serve is up to date` and stops, in under half a second.
+  Any change, a missing binary or stamp, or a build that failed rebuilds;
+  delete the stamp to force one. `poe check-serve-stamp` proves each input
+  rebuilds.
 - **`poe smoke-doctor` takes half as long.** To tell a configuration the
   server accepts from one it refuses, it waited a fixed 8 s for each of the
   seven that serve. It now polls until the server answers and allows it 2 s

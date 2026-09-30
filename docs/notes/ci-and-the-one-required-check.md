@@ -156,15 +156,27 @@ would fail every cited row at once. Moving a step between the jobs is free:
 the sheet reads step NAMES out of the file and does not care which job holds
 one.
 
-Two costs are larger than any rebalancing, and no job's to fix by moving
-steps. Every step whose task depends on `build-serve` relinks `bin/m0serve`
-before it runs, about 8.5 seconds each, though its job built the binary
-first: 44 steps, about six minutes a leg across the jobs. The `--doctor`
-smoke waited out an 8-second watchdog for each configuration that serves,
-seven of them, 56 of its 77 seconds, until review record CI1: it now polls
-until the server answers and allows it 2 seconds more, and an application
-that answers once and then exits proves on every run that the watchdog
-still reads such a server as its exit code, not as served.
+Two costs were larger than any rebalancing, and no job's to fix by moving
+steps. Every step whose task depends on `build-serve` relinked `bin/m0serve`
+before it ran, about 8.5 seconds each, though its job had built the binary
+first: 44 steps, about six minutes a leg across the jobs. Since review
+record CI2 the task skips the link when `bin/m0serve.stamp` proves the
+binary current: a digest of every input the build reads (its arguments, the
+sources under each `-I` root with the `.mojoc` it links and the fork, the
+toolchain and the venv beside it, the task's own body and the scripts it
+runs) and of the binary and runtime it left. Anything else builds, so an
+edit to the fork still reaches the binary through the next smoke's dep.
+`scripts/serve_stamp.py` holds the list, and `poe check-serve-stamp` runs
+the task's body against a stub toolchain with each input and output changed
+in turn, then breaks each rule in a copy. That took 82 seconds on an
+M-series Mac under two shells, so it is a step of `pid1`, an ubuntu job
+(dash is `sh` there) that ends minutes before the run's longest.
+
+The `--doctor` smoke waited out an 8-second watchdog for each configuration
+that serves, seven of them, 56 of its 77 seconds, until review record CI1:
+it now polls until the server answers and allows it 2 seconds more, and an
+application that answers once and then exits proves on every run that the
+watchdog still reads such a server as its exit code, not as served.
 
 No job `needs:` another, and the smokes used to: that gate put `unit-tests`
 on the front of every run and caught nothing (the comment on `smoke` names

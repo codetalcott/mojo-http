@@ -501,6 +501,18 @@ jobs:
         with:
           apt: libsqlite3-dev patchelf
       - run: uv run poe build-all
+      # build-serve skips the link when its stamp proves bin/m0serve current,
+      # which spares each smoke that names it as a dep about 8.5 s (review
+      # record CI2). A stamp that skipped a build it owed would hand every
+      # smoke after it a stale binary, green, so its rules are proven here:
+      # build-serve's own body under dash, which is poe's `sh` on this
+      # runner, against a stub toolchain, each input and output changed in
+      # turn, then each rule broken in a copy. No compiler; about a minute.
+      # Here rather than in a smoke job because this job runs 3.5-4.7 min,
+      # far from the run's longest, and its wheel builds call build-serve
+      # three times, so the stamp is also used for real a few steps on.
+      - name: Self-test build-serve's stamp
+        run: uv run poe check-serve-stamp
       - name: Smoke test SIGTERM delivered to PID 1 in a container
         run: uv run poe smoke-pid1
       # The documentation site's deploy image, built from THIS tree's wheel
@@ -648,8 +660,9 @@ jobs:
     # seven here, and the counter and the accept batch with the shutdown
     # smoke that compiles their apps first; host_check's three in
     # `smoke-app-layer`. Each job builds the packages and the serve CLI
-    # before its first smoke, and every step whose task depends on
-    # build-serve then relinks bin/m0serve anyway, about 8.5 s of it.
+    # before its first smoke. Every step after it whose task depends on
+    # build-serve relinked bin/m0serve anyway, about 8.5 s of it, until
+    # build-serve's stamp let it skip a binary nothing has changed (CI2).
     #
     # Shards are SEPARATE JOBS, never one job with `if: matrix.shard`:
     # scripts/spec_sheet.py refuses a SPEC row whose cited step carries an
@@ -1082,8 +1095,8 @@ jobs:
       - name: Build all packages
         run: uv run poe build-all
       # The serve CLI: one binary for every WSGI row. Built here once, so
-      # the tasks below that depend on it only relink it (about 8.5 s each)
-      # and the first build's cost is no one smoke's.
+      # the build's cost is no one smoke's, and the tasks below that depend
+      # on it find it current by its stamp and skip the link (CI2).
       - name: Build the serve CLI
         run: uv run poe build-serve
       # PEP 3333 conformance against a bare WSGI callable -- no framework, so a
