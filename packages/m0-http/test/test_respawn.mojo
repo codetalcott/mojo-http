@@ -29,10 +29,14 @@ from std.os import makedirs, path, remove, rmdir, setenv
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from std.time import perf_counter_ns, sleep
 
-from src.multiworker import WorkerSupervisor, _forget_supervisor_signals
+from src.multiworker import SharedAtomics, WorkerSupervisor, _forget_supervisor_signals
 from src.global_slot import record_supervisor_stop
 from src.signal import install_shutdown_signals
 from src.threads import read_one_byte_blocking
+from lightbug_http.accept_share import (
+    ACCEPT_SHARE_FIRST_WORKER_SLOT, ACCEPT_SHARE_WORKER_STRIDE, AcceptShare,
+    STATE_LEFT, STATE_PARKED, accept_share_slots,
+)
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
@@ -675,3 +679,222 @@ def test_a_spawn_that_cannot_exec_is_a_refusal_not_a_crash_loop() raises:
     var result = waitpid_blocking(pid)
     assert_false(was_signaled(result[1]), "supervisor died on a signal")
     assert_equal(exit_code(result[1]), 78)
+
+
+# --- A worker reaped and not replaced (review RP) ----------------------------
+#
+# Accept sharing reads each worker's `state` word off the pre-fork page, and a
+# worker that dies writes it no more: killed while parked, it read as parked
+# with no load, and `pick` handed it connections nothing would read when no
+# replacement followed. The supervisor marks every index it reaps left
+# (`share_accepts`, `_remove_pid`). The page here is the test's own, made
+# before the isolated supervisor is forked, so the test reads the supervisor's
+# marks directly -- while worker 0, which the mark must not touch, lives on.
+
+
+def _state_slot(worker: Int) -> Int:
+    """The slot of worker `worker`'s `state` word (`accept_share.mojo`)."""
+    return ACCEPT_SHARE_FIRST_WORKER_SLOT + ACCEPT_SHARE_WORKER_STRIDE * worker
+
+
+def _reaped_scenario(
+    page_addr: Int, share: AcceptShare, exit_with: Int, budget: Int,
+    reload_dir: String, ready: String, again: String, go: String,
+):
+    """Two workers over one accept-share page, each parked as a started
+    loop is. Worker 1 leaves `ready` and exits with `exit_with` at once,
+    with `budget` respawns allowed; a replacement leaves `again` once
+    parked and waits as worker 0 does. Worker 0 waits for `go`, then exits
+    0. A `reload_dir` supervises by polling, `--reload`'s loop."""
+    try:
+        var supervisor = WorkerSupervisor(2)
+        supervisor.max_respawns = budget
+        if reload_dir.byte_length() > 0:
+            supervisor.enable_reload([reload_dir], String(".m0-never"))
+        supervisor.share_accepts(share, page_addr)
+        supervisor.fork_all()
+        var mine = share.copy()
+        mine.bind(supervisor.worker_index, page_addr)
+        mine.start()
+        if supervisor.worker_index == 1:
+            if path.exists(ready):
+                with open(again, "w") as f:
+                    f.write(String("replaced, parked"))
+            else:
+                with open(ready, "w") as f:
+                    f.write(String("parked"))
+                process_exit(exit_with)
+        var waited = 0
+        while not path.exists(go) and waited < 1000:
+            sleep(0.01)
+            waited += 1
+        process_exit(0)
+    except:
+        process_exit(7)
+
+
+def _reap_worker_1(
+    exit_with: Int, budget: Int, polling: Bool, replaced: Bool = False
+) raises -> List[Int]:
+    """Run the scenario and answer, read while worker 0 still lives: worker
+    1's `state`, worker 0's, and where worker 0 would send a connection
+    while it holds fifty; then the supervisor's exit code. `replaced`: the
+    reads wait for worker 1's replacement to park, not for the mark."""
+    var tag = String(getpid())
+    var ready = "/tmp/m0_reaped_ready_" + tag
+    var again = "/tmp/m0_reaped_again_" + tag
+    var go = "/tmp/m0_reaped_go_" + tag
+    var dir = String("")
+    if polling:
+        dir = "/tmp/m0_reaped_reload_" + tag
+        makedirs(dir, exist_ok=True)
+    for m in [ready, again, go]:
+        if path.exists(m):
+            remove(m)
+    var page = SharedAtomics(accept_share_slots(2))
+    var share = AcceptShare(2)
+    var pid = fork()
+    if pid == 0:
+        _reaped_scenario(
+            page.addr(0), share, exit_with, budget, dir, ready, again, go
+        )
+        process_exit(99)  # unreachable
+    # The reap follows the death at once, and under polling within the
+    # interval; 5 s is a bound, never a wait on the good path.
+    var waited = 0
+    while waited < 500:
+        if replaced and path.exists(again):
+            break
+        if not replaced and path.exists(ready) and page.load(_state_slot(1)) == STATE_LEFT:
+            break
+        sleep(0.01)
+        waited += 1
+    var dead = page.load(_state_slot(1))
+    var live = page.load(_state_slot(0))
+    # Worker 0's view, fifty connections open: it keeps the next one unless
+    # a sibling is willing and lighter.
+    var view = share.copy()
+    view.bind(0, page.addr(0))
+    view.start()
+    var picked = view.pick(50, perf_counter_ns())
+    with open(go, "w") as f:
+        f.write(String("go"))
+    var result = waitpid_blocking(pid)
+    var readied = path.exists(ready)
+    var replacement = path.exists(again)
+    for m in [ready, again, go]:
+        if path.exists(m):
+            remove(m)
+    if polling:
+        rmdir(dir)
+    for fd in share.read_fds:
+        close_fd(fd)
+    for fd in share.write_fds:
+        close_fd(fd)
+    for fd in share.anchor_fds:
+        close_fd(fd)
+    assert_true(readied, "worker 1 never parked: the scenario itself is broken")
+    assert_equal(replacement, replaced, "worker 1 was replaced, or was not, against the scenario")
+    assert_false(was_signaled(result[1]), "the supervisor died on a signal")
+    return [dead, live, picked, exit_code(result[1])]
+
+
+def test_a_crashed_worker_the_supervisor_gave_up_on_is_never_picked() raises:
+    """A worker that crashes once the respawn budget is spent is not
+    replaced, and the supervisor, which reaps it, marks its index left
+    while its sibling serves on: that sibling keeps its fifty connections'
+    next one rather than handing it to the dead worker's channel, and its
+    own word is untouched. Before the mark the dead worker read parked with
+    no load for good, and every connection handed to it was accepted and
+    never answered. The exit is 1, as for any supervisor that gave up.
+
+    covers: E16
+    """
+    var got = _reap_worker_1(9, budget=0, polling=False)
+    assert_equal(got[0], STATE_LEFT, "the supervisor did not mark the worker it reaped")
+    assert_equal(got[1], STATE_PARKED, "the mark reached the sibling that lives")
+    assert_equal(got[2], 0, "a sibling would hand a connection to the reaped worker")
+    assert_equal(got[3], 1)
+
+
+def test_a_worker_that_exits_cleanly_is_marked_as_it_is_reaped() raises:
+    """A clean exit is never respawned, and a worker's own exit 0 does not
+    say it left (an application's `os._exit(0)` from a thread, say): the
+    supervisor's mark does.
+
+    covers: E16
+    """
+    var got = _reap_worker_1(0, budget=10, polling=False)
+    assert_equal(got[0], STATE_LEFT, "the supervisor did not mark the worker that exited")
+    assert_equal(got[1], STATE_PARKED)
+    assert_equal(got[2], 0, "a sibling would hand a connection to the exited worker")
+    assert_equal(got[3], 0)
+
+
+def test_the_polling_supervisor_marks_a_worker_it_will_not_replace() raises:
+    """`--reload`'s supervisor reaps by polling, through its own accounting,
+    and marks as the blocking one does.
+
+    covers: E16
+    """
+    var got = _reap_worker_1(9, budget=0, polling=True)
+    assert_equal(got[0], STATE_LEFT, "the polling supervisor did not mark the worker it reaped")
+    assert_equal(got[1], STATE_PARKED)
+    assert_equal(got[2], 0, "a sibling would hand a connection to the reaped worker")
+    assert_equal(got[3], 1)
+
+
+def test_a_replacement_is_picked_again_after_the_mark() raises:
+    """The mark does not outlive the worker it names: a respawn at the same
+    index writes over it in its own `bind` and `start`, and is picked
+    again, where a mark that stuck would leave a live worker refused for
+    good. The mark is made in `_remove_pid`, before `_try_respawn` forks,
+    which is what orders it first; this test cannot force the other order
+    (a mark made just after the fork still lands before the child's
+    `bind`, measured), so it pins the outcome, not the placement.
+
+    covers: E16
+    """
+    var got = _reap_worker_1(9, budget=10, polling=False, replaced=True)
+    assert_equal(got[0], STATE_PARKED, "the replacement's index still reads as reaped")
+    assert_equal(got[2], 1, "the replacement was never picked")
+    assert_equal(got[3], 0)
+
+
+def test_spawned_workers_are_marked_as_they_are_reaped() raises:
+    """Under `--spawn-workers` the page is the supervisor's own mapping, and
+    it marks each exec'd worker it reaps. The workers are the shell, which
+    maps nothing, so the test writes each word parked, as a started loop
+    would, before the supervisor forks them.
+
+    covers: E16
+    """
+    var page = SharedAtomics(accept_share_slots(2))
+    var share = AcceptShare(2)
+    page.store(_state_slot(0), STATE_PARKED)
+    page.store(_state_slot(1), STATE_PARKED)
+    var pid = fork()
+    if pid == 0:
+        try:
+            var supervisor = WorkerSupervisor(2)
+            supervisor.share_accepts(share, page.addr(0))
+            var args = List[String]()
+            args.append(String("sh"))
+            args.append(String("-c"))
+            args.append(String("exit 0"))
+            supervisor.enable_spawn(String("/bin/sh"), args^)
+            supervisor.fork_all()
+            process_exit(7)
+        except:
+            process_exit(7)
+    var result = waitpid_blocking(pid)
+    for fd in share.read_fds:
+        close_fd(fd)
+    for fd in share.write_fds:
+        close_fd(fd)
+    for fd in share.anchor_fds:
+        close_fd(fd)
+    assert_false(was_signaled(result[1]), "supervisor died on a signal")
+    assert_equal(exit_code(result[1]), 0)
+    assert_equal(page.load(_state_slot(0)), STATE_LEFT, "spawned worker 0 was not marked")
+    assert_equal(page.load(_state_slot(1)), STATE_LEFT, "spawned worker 1 was not marked")

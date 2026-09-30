@@ -21,7 +21,7 @@ from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.accept_share import (
     AcceptShare, accept_share_slots, ACCEPT_SHARE_FIRST_WORKER_SLOT,
     ACCEPT_SHARE_WORKER_STRIDE, ACCEPT_SHARE_BUSY_NS, STATE_LEFT,
-    STATE_NOT_STARTED, STATE_PARKED, HandoffPost,
+    STATE_NOT_STARTED, STATE_PARKED, HandoffPost, mark_reaped,
 )
 from lightbug_http.c.fdpass import (
     send_fd, recv_fd, FDPASS_MAX_PAYLOAD, RECV_FD_EMPTY, RECV_FD_REFUSED,
@@ -584,6 +584,52 @@ def test_a_sibling_that_has_not_started_is_never_picked() raises:
         me.pick_for_leaver(now), 0,
         "a leaver passed a connection on to a sibling that has not started",
     )
+
+
+def test_a_worker_reaped_after_the_pick_is_not_sent_to() raises:
+    """The supervisor's mark for a worker it reaped (`mark_reaped`) is
+    `STATE_LEFT`, and the sender's second read of `state` refuses it: an
+    acceptor that picked the worker while it still read parked, and reads
+    the word again after the reap, keeps the connection and takes its
+    count back. Marked not started instead, `pick` would refuse the worker
+    from then on but this send would go through, into a channel nothing
+    reads (review record RP). A replacement's `bind` and `start` make the
+    index willing again.
+
+    covers: E16
+    """
+    var page = SharedAtomics(accept_share_slots(2))
+    var share = AcceptShare(2)
+    var me = share.copy()
+    me.bind(0, page.addr(0))
+    me.start()
+    var w1 = share.copy()
+    w1.bind(1, page.addr(0))
+    w1.start()
+    var now = perf_counter_ns()
+    assert_equal(me.pick(50, now), 1, "an idle parked sibling was not picked")
+    # Worker 1 dies parked, and the supervisor reaps it between the pick
+    # and the send.
+    mark_reaped(page.addr(0), 1)
+    var conn = _nonblocking_pair()
+    var sent = me.send(1, conn[0], "127.0.0.1", 1)
+    var payload = List[UInt8]()
+    var queued = recv_fd(share.read_fds[1], payload)
+    if queued >= 0:
+        close(FileDescriptor(queued))
+    close(FileDescriptor(conn[0]))
+    close(FileDescriptor(conn[1]))
+    assert_false(sent, "a connection was sent to a worker the supervisor had reaped")
+    assert_equal(queued, RECV_FD_EMPTY, "the reaped worker's channel holds a connection")
+    assert_equal(page.load(_word_slot(1, 2)), 0, "the refused send left its count in pending")
+    assert_equal(me.pick(50, now), 0, "a reaped worker was picked")
+    assert_equal(me.pick_for_leaver(now), 0, "a leaver would pass a connection to a reaped worker")
+    # Its replacement is not started until its loop starts, then willing.
+    var r1 = share.copy()
+    r1.bind(1, page.addr(0))
+    assert_equal(page.load(_word_slot(1, 0)), STATE_NOT_STARTED)
+    r1.start()
+    assert_equal(me.pick(50, now), 1, "a replacement was never picked again")
 
 
 def test_a_burst_spreads_across_siblings_through_pending() raises:

@@ -1166,6 +1166,16 @@ lightbug_http
         waited out its startup and died with it when a stop reached it
         before it armed (review record AR).
 
+      - accept_share.mojo (2026-09-30): `mark_reaped(page, worker)`, the
+        supervisor's store of `STATE_LEFT` in the `state` word of a worker
+        it has reaped (`m0_http.multiworker`, `WorkerSupervisor.share_accepts`,
+        on every reap path). A worker that died wrote its word no more, and
+        one killed while parked read as parked with no load, so `pick` handed
+        it about half of every burst, into a channel nothing read when no
+        replacement followed (review record RP). Left rather than not
+        started because the sender's second read of `state` refuses only
+        left. `_word_at` is the page arithmetic `_word` now calls.
+
       - socket.mojo (2026-09-30): `Socket.close()` gives up the number
         before its `close(2)`, so a failure the call reports (anything but
         EBADF, which is swallowed as before, and still raised) leaves the

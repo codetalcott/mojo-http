@@ -49,7 +49,8 @@ What can never happen: a lost connection. A send that fails for any
 reason (the sibling's channel full, a sibling gone) keeps the connection
 where it is; a datagram queued to a worker that crashed waits in the
 channel for the respawn, which inherits the same fd by index and drains
-it at its first pass.
+it at its first pass (one that is not respawned is the exception, below:
+"A worker that DIES").
 
 The kernel is the other party that could lose one. On macOS a connection
 in flight whose sender has closed its copy, which every hand-off is, was
@@ -104,22 +105,30 @@ hold, all 8 were closed unanswered while the server exited 0. So 0 is
 `STATE_NOT_STARTED`, which a fresh page holds from before the fork with
 nothing written, and a parked worker writes a word of its own.
 
+A worker that DIES writes nothing more, so the supervisor writes for it:
+as it reaps a worker, on every path and whether or not a replacement
+follows, it marks the index left (`mark_reaped`, from the page it made
+before the fork). Until then a sibling reads what the dead worker last
+wrote: a pass, which is busy and skipped once `ACCEPT_SHARE_BUSY_NS` has
+passed (a view that crashes dies inside one), or parked, if it was killed
+while waiting, which `pick` took for idle. A worker that no replacement
+followed -- the supervisor stopping, out of respawns, or the worker
+having exited 0 or 78 -- was handed about half of every burst after its
+death, each into a channel nothing would read again (review record RP).
+What was sent before the mark waits in the channel: for the replacement
+when one follows, admitted at its first pass; unanswered until the server
+stops when none does, as the connections the dead worker held are lost
+with it. The window is the supervisor's own reaction: it reaps in a
+blocking `waitpid`; under `--reload` the poll interval bounds it.
+
 A replacement -- a respawn, or a reload's new worker -- takes its
 predecessor's index, and with it the channel, `pending` and `taken`,
-which `start` accounts for. It marks the index not started again as it
-binds, its first act after the fork, before any import, because the
-predecessor's `state` says what that worker last did and nothing reads the
-channel until the replacement's `start()`. Between the death and that bind
-a sibling reads what the dead worker last wrote: a pass, which is busy and
-skipped once `ACCEPT_SHARE_BUSY_NS` has passed (a view that crashes dies
-inside one), or parked, if it was killed while waiting. A connection sent
-in that window waits in the channel for the replacement, as one queued
-before the death does, and is admitted at its first pass. The window is
-the supervisor's own reaction: it reaps in a blocking `waitpid` and forks
-at once, plus the exec and the start of `main` under `--spawn-workers`;
-under `--reload` the poll interval bounds it. `send` itself does not
-refuse a worker that has not started: a hand-off there is late, never
-lost while the worker lives, and the choice is `pick`'s.
+which `start` accounts for. It marks the index not started as it binds,
+its first act after the fork, before any import, over the supervisor's
+mark, because nothing reads the channel until the replacement's
+`start()`. `send` itself does not refuse a worker that has not started:
+a hand-off there is late, never lost while the worker lives, and the
+choice is `pick`'s.
 
 Page layout, in Int64 slots of the `SharedAtomics` page `m0serve` creates
 pre-fork: slot 0 is the SSE event id (not ours), slot 1 the rotation
@@ -172,7 +181,8 @@ comptime ACCEPT_SHARE_BUSY_NS: Int = 2_000_000
 """A sibling inside one pass for longer than this is running something
 slow inline and is not handed a connection."""
 comptime STATE_LEFT: Int = -1
-"""A `state` word meaning the worker is shutting down: never send to it."""
+"""A `state` word meaning the worker is shutting down, or is gone (the
+supervisor's `mark_reaped`): never send to it."""
 comptime STATE_NOT_STARTED: Int = 0
 """A `state` word meaning the worker's loop has not started: never pick it.
 
@@ -217,6 +227,40 @@ def _store(addr: Int, value: Int):
 
 def _fetch_add(addr: Int, delta: Int) -> Int:
     return Int(_atomic(addr)[].fetch_add(Int64(delta)))
+
+
+def _word_at(page: Int, worker: Int, which: Int) -> Int:
+    """The address of word `which` of worker `worker`'s line on `page`."""
+    return page + 8 * (
+        ACCEPT_SHARE_FIRST_WORKER_SLOT
+        + ACCEPT_SHARE_WORKER_STRIDE * worker + which
+    )
+
+
+def mark_reaped(page: Int, worker: Int):
+    """The supervisor's store for a worker it has reaped: `STATE_LEFT` in
+    that worker's `state` word on `page`, the page's address in the
+    supervisor (review record RP).
+
+    Nothing else writes the word of a worker that died: siblings read what
+    it last wrote, and a worker killed while parked read as parked with no
+    load, so `pick` handed it about half of every burst -- into a channel
+    nothing would read again when no replacement followed (the supervisor
+    stopping, out of respawns, or the worker exiting 0 or 78). Measured
+    with `--workers 2` and worker 1 killed until the supervisor stopped
+    respawning it: 16 of a burst of 32 were accepted and never answered.
+
+    Left, not not-started, because `send_with` reads the word again after
+    it raises `pending` and refuses only a target that has left: a sender
+    that picked the worker before this store and reads it after keeps the
+    connection. `pick` and `pick_for_leaver` refuse both. A replacement
+    writes `STATE_NOT_STARTED` over this in `bind`, its first act after a
+    fork the supervisor makes after this store. Harmless on a line nobody
+    reads: accept sharing inactive, or a worker that had left already.
+    """
+    if page == 0 or worker < 0:
+        return
+    _store(_word_at(page, worker, _WORD_STATE), STATE_LEFT)
 
 
 trait HandoffPost:
@@ -395,10 +439,7 @@ struct AcceptShare(Copyable, Movable):
         return self.read_fds[self.worker]
 
     def _word(self, worker: Int, which: Int) -> Int:
-        return self.page + 8 * (
-            ACCEPT_SHARE_FIRST_WORKER_SLOT
-            + ACCEPT_SHARE_WORKER_STRIDE * worker + which
-        )
+        return _word_at(self.page, worker, which)
 
     def start(self):
         """At loop start: this worker is parked with no connections, and

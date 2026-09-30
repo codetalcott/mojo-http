@@ -180,6 +180,40 @@ per connection that changes hands. Built.
   worker that takes the index subtracts it (`start`).
   `test_handoff_leaving.mojo` forces each interleaving.
 
+  **Correction, 2026-09-30: a worker that dies.** A worker that dies
+  writes its line no more, and "a crashed worker's queued datagrams wait
+  for the respawn" held only when a respawn came. The supervisor replaces
+  nobody once it is stopping (D10), once it has spent its respawns (five
+  deaths inside a second of their fork, or ten times the worker count), or
+  after an exit 0 or 78, and a worker killed while parked read as parked
+  with no load for the rest of the server's life: `pick` handed it
+  connections until its `pending` outgrew the acceptor's load, each into
+  a channel nothing would read (review record RP). With `--workers 2` and
+  worker 1 killed with SIGKILL until the supervisor stopped respawning
+  it, 16 of a burst of 32 were accepted and never answered, forked,
+  spawned, under `--reload` and on the Mojo host alike. The supervisor is
+  the one process that learns of a death, and it holds the page (it made
+  it before the fork), so it writes the mark: every reap goes through
+  `_remove_pid`, which stores −1 in the index's `state` before anything
+  decides whether to replace it (`mark_reaped`,
+  `WorkerSupervisor.share_accepts`). Left rather than not started because
+  a sender reads `state` again after raising `pending` and refuses only
+  −1, so a sender that picked the worker before the reap and reads it
+  after keeps the connection. A replacement is forked after the mark and
+  writes not started over it as it binds. After the fix the same burst is
+  answered 32 of 32 by worker 0, which passes none on.
+
+  What is still lost is what a sender queued between the death and the
+  reap, in `_supervise` the time for `waitpid` to return, in `--reload`'s
+  polling supervisor up to its 300 ms interval: it waits in the channel
+  until the server stops. The supervisor holds every channel's read end
+  and could take those off and pass them on, but to be complete it would
+  need the leaver's half of the handshake, a wait until the index's
+  `pending` less what the dead worker had `taken` is drained, run by a
+  process that otherwise only waits and forks, to cover a window that is
+  one `waitpid`'s return outside `--reload`. Not built; the connections a
+  worker held when it died are lost with it in any case.
+
   **Correction, 2026-09-29: the kernel's collector (macOS).** A hand-off
   whose sender has closed its copy, which is every hand-off, is held only
   by the message in flight until the receiver takes it, and macOS's

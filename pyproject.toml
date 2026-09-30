@@ -3205,6 +3205,13 @@ echo "smoke-accept-spread: bursts spread within 2:1 across two workers, fork and
 # worker, 16 of 32 each waited out the hold, and a stop inside it closed
 # them unanswered.
 python3 scripts/accept_spread.py --unstarted-gap 3000 --port $(free_port) || exit 1
+# Nor is a worker the supervisor reaped and did not replace (review RP):
+# worker 1 is killed with SIGKILL, parked, until the supervisor stops
+# respawning it, and a burst of 32 must then be answered, every one, by
+# worker 0, forked and spawned. Before the supervisor marked the index, the
+# dead worker read parked with no load and 16 of the 32 went to it,
+# accepted and never answered.
+python3 scripts/accept_spread.py --reaped --modes fork,spawn --port $(free_port 2) || exit 1
 # The negative arm on macOS, where the bare race is all but deterministic:
 # with the knob off the same probe must see the skew, or the gate is not
 # testing the mechanism. Linux's race sometimes lands within 2:1 on its own,
@@ -8460,6 +8467,13 @@ python3 scripts/accept_spread.py --app-bin "$out/host_check" --modes fork \
   --assert --expect-handoffs --rounds 2 --port $(free_port) > "$out/spread.log" 2>&1 \
   || fail "accept sharing: bursts did not spread"
 echo "accept sharing: $(tail -1 "$out/spread.log")"
+# The host's supervisor marks a worker it reaped and did not replace, as
+# m0serve's does (review RP): worker 1 killed until it is not respawned, then
+# a burst of 32 all answered by worker 0 (16 of 32 were lost before).
+python3 scripts/accept_spread.py --app-bin "$out/host_check" --modes fork \
+  --reaped --port $(free_port) > "$out/reaped.log" 2>&1 \
+  || fail "accept sharing: a reaped worker was handed connections: $(tail -2 "$out/reaped.log")"
+echo "accept sharing: $(tail -1 "$out/reaped.log")"
 # The negative arm where the bare race is all but deterministic (E16's
 # reasoning): with the knob off the same probe must see the skew. Five
 # rounds, failing only if every one is within 2:1, as E16's arm does.

@@ -182,6 +182,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   those connections, closed unanswered while the server exited 0. A
   worker is now handed connections only once it serves; a respawned one
   is handed nothing until it has started again. Found in review.
+- **Under `--workers N` or `M0_WORKERS`, no connection is handed to a
+  worker that has died and was not replaced** (SPEC E16). The supervisor
+  does not replace a worker once it is stopping, once it has used up its
+  respawns (five crashes in a row, each within a second of its start, or
+  ten times the worker count in all), or when the worker exited 0 or 78.
+  The worker's
+  siblings went on reading the load it last published, which for one
+  killed while idle read as idle with no connections, so the least-loaded
+  choice handed it about half of every burst: accepted, and never
+  answered until the whole server stopped. With `--workers 2` and worker 1
+  killed until the supervisor stopped respawning it, 16 of a burst of 32
+  went unanswered, under `--spawn-workers`, `--reload` and the Mojo host
+  alike. The supervisor now marks every worker it reaps as gone, so no
+  sibling picks it; a replacement is picked again once it has started.
+  Found in review.
 - **A `Socket` whose `close()` fails is closed all the same** (SPEC D1).
   A close that failed with anything but EBADF, such as EINTR from a signal
   or EIO, raised with the socket still holding its number, although the
