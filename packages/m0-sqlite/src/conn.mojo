@@ -353,17 +353,35 @@ struct Connection(Movable):
 
         Per connection, like `register_array_module`: a pool thread's
         connection registers its own. `impl` belongs to SQLite from this call
-        on, and is destroyed when the function is replaced or the connection
-        closes. Registering a name and arity again replaces the function,
-        which SQLite refuses while a statement of this connection is active.
+        on, and is destroyed exactly once: when the function is replaced, or
+        when the connection is destroyed. That is `close()` unless a
+        statement of this connection is still outstanding: every close here
+        is `sqlite3_close_v2`, so the connection then lives until the LAST
+        such statement is finalized, the function stays callable from those
+        statements, and `impl` is destroyed at that last finalize, on
+        whichever thread finalizes.
 
-        The function is callable from top-level SQL and this connection's TEMP
-        views, and never from anything the database file stores: SQLite
-        refuses it in a stored view or trigger, a CHECK constraint, a
-        generated column or an index. Raises on a library older than 3.30.0,
-        which cannot make that refusal; on a closed connection; on a name
-        SQLite refuses (longer than 255 bytes); and on a connection whose
-        libsqlite3 is not the one this process's functions already call.
+        Registering a name and arity again replaces the function. SQLite
+        refuses that while a statement of this connection is active, with
+        `SQLITE_BUSY` — the code this package otherwise means "retry" by,
+        and here it is not: the statement in the way is the caller's own, so
+        no wait clears it. Reset or finalize the statement, then register.
+
+        The function is callable from top-level SQL and this connection's
+        TEMP views. The schema cannot compute with it: SQLite refuses it in
+        a CHECK constraint, a generated column or an index when they are
+        created, in a stored view when the view is used, and in a trigger
+        when it fires. Creating a view or a trigger that names it is NOT
+        refused, and such a trigger then fails every write to its table,
+        from every program, until it is dropped (`function.mojo`).
+
+        Raises on a library older than 3.31.0, which cannot make those
+        refusals; on a closed connection; on a name that is empty, holds a
+        NUL byte or is longer than 255 bytes; on an arity above the
+        library's own limit (127 on Apple's build); and through a table of
+        another libsqlite3 image than the one this process's functions
+        already call. A function type whose `arity` is outside -1..32767
+        does not compile.
         """
         if self._handle == 0:
             raise Error(
@@ -372,9 +390,11 @@ struct Connection(Movable):
         var have = self._lib.fns.libversion_number()
         if have < SQLITE_MIN_FUNCTION_VERSION:
             raise Error(
-                "create_function needs SQLite 3.30.0 or newer"
-                " (SQLITE_DIRECTONLY, which keeps a registered function out of"
-                " the schema), but the library at " + self._lib.path + " is "
+                "create_function needs SQLite 3.31.0 or newer"
+                " (SQLITE_DIRECTONLY as it refuses a registered function in a"
+                " CHECK constraint, a generated column and an index, not only"
+                " in views and triggers), but the library at "
+                + self._lib.path + " is "
                 + self._lib.fns.libversion()
                 + " ("
                 + String(have)

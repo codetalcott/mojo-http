@@ -16,16 +16,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and a `call(args, answer)` — on that connection, and SQLite calls it
   from inside the query plan. `Args.blob` is SQLite's own bytes, never a
   copy, so a kernel over a large column costs the kernel: a dot product
-  over 100,000 384-float embeddings scanned them in 8.6 ms, within 1 % of
-  the same function written by hand against the C API and twice as fast as
-  sqlite-vec's `vec_distance_l2`, which copies both vectors on every call.
-  A raise fails the statement with its text. A registered function never
-  becomes part of the database file: SQLite refuses it in a stored view or
-  trigger, a CHECK constraint, a generated column or an index, so every
-  other tool can still write the file, and a library older than 3.30.0,
-  which cannot make that refusal, is refused. SQLite owns the instance from
-  registration and destroys it on replacement or close. m0-sqlite registers
-  no functions of its own.
+  over 100,000 384-float embeddings scanned them in 8.6 ms, one to three
+  percent over the same function written by hand against the C API and
+  twice as fast as sqlite-vec's `vec_distance_l2`, which copies both
+  vectors on every call. A span from `Args.blob` stays good for the whole
+  call: `Args.text` refuses a BLOB, since reading one as text can move it.
+  A raise fails the statement with its text. The schema never computes
+  with a registered function: SQLite refuses it in a CHECK constraint, a
+  generated column or an index when they are created, in a stored view
+  when it is used and in a trigger when it fires. Creating a view or a
+  trigger that names one is NOT refused, and such a trigger then fails
+  every write to its table, from every program, until it is dropped; do
+  not name a registered function in either. A library older than 3.31.0,
+  where that refusal is incomplete, is refused. SQLite owns the instance
+  from registration and destroys it when the function is replaced or the
+  connection is destroyed — at `close()`, or, when a statement outlives the
+  close, at that statement's finalize, the function answering until then.
+  m0-sqlite registers no functions of its own.
 
 - **IPv6** (SPEC M29). `m0serve --host ::` listens on IPv6 and IPv4 at
   once, and `--host ::1` on the IPv6 loopback alone; the same goes for the
@@ -177,18 +184,30 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
-- **One copy of SQLite per process, on macOS with a libsqlite3 outside the
-  system's** (SPEC O23). With `M0_LIBSQLITE3` naming Homebrew's build, or
-  any library file of its own, a process that closed all its connections
-  and then opened another loaded a fresh copy of SQLite: the library was
-  pinned with `RTLD_NODELETE`, which on macOS keeps an image mapped but
-  forgets it once its last handle closes. Two copies in one process is the
-  corruption SQLite's documentation warns about — each keeps its own list
-  of open files, so a close through one drops the locks the other holds on
-  the same database — and here it took a statement outliving every
-  connection while a new one opened the same file. The pin now keeps one
-  handle open for the life of the process. Apple's library, in the dyld
-  shared cache, and Linux were never affected.
+- **m0-sqlite opens one copy of SQLite per process** (SPEC O23). On macOS
+  with `M0_LIBSQLITE3` naming Homebrew's build, or any library file of its
+  own, a process that closed all its connections and then opened another
+  loaded a fresh copy of SQLite: the library was pinned with
+  `RTLD_NODELETE`, which on macOS keeps an image mapped but forgets it once
+  its last handle closes. Two copies on one database file is the corruption
+  SQLite's documentation warns about — each keeps its own list of open
+  files, so a close through one drops the locks the other holds — and here
+  it took a statement outliving every connection while a new one opened the
+  same file. The pin now keeps one handle open for the life of the process;
+  Apple's library, in the dyld shared cache, and Linux were never affected
+  by that. Two things change with it for every platform. **The first
+  libsqlite3 a process opens is the only one m0-sqlite will open**: a
+  library that is another image — `M0_LIBSQLITE3` changed mid-process, or
+  a second path — is refused where it is opened, naming both files. And
+  the library is opened `RTLD_LOCAL`, no longer in the loader's global
+  scope, where on Ubuntu's build it captured the internal calls of any
+  other libsqlite3 loaded later, which then could not open a database
+  ("no such vfs"). **What this cannot cover is a copy m0-sqlite did not
+  open.** CPython's `sqlite3` module carries its own SQLite in the
+  interpreters uv installs, so inside `m0serve` a Mojo mount using
+  m0-sqlite beside a Python application on the stdlib `sqlite3` backend is
+  two copies of SQLite in one process: give each side its own database
+  file.
 - **A closed `Socket` refuses every call, not only `close()`** (SPEC D1).
   After `close()` a socket went on passing its old number to the kernel,
   so a late `send` wrote into whatever the process had opened on that

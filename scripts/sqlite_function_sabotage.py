@@ -3,30 +3,44 @@
 and insist the test that claims it fails.
 
 `function.mojo` makes a handful of promises a well-meaning simplification
-removes without any other test noticing: that a registered function never
-becomes part of the database file (DIRECTONLY), that the type's arity is
-what SQLite holds, that an index past what a call passed is never read,
-that a raise reaches the statement, that a refused registration is never
-freed twice, that the global word every callback reads is one word, and
-that the callbacks reach one libsqlite3 image. `lib.mojo` promises that
-image is one per process however connections come and go. Each entry
-below reverts one of them by an EXACT source line and runs the test file
-that claims it; the run must fail, in that test's own words where the
-failure can print any (a read past `argv` and a double free can take the
-process down with its output, and the library counts a crash as a catch
-only once the sabotaged source is shown to build).
+removes without any other test noticing: that the schema never computes
+with a registered function (DIRECTONLY), that the type's arity is what
+SQLite holds, that an index past what a call passed is never read, that a
+span from `blob` is never left dangling by `text`, that an empty blob is
+answered as a blob, that a raise reaches the statement, that a refusal is
+told in its own words and a refused registration is never freed twice, that
+the global word every callback reads is one word, and that the callbacks
+reach one libsqlite3 image. `lib.mojo` promises that image is one per
+process: however connections come and go, whatever library a later open
+names, and without capturing another copy's calls. Each entry below reverts
+one of them by an EXACT source line and runs the test file that claims it;
+the run must fail, in that test's own words where the failure can print any
+(a read past `argv` and a double free can take the process down with its
+output, and the library counts a crash as a catch only once the sabotaged
+source is shown to build).
 
-Two rules are observable only where a second image of libsqlite3 can be
-loaded. On Linux a copy of the system library is one. On macOS the system
-library lives in the dyld shared cache, so a second image needs Homebrew's
-build, and the reopen O23 is about needs a library backed by a file at all:
-without Homebrew's SQLite those rules report SKIPPED, never caught.
+Three kinds of rule are observable only on some hosts, and report SKIPPED,
+never caught, elsewhere:
+
+  - A SECOND IMAGE of libsqlite3 must be loadable. On Linux a copy of the
+    system library is one. On macOS the system library lives in the dyld
+    shared cache, so a second image needs Homebrew's build. That a refused
+    one is not left pinned is asked of the loader, on Linux alone.
+  - The REOPEN O23 was found by maps another image only on macOS, and only
+    for a library backed by a file: Homebrew's again.
+  - A copy BINDS INTO the first image only where the distribution's build
+    resolves its internal calls through the loader's global scope: Ubuntu's
+    does, Debian's does not, macOS's two-level namespaces never do. Asked
+    of the host by `_global_scope_binds`, since nothing else can say.
 
 What has no entry, and why: the `try` around `call` (an `abi("C")`
 function cannot raise, so removing it does not compile, which proves
-nothing -- the compiler holds it); the compare-and-swap that publishes the
-word (no single-threaded test can tell it from a store); and the 3.30.0
-floor (every library this runs against is newer).
+nothing -- the compiler holds it); the bound on `arity` (the same: a type
+outside it does not compile); the compare-and-swaps that publish the two
+words (no single-threaded test can tell one from a store); the 3.31.0
+floor (every library this runs against is newer); and the order that asks
+a library everything before a branch that closes it (it takes a library
+the package refuses for its version, which no host here has).
 
     python3 scripts/sqlite_function_sabotage.py
     python3 scripts/sqlite_function_sabotage.py --only DIRECTONLY
@@ -36,6 +50,7 @@ from __future__ import annotations
 
 import os
 import platform
+import subprocess
 import sys
 from pathlib import Path
 
@@ -44,18 +59,62 @@ from sabotage_lib import MojoRun, rule, run
 FUNCTION = Path("packages/m0-sqlite/src/function.mojo")
 LIB = Path("packages/m0-sqlite/src/lib.mojo")
 FUNCTION_TESTS = Path("packages/m0-sqlite/test/test_scalar_function.mojo")
-LIB_TESTS = Path("packages/m0-sqlite/test/test_lib.mojo")
+IMAGE_TESTS = Path("packages/m0-sqlite/test/test_one_image.mojo")
 
 BREW = Path("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib")
 ON_MACOS = platform.system() == "Darwin"
-# A second image: anywhere but macOS without Homebrew's SQLite.
-SECOND_IMAGE = "" if (not ON_MACOS or BREW.exists()) else "Linux, or macOS with Homebrew's SQLite"
-# A reopen that maps another image: macOS, with a library backed by a file.
-REOPEN = "Darwin" if BREW.exists() else "macOS with Homebrew's SQLite"
+
+_BINDS_PROBE = r"""
+import ctypes, glob, os, shutil, sys, tempfile
+paths = sorted(glob.glob("/usr/lib/*-linux-gnu/libsqlite3.so.0")
+               + glob.glob("/usr/lib64/libsqlite3.so.0")
+               + glob.glob("/usr/local/lib/libsqlite3.so.0"))
+if not paths:
+    sys.exit(2)
+first = ctypes.CDLL(paths[0], mode=2 | 0x100)          # RTLD_NOW | RTLD_GLOBAL
+db = ctypes.c_void_p()
+if first.sqlite3_open_v2(b":memory:", ctypes.byref(db), 6, None) != 0:
+    sys.exit(2)
+with tempfile.TemporaryDirectory() as d:
+    copy = os.path.join(d, "copy.so")
+    shutil.copy(os.path.realpath(paths[0]), copy)
+    second = ctypes.CDLL(copy, mode=2)                 # RTLD_NOW | RTLD_LOCAL
+    db2 = ctypes.c_void_p()
+    rc = second.sqlite3_open_v2(b":memory:", ctypes.byref(db2), 6, None)
+sys.exit(0 if rc != 0 else 1)
+"""
+
+
+def _global_scope_binds() -> bool:
+    """Whether a copy of this host's libsqlite3, loaded beside a first image
+    that sits in the loader's GLOBAL scope, fails to open a database: the
+    breakage the two RTLD_LOCAL rules guard against. In a child process, so
+    the two images it loads are nobody else's."""
+    if ON_MACOS:
+        return False
+    try:
+        done = subprocess.run([sys.executable, "-c", _BINDS_PROBE],
+                              capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return done.returncode == 0
+
+
+# What each host-dependent rule needs, as the SKIPPED line will print it.
+# `only_on` is compared with platform.system(), so "" and the host's own
+# name both mean "runs here"; any other text means "not here, because".
+HERE = platform.system()
+SECOND_IMAGE = HERE if (not ON_MACOS or BREW.exists()) else (
+    "a host with a second libsqlite3 image (macOS needs Homebrew's SQLite)")
+REOPEN = HERE if (ON_MACOS and BREW.exists()) else (
+    "macOS with Homebrew's SQLite (a library the loader can drop)")
+BINDS = HERE if _global_scope_binds() else (
+    "a Linux whose libsqlite3 resolves its own calls through the global"
+    " scope (Ubuntu's does, Debian's does not)")
 
 RULES = [
     rule(
-        "DIRECTONLY: a registered function stays out of the schema (O20)",
+        "DIRECTONLY: the schema never computes with a registered function (O20)",
         FUNCTION,
         "    var flags = _SQLITE_UTF8 | _SQLITE_DIRECTONLY\n",
         "    var flags = _SQLITE_UTF8\n",
@@ -86,6 +145,30 @@ RULES = [
         expect="test_sqlite_holds_the_arity_and_args_holds_the_index",
     ),
     rule(
+        "text: a BLOB is refused, so a span from blob never dangles (O19)",
+        FUNCTION,
+        "        if fns.value_type(v) == SQLITE_BLOB:\n",
+        "        if False:\n",
+        gate="functions",
+        expect="test_a_blob_span_stays_good_because_text_refuses_a_blob",
+    ),
+    rule(
+        "empty blob: its span never carries SQLite's NULL pointer (O19)",
+        FUNCTION,
+        "        if n <= 0:\n",
+        "        if False:\n",
+        gate="functions",
+        expect="test_an_empty_blob_is_answered_as_a_blob",
+    ),
+    rule(
+        "empty blob: an answer of no bytes never hands SQLite a NULL pointer (O19)",
+        LIB,
+        "        if length == 0:\n            var none = UInt8(0)\n            self._result_blob(\n",
+        "        if False:\n            var none = UInt8(0)\n            self._result_blob(\n",
+        gate="functions",
+        expect="test_an_empty_blob_is_answered_as_a_blob",
+    ),
+    rule(
         "deterministic: the flag is registered (O19)",
         FUNCTION,
         "        flags |= _SQLITE_DETERMINISTIC\n",
@@ -96,7 +179,7 @@ RULES = [
     rule(
         "raise: what call raises is the statement's error (O19)",
         FUNCTION,
-        "        fns.result_error(ctx, str_cstr(message), len(message.as_bytes()))\n",
+        "        fns.result_error(ctx, str_cstr(message), min(len(message.as_bytes()), MAX_C_INT))\n",
         "        fns.result_null(ctx)\n",
         gate="functions",
         expect="test_a_raise_is_the_statements_error",
@@ -110,7 +193,31 @@ RULES = [
         gate="functions",
     ),
     rule(
-        "one word: @no_inline keeps the global a single word (O22)",
+        "name: a NUL byte is refused before SQLite sees the name (O21)",
+        FUNCTION,
+        "        if name_bytes[i] == 0:\n",
+        "        if False:\n",
+        gate="functions",
+        expect="test_a_refusal_before_sqlite_and_a_refusal_in_its_own_words",
+    ),
+    rule(
+        "name: an empty one is refused before SQLite sees it (O21)",
+        FUNCTION,
+        "    if len(name_bytes) == 0:\n",
+        "    if False:\n",
+        gate="functions",
+        expect="test_a_refusal_before_sqlite_and_a_refusal_in_its_own_words",
+    ),
+    rule(
+        "message: the connection's text only when its code agrees (O21)",
+        FUNCTION,
+        "        if fns.errcode(db) == rc:\n",
+        "        if True:\n",
+        gate="functions",
+        expect="test_a_refusal_before_sqlite_and_a_refusal_in_its_own_words",
+    ),
+    rule(
+        "one word: @no_inline keeps the functions' global a single word (O22)",
         FUNCTION,
         "@no_inline\ndef _fn_table_slot()",
         "def _fn_table_slot()",
@@ -118,34 +225,82 @@ RULES = [
         expect="did not read back",
     ),
     rule(
-        "one image: a connection on another image may not register (O22)",
+        "one image: a table of another image may not register (O22)",
         FUNCTION,
-        "    if published.image() != fns.image():\n",
+        "    if published.fns.image() != fns.image():\n",
         "    if False:\n",
-        gate="functions",
+        gate="image",
         only_on=SECOND_IMAGE,
-        expect="test_a_second_libsqlite3_image_is_refused",
+        expect="test_a_table_of_another_image_may_not_register",
+    ),
+    rule(
+        "one image per process: a second image is refused at open (O23)",
+        LIB,
+        "    if pinned.image != image:\n",
+        "    if False:\n",
+        gate="image",
+        only_on=SECOND_IMAGE,
+        expect="test_a_second_image_is_refused_at_open",
+    ),
+    rule(
+        "one image per process: a refused library is never pinned (O23)",
+        LIB,
+        "    if current == 0:\n        var pin: OwnedDLHandle\n",
+        "    if True:\n        var pin: OwnedDLHandle\n",
+        gate="image",
+        # The test asks the loader whether the refused copy is still mapped
+        # (RTLD_NOLOAD), which it does on Linux alone: macOS's second image
+        # may be Apple's, which the dyld shared cache never unmaps.
+        only_on="Linux",
+        expect="test_a_second_image_is_refused_at_open",
     ),
     rule(
         "one image per process: the pin keeps a handle open (O23)",
         LIB,
-        "    var kept = unsafe_alloc[OwnedDLHandle](count=1)\n    kept.unsafe_write(pin^)\n",
-        "    _ = pin^\n",
-        gate="loader",
+        "            var kept = unsafe_alloc[OwnedDLHandle](count=1)\n"
+        "            kept.unsafe_write(pin^)\n",
+        "            _ = pin^\n",
+        gate="image",
         only_on=REOPEN,
         expect="test_one_image_however_connections_come_and_go",
+    ),
+    rule(
+        "one image per process: @no_inline keeps the pin a single word (O23)",
+        LIB,
+        "@no_inline\ndef _pinned_image_slot()",
+        "def _pinned_image_slot()",
+        gate="image",
+        expect="did not read back",
+    ),
+    rule(
+        "local scope: a connection's handle does not capture another copy (O23)",
+        LIB,
+        "    else:\n        return 2\n",
+        "    else:\n        return 2 | 256\n",
+        gate="image",
+        only_on=BINDS,
+        expect="test_another_copy_of_sqlite_is_not_bound_into_this_one",
+    ),
+    rule(
+        "local scope: the pin does not promote the image to the global scope (O23)",
+        LIB,
+        "    else:\n        return 1 | 0x1000\n",
+        "    else:\n        return 1 | 256 | 0x1000\n",
+        gate="image",
+        only_on=BINDS,
+        expect="test_another_copy_of_sqlite_is_not_bound_into_this_one",
     ),
 ]
 
 GATES = {
     "functions": MojoRun(FUNCTION_TESTS, includes=("packages/m0-sqlite",)),
-    "loader": MojoRun(LIB_TESTS, includes=("packages/m0-sqlite",)),
+    "image": MojoRun(IMAGE_TESTS, includes=("packages/m0-sqlite",)),
 }
 
 
 def main(argv: list[str]) -> int:
     # test-sqlite's setting, for the same reason (a signpost in Apple's
-    # library); these two files do not fork, so it is belt and braces.
+    # library); neither file forks, so it is belt and braces.
     os.environ.setdefault("OS_ACTIVITY_MODE", "disable")
     return run("sabotage-sqlite-function", RULES, GATES, argv)
 

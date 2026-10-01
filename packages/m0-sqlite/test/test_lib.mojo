@@ -11,12 +11,13 @@ test fail, which is why the rules are written in that module's docstring
 as well as here.
 
 Runs under `mojo run` like every other test in this package now: nothing
-here links libsqlite3, which is the point of the loader.
+here links libsqlite3, which is the point of the loader. The one-image half
+of the third rule (O23) needs a process of its own, and is
+`test_one_image.mojo`.
 """
 
 from std.ffi import OwnedDLHandle, c_int
 from std.os import getenv, setenv, unsetenv
-from std.os.path import exists
 from std.python._cpython import ExternalFunction
 from std.sys import CompilationTarget
 from std.testing import (
@@ -109,70 +110,6 @@ def test_a_statement_outlives_every_handle_of_the_library() raises:
     assert_equal(q.column_count(), 1)
 
 
-def _file_backed_library() -> String:
-    """A libsqlite3 the loader maps from a file of its own, or "".
-
-    macOS: Homebrew's build. Apple's lives in the dyld shared cache, where no
-    image is ever dropped, so it cannot show what this test is about. Linux:
-    the system library, whose loader keeps a `RTLD_NODELETE` object findable
-    anyway, so there the test states the property without being able to
-    lose it.
-    """
-    comptime if CompilationTarget.is_macos():
-        var brew = String("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib")
-        return brew if exists(brew) else String("")
-    else:
-        for p in default_search_path():
-            if p.startswith("/") and exists(p):
-                return p
-        return String("")
-
-
-def test_one_image_however_connections_come_and_go() raises:
-    """Every connection of a process calls into ONE image of its libsqlite3,
-    even after every earlier connection has closed.
-
-    SQLite requires it: two copies in one process each keep their own list of
-    open files, so a close through one drops the POSIX locks the other holds
-    on the same file ("How To Corrupt An SQLite Database File", 2.2.1), and a
-    registered function's callbacks reach one image. macOS drops an image
-    opened `RTLD_NODELETE` from dyld's list once its last handle closes --
-    the code stays mapped, which is why O18 held -- and the next `dlopen` of
-    the path maps a fresh copy: measured with Homebrew's build, a new image
-    at every reopen until `pin_library` kept a handle. Where there is no
-    file-backed library to open (macOS without Homebrew's SQLite) this says
-    so and asserts nothing.
-
-    covers: O23
-    """
-    var path = _file_backed_library()
-    if not path:
-        print("    (no file-backed libsqlite3 here; the reopen is not exercised)")
-        return
-    var before = getenv("M0_LIBSQLITE3", "")
-    _ = setenv("M0_LIBSQLITE3", path, True)
-    var first_image = 0
-    var second_image = 0
-    var failed = String("")
-    try:
-        var first = open_memory()
-        first_image = first._lib.fns.image()
-        first.close()
-        _ = first^
-        # No connection holds the library now: only the pin's kept handle.
-        var second = open_memory()
-        second_image = second._lib.fns.image()
-    except e:
-        failed = String(e)
-    if before:
-        _ = setenv("M0_LIBSQLITE3", before, True)
-    else:
-        _ = unsetenv("M0_LIBSQLITE3")
-    assert_equal(failed, "")
-    assert_true(first_image != 0)
-    assert_equal(first_image, second_image, "a reopen mapped another image of " + path)
-
-
 def test_a_symbol_the_library_lacks_is_an_error_naming_it() raises:
     """Every entry point is checked before it is loaded, in ONE place.
 
@@ -207,7 +144,7 @@ def test_a_symbol_the_library_lacks_is_an_error_naming_it() raises:
         assert_true("3.20.0" in text)
     assert_true(raised)
 
-    # And the whole table still loads, which is the 41 checks passing.
+    # And the whole table still loads, which is all 53 checks passing.
     var lib = open_library()
     assert_true(lib.fns.libversion_number() > 0)
 
@@ -230,13 +167,19 @@ def test_a_path_that_is_not_a_library_is_an_error_naming_it() raises:
 
     # Through the environment, the way a deployment names it -- and what a
     # Connection sees, since it opens the library first.
+    var before = getenv("M0_LIBSQLITE3", "")
     _ = setenv("M0_LIBSQLITE3", "/no/such/dir/libsqlite3.so", True)
     var through_env = String("")
     try:
         _ = open_memory()
     except e:
         through_env = String(e)
-    _ = unsetenv("M0_LIBSQLITE3")
+    # Put back, not unset: the process is held to the library it opened
+    # first (O23), and a run that named one must go on naming it.
+    if before:
+        _ = setenv("M0_LIBSQLITE3", before, True)
+    else:
+        _ = unsetenv("M0_LIBSQLITE3")
     assert_true("/no/such/dir/libsqlite3.so" in through_env, through_env)
     assert_true("M0_LIBSQLITE3" in through_env, through_env)
 

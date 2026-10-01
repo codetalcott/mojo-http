@@ -1008,10 +1008,12 @@ deps = ["build-sqlite"]
 
 # Guard the guards of the scalar functions and the one-image pin (SPEC
 # O19-O23): revert each rule by an exact source line and insist the test
-# claiming it fails, in its own words where it can print any. Two rules need
-# a second libsqlite3 image, which macOS has only beside Homebrew's build;
-# without it they report SKIPPED, never caught. About 30 s, twelve
-# `mojo run`s of two test files, so it sits in test-gates after test-sqlite.
+# claiming it fails, in its own words where it can print any. Some rules a
+# host cannot observe -- a second libsqlite3 image, which macOS has only
+# beside Homebrew's build; a library the loader can drop, macOS's alone; a
+# build that binds through the global scope, Ubuntu's -- and those report
+# SKIPPED, never caught. About a minute, some twenty `mojo run`s of two test
+# files, so it sits in test-gates after test-sqlite.
 [tool.poe.tasks.sabotage-sqlite-function]
 help = "Revert each scalar-function and one-image rule of m0-sqlite; every one must be caught"
 cmd = "python3 scripts/sqlite_function_sabotage.py"

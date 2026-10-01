@@ -33,7 +33,9 @@ registered function needs its own `abi("C")` entry point. `_x_scalar[F]` is
 one generic trampoline, instantiated per implementing type, and
 `_x_destroy[F]` its destructor. The instance is the function's state and its
 destruction as one value; a function that needs no state is a struct with no
-fields, so there is no second form for one (D12's argument for `PageShell`).
+fields, so there is no second form for one (the argument that made
+`PageShell` a trait, docs/notes/the-page-shell-becomes-a-trait.md). On Mojo
+1.1.0 a struct with no fields still writes its `def __init__(out self): pass`.
 The trait refines `Deinitable` because the instance is destroyed generically
 — by SQLite's `xDestroy` — and on the error path of a refused registration.
 
@@ -46,17 +48,31 @@ once per statement rather than once per row. Both are `comptime` members,
 so the promise sits beside the code that keeps it and a call site cannot
 disagree with it.
 
-**A registered function never becomes part of the database file.** Every
-registration carries `SQLITE_DIRECTONLY`, so SQLite refuses the function in
-anything the file stores: a CHECK constraint, a generated column or an
-expression index when it is created, a view when it is used, a trigger when
-it fires. Top-level SQL and this connection's TEMP views may call it. A
-schema that called an m0 function would be writable only by the binary
-that registered it — the `sqlite3` shell, a migration, a backup through
-`VACUUM INTO` would all fail — and a database file handed over by someone
-else could reach application code through its triggers. The flag arrived in
-SQLite 3.30.0, so registration refuses an older library rather than
-registering a function the schema could call (D59).
+**The schema never computes with a registered function: SQLite refuses it
+there, at use.** Every registration carries `SQLITE_DIRECTONLY`, so SQLite
+refuses the function wherever the database file's own schema would call it:
+in a CHECK constraint, a generated column or an expression index when it is
+created, in a stored view when the view is used, in a trigger when it
+fires. Top-level SQL and this connection's TEMP views may call it. So no
+index, constraint or stored column ever holds a registered function's
+results, and a database file handed over by someone else cannot reach
+application code through its views and triggers.
+
+What the flag cannot refuse is the CREATE of a view or a trigger that NAMES
+the function: SQLite resolves those bodies when they run, not when they are
+stored. `CREATE TRIGGER ... BEGIN SELECT dot(NEW.x); END` succeeds, the name
+is in the file from then on, and every write to that table fails for every
+writer — "unsafe use of dot()" in the binary that registered it, "no such
+function: dot" in the `sqlite3` shell, Django or a backup script — until
+someone drops the trigger. The refusal makes that mistake loud at its first
+use instead of working in one binary; it does not make it impossible. Do
+not name a registered function in a stored view or a trigger.
+
+The flag arrived in SQLite 3.30.0, which refused only triggers and views;
+the refusal in a CHECK constraint, a generated column and an index is
+3.31.0's (`sqlite3ExprFunctionUsable`). Registration refuses a library
+older than 3.31.0 rather than registering a function its schema could
+compute with (D59).
 
 **How a callback reaches the library: one global word.** The virtual table
 needs no global (O18): SQLite hands `pAux` straight to `xConnect`. A scalar
@@ -80,22 +96,35 @@ this package imports nothing, and the shape of a C extension's global
     that stopped honouring it is a refused registration here rather than
     callbacks reading zero. A callback that did read zero could not even
     report it, reporting being a library call: it answers NULL.
-  - **One libsqlite3 image per process.** Registering on a connection whose
-    library is not the one the word holds is refused, naming both: a
-    callback of one image calling another image's entry points on its
-    values is a crash in waiting. Compared by `SqliteFns.image`, never by
-    path.
-  - **It is the package's only global**, and it is never freed: a pinned
-    library is never unloaded either, and the word must outlive every
-    connection that can call through it.
+  - **One libsqlite3 image.** Registering through a table that is not of
+    the image the word holds is refused, naming both files: a callback of
+    one image calling another image's entry points on its values is a
+    crash in waiting. Compared by `SqliteFns.image`, never by path. The
+    loader already holds this package to one image (`lib.mojo`,
+    `pin_library`), so no `Connection` can bring a second; this is the
+    backstop behind it, for a table built any other way.
+  - **It is one of the package's two globals** (the pinned library's word
+    in `lib.mojo` is the other), and it is never freed: a pinned library is
+    never unloaded either, and the word must outlive every connection that
+    can call through it.
 
 **Ownership passes to SQLite at the call.** The instance moves into a heap
 box whose address is `pApp`, and SQLite runs `_x_destroy[F]` on it exactly
-once: when the function is replaced, when the connection closes, and —
-from inside `create_function_v2` itself — when registration is refused. So
-`_register_function` never frees on failure; freeing again would be a
+once: when the function is replaced, when the connection is destroyed, and
+— from inside `create_function_v2` itself — when registration is refused.
+So `_register_function` never frees on failure; freeing again would be a
 double free (the rule `vtab.mojo`'s `_register` states for
 `create_module_v2`).
+
+**"Destroyed" is not always `close()`.** This package closes with
+`sqlite3_close_v2`, which is what lets a `Statement` outlive its
+`Connection` (O2), and a connection closed while a statement of its own is
+outstanding lives on until the LAST of them is finalized. Until then its
+functions stay callable from those statements, and the instances are
+destroyed at that last finalize, on whichever thread finalizes. With no
+statement outstanding, `close()` destroys them before it returns. An
+instance whose destructor must run at a known point wants its connection's
+statements finalized before the close.
 
 **A raise is the statement's error.** The trampoline catches whatever
 `call` raises and hands its text to `sqlite3_result_error`, so `step`
@@ -117,27 +146,45 @@ from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
 
 from .ffi import (
+    MAX_C_INT,
     SQLITE_BLOB,
     SQLITE_NULL,
     SQLITE_OK,
     c_string,
+    check_c_int_length,
     cstr_to_string,
     describe_in,
 )
 from .lib import SqliteFns, as_cstr, str_cstr
 
-comptime SQLITE_MIN_FUNCTION_VERSION: Int = 3_030_000
-"""SQLite 3.30.0, where `SQLITE_DIRECTONLY` arrived. A library older than
-that cannot keep the promise that a registered function stays out of the
-schema, so `Connection.create_function` refuses it rather than registering
-a function the schema could call."""
+comptime SQLITE_MIN_FUNCTION_VERSION: Int = 3_031_000
+"""SQLite 3.31.0, where `SQLITE_DIRECTONLY` came to refuse a function in a
+CHECK constraint, a generated column and an index. 3.30.0 has the flag and
+refuses only triggers and views with it, so a function registered there
+could still be computed with by the schema; `Connection.create_function`
+refuses a library older than this rather than register one."""
 
 comptime _SQLITE_UTF8: Int = 1
 comptime _SQLITE_DETERMINISTIC: Int = 0x800
 comptime _SQLITE_DIRECTONLY: Int = 0x80000
 
-comptime _FnsPtr = Pointer[SqliteFns, MutUntrackedOrigin]
 comptime _WordPtr = Pointer[Int, MutUntrackedOrigin]
+
+
+struct _Published(Movable):
+    """What the global word points at: the table every callback calls
+    through, and the file it was loaded from, so the refusal of another
+    image can name the one to keep. Written once and never freed."""
+
+    var fns: SqliteFns
+    var path: String
+
+    def __init__(out self, fns: SqliteFns, path: String):
+        self.fns = fns
+        self.path = path
+
+
+comptime _PublishedPtr = Pointer[_Published, MutUntrackedOrigin]
 
 
 # --- The one global word ------------------------------------------------------
@@ -145,7 +192,7 @@ comptime _WordPtr = Pointer[Int, MutUntrackedOrigin]
 
 @no_inline
 def _fn_table_slot() -> Pointer[Int, MutUntrackedOrigin]:
-    """Return the word holding the published table's address, 0 until then.
+    """Return the word holding the published record's address, 0 until then.
 
     `@no_inline` IS LOAD-BEARING: `pop.global_alloc` is `Pure`, so every
     inlined copy of this accessor would make a global of its own, and the
@@ -166,8 +213,8 @@ def _fn_table_slot() -> Pointer[Int, MutUntrackedOrigin]:
 
 @always_inline
 def _fn_table() -> Int:
-    """The published table's address as every callback reads it: 0 until the
-    first registration in the process.
+    """The published record's address (a `_Published`) as every callback
+    reads it: 0 until the first registration in the process.
 
     Inlined, and that is safe: the word is `_fn_table_slot`'s, which is not.
     A second call per row here cost 1.3 ns of an 84 ns row on vecscan's
@@ -177,10 +224,10 @@ def _fn_table() -> Int:
 
 def _publish(fns: SqliteFns, path: String) raises -> Int:
     """Publish the table the callbacks call through, once per process, and
-    return its address.
+    return the published record's address.
 
     Compare-and-swap, because two pool threads may register at once; the
-    loser frees its copy and takes the winner's. Then two checks, each of
+    loser frees its record and takes the winner's. Then two checks, each of
     which a callback could not make for itself: that the word reads back
     through the callbacks' own accessor, and that the published table and
     `fns` come from one libsqlite3 image.
@@ -189,14 +236,15 @@ def _publish(fns: SqliteFns, path: String) raises -> Int:
     var slot = Pointer[Atomic[Int64], MutUntrackedOrigin](unsafe_from_address=Int(word))
     var current = Int(slot[].load())
     if current == 0:
-        var copy = unsafe_alloc[SqliteFns](count=1)
-        copy.unsafe_write(fns)
+        var record = unsafe_alloc[_Published](count=1)
+        record.unsafe_write(_Published(fns, path))
         var expected = Int64(0)
-        if slot[].compare_exchange(expected, Int64(Int(copy))):
-            current = Int(copy)
+        if slot[].compare_exchange(expected, Int64(Int(record))):
+            current = Int(record)
         else:
-            # A table owns nothing, so freeing the copy destroys nothing.
-            copy.unsafe_free()
+            # The loser's record owns its copy of the path and nothing else.
+            _ = record.unsafe_take_pointee()
+            record.unsafe_free()
             current = Int(expected)
     if _fn_table() != current:
         raise Error(
@@ -208,15 +256,16 @@ def _publish(fns: SqliteFns, path: String) raises -> Int:
             + "): this toolchain gives pop.global_alloc more than one word,"
             " so no callback could reach the library; nothing is registered"
         )
-    ref published = _FnsPtr(unsafe_from_address=current)[]
-    if published.image() != fns.image():
+    ref published = _PublishedPtr(unsafe_from_address=current)[]
+    if published.fns.image() != fns.image():
         raise Error(
             "this connection's libsqlite3 (" + path + ", "
             + fns.libversion() + ") is not the image this process's"
-            " functions were first registered against (" + published.libversion()
-            + "): a callback reaches ONE library, so every connection that"
-            " registers a function must open the same one (set M0_LIBSQLITE3"
-            " once, before the first connection)"
+            " functions were first registered against (" + published.path
+            + ", " + published.fns.libversion() + "): a callback reaches ONE"
+            " library, so every connection that registers a function must"
+            " open the same one (set M0_LIBSQLITE3 to " + published.path
+            + " once, before the first connection)"
         )
     return current
 
@@ -227,22 +276,28 @@ def _publish(fns: SqliteFns, path: String) raises -> Int:
 struct Args(Sized):
     """The arguments of one call: SQLite's own values, readable while it runs.
 
-    Indexed from 0. Each accessor reads the value as SQLite converts it —
-    `int` of a text answers what `CAST(x AS INTEGER)` would, `text` of NULL
-    answers "" — except `blob`, which refuses anything but a BLOB. Read
-    `type` first when the storage class matters. Valid only inside `call`:
-    the values, and the bytes `blob` hands out, belong to the statement.
+    Indexed from 0. `int`, `float` and `text` read the value as SQLite
+    converts it — `int` of a text answers what `CAST(x AS INTEGER)` would —
+    with one difference from `CAST`: NULL reads as 0, 0.0 and "" where
+    `CAST` answers NULL, as `Statement`'s column accessors do, so ask
+    `is_null` when that matters. The two accessors that touch bytes are
+    disjoint: `blob` refuses anything but a BLOB, and `text` refuses a BLOB.
+    Valid only inside `call`: the values, and the bytes `blob` hands out,
+    belong to the statement.
     """
 
     var _t: Int
     var _argc: Int
     var _argv: Int
 
-    def __init__(out self, t: Int, argc: Int, argv: Int):
-        """Wrap the `argc`/`argv` SQLite passed; `t` is the published table."""
-        self._t = t
-        self._argc = argc
-        self._argv = argv
+    def __init__(out self, *, _table: Int, _argc: Int, _argv: Int):
+        """The trampoline's (`_x_scalar`), and nobody else's: the published
+        record's address and the `argc`/`argv` SQLite passed for one call.
+        All three are raw addresses read without a check, so an `Args`
+        built from anything else is a wild read."""
+        self._t = _table
+        self._argc = _argc
+        self._argv = _argv
 
     def __len__(self) -> Int:
         """How many arguments this call passed."""
@@ -259,35 +314,54 @@ struct Args(Sized):
         return _WordPtr(unsafe_from_address=self._argv)[unsafe_offset=i]
 
     def type(self, i: Int) raises -> Int:
-        """The storage class argument `i` arrived as: `SQLITE_INTEGER`,
+        """Argument `i`'s storage class as it is NOW: `SQLITE_INTEGER`,
         `SQLITE_FLOAT`, `SQLITE_TEXT`, `SQLITE_BLOB` or `SQLITE_NULL`.
 
-        Ask before any other accessor reads it: a conversion can change what
-        a later `type` answers (sqlite3.h, `sqlite3_value_type`)."""
-        return _FnsPtr(unsafe_from_address=self._t)[].value_type(self._value(i))
+        The class the argument arrived as only until something converts it
+        (sqlite3.h, `sqlite3_value_type`). Nothing in this struct does —
+        `text` of a number adds a text form and leaves the class, and the
+        one conversion that would change it, a BLOB read as text, is
+        refused — but the contract is SQLite's, so ask before reading."""
+        return _PublishedPtr(unsafe_from_address=self._t)[].fns.value_type(
+            self._value(i)
+        )
 
     def is_null(self, i: Int) raises -> Bool:
         """Whether argument `i` is NULL."""
         return self.type(i) == SQLITE_NULL
 
     def int(self, i: Int) raises -> Int:
-        """Argument `i` as an integer, converted as SQLite converts it."""
-        return _FnsPtr(unsafe_from_address=self._t)[].value_int64(self._value(i))
+        """Argument `i` as an integer, converted as SQLite converts it.
+        Answers 0 for NULL, where `CAST` answers NULL — see `is_null`."""
+        return _PublishedPtr(unsafe_from_address=self._t)[].fns.value_int64(
+            self._value(i)
+        )
 
     def float(self, i: Int) raises -> Float64:
-        """Argument `i` as a double, converted as SQLite converts it."""
-        return _FnsPtr(unsafe_from_address=self._t)[].value_double(self._value(i))
+        """Argument `i` as a double, converted as SQLite converts it.
+        Answers 0.0 for NULL, where `CAST` answers NULL — see `is_null`."""
+        return _PublishedPtr(unsafe_from_address=self._t)[].fns.value_double(
+            self._value(i)
+        )
 
     def text(self, i: Int) raises -> String:
         """Argument `i` as text, copied; NULL reads as "" (see `is_null`).
 
-        The pointer is asked for before the length, sqlite3.h's order, so the
-        length measures the text form. The bytes are taken as they are, as
-        `Statement.column_text` takes them: SQLite does not check that TEXT
-        is valid UTF-8.
+        A BLOB is refused, as `blob` refuses everything else: reading one
+        as text converts the value in place, which moves the bytes a span
+        from `blob` points at (see there). For a blob's bytes as a `String`,
+        copy the span. The pointer is asked for before the length,
+        sqlite3.h's order, so the length measures the text form. The bytes
+        are taken as they are, as `Statement.column_text` takes them: SQLite
+        does not check that TEXT is valid UTF-8.
         """
-        ref fns = _FnsPtr(unsafe_from_address=self._t)[]
+        ref fns = _PublishedPtr(unsafe_from_address=self._t)[].fns
         var v = self._value(i)
+        if fns.value_type(v) == SQLITE_BLOB:
+            raise Error(
+                "argument " + String(i + 1) + " is a blob, which text() does"
+                " not convert; read it with blob()"
+            )
         var p = fns.value_text(v)
         return cstr_to_string(p, fns.value_bytes(v))
 
@@ -298,55 +372,84 @@ struct Args(Sized):
         valid for this call and no longer. Anything but a BLOB is refused
         rather than converted: a vector arriving as text or a number is the
         caller's bug, and SQLite's conversion would rewrite the value in
-        place. The pointer is asked for before the length, sqlite3.h's order.
-        A blob sits wherever its record put it in the page, so a kernel loads
-        it with alignment 1.
+        place. A blob sits wherever its record put it in the page, so a
+        kernel loads it with alignment 1. A zero-length blob is an empty
+        span.
+
+        The span stays good for the whole call because nothing here can
+        move it. sqlite3.h: a `sqlite3_value_blob` pointer "can be
+        invalidated by a subsequent call to sqlite3_value_bytes(),
+        sqlite3_value_bytes16(), sqlite3_value_text(), or
+        sqlite3_value_text16()". Measured: `sqlite3_value_text` on a blob
+        that was BOUND reallocates it to add a terminator, and the span is
+        left pointing at freed memory (a blob read off a table page happens
+        not to move, which is how that goes unseen). So `text` refuses a
+        BLOB, and the length is asked for here, once, straight after the
+        pointer and on a value already a blob, where it converts nothing.
         """
-        ref fns = _FnsPtr(unsafe_from_address=self._t)[]
+        ref fns = _PublishedPtr(unsafe_from_address=self._t)[].fns
         var v = self._value(i)
         if fns.value_type(v) != SQLITE_BLOB:
             raise Error("argument " + String(i + 1) + " is not a blob")
         var p = Int(fns.value_blob(v))
+        var n = fns.value_bytes(v)
+        if n <= 0:
+            # SQLite's pointer for a zero-length blob is NULL, which a Mojo
+            # pointer is never meant to be: an empty span of its own.
+            return Span[UInt8, origin_of(self)]()
         return Span[UInt8, origin_of(self)](
             unsafe_ptr=Pointer[UInt8, origin_of(self)](unsafe_from_address=p),
-            length=fns.value_bytes(v),
+            length=n,
         )
 
 
 struct Answer:
     """What one call answers: NULL until a method sets it, and the last one set
     is the answer. Text and blobs are copied by SQLite before the method
-    returns (`SQLITE_TRANSIENT`), so any buffer may be handed over."""
+    returns (`SQLITE_TRANSIENT`), so any buffer may be handed over. An empty
+    text or blob is answered as that, never as NULL."""
 
     var _t: Int
     var _ctx: Int
 
-    def __init__(out self, t: Int, ctx: Int):
-        """Wrap the `sqlite3_context *` SQLite passed; `t` is the published table."""
-        self._t = t
-        self._ctx = ctx
+    def __init__(out self, *, _table: Int, _ctx: Int):
+        """The trampoline's (`_x_scalar`), and nobody else's: the published
+        record's address and the `sqlite3_context *` SQLite passed for one
+        call. Both are raw addresses, so an `Answer` built from anything
+        else is a wild call."""
+        self._t = _table
+        self._ctx = _ctx
 
     def null(mut self):
         """Answer NULL."""
-        _FnsPtr(unsafe_from_address=self._t)[].result_null(self._ctx)
+        _PublishedPtr(unsafe_from_address=self._t)[].fns.result_null(self._ctx)
 
     def int(mut self, value: Int):
         """Answer an integer."""
-        _FnsPtr(unsafe_from_address=self._t)[].result_int64(self._ctx, value)
+        _PublishedPtr(unsafe_from_address=self._t)[].fns.result_int64(
+            self._ctx, value
+        )
 
     def float(mut self, value: Float64):
         """Answer a double."""
-        _FnsPtr(unsafe_from_address=self._t)[].result_double(self._ctx, value)
-
-    def text(mut self, value: String):
-        """Answer text."""
-        _FnsPtr(unsafe_from_address=self._t)[].result_text(
-            self._ctx, str_cstr(value), len(value.as_bytes())
+        _PublishedPtr(unsafe_from_address=self._t)[].fns.result_double(
+            self._ctx, value
         )
 
-    def blob(mut self, value: Span[UInt8, _]):
-        """Answer a blob."""
-        _FnsPtr(unsafe_from_address=self._t)[].result_blob(
+    def text(mut self, value: String) raises:
+        """Answer text. Raises past `MAX_C_INT` bytes, the limit of the C
+        `int` SQLite takes the length as."""
+        var n = len(value.as_bytes())
+        check_c_int_length("result_text", n)
+        _PublishedPtr(unsafe_from_address=self._t)[].fns.result_text(
+            self._ctx, str_cstr(value), n
+        )
+
+    def blob(mut self, value: Span[UInt8, _]) raises:
+        """Answer a blob; an empty span answers a zero-length blob. Raises
+        past `MAX_C_INT` bytes, as `text`."""
+        check_c_int_length("result_blob", len(value))
+        _PublishedPtr(unsafe_from_address=self._t)[].fns.result_blob(
             self._ctx,
             value.unsafe_ptr().as_imm().as_unsafe_any_origin(),
             len(value),
@@ -357,12 +460,19 @@ trait ScalarFunction(Movable, Deinitable):
     """A scalar SQL function written in Mojo, for `Connection.create_function`.
 
     The instance is the function's state; SQLite owns it from registration
-    and destroys it when the function is replaced or the connection closes.
+    and destroys it when the function is replaced or the connection is
+    destroyed — at `close()`, or at the last finalize of a statement that
+    outlived it (the module docstring).
     """
 
     comptime arity: Int
     """How many arguments a call takes, or -1 for any number: registered, so
-    SQLite refuses a call with another count when it prepares the statement."""
+    SQLite refuses a call with another count when it prepares the statement.
+
+    Anything outside -1..32767 does not compile. Inside it, the library's
+    build decides: `SQLITE_MAX_FUNCTION_ARG` is 127 on Apple's build and
+    1000 on Homebrew's, and a registration above it is refused at run time
+    (`SQLITE_MISUSE`), so an arity over 127 is build-dependent."""
 
     comptime deterministic: Bool
     """True when the same arguments always give the same answer and the call
@@ -387,24 +497,28 @@ def _x_scalar[F: ScalarFunction](ctx: Int, argc: c_int, argv: Int) abi("C"):
         # Unreachable once a registration has read the word back, and there
         # is nothing to report with: reporting is a library call. NULL.
         return
-    ref fns = _FnsPtr(unsafe_from_address=t)[]
+    ref fns = _PublishedPtr(unsafe_from_address=t)[].fns
     ref impl = Pointer[F, MutUntrackedOrigin](
         unsafe_from_address=fns.user_data(ctx)
     )[]
-    var answer = Answer(t, ctx)
+    var answer = Answer(_table=t, _ctx=ctx)
     try:
-        impl.call(Args(t, Int(argc), argv), answer)
+        impl.call(Args(_table=t, _argc=Int(argc), _argv=argv), answer)
     except e:
         var message = String(e)
-        fns.result_error(ctx, str_cstr(message), len(message.as_bytes()))
+        # Clamped, not checked: there is nowhere left to raise to, and a
+        # length that wrapped negative would mean "scan to the first NUL".
+        fns.result_error(ctx, str_cstr(message), min(len(message.as_bytes()), MAX_C_INT))
         _ = message
 
 
 def _x_destroy[F: ScalarFunction](p: Int) abi("C"):
     """SQLite's `xDestroy`: run the instance's destructor and free its box.
 
-    SQLite calls it exactly once per registration — on replacement, at close,
-    and from inside `create_function_v2` when it refuses one.
+    SQLite calls it exactly once per registration — on replacement, when the
+    connection is destroyed (its close, or the last finalize of a statement
+    that outlived the close), and from inside `create_function_v2` when it
+    refuses one.
     """
     var box = Pointer[F, MutUntrackedOrigin](unsafe_from_address=p)
     _ = box.unsafe_take_pointee()
@@ -416,6 +530,22 @@ def _register_function[
 ](fns: SqliteFns, path: String, db: Int, name: String, var impl: F) raises:
     """Register `impl` as `name` on the connection `db`, whose library is at
     `path`. See `Connection.create_function`."""
+    comptime assert F.arity >= -1 and F.arity <= 32767, (
+        "a ScalarFunction's arity is -1, for any number of arguments, or 0 to"
+        " 32767"
+    )
+    # Refused before SQLite sees the name: `c_string` would end it at the
+    # first NUL and register a different function, and an empty name is one
+    # no SQL can call.
+    var name_bytes = name.as_bytes()
+    if len(name_bytes) == 0:
+        raise Error("create_function: the name is empty")
+    for i in range(len(name_bytes)):
+        if name_bytes[i] == 0:
+            raise Error(
+                "create_function: the name has an embedded null character"
+                " (at byte " + String(i) + ")"
+            )
     _ = _publish(fns, path)
     var box = unsafe_alloc[F](count=1)
     box.unsafe_write(impl^)
@@ -433,12 +563,20 @@ def _register_function[
         # a double free. Measured: a 256-byte name (SQLITE_MISUSE) and a
         # replacement under an active statement (SQLITE_BUSY) each destroy
         # the new instance exactly once.
+        #
+        # The connection's message only when its own code agrees with `rc`,
+        # as `stmt_errmsg` reads it: a refusal that never reached the
+        # connection's error state (SQLITE_MISUSE for the name or the arity)
+        # leaves the PREVIOUS statement's message there.
+        var detail = String("")
+        if fns.errcode(db) == rc:
+            detail = fns.errmsg(db)
         raise Error(
             describe_in(
                 "create_function_v2",
                 rc,
-                fns.errmsg(db),
-                name,
+                detail,
+                name + ", arity " + String(F.arity),
                 fns.errstr(rc),
             )
         )

@@ -1,25 +1,28 @@
 """Scalar functions written in Mojo (`function.mojo`): SPEC O19 to O22.
 
 Each test holds one of the rules `function.mojo`'s docstring states — the
-call and its errors (O19), the refusal that keeps a function out of the
-database file (O20), who destroys the state and when (O21), and the one
+call and its errors (O19), what the schema may not do with a function and
+what it still can (O20), who destroys the state and when (O21), and the one
 global word every callback reaches the library through (O22) — and
 `poe sabotage-sqlite-function` reverts each rule and insists the test that
-claims it fails. Counters live at heap addresses the functions hold, since
-`call` borrows its instance immutably: the same way a real function would
-own a side channel, and the only way a test can watch SQLite call it.
+claims it fails. Counters live at heap addresses the functions hold: SQLite
+owns the instance, so a word outside it is the only way a test can watch
+SQLite call it, or destroy it.
 
-What no test here can hold, and why: the 3.30.0 floor (every library this
-runs against is newer), and the compare-and-swap that publishes the word
-(no single-threaded test can tell it from a store). Both are in the source,
-each with its reason.
+What no test here can hold, and why: the 3.31.0 floor (every library this
+runs against is newer), the compare-and-swap that publishes the word (no
+single-threaded test can tell it from a store), and the bound on `arity`
+(a type outside it does not compile, so there is nothing to run). Each is
+in the source with its reason. The refusal of a second libsqlite3 image
+needs a process of its own, and is `test_one_image.mojo`.
 """
 
+from std.collections.span import Span
+from std.ffi import c_int, external_call
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
 from std.os import getenv, remove
 from std.os.path import exists
-from std.sys import CompilationTarget
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from src import (
@@ -28,6 +31,8 @@ from src import (
     SQLITE_FLOAT,
     SQLITE_INTEGER,
     SQLITE_MISUSE,
+    SQLITE_OPEN_CREATE,
+    SQLITE_OPEN_READWRITE,
     SQLITE_TEXT,
     Answer,
     Args,
@@ -36,8 +41,7 @@ from src import (
     error_code,
     open_memory,
 )
-from src.function import _fn_table, _publish
-from src.lib import default_search_path, open_library
+from src.function import _fn_table
 
 comptime _Word = Pointer[Int, MutUntrackedOrigin]
 
@@ -69,6 +73,18 @@ def _exec_error(db: Connection, sql: String) -> String:
         return String("")
     except e:
         return String(e)
+
+
+def _scratch_db(name: String) raises -> String:
+    """A database file of this process's own, absent: keyed to the pid, since
+    two sessions' runs meet in one `$TMPDIR` (`test_file.mojo`'s reason)."""
+    var path = (
+        getenv("TMPDIR", "/tmp") + "/m0-sqlite-fn-"
+        + String(Int(external_call["getpid", c_int]())) + "-" + name + ".db"
+    )
+    if exists(path):
+        remove(path)
+    return path
 
 
 # --- The functions under test -------------------------------------------------
@@ -121,6 +137,10 @@ struct Kinds(ScalarFunction):
     def call(self, args: Args, mut answer: Answer) raises:
         var s = String("")
         for i in range(len(args)):
+            # `is_null` first, so it answers both ways.
+            if args.is_null(i):
+                s += "N"
+                continue
             var t = args.type(i)
             if t == SQLITE_INTEGER:
                 s += "I"
@@ -130,8 +150,6 @@ struct Kinds(ScalarFunction):
                 s += "T"
             elif t == SQLITE_BLOB:
                 s += "B"
-            elif args.is_null(i):
-                s += "N"
         answer.text(s)
 
 
@@ -149,6 +167,96 @@ struct ByteSum(ScalarFunction):
         for b in args.blob(0):
             total += Int(b)
         answer.int(total)
+
+
+struct BlobThenText(ScalarFunction):
+    """Takes its argument's bytes in place, then asks for the same argument
+    as text: the order that left the span dangling."""
+
+    comptime arity: Int = 1
+    comptime deterministic: Bool = True
+
+    def __init__(out self):
+        pass
+
+    def call(self, args: Args, mut answer: Answer) raises:
+        var bytes = args.blob(0)
+        var s = args.text(0)
+        answer.int(len(bytes) + len(s.as_bytes()))
+
+
+struct Steady(ScalarFunction):
+    """Answers 1 when its blob argument's bytes are where `blob` first found
+    them, and what they were, after every other accessor has read it."""
+
+    comptime arity: Int = 1
+    comptime deterministic: Bool = True
+
+    def __init__(out self):
+        pass
+
+    def call(self, args: Args, mut answer: Answer) raises:
+        var first = args.blob(0)
+        var at = Int(first.unsafe_ptr())
+        var before = 0
+        for b in first:
+            before += Int(b)
+        var kind = args.type(0)
+        var null = args.is_null(0)
+        _ = args.int(0)
+        _ = args.float(0)
+        var again = args.blob(0)
+        var after = 0
+        for b in first:
+            after += Int(b)
+        var steady = (
+            kind == SQLITE_BLOB
+            and not null
+            and Int(again.unsafe_ptr()) == at
+            and len(again) == len(first)
+            and after == before
+        )
+        answer.int(1 if steady else 0)
+
+
+struct EmptyFrom[null: Bool](ScalarFunction):
+    """Answers 1 when an empty blob arrives as an empty span whose pointer is
+    not SQLite's NULL. With `null`, answers a zero-length blob from a span
+    whose pointer is its integer argument: 0 makes the span C hands over
+    for no bytes, which Mojo will not let a constant spell."""
+
+    comptime arity: Int = 1
+    comptime deterministic: Bool = True
+
+    def __init__(out self):
+        pass
+
+    def call(self, args: Args, mut answer: Answer) raises:
+        comptime if Self.null:
+            answer.blob(
+                Span[UInt8, MutAnyOrigin](
+                    unsafe_ptr=Pointer[UInt8, MutAnyOrigin](
+                        unsafe_from_address=args.int(0)
+                    ),
+                    length=0,
+                )
+            )
+        else:
+            var bytes = args.blob(0)
+            answer.int(1 if len(bytes) == 0 and Int(bytes.unsafe_ptr()) != 0 else 0)
+
+
+struct Wide[n: Int](ScalarFunction):
+    """A function of `n` arguments, for the arities a library refuses."""
+
+    comptime arity: Int = Self.n
+    comptime deterministic: Bool = True
+
+    def __init__(out self):
+        pass
+
+    def call(self, args: Args, mut answer: Answer) raises:
+        answer.int(len(args))
 
 
 struct Boom(ScalarFunction):
@@ -224,6 +332,36 @@ struct Tracked(ScalarFunction):
         answer.int(7)
 
 
+struct Witness(ScalarFunction):
+    """Counts its calls into one word and its destruction into another, and
+    is never deterministic, so every row calls it. Both addresses sit past
+    the allocator's links, for `Tracked`'s reason."""
+
+    comptime arity: Int = 0
+    comptime deterministic: Bool = False
+    var _links: Int
+    var _links_too: Int
+    var _past_the_links: Int
+    var calls: Int
+    var destroyed: Int
+
+    def __init__(out self, calls: Int, destroyed: Int):
+        self._links = 0
+        self._links_too = 0
+        self._past_the_links = 0
+        self.calls = calls
+        self.destroyed = destroyed
+
+    def __deinit__(deinit self):
+        var c = _Word(unsafe_from_address=self.destroyed)
+        c[] = c[] + 1
+
+    def call(self, args: Args, mut answer: Answer) raises:
+        var c = _Word(unsafe_from_address=self.calls)
+        c[] = c[] + 1
+        answer.int(7)
+
+
 # --- O19: the call ------------------------------------------------------------
 
 
@@ -256,6 +394,8 @@ def test_every_storage_class_goes_in_and_comes_back() raises:
         db.query_scalar("SELECT kinds(1, 2.5, 'x', x'00ff', NULL)"), "IFTBN"
     )
     assert_equal(db.query_scalar("SELECT kinds()"), "")
+    # An empty text is text, not NULL: "" alone cannot say which it was.
+    assert_equal(db.query_scalar("SELECT typeof(kinds())"), "text")
 
     var q = db.prepare("SELECT typeof(echo(?1)), echo(?1)")
     q.bind_int(1, -7)
@@ -297,6 +437,85 @@ def test_every_storage_class_goes_in_and_comes_back() raises:
     assert_equal(s.column_int(0), expected_sum)
     s.finalize()
     assert_equal(db.query_scalar("SELECT byte_sum(x'')"), "0")
+
+
+def test_an_empty_blob_is_answered_as_a_blob() raises:
+    """A zero-length blob goes in as an empty span and comes back as a
+    zero-length BLOB, never as NULL. SQLite's own pointer for one is NULL
+    (`sqlite3_value_blob` of `x''`), and `sqlite3_result_blob` answers NULL
+    for a NULL pointer whatever the length. Two guards, each tested alone:
+    `Args.blob` never hands the NULL out, and an answer of no bytes never
+    hands one in, whatever span it was given. Then the two together: a
+    literal, `zeroblob(0)`, one that was bound, and one stored in a column
+    that refuses NULL.
+
+    covers: O19
+    """
+    var db = open_memory()
+    db.create_function("echo", Echo())
+    db.create_function("byte_sum", ByteSum())
+    db.create_function("arrives_empty", EmptyFrom[False]())
+    db.create_function("answers_from_null", EmptyFrom[True]())
+    assert_equal(db.query_scalar("SELECT arrives_empty(x'')"), "1")
+    assert_equal(db.query_scalar("SELECT typeof(answers_from_null(0))"), "blob")
+    assert_equal(db.query_scalar("SELECT typeof(echo(x''))"), "blob")
+    assert_equal(db.query_scalar("SELECT length(echo(x''))"), "0")
+    assert_equal(db.query_scalar("SELECT typeof(echo(zeroblob(0)))"), "blob")
+    assert_equal(db.query_scalar("SELECT byte_sum(x'')"), "0")
+
+    var q = db.prepare("SELECT typeof(echo(?1)), echo(?1) IS NULL")
+    q.bind_blob(1, List[UInt8]())
+    assert_true(q.step())
+    assert_equal(q.column_text(0), "blob")
+    assert_equal(q.column_int(1), 0)
+    q.finalize()
+
+    db.execute("CREATE TABLE b (v BLOB NOT NULL)")
+    assert_equal(_exec_error(db, "INSERT INTO b VALUES (echo(x''))"), "")
+    assert_equal(db.query_scalar("SELECT typeof(v) || length(v) FROM b"), "blob0")
+
+
+def test_a_blob_span_stays_good_because_text_refuses_a_blob() raises:
+    """`blob` hands out SQLite's own bytes, and nothing a function can then
+    do moves them. Reading a BOUND blob as text reallocates it to add a
+    terminator (sqlite3.h says a `sqlite3_value_blob` pointer "can be
+    invalidated by a subsequent call to sqlite3_value_text()"), which left
+    a span from `blob` pointing at freed memory, so `text` refuses a BLOB
+    as `blob` refuses everything else. A blob read off a table page does
+    not move, so the argument here is bound. Every other accessor leaves
+    the bytes where they were.
+
+    covers: O19
+    """
+    var db = open_memory()
+    db.create_function("blob_then_text", BlobThenText())
+    db.create_function("steady", Steady())
+    var bytes = List[UInt8]()
+    for i in range(4096):
+        bytes.append(UInt8(i % 251))
+
+    var q = db.prepare("SELECT blob_then_text(?1)")
+    q.bind_blob(1, bytes)
+    var refused = String("")
+    try:
+        _ = q.step()
+    except e:
+        refused = String(e)
+    q.finalize()
+    assert_true("argument 1 is a blob, which text() does not convert" in refused, refused)
+
+    var s = db.prepare("SELECT steady(?1)")
+    s.bind_blob(1, bytes)
+    assert_true(s.step())
+    assert_equal(s.column_int(0), 1, "an accessor moved a blob's bytes")
+    s.finalize()
+
+    # Text is still text to both: `text` of a number converts, `blob` of
+    # anything but a blob does not.
+    db.create_function("echo", Echo())
+    assert_equal(db.query_scalar("SELECT echo('plain')"), "plain")
+    var e = _error_of(db, "SELECT steady('text')")
+    assert_true("argument 1 is not a blob" in e, e)
 
 
 def test_a_raise_is_the_statements_error() raises:
@@ -359,11 +578,12 @@ def test_a_deterministic_call_with_constant_arguments_runs_once() raises:
 
 
 def test_the_schema_cannot_call_a_registered_function() raises:
-    """Nothing the database file stores may call a registered function, so a
-    schema never needs this binary to be written: SQLite refuses a CHECK
-    constraint, a generated column and an expression index when they are
-    created, a stored view when it is used, a trigger when it fires. A TEMP
-    view, which lives on this connection alone, may.
+    """The schema never computes with a registered function: SQLite refuses
+    one in a CHECK constraint, a generated column and an expression index
+    when they are created, in a stored view when it is used, and in a
+    trigger when it fires. Creating the view and the trigger is NOT refused
+    (their bodies resolve when they run), which is what the next test is
+    about. A TEMP view, which lives on this connection alone, may call it.
 
     covers: O20
     """
@@ -390,6 +610,55 @@ def test_the_schema_cannot_call_a_registered_function() raises:
 
     db.execute("CREATE TEMP VIEW v_temp AS SELECT f(1) AS x")
     assert_equal(db.query_scalar("SELECT x FROM v_temp"), "2")
+
+
+def test_a_trigger_naming_a_function_locks_its_table_for_every_writer() raises:
+    """What `SQLITE_DIRECTONLY` cannot refuse: the CREATE of a trigger that
+    names a registered function. The name is then in the database file, and
+    every write to that table fails, from every program: "unsafe use" in
+    the connection that registered the function, "no such function" in one
+    that never heard of it — the `sqlite3` shell, a migration, a backup
+    script. Reads still work, and dropping the trigger, which any writer
+    can do, is what ends it. The flag makes the mistake loud at its first
+    use; it does not make it impossible.
+
+    covers: O20
+    """
+    var path = _scratch_db("trigger")
+    var db = Connection(path, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE)
+    db.create_function("f", AddN(1))
+    db.execute("CREATE TABLE t (x INTEGER)")
+    db.execute("INSERT INTO t VALUES (1)")
+    assert_equal(
+        _exec_error(
+            db, "CREATE TRIGGER t_after AFTER INSERT ON t BEGIN SELECT f(NEW.x); END"
+        ),
+        "",
+        "creating the trigger is not refused",
+    )
+    var e = _exec_error(db, "INSERT INTO t VALUES (2)")
+    assert_true("unsafe use of f()" in e, "the registering connection: " + e)
+
+    # Another program: the same file, and no function.
+    var other = Connection(path, SQLITE_OPEN_READWRITE)
+    e = _exec_error(other, "INSERT INTO t VALUES (3)")
+    assert_true("no such function: f" in e, "a connection without it: " + e)
+    assert_equal(other.query_scalar("SELECT count(*) FROM t"), "1", "reads work")
+
+    other.execute("DROP TRIGGER t_after")
+    assert_equal(_exec_error(other, "INSERT INTO t VALUES (4)"), "")
+    # The registering connection still holds the schema it read before the
+    # drop, and the refusal is raised while the INSERT is compiled against
+    # that copy, before anything compares it with the file: it stays locked
+    # out until a statement that does run notices the schema changed.
+    e = _exec_error(db, "INSERT INTO t VALUES (5)")
+    assert_true("unsafe use of f()" in e, "before its schema is reread: " + e)
+    assert_equal(db.query_scalar("SELECT count(*) FROM t"), "2")
+    assert_equal(_exec_error(db, "INSERT INTO t VALUES (5)"), "")
+    assert_equal(db.query_scalar("SELECT count(*) FROM t"), "3")
+    other.close()
+    db.close()
+    remove(path)
 
 
 # --- O21: SQLite owns the state -----------------------------------------------
@@ -449,19 +718,115 @@ def test_sqlite_destroys_the_state_exactly_once() raises:
     assert_equal(_read(n), 5, "refused before SQLite saw it, destroyed once")
 
 
+def test_the_state_lives_until_the_last_statement_is_finalized() raises:
+    """"Destroyed when the connection closes" is exact only with no statement
+    outstanding. Every close here is `sqlite3_close_v2`, so a connection
+    closed under a statement of its own lives on until that statement is
+    finalized: the function still answers from it after `close()`, and the
+    instance is destroyed at the finalize, not before.
+
+    covers: O21
+    """
+    var calls = _counter()
+    var destroyed = _counter()
+    var db = open_memory()
+    db.create_function("w", Witness(calls, destroyed))
+    var q = db.prepare("SELECT w() UNION ALL SELECT w() UNION ALL SELECT w()")
+    assert_true(q.step())
+    assert_equal(_read(calls), 1)
+
+    db.close()
+    assert_equal(_read(destroyed), 0, "close() under a statement destroys nothing yet")
+    assert_true(q.step())
+    assert_equal(q.column_int(0), 7)
+    assert_equal(_read(calls), 2, "the function answers after close()")
+    assert_equal(_read(destroyed), 0)
+
+    q.finalize()
+    assert_equal(_read(destroyed), 1, "the last finalize destroys it")
+
+
+def test_a_refusal_before_sqlite_and_a_refusal_in_its_own_words() raises:
+    """A name SQLite would misread never reaches it: an empty one, and one
+    holding a NUL byte, which a C string would end at, registering a
+    different function. Each is refused naming the cause, and the instance
+    is destroyed the ordinary way. A refusal SQLite makes without touching
+    the connection's error state — `SQLITE_MISUSE`, for a name over 255
+    bytes or an arity over the library's limit — is reported by its code's
+    own text, never by the message the PREVIOUS statement left on the
+    connection, and names the arity it registered.
+
+    covers: O21
+    """
+    var n = _counter()
+    var db = open_memory()
+    var refused = String("")
+    try:
+        db.create_function("", Tracked(n))
+    except e:
+        refused = String(e)
+    assert_true("the name is empty" in refused, refused)
+    assert_equal(_read(n), 1, "refused before SQLite saw it, destroyed once")
+
+    var bytes = List[UInt8]()
+    bytes.append(97)
+    bytes.append(98)
+    bytes.append(0)
+    bytes.append(99)
+    var with_nul = String(unsafe_from_utf8=Span(bytes))
+    refused = String("")
+    try:
+        db.create_function(with_nul, Tracked(n))
+    except e:
+        refused = String(e)
+    assert_true("embedded null character" in refused, refused)
+    assert_equal(_read(n), 2)
+    var e = _error_of(db, "SELECT ab()")
+    assert_true("no such function: ab" in e, "the name's head was registered: " + e)
+
+    # Leave a message on the connection, then be refused without one.
+    e = _error_of(db, "SELECT * FROM no_such_table")
+    assert_true("no such table" in e, e)
+    var long_name = String("")
+    for _ in range(256):
+        long_name += "x"
+    refused = String("")
+    try:
+        db.create_function(long_name, Tracked(n))
+    except e2:
+        refused = String(e2)
+    assert_equal(error_code(refused), SQLITE_MISUSE, refused)
+    assert_false("no such table" in refused, "a stale message: " + refused)
+    assert_true("misuse" in refused, refused)
+    assert_equal(_read(n), 3)
+
+    refused = String("")
+    try:
+        db.create_function("wide", Wide[32767]())
+    except e3:
+        refused = String(e3)
+    assert_equal(error_code(refused), SQLITE_MISUSE, refused)
+    assert_true("wide, arity 32767" in refused, refused)
+    assert_false("no such table" in refused, "a stale message: " + refused)
+
+
 # --- O22: one word, one library -------------------------------------------------
 
 
 def test_one_word_reaches_every_connection() raises:
     """Every connection's functions answer through the one published table,
-    which outlives the connection that published it.
+    which outlives the connection that published it and is never published
+    again: a registration finds the word as an earlier one left it.
 
     covers: O22
     """
+    var before = _fn_table()
     var first = open_memory()
     first.create_function("add_one", AddN(1))
     var table = _fn_table()
     assert_true(table != 0)
+    if before != 0:
+        assert_equal(table, before, "an earlier test's word was replaced")
     var second = open_memory()
     second.create_function("add_two", AddN(2))
     assert_equal(_fn_table(), table, "published once")
@@ -469,67 +834,6 @@ def test_one_word_reaches_every_connection() raises:
     first.close()
     _ = first^
     assert_equal(second.query_scalar("SELECT add_two(1)"), "3")
-
-
-def _second_image(current: String) raises -> String:
-    """A libsqlite3 file that is not the image at `current`, or "" when there
-    is none.
-
-    Linux: a copy of the system library. A copy is a second image, because
-    the loader identifies an object by its file, and a path with a slash
-    never matches a loaded object's soname. macOS: whichever of Apple's and
-    Homebrew's builds is not in use. Apple's lives in the dyld shared cache
-    and has no file to copy, so without Homebrew's there is no second image.
-    """
-    comptime if CompilationTarget.is_macos():
-        var brew = String("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib")
-        if not exists(brew):
-            return String("")
-        return String("/usr/lib/libsqlite3.dylib") if current == brew else brew
-    else:
-        for p in default_search_path():
-            if p.startswith("/") and exists(p):
-                var copy = getenv("TMPDIR", "/tmp") + "/m0-sqlite-second-image.so"
-                var data: List[UInt8]
-                with open(p, "r") as f:
-                    data = f.read_bytes()
-                with open(copy, "w") as f:
-                    f.write_bytes(Span(data))
-                return copy
-        return String("")
-
-
-def test_a_second_libsqlite3_image_is_refused() raises:
-    """A callback reaches one library, so a connection on another image may
-    not register: its values would be read by the first image's entry
-    points. The refusal is the first thing a registration does (`_publish`),
-    before any database is touched, so this asks it directly, with a second
-    image's table and no database on it — on Ubuntu's build a database
-    cannot be opened on a copy of the library loaded beside the first at
-    all: the copy's calls to its own exported functions resolve into the
-    first copy through the global symbol scope, so it never registers a VFS
-    of its own ("no such vfs", measured on the CI runner). Where no second
-    image exists (macOS without Homebrew's SQLite) this says so.
-
-    covers: O22
-    """
-    var db = open_memory()
-    db.create_function("add_one", AddN(1))
-    var other = _second_image(db.library_path())
-    if not other:
-        print("    (no second libsqlite3 image here; the refusal is not exercised)")
-        return
-    var refused = String("")
-    try:
-        var second = open_library(other)
-        _ = _publish(second.fns, other)
-    except e:
-        refused = String(e)
-    if other.endswith("m0-sqlite-second-image.so"):
-        remove(other)
-    assert_true("is not the image" in refused, refused)
-    assert_true(other in refused, refused)
-    assert_equal(db.query_scalar("SELECT add_one(1)"), "2")
 
 
 def main() raises:

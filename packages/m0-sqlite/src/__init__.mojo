@@ -38,6 +38,9 @@ where SQLite holds it (`function.mojo` says what it may and may not do):
         comptime arity: Int = 2
         comptime deterministic: Bool = True
 
+        def __init__(out self):
+            pass
+
         def call(self, args: Args, mut answer: Answer) raises:
             answer.float(dot_f32(args.blob(0), args.blob(1)))
 
