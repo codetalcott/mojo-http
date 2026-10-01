@@ -297,19 +297,22 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           apt: libsqlite3-dev patchelf
-      # A SECOND libsqlite3, which only this leg needs installed. The
-      # one-image tests and three of `sabotage-sqlite-function`'s rules need
-      # a libsqlite3 image beside the one the process is pinned to, and one
-      # the loader can drop (SPEC O22, O23). Linux makes a copy of the
-      # system library. macOS cannot: Apple's sits in the dyld shared cache,
-      # so the second image there is Homebrew's build. The runner image has
-      # carried one (run 36811209488 caught all three rules on this leg),
-      # and its software list does not name it, so nothing promised it:
-      # installed here, the macOS arm stops being luck, and
-      # `test_one_image.mojo` fails under `CI` when it finds none. A setup
-      # step, so its `if:` is no cited step's; in this job and not in
-      # `.github/actions/setup`, which every job runs. Capped, as the apt
-      # step is: Homebrew has no timeout of its own.
+      # A SECOND libsqlite3, which in this workflow only this leg needs
+      # installed (nightly-canary.yml's macOS leg runs the same tests and
+      # installs it too). The one-image tests and three of
+      # `sabotage-sqlite-function`'s rules need a libsqlite3 image beside
+      # the one the process is pinned to, and one the loader can drop (SPEC
+      # O22, O23). Linux makes a copy of the system library. macOS cannot:
+      # Apple's sits in the dyld shared cache, so the library to install
+      # there is Homebrew's build, which the test's process then opens
+      # first, Apple's being the second image. The runner image has carried
+      # one (run 36811209488 caught all three rules on this leg), and its
+      # software list does not name it, so nothing promised it: installed
+      # here, the macOS arm stops being luck, and `test_one_image.mojo`
+      # fails under `CI` when it finds none. A setup step, so its `if:` is
+      # no cited step's; in this job and not in `.github/actions/setup`,
+      # which every job runs. Capped, as the apt step is: Homebrew has no
+      # timeout of its own.
       - name: Install Homebrew's SQLite (macOS, a second libsqlite3 image)
         if: runner.os == 'macOS'
         timeout-minutes: 5

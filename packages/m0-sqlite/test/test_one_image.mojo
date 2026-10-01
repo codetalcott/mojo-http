@@ -14,9 +14,9 @@ image a file is (`sqlite3_libversion`'s address), never by comparing paths:
 one file. On Linux it is a copy of the system library; on macOS whichever
 of Apple's and Homebrew's builds this process is not using, so without
 Homebrew's there is none, and each test that needs one says so. Under `CI`
-saying so is a failure (`_unexercised`): the macOS job installs Homebrew's
-SQLite for these tests, so a runner without it is a broken job, never a
-quieter pass.
+saying so is a failure (`_unexercised`): the macOS jobs that run this file
+install Homebrew's SQLite for it, so a runner without it is a broken job,
+never a quieter pass.
 """
 
 from std.collections.span import Span
@@ -146,18 +146,21 @@ def _is_loaded(path: String) -> Bool:
 def _unexercised(what: String) raises:
     """Say that this host cannot exercise `what`, and under `CI` fail for it.
 
-    A Mac without Homebrew's SQLite runs this file with the arms that need
-    it left out, and is told so. CI is not allowed that: `unit-gates`
-    installs the library on its macOS leg (`test.yml`), so there a missing
-    one means the job is broken, and a test that passed anyway would be
-    green having tested nothing. GitHub Actions sets `CI`.
+    A Mac without Homebrew's SQLite, or a run that names Apple's library in
+    `M0_LIBSQLITE3`, runs this file with the arms that need Homebrew's left
+    out, and is told so. CI is not allowed that: the macOS jobs that run
+    this file install the library (`test.yml`'s `unit-gates`, and the
+    nightly canary), so there a missing one means the job is broken, and a
+    test that passed anyway would be green having tested nothing. GitHub
+    Actions sets `CI=true`; empty, `0` and `false` read as unset.
     """
-    if getenv("CI", ""):
+    var ci = getenv("CI", "")
+    if ci and ci != "0" and ci != "false":
         raise Error(
             what + ". CI is set, so this is a failure: a test that passes"
-            " without running has tested nothing. On macOS what is missing"
-            " is Homebrew's SQLite, which the unit-gates job installs (`brew"
-            " install sqlite`); unset CI to run without it"
+            " without running has tested nothing. On macOS this arm needs"
+            " Homebrew's SQLite installed (`brew install sqlite`) and"
+            " M0_LIBSQLITE3 unset or naming it; unset CI to run without it"
         )
     print("    (" + what + ")")
 

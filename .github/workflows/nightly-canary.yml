@@ -46,6 +46,15 @@ jobs:
         timeout-minutes: 3
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
 
+      # test-all runs m0-sqlite's one-image tests, which on macOS need
+      # Homebrew's SQLite and fail under `CI` without it (test.yml's
+      # `unit-gates` has the reasons). Installed here too, so a runner image
+      # that drops the library is not reported as a break in the nightly.
+      - name: Install Homebrew's SQLite (macOS, a second libsqlite3 image)
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: brew install sqlite
+
       - name: Install pinned dependencies
         run: uv sync
 

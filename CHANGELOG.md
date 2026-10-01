@@ -147,10 +147,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   a second image, and the sabotage that drops the pin's kept handle, need
   on macOS a libsqlite3 outside the dyld shared cache: Homebrew's. The
   runner image happened to carry one, which its software list does not
-  promise. The macOS `unit-gates` leg now runs `brew install sqlite`, and
-  under `CI` `test_one_image.mojo` fails where it used to print that an arm
-  was not exercised. On a developer's Mac without Homebrew's SQLite it
-  still prints and passes.
+  promise. The macOS `unit-gates` leg and the nightly canary's now run
+  `brew install sqlite`, and under `CI` `test_one_image.mojo` fails where
+  it used to print that an arm was not exercised. On a developer's Mac
+  without Homebrew's SQLite it still prints and passes.
 
 ### Removed
 
