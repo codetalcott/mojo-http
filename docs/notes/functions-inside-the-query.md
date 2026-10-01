@@ -366,6 +366,10 @@ Each waits for an application that needs it:
 - **A function the schema may call** (`SQLITE_INNOCUOUS`): D59's retiring
   condition, an application that needs one in an index or a generated
   column.
+- **A function that is not deterministic on a library older than 3.50.0**:
+  D59's second retiring condition, added 2026-10-01. Then the choice is an
+  opt-in by name with the hole documented, or pointing `M0_LIBSQLITE3` at
+  a newer build.
 - **Subtypes**, which matter only for interop with sqlite-vec's typed
   values; **auxiliary data** (a per-statement cache of something derived
   from a constant argument), once a function measures that preparation
