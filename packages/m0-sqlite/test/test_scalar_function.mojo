@@ -39,10 +39,11 @@ from src import (
     Args,
     Connection,
     ScalarFunction,
+    Statement,
     error_code,
     open_memory,
 )
-from src.function import SQLITE_MIN_MOVING_FUNCTION_VERSION, _fn_table
+from src.function import REENTERED, SQLITE_MIN_MOVING_FUNCTION_VERSION, _fn_table
 
 comptime _Word = Pointer[Int, MutUntrackedOrigin]
 
@@ -399,6 +400,98 @@ struct Witness(ScalarFunction):
 # --- O19: the call ------------------------------------------------------------
 
 
+struct Placeholder(ScalarFunction):
+    """A name to prepare a statement against, before the function that will
+    hold that statement replaces it."""
+
+    comptime arity: Int = 1
+    comptime deterministic: Bool = True
+
+    def __init__(out self):
+        pass
+
+    def call(mut self, args: Args, mut answer: Answer) raises:
+        answer.int(0)
+
+
+struct Recur(ScalarFunction):
+    """Holds a `Statement` of its own connection, in its own fields, and
+    steps it for an argument above zero: the public API's way to a call
+    inside a call. An instance over 256 bytes, which `call` takes by
+    pointer. It reports `entered * 1000 + finished` to a word the test
+    reads, written as each changes."""
+
+    comptime arity: Int = 1
+    comptime deterministic: Bool = True
+    var inner: Statement
+    var entered: Int
+    var finished: Int
+    var report: Int
+
+    def __init__(out self, var inner: Statement, report: Int):
+        self.inner = inner^
+        self.entered = 0
+        self.finished = 0
+        self.report = report
+
+    def call(mut self, args: Args, mut answer: Answer) raises:
+        var r = _Word(unsafe_from_address=self.report)
+        self.entered += 1
+        r[] = self.entered * 1000 + self.finished
+        var n = args.int(0)
+        if n > 0:
+            self.inner.reset()
+            self.inner.bind_int(1, n - 1)
+            _ = self.inner.step()
+            self.inner.reset()
+        self.finished += 1
+        r[] = self.entered * 1000 + self.finished
+        answer.int(n)
+
+
+struct RecurAt(ScalarFunction):
+    """The same with the statement behind an address: a 32-byte instance,
+    which `call` is handed as a copy that is stored back when it returns."""
+
+    comptime arity: Int = 1
+    comptime deterministic: Bool = True
+    var inner_at: Int
+    var entered: Int
+    var finished: Int
+    var report: Int
+
+    def __init__(out self, inner_at: Int, report: Int):
+        self.inner_at = inner_at
+        self.entered = 0
+        self.finished = 0
+        self.report = report
+
+    def call(mut self, args: Args, mut answer: Answer) raises:
+        var r = _Word(unsafe_from_address=self.report)
+        self.entered += 1
+        r[] = self.entered * 1000 + self.finished
+        var n = args.int(0)
+        if n > 0:
+            ref inner = Pointer[Statement, MutUntrackedOrigin](
+                unsafe_from_address=self.inner_at
+            )[]
+            inner.reset()
+            inner.bind_int(1, n - 1)
+            _ = inner.step()
+            inner.reset()
+        self.finished += 1
+        r[] = self.entered * 1000 + self.finished
+        answer.int(n)
+
+
+def _on_the_heap(var st: Statement) -> Int:
+    """A statement at an address a function can hold. Never finalized: its
+    connection is the test's own and goes with the process."""
+    var box = unsafe_alloc[Statement](count=1)
+    box.unsafe_write(st^)
+    return Int(box)
+
+
 def test_a_function_answers_from_its_own_state() raises:
     """Two registrations of one type are two instances, each reached by its
     own calls through `sqlite3_user_data`.
@@ -586,6 +679,84 @@ def test_a_blob_span_stays_good_because_text_refuses_a_blob() raises:
     assert_equal(db.query_scalar("SELECT echo('plain')"), "plain")
     var e = _error_of(db, "SELECT steady('text')")
     assert_true("argument 1 is not a blob" in e, e)
+
+
+def test_a_call_inside_a_call_is_refused_not_run() raises:
+    """A function that steps a statement of its own connection which calls
+    the same function is refused at the inner call: the inner statement
+    fails with the refusal, which the outer call raises on as its own
+    statement's error, and the body never runs a second time on an instance
+    that is in the middle of a call. `call` takes `mut self`, so the inner
+    call's writes would otherwise be lost to the outer's store, silently.
+    The refusal clears with the call that met it: the next call runs.
+
+    Twice, for the two ways Mojo 1.1 hands `call` its instance: one of 256
+    bytes or less, copied in and stored back, and a larger one, by pointer.
+
+    covers: O19
+    """
+    comptime refusal = "called again while a call on it was in progress"
+    assert_true(refusal in String(REENTERED))
+
+    var db = open_memory()
+    var report = _counter()
+    db.create_function("recur", Placeholder())
+    db.create_function("recur", RecurAt(_on_the_heap(db.prepare("SELECT recur(?)")), report))
+    assert_equal(db.query_scalar("SELECT recur(0)"), "0")
+    assert_equal(_read(report), 1001, "a call that does not re-enter runs")
+    var e = _error_of(db, "SELECT recur(1)")
+    assert_true(refusal in e, e)
+    assert_equal(error_code(e), 1)
+    assert_equal(
+        _read(report), 2001,
+        "the outer call entered and raised; the inner one never ran",
+    )
+    assert_equal(db.query_scalar("SELECT recur(0)"), "0")
+    assert_equal(_read(report), 3002, "the refusal clears with the call that met it")
+    e = _error_of(db, "SELECT recur(2)")
+    assert_true(refusal in e, e)
+    assert_equal(_read(report), 4002)
+
+    var big = open_memory()
+    var big_report = _counter()
+    big.create_function("recur", Placeholder())
+    var st = big.prepare("SELECT recur(?)")
+    big.create_function("recur", Recur(st^, big_report))
+    e = _error_of(big, "SELECT recur(1)")
+    assert_true(refusal in e, e)
+    assert_equal(_read(big_report), 1000)
+    assert_equal(big.query_scalar("SELECT recur(0)"), "0")
+    assert_equal(_read(big_report), 2001)
+    # The instance owns a statement of the connection that owns it: replace
+    # it, so the statement is finalized and the close is a close.
+    big.create_function("recur", Placeholder())
+
+
+def test_two_functions_calling_each_other_are_refused_at_the_second_entry() raises:
+    """The guard is per instance, so it neither refuses a function that
+    calls ANOTHER through a statement of its connection nor misses the way
+    back: `f` steps `SELECT g(?)`, which runs, and `g` steps `SELECT f(?)`,
+    which is refused, `f` being in the middle of its call.
+
+    covers: O19
+    """
+    var db = open_memory()
+    var f_report = _counter()
+    var g_report = _counter()
+    db.create_function("f", Placeholder())
+    db.create_function("g", Placeholder())
+    var calls_g = _on_the_heap(db.prepare("SELECT g(?)"))
+    var calls_f = _on_the_heap(db.prepare("SELECT f(?)"))
+    db.create_function("f", RecurAt(calls_g, f_report))
+    db.create_function("g", RecurAt(calls_f, g_report))
+    assert_equal(db.query_scalar("SELECT f(1)"), "1", "f calls g, which stops at 0")
+    assert_equal(_read(f_report), 1001)
+    assert_equal(_read(g_report), 1001, "another function's call is not refused")
+    var e = _error_of(db, "SELECT f(2)")
+    assert_true("called again while a call on it was in progress" in e, e)
+    assert_equal(_read(f_report), 2001, "f entered once more, and not a third time")
+    assert_equal(_read(g_report), 2001, "g entered and raised")
+    assert_equal(db.query_scalar("SELECT g(1)"), "1", "and both answer afterwards")
 
 
 def test_a_raise_is_the_statements_error() raises:

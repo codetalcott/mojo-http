@@ -100,12 +100,17 @@ most:
 - **Arity and determinism are the type's `comptime` members**, so a call
   site cannot disagree with the code that keeps them.
 - **`call` takes `mut self`, and is never re-entered.** A function's state
-  is its own fields. That is sound only because SQLite calls one instance
-  one call at a time, so never give a function a way to run SQL on its own
-  connection (`Args` carries none): on Mojo 1.1 a small instance is copied
-  in and stored back, so an inner call's writes would be overwritten, and a
-  large one is passed as a pointer taken to be unaliased. Unsound at any
-  size. Nothing reaches a registered instance by address, either.
+  is its own fields. That is sound only because one instance runs one call
+  at a time: on Mojo 1.1 a small instance is copied in and stored back, so
+  an inner call's writes would be overwritten, and a large one is passed as
+  a pointer taken to be unaliased. Unsound at any size, and reachable with
+  the public API (a function holding a `Statement` of its own connection
+  that calls it), where it lost state silently. So `_x_scalar` refuses it:
+  the instance is boxed beside a busy word (`_Guarded`), set for the length
+  of `call` and cleared after it, a raise included, and a call that finds
+  it set is its statement's error. Do not move the clear inside the `try`,
+  and do not hand a function its connection (`Args` carries none). Nothing
+  reaches a registered instance by address, either.
 
 **The package has two globals**, each a `pop.global_alloc` word behind an
 `@no_inline` accessor (m0-http's `src/global_slot.mojo` idiom, copied, since
