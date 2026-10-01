@@ -494,7 +494,10 @@ the server's max connections. A WebSocket upgrade is signalled on the wire:
 the loop switches a slot to frame mode when the response is `101` +
 `Upgrade: websocket` (what `websocket_upgrade` builds). On the
 `sse_heartbeat_ms` cadence an SSE slot gets a `: heartbeat` comment and a WS
-slot a protocol ping.
+slot a protocol ping; a stream the application writes through the chunk
+channel gets no comment (an event may span two chunks). Every stream's
+socket has TCP keepalive on, which is what reaps a vanished client where
+nothing is in flight (SPEC I32, `_keep_stream_alive`; D57's note).
 
 ## Writing an application in Mojo
 
@@ -881,7 +884,9 @@ Env vars, all `M0_`-prefixed: `M0_HOST`, `M0_PORT`, `M0_BASE_URL`,
 `M0_WORKERS`, `M0_THREADS` (mutually exclusive with `M0_WORKERS>1`;
 free-threaded CPython only), `M0_BLOCKING_THREADS` (handler threads per
 loop; composes with either and with `--realtime`),
-`M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`, `M0_APP_TICK_MS`, `M0_QOS` (macOS:
+`M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`, `M0_STREAM_KEEPALIVE_S` (keepalive
+on a stream's socket: idle seconds and probe interval, default 15; `0`
+off), `M0_APP_TICK_MS`, `M0_QOS` (macOS:
 keeps the loop and its workers on performance cores; accepted and ignored
 elsewhere), `M0_MAX_KEEPALIVE_REQUESTS` (the keep-alive cap; 0 = never close
 for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and

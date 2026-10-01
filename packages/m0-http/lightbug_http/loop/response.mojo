@@ -9,7 +9,7 @@ next request. `_send_error_to_fd` is the best-effort answer before a close.
 """
 
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import send, close
+from lightbug_http.c.socket import send, close, set_tcp_keepalive
 from lightbug_http.connection import ConnectionState
 from lightbug_http.header import HeaderKey, KH_DATE
 from lightbug_http.http import (
@@ -23,8 +23,9 @@ from lightbug_http.service import HTTPService
 from lightbug_http.websocket import is_ws_upgrade_response
 
 from lightbug_http.loop.state import (
-    LoopState, UNUSED, _arm_send_deadline, _await_write, _close_slot,
-    _end_request, _record_response, _stream_idle, _ws_linger,
+    LoopState, STREAM_KEEPALIVE_PROBES, UNUSED, _arm_send_deadline,
+    _await_write, _close_slot, _end_request, _record_response, _stream_idle,
+    _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 
@@ -179,6 +180,32 @@ def _pump_body_fd(mut provision: ConnectionProvision, fd_val: Int) -> Int:
     return BODY_FD_DONE
 
 
+def _keep_stream_alive(st: LoopState, fd_val: Int):
+    """Turn TCP keepalive on for a connection that is becoming a stream.
+
+    A stream has no deadline (DECISIONS D57), so nothing of the loop's
+    looks at an idle one, and a client that vanished without a FIN holds
+    its slot until something sent to it goes unanswered. The heartbeat is
+    that something for a stream the loop writes; a stream the application
+    writes through the chunk channel gets none, and no stream does with
+    the heartbeat off. The kernel's probe covers both and puts no byte in
+    the stream. A live client answers it from its kernel, so a reader that
+    is merely slow, or idle, keeps its slot.
+
+    A failure is not the stream's: the option is advice to the kernel, and
+    a socket it cannot be set on is one the next send will report.
+    """
+    if st.stream_keepalive_s <= 0:
+        return
+    try:
+        set_tcp_keepalive(
+            FileDescriptor(fd_val), st.stream_keepalive_s,
+            st.stream_keepalive_s, STREAM_KEEPALIVE_PROBES,
+        )
+    except e:
+        pass
+
+
 def _finish_response[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
     var response: HTTPResponse,
@@ -211,6 +238,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # raises it, or the sweep skips a stream nothing else drains.
         st.offload.streaming_hint += 1
         st.provision_pool.provisions[slot].should_close = False
+        _keep_stream_alive(st, fd_val)
 
     # A 101 with Upgrade: websocket switches this connection to frame mode
     # once the handshake response is on the wire (see _after_send).
@@ -220,6 +248,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         st.offload.streaming_hint += 1
         st.slot_ws_state[slot].reset()
         st.provision_pool.provisions[slot].should_close = False
+        _keep_stream_alive(st, fd_val)
         # A 1xx response carries no body: drop the defaulted entity headers.
         response.headers.pop("content-length")
         response.headers.pop("content-type")

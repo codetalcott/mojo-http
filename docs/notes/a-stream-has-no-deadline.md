@@ -43,7 +43,10 @@ cadence of its own, as sse-starlette's ping does; a WebSocket on that path
 still gets the loop's ping. Second, its sends wait for drain credit
 ([the WebSocket send window](websocket-send-window.md)), so a stalled
 reader holds up the application's producer and no frame is dropped. None
-of this path was measured here.
+of this path was measured when the decision was written. It was on
+2026-10-01, and a quiet stream of that kind held its slot after its client
+vanished; [keepalive on the stream's socket](#keepalive-on-a-streams-socket)
+is what reaps it now.
 
 ## The measurement
 
@@ -90,9 +93,10 @@ idles, and the error wakes it.
 **With the heartbeat off, the slot stays.** Nothing is in flight, so
 nothing times out. `ss` showed the socket established with an empty send
 queue and no timer for all 100 s, past the 60 s idle timeout, which a
-stream does not have. m0serve sets no `SO_KEEPALIVE` on a connection, so
-nothing else looks. Once the rules were removed and the client closed,
-the count was 0 within 1.5 s.
+stream does not have. m0serve set no `SO_KEEPALIVE` on a connection at
+13c7d40, so nothing else looked; it does now, on a stream's socket, and
+this arm is reaped ([below](#keepalive-on-a-streams-socket)). Once the
+rules were removed and the client closed, the count was 0 within 1.5 s.
 
 **A live client that stops reading keeps its slot, by design.** It set a
 4 KB receive buffer and read nothing after the head. Two publishes of
@@ -112,7 +116,65 @@ Not measured:
 - A stalled reader that vanishes, at the default `tcp_retries2`. The
   probe interval grows to 120 s, so the bound is longer than the
   retransmission case's.
-- The chunk-channel streams above.
+- The chunk-channel streams above, until 2026-10-01 (the next section).
+
+## Keepalive on a stream's socket
+
+Added 2026-10-01 (SPEC I32). Two of the arms above left a vanished client
+holding its slot for as long as the server ran: a stream with the
+heartbeat off, and, unmeasured then, the stream an application writes
+through the chunk channel, which the loop does not heartbeat. Measured the
+same way, at the same kernel, on a quiet ASGI stream (`/stream-quiet` in
+`apps/asgi_bare`: one event, then nothing): 30 s after its client's
+packets were dropped the application still counted the stream open.
+
+A deadline is not the answer D57 gave, and this is not one. TCP keepalive
+is the kernel asking an idle peer whether it is still there: after
+`M0_STREAM_KEEPALIVE_S` seconds with nothing received (15) it sends an
+empty segment, again at that interval, and fails the socket when three in
+a row go unanswered. No byte enters the stream, so the reason the loop's
+comment is kept out of an application's stream does not apply, and a live
+client's kernel answers whatever its application is doing. The loop sets
+it where a slot becomes an SSE stream or a WebSocket (`_keep_stream_alive`
+in `loop/response.mojo`); `0` sets nothing.
+
+| arm | heartbeat | keepalive | the slot after the vanish |
+|---|---|---|---|
+| ASGI stream, quiet | none reaches it | off | held at 30 s |
+| ASGI stream, quiet | none reaches it | 1 s | closed at 4.18, 4.16, 4.14 s |
+| ASGI stream, quiet | none reaches it | 15 s, the default | closed at 61.52 s |
+| SSE hold | off | 1 s | closed at 4.16 s |
+| WebSocket hold | off | 1 s | closed at 4.17 s |
+| SSE hold | 1 s | 1 s | held at 60 s |
+| ASGI stream, quiet, a live client | none reaches it | 1 s | kept through 15 s |
+| SSE hold, a live client with a zero window | 1 s | 1 s | kept through 30 s |
+
+`tcp_retries2` was the default, 15, throughout. The reap is the idle time
+plus three intervals: `ss` showed `timer:(keepalive,997ms,0)` as the rule
+went in and `timer:(keepalive,124ms,3)` in the last sample before the
+socket was gone, and the application's disconnect ran in the same 0.1 s.
+
+Three things the table says:
+
+- **A stream with nothing in flight is reaped in about a minute at the
+  default**, where it was held for good.
+- **A heartbeated stream is not reaped sooner.** Once a heartbeat is
+  unacknowledged the kernel is retransmitting, and Linux sends no
+  keepalive probe while data is outstanding: with both at 1 s the slot was
+  still held at 60 s, on its retransmission timer (`timer:(on,44sec,8)`).
+  The bound for that stream is the one measured above, about 16 minutes at
+  the defaults. So a quiet stream is now reaped sooner than a heartbeated
+  one. Shortening the second is a different change (`TCP_USER_TIMEOUT` on
+  Linux). Whether that would also end a live client with a zero window is
+  unmeasured, and it is D57's question.
+- **A live client keeps its slot**, idle or not reading: its kernel
+  answers the probe, and with data queued the persist timer is what runs.
+
+Not measured: macOS's reap, since dropping a client's packets there needs
+root. What is checked on macOS is that the option is on the server's
+socket with the idle time asked for (`lsof -Tf` prints `SO=KEEPALIVE=15001`
+for a stream and nothing for a plain connection). The smoke's Linux leg
+repeats the first two rows on every pull request.
 
 ## What it costs
 

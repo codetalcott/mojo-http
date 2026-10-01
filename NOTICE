@@ -1215,6 +1215,17 @@ lightbug_http
         behind one slow view had waited 1.3-1.5 ms for that pass whatever
         its threshold (review record PW).
 
+      - c/socket.mojo, loop/state.mojo, loop/response.mojo (2026-10-01): a
+        stream's socket has TCP keepalive on (SPEC I32). `set_tcp_keepalive`
+        and its constants are new in `c/socket.mojo` (`SO_KEEPALIVE`,
+        `IPPROTO_TCP`, `TCP_KEEPIDLE` -- macOS's `TCP_KEEPALIVE` under
+        Linux's name -- `TCP_KEEPINTVL`, `TCP_KEEPCNT`), and
+        `_finish_response` calls `_keep_stream_alive` where a slot becomes
+        an SSE stream or a WebSocket. `LoopState.stream_keepalive_s` is the
+        idle time and the interval, from `M0_STREAM_KEEPALIVE_S` (15; 0 sets
+        nothing), with three probes. A client that vanished from a stream
+        with nothing in flight had held its slot for good.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

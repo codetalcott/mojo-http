@@ -58,6 +58,10 @@ _LIFESPAN = {"started": False}
 # The disconnect codes /ws/record sockets were told, in order, and every
 # text message they received.
 _WS_CLOSES = []
+# Streams `/stream-quiet` has open and has seen end: `/quiet-streams`
+# answers both, so a probe can tell when the server told the application
+# its client was gone (SPEC I32).
+_QUIET = {"open": 0, "closed": 0}
 _WS_TEXTS = []
 
 # /ws/flood's shape. 400 x 4 KB is ~25 send windows' worth, so the
@@ -283,6 +287,23 @@ async def application(scope, receive, send):
         }).encode()
         await _send_start(send, 200, [(b"content-type", b"application/json")])
         await send({"type": "http.response.body", "body": payload})
+    elif path == "/stream-quiet":
+        # One event, then silence until the server says the client has
+        # gone. Nothing is in flight to the client while it waits, so
+        # nothing but TCP keepalive notices one that vanished: the stream
+        # an application writes gets no heartbeat from the loop.
+        await _send_start(send, 200, [(b"content-type", b"text/event-stream")])
+        await send({"type": "http.response.body",
+                    "body": b"data: quiet\n\n", "more_body": True})
+        _QUIET["open"] += 1
+        try:
+            while (await receive())["type"] != "http.disconnect":
+                pass
+        finally:
+            _QUIET["open"] -= 1
+            _QUIET["closed"] += 1
+    elif path == "/quiet-streams":
+        await _text(send, 200, json.dumps(_QUIET).encode())
     elif path == "/stream-forever":
         await _send_start(send, 200, [(b"content-type", b"text/event-stream")])
         n = 0
