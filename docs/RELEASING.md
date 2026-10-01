@@ -83,7 +83,11 @@ which a `localhost` entry does not cover, and fails every test with
 `M0_PG_TEST_URL=postgres://postgres@localhost:5432/postgres` passes. It
 fails without a server; it never skips. The three files took 26 minutes on
 the 1.4.0 run and 12 seconds on the 1.5.0 run; what made the difference
-was not traced, so budget for the former.
+was not traced, so budget for the former. Since 2026-10-01 there are four
+files: `test_pin.mojo` (SPEC O24) is among them, and is the one part of
+this arm that CI's own macOS job, `postgres-macos`, also runs on every pull
+request, against the libpq it installs. Here it runs against the reference
+Mac's.
 
 **And `uv run poe stress-pool`** (SPEC E18): the handler pool's lost-wake
 reproducers, in the `m0lin` Linux container — the only place a lost pool

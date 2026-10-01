@@ -13,8 +13,9 @@ Loading the library the way `m0-postgres` loads libpq answers both: no
 binary links it, and a JIT'd test opens it like any other process.
 
 The shape is `m0-postgres/src/lib.mojo`'s, and its three rules — each
-found there by crashing — are adopted here up front. The third has grown a
-second half here that m0-postgres does not have yet (one image, O23):
+found there by crashing — are adopted here up front. The third grew a
+second half here (one image, O23), of which m0-postgres has since taken the
+kept handle and not the refusal (O24):
 
   - **The handle and the pointers loaded from it live in ONE struct.** A
     `thin` pointer loaded from a handle carries no borrow, so an

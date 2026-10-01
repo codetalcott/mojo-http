@@ -429,7 +429,9 @@ jobs:
   # docs/RELEASING.md names `poe test-postgres-server` on a Mac with a local
   # server as the pre-release arm; the lifetime rules the job pins are
   # toolchain behaviour rather than OS behaviour, so Linux every PR is the
-  # coverage that matters for them.
+  # coverage that matters for them. One is not: the pin's kept handle (O24)
+  # is the loader's behaviour, macOS's alone, and `postgres-macos` below is
+  # where it can fail.
   #
   # `libpq5` is installed explicitly rather than relied on: the runner image
   # ships a PostgreSQL client, but this package opens the library by name at
@@ -463,6 +465,14 @@ jobs:
       - run: uv run poe build-all
       - name: Test m0-postgres against a real server
         run: uv run poe test-postgres-server
+      # The pin's rules reverted on the platform where the scope matters:
+      # an image in the global scope captures a second libpq's calls on
+      # glibc alone (SPEC O24), and the harness's anchors for the two scope
+      # rules are this platform's arm of a `comptime if`, which the macOS
+      # job never reads. Six of seven are caught here; the kept handle
+      # reports SKIPPED, which exits 0.
+      - name: Sabotage m0-postgres's library pin (Linux, where the scope binds)
+        run: uv run poe sabotage-postgres-pin
       - name: Build the serve CLI
         run: uv run poe build-serve
       - name: Smoke test a Postgres NOTIFY reaching a held stream
@@ -472,6 +482,54 @@ jobs:
         uses: ./.github/actions/record-measurements
         with:
           name: ci-results-postgres
+
+  # O24: m0-postgres's library pin, on the one platform that can lose it.
+  # The pin keeps a handle open because macOS drops an image opened
+  # `RTLD_NODELETE` from dyld's list once its last handle closes, so a
+  # reopen mapped a fresh copy of libpq. glibc keeps such an object
+  # findable, so the Linux job above, which runs the same file, states
+  # that property and cannot fail it; the file's other rules it can. The
+  # apple-silicon shape: job-level `runs-on`, no condition on the cited
+  # step.
+  #
+  # libpq is INSTALLED here, not found. The macOS runner image's software
+  # list names no PostgreSQL (macos-26-arm64 of 20260907). It carries
+  # Homebrew's libpq all the same: this job's first run, 36869066412, was
+  # told 18.6 was already installed. That is the luck the SQLite arm ran on,
+  # and nothing promises it: without the install, an image that dropped the
+  # library would leave no macOS leg able to run the test, and a row saying
+  # `(every PR)` over a test that every runner skips, or that cannot fail
+  # where it runs, is the defect #522's review found twice.
+  # `test_pin.mojo` needs no server, the thing a macOS runner cannot have
+  # (the job above's comment), and fails without a library. Homebrew's
+  # `libpq` is keg-only, and `default_search_path` names its `opt` path.
+  # The install is capped, as the apt step is: Homebrew has no timeout of
+  # its own. No `build-all`: the test and its sabotage compile the package
+  # from source (`src.*`).
+  postgres-macos:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    env:
+      M0_RESULTS: ${{ github.workspace }}/ci-results.jsonl
+      M0_RESULTS_TAG: postgres-macos
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - name: Install libpq (the macOS runner image does not promise one)
+        timeout-minutes: 5
+        run: brew install libpq
+      - name: Test m0-postgres's library pin where the loader can drop it
+        run: uv run poe test-postgres-pin
+      # Each of the pin's seven rules reverted, and the test required to
+      # fail. macOS is the one leg where all seven are observable: on Linux
+      # the kept handle reports SKIPPED.
+      - name: Sabotage m0-postgres's library pin (macOS observes every rule)
+        run: uv run poe sabotage-postgres-pin
+      - name: Record the measurements
+        if: always()
+        uses: ./.github/actions/record-measurements
+        with:
+          name: ci-results-postgres-macos
 
   # N30: `uv run m0 dev` on a scaffolded app, asked of a real process tree --
   # the OLD server answers while a build runs and after one fails, a build

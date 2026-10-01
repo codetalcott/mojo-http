@@ -222,6 +222,32 @@ in a minor release: `m0serve`'s flags and environment variables, the
   m0-sqlite beside a Python application on the stdlib `sqlite3` backend is
   two copies of SQLite in one process: give each side its own database
   file.
+- **m0-postgres maps each libpq it opens once, and keeps it out of the
+  loader's global scope** (SPEC O24). On macOS,
+  a process whose last connection closed and which then opened another
+  loaded a fresh copy of libpq, and of the libraries it links, each time.
+  The library was pinned with `RTLD_NODELETE`, which on macOS keeps an
+  image mapped but forgets it once its last handle closes, so the next
+  open could not find it: m0-sqlite's defect above, in the code it was
+  copied from. Nothing faulted, and a result read after its connection
+  still answered. The process grew by one mapping of libpq per reopen,
+  which for a connection per request on one thread is one per request.
+  The pin now keeps one handle open for the life of the process, and a
+  later open of the same library is a comparison where it was a second
+  `dlopen`. Linux was never affected by that. **On Linux the change is
+  the scope**: libpq was opened in the loader's global scope, where it
+  captured the internal calls of any other libpq build loaded later. With
+  Ubuntu's libpq 16.15 loaded first and psycopg-binary's bundled 18.6
+  second, 69 of the second's symbols bound into the first, and a
+  connection attempt through the second's own handle crashed the process.
+  A Python application on psycopg-binary beside a libpq loaded that way,
+  which is the arrangement under `m0serve --pg-listen`, was captured too:
+  it reported libpq 16.15, not its bundled 18.6, and ran on the system's
+  library. No crash was measured for that case. Every handle is
+  `RTLD_LOCAL` now, and the two libraries keep to themselves: psycopg
+  reports its own 18.6. Unlike m0-sqlite, a second libpq file is not
+  refused: each one a process opens is pinned once. A library that opens
+  and is not libpq is no longer left mapped after it is refused.
 - **A closed `Socket` refuses every call, not only `close()`** (SPEC D1).
   After `close()` a socket went on passing its old number to the kernel,
   so a late `send` wrote into whatever the process had opened on that

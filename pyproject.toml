@@ -1080,6 +1080,15 @@ done
 # It FAILS without a server; it never skips. A gate that exits 0 when its
 # dependency is absent is green having tested nothing, which is the shape
 # scripts/spec_sheet.py refuses for a cited step.
+#
+# `test-postgres-pin` is the third: it needs libpq and NO server, so it can
+# run where a server cannot be had. That is a macOS runner, and macOS is the
+# one platform where the reopen in its first test can fail (SPEC O24): the
+# loader there drops an image whose last handle closed, glibc does not. CI
+# runs it in a macOS job that installs libpq itself, the runner image
+# promising none, and `test-postgres-server` runs the same file on Linux,
+# where the reopen states the property and everything else in the file can
+# fail. It fails without a library, like the rest.
 [tool.poe.tasks.test-postgres]
 help = "Test m0-postgres's pure half (no server, no libpq needed)"
 shell = """
@@ -1108,6 +1117,7 @@ trap 'rm -rf "$out"' EXIT
 # the fill that depends on glibc taking the block back. macOS has no glibc
 # and ignores the variable, which is why it goes on the tests, not the build.
 for f in packages/m0-postgres/test/test_lib.mojo \
+         packages/m0-postgres/test/test_pin.mojo \
          packages/m0-postgres/test/test_postgres.mojo \
          packages/m0-postgres/test/test_notify.mojo; do
   name=$(basename "$f" .mojo)
@@ -1123,6 +1133,24 @@ python3 scripts/emit.py --covers O14 --task test-postgres-server
 python3 scripts/emit.py --covers O15 --task test-postgres-server
 python3 scripts/emit.py --covers O16 --task test-postgres-server
 """
+
+[tool.poe.tasks.test-postgres-pin]
+help = "Test m0-postgres's library pin (needs libpq, no server; fails if absent)"
+shell = """
+mojo run -I packages/m0-postgres packages/m0-postgres/test/test_pin.mojo || exit 1
+python3 scripts/emit.py --covers O24 --task test-postgres-pin
+"""
+
+# Guard the guard of the pin (SPEC O16, O24): revert each of its rules by an
+# exact source line and insist test_pin.mojo fails. The rule the row began
+# with, the kept handle, is observable on macOS alone and reports SKIPPED,
+# never caught, on Linux; the other six are caught on both. Needs libpq,
+# as the test does, so it runs beside it in the macOS job, and in the Linux
+# `postgres` job for the scope rules' Linux anchors, and not in test-all.
+# Eight `mojo run`s of one file, about two minutes.
+[tool.poe.tasks.sabotage-postgres-pin]
+help = "Revert each rule of m0-postgres's library pin; every one must be caught"
+cmd = "python3 scripts/postgres_pin_sabotage.py"
 
 # test-all is the whole, and CI runs it as its two halves, one per job
 # (test.yml's `unit-tests` and `unit-gates`): as one step it took 34-35 min
