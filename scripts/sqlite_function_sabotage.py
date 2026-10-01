@@ -36,7 +36,9 @@ never caught, elsewhere:
 What has no entry, and why: the `try` around `call` (an `abi("C")`
 function cannot raise, so removing it does not compile, which proves
 nothing -- the compiler holds it); the bound on `arity` (the same: a type
-outside it does not compile); the compare-and-swaps that publish the two
+outside it does not compile); the instance `call` writes being the one
+SQLite holds (the same again: a `ScalarFunction` is not `Copyable`, so a
+trampoline that took a copy does not compile); the compare-and-swaps that publish the two
 words (no single-threaded test can tell one from a store); the 3.31.0
 floor (every library this runs against is newer); and the order that asks
 a library everything before a branch that closes it (it takes a library

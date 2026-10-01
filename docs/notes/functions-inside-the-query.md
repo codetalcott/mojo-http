@@ -50,7 +50,7 @@ struct Dot(ScalarFunction):
     def __init__(out self):     # Mojo 1.1.0 wants it written, fields or none
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         answer.float(dot_f32(args.blob(0), args.blob(1)))
 
 db.create_function("dot", Dot())
@@ -72,6 +72,27 @@ again. Two facts of Mojo 1.1 came with it, both found by the
 compiler: the trait refines `Deinitable`, because the instance is destroyed
 generically and on the error path of a refused registration, and `Args`
 conforms to `Sized` for `len(args)`.
+
+**`call` takes `mut self`.** The first version borrowed the instance
+immutably, which left a function with any state of its own — a scratch
+buffer for a kernel, a cache keyed on a constant argument, a counter — no
+sanctioned place to keep it, and the package's own tests reaching heap
+words by raw address, the shape
+[mut-arguments-and-raw-addresses](mut-arguments-and-raw-addresses.md) warns
+about. The review asked for the decision before the API was public, since
+changing it later breaks every implementer. It is sound by SQLite's
+contract rather than by a lock: one instance per registration per
+connection, calls on a connection one at a time, `f(f(x))` evaluated inner
+then outer, and a replacement refused while a statement is active. Probed
+before it was adopted, at `-O0` and at the default, under `mojo run` and
+built: a counter and a list that reallocates keep what a call wrote across
+200 rows, across statements, across a call that raised after writing, and
+between the inner and outer call of one expression, for instances of 8
+and 24 bytes (copied in and stored back on Mojo 1.1) and one of 328 (passed
+by pointer). The one way to break it is a function that steps a statement of
+its own connection which calls it again: the inner call's writes would be
+overwritten by the outer's store-back. `Args` carries no connection, and a
+function must not be handed one of its own.
 
 **The type states its promises**, as `comptime` members a call site cannot
 disagree with. `arity` is registered, so SQLite refuses a wrong call when it
@@ -301,13 +322,14 @@ one's `@no_inline` is load-bearing. What remains is mostly the
 not make.
 
 That figure moves with the machine more than with the code. Measured again
-after the review's changes, the first version and the fixed one interleaved
-over three rounds gave 1.6 to 2.5 and 2.3 to 2.5 ns a call over the
-hand-written function (8.03 to 8.11 ms against 8.25 to 8.31), and the
-binary that had measured 0.8 measured 2.3 and 2.4 in the same session. So:
-one to three percent of the row, the two indistinguishable, and no cost
-found for the type check `text` gained, the record the word now points at,
-or the empty-blob guards.
+after the review's changes, three binaries interleaved over three rounds —
+the first version, the fixed one, and the fixed one with `mut self` — gave
+1.6 to 2.5, 2.3 to 2.5 and 1.9 to 2.1 ns a call over the hand-written
+function (8.03 to 8.11 ms against 8.25 to 8.31), and the binary that had
+measured 0.8 measured 2.3 and 2.4 in the same session. So: one to three
+percent of the row, the three indistinguishable, and no cost found for the
+type check `text` gained, the record the word now points at, the empty-blob
+guards, or the instance being written rather than read.
 
 ## What is not built
 
@@ -360,6 +382,9 @@ test that fails without its fix:
   whose creation the flag does not refuse. The claim is now what the flag
   does: the schema never computes with the function, and a trigger naming
   it fails every writer until it is dropped.
+
+One finding was a question rather than a defect: whether `call` should be
+able to write its instance. It can now (`mut self`, above).
 
 The smaller ones are in the code where they apply: a stale message on a
 refused registration, names with a NUL byte, the arity's bounds, result

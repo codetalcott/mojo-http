@@ -5,9 +5,10 @@ call and its errors (O19), what the schema may not do with a function and
 what it still can (O20), who destroys the state and when (O21), and the one
 global word every callback reaches the library through (O22) — and
 `poe sabotage-sqlite-function` reverts each rule and insists the test that
-claims it fails. Counters live at heap addresses the functions hold: SQLite
-owns the instance, so a word outside it is the only way a test can watch
-SQLite call it, or destroy it.
+claims it fails. A function's own state lives in its fields (`Tally`). The
+counters the tests READ live at heap addresses the functions hold instead:
+SQLite owns the instance, so a word outside it is the only way a test can
+watch SQLite call it, or destroy it.
 
 What no test here can hold, and why: the 3.31.0 floor (every library this
 runs against is newer), the compare-and-swap that publishes the word (no
@@ -98,8 +99,35 @@ struct AddN(ScalarFunction):
     def __init__(out self, n: Int):
         self.n = n
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         answer.int(args.int(0) + self.n)
+
+
+struct Tally(ScalarFunction):
+    """Keeps its state in its own fields: how many calls it has answered,
+    and every argument it has seen, in a list that reallocates as it grows.
+    Answers the sum of what it has seen, and raises on a negative argument
+    AFTER recording it."""
+
+    comptime arity: Int = 1
+    comptime deterministic: Bool = False
+    var calls: Int
+    var seen: List[Int]
+
+    def __init__(out self):
+        self.calls = 0
+        self.seen = List[Int]()
+
+    def call(mut self, args: Args, mut answer: Answer) raises:
+        self.calls += 1
+        var v = args.int(0)
+        self.seen.append(v)
+        if v < 0:
+            raise Error("negative after " + String(self.calls) + " calls")
+        var total = 0
+        for x in self.seen:
+            total += x
+        answer.int(total)
 
 
 struct Echo(ScalarFunction):
@@ -111,7 +139,7 @@ struct Echo(ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         var t = args.type(0)
         if t == SQLITE_INTEGER:
             answer.int(args.int(0))
@@ -134,7 +162,7 @@ struct Kinds(ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         var s = String("")
         for i in range(len(args)):
             # `is_null` first, so it answers both ways.
@@ -162,7 +190,7 @@ struct ByteSum(ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         var total = 0
         for b in args.blob(0):
             total += Int(b)
@@ -179,7 +207,7 @@ struct BlobThenText(ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         var bytes = args.blob(0)
         var s = args.text(0)
         answer.int(len(bytes) + len(s.as_bytes()))
@@ -195,7 +223,7 @@ struct Steady(ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         var first = args.blob(0)
         var at = Int(first.unsafe_ptr())
         var before = 0
@@ -231,7 +259,7 @@ struct EmptyFrom[null: Bool](ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         comptime if Self.null:
             answer.blob(
                 Span[UInt8, MutAnyOrigin](
@@ -255,7 +283,7 @@ struct Wide[n: Int](ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         answer.int(len(args))
 
 
@@ -266,7 +294,7 @@ struct Boom(ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         raise Error("boom from mojo")
 
 
@@ -279,7 +307,7 @@ struct Reach(ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         answer.int(args.int(1))
 
 
@@ -293,7 +321,7 @@ struct Count[det: Bool](ScalarFunction):
     def __init__(out self, counter: Int):
         self.counter = counter
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         var c = _Word(unsafe_from_address=self.counter)
         c[] = c[] + 1
         answer.int(args.int(0))
@@ -328,7 +356,7 @@ struct Tracked(ScalarFunction):
         var c = _Word(unsafe_from_address=self.counter)
         c[] = c[] + 1
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         answer.int(7)
 
 
@@ -356,7 +384,7 @@ struct Witness(ScalarFunction):
         var c = _Word(unsafe_from_address=self.destroyed)
         c[] = c[] + 1
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         var c = _Word(unsafe_from_address=self.calls)
         c[] = c[] + 1
         answer.int(7)
@@ -376,6 +404,29 @@ def test_a_function_answers_from_its_own_state() raises:
     db.create_function("add_ten", AddN(10))
     assert_equal(db.query_scalar("SELECT add_five(1)"), "6")
     assert_equal(db.query_scalar("SELECT add_ten(add_five(1))"), "16")
+
+
+def test_a_function_keeps_what_it_writes_to_itself() raises:
+    """`call` takes `mut self`, and what it writes to its own fields is there
+    for the next call: across the rows of one statement, across statements,
+    across a list that reallocated, across a call that raised (what it wrote
+    before raising stays written), and between an inner and an outer call of
+    one expression. The trampoline hands `call` the instance SQLite holds,
+    never a copy of it.
+
+    covers: O19
+    """
+    var db = open_memory()
+    db.create_function("tally", Tally())
+    comptime rows = (
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c"
+        " WHERE x < 200) "
+    )
+    assert_equal(db.query_scalar(rows + "SELECT max(tally(x)) FROM c"), "20100")
+    var e = _error_of(db, "SELECT tally(-5)")
+    assert_true("negative after 201 calls" in e, e)
+    assert_equal(db.query_scalar("SELECT tally(0)"), "20095", "the raise lost its write")
+    assert_equal(db.query_scalar("SELECT tally(tally(0) * 0 + 7)"), "20102")
 
 
 def test_every_storage_class_goes_in_and_comes_back() raises:

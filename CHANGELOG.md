@@ -13,8 +13,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
 - **Scalar SQL functions written in Mojo** (SPEC O19–O22, DECISIONS
   D58–D59). `Connection.create_function("dot", Dot())` registers a type
   conforming to `ScalarFunction` — `comptime arity` and `deterministic`,
-  and a `call(args, answer)` — on that connection, and SQLite calls it
-  from inside the query plan. `Args.blob` is SQLite's own bytes, never a
+  and a `call(mut self, args, answer)` — on that connection, and SQLite
+  calls it from inside the query plan. The instance is the function's
+  state: `call` may write its own fields, and what it writes is there for
+  the next call. `Args.blob` is SQLite's own bytes, never a
   copy, so a kernel over a large column costs the kernel: a dot product
   over 100,000 384-float embeddings scanned them in 8.6 ms, one to three
   percent over the same function written by hand against the C API and

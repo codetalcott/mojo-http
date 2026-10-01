@@ -81,6 +81,12 @@ most:
   in. Each guard has its own assertion; with one, either hides the other.
 - **Arity and determinism are the type's `comptime` members**, so a call
   site cannot disagree with the code that keeps them.
+- **`call` takes `mut self`, and is never re-entered.** A function's state
+  is its own fields. That is sound only because SQLite calls one instance
+  one call at a time, so never give a function a way to run SQL on its own
+  connection (`Args` carries none): on Mojo 1.1 a small instance is copied
+  in and stored back, and an inner call's writes would be overwritten.
+  Nothing reaches a registered instance by address, either.
 
 **The package has two globals**, each a `pop.global_alloc` word behind an
 `@no_inline` accessor (m0-http's `src/global_slot.mojo` idiom, copied, since

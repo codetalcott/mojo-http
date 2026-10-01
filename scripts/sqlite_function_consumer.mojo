@@ -27,7 +27,7 @@ struct Scaled(ScalarFunction):
     def __init__(out self, factor: Int):
         self.factor = factor
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         answer.int(args.int(0) * self.factor)
 
 
@@ -40,7 +40,7 @@ struct Length(ScalarFunction):
     def __init__(out self):
         pass
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         answer.int(len(args.blob(0)))
 
 

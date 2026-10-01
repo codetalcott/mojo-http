@@ -41,7 +41,7 @@ where SQLite holds it (`function.mojo` says what it may and may not do):
         def __init__(out self):
             pass
 
-        def call(self, args: Args, mut answer: Answer) raises:
+        def call(mut self, args: Args, mut answer: Answer) raises:
             answer.float(dot_f32(args.blob(0), args.blob(1)))
 
     db.create_function("dot", Dot())

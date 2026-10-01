@@ -10,7 +10,7 @@
         def __init__(out self, n: Int):
             self.n = n
 
-        def call(self, args: Args, mut answer: Answer) raises:
+        def call(mut self, args: Args, mut answer: Answer) raises:
             answer.int(args.int(0) + self.n)
 
     var db = open_memory()
@@ -38,6 +38,26 @@ fields, so there is no second form for one (the argument that made
 1.1.0 a struct with no fields still writes its `def __init__(out self): pass`.
 The trait refines `Deinitable` because the instance is destroyed generically
 — by SQLite's `xDestroy` — and on the error path of a refused registration.
+
+**The instance is the function's state, and `call` may write it.** `call`
+takes `mut self`: a scratch buffer for a kernel, a cache keyed on a constant
+argument, a counter, live in the struct's own fields and are there for the
+next call, a call that raised included. That is sound because of how SQLite
+calls a function, not because anything here locks: there is one instance
+per registration per connection; calls on a connection are one at a time
+(by SQLite's mutex on a serialized connection, by this package's
+one-connection-per-thread rule otherwise); `f(f(x))` evaluates the inner
+call to completion and then the outer; and a replacement is refused while a
+statement is active. So nothing else touches the instance while `call` runs.
+
+The one way to break it is to make the call re-entrant: a function that
+steps a statement of its OWN connection which calls the same function. On
+Mojo 1.1 an instance of 256 bytes or less is copied in to `call` and stored
+back when it returns (docs/notes/mut-arguments-and-raw-addresses.md), so
+the inner call's writes would be overwritten by the outer's store, silently.
+`Args` carries no connection for that reason; do not hand a function one of
+its own. For the same reason nothing reaches an instance by address while
+it is registered: its state is its fields, read and written through `self`.
 
 **The type states its promises.** `arity` is what is registered, so SQLite
 refuses a wrong call when the statement is prepared ("wrong number of
@@ -459,10 +479,10 @@ struct Answer:
 trait ScalarFunction(Movable, Deinitable):
     """A scalar SQL function written in Mojo, for `Connection.create_function`.
 
-    The instance is the function's state; SQLite owns it from registration
-    and destroys it when the function is replaced or the connection is
-    destroyed — at `close()`, or at the last finalize of a statement that
-    outlived it (the module docstring).
+    The instance is the function's state, which `call` may write; SQLite
+    owns it from registration and destroys it when the function is replaced
+    or the connection is destroyed — at `close()`, or at the last finalize
+    of a statement that outlived it (the module docstring).
     """
 
     comptime arity: Int
@@ -480,8 +500,11 @@ trait ScalarFunction(Movable, Deinitable):
     constant arguments once per statement; a function that reads a clock, a
     counter or anything else that moves must say False."""
 
-    def call(self, args: Args, mut answer: Answer) raises:
-        """Answer one call. A raise fails the statement with its text."""
+    def call(mut self, args: Args, mut answer: Answer) raises:
+        """Answer one call. A raise fails the statement with its text, and
+        what the call wrote to `self` before raising stays written. Never
+        re-entered: see the module docstring for the one way to arrange
+        that, and why not to."""
         ...
 
 
@@ -491,6 +514,9 @@ trait ScalarFunction(Movable, Deinitable):
 def _x_scalar[F: ScalarFunction](ctx: Int, argc: c_int, argv: Int) abi("C"):
     """SQLite's `xFunc` for every function `F` implements: find the table and
     the instance, and answer the call, a raise becoming the statement's error.
+
+    `impl` is a reference into the box SQLite holds, never a copy: `call`
+    writes the function's state through it.
     """
     var t = _fn_table()
     if t == 0:

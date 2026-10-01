@@ -55,7 +55,7 @@ struct AddN(ScalarFunction):
     def __init__(out self, n: Int):
         self.n = n
 
-    def call(self, args: Args, mut answer: Answer) raises:
+    def call(mut self, args: Args, mut answer: Answer) raises:
         answer.int(args.int(0) + self.n)
 
 
