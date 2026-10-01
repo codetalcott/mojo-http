@@ -222,8 +222,8 @@ outstanding. Every close here is `sqlite3_close_v2`, the call that lets a
 `Statement` outlive its `Connection` (O2), and it leaves a connection that
 still has a statement alive until the last one is finalized. Until then the
 function answers from those statements, and the instance is destroyed at
-that last finalize, on whichever thread finalizes. The same fact is the
-commit hook's trap further down.
+that last finalize, on whichever thread finalizes. The same fact counts
+against a commit hook, [further down](#the-two-callbacks-measured).
 
 Two more things about a refusal. `SQLITE_BUSY` is the one code this package
 otherwise means "retry" by, and for a replacement it is not retryable: the
@@ -401,17 +401,150 @@ Each waits for an application that needs it:
   above a row's noise; **collations**, once a listing needs an order
   `BINARY` and `NOCASE` cannot give; removing a function, which replacement
   covers.
-- **A commit hook** that counts a connection's own commits, so a change
-  clock stops depending on the caller remembering to say it wrote. Building
-  it has one trap the registration work already measured: a `Statement`
-  that outlives its `Connection` still commits on the connection
-  `close_v2` leaves behind, and still fires that connection's hook, so the
-  hook must be removed before the close.
-- **A progress handler** that interrupts a statement past its request's
-  deadline: measured, a 20 ms deadline stopped a 2M-row scan at 20.0 ms
-  with `SQLITE_INTERRUPT`, the connection answered the next statement, and
-  a handler every 1,000 operations cost nothing the noise let through.
-  Waits for a query on the layer whose worst case outlives its request.
+- **A deadline on a statement**, by SQLite's progress handler. Waits for a
+  query on the layer whose worst case outlives its request, and will be
+  built around a step, as the next section measures.
+
+A commit hook counting a connection's own commits was on this list until
+2026-10-01. A change clock does not need one, and it will not be built; the
+next section has the measurement.
+
+## The two callbacks, measured
+
+The first version of this page listed two connection callbacks as waiting
+for an application: a commit hook, so a change clock would count a
+connection's own commits without the caller saying it wrote, and a progress
+handler holding a request's deadline. Both were measured on 2026-10-01
+against the registration work as merged, on Apple's 3.54.0 and Homebrew's
+3.53.4, and on no Linux build. Neither is built. No row or gate holds what
+follows; the gates land with the code that relies on it.
+
+### A change clock needs no commit hook
+
+`PRAGMA data_version` moves when another connection commits to the file and
+stays put for a connection's own writes, on every statement below. The hook
+was to supply those. A second connection to the same file, opened
+read-only, sees the writer's commits as it sees anyone's. One writer in WAL
+mode with a hook counting into a word, and one read-only connection, the
+same on both libraries:
+
+| statement on the writer | hook | read-only connection's `data_version` | `total_changes` |
+|---|---|---|---|
+| `CREATE TABLE` | +1 | moved | +0 |
+| a read | +0 | same | +0 |
+| `INSERT`, autocommit | +1 | moved | +1 |
+| `BEGIN`, three `INSERT`s, `COMMIT` | +1 | moved | +3 |
+| `BEGIN`, `INSERT`, `ROLLBACK` | +0 | same | +1 |
+| `BEGIN IMMEDIATE; COMMIT`, nothing written | +1 | same | +0 |
+| `UPDATE` matching no row | +1 | same | +0 |
+| a TEMP table: create and insert | +2 | same | +1 |
+| a write to an `ATTACH`ed file | +2 | same | +1 |
+| `PRAGMA user_version = 7` | +1 | moved | +0 |
+| `ALTER TABLE ADD COLUMN` | +1 | moved | +0 |
+| `VACUUM` | +0 | moved | +0 |
+| `PRAGMA wal_checkpoint(TRUNCATE)` | +0 | moved | +0 |
+| a `PASSIVE` or `RESTART` checkpoint, an automatic one | +0 | same | +0 |
+
+The read-only connection moved for every statement that changed the main
+database file, and for one that did not, a checkpoint that truncates the
+log. The hook counted four statements that changed nothing in that file and
+did not count `VACUUM`, which can renumber the rowids of a table declared
+without an `INTEGER PRIMARY KEY`. `sqlite3_total_changes` misses a schema
+change and counts a row that was rolled back. A clock that moves once too
+often costs a cache one render; a clock that stays put after a change
+serves stale data.
+
+A hook also has a lifetime the package cannot manage after the fact. Every
+close here is `sqlite3_close_v2`, and a statement that outlives its
+connection still commits through it and still fires its hook. Asked through
+the closed handle, `sqlite3_commit_hook` answered 0 and removed nothing: the
+next commit through the outliving statement fired the hook again. So the
+word a hook counts into would have to be freed only after a removal made
+before the close, and a write to it after that is visible only to an
+allocator that traps one, which is how the ownership test here missed a
+double free.
+
+Two rules for whoever builds the clock:
+
+- **Read it on a connection that does not write.** `open_readonly` makes
+  that structural.
+- **Fill the cache through that same connection.** With the writer holding
+  a statement open while another connection committed, the writer's own
+  `data_version` and its `count(*)` both stayed at the old snapshot, and the
+  read-only connection's clock had already moved. A cache filled through
+  one connection and stamped with the other's clock pairs an old rendering
+  with a new clock value and does not render again. On one connection the
+  clock moves when the snapshot does.
+
+A poll costs 0.65 to 1.09 µs with the statement kept and 0.85 to 1.29 µs
+through `query_scalar`. A read-only connection that has answered one pragma
+holds 75 KB on Homebrew's build and 171 KB on Apple's, from 200 held open
+at once.
+
+An in-memory database has no second connection, so there a connection's own
+writes are the whole clock. An application whose data must live in one is
+what would bring the hook back, with the lifetime rule above.
+
+### A deadline belongs to a step
+
+A table of 2,000,000 rows, the handler called every 1,000 VM operations.
+The overshoot is how far past its deadline a statement ran before
+`SQLITE_INTERRUPT`: the worst of five deadlines placed along the unbounded
+run, over two runs. Where a sort is involved two runs differ by up to three
+times.
+
+| statement | unbounded, Apple / Homebrew | worst overshoot, Apple / Homebrew |
+|---|---|---|
+| a recursive CTE of 2M steps | 166 / 187 ms | 32 µs / 21 µs |
+| `SELECT sum(y) FROM big` | 39 / 39 ms | 31 µs / 21 µs |
+| a nested-loop join | 0.8 / 0.9 ms | 42 µs / 35 µs |
+| `SELECT count(*) FROM big` | 8.9 / 7.2 ms | never interrupted |
+| `ORDER BY y LIMIT 1 OFFSET 1000000` | 0.79 / 3.2 s | 0.6 ms / 21 ms |
+| `count(DISTINCT y)` | 0.64 / 1.4 s | 0.3 ms / 14 ms |
+| `GROUP BY y`, to its 500,000th group | 0.43 / 0.49 s | 65 ms / 12 ms |
+| `CREATE INDEX` | 0.58 / 0.64 s | 31 ms / 9 ms |
+
+SQLite calls the handler between VM operations. A statement that loops
+through the VM stops within tens of microseconds. A count with no `WHERE`
+is one operation (`Count` in `EXPLAIN`) and ran to its end every time. The
+sort under a `GROUP BY` is one too (`SorterSort`), and the statements that
+sort or build an index overshot by milliseconds to tens of them.
+
+Four more measurements decide the shape:
+
+- **A deadline left on the connection interrupts the next statement.** With
+  an expired handler still installed, a 5,000-row count on that connection
+  raised `SQLITE_INTERRUPT`, while `SELECT 1` ran, being too short to reach
+  the handler. Mojo has no `defer`, so a view that raises between setting a
+  deadline and clearing it leaves that on a pool thread's connection for
+  the next request.
+- **Installing and removing the handler costs 3 to 4 ns a pair.** Around
+  every step of a 500,000-row read a row went from 18–20 ns to 21–22. A
+  handler every 1,000 operations is inside the noise, every 100 costs 1 to
+  3 %, and every 10 costs 13 to 14 %.
+- **An interrupted write takes its transaction with it.** An `INSERT ...
+  SELECT` inside `BEGIN`, interrupted 20 ms in, left the connection outside
+  any transaction and the row inserted before it gone.
+- **A closed connection takes no handler and gives none up.** On a
+  statement that outlived its connection, a handler installed before the
+  close still fired, removing it through the closed handle did nothing, and
+  one installed after the close was never called.
+
+So the deadline will be given to a step: installed, stepped and removed
+inside one call on the `Connection`, on the raising path too, with the
+instant itself as the handler's argument, so nothing is left on the
+connection between calls and there is no word to free. That call will
+refuse a closed connection and a statement of another connection, since the
+handler would cover neither, and a statement that is not read-only.
+
+What it will not bound: a count with no `WHERE`; a sort, by the tens of
+milliseconds above; a registered function's own `call`; and a wait for a
+lock, which `busy_timeout` bounds (a write blocked under a 20 ms deadline
+and a 300 ms `busy_timeout` came back after 340 to 380 ms with
+`SQLITE_BUSY`). Readers under WAL do not wait on a writer.
+`sqlite3_interrupt` from another thread is a different mechanism, not
+measured here, and is what a client's disconnect would need; the pool
+thread does not learn of a disconnect today.
 
 ## What the review found
 
