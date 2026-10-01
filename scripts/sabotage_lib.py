@@ -95,9 +95,12 @@ Any shape this module does not recognise is a miss, never a catch, so a
 toolchain that changes its wording fails loud rather than green.
 
 A rule may also name the text its catch must carry (`expect`): the fuzzer's
-invariant, a smoke's assertion. A gate that fails without it failed
-elsewhere, which is a miss -- the harness has not shown that the check
-claiming the rule is the one that holds it.
+invariant, a smoke's assertion, the test that claims the rule. A gate that
+fails without it failed elsewhere, which is a miss -- the harness has not
+shown that the check claiming the rule is the one that holds it. A suite
+names every test it runs, so the line of a test that did not fail (`PASS [`,
+`SKIP [`) never carries the text: a run that fails in another test, with
+the named one passing, failed elsewhere.
 
 Writing a harness
 -----------------
@@ -182,7 +185,8 @@ class Rule:
     names one of the harness's gates when it has several. `only_on` is the
     `platform.system()` that can observe the breakage; elsewhere the rule is
     SKIPPED. `expect` is text the gate's output must carry for its failure
-    to count as the catch. Compared by identity, so two rows that happen to
+    to count as the catch, on a line other than a passing or skipped test's.
+    Compared by identity, so two rows that happen to
     be alike are still two rules.
     """
 
@@ -462,6 +466,9 @@ class Gate:
 DIAGNOSTIC = re.compile(r"^.*\.mojo:\d+:\d+: error:.*$", re.M)
 _EXECUTED = re.compile(r"execution exited with a non-zero result|execution crashed")
 _TEST_FAILED = re.compile(r"^\s*FAIL \[[^\]]*\]\s*(\S+)", re.M)
+# A suite's line for a test that did not fail: `PASS [ 0.001 ] test_one`, or
+# `SKIP [ 0.001 ] test_one` (`TestSuite.skip`, measured the same way).
+_TEST_DID_NOT_FAIL = re.compile(r"^\s*(?:PASS|SKIP) \[[^\]]*\]\s")
 _ABORT = re.compile(r"^ABORT: .*$", re.M)
 _RAISED = re.compile(r"Unhandled exception caught during execution: ?(.*)$", re.M)
 _EXITED = re.compile(r"execution exited with a non-zero result: (-?\d+)")
@@ -649,8 +656,11 @@ def verdict(r: Rule, o: Outcome) -> tuple[str, str]:
     if o.kind != "failed":
         return ELSEWHERE, o.detail
     if r.expect:
+        # Never a line that says a test passed or was skipped: it carries
+        # the test's name, and a rule that expects the name would be caught
+        # by any failure in the same suite.
         said = [ln.strip() for ln in (o.output + "\n" + o.detail).splitlines()
-                if r.expect in ln]
+                if r.expect in ln and not _TEST_DID_NOT_FAIL.match(ln)]
         if not said:
             return ELSEWHERE, f"expected {r.expect!r}; the gate said: {o.detail}"
         return CAUGHT, said[0][:160]
@@ -1195,6 +1205,8 @@ def _selftest() -> int:
             rule("constraint", A, "keep_b()", "keep_b() CONSTRAINT"),
             rule("double", A, "def dup(): same()", "def dup(): other()"),
             rule("expect", A, "keep_a()", "gone()", expect="test_rule_a_invariant"),
+            rule("expect the failing test", A, "keep_a()", "gone()", expect="test_two"),
+            rule("expect the passing test", A, "keep_a()", "gone()", expect="test_one"),
             rule("elsewhere only", A, "keep_b()", "keep_b()  # other", only_on="Plan9"),
         ]
         rep, out = ran(rules)
@@ -1212,6 +1224,15 @@ def _selftest() -> int:
               "a double anchor: NOT APPLICABLE, naming the file and the anchor")
         check(got.get("expect") == ELSEWHERE,
               "a catch without the text the rule names: MISSED (failed elsewhere)")
+        check(got.get("expect the failing test") == CAUGHT,
+              "a catch in the test the rule names: caught")
+        check(got.get("expect the passing test") == ELSEWHERE,
+              "a catch while the test the rule names PASSES: MISSED (failed elsewhere)")
+        skipped = Outcome.failed("1 test(s) fail: test_two",
+                                 _MEASURED["assert"][1].replace("PASS [", "SKIP ["))
+        check(verdict(rule("skip", A, "a", "b", expect="test_one"), skipped)[0] == ELSEWHERE
+              and verdict(rule("skip", A, "a", "b", expect="test_two"), skipped)[0] == CAUGHT,
+              "a skipped test's line is no catch either; the failing one's is")
         check(got.get("elsewhere only") == SKIPPED, "another platform's rule: SKIPPED")
         check(rep.status == 1, "any miss fails the run")
         check(read(A) == _SOURCE and read(B) == _SOURCE, "the tree is put back")
