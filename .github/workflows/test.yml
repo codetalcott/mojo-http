@@ -882,6 +882,14 @@ jobs:
       # never answered Close held its slot forever.
       - name: Smoke test the idle connection timeout
         run: uv run poe smoke-idle-timeout
+      # A stream has no deadline (D57), so nothing of the loop's notices a
+      # client that vanished from a QUIET one: the stream an application
+      # writes gets no heartbeat. Keepalive on the stream's socket does
+      # (SPEC I32). Both legs read the option off the server's sockets; the
+      # Linux leg also drops a client's packets with iptables and requires
+      # the reap, and its absence with the knob off.
+      - name: Smoke test keepalive on a stream's socket
+        run: uv run poe smoke-stream-keepalive
       # The body timer (SPEC A23), which a body that arrived whole with its
       # headers left running: it closed the keep-alive connection 30 s
       # later, and under the handler pool released a slot whose request a

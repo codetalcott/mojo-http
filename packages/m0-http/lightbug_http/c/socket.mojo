@@ -52,6 +52,7 @@ comptime SOL_SOCKET = 0xFFFF if _IS_MACOS else 1
 struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     var value: c_int
     comptime SO_REUSEADDR = Self(c_int(0x0004 if _IS_MACOS else 2))
+    comptime SO_KEEPALIVE = Self(c_int(0x0008 if _IS_MACOS else 9))
     comptime SO_REUSEPORT = Self(c_int(0x0200 if _IS_MACOS else 15))
     comptime SO_SNDBUF = Self(c_int(0x1001 if _IS_MACOS else 7))
     comptime SO_RCVBUF = Self(c_int(0x1002 if _IS_MACOS else 8))
@@ -63,6 +64,8 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         if self == Self.SO_REUSEADDR:
             writer.write("SO_REUSEADDR")
+        elif self == Self.SO_KEEPALIVE:
+            writer.write("SO_KEEPALIVE")
         elif self == Self.SO_REUSEPORT:
             writer.write("SO_REUSEPORT")
         elif self == Self.SO_SNDBUF:
@@ -83,6 +86,14 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
 # too, as `::ffff:a.b.c.d`. Its default is a system setting on both
 # (`net.inet6.ip6.v6only`, `net.ipv6.bindv6only`), so a listener sets it.
 comptime IPPROTO_IPV6 = 41
+# TCP keepalive (`set_tcp_keepalive`), from each platform's <netinet/tcp.h>.
+# The option that sets the idle time before the first probe is
+# TCP_KEEPIDLE on Linux and TCP_KEEPALIVE on macOS: one name here, two
+# numbers.
+comptime IPPROTO_TCP = 6
+comptime TCP_KEEPIDLE = 0x10 if _IS_MACOS else 4
+comptime TCP_KEEPINTVL = 0x101 if _IS_MACOS else 5
+comptime TCP_KEEPCNT = 0x102 if _IS_MACOS else 6
 comptime IPV6_V6ONLY = 27 if _IS_MACOS else 26
 
 
@@ -245,6 +256,27 @@ def setsockopt(
     )
     if result == -1:
         raise SysError("setsockopt", get_errno())
+
+
+def set_tcp_keepalive(
+    socket: FileDescriptor, idle_s: Int, interval_s: Int, count: Int,
+) raises SysError:
+    """Turn TCP keepalive on for a connected socket: after `idle_s` seconds
+    with nothing received, the kernel probes the peer every `interval_s`
+    seconds and fails the socket once `count` probes in a row go unanswered.
+
+    The probes are empty segments, so nothing reaches the peer's
+    application, and a live peer's kernel answers them whatever its
+    application is doing. The timings go in before the switch, so the first
+    timer the kernel arms is the one asked for.
+
+    Raises:
+        SysError: If a call fails, whatever its errno.
+    """
+    setsockopt(socket, c_int(IPPROTO_TCP), c_int(TCP_KEEPIDLE), c_int(idle_s))
+    setsockopt(socket, c_int(IPPROTO_TCP), c_int(TCP_KEEPINTVL), c_int(interval_s))
+    setsockopt(socket, c_int(IPPROTO_TCP), c_int(TCP_KEEPCNT), c_int(count))
+    setsockopt(socket, c_int(SOL_SOCKET), SocketOption.SO_KEEPALIVE.value, c_int(1))
 
 
 def _getsockname[

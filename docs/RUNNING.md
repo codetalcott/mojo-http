@@ -127,6 +127,16 @@ has the Flask version of the whole thing, and CI drives that exact file.
   (`M0_SSE_HEARTBEAT_MS`, default `15000`). Set the variable only to change
   the cadence, and keep it below the proxy's idle timeout: a proxy that
   closes at 60 s is fine with the default, and `25000` would be too.
+- **A client that vanishes from a quiet stream is dropped in about a
+  minute.** A stream's socket has TCP keepalive on: after 15 s with
+  nothing received the kernel probes the client every 15 s, and closes the
+  connection at the third probe left unanswered. That covers the streams
+  the comment above does not reach: one your ASGI application writes
+  itself, while it has nothing to send, and any stream with the heartbeat
+  set to `0`. `M0_STREAM_KEEPALIVE_S` sets the seconds; `0` turns it off.
+  A stream the server heartbeats is dropped when the heartbeat goes
+  unanswered for as long as the kernel retries, about 16 minutes on Linux
+  at its defaults.
 - **Static files.** `--static PREFIX=DIR` serves a directory from the server
   with `sendfile`, ETags and byte ranges, never entering Python; a miss falls
   through to the application. `--static-cache-control V` sets the header.

@@ -163,6 +163,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   it used to print that an arm was not exercised. On a developer's Mac
   without Homebrew's SQLite it still prints and passes.
 
+- **A stream's socket has TCP keepalive on** (SPEC I32), so a client that
+  vanishes from a quiet stream no longer holds its connection for as long
+  as the server runs. A closed laptop or a dropped network sends no FIN,
+  and a stream has no deadline; the server noticed such a client only when
+  something sent to it went unanswered. That left out every stream with
+  nothing in flight: an SSE stream an ASGI application writes itself (a
+  Starlette `StreamingResponse`, FastHTML's `EventStream`) while it has
+  nothing to send, a WSGI body streamed from a handler thread, and any
+  stream once `M0_SSE_HEARTBEAT_MS` is `0`. Now the kernel probes a stream's
+  client after 15 s of silence, every 15 s, and closes the connection at
+  the third probe left unanswered, and the application is told its client
+  has gone. Measured on Linux with a client whose packets were dropped: a
+  quiet ASGI stream was still held 30 s later without it, and is closed
+  61.5 s later with it (4.1 s with the setting at 1). The probes carry no
+  data, so no stream's bytes change, and a client that is idle or reading
+  slowly answers them and keeps its stream. `M0_STREAM_KEEPALIVE_S` sets
+  the seconds, for the idle time and the interval alike; `0` turns it off.
+  A stream the server heartbeats is reaped as before, when the heartbeat
+  goes unanswered for as long as the kernel retries (about 16 minutes on
+  Linux at its defaults): keepalive does not shorten that.
+
 ### Removed
 
 - **The last upstream `lightbug_http` names nothing used**:

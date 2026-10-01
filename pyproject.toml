@@ -1681,6 +1681,68 @@ python3 scripts/emit.py --covers L16 --task smoke-idle-timeout
 python3 scripts/emit.py --covers A24 --task smoke-idle-timeout
 """
 
+# A stream has no deadline (D57), so a client that vanishes without a FIN
+# holds its slot until something sent to it goes unanswered. The loop's
+# heartbeat is that something for a stream the loop writes; the stream an
+# application writes through the chunk channel gets none, and no stream
+# does with the heartbeat off. Measured in the Linux container before this
+# gate existed: a quiet ASGI stream whose client's packets were dropped was
+# still held 30 s later, and a hold with the heartbeat off 100 s later. So a
+# stream's socket gets TCP keepalive (`M0_STREAM_KEEPALIVE_S`, 15), which
+# puts no byte in the stream.
+# Three servers, because the setting is read once at start. On each the
+# kernel is asked what the SERVER's sockets carry (`ss`, or `lsof -Tf` on
+# macOS): both kinds of stream have the timer, a plain keep-alive connection
+# has none, and with the knob at 0 nothing does. At 1 s a live client that
+# sits idle through several probe rounds keeps its stream. The reap itself
+# needs a client that vanishes, which takes a packet filter: Linux's leg
+# drops the client's packets with iptables, requires the application to be
+# told within the bound, and with the knob at 0 requires that it is NOT --
+# the arm that shows the first can fail.
+[tool.poe.tasks.smoke-stream-keepalive]
+help = "A stream's socket has TCP keepalive on and a plain connection none; on Linux a client that vanishes from a quiet stream is reaped, and with the knob off it is not"
+deps = ["build-serve"]
+shell = """
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn default.log bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port
+wait_ready http://localhost:$port/ $pid
+res=$(python3 scripts/stream_keepalive_probe.py options $port $pid 15 2>&1) || fail "the default: $res"
+echo "the default: $res"
+stop $pid || fail "the server at the default exited non-zero"
+
+port=$(free_port)
+spawn short.log env M0_STREAM_KEEPALIVE_S=1 bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port
+wait_ready http://localhost:$port/ $pid
+res=$(python3 scripts/stream_keepalive_probe.py options $port $pid 1 2>&1) || fail "the knob at 1 s: $res"
+echo "the knob at 1 s: $res"
+res=$(python3 scripts/stream_keepalive_probe.py idle $port 6 2>&1) || fail "a live idle client: $res"
+echo "a live idle client: $res"
+reaped_ms=""
+if [ "$(uname)" = Linux ]; then
+  res=$(python3 scripts/stream_keepalive_probe.py vanish $port 20 reaped 2>&1) || fail "a vanished client: $res"
+  reaped_ms=$(echo "$res" | sed -n 's/.*reaped_ms=\\([0-9]*\\).*/\\1/p')
+  [ -n "$reaped_ms" ] || fail "a vanished client: no measurement in: $res"
+  echo "a vanished client: $res"
+fi
+stop $pid || fail "the server at 1 s exited non-zero"
+
+port=$(free_port)
+spawn off.log env M0_STREAM_KEEPALIVE_S=0 bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port
+wait_ready http://localhost:$port/ $pid
+res=$(python3 scripts/stream_keepalive_probe.py options $port $pid 0 2>&1) || fail "the knob at 0: $res"
+echo "the knob at 0: $res"
+if [ "$(uname)" = Linux ]; then
+  res=$(python3 scripts/stream_keepalive_probe.py vanish $port 10 held 2>&1) || fail "a vanished client, keepalive off: $res"
+  echo "a vanished client, keepalive off: $res"
+fi
+stop $pid || fail "the server at 0 exited non-zero"
+
+echo "smoke-stream-keepalive OK"
+[ -z "$reaped_ms" ] || python3 scripts/emit.py stream_keepalive.reaped_ms "$reaped_ms" --unit ms --limit 20000 --task smoke-stream-keepalive
+python3 scripts/emit.py --covers I32 --task smoke-stream-keepalive
+"""
+
 # B1. The body timer was armed above the decode of what came with the
 # headers, so every body that arrived whole left it running: it closed a
 # keep-alive connection `body_read_timeout` after its POST, and under the

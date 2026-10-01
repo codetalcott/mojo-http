@@ -55,6 +55,17 @@ comptime WS_CLOSE_LINGER_NS: Int = 2_000_000_000
 # twice. `M0_ACCEPT_BATCH` overrides it; 0 takes the whole backlog in one
 # pass as the loop used to, an A/B knob.
 comptime ACCEPT_BATCH = 16
+# TCP keepalive on a stream's socket: seconds idle before the first probe
+# and between probes, and the unanswered probes that fail the socket. A
+# stream has no deadline (DECISIONS D57) and a client that vanishes without
+# a FIN is reaped only while something is in flight to it. A heartbeat is,
+# every `sse_heartbeat_ms`; nothing is for a stream the application writes
+# through the chunk channel, which gets no comment (`_heartbeat`), or for
+# any stream once the heartbeat is turned off. There the kernel's own probe
+# is the one thing that looks. `M0_STREAM_KEEPALIVE_S` overrides the
+# seconds; 0 sets nothing, as the server did before.
+comptime STREAM_KEEPALIVE_S = 15
+comptime STREAM_KEEPALIVE_PROBES = 3
 comptime UNUSED: Int = -1
 
 
@@ -71,6 +82,21 @@ def _accept_batch_from_env() -> Int:
     except:
         pass
     return ACCEPT_BATCH
+
+
+def _stream_keepalive_from_env() -> Int:
+    """`M0_STREAM_KEEPALIVE_S`, else `STREAM_KEEPALIVE_S`. 0 is off;
+    anything unreadable or negative is the default."""
+    var raw = getenv("M0_STREAM_KEEPALIVE_S", "")
+    if raw.byte_length() == 0:
+        return STREAM_KEEPALIVE_S
+    try:
+        var n = Int(raw)
+        if n >= 0:
+            return n
+    except:
+        pass
+    return STREAM_KEEPALIVE_S
 
 
 struct LoopState(Movable):
@@ -126,6 +152,7 @@ struct LoopState(Movable):
     """A caller's word to stamp when the drain begins, or 0. See
     `run_event_loop`."""
     var accept_batch: Int
+    var stream_keepalive_s: Int
     """Connections admitted per pass (`ACCEPT_BATCH`); 0 is unbounded."""
     var accept_owed: Bool
     """The last pass stopped accepting at its batch, so the backlog may
@@ -236,6 +263,7 @@ struct LoopState(Movable):
         self.accept_share = accept_share.copy()
         self.stop_addr = 0
         self.accept_batch = _accept_batch_from_env()
+        self.stream_keepalive_s = _stream_keepalive_from_env()
         self.accept_owed = False
         self.handoffs_owed = False
 
