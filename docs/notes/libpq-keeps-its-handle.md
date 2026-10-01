@@ -150,6 +150,13 @@ alone and with the pin's, the arm failed both times, "psycopg was built
 against libpq 180006 and reports 160015", after the three arms before it
 had passed; unchanged, it passed with both files mapped.
 
+And again for the pair CI has, PostgreSQL's libpq 18.6 as the system's
+with the pinned wheel's 17.6 beside it: unchanged, the smoke passed with
+both files mapped; with the open's flag global, the arm failed, "built
+against libpq 170006 and reports 180006". A newer libpq captures an older
+build's calls as the older captured the newer's: no crash, queries
+answer, and the version psycopg reports is the one thing that shows it.
+
 So every handle is `RTLD_LOCAL` now, the open's and the pin's, which is
 m0-sqlite's second rule arriving for the same reason. Nothing here needs
 the global scope: every entry point is looked up through the handle. With
