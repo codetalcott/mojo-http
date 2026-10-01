@@ -993,6 +993,29 @@ shell = "python3 scripts/vtab_layout.py"
 help = "Move each vtab.mojo layout constant and insist verify_layout.c rejects it"
 shell = "python3 scripts/vtab_layout.py --sabotage"
 
+# An application's ScalarFunction, compiled against m0_sqlite.mojoc rather
+# than the package's source (SPEC O22). The package's own tests import
+# `src.*`, so they cannot see the two failures that live only behind the
+# .mojoc: a conformance to the package's trait losing its witness table
+# (the D28 bug; check-mojoc-trait guards m0-http's traits the same way), and
+# the global word the callbacks read not being the one the application's
+# registration wrote. A few seconds, so it sits in test-gates beside
+# test-sqlite.
+[tool.poe.tasks.check-sqlite-function]
+help = "An application's ScalarFunction, built against m0_sqlite.mojoc, registers and answers"
+shell = "OS_ACTIVITY_MODE=disable mojo run -I packages/m0-sqlite scripts/sqlite_function_consumer.mojo"
+deps = ["build-sqlite"]
+
+# Guard the guards of the scalar functions and the one-image pin (SPEC
+# O19-O23): revert each rule by an exact source line and insist the test
+# claiming it fails, in its own words where it can print any. Two rules need
+# a second libsqlite3 image, which macOS has only beside Homebrew's build;
+# without it they report SKIPPED, never caught. About 30 s, twelve
+# `mojo run`s of two test files, so it sits in test-gates after test-sqlite.
+[tool.poe.tasks.sabotage-sqlite-function]
+help = "Revert each scalar-function and one-image rule of m0-sqlite; every one must be caught"
+cmd = "python3 scripts/sqlite_function_sabotage.py"
+
 # verify-vtab-layout runs first: if the struct offsets are wrong, the vtab
 # tests below fail in confusing ways or pass by luck, and the offsets are the
 # more fundamental claim.
@@ -1133,8 +1156,8 @@ default_item_type = "ref"
 # probe, the zero-size buffer scan. CI's `unit-gates` job, after its own
 # `build-all`.
 [tool.poe.tasks.test-gates]
-help = "test-all's second half: the shim's rules, the phase stamps, m0-sqlite, and the compile gates (CI's unit-gates job)"
-sequence = ["test-shim", "check-phase-stamps", "test-sqlite", "sabotage-vtab", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
+help = "test-all's second half: the shim's rules, the phase stamps, m0-sqlite and its sabotage, and the compile gates (CI's unit-gates job)"
+sequence = ["test-shim", "check-phase-stamps", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

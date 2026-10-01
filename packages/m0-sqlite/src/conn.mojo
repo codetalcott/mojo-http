@@ -30,6 +30,11 @@ from .ffi import (
     error_code,
 )
 from .lib import SqliteLib, as_cstr, open_library, str_cstr
+from .function import (
+    SQLITE_MIN_FUNCTION_VERSION,
+    ScalarFunction,
+    _register_function,
+)
 from .stmt import Statement
 from .vtab import _register, SQLITE_MIN_VTAB_VERSION
 
@@ -334,6 +339,50 @@ struct Connection(Movable):
                 + ")"
             )
         _register(self._lib.fns, self._handle)
+
+    def create_function[
+        F: ScalarFunction
+    ](mut self, name: String, var impl: F) raises:
+        """Make `name(...)` callable from SQL on this connection, answered by
+        `impl` (`function.mojo`, which says what a function may and may not do).
+
+            db.create_function("dot", Dot())
+            var q = db.prepare(
+                "SELECT id FROM notes ORDER BY dot(embedding, ?1) DESC LIMIT 10"
+            )
+
+        Per connection, like `register_array_module`: a pool thread's
+        connection registers its own. `impl` belongs to SQLite from this call
+        on, and is destroyed when the function is replaced or the connection
+        closes. Registering a name and arity again replaces the function,
+        which SQLite refuses while a statement of this connection is active.
+
+        The function is callable from top-level SQL and this connection's TEMP
+        views, and never from anything the database file stores: SQLite
+        refuses it in a stored view or trigger, a CHECK constraint, a
+        generated column or an index. Raises on a library older than 3.30.0,
+        which cannot make that refusal; on a closed connection; on a name
+        SQLite refuses (longer than 255 bytes); and on a connection whose
+        libsqlite3 is not the one this process's functions already call.
+        """
+        if self._handle == 0:
+            raise Error(
+                "create_function(" + name + ") on a closed connection"
+            )
+        var have = self._lib.fns.libversion_number()
+        if have < SQLITE_MIN_FUNCTION_VERSION:
+            raise Error(
+                "create_function needs SQLite 3.30.0 or newer"
+                " (SQLITE_DIRECTONLY, which keeps a registered function out of"
+                " the schema), but the library at " + self._lib.path + " is "
+                + self._lib.fns.libversion()
+                + " ("
+                + String(have)
+                + ")"
+            )
+        _register_function(
+            self._lib.fns, self._lib.path, self._handle, name, impl^
+        )
 
     def close(mut self) raises:
         """Close early. Idempotent; `__deinit__` also closes.

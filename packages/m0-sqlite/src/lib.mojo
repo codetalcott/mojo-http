@@ -42,7 +42,7 @@ found there by crashing — are adopted here up front:
     the same way (`VtabLib`), in the buffer SQLite owns.
 
 Each `Connection` opens its own table: a `dlopen` of an already-mapped image
-is a reference count and ~41 `dlsym`s, paid once per connection, which this
+is a reference count and ~53 `dlsym`s, paid once per connection, which this
 package opens once per thread. A call through a stored pointer then costs
 what a direct call does.
 
@@ -63,7 +63,7 @@ from std.os import getenv
 from std.python._cpython import ExternalFunction
 from std.sys import CompilationTarget
 
-from .ffi import CharPtr, cstr_len, cstr_to_string
+from .ffi import SQLITE_TRANSIENT, CharPtr, cstr_len, cstr_to_string
 
 
 comptime CStr = Pointer[UInt8, ImmutAnyOrigin]
@@ -229,6 +229,49 @@ comptime _create_module_v2 = ExternalFunction[
     "sqlite3_create_module_v2", def (Int, CStr, Int, Int, FreeFn) thin abi("C") -> c_int
 ]
 
+comptime XFuncFn = def (Int, c_int, Int) thin abi("C") -> None
+"""`void (*)(sqlite3_context *, int argc, sqlite3_value **argv)`: the body
+of a scalar function, which `function.mojo`'s trampoline is."""
+
+comptime _create_function_v2 = ExternalFunction[
+    # int sqlite3_create_function_v2(sqlite3 *, const char *zName, int nArg,
+    #   int eTextRep, void *pApp, xFunc, xStep, xFinal, void (*xDestroy)(void *))
+    "sqlite3_create_function_v2",
+    def (Int, CStr, c_int, c_int, Int, XFuncFn, Int, Int, FreeFn) thin abi("C") -> c_int,
+]
+comptime _user_data = ExternalFunction[
+    "sqlite3_user_data", def (Int) thin abi("C") -> Int
+]
+comptime _value_type = ExternalFunction[
+    "sqlite3_value_type", def (Int) thin abi("C") -> c_int
+]
+comptime _value_int64 = ExternalFunction[
+    "sqlite3_value_int64", def (Int) thin abi("C") -> Int64
+]
+comptime _value_double = ExternalFunction[
+    "sqlite3_value_double", def (Int) thin abi("C") -> Float64
+]
+comptime _value_text = ExternalFunction[
+    "sqlite3_value_text", def (Int) thin abi("C") -> Int
+]
+comptime _value_blob = ExternalFunction[
+    "sqlite3_value_blob", def (Int) thin abi("C") -> Int
+]
+comptime _value_bytes = ExternalFunction[
+    "sqlite3_value_bytes", def (Int) thin abi("C") -> c_int
+]
+comptime _result_text = ExternalFunction[
+    # void sqlite3_result_text(sqlite3_context *, const char *, int n, void (*)(void *))
+    "sqlite3_result_text", def (Int, CStr, c_int, Int) thin abi("C") -> None
+]
+comptime _result_blob = ExternalFunction[
+    "sqlite3_result_blob", def (Int, CStr, c_int, Int) thin abi("C") -> None
+]
+comptime _result_error = ExternalFunction[
+    # void sqlite3_result_error(sqlite3_context *, const char *, int n)
+    "sqlite3_result_error", def (Int, CStr, c_int) thin abi("C") -> None
+]
+
 
 def _pin_flags() -> Int:
     """`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`, the mode the pin re-opens with.
@@ -283,7 +326,8 @@ def pin_library(path: String) raises:
     a process that closed all its connections and opened another ran two
     copies of SQLite. SQLite forbids that — each copy keeps its own list of
     open files, so a close through one drops the POSIX locks the other holds
-    on the same file ("How To Corrupt An SQLite Database File", 2.2.1).
+    on the same file ("How To Corrupt An SQLite Database File", 2.2.1) —
+    and a registered function's callbacks reach one image (`function.mojo`).
     Measured with Homebrew's build: a new image at every reopen, one image
     with a handle kept. Apple's library lives in the dyld shared cache,
     where no image is ever dropped, and glibc keeps a `RTLD_NODELETE` object
@@ -467,6 +511,17 @@ struct SqliteFns(ImplicitlyCopyable, Movable):
     var _result_double: _result_double.type
     var _result_int64: _result_int64.type
     var _create_module_v2: _create_module_v2.type
+    var _create_function_v2: _create_function_v2.type
+    var _user_data: _user_data.type
+    var _value_type: _value_type.type
+    var _value_int64: _value_int64.type
+    var _value_double: _value_double.type
+    var _value_text: _value_text.type
+    var _value_blob: _value_blob.type
+    var _value_bytes: _value_bytes.type
+    var _result_text: _result_text.type
+    var _result_blob: _result_blob.type
+    var _result_error: _result_error.type
     """Every entry point, private: the module docstring's second rule."""
 
     def __init__(out self, ref handle: OwnedDLHandle, path: String) raises:
@@ -536,6 +591,23 @@ struct SqliteFns(ImplicitlyCopyable, Movable):
         self._result_int64 = _checked[_result_int64.name, _result_int64.type](handle, path)
         self._create_module_v2 = _checked[
             _create_module_v2.name, _create_module_v2.type
+        ](handle, path)
+        self._create_function_v2 = _checked[
+            _create_function_v2.name, _create_function_v2.type
+        ](handle, path)
+        self._user_data = _checked[_user_data.name, _user_data.type](handle, path)
+        self._value_type = _checked[_value_type.name, _value_type.type](handle, path)
+        self._value_int64 = _checked[_value_int64.name, _value_int64.type](handle, path)
+        self._value_double = _checked[
+            _value_double.name, _value_double.type
+        ](handle, path)
+        self._value_text = _checked[_value_text.name, _value_text.type](handle, path)
+        self._value_blob = _checked[_value_blob.name, _value_blob.type](handle, path)
+        self._value_bytes = _checked[_value_bytes.name, _value_bytes.type](handle, path)
+        self._result_text = _checked[_result_text.name, _result_text.type](handle, path)
+        self._result_blob = _checked[_result_blob.name, _result_blob.type](handle, path)
+        self._result_error = _checked[
+            _result_error.name, _result_error.type
         ](handle, path)
 
     # --- Library ----------------------------------------------------------
@@ -764,6 +836,80 @@ struct SqliteFns(ImplicitlyCopyable, Movable):
         of its own to reach `sqlite3_free`."""
         return self._free
 
+    # --- Scalar functions (`function.mojo`) --------------------------------
+
+    def create_function_v2(
+        self,
+        db: Int,
+        name: CStr,
+        n_arg: Int,
+        flags: Int,
+        app: Int,
+        body: XFuncFn,
+        destroy: FreeFn,
+    ) -> Int:
+        """`sqlite3_create_function_v2` for a scalar function: no step, no final."""
+        return Int(
+            self._create_function_v2(
+                db, name, c_int(n_arg), c_int(flags), app, body, 0, 0, destroy
+            )
+        )
+
+    def user_data(self, ctx: Int) -> Int:
+        """`sqlite3_user_data`: the `pApp` the function was registered with."""
+        return self._user_data(ctx)
+
+    def value_type(self, value: Int) -> Int:
+        """`sqlite3_value_type`: the storage class the value arrived as."""
+        return Int(self._value_type(value))
+
+    def value_int64(self, value: Int) -> Int:
+        """`sqlite3_value_int64`."""
+        return Int(self._value_int64(value))
+
+    def value_double(self, value: Int) -> Float64:
+        """`sqlite3_value_double`."""
+        return self._value_double(value)
+
+    def value_text(self, value: Int) -> CharPtr:
+        """`sqlite3_value_text`: SQLite's own buffer, valid for the call."""
+        return CharPtr(unsafe_from_address=Int(self._value_text(value)))
+
+    def value_blob(self, value: Int) -> CharPtr:
+        """`sqlite3_value_blob`: SQLite's own buffer, valid for the call."""
+        return CharPtr(unsafe_from_address=Int(self._value_blob(value)))
+
+    def value_bytes(self, value: Int) -> Int:
+        """`sqlite3_value_bytes`: called AFTER `value_text` or `value_blob`, so
+        it measures the form that call produced (sqlite3.h's order)."""
+        return Int(self._value_bytes(value))
+
+    def result_null(self, ctx: Int):
+        """`sqlite3_result_null`."""
+        self._result_null(ctx)
+
+    def result_int64(self, ctx: Int, value: Int):
+        """`sqlite3_result_int64`."""
+        self._result_int64(ctx, Int64(value))
+
+    def result_double(self, ctx: Int, value: Float64):
+        """`sqlite3_result_double`."""
+        self._result_double(ctx, value)
+
+    def result_text(self, ctx: Int, text: CStr, length: Int):
+        """`sqlite3_result_text` with `SQLITE_TRANSIENT`: SQLite copies the
+        bytes before this returns, so a Mojo temporary is safe to hand over."""
+        self._result_text(ctx, text, c_int(length), SQLITE_TRANSIENT)
+
+    def result_blob(self, ctx: Int, data: CStr, length: Int):
+        """`sqlite3_result_blob` with `SQLITE_TRANSIENT`, as `result_text`."""
+        self._result_blob(ctx, data, c_int(length), SQLITE_TRANSIENT)
+
+    def result_error(self, ctx: Int, message: CStr, length: Int):
+        """`sqlite3_result_error`: the statement fails with `message`, which
+        SQLite copies."""
+        self._result_error(ctx, message, c_int(length))
+
     def vtab_lib(self) -> VtabLib:
         """The entry points the virtual-table callbacks call, copied out,
         for `vtab.mojo` to store in the module buffer SQLite owns."""
@@ -951,7 +1097,7 @@ def open_library(path: String = "") raises -> SqliteLib:
 # --- Conveniences that open the library themselves --------------------------
 #
 # For a banner, a version check, a test. Each opens the library — a
-# reference count on an image already mapped, and ~41 symbol lookups — so
+# reference count on an image already mapped, and ~53 symbol lookups — so
 # none belongs on a request path; a connection's own table answers the same
 # questions for free.
 

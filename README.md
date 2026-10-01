@@ -197,9 +197,9 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 939 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 95 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 182 |
-| `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table | 119 |
+| `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table, scalar functions written in Mojo | 128 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 78 |
-| **Total** | | **1495** |
+| **Total** | | **1504** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -728,6 +728,30 @@ message ending in `(rc=NN)`, and `error_code()` recovers it, so retrying a
 `SQLITE_BUSY` or reporting a `SQLITE_CONSTRAINT` does not mean parsing text.
 The codes worth branching on are exported by name.
 
+**Functions written in Mojo.** `create_function` registers a type as a scalar
+SQL function on a connection. It runs inside the query plan and reads each
+argument where SQLite holds it, so a kernel over a large column costs the
+kernel and not a copy out of the database: a dot product over 100,000
+384-float embeddings scanned them in 8.6 ms, twice as fast as sqlite-vec's
+`vec_distance_l2`, which copies both vectors on every call.
+
+```mojo
+struct Dot(ScalarFunction):
+    comptime arity: Int = 2
+    comptime deterministic: Bool = True
+
+    def call(self, args: Args, mut answer: Answer) raises:
+        answer.float(dot_f32(args.blob(0), args.blob(1)))   # SQLite's bytes, no copy
+
+db.create_function("dot", Dot())
+var q = db.prepare("SELECT id FROM notes ORDER BY dot(embedding, ?1) DESC LIMIT 10")
+```
+
+A registered function never becomes part of the database file: SQLite refuses
+it in a stored view or trigger, a CHECK constraint, a generated column or an
+index, so the file stays writable by every other tool. What a function may and
+may not do is [docs/notes/functions-inside-the-query.md](docs/notes/functions-inside-the-query.md).
+
 ```mojo
 from m0_sqlite import error_code, SQLITE_BUSY, SQLITE_CONSTRAINT
 
@@ -881,7 +905,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1495 unit tests, then compiles every example
+uv run poe test-all         # 1504 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

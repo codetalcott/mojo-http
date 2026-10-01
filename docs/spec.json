@@ -2482,12 +2482,44 @@
       "evidence": "`test_lib.mojo:test_a_statement_outlives_every_handle_of_the_library` (every PR) \u2014 the connection is closed and dropped, the only handle with it, and the statement then steps and reads through its copies. The sabotage is the pin removed from `SqliteLib.__init__`: measured 2026-09-25 on Linux, where nothing else has the library mapped, the same test then dies of a segmentation fault at its first `step` rather than failing (docs/notes/sqlite-at-run-time.md)"
     },
     {
+      "id": "O19",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "A Mojo type registered with `Connection.create_function` answers SQL calls from inside the query plan: each registration reaches its own instance, every storage class arrives and is answered as itself, a blob argument is read where SQLite holds it, a raise fails the statement with its own text, the type's `arity` is what SQLite refuses a wrong call by at prepare while an index past what a call passed is refused by `Args` rather than read, and `deterministic` is registered, so a call with constant arguments runs once per statement",
+      "status": "verified",
+      "evidence": "`test_scalar_function.mojo:test_every_storage_class_goes_in_and_comes_back` (every PR) \u2014 `test_a_function_answers_from_its_own_state`, `test_a_raise_is_the_statements_error`, `test_sqlite_holds_the_arity_and_args_holds_the_index` and `test_a_deterministic_call_with_constant_arguments_runs_once` beside it, and `poe sabotage-sqlite-function` reverts the arity, the index check, the blob check, the flag and the error path, each caught. Measured on 100,000 rows of 384-float embeddings: within 1 % of the same function written by hand against the C API (0.8 ns a call) and twice as fast as sqlite-vec's `vec_distance_l2`, which copies both vectors on every call (docs/notes/functions-inside-the-query.md)"
+    },
+    {
+      "id": "O20",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "A function registered through `m0-sqlite` never becomes part of the database file: every registration carries `SQLITE_DIRECTONLY`, so SQLite refuses it in a CHECK constraint, a generated column or an expression index when they are created, in a stored view when it is used and in a trigger when it fires, while top-level SQL and a TEMP view, the connection's own, may call it; a library older than 3.30.0, which has no such flag, is refused rather than trusted",
+      "status": "verified",
+      "evidence": "`test_scalar_function.mojo:test_the_schema_cannot_call_a_registered_function` (every PR) \u2014 a schema that called one would be writable only by the binary that registered it (the `sqlite3` shell, a migration, a `VACUUM INTO` backup would all fail), and a database file from elsewhere could reach application code through its triggers (D59). The sabotage drops the flag and the test fails; the 3.30.0 floor has no test, every library CI runs being newer"
+    },
+    {
+      "id": "O21",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "SQLite owns a registered function's state from the call on and destroys it exactly once: when the function is replaced, when the connection closes, and when a registration is refused \u2014 by `create_function_v2` itself, for a name over 255 bytes or a replacement while a statement is active, which is why the package never frees on failure",
+      "status": "verified",
+      "evidence": "`test_scalar_function.mojo:test_sqlite_destroys_the_state_exactly_once` (every PR) \u2014 the sabotage that frees a refused registration again went unseen by the test's first version: the allocator keeps its free-list links in a freed block's first words, where the counter's address sat, so the second destruction wrote through a link. The fixture holds the address past them, and the double free is caught"
+    },
+    {
+      "id": "O22",
+      "section": "O",
+      "category": "O. Storage packages",
+      "capability": "Every callback reaches the library through ONE process-wide word, because a scalar function gets its user data only through `sqlite3_user_data`, itself a library call: published once by compare-and-swap, read back through the callbacks' own accessor before the first registration so a toolchain that gave the writer and the reader different words is a refused registration rather than callbacks reading zero, and refused for a connection whose libsqlite3 is another image; an application's conformance compiled against `m0_sqlite.mojoc` registers and answers",
+      "status": "verified",
+      "evidence": "`test_scalar_function.mojo:test_one_word_reaches_every_connection` (every PR) \u2014 `test_a_second_libsqlite3_image_is_refused` beside it, on a copy of the library on Linux and Homebrew's build on macOS (without it the test says so), and `poe check-sqlite-function`, inside `poe test-all`, builds an application's function against the compiled package, where a lost witness table (D28) or a word lost in the precompile would show. The sabotage removing `@no_inline` from the word's accessor is refused at the read-back"
+    },
+    {
       "id": "O23",
       "section": "O",
       "category": "O. Storage packages",
       "capability": "Every connection of a process calls into ONE image of its libsqlite3, however its connections come and go: SQLite forbids two copies in a process (each keeps its own list of open files, so a close through one drops the POSIX locks the other holds on the same file), and macOS drops an image opened `RTLD_NODELETE` from dyld's list once its last handle closes \u2014 leaving it mapped, which is why O18 held \u2014 so the next open of the same path mapped a fresh copy; the pin keeps one handle open for the life of the process, once per image",
       "status": "verified",
-      "evidence": "`test_lib.mojo:test_one_image_however_connections_come_and_go` (every PR) \u2014 measured with Homebrew's build before the fix, a new image at every reopen; Apple's library lives in the dyld shared cache, where no image is dropped, and glibc keeps a `RTLD_NODELETE` object findable, which is why no gate saw it. The test opens, closes and reopens a library backed by a file \u2014 the system one on Linux, Homebrew's on macOS \u2014 and says so where there is none; with the kept handle reverted it fails on macOS"
+      "evidence": "`test_lib.mojo:test_one_image_however_connections_come_and_go` (every PR) \u2014 measured with Homebrew's build before the fix, a new image at every reopen; Apple's library lives in the dyld shared cache, where no image is dropped, and glibc keeps a `RTLD_NODELETE` object findable, which is why no gate saw it. The test opens, closes and reopens a library backed by a file \u2014 the system one on Linux, Homebrew's on macOS \u2014 and says so where there is none; the sabotage drops the kept handle and the test fails on macOS (docs/notes/functions-inside-the-query.md)"
     }
   ]
 }

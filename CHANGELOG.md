@@ -10,6 +10,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **Scalar SQL functions written in Mojo** (SPEC O19–O22, DECISIONS
+  D58–D59). `Connection.create_function("dot", Dot())` registers a type
+  conforming to `ScalarFunction` — `comptime arity` and `deterministic`,
+  and a `call(args, answer)` — on that connection, and SQLite calls it
+  from inside the query plan. `Args.blob` is SQLite's own bytes, never a
+  copy, so a kernel over a large column costs the kernel: a dot product
+  over 100,000 384-float embeddings scanned them in 8.6 ms, within 1 % of
+  the same function written by hand against the C API and twice as fast as
+  sqlite-vec's `vec_distance_l2`, which copies both vectors on every call.
+  A raise fails the statement with its text. A registered function never
+  becomes part of the database file: SQLite refuses it in a stored view or
+  trigger, a CHECK constraint, a generated column or an index, so every
+  other tool can still write the file, and a library older than 3.30.0,
+  which cannot make that refusal, is refused. SQLite owns the instance from
+  registration and destroys it on replacement or close. m0-sqlite registers
+  no functions of its own.
+
 - **IPv6** (SPEC M29). `m0serve --host ::` listens on IPv6 and IPv4 at
   once, and `--host ::1` on the IPv6 loopback alone; the same goes for the
   Mojo host's `M0_HOST` and `--host`, and for `Server.listen_and_serve` on
