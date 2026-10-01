@@ -117,6 +117,9 @@ Writing a harness
         return run("sabotage-x", RULES, MojoRun(TEST), argv)
 
 A harness with a loop of its own, not `run`, enters `own_tmpdir` itself.
+An `expect` that names a test works only where the gate's output carries
+the suite's own `FAIL [ t ] name` lines, unprefixed: `MojoRun` of one test
+file. Behind a command that prefixes or recolours them it is always a miss.
 Run from the repository root, as every poe task is.
 
     python3 scripts/sabotage_lib.py --selftest
@@ -470,7 +473,7 @@ class Gate:
 # What `mojo run` prints, measured on Mojo 1.1.0 (the module docstring).
 DIAGNOSTIC = re.compile(r"^.*\.mojo:\d+:\d+: error:.*$", re.M)
 _EXECUTED = re.compile(r"execution exited with a non-zero result|execution crashed")
-_TEST_FAILED = re.compile(r"^\s*FAIL \[[^\]]*\]\s*(\S+)", re.M)
+_TEST_FAILED = re.compile(r"^[ \t]*FAIL \[[^\]\n]*\][ \t]*(\S+)", re.M)
 # A suite's line for a test that did not fail: `PASS [ 0.001 ] test_one`, or
 # `SKIP [ 0.001 ] test_one` (`TestSuite.skip`, measured the same way).
 _TEST_DID_NOT_FAIL = re.compile(r"^\s*(?:PASS|SKIP) \[[^\]]*\]\s")
@@ -1260,6 +1263,9 @@ def _selftest() -> int:
         prefixed = Outcome.failed("exited 1", "unit:     FAIL [ 0.001 ] test_two\n")
         check(verdict(rule("name", A, "a", "b", expect="test_two"), prefixed)[0] == ELSEWHERE,
               "a FAIL line in a shape the suite does not print is a miss, never a catch")
+        broken = Outcome.failed("exited 1", "    FAIL [ 0.001 ]\ntest_two\n")
+        check(verdict(rule("name", A, "a", "b", expect="test_two"), broken)[0] == ELSEWHERE,
+              "a name on the line after a FAIL line is not that line's test")
         check(got.get("elsewhere only") == SKIPPED, "another platform's rule: SKIPPED")
         check(rep.status == 1, "any miss fails the run")
         check(read(A) == _SOURCE and read(B) == _SOURCE, "the tree is put back")
