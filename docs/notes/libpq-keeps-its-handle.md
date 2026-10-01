@@ -139,7 +139,12 @@ library too follows from the binding count above and was not traced.
 That measurement is now an arm of `smoke-pg-notify`: an application on
 psycopg-binary served beside the listener must report the version it was
 built against, with two libpq files mapped and the system's a different
-version, or the arm says it proves nothing on that runner.
+version, or the arm says it proves nothing on that runner. Which it did,
+on its first run in CI: GitHub's Ubuntu runner carries PostgreSQL's own
+libpq 18.6, not Ubuntu's 16.15, and psycopg-binary 3.3.6 bundles 18.6 too.
+So the wheel is pinned, in a dependency group of its own, to 3.2.13, which
+bundles 17.6; the group also keeps it out of the free-threaded canary's
+sync, the wheel having no free-threaded build.
 Run by hand on the same Ubuntu with the open's flag put back to global,
 alone and with the pin's, the arm failed both times, "psycopg was built
 against libpq 180006 and reports 160015", after the three arms before it

@@ -41,11 +41,6 @@ dev = [
     # reports "server never became healthy" through poe, which is what it did.
     "numpy>=2.0",
     "poethepoet>=0.30",
-    # `smoke-pg-notify`'s last arm: an application on psycopg's BINARY wheel,
-    # which bundles a libpq of its own, served beside `--pg-listen`'s. The
-    # arm fails when the import does, so the wheel is in dev (the rule
-    # fastapi's entry gives).
-    "psycopg[binary]>=3.3",
     "pyflakes>=3.4.0",
     "python-fasthtml>=0.12",
 ]
@@ -56,6 +51,21 @@ dev = [
 #     uv sync --group bench
 bench = [
     "granian==2.8.3",
+]
+# `smoke-pg-notify`'s fourth arm: an application on psycopg's BINARY wheel,
+# which bundles a libpq of its own, served beside `--pg-listen`'s. Its own
+# group, synced by the `postgres` job alone (`uv run --group pg poe
+# smoke-pg-notify`), for two reasons. The wheel has no free-threaded build
+# and no sdist, so in dev it broke `uv sync --python 3.14t`, the weekly
+# canary's first step. And it is pinned exactly, with Dependabot told to
+# leave it: 3.2.13 bundles libpq 17.6, and the arm needs a libpq whose
+# version differs from the system's. GitHub's runner carries PostgreSQL's
+# own 18.x, not Ubuntu's 16.x, and psycopg 3.3 bundles 18.x too, which is
+# the same number and shows nothing. Move the pin only to a release whose
+# bundled major is not the runner's.
+pg = [
+    "psycopg==3.2.13",
+    "psycopg-binary==3.2.13",
 ]
 
 # No [build-system]: this is a virtual project. uv manages the environment but
@@ -378,6 +388,8 @@ stop $pid
 # psycopg's binary wheel, imported in a process whose listener has already
 # opened the system's libpq, must report the version it was BUILT against:
 # captured by a libpq in the global scope it reports that library's.
+python3 -c 'import psycopg' 2> /dev/null \
+  || fail 'arm 4 needs psycopg-binary, which is in its own group: uv run --group pg poe smoke-pg-notify'
 spawn libpq.log env LIBPQ_APP_URL="$url" bin/m0serve libpq_app:application \
   --app-dir scripts/smoke --port $port --realtime --health-path /health \
   --pg-listen "$url"
@@ -395,7 +407,7 @@ grep -q '^impl=binary$' "$out/libpq-v.txt" \
 built=$(sed -n 's/^build_version=//p' "$out/libpq-v.txt")
 runs=$(sed -n 's/^version=//p' "$out/libpq-v.txt")
 [ -n "$built" ] && [ "$runs" = "$built" ] \
-  || { cat "$out/libpq-v.txt"; fail "psycopg was built against libpq $built and reports $runs: another libpq captured its calls"; }
+  || { cat "$out/libpq-v.txt"; fail "arm 4: psycopg was built against libpq $built and reports $runs: another libpq captured its calls"; }
 if [ "$(uname -s)" = "Linux" ]; then
   # Not vacuous: the listener's library and the wheel's are both mapped in
   # this one process, and they are different versions. Asked of the system
@@ -405,7 +417,7 @@ if [ "$(uname -s)" = "Linux" ]; then
   system=$(python3 -c 'import ctypes; print(ctypes.CDLL("libpq.so.5").PQlibVersion())') \
     || fail 'arm 4: could not ask the system libpq its version'
   [ "$system" != "$built" ] \
-    || fail "arm 4: the system libpq and psycopg's bundled one are both $built, so a capture would not show: this arm proves nothing on this runner"
+    || { cat "$out/libpq-v.txt"; fail "arm 4: the system libpq and psycopg's bundled one are both $built, so a capture would not show and this arm proves nothing here: move the pin in the pg group to a psycopg-binary whose bundled libpq is another major"; }
 fi
 curl -s --max-time 10 "http://127.0.0.1:$port/q" > "$out/libpq-q.txt" \
   || fail 'arm 4: the psycopg application did not answer /q'

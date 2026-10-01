@@ -25,6 +25,12 @@ updates:
           - "mojo"
           - "mojo-*"
           - "mblack"
+    # The `pg` group's pin is chosen for the libpq it bundles, not for
+    # freshness (pyproject.toml): a bump to a release bundling the runner's
+    # own libpq major turns smoke-pg-notify's fourth arm red.
+    ignore:
+      - dependency-name: "psycopg"
+      - dependency-name: "psycopg-binary"
     open-pull-requests-limit: 3
     labels:
       - "dependencies"
