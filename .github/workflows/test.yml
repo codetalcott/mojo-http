@@ -488,9 +488,9 @@ jobs:
         run: brew install libpq
       - name: Test m0-postgres's library pin where the loader can drop it
         run: uv run poe test-postgres-pin
-      # Each of the pin's four rules reverted, and the test required to fail.
-      # macOS is the one leg where all four are observable: on Linux the
-      # kept handle reports SKIPPED.
+      # Each of the pin's seven rules reverted, and the test required to
+      # fail. macOS is the one leg where all seven are observable: on Linux
+      # the kept handle reports SKIPPED.
       - name: Sabotage m0-postgres's library pin (macOS observes every rule)
         run: uv run poe sabotage-postgres-pin
       - name: Record the measurements

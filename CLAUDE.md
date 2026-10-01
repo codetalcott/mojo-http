@@ -90,8 +90,10 @@ direction, and that no libpython reaches the link line.
   loader rules, each found by crashing (one struct holds the handle and its
   pointers, every entry point is private behind a method, the library is
   pinned `RTLD_NODELETE` with one handle kept open, since on macOS the flag
-  alone let a reopen map a fresh copy — m0-sqlite also refuses a second
-  image at open, SPEC O23; m0-postgres pins one beside the first, O24),
+  alone let a reopen map a fresh copy, and every handle is `RTLD_LOCAL`,
+  since a global image captures the calls of a second copy on Linux —
+  m0-sqlite also refuses a second image at open, SPEC O23; m0-postgres
+  pins one beside the first, O24),
   why m0-sqlite's `Connection` and `Statement` are
   deliberately not `Copyable`, why `test-postgres-server` is not in
   `test-all`, and six SQLite invariants that look like bugs and are not:

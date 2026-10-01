@@ -213,7 +213,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   m0-sqlite beside a Python application on the stdlib `sqlite3` backend is
   two copies of SQLite in one process: give each side its own database
   file.
-- **m0-postgres maps one copy of libpq per process** (SPEC O24). On macOS,
+- **m0-postgres maps each libpq it opens once, and keeps it out of the
+  loader's global scope** (SPEC O24). On macOS,
   a process whose last connection closed and which then opened another
   loaded a fresh copy of libpq, and of the libraries it links, each time.
   The library was pinned with `RTLD_NODELETE`, which on macOS keeps an
@@ -224,10 +225,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   which for a connection per request on one thread is one per request.
   The pin now keeps one handle open for the life of the process, and a
   later open of the same library is a comparison where it was a second
-  `dlopen`. Linux was never affected. Unlike m0-sqlite, a second libpq
-  file is not refused: nothing in libpq forbids two copies in one process,
-  so each one a process opens is pinned once. A library that opens and is
-  not libpq is no longer left mapped after it is refused.
+  `dlopen`. Linux was never affected by that. **On Linux the change is
+  the scope**: libpq was opened in the loader's global scope, where it
+  captured the internal calls of any other libpq build loaded later. With
+  Ubuntu's libpq 16.15 loaded first and psycopg-binary's bundled 18.6
+  second, 70 of the second's symbols bound into the first, and a
+  connection attempt through the second crashed the process. Under
+  `m0serve --pg-listen` a Python application on psycopg-binary is that
+  arrangement. Every handle is `RTLD_LOCAL` now, and the two libraries
+  keep to themselves. Unlike m0-sqlite, a second libpq file is not
+  refused: each one a process opens is pinned once. A library that opens
+  and is not libpq is no longer left mapped after it is refused.
 - **A closed `Socket` refuses every call, not only `close()`** (SPEC D1).
   After `close()` a socket went on passing its old number to the kernel,
   so a late `send` wrote into whatever the process had opened on that

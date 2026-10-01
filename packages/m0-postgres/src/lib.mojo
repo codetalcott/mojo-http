@@ -59,12 +59,28 @@ naming the paths tried, rather than a link failure or a load-time abort.
     but leaves dyld's list, so the next open of the same path mapped a
     FRESH copy of libpq and of the eight libraries it brings: measured
     with Homebrew's build, a new image at every reopen. m0-sqlite found it
-    (O23) and refuses a second image as well. This package does not,
-    nothing in libpq forbidding two copies in one process: each image a
-    process opens is pinned once, a second file's beside the first's
-    (DECISIONS D49).
+    (O23) and refuses a second image as well. This package does not: each
+    image a process opens is pinned once, a second file's beside the
+    first's (DECISIONS D49).
     The cost is one library's pages kept mapped by a process that already
     chose to load it.
+
+Every handle is opened `RTLD_LOCAL` (`_open_flags`, `_pin_flags`), and that
+is what makes a second libpq in the process sound, whoever loads it. With
+this package's image in the loader's global scope, as `OwnedDLHandle`'s
+default mode puts it, glibc binds the internal calls of any libpq loaded
+later into this one, unless that build was linked `-Bsymbolic`. Measured on
+Ubuntu 24.04 with its own libpq 16.15 opened first and psycopg-binary's
+bundled 18.6 second: 70 of the second image's symbols bound into the
+first, `PQconnectStart`, `PQconnectPoll` and `PQclear` among them, and a
+connection attempt through the second crashed the process, three runs of
+three, a `PGconn` built by one version walked by the other. With the first
+image local, none bound and the attempt failed cleanly. The second library
+need not be one this package opened: under `m0serve`, a Python application
+on psycopg-binary loads its own after `--pg-listen` has loaded the
+system's.
+Nothing here needs the global scope: every entry point is looked up
+through the handle.
 
 Opaque handles (`PGconn *`, `PGresult *`, `PGnotify *`) travel as `Int`, as
 `sqlite3 *` does in `m0-sqlite`: they are opaque to us, and an integer is
@@ -248,8 +264,24 @@ comptime _PQescapeIdentifier = ExternalFunction[
 ]
 
 
+def _open_flags() -> Int:
+    """`RTLD_NOW | RTLD_LOCAL`, the mode every `PgLib` opens the library with.
+
+    Local, and that is load-bearing on Linux (the module docstring): an
+    image in the global scope captures the internal calls of any libpq
+    loaded after it. `OwnedDLHandle`'s default is `RTLD_NOW | RTLD_GLOBAL`
+    (`DEFAULT_RTLD`, printed: 258 on Linux, 10 on macOS), so the mode is
+    spelled, and only its scope differs from what the package opened with
+    before. `RTLD_LOCAL` is 0 in glibc's `dlfcn.h` and 4 in macOS's.
+    """
+    comptime if CompilationTarget.is_macos():
+        return 2 | 4
+    else:
+        return 2
+
+
 def _pin_flags() -> Int:
-    """`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`, the mode the pin re-opens with.
+    """`RTLD_LAZY | RTLD_LOCAL | RTLD_NODELETE`, the mode the pin re-opens with.
 
     **A binding mode is not optional, and leaving it out broke Linux.**
     glibc's `dlopen` refuses a mode carrying neither `RTLD_LAZY` (1) nor
@@ -262,22 +294,24 @@ def _pin_flags() -> Int:
     which is exactly what happened, and why the flags are written here as a
     measurement rather than as a guess at another module's default.
 
+    Local, for `_open_flags`' reason: a re-open that says `RTLD_GLOBAL`
+    promotes an image opened local to the global scope, on both loaders
+    (measured). The measurements above were taken with the global flag,
+    which this mode carried until 2026-10-01.
+
     `RTLD_LAZY` rather than `RTLD_NOW`, because this is a RE-open of an image
     already loaded: `RTLD_NOW` would upgrade it to eager binding the first
     open never asked for, so a libpq with a transitive symbol resolvable only
     lazily would fail the pin and make `PgLib.open` raise on a host where the
     library works. Lazy asks for nothing the first open did not.
 
-    The stdlib's own default is deliberately not named here. `std` ships as a
-    `.mojoc` with no source, so any claim about it is unverifiable from this
-    tree — and a wrong one was how the missing binding mode got in.
     `RTLD_NODELETE` is 0x1000 in glibc's `dlfcn.h` and 0x80 in macOS's, and
     both loaders promote an already-loaded image to it on a re-open.
     """
     comptime if CompilationTarget.is_macos():
-        return 1 | 8 | 0x80
+        return 1 | 4 | 0x80
     else:
-        return 1 | 256 | 0x1000
+        return 1 | 0x1000
 
 
 @no_inline
@@ -289,9 +323,8 @@ def _pinned_images_slot() -> Pointer[Int, MutUntrackedOrigin]:
     copy of this accessor would make a word of its own (m0-http's
     `src/global_slot.mojo` holds the measurement; m0-sqlite's `lib.mojo`
     keeps its pin the same way), and a pin written through one copy would
-    be invisible through another: every open would pin again, one handle
-    and one record leaked each time. `pin_library` reads the word back
-    through `_pinned` to prove it is one.
+    be invisible to a reader through another. `pin_library` reads the word
+    back through `_pinned` to prove it is one.
     """
     return {
         _mlir_value = __mlir_op.`pop.global_alloc`[
@@ -343,6 +376,19 @@ def is_pinned(image: Int) -> Bool:
     """Whether the libpq image `image` (`PgFns.image`) is pinned in this
     process: loaded for good, with a handle kept so a reopen finds it."""
     return _pinned_from(_pinned(), image)
+
+
+def pinned_count() -> Int:
+    """How many libpq images this process has pinned: one per library file
+    it has opened, however many times it opened each."""
+    var n = 0
+    var cursor = _pinned()
+    while cursor != 0:
+        n += 1
+        cursor = Pointer[_Pinned, MutUntrackedOrigin](
+            unsafe_from_address=cursor
+        )[].next
+    return n
 
 
 def pin_library(path: String, image: Int) raises:
@@ -419,11 +465,21 @@ def pin_library(path: String, image: Int) raises:
         else:
             record.unsafe_free()
     if not is_pinned(image):
+        # Two causes, told apart by asking the word this function wrote
+        # through: there and not through the readers' accessor is two
+        # words; in neither is a pin that never recorded its image.
+        if _pinned_from(Int(word[].load()), image):
+            raise Error(
+                "the libpq at " + path + " was pinned, and the pinned"
+                " libraries' global word did not read back through the"
+                " accessor its readers use: this toolchain gives"
+                " pop.global_alloc more than one word, so nothing could tell"
+                " which libraries are pinned; it is not opened"
+            )
         raise Error(
-            "the libpq at " + path + " was pinned, and the pinned libraries'"
-            " global word did not read back through the accessor its readers"
-            " use: this toolchain gives pop.global_alloc more than one word,"
-            " so every open would pin the library again; it is not opened"
+            "the libpq at " + path + " is not among the pinned libraries"
+            " after its pin: a table copied from it would call into code"
+            " that can be unloaded; it is not opened"
         )
 
 
@@ -579,7 +635,7 @@ struct PgLib(Movable):
         for candidate in candidates:
             var handle: OwnedDLHandle
             try:
-                handle = OwnedDLHandle(candidate)
+                handle = OwnedDLHandle(candidate, _open_flags())
             except:
                 tried.append(candidate)
                 continue

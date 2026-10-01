@@ -1086,8 +1086,9 @@ done
 # one platform where its first test can fail (SPEC O24): the loader there
 # drops an image whose last handle closed, glibc does not. CI runs it in a
 # macOS job that installs libpq itself, the runner image carrying none, and
-# `test-postgres-server` runs the same file on Linux, where it states the
-# property. It fails without a library, like the rest.
+# `test-postgres-server` runs the same file on Linux, where that test states
+# the property and the other two can fail. It fails without a library, like
+# the rest.
 [tool.poe.tasks.test-postgres]
 help = "Test m0-postgres's pure half (no server, no libpq needed)"
 shell = """
@@ -1141,11 +1142,11 @@ python3 scripts/emit.py --covers O24 --task test-postgres-pin
 """
 
 # Guard the guard of the pin (SPEC O16, O24): revert each of its rules by an
-# exact source line and insist test_pin.mojo fails. The rule the row is
-# about, the kept handle, is observable on macOS alone and reports SKIPPED,
-# never caught, on Linux; the other three are caught on both. Needs libpq,
+# exact source line and insist test_pin.mojo fails. The rule the row began
+# with, the kept handle, is observable on macOS alone and reports SKIPPED,
+# never caught, on Linux; the other six are caught on both. Needs libpq,
 # as the test does, so it runs beside it in the macOS job and not in
-# test-all. Five `mojo run`s of one file, about a minute.
+# test-all. Eight `mojo run`s of one file, about two minutes.
 [tool.poe.tasks.sabotage-postgres-pin]
 help = "Revert each rule of m0-postgres's library pin; every one must be caught"
 cmd = "python3 scripts/postgres_pin_sabotage.py"
