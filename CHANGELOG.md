@@ -23,7 +23,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   twice as fast as sqlite-vec's `vec_distance_l2`, which copies both
   vectors on every call. A span from `Args.blob` stays good for the whole
   call: `Args.text` refuses a BLOB, since reading one as text can free or
-  move its bytes. A raise fails the statement with its text. The schema
+  move its bytes. A raise fails the statement with its text, while the
+  connection is open: on a statement stepped after its `Connection`'s last
+  mention, where Mojo has already closed it, the error keeps its code and
+  carries the code's own text ("SQL logic error"), as every error of such
+  a statement does. Keep the connection mentioned past the step to get the
+  function's text. The schema
   never computes with a registered function: SQLite refuses it in a CHECK
   constraint, a generated column or an index when they are created, in a
   stored view when it is used, in a trigger when it fires and in a column

@@ -145,7 +145,11 @@ pointer for `x''` is NULL, and `sqlite3_result_blob` answers SQL NULL for a
 NULL pointer whatever the length, so that pointer is neither handed out nor
 handed back. A raise becomes `sqlite3_result_error`, so `step` raises the
 function's own text; the `try` around the call is not a convention, because
-an `abi("C")` function cannot raise and the compiler holds it.
+an `abi("C")` function cannot raise and the compiler holds it. On a
+statement stepped after its connection's last mention the connection is
+closed, and the error keeps its code and carries the code's own text ("SQL
+logic error"), as every error of such a statement does (SPEC O3); keep the
+connection mentioned past the step to get the function's text.
 
 ## What the schema may not do with one (D59)
 
