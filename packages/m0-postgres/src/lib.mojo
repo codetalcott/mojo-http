@@ -41,19 +41,30 @@ naming the paths tried, rather than a link failure or a load-time abort.
     `buf.unsafe_ptr().as_imm().as_unsafe_any_origin()` — bridge.mojo's own
     spelling — the buffer survived the call three times out of three.
 
-  - **libpq is never unloaded while the process lives.** `PgLib.__init__`
-    re-opens the image it was handed with `RTLD_NODELETE`, which marks it
-    so that no `dlclose` ever unmaps it (`pin_library`). Without it the library was unmapped when the LAST
-    `PgLib` went — which is when the last `Connection` went, at its last
-    use — and a `Result` read after that jumped into unloaded code:
+  - **libpq is never unloaded while the process lives, and a reopen finds
+    the image the first open pinned.** The first `PgLib` of an image
+    re-opens it with `RTLD_NODELETE`, which marks it so that no `dlclose`
+    ever unmaps it, and keeps that handle open for the life of the process
+    (`pin_library`). Without the flag the library was unmapped when the
+    LAST `PgLib` went — which is when the last `Connection` went, at its
+    last use — and a `Result` read after that jumped into unloaded code:
     `var rows = db.query(...)` with no later mention of `db`, then
     `rows.text(0, 0)`, was a segmentation fault three runs out of three,
     and the same program with a second `PgLib` held alive for the run read
     the row correctly. The pin is what lets a `Result` hold a COPY of the
     table (`PgFns`, whole) rather than reach it through the connection's
     address, which a move or a destruction leaves dangling.
+    The flag without the kept handle leaked on macOS (SPEC O24). There an
+    image opened `RTLD_NODELETE` stays mapped after its last handle closes
+    but leaves dyld's list, so the next open of the same path mapped a
+    FRESH copy of libpq and of the eight libraries it brings: measured
+    with Homebrew's build, a new image at every reopen. m0-sqlite found it
+    (O23) and refuses a second image as well. This package does not,
+    nothing in libpq forbidding two copies in one process: each image a
+    process opens is pinned once, a second file's beside the first's
+    (DECISIONS D49).
     The cost is one library's pages kept mapped by a process that already
-    chose to load it; nothing here ever reloads it, so nothing is lost.
+    chose to load it.
 
 Opaque handles (`PGconn *`, `PGresult *`, `PGnotify *`) travel as `Int`, as
 `sqlite3 *` does in `m0-sqlite`: they are opaque to us, and an integer is
@@ -67,9 +78,12 @@ loading in one place is deliberate: they were two, and nothing held the
 list of names in step with what was loaded.
 """
 
+from std.atomic import Atomic
 from std.collections.span import Span
+from std.collections.string.string_span import _get_kgen_string
 from std.ffi import OwnedDLHandle, c_int
 from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc
 from std.python._cpython import ExternalFunction
 from std.sys import CompilationTarget
 from std.os import getenv
@@ -266,27 +280,150 @@ def _pin_flags() -> Int:
         return 1 | 256 | 0x1000
 
 
-def pin_library(path: String) raises:
-    """Keep the library at `path` loaded for the life of the process.
+@no_inline
+def _pinned_images_slot() -> Pointer[Int, MutUntrackedOrigin]:
+    """Return the word holding the address of the newest `_Pinned` record, 0
+    until the process first opens libpq.
 
-    A second `dlopen` of the image the caller already holds, flagged
-    `RTLD_NODELETE`, which both glibc and dyld apply to an image that is
-    already loaded: from then on no `dlclose` unmaps it, this handle's own
-    included — so the handle is let go at once, and what remains is the
-    flag. Through `OwnedDLHandle` rather than a hand-declared `dlopen`,
+    `@no_inline` IS LOAD-BEARING: `pop.global_alloc` is `Pure`, so an inlined
+    copy of this accessor would make a word of its own (m0-http's
+    `src/global_slot.mojo` holds the measurement; m0-sqlite's `lib.mojo`
+    keeps its pin the same way), and a pin written through one copy would
+    be invisible through another: every open would pin again, one handle
+    and one record leaked each time. `pin_library` reads the word back
+    through `_pinned` to prove it is one.
+    """
+    return {
+        _mlir_value = __mlir_op.`pop.global_alloc`[
+            name = _get_kgen_string["m0_postgres_pinned_images"](),
+            count = Int(1).__mlir_index__(),
+            _type = Pointer[Int, MutUntrackedOrigin]._mlir_type,
+            alignment = Int(8).__mlir_index__(),
+        ]()
+    }
+
+
+@always_inline
+def _pinned() -> Int:
+    """The newest `_Pinned` record's address as every reader but the pin
+    itself takes it: 0 before the first open."""
+    return _pinned_images_slot()[]
+
+
+struct _Pinned(Movable):
+    """One libpq image this process has pinned, and the record pinned before
+    it. Written once and never freed; `next` changes only before the record
+    is published."""
+
+    var image: Int
+    """`PgFns.image` of the pinned library."""
+
+    var next: Int
+    """The address of the record pinned before this one, or 0."""
+
+    def __init__(out self, image: Int, next: Int):
+        self.image = image
+        self.next = next
+
+
+def _pinned_from(at: Int, image: Int) -> Bool:
+    """Whether `image` is among the records from the one at `at` on."""
+    var cursor = at
+    while cursor != 0:
+        ref record = Pointer[_Pinned, MutUntrackedOrigin](
+            unsafe_from_address=cursor
+        )[]
+        if record.image == image:
+            return True
+        cursor = record.next
+    return False
+
+
+def is_pinned(image: Int) -> Bool:
+    """Whether the libpq image `image` (`PgFns.image`) is pinned in this
+    process: loaded for good, with a handle kept so a reopen finds it."""
+    return _pinned_from(_pinned(), image)
+
+
+def pin_library(path: String, image: Int) raises:
+    """Keep the library at `path`, whose image is `image`, loaded for the life
+    of the process, and findable by the next open of the same file.
+
+    The first call for an image pins it: a second `dlopen` of the image the
+    caller already holds, flagged `RTLD_NODELETE`, which both glibc and dyld
+    apply to an image that is already loaded, so that no `dlclose` unmaps
+    it. Through `OwnedDLHandle` rather than a hand-declared `dlopen`,
     because the stdlib already declares that symbol and a second, different
     declaration does not compile. The module docstring's third rule says
-    why this exists.
+    why the flag.
+
+    That handle is then KEPT, never closed (SPEC O24). The flag was once
+    thought to be all that remained of it, and on macOS it is not: an image
+    opened `RTLD_NODELETE` stays mapped after its last `dlclose` but drops
+    out of dyld's list, so the next `dlopen` of the same path maps a FRESH
+    copy. A process whose last `PgLib` went and which then opened another —
+    a connection per request, on one thread — mapped libpq again each time,
+    with the libraries it brings. Measured with Homebrew's libpq: a new
+    image at every reopen, one image with the handle kept. No libpq on
+    macOS escapes it, none being in the dyld shared cache, and glibc keeps
+    a `RTLD_NODELETE` object findable, which is why Linux never showed it.
+
+    Every later call for a pinned image is a comparison and returns: one
+    handle is kept per image, not one per `PgLib`. Images are compared by an
+    entry point's address, never by path: two spellings of one file are one.
+
+    A library that is ANOTHER image — a second libpq file — is pinned the
+    same way, beside the first, and is not refused (DECISIONS D49).
+    m0-sqlite refuses one because SQLite's file locks do not survive two
+    copies of it; libpq has no such rule, so here the word names a list.
+
+    Published by compare-and-swap, because pool threads open their first
+    connections together; a thread that finds its image pinned by another
+    meanwhile lets its own pin go, which unloads nothing while the winner's
+    handle is open.
     """
-    try:
-        var pin = OwnedDLHandle(path, _pin_flags())
-        _ = pin.check_symbol("PQlibVersion")
-    except e:
+    var word = Pointer[Atomic[Int64], MutUntrackedOrigin](
+        unsafe_from_address=Int(_pinned_images_slot())
+    )
+    var head = Int(word[].load())
+    if not _pinned_from(head, image):
+        var pin: OwnedDLHandle
+        try:
+            pin = OwnedDLHandle(path, _pin_flags())
+        except e:
+            raise Error(
+                "the library at " + path + " opened once and could not be"
+                " pinned for the life of the process (" + String(e) + "); a"
+                " result read after its connection closed would call into"
+                " unloaded code"
+            )
+        var record = unsafe_alloc[_Pinned](count=1)
+        record.unsafe_write(_Pinned(image, head))
+        var published = False
+        while not published:
+            var expected = Int64(head)
+            if word[].compare_exchange(expected, Int64(Int(record))):
+                published = True
+            else:
+                # Another thread pinned something first: this image, and
+                # the record is not needed, or another, and it goes behind.
+                head = Int(expected)
+                if _pinned_from(head, image):
+                    break
+                record[].next = head
+        if published:
+            # Never freed and never closed: the handle is the image's place
+            # in the loader's list (O24).
+            var kept = unsafe_alloc[OwnedDLHandle](count=1)
+            kept.unsafe_write(pin^)
+        else:
+            record.unsafe_free()
+    if not is_pinned(image):
         raise Error(
-            "the library at " + path + " opened once and could not be"
-            " pinned for the life of the process (" + String(e) + "); a"
-            " result read after its connection closed would call into"
-            " unloaded code"
+            "the libpq at " + path + " was pinned, and the pinned libraries'"
+            " global word did not read back through the accessor its readers"
+            " use: this toolchain gives pop.global_alloc more than one word,"
+            " so every open would pin the library again; it is not opened"
         )
 
 
@@ -404,14 +541,17 @@ struct PgLib(Movable):
         """Resolve every entry point from an already-open handle.
 
         Private in effect: `open` is the constructor callers use. The table
-        checks every symbol before loading it (`PgFns.__init__`); `path` and
-        `_lib` are assigned after it, so a missing symbol leaves no table to
-        half-own.
+        checks every symbol before loading it (`PgFns.__init__`), and a
+        library missing one is refused before anything of it is pinned: no
+        table of it is kept, so its handle closing on the raise may unload
+        it. The pin needs the table, since an image is told by an entry
+        point's address, and comes before any field is assigned, so no
+        `PgLib` exists whose library can be unmapped under it (the third
+        rule).
         """
-        # First, so no path out of this constructor leaves a table whose
-        # library can be unmapped under it (the third rule).
-        pin_library(path)
-        self.fns = PgFns(handle, path)
+        var fns = PgFns(handle, path)
+        pin_library(path, fns.image())
+        self.fns = fns
         self.path = path^
         # Last, so the handle's own last mention is after every load above.
         self._lib = handle^
@@ -543,14 +683,14 @@ struct PgFns(ImplicitlyCopyable, Movable):
     def __init__(out self, ref handle: OwnedDLHandle, path: String) raises:
         """Resolve every entry point from `handle`, checking each first.
 
-        Built by `PgLib.__init__`, after the pin and while it still holds
-        the handle. Every entry point goes through `_checked`, which asks
-        `check_symbol` before loading, because `load` aborts the process on
-        a missing one — a libpq too old, or a library that is not libpq at
-        all, must be an error naming the symbol rather than a stack trace
-        with no cause in it. One call per field, taking the symbol from the
-        declaration it loads, so an entry point cannot be loaded without
-        being checked.
+        Built by `PgLib.__init__`, first of all and while it still holds
+        the handle: the pin reads this table. Every entry point goes through
+        `_checked`, which asks `check_symbol` before loading, because `load`
+        aborts the process on a missing one — a libpq too old, or a library
+        that is not libpq at all, must be an error naming the symbol rather
+        than a stack trace with no cause in it. One call per field, taking
+        the symbol from the declaration it loads, so an entry point cannot
+        be loaded without being checked.
         """
         self._libversion = _checked[
             _PQlibVersion.name, _PQlibVersion.type
@@ -632,6 +772,16 @@ struct PgFns(ImplicitlyCopyable, Movable):
         self._escape_identifier = _checked[
             _PQescapeIdentifier.name, _PQescapeIdentifier.type
         ](handle, path)
+
+    def image(self) -> Int:
+        """Which libpq image this table was loaded from, as an address.
+
+        `PQlibVersion`'s, read and not called. One image answers the same
+        address to every table loaded from it, under whatever name it was
+        opened, and a second image — another build, or a copy of the file —
+        answers another: what `pin_library` pins once each (O24).
+        """
+        return Pointer(to=self._libversion).unsafe_bitcast[Int]()[]
 
     def libversion(self) -> Int:
         """`PQlibVersion`."""

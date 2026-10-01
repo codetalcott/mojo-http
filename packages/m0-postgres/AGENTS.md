@@ -20,14 +20,32 @@ there were each found by crashing, and all three are in `lib.mojo`'s docstring:
   an entry point is added there and nowhere else. `test_lib.mojo` asserts that
   shape in the position the broken one failed in. A dangling call is a segmentation fault, not an exception, which is
   why the rule is written down as well as tested.
-- **libpq is never unloaded once opened.** `PgLib.__init__` re-opens its image
-  with `RTLD_NODELETE` (`pin_library`), so no `dlclose` unmaps it. Without the
-  pin, the last `Connection` going — at its last use, routinely the query
-  itself — unloaded the library, and `rows.text(0, 0)` on the result was a
-  segmentation fault three runs out of three. The pin is what makes it sound
-  for `Result` to hold a COPY of the entry-point table (`PgFns`); reaching it
-  through the connection's address instead faulted even with the pin, because
-  a destroyed or moved connection leaves that address pointing at nothing.
+- **libpq is never unloaded once opened, and a reopen finds the image the
+  first open pinned.** The first `PgLib` of an image re-opens it with
+  `RTLD_NODELETE` (`pin_library`), so no `dlclose` unmaps it, and KEEPS that
+  handle for the life of the process. Without the pin, the last `Connection`
+  going — at its last use, routinely the query itself — unloaded the library,
+  and `rows.text(0, 0)` on the result was a segmentation fault three runs out
+  of three. The pin is what makes it sound for `Result` to hold a COPY of the
+  entry-point table (`PgFns`); reaching it through the connection's address
+  instead faulted even with the pin, because a destroyed or moved connection
+  leaves that address pointing at nothing. Without the kept handle the flag
+  alone leaked on macOS, where an image opened `RTLD_NODELETE` leaves dyld's
+  list at its last close and the next open maps a fresh copy (SPEC O24;
+  docs/notes/libpq-keeps-its-handle.md). m0-sqlite's pin, the model, also
+  refuses a second image. This one does NOT, on purpose: that refusal exists
+  for SQLite's file locks, nothing in libpq forbids two copies in a process,
+  and each image opened is pinned once, on a list (DECISIONS D49). Do not
+  add the refusal without a measured fault.
+
+The pin's word is a `pop.global_alloc` behind a `@no_inline` accessor, read
+back as it is written (m0-sqlite's idiom, copied, since this package imports
+nothing). `test/test_pin.mojo` holds it and needs libpq but no server:
+`poe test-postgres-pin` runs it in CI's macOS job, the one platform that can
+lose the kept handle, and `poe test-postgres-server` on Linux.
+`poe sabotage-postgres-pin` reverts its four rules by exact source lines;
+after editing an anchored line, run it and re-point the anchor. Its kept-handle
+rule reports SKIPPED on Linux, so read the last lines of a run, not its count.
 
 Also unlike m0-sqlite: a `Result` is a VALUE, not a cursor — libpq hands back a
 complete result that owns its memory, so it can outlive its query and the
@@ -41,6 +59,7 @@ Its tests split, and the split is the point: `test-postgres` is pure (wire
 formats, URL defaults and redaction, SQLSTATE) and runs inside `test-all` on
 every leg, while `test-postgres-server` needs a server and does not — `test-all`'s
 contract is what a checkout can run with the toolchain and the system libraries.
+`test-postgres-pin` sits between them: libpq, no server.
 CI runs the server half in a Linux-only job with a service container, because
 GitHub's service containers require a Linux runner; `docs/RELEASING.md` names
 the macOS arm. Those tests FAIL without a server and never skip.

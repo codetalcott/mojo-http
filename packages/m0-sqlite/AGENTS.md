@@ -3,8 +3,9 @@
 SQLite bindings over libsqlite3, opened at run time. The repository's
 `CLAUDE.md` still applies; this page adds what is specific to this package,
 and `packages/m0-postgres/AGENTS.md` holds the three loader rules it took
-from there. The third has a second half here that m0-postgres does not have
-yet (one image, below); its `pin_library` still lets its handle go.
+from there. The third has a second half that was found here (one image,
+below). m0-postgres has since taken the kept handle and not the refusal: a
+second libpq is pinned beside the first (SPEC O24).
 
 `m0-sqlite` imports nothing else here and, since 2026-09-25, links
 **nothing**: libsqlite3 is opened with `dlopen` at run time (`src/lib.mojo`,

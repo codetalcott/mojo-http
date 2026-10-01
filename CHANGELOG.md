@@ -213,6 +213,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   m0-sqlite beside a Python application on the stdlib `sqlite3` backend is
   two copies of SQLite in one process: give each side its own database
   file.
+- **m0-postgres maps one copy of libpq per process** (SPEC O24). On macOS,
+  a process whose last connection closed and which then opened another
+  loaded a fresh copy of libpq, and of the libraries it links, each time.
+  The library was pinned with `RTLD_NODELETE`, which on macOS keeps an
+  image mapped but forgets it once its last handle closes, so the next
+  open could not find it: m0-sqlite's defect above, in the code it was
+  copied from. Nothing faulted, and a result read after its connection
+  still answered. The process grew by one mapping of libpq per reopen,
+  which for a connection per request on one thread is one per request.
+  The pin now keeps one handle open for the life of the process, and a
+  later open of the same library is a comparison where it was a second
+  `dlopen`. Linux was never affected. Unlike m0-sqlite, a second libpq
+  file is not refused: nothing in libpq forbids two copies in one process,
+  so each one a process opens is pinned once. A library that opens and is
+  not libpq is no longer left mapped after it is refused.
 - **A closed `Socket` refuses every call, not only `close()`** (SPEC D1).
   After `close()` a socket went on passing its old number to the kernel,
   so a late `send` wrote into whatever the process had opened on that
