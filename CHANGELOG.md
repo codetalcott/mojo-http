@@ -157,6 +157,31 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `brew install sqlite`, and under `CI` `test_one_image.mojo` fails where
   it used to print that an arm was not exercised. On a developer's Mac
   without Homebrew's SQLite it still prints and passes.
+- **`poe smoke-ramp` gates on the second-worst of its 24 samples, and
+  says where the worst one spent its time** (SPEC N20). Each placement arm
+  required the WORST of 24 `/x/now` samples under 100 ms, and a macOS
+  runner stalls a single sample for 80 to 120 ms, twice in about 2,000.
+  Over 40 green `Tests` runs the host's full-lane arm measured 2 ms at the
+  median and 8 ms at most on macOS (1 ms at most on Ubuntu), the host's
+  one-loader arm reached 79 ms once and m0serve's 42 ms, and then run
+  36898942895 failed at 120 ms on a change that did not touch it, beside
+  arms that measured 2 and 4 ms. A red `Smoke test one views module on
+  two hosts` on macOS with one slow sample was that, and a rerun passed.
+  - The three bounded arms now read `second_now_ms`, and the negative arm
+    (the host with no lane) must still reach the bound by the same number.
+    What the gate is for still fails it: with `/x/now` taken off the loop
+    the second-worst sample was 132 to 194 ms in 13 runs of 13, since a
+    request that waits for a pool thread is slow on many samples, not one.
+  - Each result line carries `worst_now_ms` as before, `second_now_ms`,
+    and `worst_connect_ms` and `worst_request_ms` for the worst sample,
+    so the next stall says whether it was in the connect or in the
+    request. A failure prints the whole line.
+  - CI records the gated numbers against the limit
+    (`ramp.second_now_ms.m0serve`, `ramp.second_now_ms.host`,
+    `ramp.full_lane_second_now_ms.host`), keeps the worst samples under
+    their names with no limit, and adds the worst sample's two parts for
+    the host's full-lane arm. `ramp_probe.py selftest` runs first: one
+    stall in 24 must pass, two must not.
 
 ### Removed
 
