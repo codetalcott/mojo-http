@@ -30,6 +30,12 @@ from .ffi import (
     error_code,
 )
 from .lib import SqliteLib, as_cstr, open_library, str_cstr
+from .function import (
+    SQLITE_MIN_FUNCTION_VERSION,
+    SQLITE_MIN_MOVING_FUNCTION_VERSION,
+    ScalarFunction,
+    _register_function,
+)
 from .stmt import Statement
 from .vtab import _register, SQLITE_MIN_VTAB_VERSION
 
@@ -334,6 +340,86 @@ struct Connection(Movable):
                 + ")"
             )
         _register(self._lib.fns, self._handle)
+
+    def create_function[
+        F: ScalarFunction
+    ](mut self, name: String, var impl: F) raises:
+        """Make `name(...)` callable from SQL on this connection, answered by
+        `impl` (`function.mojo`, which says what a function may and may not do).
+
+            db.create_function("dot", Dot())
+            var q = db.prepare(
+                "SELECT id FROM notes ORDER BY dot(embedding, ?1) DESC LIMIT 10"
+            )
+
+        Per connection, like `register_array_module`: a pool thread's
+        connection registers its own. `impl` belongs to SQLite from this call
+        on, and is destroyed exactly once: when the function is replaced, or
+        when the connection is destroyed. That is `close()` unless a
+        statement of this connection is still outstanding: every close here
+        is `sqlite3_close_v2`, so the connection then lives until the LAST
+        such statement is finalized, the function stays callable from those
+        statements, and `impl` is destroyed at that last finalize, on
+        whichever thread finalizes.
+
+        Registering a name and arity again replaces the function. SQLite
+        refuses that while a statement of this connection is active, with
+        `SQLITE_BUSY` — the code this package otherwise means "retry" by,
+        and here it is not: the statement in the way is the caller's own, so
+        no wait clears it. Reset or finalize the statement, then register.
+
+        The function is callable from top-level SQL and this connection's
+        TEMP views and triggers. The schema cannot compute with it: SQLite
+        refuses it in a CHECK constraint, a generated column or an index
+        when they are created, in a stored view when the view is used, in a
+        trigger when it fires, and in a column DEFAULT when an INSERT takes
+        it. Creating a view, a trigger or a DEFAULT that names it is NOT
+        refused, and such a trigger then fails every write to its table,
+        from every program, until it is dropped (`function.mojo`).
+
+        Raises on a library older than 3.31.0, which cannot make those
+        refusals, and for a function whose `deterministic` is False on one
+        older than 3.50.0, which would let a CHECK constraint call it; on a
+        closed connection; on a name that is empty, holds a
+        NUL byte or is longer than 255 bytes; on an arity above the
+        library's own limit (127 on Apple's build); and through a table of
+        another libsqlite3 image than the one this process's functions
+        already call. A function type whose `arity` is outside -1..32767
+        does not compile.
+        """
+        if self._handle == 0:
+            raise Error(
+                "create_function(" + name + ") on a closed connection"
+            )
+        var have = self._lib.fns.libversion_number()
+        if have < SQLITE_MIN_FUNCTION_VERSION:
+            raise Error(
+                "create_function needs SQLite 3.31.0 or newer"
+                " (SQLITE_DIRECTONLY as it refuses a registered function in a"
+                " CHECK constraint, a generated column and an index, not only"
+                " in views and triggers), but the library at "
+                + self._lib.path + " is "
+                + self._lib.fns.libversion()
+                + " ("
+                + String(have)
+                + ")"
+            )
+        comptime if not F.deterministic:
+            if have < SQLITE_MIN_MOVING_FUNCTION_VERSION:
+                raise Error(
+                    "create_function(" + name + "): a function that is not"
+                    " deterministic needs SQLite 3.50.0 or newer — before"
+                    " it SQLITE_DIRECTONLY does not keep one out of a CHECK"
+                    " constraint, which every write would then run — but"
+                    " the library at " + self._lib.path + " is "
+                    + self._lib.fns.libversion()
+                    + " ("
+                    + String(have)
+                    + ")"
+                )
+        _register_function(
+            self._lib.fns, self._lib.path, self._handle, name, impl^
+        )
 
     def close(mut self) raises:
         """Close early. Idempotent; `__deinit__` also closes.

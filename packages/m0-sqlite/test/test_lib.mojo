@@ -11,7 +11,9 @@ test fail, which is why the rules are written in that module's docstring
 as well as here.
 
 Runs under `mojo run` like every other test in this package now: nothing
-here links libsqlite3, which is the point of the loader.
+here links libsqlite3, which is the point of the loader. The one-image half
+of the third rule (O23) needs a process of its own, and is
+`test_one_image.mojo`.
 """
 
 from std.ffi import OwnedDLHandle, c_int
@@ -142,7 +144,7 @@ def test_a_symbol_the_library_lacks_is_an_error_naming_it() raises:
         assert_true("3.20.0" in text)
     assert_true(raised)
 
-    # And the whole table still loads, which is the 41 checks passing.
+    # And the whole table still loads, which is all 53 checks passing.
     var lib = open_library()
     assert_true(lib.fns.libversion_number() > 0)
 
@@ -165,13 +167,19 @@ def test_a_path_that_is_not_a_library_is_an_error_naming_it() raises:
 
     # Through the environment, the way a deployment names it -- and what a
     # Connection sees, since it opens the library first.
+    var before = getenv("M0_LIBSQLITE3", "")
     _ = setenv("M0_LIBSQLITE3", "/no/such/dir/libsqlite3.so", True)
     var through_env = String("")
     try:
         _ = open_memory()
     except e:
         through_env = String(e)
-    _ = unsetenv("M0_LIBSQLITE3")
+    # Put back, not unset: the process is held to the library it opened
+    # first (O23), and a run that named one must go on naming it.
+    if before:
+        _ = setenv("M0_LIBSQLITE3", before, True)
+    else:
+        _ = unsetenv("M0_LIBSQLITE3")
     assert_true("/no/such/dir/libsqlite3.so" in through_env, through_env)
     assert_true("M0_LIBSQLITE3" in through_env, through_env)
 

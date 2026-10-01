@@ -89,9 +89,12 @@ direction, and that no libpython reaches the link line.
   `-Xlinker -lsqlite3` anywhere in the tree is a regression. Their three
   loader rules, each found by crashing (one struct holds the handle and its
   pointers, every entry point is private behind a method, the library is
-  pinned `RTLD_NODELETE`), why m0-sqlite's `Connection` and `Statement` are
+  pinned `RTLD_NODELETE` — and m0-sqlite keeps one handle open, since on
+  macOS the flag alone let a reopen map a second copy of SQLite, and refuses
+  a second image at open, SPEC O23),
+  why m0-sqlite's `Connection` and `Statement` are
   deliberately not `Copyable`, why `test-postgres-server` is not in
-  `test-all`, and three SQLite invariants that look like bugs and are not:
+  `test-all`, and six SQLite invariants that look like bugs and are not:
   [packages/m0-postgres/AGENTS.md](packages/m0-postgres/AGENTS.md),
   [packages/m0-sqlite/AGENTS.md](packages/m0-sqlite/AGENTS.md).
 
@@ -789,7 +792,9 @@ Properties of the design, not defects to fix in passing. Each names its note.
   gets no user-data pointer). `@no_inline` on the accessors is load-bearing
   (the op is `Pure`, so each inlined copy makes its own global), the slots
   are private to m0-http so writer and reader share one emission, and fork
-  copies them — cross-process state is `SharedAtomics`. If the op stops
+  copies them — cross-process state is `SharedAtomics`. m0-sqlite keeps two
+  words the same way, for a scalar function's callbacks and the pinned
+  library ([packages/m0-sqlite/AGENTS.md](packages/m0-sqlite/AGENTS.md)). If the op stops
   working nothing is installed and the default signal behaviour stands;
   `shutdown_signals_active()` reports which, and `test_lifecycle.mojo`
   asserts it.

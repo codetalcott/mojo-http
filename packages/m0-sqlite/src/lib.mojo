@@ -13,7 +13,8 @@ Loading the library the way `m0-postgres` loads libpq answers both: no
 binary links it, and a JIT'd test opens it like any other process.
 
 The shape is `m0-postgres/src/lib.mojo`'s, and its three rules — each
-found there by crashing — are adopted here up front:
+found there by crashing — are adopted here up front. The third has grown a
+second half here that m0-postgres does not have yet (one image, O23):
 
   - **The handle and the pointers loaded from it live in ONE struct.** A
     `thin` pointer loaded from a handle carries no borrow, so an
@@ -28,20 +29,53 @@ found there by crashing — are adopted here up front:
     entry point is private behind a wrapper in `SqliteFns`, and nothing
     outside that table calls one.
 
-  - **The library is never unloaded once opened.** `SqliteLib.__init__`
-    re-opens the image with `RTLD_NODELETE` (`pin_library`), so no
-    `dlclose` unmaps it. That is what makes it sound for a `Statement` to
-    hold a COPY of the table (`SqliteFns`, whole) and outlive the
-    `Connection` — and the handle — that loaded it: Mojo destroys a
-    connection at its last use, routinely the `prepare()` itself (O2), and
-    without the pin the statement's next `step` would call into memory the
-    connection's `dlclose` had just unmapped. The virtual-table callbacks
-    hold a copy the same way (`VtabLib`), in the buffer SQLite owns.
+  - **The library is never unloaded once opened, and it is the only one
+    this package opens.** The first connection of a process pins its image
+    (`pin_library`): a second `dlopen` flagged `RTLD_NODELETE`, so no
+    `dlclose` unmaps it, whose handle is then kept open for the life of
+    the process, so every later open finds the SAME image (O23: on macOS
+    the flag alone let a reopen map a second copy of SQLite). The first
+    half is what makes it sound for a `Statement` to hold a COPY of the
+    table (`SqliteFns`, whole) and outlive the `Connection` — and the
+    handle — that loaded it: Mojo destroys a connection at its last use,
+    routinely the `prepare()` itself (O2), and without the pin the
+    statement's next `step` would call into memory the connection's
+    `dlclose` had just unmapped. The virtual-table callbacks hold a copy
+    the same way (`VtabLib`), in the buffer SQLite owns. The second half
+    is enforced: a library whose image is not the pinned one is refused at
+    open, naming both files, and is never pinned itself.
+
+**What "one image" covers, and what it cannot.** SQLite does not survive two
+copies of itself in one process: each keeps its own list of open files, so a
+close through one drops the POSIX locks the other holds on the same database
+("How To Corrupt An SQLite Database File", 2.2.1). This package keeps itself
+to one — the libsqlite3 files IT opens. It cannot see a copy something else
+brought into the process, and one case is routine: CPython's `sqlite3`
+module. An interpreter built with its own SQLite inside `_sqlite3` (the
+builds uv installs are) has no libsqlite3 file for the loader to share, so
+`m0serve` serving a Mojo mount that uses this package beside a Python
+application on the stdlib `sqlite3` backend is two copies of SQLite in one
+process, whatever `M0_LIBSQLITE3` says. That is safe exactly as long as the
+two never open the same database file; give each side its own file, or keep
+SQLite on one side of the process. Where the interpreter's `_sqlite3` links
+a libsqlite3 file instead (Debian's and Ubuntu's `python3` link the system's),
+the loader hands both the same image once this package opens that same file —
+which there the default search path does — and there is one copy.
+
+Every handle is opened `RTLD_LOCAL` (`_open_flags`, `_pin_flags`), for the
+copy this package cannot refuse. With the image in the loader's global
+scope, a second libsqlite3 loaded later resolves its OWN internal calls into
+this one — `sqlite3_initialize` among them — and so never initializes:
+measured on Ubuntu 24.04's build, every open on the second copy answered
+"no such vfs" while the first was `RTLD_GLOBAL`, and opened once it was
+local. Nothing here needs the global scope: every entry point is looked up
+through the handle.
 
 Each `Connection` opens its own table: a `dlopen` of an already-mapped image
-is a reference count and ~41 `dlsym`s, paid once per connection, which this
-package opens once per thread. A call through a stored pointer then costs
-what a direct call does.
+is a reference count, and 53 entry points each cost two `dlsym`s (`_checked`
+asks, then loads), paid once per connection, which this package opens once
+per thread. A call through a stored pointer then costs what a direct call
+does.
 
 Every entry point goes through `_checked`, which asks `check_symbol` before
 `load` — `load` ABORTS the process on a missing symbol — so a libsqlite3
@@ -50,14 +84,17 @@ symbol. Checking and loading in one place, taking the name from the
 declaration, is what keeps the two from drifting.
 """
 
+from std.atomic import Atomic
 from std.collections.span import Span
+from std.collections.string.string_span import _get_kgen_string
 from std.ffi import OwnedDLHandle, c_int
 from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc
 from std.os import getenv
 from std.python._cpython import ExternalFunction
 from std.sys import CompilationTarget
 
-from .ffi import CharPtr, cstr_len, cstr_to_string
+from .ffi import SQLITE_TRANSIENT, CharPtr, cstr_len, cstr_to_string
 
 
 comptime CStr = Pointer[UInt8, ImmutAnyOrigin]
@@ -223,42 +260,228 @@ comptime _create_module_v2 = ExternalFunction[
     "sqlite3_create_module_v2", def (Int, CStr, Int, Int, FreeFn) thin abi("C") -> c_int
 ]
 
+comptime XFuncFn = def (Int, c_int, Int) thin abi("C") -> None
+"""`void (*)(sqlite3_context *, int argc, sqlite3_value **argv)`: the body
+of a scalar function, which `function.mojo`'s trampoline is."""
+
+comptime _create_function_v2 = ExternalFunction[
+    # int sqlite3_create_function_v2(sqlite3 *, const char *zName, int nArg,
+    #   int eTextRep, void *pApp, xFunc, xStep, xFinal, void (*xDestroy)(void *))
+    "sqlite3_create_function_v2",
+    def (Int, CStr, c_int, c_int, Int, XFuncFn, Int, Int, FreeFn) thin abi("C") -> c_int,
+]
+comptime _user_data = ExternalFunction[
+    "sqlite3_user_data", def (Int) thin abi("C") -> Int
+]
+comptime _value_type = ExternalFunction[
+    "sqlite3_value_type", def (Int) thin abi("C") -> c_int
+]
+comptime _value_int64 = ExternalFunction[
+    "sqlite3_value_int64", def (Int) thin abi("C") -> Int64
+]
+comptime _value_double = ExternalFunction[
+    "sqlite3_value_double", def (Int) thin abi("C") -> Float64
+]
+comptime _value_text = ExternalFunction[
+    "sqlite3_value_text", def (Int) thin abi("C") -> Int
+]
+comptime _value_blob = ExternalFunction[
+    "sqlite3_value_blob", def (Int) thin abi("C") -> Int
+]
+comptime _value_bytes = ExternalFunction[
+    "sqlite3_value_bytes", def (Int) thin abi("C") -> c_int
+]
+comptime _result_text = ExternalFunction[
+    # void sqlite3_result_text(sqlite3_context *, const char *, int n, void (*)(void *))
+    "sqlite3_result_text", def (Int, CStr, c_int, Int) thin abi("C") -> None
+]
+comptime _result_blob = ExternalFunction[
+    "sqlite3_result_blob", def (Int, CStr, c_int, Int) thin abi("C") -> None
+]
+comptime _result_error = ExternalFunction[
+    # void sqlite3_result_error(sqlite3_context *, const char *, int n)
+    "sqlite3_result_error", def (Int, CStr, c_int) thin abi("C") -> None
+]
+
+
+def _open_flags() -> Int:
+    """`RTLD_NOW | RTLD_LOCAL`, the mode every connection opens the library
+    with.
+
+    Local, and that is load-bearing on Linux (the module docstring): an
+    image in the global scope captures the internal calls of any libsqlite3
+    loaded after it. `OwnedDLHandle`'s default is `RTLD_GLOBAL`, so the mode
+    is spelled. `RTLD_LOCAL` is 0 in glibc's `dlfcn.h` and 4 in macOS's.
+    """
+    comptime if CompilationTarget.is_macos():
+        return 2 | 4
+    else:
+        return 2
+
 
 def _pin_flags() -> Int:
-    """`RTLD_LAZY | RTLD_GLOBAL | RTLD_NODELETE`, the mode the pin re-opens with.
+    """`RTLD_LAZY | RTLD_LOCAL | RTLD_NODELETE`, the mode the pin re-opens with.
 
-    m0-postgres's measurement, kept as written there: glibc refuses a mode
+    m0-postgres's measurement of the first and last: glibc refuses a mode
     carrying neither `RTLD_LAZY` (1) nor `RTLD_NOW` (2), and `RTLD_NODELETE`
     is 0x1000 in glibc's `dlfcn.h` and 0x80 in macOS's. Both loaders promote
     an already-loaded image to it on a re-open. Lazy, because this is a
     re-open of an image already mapped and asks for nothing the first open
-    did not.
+    did not. Local for `_open_flags`' reason: a re-open that said
+    `RTLD_GLOBAL` would promote the image to the global scope.
     """
     comptime if CompilationTarget.is_macos():
-        return 1 | 8 | 0x80
+        return 1 | 4 | 0x80
     else:
-        return 1 | 256 | 0x1000
+        return 1 | 0x1000
 
 
-def pin_library(path: String) raises:
-    """Keep the library at `path` loaded for the life of the process.
+@no_inline
+def _pinned_image_slot() -> Pointer[Int, MutUntrackedOrigin]:
+    """Return the word holding the address of the process's `_Pinned` record,
+    0 until the first connection.
 
-    A second `dlopen` of the image the caller already holds, flagged
-    `RTLD_NODELETE`: from then on no `dlclose` unmaps it, this handle's own
-    included, so the handle is let go at once and what remains is the flag.
-    The module docstring's third rule says why this exists: without it a
-    `Statement` outliving its `Connection` — the shape O2 promises — steps
-    into memory the connection's handle unmapped.
+    `@no_inline` IS LOAD-BEARING: `pop.global_alloc` is `Pure`, so an inlined
+    copy of this accessor would make a word of its own (m0-http's
+    `src/global_slot.mojo` holds the measurement), and a pin written through
+    one copy would refuse nothing read through another. `pin_library` reads
+    the word back through `_pinned` to prove it is one.
     """
-    try:
-        var pin = OwnedDLHandle(path, _pin_flags())
-        _ = pin.check_symbol("sqlite3_libversion")
-    except e:
+    return {
+        _mlir_value = __mlir_op.`pop.global_alloc`[
+            name = _get_kgen_string["m0_sqlite_pinned_image"](),
+            count = Int(1).__mlir_index__(),
+            _type = Pointer[Int, MutUntrackedOrigin]._mlir_type,
+            alignment = Int(8).__mlir_index__(),
+        ]()
+    }
+
+
+@always_inline
+def _pinned() -> Int:
+    """The `_Pinned` record's address as every reader but the pin itself
+    takes it: 0 before the first connection."""
+    return _pinned_image_slot()[]
+
+
+struct _Pinned(Movable):
+    """The one libsqlite3 image this process's connections call into: which
+    it is, and the file it was first opened as. Written once, never changed
+    and never freed."""
+
+    var image: Int
+    """`SqliteFns.image` of the pinned library."""
+
+    var path: String
+    """The file the first connection opened, as it named it."""
+
+    def __init__(out self, image: Int, path: String):
+        self.image = image
+        self.path = path
+
+
+def pinned_image() -> Int:
+    """`SqliteFns.image` of the libsqlite3 this process is pinned to, or 0
+    before its first connection."""
+    var at = _pinned()
+    if at == 0:
+        return 0
+    return Pointer[_Pinned, MutUntrackedOrigin](unsafe_from_address=at)[].image
+
+
+def pinned_path() -> String:
+    """The file the pinned libsqlite3 was first opened as, or "" before the
+    process's first connection: what `M0_LIBSQLITE3` must keep naming."""
+    var at = _pinned()
+    if at == 0:
+        return String("")
+    return Pointer[_Pinned, MutUntrackedOrigin](unsafe_from_address=at)[].path
+
+
+def pin_library(path: String, image: Int, version: String) raises:
+    """Make the library at `path`, whose image is `image`, the ONE libsqlite3
+    of this process — or refuse it because another already is.
+
+    The first call of a process pins: a second `dlopen` of the image the
+    caller already holds, flagged `RTLD_NODELETE`, kept open and never
+    closed. The module docstring's third rule says why the flag: without it
+    a `Statement` outliving its `Connection` — the shape O2 promises —
+    steps into memory the connection's handle unmapped.
+
+    The flag alone is not enough on macOS (O23). There an image opened
+    `RTLD_NODELETE` stays mapped after its last `dlclose` but drops out of
+    dyld's list, so the next `dlopen` of the same path maps a FRESH copy:
+    a process that closed all its connections and opened another ran two
+    copies of SQLite. SQLite forbids that — each copy keeps its own list of
+    open files, so a close through one drops the POSIX locks the other holds
+    on the same file ("How To Corrupt An SQLite Database File", 2.2.1) —
+    and a registered function's callbacks reach one image (`function.mojo`).
+    Measured with Homebrew's build: a new image at every reopen, one image
+    with a handle kept. Apple's library lives in the dyld shared cache,
+    where no image is ever dropped, and glibc keeps a `RTLD_NODELETE` object
+    findable, which is why no test saw it before.
+
+    Every later call compares and returns: one handle is kept per process,
+    not one per connection. A library that is another image — a different
+    build, or a copy of the same file — is refused, naming both files and
+    before anything of it is pinned, so the caller's own handle closing is
+    what unloads it. Images are compared by an entry point's address, never
+    by path: `libsqlite3.dylib` and `/usr/lib/libsqlite3.dylib` are one.
+
+    Published by compare-and-swap, because pool threads open their first
+    connections together (D31); the loser lets its pin go, which unloads
+    nothing while the winner's handle is open, and is then compared like
+    any later caller.
+    """
+    var word = Pointer[Atomic[Int64], MutUntrackedOrigin](
+        unsafe_from_address=Int(_pinned_image_slot())
+    )
+    var current = Int(word[].load())
+    if current == 0:
+        var pin: OwnedDLHandle
+        try:
+            pin = OwnedDLHandle(path, _pin_flags())
+        except e:
+            raise Error(
+                "the library at " + path + " opened once and could not be"
+                " pinned for the life of the process (" + String(e) + "); a"
+                " statement stepped after its connection closed would call into"
+                " unloaded code"
+            )
+        var record = unsafe_alloc[_Pinned](count=1)
+        record.unsafe_write(_Pinned(image, path))
+        var expected = Int64(0)
+        if word[].compare_exchange(expected, Int64(Int(record))):
+            current = Int(record)
+            # Never freed and never closed: the handle is the image's place
+            # in the loader's list (O23).
+            var kept = unsafe_alloc[OwnedDLHandle](count=1)
+            kept.unsafe_write(pin^)
+        else:
+            _ = record.unsafe_take_pointee()
+            record.unsafe_free()
+            current = Int(expected)
+    if _pinned() != current:
         raise Error(
-            "the library at " + path + " opened once and could not be"
-            " pinned for the life of the process (" + String(e) + "); a"
-            " statement stepped after its connection closed would call into"
-            " unloaded code"
+            "the pinned library's global word did not read back through the"
+            " accessor its readers use (wrote "
+            + String(current)
+            + ", read "
+            + String(_pinned())
+            + "): this toolchain gives pop.global_alloc more than one word,"
+            " so nothing could hold this process to one libsqlite3; no"
+            " connection is opened"
+        )
+    ref pinned = Pointer[_Pinned, MutUntrackedOrigin](unsafe_from_address=current)[]
+    if pinned.image != image:
+        raise Error(
+            "the libsqlite3 at " + path + " (" + version + ") is not the image"
+            " this process already opened (" + pinned.path + "): SQLite does"
+            " not survive two copies of itself in one process — each keeps"
+            " its own list of open files, so a close through one drops the"
+            " locks the other holds on the same database — so every"
+            " connection opens the same library. Set M0_LIBSQLITE3 once,"
+            " before the first connection, and leave it"
         )
 
 
@@ -332,15 +555,41 @@ struct SqliteLib(Movable):
     `SqliteFns`'s wrappers (the second rule)."""
 
     def __init__(out self, var handle: OwnedDLHandle, var path: String) raises:
-        """Resolve every entry point from an already-open handle.
+        """Resolve every entry point from an already-open handle, refuse a
+        library this package cannot use, and pin the one it can.
 
         Private in effect: `open_library` is the constructor callers use.
-        The pin comes first, so no path out of this constructor leaves a
-        table whose library can be unmapped under it; `path` and `_lib`
-        are assigned last, so a missing symbol leaves no table to half-own.
+        The order is the contract. The refusals come before the pin — a
+        missing symbol, a version under the floor, a build without threads,
+        a second image — so a refused library is never pinned: `handle`
+        closes on the raise, and with no table of it kept, unloading it is
+        sound. The pin comes before any field is assigned, so no `SqliteLib`
+        exists whose library can be unmapped under it.
         """
-        pin_library(path)
-        self.fns = SqliteFns(handle, path)
+        var fns = SqliteFns(handle, path)
+        # Everything asked of the library is asked HERE, before the first
+        # branch that can raise. `handle` is not mentioned again on a
+        # raising path, so it closes as that path begins — and unpinned,
+        # the library unloads with it: a call through `fns` from inside an
+        # error message would be a call into unmapped memory.
+        var have = fns.libversion_number()
+        var version = fns.libversion()
+        var threadsafe = fns.threadsafe()
+        if have < MIN_SQLITE_VERSION:
+            raise Error(
+                "the libsqlite3 at " + path + " is version "
+                + version + " (" + String(have) + "), older than the"
+                " 3.20.0 (" + String(MIN_SQLITE_VERSION) + ") this package"
+                " requires"
+            )
+        if threadsafe == 0:
+            raise Error(
+                "the libsqlite3 at " + path + " was built with"
+                " SQLITE_THREADSAFE=0, and this package opens one connection"
+                " per thread"
+            )
+        pin_library(path, fns.image(), version)
+        self.fns = fns
         self.path = path^
         # Last, so the handle's own last mention is after every load.
         self._lib = handle^
@@ -407,13 +656,25 @@ struct SqliteFns(ImplicitlyCopyable, Movable):
     var _result_double: _result_double.type
     var _result_int64: _result_int64.type
     var _create_module_v2: _create_module_v2.type
+    var _create_function_v2: _create_function_v2.type
+    var _user_data: _user_data.type
+    var _value_type: _value_type.type
+    var _value_int64: _value_int64.type
+    var _value_double: _value_double.type
+    var _value_text: _value_text.type
+    var _value_blob: _value_blob.type
+    var _value_bytes: _value_bytes.type
+    var _result_text: _result_text.type
+    var _result_blob: _result_blob.type
+    var _result_error: _result_error.type
     """Every entry point, private: the module docstring's second rule."""
 
     def __init__(out self, ref handle: OwnedDLHandle, path: String) raises:
         """Resolve every entry point from `handle`, checking each first.
 
-        Built by `SqliteLib.__init__`, after the pin and while it still
-        holds the handle. One `_checked` per field, taking the symbol from
+        Built by `SqliteLib.__init__`, first of all and while it still
+        holds the handle: the refusals and the pin both read this table.
+        One `_checked` per field, taking the symbol from
         the declaration it loads, so an entry point cannot be loaded without
         being checked.
         """
@@ -477,6 +738,23 @@ struct SqliteFns(ImplicitlyCopyable, Movable):
         self._create_module_v2 = _checked[
             _create_module_v2.name, _create_module_v2.type
         ](handle, path)
+        self._create_function_v2 = _checked[
+            _create_function_v2.name, _create_function_v2.type
+        ](handle, path)
+        self._user_data = _checked[_user_data.name, _user_data.type](handle, path)
+        self._value_type = _checked[_value_type.name, _value_type.type](handle, path)
+        self._value_int64 = _checked[_value_int64.name, _value_int64.type](handle, path)
+        self._value_double = _checked[
+            _value_double.name, _value_double.type
+        ](handle, path)
+        self._value_text = _checked[_value_text.name, _value_text.type](handle, path)
+        self._value_blob = _checked[_value_blob.name, _value_blob.type](handle, path)
+        self._value_bytes = _checked[_value_bytes.name, _value_bytes.type](handle, path)
+        self._result_text = _checked[_result_text.name, _result_text.type](handle, path)
+        self._result_blob = _checked[_result_blob.name, _result_blob.type](handle, path)
+        self._result_error = _checked[
+            _result_error.name, _result_error.type
+        ](handle, path)
 
     # --- Library ----------------------------------------------------------
 
@@ -492,6 +770,18 @@ struct SqliteFns(ImplicitlyCopyable, Movable):
     def threadsafe(self) -> Int:
         """`sqlite3_threadsafe`: 0 when the library was built single-threaded."""
         return Int(self._threadsafe())
+
+    def image(self) -> Int:
+        """Which libsqlite3 image this table was loaded from, as an address.
+
+        `sqlite3_libversion`'s, read and not called. One image answers the
+        same address to every table loaded from it, under whatever name it
+        was opened (`libsqlite3.dylib` and `/usr/lib/libsqlite3.dylib` are
+        one), and a second image — another build, or a copy of the file —
+        answers another: what `pin_library` holds this package to one of
+        (O23).
+        """
+        return Pointer(to=self._libversion).unsafe_bitcast[Int]()[]
 
     def errstr(self, code: Int) -> String:
         """`sqlite3_errstr`: English text for a primary result code."""
@@ -693,6 +983,104 @@ struct SqliteFns(ImplicitlyCopyable, Movable):
         of its own to reach `sqlite3_free`."""
         return self._free
 
+    # --- Scalar functions (`function.mojo`) --------------------------------
+
+    def create_function_v2(
+        self,
+        db: Int,
+        name: CStr,
+        n_arg: Int,
+        flags: Int,
+        app: Int,
+        body: XFuncFn,
+        destroy: FreeFn,
+    ) -> Int:
+        """`sqlite3_create_function_v2` for a scalar function: no step, no final."""
+        return Int(
+            self._create_function_v2(
+                db, name, c_int(n_arg), c_int(flags), app, body, 0, 0, destroy
+            )
+        )
+
+    def user_data(self, ctx: Int) -> Int:
+        """`sqlite3_user_data`: the `pApp` the function was registered with."""
+        return self._user_data(ctx)
+
+    def value_type(self, value: Int) -> Int:
+        """`sqlite3_value_type`: the value's storage class NOW; a conversion
+        by `sqlite3_value_text` can change what it answers."""
+        return Int(self._value_type(value))
+
+    def value_int64(self, value: Int) -> Int:
+        """`sqlite3_value_int64`."""
+        return Int(self._value_int64(value))
+
+    def value_double(self, value: Int) -> Float64:
+        """`sqlite3_value_double`."""
+        return self._value_double(value)
+
+    def value_text(self, value: Int) -> CharPtr:
+        """`sqlite3_value_text`: SQLite's own buffer, valid for the call."""
+        return CharPtr(unsafe_from_address=Int(self._value_text(value)))
+
+    def value_blob(self, value: Int) -> CharPtr:
+        """`sqlite3_value_blob`: SQLite's own buffer, valid for the call."""
+        return CharPtr(unsafe_from_address=Int(self._value_blob(value)))
+
+    def value_bytes(self, value: Int) -> Int:
+        """`sqlite3_value_bytes`: called AFTER `value_text` or `value_blob`, so
+        it measures the form that call produced (sqlite3.h's order)."""
+        return Int(self._value_bytes(value))
+
+    def result_null(self, ctx: Int):
+        """`sqlite3_result_null`."""
+        self._result_null(ctx)
+
+    def result_int64(self, ctx: Int, value: Int):
+        """`sqlite3_result_int64`."""
+        self._result_int64(ctx, Int64(value))
+
+    def result_double(self, ctx: Int, value: Float64):
+        """`sqlite3_result_double`."""
+        self._result_double(ctx, value)
+
+    def result_text(self, ctx: Int, text: CStr, length: Int):
+        """`sqlite3_result_text` with `SQLITE_TRANSIENT`: SQLite copies the
+        bytes before this returns, so a Mojo temporary is safe to hand over.
+
+        `length` is the caller's to hold under `MAX_C_INT`: a length that
+        wraps negative means "scan to the first NUL". A NULL `text` would
+        answer SQL NULL, as it does for `result_blob`, but a `String`'s
+        pointer is never NULL, the empty one's included, and
+        `test_scalar_function.mojo` holds an empty answer to `text`.
+        """
+        self._result_text(ctx, text, c_int(length), SQLITE_TRANSIENT)
+
+    def result_blob(self, ctx: Int, data: CStr, length: Int):
+        """`sqlite3_result_blob` with `SQLITE_TRANSIENT`, as `result_text`.
+
+        A NULL `data` answers SQL NULL whatever `length` says, and NULL is
+        the pointer SQLite itself hands out for a zero-length blob
+        (`sqlite3_value_blob` of `x''`), so an empty blob passed straight
+        through came back as NULL. A zero length is handed a real byte's
+        address instead, of which SQLite copies none.
+        """
+        if length == 0:
+            var none = UInt8(0)
+            self._result_blob(
+                ctx,
+                Pointer(to=none).as_imm().as_unsafe_any_origin(),
+                c_int(0),
+                SQLITE_TRANSIENT,
+            )
+            return
+        self._result_blob(ctx, data, c_int(length), SQLITE_TRANSIENT)
+
+    def result_error(self, ctx: Int, message: CStr, length: Int):
+        """`sqlite3_result_error`: the statement fails with `message`, which
+        SQLite copies. `length` is the caller's to hold under `MAX_C_INT`."""
+        self._result_error(ctx, message, c_int(length))
+
     def vtab_lib(self) -> VtabLib:
         """The entry points the virtual-table callbacks call, copied out,
         for `vtab.mojo` to store in the module buffer SQLite owns."""
@@ -826,12 +1214,14 @@ struct VtabLib(ImplicitlyCopyable, Movable):
 def open_library(path: String = "") raises -> SqliteLib:
     """Open libsqlite3: `path`, else `M0_LIBSQLITE3`, else the search path.
 
-    The version floor and the library's own thread-safety flag are checked
-    here, where both are one call and the answer can name the library that
-    failed. A libsqlite3 built with `SQLITE_THREADSAFE=0` ignores the
-    `NOMUTEX`/`FULLMUTEX` open flags this package chooses between, so one
-    connection per thread would be a data race rather than a choice; it is
-    refused.
+    The first candidate that opens is the answer or the error: it is checked
+    (`SqliteLib.__init__`) where each check is one call and the answer can
+    name the library that failed. The version floor; the library's own
+    thread-safety flag — a libsqlite3 built with `SQLITE_THREADSAFE=0`
+    ignores the `NOMUTEX`/`FULLMUTEX` open flags this package chooses
+    between, so one connection per thread would be a data race rather than a
+    choice; and that it is the image this process already opened, if it
+    opened one (O23, `pin_library`).
     """
     var tried = List[String]()
     var candidates = List[String]()
@@ -847,26 +1237,11 @@ def open_library(path: String = "") raises -> SqliteLib:
     for candidate in candidates:
         var handle: OwnedDLHandle
         try:
-            handle = OwnedDLHandle(candidate)
+            handle = OwnedDLHandle(candidate, _open_flags())
         except:
             tried.append(candidate)
             continue
-        var lib = SqliteLib(handle^, candidate)
-        var have = lib.fns.libversion_number()
-        if have < MIN_SQLITE_VERSION:
-            raise Error(
-                "the libsqlite3 at " + candidate + " is version "
-                + lib.fns.libversion() + " (" + String(have) + "), older than the"
-                " 3.20.0 (" + String(MIN_SQLITE_VERSION) + ") this package"
-                " requires"
-            )
-        if lib.fns.threadsafe() == 0:
-            raise Error(
-                "the libsqlite3 at " + candidate + " was built with"
-                " SQLITE_THREADSAFE=0, and this package opens one connection"
-                " per thread"
-            )
-        return lib^
+        return SqliteLib(handle^, candidate)
 
     var names = String("")
     for i in range(len(tried)):
@@ -880,7 +1255,7 @@ def open_library(path: String = "") raises -> SqliteLib:
 # --- Conveniences that open the library themselves --------------------------
 #
 # For a banner, a version check, a test. Each opens the library — a
-# reference count on an image already mapped, and ~41 symbol lookups — so
+# reference count on an image already mapped, and 106 symbol lookups — so
 # none belongs on a request path; a connection's own table answers the same
 # questions for free.
 

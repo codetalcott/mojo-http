@@ -31,7 +31,8 @@ and under its three rules, each of which m0-postgres found by crashing:
 
 - **The handle and the pointers loaded from it live in ONE struct.**
   `SqliteLib` holds the `OwnedDLHandle` and every entry point this package
-  uses — 41 of them, each loaded through `_checked`, which asks
+  uses — 42 of them then, 53 since scalar functions brought eleven
+  (functions-inside-the-query.md) — each loaded through `_checked`, which asks
   `check_symbol` before `load` because `load` aborts the process on a
   missing symbol. A libsqlite3 too old, or a library that is not
   libsqlite3, is an error naming the symbol and the path.

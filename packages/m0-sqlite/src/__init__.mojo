@@ -31,6 +31,21 @@ which take the array as an argument and finish the statement before returning.
 That is not a convenience — it is what keeps the borrow safe; see the note
 above those methods in `stmt.mojo`.
 
+A function written in Mojo can run inside the query plan, reading each value
+where SQLite holds it (`function.mojo` says what it may and may not do):
+
+    struct Dot(ScalarFunction):
+        comptime arity: Int = 2
+        comptime deterministic: Bool = True
+
+        def __init__(out self):
+            pass
+
+        def call(mut self, args: Args, mut answer: Answer) raises:
+            answer.float(dot_f32(args.blob(0), args.blob(1)))
+
+    db.create_function("dot", Dot())
+
 Depends on nothing else in this repo — it is a sibling of `m0-core` and
 `m0-http`, not a layer on top of them.
 
@@ -98,6 +113,13 @@ from .ffi import (
     SQLITE_OPEN_FULLMUTEX,
 )
 from .stmt import Statement
+from .function import (
+    Args,
+    Answer,
+    ScalarFunction,
+    SQLITE_MIN_FUNCTION_VERSION,
+    SQLITE_MIN_MOVING_FUNCTION_VERSION,
+)
 from .conn import (
     Connection,
     open,
