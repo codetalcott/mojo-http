@@ -51,7 +51,13 @@ naming both files. Three rules come with it:
 `test/test_one_image.mojo` is a process of its own for this: a process is
 held to its first library, so a test that needs a particular one cannot
 share a process with tests that opened another. A test that sets
-`M0_LIBSQLITE3` puts the old value back; it never unsets it.
+`M0_LIBSQLITE3` puts the old value back; it never unsets it. On macOS the
+second image those tests need, and the library the loader can drop, is
+Homebrew's SQLite. A Mac without it is told which arms did not run; under
+`CI` the same tests FAIL (`_unexercised`), and the macOS jobs that run them
+(`unit-gates`, and the nightly canary) install the library themselves, so
+that arm is never there by luck. A new macOS job that runs `test-sqlite`
+needs the same step.
 
 **Scalar functions** (`src/function.mojo`, SPEC O19–O22, D58–D59;
 docs/notes/functions-inside-the-query.md) are a type conforming to
@@ -115,7 +121,10 @@ each rule above by exact source lines; after editing an anchored line, run
 it and re-point the anchor. Four kinds of rule report SKIPPED on a host
 that cannot observe them (no second image, no library the loader can drop,
 no build that binds through the global scope, no library older than
-3.50.0), so read the last lines of a run, not its count.
+3.50.0), so read the last lines of a run, not its count. In CI a run
+cannot pass with the first two skipped for want of Homebrew's SQLite:
+without it the baseline, `test_one_image.mojo` itself, fails, and the run
+exits 1 with those rules still printed SKIPPED.
 
 Six m0-sqlite invariants that look like bugs and are not:
 

@@ -13,7 +13,10 @@ image a file is (`sqlite3_libversion`'s address), never by comparing paths:
 `/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib` and its Cellar spelling are
 one file. On Linux it is a copy of the system library; on macOS whichever
 of Apple's and Homebrew's builds this process is not using, so without
-Homebrew's there is none, and each test that needs one says so.
+Homebrew's there is none, and each test that needs one says so. Under `CI`
+saying so is a failure (`_unexercised`): the macOS jobs that run this file
+install Homebrew's SQLite for it, so a runner without it is a broken job,
+never a quieter pass.
 """
 
 from std.collections.span import Span
@@ -140,9 +143,33 @@ def _is_loaded(path: String) -> Bool:
         return False
 
 
-def _nothing_to_refuse() -> Bool:
-    print("    (no second libsqlite3 image on this host; the refusal is not exercised)")
-    return True
+def _unexercised(what: String) raises:
+    """Say that this host cannot exercise `what`, and under `CI` fail for it.
+
+    A Mac without Homebrew's SQLite, or a run that names Apple's library in
+    `M0_LIBSQLITE3`, runs this file with the arms that need Homebrew's left
+    out, and is told so. CI is not allowed that: the macOS jobs that run
+    this file install the library (`test.yml`'s `unit-gates`, and the
+    nightly canary), so there a missing one means the job is broken, and a
+    test that passed anyway would be green having tested nothing. GitHub
+    Actions sets `CI=true`; empty, `0` and `false` read as unset.
+    """
+    var ci = getenv("CI", "")
+    if ci and ci != "0" and ci != "false":
+        raise Error(
+            what + ". CI is set, so this is a failure: a test that passes"
+            " without running has tested nothing. On macOS this arm needs"
+            " Homebrew's SQLite installed (`brew install sqlite`) and"
+            " M0_LIBSQLITE3 unset or naming it; unset CI to run without it"
+        )
+    print("    (" + what + ")")
+
+
+def _nothing_to_refuse() raises:
+    """No second image: said, or under `CI` failed (`_unexercised`)."""
+    _unexercised(
+        "no second libsqlite3 image on this host: the refusal is not exercised"
+    )
 
 
 def test_one_image_however_connections_come_and_go() raises:
@@ -183,9 +210,9 @@ def test_one_image_however_connections_come_and_go() raises:
     assert_equal(pinned_image(), first_image)
     comptime if CompilationTarget.is_macos():
         if not exists(path):
-            print(
-                "    (", path, "is in the dyld shared cache, where no image is"
-                " dropped: the reopen cannot fail here)"
+            _unexercised(
+                path + " is in the dyld shared cache, where no image is"
+                " dropped: the reopen cannot fail here"
             )
 
 
@@ -205,7 +232,7 @@ def test_a_second_image_is_refused_at_open() raises:
     assert_equal(db._lib.fns.image(), image)
     var other = _second_image()
     if not other:
-        _ = _nothing_to_refuse()
+        _nothing_to_refuse()
         return
 
     var by_name = String("")
@@ -260,7 +287,7 @@ def test_another_copy_of_sqlite_is_not_bound_into_this_one() raises:
     db.execute("CREATE TABLE t (x INTEGER)")
     var other = _second_image()
     if not other:
-        _ = _nothing_to_refuse()
+        _nothing_to_refuse()
         return
     var handle = OwnedDLHandle(other, _open_flags())
     var fns = SqliteFns(handle, other)
@@ -302,7 +329,7 @@ def test_a_table_of_another_image_may_not_register() raises:
     db.create_function("add_one", AddN(1))
     var other = _second_image()
     if not other:
-        _ = _nothing_to_refuse()
+        _nothing_to_refuse()
         return
     var refused = String("")
     try:
