@@ -160,6 +160,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **One copy of SQLite per process, on macOS with a libsqlite3 outside the
+  system's** (SPEC O23). With `M0_LIBSQLITE3` naming Homebrew's build, or
+  any library file of its own, a process that closed all its connections
+  and then opened another loaded a fresh copy of SQLite: the library was
+  pinned with `RTLD_NODELETE`, which on macOS keeps an image mapped but
+  forgets it once its last handle closes. Two copies in one process is the
+  corruption SQLite's documentation warns about — each keeps its own list
+  of open files, so a close through one drops the locks the other holds on
+  the same database — and here it took a statement outliving every
+  connection while a new one opened the same file. The pin now keeps one
+  handle open for the life of the process. Apple's library, in the dyld
+  shared cache, and Linux were never affected.
 - **A closed `Socket` refuses every call, not only `close()`** (SPEC D1).
   After `close()` a socket went on passing its old number to the kernel,
   so a late `send` wrote into whatever the process had opened on that

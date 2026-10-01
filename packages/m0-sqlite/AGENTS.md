@@ -10,7 +10,10 @@ in `m0-postgres`'s shape and under its three rules — handle and pointers in
 one struct, every entry point behind a method (all in one table,
 `SqliteFns`, which a `Statement` copies whole), the image pinned
 `RTLD_NODELETE` so a `Statement`'s copy of the table outlives the
-`Connection` that loaded it), from `M0_LIBSQLITE3` or a search path, and
+`Connection` that loaded it, and one handle to it kept open for the life of
+the process so every connection gets the SAME image (O23: on macOS the flag
+alone let a reopen map a fresh copy of SQLite)), from `M0_LIBSQLITE3` or a
+search path, and
 refused below 3.20.0, built without threads, or missing a symbol. So every
 test in the package runs under `mojo run` on both platforms, `build-apps`
 fails if `datastar_todo`'s binary names the library, and a `-Xlinker

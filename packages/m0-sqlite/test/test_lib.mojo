@@ -16,6 +16,7 @@ here links libsqlite3, which is the point of the loader.
 
 from std.ffi import OwnedDLHandle, c_int
 from std.os import getenv, setenv, unsetenv
+from std.os.path import exists
 from std.python._cpython import ExternalFunction
 from std.sys import CompilationTarget
 from std.testing import (
@@ -106,6 +107,70 @@ def test_a_statement_outlives_every_handle_of_the_library() raises:
     assert_equal(q.column_int(0), 42)
     assert_false(q.step())
     assert_equal(q.column_count(), 1)
+
+
+def _file_backed_library() -> String:
+    """A libsqlite3 the loader maps from a file of its own, or "".
+
+    macOS: Homebrew's build. Apple's lives in the dyld shared cache, where no
+    image is ever dropped, so it cannot show what this test is about. Linux:
+    the system library, whose loader keeps a `RTLD_NODELETE` object findable
+    anyway, so there the test states the property without being able to
+    lose it.
+    """
+    comptime if CompilationTarget.is_macos():
+        var brew = String("/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib")
+        return brew if exists(brew) else String("")
+    else:
+        for p in default_search_path():
+            if p.startswith("/") and exists(p):
+                return p
+        return String("")
+
+
+def test_one_image_however_connections_come_and_go() raises:
+    """Every connection of a process calls into ONE image of its libsqlite3,
+    even after every earlier connection has closed.
+
+    SQLite requires it: two copies in one process each keep their own list of
+    open files, so a close through one drops the POSIX locks the other holds
+    on the same file ("How To Corrupt An SQLite Database File", 2.2.1), and a
+    registered function's callbacks reach one image. macOS drops an image
+    opened `RTLD_NODELETE` from dyld's list once its last handle closes --
+    the code stays mapped, which is why O18 held -- and the next `dlopen` of
+    the path maps a fresh copy: measured with Homebrew's build, a new image
+    at every reopen until `pin_library` kept a handle. Where there is no
+    file-backed library to open (macOS without Homebrew's SQLite) this says
+    so and asserts nothing.
+
+    covers: O23
+    """
+    var path = _file_backed_library()
+    if not path:
+        print("    (no file-backed libsqlite3 here; the reopen is not exercised)")
+        return
+    var before = getenv("M0_LIBSQLITE3", "")
+    _ = setenv("M0_LIBSQLITE3", path, True)
+    var first_image = 0
+    var second_image = 0
+    var failed = String("")
+    try:
+        var first = open_memory()
+        first_image = first._lib.fns.image()
+        first.close()
+        _ = first^
+        # No connection holds the library now: only the pin's kept handle.
+        var second = open_memory()
+        second_image = second._lib.fns.image()
+    except e:
+        failed = String(e)
+    if before:
+        _ = setenv("M0_LIBSQLITE3", before, True)
+    else:
+        _ = unsetenv("M0_LIBSQLITE3")
+    assert_equal(failed, "")
+    assert_true(first_image != 0)
+    assert_equal(first_image, second_image, "a reopen mapped another image of " + path)
 
 
 def test_a_symbol_the_library_lacks_is_an_error_naming_it() raises:
