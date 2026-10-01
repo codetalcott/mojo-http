@@ -168,7 +168,11 @@ functions stay callable from those statements, and the instances are
 destroyed at that last finalize, on whichever thread finalizes. With no
 statement outstanding, `close()` destroys them before it returns. An
 instance whose destructor must run at a known point wants its connection's
-statements finalized before the close.
+statements finalized before the close. A function that HOLDS a statement of
+the connection it is registered on is the cycle that never ends: the
+connection waits for the statement, which only the connection's destruction
+would finalize, and `close()` destroys neither (measured). Replace such a
+function before closing, which destroys the instance and its statement.
 
 **A raise is the statement's error.** The trampoline catches whatever
 `call` raises and hands its text to `sqlite3_result_error`, so `step`
@@ -221,7 +225,7 @@ comptime _SQLITE_DIRECTONLY: Int = 0x80000
 
 comptime REENTERED = (
     "a scalar function was called again while a call on it was in progress:"
-    " it stepped a statement of its own connection"
+    " a statement it stepped called it"
 )
 """The statement error of a call that arrived inside another call on the
 same instance."""

@@ -247,6 +247,21 @@ RULES = [
         expect="test_a_call_inside_a_call_is_refused_not_run",
     ),
     rule(
+        "re-entry: the mark clears after the try, not inside it (O19)",
+        FUNCTION,
+        (
+            "        box[].impl.call(Args(_table=t, _argc=Int(argc), _argv=argv), answer)\n",
+            "        _ = message\n    box[].busy = 0\n",
+        ),
+        (
+            "        box[].impl.call(Args(_table=t, _argc=Int(argc), _argv=argv), answer)\n"
+            "        box[].busy = 0\n",
+            "        _ = message\n",
+        ),
+        gate="functions",
+        expect="test_a_call_inside_a_call_is_refused_not_run",
+    ),
+    rule(
         "ownership: a refused registration is not freed again (O21)",
         FUNCTION,
         "    _ = cname\n    if rc != SQLITE_OK:\n",
