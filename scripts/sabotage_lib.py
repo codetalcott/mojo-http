@@ -100,7 +100,11 @@ fails without it failed elsewhere, which is a miss -- the harness has not
 shown that the check claiming the rule is the one that holds it. A suite
 names every test it runs, so the line of a test that did not fail (`PASS [`,
 `SKIP [`) never carries the text: a run that fails in another test, with
-the named one passing, failed elsewhere.
+the named one passing, failed elsewhere. And an `expect` that IS a test's
+name (`test_...`, nothing else) is compared whole with the names on the
+suite's `FAIL [` lines, never searched for: `test_pin` is also in the path
+of `test_pin.mojo`, which every failure prints, and `test_one` is inside
+`test_one_more`.
 
 Writing a harness
 -----------------
@@ -113,6 +117,9 @@ Writing a harness
         return run("sabotage-x", RULES, MojoRun(TEST), argv)
 
 A harness with a loop of its own, not `run`, enters `own_tmpdir` itself.
+An `expect` that names a test works only where the gate's output carries
+the suite's own `FAIL [ t ] name` lines, unprefixed: `MojoRun` of one test
+file. Behind a command that prefixes or recolours them it is always a miss.
 Run from the repository root, as every poe task is.
 
     python3 scripts/sabotage_lib.py --selftest
@@ -185,7 +192,8 @@ class Rule:
     names one of the harness's gates when it has several. `only_on` is the
     `platform.system()` that can observe the breakage; elsewhere the rule is
     SKIPPED. `expect` is text the gate's output must carry for its failure
-    to count as the catch, on a line other than a passing or skipped test's.
+    to count as the catch, on a line other than a passing or skipped test's;
+    a test's name (`test_...`) must be one the suite reports as FAILED.
     Compared by identity, so two rows that happen to
     be alike are still two rules.
     """
@@ -465,10 +473,12 @@ class Gate:
 # What `mojo run` prints, measured on Mojo 1.1.0 (the module docstring).
 DIAGNOSTIC = re.compile(r"^.*\.mojo:\d+:\d+: error:.*$", re.M)
 _EXECUTED = re.compile(r"execution exited with a non-zero result|execution crashed")
-_TEST_FAILED = re.compile(r"^\s*FAIL \[[^\]]*\]\s*(\S+)", re.M)
+_TEST_FAILED = re.compile(r"^[ \t]*FAIL \[[^\]\n]*\][ \t]*(\S+)", re.M)
 # A suite's line for a test that did not fail: `PASS [ 0.001 ] test_one`, or
 # `SKIP [ 0.001 ] test_one` (`TestSuite.skip`, measured the same way).
 _TEST_DID_NOT_FAIL = re.compile(r"^\s*(?:PASS|SKIP) \[[^\]]*\]\s")
+# An `expect` that names a test, whole: compared with the failed names.
+_TEST_NAME = re.compile(r"test_\w+")
 _ABORT = re.compile(r"^ABORT: .*$", re.M)
 _RAISED = re.compile(r"Unhandled exception caught during execution: ?(.*)$", re.M)
 _EXITED = re.compile(r"execution exited with a non-zero result: (-?\d+)")
@@ -655,6 +665,14 @@ def verdict(r: Rule, o: Outcome) -> tuple[str, str]:
         return UNBUILT, o.detail
     if o.kind != "failed":
         return ELSEWHERE, o.detail
+    if r.expect and _TEST_NAME.fullmatch(r.expect):
+        # A test's name is compared whole with the names the suite failed:
+        # as a substring it is also in a longer test's name and in the path
+        # of its own file, which every failure prints.
+        failed = [m for m in _TEST_FAILED.finditer(o.output) if m.group(1) == r.expect]
+        if not failed:
+            return ELSEWHERE, f"expected {r.expect!r} to fail; the gate said: {o.detail}"
+        return CAUGHT, failed[0].group(0).strip()[:160]
     if r.expect:
         # Never a line that says a test passed or was skipped: it carries
         # the test's name, and a rule that expects the name would be caught
@@ -1233,6 +1251,21 @@ def _selftest() -> int:
         check(verdict(rule("skip", A, "a", "b", expect="test_one"), skipped)[0] == ELSEWHERE
               and verdict(rule("skip", A, "a", "b", expect="test_two"), skipped)[0] == CAUGHT,
               "a skipped test's line is no catch either; the failing one's is")
+        longer = Outcome.failed(
+            "1 test(s) fail: test_one_more",
+            "Running 2 tests for /w/test_one.mojo\n    PASS [ 0.001 ] test_one\n"
+            "    FAIL [ 0.001 ] test_one_more\n      At /w/test_one.mojo:9:17: no\n")
+        check(verdict(rule("name", A, "a", "b", expect="test_one"), longer)[0] == ELSEWHERE
+              and verdict(rule("name", A, "a", "b", expect="test_one_more"), longer)[0] == CAUGHT,
+              "a test's name is compared whole: not caught by a longer name, nor by its file's path")
+        check(verdict(rule("text", A, "a", "b", expect="test_one.mojo:9:17: no"), longer)[0] == CAUGHT,
+              "text that is not a test's name is still searched for, line by line")
+        prefixed = Outcome.failed("exited 1", "unit:     FAIL [ 0.001 ] test_two\n")
+        check(verdict(rule("name", A, "a", "b", expect="test_two"), prefixed)[0] == ELSEWHERE,
+              "a FAIL line in a shape the suite does not print is a miss, never a catch")
+        broken = Outcome.failed("exited 1", "    FAIL [ 0.001 ]\ntest_two\n")
+        check(verdict(rule("name", A, "a", "b", expect="test_two"), broken)[0] == ELSEWHERE,
+              "a name on the line after a FAIL line is not that line's test")
         check(got.get("elsewhere only") == SKIPPED, "another platform's rule: SKIPPED")
         check(rep.status == 1, "any miss fails the run")
         check(read(A) == _SOURCE and read(B) == _SOURCE, "the tree is put back")
