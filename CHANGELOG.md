@@ -142,6 +142,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Apple-silicon Mac, `test-http` went from 390 s to 66-107 s.
   `poe sabotage-mojo-suite` breaks a small package ten ways and requires
   each to fail. To run one file, `mojo run` it as before.
+- **CI installs the second libsqlite3 its one-image gates need on macOS,
+  and those gates fail without it** (SPEC O22, O23). The tests that refuse
+  a second image, and the sabotage that drops the pin's kept handle, need
+  on macOS a libsqlite3 outside the dyld shared cache: Homebrew's. The
+  runner image happened to carry one, which its software list does not
+  promise. The macOS `unit-gates` leg now runs `brew install sqlite`, and
+  under `CI` `test_one_image.mojo` fails where it used to print that an arm
+  was not exercised. On a developer's Mac without Homebrew's SQLite it
+  still prints and passes.
 
 ### Removed
 

@@ -26,6 +26,9 @@ never caught, elsewhere:
     system library is one. On macOS the system library lives in the dyld
     shared cache, so a second image needs Homebrew's build. That a refused
     one is not left pinned is asked of the loader, on Linux alone.
+    CI's macOS job installs Homebrew's SQLite for this, and under `CI`
+    `test_one_image.mojo` fails without it, so there a missing library is
+    a failed baseline here, never a SKIPPED line.
   - The REOPEN O23 was found by maps another image only on macOS, and only
     for a library backed by a file: Homebrew's again.
   - A copy BINDS INTO the first image only where the distribution's build
