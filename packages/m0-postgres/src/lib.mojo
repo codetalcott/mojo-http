@@ -79,10 +79,11 @@ three runs of three, a `PGconn` built by one version walked by the other.
 With the first image local, none bound and the attempt failed cleanly. The
 second library need not be one this package opened. A Python application
 on psycopg-binary, which under `m0serve` loads after `--pg-listen` has
-loaded the system's libpq, was captured the same way: it reported the
-system's version, not its bundled one, and ran on the system's library.
-That did not crash, its extension's own calls being captured with the
-rest, and it is not the library the application chose.
+loaded the system's libpq, was captured the same way: under a real
+`m0serve` it reported the system's version, 160015, not its bundled
+180006. That did not crash, and its queries answered, its extension's own
+calls being captured with the rest; it is not the library the application
+chose. `smoke-pg-notify` holds the application's side of this rule.
 Nothing here needs the global scope: every entry point is looked up
 through the handle.
 

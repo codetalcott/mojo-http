@@ -242,8 +242,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   connection attempt through the second's own handle crashed the process.
   A Python application on psycopg-binary beside a libpq loaded that way,
   which is the arrangement under `m0serve --pg-listen`, was captured too:
-  it reported libpq 16.15, not its bundled 18.6, and ran on the system's
-  library. No crash was measured for that case. Every handle is
+  it reported libpq 16.15, not its bundled 18.6 (measured under `m0serve`
+  itself, where every query still answered and nothing crashed). Every handle is
   `RTLD_LOCAL` now, and the two libraries keep to themselves: psycopg
   reports its own 18.6. Unlike m0-sqlite, a second libpq file is not
   refused: each one a process opens is pinned once. A library that opens

@@ -41,6 +41,11 @@ dev = [
     # reports "server never became healthy" through poe, which is what it did.
     "numpy>=2.0",
     "poethepoet>=0.30",
+    # `smoke-pg-notify`'s last arm: an application on psycopg's BINARY wheel,
+    # which bundles a libpq of its own, served beside `--pg-listen`'s. The
+    # arm fails when the import does, so the wheel is in dev (the rule
+    # fastapi's entry gives).
+    "psycopg[binary]>=3.3",
     "pyflakes>=3.4.0",
     "python-fasthtml>=0.12",
 ]
@@ -238,6 +243,13 @@ shell = "python3 scripts/shim_ownership.py --selftest && python3 scripts/shim_ow
 #   3. the same publish against a server started WITHOUT --pg-listen reaches
 #      nobody -- the null case, which is what proves the flag is what did it.
 #
+# And a fourth, for the library and not the bus (SPEC O24): an application on
+# psycopg's binary wheel, served beside the listener, runs on the libpq the
+# wheel bundles. The listener's libpq used to sit in the loader's global
+# scope, where it captured psycopg's calls: measured on Ubuntu 24.04 under
+# this server, psycopg reported 160015, the system's, before the scope
+# became local and 180006, its own, after.
+#
 # Runs in the postgres job, not the smoke matrix: it needs a server, and
 # GitHub's service containers require a Linux runner.
 [tool.poe.tasks.smoke-pg-notify]
@@ -360,6 +372,48 @@ wait $quiet
 grep -q 'event: greeting' "$out/quiet.txt" \
   && { echo '--- quiet.txt ---'; cat "$out/quiet.txt"; fail 'an event arrived with no listener configured -- this gate cannot tell the flag apart from nothing'; }
 
+stop $pid
+
+# --- arm 4: the application keeps its own libpq ---------------------------
+# psycopg's binary wheel, imported in a process whose listener has already
+# opened the system's libpq, must report the version it was BUILT against:
+# captured by a libpq in the global scope it reports that library's.
+spawn libpq.log env LIBPQ_APP_URL="$url" bin/m0serve libpq_app:application \
+  --app-dir scripts/smoke --port $port --realtime --health-path /health \
+  --pg-listen "$url"
+wait_ready http://127.0.0.1:$port/health $pid
+for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+  grep -q 'pg-listen: listening on' "$out/libpq.log" && break
+  sleep 0.5
+done
+grep -q 'pg-listen: listening on' "$out/libpq.log" \
+  || fail 'arm 4: the listener never reported a subscription, so no libpq was loaded beside the application'
+curl -s --max-time 10 "http://127.0.0.1:$port/v" > "$out/libpq-v.txt" \
+  || fail 'arm 4: the psycopg application did not answer /v'
+grep -q '^impl=binary$' "$out/libpq-v.txt" \
+  || { cat "$out/libpq-v.txt"; fail 'arm 4: psycopg is not running on its binary wheel, so this arm has no second libpq'; }
+built=$(sed -n 's/^build_version=//p' "$out/libpq-v.txt")
+runs=$(sed -n 's/^version=//p' "$out/libpq-v.txt")
+[ -n "$built" ] && [ "$runs" = "$built" ] \
+  || { cat "$out/libpq-v.txt"; fail "psycopg was built against libpq $built and reports $runs: another libpq captured its calls"; }
+if [ "$(uname -s)" = "Linux" ]; then
+  # Not vacuous: the listener's library and the wheel's are both mapped in
+  # this one process, and they are different versions. Asked of the system
+  # library in a process of its own, so the question loads nothing here.
+  [ "$(grep -c '^mapped=' "$out/libpq-v.txt")" -ge 2 ] \
+    || { cat "$out/libpq-v.txt"; fail 'arm 4: fewer than two libpq files are mapped, so nothing could have been captured'; }
+  system=$(python3 -c 'import ctypes; print(ctypes.CDLL("libpq.so.5").PQlibVersion())') \
+    || fail 'arm 4: could not ask the system libpq its version'
+  [ "$system" != "$built" ] \
+    || fail "arm 4: the system libpq and psycopg's bundled one are both $built, so a capture would not show: this arm proves nothing on this runner"
+fi
+curl -s --max-time 10 "http://127.0.0.1:$port/q" > "$out/libpq-q.txt" \
+  || fail 'arm 4: the psycopg application did not answer /q'
+grep -q '^answer=42$' "$out/libpq-q.txt" \
+  || { cat "$out/libpq-q.txt"; fail 'arm 4: a query through psycopg did not answer'; }
+after=$(curl -s --max-time 10 "http://127.0.0.1:$port/v" | sed -n 's/^pid=//p')
+[ "$after" = "$(sed -n 's/^pid=//p' "$out/libpq-v.txt")" ] \
+  || fail 'arm 4: the process serving psycopg changed across one query'
 stop $pid
 
 # The listener's own account, which it prints as it stops, asserted as the
