@@ -7,7 +7,8 @@ removes without any other test noticing: that the schema never computes
 with a registered function (DIRECTONLY), that the type's arity is what
 SQLite holds, that an index past what a call passed is never read, that a
 span from `blob` is never left dangling by `text`, that an empty blob is
-answered as a blob, that a raise reaches the statement, that a refusal is
+answered as a blob, that a raise reaches the statement, that a call arriving
+inside a call on the same instance is refused and not run, that a refusal is
 told in its own words and a refused registration is never freed twice, that
 the global word every callback reads is one word, and that the callbacks
 reach one libsqlite3 image. `lib.mojo` promises that image is one per
@@ -220,6 +221,30 @@ RULES = [
         "        fns.result_null(ctx)\n",
         gate="functions",
         expect="test_a_raise_is_the_statements_error",
+    ),
+    rule(
+        "re-entry: a call inside a call on the same instance is refused (O19)",
+        FUNCTION,
+        "    if box[].busy != 0:\n",
+        "    if False:\n",
+        gate="functions",
+        expect="test_a_call_inside_a_call_is_refused_not_run",
+    ),
+    rule(
+        "re-entry: a call in progress is marked (O19)",
+        FUNCTION,
+        "    box[].busy = 1\n",
+        "",
+        gate="functions",
+        expect="test_two_functions_calling_each_other_are_refused_at_the_second_entry",
+    ),
+    rule(
+        "re-entry: the mark clears when the call ends, a raise included (O19)",
+        FUNCTION,
+        "        _ = message\n    box[].busy = 0\n",
+        "        _ = message\n",
+        gate="functions",
+        expect="test_a_call_inside_a_call_is_refused_not_run",
     ),
     rule(
         "ownership: a refused registration is not freed again (O21)",

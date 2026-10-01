@@ -26,7 +26,8 @@ not a copy out of the database first. Measured on a 100,000-row table of
 within 1 % of the same function written by hand against the C API (8.49 ms;
 0.8 ns a call, most of it the `sqlite3_user_data` call state costs), and
 twice as fast as sqlite-vec's `vec_distance_l2` (18.0 ms), which copies both
-vectors on every call (docs/notes/functions-inside-the-query.md).
+vectors on every call (docs/notes/functions-inside-the-query.md). Those
+figures predate the re-entry check below, which adds about 0.6 ns a call.
 
 **A type, not a function value.** A C callback cannot be a closure, so each
 registered function needs its own `abi("C")` entry point. `_x_scalar[F]` is
@@ -51,16 +52,25 @@ call to completion and then the outer; and a replacement is refused while a
 statement is active. So nothing else touches the instance while `call` runs.
 
 The one way to break it is to make the call re-entrant: a function that
-steps a statement of its OWN connection which calls the same function. On
-Mojo 1.1 that is unsound at any size
-(docs/notes/mut-arguments-and-raw-addresses.md): an instance of 256 bytes
-or less is copied in to `call` and stored back when it returns, so the
-inner call's writes would be overwritten by the outer's store, silently;
-a larger one is passed as a pointer the compiler takes to be unaliased, so
-the outer call may go on using what it read before the inner one wrote.
-`Args` carries no connection for that reason; do not hand a function one of
-its own. For the same reason nothing reaches an instance by address while
-it is registered: its state is its fields, read and written through `self`.
+steps a statement of its OWN connection which calls the same function. The
+public API can arrange that — a type that holds a `Statement`, registered
+over a placeholder the statement was prepared against — and on Mojo 1.1 it
+is unsound at any size (docs/notes/mut-arguments-and-raw-addresses.md): an
+instance of 256 bytes or less is copied in to `call` and stored back when
+it returns, so the inner call's writes are overwritten by the outer's
+store, silently (measured: a counter answered 101 where a sound call
+answers 202); a larger one is passed as a pointer the compiler takes to be
+unaliased, so the outer call may go on using what it read before the inner
+one wrote. **So a re-entered call is refused, not run**: the instance sits
+in a box beside one word that says a call on it is in progress
+(`_Guarded`), and a call that finds the word set fails its statement with
+"a scalar function was called again while a call on it was in progress".
+The outer call sees that as the error of the statement it stepped, and its
+own state is untouched. The check costs about 0.6 ns a call (16.4 ns a
+row without it and 17.0 with, over 2,000,000 rows of `SELECT sum(f(x))`).
+`Args` still carries no connection; do not hand a function one of its own.
+And nothing reaches an instance by address while it is registered: its
+state is its fields, read and written through `self`.
 
 **The type states its promises.** `arity` is what is registered, so SQLite
 refuses a wrong call when the statement is prepared ("wrong number of
@@ -208,6 +218,13 @@ is False is refused on an older library; a deterministic one needs only
 comptime _SQLITE_UTF8: Int = 1
 comptime _SQLITE_DETERMINISTIC: Int = 0x800
 comptime _SQLITE_DIRECTONLY: Int = 0x80000
+
+comptime REENTERED = (
+    "a scalar function was called again while a call on it was in progress:"
+    " it stepped a statement of its own connection"
+)
+"""The statement error of a call that arrived inside another call on the
+same instance."""
 
 comptime _WordPtr = Pointer[Int, MutUntrackedOrigin]
 
@@ -531,9 +548,24 @@ trait ScalarFunction(Movable, Deinitable):
     def call(mut self, args: Args, mut answer: Answer) raises:
         """Answer one call. A raise fails the statement with its text, and
         what the call wrote to `self` before raising stays written. Never
-        re-entered: see the module docstring for the one way to arrange
-        that, and why not to."""
+        re-entered: a call that arrives while one on this instance is in
+        progress is refused as its statement's error, and this body does
+        not run for it (the module docstring)."""
         ...
+
+
+struct _Guarded[F: ScalarFunction](Movable):
+    """What SQLite holds for a registration: the instance, and whether a
+    call on it is in progress. `call` takes `mut self`, which a second call
+    arriving inside the first would break silently, so `_x_scalar` refuses
+    one while `busy` is set."""
+
+    var impl: Self.F
+    var busy: Int
+
+    def __init__(out self, var impl: Self.F):
+        self.impl = impl^
+        self.busy = 0
 
 
 # --- What SQLite calls ------------------------------------------------------
@@ -543,8 +575,10 @@ def _x_scalar[F: ScalarFunction](ctx: Int, argc: c_int, argv: Int) abi("C"):
     """SQLite's `xFunc` for every function `F` implements: find the table and
     the instance, and answer the call, a raise becoming the statement's error.
 
-    `impl` is a reference into the box SQLite holds, never a copy: `call`
-    writes the function's state through it.
+    The instance is reached through the box SQLite holds, never a copy:
+    `call` writes the function's state through it. A call that arrives
+    while one on the same instance is in progress is refused here, before
+    `call`: the function stepped a statement of its own connection.
     """
     var t = _fn_table()
     if t == 0:
@@ -552,18 +586,25 @@ def _x_scalar[F: ScalarFunction](ctx: Int, argc: c_int, argv: Int) abi("C"):
         # is nothing to report with: reporting is a library call. NULL.
         return
     ref fns = _PublishedPtr(unsafe_from_address=t)[].fns
-    ref impl = Pointer[F, MutUntrackedOrigin](
+    var box = Pointer[_Guarded[F], MutUntrackedOrigin](
         unsafe_from_address=fns.user_data(ctx)
-    )[]
+    )
+    if box[].busy != 0:
+        var refused = String(REENTERED)
+        fns.result_error(ctx, str_cstr(refused), len(refused.as_bytes()))
+        _ = refused
+        return
+    box[].busy = 1
     var answer = Answer(_table=t, _ctx=ctx)
     try:
-        impl.call(Args(_table=t, _argc=Int(argc), _argv=argv), answer)
+        box[].impl.call(Args(_table=t, _argc=Int(argc), _argv=argv), answer)
     except e:
         var message = String(e)
         # Clamped, not checked: there is nowhere left to raise to, and a
         # length that wrapped negative would mean "scan to the first NUL".
         fns.result_error(ctx, str_cstr(message), min(len(message.as_bytes()), MAX_C_INT))
         _ = message
+    box[].busy = 0
 
 
 def _x_destroy[F: ScalarFunction](p: Int) abi("C"):
@@ -574,7 +615,7 @@ def _x_destroy[F: ScalarFunction](p: Int) abi("C"):
     that outlived the close), and from inside `create_function_v2` when it
     refuses one.
     """
-    var box = Pointer[F, MutUntrackedOrigin](unsafe_from_address=p)
+    var box = Pointer[_Guarded[F], MutUntrackedOrigin](unsafe_from_address=p)
     _ = box.unsafe_take_pointee()
     box.unsafe_free()
 
@@ -601,8 +642,8 @@ def _register_function[
                 " (at byte " + String(i) + ")"
             )
     _ = _publish(fns, path)
-    var box = unsafe_alloc[F](count=1)
-    box.unsafe_write(impl^)
+    var box = unsafe_alloc[_Guarded[F]](count=1)
+    box.unsafe_write(_Guarded[F](impl^))
     var flags = _SQLITE_UTF8 | _SQLITE_DIRECTONLY
     comptime if F.deterministic:
         flags |= _SQLITE_DETERMINISTIC

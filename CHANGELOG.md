@@ -37,6 +37,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   from registration and destroys it when the function is replaced or the
   connection is destroyed — at `close()`, or, when a statement outlives the
   close, at that statement's finalize, the function answering until then.
+  A call that arrives while one on the same instance is in progress — a
+  function that steps a statement of its own connection which calls it —
+  fails its statement with "a scalar function was called again while a
+  call on it was in progress" and does not run: `call` takes `mut self`,
+  and the inner call's writes were otherwise lost to the outer one,
+  silently. The check costs about 0.6 ns a call.
   m0-sqlite registers no functions of its own.
 
 - **IPv6** (SPEC M29). `m0serve --host ::` listens on IPv6 and IPv4 at

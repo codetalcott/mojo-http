@@ -95,6 +95,23 @@ its own connection which calls it again: the inner call's writes would be
 overwritten by the outer's store-back. `Args` carries no connection, and a
 function must not be handed one of its own.
 
+**A call inside a call is refused.** "Must not" was all that held that
+rule, and the public API alone breaks it: register a placeholder under the
+name, `prepare("SELECT f(?)")` against it, then replace the placeholder
+with an instance that holds the statement. Measured that way before the
+guard, a counter that adds 1 on entry and 100 on exit answered 101 where a
+sound call answers 202, for an instance of 16 bytes and one of 440 alike,
+and a `List` field kept 2 of 4,100 appends. Nothing crashed, under `mojo
+run`, built or under guard malloc, so the loss was silent. Now the
+instance sits in a box beside one word (`_Guarded`): the trampoline sets
+it for the length of `call`, and a call that finds it set fails its
+statement with "a scalar function was called again while a call on it was
+in progress". The outer call sees that as the error of the statement it
+stepped, its own state is as it left it, and the word clears when the
+outer call ends, a raise included. It is per instance, so a function that
+steps a statement calling ANOTHER function is not refused, and two that
+call each other are refused at the second entry of the first.
+
 **The type states its promises**, as `comptime` members a call site cannot
 disagree with. `arity` is registered, so SQLite refuses a wrong call when it
 prepares the statement; `Args` still bounds-checks an index, since a
@@ -345,6 +362,14 @@ through two calls the inliner could not see through, and only the inner
 one's `@no_inline` is load-bearing. What remains is mostly the
 `sqlite3_user_data` call that state costs and the hand-written function did
 not make.
+
+The re-entry guard came later and costs about 0.6 ns a call: `SELECT
+sum(add_n(x))` over 2,000,000 rows, best of 15 passes, two binaries
+alternating over six rounds, 16.35 to 16.47 ns a row without it and 16.92
+to 17.04 with it, every guarded run slower than every plain one. The same
+query computing `x + 1` inline took 15.3 ns a row, so the call itself is
+1.0 to 1.2 ns without the guard and 1.6 to 1.7 with it. The figures above
+predate it.
 
 That figure moves with the machine more than with the code. Measured again
 after the review's changes, three binaries interleaved over three rounds —
