@@ -17,7 +17,7 @@ each with its reason.
 
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
-from std.os import getenv, remove, setenv, unsetenv
+from std.os import getenv, remove
 from std.os.path import exists
 from std.sys import CompilationTarget
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
@@ -36,8 +36,8 @@ from src import (
     error_code,
     open_memory,
 )
-from src.function import _fn_table
-from src.lib import default_search_path
+from src.function import _fn_table, _publish
+from src.lib import default_search_path, open_library
 
 comptime _Word = Pointer[Int, MutUntrackedOrigin]
 
@@ -500,11 +500,16 @@ def _second_image(current: String) raises -> String:
 
 
 def test_a_second_libsqlite3_image_is_refused() raises:
-    """A callback reaches one library, so a connection opened on another
-    image may not register: its values would be read by the first image's
-    entry points. Refused at registration, naming the connection's library.
-    Where no second image exists (macOS without Homebrew's SQLite) this says
-    so and asserts only the first half.
+    """A callback reaches one library, so a connection on another image may
+    not register: its values would be read by the first image's entry
+    points. The refusal is the first thing a registration does (`_publish`),
+    before any database is touched, so this asks it directly, with a second
+    image's table and no database on it — on Ubuntu's build a database
+    cannot be opened on a copy of the library loaded beside the first at
+    all: the copy's calls to its own exported functions resolve into the
+    first copy through the global symbol scope, so it never registers a VFS
+    of its own ("no such vfs", measured on the CI runner). Where no second
+    image exists (macOS without Homebrew's SQLite) this says so.
 
     covers: O22
     """
@@ -514,25 +519,14 @@ def test_a_second_libsqlite3_image_is_refused() raises:
     if not other:
         print("    (no second libsqlite3 image here; the refusal is not exercised)")
         return
-    var before = getenv("M0_LIBSQLITE3", "")
-    _ = setenv("M0_LIBSQLITE3", other)
-    var opened = String("")
     var refused = String("")
     try:
-        var elsewhere = open_memory()
-        opened = elsewhere.library_path()
-        elsewhere.create_function("add_one", AddN(1))
+        var second = open_library(other)
+        _ = _publish(second.fns, other)
     except e:
         refused = String(e)
-    # Put the environment back before any assertion can end the test: the
-    # tests after this one open the process's own library.
-    if before:
-        _ = setenv("M0_LIBSQLITE3", before)
-    else:
-        _ = unsetenv("M0_LIBSQLITE3")
     if other.endswith("m0-sqlite-second-image.so"):
         remove(other)
-    assert_equal(opened, other, refused)
     assert_true("is not the image" in refused, refused)
     assert_true(other in refused, refused)
     assert_equal(db.query_scalar("SELECT add_one(1)"), "2")
