@@ -29,6 +29,7 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from src import (
     SQLITE_BLOB,
     SQLITE_BUSY,
+    SQLITE_ERROR,
     SQLITE_FLOAT,
     SQLITE_INTEGER,
     SQLITE_MISUSE,
@@ -41,6 +42,7 @@ from src import (
     ScalarFunction,
     Statement,
     error_code,
+    errstr,
     open_memory,
 )
 from src.function import REENTERED, SQLITE_MIN_MOVING_FUNCTION_VERSION, _fn_table
@@ -761,7 +763,9 @@ def test_two_functions_calling_each_other_are_refused_at_the_second_entry() rais
 
 def test_a_raise_is_the_statements_error() raises:
     """What `call` raises fails the statement with its own text and
-    SQLITE_ERROR, and the connection answers the next statement.
+    SQLITE_ERROR, and the connection answers the next statement. The
+    connection is mentioned after the step, so it is open while the
+    statement fails; the next test is the other lifetime.
 
     covers: O19
     """
@@ -771,6 +775,45 @@ def test_a_raise_is_the_statements_error() raises:
     assert_true("boom from mojo" in e, e)
     assert_equal(error_code(e), 1)
     assert_equal(db.query_scalar("SELECT 1"), "1")
+
+
+def _boom_after_the_last_mention() raises -> String:
+    """The error of `SELECT boom()`, stepped after its connection's last
+    mention. That mention is the `prepare`, so Mojo destroys `db` there and
+    the step runs on a closed connection, alive through `close_v2` for the
+    statement's sake. A function of its own: a mention of `db` in ANY branch
+    after the step would keep it open on every path."""
+    var db = open_memory()
+    db.create_function("boom", Boom())
+    var q = db.prepare("SELECT boom()")
+    var message = String("")
+    try:
+        _ = q.step()
+    except e:
+        message = String(e)
+    return message
+
+
+def test_a_raise_on_a_closed_connection_keeps_its_code_and_loses_its_text() raises:
+    """The one exception to the test above. A statement stepped after its
+    connection's last mention runs on a closed connection (O2), and a closed
+    connection answers SQLITE_MISUSE to every question, so its text is never
+    used for an error (O3). The function's raise still fails the statement
+    with SQLITE_ERROR, and the message is that code's own text, as it is for
+    every error of such a statement: neither the function's text, nor the
+    closed connection's.
+
+    covers: O19
+    """
+    var message = _boom_after_the_last_mention()
+    assert_equal(error_code(message), SQLITE_ERROR, message)
+    assert_false(
+        "boom from mojo" in message,
+        "the function's text, so the connection was open at the step: " + message,
+    )
+    assert_equal(
+        message, "sqlite3_step failed: " + errstr(SQLITE_ERROR) + " (rc=1)"
+    )
 
 
 def test_sqlite_holds_the_arity_and_args_holds_the_index() raises:
