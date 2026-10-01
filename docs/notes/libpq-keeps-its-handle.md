@@ -112,7 +112,50 @@ connection attempt failed cleanly. No crash was measured for it, because
 its extension's own calls were captured with the rest; what it lost was
 the library it shipped. All of this predates the change. It was measured
 in a Python process modelling the two loads, and, in review, in a Mojo
-program embedding CPython; not under a real `bin/m0serve`.
+program embedding CPython.
+
+Then under a real `bin/m0serve`, built from the commit before the change
+and from the one that made it, serving a WSGI application on psycopg-binary
+3.3.6 with `--realtime --pg-listen` on Ubuntu 24.04 (aarch64, CPython
+3.12, PostgreSQL 17 beside it):
+
+| `psycopg.pq.version()` in a request | before | after |
+|---|---|---|
+| with `--pg-listen` | 160015, the system's | 180006, its own |
+| without it (the control) | 180006 | 180006 |
+
+In all four `psycopg.pq.__impl__` was `binary`, and with the listener on
+both files were mapped in the serving process, the system's `libpq.so.5.16`
+and the wheel's 18.6. The listener was in that process: the same pid, its
+`pg-listen: listening on` line, and a `pg_notify` sent from the handler
+arriving on a held stream. Nothing crashed on either side of the change:
+before it, 60 queries in sequence and 40 eight at a time through the
+captured psycopg all answered, at one worker and at two, with no worker
+replaced. At two workers the one that runs no listener reported 160015 as
+well, the library having been opened before the fork. What was observed is
+the version psycopg reports; that its other calls went to the system's
+library too follows from the binding count above and was not traced.
+
+That measurement is now an arm of `smoke-pg-notify`: an application on
+psycopg-binary served beside the listener must report the version it was
+built against, with two libpq files mapped and the system's a different
+version, or the arm says it proves nothing on that runner. Which it did,
+on its first run in CI: GitHub's Ubuntu runner carries PostgreSQL's own
+libpq 18.6, not Ubuntu's 16.15, and psycopg-binary 3.3.6 bundles 18.6 too.
+So the wheel is pinned, in a dependency group of its own, to 3.2.13, which
+bundles 17.6; the group also keeps it out of the free-threaded canary's
+sync, the wheel having no free-threaded build.
+Run by hand on the same Ubuntu with the open's flag put back to global,
+alone and with the pin's, the arm failed both times, "psycopg was built
+against libpq 180006 and reports 160015", after the three arms before it
+had passed; unchanged, it passed with both files mapped.
+
+And again for the pair CI has, PostgreSQL's libpq 18.6 as the system's
+with the pinned wheel's 17.6 beside it: unchanged, the smoke passed with
+both files mapped; with the open's flag global, the arm failed, "built
+against libpq 170006 and reports 180006". A newer libpq captures an older
+build's calls as the older captured the newer's: no crash, queries
+answer, and the version psycopg reports is the one thing that shows it.
 
 So every handle is `RTLD_LOCAL` now, the open's and the pin's, which is
 m0-sqlite's second rule arriving for the same reason. Nothing here needs

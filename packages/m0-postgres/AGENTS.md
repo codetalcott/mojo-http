@@ -45,8 +45,10 @@ four are in `lib.mojo`'s docstring:
   symbols bound into the system's and a connection attempt through the
   second's own handle crashed. The second need not be one this package
   opened: psycopg-binary itself, loaded beside a global libpq as it is under
-  `m0serve --pg-listen`, reported the system's version and ran on the
-  system's library (no crash measured for that case). A re-open that says
+  `m0serve --pg-listen`, reported the system's version (160015 where its
+  own is 180006, measured under the real server, with no crash and every
+  query answered). `smoke-pg-notify`'s fourth arm holds that: psycopg
+  beside the listener reports the libpq it was built against. A re-open that says
   `RTLD_GLOBAL` promotes the image, so the pin is local too, and so would a
   global `dlopen` of the same file by anything else in the process. A copy of
   the system library cannot show the fault (Ubuntu's build binds one data

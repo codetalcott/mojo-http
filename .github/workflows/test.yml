@@ -475,8 +475,13 @@ jobs:
         run: uv run poe sabotage-postgres-pin
       - name: Build the serve CLI
         run: uv run poe build-serve
+      # Under the `pg` group: the smoke's fourth arm serves an application
+      # on psycopg's binary wheel, pinned there to a release whose bundled
+      # libpq is not the runner's (pyproject.toml says why).
       - name: Smoke test a Postgres NOTIFY reaching a held stream
-        run: uv run poe smoke-pg-notify
+        run: |
+          uv sync --group pg
+          uv run --group pg poe smoke-pg-notify
       - name: Record the measurements
         if: always()
         uses: ./.github/actions/record-measurements
