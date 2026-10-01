@@ -294,8 +294,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   against 1.45–1.55 ms before. Throughput under load is unchanged. On Linux
   the shorter waits need `epoll_pwait2` (kernel 5.11 or later); an older
   kernel keeps the millisecond.
-### Fixed
-
 - **Under `--workers N` or `M0_WORKERS`, a worker that fails while the
   server stops makes the supervisor exit 1, whichever worker it reaps
   first** (SPEC D10). A worker catches SIGTERM only once it has started
