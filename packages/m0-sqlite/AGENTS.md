@@ -60,21 +60,32 @@ most:
 
 - **Every registration is `SQLITE_DIRECTONLY`** (D59), so the schema never
   computes with one: refused in a CHECK constraint, a generated column or an
-  index at CREATE, in a stored view at use, in a trigger when it fires. The
-  flag does NOT refuse creating a view or trigger that names the function,
-  and such a trigger fails every write to its table from every program;
-  never write that a function "stays out of the database file". Do not add
-  a flag that relaxes it without D59's retiring condition.
+  index at CREATE, in a stored view at use, in a trigger when it fires, in a
+  column DEFAULT when an INSERT takes it. The flag does NOT refuse creating
+  a view, a trigger or a DEFAULT that names the function, and such a trigger
+  fails every write to its table from every program; never write that a
+  function "stays out of the database file". Do not add a flag that relaxes
+  it without D59's retiring condition.
+- **Two version floors, and the second is per function.** 3.31.0 for all;
+  3.50.0 for a type whose `deterministic` is False, because before it a
+  CHECK constraint naming a non-deterministic function is created and RUN
+  (the flag reached only the deterministic branch of `resolve.c`). So a
+  fixture is deterministic unless non-determinism is the thing under test,
+  or its test does not run on the Linux leg (Ubuntu 24.04 has 3.45.1); a
+  function called over a column runs once per row either way. Before
+  writing what the flag refuses, run the matrix on an old and a new library:
+  both words of it were wrong once.
 - **A callback reaches the library through one global word**, because a
   scalar function's user data comes back only through `sqlite3_user_data`,
   itself a library call. The virtual table needs none (`pAux` is handed to
   it); do not "simplify" it toward that shape.
 - **`blob` is SQLite's own bytes, valid for the call**: zero-copy is the
   whole reason the feature exists. Never return a `List` there. **And
-  `text` refuses a BLOB**, because reading a bound blob as text reallocates
-  it and a span taken earlier dangles: an accessor that hands out a pointer
-  and one that converts are never both allowed on one storage class. A new
-  accessor goes on one side of that line.
+  `text` refuses a BLOB**, because reading one as text converts it in
+  place: a blob the statement computed is reallocated and a span taken
+  earlier dangles, and a bound one moves out from under it. An accessor
+  that hands out a pointer and one that converts are never both allowed on
+  one storage class. A new accessor goes on one side of that line.
 - **An empty blob is a blob.** SQLite's pointer for one is NULL and
   `sqlite3_result_blob` answers SQL NULL for a NULL pointer, so `Args.blob`
   never hands that pointer out and `SqliteFns.result_blob` never hands one
@@ -85,8 +96,9 @@ most:
   is its own fields. That is sound only because SQLite calls one instance
   one call at a time, so never give a function a way to run SQL on its own
   connection (`Args` carries none): on Mojo 1.1 a small instance is copied
-  in and stored back, and an inner call's writes would be overwritten.
-  Nothing reaches a registered instance by address, either.
+  in and stored back, so an inner call's writes would be overwritten, and a
+  large one is passed as a pointer taken to be unaliased. Unsound at any
+  size. Nothing reaches a registered instance by address, either.
 
 **The package has two globals**, each a `pop.global_alloc` word behind an
 `@no_inline` accessor (m0-http's `src/global_slot.mojo` idiom, copied, since
@@ -99,10 +111,10 @@ which is what turns a toolchain that broke it into a refusal. Both words
 point at a record written once and never freed, each holding the file it
 came from so a refusal can name it. `poe sabotage-sqlite-function` reverts
 each rule above by exact source lines; after editing an anchored line, run
-it and re-point the anchor. Three kinds of rule report SKIPPED on a host
+it and re-point the anchor. Four kinds of rule report SKIPPED on a host
 that cannot observe them (no second image, no library the loader can drop,
-no build that binds through the global scope), so read the last lines of a
-run, not its count.
+no build that binds through the global scope, no library older than
+3.50.0), so read the last lines of a run, not its count.
 
 Six m0-sqlite invariants that look like bugs and are not:
 

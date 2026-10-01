@@ -5,7 +5,7 @@ call and its errors (O19), what the schema may not do with a function and
 what it still can (O20), who destroys the state and when (O21), and the one
 global word every callback reaches the library through (O22) — and
 `poe sabotage-sqlite-function` reverts each rule and insists the test that
-claims it fails. A function's own state lives in its fields (`Tally`). The
+claims it fails. A function's own state lives in its fields (`Remembers`). The
 counters the tests READ live at heap addresses the functions hold instead:
 SQLite owns the instance, so a word outside it is the only way a test can
 watch SQLite call it, or destroy it.
@@ -42,7 +42,7 @@ from src import (
     error_code,
     open_memory,
 )
-from src.function import _fn_table
+from src.function import SQLITE_MIN_MOVING_FUNCTION_VERSION, _fn_table
 
 comptime _Word = Pointer[Int, MutUntrackedOrigin]
 
@@ -103,31 +103,37 @@ struct AddN(ScalarFunction):
         answer.int(args.int(0) + self.n)
 
 
-struct Tally(ScalarFunction):
-    """Keeps its state in its own fields: how many calls it has answered,
-    and every argument it has seen, in a list that reallocates as it grows.
-    Answers the sum of what it has seen, and raises on a negative argument
-    AFTER recording it."""
+struct Remembers(ScalarFunction):
+    """`x` squared — and everything it has been asked, kept in its own
+    fields: a count of calls, and the arguments, in a list that reallocates
+    as it grows. Its answer depends on its argument alone, so it is honestly
+    deterministic; what it remembers goes to a word the test reads, as
+    `calls * 1_000_000 + the sum of the arguments`. A negative argument
+    raises AFTER it is recorded."""
 
     comptime arity: Int = 1
-    comptime deterministic: Bool = False
+    comptime deterministic: Bool = True
     var calls: Int
     var seen: List[Int]
+    var report: Int
 
-    def __init__(out self):
+    def __init__(out self, report: Int):
         self.calls = 0
         self.seen = List[Int]()
+        self.report = report
 
     def call(mut self, args: Args, mut answer: Answer) raises:
         self.calls += 1
         var v = args.int(0)
         self.seen.append(v)
-        if v < 0:
-            raise Error("negative after " + String(self.calls) + " calls")
         var total = 0
         for x in self.seen:
             total += x
-        answer.int(total)
+        var r = _Word(unsafe_from_address=self.report)
+        r[] = self.calls * 1_000_000 + total
+        if v < 0:
+            raise Error("negative after " + String(self.calls) + " calls")
+        answer.int(v * v)
 
 
 struct Echo(ScalarFunction):
@@ -289,7 +295,7 @@ struct Wide[n: Int](ScalarFunction):
 
 struct Boom(ScalarFunction):
     comptime arity: Int = 0
-    comptime deterministic: Bool = False
+    comptime deterministic: Bool = True
 
     def __init__(out self):
         pass
@@ -361,12 +367,12 @@ struct Tracked(ScalarFunction):
 
 
 struct Witness(ScalarFunction):
-    """Counts its calls into one word and its destruction into another, and
-    is never deterministic, so every row calls it. Both addresses sit past
-    the allocator's links, for `Tracked`'s reason."""
+    """Counts its calls into one word and its destruction into another. It
+    takes an argument so that a call over a column runs once per row. Both
+    addresses sit past the allocator's links, for `Tracked`'s reason."""
 
-    comptime arity: Int = 0
-    comptime deterministic: Bool = False
+    comptime arity: Int = 1
+    comptime deterministic: Bool = True
     var _links: Int
     var _links_too: Int
     var _past_the_links: Int
@@ -417,16 +423,21 @@ def test_a_function_keeps_what_it_writes_to_itself() raises:
     covers: O19
     """
     var db = open_memory()
-    db.create_function("tally", Tally())
+    var report = _counter()
+    db.create_function("sq", Remembers(report))
     comptime rows = (
         "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c"
         " WHERE x < 200) "
     )
-    assert_equal(db.query_scalar(rows + "SELECT max(tally(x)) FROM c"), "20100")
-    var e = _error_of(db, "SELECT tally(-5)")
+    assert_equal(db.query_scalar(rows + "SELECT sum(sq(x)) FROM c"), "2686700")
+    assert_equal(_read(report), 200_020_100, "200 calls, their arguments summed")
+    var e = _error_of(db, "SELECT sq(-5)")
     assert_true("negative after 201 calls" in e, e)
-    assert_equal(db.query_scalar("SELECT tally(0)"), "20095", "the raise lost its write")
-    assert_equal(db.query_scalar("SELECT tally(tally(0) * 0 + 7)"), "20102")
+    assert_equal(_read(report), 201_020_095)
+    assert_equal(db.query_scalar("SELECT sq(0)"), "0")
+    assert_equal(_read(report), 202_020_095, "the call that raised lost its write")
+    assert_equal(db.query_scalar("SELECT sq(sq(2))"), "16")
+    assert_equal(_read(report), 204_020_101, "inner then outer")
 
 
 def test_every_storage_class_goes_in_and_comes_back() raises:
@@ -528,13 +539,15 @@ def test_an_empty_blob_is_answered_as_a_blob() raises:
 
 def test_a_blob_span_stays_good_because_text_refuses_a_blob() raises:
     """`blob` hands out SQLite's own bytes, and nothing a function can then
-    do moves them. Reading a BOUND blob as text reallocates it to add a
-    terminator (sqlite3.h says a `sqlite3_value_blob` pointer "can be
-    invalidated by a subsequent call to sqlite3_value_text()"), which left
-    a span from `blob` pointing at freed memory, so `text` refuses a BLOB
-    as `blob` refuses everything else. A blob read off a table page does
-    not move, so the argument here is bound. Every other accessor leaves
-    the bytes where they were.
+    do converts them. Reading a blob as text does (sqlite3.h says a
+    `sqlite3_value_blob` pointer "can be invalidated by a subsequent call to
+    sqlite3_value_text()"): a blob the statement computed is reallocated,
+    and a span taken a line earlier points at freed memory; a BOUND one gets
+    a new buffer, and the span is left on the binding's bytes, no longer the
+    value's. A blob read off a table page does not move, which is how a
+    test on a table misses it. So `text` refuses a BLOB as `blob` refuses
+    everything else, for both kinds, and every other accessor leaves the
+    bytes where they were.
 
     covers: O19
     """
@@ -545,6 +558,12 @@ def test_a_blob_span_stays_good_because_text_refuses_a_blob() raises:
     for i in range(4096):
         bytes.append(UInt8(i % 251))
 
+    # The blob that is freed under the span: one the statement computed.
+    var computed = _error_of(db, "SELECT blob_then_text(randomblob(4096))")
+    assert_true(
+        "argument 1 is a blob, which text() does not convert" in computed, computed
+    )
+    # And the one that moves out from under it: one that was bound.
     var q = db.prepare("SELECT blob_then_text(?1)")
     q.bind_blob(1, bytes)
     var refused = String("")
@@ -605,24 +624,26 @@ def test_sqlite_holds_the_arity_and_args_holds_the_index() raises:
 
 def test_a_deterministic_call_with_constant_arguments_runs_once() raises:
     """The planner evaluates a deterministic call with constant arguments
-    once per statement, and anything else once per row: so the flag is
-    registered, and a function that moves must say it is not deterministic.
+    once per statement: so the flag is registered. The same function over a
+    column is the control, called once per row, so the counter is known to
+    count. A function that says it is NOT deterministic is the next
+    section's, since an older library refuses it.
 
     covers: O19
     """
     var db = open_memory()
-    var det = _counter()
-    var moving = _counter()
-    db.create_function("det", Count[True](det))
-    db.create_function("moving", Count[False](moving))
+    var constant = _counter()
+    var per_row = _counter()
+    db.create_function("det", Count[True](constant))
+    db.create_function("det_too", Count[True](per_row))
     comptime rows = (
         "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c"
         " WHERE x < 100) "
     )
     assert_equal(db.query_scalar(rows + "SELECT sum(det(1)) FROM c"), "100")
-    assert_equal(db.query_scalar(rows + "SELECT sum(moving(1)) FROM c"), "100")
-    assert_equal(_read(det), 1)
-    assert_equal(_read(moving), 100)
+    assert_equal(db.query_scalar(rows + "SELECT sum(det_too(x)) FROM c"), "5050")
+    assert_equal(_read(constant), 1)
+    assert_equal(_read(per_row), 100)
 
 
 # --- O20: never part of the database file -------------------------------------
@@ -631,10 +652,11 @@ def test_a_deterministic_call_with_constant_arguments_runs_once() raises:
 def test_the_schema_cannot_call_a_registered_function() raises:
     """The schema never computes with a registered function: SQLite refuses
     one in a CHECK constraint, a generated column and an expression index
-    when they are created, in a stored view when it is used, and in a
-    trigger when it fires. Creating the view and the trigger is NOT refused
-    (their bodies resolve when they run), which is what the next test is
-    about. A TEMP view, which lives on this connection alone, may call it.
+    when they are created, in a stored view when it is used, in a trigger
+    when it fires, and in a column DEFAULT when an INSERT takes it. Creating
+    the view, the trigger and the DEFAULT is NOT refused (each resolves when
+    it runs), which is what the next test is about. A TEMP view, which lives
+    on this connection alone, may call it.
 
     covers: O20
     """
@@ -659,8 +681,50 @@ def test_the_schema_cannot_call_a_registered_function() raises:
     e = _exec_error(db, "INSERT INTO t VALUES (1)")
     assert_true("unsafe use of f()" in e, "trigger: " + e)
 
+    db.execute("CREATE TABLE t_default (id INTEGER PRIMARY KEY, x INTEGER DEFAULT (f(41)))")
+    e = _exec_error(db, "INSERT INTO t_default (id) VALUES (1)")
+    assert_true("unsafe use of f()" in e, "DEFAULT: " + e)
+    assert_equal(_exec_error(db, "INSERT INTO t_default VALUES (2, 7)"), "")
+
     db.execute("CREATE TEMP VIEW v_temp AS SELECT f(1) AS x")
     assert_equal(db.query_scalar("SELECT x FROM v_temp"), "2")
+
+
+def test_a_function_that_moves_needs_a_library_that_keeps_it_out_of_a_check() raises:
+    """Before SQLite 3.50.0 the flag does not reach a function that is NOT
+    deterministic inside a CHECK constraint: the table is created, and every
+    INSERT then runs the function (measured on 3.45.1 and 3.46.1; `resolve.c`
+    marked a call as the schema's only on its deterministic branch). So a
+    type that says `deterministic = False` is refused on an older library,
+    naming it, rather than registered where a schema could compute with it.
+    On 3.50.0 and later it registers, a CHECK naming it is refused, and it
+    is called once per row, constant arguments or not. Which half runs is
+    the library's to decide; both assert.
+
+    covers: O20
+    """
+    var n = _counter()
+    var db = open_memory()
+    var refused = String("")
+    try:
+        db.create_function("moving", Count[False](n))
+    except e:
+        refused = String(e)
+    if db._lib.fns.libversion_number() < SQLITE_MIN_MOVING_FUNCTION_VERSION:
+        assert_true("not deterministic needs SQLite 3.50.0" in refused, refused)
+        assert_true(db.library_path() in refused, refused)
+        var absent = _error_of(db, "SELECT moving(1)")
+        assert_true("no such function: moving" in absent, absent)
+        return
+    assert_equal(refused, "")
+    var e = _exec_error(db, "CREATE TABLE t_check (x INTEGER CHECK (moving(x) > 0))")
+    assert_true("unsafe use of moving()" in e, "CHECK: " + e)
+    comptime rows = (
+        "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c"
+        " WHERE x < 100) "
+    )
+    assert_equal(db.query_scalar(rows + "SELECT sum(moving(1)) FROM c"), "100")
+    assert_equal(_read(n), 100)
 
 
 def test_a_trigger_naming_a_function_locks_its_table_for_every_writer() raises:
@@ -782,7 +846,9 @@ def test_the_state_lives_until_the_last_statement_is_finalized() raises:
     var destroyed = _counter()
     var db = open_memory()
     db.create_function("w", Witness(calls, destroyed))
-    var q = db.prepare("SELECT w() UNION ALL SELECT w() UNION ALL SELECT w()")
+    var q = db.prepare(
+        "SELECT w(x) FROM (SELECT 1 AS x UNION ALL SELECT 2 UNION ALL SELECT 3)"
+    )
     assert_true(q.step())
     assert_equal(_read(calls), 1)
 

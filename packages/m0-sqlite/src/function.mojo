@@ -52,9 +52,12 @@ statement is active. So nothing else touches the instance while `call` runs.
 
 The one way to break it is to make the call re-entrant: a function that
 steps a statement of its OWN connection which calls the same function. On
-Mojo 1.1 an instance of 256 bytes or less is copied in to `call` and stored
-back when it returns (docs/notes/mut-arguments-and-raw-addresses.md), so
-the inner call's writes would be overwritten by the outer's store, silently.
+Mojo 1.1 that is unsound at any size
+(docs/notes/mut-arguments-and-raw-addresses.md): an instance of 256 bytes
+or less is copied in to `call` and stored back when it returns, so the
+inner call's writes would be overwritten by the outer's store, silently;
+a larger one is passed as a pointer the compiler takes to be unaliased, so
+the outer call may go on using what it read before the inner one wrote.
 `Args` carries no connection for that reason; do not hand a function one of
 its own. For the same reason nothing reaches an instance by address while
 it is registered: its state is its fields, read and written through `self`.
@@ -72,27 +75,38 @@ disagree with it.
 there, at use.** Every registration carries `SQLITE_DIRECTONLY`, so SQLite
 refuses the function wherever the database file's own schema would call it:
 in a CHECK constraint, a generated column or an expression index when it is
-created, in a stored view when the view is used, in a trigger when it
-fires. Top-level SQL and this connection's TEMP views may call it. So no
-index, constraint or stored column ever holds a registered function's
-results, and a database file handed over by someone else cannot reach
-application code through its views and triggers.
+created; in a stored view when the view is used, in a trigger when it
+fires, and in a column DEFAULT when an INSERT takes it. Top-level SQL and
+this connection's TEMP views and triggers may call it. So no index,
+constraint or stored column ever holds a registered function's results, and
+a database file handed over by someone else cannot reach application code
+through its schema.
 
-What the flag cannot refuse is the CREATE of a view or a trigger that NAMES
-the function: SQLite resolves those bodies when they run, not when they are
-stored. `CREATE TRIGGER ... BEGIN SELECT dot(NEW.x); END` succeeds, the name
-is in the file from then on, and every write to that table fails for every
-writer — "unsafe use of dot()" in the binary that registered it, "no such
-function: dot" in the `sqlite3` shell, Django or a backup script — until
-someone drops the trigger. The refusal makes that mistake loud at its first
-use instead of working in one binary; it does not make it impossible. Do
-not name a registered function in a stored view or a trigger.
+What the flag cannot refuse is the CREATE of a view, a trigger or a column
+DEFAULT that NAMES the function: SQLite resolves those when they run, not
+when they are stored. `CREATE TRIGGER ... BEGIN SELECT dot(NEW.x); END`
+succeeds, the name is in the file from then on, and every write to that
+table fails for every writer — "unsafe use of dot()" in the binary that
+registered it, "no such function: dot" in the `sqlite3` shell, Django or a
+backup script — until someone drops the trigger. A DEFAULT does the same to
+every INSERT that takes it, a view to every read of it. The refusal makes
+the mistake loud at its first use instead of working in one binary; it does
+not make it impossible. Do not name a registered function in any of the
+three.
 
-The flag arrived in SQLite 3.30.0, which refused only triggers and views;
-the refusal in a CHECK constraint, a generated column and an index is
-3.31.0's (`sqlite3ExprFunctionUsable`). Registration refuses a library
-older than 3.31.0 rather than registering a function its schema could
-compute with (D59).
+Two floors keep the promise, because SQLite came to it in three steps. The
+flag arrived in 3.30.0, refusing only triggers and views; the refusal in a
+CHECK constraint, a generated column and an index is 3.31.0's
+(`sqlite3ExprFunctionUsable`), so registration refuses a library older than
+that. And until 3.50.0 the refusal in a CHECK constraint reached only a
+function registered DETERMINISTIC: `resolve.c` marked a call as coming from
+the schema on its deterministic branch alone, so a function that says
+`deterministic = False` was accepted in a CHECK and run by every write
+(measured on 3.45.1 and 3.46.1: the table is created, the INSERT calls the
+function). So a type whose `deterministic` is False is refused on a library
+older than 3.50.0, rather than registered where a schema could compute with
+it (D59). The kernel this exists for is deterministic and registers on
+either.
 
 **How a callback reaches the library: one global word.** The virtual table
 needs no global (O18): SQLite hands `pAux` straight to `xConnect`. A scalar
@@ -183,6 +197,13 @@ CHECK constraint, a generated column and an index. 3.30.0 has the flag and
 refuses only triggers and views with it, so a function registered there
 could still be computed with by the schema; `Connection.create_function`
 refuses a library older than this rather than register one."""
+
+comptime SQLITE_MIN_MOVING_FUNCTION_VERSION: Int = 3_050_000
+"""SQLite 3.50.0, where `SQLITE_DIRECTONLY` came to refuse a function that
+is NOT deterministic in a CHECK constraint. Before it the constraint is
+created and every write runs the function, so a type whose `deterministic`
+is False is refused on an older library; a deterministic one needs only
+`SQLITE_MIN_FUNCTION_VERSION`."""
 
 comptime _SQLITE_UTF8: Int = 1
 comptime _SQLITE_DETERMINISTIC: Int = 0x800
@@ -368,8 +389,8 @@ struct Args(Sized):
         """Argument `i` as text, copied; NULL reads as "" (see `is_null`).
 
         A BLOB is refused, as `blob` refuses everything else: reading one
-        as text converts the value in place, which moves the bytes a span
-        from `blob` points at (see there). For a blob's bytes as a `String`,
+        as text converts the value in place, which can free the bytes a
+        span from `blob` points at (see there). For a blob's bytes as a `String`,
         copy the span. The pointer is asked for before the length,
         sqlite3.h's order, so the length measures the text form. The bytes
         are taken as they are, as `Statement.column_text` takes them: SQLite
@@ -396,16 +417,21 @@ struct Args(Sized):
         kernel loads it with alignment 1. A zero-length blob is an empty
         span.
 
-        The span stays good for the whole call because nothing here can
-        move it. sqlite3.h: a `sqlite3_value_blob` pointer "can be
-        invalidated by a subsequent call to sqlite3_value_bytes(),
-        sqlite3_value_bytes16(), sqlite3_value_text(), or
-        sqlite3_value_text16()". Measured: `sqlite3_value_text` on a blob
-        that was BOUND reallocates it to add a terminator, and the span is
-        left pointing at freed memory (a blob read off a table page happens
-        not to move, which is how that goes unseen). So `text` refuses a
-        BLOB, and the length is asked for here, once, straight after the
-        pointer and on a value already a blob, where it converts nothing.
+        The span stays the value's own bytes for the whole call because
+        nothing here can convert it. sqlite3.h: a `sqlite3_value_blob`
+        pointer "can be invalidated by a subsequent call to
+        sqlite3_value_bytes(), sqlite3_value_bytes16(),
+        sqlite3_value_text(), or sqlite3_value_text16()". Measured, on
+        3.46.1, 3.53.4 and 3.54.0, what `sqlite3_value_text` does to a blob
+        depends on who holds its bytes. One the statement computed
+        (`randomblob(4096)`) is reallocated to add a terminator, and a span
+        taken before it points at freed memory. One that was BOUND gets a
+        new buffer while the span goes on pointing at the binding's, alive
+        but no longer the value's. One with room to spare, and one read off
+        a table page, do not move, which is how this goes unseen. So `text`
+        refuses a BLOB, and the length is asked for here, once, straight
+        after the pointer and on a value already a blob, where it converts
+        nothing.
         """
         ref fns = _PublishedPtr(unsafe_from_address=self._t)[].fns
         var v = self._value(i)
@@ -498,7 +524,9 @@ trait ScalarFunction(Movable, Deinitable):
     """True when the same arguments always give the same answer and the call
     has no effect but its answer. The planner then evaluates a call with
     constant arguments once per statement; a function that reads a clock, a
-    counter or anything else that moves must say False."""
+    counter or anything else that moves must say False. One that says False
+    needs SQLite 3.50.0 (`SQLITE_MIN_MOVING_FUNCTION_VERSION`): an older
+    library would let a CHECK constraint call it."""
 
     def call(mut self, args: Args, mut answer: Answer) raises:
         """Answer one call. A raise fails the statement with its text, and

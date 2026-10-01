@@ -22,15 +22,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   percent over the same function written by hand against the C API and
   twice as fast as sqlite-vec's `vec_distance_l2`, which copies both
   vectors on every call. A span from `Args.blob` stays good for the whole
-  call: `Args.text` refuses a BLOB, since reading one as text can move it.
-  A raise fails the statement with its text. The schema never computes
-  with a registered function: SQLite refuses it in a CHECK constraint, a
-  generated column or an index when they are created, in a stored view
-  when it is used and in a trigger when it fires. Creating a view or a
-  trigger that names one is NOT refused, and such a trigger then fails
-  every write to its table, from every program, until it is dropped; do
-  not name a registered function in either. A library older than 3.31.0,
-  where that refusal is incomplete, is refused. SQLite owns the instance
+  call: `Args.text` refuses a BLOB, since reading one as text can free or
+  move its bytes. A raise fails the statement with its text. The schema
+  never computes with a registered function: SQLite refuses it in a CHECK
+  constraint, a generated column or an index when they are created, in a
+  stored view when it is used, in a trigger when it fires and in a column
+  DEFAULT when an INSERT takes it. Creating a view, a trigger or a DEFAULT
+  that names one is NOT refused, and such a trigger then fails every write
+  to its table, from every program, until it is dropped; do not name a
+  registered function in any of them. A library where that refusal is
+  incomplete is refused: one older than 3.31.0 for every function, and one
+  older than 3.50.0 for a function that says it is not deterministic,
+  which until then a CHECK constraint could name and run. SQLite owns the instance
   from registration and destroys it when the function is replaced or the
   connection is destroyed — at `close()`, or, when a statement outlives the
   close, at that statement's finalize, the function answering until then.

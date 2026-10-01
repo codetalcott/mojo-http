@@ -32,6 +32,7 @@ from .ffi import (
 from .lib import SqliteLib, as_cstr, open_library, str_cstr
 from .function import (
     SQLITE_MIN_FUNCTION_VERSION,
+    SQLITE_MIN_MOVING_FUNCTION_VERSION,
     ScalarFunction,
     _register_function,
 )
@@ -368,15 +369,18 @@ struct Connection(Movable):
         no wait clears it. Reset or finalize the statement, then register.
 
         The function is callable from top-level SQL and this connection's
-        TEMP views. The schema cannot compute with it: SQLite refuses it in
-        a CHECK constraint, a generated column or an index when they are
-        created, in a stored view when the view is used, and in a trigger
-        when it fires. Creating a view or a trigger that names it is NOT
+        TEMP views and triggers. The schema cannot compute with it: SQLite
+        refuses it in a CHECK constraint, a generated column or an index
+        when they are created, in a stored view when the view is used, in a
+        trigger when it fires, and in a column DEFAULT when an INSERT takes
+        it. Creating a view, a trigger or a DEFAULT that names it is NOT
         refused, and such a trigger then fails every write to its table,
         from every program, until it is dropped (`function.mojo`).
 
         Raises on a library older than 3.31.0, which cannot make those
-        refusals; on a closed connection; on a name that is empty, holds a
+        refusals, and for a function whose `deterministic` is False on one
+        older than 3.50.0, which would let a CHECK constraint call it; on a
+        closed connection; on a name that is empty, holds a
         NUL byte or is longer than 255 bytes; on an arity above the
         library's own limit (127 on Apple's build); and through a table of
         another libsqlite3 image than the one this process's functions
@@ -400,6 +404,19 @@ struct Connection(Movable):
                 + String(have)
                 + ")"
             )
+        comptime if not F.deterministic:
+            if have < SQLITE_MIN_MOVING_FUNCTION_VERSION:
+                raise Error(
+                    "create_function(" + name + "): a function that is not"
+                    " deterministic needs SQLite 3.50.0 or newer — before"
+                    " it SQLITE_DIRECTONLY does not keep one out of a CHECK"
+                    " constraint, which every write would then run — but"
+                    " the library at " + self._lib.path + " is "
+                    + self._lib.fns.libversion()
+                    + " ("
+                    + String(have)
+                    + ")"
+                )
         _register_function(
             self._lib.fns, self._lib.path, self._handle, name, impl^
         )

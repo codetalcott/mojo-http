@@ -197,9 +197,9 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 939 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 95 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 182 |
-| `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table, scalar functions written in Mojo | 136 |
+| `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table, scalar functions written in Mojo | 137 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 78 |
-| **Total** | | **1512** |
+| **Total** | | **1513** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
 
@@ -752,10 +752,12 @@ var q = db.prepare("SELECT id FROM notes ORDER BY dot(embedding, ?1) DESC LIMIT 
 
 The schema never computes with a registered function: SQLite refuses it in a
 CHECK constraint, a generated column or an index when they are created, in a
-stored view when it is used and in a trigger when it fires. It does not refuse
-creating a view or a trigger that names one, and such a trigger then fails
-every write to its table, from every program, until it is dropped — so do not
-name a registered function in either. What a function may and may not do is
+stored view when it is used, in a trigger when it fires and in a column
+DEFAULT when an INSERT takes it. It does not refuse creating a view, a trigger
+or a DEFAULT that names one, and such a trigger then fails every write to its
+table, from every program, until it is dropped — so do not name a registered
+function in any of them. A function that says it is not deterministic needs
+SQLite 3.50.0; any other, 3.31.0. What a function may and may not do is
 [docs/notes/functions-inside-the-query.md](docs/notes/functions-inside-the-query.md).
 
 ```mojo
@@ -911,7 +913,7 @@ is silently a different number.
 ```bash
 uv run poe                  # list every task
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1512 unit tests, then compiles every example
+uv run poe test-all         # 1513 unit tests, then compiles every example
 uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
 uv run poe serve-counter    # the Datastar counter demo on :8080
 uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080

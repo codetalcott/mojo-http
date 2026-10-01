@@ -672,8 +672,9 @@ struct SqliteFns(ImplicitlyCopyable, Movable):
     def __init__(out self, ref handle: OwnedDLHandle, path: String) raises:
         """Resolve every entry point from `handle`, checking each first.
 
-        Built by `SqliteLib.__init__`, after the pin and while it still
-        holds the handle. One `_checked` per field, taking the symbol from
+        Built by `SqliteLib.__init__`, first of all and while it still
+        holds the handle: the refusals and the pin both read this table.
+        One `_checked` per field, taking the symbol from
         the declaration it loads, so an entry point cannot be loaded without
         being checked.
         """

@@ -6,9 +6,10 @@ value where SQLite already holds it. SPEC O19 to O22 are its rows, D58 and
 D59 its decisions. Building it turned up a defect in the loader that came
 before it: on macOS, a process that closed all its connections and opened
 another was running a second copy of SQLite. That is SPEC O23, fixed in the
-same change. A review before it merged found six claims on this page that
-the code did not keep; [the last section](#what-the-review-found) says
-which, and the page now states what was measured.
+same change. Two reviews before it merged found eight claims on this page
+that the code or SQLite did not keep; [the last
+section](#what-the-review-found) says which, and the page now states what
+was measured.
 
 ## The question
 
@@ -110,13 +111,17 @@ BLOB, since a vector arriving as text or a number is the caller's bug and
 SQLite's conversion would rewrite the value in place. `text` refuses a BLOB
 for the same reason seen from the other side: sqlite3.h says a
 `sqlite3_value_blob` pointer "can be invalidated by a subsequent call to
-sqlite3_value_text()", and measured on Apple's 3.54.0 and Homebrew's
-3.53.4, `sqlite3_value_text` on a BOUND blob reallocates it to add a
-terminator, leaving a span taken a line earlier pointing at freed memory (a
-blob read off a table page does not move, which is how the first tests
-missed it). So the accessor that hands out a pointer and the accessor that
-converts are disjoint, and nothing a function can call moves a span it
-holds. `int` and `float` convert as `Statement`'s column accessors do,
+sqlite3_value_text()". Measured on 3.46.1, 3.53.4 and 3.54.0 with a
+function that takes the pointer, asks for the text and looks again, what
+happens depends on who holds the bytes. A blob the statement computed
+(`randomblob(4096)`) is reallocated to add a terminator, and the old bytes
+are gone: a span taken a line earlier points at freed memory. A blob that
+was BOUND gets a new buffer while the old pointer is still the binding's,
+its bytes intact: the span is alive and no longer the value's. A blob with
+room to spare, and one read off a table page, do not move, which is how the
+first tests missed it. So the accessor that hands out a pointer and the
+accessor that converts are disjoint, and nothing a function can call
+converts a value under a span it holds. `int` and `float` convert as `Statement`'s column accessors do,
 NULL reading as 0 and 0.0 where `CAST` would answer NULL. Answers copy
 (`SQLITE_TRANSIENT`), and an empty blob is answered as a blob: SQLite's own
 pointer for `x''` is NULL, and `sqlite3_result_blob` answers SQL NULL for a
@@ -130,15 +135,16 @@ an `abi("C")` function cannot raise and the compiler holds it.
 Every registration carries `SQLITE_DIRECTONLY`. Measured on Apple's 3.54.0
 and Homebrew's 3.53.4, SQLite then refuses the function in a CHECK
 constraint, a generated column and an expression index **when they are
-created**, in a stored view **when it is used**, and in a trigger **when it
-fires**; top-level SQL and a TEMP view may call it. So the schema never
-computes with a registered function — no index, constraint or stored column
-holds its results — and a database handed over by someone else cannot reach
-application code through its views and triggers. Rules every writer must
-obey belong in the schema as built-in SQL.
+created**, in a stored view **when it is used**, in a trigger **when it
+fires** and in a column DEFAULT **when an INSERT takes it**; top-level SQL
+and a TEMP view or trigger may call it. So the schema never computes with a
+registered function — no index, constraint or stored column holds its
+results — and a database handed over by someone else cannot reach
+application code through its schema. Rules every writer must obey belong in
+the schema as built-in SQL.
 
 What the flag does not do is keep the NAME out of the file. SQLite resolves
-the body of a view or a trigger when it runs, not when it is stored, so
+a view, a trigger and a DEFAULT when they run, not when they are stored, so
 `CREATE TRIGGER ... BEGIN SELECT f(NEW.x); END` succeeds, and from then on
 every INSERT on that table fails, from every program: "unsafe use of f()"
 in the connection that registered `f`, "no such function: f" in the
@@ -156,6 +162,23 @@ The flag arrived in SQLite 3.30.0, where it refused only triggers and
 views; the refusal at CREATE of a constraint, a generated column or an
 index is 3.31.0's (`sqlite3ExprFunctionUsable`). Registration refuses a
 library older than 3.31.0 rather than trusting it.
+
+A second floor, found by the second review. The same thirteen statements
+run for a deterministic function and one that is not, on 3.45.1 (Ubuntu
+24.04), 3.46.1, 3.53.4 and 3.54.0, agree everywhere but one cell: on the
+two older libraries `CREATE TABLE c (x INTEGER CHECK (moving(x) > 0))`
+succeeds for a function registered without the deterministic flag, and the
+INSERT that follows runs it. Until 3.50.0 `resolve.c` marked a call as
+coming from the schema only on its deterministic branch (the comment beside
+it reads "Curiously, they can be used in a CHECK constraint"), so the flag
+never saw that call; a generated column or an index refuses a
+non-deterministic function on its own, and a view and a trigger were
+refused at use either way. That one cell is the promise: a CHECK in a file
+from elsewhere would have run an application's counter or clock. So a type
+that says `deterministic = False` is refused on a library older than
+3.50.0. It costs such a function Ubuntu 24.04's and Debian 12's system
+SQLite; the kernel over a column this exists for is deterministic, and
+registers there.
 
 That is also the answer to which application concerns a function serves.
 Auth keeps nothing at rest for SQL to check (D24, D25, D53), and the rows a
@@ -295,13 +318,15 @@ the counter, and the double free went unreported (macOS's allocator does
 not check; `MallocScribble=1` did not help, the links being written over
 the scribble). The fixture now holds the address past three words of
 padding, the second destruction counts, and the sabotage is caught. Ten of
-ten then; twenty-one rules after the review, since each thing it found
-became a rule with a test that fails without it. Three kinds are observable only on
-some hosts and report SKIPPED, never caught, elsewhere: the image rules need
-a second image to load (a copy of the library on Linux, Homebrew's build on
-macOS), the kept handle needs macOS with a library backed by a file, and the
-two `RTLD_LOCAL` rules need a build that binds through the global scope,
-which the harness asks the host about with a probe of its own.
+ten then; twenty-two rules after the reviews, since each thing they found
+became a rule with a test that fails without it. Four kinds are observable
+only on some hosts and report SKIPPED, never caught, elsewhere: the image
+rules need a second image to load (a copy of the library on Linux,
+Homebrew's build on macOS), the kept handle needs macOS with a library
+backed by a file, the two `RTLD_LOCAL` rules need a build that binds
+through the global scope, which the harness asks the host about with a
+probe of its own, and the floor for a function that is not deterministic
+needs a library older than 3.50.0.
 
 The second miss was the same lesson. A zero-length blob is guarded twice,
 where it is handed out and where it is handed back, and with either guard
@@ -366,8 +391,8 @@ nineteen findings by probe or by the CI log. Six were claims this page, the
 rows or the docstrings made that the code did not keep, and each is now a
 test that fails without its fix:
 
-- **A span from `blob` dangled after `text` on the same argument**, for a
-  bound blob. `text` refuses a BLOB.
+- **A span from `blob` dangled after `text` on the same argument.** `text`
+  refuses a BLOB.
 - **A zero-length blob was answered as NULL.** Guarded where it is handed
   out and where it is handed back.
 - **The version floor was 3.30.0**, where `SQLITE_DIRECTONLY` exists and
@@ -385,6 +410,22 @@ test that fails without its fix:
 
 One finding was a question rather than a defect: whether `call` should be
 able to write its instance. It can now (`mut self`, above).
+
+Then the fix round was itself reviewed, from a session that had not written
+it, before it was pushed. It found no crash or race, and two more claims
+SQLite does not keep, both in the section the first review had already
+corrected once:
+
+- **"The schema never computes with a registered function"** was false on
+  SQLite 3.31.0 to 3.49 for a function that is not deterministic, which a
+  CHECK constraint could name and run. Every test used a deterministic
+  function. Such a function now needs 3.50.0.
+- **A column DEFAULT** is a third thing whose creation the flag does not
+  refuse, beside the view and the trigger.
+
+And it corrected the first finding above: the blob that dangles is one the
+statement computed. A bound one moves out from under the span and its old
+bytes stay alive, which the first fix had described the other way round.
 
 The smaller ones are in the code where they apply: a stale message on a
 refused registration, names with a NUL byte, the arity's bounds, result

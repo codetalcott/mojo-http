@@ -17,7 +17,7 @@ Homebrew's there is none, and each test that needs one says so.
 """
 
 from std.collections.span import Span
-from std.ffi import OwnedDLHandle
+from std.ffi import OwnedDLHandle, c_int, external_call
 from std.memory import stack_allocation
 from std.os import getenv, remove, setenv, unsetenv
 from std.os.path import exists
@@ -44,7 +44,17 @@ from src.lib import (
 
 comptime BREW = "/opt/homebrew/opt/sqlite/lib/libsqlite3.dylib"
 comptime APPLE = "/usr/lib/libsqlite3.dylib"
-comptime COPY_NAME = "/m0-sqlite-second-image.so"
+comptime COPY_SUFFIX = "-m0-sqlite-second-image.so"
+
+
+def _copy_path() -> String:
+    """Where this process keeps its copy of the system library: keyed to the
+    pid, since two runs sharing a `$TMPDIR` would otherwise truncate and
+    remove a file the other has mapped (`test_file.mojo`'s reason)."""
+    return (
+        getenv("TMPDIR", "/tmp") + "/"
+        + String(Int(external_call["getpid", c_int]())) + COPY_SUFFIX
+    )
 
 
 struct AddN(ScalarFunction):
@@ -103,7 +113,7 @@ def _second_image() raises -> String:
         # file, and a path with a slash never matches a loaded soname.
         for p in default_search_path():
             if p.startswith("/") and exists(p):
-                var copy = getenv("TMPDIR", "/tmp") + COPY_NAME
+                var copy = _copy_path()
                 var data: List[UInt8]
                 with open(p, "r") as f:
                     data = f.read_bytes()
@@ -115,7 +125,7 @@ def _second_image() raises -> String:
 
 def _forget(other: String) raises:
     """Remove the copy `_second_image` made, if `other` is one."""
-    if other.endswith(COPY_NAME) and exists(other):
+    if other.endswith(COPY_SUFFIX) and exists(other):
         remove(other)
 
 

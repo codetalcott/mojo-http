@@ -19,7 +19,7 @@ the run must fail, in that test's own words where the failure can print any
 output, and the library counts a crash as a catch only once the sabotaged
 source is shown to build).
 
-Three kinds of rule are observable only on some hosts, and report SKIPPED,
+Four kinds of rule are observable only on some hosts, and report SKIPPED,
 never caught, elsewhere:
 
   - A SECOND IMAGE of libsqlite3 must be loadable. On Linux a copy of the
@@ -32,6 +32,10 @@ never caught, elsewhere:
     resolves its internal calls through the loader's global scope: Ubuntu's
     does, Debian's does not, macOS's two-level namespaces never do. Asked
     of the host by `_global_scope_binds`, since nothing else can say.
+  - The floor for a function that is NOT deterministic refuses only on a
+    libsqlite3 older than 3.50.0; on a newer one the registration it guards
+    is legitimate, and the test's other half runs. Asked of the library the
+    tests will open, by `_library_version`.
 
 What has no entry, and why: the `try` around `call` (an `abi("C")`
 function cannot raise, so removing it does not compile, which proves
@@ -59,6 +63,7 @@ from pathlib import Path
 from sabotage_lib import MojoRun, rule, run
 
 FUNCTION = Path("packages/m0-sqlite/src/function.mojo")
+CONN = Path("packages/m0-sqlite/src/conn.mojo")
 LIB = Path("packages/m0-sqlite/src/lib.mojo")
 FUNCTION_TESTS = Path("packages/m0-sqlite/test/test_scalar_function.mojo")
 IMAGE_TESTS = Path("packages/m0-sqlite/test/test_one_image.mojo")
@@ -102,6 +107,19 @@ def _global_scope_binds() -> bool:
     return done.returncode == 0
 
 
+def _library_version() -> int:
+    """`sqlite3_libversion_number` of the library m0-sqlite will open here:
+    `M0_LIBSQLITE3`, else the loader's own by its bare name. 0 if it cannot
+    be asked, which skips the rule that needs it."""
+    name = os.environ.get("M0_LIBSQLITE3") or (
+        "libsqlite3.dylib" if ON_MACOS else "libsqlite3.so.0")
+    try:
+        import ctypes
+        return int(ctypes.CDLL(name).sqlite3_libversion_number())
+    except (OSError, AttributeError):
+        return 0
+
+
 # What each host-dependent rule needs, as the SKIPPED line will print it.
 # `only_on` is compared with platform.system(), so "" and the host's own
 # name both mean "runs here"; any other text means "not here, because".
@@ -114,6 +132,10 @@ BINDS = HERE if _global_scope_binds() else (
     "a Linux whose libsqlite3 resolves its own calls through the global"
     " scope (Ubuntu's does, Debian's does not)")
 
+VERSION = _library_version()
+MOVING_FLOOR = HERE if 0 < VERSION < 3_050_000 else (
+    f"a libsqlite3 older than 3.50.0 (this one answers {VERSION})")
+
 RULES = [
     rule(
         "DIRECTONLY: the schema never computes with a registered function (O20)",
@@ -122,6 +144,15 @@ RULES = [
         "    var flags = _SQLITE_UTF8\n",
         gate="functions",
         expect="test_the_schema_cannot_call_a_registered_function",
+    ),
+    rule(
+        "moving: a function that is not deterministic needs 3.50.0 (O20)",
+        CONN,
+        "            if have < SQLITE_MIN_MOVING_FUNCTION_VERSION:\n",
+        "            if False:\n",
+        gate="functions",
+        only_on=MOVING_FLOOR,
+        expect="test_a_function_that_moves_needs_a_library_that_keeps_it_out_of_a_check",
     ),
     rule(
         "arity: the type's count is what SQLite holds (O19)",

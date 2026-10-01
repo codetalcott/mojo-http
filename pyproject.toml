@@ -1011,8 +1011,8 @@ deps = ["build-sqlite"]
 # claiming it fails, in its own words where it can print any. Some rules a
 # host cannot observe -- a second libsqlite3 image, which macOS has only
 # beside Homebrew's build; a library the loader can drop, macOS's alone; a
-# build that binds through the global scope, Ubuntu's -- and those report
-# SKIPPED, never caught. About a minute, some twenty `mojo run`s of two test
+# build that binds through the global scope, Ubuntu's; a library older than
+# 3.50.0 -- and those report SKIPPED, never caught. About a minute, some twenty `mojo run`s of two test
 # files, so it sits in test-gates after test-sqlite.
 [tool.poe.tasks.sabotage-sqlite-function]
 help = "Revert each scalar-function and one-image rule of m0-sqlite; every one must be caught"

@@ -118,6 +118,7 @@ from .function import (
     Answer,
     ScalarFunction,
     SQLITE_MIN_FUNCTION_VERSION,
+    SQLITE_MIN_MOVING_FUNCTION_VERSION,
 )
 from .conn import (
     Connection,
