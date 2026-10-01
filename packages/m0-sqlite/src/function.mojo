@@ -178,6 +178,13 @@ function before closing, which destroys the instance and its statement.
 `call` raises and hands its text to `sqlite3_result_error`, so `step`
 raises it (`sqlite3_step failed: <text> (rc=1)`). The `try` is not a
 convention: an `abi("C")` function cannot raise, so the compiler holds it.
+The one exception is the package's rule for every error (O3), not this
+file's: a statement stepped after its connection's last mention runs on a
+closed connection (Mojo destroys a `Connection` there, and `close_v2` keeps
+it alive for the statement), and a closed connection's text is never used.
+The raise then keeps its code and carries the code's own text,
+`sqlite3_step failed: SQL logic error (rc=1)`. Keep the connection
+mentioned past the step to get the function's text.
 
 What a function must not do: I/O. It runs inside a statement, on a pool
 thread, and inside a write it holds the database's write lock; a network
@@ -550,8 +557,9 @@ trait ScalarFunction(Movable, Deinitable):
     library would let a CHECK constraint call it."""
 
     def call(mut self, args: Args, mut answer: Answer) raises:
-        """Answer one call. A raise fails the statement with its text, and
-        what the call wrote to `self` before raising stays written. Never
+        """Answer one call. A raise fails the statement with its text (with
+        its code alone once the connection is closed: the module docstring),
+        and what the call wrote to `self` before raising stays written. Never
         re-entered: a call that arrives while one on this instance is in
         progress is refused as its statement's error, and this body does
         not run for it (the module docstring)."""

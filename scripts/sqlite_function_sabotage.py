@@ -7,7 +7,9 @@ removes without any other test noticing: that the schema never computes
 with a registered function (DIRECTONLY), that the type's arity is what
 SQLite holds, that an index past what a call passed is never read, that a
 span from `blob` is never left dangling by `text`, that an empty blob is
-answered as a blob, that a raise reaches the statement, that a call arriving
+answered as a blob, that a raise reaches the statement, and with the code's
+own text where its connection is closed (`lib.mojo`'s corroboration, SPEC
+O3: a closed connection's message is never used), that a call arriving
 inside a call on the same instance is refused and not run, that a refusal is
 told in its own words and a refused registration is never freed twice, that
 the global word every callback reads is one word, and that the callbacks
@@ -221,6 +223,15 @@ RULES = [
         "        fns.result_null(ctx)\n",
         gate="functions",
         expect="test_a_raise_is_the_statements_error",
+    ),
+    rule(
+        "raise: on a closed connection its text is the code's, never the"
+        " connection's (O3, O19)",
+        LIB,
+        "        if db == 0 or Int(self._errcode(db)) != rc:\n",
+        "        if db == 0:\n",
+        gate="functions",
+        expect="test_a_raise_on_a_closed_connection_keeps_its_code_and_loses_its_text",
     ),
     rule(
         "re-entry: a call inside a call on the same instance is refused (O19)",
