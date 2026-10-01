@@ -12,8 +12,9 @@ handle, a new image at five reopens of five, each bringing its own copies
 of the libraries libpq links. No libpq on macOS escapes it, because none is
 in the dyld shared cache — Apple ships no libpq — so wherever this file
 runs on macOS it can fail. glibc keeps a `RTLD_NODELETE` object findable,
-so on Linux the first test states the property without being able to lose
-it; the second can fail on both.
+so on Linux the first test's reopen states the property without being able
+to lose it. The rest can fail on both: that a pin is taken once, the
+second library, and the scope.
 
 An image is told by an entry point's address (`PgFns.image`), read and
 never called: a stale pointer into an image the loader dropped keeps
@@ -173,7 +174,7 @@ def test_libpq_stays_out_of_the_loaders_global_scope() raises:
     An image in the global scope captures the internal calls of any libpq
     loaded after it, on glibc and for a build not linked `-Bsymbolic`:
     measured with Ubuntu's libpq 16.15 first and psycopg-binary's bundled
-    18.6 second, 70 symbols bound across and a connection attempt through
+    18.6 second, 69 symbols bound across and a connection attempt through
     the second crashed. So the property is asked of the loader itself: a
     lookup through the process's own handle searches the global scope, and
     must not find libpq there. Nothing else in this process loads one.

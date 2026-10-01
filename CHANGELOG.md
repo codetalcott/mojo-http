@@ -229,11 +229,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the scope**: libpq was opened in the loader's global scope, where it
   captured the internal calls of any other libpq build loaded later. With
   Ubuntu's libpq 16.15 loaded first and psycopg-binary's bundled 18.6
-  second, 70 of the second's symbols bound into the first, and a
-  connection attempt through the second crashed the process. Under
-  `m0serve --pg-listen` a Python application on psycopg-binary is that
-  arrangement. Every handle is `RTLD_LOCAL` now, and the two libraries
-  keep to themselves. Unlike m0-sqlite, a second libpq file is not
+  second, 69 of the second's symbols bound into the first, and a
+  connection attempt through the second's own handle crashed the process.
+  A Python application on psycopg-binary beside a libpq loaded that way,
+  which is the arrangement under `m0serve --pg-listen`, was captured too:
+  it reported libpq 16.15, not its bundled 18.6, and ran on the system's
+  library. No crash was measured for that case. Every handle is
+  `RTLD_LOCAL` now, and the two libraries keep to themselves: psycopg
+  reports its own 18.6. Unlike m0-sqlite, a second libpq file is not
   refused: each one a process opens is pinned once. A library that opens
   and is not libpq is no longer left mapped after it is refused.
 - **A closed `Socket` refuses every call, not only `close()`** (SPEC D1).

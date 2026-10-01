@@ -17,6 +17,7 @@ functions `CPython` leaves out. An absent library is then one raised error
 naming the paths tried, rather than a link failure or a load-time abort.
 
 **Three rules here are load-bearing, and all three were found by crashing.**
+A fourth, the scope every handle is opened with, follows them below.
 (`~/dev` probes, 2026-09-12; the write-ups are in this module's tests.)
 
   - **The handle and the pointers loaded from it live in ONE struct.** A
@@ -71,14 +72,17 @@ this package's image in the loader's global scope, as `OwnedDLHandle`'s
 default mode puts it, glibc binds the internal calls of any libpq loaded
 later into this one, unless that build was linked `-Bsymbolic`. Measured on
 Ubuntu 24.04 with its own libpq 16.15 opened first and psycopg-binary's
-bundled 18.6 second: 70 of the second image's symbols bound into the
+bundled 18.6 second: 69 of the second image's symbols bound into the
 first, `PQconnectStart`, `PQconnectPoll` and `PQclear` among them, and a
-connection attempt through the second crashed the process, three runs of
-three, a `PGconn` built by one version walked by the other. With the first
-image local, none bound and the attempt failed cleanly. The second library
-need not be one this package opened: under `m0serve`, a Python application
-on psycopg-binary loads its own after `--pg-listen` has loaded the
-system's.
+connection attempt through the second's own handle crashed the process,
+three runs of three, a `PGconn` built by one version walked by the other.
+With the first image local, none bound and the attempt failed cleanly. The
+second library need not be one this package opened. A Python application
+on psycopg-binary, which under `m0serve` loads after `--pg-listen` has
+loaded the system's libpq, was captured the same way: it reported the
+system's version, not its bundled one, and ran on the system's library.
+That did not crash, its extension's own calls being captured with the
+rest, and it is not the library the application chose.
 Nothing here needs the global scope: every entry point is looked up
 through the handle.
 

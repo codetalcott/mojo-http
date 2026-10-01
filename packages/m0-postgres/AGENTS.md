@@ -41,13 +41,16 @@ four are in `lib.mojo`'s docstring:
   what makes a second libpq in the process sound. `OwnedDLHandle`'s default
   is global, and an image in the global scope captures the internal calls of
   any libpq build loaded after it that was not linked `-Bsymbolic`: measured
-  on Ubuntu 24.04 with psycopg-binary's bundled libpq loaded second, 70
-  symbols bound into the system's and a connection attempt through the second
-  crashed. The second need not be one this package opened: a Python
-  application on psycopg-binary under `m0serve --pg-listen` is that case. A
-  re-open that says `RTLD_GLOBAL` promotes the image, so the pin is local
-  too. A copy of the system library cannot show the fault (Ubuntu's build
-  binds one data symbol across), so `test_pin.mojo` holds the scope itself.
+  on Ubuntu 24.04 with psycopg-binary's bundled libpq loaded second, 69
+  symbols bound into the system's and a connection attempt through the
+  second's own handle crashed. The second need not be one this package
+  opened: psycopg-binary itself, loaded beside a global libpq as it is under
+  `m0serve --pg-listen`, reported the system's version and ran on the
+  system's library (no crash measured for that case). A re-open that says
+  `RTLD_GLOBAL` promotes the image, so the pin is local too, and so would a
+  global `dlopen` of the same file by anything else in the process. A copy of
+  the system library cannot show the fault (Ubuntu's build binds one data
+  symbol across), so `test_pin.mojo` holds the scope itself.
 
 The pin's word is a `pop.global_alloc` behind a `@no_inline` accessor, read
 back as it is written (m0-sqlite's idiom, copied, since this package imports

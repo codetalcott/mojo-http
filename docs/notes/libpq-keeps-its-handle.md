@@ -98,15 +98,21 @@ different build does:
 
 | Ubuntu 24.04, aarch64 | first image global | first image local |
 |---|---|---|
-| symbols of psycopg-binary 3.3.6's libpq 18.6 bound into Ubuntu's 16.15 | 70 | 0 |
-| a connection attempt through the second (`PgLib.open(path)`, then `connect_with`) | the process crashes, 3 runs of 3 | "connection refused", 3 of 3 |
+| symbols of psycopg-binary 3.3.6's libpq 18.6 bound into Ubuntu's 16.15 | 69 (70 bindings) | 0 |
+| a connection attempt through the second's own handle (`PgLib.open(path)`, then `connect_with`) | the process crashes, 3 runs of 3 | "connection refused", 3 of 3 |
+| `psycopg.pq.version()` from psycopg-binary imported after the first image | 160015, the system's | 180006, its own |
 
 A `PGconn` built by one version was being walked by the other. And the
 second libpq need not be one this package opened: under `m0serve`, a
 Python application on psycopg-binary loads its bundled libpq after
-`--pg-listen` has loaded the system's, and the binding count above is that
-case exactly, the second library loaded through `ctypes`. That one
-predates this change.
+`--pg-listen` has loaded the system's. The binding count above is that
+case, the second library loaded through `ctypes`, and the last row is
+psycopg itself: captured whole, it ran on the system's libpq, and its
+connection attempt failed cleanly. No crash was measured for it, because
+its extension's own calls were captured with the rest; what it lost was
+the library it shipped. All of this predates the change. It was measured
+in a Python process modelling the two loads, and, in review, in a Mojo
+program embedding CPython; not under a real `bin/m0serve`.
 
 So every handle is `RTLD_LOCAL` now, the open's and the pin's, which is
 m0-sqlite's second rule arriving for the same reason. Nothing here needs
@@ -170,3 +176,10 @@ its own, in the global scope: then it is this package's image whose calls
 may bind into the other, and nothing here can prevent it. `m0serve` opens
 libpq for `--pg-listen` before the application is imported, so the order
 there is the safe one.
+
+And a later `dlopen` of the SAME libpq file with `RTLD_GLOBAL`, by
+anything else in the process: a re-open promotes an image opened local,
+which is why the pin's own re-open is local. `ctypes.CDLL("libpq.so.5",
+mode=RTLD_GLOBAL)` in an application would do it. Pure-Python psycopg,
+which finds the system library through `ctypes`, does not: in review it
+shared the package's image and the scope held.

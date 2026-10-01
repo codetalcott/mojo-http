@@ -445,6 +445,14 @@ jobs:
       - run: uv run poe build-all
       - name: Test m0-postgres against a real server
         run: uv run poe test-postgres-server
+      # The pin's rules reverted on the platform where the scope matters:
+      # an image in the global scope captures a second libpq's calls on
+      # glibc alone (SPEC O24), and the harness's anchors for the two scope
+      # rules are this platform's arm of a `comptime if`, which the macOS
+      # job never reads. Six of seven are caught here; the kept handle
+      # reports SKIPPED, which exits 0.
+      - name: Sabotage m0-postgres's library pin (Linux, where the scope binds)
+        run: uv run poe sabotage-postgres-pin
       - name: Build the serve CLI
         run: uv run poe build-serve
       - name: Smoke test a Postgres NOTIFY reaching a held stream
@@ -459,9 +467,10 @@ jobs:
   # The pin keeps a handle open because macOS drops an image opened
   # `RTLD_NODELETE` from dyld's list once its last handle closes, so a
   # reopen mapped a fresh copy of libpq. glibc keeps such an object
-  # findable, so the Linux job above runs the same file, states the
-  # property and cannot fail it. The apple-silicon shape: job-level
-  # `runs-on`, no condition on the cited step.
+  # findable, so the Linux job above, which runs the same file, states
+  # that property and cannot fail it; the file's other rules it can. The
+  # apple-silicon shape: job-level `runs-on`, no condition on the cited
+  # step.
   #
   # libpq is INSTALLED here, not found. The macOS runner image carries no
   # PostgreSQL (macos-26-arm64 of 20260907: none in its software list), so
