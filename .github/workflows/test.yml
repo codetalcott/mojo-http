@@ -472,11 +472,14 @@ jobs:
   # apple-silicon shape: job-level `runs-on`, no condition on the cited
   # step.
   #
-  # libpq is INSTALLED here, not found. The macOS runner image carries no
-  # PostgreSQL (macos-26-arm64 of 20260907: none in its software list), so
-  # without the install no macOS leg could run the test at all, and a row
-  # saying `(every PR)` over a test that every runner skips, or that cannot
-  # fail where it runs, is the defect #522's review found twice.
+  # libpq is INSTALLED here, not found. The macOS runner image's software
+  # list names no PostgreSQL (macos-26-arm64 of 20260907). It carries
+  # Homebrew's libpq all the same: this job's first run, 36869066412, was
+  # told 18.6 was already installed. That is the luck the SQLite arm ran on,
+  # and nothing promises it: without the install, an image that dropped the
+  # library would leave no macOS leg able to run the test, and a row saying
+  # `(every PR)` over a test that every runner skips, or that cannot fail
+  # where it runs, is the defect #522's review found twice.
   # `test_pin.mojo` needs no server, the thing a macOS runner cannot have
   # (the job above's comment), and fails without a library. Homebrew's
   # `libpq` is keg-only, and `default_search_path` names its `opt` path.
@@ -492,7 +495,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: ./.github/actions/setup
-      - name: Install libpq (the macOS runner image carries none)
+      - name: Install libpq (the macOS runner image does not promise one)
         timeout-minutes: 5
         run: brew install libpq
       - name: Test m0-postgres's library pin where the loader can drop it

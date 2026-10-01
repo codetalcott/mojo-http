@@ -142,11 +142,16 @@ holds the scope, which a flag flipped back fails on both platforms, and
 the table above is the measurement of what the scope prevents, taken once
 by hand.
 
-Only macOS can fail the kept handle, and CI's macOS runners carry no
-libpq: the `macos-26-arm64` image of 2026-09-07 lists no PostgreSQL among
-its software. A row saying `(every PR)` over a test that every runner
-skips, or that cannot fail where it runs, is the defect the review of #522
-found twice. That left two honest cadences:
+Only macOS can fail the kept handle, and CI's macOS runners do not promise
+a libpq: the `macos-26-arm64` image of 2026-09-07 lists no PostgreSQL among
+its software. This note first took that list to mean the image had none;
+it has one. The first run of the job below was told Homebrew's libpq 18.6 was
+already installed, some other formula's dependency, as Homebrew's SQLite
+was for O23. So the install is what it is there: the thing that keeps a
+library the image merely happens to carry from being what the gate rests
+on. A row saying `(every PR)` over a test that every runner skips, or that
+cannot fail where it runs, is the defect the review of #522 found twice.
+That left two honest cadences:
 
 - **every PR**, in a macOS job that installs libpq itself and fails
   without it;
@@ -157,8 +162,9 @@ The row is `(every PR)`. A regression here is silent by construction: the
 code keeps working and the process only grows. A gate that runs at release
 time would report it weeks after the change that caused it, when that
 change is no longer in anyone's diff. The cost is one `brew install libpq`
-per pull request, in a job of its own (`postgres-macos`) so that a Homebrew
-outage reddens a job named for what it could not install. The Linux
+per pull request, which today finds the library there and installs
+nothing, in a job of its own (`postgres-macos`) so that a Homebrew outage
+reddens a job named for what it could not install. The Linux
 `postgres` job runs the file too, inside `test-postgres-server`: the kept
 handle is only stated there, and everything else in the file can fail
 there.
