@@ -112,6 +112,16 @@ most:
   and do not hand a function its connection (`Args` carries none). Nothing
   reaches a registered instance by address, either.
 
+**The change clock is `Connection.data_version()`, and there is no commit
+hook** (SPEC O25, D60; docs/notes/a-resource-over-a-table.md). The pragma
+stands still for the asking connection's own writes, so the connection
+that asks is one that does not write: opened read-only beside the writer,
+it sees this process's commits like any other's. Do not add a hook to
+count own writes; it over-counts four ways, misses `VACUUM`, and cannot be
+removed after `close_v2`. `test_change_clock.mojo` pins what moves the
+clock and what does not, the truncating checkpoint's move with nothing
+behind it included.
+
 **The package has two globals**, each a `pop.global_alloc` word behind an
 `@no_inline` accessor (m0-http's `src/global_slot.mojo` idiom, copied, since
 this package imports nothing): `function.mojo`'s published table and

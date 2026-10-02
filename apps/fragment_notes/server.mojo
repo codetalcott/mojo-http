@@ -8,7 +8,7 @@ It was first written the way every Mojo app in this tree was written —
 attributes by hand in eight places, `String(...)` concatenation, a
 handler-id chain, every view branching on the request header — and gated
 on WIRE OUTPUT only (`poe smoke-fragment-notes`), so each of those could be
-lifted into the framework under a green gate. This is the app after five
+lifted into the framework under a green gate. This is the app after six
 of those lifts, and the smoke has not changed:
 
 - **the URL table names the view.** `note_urls()` is the whole mapping; a view
@@ -33,6 +33,11 @@ of those lifts, and the smoke has not changed:
 - **routes are values.** `NOTES` and `NOTE` are `comptime` patterns given
   to the table and to `url_for`; no renderer spells a path. A misspelled
   route is a compile error, and `url_for` raises on the wrong arity.
+- **the resource is its routes, named once.** `v.resource(NOTES,
+  list=index, create=create, show=detail, delete=delete)` is the four
+  routes under `/notes`, each view in the slot that says what it does, and
+  `NOTE` is `NOTES` and the suffix the same call registers. This app has
+  no edit form, so those slots are empty and register nothing.
 
 - **the form is parsed once, by the framework.** `form(req)` is an
   ordered multimap — `f.all("tag")` is every ticked checkbox — and is
@@ -121,6 +126,7 @@ from m0_http import (
     Html,
     Htmx,
     Login,
+    RESOURCE_ITEM,
     SessionKeys,
     SessionVerdict,
     Views,
@@ -161,7 +167,7 @@ form.session{display:inline;margin:0}
 # table below and to `url_for` in the renderers. A misspelled route is a
 # compile error, not a dead link.
 comptime NOTES = "/notes"
-comptime NOTE = "/notes/:id"
+comptime NOTE = NOTES + RESOURCE_ITEM
 
 # The fragment's id, written once: both renderers build the same element,
 # and a list that swapped in a section the detail view's links did not
@@ -629,8 +635,9 @@ def _index_of(store: NoteStore, param: String) -> Int:
 
 def note_urls() raises -> Views[NoteStore]:
     """The whole URL-to-view mapping. Each line names the function that
-    answers it and says whether it writes; there is no id to keep in step
-    and no dispatch chain to fall through.
+    answers it and says whether it writes -- for the notes, by the slot it
+    sits in -- and there is no id to keep in step and no dispatch chain to
+    fall through.
 
     Which routes are private is not in this table, on purpose: a table
     that carried it would be a second place to forget, and there is no
@@ -643,10 +650,7 @@ def note_urls() raises -> Views[NoteStore]:
     v.add_read("GET", LOGIN, login_form)
     v.add_read("POST", LOGIN, login)
     v.add_read("POST", LOGOUT, logout)
-    v.add_read("GET", NOTES, index)
-    v.add_write("POST", NOTES, create)
-    v.add_read("GET", NOTE, detail)
-    v.add_write("DELETE", NOTE, delete)
+    v.resource(NOTES, list=index, create=create, show=detail, delete=delete)
     return v^
 
 

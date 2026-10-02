@@ -1070,6 +1070,14 @@ jobs:
       # the CSRF token and with another session's, and logout.
       - name: Smoke test the fragment notes app
         run: uv run poe smoke-fragment-notes
+      # The same resource over a SQLite table (N46-N48): `Views.resource`'s
+      # routes with the POST twin of its PUT, a list rendered only when the
+      # read-only connection's `data_version` moves, and a 304 from a tag
+      # over the bytes sent -- which a commit to another table, from another
+      # program, leaves alone. Then two loops over one file, each serving
+      # what the other wrote.
+      - name: Smoke test the table notes app
+        run: uv run poe smoke-table-notes
       # Periodic work with a real budget does not belong on the event loop,
       # and this is where that stops being an assertion. apps/sim_loop runs
       # the identical step in two places behind one variable: off the loop a

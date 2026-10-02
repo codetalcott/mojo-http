@@ -10,6 +10,33 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **A resource over a table** (SPEC N46–N48 and O25, DECISIONS D60–D62;
+  docs/notes/a-resource-over-a-table.md), in three pieces an application
+  joins:
+  - `Views.resource(NOTES, list=, new=, create=, show=, edit=, update=,
+    delete=)` registers a collection and its rows under one pattern, each
+    view in the slot that says what it does. Every slot is optional.
+    `update` answers `PUT /notes/:id` and `POST /notes/:id/edit`, because a
+    plain form cannot PUT and posts to the URL it was served from.
+    `RESOURCE_NEW`, `RESOURCE_ITEM` and `RESOURCE_EDIT` are the suffixes,
+    for the constants given to `url_for`.
+  - `m0_sqlite`'s `Connection.data_version()` is a change clock: a number
+    that differs once another connection has committed a change to the
+    file. Asked on a connection opened read-only beside the writer, it
+    moves for this process's own commits too, so a cache keyed by it needs
+    no commit hook and nothing a caller could forget to say. Ask it on the
+    connection that renders, before rendering.
+  - `Cached` keeps one rendering and the clock value it was made at, and
+    `conditional(req, resp)` puts an `ETag` over the response's body and
+    answers 304 to a GET or HEAD that names it. The tag is a hash of the
+    bytes sent: a page and its fragment have two, and a commit to another
+    table leaves both alone.
+
+  `apps/table_notes` is the three together over a SQLite file: two loops
+  under `M0_THREADS=2` each serve what the other wrote, with no lock held
+  across a render and nothing shared but the file. `apps/fragment_notes`
+  registers its notes through `resource`, its wire output unchanged.
+
 - **Scalar SQL functions written in Mojo** (SPEC O19–O22, DECISIONS
   D58–D59). `Connection.create_function("dot", Dot())` registers a type
   conforming to `ScalarFunction` — `comptime arity` and `deterministic`,
