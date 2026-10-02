@@ -111,6 +111,24 @@ identical, one round trip later, with THAT thread's state. Recorded rather
 than built (DECISIONS D32): the divergence is latency under a full lane,
 not a stall, and `smoke-ramp` measures it on both hosts.
 
+## A resource is its routes, named once
+
+A table over a collection of rows registers the same routes every time: a
+list, a form and the POST that creates, one row, a form and the PUT that
+updates, a DELETE. Two applications wrote them out by hand, five times in
+one of them, with the same seven view names in every module.
+`resource(NOTES, list=index, create=create, show=detail, ...)` is that
+registration, and nothing else: the views stay free functions, a slot left
+out registers nothing, and the patterns are `NOTES` and three suffixes
+(`RESOURCE_NEW`, `RESOURCE_ITEM`, `RESOURCE_EDIT`) an application joins
+once into the constants it gives `url_for`.
+
+What it names that the layer had not is the twin of the update. A plain
+HTML form sends GET or POST, so an edit form answered with a 303 -- the
+default, a swap being the exception -- cannot reach a PUT. `update`
+registers for `PUT pattern/:id` and for `POST pattern/:id/edit`, the URL
+the form was served from, so the form posts to where it is.
+
 ## Views are stored as thin function pointers
 
 `fn` is gone in Mojo 1.0 and a function type spells `def (...) -> ...`,
@@ -152,6 +170,17 @@ from lightbug_http.service import HTTPService
 
 from .reply import empty, problem
 from .router import Mount, Router, _list_contains
+
+
+comptime RESOURCE_NEW = "/new"
+"""What `Views.resource` appends to a collection's pattern for the form
+that creates a row. With the two below, the suffixes an application gives
+`url_for`: `comptime NOTE = NOTES + RESOURCE_ITEM`."""
+comptime RESOURCE_ITEM = "/:id"
+"""The suffix of one row."""
+comptime RESOURCE_EDIT = "/:id/edit"
+"""The suffix of the form that updates a row, and of the POST a plain
+form sends it to."""
 
 
 comptime LOOP_STATELESS: UInt8 = 0
@@ -296,6 +325,58 @@ struct Views[S: Movable]:
         if on_loop:
             self._place_on_loop(method, pattern, LOOP_WRITE, len(self._writes))
         self._writes.append(view)
+
+    def resource(
+        mut self,
+        pattern: String,
+        *,
+        list: Optional[Self.ReadView] = None,
+        new: Optional[Self.ReadView] = None,
+        create: Optional[Self.WriteView] = None,
+        show: Optional[Self.ReadView] = None,
+        edit: Optional[Self.ReadView] = None,
+        update: Optional[Self.WriteView] = None,
+        delete: Optional[Self.WriteView] = None,
+    ):
+        """Register a collection and its rows under `pattern`, each view
+        named for what it does (module docstring, "A resource is its
+        routes, named once"). Every slot is optional; an empty one
+        registers nothing, so its method is a 405 or its path a 404.
+
+            GET    pattern            list
+            GET    pattern/new        new      the form that creates
+            POST   pattern            create
+            GET    pattern/:id        show
+            GET    pattern/:id/edit   edit     the form that updates
+            PUT    pattern/:id        update
+            POST   pattern/:id/edit   update   the same view: a form cannot PUT
+            DELETE pattern/:id        delete
+
+        The reading slots take a view that does not write and the others
+        one that may, which is the table's rule and not this method's. A
+        view the slot's kind does not fit -- a list that fills a cache as
+        it answers -- registers through `add_write` on the same pattern,
+        its slot left empty.
+        """
+        var item = pattern + RESOURCE_ITEM
+        var item_edit = pattern + RESOURCE_EDIT
+        if list:
+            self.add_read("GET", pattern, list.value())
+        # Before `show`: the router answers with the first route that
+        # matches, and `:id` would capture `new`.
+        if new:
+            self.add_read("GET", pattern + RESOURCE_NEW, new.value())
+        if create:
+            self.add_write("POST", pattern, create.value())
+        if show:
+            self.add_read("GET", item, show.value())
+        if edit:
+            self.add_read("GET", item_edit, edit.value())
+        if update:
+            self.add_write("PUT", item, update.value())
+            self.add_write("POST", item_edit, update.value())
+        if delete:
+            self.add_write("DELETE", item, delete.value())
 
     def _place_on_loop(mut self, method: String, pattern: String, kind: UInt8, slot: Int):
         """Register the route in the loop router too, naming which table

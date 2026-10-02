@@ -52,6 +52,35 @@ if refused:
     return refused.take()
 ```
 
+A table over rows registers the same routes each time, and `resource` is
+that registration:
+
+```mojo
+comptime ITEMS = "/items"
+comptime ITEM = ITEMS + RESOURCE_ITEM         # /items/:id
+comptime ITEM_EDIT = ITEMS + RESOURCE_EDIT    # /items/:id/edit
+
+v.resource(
+    ITEMS, list=index, new=new_form, create=create, show=detail,
+    edit=edit_form, update=update, delete=delete,
+)
+```
+
+| slot | route | the view |
+|---|---|---|
+| `list` | `GET /items` | reads |
+| `new` | `GET /items/new` | reads |
+| `create` | `POST /items` | writes |
+| `show` | `GET /items/:id` | reads |
+| `edit` | `GET /items/:id/edit` | reads |
+| `update` | `PUT /items/:id` and `POST /items/:id/edit` | writes |
+| `delete` | `DELETE /items/:id` | writes |
+
+Every slot is optional, and an empty one registers nothing. `update` has
+two routes because a plain form cannot PUT: the edit form posts to the URL
+it was served from. A view of the other kind takes its route through
+`add_read` or `add_write` with the slot left empty.
+
 `form(req)` returns `None` unless the body is `application/x-www-form-urlencoded`,
 so a missing form cannot be read as an empty one. The `Form` keeps every
 value of a repeated key; `first("title")` is the usual read. Multipart is
@@ -183,6 +212,39 @@ came from a request is encoded byte by byte, so the URL is one
 `Views[S](Mount("/shop"))` registers every pattern under a prefix, and
 `mount.url_for(ITEM, ...)` puts the prefix in front. One `Mount` value does
 both, so a table moved under a prefix keeps its links.
+
+## A rendering kept until the data changes
+
+`Cached` keeps one rendering and the clock value it was made at.
+`conditional` puts an `ETag` over a response's body and answers 304 to a
+GET that names it:
+
+```mojo
+def index(req: HTTPRequest, params: List[String], mut st: Store) raises -> HTTPResponse:
+    var now = st.reader.data_version()
+    if not st.rows.current(now):
+        var body = render_rows(st.reader)
+        _ = st.rows.fill(now, body^)
+    return conditional(req, page_or_fragment(req, st.rows.body, Site("items")))
+```
+
+The clock is any number that differs once the data may have. For SQLite it
+is `Connection.data_version()`, asked on a connection opened with
+`open_readonly` beside the one that writes:
+
+- Render through the connection the clock is asked on, and ask before
+  rendering.
+- The view fills a cache, so it registers with `add_write`.
+- Each thread that serves builds its own state, so each has its own two
+  connections and its own `Cached`. They serve what the others wrote, with
+  nothing shared but the file.
+
+The tag is a hash of the bytes sent. A page and its fragment have two
+tags, and a commit to another table moves the clock and leaves both alone.
+`conditional` adds `Cache-Control: no-cache` where the response names no
+policy and keeps a policy the response names, and leaves any status but
+200 and any method but GET and HEAD as they are. `apps/table_notes` in the
+repository is a resource, the clock and the 304 over one SQLite file.
 
 ## Sessions
 

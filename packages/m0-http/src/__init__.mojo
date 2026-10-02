@@ -8,7 +8,9 @@ Events) support, and multi-worker fork supervision.
 """
 
 from .router import Mount, Query, Router, MatchResult, reverse, url_for
-from .views import Views, ViewService
+from .views import (
+    Views, ViewService, RESOURCE_EDIT, RESOURCE_ITEM, RESOURCE_NEW,
+)
 from .fragment import PageShell, page_or_fragment, vary_on_fragment_headers, wants_fragment
 from .html import (
     Datastar, ElementKind, Fragment, Html, Htmx, RequestHeader, STANDARD_VERBS,
@@ -31,6 +33,7 @@ from .session import (
 )
 from .content_negotiation import AcceptResult, parse_accept
 from .etag import compute_etag, etag_matches
+from .cached import Cached, conditional
 from .reply import (
     accept_header,
     body_string,

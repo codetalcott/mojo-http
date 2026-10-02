@@ -420,8 +420,11 @@ for an application: a commit hook, so a change clock would count a
 connection's own commits without the caller saying it wrote, and a progress
 handler holding a request's deadline. Both were measured on 2026-10-01
 against the registration work as merged, on Apple's 3.54.0 and Homebrew's
-3.53.4, and on no Linux build. Neither is built. No row or gate holds what
-follows; the gates land with the code that relies on it.
+3.53.4, and on no Linux build. Neither is built. The clock's table below
+has been a gate since 2026-10-02, on both platforms: SPEC O25,
+`test_change_clock.mojo`, with the application that relies on it
+([a-resource-over-a-table](a-resource-over-a-table.md)). Nothing holds the
+deadline's measurements; that gate lands with the code that relies on it.
 
 ### A change clock needs no commit hook
 

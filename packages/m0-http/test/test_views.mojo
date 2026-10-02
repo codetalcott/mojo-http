@@ -11,7 +11,10 @@ from lightbug_http.uri import URI
 
 from src import reply
 from src.router import Mount
-from src.views import Views, ViewService
+from src.router import url_for
+from src.views import (
+    Views, ViewService, RESOURCE_EDIT, RESOURCE_ITEM, RESOURCE_NEW,
+)
 
 
 struct Counter(Movable):
@@ -84,6 +87,153 @@ def _table() raises -> Views[Counter]:
     v.add_read(String("GET"), String("/notes/:id"), _detail)
     v.add_write(String("POST"), String("/notes"), _bump)
     return v^
+
+
+comptime THINGS = "/things"
+comptime THINGS_NEW = THINGS + RESOURCE_NEW
+comptime THING = THINGS + RESOURCE_ITEM
+comptime THING_EDIT = THINGS + RESOURCE_EDIT
+
+
+def _named(name: String, params: List[String]) -> HTTPResponse:
+    var who = name
+    for p in params:
+        who += " " + p
+    return reply.html(who)
+
+
+def _r_list(req: HTTPRequest, params: List[String], st: Counter) raises -> HTTPResponse:
+    return _named("list", params)
+
+
+def _r_new(req: HTTPRequest, params: List[String], st: Counter) raises -> HTTPResponse:
+    return _named("new", params)
+
+
+def _r_show(req: HTTPRequest, params: List[String], st: Counter) raises -> HTTPResponse:
+    return _named("show", params)
+
+
+def _r_edit(req: HTTPRequest, params: List[String], st: Counter) raises -> HTTPResponse:
+    return _named("edit", params)
+
+
+def _r_create(req: HTTPRequest, params: List[String], mut st: Counter) raises -> HTTPResponse:
+    st.hits += 1
+    return _named("create", params)
+
+
+def _r_update(req: HTTPRequest, params: List[String], mut st: Counter) raises -> HTTPResponse:
+    st.hits += 1
+    return _named("update", params)
+
+
+def _r_delete(req: HTTPRequest, params: List[String], mut st: Counter) raises -> HTTPResponse:
+    st.hits += 1
+    return _named("delete", params)
+
+
+def _whole_resource(mount: Mount = Mount()) raises -> Views[Counter]:
+    var v = Views[Counter](mount)
+    v.resource(
+        THINGS, list=_r_list, new=_r_new, create=_r_create, show=_r_show,
+        edit=_r_edit, update=_r_update, delete=_r_delete,
+    )
+    return v^
+
+
+def _answer(v: Views[Counter], mut st: Counter, method: String, path: String) raises -> String:
+    return _body(v.dispatch(_req(method, path), st))
+
+
+def test_a_resource_registers_each_view_under_its_route() raises:
+    """Seven views, eight routes, each answered by the view its slot names.
+
+    covers: N46
+    """
+    var v = _whole_resource()
+    var st = Counter()
+    assert_equal(v.route_count(), 8)
+    assert_equal(_answer(v, st, "GET", "/things"), "list")
+    assert_equal(_answer(v, st, "GET", "/things/new"), "new")
+    assert_equal(_answer(v, st, "POST", "/things"), "create")
+    assert_equal(_answer(v, st, "GET", "/things/7"), "show 7")
+    assert_equal(_answer(v, st, "GET", "/things/7/edit"), "edit 7")
+    assert_equal(_answer(v, st, "PUT", "/things/7"), "update 7")
+    assert_equal(_answer(v, st, "DELETE", "/things/7"), "delete 7")
+    assert_equal(st.hits, 3)
+
+
+def test_a_resources_update_answers_the_form_that_cannot_put() raises:
+    """A plain form posts to the URL it was served from, and reaches the
+    view a PUT reaches."""
+    var v = _whole_resource()
+    var st = Counter()
+    assert_equal(_answer(v, st, "POST", "/things/7/edit"), "update 7")
+    assert_equal(st.hits, 1)
+    assert_equal(v.allow_header("/things/7/edit"), "GET, HEAD, POST, OPTIONS")
+    assert_equal(v.allow_header("/things/7"), "GET, HEAD, PUT, DELETE, OPTIONS")
+
+
+def test_a_resources_new_form_is_not_a_row_named_new() raises:
+    """`/things/new` matches `/things/:id` too; the form is registered
+    first, and the router answers with the first route that matches."""
+    var v = _whole_resource()
+    var st = Counter()
+    assert_equal(_answer(v, st, "GET", "/things/new"), "new")
+    # Without the form, `new` is a row's name like any other.
+    var bare = Views[Counter]()
+    bare.resource(THINGS, show=_r_show)
+    assert_equal(_answer(bare, st, "GET", "/things/new"), "show new")
+
+
+def test_an_empty_slot_registers_nothing() raises:
+    var v = Views[Counter]()
+    v.resource(THINGS, list=_r_list, show=_r_show)
+    var st = Counter()
+    assert_equal(v.route_count(), 2)
+    assert_equal(v.dispatch(_req("POST", "/things"), st).status_code, 405)
+    assert_equal(v.dispatch(_req("DELETE", "/things/7"), st).status_code, 405)
+    assert_equal(v.dispatch(_req("GET", "/things/7/edit"), st).status_code, 404)
+    assert_equal(v.allow_header("/things/7"), "GET, HEAD, OPTIONS")
+    # An update alone is both of its routes and no form.
+    var u = Views[Counter]()
+    u.resource(THINGS, update=_r_update)
+    assert_equal(u.route_count(), 2)
+    assert_equal(u.dispatch(_req("GET", "/things/7/edit"), st).status_code, 405)
+
+
+def test_a_slot_left_empty_takes_a_view_of_the_other_kind() raises:
+    """A list that writes -- one that fills a cache as it answers --
+    registers through `add_write` on the collection's own pattern."""
+    var v = Views[Counter]()
+    v.resource(THINGS, create=_r_create, show=_r_show)
+    v.add_write("GET", THINGS, _bump)
+    var st = Counter()
+    assert_equal(v.dispatch(_req("GET", "/things"), st).status_code, 204)
+    assert_equal(st.hits, 1)
+    assert_equal(v.allow_header("/things"), "POST, GET, HEAD, OPTIONS")
+
+
+def test_a_resources_patterns_reverse_from_its_suffixes() raises:
+    """The constants an application gives `url_for` are the collection's
+    pattern and a suffix, so they are the patterns `resource` registered."""
+    var v = _whole_resource()
+    var st = Counter()
+    assert_equal(url_for(THINGS), "/things")
+    assert_equal(url_for(THINGS_NEW), "/things/new")
+    assert_equal(url_for(THING, "7"), "/things/7")
+    assert_equal(url_for(THING_EDIT, "7"), "/things/7/edit")
+    assert_equal(_answer(v, st, "GET", url_for(THING_EDIT, "7")), "edit 7")
+
+
+def test_a_mounted_resource_is_under_its_prefix() raises:
+    var at = Mount("/native")
+    var v = _whole_resource(at)
+    var st = Counter()
+    assert_equal(_answer(v, st, "GET", "/native/things/7/edit"), "edit 7")
+    assert_equal(_answer(v, st, "POST", at.url_for(THING_EDIT, "7")), "update 7")
+    assert_equal(v.dispatch(_req("GET", "/things/7"), st).status_code, 404)
 
 
 def test_dispatch_calls_the_registered_view() raises:

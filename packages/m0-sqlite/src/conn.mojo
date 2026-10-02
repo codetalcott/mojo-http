@@ -271,6 +271,37 @@ struct Connection(Movable):
             return String("")
         return q.column_text(0)
 
+    def data_version(self) raises -> Int:
+        """The change clock: `PRAGMA data_version`, a number that is
+        different after ANOTHER connection commits a change to the database
+        file, and the same after this connection's own.
+
+        So the connection that asks is one that does not write. Opened with
+        `open_readonly` beside the writer, it sees this process's commits
+        like any other's, and its answer is a cache key: what was rendered
+        through this connection at one value is current while the value
+        stands (SPEC O25). Two rules make that true:
+
+        - **Ask on the connection that renders.** A connection holding a
+          read open keeps its snapshot AND its clock, so its clock moves
+          when what it can see does. A cache filled through one connection
+          and stamped with another's clock can pair an old rendering with
+          a new value, and then never render again.
+        - **Ask before rendering, not after.** A commit that lands between
+          the two leaves a current rendering under an old value, which
+          costs one more rendering; the other order keeps a stale one.
+
+        It says that something changed, not what: the value moves for a
+        commit to any table, and for a `wal_checkpoint(TRUNCATE)` that
+        changed nothing. A validator is therefore a hash of what was
+        rendered, never this number. Compare for equality only; it is not
+        a count. About a microsecond.
+        """
+        var q = self.prepare("PRAGMA data_version")
+        if not q.step():
+            raise Error("PRAGMA data_version answered no row")
+        return q.column_int(0)
+
     def mmap_size(self, bytes_: Int) raises:
         """Map up to `bytes_` of the database file into the process.
 

@@ -1329,6 +1329,12 @@ M0_NOTES_SECURE=${M0_NOTES_SECURE:-0} \
 mojo run -I packages/m0-core/ -I packages/m0-http/ apps/fragment_notes/server.mojo
 """
 
+[tool.poe.tasks.serve-table-notes]
+help = "Run the table notes example (a resource over a SQLite table, cached by the change clock) on :8080"
+shell = """
+mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-sqlite/ apps/table_notes/server.mojo
+"""
+
 # The view table's read/write split is a claim about what the compiler
 # REFUSES, which no passing test can show -- the counter-example is a file
 # that does not build. Same shape as sabotage-spec and shim_ownership.py
@@ -9747,6 +9753,37 @@ python3 scripts/emit.py --covers N18 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N37 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N43 --task smoke-fragment-notes
 python3 scripts/emit.py --covers N44 --task smoke-fragment-notes
+"""
+
+# A resource over a SQLite table (SPEC N46-N48): `Views.resource`'s routes
+# and the POST twin of its PUT, on the wire; a list rendered when
+# `Connection.data_version` moves on a read-only connection and at no other
+# time; and `conditional`'s 304. Two servers: one loop, where one cache
+# makes "rendered N times" exact, then two loops on threads over one file,
+# where a write through either is what the other serves next. The other
+# program that writes the file is the probe, through CPython's sqlite3.
+[tool.poe.tasks.smoke-table-notes]
+help = "Start the table notes app (a resource over SQLite, cached by the change clock), assert its routes, its 304s and what moves them, at one loop and at two"
+shell = """
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-sqlite/ apps/table_notes/server.mojo -o "$out/table_notes" || fail 'apps/table_notes did not build'
+
+port=$(free_port)
+spawn one.log env M0_PORT=$port M0_DB="$out/one.db" "$out/table_notes"
+wait_ready http://localhost:$port/health $pid 60
+python3 scripts/table_notes_probe.py one $port "$out/one.db" || fail 'the one-loop phase failed'
+stop $pid || fail "the one-loop server exited $? on SIGTERM"
+
+port=$(free_port)
+spawn loops.log env M0_PORT=$port M0_THREADS=2 M0_DB="$out/loops.db" "$out/table_notes"
+wait_ready http://localhost:$port/health $pid 60
+python3 scripts/table_notes_probe.py loops $port "$out/loops.db" || fail 'the two-loop phase failed'
+stop $pid || fail "the two-loop server exited $? on SIGTERM"
+
+echo "smoke-table-notes OK"
+python3 scripts/emit.py --covers N48 --task smoke-table-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------

@@ -661,6 +661,20 @@ piece: an app that asks, a wire gate, then the lift.
   empty one. Deliberately NOT factored out of `URI.parse`, which fills a
   last-wins `Dict` by contract; `test_form.mojo`'s encoding table is the
   anti-drift device, and stays a test rather than a shared loop.
+- **A resource over a table** (SPEC N46–N48, O25, D60–D62;
+  docs/notes/a-resource-over-a-table.md). `Views.resource` is a
+  registration: seven optional slots typed by the table's read/write rule,
+  `update` on PUT and on the POST a plain form sends, no guard (D3), and
+  `new` registered before `show` because the router takes the first match.
+  There is no `Resource` type, because `m0-http` and `m0-sqlite` are
+  siblings: the clock crosses as a number. `Connection.data_version()` is
+  asked on a READ-ONLY connection beside the writer, on the connection
+  that renders and BEFORE the rendering; do not add a commit hook (D60).
+  `Cached` keeps a rendering against the clock and `conditional` hashes
+  the response's own body, never the clock, which is the database's and
+  would move every table's tag. A view that fills a `Cached` writes, so it
+  is `add_write`, not `resource`'s `list` slot. `apps/table_notes` is the
+  reference, gated by `smoke-table-notes` at one loop and at two.
 - **A table that streams** (`apps/blobs`, SPEC N16;
   docs/notes/a-world-the-page-cannot-hold.md): `ViewService` forwards only
   `func` and `before_request`, so an app that also owns the SSE hooks writes
