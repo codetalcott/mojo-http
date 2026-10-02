@@ -40,8 +40,8 @@ jobs:
           uv run poe build-http
           uv run mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/host_check/server.mojo -o ab/host_check_b
           cmp -s ab/host_check_a ab/host_check_b && { echo "A and B are the same binary"; exit 1; } || true
-      - name: Run the arms
-        run: python3 scripts/probes/stall_ab.py run ab/results.json ab/host_check_a ab/host_check_b 20 10
+      - name: The gate's own arm, looped
+        run: python3 scripts/probes/stall_ab.py gate ab/results.json ab/host_check_a ab/host_check_b 24
       - name: Upload the samples
         if: always()
         uses: actions/upload-artifact@v7

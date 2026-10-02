@@ -37,6 +37,12 @@ completion's wake, which is what a missed wake looks like.
 
     stall_ab.py patch OFFLOAD_MOJO            # turn the timed look off
     stall_ab.py run OUT.json BIN_A BIN_B ROUND_S ROUNDS
+    stall_ab.py gate OUT.json BIN_A BIN_B MINUTES   # the gate's own arm, looped
+
+The first run (`run`, 2026-10-02 00:20 UTC, three macOS runners) showed no
+stall in any build: about 5,200 samples a cell, the worst 62.7 ms, where
+the gates had failed at 120 to 190 ms. So `run` is not the gate. `gate`
+is: the task's own sequence, cadence and counts, a fresh server each time.
 """
 
 from __future__ import annotations
@@ -75,12 +81,13 @@ def free_port() -> int:
     return port
 
 
-def start(binary: str, env_extra: dict) -> tuple:
+def start(binary: str, env_extra: dict, bind_loopback: bool = True) -> tuple:
     port = free_port()
     env = dict(os.environ)
     env.update(env_extra)
     env["M0_PORT"] = str(port)
-    env["M0_HOST"] = HOST
+    if bind_loopback:
+        env["M0_HOST"] = HOST
     proc = subprocess.Popen([binary], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     end = time.monotonic() + 30
     while time.monotonic() < end:
@@ -156,6 +163,96 @@ def run_cell(binary: str, env_extra: dict, k: int, path: str, seconds: float) ->
     return {"totals": [s[1] for s in samples], "stalls": stalls, "slow_requests": len(ends)}
 
 
+def gate_iteration(binary: str, with_streams: bool) -> dict:
+    """`smoke-host-threads`' pooled-loops arm as the task runs it: a fresh
+    server with M0_THREADS=2 M0_BLOCKING_THREADS=2 on the default host,
+    `host_probe.py streams PORT 4 2 2`, then the placement arm at the gate's
+    own numbers -- two connections on /slow for 4 s, 24 /health samples
+    0.05 to 0.3 s apart, each on a new connection -- with every sample
+    kept and split."""
+    proc, port = start(binary, {"M0_THREADS": "2", "M0_BLOCKING_THREADS": "2"}, bind_loopback=False)
+    try:
+        if with_streams:
+            r = subprocess.run([sys.executable, "scripts/host_probe.py", "streams", str(port), "4", "2", "2"],
+                               capture_output=True, text=True, timeout=120)
+            if r.returncode != 0:
+                raise RuntimeError("the streams phase failed: %s %s" % (r.stdout[-300:], r.stderr[-300:]))
+        until = time.perf_counter() + 4.0
+        ends: list = []
+        loaders = [threading.Thread(target=slow_loop, args=(port, until, ends), daemon=True)
+                   for _ in range(2)]
+        for t in loaders:
+            t.start()
+        time.sleep(0.3)
+        samples = []
+        for _ in range(24):
+            conn = http.client.HTTPConnection(HOST, port, timeout=30)
+            t0 = time.perf_counter()
+            conn.connect()
+            t1 = time.perf_counter()
+            conn.request("GET", "/health")
+            resp = conn.getresponse()
+            resp.read()
+            t2 = time.perf_counter()
+            conn.close()
+            t3 = time.perf_counter()
+            samples.append({"total": (t3 - t0) * 1000.0, "connect": (t1 - t0) * 1000.0,
+                            "request": (t2 - t1) * 1000.0, "end": t2})
+            time.sleep(random.uniform(0.05, 0.3))
+        for t in loaders:
+            t.join(timeout=40)
+    finally:
+        stop(proc)
+    ordered = sorted(samples, key=lambda x: x["total"], reverse=True)
+    worst = ordered[0]
+    nearest = min((abs(worst["end"] - e) for e in ends), default=-1.0)
+    return {"worst_ms": round(worst["total"], 1), "second_ms": round(ordered[1]["total"], 1),
+            "worst_connect_ms": round(worst["connect"], 1), "worst_request_ms": round(worst["request"], 1),
+            "worst_ms_from_a_slow_request_ending": round(nearest * 1000.0, 1),
+            "totals": [round(x["total"], 2) for x in samples]}
+
+
+def gate(out: str, bin_a: str, bin_b: str, minutes: float) -> None:
+    cells = [("A, as the gate runs it", bin_a, True), ("B, as the gate runs it", bin_b, True),
+             ("A, no streams phase first", bin_a, False)]
+    got: dict = {name: [] for name, _, _ in cells}
+    started = time.monotonic()
+    i = 0
+    while time.monotonic() - started < minutes * 60:
+        order = cells[i % 3:] + cells[:i % 3]
+        for name, binary, with_streams in order:
+            got[name].append(gate_iteration(binary, with_streams))
+        i += 1
+        if i % 10 == 0:
+            print("%d iterations, %.0f s in" % (i, time.monotonic() - started), flush=True)
+    lines = ["| cell | gate runs | worst >= 100 ms (a red gate) | worst >= 50 ms | second-worst >= 100 ms | largest worst | samples | p99 ms |",
+             "|---|---|---|---|---|---|---|---|"]
+    summary = {}
+    for name, _, _ in cells:
+        runs = got[name]
+        totals = sorted(t for r in runs for t in r["totals"])
+        row = {"runs": len(runs), "red": sum(1 for r in runs if r["worst_ms"] >= 100),
+               "ge_50": sum(1 for r in runs if r["worst_ms"] >= 50),
+               "second_red": sum(1 for r in runs if r["second_ms"] >= 100),
+               "largest": max(r["worst_ms"] for r in runs), "samples": len(totals),
+               "p99_ms": round(quantile(totals, 0.99), 2),
+               "slow_runs": [{k: v for k, v in r.items() if k != "totals"} for r in runs if r["worst_ms"] >= 50]}
+        summary[name] = row
+        lines.append("| %s | %d | %d | %d | %d | %.1f | %d | %.2f |" % (
+            name, row["runs"], row["red"], row["ge_50"], row["second_red"], row["largest"], row["samples"], row["p99_ms"]))
+    text = "\n".join(lines)
+    print(text)
+    for name in summary:
+        for r in summary[name]["slow_runs"]:
+            print("slow run, %s: %s" % (name, r))
+    json.dump({"cpus": os.cpu_count(), "platform": sys.platform, "minutes": minutes, "cells": summary},
+              open(out, "w"), indent=1)
+    step_summary = os.environ.get("GITHUB_STEP_SUMMARY")
+    if step_summary:
+        with open(step_summary, "a") as f:
+            f.write("### the gate's own arm, looped, on %s, %s CPUs\n\n%s\n" % (sys.platform, os.cpu_count(), text))
+
+
 BUILDS = [("A", "a", {}), ("B", "b", {}), ("C", "a", {"M0_POOL_ELASTIC": "0"})]
 SHAPES = [
     ("loops2x2", {"M0_THREADS": "2", "M0_BLOCKING_THREADS": "2"}, 2, "/health"),
@@ -171,6 +268,9 @@ def quantile(sorted_values: list, q: float) -> float:
 def main() -> None:
     if len(sys.argv) == 3 and sys.argv[1] == "patch":
         patch(sys.argv[2])
+        return
+    if len(sys.argv) == 6 and sys.argv[1] == "gate":
+        gate(sys.argv[2], sys.argv[3], sys.argv[4], float(sys.argv[5]))
         return
     if len(sys.argv) != 7 or sys.argv[1] != "run":
         sys.exit(__doc__)
