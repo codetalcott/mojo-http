@@ -1,7 +1,7 @@
 # Exercising the server against real applications
 
-**A record. Last run 2026-09-24**, against m0serve 1.6.0 on the release
-branch at `9b051fd`, all four applications, six rows, in the newest section
+**A record. Last run 2026-10-02**, against m0serve 1.8.0 on main at
+`d624ae7`, all four applications, six rows, in the newest section
 below. The full pass it re-runs was **2026-09-01 and
 2026-09-02**, against 0.16.0 (`bin/m0serve` from the tree at `c823198`),
 macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
@@ -271,6 +271,64 @@ renews through the view when a grant expires — the browser side of that,
 gate yet. The application layer's own soak is unchanged and still NOT MET
 below: this is the server holding for textshelf, not textshelf on `Views`
 and `Fragment`.
+
+## Re-soak — 2026-10-02, against 1.8.0 on main at `d624ae7`, all four applications
+
+**Run ahead of the staleness rule this time.** At 1.8.0 the 1.6.0 pass is
+two minors behind a limit of two, so the milestone still read MET, and
+1.9.0 would have read it STALE. Between the two passes the fork under
+every row was reviewed and cut: its typed socket errors became one
+`SysError`, the blocking accept loop and about 870 lines nothing used were
+removed, and 1.8.0's changelog lists the request-path fixes that came
+with it — a POST's leftover timer, a keep-alive request's second
+registration, a listener closed once by its drain, response heads that
+refuse CR and LF (G1, G2). So this pass asks the old question of a server
+whose loop was rewritten in place.
+
+Fresh clones under `/tmp/soak/` (the 2026-09-24 checkouts had not
+survived): transcripts at `00dcb7a`, color-separation at `65c5445` with
+its gitignored `output/` source copied in, textshelf at `7981657` against
+its scratch database `textshelf_soak`, bakerydemo at `c8f8255`. Every
+reference capture was re-recorded first. `bin/m0serve` was rebuilt from
+main and reports `m0serve 1.8.0`; CPython 3.13.6 (3.12.11 for
+color-separation and bakerydemo), macOS 27 on an M4. Raw driver outputs
+and the scripts that drove it are in `bench/soak/2026-10-02/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 26,563 | 0 | SIGTERM ×2, drains 179 ms max (window 1481 ms) | 119.6 → 124.8 MB | 91 → 89 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions, 311 logins | 180 | 21,490 | 0 | SIGTERM ×2, drains 244 ms max (window 1177 ms) | 177.7 → 186.0 MB | 84 → 83 / 13 → 13 |
+| color-separation | WSGI, pool 8, 256 uploads | 120 | 37,857 | 0 | SIGTERM ×1, drains 142 ms max (window 900 ms) | 1.01 → 1.33 GB (finding 6) | 151 → 158 / 19 → 18 |
+| color-separation | ASGI executor vs uvicorn, 244 uploads | 90 | 17,811 | 0 | — | 1.11 → 1.48 GB (finding 6) | 134 → 120 / 22 → 33 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 81,019 | 0 | SIGTERM ×1, drains 46 ms max (window 825 ms) | 177.0 → 182.9 MB | 111 → 106 / 16 → 16 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 26,921 | 0 | — | 491.3 → 192.5 MB (the startup transient) | 99 → 98 / 13 → 13 |
+
+**211,661 responses verified byte for byte, zero failures**, and every
+row ends with its active connections and free slots where they began.
+transcripts verified a third fewer than on 2026-09-24 in the same 150 s
+(26,563 against 40,117), back at the 2026-09-13 figure (29,989); the
+build that preceded the rows ran on the same machine minutes earlier, and
+the row asserts bytes rather than rate, so the figure is recorded and not
+explained.
+
+**Nothing was found on the wire.** Three things moved with the
+applications or the calendar, and the first cost a run of the two
+textshelf rows:
+
+- textshelf at `7981657` renders a masked CSRF token into every signed-in
+  page's `hx-headers` attribute, new bytes on each request. The first run
+  of its rows failed 8,273 comparisons on `/notifications/`,
+  `/users/~update/` and `/feeds/tokens/`, each a body of the capture's
+  length with one differing token. The manifest gained a `body_sub` rule
+  for `"X-CSRFToken": "…"`, daphne was re-captured under it (the rules
+  fingerprint refuses the old capture), and both rows were run again; the
+  table carries the second run.
+- textshelf's `components.css` is 103,602 bytes at `7981657`, where the
+  manifest had 121,037. WhiteNoise under daphne serves the new size.
+- color-separation files media by month, and the manifest names
+  `2026/09`. The checkout's `media/uploads/2026/09` and
+  `media/outputs/2026/09` are symbolic links to `10` for this pass, so the
+  manifest's two media routes read the files job 1 produced today.
 
 ## Re-soak — 2026-09-24, against 1.6.0 on the release branch at `9b051fd`, all four applications
 
