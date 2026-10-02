@@ -9,7 +9,11 @@
     ramp_probe.py placement PORT PREFIX K SECONDS
         hold K connections each looping `GET PREFIX/slow?ms=200` for
         SECONDS while sampling `GET PREFIX/now` 24 times at random gaps,
-        and print the worst sample; the caller says what it means
+        and print the worst sample, the second-worst, and where the worst
+        one spent its time; the caller says what they mean
+    ramp_probe.py selftest
+        the placement summary against sample lists whose answers are
+        known; exits 1 on a wrong one, and starts nothing
 
 Each prints one summary line and exits 0, or exits 1 naming the phase and
 the first difference. Stdlib only.
@@ -21,6 +25,30 @@ answers `/` from its Python mount and an unmounted path with its own JSON
 404 before any lane is chosen, while the host has neither -- but asserting
 nothing there would hide a prefix that swallowed `/xapp`, so each outside
 path is asserted for what its host owns.
+
+The placement line, and why it carries two statistics:
+
+    worst_now_ms=120 second_now_ms=2 worst_connect_ms=0 worst_request_ms=119 slow_requests=20
+
+`smoke-ramp` gates on `second_now_ms`, the second-worst of the 24. What
+the gate exists to catch -- `/now` answered from a pool thread, or the
+lane's other thread not answering -- puts a sample behind a 200 ms view
+whenever it lands in the view's first half, so several of 24 wait 100 ms
+or more and the second-worst is over the bound with the worst. A shared
+macOS runner, though, stalls about one sample in a thousand for 80 to
+120 ms, and the worst of 24 has no margin for one: `Tests` run
+36898942895 failed at 120 ms in the host's full-lane arm, where the worst
+sample of each of 40 green runs had been 8 ms or less. `worst_now_ms` is
+still printed and still recorded, so a runner that stalls more often
+shows in the numbers before it shows as a red run.
+
+`worst_connect_ms` and `worst_request_ms` say where the worst sample
+spent its time: the connect (on loopback the kernel completes it with no
+part taken by the server's loop, so a slow one is the client's side or
+the runner's) and the request, from its first byte written to the last
+byte of the answer read (the server, or the probe not being scheduled).
+The total also holds the close, which is in neither, so a stall both
+figures leave unexplained was the probe itself not running.
 """
 
 from __future__ import annotations
@@ -168,6 +196,40 @@ def _slow_loop(port: int, prefix: str, until: float, counts: list) -> None:
     counts.append(n)
 
 
+def summarize(samples: list) -> dict:
+    """The placement line's numbers, from `(total, connect, request)` per
+    sample, each in milliseconds. A pure function of the list.
+
+    `second_now_ms` is the second-largest total (equal to the worst when two
+    samples tie for it), and the connect and request figures are the WORST
+    sample's own, not each column's maximum: they say where that one
+    sample's time went. Whole milliseconds, truncated, as `worst_now_ms`
+    always was. Fewer than two samples have no second-worst, and are
+    refused rather than answered with the only one.
+    """
+    if len(samples) < 2:
+        raise ValueError(
+            "%d sample(s): a second-worst needs at least two" % len(samples)
+        )
+    ordered = sorted(samples, key=lambda s: s[0], reverse=True)
+    worst, second = ordered[0], ordered[1]
+    return {
+        "worst_now_ms": int(worst[0]),
+        "second_now_ms": int(second[0]),
+        "worst_connect_ms": int(worst[1]),
+        "worst_request_ms": int(worst[2]),
+    }
+
+
+SUMMARY_FIELDS = ("worst_now_ms", "second_now_ms", "worst_connect_ms", "worst_request_ms")
+
+
+def summary_line(samples: list, slow_requests: int) -> str:
+    got = summarize(samples)
+    fields = ["%s=%d" % (name, got[name]) for name in SUMMARY_FIELDS]
+    return " ".join(fields + ["slow_requests=%d" % slow_requests])
+
+
 def placement(port: int, prefix: str, k: int, seconds: float) -> None:
     phase("holding %d connections on %s/slow" % (k, prefix))
     until = time.perf_counter() + seconds
@@ -180,25 +242,104 @@ def placement(port: int, prefix: str, k: int, seconds: float) -> None:
         t.start()
     time.sleep(0.3)
     phase("sampling %s/now under the load" % prefix)
-    worst = 0.0
+    samples: list = []
     for _ in range(PLACEMENT_SAMPLES):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
         t0 = time.perf_counter()
         try:
+            conn.connect()
+            t1 = time.perf_counter()
             conn.request("GET", prefix + "/now")
             resp = conn.getresponse()
             resp.read()
+            t2 = time.perf_counter()
         finally:
             conn.close()
         if resp.status != 200:
             fail("%s/now answered HTTP %d under the load" % (prefix, resp.status))
-        worst = max(worst, (time.perf_counter() - t0) * 1000.0)
+        # The total ends where it always did, after the close.
+        total = (time.perf_counter() - t0) * 1000.0
+        samples.append((total, (t1 - t0) * 1000.0, (t2 - t1) * 1000.0))
         time.sleep(random.uniform(0.05, 0.3))
     for t in loaders:
         t.join(timeout=seconds + 30)
     if len(counts) != k or min(counts) == 0:
         fail("the slow connections did not all serve: %r" % counts)
-    print("worst_now_ms=%d slow_requests=%d" % (int(worst), sum(counts)))
+    print(summary_line(samples, sum(counts)))
+
+
+SELFTEST_BOUND_MS = 100
+"""`smoke-ramp`'s bound, for the selftest's two verdicts. The gate itself is
+the task's `[ "$x" -lt 100 ]`; this only says which side each case is on."""
+
+
+def selftest() -> None:
+    """`summarize` against lists whose answers are known. No sockets."""
+    phase("the selftest")
+    wrong = []
+    checks = [0]
+
+    def check(what: str, ok: bool) -> None:
+        checks[0] += 1
+        if not ok:
+            print("  WRONG  %s" % what)
+            wrong.append(what)
+
+    quiet = (2.9, 0.4, 2.3)
+    stall = (120.7, 0.5, 119.9)
+
+    # One runner stall among 24: the worst sees it, the gate's statistic
+    # does not.
+    one = summarize([quiet] * 11 + [stall] + [quiet] * 12)
+    check("one stall of 120 ms in 24: the worst is 120", one["worst_now_ms"] == 120)
+    check("one stall of 120 ms in 24: the second-worst is 2", one["second_now_ms"] == 2)
+    check("one stall of 120 ms in 24: the second-worst is under the bound",
+          one["second_now_ms"] < SELFTEST_BOUND_MS)
+
+    # Two of them is what a regression looks like, and is over it.
+    two = summarize([stall] + [quiet] * 22 + [stall])
+    check("two samples of 120 ms in 24: the second-worst is 120", two["second_now_ms"] == 120)
+    check("two samples of 120 ms in 24: the second-worst is over the bound",
+          two["second_now_ms"] >= SELFTEST_BOUND_MS)
+
+    # The split is the worst SAMPLE's, not each column's maximum: here the
+    # slowest connect and the slowest request belong to other samples.
+    split = summarize([(50.0, 45.0, 4.0), (120.0, 1.0, 118.0), (60.0, 2.0, 57.0)])
+    check("the connect and request times are the worst sample's own",
+          (split["worst_connect_ms"], split["worst_request_ms"]) == (1, 118))
+    check("the second-worst of three is the middle one", split["second_now_ms"] == 60)
+    slow_connect = summarize([(3.0, 1.0, 2.0), (95.0, 90.0, 4.0)])
+    check("a stall in the connect is reported as one",
+          (slow_connect["worst_connect_ms"], slow_connect["worst_request_ms"]) == (90, 4))
+
+    # Order does not matter, and the answer does not depend on which of two
+    # equal samples sorts first.
+    shuffled = [quiet] * 22 + [stall, (80.2, 0.3, 79.5)]
+    random.shuffle(shuffled)
+    check("the answer does not depend on the order of the samples",
+          summarize(shuffled) == summarize(sorted(shuffled)))
+
+    # Refused by name: an answer is wrong, and so is any other exception --
+    # an IndexError is the function falling over, not saying no.
+    for few in ([], [stall]):
+        try:
+            summarize(few)
+            refused = False
+        except ValueError:
+            refused = True
+        except Exception:
+            refused = False
+        check("%d sample(s) are refused, not summarised" % len(few), refused)
+
+    line = summary_line([quiet] * 23 + [stall], 20)
+    check("the line keeps worst_now_ms= first and slow_requests= last",
+          line == "worst_now_ms=120 second_now_ms=2 worst_connect_ms=0 "
+                  "worst_request_ms=119 slow_requests=20")
+
+    if wrong:
+        print("ramp_probe: FAIL: selftest: %d wrong answer(s)" % len(wrong))
+        sys.exit(1)
+    print("ramp_probe selftest OK (%d checks)" % checks[0])
 
 
 def main() -> None:
@@ -207,6 +348,8 @@ def main() -> None:
         bytes_phase(int(a[2]), int(a[3]), a[4])
     elif len(a) == 6 and a[1] == "placement":
         placement(int(a[2]), a[3], int(a[4]), float(a[5]))
+    elif len(a) == 2 and a[1] == "selftest":
+        selftest()
     else:
         sys.exit(__doc__)
 

@@ -249,7 +249,10 @@ mount.
 
 Placement, `scripts/ramp_probe.py placement`, is `host_probe.py`'s
 arithmetic under the prefix: K connections looping `/x/slow?ms=200`, 24
-samples of `/x/now` at random gaps, the worst reported.
+samples of `/x/now` at random gaps, the worst reported — and, since
+2026-10-01, the second-worst beside it, which is what the gate reads
+([below](#the-gate-reads-the-second-worst-sample-2026-10-01)). The table
+is the worst sample.
 
 | arm | m0serve (lane of 2) | host (lane of 2) | host, bare loop |
 |---|---|---|---|
@@ -259,8 +262,9 @@ samples of `/x/now` at random gaps, the worst reported.
 (The first cut used lanes of four with two and four loaders: 1 ms and
 1 ms, then 154 ms against 5 ms — the same shape. Two threads leave a
 shared runner's cores something for the loop.) The first row is the
-gate's bound on both hosts (100 ms, `sim_loop`'s), and the bare loop is
-the negative arm that must fail it. The second row
+gate's bound on both hosts (100 ms, `sim_loop`'s, on the second-worst
+sample), and the bare loop is the negative arm that must fail it. The
+second row
 is the measurement D32 asked for. With every thread busy, `m0serve`'s
 loop route waits for a pool thread — its loop handler holds no Mojo
 table — while the host's, an `add_loop` route, is answered by the loop:
@@ -269,14 +273,82 @@ the host there and RECORDS `m0serve` (`ramp.full_lane_now_ms.m0serve`),
 so the number that would justify building option (i) accumulates on
 every run instead of being argued once.
 
+### The gate reads the second-worst sample (2026-10-01)
+
+The bound was on the WORST of the 24 samples, and on a macOS runner that
+is a bound on the runner. `Tests` run 36898942895 failed in the host's
+full-lane arm, `/x/now waited 120 ms with every lane thread busy`, on a
+change that did not touch it; the rerun passed, and the two arms before
+it in the same job measured 2 ms and 4 ms. What 40 green `Tests` runs
+had recorded up to that day (`ci-results-<os>-gateway`):
+
+| metric (the worst of 24) | macOS: median, p90, max | Ubuntu: max |
+|---|---|---|
+| `ramp.full_lane_now_ms.host`, the arm that failed | 2, 7, 8 ms | 1 ms |
+| `ramp.worst_now_ms.host` | 1, 5, **79** ms | 0 ms |
+| `ramp.worst_now_ms.m0serve` | 3, 12, 42 ms | 1 ms |
+| `ramp.full_lane_now_ms.m0serve` (D32, recorded, not gated) | 190, 200, 201 ms | 200 ms |
+
+So a macOS runner stalls a single sample for 80 to 120 ms, twice in
+about 2,000 gated samples, an Ubuntu runner never did, and a gate on the
+worst of 24 has no margin for one. The regression the gate exists for is
+different in kind. With `add_loop` broken, or the lane's other thread
+not answering, a sample waits out what is left of a 200 ms view, so many
+of the 24 are slow, not one: the last row above is that shape, on every
+run.
+
+The three bounded arms and the negative arm therefore read the
+**second-worst** sample, `second_now_ms`, against the same 100 ms. One
+stall no longer fails the gate; two in one arm still do. What the change
+costs was measured rather than argued, on an M4, by registering `/x/now`
+with `add_read` in place of `add_loop` and running the arm repeatedly:
+
+| the regression | runs | worst | second-worst |
+|---|---|---|---|
+| the host's lane full, `/x/now` no longer on the loop | 13 | 146–198 ms | 132–194 ms |
+| a lane of one holding the view, the same build | 8 | 146–199 ms | 130–195 ms |
+| the bare loop (the negative arm, unsabotaged) | 2 | 378, 386 ms | 321, 307 ms |
+
+Every run is over the bound by either statistic. The margin is thinner
+than the worst's, and arithmetic says by how much: with the two loaders'
+spins in step a sample waits 100 ms or more half the time, and with them
+out of step a quarter of the time, which would leave the second-worst of
+24 under the bound in about one run in a hundred. The gate runs on two
+legs of every pull request.
+
+The worst sample is still printed and still recorded, without a limit,
+so a runner that stalls more often shows in the numbers first. And each
+line now says where its worst sample spent its time:
+
+```
+full lane, host: worst_now_ms=7 second_now_ms=1 worst_connect_ms=0 worst_request_ms=7 slow_requests=40
+```
+
+`worst_connect_ms` is the connect, which on loopback the kernel
+completes without the server's loop taking part; `worst_request_ms` is
+the request written to the last byte of the answer read. The total also
+holds the close, so a stall neither figure accounts for was the probe
+itself not running. **Nothing yet says which side the 120 ms was on**:
+the run that failed printed one number. The next one prints three, and
+CI records the two parts for the host's full-lane arm
+(`ramp.full_lane_worst_connect_ms.host`,
+`ramp.full_lane_worst_request_ms.host`) beside the gated
+`ramp.second_now_ms.*` and `ramp.full_lane_second_now_ms.host`.
+
+The summary is a pure function of the sample list, and `ramp_probe.py
+selftest`, the task's first step, holds it to the two cases that matter:
+23 samples of 2 ms and one of 120 are under the bound, two of 120 are
+over it, and fewer than two samples are refused.
+
 ### The gates
 
 `smoke-ramp` (every PR, SPEC N20) builds both binaries from the one
 module, starts `m0serve` with the mount beside `bareapp.wsgi` and the
-host with a lane of four on ports of its own, runs the bytes phase, the
-two-loader placement on each, the full-lane arm on each, then the bare
-host as the negative arm, and records the four placement numbers. It
-reaps by its own temp directory as every host smoke does.
+host with a lane of two on ports of its own, runs the bytes phase, the
+one-loader placement on each, the full-lane arm on each, then the bare
+host as the negative arm, and records the placement numbers: the
+second-worst sample of each bounded arm against the limit, and the worst
+beside it. It reaps by its own temp directory as every host smoke does.
 
 ### Open questions, answered
 

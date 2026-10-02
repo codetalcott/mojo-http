@@ -7224,7 +7224,12 @@ help = "One views module on two hosts: byte-identical answers, a followed link, 
 shell = """
 . scripts/smoke/lib.sh
 set -u
+# The summary the placement arms are judged by, proven before anything is
+# built: one stalled sample of 24 must not read as a regression, two must.
+python3 scripts/ramp_probe.py selftest || fail "ramp_probe's placement summary gave a wrong answer"
 out=$SMOKE_DIR
+# One field of a placement line; empty when the line does not carry it.
+field() { echo "$1" | sed -n "s/.*$2=\\([0-9]*\\).*/\\1/p"; }
 srv=$out/m0serve-ramp
 # One module, two binaries. The mount build REPLACES the demo mount and
 # adds the application's module root (M0SERVE_INCLUDE); the host build is
@@ -7234,8 +7239,8 @@ M0SERVE_MOUNT_DIR=apps/ramp/mount M0SERVE_INCLUDE=apps M0SERVE_OUT=$srv \
 mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ \
   apps/ramp/server.mojo -o "$out/ramp" || fail "the ramp's host binary did not build"
 
-# m0serve: the module as a mount beside a Python application, four
-# threads on its lane; the host: the same module with a lane of four.
+# m0serve: the module as a mount beside a Python application, two
+# threads on its lane; the host: the same module with a lane of two.
 mport=$(free_port)
 spawn m0serve.log "$srv" --mount /=bareapp.wsgi --mount /x=mojo --app-dir apps/wsgi_bare \
   --port $mport --blocking-threads 2
@@ -7253,16 +7258,22 @@ res=$(python3 scripts/ramp_probe.py bytes $mport $hport /x 2>&1) || fail "bytes:
 echo "bytes: $res"
 
 # Placement, on each: one connection holds /x/slow?ms=200 on a lane of
-# two, and the worst of 24 /x/now samples stays under 100 ms (sim_loop's
-# bound) -- on m0serve because the lane's other thread answers, on the
-# host because the loop does.
+# two, and the SECOND-WORST of 24 /x/now samples stays under 100 ms
+# (sim_loop's bound) -- on m0serve because the lane's other thread
+# answers, on the host because the loop does. The second-worst, because a
+# macOS runner stalls one sample in about a thousand for 80 to 120 ms and
+# the worst of 24 has no margin for it, while the regression this bounds
+# puts several of the 24 behind the 200 ms view. The worst is printed and
+# recorded beside it, with where that one sample spent its time.
 res=$(python3 scripts/ramp_probe.py placement $mport /x 1 4 2>&1) || fail "placement, m0serve: $res"
-m0_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$m0_ms" ] && [ "$m0_ms" -lt 100 ] || fail "placement, m0serve: /x/now waited ${m0_ms:-?} ms behind a slow view on a lane of two ($res)"
+m0_ms=$(field "$res" worst_now_ms)
+m0_2nd=$(field "$res" second_now_ms)
+[ -n "$m0_2nd" ] && [ "$m0_2nd" -lt 100 ] || fail "placement, m0serve: the second-worst of 24 /x/now samples waited ${m0_2nd:-?} ms behind a slow view on a lane of two; second_now_ms must be under 100 ($res)"
 echo "placement, m0serve: $res"
 res=$(python3 scripts/ramp_probe.py placement $hport /x 1 4 2>&1) || fail "placement, host: $res"
-host_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$host_ms" ] && [ "$host_ms" -lt 100 ] || fail "placement, host: /x/now waited ${host_ms:-?} ms behind a slow view on a lane of two ($res)"
+host_ms=$(field "$res" worst_now_ms)
+host_2nd=$(field "$res" second_now_ms)
+[ -n "$host_2nd" ] && [ "$host_2nd" -lt 100 ] || fail "placement, host: the second-worst of 24 /x/now samples waited ${host_2nd:-?} ms behind a slow view on a lane of two; second_now_ms must be under 100 ($res)"
 echo "placement, host: $res"
 
 # The lane FULL: two connections on two threads. The host's /x/now is an
@@ -7271,12 +7282,16 @@ echo "placement, host: $res"
 # a pool thread (D32, recorded rather than built). The host is bounded;
 # m0serve's number is the measurement the decision asked for, recorded.
 res=$(python3 scripts/ramp_probe.py placement $hport /x 2 4 2>&1) || fail "full lane, host: $res"
-host_full_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$host_full_ms" ] && [ "$host_full_ms" -lt 100 ] || fail "full lane, host: /x/now waited ${host_full_ms:-?} ms with every lane thread busy -- add_loop no longer keeps it on the loop ($res)"
+host_full_ms=$(field "$res" worst_now_ms)
+host_full_2nd=$(field "$res" second_now_ms)
+host_full_connect=$(field "$res" worst_connect_ms)
+host_full_request=$(field "$res" worst_request_ms)
+[ -n "$host_full_2nd" ] && [ "$host_full_2nd" -lt 100 ] || fail "full lane, host: the second-worst of 24 /x/now samples waited ${host_full_2nd:-?} ms with every lane thread busy; second_now_ms must be under 100 -- add_loop no longer keeps it on the loop ($res)"
 echo "full lane, host: $res"
 res=$(python3 scripts/ramp_probe.py placement $mport /x 2 4 2>&1) || fail "full lane, m0serve: $res"
-m0_full_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$m0_full_ms" ] || fail "full lane, m0serve: no measurement in: $res"
+m0_full_ms=$(field "$res" worst_now_ms)
+m0_full_2nd=$(field "$res" second_now_ms)
+[ -n "$m0_full_ms" ] && [ -n "$m0_full_2nd" ] || fail "full lane, m0serve: no measurement in: $res"
 echo "full lane, m0serve (D32, recorded): $res"
 
 for p in $pids; do kill -TERM $p; done
@@ -7287,22 +7302,35 @@ for p in $pids; do
 done
 
 # The negative arm: the host with no lane must FAIL the bound under the
-# same load, or the placement arm above proves nothing.
+# same load, or the placement arm above proves nothing. It is read by the
+# statistic the arms above are gated on, the second-worst, so what it
+# proves is that THAT number reaches the bound when every view is on the
+# loop.
 bport=$(free_port)
 spawn host-bare.log env M0_PORT=$bport M0_BLOCKING_THREADS=0 "$out/ramp"
 wait_ready http://127.0.0.1:$bport/x/now $pid
 res=$(python3 scripts/ramp_probe.py placement $bport /x 2 4 2>&1) || fail "placement, bare host: $res"
-bare_ms=$(echo "$res" | sed -n 's/.*worst_now_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$bare_ms" ] && [ "$bare_ms" -ge 100 ] || fail "placement, bare host: /x/now answered in ${bare_ms:-?} ms with every view on the loop -- the arm no longer discriminates ($res)"
+bare_2nd=$(field "$res" second_now_ms)
+[ -n "$bare_2nd" ] && [ "$bare_2nd" -ge 100 ] || fail "placement, bare host: the second-worst of 24 /x/now samples answered in ${bare_2nd:-?} ms with every view on the loop; second_now_ms must reach 100 -- the arm no longer discriminates ($res)"
 echo "placement, bare host (negative arm): $res"
 kill -TERM $pid
 wait $pid || fail "the bare host exited non-zero on SIGTERM"
 
 echo "smoke-ramp OK"
-python3 scripts/emit.py ramp.worst_now_ms.m0serve "$m0_ms" --unit ms --limit 100 --task smoke-ramp
-python3 scripts/emit.py ramp.worst_now_ms.host "$host_ms" --unit ms --limit 100 --task smoke-ramp
-python3 scripts/emit.py ramp.full_lane_now_ms.host "$host_full_ms" --unit ms --limit 100 --task smoke-ramp
+# The gated numbers carry the limit, so the headroom column tracks the
+# gate. The worst samples keep their names and carry none: they are the
+# runner's stalls, recorded so their rate can be read, and for the arm that
+# failed on one, where that sample spent its time.
+python3 scripts/emit.py ramp.second_now_ms.m0serve "$m0_2nd" --unit ms --limit 100 --task smoke-ramp
+python3 scripts/emit.py ramp.second_now_ms.host "$host_2nd" --unit ms --limit 100 --task smoke-ramp
+python3 scripts/emit.py ramp.full_lane_second_now_ms.host "$host_full_2nd" --unit ms --limit 100 --task smoke-ramp
+python3 scripts/emit.py ramp.worst_now_ms.m0serve "$m0_ms" --unit ms --task smoke-ramp
+python3 scripts/emit.py ramp.worst_now_ms.host "$host_ms" --unit ms --task smoke-ramp
+python3 scripts/emit.py ramp.full_lane_now_ms.host "$host_full_ms" --unit ms --task smoke-ramp
+python3 scripts/emit.py ramp.full_lane_worst_connect_ms.host "$host_full_connect" --unit ms --task smoke-ramp
+python3 scripts/emit.py ramp.full_lane_worst_request_ms.host "$host_full_request" --unit ms --task smoke-ramp
 python3 scripts/emit.py ramp.full_lane_now_ms.m0serve "$m0_full_ms" --unit ms --task smoke-ramp
+python3 scripts/emit.py ramp.full_lane_second_now_ms.m0serve "$m0_full_2nd" --unit ms --task smoke-ramp
 python3 scripts/emit.py --covers N20 --task smoke-ramp
 """
 
