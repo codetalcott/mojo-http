@@ -1409,12 +1409,15 @@ def test_an_idle_loop_waits_for_a_pending_heads_deadline() raises:
     assert_equal(len(backend.ms), 1)
     assert_equal(backend.ms[0], 1000)
     assert_equal(len(backend.ns), 0)
-    # A job beside the busy thread: nobody woken at the push, and the
-    # pass's look finds it fresh.
+    # A job beside the busy thread: nobody woken at the push, and a look
+    # at the push finds it fresh. The look is given the push's own clock,
+    # not a later one: the threshold is `POOL_FREE_WAKE_AGE_NS`, 10 us, and
+    # a test thread paused that long between the two lines aged the job
+    # (seen on the macOS runner, 2026-10-02).
     pool.park_request(1, _request("/a"))
     assert_true(pool.submit(1))
     assert_equal(pool.wakes_in_flight(0), 0)
-    assert_equal(st.offload.wake_aged(perf_counter_ns()), 0)
+    assert_equal(st.offload.wake_aged(pool.submitted_ns(1)), 0)
     var before = perf_counter_ns()
     _ = _wait_for_events(backend, st, 1000)
     assert_equal(len(backend.ms), 1, "the wait was not timed to the head")
