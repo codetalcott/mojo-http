@@ -30,6 +30,15 @@ them with SQL:
     m0_stamp(id = 0, seq, floor)
         seq    the last stamp given: where a client with everything stands
         floor  tombstones at or below it were pruned
+    m0_cursors(name, seq)
+        seq    the last stamp a named stage has acted on
+
+A stage -- a process or a thread that derives something from a table --
+keeps its place in `m0_cursors` when its work is costly to repeat, so a
+restart begins where it stopped: `advance` is written in the same
+transaction as the stage's outputs, and so holds exactly when they do.
+Its lag is a query, `(SELECT seq FROM m0_stamp) - seq`, and the slowest
+cursor is the stamp pruning may reach without stranding a stage.
 
 What holds, each pinned by `test_stamps.mojo` (and the last by the wire
 gate of `apps/table_notes`, whose other program is CPython's SQLite):
@@ -88,6 +97,7 @@ CREATE TABLE IF NOT EXISTS m0_stamp(
     id INTEGER PRIMARY KEY CHECK (id = 0),
     seq INTEGER NOT NULL, floor INTEGER NOT NULL);
 INSERT OR IGNORE INTO m0_stamp VALUES (0, 0, 0);
+CREATE TABLE IF NOT EXISTS m0_cursors(name TEXT PRIMARY KEY, seq INTEGER NOT NULL);
 """
 
 comptime _TICK = "UPDATE m0_stamp SET seq = seq + 1;"
@@ -168,7 +178,8 @@ def _gone(table: String, row: String) -> String:
 
 
 def install_stamps(db: Connection) raises:
-    """Create `m0_changes` and `m0_stamp`. Idempotent; a write."""
+    """Create `m0_changes`, `m0_stamp` and `m0_cursors`. Idempotent; a
+    write. A file installed before `m0_cursors` existed gains it."""
     db.execute(STAMP_TABLES)
 
 
@@ -296,3 +307,62 @@ def prune_stamps(db: Connection, below: Int) raises -> Int:
     except e:
         db.rollback()
         raise e^
+
+
+def cursor(db: Connection, name: String) raises -> Int:
+    """Where the stage called `name` stopped: the last stamp it acted on,
+    0 for a stage with no place yet."""
+    var q = db.prepare("SELECT seq FROM m0_cursors WHERE name = ?1")
+    q.bind_text(1, name)
+    if not q.step():
+        return 0
+    return q.column_int(0)
+
+
+def advance(db: Connection, name: String, seq: Int) raises:
+    """Record that `name` has acted on everything up to `seq`.
+
+    Call it inside the `begin_immediate` transaction that writes the
+    stage's outputs, so the place holds exactly when they do: a crash
+    between the two is impossible, and a restart repeats nothing and
+    skips nothing. It opens no transaction of its own, on purpose, and a
+    refusal leaves the caller's open, outputs written: roll it back.
+
+    A cursor does not go back, and does not pass the head: a `seq` below
+    the cursor or above the last stamp given is refused, in the one
+    statement that writes, so two writers racing on one name cannot
+    undo each other. A stage registers before its first read with
+    `advance(db, name, 0)`, or `slowest_cursor` cannot protect it; one
+    that starts over deletes its row and its outputs; one that finds its
+    cursor below `stamp_floor` at startup was pruned past, and starts
+    over.
+    """
+    # The check travels with the write. OR REPLACE rather than an
+    # upsert: the package's floor is SQLite 3.20.
+    var u = db.prepare(
+        "INSERT OR REPLACE INTO m0_cursors SELECT ?1, ?2 WHERE ?2 >= 0"
+        + " AND ?2 >= coalesce((SELECT seq FROM m0_cursors WHERE name = ?1), 0)"
+        + " AND ?2 <= (SELECT seq FROM m0_stamp)"
+    )
+    u.bind_text(1, name)
+    u.bind_int(2, seq)
+    _ = u.step()
+    if db.changes() == 0:
+        raise Error(
+            "advance: " + name + " is at " + String(cursor(db, name)) + " and the head at "
+            + String(stamp_head(db)) + "; " + String(seq) + " is not a place between them"
+        )
+
+
+def slowest_cursor(db: Connection) raises -> Int:
+    """The place of the stage furthest behind, or the head when no stage
+    has a place: the stamp `prune_stamps` may be given without taking a
+    deletion from under a registered stage. A client that keeps its own
+    place and is not registered -- a browser -- is told to start over
+    instead (`stamp_floor`). A stage that is retired deletes its row, or
+    pruning stops at its place for good; the lag query names it."""
+    var q = db.prepare(
+        "SELECT coalesce((SELECT min(seq) FROM m0_cursors), (SELECT seq FROM m0_stamp))"
+    )
+    _ = q.step()
+    return q.column_int(0)

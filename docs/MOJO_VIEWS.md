@@ -280,6 +280,12 @@ q.bind_int(1, since)
 - A row that was in the table before `watch` appears in no answer until
   it is written.
 - `stamp_of(db, "items")` is the highest stamp in one table.
+- A process that derives something from the table keeps its place with
+  `cursor(db, name)` and `advance(db, name, seq)`, the latter inside the
+  transaction that writes what it derived. It registers before its first
+  read (`advance` to 0) and deletes its row when it retires; between the
+  two, `prune_stamps(db, slowest_cursor(db))` forgets nothing it still
+  needs, and a retired process that kept its row stops pruning for good.
 
 Three limits. A writer that uses `INSERT OR REPLACE` or
 `UPDATE OR REPLACE` sets `PRAGMA recursive_triggers = ON`, or a row it

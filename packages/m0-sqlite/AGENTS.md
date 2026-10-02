@@ -115,7 +115,7 @@ most:
 **Stamps say what changed; the clock says that something did** (SPEC
 O26–O27, D63–D64; docs/notes/a-database-that-remembers-what-changed.md).
 `src/stamps.mojo` is SQL and nothing else: two tables and four triggers a
-table. Six rules:
+table. Seven rules:
 
 - **`m0_changes` and `m0_stamp` are a contract.** Programs that are not
   Mojo read them, so a column renamed is a break for somebody's Python.
@@ -130,6 +130,10 @@ table. Six rules:
   fail the write. And the key is named by its column, never `rowid`,
   which a WITHOUT ROWID table lacks and resolves only when a trigger
   fires.
+- **`advance` opens no transaction.** A stage calls it inside the one
+  that writes its outputs; giving it a transaction of its own would make
+  "outputs committed, place lost" possible, which is the one thing the
+  table exists to rule out.
 - **A stamp never validates anything.** It can be got past (a REPLACE
   without `recursive_triggers` on the writer, a rebuilt table), so a cache
   stays keyed on `data_version`. Both traps are tests; do not "fix" one by
