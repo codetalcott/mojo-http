@@ -108,6 +108,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **The application layer's milestone is met.** `unotes`, the layer's
+  first application outside `apps/`, is recorded in
+  `docs/REAL_APP_VALIDATION.md` against 1.8.0: 1,748,962 responses at two
+  workers and 864,732 at two loops on threads, each compared byte for byte
+  with the same binary's answer alone, 0 failures, through six restarts
+  and 9,722 abandoned responses, with RSS flat. It is a dogfood
+  application and the record says so.
+
 - **The other six sabotage harnesses run on `scripts/sabotage_lib.py`**
   (`sabotage-blobs`, `-host`, `-notes-login`, `-m0-wheel`, `-scaffold` and
   `-mojo-image`): a SIGINT or SIGTERM mid-rule now puts every file back,

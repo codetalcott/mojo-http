@@ -33,9 +33,11 @@ its rows are the next milestone's.
 the layer — an application outside `apps/` running on `Views` or
 `Fragment`, recorded in
 [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md#the-application-layer)
-under the same staleness rule. NOT MET until a real application runs on
-the layer, which is the honest reading of a layer proven by demos; standing
-decisions about it are in [DECISIONS.md](DECISIONS.md).
+under the same staleness rule. MET on 2026-10-02 by `unotes`, written
+outside the tree by this repository's owner to exercise the layer: the
+record says what that does and does not show, an independent author's
+application among the second. Standing decisions about the layer are in
+[DECISIONS.md](DECISIONS.md).
 
 `poe check-milestones` gates the rot: every known issue carries a
 `Closed by:` line naming SPEC rows or `none`, and an issue whose rows are
