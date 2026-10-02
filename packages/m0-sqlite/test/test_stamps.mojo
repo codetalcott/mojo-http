@@ -22,6 +22,9 @@ from src import (
     stamp_of,
     stamp_floor,
     prune_stamps,
+    cursor,
+    advance,
+    slowest_cursor,
 )
 
 
@@ -405,6 +408,119 @@ def test_two_watched_tables_share_one_sequence() raises:
         db.query_scalar("SELECT group_concat(tbl || row || '@' || seq, ' ') FROM (SELECT * FROM m0_changes ORDER BY seq)"),
         "tags1@2 notes1@3",
     )
+    _cleanup(p)
+
+
+def test_a_stage_keeps_its_place_with_its_outputs() raises:
+    """A stage's cursor is written in the transaction that writes what
+    it derived, so the two hold or fail together.
+
+    covers: O28
+    """
+    var p = _fresh("cursor")
+    var db = _watched(p)
+    db.execute("CREATE TABLE lengths (id INTEGER PRIMARY KEY, n INTEGER NOT NULL)")
+    assert_equal(cursor(db, "lengths"), 0)
+    db.execute("INSERT INTO notes (slug) VALUES ('ab'), ('cde')")
+    # The stage: rows above its place, outputs and place in one transaction.
+    db.begin_immediate()
+    db.execute(
+        "INSERT INTO lengths SELECT n.id, length(n.slug) FROM m0_changes c"
+        " JOIN notes n ON n.id = c.row WHERE c.tbl = 'notes' AND c.seq > 0"
+    )
+    advance(db, "lengths", 2)
+    db.commit()
+    assert_equal(cursor(db, "lengths"), 2)
+    assert_equal(db.query_scalar("SELECT sum(n) FROM lengths"), "5")
+    # A stage that fails after its outputs loses its place with them.
+    db.execute("UPDATE notes SET slug = 'abcd' WHERE id = 1")
+    db.begin_immediate()
+    db.execute("UPDATE lengths SET n = 4 WHERE id = 1")
+    advance(db, "lengths", 3)
+    db.rollback()
+    assert_equal(cursor(db, "lengths"), 2)
+    assert_equal(db.query_scalar("SELECT n FROM lengths WHERE id = 1"), "2")
+    # Lag is a query.
+    assert_equal(
+        db.query_scalar("SELECT (SELECT seq FROM m0_stamp) - seq FROM m0_cursors WHERE name = 'lengths'"),
+        "1",
+    )
+    # A reader beside the writer sees the place and the outputs move at once.
+    var reader = open_readonly(p)
+    var both = "SELECT (SELECT seq FROM m0_cursors WHERE name = 'lengths') || ':' || (SELECT n FROM lengths WHERE id = 1)"
+    db.begin_immediate()
+    db.execute("UPDATE lengths SET n = 4 WHERE id = 1")
+    advance(db, "lengths", 3)
+    assert_equal(reader.query_scalar(both), "2:2")
+    db.commit()
+    assert_equal(reader.query_scalar(both), "3:4")
+    _cleanup(p)
+
+
+def test_a_cursor_does_not_go_back_or_past_the_head() raises:
+    var p = _fresh("cursor_back")
+    var db = _watched(p)
+    db.execute("INSERT INTO notes (slug) VALUES ('a'), ('b'), ('c'), ('d'), ('e')")
+    advance(db, "s", 0)
+    advance(db, "s", 5)
+    advance(db, "s", 5)
+    for bad in [4, 6, -1]:
+        var refused = False
+        try:
+            advance(db, "s", bad)
+        except:
+            refused = True
+        assert_true(refused, "advance took " + String(bad))
+    assert_equal(cursor(db, "s"), 5)
+    # The check is in the statement that writes: a second writer on the
+    # same name that got ahead in between is not undone. Two connections
+    # in autocommit, where a check-then-write would have a window.
+    var other = open(p)
+    advance(other, "s", 5)
+    db.execute("INSERT INTO notes (slug) VALUES ('f'), ('g')")
+    advance(other, "s", 7)
+    var refused = False
+    try:
+        advance(db, "s", 6)
+    except:
+        refused = True
+    assert_true(refused)
+    assert_equal(cursor(db, "s"), 7)
+    # Starting over is deleting the row.
+    db.execute("DELETE FROM m0_cursors WHERE name = 's'")
+    assert_equal(cursor(db, "s"), 0)
+    _cleanup(p)
+
+
+def test_the_slowest_cursor_is_the_safe_prune_point() raises:
+    var p = _fresh("slowest")
+    var db = _watched(p)
+    db.execute("INSERT INTO notes (slug) VALUES ('a'), ('b'), ('c')")
+    db.execute("DELETE FROM notes WHERE id = 1")
+    db.execute("DELETE FROM notes WHERE id = 2")
+    # No stage: the head, and everything may go.
+    assert_equal(slowest_cursor(db), 5)
+    advance(db, "quick", 5)
+    advance(db, "slow", 3)
+    assert_equal(slowest_cursor(db), 3)
+    # Pruning there keeps the tombstone the slow stage has not seen.
+    assert_equal(prune_stamps(db, slowest_cursor(db)), 0)
+    db.execute("DELETE FROM notes WHERE id = 3")
+    advance(db, "slow", 6)
+    assert_equal(slowest_cursor(db), 5)
+    assert_equal(prune_stamps(db, slowest_cursor(db)), 2)
+    assert_equal(_delta(db, 0), "3:6:3:1")
+    _cleanup(p)
+
+
+def test_a_file_installed_before_cursors_gains_them() raises:
+    var p = _fresh("older_install")
+    var db = _watched(p)
+    db.execute("DROP TABLE m0_cursors")
+    install_stamps(db)
+    db.execute("INSERT INTO notes (slug) VALUES ('a')")
+    advance(db, "s", 1)
+    assert_equal(cursor(db, "s"), 1)
     _cleanup(p)
 
 

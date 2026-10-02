@@ -184,6 +184,21 @@ Two rules came from getting them wrong:
   again from where each stands, a slow client gets fewer and larger
   deltas.
 
+## A stage's place (added the same day)
+
+The embedder kept its cursor in a table of its own making, in the
+transaction that wrote its vectors. That is the one part of a stage the
+package can hold without holding the stage: `m0_cursors(name, seq)`,
+`cursor`, `advance` (inside the caller's transaction, so outputs and
+place hold together; never backwards, never past the head, the check in
+the statement that writes) and `slowest_cursor`, the stamp pruning may
+reach without stranding a registered stage (O28). Registered is the
+word: a stage takes its row before its first read and gives it back
+when it retires, or pruning waits on it for good, and the lag query
+says which one. Two things
+become queries: a stage's lag, `head - seq`, and the safe prune point.
+It was lifted ahead of a Mojo asker, which D64 records.
+
 ## Not built
 
 - **The stream.** The probes wrote their own handler over `SSERegistry`:
@@ -192,8 +207,6 @@ Two rules came from getting them wrong:
   registry's bound of 64 KB a slot cannot hold one large delta whole.
   What the layer would want is a stream whose event ids are the
   application's and whose replay is a callback.
-- **A cursor table.** One probe keeps `m0_cursors(name, seq)`; one
-  application is not a pattern.
 - **Repairing a rebuilt table.** `watched` reports; the application
   decides.
 - **History.** One entry per row is the present and when it last

@@ -25,6 +25,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `PRAGMA recursive_triggers = ON` on the writer, and a table rebuilt by
   a migration loses its triggers. `watch` refuses a table whose key is
   not its rowid.
+- **A stage's place: `m0_cursors`, `cursor`, `advance`, `slowest_cursor`**
+  (SPEC O28). A process or thread that derives data from a watched table
+  records the last stamp it acted on in the transaction that writes its
+  outputs, so a restart repeats nothing and skips nothing; lag and the
+  safe prune point are queries.
 - **`apps/table_notes` answers `GET /notes/changes?since=N`**: the rows
   stamped above N as JSON, from either loop, with nothing kept for the
   client. `smoke-table-notes` holds it at one loop and at two.

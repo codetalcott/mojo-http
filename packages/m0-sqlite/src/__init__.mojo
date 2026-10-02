@@ -137,4 +137,7 @@ from .stamps import (
     stamp_of,
     stamp_floor,
     prune_stamps,
+    cursor,
+    advance,
+    slowest_cursor,
 )
