@@ -340,6 +340,39 @@ selftest`, the task's first step, holds it to the two cases that matter:
 23 samples of 2 ms and one of 120 are under the bound, two of 120 are
 over it, and fewer than two samples are refused.
 
+**The host's own placement arms read it the same way since 2026-10-02.**
+`host_probe.py placement` (`smoke-host`'s pool and bare-loop arms, and
+`smoke-host-threads`' pooled loops) printed one number, the worst of 24
+`/health` samples, and `smoke-host-threads` failed on it twice on macOS
+on 2026-10-01 at 120 to 190 ms. It now prints the same line, built by the
+one function in `probelib.py` (`placement_summary`), and its three arms
+read `second_health_ms`. The rule the pool arm exists for still fails it:
+with the gate app's health path answered on a pool thread
+(`sabotage-host`'s rule of that name) the line was
+
+```
+worst_health_ms=143 second_health_ms=141 worst_connect_ms=0 worst_request_ms=143 slow_requests=40
+```
+
+and the unsabotaged bare loop measured 358 and 354 ms. Recorded:
+`host.pool_second_health_ms` against the limit, `host.pool_health_ms`
+beside it without one.
+
+**What a search for the stall found.** A throwaway pull request (#533)
+looped the gate's own sequence on three macOS runners, 171 gate runs per
+build, against `main`, `main` with the pool's timed look patched out
+and `main` without the streams phase first. No run
+of any build would have failed; the worst sample was 80.4 ms, of which
+78.9 ms was the connect. A first run of about 5,200 samples per build
+had none at 100 ms, and three over 50 ms: one in the connect, and two in
+the request under the eager wakes (`M0_POOL_ELASTIC=0`), where the timed
+look does nothing. On Ubuntu the
+worst of 240 gate runs was 0.8 ms. So the stall is not a steady property
+of `main`, nothing measured ties it to the timed look, and why four
+first-attempt failures fell on one day is not known; the runner image was
+the same before, during and after. The split in each line is what will
+say which side the next one is on.
+
 ### The gates
 
 `smoke-ramp` (every PR, SPEC N20) builds both binaries from the one

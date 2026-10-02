@@ -188,6 +188,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
     the host's full-lane arm. `ramp_probe.py selftest` runs first: one
     stall in 24 must pass, two must not.
 
+- **`poe smoke-host` and `poe smoke-host-threads` gate their placement
+  arms the same way** (SPEC E26, E27). `host_probe.py placement` printed
+  the worst of 24 `/health` samples and nothing else, and
+  `smoke-host-threads` failed on it twice on macOS on 2026-10-01, at 120
+  to 190 ms, on changes that did not touch it. The probe now prints
+  `worst_health_ms`, `second_health_ms`, `worst_connect_ms` and
+  `worst_request_ms` through the function `ramp_probe.py` uses (now
+  `probelib.placement_summary`), the pool arms require the second-worst
+  under 100 ms and the bare-loop arm requires it to reach 100, and a
+  failure prints the whole line. With the gate app's health path moved to
+  a pool thread the second-worst was 141 ms, so the rule the arm guards
+  is still caught. CI records `host.pool_second_health_ms` against the
+  limit and keeps `host.pool_health_ms` without one.
+
 - **A stream's socket has TCP keepalive on** (SPEC I32), so a client that
   vanishes from a quiet stream no longer holds its connection for as long
   as the server runs. A closed laptop or a dropped network sends no FIN,

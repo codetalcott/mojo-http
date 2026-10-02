@@ -60,7 +60,7 @@ import sys
 import threading
 import time
 
-from probelib import fail, phase, stamp
+from probelib import fail, phase, placement_line, placement_summary, stamp
 
 stamp("ramp_probe: FAIL", fail="ramp_probe: FAIL: {phase}: {msg}", stream=sys.stderr)
 
@@ -197,37 +197,13 @@ def _slow_loop(port: int, prefix: str, until: float, counts: list) -> None:
 
 
 def summarize(samples: list) -> dict:
-    """The placement line's numbers, from `(total, connect, request)` per
-    sample, each in milliseconds. A pure function of the list.
-
-    `second_now_ms` is the second-largest total (equal to the worst when two
-    samples tie for it), and the connect and request figures are the WORST
-    sample's own, not each column's maximum: they say where that one
-    sample's time went. Whole milliseconds, truncated, as `worst_now_ms`
-    always was. Fewer than two samples have no second-worst, and are
-    refused rather than answered with the only one.
-    """
-    if len(samples) < 2:
-        raise ValueError(
-            "%d sample(s): a second-worst needs at least two" % len(samples)
-        )
-    ordered = sorted(samples, key=lambda s: s[0], reverse=True)
-    worst, second = ordered[0], ordered[1]
-    return {
-        "worst_now_ms": int(worst[0]),
-        "second_now_ms": int(second[0]),
-        "worst_connect_ms": int(worst[1]),
-        "worst_request_ms": int(worst[2]),
-    }
-
-
-SUMMARY_FIELDS = ("worst_now_ms", "second_now_ms", "worst_connect_ms", "worst_request_ms")
+    """The placement line's numbers: `probelib.placement_summary` for
+    `/now`, which `host_probe.py placement` shares for `/health`."""
+    return placement_summary(samples, "now")
 
 
 def summary_line(samples: list, slow_requests: int) -> str:
-    got = summarize(samples)
-    fields = ["%s=%d" % (name, got[name]) for name in SUMMARY_FIELDS]
-    return " ".join(fields + ["slow_requests=%d" % slow_requests])
+    return placement_line(samples, "now", slow_requests)
 
 
 def placement(port: int, prefix: str, k: int, seconds: float) -> None:
