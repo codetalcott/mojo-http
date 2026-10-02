@@ -7,7 +7,8 @@ a client holds are still the bytes.
                                            renderings, where one cache makes
                                            the count exact
     table_notes_probe.py loops PORT DB     M0_THREADS=2: a write through one
-                                           loop is what the other serves next
+                                           loop is what the other serves next,
+                                           and what its delta holds
 
 "Another program" below is this process, writing the file through CPython's
 own sqlite3: a different process and a different copy of SQLite from the
@@ -70,6 +71,12 @@ class Client:
 
     def post(self, path, fields):
         return self.ask("POST", path, body=urlencode(fields), headers=FORM)
+
+    def changes(self, since):
+        resp, body = self.get(f"/notes/changes?since={since}")
+        check(resp.status == 200, f"/notes/changes?since={since} answered {resp.status}")
+        check(resp.getheader("ETag") is None, "a delta carried a validator")
+        return json.loads(body)
 
     def stats(self):
         resp, body = self.get("/stats")
@@ -239,6 +246,90 @@ def one(port, db):
     resp, body = c.get("/notes?after=0" + more.group(2))
     check(resp.status == 404, "a continuation with a leading zero is a second name for a page")
 
+    phase("what changed since")
+    # --- the database remembers what changed -------------------------------------
+    check(c.stats()["watched"], "the table is not watched")
+    all_ = c.changes(0)
+    check(not all_["reset"] and all_["head"] == c.stats()["head"], f"a delta from 0: head {all_['head']}")
+    living = [r for r in all_["rows"] if not r.get("gone")]
+    check(len(living) > LIST_PAGE and all(r["born"] for r in living), "from 0, on a table watched from its first row, a row that lives was not born")
+    con = sqlite3.connect(db, timeout=10)
+    held = {i: t for i, t in con.execute("SELECT id, title FROM notes")}
+    con.close()
+    check({r["id"]: r["title"] for r in living} == held, "the delta from 0 is not the table")
+    at = all_["head"]
+    again = c.changes(at)
+    check(again == {"since": at, "head": at, "reset": False, "rows": []}, f"a client that has everything was sent {again}")
+
+    # One write through the server, one by another program, one delete.
+    resp, body = c.post("/notes", {"title": 'quoted "new"', "body": ""})
+    made = int(resp.getheader("Location").rsplit("/", 1)[1])
+    con = sqlite3.connect(db, timeout=10)
+    older = con.execute("SELECT min(id) FROM notes").fetchone()[0]
+    doomed = con.execute("SELECT max(id) FROM notes WHERE id < ?", (made,)).fetchone()[0]
+    con.close()
+    write(db, "UPDATE notes SET title = 'renamed outside' WHERE id = ?", (older,))
+    resp, body = c.ask("DELETE", f"/notes/{doomed}", headers=PARTIAL)
+    check(resp.status == 200, f"DELETE /notes/{doomed}: {resp.status}")
+    delta = c.changes(at)
+    check(
+        delta["rows"] == [
+            {"id": made, "seq": at + 1, "born": True, "title": 'quoted "new"'},
+            {"id": older, "seq": at + 2, "born": False, "title": "renamed outside"},
+            {"id": doomed, "seq": at + 3, "gone": True},
+        ],
+        f"three changes, in the order they were committed: {delta['rows']}",
+    )
+    check(delta["head"] == at + 3, f"the delta's head is {delta['head']}, want {at + 3}")
+    # From the middle of it: the row made above the stamp is no longer new.
+    tail = c.changes(at + 1)
+    check([r["id"] for r in tail["rows"]] == [older, doomed], f"from the middle: {tail['rows']}")
+    check(tail["head"] == at + 3, "from the middle, another head")
+    # And a row created above a stamp is new from there, not from past it.
+    check(c.changes(at)["rows"][0]["born"] is True and all(not r.get("born") for r in tail["rows"]), "born does not follow the stamp asked from")
+    # A row written twice has one entry, at its last stamp.
+    write(db, "UPDATE notes SET title = 'renamed twice' WHERE id = ?", (older,))
+    delta = c.changes(at)
+    check(
+        [(r["id"], r["seq"]) for r in delta["rows"]] == [(made, at + 1), (doomed, at + 3), (older, at + 4)],
+        f"a row written twice: {delta['rows']}",
+    )
+
+    # A title is whatever was stored: a byte that is not UTF-8 and a
+    # control character still make a delta a strict client can read.
+    resp, body = c.ask("POST", "/notes", body="title=a%FFb%01c&body=", headers=FORM)
+    check(resp.status == 303, f"a title with a stray byte: {resp.status}")
+    odd = int(resp.getheader("Location").rsplit("/", 1)[1])
+    row = [r for r in c.changes(at)["rows"] if r["id"] == odd]
+    check(row and row[0]["title"] == "a\ufffdb\x01c", f"a stray byte in a title: {row}")
+    delta = c.changes(at)
+
+    # What is not a change to the table moves the clock and not the stamp.
+    head = delta["head"]
+    clock = c.stats()["clock"]
+    write(db, "INSERT INTO elsewhere VALUES (2)")
+    check(c.stats()["clock"] != clock, "the commit elsewhere did not move the clock: the next check is vacuous")
+    check(c.changes(head)["rows"] == [] and c.stats()["head"] == head, "a commit to another table was stamped")
+
+    for bad in ("abc", "-1", "01", "", "1.5"):
+        resp, body = c.get(f"/notes/changes?since={bad}")
+        check(resp.status == 400, f"since={bad!r}: {resp.status}, want 400")
+    resp, body = c.get("/notes/changes")
+    check(resp.status == 200 and json.loads(body)["since"] == 0, "no since is not since 0")
+
+    # Below the floor a delta could keep a deleted note alive: start over.
+    con = sqlite3.connect(db, timeout=10)
+    con.execute("DELETE FROM m0_changes WHERE gone = 1 AND seq <= ?", (head,))
+    con.execute("UPDATE m0_stamp SET floor = ?", (head,))
+    con.commit()
+    con.close()
+    stale = c.changes(at)
+    check(stale == {"since": at, "head": head, "reset": True, "rows": []}, f"a client behind the floor: {stale}")
+    check(c.changes(head)["reset"] is False, "a client at the floor was told to start over")
+    # A stamp this database never gave is not a place to wait from.
+    ahead = c.changes(head + 50)
+    check(ahead == {"since": head + 50, "head": head, "reset": True, "rows": []}, f"a client ahead of the head: {ahead}")
+
     c.close()
     print("table_notes_probe one: OK")
 
@@ -260,6 +351,7 @@ def loops(port, db):
     a, b = by_worker[0], by_worker[1]
 
     phase("each loop serves the other's write")
+    at = a.changes(0)["head"]
     for i in range(20):
         writer, reader = (a, b) if i % 2 == 0 else (b, a)
         # Warm the reader's cache, so what it must notice is a change.
@@ -277,6 +369,12 @@ def loops(port, db):
         # The tag is over the bytes, so the two loops agree on it.
         resp, body = writer.get("/notes", {"If-None-Match": there})
         check(resp.status == 304, f"round {i}: one loop's tag did not validate the other's list")
+        # Neither loop keeps the client's place, so either answers from it.
+        delta = reader.changes(at)
+        want = [{"id": int(where.rsplit("/", 1)[1]), "seq": at + 1, "born": True, "title": title}]
+        check(delta["rows"] == want and delta["head"] == at + 1, f"round {i}: the other loop's delta from {at}: {delta}")
+        check(writer.changes(at) == delta, f"round {i}: the two loops answered one stamp differently")
+        at = delta["head"]
 
     sa, sb = a.stats(), b.stats()
     check(sa["worker"] == 0 and sb["worker"] == 1, "a connection changed loops")

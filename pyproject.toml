@@ -9784,6 +9784,7 @@ stop $pid || fail "the two-loop server exited $? on SIGTERM"
 
 echo "smoke-table-notes OK"
 python3 scripts/emit.py --covers N48 --task smoke-table-notes
+python3 scripts/emit.py --covers N49 --task smoke-table-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------
