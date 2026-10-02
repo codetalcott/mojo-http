@@ -659,6 +659,35 @@ names an `m0` the index lacks.
   interpreter.
 - Step 6: 8 blocks passed against the published package.
 
+`m0 0.5.0`: tag `m0-v0.5.0` at `e2a88d7`, 2026-10-02, cut beside m0serve
+1.9.0 and pushed first; `v1.9.0` was pushed only once the index had it.
+- Step 1: `sabotage-m0-wheel` 25 of 25. `sabotage-scaffold` 66 of 66, in
+  two runs: the host's disk filled during the image rules (about 10 GiB
+  free at the start), two rules read MISSED because the build failed and
+  not the rule, the next crashed, and the harness could not write its
+  restore, leaving `_common/deploy/Dockerfile` sabotaged and docker's
+  volume answering `input/output error`. Put back with `git checkout`,
+  `colima restart`, a prune, and the last four image rules one at a time
+  with `--only`, a prune and an `fstrim` of `/var/lib/docker` between
+  them: all four caught. `fstrim -av` reported 0 bytes there; the volume
+  is a disk of its own and is trimmed by its mount point.
+- Step 3: the local wheel was `m0-0.5.0-py3-none-any.whl`, 665,220 bytes,
+  and a scaffold from it pinned `m0==0.5.0`.
+- Step 4: `build` green at the first attempt, and `publish-pypi` green
+  after approval; the file on the index is 665,220 bytes, equal to the
+  local wheel. "Tests passed on" named the pull request head (`df8f90c`)
+  that the labelled merge carries. The two lines to read before approving
+  could not be fetched with `gh` while the run waited: read them in the
+  browser.
+- Step 5 on macOS arm64: the scaffold pinned `m0==0.5.0`, and `uv.lock`
+  named it from pypi.org. The first build took 12 s, `smoke.sh` passed,
+  `m0 test` passed, and every `m0 doctor` check passed, `scaffold` naming
+  no file.
+- `m0 image` built in 30 s with the base layers present. The image is
+  103.5 MB, 2.93 MB of it the app, with `libsqlite3-0` installed and no
+  interpreter.
+- Step 6: 8 blocks passed against the published package.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
