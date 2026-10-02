@@ -1,0 +1,51 @@
+# THROWAWAY, never merged: scripts/probes/stall_ab.py says what it asks.
+# Three macOS jobs, because the stall is rare and may depend on the runner a
+# job lands on, and one Ubuntu job as the control (no stall has been seen
+# there).
+name: Stall probe
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/stall-probe.yml
+      - scripts/probes/stall_ab.py
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {os: macos-latest, shard: 1}
+          - {os: macos-latest, shard: 2}
+          - {os: macos-latest, shard: 3}
+          - {os: ubuntu-latest, shard: 1}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 55
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup
+      - name: The machine
+        run: |
+          uname -a
+          python3 -c "import os; print('cpus', os.cpu_count())"
+      - name: Build the packages the host needs
+        run: uv run poe build-core && uv run poe build-http
+      - name: Build A, main
+        run: |
+          mkdir -p ab
+          uv run mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/host_check/server.mojo -o ab/host_check_a
+      - name: Build B, the timed look off
+        run: |
+          python3 scripts/probes/stall_ab.py patch packages/m0-http/lightbug_http/offload.mojo
+          uv run poe build-http
+          uv run mojo build -I packages/m0-core/ -I packages/m0-http/ -I apps/ apps/host_check/server.mojo -o ab/host_check_b
+          cmp -s ab/host_check_a ab/host_check_b && { echo "A and B are the same binary"; exit 1; } || true
+      - name: Run the arms
+        run: python3 scripts/probes/stall_ab.py run ab/results.json ab/host_check_a ab/host_check_b 20 10
+      - name: Upload the samples
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: stall-ab-${{ matrix.os }}-${{ matrix.shard }}
+          path: ab/results.json
+          if-no-files-found: warn
