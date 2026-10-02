@@ -676,6 +676,14 @@ piece: an app that asks, a wire gate, then the lift.
   would move every table's tag. A view that fills a `Cached` writes, so it
   is `add_write`, not `resource`'s `list` slot. `apps/table_notes` is the
   reference, gated by `smoke-table-notes` at one loop and at two.
+- **Stamps** (`m0_sqlite`'s `watch`; SPEC O26–O27, N49, D63–D64;
+  docs/notes/a-database-that-remembers-what-changed.md). Triggers give
+  every row a watched table writes one entry with the stamp of its last
+  change, so "what changed since N" is a query and whoever asks keeps one
+  number. A stamp can be got past and the clock cannot: `Cached` stays on
+  `data_version`. A delta is sent whole, never cut at a stamp. The stream
+  over it is not built (D64); read
+  [packages/m0-sqlite/AGENTS.md](packages/m0-sqlite/AGENTS.md) first.
 - **A table that streams** (`apps/blobs`, SPEC N16;
   docs/notes/a-world-the-page-cannot-hold.md): `ViewService` forwards only
   `func` and `before_request`, so an app that also owns the SSE hooks writes

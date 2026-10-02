@@ -112,6 +112,34 @@ most:
   and do not hand a function its connection (`Args` carries none). Nothing
   reaches a registered instance by address, either.
 
+**Stamps say what changed; the clock says that something did** (SPEC
+O26–O27, D63–D64; docs/notes/a-database-that-remembers-what-changed.md).
+`src/stamps.mojo` is SQL and nothing else: two tables and four triggers a
+table. Six rules:
+
+- **`m0_changes` and `m0_stamp` are a contract.** Programs that are not
+  Mojo read them, so a column renamed is a break for somebody's Python.
+- **The counter is a row, incremented in the trigger.** Do not go back to
+  `max(seq) + 1`: it frees a stamp for reuse when the highest tombstone is
+  pruned, and makes a table's own clock a scan.
+- **The entry is written by `INSERT ... SELECT ... WHERE NOT EXISTS`,
+  then an UPDATE.** Not an upsert (a SQLite older than 3.24 could then
+  not open the file) and not `INSERT OR IGNORE`: the conflict clause of
+  the statement that fires a trigger replaces the trigger's own, so
+  `UPDATE OR REPLACE` would replace the entry and `INSERT OR FAIL` would
+  fail the write. And the key is named by its column, never `rowid`,
+  which a WITHOUT ROWID table lacks and resolves only when a trigger
+  fires.
+- **A stamp never validates anything.** It can be got past (a REPLACE
+  without `recursive_triggers` on the writer, a rebuilt table), so a cache
+  stays keyed on `data_version`. Both traps are tests; do not "fix" one by
+  deleting it.
+- **`stamp_of` can go down** when the tombstone that held it is pruned:
+  compared for equality, like the clock.
+- **A delta is whole.** `born` says a client at N lacks a row only when N
+  was the head of a snapshot it has all of, so nothing here offers a
+  LIMIT, and an application does not add one.
+
 **The change clock is `Connection.data_version()`, and there is no commit
 hook** (SPEC O25, D60; docs/notes/a-resource-over-a-table.md). The pragma
 stands still for the asking connection's own writes, so the connection

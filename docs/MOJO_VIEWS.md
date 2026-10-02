@@ -246,6 +246,50 @@ policy and keeps a policy the response names, and leaves any status but
 200 and any method but GET and HEAD as they are. `apps/table_notes` in the
 repository is a resource, the clock and the 304 over one SQLite file.
 
+## What changed since a client last asked
+
+The clock says that something was committed. `m0_sqlite`'s stamps say
+what:
+
+```mojo
+install_stamps(writer)
+watch(writer, "items")
+```
+
+From then on every row written to `items`, by this program or any other,
+has one entry in `m0_changes` with the stamp of its last change (`seq`),
+the stamp it was created at (`born`) and whether it was deleted (`gone`).
+The rows above a stamp are one query:
+
+```mojo
+var q = st.reader.prepare(
+    "SELECT c.row, c.seq, c.born, c.gone, i.name FROM m0_changes c"
+    " LEFT JOIN items i ON i.id = c.row"
+    " WHERE c.tbl = 'items' AND c.seq > ?1 ORDER BY c.seq"
+)
+q.bind_int(1, since)
+```
+
+- The client keeps the highest `seq` it was answered and asks from there.
+  The server keeps nothing for it, so any thread answers.
+- A client at stamp N has a row when `born <= N`. Send what is above a
+  stamp whole: the rule holds only for a stamp that ended an answer.
+- `prune_stamps` forgets deleted rows up to a stamp. A client below
+  `stamp_floor`, or above `stamp_head`, is told to read everything again.
+  Read the floor, the head and the rows in one read transaction.
+- A row that was in the table before `watch` appears in no answer until
+  it is written.
+- `stamp_of(db, "items")` is the highest stamp in one table.
+
+Three limits. A writer that uses `INSERT OR REPLACE` or
+`UPDATE OR REPLACE` sets `PRAGMA recursive_triggers = ON`, or a row it
+displaces is deleted unrecorded. A migration that rebuilds a table drops
+the triggers; ask `watched` at startup. The table's key is
+`INTEGER PRIMARY KEY` and the table is not `WITHOUT ROWID`. Because a
+stamp can be bypassed, keep `Cached` on the clock.
+
+`apps/table_notes` answers `GET /notes/changes?since=N` this way.
+
 ## Sessions
 
 `m0_http.session` is a signed cookie and nothing else:

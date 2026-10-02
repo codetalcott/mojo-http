@@ -32,6 +32,17 @@ may open, and the app is what that takes:
   rowid (`?after=`), the same continuation under inserts and deletes
   between two reads; only the first page is kept.
 
+- **what changed is asked of the database.** The table is watched
+  (`m0_sqlite`'s stamps), so each row written, here or by any program,
+  carries the number of its last change. `GET /notes/changes?since=N`
+  answers the rows stamped above N in one statement: the ones that live
+  with their titles, `born` when the client cannot have them, and the
+  ones that are gone. A client keeps `head` and asks again from it; no
+  loop keeps anything for it, so either loop answers. Below the floor
+  tombstones were pruned to, the answer is `reset`: read the list again.
+  The list's cache stays on the clock, which no write can get past; a
+  stamp can be (a REPLACE without the pragma, a rebuilt table).
+
 Nothing is shared between threads but the file. Each loop under
 `M0_THREADS` and each pool thread builds its own `Notes`, with its own
 two connections and its own cache, and every one of them serves what the
@@ -53,7 +64,9 @@ No session and so no CSRF token: `apps/fragment_notes` is the login, and
     PUT    /notes/:id        the same fields; 303 to the note
     POST   /notes/:id/edit   the same view, for the form
     DELETE /notes/:id        removes it; answers the list
-    GET    /stats            this loop's cache: {"worker","fills","clock"}
+    GET    /notes/changes    `?since=N`: the rows stamped above N, as JSON
+    GET    /stats            this loop's cache and stamp:
+                             {"worker","fills","clock","head","watched"}
     GET    /                 303 to /notes
     GET    /health           {"status":"ok"}
 
@@ -90,7 +103,17 @@ from m0_http import (
     url_for,
     void,
 )
-from m0_sqlite import Connection, open, open_readonly
+from m0_core.json_escape import escape_json_string
+from m0_sqlite import (
+    Connection,
+    install_stamps,
+    open,
+    open_readonly,
+    stamp_floor,
+    stamp_head,
+    watch,
+    watched,
+)
 
 comptime HTMX_CDN = "https://cdn.jsdelivr.net/npm/htmx.org@4.0.0/dist/htmx.min.js"
 
@@ -108,6 +131,8 @@ comptime NOTES = "/notes"
 comptime NOTES_NEW = NOTES + RESOURCE_NEW
 comptime NOTE = NOTES + RESOURCE_ITEM
 comptime NOTE_EDIT = NOTES + RESOURCE_EDIT
+comptime NOTES_CHANGES = NOTES + "/changes"
+"""Registered before the resource: `/notes/:id` matches it too."""
 
 comptime NOTES_ID = "notes"
 comptime Frag = Fragment[Htmx]
@@ -145,7 +170,13 @@ struct Notes(ViewState):
             "  title TEXT NOT NULL,"
             "  body TEXT NOT NULL DEFAULT '')"
         )
+        install_stamps(self.writer)
+        watch(self.writer, "notes")
         self.writer.commit()
+        # A REPLACE that displaces a row deletes it with no delete trigger
+        # unless the writing connection says this. The app has no REPLACE;
+        # the line is here for the one somebody adds.
+        self.writer.execute("PRAGMA recursive_triggers = ON")
         # AUTOINCREMENT, so a deleted note's id is never handed to another:
         # without it SQLite reuses the highest rowid once its row is gone,
         # and a URL someone kept would name a different note.
@@ -425,15 +456,132 @@ def delete(
     return page_or_fragment(req, st.first_page(), Site("notes"))
 
 
+def stamp(param: String) -> Int:
+    """The stamp a `since` names, or -1: decimal digits, no sign, and no
+    leading zero but for 0 itself."""
+    if param == "0":
+        return 0
+    return rowid(param)
+
+
+def json_text(s: String) -> String:
+    """`s` as a JSON string. A title is what a form or another program
+    stored, so it may hold bytes that are not UTF-8: each such byte
+    becomes U+FFFD, since one undecodable row would make every delta
+    that includes it unreadable, and a delta cannot skip a row."""
+    var b = s.as_bytes()
+    var n = len(b)
+    var clean = List[UInt8](capacity=n)
+    var i = 0
+    while i < n:
+        var c = Int(b[i])
+        var want = 0
+        if c < 0x80:
+            want = 1
+        elif c >= 0xC2 and c <= 0xDF:
+            want = 2
+        elif c >= 0xE0 and c <= 0xEF:
+            want = 3
+        elif c >= 0xF0 and c <= 0xF4:
+            want = 4
+        var ok = want > 0 and i + want <= n
+        if ok:
+            for k in range(1, want):
+                var t = Int(b[i + k])
+                if t < 0x80 or t > 0xBF:
+                    ok = False
+            # Overlong forms, surrogates and what lies past U+10FFFF.
+            if want == 3 and ok:
+                var t = Int(b[i + 1])
+                ok = not (c == 0xE0 and t < 0xA0) and not (c == 0xED and t > 0x9F)
+            if want == 4 and ok:
+                var t = Int(b[i + 1])
+                ok = not (c == 0xF0 and t < 0x90) and not (c == 0xF4 and t > 0x8F)
+        if ok:
+            for k in range(want):
+                clean.append(b[i + k])
+            i += want
+        else:
+            clean.append(0xEF)
+            clean.append(0xBF)
+            clean.append(0xBD)
+            i += 1
+    return escape_json_string(String(unsafe_from_utf8=Span(clean)))
+
+
+def _changes(db: Connection, since: Int) raises -> String:
+    """The answer for a client at `since`, read inside one transaction."""
+    var head = stamp_head(db)
+    if since < stamp_floor(db) or since > head:
+        # Below the floor, deletions are no longer recorded, and a delta
+        # could leave the client a note that is gone. Above the head, the
+        # client's stamp is not this database's (a file restored or made
+        # again): it would hear nothing until the counter passed it, then
+        # miss what lay between.
+        return String('{"since":', since, ',"head":', head, ',"reset":true,"rows":[]}')
+    var q = db.prepare(
+        "SELECT c.row, c.seq, c.born, c.gone, n.title FROM m0_changes c"
+        " LEFT JOIN notes n ON n.id = c.row"
+        " WHERE c.tbl = 'notes' AND c.seq > ?1 ORDER BY c.seq"
+    )
+    q.bind_int(1, since)
+    var rows = String()
+    while q.step():
+        if rows.byte_length() > 0:
+            rows += ","
+        rows += String('{"id":', q.column_int(0), ',"seq":', q.column_int(1))
+        if q.column_int(3) == 1 or q.is_null(4):
+            rows += ',"gone":true}'
+        else:
+            rows += String(
+                ',"born":', "true" if q.column_int(2) > since else "false",
+                ',"title":', json_text(q.column_text(4)), "}",
+            )
+    q.finalize()
+    return String('{"since":', since, ',"head":', head, ',"reset":false,"rows":[', rows, "]}")
+
+
+def changes(
+    req: HTTPRequest, params: List[String], st: Notes
+) raises -> HTTPResponse:
+    """GET /notes/changes?since=N — the rows stamped above N.
+
+    The floor, the head and the rows are read in one transaction, so one
+    snapshot: `head` is the last stamp given as of it, and a client that
+    asks again from `head` misses nothing. The answer is whole however
+    long: `born` says the row was created above N, which tells a client
+    it lacks the row only when N was some answer's `head`.
+    """
+    var since = 0
+    ref query = req.uri.queries
+    if "since" in query:
+        since = stamp(query["since"])
+    if since < 0:
+        return reply.problem(
+            400, "Invalid Stamp", "since is a stamp: decimal digits", NOTES_CHANGES
+        )
+    st.reader.begin()
+    try:
+        var body = _changes(st.reader, since)
+        st.reader.commit()
+        return reply.json(200, "OK", body)
+    except e:
+        st.reader.rollback()
+        raise e^
+
+
 def stats(
     req: HTTPRequest, params: List[String], st: Notes
 ) raises -> HTTPResponse:
-    """GET /stats — how often this loop rendered the list, for the gate."""
+    """GET /stats — how often this loop rendered the list, and where the
+    stamps stand, for the gate."""
     return reply.json(
         200, "OK",
         String(
             '{"worker":', st.worker, ',"fills":', st.rows.fills,
-            ',"clock":', st.reader.data_version(), "}",
+            ',"clock":', st.reader.data_version(),
+            ',"head":', stamp_head(st.reader),
+            ',"watched":', "true" if watched(st.reader, "notes") else "false", "}",
         ),
     )
 
@@ -457,6 +605,8 @@ def note_urls() raises -> Views[Notes]:
     # The list fills a cache as it answers, so it is a write and takes the
     # collection's GET itself; `resource` registers the rest.
     v.add_write("GET", NOTES, index)
+    # Before the resource: the router answers with the first match.
+    v.add_read("GET", NOTES_CHANGES, changes)
     v.resource(
         NOTES, new=new_form, create=create, show=detail, edit=edit_form,
         update=update, delete=delete,

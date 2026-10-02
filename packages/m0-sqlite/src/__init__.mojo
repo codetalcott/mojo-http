@@ -129,3 +129,12 @@ from .conn import (
     MEMORY,
     DEFAULT_BUSY_TIMEOUT_MS,
 )
+from .stamps import (
+    install_stamps,
+    watch,
+    watched,
+    stamp_head,
+    stamp_of,
+    stamp_floor,
+    prune_stamps,
+)

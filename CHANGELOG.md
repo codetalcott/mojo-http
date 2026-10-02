@@ -8,6 +8,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **`m0-sqlite` stamps: the database remembers which rows changed**
+  (SPEC O26, O27, N49, DECISIONS D63, D64;
+  docs/notes/a-database-that-remembers-what-changed.md).
+  `install_stamps(db)` and `watch(db, table)` put four triggers on a
+  table, after which every row written there, by any program, has one
+  entry in `m0_changes` holding the stamp of its last change, the stamp
+  it was born at and whether it is gone. "What changed since N" is then
+  one statement, and whoever asks keeps one number. `watched`,
+  `stamp_head`, `stamp_of` (one table's clock), `stamp_floor` and
+  `prune_stamps` are the rest. A watched single-row commit measured
+  30 µs against 8.6 µs unwatched. What a stamp cannot see is pinned
+  by tests: a REPLACE through a UNIQUE column needs
+  `PRAGMA recursive_triggers = ON` on the writer, and a table rebuilt by
+  a migration loses its triggers. `watch` refuses a table whose key is
+  not its rowid.
+- **`apps/table_notes` answers `GET /notes/changes?since=N`**: the rows
+  stamped above N as JSON, from either loop, with nothing kept for the
+  client. `smoke-table-notes` holds it at one loop and at two.
+
 ## [1.9.0] — 2026-10-02
 
 An application in Mojo can serve a table: `Views.resource` registers a
