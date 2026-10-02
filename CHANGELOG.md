@@ -8,7 +8,43 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.9.0] — 2026-10-02
+
+An application in Mojo can serve a table: `Views.resource` registers a
+collection's routes, `m0_sqlite`'s `Connection.data_version()` says when
+the data may have changed, and `Cached` with `conditional` keep a rendering
+until it does and answer a client that holds it 304. A Mojo function can
+run inside a SQLite query. `m0serve` and the Mojo host listen on IPv6. A
+stream's socket carries TCP keepalive, so a client that vanished is reaped
+where nothing is in flight. Under `--workers N`, five ways a connection or
+a worker could be lost at a restart or a failure are closed, and m0-sqlite
+and m0-postgres each keep to one image of their library. The application
+layer's milestone is met: its first application outside the tree is
+recorded. The served contract is unchanged. Names nothing in the tree used
+left the packages the `m0` wheel ships, the Mojo HTTP client among them,
+which matters only to an application that imported one; the `m0` wheel
+ships as `m0 0.5.0`.
+
 ### Added
+
+- **`m0 0.5.0`: this release's framework, for applications built with
+  `m0`.** What changed since `m0 0.4.0` for someone writing an
+  application:
+  - New: `Views.resource` and the `RESOURCE_*` suffixes (N46), `Cached`
+    and `conditional` (N47), `Connection.data_version()` (O25) and
+    `Connection.create_function` (O19–O22), each below; `apps/table_notes`
+    in the repository is the first three together. `--host ::` and
+    `M0_HOST` take an IPv6 address (M29).
+  - What an application may have to change: the names under Removed are
+    gone from the packages the wheel ships — `m0_http.Client`,
+    `RequestContext`, `check_api_key` and `AppConfig.api_key`,
+    `ResponseCache`, `PatchJournal`, `negotiate_encoding`,
+    `negotiate_language`, the free `wants_html` and `wants_event_stream`,
+    m0-core's FNV-1a and xxHash32, m0-sqlite's `stats_ints` family, and a
+    handful of upstream `lightbug_http` names. An application that
+    imported one needs its own copy; none of the three templates did.
+  - Nothing an application built by `m0 0.4.0` must act on otherwise: the
+    templates are unchanged, and `m0 doctor` names no scaffold file.
 
 - **A resource over a table** (SPEC N46–N48 and O25, DECISIONS D60–D62;
   docs/notes/a-resource-over-a-table.md), in three pieces an application
@@ -7203,6 +7239,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.9.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.9.0
 [1.8.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.8.0
 [1.7.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.7.0
 [1.6.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.6.0
