@@ -23,8 +23,9 @@ milestones derive from row status:
 - **the application layer** — no section-N row `implemented`, every
   section-N `planned` row resolved, and a soak on the layer: an application
   outside `apps/` on `Views`/`Fragment`, recorded in
-  `docs/REAL_APP_VALIDATION.md`'s application-layer section. NOT MET until
-  one exists, on purpose. Its standing decisions are `docs/DECISIONS.md`
+  `docs/REAL_APP_VALIDATION.md`'s application-layer section. MET on
+  2026-10-02 by `unotes`, a dogfood application and the owner's alone;
+  the staleness rule applies to it as to the server's. Its standing decisions are `docs/DECISIONS.md`
   (permanent ids, each with a retiring condition), kept resolvable by
   `check-docs`.
 
@@ -697,8 +698,7 @@ routes as function values (D5), multipart (D16), `HX-*` header setters
 (D17), streaming from a Mojo mount other than as an `M0-Hold` (D22, which
 superseded D18), a session store (D24), a password KDF (D25) — is each a row
 of `docs/DECISIONS.md` with its note and the condition that would retire it.
-Section N has no `planned` rows left: what stands between the layer and its
-milestone is the soak alone. Read the ledger and `poe milestones` before
+Section N has no `planned` rows left, and the layer's soak is recorded. Read the ledger and `poe milestones` before
 proposing a piece; the process is one pull request per round carrying the
 note, the rows, the ledger update and the milestone line, reviewed from a
 separate session before it merges.

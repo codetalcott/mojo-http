@@ -268,8 +268,8 @@ from auto-stop can consume; the window now starts at the response.
 real application behind a real proxy, refuses what it should by name, and
 renews through the view when a grant expires — the browser side of that,
 `held_stream.js`, is exercised by every page that opens a stream and by no
-gate yet. The application layer's own soak is unchanged and still NOT MET
-below: this is the server holding for textshelf, not textshelf on `Views`
+gate yet. The application layer's own soak was unchanged by it (NOT MET
+then; recorded below on 2026-10-02): this is the server holding for textshelf, not textshelf on `Views`
 and `Fragment`.
 
 ## Re-soak — 2026-10-02, against 1.8.0 on main at `d624ae7`, all four applications
@@ -1039,21 +1039,71 @@ Django.
 
 ## The application layer
 
-**Under way, not yet recorded.** The soak's application is
-[`unotes`](https://github.com/codetalcott/unotes), a reader over a private
-notes corpus written outside this repository on the documented path:
-`m0 new` from `m0` 0.1.0 as published, `Views` and `Fragment[Htmx]`, a
-login on `m0_http.session`, deployed as an image to Fly.io. Its
-`SOAK_LOG.md` is the running record, and its findings are rows here
-already: `Query` (N36), `push=True` (N37), HEAD answered by GET (N38),
-SQLite opened at run time (O17, O18, N39, N40), the scaffold's login
-guidance, and the login module and `auth` template that its login, the
-second one written by hand, was the trigger for (N43–N45). By its own account it has run a synthetic soak (`scripts/soak.py`
-against a local two-worker build, every response compared with the same
-binary's answer alone, through SIGTERM restarts and abandoning clients) and
-owes the use window: the deployed instance in real use, including a phone
-that sleeps and reconnects, and a deploy while a reader is mid-session.
-Until a record lands here, `poe milestones` reports the soak NOT MET.
+**Last run 2026-10-02**, against m0-http 1.8.0 — `unotes` at `21673f2`, built by `m0` 0.4.0 as published (framework commit `b1dca5b`), macOS 26 on an M4.
+
+The application is [`unotes`](https://github.com/codetalcott/unotes), a
+reader over a private notes corpus, written outside this repository on the
+documented path: `m0 new` from `m0` 0.1.0 as published, `Views` and
+`Fragment[Htmx]`, a login on `m0_http.login`, the corpus read from SQLite
+through `m0_sqlite`, deployed as an image to Fly.io, and taken through
+three upgrades (0.2.0, 0.3.0, 0.4.0) with `m0 doctor`. Its `SOAK_LOG.md` is
+the running record. It was written to exercise the layer, by this
+repository's owner: it is the layer's first application outside `apps/`,
+not an independent adopter, and what it found is rows here already —
+`Query` (N36), `push=True` (N37), HEAD answered by GET (N38), SQLite opened
+at run time (O17, O18, N39, N40), the scaffold's login guidance, and the
+login module and `auth` template (N43–N45).
+
+**The synthetic soak.** `scripts/soak.py` against a local `bin/server` on
+the real corpus, `tools/soak_manifest.json` its manifest. The
+reference is the same binary's answer to each route alone; every response
+under load is compared with it, status, headers and a digest of the body,
+the scan figure and the CSRF token normalised. Six keep-alive bursts over
+eleven routes, nine of them behind the session, four sessions signed in,
+two clients that abandon a response mid-body (FIN and RST alternating,
+paced at 50 ms) and at once reuse the slot, and a SIGTERM and restart
+every 40 s with everything in flight.
+
+| row | seconds | verified byte for byte | failures | restarts | worst drain | RSS | fds, threads |
+|---|---|---|---|---|---|---|---|
+| two workers, forked | 180 | 1,748,962 | 0 | 4, each exit 0 | 3 ms | 17,296 → 17,312 kB | 54 → 55, 2 → 2 |
+| two loops on threads | 90 | 864,732 | 0 | 2, each exit 0 | 38 ms | 23,072 → 23,072 kB | 39 → 37, 7 → 7 |
+
+6,484 and 3,238 abandonments in the two rows. A request that met a restart
+and was refused or cut is counted apart and not as a failure (12,375 and
+6,824), within a window of at most 516 ms a restart.
+
+A first attempt at each row failed for the client's reason and is recorded
+because a rerun that passes is not an explanation: the driver's login
+population was left on, the manifest sets no interval for it, and about 170
+logins a second used up the client's local ports. Every one of its 232,946
+and 132,239 failures was `OSError 49` on a connect; 668,856 and 338,161
+responses were verified in those runs with none wrong, and the server
+exited 0 on each restart. The rows above are the same runs with that
+population off.
+
+**The deployed instance**, `unotes.fly.dev` on a `shared-cpu-1x`, on
+`m0` 0.4.0 since 2026-09-30. Signed in on 2026-10-02: the list, a note and
+the themes page each answer 200, and the list signed out is a 303 to the
+login. The corpus scan on that CPU, `x-scan-us`, six requests of each:
+
+| query | µs |
+|---|---|
+| no filter | 6–9, and 60 on the first request |
+| `q=the` | 164–189, and 573 on the first |
+| `q=football` | 1,227–1,517 |
+| `q=zzzzqqqq` (no match, the whole corpus read) | 1,256–1,595 |
+
+The same figures as on 0.1.0. A deploy with a reader mid-session, and a
+phone that sleeps and reconnects, were taken on the deployed instance on
+2026-09-24 with the phone emulated (the application's log, "the real use
+the log owed").
+
+**What this does not show.** Traffic from anyone but its owner, an
+application with writes (unotes reads), a stream, or a second author's
+habits. The layer's write path is gated by `apps/fragment_notes`,
+`apps/datastar_todo` and `apps/table_notes` inside the tree and has no
+soak outside it.
 
 textshelf, first named here, is not the soak: its streams moved onto the
 built-in hold mount in production on 2026-09-12 (above), and it writes no
