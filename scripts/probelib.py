@@ -110,6 +110,42 @@ def fail(msg):
     sys.exit(1)
 
 
+# --- a placement probe's summary ---------------------------------------------------
+
+
+def placement_summary(samples, name):
+    """A placement line's numbers, from `(total, connect, request)` per
+    sample, each in milliseconds. A pure function of the list; `name` is
+    what was sampled (`now`, `health`) and spells the first two keys.
+
+    `second_<name>_ms` is the second-largest total (equal to the worst when
+    two samples tie for it), and the connect and request figures are the
+    WORST sample's own, not each column's maximum: they say where that one
+    sample's time went. Whole milliseconds, truncated. Fewer than two
+    samples have no second-worst, and are refused rather than answered with
+    the only one. `ramp_probe.py selftest` holds the answers.
+    """
+    if len(samples) < 2:
+        raise ValueError(
+            "%d sample(s): a second-worst needs at least two" % len(samples)
+        )
+    ordered = sorted(samples, key=lambda s: s[0], reverse=True)
+    worst, second = ordered[0], ordered[1]
+    return {
+        "worst_%s_ms" % name: int(worst[0]),
+        "second_%s_ms" % name: int(second[0]),
+        "worst_connect_ms": int(worst[1]),
+        "worst_request_ms": int(worst[2]),
+    }
+
+
+def placement_line(samples, name, slow_requests):
+    """The summary as one line, in dict order, `slow_requests=` last."""
+    got = placement_summary(samples, name)
+    fields = ["%s=%d" % pair for pair in got.items()]
+    return " ".join(fields + ["slow_requests=%d" % slow_requests])
+
+
 # --- a server, watched while it starts -------------------------------------------
 
 

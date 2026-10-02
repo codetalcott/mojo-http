@@ -8329,8 +8329,12 @@ start pooled M0_THREADS=2 M0_BLOCKING_THREADS=2
 [ "$(grep -c 'handler thread(s) behind the loop' "$out/pooled.log")" -eq 2 ] || fail "two loops did not each start a pool"
 res=$(python3 scripts/host_probe.py streams $port 4 2 2 2>&1) || fail "pooled loops, streams: $res"
 res2=$(python3 scripts/host_probe.py placement $port 2 4 2>&1) || fail "pooled loops, placement: $res2"
-worst=$(echo "$res2" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
-[ "$worst" -lt 100 ] || fail "pooled loops: /health took ${worst} ms behind slow views"
+# The second-worst of the 24, as `smoke-ramp` reads its own: one sample a
+# macOS runner stalled is not a request that waited on a pool, which is
+# slow on many. The whole line is printed, with where the worst one went.
+second=$(echo "$res2" | sed -n 's/.*second_health_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$second" ] && [ "$second" -lt 100 ] || fail "pooled loops: the second-worst of 24 /health samples took ${second:-?} ms behind slow views; second_health_ms must be under 100
+$res2"
 sigterm "pooled loops"
 [ "$rc" -eq 0 ] || fail "pooled loops: SIGTERM exited $rc, not 0"
 echo "two loops of two: $res; $res2; exit 0 in ${took}s"
@@ -8739,9 +8743,14 @@ echo "a long period: exit 0 in ${took}s"
 start pool M0_BLOCKING_THREADS=2
 grep -q 'handler thread(s) behind the loop' "$out/pool.log" || fail "pool: the host started no pool for M0_BLOCKING_THREADS=2"
 res=$(python3 scripts/host_probe.py placement $port 2 4 2>&1) || fail "pool placement: $res"
+# Judged by the second-worst sample, as `smoke-ramp`'s arms are (its
+# probe's docstring has the reason): a runner's one stalled sample is
+# printed and recorded, and does not fail the gate; two do.
 pool_ms=$(echo "$res" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$pool_ms" ] || fail "pool placement: no measurement in: $res"
-[ "$pool_ms" -lt 100 ] || fail "pool placement: /health waited ${pool_ms} ms with both pool threads inside slow views"
+pool_2nd=$(echo "$res" | sed -n 's/.*second_health_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$pool_ms" ] && [ -n "$pool_2nd" ] || fail "pool placement: no measurement in: $res"
+[ "$pool_2nd" -lt 100 ] || fail "pool placement: the second-worst of 24 /health samples waited ${pool_2nd} ms with both pool threads inside slow views; second_health_ms must be under 100
+$res"
 # A stream opened on the LOOP works under the pool: the subscription is
 # in the registry the loop drains, and the producer's beats reach it.
 res2=$(python3 scripts/host_probe.py streams $port 2 2 1 2>&1) || fail "pool: a stream opened in before_request under the pool: $res2"
@@ -8765,9 +8774,10 @@ sigterm "two pooled workers"
 echo "two pooled workers: $res2"
 start nopool M0_BLOCKING_THREADS=0
 res=$(python3 scripts/host_probe.py placement $port 2 4 2>&1) || fail "no pool: $res"
-bare_ms=$(echo "$res" | sed -n 's/.*worst_health_ms=\\([0-9]*\\).*/\\1/p')
-[ -n "$bare_ms" ] || fail "no pool: no measurement in: $res"
-[ "$bare_ms" -ge 100 ] || fail "no pool: /health answered in ${bare_ms} ms under two slow views on the bare loop -- the placement arm no longer discriminates"
+bare_2nd=$(echo "$res" | sed -n 's/.*second_health_ms=\\([0-9]*\\).*/\\1/p')
+[ -n "$bare_2nd" ] || fail "no pool: no measurement in: $res"
+[ "$bare_2nd" -ge 100 ] || fail "no pool: the second-worst of 24 /health samples answered in ${bare_2nd} ms under two slow views on the bare loop -- the placement arm no longer discriminates
+$res"
 sigterm "no pool"
 [ "$rc" -eq 0 ] || fail "no pool: SIGTERM exited $rc, not 0"
 echo "no pool (negative arm): $res"
@@ -8867,7 +8877,8 @@ echo "a raising make on a pool thread is refused with 78, one worker and two"
 
 echo "smoke-host OK"
 python3 scripts/emit.py host.overrun_exit_s "$overrun_s" --unit s --limit 12 --task smoke-host
-python3 scripts/emit.py host.pool_health_ms "$pool_ms" --unit ms --limit 100 --task smoke-host
+python3 scripts/emit.py host.pool_second_health_ms "$pool_2nd" --unit ms --limit 100 --task smoke-host
+python3 scripts/emit.py host.pool_health_ms "$pool_ms" --unit ms --task smoke-host
 python3 scripts/emit.py host.overlap_exit_s "$overlap_s" --unit s --limit 6 --task smoke-host
 python3 scripts/emit.py --covers A25 --task smoke-host
 python3 scripts/emit.py --covers E21 --task smoke-host

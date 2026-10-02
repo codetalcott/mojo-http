@@ -17,9 +17,10 @@
     host_probe.py placement PORT K SECONDS
         hold K connections each looping `GET /slow?ms=200` for SECONDS
         while sampling `GET /health` 24 times at random gaps, and print
-        the worst sample; the caller says what the number means (under a
-        pool of more than K threads it must stay small, on the bare loop
-        it must not -- the negative arm)
+        the worst sample, the second-worst, and where the worst one spent
+        its time; the caller says what they mean (under a pool the
+        second-worst must stay small, on the bare loop it must not -- the
+        negative arm)
     host_probe.py isolation PORT LOOPS
         keep-alive connections spanning LOOPS loops of ONE process
         (`M0_THREADS`), five `GET /instance` on each: every answer names
@@ -36,7 +37,13 @@ the first assertion that failed. Stdlib only.
 
 The placement phase's 24 samples are `sim_loop_probe.py`'s arithmetic: a
 sample lands too late to see a 200 ms spin with probability about 0.68,
-so 24 at random phases miss it about once in 10,000 runs.
+so 24 at random phases miss it about once in 10,000 runs. The line is
+`ramp_probe.py`'s, whose docstring says why a gate reads the second-worst
+(a shared macOS runner stalls a single sample for 80 to 190 ms; a request
+waiting on the pool is slow on many) and what the connect and request
+figures separate:
+
+    worst_health_ms=3 second_health_ms=1 worst_connect_ms=0 worst_request_ms=2 slow_requests=40
 
 Every beat names the pid that produced it, and one run must see exactly
 one: the loop's redelivery filter keeps the newer of two racing ids, so a
@@ -66,7 +73,7 @@ import sys
 import threading
 import time
 
-from probelib import fail, phase, sse_events, stamp
+from probelib import fail, phase, placement_line, sse_events, stamp
 
 PERIOD_S = 0.1
 
@@ -308,25 +315,30 @@ def placement(port: int, k: int, seconds: float) -> None:
         t.start()
     time.sleep(0.3)
     phase("sampling /health under the load")
-    worst = 0.0
+    samples: list = []
     for _ in range(PLACEMENT_SAMPLES):
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
         t0 = time.perf_counter()
         try:
+            conn.connect()
+            t1 = time.perf_counter()
             conn.request("GET", "/health")
             resp = conn.getresponse()
             resp.read()
+            t2 = time.perf_counter()
         finally:
             conn.close()
         if resp.status != 200:
             fail("/health answered HTTP %d under the load" % resp.status)
-        worst = max(worst, (time.perf_counter() - t0) * 1000.0)
+        # The total ends where it always did, after the close.
+        total = (time.perf_counter() - t0) * 1000.0
+        samples.append((total, (t1 - t0) * 1000.0, (t2 - t1) * 1000.0))
         time.sleep(random.uniform(0.05, 0.3))
     for t in loaders:
         t.join(timeout=seconds + 30)
     if len(counts) != k or min(counts) == 0:
         fail("the slow connections did not all serve: %r" % counts)
-    print("worst_health_ms=%d slow_requests=%d" % (int(worst), sum(counts)))
+    print(placement_line(samples, "health", sum(counts)))
 
 
 class Conn:
