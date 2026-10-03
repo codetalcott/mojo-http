@@ -199,14 +199,58 @@ says which one. Two things
 become queries: a stage's lag, `head - seq`, and the safe prune point.
 It was lifted ahead of a Mojo asker, which D64 records.
 
+## The stream (added the day after)
+
+The handler the three probes wrote by hand is `m0_http.Feed` (N51): a
+registry of subscribers each at a number the application owns, and
+nothing else. `open` places a client at its `Last-Event-ID`, `behind(head)`
+names who is not at the head, `send` queues a delta whole and places the
+client where the application says, `skip` moves one with nothing of its
+own. There is no counter and no journal: a reconnect is the application's
+own query from the client's number. `ViewState` gained the stream hooks
+and the tick, with defaults, so a views application can hold one.
+
+`apps/table_notes` is the asker (N50): `GET /notes/events` keeps the
+list live from either loop. The page's side is eight lines of script, an
+`EventSource` and `htmx.swap`, because htmx 4.0.0 has no SSE in core and
+its `sse` extension targets htmx 2's API — checked against both bundles.
+Two facts about htmx 4 cost a round each in Chromium: an out-of-band
+element with a positional swap (`beforeend`) inserts its CHILDREN into
+the element of the same id, so new rows travel inside a
+`<ul id="notes-list" hx-swap-oob="beforeend">`; and `htmx.swap({text,
+target, swap: 'none'})` applies the out-of-band parts of `text` and
+nothing else, which is exactly the call an event wants.
+
+Three more things the gate found:
+
+- **A client above the head is not behind.** The first `behind` named
+  only subscribers below the head; a client from another incarnation, or
+  a database restored from backup, stood above it and was never served.
+  `behind` now names both, and `send` places a subscriber down as well as
+  up.
+- **A delta of a bulk change is the size of the change.** One `UPDATE`
+  touching 400 rows is one event of 400 rows; the gate uses that to fill
+  a slow subscriber's slot and watch the merging, since the sender's own
+  socket buffer absorbs megabytes before the loop feels anything.
+- **A refused subscriber must not cost a rendering a tick.** The first
+  `behind` named a stuck subscriber every tick, and the loop rendered
+  its delta every tick to refuse it again (measured: 16 refusals a
+  second with no commits). `Feed` now remembers how much a slot held
+  when it was refused and leaves it out until that changes.
+- **A fragment rendered again must reopen the feed from its own stamp.**
+  The DELETE's answer is the list at the head; a feed left at its old
+  place then appended a row the fragment already held. The page's script
+  closes the old `EventSource` and opens one at the fragment's `since`.
+- **A view that raises after opening a stream leaves a slot subscribed
+  that the loop never drains.** `open` now clears what a slot held, and
+  the view opens and returns, leaving the sending to the next tick.
+- **A probe reading a stream reads chunked transfer encoding.** The first
+  reader split raw bytes at blank lines; a chunk boundary inside an event
+  corrupted it, and the symptom (an id of 176 at a head of 76) looked like
+  a server bug for an hour.
+
 ## Not built
 
-- **The stream.** The probes wrote their own handler over `SSERegistry`:
-  `ViewsApp` forwards no stream hooks, `DatastarStream` numbers its own
-  frames and keeps a journal a stamp makes unnecessary, and the
-  registry's bound of 64 KB a slot cannot hold one large delta whole.
-  What the layer would want is a stream whose event ids are the
-  application's and whose replay is a callback.
 - **Repairing a rebuilt table.** `watched` reports; the application
   decides.
 - **History.** One entry per row is the present and when it last

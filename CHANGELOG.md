@@ -30,6 +30,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   records the last stamp it acted on in the transaction that writes its
   outputs, so a restart repeats nothing and skips nothing; lag and the
   safe prune point are queries.
+- **`m0_http.Feed`: a stream whose event ids are the application's**
+  (SPEC N51). Subscribers each stand at a number the application owns;
+  a reconnect is the application's query, not a replay; fan-out is per
+  subscriber from where it stands; a delta goes whole or waits, so a
+  slow client gets merged events and never a gap. `ViewState` gains the
+  three stream hooks and the tick, with defaults, forwarded by
+  `ViewsApp`.
+- **`apps/table_notes`' list is live** (SPEC N50): `GET /notes/events`
+  from either loop, an eight-line script on the page (an `EventSource`
+  and htmx 4's `htmx.swap`), the rows as out-of-band `<li>`s.
 - **`apps/table_notes` answers `GET /notes/changes?since=N`**: the rows
   stamped above N as JSON, from either loop, with nothing kept for the
   client. `smoke-table-notes` holds it at one loop and at two.

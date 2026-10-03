@@ -42,6 +42,18 @@ may open, and the app is what that takes:
   tombstones were pruned to, the answer is `reset`: read the list again.
   The list's cache stays on the clock, which no write can get past; a
   stamp can be (a REPLACE without the pragma, a rebuilt table).
+- **the list is live, from either loop, and the server keeps nothing for
+  the page.** `GET /notes/events` is a `Feed` (`m0_http.feed`): each
+  subscriber stands at a stamp, the loop's tick asks the clock, and when
+  it has moved each subscriber is sent the rows stamped above where IT
+  stands -- an `<li>` per row, `hx-swap-oob` saying replace or delete,
+  the new ones inside a `<ul id="notes-list" hx-swap-oob="beforeend">`
+  -- as one event carrying the new stamp as its id. A reconnect
+  with `Last-Event-ID` is the same question; below the floor, or above
+  the head, the event is `resync` and carries the first page whole. The
+  page's script is one line: an `EventSource` from the stamp the fragment
+  was rendered at, and `htmx.swap`. A fragment rendered again opens the
+  feed again from its own stamp, so no row is appended twice.
 
 Nothing is shared between threads but the file. Each loop under
 `M0_THREADS` and each pool thread builds its own `Notes`, with its own
@@ -65,8 +77,10 @@ No session and so no CSRF token: `apps/fragment_notes` is the login, and
     POST   /notes/:id/edit   the same view, for the form
     DELETE /notes/:id        removes it; answers the list
     GET    /notes/changes    `?since=N`: the rows stamped above N, as JSON
+    GET    /notes/events     SSE: the same rows as `<li>`s, as they change
     GET    /stats            this loop's cache and stamp:
-                             {"worker","fills","clock","head","watched"}
+                             {"worker","fills","clock","head","watched",
+                              "subscribers","feed_sent","feed_refused"}
     GET    /                 303 to /notes
     GET    /health           {"status":"ok"}
 
@@ -84,6 +98,7 @@ from m0_host.host import HostContext, ViewState, ViewsApp, serve
 from m0_http import reply
 from m0_http import (
     Cached,
+    Feed,
     Fragment,
     Html,
     Htmx,
@@ -103,6 +118,7 @@ from m0_http import (
     url_for,
     void,
 )
+from m0_http.sse import format_sse_event
 from m0_core.json_escape import escape_json_string
 from m0_sqlite import (
     Connection,
@@ -132,7 +148,9 @@ comptime NOTES_NEW = NOTES + RESOURCE_NEW
 comptime NOTE = NOTES + RESOURCE_ITEM
 comptime NOTE_EDIT = NOTES + RESOURCE_EDIT
 comptime NOTES_CHANGES = NOTES + "/changes"
-"""Registered before the resource: `/notes/:id` matches it too."""
+comptime NOTES_EVENTS = NOTES + "/events"
+"""Both registered before the resource: `/notes/:id` matches them too."""
+comptime LIST_ID = "notes-list"
 
 comptime NOTES_ID = "notes"
 comptime Frag = Fragment[Htmx]
@@ -156,9 +174,14 @@ struct Notes(ViewState):
     """Read-only, and the one every view renders through: its
     `data_version` moves for the writer's commits as for anyone's."""
     var rows: Cached
+    var rows_head: Int
+    """The stamp the kept page was rendered at: where its reader stands."""
+    var feed: Feed
+    var clock: Int
+    """The clock the feed last fanned out at."""
     var worker: Int
 
-    def __init__(out self, path: String, worker: Int) raises:
+    def __init__(out self, path: String, worker: Int, capacity: Int) raises:
         self.writer = open(path)
         # IMMEDIATE: `CREATE TABLE IF NOT EXISTS` reads first and upgrades
         # to a write, which SQLite refuses at once, not through the busy
@@ -182,11 +205,52 @@ struct Notes(ViewState):
         # and a URL someone kept would name a different note.
         self.reader = open_readonly(path)
         self.rows = Cached()
+        self.rows_head = 0
+        self.feed = Feed(capacity)
+        self.clock = 0
         self.worker = worker
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
-        return Notes(getenv(DB_ENV, DB_DEFAULT), ctx.worker)
+        return Notes(getenv(DB_ENV, DB_DEFAULT), ctx.worker, ctx.capacity)
+
+    def refresh(mut self) raises:
+        """The feed's fan-out: when the clock has moved, or a subscriber is
+        known to stand behind, bring each from where it stands to the head.
+        Most stand together, so one delta serves them all."""
+        var now = self.reader.data_version()
+        if now == self.clock and not self.feed.lagging():
+            return
+        self.clock = now
+        var head = stamp_head(self.reader)
+        var have = -1
+        var frames = String()
+        var to = 0
+        for slot in self.feed.behind(head):
+            var at = self.feed.at(slot)
+            if at != have:
+                have = at
+                to = at
+                frames = delta_frames(self.reader, at, to)
+            if to == at:
+                self.feed.skip(slot, head)
+            else:
+                _ = self.feed.send(slot, to, frames)
+
+    def tick(mut self, now_ms: Int):
+        try:
+            self.refresh()
+        except e:
+            print("table_notes: the feed's tick failed:", e)
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        return self.feed.drain(slot)
+
+    def sse_is_streaming(self, slot: Int) -> Bool:
+        return self.feed.is_streaming(slot)
+
+    def sse_slot_disconnected(mut self, slot: Int):
+        self.feed.closed(slot)
 
     @staticmethod
     def urls() raises -> Views[Self]:
@@ -199,8 +263,17 @@ struct Notes(ViewState):
         which costs one more rendering; the other order keeps stale ones."""
         var now = self.reader.data_version()
         if not self.rows.current(now):
-            var body = render_list(self.reader, 0)
-            _ = self.rows.fill(now, body^)
+            # The stamp and the rows in one snapshot: a row born after
+            # the stamp would be in the page AND appended by the feed.
+            self.reader.begin()
+            try:
+                self.rows_head = stamp_head(self.reader)
+                var body = render_list(self.reader, 0, self.rows_head)
+                self.reader.commit()
+                _ = self.rows.fill(now, body^)
+            except e:
+                self.reader.rollback()
+                raise e^
         return self.rows.body
 
 
@@ -232,9 +305,43 @@ struct Site(PageShell):
         return h^.finish()
 
 
-def render_list(db: Connection, after: Int) raises -> String:
+def render_item(f: Frag, id: Int, title: String, oob: String) raises -> String:
+    """One row of the list. `oob` is empty in the list itself and in the
+    rows a feed event appends (those travel inside a `<ul id="notes-list"
+    hx-swap-oob="beforeend">`, since htmx 4 inserts an out-of-band
+    element's CHILDREN for a positional swap); a changed row carries
+    `true`, to replace its own by id."""
+    var url = url_for(NOTE, String(id))
+    var attrs = attr("id", "n" + String(id))
+    if oob.byte_length() > 0:
+        attrs += attr("hx-swap-oob", oob)
+    return el("li", attrs,
+        f.el("a", "get", url, attr("href", url), text(title), push=True),
+        f.el("button", "delete", url, attr("aria-label", "delete"), "&times;"),
+    )
+
+
+comptime _FEED_SCRIPT = (
+    "if(window.notesFeed)window.notesFeed.close();window.notesFeed=new EventSource('"
+    + NOTES_EVENTS + "?since="
+)
+"""Opens the feed from the stamp THIS rendering was made at, closing the
+one before: a fragment rendered again (the DELETE's answer, "all notes")
+holds rows the old feed had not yet sent, and a feed left at its old
+place would append them twice. Each event goes to htmx: an oob event
+swaps nothing itself and lets its rows find their places; a resync
+replaces the whole fragment. `htmx.swap` is htmx 4's public swap."""
+comptime _FEED_SCRIPT_TAIL = (
+    "');notesFeed.addEventListener('notes',e=>htmx.swap({text:e.data,target:document.body,"
+    "swap:'none'}));notesFeed.addEventListener('resync',e=>htmx.swap({text:e.data,"
+    "target:document.getElementById('" + NOTES_ID + "'),swap:'outerHTML'}))"
+)
+
+
+def render_list(db: Connection, after: Int, head: Int = -1) raises -> String:
     """The `notes` fragment: `LIST_PAGE` rows after rowid `after`, and a
-    link to the rows after those when there are any."""
+    link to the rows after those when there are any. With `head`, the
+    first page carries the script that keeps it live from that stamp."""
     var f = Frag(NOTES_ID)
     f.raw(el("p", "", el("a", attr("href", NOTES_NEW), "New note")))
     var q = db.prepare("SELECT id, title FROM notes WHERE id > ?1 ORDER BY id LIMIT ?2")
@@ -249,21 +356,79 @@ def render_list(db: Connection, after: Int) raises -> String:
             more = True
             break
         last = q.column_int(0)
-        var url = url_for(NOTE, String(last))
-        items += el("li", "",
-            f.el("a", "get", url, attr("href", url), text(q.column_text(1)), push=True),
-            f.el("button", "delete", url, attr("aria-label", "delete"), "&times;"),
-        )
+        items += render_item(f, last, q.column_text(1), String(""))
         shown += 1
-    f.raw(el("ul", "", items))
+    f.raw(el("ul", attr("id", LIST_ID), items))
     if shown == 0:
-        f.raw(el("p", "", text("none yet")))
+        f.raw(el("p", attr("id", "none-yet"), text("none yet")))
     if more:
         var next = Query()
         next.add("after", String(last))
         var url = next.on(url_for(NOTES))
         f.raw(el("p", "", f.el("a", "get", url, attr("href", url), "More", push=True)))
+    if head >= 0:
+        f.raw(el("script", "", _FEED_SCRIPT + String(head) + _FEED_SCRIPT_TAIL))
     return f^.finish()
+
+
+def delta_frames(db: Connection, since: Int, mut head: Int) raises -> String:
+    """The feed's event for a subscriber at `since`: the rows stamped above
+    it as `<li>`s with their `hx-swap-oob`, the new stamp as the id; or
+    `resync` with the first page whole, below the floor or above the head.
+    One read transaction, so one snapshot. `head` is left where the
+    subscriber will stand, `since` when there is nothing for it."""
+    db.begin()
+    try:
+        var top = stamp_head(db)
+        var low = stamp_floor(db)
+        var out = String()
+        if since < low or since > top:
+            head = top
+            out = format_sse_event(top, "resync", render_list(db, 0, top))
+        else:
+            var q = db.prepare(
+                "SELECT c.row, c.seq, c.born, c.gone, n.title FROM m0_changes c"
+                " LEFT JOIN notes n ON n.id = c.row"
+                " WHERE c.tbl = 'notes' AND c.seq > ?1 ORDER BY c.seq"
+            )
+            q.bind_int(1, since)
+            var f = Frag(NOTES_ID)
+            var rows = String()
+            var born = String()
+            var last = since
+            while q.step():
+                last = q.column_int(1)
+                var id = q.column_int(0)
+                if q.column_int(3) == 1 or q.is_null(4):
+                    rows += el("li", attr("id", "n" + String(id)) + attr("hx-swap-oob", "delete"))
+                elif q.column_int(2) > since:
+                    born += render_item(f, id, q.column_text(4), String(""))
+                else:
+                    rows += render_item(f, id, q.column_text(4), String("true"))
+            _ = f^.finish()
+            if born.byte_length() > 0:
+                # The empty list's "none yet" goes when the first row comes;
+                # htmx skips a target that is not there.
+                rows += el("p", attr("id", "none-yet") + attr("hx-swap-oob", "delete"))
+                rows += el("ul", attr("id", LIST_ID) + attr("hx-swap-oob", "beforeend"), born)
+            head = last
+            if last > since:
+                out = format_sse_event(last, "notes", rows)
+        db.commit()
+        return out
+    except e:
+        db.rollback()
+        raise e^
+
+
+def events(
+    req: HTTPRequest, params: List[String], mut st: Notes
+) raises -> HTTPResponse:
+    """GET /notes/events — the list, live. Answered on the loop, whose
+    state holds the feed; the next tick sends what the client is missing
+    (a refresh here would turn its raise into a 500 on a stream half
+    opened)."""
+    return st.feed.open(req, NOTES_ID)
 
 
 def render_note(id: Int, title: String, body: String) raises -> String:
@@ -581,7 +746,9 @@ def stats(
             '{"worker":', st.worker, ',"fills":', st.rows.fills,
             ',"clock":', st.reader.data_version(),
             ',"head":', stamp_head(st.reader),
-            ',"watched":', "true" if watched(st.reader, "notes") else "false", "}",
+            ',"watched":', "true" if watched(st.reader, "notes") else "false",
+            ',"subscribers":', st.feed.subscribers(NOTES_ID),
+            ',"feed_sent":', st.feed.sent, ',"feed_refused":', st.feed.refused, "}",
         ),
     )
 
@@ -605,8 +772,10 @@ def note_urls() raises -> Views[Notes]:
     # The list fills a cache as it answers, so it is a write and takes the
     # collection's GET itself; `resource` registers the rest.
     v.add_write("GET", NOTES, index)
-    # Before the resource: the router answers with the first match.
+    # Before the resource: the router answers with the first match. The
+    # feed opens on the loop, whose state holds it (D32).
     v.add_read("GET", NOTES_CHANGES, changes)
+    v.add_write("GET", NOTES_EVENTS, events, on_loop=True)
     v.resource(
         NOTES, new=new_form, create=create, show=detail, edit=edit_form,
         update=update, delete=delete,
@@ -616,6 +785,8 @@ def note_urls() raises -> Views[Notes]:
 
 def main() raises:
     var config = host_config()
+    if config.app_tick_ms == 0:
+        config.app_tick_ms = 50
     print(
         String("Table notes on ", config.base_url, " over ", getenv(DB_ENV, DB_DEFAULT)),
         flush=True,

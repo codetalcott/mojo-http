@@ -34,6 +34,7 @@ from .session import (
 from .content_negotiation import AcceptResult, parse_accept
 from .etag import compute_etag, etag_matches
 from .cached import Cached, conditional
+from .feed import Feed, since_of, FEED_SLOT_BUDGET
 from .reply import (
     accept_header,
     body_string,
