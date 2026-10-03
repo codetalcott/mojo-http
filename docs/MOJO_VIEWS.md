@@ -359,9 +359,53 @@ channel, bound to a session cookie. It is how a Python application behind
 ## Streams
 
 A view opens a Server-Sent Events stream by subscribing the connection's
-slot to a registry, and must run on the loop. A `Producer`
-([the host](MOJO_HOST.md)) publishes frames to every worker. The rules the
-`live` scaffold follows:
+slot to a registry, and must run on the loop (`add_write(...,
+on_loop=True)`). Two streams, for two kinds of state:
+
+**A `Feed`** is for a table that remembers what changed
+([above](#what-changed-since-a-client-last-asked)). Its event ids are the
+application's stamps, the server keeps one number per subscriber, and a
+reconnect is the application's own query:
+
+```mojo
+def refresh(mut self) raises:              # on the ViewState
+    var now = self.reader.data_version()
+    if now == self.clock and not self.feed.lagging():
+        return
+    self.clock = now
+    var head = stamp_head(self.reader)
+    for slot in self.feed.behind(head):
+        var at = self.feed.at(slot)
+        var to = at
+        var frames = delta_frames(self.reader, at, to)   # the application's
+        if to == at:
+            self.feed.skip(slot, head)
+        else:
+            _ = self.feed.send(slot, to, frames)
+
+def tick(mut self, now_ms: Int):           # the trait's: it does not raise
+    try:
+        self.refresh()
+    except e:
+        print("feed:", e)
+
+def events(req: HTTPRequest, params: List[String], mut st: Store) raises -> HTTPResponse:
+    return st.feed.open(req, "items")      # the next tick sends what it lacks
+```
+
+The state forwards `sse_drain_slot`, `sse_is_streaming` and
+`sse_slot_disconnected` to the feed. A delta is sent whole: one that
+does not fit beside what a slow subscriber still holds waits, the
+subscriber is left out of `behind` until its socket drains, and the
+next asks from where that subscriber stands. A page that renders the
+view again opens its feed again from that rendering's stamp. Below the floor, or at a
+number this database never gave, the application answers with the view
+whole. `apps/table_notes` does this for its list, with htmx 4's
+`htmx.swap` applying each row's `hx-swap-oob`.
+
+**A `DatastarStream`** is for state the server computes and publishes. A
+`Producer` ([the host](MOJO_HOST.md)) publishes frames to every worker.
+The rules the `live` scaffold follows:
 
 - Every frame is the whole state. A slow reader's outbox drops frames, and
   the next whole frame heals it.

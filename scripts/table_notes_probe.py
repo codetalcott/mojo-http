@@ -18,8 +18,11 @@ server's, which is the claim.
 import http.client
 import json
 import re
+import select
+import socket
 import sqlite3
 import sys
+import time
 import traceback
 from urllib.parse import urlencode
 
@@ -85,6 +88,112 @@ class Client:
 
     def close(self):
         self.conn.close()
+
+
+class Feed:
+    """One subscriber of `/notes/events` on a raw socket, so one loop under
+    M0_THREADS, and the wire read as the browser's EventSource reads it."""
+
+    def __init__(self, port, since=None, last_event_id=None, rcvbuf=None):
+        self.sock = socket.socket()
+        if rcvbuf:
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, rcvbuf)
+        self.sock.connect(("127.0.0.1", port))
+        path = "/notes/events" if since is None else f"/notes/events?since={since}"
+        req = f"GET {path} HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n"
+        if last_event_id is not None:
+            req += f"Last-Event-ID: {last_event_id}\r\n"
+        self.sock.sendall((req + "\r\n").encode())
+        self.raw = b""
+        self.buf = b""
+        self.status = None
+        self.chunked = False
+        self.events = []
+        self.bytes = 0
+        deadline = time.time() + 5
+        while self.status is None and time.time() < deadline:
+            self.pump(0.05)
+        check(self.status == 200, f"the feed opened with {self.status}")
+
+    def _dechunk(self):
+        """Move whole chunks from `raw` to `buf`: a stream is sent chunked,
+        and a chunk may end anywhere, mid-line included."""
+        while True:
+            nl = self.raw.find(b"\r\n")
+            if nl < 0:
+                return
+            size = int(self.raw[:nl].split(b";")[0], 16)
+            if len(self.raw) < nl + 2 + size + 2:
+                return
+            self.buf += self.raw[nl + 2:nl + 2 + size]
+            self.raw = self.raw[nl + 2 + size + 2:]
+
+    def pump(self, wait=0.0):
+        r, _, _ = select.select([self.sock], [], [], wait)
+        if not r:
+            return
+        data = self.sock.recv(65536)
+        if not data:
+            return
+        self.raw += data
+        if self.status is None:
+            if b"\r\n\r\n" not in self.raw:
+                return
+            head, self.raw = self.raw.split(b"\r\n\r\n", 1)
+            self.status = int(head.split(b" ")[1])
+            self.chunked = b"transfer-encoding: chunked" in head.lower()
+        if self.chunked:
+            self._dechunk()
+        else:
+            self.buf += self.raw
+            self.raw = b""
+        while b"\n\n" in self.buf:
+            raw, self.buf = self.buf.split(b"\n\n", 1)
+            text = raw.decode("utf-8")
+            if text.startswith(":"):
+                continue
+            self.bytes += len(raw) + 2
+            ev = {"id": None, "event": "message", "data": []}
+            for line in text.split("\n"):
+                key, _, val = line.partition(": ")
+                if key == "id":
+                    ev["id"] = int(val)
+                elif key == "event":
+                    ev["event"] = val
+                elif key == "data":
+                    ev["data"].append(val)
+            ev["data"] = "\n".join(ev["data"])
+            self.events.append(ev)
+
+    def wait(self, n=1, timeout=3.0, what="an event"):
+        deadline = time.time() + timeout
+        while len(self.events) < n and time.time() < deadline:
+            self.pump(0.01)
+        check(len(self.events) >= n, f"waited for {what}, have {len(self.events)} event(s)")
+        ev, self.events = self.events[:n], self.events[n:]
+        return ev if n > 1 else ev[0]
+
+    def quiet(self, seconds=0.3):
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            self.pump(0.02)
+        check(not self.events, f"an event arrived when none was due: {self.events[:1]}")
+
+    def close(self):
+        self.sock.close()
+
+
+def oob(ev):
+    """`(id, what)` for each row an event carries: `true`, `delete`, or
+    `append` for a row inside the `<ul hx-swap-oob="beforeend">`."""
+    out = []
+    ul = re.search(r'<ul id="notes-list" hx-swap-oob="beforeend">(.*?)</ul>', ev["data"])
+    for m in re.finditer(r'<li id="n(\d+)" hx-swap-oob="(\w+)"', ev["data"]):
+        out.append((int(m.group(1)), m.group(2)))
+    if ul:
+        for m in re.finditer(r'<li id="n(\d+)">', ul.group(1)):
+            out.append((int(m.group(1)), "append"))
+    return out
 
 
 def write(db, sql, args=()):
@@ -236,11 +345,11 @@ def one(port, db):
     con.commit()
     con.close()
     resp, body = c.get("/notes")
-    check(body.count("<li>") == LIST_PAGE, f"the first page has {body.count('<li>')} rows, want {LIST_PAGE}")
+    check(body.count("<li id=") == LIST_PAGE, f"the first page has {body.count('<li>')} rows, want {LIST_PAGE}")
     more = re.search(r'href="(/notes\?after=(\d+))"', body)
     check(more is not None, "a list with rows left has no link to them")
     resp, body = c.get(more.group(1))
-    check(resp.status == 200 and body.count("<li>") == 10, f"the second page has {body.count('<li>')} rows, want 10")
+    check(resp.status == 200 and body.count("<li id=") == 10, f"the second page has {body.count('<li>')} rows, want 10")
     check("?after=" not in body, "the last page links to another")
     tag_of(resp)
     resp, body = c.get("/notes?after=0" + more.group(2))
@@ -330,6 +439,108 @@ def one(port, db):
     ahead = c.changes(head + 50)
     check(ahead == {"since": head + 50, "head": head, "reset": True, "rows": []}, f"a client ahead of the head: {ahead}")
 
+    phase("the list is live")
+    # --- the feed: the same rows, as they change -----------------------------
+    resp, body = c.get("/notes")
+    since = int(re.search(r"/notes/events\?since=(\d+)", body).group(1))
+    check('id="notes-list"' in body and "new EventSource(" in body, "the first page carries no feed")
+    check("notesFeed.close()" in body, "a fragment rendered again does not reopen the feed from its own stamp")
+    resp, body = c.get("/notes?after=1")
+    check("new EventSource(" not in body, "a later page carries the feed")
+    check(since == c.stats()["head"], "the page's stamp is not the head it was rendered at")
+    feed = Feed(c_port := int(sys.argv[2]), since=since)
+    feed.quiet()
+    check(c.stats()["subscribers"] == 1, "the subscriber is not counted")
+
+    # An outside write, a write through the server, a delete: each one event.
+    write(db, "INSERT INTO notes (title, body) VALUES ('live from outside', '')")
+    ev = feed.wait(what="the outside insert")
+    born = int(re.search(r'<li id="n(\d+)">', ev["data"]).group(1))
+    check(ev["event"] == "notes" and oob(ev) == [(born, "append")] and "live from outside" in ev["data"], f"the outside insert: {ev}")
+    check(ev["id"] == c.stats()["head"], "the event's id is not the stamp")
+    check("hx-get=" in ev["data"] and "hx-delete=" in ev["data"], "an appended row lost its htmx attributes")
+    resp, body = c.post("/notes", {"title": "live from the server", "body": ""})
+    made2 = int(resp.getheader("Location").rsplit("/", 1)[1])
+    ev = feed.wait(what="the server's insert")
+    check(oob(ev) == [(made2, "append")], f"the server's own insert: {oob(ev)}")
+    write(db, "UPDATE notes SET title = 'renamed live' WHERE id = ?", (born,))
+    ev = feed.wait(what="the outside update")
+    check(oob(ev) == [(born, "true")] and "renamed live" in ev["data"], f"the update: {oob(ev)}")
+    resp, body = c.ask("DELETE", f"/notes/{made2}", headers=PARTIAL)
+    ev = feed.wait(what="the delete")
+    check(oob(ev) == [(made2, "delete")], f"the delete: {oob(ev)}")
+    at = ev["id"]
+    # Nothing for what is not a change to the table.
+    write(db, "INSERT INTO elsewhere VALUES (3)")
+    feed.quiet()
+    check(c.stats()["feed_refused"] == 0, "a delta was refused on an idle subscriber")
+
+    # A reconnect is a query from where the client stood, not a replay.
+    feed.close()
+    write(db, "UPDATE notes SET title = 'while away' WHERE id = ?", (born,))
+    write(db, "INSERT INTO notes (title, body) VALUES ('also while away', '')")
+    back = Feed(c_port, last_event_id=at)
+    ev = back.wait(what="the reconnect's delta")
+    check([w for _, w in oob(ev)] == ["true", "append"] and oob(ev)[0][0] == born, f"the reconnect's delta: {oob(ev)}")
+    check(ev["id"] == c.stats()["head"], "the reconnect's event does not carry the head")
+    back.quiet()
+    back.close()
+    current = Feed(c_port, last_event_id=c.stats()["head"])
+    current.quiet()
+    current.close()
+
+    # Below the floor, and above the head: the page whole, as a resync.
+    head = c.stats()["head"]
+    con = sqlite3.connect(db, timeout=10)
+    con.execute("DELETE FROM m0_changes WHERE gone = 1 AND seq <= ?", (head,))
+    con.execute("UPDATE m0_stamp SET floor = ?", (head,))
+    con.commit()
+    con.close()
+    for stale in (at, head + 100):
+        f2 = Feed(c_port, last_event_id=stale)
+        ev = f2.wait(what=f"a resync for {stale} (head {head})")
+        check(ev["event"] == "resync" and ev["data"].startswith('<section id="notes">') and f"since={head}" in ev["data"], f"a client at {stale}: {ev['event']} {ev['data'][:60]}")
+        check(ev["id"] == head, "the resync does not carry the head")
+        f2.close()
+    resp, body = c.get("/notes/events?since=x")
+    check(resp.status == 400, f"since=x: {resp.status}")
+
+    # A subscriber that stops reading is sent merged deltas, never a gap.
+    # Each commit touches every row, so each event is the whole list over
+    # again: the socket's buffers fill, then the slot's, then deltas are
+    # refused and merged.
+    # The sender's own socket buffer absorbs megabytes before the loop
+    # feels it, so the table is made large enough that one event does not
+    # fit the slot's budget beside another.
+    con = sqlite3.connect(db, timeout=10)
+    con.executemany("INSERT INTO notes (title) VALUES (?)", [(f"bulk {i}",) for i in range(400)])
+    con.commit()
+    slow = Feed(c_port, since=c.stats()["head"], rcvbuf=4096)
+    for i in range(60):
+        con.execute("UPDATE notes SET title = ?", (f"slow {i}",))
+        con.commit()
+        if i % 8 == 0:
+            con.execute("INSERT INTO notes (title) VALUES (?)", (f"burst {i}",))
+            con.commit()
+        time.sleep(0.02)
+    con.close()
+    final_head = c.stats()["head"]
+    deadline = time.time() + 15
+    seen = []
+    while time.time() < deadline:
+        slow.pump(0.02)
+        seen += slow.events
+        slow.events = []
+        if seen and seen[-1]["id"] == final_head:
+            break
+    check(seen and seen[-1]["id"] == final_head, f"the slow subscriber did not reach the head: {seen[-1]['id'] if seen else None} vs {final_head}")
+    check(len(seen) < 60, f"68 commits were {len(seen)} events to a subscriber that read nothing")
+    check(seen[-1]["data"].count("slow 59") >= 450, "the last event does not carry every row's final title")
+    appended = [i for ev in seen for i, w in oob(ev) if w == "append"]
+    check(len(appended) == 8 and len(set(appended)) == 8, f"the bursts' rows: {appended}")
+    check(c.stats()["feed_refused"] > 0, "the slow subscriber's buffer never filled; the phase proved nothing")
+    slow.close()
+
     c.close()
     print("table_notes_probe one: OK")
 
@@ -375,6 +586,32 @@ def loops(port, db):
         check(delta["rows"] == want and delta["head"] == at + 1, f"round {i}: the other loop's delta from {at}: {delta}")
         check(writer.changes(at) == delta, f"round {i}: the two loops answered one stamp differently")
         at = delta["head"]
+
+    phase("each loop's feed carries the other's write")
+    feeds = {}
+    for _ in range(200):
+        f = Feed(int(sys.argv[2]), since=a.stats()["head"])
+        f.quiet(0.1)
+        # Which loop took it: the one whose subscriber count rose.
+        for w, cl in ((0, a), (1, b)):
+            if cl.stats()["subscribers"] == 1 and w not in feeds:
+                feeds[w] = f
+                break
+        else:
+            f.close()
+        if len(feeds) == 2:
+            break
+    check(len(feeds) == 2, f"200 feeds reached loops {sorted(feeds)} only: the phase would be vacuous")
+    for i in range(6):
+        writer = a if i % 2 == 0 else b
+        resp, body = writer.post("/notes", {"title": f"live round {i}", "body": ""})
+        made = int(resp.getheader("Location").rsplit("/", 1)[1])
+        for w, f in feeds.items():
+            ev = f.wait(what=f"round {i} on loop {w}")
+            check(oob(ev) == [(made, "append")] and f"live round {i}" in ev["data"], f"round {i}: loop {w}'s feed: {oob(ev)}")
+    for f in feeds.values():
+        f.quiet(0.2)
+        f.close()
 
     sa, sb = a.stats(), b.stats()
     check(sa["worker"] == 0 and sb["worker"] == 1, "a connection changed loops")

@@ -409,12 +409,35 @@ trait ViewState(Movable, Deinitable):
         """As `AppHandler.max_threads`."""
         return Self.max_workers()
 
+    # The stream hooks and the tick, with the handler's defaults: a state
+    # that holds a stream (`m0_http.Feed`, a `DatastarStream`) forwards
+    # these to it, and the tick is where it fans out. They are called on
+    # the LOOP's instance of the state; under a pool, a view that opens a
+    # stream registers `on_loop=True` so it reaches that instance (D32).
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        """As `HTTPService.sse_drain_slot`."""
+        return List[UInt8]()
+
+    def sse_is_streaming(self, slot: Int) -> Bool:
+        """As `HTTPService.sse_is_streaming`."""
+        return False
+
+    def sse_slot_disconnected(mut self, slot: Int):
+        """As `HTTPService.sse_slot_disconnected`."""
+        pass
+
+    def tick(mut self, now_ms: Int):
+        """As `HTTPService.tick`: on the loop thread, every `app_tick_ms`."""
+        pass
+
 
 struct ViewsApp[S: ViewState](AppHandler):
     """A `Views` table and its state as the host's handler.
 
-    `m0_http.ViewService` with a `make`: it forwards `func` to `dispatch`
-    and `before_request` to `answer_on_loop`, and nothing else.
+    `m0_http.ViewService` with a `make`: it forwards `func` to `dispatch`,
+    `before_request` to `answer_on_loop`, and the three stream hooks and
+    the tick to the state, whose defaults are the handler's.
     """
 
     var views: Views[Self.S]
@@ -447,6 +470,18 @@ struct ViewsApp[S: ViewState](AppHandler):
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         return self.views.dispatch(req, self.state)
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        return self.state.sse_drain_slot(slot)
+
+    def sse_is_streaming(self, slot: Int) -> Bool:
+        return self.state.sse_is_streaming(slot)
+
+    def sse_slot_disconnected(mut self, slot: Int):
+        self.state.sse_slot_disconnected(slot)
+
+    def tick(mut self, now_ms: Int):
+        self.state.tick(now_ms)
 
 
 struct PoolLane[H: AppHandler](PoolHandler):

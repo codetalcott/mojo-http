@@ -682,8 +682,12 @@ piece: an app that asks, a wire gate, then the lift.
   change, so "what changed since N" is a query and whoever asks keeps one
   number. A stamp can be got past and the clock cannot: `Cached` stays on
   `data_version`. A delta is sent whole, never cut at a stamp. The stream
-  over it is not built (D64); read
-  [packages/m0-sqlite/AGENTS.md](packages/m0-sqlite/AGENTS.md) first.
+  over it is `m0_http.Feed` (`src/feed.mojo`, N51): ids are the
+  application's, no journal, fan-out per subscriber from its own number,
+  `behind(head)` names clients above the head too; `ViewState` carries
+  the stream hooks with defaults. `apps/table_notes`' list is live on it
+  (N50). Read [packages/m0-sqlite/AGENTS.md](packages/m0-sqlite/AGENTS.md)
+  first.
 - **A table that streams** (`apps/blobs`, SPEC N16;
   docs/notes/a-world-the-page-cannot-hold.md): `ViewService` forwards only
   `func` and `before_request`, so an app that also owns the SSE hooks writes

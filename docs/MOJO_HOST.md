@@ -34,8 +34,11 @@ different copies.
 
 **`ViewsApp[S]`** is the `AppHandler` for an application that is a
 [views table](MOJO_VIEWS.md). `S: ViewState` has `make(ctx)` and `urls()`,
-and the same three optional methods. The `views` scaffold uses it; `live`,
-whose handler also owns the stream hooks, is an `AppHandler` of its own.
+the same three optional methods, and the three stream hooks and the tick
+with the handler's defaults, so a state that holds a stream (a `Feed`, a
+`DatastarStream`) forwards them to it. The `views` scaffold uses it;
+`live`, whose handler owns a `DatastarStream` and a producer, is an
+`AppHandler` of its own.
 
 **`P: Producer`** is work on a cadence, off the event loop: `make(ctx)`, and
 `step(mut self, mut out: Publisher) -> Int`, which returns the nanoseconds
