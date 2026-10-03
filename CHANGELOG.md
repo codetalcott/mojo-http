@@ -8,7 +8,37 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.10.0] — 2026-10-03
+
+The database remembers what changed. `m0_sqlite`'s stamps put four
+triggers on a table, after which every row written there, by any program,
+carries the number of its last change, and "what changed since N" is one
+statement; a process that derives data from the table keeps its place in
+the same database, with its outputs. `m0_http.Feed` is a stream whose
+event ids are those numbers: a reconnect is the application's query, not
+a replay, fan-out is per subscriber from where it stands, and a delta
+goes whole or waits. `apps/table_notes`' list is live on it, from either
+loop, with one line of script on the page. The served contract is
+unchanged; the `m0` wheel ships as `m0 0.6.0`.
+
 ### Added
+
+- **`m0 0.6.0`: this release's framework, for applications built with
+  `m0`.** What changed since `m0 0.5.0` for someone writing an
+  application:
+  - New: `install_stamps`, `watch`, `watched`, `stamp_head`, `stamp_of`,
+    `stamp_floor`, `prune_stamps` (O26, O27), `cursor`, `advance` and
+    `slowest_cursor` (O28) in `m0_sqlite`; `Feed` and `since_of` in
+    `m0_http` (N51); `ViewState`'s three stream hooks and `tick`, each
+    with a default, so a state that holds a stream forwards them (N51).
+    `apps/table_notes` in the repository is stamps, a delta over a GET
+    (N49) and the live list (N50) together.
+  - What an application may have to change: nothing. A `ViewState` that
+    already declared a method named `tick`, `sse_drain_slot`,
+    `sse_is_streaming` or `sse_slot_disconnected` now has it called by
+    `ViewsApp`.
+  - Nothing an application built by `m0 0.5.0` must act on otherwise: the
+    templates are unchanged, and `m0 doctor` names no scaffold file.
 
 - **`m0-sqlite` stamps: the database remembers which rows changed**
   (SPEC O26, O27, N49, DECISIONS D63, D64;
@@ -7275,6 +7305,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.10.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.10.0
 [1.9.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.9.0
 [1.8.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.8.0
 [1.7.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.7.0

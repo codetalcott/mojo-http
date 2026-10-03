@@ -1,0 +1,257 @@
+{
+  "bench": "mixed_workload",
+  "recorded_utc": "2026-10-03T16:35:05+00:00",
+  "environment": {
+    "version": "1.9.0",
+    "git_sha": "c791a0f",
+    "source_stamp": "dc9f3aed26e613c2",
+    "git_dirty": null,
+    "os": "Linux 6.8.0-117-generic",
+    "machine": "aarch64",
+    "python": "Python 3.13.11 (main, Feb  3 2026, 05:52:03) [GCC 12.2.0]",
+    "mojo": "Mojo 1.1.0 (8189361e)",
+    "granian": "granian 2.8.3",
+    "wrk": "wrk debian/4.1.0-3+b2 [epoll] Copyright (C) 2012 Will Glozer",
+    "numpy": "2.5.3",
+    "cpu": "aarch64 impl 0x61 part 0x000",
+    "cores_physical": "8",
+    "memory_bytes": "6197739520"
+  },
+  "parameters": {
+    "client": "wrk -t2 -c16 -d10s, browser headers",
+    "hold_ms": "200",
+    "rounds": "3",
+    "note": "Linux arm of the conclusions pass, recorded in the m0lin container. NOT the benchmark page's row and not comparable to it in absolute terms -- a VM on a Mac, and server and client share its cpus. The RATIOS are the signal; every comparator was re-measured in every round and the per-arm spread is in the rows."
+  },
+  "definitions": {
+    "medians.rps_per_core": "median rps across rounds / median cores across rounds; the figure docs/BENCHMARKS.md renders",
+    "medians.rps_per_core_rounds": "median across rounds of each round's own rps per core",
+    "cores": "process CPU seconds over wall seconds during the measured window"
+  },
+  "rows": [
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 318395.22,
+      "p50_us": 38.0,
+      "p99_us": 156.0,
+      "cores": 3.272,
+      "rps_per_core": 97311,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 312773.01,
+      "p50_us": 35.0,
+      "p99_us": 1400000.0,
+      "cores": 2.444,
+      "rps_per_core": 127968,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 312625.01,
+      "p50_us": 36.0,
+      "p99_us": 1410000.0,
+      "cores": 2.091,
+      "rps_per_core": 149491,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 145911.36,
+      "p50_us": 98.0,
+      "p99_us": 220.0,
+      "cores": 3.64,
+      "rps_per_core": 40083,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 132395.3,
+      "p50_us": 97.0,
+      "p99_us": 430.0,
+      "cores": 3.171,
+      "rps_per_core": 41751,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 122388.82,
+      "p50_us": 91.0,
+      "p99_us": 519.0,
+      "cores": 2.67,
+      "rps_per_core": 45842,
+      "round": 1
+    },
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 338848.01,
+      "p50_us": 34.0,
+      "p99_us": 133.0,
+      "cores": 3.265,
+      "rps_per_core": 103783,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 340736.72,
+      "p50_us": 30.0,
+      "p99_us": 1420000.0,
+      "cores": 2.607,
+      "rps_per_core": 130723,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 319209.15,
+      "p50_us": 40.0,
+      "p99_us": 1370000.0,
+      "cores": 2.197,
+      "rps_per_core": 145261,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 147554.11,
+      "p50_us": 95.0,
+      "p99_us": 235.0,
+      "cores": 3.628,
+      "rps_per_core": 40671,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 130301.23,
+      "p50_us": 98.0,
+      "p99_us": 439.0,
+      "cores": 3.257,
+      "rps_per_core": 40008,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 122151.86,
+      "p50_us": 86.0,
+      "p99_us": 483.0,
+      "cores": 2.569,
+      "rps_per_core": 47556,
+      "round": 2
+    },
+    {
+      "name": "--workers 4 slow=0",
+      "rps": 338212.03,
+      "p50_us": 34.0,
+      "p99_us": 134.0,
+      "cores": 3.343,
+      "rps_per_core": 101170,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 slow=1",
+      "rps": 365538.74,
+      "p50_us": 30.0,
+      "p99_us": 1410000.0,
+      "cores": 2.742,
+      "rps_per_core": 133335,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 slow=2",
+      "rps": 303516.68,
+      "p50_us": 35.0,
+      "p99_us": 1400000.0,
+      "cores": 2.168,
+      "rps_per_core": 139967,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=0",
+      "rps": 149396.73,
+      "p50_us": 95.0,
+      "p99_us": 205.0,
+      "cores": 3.631,
+      "rps_per_core": 41143,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=1",
+      "rps": 138153.33,
+      "p50_us": 93.0,
+      "p99_us": 409.0,
+      "cores": 3.29,
+      "rps_per_core": 41997,
+      "round": 3
+    },
+    {
+      "name": "--workers 4 +bt=4 slow=2",
+      "rps": 115431.95,
+      "p50_us": 92.0,
+      "p99_us": 543.0,
+      "cores": 2.545,
+      "rps_per_core": 45361,
+      "round": 3
+    }
+  ],
+  "medians": {
+    "--workers 4 slow=0": {
+      "rounds": 3,
+      "rps": 338212.03,
+      "cores": 3.272,
+      "rps_per_core": 103366,
+      "rps_per_core_rounds": 101170,
+      "p99_us": 134.0,
+      "p99_us_min": 133.0,
+      "p99_us_max": 156.0
+    },
+    "--workers 4 slow=1": {
+      "rounds": 3,
+      "rps": 340736.72,
+      "cores": 2.607,
+      "rps_per_core": 130701,
+      "rps_per_core_rounds": 130723,
+      "p99_us": 1410000.0,
+      "p99_us_min": 1400000.0,
+      "p99_us_max": 1420000.0
+    },
+    "--workers 4 slow=2": {
+      "rounds": 3,
+      "rps": 312625.01,
+      "cores": 2.168,
+      "rps_per_core": 144200,
+      "rps_per_core_rounds": 145261,
+      "p99_us": 1400000.0,
+      "p99_us_min": 1370000.0,
+      "p99_us_max": 1410000.0
+    },
+    "--workers 4 +bt=4 slow=0": {
+      "rounds": 3,
+      "rps": 147554.11,
+      "cores": 3.631,
+      "rps_per_core": 40637,
+      "rps_per_core_rounds": 40671,
+      "p99_us": 220.0,
+      "p99_us_min": 205.0,
+      "p99_us_max": 235.0
+    },
+    "--workers 4 +bt=4 slow=1": {
+      "rounds": 3,
+      "rps": 132395.3,
+      "cores": 3.257,
+      "rps_per_core": 40649,
+      "rps_per_core_rounds": 41751,
+      "p99_us": 430.0,
+      "p99_us_min": 409.0,
+      "p99_us_max": 439.0
+    },
+    "--workers 4 +bt=4 slow=2": {
+      "rounds": 3,
+      "rps": 122151.86,
+      "cores": 2.569,
+      "rps_per_core": 47548,
+      "rps_per_core_rounds": 45842,
+      "p99_us": 519.0,
+      "p99_us_min": 483.0,
+      "p99_us_max": 543.0
+    }
+  }
+}
