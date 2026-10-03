@@ -688,6 +688,40 @@ names an `m0` the index lacks.
   interpreter.
 - Step 6: 8 blocks passed against the published package.
 
+`m0 0.6.0`: tag `m0-v0.6.0` at `51d6fac`, 2026-10-03, cut beside m0serve
+1.10.0 and pushed first; `v1.10.0` was pushed once the index had it.
+- Step 1: `sabotage-m0-wheel` 25 of 25 (652 s). `sabotage-scaffold` 66 of
+  66 in one pass: the 62 rules that build no image in one run (1416 s),
+  then each of the four image rules with `--only` (105–114 s each), a
+  `docker builder prune` and an `fstrim` of `/var/lib/docker` between
+  them, starting from 10 GiB free. No disk trouble that way.
+- Step 3: the local wheel was `m0-0.6.0-py3-none-any.whl`, 675,312 bytes,
+  and a scaffold from it pinned `m0==0.6.0`.
+- Step 4: `build` green at the first attempt ("m0 0.6.0, cut from
+  51d6fac…"), and `publish-pypi` green after approval; "Tests passed on"
+  named the pull request head (`fc2359b`) that the labelled merge carries.
+  The file on the index is 675,311 bytes, ONE byte under the local wheel:
+  the wheel records the commit it was cut from in `_build_info.json`, the
+  local one was built on the branch head and the published one on the
+  merge commit, and the two hashes compress differently. Nothing else in
+  the two archives differs. Build the local wheel on the merge commit if
+  the counts are to be compared.
+- Step 5 on macOS arm64: the scaffold pinned `m0==0.6.0`, and `uv.lock`
+  named it from pypi.org. The first build took 13 s, `smoke.sh` passed,
+  `m0 test` passed, and every `m0 doctor` check passed, `scaffold` naming
+  no file. `m0 image` built in 31 s with the base layers present: 103.5 MB,
+  2.93 MB of it the app, `libsqlite3-0` installed and no interpreter.
+- Step 6: 8 blocks passed against the published package.
+- The pre-release run, for the record: the first mixed-workload recording
+  had its three `--workers 4` rows 28% down with every comparator row
+  unmoved, which `render-bench-docs --check` refused; an interleaved A/B of
+  accept sharing showed no difference, and a second recording put the rows
+  at +2%, 0% and -1% against 1.8.0. Those rows run first, minutes after
+  the free-threaded swap writes a fresh venv. A `docker system prune -f`
+  run to free disk removed the `m0lin` container `stress-pool` runs in;
+  `docker builder prune` is the prune that frees what the image rules
+  leave and nothing else.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
