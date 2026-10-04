@@ -60,6 +60,20 @@ struct ServerConfig(Copyable, Movable):
     var app_tick_ms: Int
     """Milliseconds between application `tick` hook calls (0 = never, default)."""
 
+    var body_size_notice: String
+    """Printed the first time a loop refuses a body as too large; empty
+    (the default) prints nothing.
+
+    The 413 itself says only "Payload Too Large", and the application never
+    sees the request, so nothing in its log says which knob refused it. The
+    server that owns the knob's name writes the sentence (m0serve names
+    `--max-body`); the loop says it once, then empties its own copy.
+    """
+
+    var body_timeout_notice: String
+    """The same, the first time a loop ends a body that stopped arriving
+    (`body_read_timeout`)."""
+
     def __init__(out self):
         self.max_connections = 1024
         # 1000, nginx's default since 1.19.10, from 100: every close is a
@@ -83,6 +97,8 @@ struct ServerConfig(Copyable, Movable):
         self.enable_metrics = False
         self.sse_heartbeat_ms = 15000
         self.app_tick_ms = 0
+        self.body_size_notice = String("")
+        self.body_timeout_notice = String("")
 
     def recv_buffer_limit(self) -> Int:
         """The most bytes one connection may hold buffered and unprocessed.

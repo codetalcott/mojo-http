@@ -18,6 +18,7 @@ from src.cli import (
     parse_int,
     parse_static_header,
     static_header_set,
+    format_size,
     usage,
     zero_config_topology,
     default_blocking_threads,
@@ -425,6 +426,9 @@ def _clear_env():
     for name in [
         String("M0_HOST"), String("M0_PORT"), String("M0_WORKERS"), String("M0_THREADS"),
         String("M0_ACCESS_LOG"), String("M0_SSE_HEARTBEAT_MS"), String("M0_APP_TICK_MS"),
+        String("M0_BLOCKING_THREADS"), String("M0_QOS"), String("M0_SPAWN_WORKERS"),
+        String("M0_MAX_KEEPALIVE_REQUESTS"), String("M0_MAX_BODY"),
+        String("M0_BODY_TIMEOUT"),
     ]:
         _ = setenv(name, "", True)
 
@@ -603,6 +607,111 @@ def test_static_header_cache_control_points_to_its_flag() raises:
         assert_true(False, "Cache-Control was accepted")
     except e:
         assert_true(String(e).find("--static-cache-control") >= 0, String(e))
+
+
+def test_from_env_reads_the_body_limits() raises:
+    """`M0_MAX_BODY` and `M0_BODY_TIMEOUT` are the flags' environment forms,
+    read with the flags' parsers, and a flag still wins over each."""
+    _clear_env()
+    _ = setenv("M0_MAX_BODY", "8m", True)
+    _ = setenv("M0_BODY_TIMEOUT", "7", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.max_body, 8 * 1024 * 1024)
+    assert_equal(seed.body_timeout, 7)
+    assert_equal(len(seed.env_ignored), 0)
+    var sc = seed.server_config(AppConfig())
+    assert_equal(sc.max_request_body_size, 8 * 1024 * 1024)
+    assert_equal(sc.body_read_timeout, 7)
+    var opts = parse_args(
+        [String("m.wsgi"), String("--max-body"), String("1k"),
+         String("--body-timeout"), String("0")],
+        seed,
+    )
+    assert_equal(opts.server_config(AppConfig()).max_request_body_size, 1024)
+    assert_equal(opts.server_config(AppConfig()).body_read_timeout, 0)
+    _clear_env()
+
+
+def test_from_env_ignores_an_unreadable_body_limit_and_says_so() raises:
+    """Lenient as every `M0_*` variable is, but not silent: `64mb` keeps the
+    4 MB cap, and the note names the variable, the value and the cap."""
+    _clear_env()
+    _ = setenv("M0_MAX_BODY", "64mb", True)
+    _ = setenv("M0_BODY_TIMEOUT", "7s", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.max_body, -1)
+    assert_equal(seed.body_timeout, -1)
+    assert_equal(len(seed.env_ignored), 2)
+    assert_equal(
+        seed.env_ignored[0],
+        "ignoring M0_MAX_BODY='64mb', not a size like 4m or 4194304; using 4m",
+    )
+    assert_equal(
+        seed.env_ignored[1],
+        "ignoring M0_BODY_TIMEOUT='7s', not a whole number of seconds; using 30",
+    )
+    var sc = seed.server_config(AppConfig())
+    assert_equal(sc.max_request_body_size, ServerConfig().max_request_body_size)
+    assert_equal(sc.body_read_timeout, ServerConfig().body_read_timeout)
+    _clear_env()
+
+
+def test_from_env_says_which_lenient_values_it_ignored() raises:
+    """`AppConfig` falls back from a number that is not digits and reads a
+    switch it does not recognise as off; `from_env` says so for each, and
+    says nothing for a value it used."""
+    _clear_env()
+    _ = setenv("M0_PORT", "80eighty", True)
+    _ = setenv("M0_ACCESS_LOG", "yes", True)
+    _ = setenv("M0_WORKERS", "2", True)
+    _ = setenv("M0_QOS", "0", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.port, DEFAULT_PORT)
+    assert_false(seed.access_log)
+    assert_equal(seed.workers, 2)
+    assert_equal(len(seed.env_ignored), 2)
+    assert_equal(
+        seed.env_ignored[0],
+        "ignoring M0_PORT='80eighty', not a whole number; using 8000",
+    )
+    assert_equal(
+        seed.env_ignored[1],
+        "ignoring M0_ACCESS_LOG='yes', not true, 1, false or 0; using off",
+    )
+    _clear_env()
+    assert_equal(len(ServeOptions.from_env().env_ignored), 0)
+
+
+def test_format_size_is_what_parse_size_reads_back() raises:
+    assert_equal(format_size(4 * 1024 * 1024), "4m")
+    assert_equal(format_size(1024), "1k")
+    assert_equal(format_size(1536), "1536")
+    assert_equal(format_size(2 * 1024 * 1024 * 1024), "2g")
+    assert_equal(format_size(0), "0")
+    for n in [1, 1024, 1536, 4 * 1024 * 1024, 3 * 1024 * 1024 * 1024]:
+        assert_equal(parse_size(format_size(n)), n)
+
+
+def test_server_config_names_the_knobs_in_its_notices() raises:
+    """The notices the loop prints on its first 413 and its first body
+    timeout name the effective limit and both of its knobs."""
+    _clear_env()
+    var sc = _parse([String("m.wsgi")]).server_config(AppConfig())
+    assert_true(sc.body_size_notice.find("--max-body (4m)") >= 0, sc.body_size_notice)
+    assert_true(sc.body_size_notice.find("M0_MAX_BODY") >= 0)
+    assert_true(sc.body_size_notice.find("413") >= 0)
+    assert_true(sc.body_timeout_notice.find("--body-timeout (30s)") >= 0, sc.body_timeout_notice)
+    assert_true(sc.body_timeout_notice.find("M0_BODY_TIMEOUT") >= 0)
+    var given = _parse(
+        [String("m.wsgi"), String("--max-body"), String("1536"),
+         String("--body-timeout"), String("5")]
+    ).server_config(AppConfig())
+    assert_true(given.body_size_notice.find("--max-body (1536)") >= 0, given.body_size_notice)
+    assert_true(given.body_timeout_notice.find("--body-timeout (5s)") >= 0)
+    # The fork's own default prints nothing: the notice is the server's to
+    # word, and an application on the bare `ServerConfig` names no flag.
+    assert_equal(ServerConfig().body_size_notice, "")
+    assert_equal(ServerConfig().body_timeout_notice, "")
 
 
 def test_from_env_default_port_is_8000() raises:

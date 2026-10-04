@@ -837,16 +837,22 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     report.add_fact(
         String("server"), String("health_path"), opts.health_path
     )
-    report.add_int(String("server"), String("max_body"), opts.max_body)
+    # The values the server would USE: flag over M0_* over the default, the
+    # defaults included. `opts` keeps -1 for "unset", which told an agent
+    # reading this nothing about the limit it would meet.
+    var limits = opts.server_config(AppConfig(default_port=DEFAULT_PORT))
+    report.add_int(
+        String("server"), String("max_body"), limits.max_request_body_size
+    )
     report.add_int(
         String("server"), String("max_keepalive_requests"),
-        opts.max_keepalive_requests,
+        limits.max_keepalive_requests,
     )
     report.add_int(
-        String("server"), String("idle_timeout"), opts.idle_timeout
+        String("server"), String("idle_timeout"), limits.idle_timeout
     )
     report.add_int(
-        String("server"), String("body_timeout"), opts.body_timeout
+        String("server"), String("body_timeout"), limits.body_read_timeout
     )
     # Escaped: a directory is a path, and a path may hold a quote. The
     # mounts were concatenated raw, so one did not parse.
@@ -897,6 +903,12 @@ def main() raises:
     if opts.show_version:
         print("m0serve " + M0SERVE_VERSION, flush=True)
         return
+    # Each M0_* value the environment could not use, said once: by the
+    # process that read it, not again by every worker a spawn re-executes.
+    # The doctor's report is still the last line it prints.
+    if spawned_worker_index() < 0:
+        for note in opts.env_ignored:
+            print("m0serve: " + note, flush=True)
     # Before the checks below, which stop at the first failure where the
     # doctor's job is to report all of them at once.
     if opts.show_doctor:
