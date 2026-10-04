@@ -70,6 +70,21 @@ because there is nothing for a browser to sniff: the type always comes from
 the extension table, never from the bytes, and fetch's check refuses only a
 script or a style whose type is not JavaScript or CSS, which the table never
 sends for `.js`, `.mjs` or `.css`.
+
+**An SVG is a document, and is answered as one that may not run**
+(`SVG_SANDBOX_POLICY`). In an `<img>`, a CSS background or a `<use>` sprite
+its script never runs, but opened directly, or in an `<iframe>` or an
+`<object>`, an SVG's `<script>` runs as a page of this origin, with its
+cookies and storage: a stored XSS wherever a mount serves an SVG the
+application did not write, an upload above all. nosniff does not touch it;
+the type is right. So an SVG's 200, 206 and 304 carry a policy that
+sandboxes the document and allows no script, the shape GitHub serves user
+content with. Measured in Chromium, Firefox and WebKit: the script ran
+framed and opened directly without it and did not with it, and `<img>`,
+CSS backgrounds and `<use>` sprites rendered the same either way (`poe
+browser-svg-sandbox`). A deployment that names its own
+`Content-Security-Policy` (`m0serve --static-header`) has it on every
+answer, SVGs included, in place of this one.
 """
 
 from std.os import stat
@@ -84,6 +99,15 @@ from .etag import compute_etag, etag_matches
 
 # The file-type bits of `st_mode`, and the one value this module serves.
 # POSIX constants, spelled out because Mojo's `std.os` does not export them.
+comptime SVG_SANDBOX_POLICY = (
+    "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:;"
+    " font-src 'self' data:; sandbox"
+)
+"""The `Content-Security-Policy` an SVG is answered with (module docstring):
+no script, no plugin, no request beyond its own inline styles, images and
+fonts, and `sandbox`, which gives the document an opaque origin, so even a
+script that ran would reach none of this origin's cookies or storage."""
+
 comptime _S_IFMT = 0o170000
 comptime _S_IFREG = 0o100000
 
@@ -123,6 +147,10 @@ struct StaticFiles(Copyable, Movable):
     stylesheet. One the response already carries is left alone, so no
     name here can unsay a `Content-Type`, an `ETag` or a range's bounds."""
     var header_values: List[String]
+    var svg_policy: String
+    """`SVG_SANDBOX_POLICY`, set on an SVG's 200, 206 and 304; empty when the
+    mount's headers name `Content-Security-Policy`, which every answer then
+    carries instead (`svg_policy_for`)."""
 
     def __init__(
         out self,
@@ -152,10 +180,21 @@ struct StaticFiles(Copyable, Movable):
         for i in range(all.count()):
             self.header_names.append(String(unsafe_from_utf8=all.name_span(i)))
             self.header_values.append(String(unsafe_from_utf8=all.value_span(i)))
+        self.svg_policy = (
+            String("") if "content-security-policy" in all
+            else String(SVG_SANDBOX_POLICY)
+        )
 
-    def _with_cache_control(self, var resp: HTTPResponse) -> HTTPResponse:
+    def _for_the_file(self, var resp: HTTPResponse, rel: String) -> HTTPResponse:
+        """What a response about the file itself carries -- the 200, the
+        206, the 304 -- and an error does not: its freshness, and an SVG's
+        sandbox."""
         if self.cache_control.byte_length() > 0:
             resp.headers[HeaderKey.CACHE_CONTROL] = self.cache_control
+        if self.svg_policy.byte_length() > 0 and content_type_for(rel).startswith(
+            "image/svg+xml"
+        ):
+            resp.headers[HeaderKey.CONTENT_SECURITY_POLICY] = self.svg_policy
         return resp^
 
     def matches(self, path: String) -> Bool:
@@ -256,7 +295,7 @@ struct StaticFiles(Copyable, Movable):
                     status_code=304,
                     status_text="Not Modified",
                 )
-                return self._with_cache_control(not_modified^)
+                return self._for_the_file(not_modified^, rel)
 
         # A single satisfiable byte range is sent from an offset rather
         # than sliced; If-Range never matches (strong comparison, weak
@@ -300,7 +339,7 @@ struct StaticFiles(Copyable, Movable):
                 # as a whole file with different bounds — no slicing, and
                 # nothing proportional to the range is ever allocated.
                 partial.set_file_body(part_fd, r.start, r.end - r.start + 1)
-                return self._with_cache_control(partial^)
+                return self._for_the_file(partial^, rel)
 
         # Opened LAST, after every refusal above has already returned:
         # from here the descriptor belongs to the response, and a path
@@ -319,7 +358,7 @@ struct StaticFiles(Copyable, Movable):
             status_text="OK",
         )
         resp.set_file_body(fd, 0, total)
-        return self._with_cache_control(resp^)
+        return self._for_the_file(resp^, rel)
 
 
 def static_headers(extra: Headers) -> Headers:
@@ -331,6 +370,16 @@ def static_headers(extra: Headers) -> Headers:
     for i in range(extra.count()):
         out.set_bytes(extra.name_span(i), extra.value_span(i))
     return out^
+
+
+def svg_policy_for(extra: Headers) -> String:
+    """The `Content-Security-Policy` an SVG a mount with these headers serves
+    is answered with: the deployment's own when it names one, which every
+    answer then carries, else `SVG_SANDBOX_POLICY`. What `--doctor` reports."""
+    var named = extra.get(HeaderKey.CONTENT_SECURITY_POLICY)
+    if named:
+        return named.value()
+    return String(SVG_SANDBOX_POLICY)
 
 
 def _open_read(path: String) -> Int:

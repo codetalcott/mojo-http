@@ -61,6 +61,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **An SVG from a static mount is sandboxed** (SPEC J14). Its 200, 206
+  and 304 carry `Content-Security-Policy: default-src 'none';
+  style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;
+  sandbox`. An SVG's `<script>` never runs in an `<img>`, but opened
+  directly or framed it ran as the serving site, with its cookies and
+  storage, in Chromium, Firefox and WebKit: a stored XSS wherever a mount
+  serves an SVG the application did not write. Starlette and Django serve
+  it the same way. With the policy the script cannot act as the site, and
+  `<img>`, CSS backgrounds and `<use>` sprites draw as before (measured by
+  pixels in all three; `poe browser-svg-sandbox`, pre-release). This
+  applies to `StaticFiles` in a Mojo application too. An SVG meant as an
+  interactive document with its own script stops scripting; a deployment
+  that names its own `Content-Security-Policy` with `--static-header` has
+  it on every static response in place of this one. `--doctor` reports
+  the effective one as `static_svg_policy`.
 - **`.md` is served as `text/markdown; charset=utf-8`**, not `text/plain`
   (RFC 7763). Agents such as Claude Code and Cursor ask for Markdown by
   that name (`Accept: text/markdown`), and the llms.txt convention names

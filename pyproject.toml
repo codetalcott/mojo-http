@@ -3852,7 +3852,16 @@ assert s["static"] == [{"prefix": "/q/", "dir": 'di"r'}], s["static"]
 assert s["static_cache_control"] == "max-age=60", s["static_cache_control"]
 want = {"x-content-type-options": "nosniff", "referrer-policy": "no-referrer"}
 assert s["static_headers"] == want, s["static_headers"]
+assert "; sandbox" in s["static_svg_policy"], s["static_svg_policy"]
 PYDOC
+# A Content-Security-Policy the deployment names replaces the SVG sandbox.
+"$srv" --doctor --static-header "Content-Security-Policy: default-src 'self'" > "$log" 2>&1
+tail -1 "$log" > "$SMOKE_DIR/doctor-csp.json"
+python3 - "$SMOKE_DIR/doctor-csp.json" <<'PYCSP' || fail '--doctor: a named Content-Security-Policy did not replace the SVG sandbox'
+import json, sys
+p = json.load(open(sys.argv[1]))["server"]["static_svg_policy"]
+assert p == "default-src 'self'", p
+PYCSP
 
 # The doctor reports the limits the server would USE, defaults included (it
 # printed -1 for an unset --max-body or --body-timeout), flag over M0_* over
@@ -3922,9 +3931,11 @@ grep -q 'Retrying' "$log" && fail 'a bind failure that waiting cannot cure was r
 
 # A static mount is answered in Mojo with the freshness policy given; a path
 # outside it still reaches the app; --max-body and --metrics reach the server.
+mkdir -p "$SMOKE_DIR/svg"
+printf '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>' > "$SMOKE_DIR/svg/icon.svg"
 spawn serve-mount.log "$srv" $SPEC --port $port --static /assets/=apps/django_realtime/static \
   --static-cache-control 'public, max-age=60' --max-body 1024 --metrics \
-  --static-header 'Referrer-Policy: strict-origin-when-cross-origin'
+  --static-header 'Referrer-Policy: strict-origin-when-cross-origin' --static /svg/="$SMOKE_DIR/svg"
 wait_ready http://127.0.0.1:$port/ $pid
 hdr=$SMOKE_DIR/serve_hdr.txt
 curl -s -D "$hdr" http://127.0.0.1:$port/assets/app.css -o "$SMOKE_DIR/serve_body.txt"
@@ -3936,6 +3947,14 @@ grep -iq '^etag' "$hdr" || fail 'the static response carries no ETag'
 # own responses carry neither.
 grep -iq '^referrer-policy: strict-origin-when-cross-origin' "$hdr" || fail '--static-header is not on a static 200'
 grep -iq '^x-content-type-options: nosniff' "$hdr" || fail 'a static 200 does not carry nosniff'
+# An SVG is answered as a document that may not run (J14): opened directly
+# or framed, its script would run as this origin. Only the SVG: the policy
+# is about what an SVG is, so the stylesheet above carries none.
+code=$(curl -s -o /dev/null -D "$hdr.svg" -w '%{http_code}' http://127.0.0.1:$port/svg/icon.svg)
+[ "$code" = "200" ] || fail "the SVG expected 200, got $code"
+grep -i '^content-security-policy:' "$hdr.svg" | grep -q "default-src 'none'.*; sandbox" \
+  || fail "an SVG is not answered with the sandboxing policy: $(grep -i '^content-security-policy' "$hdr.svg")"
+grep -iq '^content-security-policy' "$hdr" && fail 'a stylesheet carries the SVG policy'
 etag=$(grep -i '^etag:' "$hdr" | sed 's/^[^:]*: *//' | tr -d '\r')
 code=$(curl -s -o /dev/null -D "$hdr.304" -w '%{http_code}' -H "If-None-Match: $etag" http://127.0.0.1:$port/assets/app.css)
 [ "$code" = "304" ] || fail "a revalidation of the static file expected 304, got $code"
@@ -8332,6 +8351,22 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ \
 # cache (`uv run --no-project --with playwright playwright install chromium`
 # once, if this says the browser is missing).
 uv run --no-project --with playwright python3 scripts/notes_login_browser.py --bin "$out/notes"
+"""
+
+# An SVG served from a static mount is a document that may not run (SPEC
+# J14). curl sees the policy on the wire (smoke-serve); only a browser can
+# see what it stops -- a scripted SVG acting as this origin, framed or
+# opened directly -- and what it must not stop: an <img>, a CSS background,
+# a <use> sprite. The second arm replaces the policy with one that allows
+# script and insists the probe then sees the script run.
+[tool.poe.tasks.browser-svg-sandbox]
+help = "PRE-RELEASE: SVGs from a static mount in Chromium, Firefox and WebKit: they render, and their script cannot run as the origin (SPEC J14; not in CI)"
+deps = ["build-serve"]
+shell = """
+# playwright is not a dependency of this project; `--with` borrows it for
+# one process (see browser-notes-login). The first run may need
+# `uv run --no-project --with playwright playwright install chromium firefox webkit`.
+uv run --no-project --with playwright python3 scripts/svg_sandbox_browser.py --bin bin/m0serve
 """
 
 # apps/blobs, driven on the wire (SPEC N16). One binary, three servers, each

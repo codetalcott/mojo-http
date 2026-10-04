@@ -1426,6 +1426,14 @@
       "evidence": "`test_static.mojo:test_every_listed_type` (every PR) \u2014 every listed extension in lower and upper case, the unlisted ones pinned by `test_static.mojo:test_build_inputs_weights_and_jsonl_stay_unlisted`, and the docs site's Markdown twins answering `text/markdown` in `Smoke test the documentation site`. An image or an audio file of a type the table lacked downloaded when opened directly, in Chromium, Firefox and WebKit, where Starlette and Django serve it to be displayed or played; the list was drawn against Python's `mimetypes`, which both use"
     },
     {
+      "id": "J14",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "An SVG a static mount serves is answered as a document that may not run: its 200, 206 and 304 carry `Content-Security-Policy` with `default-src 'none'` and `sandbox`, so its script cannot act as the serving origin when the SVG is opened directly or framed, while an `<img>`, a CSS background and a `<use>` sprite render as before; nothing else carries it, and a deployment's own `Content-Security-Policy` (`--static-header`) replaces it on every answer",
+      "status": "verified",
+      "evidence": "`test_static.mojo:test_an_svg_is_answered_sandboxed` (every PR) \u2014 the 200, the 304 and the 206, none on a stylesheet or a refusal's 404, and `test_static.mojo:test_a_named_policy_replaces_the_svg_sandbox`; on the wire in `Smoke test the serve CLI`, the SVG carrying the policy, the stylesheet beside it none, and `--doctor` reporting the named policy in its place. In browsers, `poe browser-svg-sandbox` (pre-release): Chromium, Firefox and WebKit draw the three uses, judged by pixels, and a scripted SVG leaves no mark in the origin's storage framed or opened directly; with a policy that allows script, the probe sees it run both ways. Without the policy the script ran as the origin in all three, the stored XSS an uploaded SVG is"
+    },
+    {
       "id": "J8",
       "section": "J",
       "category": "J. Static file serving",

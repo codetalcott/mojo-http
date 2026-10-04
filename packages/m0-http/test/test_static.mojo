@@ -17,7 +17,7 @@ from lightbug_http.c.process import getpid
 from lightbug_http.http import HTTPRequest
 from lightbug_http.uri import URI
 
-from src.static import StaticFiles, content_type_for, parse_range, ByteRange, RANGE_NONE, RANGE_VALID, RANGE_UNSATISFIABLE, static_headers
+from src.static import StaticFiles, content_type_for, parse_range, ByteRange, RANGE_NONE, RANGE_VALID, RANGE_UNSATISFIABLE, static_headers, svg_policy_for, SVG_SANDBOX_POLICY
 from lightbug_http.header import Header, Headers
 
 
@@ -40,6 +40,8 @@ def _fixture_root() raises -> String:
         f.write("body { color: red }")
     with open(root + "/data.bin", "w") as f:
         f.write("BINARY")
+    with open(root + "/icon.svg", "w") as f:
+        f.write('<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>')
     with open(root + "/sub/index.html", "w") as f:
         f.write("<h1>sub</h1>")
     with open(root + "/sub/notes.txt", "w") as f:
@@ -662,6 +664,53 @@ def test_a_mount_header_never_replaces_the_responses_own() raises:
     assert_true(resp.headers["etag"] != '"forged"')
     var refused = _serve(static, _get("/static/style.css", "POST"))
     assert_equal(refused.headers["allow"], "GET, HEAD")
+
+
+def _csp(resp: HTTPResponse) -> String:
+    return resp.headers.get("content-security-policy").or_else("<none>")
+
+
+def test_an_svg_is_answered_sandboxed() raises:
+    """An SVG's 200, 304 and 206 carry `SVG_SANDBOX_POLICY`: opened directly
+    or framed, its script would otherwise run as this origin. Nothing else
+    does -- a stylesheet, a refusal's 404 -- since the policy is about the
+    document an SVG is, not the mount.
+
+    covers: J14
+    """
+    var static = StaticFiles(_fixture_root())
+    assert_true(String(SVG_SANDBOX_POLICY).startswith("default-src 'none';"))
+    assert_true(String(SVG_SANDBOX_POLICY).endswith("; sandbox"))
+    var ok = _serve(static, _get("/static/icon.svg"))
+    assert_equal(ok.status_code, 200)
+    assert_equal(_csp(ok), String(SVG_SANDBOX_POLICY))
+    var cond = _get("/static/icon.svg")
+    cond.headers["if-none-match"] = ok.headers["etag"]
+    var not_modified = _serve(static, cond^)
+    assert_equal(not_modified.status_code, 304)
+    assert_equal(_csp(not_modified), String(SVG_SANDBOX_POLICY))
+    var part = _get("/static/icon.svg")
+    part.headers["range"] = "bytes=0-3"
+    var partial = _serve(static, part^)
+    assert_equal(partial.status_code, 206)
+    assert_equal(_csp(partial), String(SVG_SANDBOX_POLICY))
+    var refused = _serve(static, _get("/static/../secret.txt"))
+    assert_equal(refused.status_code, 404)
+    assert_equal(_csp(refused), "<none>")
+    assert_equal(_csp(_serve(static, _get("/static/style.css"))), "<none>")
+
+
+def test_a_named_policy_replaces_the_svg_sandbox() raises:
+    """A deployment that names its own Content-Security-Policy has it on
+    every answer, an SVG's included, in place of the sandbox -- not beside
+    it, which a browser would enforce as both."""
+    var own = String("default-src 'self'")
+    var given = Headers(Header("Content-Security-Policy", own))
+    var static = StaticFiles(_fixture_root(), headers=given)
+    assert_equal(_csp(_serve(static, _get("/static/icon.svg"))), own)
+    assert_equal(_csp(_serve(static, _get("/static/style.css"))), own)
+    assert_equal(svg_policy_for(given), own)
+    assert_equal(svg_policy_for(Headers()), String(SVG_SANDBOX_POLICY))
 
 
 def test_a_directory_without_a_trailing_slash_is_not_served_as_a_file() raises:

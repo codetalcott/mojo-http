@@ -79,7 +79,7 @@ from lightbug_http.c.platform import PlatformBackend
 
 from m0_http import (
     StaticFiles, WorkerSupervisor, install_shutdown_signals, exit_worker,
-    static_headers,
+    static_headers, svg_policy_for,
 )
 from m0_core import escape_json_string
 from m0_http.config import AppConfig
@@ -879,6 +879,12 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         headers += ":" + escape_json_string(String(unsafe_from_utf8=sent.value_span(i)))
     headers += "}"
     report.add_raw(String("server"), String("static_headers"), headers)
+    # What an SVG is answered with besides: the sandbox, or the deployment's
+    # own Content-Security-Policy where it names one.
+    report.add_fact(
+        String("server"), String("static_svg_policy"),
+        svg_policy_for(static_header_set(opts)),
+    )
 
     print(report.render(), flush=True)
     return report.exit_code()
