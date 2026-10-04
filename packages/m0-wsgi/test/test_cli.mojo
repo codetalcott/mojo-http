@@ -16,6 +16,8 @@ from src.cli import (
     parse_app_spec,
     parse_size,
     parse_int,
+    parse_static_header,
+    static_header_set,
     usage,
     zero_config_topology,
     default_blocking_threads,
@@ -533,6 +535,76 @@ def test_from_env_reads_host_port_workers() raises:
     _clear_env()
 
 
+def test_static_header_parses_trims_and_repeats() raises:
+    """`--static-header 'Name: value'`, repeatable, the whitespace around
+    either side trimmed as a field's is."""
+    var opts = _parse(
+        [String("m.wsgi"), String("--static-header"),
+         String("Referrer-Policy: strict-origin-when-cross-origin"),
+         String("--static-header"), String("  X-Frame-Options:DENY  ")]
+    )
+    assert_equal(len(opts.static_header_names), 2)
+    assert_equal(opts.static_header_names[0], "Referrer-Policy")
+    assert_equal(opts.static_header_values[0], "strict-origin-when-cross-origin")
+    assert_equal(opts.static_header_names[1], "X-Frame-Options")
+    assert_equal(opts.static_header_values[1], "DENY")
+    var built = static_header_set(opts)
+    assert_equal(built.count(), 2)
+    assert_equal(built["referrer-policy"], "strict-origin-when-cross-origin")
+    # nosniff may be named, and replaces the mount's default.
+    var own = _parse(
+        [String("m.wsgi"), String("--static-header"),
+         String("X-Content-Type-Options: nosniff")]
+    )
+    assert_equal(own.static_header_names[0], "X-Content-Type-Options")
+
+
+def test_static_header_refusals() raises:
+    """Refused at the command line (exit 2), never sent wrong: no colon, a
+    name that is not a token, a control character anywhere, a name the
+    static server sets itself, Cache-Control, and a name given twice in any
+    case."""
+    for bad in [
+        String("Referrer-Policy"),
+        String(": no-referrer"),
+        String("Referrer Policy: x"),
+        String("X-A\x01: b"),
+        String("X-A: b\r\nX-B: c"),
+        String("X-A: b\nc"),
+        String("X-A: b\x00"),
+        String("Content-Length: 5"),
+        String("content-type: text/html"),
+        String("ETag: x"),
+        String("Content-Range: bytes 0-1/2"),
+        String("Transfer-Encoding: chunked"),
+        String("Last-Modified: x"),
+        String("Accept-Ranges: none"),
+        String("Date: x"),
+        String("Connection: close"),
+        String("Allow: DELETE"),
+        String("Cache-Control: no-store"),
+    ]:
+        assert_true(
+            _fails([String("m.wsgi"), String("--static-header"), bad]),
+            "--static-header accepted '" + bad + "'",
+        )
+    assert_true(
+        _fails(
+            [String("m.wsgi"), String("--static-header"), String("X-A: 1"),
+             String("--static-header"), String("x-a: 2")]
+        ),
+        "a repeated --static-header name was accepted",
+    )
+
+
+def test_static_header_cache_control_points_to_its_flag() raises:
+    try:
+        _ = parse_static_header(String("Cache-Control: no-store"), List[String]())
+        assert_true(False, "Cache-Control was accepted")
+    except e:
+        assert_true(String(e).find("--static-cache-control") >= 0, String(e))
+
+
 def test_from_env_default_port_is_8000() raises:
     _clear_env()
     assert_equal(ServeOptions.from_env().port, DEFAULT_PORT)
@@ -596,7 +668,8 @@ def test_usage_mentions_every_flag() raises:
     var text = usage()
     for flag in [
         String("--host"), String("--port"), String("--workers"), String("--threads"), String("--app-dir"),
-        String("--static"), String("--static-cache-control"), String("--access-log"),
+        String("--static"), String("--static-cache-control"), String("--static-header"),
+        String("--access-log"),
         String("--max-body"), String("--max-keepalive-requests"), String("--metrics"), String("--realtime"),
         String("--body-timeout"),
         String("--health-path"), String("--reload"), String("--reload-dir"),

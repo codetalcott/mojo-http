@@ -28,6 +28,7 @@ from lightbug_http.offload import match_path_prefix, _WAKE_MAX_LANES
 from lightbug_http.c.platform import SC_NPROCESSORS_ONLN
 from lightbug_http.address import join_host_port
 from lightbug_http.server_config import ServerConfig
+from lightbug_http.header import Headers
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig, listen_host
 
@@ -177,6 +178,14 @@ struct ServeOptions(Copyable, Movable):
     """URL prefixes of static mounts, parallel to `static_dirs`."""
     var static_dirs: List[String]
     var static_cache_control: String
+    var static_header_names: List[String]
+    """`--static-header 'Name: value'`, repeatable, parallel to
+    `static_header_values`: added to every response a static mount answers,
+    errors included, over the mount's default `nosniff`
+    (`m0_http.static.static_headers`). Global, not per mount: a deployment
+    has one header set for its assets. No `M0_*` form, as no repeatable
+    flag has one."""
+    var static_header_values: List[String]
     var access_log: Bool
     var spawn_workers: Bool
     """`--spawn-workers` / `M0_SPAWN_WORKERS`: each worker is forked and then
@@ -289,6 +298,8 @@ struct ServeOptions(Copyable, Movable):
         self.static_prefixes = List[String]()
         self.static_dirs = List[String]()
         self.static_cache_control = String("")
+        self.static_header_names = List[String]()
+        self.static_header_values = List[String]()
         self.access_log = False
         self.qos = False
         self.spawn_workers = False
@@ -432,6 +443,106 @@ def parse_size(text: String) raises -> Int:
         raise Error(
             "--max-body must be a size like 4m or 4194304, got '" + text + "'"
         )
+
+
+def _is_tchar(b: UInt8) -> Bool:
+    """A header name's byte, RFC 9110 §5.6.2: a letter, a digit, or one of
+    ``!#$%&'*+-.^_`|~``."""
+    if (b >= UInt8(ord("a")) and b <= UInt8(ord("z"))) or (
+        b >= UInt8(ord("A")) and b <= UInt8(ord("Z"))
+    ):
+        return True
+    if b >= UInt8(ord("0")) and b <= UInt8(ord("9")):
+        return True
+    var punct = "!#$%&'*+-.^_`|~".as_bytes()
+    for i in range(len(punct)):
+        if b == punct[i]:
+            return True
+    return False
+
+
+def static_header_is_the_servers(lower: String) -> Bool:
+    """Whether a static response sets `lower` itself, so a
+    `--static-header` naming it is refused: framing, the representation's
+    own metadata, and the 405's `Allow`. `cache-control` is refused apart,
+    pointing to its own flag."""
+    return (
+        lower == "content-length"
+        or lower == "content-type"
+        or lower == "content-range"
+        or lower == "transfer-encoding"
+        or lower == "etag"
+        or lower == "last-modified"
+        or lower == "accept-ranges"
+        or lower == "date"
+        or lower == "connection"
+        or lower == "allow"
+    )
+
+
+def parse_static_header(
+    text: String, taken: List[String]
+) raises -> Tuple[String, String]:
+    """`Name: value` for `--static-header`, refused here rather than sent
+    wrong. `taken` is the names already given.
+
+    Refused: no colon; a name that is not a token; a control character
+    anywhere (CR, LF and NUL above all: the fork drops such a header at the
+    wire, so it would vanish silently, and CR LF is how a header is
+    smuggled); a name given twice, in any case; a name the static server
+    sets itself; and `Cache-Control`, which `--static-cache-control` owns
+    and sends only on successes. Whitespace around the name and the value
+    is trimmed, as a field's is (RFC 9110 §5.5).
+    """
+    var bytes = text.as_bytes()
+    for i in range(len(bytes)):
+        var b = bytes[i]
+        if (b < 0x20 and b != 0x09) or b == 0x7F:
+            raise Error(
+                "--static-header must not contain a control character"
+                " (CR, LF, NUL ...)"
+            )
+    var colon = text.find(":")
+    if colon < 0:
+        raise Error(
+            "--static-header expects 'Name: value', got '" + text + "'"
+        )
+    var name = String(String(unsafe_from_utf8=bytes[:colon]).strip())
+    var value = String(String(unsafe_from_utf8=bytes[colon + 1 :]).strip())
+    var name_bytes = name.as_bytes()
+    if len(name_bytes) == 0:
+        raise Error(
+            "--static-header expects 'Name: value', got '" + text + "'"
+        )
+    for i in range(len(name_bytes)):
+        if not _is_tchar(name_bytes[i]):
+            raise Error(
+                "--static-header name '" + name + "' is not a header name"
+                " (letters, digits and !#$%&'*+-.^_`|~ only)"
+            )
+    var lower = name.lower()
+    if lower == "cache-control":
+        raise Error(
+            "--static-header cannot set Cache-Control; use"
+            " --static-cache-control, which sends it on successes only"
+        )
+    if static_header_is_the_servers(lower):
+        raise Error(
+            "--static-header cannot set " + name
+            + ": the static server sets it on its own responses"
+        )
+    for i in range(len(taken)):
+        if taken[i].lower() == lower:
+            raise Error("--static-header names " + name + " twice")
+    return (name^, value^)
+
+
+def static_header_set(opts: ServeOptions) -> Headers:
+    """The `--static-header`s as the `Headers` a `StaticFiles` takes."""
+    var out = Headers()
+    for i in range(len(opts.static_header_names)):
+        out[opts.static_header_names[i]] = opts.static_header_values[i]
+    return out^
 
 
 def zero_config_topology(opts: ServeOptions) -> Bool:
@@ -1157,6 +1268,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--app-dir"
         or name == "--static"
         or name == "--static-cache-control"
+        or name == "--static-header"
         or name == "--max-body"
         or name == "--max-keepalive-requests"
         or name == "--idle-timeout"
@@ -1284,6 +1396,10 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
             opts.mount_explicit.append(spec.find(":") >= 0)
     elif name == "--static-cache-control":
         opts.static_cache_control = value
+    elif name == "--static-header":
+        var header = parse_static_header(value, opts.static_header_names)
+        opts.static_header_names.append(header[0])
+        opts.static_header_values.append(header[1])
     elif name == "--max-body":
         opts.max_body = parse_size(value)
     elif name == "--max-keepalive-requests":
@@ -1437,6 +1553,11 @@ def usage() -> String:
         "  --static PREFIX=DIR         serve DIR at PREFIX from Mojo, never entering\n"
         "                              Python; repeatable\n"
         "  --static-cache-control V    Cache-Control for static responses\n"
+        "  --static-header 'N: V'      add a header to every static response,\n"
+        "                              errors included; repeatable. Static\n"
+        "                              responses always carry\n"
+        "                              X-Content-Type-Options: nosniff, which\n"
+        "                              this can replace\n"
         "  --access-log                one log line per request (M0_ACCESS_LOG)\n"
         "  --spawn-workers             workers exec a fresh image after the fork:\n"
         "                              for apps using Core ML, Objective-C or\n"

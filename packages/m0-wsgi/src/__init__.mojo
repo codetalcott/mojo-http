@@ -79,6 +79,7 @@ from .cli import (
     parse_size,
     parse_int,
     usage,
+    static_header_set,
     zero_config_topology,
     default_blocking_threads,
     resolve_blocking_threads,

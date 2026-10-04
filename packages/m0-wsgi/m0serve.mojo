@@ -79,7 +79,9 @@ from lightbug_http.c.platform import PlatformBackend
 
 from m0_http import (
     StaticFiles, WorkerSupervisor, install_shutdown_signals, exit_worker,
+    static_headers,
 )
+from m0_core import escape_json_string
 from m0_http.config import AppConfig
 from m0_http.prefork import (
     bind_accept_share,
@@ -90,7 +92,7 @@ from m0_http.prefork import (
     spawned_worker_index,
 )
 from m0_wsgi import (
-    WSGIHandler, ServeOptions, parse_args, usage,
+    WSGIHandler, ServeOptions, parse_args, usage, static_header_set,
     ThreadedServer, DetachingBackend,
     serve_inverted, resolve_app, resolve_blocking_threads,
     use_asgi_executor, mojo_lanes, asgi_mount_names,
@@ -846,14 +848,31 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     report.add_int(
         String("server"), String("body_timeout"), opts.body_timeout
     )
+    # Escaped: a directory is a path, and a path may hold a quote. The
+    # mounts were concatenated raw, so one did not parse.
     var statics = String("[")
     for i in range(len(opts.static_prefixes)):
         if i > 0:
             statics += ","
-        statics += '{"prefix":"' + opts.static_prefixes[i] + '","dir":"'
-        statics += opts.static_dirs[i] + '"}'
+        statics += '{"prefix":' + escape_json_string(opts.static_prefixes[i])
+        statics += ',"dir":' + escape_json_string(opts.static_dirs[i]) + "}"
     statics += "]"
     report.add_raw(String("server"), String("static"), statics)
+    report.add_fact(
+        String("server"), String("static_cache_control"),
+        opts.static_cache_control,
+    )
+    # What every static response carries, the default nosniff included,
+    # by the names the wire carries (lowercase).
+    var sent = static_headers(static_header_set(opts))
+    var headers = String("{")
+    for i in range(sent.count()):
+        if i > 0:
+            headers += ","
+        headers += escape_json_string(String(unsafe_from_utf8=sent.name_span(i)))
+        headers += ":" + escape_json_string(String(unsafe_from_utf8=sent.value_span(i)))
+    headers += "}"
+    report.add_raw(String("server"), String("static_headers"), headers)
 
     print(report.render(), flush=True)
     return report.exit_code()

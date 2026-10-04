@@ -8,7 +8,37 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **`--static-header 'Name: value'`** (SPEC J11): repeatable, adding a
+  header to every response a `--static` mount answers, errors included.
+  These are the security headers an application's middleware sets, which
+  static responses never pass through. franchise-assessment's
+  `X-Frame-Options`, `Strict-Transport-Security`, `Referrer-Policy` and
+  the rest were missing from its CSS, JS and icons. The flag is refused
+  with exit 2 for a name that is not a token, a control character, a name
+  given twice, a name the static server sets itself (`Content-Type`,
+  `ETag`, `Content-Range`, `Allow` and the framing headers), and
+  `Cache-Control`, which `--static-cache-control` sends on successes only.
+  In Mojo, `StaticFiles(..., headers=...)` is the same; there, a name the
+  response already carries is left as the response set it.
+
+### Changed
+
+- **Every static response carries `X-Content-Type-Options: nosniff`**
+  (SPEC J12), from m0serve's `--static` mounts and from `StaticFiles` in a
+  Mojo application alike. The type always comes from the extension table,
+  never from the bytes, so a browser has nothing to sniff. Fetch's check
+  refuses only a script or a style whose type is not JavaScript or CSS,
+  and the table types `.js`, `.mjs` and `.css` correctly. A
+  `--static-header` naming the header replaces the value.
+
 ### Fixed
+
+- **`--doctor` reports the static mounts as valid JSON**, escaped where
+  they were concatenated raw, so a directory with a quote in its name
+  broke the report. It now also reports `static_cache_control` and
+  `static_headers`, the headers every static response carries.
 
 - **An ASGI application whose lifespan startup fails no longer leaves a
   server that answers nothing** (SPEC L33). Under the asyncio executor,
