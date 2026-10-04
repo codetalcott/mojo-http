@@ -1754,6 +1754,14 @@
       "evidence": "`Smoke test the ASGI executor under the loop inversion` (every PR) \u2014 `scripts/nested_pass_probe.py`, against the bare app with its eager task factory installed: a blocker holds the thread while a request whose first step sends 32,768 one-byte frames arrives, and then a second event, so one pass reads both, the stream's first. The second event, a new connection and then a keep-alive request, must be answered. The executor made room in the full channel by running a pass inside that pass, and the wait there overwrote the events the outer pass had not reached: the new connection was accepted only when another arrived, and on epoll the keep-alive request was never read. With the fix reverted the probe fails every run on both platforms (the read case on Linux only: kqueue reports a readable socket again). A pass asked for inside another is refused and named in the log, which the phase also reads; nothing in the tree asks for one now, so no gate fails without the refusal"
     },
     {
+      "id": "L33",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A lifespan startup that fails ends the server with exit 1 before its ready banner, whichever thread runs it, and on the executor a stop while it runs ends it",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `M0_ASGI_STARTUP_FAIL` under the executor, a pool and a mount must exit 1 carrying the application's message with no banner printed, and under the loop inversion too (`Smoke test the ASGI executor under the loop inversion` (every PR)); `M0_ASGI_STARTUP_DELAY_S` stopped by SIGTERM and by SIGINT must exit 0, the health path unanswered meanwhile. Not under the inversion, whose lifespan runs on the loop's own thread: a stop there waits for the startup to finish. The executor runs the lifespan on its own thread, and the server printed its banner without waiting for it: a failed startup left it accepting with nothing to answer, requests hung, the health path said 200, and SIGTERM exited 0"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",

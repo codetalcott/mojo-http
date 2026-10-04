@@ -3757,7 +3757,7 @@ grep -q 'could not load deep_fail:application' "$log" || fail 'deep import failu
 grep -q 'DATABASE_URL is not set' "$log" || fail 'deep import failure: the exception text is missing'
 grep -q 'Traceback (most recent call last)' "$log" || fail 'deep import failure: no traceback'
 grep -q 'inner.py' "$log" || fail 'deep import failure: the traceback does not name the raising file'
-grep -q 'Ready to accept' "$log" && fail 'a failed load printed a ready banner first'
+grep -q -e 'Ready to accept' -e '[(]protocol=' "$log" && fail 'a failed load printed a ready banner first'
 # Discovery takes a candidate that RAISES as the answer, for a mount exactly
 # as for the positional spec: `split_fail.asgi` raises on import beside a
 # `split_fail.wsgi` that imports cleanly. Both forms must exit 1 with the
@@ -3831,7 +3831,7 @@ fi
 wait $pid2 2>/dev/null; rc2=$?
 [ "$rc2" = "1" ] || fail "second server on a busy port: exit $rc2, want 1"
 grep -q "address already in use: 0.0.0.0:$bport" "$second" || fail 'busy port: the message does not name the address'
-grep -q 'Ready to accept' "$second" && fail 'busy port: the second server printed a ready banner'
+grep -q -e 'Ready to accept' -e '[(]protocol=' "$second" && fail 'busy port: the second server printed a ready banner'
 curl --silent --fail http://localhost:$bport/ > /dev/null || fail 'the first server stopped answering after the refused second bind'
 kill -TERM $pid; wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "first server after the busy-port probe: exit $rc, want 0"
@@ -6600,7 +6600,7 @@ wait_exit() {
   done
   if kill -0 $pid 2>/dev/null; then
     kill -9 $pid 2>/dev/null; wait $pid 2>/dev/null
-    fail "$1: m0serve still alive 30 s after SIGTERM"
+    fail "$1: m0serve still alive 30 s after ${2:-SIGTERM}"
   fi
   wait $pid 2>/dev/null; rc=$?
 }
@@ -7042,13 +7042,61 @@ grep -q 'tried notcallable:application' "$log" || fail 'the error does not list 
 grep -q 'scheduled asyncio work at import' "$log" || fail 'import-time asyncio work is not refused by name (L26)'
 grep -q 'lifespan' "$log" || fail 'the import-time refusal does not name the fix (L26)'
 grep -q 'Traceback (most recent call last)' "$log" || fail 'the import-time refusal lost the traceback (L26)'
-grep -q 'Ready to accept' "$log" && fail 'the refused application printed a ready banner (L26)'
+grep -q -e 'Ready to accept' -e '[(]protocol=' "$log" && fail 'the refused application printed a ready banner (L26)'
 "$srv" --doctor import_task:app --app-dir apps/asgi_bare > "$out/doctor.json" 2>/dev/null; rc=$?
 [ "$rc" = "1" ] || fail "--doctor on import-time asyncio work: exit $rc, want 1 (L26)"
 grep -q 'scheduled asyncio work at import' "$out/doctor.json" || fail 'the doctor does not name the import-time refusal (L26)'
 "$srv" import_task --app-dir apps/asgi_bare --port $port > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "import-time asyncio work, bare MODULE: exit $rc, want 1 (L26)"
 grep -q 'scheduled asyncio work at import' "$log" || fail 'discovery hid the import-time refusal (L26)'
+
+# A lifespan startup that fails is a startup that fails (L33): exit 1 with
+# the application's message and no ready banner -- on the executor, which
+# runs the lifespan on its own thread, as on a pool, which runs it on the
+# main one, and for a mounted application on its own lane. The executor
+# printed the banner first and went on accepting with nothing to answer:
+# requests hung, the health path said 200, and SIGTERM exited 0. Spawned
+# and bounded, because that server never exited on its own.
+for topo in executor pool mount; do
+  case $topo in
+    executor) set -- $SPEC ;;
+    pool) set -- $SPEC --blocking-threads 2 ;;
+    mount) set -- --mount /a=bareapp.asgi:application --app-dir apps/asgi_bare --port $port ;;
+  esac
+  log=$SMOKE_DIR/startup-fail-$topo.log
+  spawn startup-fail-$topo.log env M0_ASGI_STARTUP_FAIL=1 "$srv" "$@"
+  wait_exit "a failed lifespan startup ($topo)" "its lifespan startup failed"
+  [ "$rc" = "1" ] || fail "$topo: a failed lifespan startup exited $rc, want 1 (L33)"
+  grep -q 'bareapp refused its startup' "$log" || fail "$topo: the exit does not carry the application's message (L33)"
+  grep -q -e 'Ready to accept' -e '[(]protocol=' "$log" && fail "$topo: a failed lifespan startup printed the ready banner (L33)"
+done
+
+# ...and on the pump a startup still running ends on a stop (L33). The loop
+# that reads the shutdown pipe has not started, and CPython's SIGINT handler
+# only sets a flag for a thread running no Python, so the wait for the
+# executor watches the pipe itself. Nothing is answered meanwhile, the
+# health path included: the banner is the ready signal, and ready means
+# ready. Not under the inversion, whose lifespan runs on the loop's own
+# thread with no other free to watch the pipe: a stop there waits for the
+# startup to finish (L33's row says so).
+sigs="TERM INT"
+[ "${M0_INVERTED:-}" = "1" ] && sigs=""
+for sig in $sigs; do
+  log=$SMOKE_DIR/startup-stop-$sig.log
+  spawn startup-stop-$sig.log env M0_ASGI_STARTUP_DELAY_S=60 "$srv" $SPEC --health-path /healthz
+  waited=0
+  until grep -q 'armed for a graceful stop' "$log"; do
+    [ $waited -lt 300 ] || fail "SIG$sig: the server never armed its signals (L33)"
+    sleep 0.1; waited=$((waited + 1))
+  done
+  code=$(curl -s -o /dev/null --max-time 1 -w '%{http_code}' $B/healthz)
+  [ "$code" = "200" ] && fail "SIG$sig: the health path answered 200 while the lifespan startup ran (L33)"
+  grep -q -e 'Ready to accept' -e '[(]protocol=' "$log" && fail "SIG$sig: the ready banner printed while the lifespan startup ran (L33)"
+  kill -$sig $pid
+  wait_exit "SIG$sig during a lifespan startup" "SIG$sig"
+  [ "$rc" = "0" ] || fail "SIG$sig during a lifespan startup: exit $rc, want 0 (L33)"
+  grep -q 'stopped before the application was ready' "$log" || fail "SIG$sig during a lifespan startup did not stop it (L33)"
+done
 
 # ASGI and --realtime: refused before the bind when forced, at load when
 # detected — same sentence both ways.
@@ -7102,6 +7150,7 @@ python3 scripts/emit.py --covers L28 --task smoke-asgi
 python3 scripts/emit.py --covers L29 --task smoke-asgi
 python3 scripts/emit.py --covers L30 --task smoke-asgi
 python3 scripts/emit.py --covers L32 --task smoke-asgi
+python3 scripts/emit.py --covers L33 --task smoke-asgi
 python3 scripts/emit.py --covers I26 --task smoke-asgi
 """
 
