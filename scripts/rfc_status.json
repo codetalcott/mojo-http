@@ -121,6 +121,16 @@
       "status": "PROPOSED STANDARD",
       "obsoleted_by": []
     },
+    "7763": {
+      "title": "The text/markdown Media Type",
+      "status": "INFORMATIONAL",
+      "obsoleted_by": []
+    },
+    "8081": {
+      "title": "The \"font\" Top-Level Media Type",
+      "status": "PROPOSED STANDARD",
+      "obsoleted_by": []
+    },
     "8187": {
       "title": "Indicating Character Encoding and Language for HTTP Header Field Parameters",
       "status": "PROPOSED STANDARD",
@@ -154,6 +164,11 @@
     "9457": {
       "title": "Problem Details for HTTP APIs",
       "status": "PROPOSED STANDARD",
+      "obsoleted_by": []
+    },
+    "9512": {
+      "title": "YAML Media Type",
+      "status": "INFORMATIONAL",
       "obsoleted_by": []
     }
   }

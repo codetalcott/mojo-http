@@ -147,7 +147,11 @@ has the Flask version of the whole thing, and CI drives that exact file.
   successes. `--static-header 'Name: value'`, repeatable, adds a header to
   every static response, errors included: the security headers an
   application's middleware sets, which static responses never pass through.
-  Every static response carries `X-Content-Type-Options: nosniff`.
+  Every static response carries `X-Content-Type-Options: nosniff`. The
+  type comes from the extension (the web's page, image, font, media and
+  data formats, Markdown as `text/markdown`); an extension the server does
+  not list is sent as `application/octet-stream`, which a browser
+  downloads when the file is opened directly.
 - **Health.** `--health-path PATH` answers a liveness JSON in the server.
 - **IPv6.** `--host ::` listens on IPv6 and IPv4 at once, and `--host ::1`
   on the IPv6 loopback alone (`[::1]`, as a URL writes it, is read the same).

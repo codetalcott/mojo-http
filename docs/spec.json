@@ -1418,6 +1418,14 @@
       "evidence": "`test_static.mojo:test_nosniff_on_every_answer` (every PR) \u2014 a 200, a 304, a 206, a 416, a 405 and a refusal's 404, with nothing configured; on the wire in `Smoke test the serve CLI`"
     },
     {
+      "id": "J13",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "A static file carries the type its extension names: the page, image, font, text, data, audio and video formats a browser displays or plays when opened directly, a proxy compresses by type, or an agent reads by type (`.md` as `text/markdown`); build inputs, model weights and JSON Lines stay `application/octet-stream`",
+      "status": "verified",
+      "evidence": "`test_static.mojo:test_every_listed_type` (every PR) \u2014 every listed extension in lower and upper case, the unlisted ones pinned by `test_static.mojo:test_build_inputs_weights_and_jsonl_stay_unlisted`, and the docs site's Markdown twins answering `text/markdown` in `Smoke test the documentation site`. An image or an audio file of a type the table lacked downloaded when opened directly, in Chromium, Firefox and WebKit, where Starlette and Django serve it to be displayed or played; the list was drawn against Python's `mimetypes`, which both use"
+    },
+    {
       "id": "J8",
       "section": "J",
       "category": "J. Static file serving",

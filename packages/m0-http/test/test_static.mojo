@@ -271,6 +271,70 @@ def test_content_types_by_extension() raises:
     assert_equal(content_type_for("a.woff2"), "font/woff2")
 
 
+def test_every_listed_type() raises:
+    """The table, entry by entry: what a browser displays or plays opened
+    directly, what a proxy compresses, what an agent reads by type. The
+    rule is `content_type_for`'s docstring; a change here is a change of
+    what the server tells every client.
+
+    covers: J13
+    """
+    var exts = [
+        "html", "htm", "css", "js", "mjs", "json", "map", "svg", "png", "jpg",
+        "jpeg", "gif", "webp", "avif", "ico", "bmp", "woff2", "woff", "ttf",
+        "otf", "txt", "md", "markdown", "csv", "tsv", "vtt", "ics", "xml",
+        "rss", "atom", "webmanifest", "jsonld", "geojson", "yaml", "yml",
+        "parquet", "mp4", "m4v", "webm", "ogv", "mov", "mp3", "m4a", "ogg",
+        "oga", "opus", "wav", "flac", "aac", "pdf", "wasm", "zip", "gz",
+    ]
+    var types = [
+        "text/html; charset=utf-8", "text/html; charset=utf-8",
+        "text/css; charset=utf-8", "text/javascript; charset=utf-8",
+        "text/javascript; charset=utf-8", "application/json",
+        "application/json", "image/svg+xml", "image/png", "image/jpeg",
+        "image/jpeg", "image/gif", "image/webp", "image/avif", "image/x-icon",
+        "image/bmp", "font/woff2", "font/woff", "font/ttf", "font/otf",
+        "text/plain; charset=utf-8", "text/markdown; charset=utf-8",
+        "text/markdown; charset=utf-8", "text/csv; charset=utf-8",
+        "text/tab-separated-values; charset=utf-8", "text/vtt; charset=utf-8",
+        "text/calendar; charset=utf-8", "application/xml",
+        "application/rss+xml", "application/atom+xml",
+        "application/manifest+json", "application/ld+json",
+        "application/geo+json", "application/yaml", "application/yaml",
+        "application/vnd.apache.parquet", "video/mp4", "video/mp4",
+        "video/webm", "video/ogg", "video/quicktime", "audio/mpeg",
+        "audio/mp4", "audio/ogg", "audio/ogg", "audio/ogg", "audio/wav",
+        "audio/flac", "audio/aac", "application/pdf", "application/wasm",
+        "application/zip", "application/gzip",
+    ]
+    assert_equal(len(exts), len(types))
+    for i in range(len(exts)):
+        assert_equal(
+            content_type_for("dir/file." + String(exts[i])), String(types[i]),
+            "." + String(exts[i]),
+        )
+        # Case does not matter: a camera writes IMG_0001.JPG.
+        assert_equal(
+            content_type_for("FILE." + String(exts[i]).upper()), String(types[i]),
+            "." + String(exts[i]).upper(),
+        )
+
+
+def test_build_inputs_weights_and_jsonl_stay_unlisted() raises:
+    """Unlisted on purpose (`content_type_for`'s docstring): a browser cannot
+    run JSX or TypeScript whatever the label says, `.ts` is also an MPEG
+    transport stream to an HLS player, weights and the like are downloads,
+    and JSON Lines has no registered type yet."""
+    for ext in [
+        "jsx", "tsx", "ts", "mts", "safetensors", "gguf", "onnx",
+        "pkl", "npy", "jsonl", "ndjson",
+    ]:
+        assert_equal(
+            content_type_for("a." + String(ext)), "application/octet-stream",
+            "." + String(ext),
+        )
+
+
 def test_unknown_extension_is_octet_stream() raises:
     assert_equal(content_type_for("a.xyz"), "application/octet-stream")
     assert_equal(content_type_for("no_extension"), "application/octet-stream")
