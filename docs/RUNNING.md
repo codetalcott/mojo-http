@@ -158,8 +158,14 @@ has the Flask version of the whole thing, and CI drives that exact file.
 
 ## Observability
 
-- `--access-log` prints one JSON line per response, the client's address
-  among its fields (`remote_addr`).
+- `--access-log` prints one JSON line per response:
+  `{"time":"2026-10-04T17:02:51.789Z","level":"INFO","msg":"access","method":"GET","path":"/","status":200,"dur_us":1234,"bytes":64,"remote_addr":"127.0.0.1"}`.
+  `time` is the wall clock in UTC, with milliseconds. `status`, `dur_us`
+  (microseconds from the request's headers to its response being sent; a
+  stream's, to its head) and `bytes` (the body as sent, a file's included,
+  nothing for a HEAD) are numbers.
+  `remote_addr` is the client's address as the application sees it, and is
+  left out when the server could not read one.
 - `--metrics` serves Prometheus exposition at `/__metrics`, with latency
   histograms.
 - `--doctor` prints the whole resolved configuration as JSON and starts
