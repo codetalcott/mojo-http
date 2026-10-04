@@ -113,8 +113,13 @@ def observe(browser, base: str) -> dict:
     page.evaluate(FRAME)
     page.wait_for_timeout(800)
     seen["ran_framed"] = page.evaluate("localStorage.getItem('ran:framed')") is not None
-    page.goto(base + "evil.svg")
-    page.wait_for_timeout(400)
+    try:
+        page.goto(base + "evil.svg")
+        page.wait_for_timeout(400)
+    except Exception as e:
+        # A download (an SVG not labelled as one): not opened as a
+        # document, so nothing ran. Said, for the reader of a failure.
+        seen["opened_directly_as"] = str(e).splitlines()[0]
     page.goto(base + "page.html")
     seen["ran_opened_directly"] = page.evaluate("localStorage.getItem('ran:top')") is not None
     ctx.close()
