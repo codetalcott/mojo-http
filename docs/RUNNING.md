@@ -44,7 +44,7 @@ Before its banner each worker prints `[worker N] pid=P armed for a
 graceful stop`, the Mojo host's line: a SIGTERM drains it from then on, and
 kills it before then. Between the two, while an ASGI application's lifespan
 startup runs, SIGTERM or SIGINT ends the worker with exit 0 and nothing
-served. A script that stops the server soon after starting it
+served; under `M0_INVERTED=1` a stop waits for the startup to finish. A script that stops the server soon after starting it
 waits for that line from every worker, since one worker answering says
 nothing of another still importing the application.
 

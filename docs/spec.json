@@ -1757,9 +1757,9 @@
       "id": "L33",
       "section": "L",
       "category": "L. ASGI 3.0",
-      "capability": "A lifespan startup that fails ends the server with exit 1 before its ready banner, whichever thread runs it, and a stop while it runs ends it",
+      "capability": "A lifespan startup that fails ends the server with exit 1 before its ready banner, whichever thread runs it, and on the executor a stop while it runs ends it",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `M0_ASGI_STARTUP_FAIL` under the executor, a pool and a mount must exit 1 carrying the application's message with no banner printed; `M0_ASGI_STARTUP_DELAY_S` stopped by SIGTERM and by SIGINT must exit 0, the health path unanswered meanwhile. The executor runs the lifespan on its own thread, and the server printed its banner without waiting for it: a failed startup left it accepting with nothing to answer, requests hung, the health path said 200, and SIGTERM exited 0"
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `M0_ASGI_STARTUP_FAIL` under the executor, a pool and a mount must exit 1 carrying the application's message with no banner printed, and under the loop inversion too (`Smoke test the ASGI executor under the loop inversion` (every PR)); `M0_ASGI_STARTUP_DELAY_S` stopped by SIGTERM and by SIGINT must exit 0, the health path unanswered meanwhile. Not under the inversion, whose lifespan runs on the loop's own thread: a stop there waits for the startup to finish. The executor runs the lifespan on its own thread, and the server printed its banner without waiting for it: a failed startup left it accepting with nothing to answer, requests hung, the health path said 200, and SIGTERM exited 0"
     },
     {
       "id": "M1",

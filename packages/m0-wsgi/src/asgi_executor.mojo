@@ -67,6 +67,7 @@ from lightbug_http.websocket import (
     WS_OP_TEXT, WS_OP_BINARY,
 )
 from lightbug_http.c.platform import PlatformBackend
+from lightbug_http.c.process import process_exit
 from m0_http import BLK_QOS, request_qos_class, QOS_CLASS_USER_INITIATED
 
 from m0_http.sse.format import NO_EVENT_ID
@@ -81,7 +82,7 @@ from .blocking_pool import BLK_POOL
 from .pg_listen import _poll_two
 from m0_http.mojo_pool import BLK_READY
 from m0_http import BLK_LANE
-from .cli import ServeOptions
+from .cli import ServeOptions, EXIT_STARTUP
 from .handler import (
     WSGIHandler, asgi_stream_url, ws_close_frame, _send_disconnect_tag,
 )
@@ -1213,6 +1214,7 @@ def serve_inverted(
     address: String,
     shutdown_fd: Int,
     mut pool: OffloadPool,
+    banner: String,
     peer_bus_fd: Int = -1,
     accept_share: AcceptShare = AcceptShare(),
 ) raises:
@@ -1231,21 +1233,37 @@ def serve_inverted(
     Runs on the calling thread — `m0serve`'s main, which is attached since
     `Py_Initialize` — so there is no thread to spawn and nothing to detach:
     the only wait is asyncio's own selector, which releases the GIL itself.
+
+    `banner` prints once the application is built, its lifespan startup
+    included, as it does for every other shape (SPEC L33); a build that
+    raised exits `EXIT_STARTUP` before it, naming the error as `m0serve`
+    does. A stop during that startup waits for it: the lifespan runs on
+    this thread, and no other is free to watch the shutdown pipe.
     """
     var lane = -1
-    var handler = WSGIHandler.for_options(
-        WSGIApp(
-            opts.module,
-            server_name=opts.host,
-            server_port=String(opts.port),
-            attribute=opts.attribute,
-            multiprocess=opts.workers > 1,
-            multithread=False,
-            protocol="asgi",
-            lifespan=True,
-        ),
-        opts,
-    )
+    var handler: WSGIHandler
+    try:
+        handler = WSGIHandler.for_options(
+            WSGIApp(
+                opts.module,
+                server_name=opts.host,
+                server_port=String(opts.port),
+                attribute=opts.attribute,
+                multiprocess=opts.workers > 1,
+                multithread=False,
+                protocol="asgi",
+                lifespan=True,
+            ),
+            opts,
+        )
+    except e:
+        print(
+            "m0serve: could not load " + opts.served() + " from "
+            + opts.app_dir + ": " + String(e),
+            flush=True,
+        )
+        process_exit(EXIT_STARTUP)
+        return
     handler.set_abort_pool(pool.addr())
     handler.set_asgi_notify(pool.submit_write_fd(lane))
 
@@ -1280,6 +1298,7 @@ def serve_inverted(
     handler.apps[0]._bridge.executor_init(
         pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )
+    print(banner, flush=True)
     print("inverted: the event loop runs inside asyncio (multiplexer fd " + String(backend.multiplexer_fd()) + ")", flush=True)
     handler.apps[0]._bridge.run_forever_inverted(backend.multiplexer_fd())
     _ = st

@@ -1185,7 +1185,8 @@ def _serve_offloaded(
     builds its application and runs its lifespan startup on its own
     thread, and the banner is the ready signal. A startup that failed
     exits 1 before it, as a pool's does in `main`; a stop that arrived
-    first exits 0, since nothing was accepted yet.
+    first exits 0, since nothing was accepted yet. The inversion prints
+    it from `serve_inverted`, after its own build.
     """
     var pool = OffloadPool(config.max_connections)
     # Without a GIL a parked thread beside a queued job is an idle core,
@@ -1211,12 +1212,11 @@ def _serve_offloaded(
         # inversion's promotion bar.
         pool.enable_stream_channel()
         pool.enable_base_stream_ack()
-        # The inversion builds its application inside `serve_inverted`, so
-        # its banner still precedes the lifespan, whose failure raises out.
-        print(banner, flush=True)
+        # The inversion builds its application inside `serve_inverted`,
+        # which prints the banner once that application is up.
         serve_inverted(
             opts, listener^.into_fd(), config, opts.address(), shutdown_fd,
-            pool, peer_bus_fd, accept_share,
+            pool, banner, peer_bus_fd, accept_share,
         )
         return
     var opts_ptr = Pointer(to=opts)

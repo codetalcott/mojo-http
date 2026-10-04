@@ -23,7 +23,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   So the banner follows the lifespan startup in every mode; the
   `armed for a graceful stop` line still precedes it, and a SIGTERM or
   SIGINT while the startup runs ends the worker with exit 0. `--mount`'s
-  ASGI applications, one executor each, are waited for alike.
+  ASGI applications, one executor each, are waited for alike, and
+  `M0_INVERTED`'s banner and exit follow the same rule (a stop there
+  still waits for the startup, which runs on the loop's own thread).
 
 ## [1.10.0] — 2026-10-03
 

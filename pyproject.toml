@@ -7071,12 +7071,17 @@ for topo in executor pool mount; do
   grep -q -e 'Ready to accept' -e '[(]protocol=' "$log" && fail "$topo: a failed lifespan startup printed the ready banner (L33)"
 done
 
-# ...and a startup still running ends on a stop (L33). The loop that reads
-# the shutdown pipe has not started, and CPython's SIGINT handler only sets
-# a flag for a thread running no Python, so the wait for the executor
-# watches the pipe itself. Nothing is answered meanwhile, the health path
-# included: the banner is the ready signal, and ready means ready.
-for sig in TERM INT; do
+# ...and on the pump a startup still running ends on a stop (L33). The loop
+# that reads the shutdown pipe has not started, and CPython's SIGINT handler
+# only sets a flag for a thread running no Python, so the wait for the
+# executor watches the pipe itself. Nothing is answered meanwhile, the
+# health path included: the banner is the ready signal, and ready means
+# ready. Not under the inversion, whose lifespan runs on the loop's own
+# thread with no other free to watch the pipe: a stop there waits for the
+# startup to finish (L33's row says so).
+sigs="TERM INT"
+[ "${M0_INVERTED:-}" = "1" ] && sigs=""
+for sig in $sigs; do
   log=$SMOKE_DIR/startup-stop-$sig.log
   spawn startup-stop-$sig.log env M0_ASGI_STARTUP_DELAY_S=60 "$srv" $SPEC --health-path /healthz
   waited=0
