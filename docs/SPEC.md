@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**329 capabilities: 303 verified, 0 implemented, 0 planned, 26 out of scope.** Of the 303 verified, 296 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**331 capabilities: 305 verified, 0 implemented, 0 planned, 26 out of scope.** Of the 305 verified, 298 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -266,6 +266,8 @@ that found, is in [the traceability note](notes/traceability.md).
 | J5 | `If-Range` with a weak ETag serves the full body | verified | `test_static.mojo:test_if_range_with_weak_etags_serves_full` (every PR) |
 | J6 | ETag and conditional 304 | verified | `Smoke test the notes API` (every PR) |
 | J7 | `Cache-Control`, configurable | verified | `Smoke test the serve CLI` (every PR) — `--static-cache-control` |
+| J11 | `--static-header 'Name: value'`, repeatable, adds a header to every response a static mount answers, errors included, and never replaces one the response sets itself; refused at the command line (exit 2) for a name that is not a token, a control character, a name given twice, a name the static server sets, or `Cache-Control`, which `--static-cache-control` owns | verified | `Smoke test the serve CLI` (every PR) — `Referrer-Policy` on a static 200, a 304 and a refusal's 404, and on none of the application's responses; `Cache-Control` refused with exit 2 naming the other flag; `--doctor` reporting the mounts, their `Cache-Control` and every static header as JSON that parses with a quote in a directory's name. The refusals one by one: `test_cli.mojo:test_static_header_refusals` |
+| J12 | Every response a static mount answers carries `X-Content-Type-Options: nosniff`, with no opt-out, because the type always comes from the extension table and never from the bytes; a `--static-header` naming it replaces the value | verified | `test_static.mojo:test_nosniff_on_every_answer` (every PR) — a 200, a 304, a 206, a 416, a 405 and a refusal's 404, with nothing configured; on the wire in `Smoke test the serve CLI` |
 | J8 | Response compression (gzip, brotli, zstd) | out of scope | recorded in ROADMAP as deliberate: no dynamic compression; a proxy compresses |
 | J9 | Precompressed sidecar files (`.br`, `.gz`) | out of scope | follows from the row above |
 

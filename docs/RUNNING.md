@@ -143,7 +143,11 @@ has the Flask version of the whole thing, and CI drives that exact file.
   at its defaults.
 - **Static files.** `--static PREFIX=DIR` serves a directory from the server
   with `sendfile`, ETags and byte ranges, never entering Python; a miss falls
-  through to the application. `--static-cache-control V` sets the header.
+  through to the application. `--static-cache-control V` sets the header on
+  successes. `--static-header 'Name: value'`, repeatable, adds a header to
+  every static response, errors included: the security headers an
+  application's middleware sets, which static responses never pass through.
+  Every static response carries `X-Content-Type-Options: nosniff`.
 - **Health.** `--health-path PATH` answers a liveness JSON in the server.
 - **IPv6.** `--host ::` listens on IPv6 and IPv4 at once, and `--host ::1`
   on the IPv6 loopback alone (`[::1]`, as a URL writes it, is read the same).

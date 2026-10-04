@@ -17,7 +17,8 @@ from lightbug_http.c.process import getpid
 from lightbug_http.http import HTTPRequest
 from lightbug_http.uri import URI
 
-from src.static import StaticFiles, content_type_for, parse_range, ByteRange, RANGE_NONE, RANGE_VALID, RANGE_UNSATISFIABLE
+from src.static import StaticFiles, content_type_for, parse_range, ByteRange, RANGE_NONE, RANGE_VALID, RANGE_UNSATISFIABLE, static_headers
+from lightbug_http.header import Header, Headers
 
 
 def _fixture_root() raises -> String:
@@ -498,6 +499,105 @@ def test_cache_control_not_on_404() raises:
     var resp = hit.take()
     assert_equal(resp.status_code, 404)
     assert_false("cache-control" in resp.headers)
+
+
+# --- The mount's headers -------------------------------------------------------
+
+
+def _every_answer(static: StaticFiles) raises -> List[HTTPResponse]:
+    """One of each response `serve` gives: 200, 304, 206, 416, 405, and a
+    refusal's 404, in that order."""
+    var out = List[HTTPResponse]()
+    var ok = _serve(static, _get("/static/style.css"))
+    var etag = ok.headers["etag"]
+    out.append(ok^)
+    var cond = _get("/static/style.css")
+    cond.headers["if-none-match"] = etag
+    out.append(_serve(static, cond^))
+    var part = _get("/static/data.bin")
+    part.headers["range"] = "bytes=0-2"
+    out.append(_serve(static, part^))
+    var past = _get("/static/data.bin")
+    past.headers["range"] = "bytes=100-200"
+    out.append(_serve(static, past^))
+    out.append(_serve(static, _get("/static/style.css", "POST")))
+    out.append(_serve(static, _get("/static/../secret.txt")))
+    var want = [200, 304, 206, 416, 405, 404]
+    for i in range(len(want)):
+        assert_equal(out[i].status_code, want[i])
+    return out^
+
+
+def test_nosniff_on_every_answer() raises:
+    """`X-Content-Type-Options: nosniff` on everything a mount answers, with
+    nothing configured: the type always comes from the extension table, so
+    nothing is left for a browser to sniff.
+
+    covers: J12
+    """
+    var answers = _every_answer(StaticFiles(_fixture_root()))
+    for i in range(len(answers)):
+        assert_equal(
+            answers[i].headers.get("x-content-type-options").or_else(""),
+            "nosniff",
+            "status " + String(answers[i].status_code),
+        )
+
+
+def test_mount_headers_on_every_answer_errors_included() raises:
+    """A deployment's headers ride every answer, the 404 and the 416 as
+    much as the 200 -- unlike Cache-Control, which is the asset's."""
+    var static = StaticFiles(
+        _fixture_root(),
+        cache_control=String("public, max-age=60"),
+        headers=Headers(
+            Header("Referrer-Policy", "strict-origin-when-cross-origin"),
+            Header("X-Frame-Options", "DENY"),
+        ),
+    )
+    var answers = _every_answer(static)
+    for i in range(len(answers)):
+        var why = "status " + String(answers[i].status_code)
+        assert_equal(
+            answers[i].headers.get("referrer-policy").or_else(""),
+            "strict-origin-when-cross-origin", why,
+        )
+        assert_equal(answers[i].headers.get("x-frame-options").or_else(""), "DENY", why)
+        assert_equal(
+            answers[i].headers.get("x-content-type-options").or_else(""), "nosniff", why
+        )
+    # Cache-Control is still the successes' alone.
+    assert_false("cache-control" in answers[3].headers)
+    assert_false("cache-control" in answers[5].headers)
+
+
+def test_a_named_nosniff_replaces_the_default() raises:
+    """Named by the deployment, `X-Content-Type-Options` is its value, sent
+    once: `static_headers` lays the deployment's over the default."""
+    var given = Headers(Header("X-Content-Type-Options", "NOSNIFF"))
+    var static = StaticFiles(_fixture_root(), headers=given)
+    var resp = _serve(static, _get("/static/style.css"))
+    assert_equal(resp.headers["x-content-type-options"], "NOSNIFF")
+    var all = static_headers(given)
+    assert_equal(all.count(), 1)
+
+
+def test_a_mount_header_never_replaces_the_responses_own() raises:
+    """A name the response sets itself is left as the response set it, so
+    the API cannot unsay a type, a validator or a range's bounds (m0serve
+    refuses such a name before this; a Mojo caller is held here)."""
+    var static = StaticFiles(
+        _fixture_root(),
+        headers=Headers(
+            Header("Content-Type", "text/html"), Header("ETag", '"forged"'),
+            Header("Allow", "DELETE"),
+        ),
+    )
+    var resp = _serve(static, _get("/static/style.css"))
+    assert_equal(resp.headers["content-type"], content_type_for("style.css"))
+    assert_true(resp.headers["etag"] != '"forged"')
+    var refused = _serve(static, _get("/static/style.css", "POST"))
+    assert_equal(refused.headers["allow"], "GET, HEAD")
 
 
 def test_a_directory_without_a_trailing_slash_is_not_served_as_a_file() raises:
