@@ -183,7 +183,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Request body timeout, `--body-timeout`: a body still short at the deadline is refused (408 on a connection's first request) and closed, and a body that arrived whole leaves no timer behind",
       "status": "verified",
-      "evidence": "`Smoke test the request body timeout` (every PR) \u2014 at a 2 s timeout, with `--blocking-threads 2`: a keep-alive connection outlives the timeout after a POST whose body came with its headers; a request out on a pool thread when the old timer would have fired keeps its slot, and eight connections opened behind it read only their own answers; headers and half a body, then silence, is answered 408 and closed at the deadline; and two arms stop the server so a read and an expiring timer share one wait, where each half of the fix is the only thing standing. The timer was armed for every body above the decode of what came with the headers, so a small POST left it running: 30 s later it closed the connection, and under the handler pool released a slot a pool thread still held, whose answer the next connection then read (review B1). An expiry that reaches a slot no longer reading its body is deleted, not only skipped, because epoll's timerfd is level triggered and one left registered is reported by every wait after it (kqueue's timers are one-shots): `test_slot_lifecycle.mojo:test_a_stale_body_expiry_is_retired`"
+      "evidence": "`Smoke test the request body timeout` (every PR) \u2014 at a 2 s timeout, with `--blocking-threads 2`: a keep-alive connection outlives the timeout after a POST whose body came with its headers; a request out on a pool thread when the old timer would have fired keeps its slot, and eight connections opened behind it read only their own answers; headers and half a body, then silence, is answered 408 and closed at the deadline; and two arms stop the server so a read and an expiring timer share one wait, where each half of the fix is the only thing standing. The first refusal prints one line naming the flag, `M0_BODY_TIMEOUT` and the timeout in effect, and only one however many follow; `M0_BODY_TIMEOUT=1` with no flag answers a stalled body 408 within five seconds, where the default waits 30; and `--doctor`'s `body_timeout` is the effective value (`Smoke test the serve CLI`). The timer was armed for every body above the decode of what came with the headers, so a small POST left it running: 30 s later it closed the connection, and under the handler pool released a slot a pool thread still held, whose answer the next connection then read (review B1). An expiry that reaches a slot no longer reading its body is deleted, not only skipped, because epoll's timerfd is level triggered and one left registered is reported by every wait after it (kqueue's timers are one-shots): `test_slot_lifecycle.mojo:test_a_stale_body_expiry_is_retired`"
     },
     {
       "id": "A24",
@@ -293,9 +293,9 @@
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",
-      "capability": "Max request body size, configurable",
+      "capability": "Max request body size, configurable by `--max-body` or `M0_MAX_BODY`, the flag winning; the first 413 a loop sends prints one line naming the flag, the variable and the cap in effect, and `--doctor` reports the cap the server would use",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--max-body`"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--max-body 1k`, `8m` and the default, each refusing above and admitting below; `M0_MAX_BODY=1k` with no flag the same, under two spawned workers; the notice once after several refusals, carrying `1k`; and `--doctor`'s `max_body` at the default (4194304, where it printed -1), from the environment and under a flag that beats it"
     },
     {
       "id": "C2",
@@ -816,6 +816,14 @@
       "capability": "Health registry with readiness aggregation",
       "status": "verified",
       "evidence": "`test_health.mojo:test_health_register_unhealthy` (every PR)"
+    },
+    {
+      "id": "F19",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "An `M0_*` value m0serve cannot read is ignored out loud: the environment stays lenient, and one line at startup names the variable, its value and what was used instead, printed by the process that read it and not again by a worker that re-executes",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `M0_MAX_BODY=64mb` and `M0_PORT=80eighty` under `--doctor` each named with the value used, the doctor's cap at its default; a readable value named by nothing; and `M0_QOS=yes` reported once under two spawned workers. It was silent, so `M0_MAX_BODY=64mb` would have kept 4 MB unnoticed"
     },
     {
       "id": "F20",

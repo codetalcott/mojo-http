@@ -196,7 +196,7 @@ The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket 
 | `m0-core` | wyhash64, SHA-256 and HMAC-SHA256, SIMD JSON escape, HTML escape, JSON field parser, a C-ABI export | 82 |
 | `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 972 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 95 |
-| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 182 |
+| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 187 |
 | `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table, scalar functions written in Mojo, stamps that say which rows changed | 164 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 81 |
 | **Total** | | **1576** |
@@ -408,8 +408,11 @@ It prints one line per worker when it is up:
 has been imported and, for ASGI, after its lifespan startup has completed —
 so a project whose import or startup fails prints the error and exits 1
 rather than announcing itself first. Startup failures and the
-shutdown report use the same `m0serve: ` prefix without the flame. Nothing
-else is written to stdout unless `--access-log` is on.
+shutdown report use the same `m0serve: ` prefix without the flame. So do
+three kinds of one-off notice: an `M0_*` value that could not be read,
+listed at startup, and the first request body each event loop refuses for
+size or for time, which names the limit and its knobs. Nothing else is
+written to stdout unless `--access-log` is on.
 
 Do not scrape it from an orchestrator, though: readiness there is
 `--health-path /health` (a probe endpoint answered in Mojo, before the
@@ -459,7 +462,8 @@ every ASGI mount gets its own executor, any number of WSGI mounts share
 the pool ([the design record §9](docs/notes/wsgi-vs-asgi-history.md)). Every `M0_*` variable keeps its
 meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
 matching flag winning over it, and flags are strict: `--port 80eighty` is a
-usage error, not a silent default. `--max-body` and `--metrics` reach two
+usage error, not a silent default (an `M0_*` value that cannot be read is
+ignored, and m0serve says so). `--metrics` and `--idle-timeout` reach
 server tunings the environment cannot; `--blocking-threads N` puts a pool of
 handler threads behind each event loop so a slow view stops holding the
 connections pinned behind it — and when no topology flag or variable is

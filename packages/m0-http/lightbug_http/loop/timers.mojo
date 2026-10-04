@@ -16,7 +16,7 @@ from std.time import perf_counter_ns
 
 from lightbug_http.loop.state import (
     LoopState, TIMER_APP_TICK, TIMER_BODY, TIMER_IDLE, TIMER_SSE_HEARTBEAT,
-    UNUSED, _close_slot,
+    UNUSED, _close_slot, _notice_once,
 )
 from lightbug_http.loop.response import _send_error_to_fd
 from lightbug_http.loop.streams import _heartbeat
@@ -85,6 +85,9 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
 
     # Phase 1d: idle timeout is expected client behaviour — close cleanly.
     # Only send 408 for header/body timeouts on the first request.
+    if timer_ident < TIMER_IDLE:
+        # A body that stopped arriving, refused whichever request it was.
+        _notice_once(st.config.body_timeout_notice)
     if timer_ident < TIMER_IDLE and st.provision_pool.provisions[slot].keepalive_count == 0:
         _send_error_to_fd(fd_val, RequestTimeout())
 

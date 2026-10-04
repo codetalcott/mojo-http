@@ -8,7 +8,35 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **`M0_MAX_BODY` and `M0_BODY_TIMEOUT`, the environment forms of
+  `--max-body` and `--body-timeout`** (SPEC C1, A23), read with the flags'
+  own parsers (`8m`, `30`) and beaten by the flags. A container raises
+  either without a start script.
+- **The first refusal of each kind names its knob.** The first time a
+  server answers 413 for a body over the cap, it prints one line naming
+  `--max-body`, the cap in effect and `M0_MAX_BODY`. The first time it
+  ends a body that stopped arriving, it prints the same for
+  `--body-timeout`. Each line is printed once per event loop. The 413
+  says only "Payload Too Large", and the application never sees the
+  request, so until now nothing in any log said which setting refused an
+  upload.
+
 ### Changed
+
+- **An `M0_*` value the environment cannot use is reported, not silently
+  replaced.** The environment stays lenient: `M0_PORT=80eighty` still
+  serves on the default port. But m0serve now prints one line at startup
+  for each such value, naming the variable, its value and what was used
+  instead. The lines are printed by the process that read the
+  environment, so a spawned worker does not repeat them. This covers
+  every variable m0serve reads as a number or a switch; a switch set to
+  anything but `true`, `1`, `false` or `0` is reported as read off.
+- **`--doctor` reports the limits the server would use**: `max_body`,
+  `body_timeout`, `idle_timeout` and `max_keepalive_requests` under
+  `server` are the effective values, defaults included, where an unset
+  flag printed -1.
 
 - **The access log's numbers are JSON numbers, and its time is the wall
   clock** (SPEC F20, F21). `status`, `dur_us` and `bytes` were strings, so
@@ -27,7 +55,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   second's prefix cached per loop. That is about 170 ns a line, the
   wall-clock read included, against about 680 ns before, measured with
   the line built and not printed.
-
 ### Fixed
 
 - **An ASGI application whose lifespan startup fails no longer leaves a

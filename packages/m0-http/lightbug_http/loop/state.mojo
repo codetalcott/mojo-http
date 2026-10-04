@@ -581,6 +581,21 @@ def _record_response(mut st: LoopState, slot: Int):
     st.provision_pool.provisions[slot].response_status = 0
 
 
+def _notice_once(mut notice: String):
+    """Print an operator's notice from the config, then empty it.
+
+    `ServerConfig.body_size_notice` and `body_timeout_notice`: a refusal
+    the application never sees, named once per loop with the knob that
+    caused it. Once, because the refusal can be a client's doing, as many
+    times as it likes, and the line is about the setting, not the client.
+    The loop owns its copy of the config, so emptying it is the memory.
+    """
+    if notice.byte_length() == 0:
+        return
+    print(notice, flush=True)
+    notice = String("")
+
+
 def _farewell_streams[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ):
