@@ -22,16 +22,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `Cache-Control`, which `--static-cache-control` sends on successes only.
   In Mojo, `StaticFiles(..., headers=...)` is the same; there, a name the
   response already carries is left as the response set it.
-
-### Changed
-
-- **Every static response carries `X-Content-Type-Options: nosniff`**
-  (SPEC J12), from m0serve's `--static` mounts and from `StaticFiles` in a
-  Mojo application alike. The type always comes from the extension table,
-  never from the bytes, so a browser has nothing to sniff. Fetch's check
-  refuses only a script or a style whose type is not JavaScript or CSS,
-  and the table types `.js`, `.mjs` and `.css` correctly. A
-  `--static-header` naming the header replaces the value.
 - **`M0_MAX_BODY` and `M0_BODY_TIMEOUT`, the environment forms of
   `--max-body` and `--body-timeout`** (SPEC C1, A23), read with the flags'
   own parsers (`8m`, `30`) and beaten by the flags. A container raises
@@ -47,6 +37,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **Every static response carries `X-Content-Type-Options: nosniff`**
+  (SPEC J12), from m0serve's `--static` mounts and from `StaticFiles` in a
+  Mojo application alike. The type always comes from the extension table,
+  never from the bytes, so a browser has nothing to sniff. Fetch's check
+  refuses only a script or a style whose type is not JavaScript or CSS,
+  and the table types `.js`, `.mjs` and `.css` correctly. A
+  `--static-header` naming the header replaces the value.
 - **An `M0_*` value the environment cannot use is reported, not silently
   replaced.** The environment stays lenient: `M0_PORT=80eighty` still
   serves on the default port. But m0serve now prints one line at startup
@@ -66,7 +63,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   they were concatenated raw, so a directory with a quote in its name
   broke the report. It now also reports `static_cache_control` and
   `static_headers`, the headers every static response carries.
-
 - **An ASGI application whose lifespan startup fails no longer leaves a
   server that answers nothing** (SPEC L33). Under the asyncio executor,
   the ASGI default, the application is built and its lifespan started on
