@@ -33,7 +33,7 @@ from lightbug_http.c.process import process_exit
 from lightbug_http.offload import OffloadPool
 from m0_http import MojoPool
 
-from .asgi_executor import AsgiExecutor
+from .asgi_executor import AsgiExecutor, READY_STOPPED
 from .blocking_pool import BlockingPool, JOIN_TIMEOUT_NS
 from .cli import ServeOptions, hold_lanes, mojo_lanes, pool_thread_count, wsgi_lanes
 from .thread_handler import ThreadHandler
@@ -52,6 +52,10 @@ struct OffloadThreads(Movable):
     """`--mount PREFIX=hold`'s threads: sized here, started by the caller."""
     var run_executor: Bool
     """Whether `executors` was started."""
+    var stopped_in_startup: Bool
+    """A stop arrived while an executor's lifespan startup ran, and
+    `wire_offload` returned without starting anything after it: the caller
+    leaves without serving."""
 
     def __init__(out self):
         """Nothing wired: a loop that calls the application itself."""
@@ -60,6 +64,7 @@ struct OffloadThreads(Movable):
         self.mojo_pool = MojoPool(0)
         self.hold_pool = MojoPool(0)
         self.run_executor = False
+        self.stopped_in_startup = False
 
     def __init__(
         out self,
@@ -68,6 +73,7 @@ struct OffloadThreads(Movable):
         var mojo_pool: MojoPool,
         var hold_pool: MojoPool,
         run_executor: Bool,
+        stopped_in_startup: Bool = False,
     ):
         """What `wire_offload` built. The threads it started hold heap
         blocks and the pool's address, never these values', so they move."""
@@ -76,6 +82,7 @@ struct OffloadThreads(Movable):
         self.mojo_pool = mojo_pool^
         self.hold_pool = hold_pool^
         self.run_executor = run_executor
+        self.stopped_in_startup = stopped_in_startup
 
 
 def wire_offload[T: ThreadHandler](
@@ -86,6 +93,7 @@ def wire_offload[T: ThreadHandler](
     blocking_threads: Int,
     user: Int,
     hold_notify_fd: Int = -1,
+    shutdown_fd: Int = -1,
 ) raises -> OffloadThreads:
     """Declare this loop's lanes and start the threads that serve them.
 
@@ -100,6 +108,12 @@ def wire_offload[T: ThreadHandler](
     Lane i is mount i, so the loop's `submit(slot, path)` and the handler's
     `app_for(path)` cannot disagree: both ask `match_path_prefix` the same
     question about the same table.
+
+    Returns once every executor's application is up, its lifespan startup
+    included (`AsgiExecutor.wait_ready`), and raises if one ended first:
+    the caller says it serves only after this. A stop on `shutdown_fd`
+    (the loop's, armed already) during that wait returns at once with
+    `stopped_in_startup` set and nothing else started. Called attached.
     """
     # The loop's handler needs the pool for one thing: a chunk frame its
     # outbox has to refuse must abort the stream rather than vanish. See
@@ -152,6 +166,23 @@ def wire_offload[T: ThreadHandler](
             pool.enable_stream_ack(lane)
             handler.set_lane_notify(lane, pool.submit_write_fd(lane))
         executors.start(pool.addr(), user, asgi_ln^, qos=opts.qos)
+        # Each executor builds its application and runs its lifespan
+        # startup on its own thread, so this is where that startup is known
+        # to have finished. One that ended first leaves its lane with no
+        # reader: every request on it parks forever while the health path
+        # still answers 200. The caller turns the raise into exit 1, as
+        # the main thread's own handler build does for a pool.
+        var refused = executors.wait_ready(shutdown_fd)
+        if refused == READY_STOPPED:
+            return OffloadThreads(
+                executors^, handler_pool^, mojo_pool^, hold_pool^,
+                run_executor, stopped_in_startup=True,
+            )
+        if refused > 0:
+            raise Error(
+                String(refused) + " ASGI executor(s) ended before serving:"
+                " the application's startup failed (the error is above)"
+            )
 
     if handler_pool.count > 0:
         # Pool threads stream WSGI iterables through the chunk channel the

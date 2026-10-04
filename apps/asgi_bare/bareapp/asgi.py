@@ -48,6 +48,11 @@ not merely killed) after a request outlived the server's drain.
 ``M0_ASGI_EAGER_TASKS`` makes lifespan startup install asyncio's eager task
 factory, as an application may, so every request's first step runs inside
 the server's spawn (SPEC L30).
+
+``M0_ASGI_STARTUP_FAIL`` makes lifespan startup answer
+``lifespan.startup.failed``, and ``M0_ASGI_STARTUP_DELAY_S`` makes it take
+that many seconds first: the server must exit 1 without a ready banner, and
+a stop while it waits must end it (SPEC L33).
 """
 
 import asyncio
@@ -95,6 +100,15 @@ async def application(scope, receive, send):
         while True:
             message = await receive()
             if message["type"] == "lifespan.startup":
+                delay = float(os.environ.get("M0_ASGI_STARTUP_DELAY_S") or 0)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                if os.environ.get("M0_ASGI_STARTUP_FAIL"):
+                    await send({
+                        "type": "lifespan.startup.failed",
+                        "message": "bareapp refused its startup",
+                    })
+                    return
                 _LIFESPAN["started"] = True
                 if os.environ.get("M0_ASGI_EAGER_TASKS"):
                     # asyncio's own opt-in (3.12+): a task's first step runs

@@ -405,8 +405,9 @@ It prints one line per worker when it is up:
 ```
 
 **That line is the ready signal**, and it is printed *after* the application
-has been imported — so a project whose import fails prints a traceback and
-exits 1 rather than announcing itself first. Startup failures and the
+has been imported and, for ASGI, after its lifespan startup has completed —
+so a project whose import or startup fails prints the error and exits 1
+rather than announcing itself first. Startup failures and the
 shutdown report use the same `m0serve: ` prefix without the flame. Nothing
 else is written to stdout unless `--access-log` is on.
 
@@ -414,10 +415,11 @@ Do not scrape it from an orchestrator, though: readiness there is
 `--health-path /health` (a probe endpoint answered in Mojo, before the
 application) or a plain TCP check on the port, and `m0serve --doctor` for a
 configuration report that exits with the code the server itself would use.
-Just before its banner each worker prints `[worker N] pid=P armed for a
-graceful stop`: a SIGTERM drains it from then on, and a script that stops the
-server soon after starting it waits for that line from every worker, since
-one answering says nothing of another still importing.
+Before its banner each worker prints `[worker N] pid=P armed for a
+graceful stop`: a SIGTERM drains it from then on (or, during an ASGI lifespan
+startup, ends it with exit 0), and a script that stops the server soon after
+starting it waits for that line from every worker, since one answering says
+nothing of another still importing.
 
 `MODULE[:ATTR]` names the callable (`ATTR` defaults to `application`, and a
 bare `MODULE` also tries `MODULE.asgi`, `MODULE.wsgi`, `MODULE:app` and

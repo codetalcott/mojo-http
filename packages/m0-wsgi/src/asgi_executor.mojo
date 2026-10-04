@@ -67,25 +67,32 @@ from lightbug_http.websocket import (
     WS_OP_TEXT, WS_OP_BINARY,
 )
 from lightbug_http.c.platform import PlatformBackend
+from lightbug_http.c.process import process_exit
 from m0_http import BLK_QOS, request_qos_class, QOS_CLASS_USER_INITIATED
 
 from m0_http.sse.format import NO_EVENT_ID
 
 from m0_http import (
     ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS,
-    STATUS_OK, STATUS_RAISED,
+    STATUS_OK, STATUS_RAISED, STATUS_NEVER_RAN,
 )
 
 from .app import WSGIApp
 from .blocking_pool import BLK_POOL
+from .pg_listen import _poll_two
+from m0_http.mojo_pool import BLK_READY
 from m0_http import BLK_LANE
-from .cli import ServeOptions
+from .cli import ServeOptions, EXIT_STARTUP
 from .handler import (
     WSGIHandler, asgi_stream_url, ws_close_frame, _send_disconnect_tag,
 )
 from .response import build_asgi_response
 from .thread_handler import ThreadContext
 
+
+comptime READY_STOPPED = -1
+"""`AsgiExecutor.wait_ready`'s answer when a stop arrived on the shutdown
+pipe before every executor was ready."""
 
 comptime _HAND_OVER_TRIES = 3
 """Inverted mode: how many times a frame the full chunk channel refused is
@@ -153,6 +160,54 @@ struct AsgiExecutor(Movable):
             block.set(BLK_QOS, 1 if qos else 0)
             self._set.spawn(i, body_addr)
         self._started = True
+
+    def wait_ready(self, shutdown_fd: Int = -1) -> Int:
+        """How many executors ended without serving: their application could
+        not be built -- an import error, or a lifespan startup that failed.
+        `READY_STOPPED` if a stop arrived on `shutdown_fd` first.
+
+        Waits until every executor has either set `BLK_READY` (its
+        application is built, its lifespan startup complete and its submit
+        reader armed) or ended. The caller prints the banner only after
+        this returns 0, so "ready" means ready, as it does for a pool or
+        the inline loop, whose handler runs the lifespan on the main thread
+        before either. Before this, a lifespan startup that failed left the
+        server accepting with nothing to answer: requests hung, the health
+        path said 200, and SIGTERM exited 0.
+
+        No deadline: a lifespan startup may run migrations for minutes, and
+        uvicorn waits for it too. What ends a startup that never finishes
+        is the shutdown pipe, which the signals were armed to write before
+        this: polled rather than slept on, because the loop that would
+        read it has not started, and CPython's own SIGINT handler, which
+        the arming replaced, only sets a flag for a main thread that runs
+        no Python here. The byte is left in the pipe.
+
+        DETACHED for the wait, exactly as `stop_and_join`: the caller is
+        attached, and every executor needs the GIL to run its startup.
+        """
+        if not self._started:
+            return 0
+        ref cpy = Python().cpython()
+        var ts = cpy.PyEval_SaveThread()
+        var failed = 0
+        var stopped = False
+        for i in range(len(self._lanes)):
+            var block = self._set.block(i)
+            while (
+                not stopped
+                and block.get(BLK_READY) == 0
+                and self._set.status(i) == STATUS_NEVER_RAN
+            ):
+                # One millisecond, as a sleep would be; with no pipe (-1)
+                # poll waits on nothing and is exactly that sleep.
+                stopped = _poll_two(shutdown_fd, -1, 1)[0]
+            if stopped:
+                break
+            if block.get(BLK_READY) == 0:
+                failed += 1
+        cpy.PyEval_RestoreThread(ts)
+        return READY_STOPPED if stopped else failed
 
     def stop_and_join(mut self, mut pool: OffloadPool, timeout_ns: Int = -1) raises -> Int:
         """One pill per executor, each on ITS OWN lane, then join.
@@ -281,6 +336,11 @@ def _executor_serve(block: ThreadBlock) raises:
     handler.apps[0]._bridge.executor_init(
         pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )
+    # Built, its lifespan started and its reader armed: what
+    # `AsgiExecutor.wait_ready` waits for before the server says it serves.
+    # A raise anywhere above never gets here, and the thread ends
+    # `STATUS_RAISED` instead.
+    block.set(BLK_READY, 1)
 
     # Parked attached, inside the loop's selector -- which is where CPython
     # releases the GIL -- for the thread's whole life; every event is
@@ -1154,6 +1214,7 @@ def serve_inverted(
     address: String,
     shutdown_fd: Int,
     mut pool: OffloadPool,
+    banner: String,
     peer_bus_fd: Int = -1,
     accept_share: AcceptShare = AcceptShare(),
 ) raises:
@@ -1172,21 +1233,37 @@ def serve_inverted(
     Runs on the calling thread — `m0serve`'s main, which is attached since
     `Py_Initialize` — so there is no thread to spawn and nothing to detach:
     the only wait is asyncio's own selector, which releases the GIL itself.
+
+    `banner` prints once the application is built, its lifespan startup
+    included, as it does for every other shape (SPEC L33); a build that
+    raised exits `EXIT_STARTUP` before it, naming the error as `m0serve`
+    does. A stop during that startup waits for it: the lifespan runs on
+    this thread, and no other is free to watch the shutdown pipe.
     """
     var lane = -1
-    var handler = WSGIHandler.for_options(
-        WSGIApp(
-            opts.module,
-            server_name=opts.host,
-            server_port=String(opts.port),
-            attribute=opts.attribute,
-            multiprocess=opts.workers > 1,
-            multithread=False,
-            protocol="asgi",
-            lifespan=True,
-        ),
-        opts,
-    )
+    var handler: WSGIHandler
+    try:
+        handler = WSGIHandler.for_options(
+            WSGIApp(
+                opts.module,
+                server_name=opts.host,
+                server_port=String(opts.port),
+                attribute=opts.attribute,
+                multiprocess=opts.workers > 1,
+                multithread=False,
+                protocol="asgi",
+                lifespan=True,
+            ),
+            opts,
+        )
+    except e:
+        print(
+            "m0serve: could not load " + opts.served() + " from "
+            + opts.app_dir + ": " + String(e),
+            flush=True,
+        )
+        process_exit(EXIT_STARTUP)
+        return
     handler.set_abort_pool(pool.addr())
     handler.set_asgi_notify(pool.submit_write_fd(lane))
 
@@ -1221,6 +1298,7 @@ def serve_inverted(
     handler.apps[0]._bridge.executor_init(
         pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )
+    print(banner, flush=True)
     print("inverted: the event loop runs inside asyncio (multiplexer fd " + String(backend.multiplexer_fd()) + ")", flush=True)
     handler.apps[0]._bridge.run_forever_inverted(backend.multiplexer_fd())
     _ = st
