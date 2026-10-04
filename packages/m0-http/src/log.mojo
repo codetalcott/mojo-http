@@ -79,6 +79,12 @@ def log_access(
 ):
     """Convenience: emit a structured access log line.
 
+    `body_size` is the response body as sent: a file sent with `sendfile`
+    included, nothing for a HEAD or a 304, and no head. It was the encoded
+    buffer's length -- the head plus an in-memory body, and none of a file
+    body -- so a 64-byte body logged 366 and a static file about the size of
+    its head. A stream is logged when its head lands, with what went with it.
+
     `remote_addr` is the client's address as the server reports it to the
     application (WSGI's `REMOTE_ADDR`): an IPv6 peer as `::1`, an IPv4 peer
     of a `::` listener as `127.0.0.1`. Left out of the line when empty, as

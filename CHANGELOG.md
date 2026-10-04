@@ -8,6 +8,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **The access log's `bytes` is the response body as sent** (SPEC F2). It
+  was the length of the encoded buffer: the head plus an in-memory body,
+  and none of a body sent with `sendfile`. So a 64-byte body logged 366,
+  and a `--static` file logged about the size of its own head. It now
+  counts the body, a file body included, and nothing for a HEAD or a 304.
+  That is what `log_access` named the value all along (`body_size`), and
+  what gunicorn's and Apache's `%b` report. The field stays a string. With
+  `--metrics`, `http_bytes_sent_total` still counts head and body, and now
+  includes file bodies, which it also left out.
+
 ## [1.10.0] — 2026-10-03
 
 The database remembers what changed. `m0_sqlite`'s stamps put four
