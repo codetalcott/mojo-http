@@ -450,9 +450,13 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         var hold_fd = -1
         if opts[].realtime and ctx.index < len(server[].bus_write_fds):
             hold_fd = server[].bus_write_fds[ctx.index]
+        # A stop during an executor's startup needs no case of its own
+        # here: the byte stays in this loop's pipe, so the loop below
+        # drains at once and `join_offload` bounds the executor.
         threads = wire_offload[T](
             pool, handler, opts[], executor_mode, blocking, ctx.user,
             hold_notify_fd=hold_fd,
+            shutdown_fd=block.get(BLK_SHUTDOWN_FD),
         )
     var pool_addr = pool.addr() if use_offload else 0
     # The chunk channel consumes `bus_read_fd`, so this thread's own

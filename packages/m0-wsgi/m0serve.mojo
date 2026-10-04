@@ -1021,7 +1021,11 @@ def main() raises:
     # for, from every worker (`_announce_armed`).
     var shutdown_fd = install_shutdown_signals()
     _announce_armed(worker, shutdown_fd)
-    print(
+    # The banner is the ready signal, so it prints once the application is
+    # UP, its lifespan startup included: below for the inline loop and a
+    # pool, whose handler above ran the lifespan on this thread; in
+    # `_serve_offloaded` for the executor, which runs it on its own.
+    var banner = String(
         "🔥 m0serve: " + opts.served() + " on http://" + opts.address()
         + " (protocol=" + ("asgi" if is_asgi else "wsgi")
         + " workers=" + String(opts.workers) + ")"
@@ -1038,8 +1042,7 @@ def main() raises:
         + (" realtime" if opts.realtime else "")
         + (" reload" if opts.reload else "")
         + (" spawn" if opts.spawn_workers and opts.workers > 1 else "")
-        + (" shared-accepts" if share.active() else ""),
-        flush=True,
+        + (" shared-accepts" if share.active() else "")
     )
     var server_config = opts.server_config(AppConfig(default_port=DEFAULT_PORT))
 
@@ -1076,7 +1079,7 @@ def main() raises:
         # prefork rule is untouched — a forked child that then makes
         # threads is fine; a threaded parent that then forks is not.
         _serve_offloaded(
-            opts, listener^, handler, server_config, shutdown_fd,
+            opts, listener^, handler, server_config, shutdown_fd, banner,
             executor_mode,
             peer_bus_fd=bus.read_fd(worker),
             # Under `--realtime` a pool thread's hold reaches THIS worker's
@@ -1098,6 +1101,7 @@ def main() raises:
             exit_worker()
         return
 
+    print(banner, flush=True)
     var server = Server(server_config^)
     # `bus.read_fd` answers this worker's channel whatever the flags (-1,
     # "no bus" to the loop, only for an index the bus has no channel for).
@@ -1137,6 +1141,7 @@ def _serve_offloaded(
     mut handler: WSGIHandler,
     config: ServerConfig,
     shutdown_fd: Int,
+    banner: String,
     executor: Bool,
     peer_bus_fd: Int = -1,
     hold_notify_fd: Int = -1,
@@ -1175,6 +1180,12 @@ def _serve_offloaded(
     `into_fd` (review B26). Borrowed, it was closed again by the caller
     when this returned, after a drain during which the pool threads could
     be given its number for files of their own.
+
+    `banner` prints HERE, once `wire_offload` has returned: an executor
+    builds its application and runs its lifespan startup on its own
+    thread, and the banner is the ready signal. A startup that failed
+    exits 1 before it, as a pool's does in `main`; a stop that arrived
+    first exits 0, since nothing was accepted yet.
     """
     var pool = OffloadPool(config.max_connections)
     # Without a GIL a parked thread beside a queued job is an idle core,
@@ -1200,6 +1211,9 @@ def _serve_offloaded(
         # inversion's promotion bar.
         pool.enable_stream_channel()
         pool.enable_base_stream_ack()
+        # The inversion builds its application inside `serve_inverted`, so
+        # its banner still precedes the lifespan, whose failure raises out.
+        print(banner, flush=True)
         serve_inverted(
             opts, listener^.into_fd(), config, opts.address(), shutdown_fd,
             pool, peer_bus_fd, accept_share,
@@ -1207,10 +1221,28 @@ def _serve_offloaded(
         return
     var opts_ptr = Pointer(to=opts)
     var opts_addr = Pointer(to=opts_ptr).unsafe_bitcast[Int]()[]
-    var threads = wire_offload[WSGIHandler](
-        pool, handler, opts, executor, opts.blocking_threads, opts_addr,
-        hold_notify_fd=hold_notify_fd,
-    )
+    var threads: OffloadThreads
+    try:
+        threads = wire_offload[WSGIHandler](
+            pool, handler, opts, executor, opts.blocking_threads, opts_addr,
+            hold_notify_fd=hold_notify_fd,
+            shutdown_fd=shutdown_fd,
+        )
+    except e:
+        _fail(
+            "could not load " + opts.served() + " from " + opts.app_dir + ": "
+            + String(e),
+            EXIT_STARTUP,
+        )
+        return
+    if threads.stopped_in_startup:
+        # SIGTERM or SIGINT while an executor's lifespan startup ran. The
+        # loop has accepted nothing, so there is nothing to drain, and the
+        # executor is still inside the application, where nothing here can
+        # unwind it: leave as `join_offload` does past its budget.
+        _fail("stopped before the application was ready", 0)
+        return
+    print(banner, flush=True)
     # The compiled mounts' workers, sized and reserved by `wire_offload`.
     # They are started like the WSGI pool and are unlike it in the one way
     # that matters: `MojoPool`'s body has no attach/detach bracket, because

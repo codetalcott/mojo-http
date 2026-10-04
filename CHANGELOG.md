@@ -8,6 +8,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **An ASGI application whose lifespan startup fails no longer leaves a
+  server that answers nothing** (SPEC L33). Under the asyncio executor,
+  the ASGI default, the application is built and its lifespan started on
+  the executor's own thread, and nothing waited for it: a
+  `lifespan.startup.failed` was logged as `asgi-executor raised`, the ready
+  banner had already printed, the loop went on accepting, requests hung
+  with no bytes, `--health-path` answered 200, and SIGTERM exited 0. The
+  server now waits for every executor's startup before it prints the
+  banner, and a startup that fails exits 1 naming the application's
+  message, as it already did under `--blocking-threads` (uvicorn exits 3).
+  So the banner follows the lifespan startup in every mode; the
+  `armed for a graceful stop` line still precedes it, and a SIGTERM or
+  SIGINT while the startup runs ends the worker with exit 0. `--mount`'s
+  ASGI applications, one executor each, are waited for alike.
+
 ## [1.10.0] — 2026-10-03
 
 The database remembers what changed. `m0_sqlite`'s stamps put four

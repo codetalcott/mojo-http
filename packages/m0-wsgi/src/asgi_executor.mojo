@@ -73,11 +73,13 @@ from m0_http.sse.format import NO_EVENT_ID
 
 from m0_http import (
     ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS,
-    STATUS_OK, STATUS_RAISED,
+    STATUS_OK, STATUS_RAISED, STATUS_NEVER_RAN,
 )
 
 from .app import WSGIApp
 from .blocking_pool import BLK_POOL
+from .pg_listen import _poll_two
+from m0_http.mojo_pool import BLK_READY
 from m0_http import BLK_LANE
 from .cli import ServeOptions
 from .handler import (
@@ -86,6 +88,10 @@ from .handler import (
 from .response import build_asgi_response
 from .thread_handler import ThreadContext
 
+
+comptime READY_STOPPED = -1
+"""`AsgiExecutor.wait_ready`'s answer when a stop arrived on the shutdown
+pipe before every executor was ready."""
 
 comptime _HAND_OVER_TRIES = 3
 """Inverted mode: how many times a frame the full chunk channel refused is
@@ -153,6 +159,54 @@ struct AsgiExecutor(Movable):
             block.set(BLK_QOS, 1 if qos else 0)
             self._set.spawn(i, body_addr)
         self._started = True
+
+    def wait_ready(self, shutdown_fd: Int = -1) -> Int:
+        """How many executors ended without serving: their application could
+        not be built -- an import error, or a lifespan startup that failed.
+        `READY_STOPPED` if a stop arrived on `shutdown_fd` first.
+
+        Waits until every executor has either set `BLK_READY` (its
+        application is built, its lifespan startup complete and its submit
+        reader armed) or ended. The caller prints the banner only after
+        this returns 0, so "ready" means ready, as it does for a pool or
+        the inline loop, whose handler runs the lifespan on the main thread
+        before either. Before this, a lifespan startup that failed left the
+        server accepting with nothing to answer: requests hung, the health
+        path said 200, and SIGTERM exited 0.
+
+        No deadline: a lifespan startup may run migrations for minutes, and
+        uvicorn waits for it too. What ends a startup that never finishes
+        is the shutdown pipe, which the signals were armed to write before
+        this: polled rather than slept on, because the loop that would
+        read it has not started, and CPython's own SIGINT handler, which
+        the arming replaced, only sets a flag for a main thread that runs
+        no Python here. The byte is left in the pipe.
+
+        DETACHED for the wait, exactly as `stop_and_join`: the caller is
+        attached, and every executor needs the GIL to run its startup.
+        """
+        if not self._started:
+            return 0
+        ref cpy = Python().cpython()
+        var ts = cpy.PyEval_SaveThread()
+        var failed = 0
+        var stopped = False
+        for i in range(len(self._lanes)):
+            var block = self._set.block(i)
+            while (
+                not stopped
+                and block.get(BLK_READY) == 0
+                and self._set.status(i) == STATUS_NEVER_RAN
+            ):
+                # One millisecond, as a sleep would be; with no pipe (-1)
+                # poll waits on nothing and is exactly that sleep.
+                stopped = _poll_two(shutdown_fd, -1, 1)[0]
+            if stopped:
+                break
+            if block.get(BLK_READY) == 0:
+                failed += 1
+        cpy.PyEval_RestoreThread(ts)
+        return READY_STOPPED if stopped else failed
 
     def stop_and_join(mut self, mut pool: OffloadPool, timeout_ns: Int = -1) raises -> Int:
         """One pill per executor, each on ITS OWN lane, then join.
@@ -281,6 +335,11 @@ def _executor_serve(block: ThreadBlock) raises:
     handler.apps[0]._bridge.executor_init(
         pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )
+    # Built, its lifespan started and its reader armed: what
+    # `AsgiExecutor.wait_ready` waits for before the server says it serves.
+    # A raise anywhere above never gets here, and the thread ends
+    # `STATUS_RAISED` instead.
+    block.set(BLK_READY, 1)
 
     # Parked attached, inside the loop's selector -- which is where CPython
     # releases the GIL -- for the thread's whole life; every event is

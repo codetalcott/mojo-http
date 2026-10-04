@@ -28,19 +28,23 @@ The protocol is detected from the object: a coroutine-function callable is
 served as ASGI, anything else as WSGI. `--protocol wsgi|asgi` overrides.
 
 The ready signal is one line per worker, printed after the application has
-imported:
+imported and, for ASGI, after its lifespan startup has completed:
 
 ```text
 🔥 m0serve: myproject.wsgi:application on http://0.0.0.0:8000 (protocol=wsgi workers=1) blocking-threads=8 (auto)
 ```
 
-An application that fails to import prints its traceback and exits 1 before
-that line. For orchestration, use `--health-path /health` (answered in the
+An application that fails to import, or whose lifespan startup fails (it
+sends `lifespan.startup.failed`, as Starlette and FastAPI do when a startup
+handler raises), prints the error and exits 1 before that line; uvicorn
+exits 3 for the same failure. For orchestration, use `--health-path /health` (answered in the
 server, before Python) or a TCP check, not the banner.
 
-Just before its banner each worker prints `[worker N] pid=P armed for a
+Before its banner each worker prints `[worker N] pid=P armed for a
 graceful stop`, the Mojo host's line: a SIGTERM drains it from then on, and
-kills it before then. A script that stops the server soon after starting it
+kills it before then. Between the two, while an ASGI application's lifespan
+startup runs, SIGTERM or SIGINT ends the worker with exit 0 and nothing
+served. A script that stops the server soon after starting it
 waits for that line from every worker, since one worker answering says
 nothing of another still importing the application.
 
