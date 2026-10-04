@@ -826,6 +826,22 @@
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `M0_MAX_BODY=64mb` and `M0_PORT=80eighty` under `--doctor` each named with the value used, the doctor's cap at its default; a readable value named by nothing; and `M0_QOS=yes` reported once under two spawned workers. It was silent, so `M0_MAX_BODY=64mb` would have kept 4 MB unnoticed"
     },
     {
+      "id": "F20",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The access line is written straight into one buffer and is byte for byte the record `format_json` renders for the same fields",
+      "status": "verified",
+      "evidence": "`test_log.mojo:test_format_access_is_format_json_byte_for_byte` (every PR) \u2014 a plain GET, a HEAD with a quote and a backslash in its path and no address, and a 413 from an IPv6 peer. The line skips `LogEntry`, whose lists and per-number strings were most of its cost: about 170 ns a line against about 680, measured on an M-series Mac with the wall-clock read included"
+    },
+    {
+      "id": "F21",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The access record's `status`, `dur_us` and `bytes` are JSON numbers, and its `time` is the wall clock: RFC 3339 in UTC with milliseconds, read once per line with the second cached per loop",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--access-log`: the three fields parse as integers, `ts` is gone, and `time` matches the format and lies within a minute of the runner's clock. Numbers were strings, so `jq 'select(.status >= 500)'` matched every line, and `ts` was a monotonic count from an arbitrary origin; the calendar arithmetic against Python's `datetime` at the epoch, leap days and 9999: `test_log.mojo:test_rfc3339_second_is_the_civil_date_in_utc`"
+    },
+    {
       "id": "F8",
       "section": "F",
       "category": "F. Observability",
@@ -1384,6 +1400,22 @@
       "capability": "`Cache-Control`, configurable",
       "status": "verified",
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--static-cache-control`"
+    },
+    {
+      "id": "J11",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "`--static-header 'Name: value'`, repeatable, adds a header to every response a static mount answers, errors included, and never replaces one the response sets itself; refused at the command line (exit 2) for a name that is not a token, a control character, a name given twice, a name the static server sets, or `Cache-Control`, which `--static-cache-control` owns",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `Referrer-Policy` on a static 200, a 304 and a refusal's 404, and on none of the application's responses; `Cache-Control` refused with exit 2 naming the other flag; `--doctor` reporting the mounts, their `Cache-Control` and every static header as JSON that parses with a quote in a directory's name. The refusals one by one: `test_cli.mojo:test_static_header_refusals`"
+    },
+    {
+      "id": "J12",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "Every response a static mount answers carries `X-Content-Type-Options: nosniff`, with no opt-out, because the type always comes from the extension table and never from the bytes; a `--static-header` naming it replaces the value",
+      "status": "verified",
+      "evidence": "`test_static.mojo:test_nosniff_on_every_answer` (every PR) \u2014 a 200, a 304, a 206, a 416, a 405 and a refusal's 404, with nothing configured; on the wire in `Smoke test the serve CLI`"
     },
     {
       "id": "J8",

@@ -55,7 +55,7 @@ from m0_http.sse.format import NO_EVENT_ID
 
 from .app import WSGIApp
 from .cli import match_mount, is_compiled_mount
-from .cli import ServeOptions
+from .cli import ServeOptions, static_header_set
 from lightbug_http.hold import (
     take_hold, request_last_event_id, ws_message_request, send_hold_frame,
     HOLD_STREAM, HOLD_WEBSOCKET,
@@ -449,6 +449,7 @@ struct WSGIHandler(ThreadHandler):
                 StaticFiles(
                     opts.static_dirs[i], opts.static_prefixes[i],
                     cache_control=opts.static_cache_control,
+                    headers=static_header_set(opts),
                 )
             )
         return mounts^

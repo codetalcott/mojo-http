@@ -49,7 +49,7 @@ from .reply import (
     vary_accept,
 )
 from .reload import MtimeScanner, ScanResult
-from .static import StaticFiles, content_type_for
+from .static import StaticFiles, content_type_for, static_headers
 from .sse import (
     format_sse_event,
     format_sse_heartbeat,

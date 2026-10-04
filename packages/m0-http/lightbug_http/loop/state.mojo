@@ -26,7 +26,7 @@ from lightbug_http.service import HTTPService
 from lightbug_http.websocket import WSState, close_frame, WS_CLOSE_GOING_AWAY
 from std.time import perf_counter_ns
 from std.os import getenv
-from m0_http.log import log_access
+from m0_http.log import LogClock, log_access
 
 
 # Timer ident offsets to distinguish timeout types from fd-based events.
@@ -139,6 +139,9 @@ struct LoopState(Movable):
     var last_idle_sweep: Int
     var date_cache_sec: Int64
     var date_cache: String
+    var log_clock: LogClock
+    """The access log's wall clock, its second cached as `date_cache` is:
+    a loop's own, because `--threads` puts loops in one process."""
     var listen_fd: FileDescriptor
     var config: ServerConfig
     var server_address: String
@@ -253,6 +256,7 @@ struct LoopState(Movable):
         self.last_idle_sweep = perf_counter_ns()
         self.date_cache_sec = date_cache_sec
         self.date_cache = http_date_from_unix(date_cache_sec)
+        self.log_clock = LogClock()
         self.listen_fd = listen_fd
         self.config = config.copy()
         self.server_address = server_address
@@ -566,6 +570,7 @@ def _record_response(mut st: LoopState, slot: Int):
     if st.config.access_log and st.provision_pool.provisions[slot].log_method.byte_length() > 0:
         var elapsed_us = Int((perf_counter_ns() - st.slot_header_start[slot]) / 1000)
         log_access(
+            st.log_clock,
             st.provision_pool.provisions[slot].log_method,
             st.provision_pool.provisions[slot].log_path,
             st.provision_pool.provisions[slot].response_status,

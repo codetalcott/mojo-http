@@ -62,6 +62,14 @@ size and mtime is now a cache *hit* the content hash would have caught.
 nginx and Apache make the same trade for the same reason. What did NOT
 change is what the tag claims — it is still weak, so `If-Range` stays
 unsatisfiable exactly as above.
+
+**Every answer carries the mount's headers**: `X-Content-Type-Options:
+nosniff`, then whatever the deployment adds (`m0serve --static-header`),
+on the 200 and on the 404 alike (`static_headers`). nosniff has no opt-out
+because there is nothing for a browser to sniff: the type always comes from
+the extension table, never from the bytes, and fetch's check refuses only a
+script or a style whose type is not JavaScript or CSS, which the table never
+sends for `.js`, `.mjs` or `.css`.
 """
 
 from std.os import stat
@@ -107,6 +115,14 @@ struct StaticFiles(Copyable, Movable):
     makes every revalidation immediately stale again. Empty (the default)
     sends no header — freshness policy belongs to the deployment, not this
     module."""
+    var header_names: List[String]
+    """Added to EVERY response `serve` answers, parallel to `header_values`:
+    nosniff and the deployment's own (`static_headers`). Every response,
+    unlike `cache_control`: freshness belongs to the asset, and a security
+    header to the origin, whose error page is as much its own as its
+    stylesheet. One the response already carries is left alone, so no
+    name here can unsay a `Content-Type`, an `ETag` or a range's bounds."""
+    var header_values: List[String]
 
     def __init__(
         out self,
@@ -114,6 +130,7 @@ struct StaticFiles(Copyable, Movable):
         var prefix: String = "/static/",
         *,
         var cache_control: String = "",
+        headers: Headers = Headers(),
     ):
         # Root never ends in "/", prefix always does: the join below then
         # has exactly one shape.
@@ -127,6 +144,14 @@ struct StaticFiles(Copyable, Movable):
         self.root = root^
         self.prefix = prefix^
         self.cache_control = cache_control^
+        # Unpacked once into Strings, so an answer costs a lookup and a set
+        # per header and no conversion.
+        var all = static_headers(headers)
+        self.header_names = List[String](capacity=all.count())
+        self.header_values = List[String](capacity=all.count())
+        for i in range(all.count()):
+            self.header_names.append(String(unsafe_from_utf8=all.name_span(i)))
+            self.header_values.append(String(unsafe_from_utf8=all.value_span(i)))
 
     def _with_cache_control(self, var resp: HTTPResponse) -> HTTPResponse:
         if self.cache_control.byte_length() > 0:
@@ -139,7 +164,21 @@ struct StaticFiles(Copyable, Movable):
         return path.startswith(self.prefix) or path == String(self.prefix[byte = : self.prefix.byte_length() - 1])
 
     def serve(self, req: HTTPRequest) raises -> Optional[HTTPResponse]:
-        """Serve `req` if it targets this mount; `None` if it does not."""
+        """Serve `req` if it targets this mount; `None` if it does not.
+
+        Whatever it answers carries the mount's headers (`header_names`).
+        """
+        var answer = self._answer(req)
+        if not answer:
+            return None
+        var resp = answer.take()
+        for i in range(len(self.header_names)):
+            if self.header_names[i] not in resp.headers:
+                resp.headers[self.header_names[i]] = self.header_values[i]
+        return resp^
+
+    def _answer(self, req: HTTPRequest) raises -> Optional[HTTPResponse]:
+        """`serve`, before the mount's headers."""
         var path = req.uri.path
         # "/static" (no slash) means the mount root, same as "/static/".
         if path == String(self.prefix[byte = : self.prefix.byte_length() - 1]):
@@ -281,6 +320,17 @@ struct StaticFiles(Copyable, Movable):
         )
         resp.set_file_body(fd, 0, total)
         return self._with_cache_control(resp^)
+
+
+def static_headers(extra: Headers) -> Headers:
+    """The headers a static mount adds to every answer: `nosniff`, then
+    `extra` over it, so a deployment that names
+    `X-Content-Type-Options` itself replaces the default rather than
+    sending two."""
+    var out = Headers(Header(HeaderKey.X_CONTENT_TYPE_OPTIONS, "nosniff"))
+    for i in range(extra.count()):
+        out.set_bytes(extra.name_span(i), extra.value_span(i))
+    return out^
 
 
 def _open_read(path: String) -> Int:
