@@ -368,7 +368,11 @@ capability its row claims.
 **Sabotage harnesses share `scripts/sabotage_lib.py`**: exact-once anchors,
 the restore in `finally`, and a sabotage that only breaks the build counted a
 MISS, never a catch (review H1). After editing a line a harness anchors, run
-that harness and re-point the anchor in the same change.
+that harness and re-point the anchor in the same change. A run compiles into a
+Mojo cache of its own (`MODULAR_CACHE_DIR`, removed on the way out): the shared
+cache never evicts, and a sabotaged tree is a program nobody builds again. A
+new harness not on the lib enters `throwaway_mojo_cache()` around its arms, as
+`mojo_suite`, `datastar_conformance` and `sabotage_views` do.
 
 **The docs gate is `scripts/docs_gate.sh`**, run by both `poe check-docs` and
 the `check-docs` job of `.github/workflows/docs.yml`, so what you run before

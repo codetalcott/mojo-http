@@ -26,6 +26,10 @@ rule table; this module is everything around it:
   - a TMPDIR of the run's own for everything its gates start, removed on
     the way out (`own_tmpdir`), so the logs a failed smoke keeps do not
     pile up in `$TMPDIR`;
+  - a Mojo compile cache of the run's own (`MODULAR_CACHE_DIR`), inside
+    that TMPDIR and removed with it: every sabotaged tree is a program
+    nobody builds again, and the shared cache never evicts
+    (`throwaway_mojo_cache` for a harness that is not on this module);
   - `--only` / `--skip`;
   - verdicts that cannot be mistaken for one another, and a tally in which
     nothing that did not run is summarised as guarded.
@@ -959,12 +963,18 @@ def own_tmpdir(name: str):
     temporary files stay where they were -- a harness's backup must outlive
     a restore that failed -- because `tempfile` fixes its directory the first
     time it is asked, which making the scratch directory here does if nothing
-    has yet.
+    has yet. The Mojo compile cache moves in as well, for
+    `throwaway_mojo_cache`'s reason.
     """
     scratch = Path(tempfile.mkdtemp(prefix=f"{name}."))
-    saved = {k: os.environ.get(k) for k in ("TMPDIR", "RUNNER_TEMP")}
+    saved = {k: os.environ.get(k) for k in ("TMPDIR", "RUNNER_TEMP", CACHE_VAR)}
     os.environ["TMPDIR"] = str(scratch)
     os.environ.pop("RUNNER_TEMP", None)
+    # The compiler's cache goes in here too (`throwaway_mojo_cache` says why),
+    # and leaves with the directory.
+    cache = scratch / "mojo-cache"
+    cache.mkdir()
+    os.environ[CACHE_VAR] = str(cache)
     try:
         yield scratch
     finally:
@@ -974,6 +984,41 @@ def own_tmpdir(name: str):
             else:
                 os.environ[k] = v
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+CACHE_VAR = "MODULAR_CACHE_DIR"
+"""Where `mojo` keeps its compile cache: `~/.cache/modular/.mojo_cache` unless
+this names a directory (`mojo --print-cache-location`)."""
+
+
+@contextmanager
+def throwaway_mojo_cache():
+    """Point the Mojo compile cache at a directory of its own for the body,
+    and remove it on the way out, however the body ends.
+
+    The shared cache keeps an entry per distinct program per compiler and
+    never evicts (no size limit in Mojo 1.1, stable or nightly). A sabotage
+    arm is by definition a program nobody builds again, so each one was
+    garbage the size of its program: about 11 MB for an m0serve build and
+    38 MB for the m0-http suite, measured 2026-10-04, and a gigabyte in a
+    session of harness runs. A cache of the run's own still serves what the
+    run repeats -- its clean baseline, its restore -- and goes when the run
+    does. `own_tmpdir` does this for every harness on this module; the
+    others enter it themselves around their sabotage arms only, so their
+    ordinary runs keep the warm shared cache. A `MODULAR_CACHE_DIR` that was
+    already set is put back afterwards.
+    """
+    made = Path(tempfile.mkdtemp(prefix="mojo-cache."))
+    saved = os.environ.get(CACHE_VAR)
+    os.environ[CACHE_VAR] = str(made)
+    try:
+        yield made
+    finally:
+        if saved is None:
+            os.environ.pop(CACHE_VAR, None)
+        else:
+            os.environ[CACHE_VAR] = saved
+        shutil.rmtree(made, ignore_errors=True)
 
 
 def run(name: str, rules: Sequence[Rule], gates, argv: Sequence[str] = (), *,
@@ -1409,9 +1454,11 @@ def _selftest() -> int:
         home, runner = work / "tmp", work / "runner"
         home.mkdir()
         runner.mkdir()
-        env_before = {k: os.environ.get(k) for k in ("TMPDIR", "RUNNER_TEMP")}
+        env_before = {k: os.environ.get(k) for k in ("TMPDIR", "RUNNER_TEMP", CACHE_VAR)}
         tempdir_before = tempfile.tempdir
         os.environ["TMPDIR"], os.environ["RUNNER_TEMP"] = str(home), str(runner)
+        shared = work / "shared-mojo-cache"  # a cache the user set, to be put back
+        os.environ[CACHE_VAR] = str(shared)
         tempfile.tempdir = None  # a harness that has not asked for it yet
         try:
             with own_tmpdir("selftest") as scratch:
@@ -1419,6 +1466,12 @@ def _selftest() -> int:
                                        capture_output=True, text=True, timeout=60)
                 kept = list(scratch.glob("m0-smoke.*"))
                 own = Path(tempfile.mkdtemp(prefix="backup-"))
+                seen = subprocess.run(["sh", "-c", f'printf %s "${CACHE_VAR}"'],
+                                      capture_output=True, text=True, timeout=60).stdout
+                cache = Path(os.environ[CACHE_VAR])
+                check(cache.parent == scratch and cache.is_dir() and seen == str(cache),
+                      "the Mojo compile cache is the run's own, and what a gate it "
+                      "starts sees")
             check(smoke.returncode == 1 and len(kept) == 1,
                   "a lib smoke that fails keeps its directory in the run's own")
             check(not list(home.glob("m0-smoke.*")) and not list(runner.glob("m0-smoke.*")),
@@ -1429,6 +1482,22 @@ def _selftest() -> int:
             check(os.environ.get("TMPDIR") == str(home)
                   and os.environ.get("RUNNER_TEMP") == str(runner),
                   "TMPDIR and RUNNER_TEMP are put back")
+            check(os.environ.get(CACHE_VAR) == str(shared) and not cache.exists(),
+                  "the cache variable is put back, and the run's cache is gone")
+            with throwaway_mojo_cache() as made:
+                inside = os.environ.get(CACHE_VAR)
+            check(inside == str(made) and not made.exists()
+                  and os.environ.get(CACHE_VAR) == str(shared),
+                  "throwaway_mojo_cache: its own directory for the body, removed "
+                  "after, and the previous value put back")
+            os.environ.pop(CACHE_VAR)
+            try:
+                with throwaway_mojo_cache() as made:
+                    raise RuntimeError("a harness with a bug in it")
+            except RuntimeError:
+                check(not made.exists() and CACHE_VAR not in os.environ,
+                      "throwaway_mojo_cache cleans up when the body raises, and "
+                      "leaves an unset variable unset")
             try:
                 with own_tmpdir("selftest") as scratch:
                     raise RuntimeError("a harness with a bug in it")

@@ -120,4 +120,8 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # The counter-examples are programs nobody builds again: compile them into
+    # a cache of the run's own, not the shared one, which never evicts.
+    from sabotage_lib import throwaway_mojo_cache
+    with throwaway_mojo_cache():
+        sys.exit(main())
