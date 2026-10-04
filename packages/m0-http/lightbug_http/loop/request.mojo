@@ -29,7 +29,7 @@ from std.time import perf_counter_ns
 
 from lightbug_http.loop.state import (
     LoopState, TIMER_BODY, UNUSED, _arm_reads, _await_write, _begin_request,
-    _close_slot, _rearm_reads, _stop_reads,
+    _close_slot, _notice_once, _rearm_reads, _stop_reads,
 )
 from lightbug_http.loop.response import (
     _finish_response, _send_error_to_fd, _send_raw_to_fd,
@@ -268,7 +268,7 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
             or st.provision_pool.provisions[slot].chunk_decoder._total_read
             > 2 * st.config.max_request_body_size
         ):
-            _reject_and_linger(handler, backend, st, slot, fd_val, PayloadTooLarge())
+            _refuse_too_large(handler, backend, st, slot, fd_val)
             return False
         if buf_len > tail_start:
             var ret: Int
@@ -468,7 +468,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         var is_chunked = parsed.is_chunked_body()
 
         if not is_chunked and content_length > st.config.max_request_body_size:
-            _reject_and_linger(handler, backend, st, slot, fd_val, PayloadTooLarge())
+            _refuse_too_large(handler, backend, st, slot, fd_val)
             return
 
 
@@ -555,9 +555,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     or st.provision_pool.provisions[slot].chunk_decoder._total_read
                     > 2 * st.config.max_request_body_size
                 ):
-                    _reject_and_linger(
-                        handler, backend, st, slot, fd_val, PayloadTooLarge()
-                    )
+                    _refuse_too_large(handler, backend, st, slot, fd_val)
                     return
                 if ret >= 0:
                     # `pending_bytes` bytes remain past the chunked data —
@@ -865,6 +863,18 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         handler.after_response(request_method, request_path, response)
 
     _finish_response(handler, backend, st, slot, fd_val, response^)
+
+
+def _refuse_too_large[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
+):
+    """The 413 for a body over `max_request_body_size`, decoded or raw.
+
+    Every size refusal goes through here, so the config's notice is said
+    on the first of them whichever check made it (`_notice_once`).
+    """
+    _notice_once(st.config.body_size_notice)
+    _reject_and_linger(handler, backend, st, slot, fd_val, PayloadTooLarge())
 
 
 def _reject_and_linger[T: HTTPService, B: EventLoopBackend](

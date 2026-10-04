@@ -17,7 +17,9 @@ Flags are strict where the environment is lenient. `_parse_int_env` swallows
 variable a container set, documented as a sharp edge in `test_config.mojo`.
 A person who typed `--port 80eighty` at a prompt wants to be told, so every
 flag value is validated and a bad one is a usage error (exit 2), never a
-silent default.
+silent default. Lenient is not silent, though: `from_env` notes each value
+it could not use (`ServeOptions.env_ignored`), and `m0serve` prints the
+notes at startup.
 """
 
 from std.os import getenv
@@ -190,7 +192,8 @@ struct ServeOptions(Copyable, Movable):
     worker threads at user-initiated (`m0_http.threads.request_qos_class`);
     accepted and ignored elsewhere."""
     var max_body: Int
-    """Request body cap in bytes; -1 leaves `ServerConfig`'s default alone."""
+    """Request body cap in bytes (`--max-body`, `M0_MAX_BODY`); -1 leaves
+    `ServerConfig`'s default alone."""
     var max_keepalive_requests: Int
     """`--max-keepalive-requests`: requests a keep-alive connection may carry
     before the server closes it (0 = never); -1 leaves the environment's
@@ -208,10 +211,19 @@ struct ServeOptions(Copyable, Movable):
     `WS_CLOSE_LINGER_NS` in lightbug_http/loop/state.mojo.
     """
     var body_timeout: Int
-    """`--body-timeout`: seconds a request body may take to arrive once its
-    headers have; -1 leaves `ServerConfig.body_read_timeout` (30) alone,
-    and 0 turns the body timer off. A body still short at the deadline is
-    refused -- 408 on a connection's first request -- and closed."""
+    """`--body-timeout` / `M0_BODY_TIMEOUT`: seconds a request body may take
+    to arrive once its headers have; -1 leaves
+    `ServerConfig.body_read_timeout` (30) alone, and 0 turns the body timer
+    off. A body still short at the deadline is refused -- 408 on a
+    connection's first request -- and closed."""
+    var env_ignored: List[String]
+    """One sentence per `M0_*` value `from_env` could not use, naming the
+    variable, its value and what was used instead.
+
+    The environment stays lenient (the module docstring says why), but not
+    silent: `M0_MAX_BODY=64mb` kept the 4 MB cap with nothing to say so.
+    `m0serve` prints these once at startup, and `--doctor` with them.
+    """
     var metrics: Bool
     var realtime: Bool
     """Hold SSE streams and WebSockets that the application approves.
@@ -296,6 +308,7 @@ struct ServeOptions(Copyable, Movable):
         self.max_keepalive_requests = -1
         self.idle_timeout = -1
         self.body_timeout = -1
+        self.env_ignored = List[String]()
         self.metrics = False
         self.realtime = False
         self.reload = False
@@ -330,6 +343,52 @@ struct ServeOptions(Copyable, Movable):
         # option, not a server one, so it has no ServerConfig field to
         # reach — the same position `M0_GRANT_KEY` is in.
         opts.pg_listen = String(getenv("M0_PG_LISTEN", "").strip())
+        # The two body limits, read with their flags' own parsers: a
+        # container raises them without a start script. Not `AppConfig`'s,
+        # for M0_PG_LISTEN's reason -- the Mojo host has no such flags.
+        var defaults = ServerConfig()
+        var raw = getenv("M0_MAX_BODY", "")
+        if raw.byte_length() > 0:
+            try:
+                opts.max_body = parse_size(raw)
+            except:
+                opts.env_ignored.append(
+                    _ignored(
+                        "M0_MAX_BODY", raw, "a size like 4m or 4194304",
+                        format_size(defaults.max_request_body_size),
+                    )
+                )
+        raw = getenv("M0_BODY_TIMEOUT", "")
+        if raw.byte_length() > 0:
+            try:
+                opts.body_timeout = parse_int(raw, "M0_BODY_TIMEOUT")
+            except:
+                opts.env_ignored.append(
+                    _ignored(
+                        "M0_BODY_TIMEOUT", raw, "a whole number of seconds",
+                        String(defaults.body_read_timeout),
+                    )
+                )
+        # What `AppConfig` read leniently, said when it fell back. The test
+        # mirrors its parser: digits only for a number, and anything but
+        # "true" or "1" is off for a switch.
+        _check_int_env(opts.env_ignored, "M0_PORT", config.port)
+        _check_int_env(opts.env_ignored, "M0_WORKERS", config.workers)
+        _check_int_env(opts.env_ignored, "M0_THREADS", config.threads)
+        _check_int_env(
+            opts.env_ignored, "M0_BLOCKING_THREADS", config.blocking_threads
+        )
+        _check_int_env(
+            opts.env_ignored, "M0_SSE_HEARTBEAT_MS", config.sse_heartbeat_ms
+        )
+        _check_int_env(opts.env_ignored, "M0_APP_TICK_MS", config.app_tick_ms)
+        _check_int_env(
+            opts.env_ignored, "M0_MAX_KEEPALIVE_REQUESTS",
+            config.max_keepalive_requests,
+        )
+        _check_bool_env(opts.env_ignored, "M0_ACCESS_LOG")
+        _check_bool_env(opts.env_ignored, "M0_QOS")
+        _check_bool_env(opts.env_ignored, "M0_SPAWN_WORKERS")
         return opts^
 
     def address(self) -> String:
@@ -363,9 +422,14 @@ struct ServeOptions(Copyable, Movable):
         """`base.server_config()` with the flags that reach `ServerConfig` applied.
 
         `--access-log` can only turn logging on (the environment may already
-        have); `--max-body`, `--idle-timeout` and `--metrics` are server-only
-        tunings the environment cannot reach and a command line can;
-        `--max-keepalive-requests` overrides `M0_MAX_KEEPALIVE_REQUESTS`.
+        have); `--idle-timeout` and `--metrics` are server-only tunings the
+        environment cannot reach and a command line can; `--max-body` and
+        `--body-timeout` arrive here with `M0_MAX_BODY` and `M0_BODY_TIMEOUT`
+        already under them (`from_env`); `--max-keepalive-requests`
+        overrides `M0_MAX_KEEPALIVE_REQUESTS`.
+
+        It also writes the two notices the loop prints on the first refusal
+        of each kind, naming the effective limit and the knobs that move it.
         """
         var sc = base.server_config()
         if self.access_log:
@@ -379,6 +443,18 @@ struct ServeOptions(Copyable, Movable):
         if self.body_timeout >= 0:
             sc.body_read_timeout = self.body_timeout
         sc.enable_metrics = self.metrics
+        sc.body_size_notice = String(
+            "m0serve: a request body over --max-body (",
+            format_size(sc.max_request_body_size),
+            ") was refused with 413; raise --max-body or M0_MAX_BODY if the"
+            " application expects more",
+        )
+        sc.body_timeout_notice = String(
+            "m0serve: a request body still arriving --body-timeout (",
+            sc.body_read_timeout,
+            "s) after its headers was refused; raise --body-timeout or"
+            " M0_BODY_TIMEOUT if clients upload that slowly",
+        )
         return sc^
 
 
@@ -432,6 +508,49 @@ def parse_size(text: String) raises -> Int:
         raise Error(
             "--max-body must be a size like 4m or 4194304, got '" + text + "'"
         )
+
+
+def format_size(n: Int) -> String:
+    """A byte count as `parse_size` reads it, in its largest exact unit.
+
+    4194304 is `4m`, 1536 is `1536` rather than `1.5k`: the notice and the
+    warnings that print it name a value the user can paste back.
+    """
+    comptime K = 1024
+    if n > 0:
+        if n % (K * K * K) == 0:
+            return String(n // (K * K * K)) + "g"
+        if n % (K * K) == 0:
+            return String(n // (K * K)) + "m"
+        if n % K == 0:
+            return String(n // K) + "k"
+    return String(n)
+
+
+def _ignored(name: String, raw: String, wanted: String, used: String) -> String:
+    """The `env_ignored` sentence: the variable, its value, what was used."""
+    return String("ignoring ", name, "='", raw, "', not ", wanted, "; using ", used)
+
+
+def _check_int_env(mut ignored: List[String], name: String, used: Int):
+    """Note `name` when `AppConfig` fell back from it: set, and not digits."""
+    var raw = getenv(name, "")
+    var bytes = raw.as_bytes()
+    for i in range(len(bytes)):
+        if bytes[i] < UInt8(ord("0")) or bytes[i] > UInt8(ord("9")):
+            ignored.append(_ignored(name, raw, "a whole number", String(used)))
+            return
+
+
+def _check_bool_env(mut ignored: List[String], name: String):
+    """Note `name` when it is set to something `AppConfig` reads as off
+    without meaning it: anything but `true`, `1`, `false` and `0`."""
+    var raw = getenv(name, "")
+    if (
+        raw.byte_length() > 0
+        and raw != "true" and raw != "1" and raw != "false" and raw != "0"
+    ):
+        ignored.append(_ignored(name, raw, "true, 1, false or 0", "off"))
 
 
 def zero_config_topology(opts: ServeOptions) -> Bool:
@@ -1445,8 +1564,9 @@ def usage() -> String:
         "  --qos                       macOS: keep the loop and its worker threads\n"
         "                              on performance cores under contention (M0_QOS)\n"
         "  --max-body SIZE             request body cap: bytes, or 512k / 64m / 1g\n"
-        "                              (default 4m); over it the server answers\n"
-        "                              413 itself, before the app runs\n"
+        "                              (default 4m; M0_MAX_BODY); over it the\n"
+        "                              server answers 413 itself, before the app\n"
+        "                              runs\n"
         "  --max-keepalive-requests N  close a keep-alive connection after N\n"
         "                              requests (default 1000, 0 = never;\n"
         "                              M0_MAX_KEEPALIVE_REQUESTS)\n"
@@ -1454,13 +1574,14 @@ def usage() -> String:
         "                              this long (default 60, 0 = never)\n"
         "  --body-timeout SECONDS      refuse a request body still arriving this\n"
         "                              long after its headers (default 30,\n"
-        "                              0 = never)\n"
+        "                              0 = never; M0_BODY_TIMEOUT)\n"
         "  --metrics                   serve Prometheus metrics at /__metrics\n"
         "  --realtime                  hold SSE streams and WebSockets the app\n"
         "                              approves with M0-Hold; publish with m0pub.py\n"
         "  --pg-listen URL             also publish what arrives on a Postgres\n"
         "                              LISTEN, so a trigger, a cron job or psql\n"
-        "                              can reach a held stream (needs --realtime)\n"
+        "                              can reach a held stream (needs --realtime;\n"
+        "                              M0_PG_LISTEN)\n"
         "  --health-path PATH          answer PATH in Mojo with a liveness JSON,\n"
         "                              never entering the application\n"
         "  --reload                    restart workers when a watched .py changes\n"

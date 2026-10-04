@@ -1226,6 +1226,14 @@ lightbug_http
         nothing), with three probes. A client that vanished from a stream
         with nothing in flight had held its slot for good.
 
+      - server_config.mojo, loop/state.mojo, loop/request.mojo,
+        loop/timers.mojo (2026-10-04): `ServerConfig.body_size_notice` and
+        `body_timeout_notice`, empty by default, are printed by a loop the
+        first time it refuses a body for size or ends one that stopped
+        arriving, then emptied in the loop's own copy (`_notice_once`).
+        The three 413 sites share `_refuse_too_large`. m0serve writes the
+        sentences, naming `--max-body` and `--body-timeout`.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

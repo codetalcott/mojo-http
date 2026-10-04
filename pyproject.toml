@@ -1767,6 +1767,37 @@ spawn bodyto.log bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare -
   --blocking-threads 2 --body-timeout 2 --idle-timeout 30
 wait_ready http://localhost:$port/ $pid
 python3 scripts/body_timeout_probe.py $port 2 || fail
+# The first body the timeout ends names the knob, once: the 408 says only
+# "Request Timeout", and a keep-alive connection's refusal says nothing.
+n=$(grep -c 'raise --body-timeout or M0_BODY_TIMEOUT' "$SMOKE_DIR/bodyto.log")
+[ "$n" = "1" ] || fail "the body-timeout notice should appear once, appeared $n times"
+grep -q -- 'arriving --body-timeout (2s) after' "$SMOKE_DIR/bodyto.log" || fail 'the body-timeout notice does not name the timeout in effect'
+stop $pid
+# The environment form: M0_BODY_TIMEOUT=1 with no flag answers a stalled
+# body in about a second, where the default would wait 30. Twice, so the
+# notice has a second refusal to stay quiet about.
+spawn bodyto-env.log env M0_BODY_TIMEOUT=1 bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port
+wait_ready http://localhost:$port/ $pid
+python3 - $port <<'PYSTALL' || fail 'M0_BODY_TIMEOUT=1 did not refuse a stalled body within 5 s'
+import socket, sys, time
+for attempt in (1, 2):
+    s = socket.create_connection(("127.0.0.1", int(sys.argv[1])))
+    s.sendall(b"POST /input/read HTTP/1.1\\r\\nHost: x\\r\\nContent-Length: 100\\r\\n\\r\\n" + b"a" * 10)
+    s.settimeout(5)
+    t0 = time.monotonic()
+    try:
+        data = s.recv(4096)
+    except socket.timeout:
+        data = b""
+    took = time.monotonic() - t0
+    s.close()
+    print("stalled body %d was answered %r after %.2fs" % (attempt, data[:12], took))
+    if not (data.startswith(b"HTTP/1.1 408") and took < 5):
+        sys.exit(1)
+PYSTALL
+grep -q -- 'arriving --body-timeout (1s) after' "$SMOKE_DIR/bodyto-env.log" || fail 'M0_BODY_TIMEOUT=1: the notice does not name the timeout the environment set'
+n=$(grep -c 'raise --body-timeout or M0_BODY_TIMEOUT' "$SMOKE_DIR/bodyto-env.log")
+[ "$n" = "1" ] || fail "M0_BODY_TIMEOUT=1: the notice should appear once after two refusals, appeared $n times"
 echo "smoke-body-timeout OK"
 python3 scripts/emit.py --covers A23 --task smoke-body-timeout
 """
@@ -3723,7 +3754,8 @@ want="m0serve $(grep -m1 '^version = ' pyproject.toml | sed 's/version = //; s/"
 [ "$ver" = "$want" ] || fail "--version printed '$ver', want '$want'"
 
 # Usage errors exit 2 and print usage. A flag typo is told, not defaulted —
-# unlike M0_PORT=80eighty, which the environment loader silently ignores.
+# unlike M0_PORT=80eighty, which the environment loader ignores, saying so
+# (the doctor phase below).
 "$srv" > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "no positional: exit $rc, want 2"
 grep -q '^usage: m0serve' "$log" || fail 'no positional: usage not printed'
@@ -3804,6 +3836,25 @@ kill $pid
 wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0 (the graceful drain)"
 
+# The doctor reports the limits the server would USE, defaults included (it
+# printed -1 for an unset --max-body or --body-timeout), flag over M0_* over
+# the default (C1, A23). And an M0_* value the loader cannot read is ignored
+# out loud: one line naming it, its value and what was used instead.
+limits() { tail -1 "$log" | python3 -c "import json,sys; s=json.load(sys.stdin)['server']; print(s['max_body'], s['body_timeout'])"; }
+"$srv" --doctor > "$log" 2>&1
+[ "$(limits)" = "4194304 30" ] || fail "--doctor: max_body and body_timeout '$(limits)', want the defaults '4194304 30'"
+env M0_MAX_BODY=8m M0_BODY_TIMEOUT=7 "$srv" --doctor > "$log" 2>&1
+[ "$(limits)" = "8388608 7" ] || fail "--doctor: M0_MAX_BODY=8m M0_BODY_TIMEOUT=7 gave '$(limits)', want '8388608 7'"
+grep -q 'm0serve: ignoring' "$log" && fail 'a readable M0_MAX_BODY was reported as ignored'
+env M0_MAX_BODY=8m M0_BODY_TIMEOUT=7 "$srv" --doctor --max-body 1k --body-timeout 0 > "$log" 2>&1
+[ "$(limits)" = "1024 0" ] || fail "--doctor: --max-body 1k --body-timeout 0 did not win over the environment: '$(limits)'"
+env M0_MAX_BODY=64mb M0_PORT=80eighty "$srv" --doctor > "$log" 2>&1
+grep -q "^m0serve: ignoring M0_MAX_BODY='64mb', not a size like 4m or 4194304; using 4m$" "$log" \
+  || fail 'M0_MAX_BODY=64mb was not reported as ignored, with the cap used instead'
+grep -q "^m0serve: ignoring M0_PORT='80eighty', not a whole number; using 8000$" "$log" \
+  || fail 'M0_PORT=80eighty was not reported as ignored, with the port used instead'
+[ "$(limits)" = "4194304 30" ] || fail "--doctor: an unreadable M0_MAX_BODY gave '$(limits)', want the default '4194304 30'"
+
 # A busy port is refused, loudly, and the server that owns it is left alone.
 # SO_REUSEPORT is opt-in now, so a second m0serve on the same port must fail
 # to bind -- five attempts a second apart, so a restart racing the previous
@@ -3874,6 +3925,12 @@ code=$(python3 -c "print('b' * 512, end='')" | curl -s -o /dev/null -w '%{http_c
 # decoded cap alone leaves the connection unbounded. The probe's middle case
 # is decoded-legal and raw-illegal, so only the raw bound can refuse it.
 python3 scripts/chunked_overhead_probe.py $port 1024 || fail 'the raw chunked-byte ceiling is not enforced'
+# The first 413 names the knob, once: the response says only "Payload Too
+# Large" and the application never sees the request, so nothing else would.
+# Several refusals by now, one line, carrying the cap in effect.
+n=$(grep -c 'was refused with 413; raise --max-body or M0_MAX_BODY' "$SMOKE_DIR/serve-mount.log")
+[ "$n" = "1" ] || fail "the 413 notice should appear once after several refusals, appeared $n times"
+grep -q -- 'over --max-body (1k)' "$SMOKE_DIR/serve-mount.log" || fail 'the 413 notice does not name the cap in effect'
 code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:$port/__metrics)
 [ "$code" = "200" ] || fail "--metrics: /__metrics expected 200, got $code"
 # The BODY, not just the status. A 200 carrying nothing a scraper understands
@@ -3922,6 +3979,20 @@ code=$(python3 -c "import sys; sys.stdout.write('d' * (7 * 1024 * 1024))" | curl
 [ "$code" = "200" ] || fail "--max-body 8m: a 7 MB body expected 200, got $code"
 code=$(python3 -c "import sys; sys.stdout.write('d' * (9 * 1024 * 1024))" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
 [ "$code" = "413" ] || fail "--max-body 8m: a 9 MB body expected 413, got $code"
+stop $pid
+# The environment form: M0_MAX_BODY sets the cap with no flag, read by the
+# flag's own parser, and the notice names the cap it set. Under spawned
+# workers, each of which re-runs main and reads the environment again, so
+# the unreadable M0_QOS must still be reported once, by the supervisor.
+spawn serve-envcap.log env M0_MAX_BODY=1k M0_QOS=yes "$srv" $SPEC --port $port --workers 2 --spawn-workers
+wait_ready http://127.0.0.1:$port/ $pid
+code=$(python3 -c "print('e' * 2048, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
+[ "$code" = "413" ] || fail "M0_MAX_BODY=1k: a 2 KB body expected 413, got $code"
+code=$(python3 -c "print('e' * 512, end='')" | curl -s -o /dev/null -w '%{http_code}' -X POST --data-binary @- http://127.0.0.1:$port/input/read)
+[ "$code" = "200" ] || fail "M0_MAX_BODY=1k: a 512 B body expected 200, got $code"
+grep -q -- 'over --max-body (1k)' "$SMOKE_DIR/serve-envcap.log" || fail 'M0_MAX_BODY=1k: the 413 notice does not name the cap the environment set'
+n=$(grep -c "^m0serve: ignoring M0_QOS='yes', not true, 1, false or 0; using off$" "$SMOKE_DIR/serve-envcap.log")
+[ "$n" = "1" ] || fail "M0_QOS=yes under two spawned workers: reported $n times, want once"
 stop $pid
 
 # --app-dir goes to the FRONT of sys.path, like gunicorn, uvicorn and
@@ -3995,6 +4066,7 @@ python3 scripts/emit.py --covers M2 --task smoke-serve
 python3 scripts/emit.py --covers M4 --task smoke-serve
 python3 scripts/emit.py --covers M6 --task smoke-serve
 python3 scripts/emit.py --covers F5 --task smoke-serve
+python3 scripts/emit.py --covers F19 --task smoke-serve
 """
 
 # The threaded execution mode. Phase 1 runs everywhere and pins the guard:
