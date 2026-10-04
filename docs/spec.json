@@ -765,9 +765,9 @@
       "id": "F2",
       "section": "F",
       "category": "F. Observability",
-      "capability": "`--access-log` emits one JSON record per response, and nothing without it",
+      "capability": "`--access-log` emits one JSON record per response, and nothing without it; its `bytes` is the body as sent",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--access-log`"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--access-log`: an in-memory body's length, 0 for a HEAD, and a static file's size, which goes out by sendfile. `bytes` was the encoded buffer, the head plus an in-memory body and none of a file body, so a 64-byte body logged 366 and a static file about its head's size; the metrics' bytes sent left the file body out too (`test_slot_lifecycle.mojo:test_a_file_body_is_counted_as_sent`)"
     },
     {
       "id": "F3",

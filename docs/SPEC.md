@@ -167,7 +167,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | id | capability | status | evidence |
 |---|---|---|---|
 | F1 | Access log records cannot be forged by a value (newline, quote, backslash escaped) | verified | `test_log.mojo:test_a_newline_cannot_forge_a_second_log_line` (every PR) |
-| F2 | `--access-log` emits one JSON record per response, and nothing without it | verified | `Smoke test the serve CLI` (every PR) — `--access-log` |
+| F2 | `--access-log` emits one JSON record per response, and nothing without it; its `bytes` is the body as sent | verified | `Smoke test the serve CLI` (every PR) — `--access-log`: an in-memory body's length, 0 for a HEAD, and a static file's size, which goes out by sendfile. `bytes` was the encoded buffer, the head plus an in-memory body and none of a file body, so a 64-byte body logged 366 and a static file about its head's size; the metrics' bytes sent left the file body out too (`test_slot_lifecycle.mojo:test_a_file_body_is_counted_as_sent`) |
 | F3 | `--metrics` turns `/__metrics` from the application's 404 into a 200 | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
 | F4 | Prometheus exposition 0.0.4: 8 counter and gauge families, each with HELP, TYPE and a sample | verified | `Smoke test the serve CLI` (every PR) — `--metrics` |
 | F5 | Latency histograms on `/__metrics` | verified | `Smoke test the serve CLI` (every PR) — six log-spaced `le` bounds (100µs–1s, +Inf), integer-only and O(1) on the loop thread; `scripts/histogram_check.py` (selftested in the same phase) asserts the documented bounds, non-decreasing cumulative counts, `le="+Inf"` equal to `_count`, and a `_count` covering the phase's own requests; boundary math pinned by `test_metrics.mojo` |
