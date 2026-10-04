@@ -5705,13 +5705,13 @@ full=$(curl -s $B/llms-full.txt | grep -c "^<!-- $B/")
 [ "$full" = "$essential" ] || fail "llms-full.txt carries $full pages; llms.txt's Documentation section lists $essential"
 
 # The sitemap is XML, and every URL in it answers as HTML with a markdown
-# twin the page advertises, which answers as text.
+# twin the page advertises, which answers as the text/markdown it advertises.
 [ "$(probe $B/sitemap.xml)" = "200 application/xml" ] || fail "sitemap.xml: $(probe $B/sitemap.xml)"
 for loc in $(sed -n 's:.*<loc>\\(.*\\)</loc>.*:\\1:p' "$out/sitemap.xml"); do
   [ "$(probe "$loc")" = "200 text/html; charset=utf-8" ] || fail "$loc: $(probe "$loc")"
   twin=$(curl -s "$loc" | sed -n 's:.*<link rel="alternate" type="text/markdown" href="\\([^"]*\\)".*:\\1:p' | head -1)
   [ -n "$twin" ] || fail "$loc advertises no markdown twin"
-  [ "$(probe "$twin")" = "200 text/plain; charset=utf-8" ] || fail "$twin: $(probe "$twin")"
+  [ "$(probe "$twin")" = "200 text/markdown; charset=utf-8" ] || fail "$twin: $(probe "$twin")"
 done
 echo "site: $pages pages answered, each with its markdown twin"
 

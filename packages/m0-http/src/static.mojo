@@ -2,8 +2,8 @@
 
 Composes the machinery that already exists rather than growing new kinds:
 ETags come from `etag.compute_etag` (weak, wyhash) with `If-None-Match`
-honoured as a `304`, content types come from a deliberately small extension
-map, and requests outside the mount return `None` so the handler's own
+honoured as a `304`, content types come from an extension map whose rule
+`content_type_for` states, and requests outside the mount return `None` so the handler's own
 routing continues.
 
 The load-bearing part is what this refuses to serve. The URL path arrives
@@ -486,24 +486,40 @@ def _safe_join(root: String, rel: String) -> Optional[String]:
 def content_type_for(name: String) -> String:
     """Content type by file extension; unknown answers octet-stream.
 
-    Deliberately small: the standard web types plus what this repo's own
-    examples serve. Vendor types stay the caller's business, exactly as in
-    content negotiation.
+    A type is listed when the label changes what a client does with the
+    file: a browser displays or plays an image, audio or video opened
+    directly where it downloads `application/octet-stream`; a proxy
+    compresses by type, and this server leaves compression to the proxy
+    (SPEC J8); an agent decides how to read a file by its type, and asks
+    for `text/markdown` by name. Only registered types, or the de-facto
+    one where the format has none (`application/manifest+json` is
+    registered; `application/rss+xml` is the de-facto feed type).
+    Measured against Python's `mimetypes`, which is what Starlette and
+    Django serve static files with: the formats it labels and a web app
+    links to are here.
+
+    Unlisted on purpose, and pinned so by `test_static.mojo`: build inputs
+    (`.jsx`, `.tsx`, and `.ts`, which is TypeScript to a bundler and an
+    MPEG transport stream to an HLS player), whose raw text a browser
+    cannot run whatever it is called; model weights and archives a client
+    only downloads; and JSON Lines, which has no registered type yet.
+    Vendor types stay the caller's business, exactly as in content
+    negotiation.
     """
     var dot = name.rfind(".")
     if not dot:
         return "application/octet-stream"
     var ext = String(unsafe_from_utf8=name.as_bytes()[dot.value() + 1 :]).lower()
+    # The page and what it loads: by far the most requested, so first.
     if ext == "html" or ext == "htm":
         return "text/html; charset=utf-8"
     if ext == "css":
         return "text/css; charset=utf-8"
     if ext == "js" or ext == "mjs":
         return "text/javascript; charset=utf-8"
-    if ext == "json":
+    if ext == "json" or ext == "map":
+        # A source map is JSON (the Source Map spec says so).
         return "application/json"
-    if ext == "xml":
-        return "application/xml"
     if ext == "svg":
         return "image/svg+xml"
     if ext == "png":
@@ -514,16 +530,85 @@ def content_type_for(name: String) -> String:
         return "image/gif"
     if ext == "webp":
         return "image/webp"
+    if ext == "avif":
+        return "image/avif"
     if ext == "ico":
         return "image/x-icon"
-    if ext == "txt" or ext == "md":
-        return "text/plain; charset=utf-8"
-    if ext == "wasm":
-        return "application/wasm"
+    if ext == "bmp":
+        return "image/bmp"
+    # Fonts (RFC 8081).
     if ext == "woff2":
         return "font/woff2"
+    if ext == "woff":
+        return "font/woff"
+    if ext == "ttf":
+        return "font/ttf"
+    if ext == "otf":
+        return "font/otf"
+    # Text.
+    if ext == "txt":
+        return "text/plain; charset=utf-8"
+    if ext == "md" or ext == "markdown":
+        # RFC 7763. What an agent asks for (`Accept: text/markdown`), and
+        # one of the two types the llms.txt convention names for the pages
+        # it links (this repo's docs site serves its Markdown twins so).
+        return "text/markdown; charset=utf-8"
+    if ext == "csv":
+        return "text/csv; charset=utf-8"
+    if ext == "tsv":
+        return "text/tab-separated-values; charset=utf-8"
+    if ext == "vtt":
+        return "text/vtt; charset=utf-8"
+    if ext == "ics":
+        return "text/calendar; charset=utf-8"
+    # Structured data.
+    if ext == "xml":
+        return "application/xml"
+    if ext == "rss":
+        return "application/rss+xml"
+    if ext == "atom":
+        return "application/atom+xml"
+    if ext == "webmanifest":
+        return "application/manifest+json"
+    if ext == "jsonld":
+        return "application/ld+json"
+    if ext == "geojson":
+        return "application/geo+json"
+    if ext == "yaml" or ext == "yml":
+        # RFC 9512 (2024): an OpenAPI document an agent reads, among others.
+        return "application/yaml"
+    if ext == "parquet":
+        return "application/vnd.apache.parquet"
+    # Audio and video: played when opened directly, downloaded otherwise.
+    if ext == "mp4" or ext == "m4v":
+        return "video/mp4"
+    if ext == "webm":
+        return "video/webm"
+    if ext == "ogv":
+        return "video/ogg"
+    if ext == "mov":
+        return "video/quicktime"
+    if ext == "mp3":
+        return "audio/mpeg"
+    if ext == "m4a":
+        return "audio/mp4"
+    if ext == "ogg" or ext == "oga" or ext == "opus":
+        return "audio/ogg"
+    if ext == "wav":
+        return "audio/wav"
+    if ext == "flac":
+        return "audio/flac"
+    if ext == "aac":
+        return "audio/aac"
+    # Documents and archives.
     if ext == "pdf":
         return "application/pdf"
+    if ext == "wasm":
+        return "application/wasm"
+    if ext == "zip":
+        return "application/zip"
+    if ext == "gz":
+        return "application/gzip"
     return "application/octet-stream"
 
 

@@ -178,7 +178,7 @@ def main():
         m = re.search(r'<link rel="alternate" type="text/markdown" href="([^"]+)"', page.decode())
         if not m:
             fail("/docs/spec/ advertises no Markdown twin")
-        expect(m.group(1), 200, "text/plain; charset=utf-8")
+        expect(m.group(1), 200, "text/markdown; charset=utf-8")
         headers, _ = expect(f"{base}/", 200, "text/html; charset=utf-8")
         if "max-age=300" not in headers.get("cache-control", ""):
             fail(f"--static-cache-control not applied: {headers.get('cache-control')!r}")

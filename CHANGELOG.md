@@ -10,6 +10,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **Static files carry their types** (SPEC J13). The table behind
+  `--static` and `StaticFiles` knew 19 extensions and sent everything
+  else as `application/octet-stream`. An app moved from Starlette or
+  Django, both of which use Python's `mimetypes`, lost about 45 types,
+  and an image or audio file of one of those types downloaded when
+  opened directly, in Chromium, Firefox and WebKit, where it had been
+  displayed or played. The table adds fonts (`woff`, `ttf`, `otf`),
+  `avif` and `bmp`, audio and video (`mp3`, `m4a`, `ogg`, `wav`, `flac`,
+  `aac`, `mp4`, `webm`, `ogv`, `mov`), captions (`vtt`), the web app
+  manifest, source maps, feeds, calendars, CSV and TSV, JSON-LD,
+  GeoJSON, YAML (RFC 9512), Parquet, `zip` and `gz`. A proxy compresses
+  by type, and this server leaves compression to it, so text labelled
+  `octet-stream` used to go out uncompressed. Build inputs (`.jsx`,
+  `.tsx`, `.ts`), model weights and JSON Lines stay
+  `application/octet-stream` on purpose.
+
 - **`--static-header 'Name: value'`** (SPEC J11): repeatable, adding a
   header to every response a `--static` mount answers, errors included.
   These are the security headers an application's middleware sets, which
@@ -44,6 +60,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   franchise-assessment.
 
 ### Changed
+
+- **`.md` is served as `text/markdown; charset=utf-8`**, not `text/plain`
+  (RFC 7763). Agents such as Claude Code and Cursor ask for Markdown by
+  that name (`Accept: text/markdown`), and the llms.txt convention names
+  it for the pages it links. The docs site already advertised its
+  Markdown twins as `text/markdown` and then served them as `text/plain`.
+  `llms.txt` itself stays `text/plain`, which the convention also allows.
 
 - **Every static response carries `X-Content-Type-Options: nosniff`**
   (SPEC J12), from m0serve's `--static` mounts and from `StaticFiles` in a
