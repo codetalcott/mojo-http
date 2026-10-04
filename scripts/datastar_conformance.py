@@ -510,7 +510,11 @@ def main(argv):
         fetch(argv[1])
         return 0
     if argv == ["--sabotage"]:
-        return 0 if sabotage() else 1
+        # Each arm runs a program nobody runs again: compile it into a cache
+        # of the run's own, not the shared one, which never evicts.
+        from sabotage_lib import throwaway_mojo_cache
+        with throwaway_mojo_cache():
+            return 0 if sabotage() else 1
     if argv:
         print(__doc__)
         return 2

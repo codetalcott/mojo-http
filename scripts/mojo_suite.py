@@ -564,7 +564,11 @@ def main() -> int:
     if a.selftest:
         return selftest()
     if a.sabotage:
-        return sabotage(a.mojo)
+        # Each arm builds a program nobody builds again: compile it into a
+        # cache of the run's own, not the shared one, which never evicts.
+        from sabotage_lib import throwaway_mojo_cache
+        with throwaway_mojo_cache():
+            return sabotage(a.mojo)
     if not a.package:
         ap.error("a package directory is required")
     return run(Path(a.package), a.includes, a.mojo, a.farm)
