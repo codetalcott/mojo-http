@@ -164,8 +164,9 @@ has the Flask version of the whole thing, and CI drives that exact file.
 
 ## Limits and lifecycle
 
-- `--max-body SIZE` caps request bodies (default 4m; `512k`, `64m`, `1g`).
-  A chunked body is bounded on the wire as well as decoded. Over the cap
+- `--max-body SIZE` (or `M0_MAX_BODY`) caps request bodies (default 4m;
+  `512k`, `64m`, `1g`). A chunked body is bounded on the wire as well as
+  decoded. Over the cap
   the server answers `413` itself, as plain text, before the application
   runs, so an application that formats its own errors (Flask's
   `MAX_CONTENT_LENGTH` with a JSON error handler, say) keeps that shape
@@ -173,16 +174,18 @@ has the Flask version of the whole thing, and CI drives that exact file.
   the client is still uploading; the server then reads and discards the
   rest for up to five seconds, so a client that writes its whole body
   before it reads, as `http.client` and `requests` do, still gets the
-  `413`.
+  `413`. The first such refusal prints one line naming the cap and both
+  knobs; the application's own log never sees the request.
 - `--idle-timeout SECONDS` closes idle keep-alive connections (default 60,
   0 = never). It also bounds a WebSocket's wait for the peer's close reply
   and a refused upload's linger; at 0 both close at once. And it bounds a
   response the client stops reading: one that goes that long without a
   send making progress is closed, however long a response read steadily
   takes.
-- `--body-timeout SECONDS` refuses a request body still arriving that long
-  after its headers (default 30, 0 = never): `408` on a connection's first
-  request, then the connection closes.
+- `--body-timeout SECONDS` (or `M0_BODY_TIMEOUT`) refuses a request body
+  still arriving that long after its headers (default 30, 0 = never): `408`
+  on a connection's first request, then the connection closes. The first
+  such refusal prints one line naming the timeout and both knobs.
 - `--max-keepalive-requests N` (or `M0_MAX_KEEPALIVE_REQUESTS`) closes a
   keep-alive connection after N requests (0 = never). Every close is a
   reconnect for the client, and one reconnect per N requests is the
@@ -199,10 +202,16 @@ has the Flask version of the whole thing, and CI drives that exact file.
 
 ## Configuration precedence
 
-Every flag has an `M0_*` variable (`M0_HOST`, `M0_PORT`, `M0_WORKERS`,
-`M0_THREADS`, `M0_BLOCKING_THREADS`, `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`,
-`M0_APP_TICK_MS`). A flag beats the variable, which beats the default, and
-flags are strict: `--port 80eighty` is a usage error, never a silent default.
+These flags have an `M0_*` variable: `--host`, `--port`, `--workers`,
+`--threads`, `--blocking-threads`, `--access-log`, `--qos`,
+`--spawn-workers`, `--max-body`, `--body-timeout`,
+`--max-keepalive-requests` and `--pg-listen`, each named in `--help`.
+`M0_SSE_HEARTBEAT_MS` and `M0_APP_TICK_MS` have no flag. A flag beats the
+variable, which beats the default. Flags are strict: `--port 80eighty` is
+a usage error. Variables are lenient: `M0_PORT=80eighty` serves on the
+default port, and m0serve prints a line at startup naming the value it
+ignored and what it used instead. `--doctor` prints the values the server
+would use.
 
 ## Platforms
 

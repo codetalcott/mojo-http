@@ -917,8 +917,10 @@ keeps the loop and its workers on performance cores; accepted and ignored
 elsewhere), `M0_MAX_KEEPALIVE_REQUESTS` (the keep-alive cap; 0 = never close
 for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and
 `M0_GRANT_COOKIE` (the hold mount's key, its previous key during a rotation,
-and the cookie a grant binds to; `sessionid`), `M0_SPAWN_WORKERS` and
-`M0_PG_LISTEN` (the env forms of those m0serve flags), `M0_INVERTED` (`1`
+and the cookie a grant binds to; `sessionid`), `M0_SPAWN_WORKERS`,
+`M0_PG_LISTEN`, `M0_MAX_BODY` and `M0_BODY_TIMEOUT` (the env forms of those
+m0serve flags, read by m0serve's `from_env`, which reports every `M0_*`
+value it cannot read rather than ignoring it silently), `M0_INVERTED` (`1`
 runs the loop inside the executor's asyncio loop, where the topology
 allows), and `M0_LIBPQ` and `M0_LIBSQLITE3` (the library to `dlopen`).
 
