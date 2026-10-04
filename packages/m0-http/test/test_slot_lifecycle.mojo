@@ -407,6 +407,26 @@ def test_a_stream_is_recorded_once() raises:
     assert_equal(st.metrics.bytes_sent_total, 120)
 
 
+def test_a_file_body_is_counted_as_sent() raises:
+    """A body sent with `sendfile` never enters `slot_response`, so the bytes
+    sent counted its head alone: every static file was missing from
+    `http_bytes_sent_total`, and the access log's `bytes` read the same
+    buffer. The metrics count head and body; the log reads the body, which
+    `_finish_response` records with the status."""
+    var config = _config()
+    config.enable_metrics = True
+    var st = _loop(config)
+    var slot = st.provision_pool.borrow()
+    st.active_count = 1
+    st.provision_pool.provisions[slot].response_status = 200
+    st.provision_pool.provisions[slot].response_body_len = 5000
+    st.provision_pool.provisions[slot].response_file_len = 5000
+    st.slot_header_start[slot] = perf_counter_ns()
+    st.slot_send_offset[slot] = 180
+    _record_response(st, slot)
+    assert_equal(st.metrics.bytes_sent_total, 5180)
+
+
 def test_a_stale_body_expiry_is_retired() raises:
     """#412's retire, on its own: a body timer's expiry that reaches a slot
     no longer reading its body is DELETED, not only skipped. The body can
