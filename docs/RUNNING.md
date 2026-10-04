@@ -151,7 +151,12 @@ has the Flask version of the whole thing, and CI drives that exact file.
   type comes from the extension (the web's page, image, font, media and
   data formats, Markdown as `text/markdown`); an extension the server does
   not list is sent as `application/octet-stream`, which a browser
-  downloads when the file is opened directly.
+  downloads when the file is opened directly. An SVG carries a
+  `Content-Security-Policy` that sandboxes it: opened directly or framed,
+  a script inside it cannot act as your site, which matters for any SVG
+  you did not write, uploads above all. In an `<img>`, a CSS background or
+  a `<use>` sprite it renders as before. A `--static-header` naming
+  `Content-Security-Policy` replaces it, on every static response.
 - **Health.** `--health-path PATH` answers a liveness JSON in the server.
 - **IPv6.** `--host ::` listens on IPv6 and IPv4 at once, and `--host ::1`
   on the IPv6 loopback alone (`[::1]`, as a URL writes it, is read the same).

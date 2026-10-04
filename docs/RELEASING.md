@@ -287,6 +287,16 @@ both kinds of pop among them, and the kernel's unit tests for the kernel's.
 Each rule rebuilds the app and reruns its gate, about six minutes in all
 (`--only unit` runs the kernel's in about fifteen seconds).
 
+**And the SVG sandbox's browser gate** (SPEC J14). `uv run poe
+browser-svg-sandbox` serves SVGs from a `--static` mount through the tree's
+`bin/m0serve` and drives Chromium, Firefox and WebKit: an `<img>`, a CSS
+background and a `<use>` sprite must draw, judged by pixels, and a scripted
+SVG must leave no mark in the origin's storage, framed or opened directly.
+Its second arm replaces the policy with one that allows script and insists
+the probe then sees the script run, so the first arm's silence is evidence.
+Pre-release because it needs three browsers; `smoke-serve` holds the header
+on every pull request. About twenty seconds.
+
 **And `uv run --group max poe sabotage-host`** (SPEC E21–E32, N18, N19) —
 breaks each rule of the host, in `m0_host/host.mojo` and `m0_host/flags.mojo`
 and in the shared pieces under it (`src/prefork.mojo`, `src/cmdline.mojo`,
