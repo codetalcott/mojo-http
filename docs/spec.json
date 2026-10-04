@@ -1402,6 +1402,22 @@
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--static-cache-control`"
     },
     {
+      "id": "J11",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "`--static-header 'Name: value'`, repeatable, adds a header to every response a static mount answers, errors included, and never replaces one the response sets itself; refused at the command line (exit 2) for a name that is not a token, a control character, a name given twice, a name the static server sets, or `Cache-Control`, which `--static-cache-control` owns",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `Referrer-Policy` on a static 200, a 304 and a refusal's 404, and on none of the application's responses; `Cache-Control` refused with exit 2 naming the other flag; `--doctor` reporting the mounts, their `Cache-Control` and every static header as JSON that parses with a quote in a directory's name. The refusals one by one: `test_cli.mojo:test_static_header_refusals`"
+    },
+    {
+      "id": "J12",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "Every response a static mount answers carries `X-Content-Type-Options: nosniff`, with no opt-out, because the type always comes from the extension table and never from the bytes; a `--static-header` naming it replaces the value",
+      "status": "verified",
+      "evidence": "`test_static.mojo:test_nosniff_on_every_answer` (every PR) \u2014 a 200, a 304, a 206, a 416, a 405 and a refusal's 404, with nothing configured; on the wire in `Smoke test the serve CLI`"
+    },
+    {
       "id": "J8",
       "section": "J",
       "category": "J. Static file serving",
