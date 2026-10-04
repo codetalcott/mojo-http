@@ -546,9 +546,12 @@ def _record_response(mut st: LoopState, slot: Int):
         return
     # Phase 4e: record completed response metrics
     if st.config.enable_metrics:
+        # Head and body as sent: the encoded buffer, then any file body,
+        # which goes out by sendfile and was once left out of the count.
         st.metrics.record_response(
             st.provision_pool.provisions[slot].response_status,
-            st.slot_send_offset[slot],
+            st.slot_send_offset[slot]
+            + st.provision_pool.provisions[slot].response_file_len,
         )
         # The latency sample, from the same clock the access log reads below.
         # Only when a header stamp exists: the keep-alive reset zeroes it, so
@@ -567,7 +570,7 @@ def _record_response(mut st: LoopState, slot: Int):
             st.provision_pool.provisions[slot].log_path,
             st.provision_pool.provisions[slot].response_status,
             elapsed_us,
-            st.slot_send_offset[slot],
+            st.provision_pool.provisions[slot].response_body_len,
             st.provision_pool.provisions[slot].peer_host,
         )
     st.provision_pool.provisions[slot].response_status = 0

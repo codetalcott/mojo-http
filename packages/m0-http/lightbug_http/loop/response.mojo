@@ -400,6 +400,15 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     var file_off = response.body_fd_offset
     var file_len = response.body_fd_len
     response.body_fd = -1
+    # The body as it goes out, for the access log's `bytes` and the metrics'
+    # bytes sent: read here because `encode_into` consumes the response, and
+    # the file part never enters `slot_response`. A HEAD's and a bodiless
+    # status's bodies were dropped above, so they count none.
+    var file_body = file_len if file_fd >= 0 else 0
+    st.provision_pool.provisions[slot].response_body_len = (
+        len(response.body_raw) + file_body
+    )
+    st.provision_pool.provisions[slot].response_file_len = file_body
 
     var scratch = Bytes()
     swap(st.provision_pool.provisions[slot].encoding_buffer, scratch)

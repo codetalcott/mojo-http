@@ -174,6 +174,17 @@ struct ConnectionProvision(Movable):
     var response_status: Int
     """HTTP status code of the last response (for metrics); 0 if not yet set."""
 
+    var response_body_len: Int
+    """The body bytes that response carries as it goes out -- in memory and
+    from `body_fd` alike, none for a HEAD or a bodiless status: the access
+    log's `bytes`. Written beside `response_status`, and read only while it
+    is set."""
+
+    var response_file_len: Int
+    """The part of `response_body_len` sent from `body_fd`, which the
+    encoded buffer (`slot_send_offset`) never holds: what the metrics' bytes
+    sent add to it."""
+
     var encoding_buffer: Bytes
     """Pre-allocated buffer for response encoding; swapped into slot_response to avoid per-request allocation."""
 
@@ -219,6 +230,8 @@ struct ConnectionProvision(Movable):
         self.log_method = String()
         self.log_path = String()
         self.response_status = 0
+        self.response_body_len = 0
+        self.response_file_len = 0
         self.encoding_buffer = Bytes()
         self.body_fd = -1
         self.body_fd_offset = 0
@@ -305,6 +318,8 @@ struct ConnectionProvision(Movable):
         self.log_method = String()
         self.log_path = String()
         self.response_status = 0
+        self.response_body_len = 0
+        self.response_file_len = 0
         # encoding_buffer is NOT cleared here — it's already been moved out and replaced.
 
 
