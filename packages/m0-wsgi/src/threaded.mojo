@@ -168,12 +168,13 @@ def asgi_free_threading_refusal(report: FreeThreadingReport) -> String:
     return String(
         "an ASGI application runs on the asyncio executor, and the"
         " executor cannot run on a free-threaded CPython build (running "
-        + report.version + "t): Mojo 1.0's Python bindings lay out PyObject"
+        + report.version + "t): Mojo's Python bindings lay out PyObject"
         " for the GIL build, so building the executor's Python type"
         " segfaults (" + PYOBJECT_LAYOUT_ISSUE + "). Run this application"
-        " on a GIL-enabled CPython (3.10-3.14 without the t suffix), with"
-        " --workers for concurrency; there is no free-threaded ASGI mode on"
-        " this toolchain."
+        " on a GIL-enabled CPython (3.10-3.14 without the t suffix; with uv,"
+        " put 3.13 in .python-version, since uv may pick a free-threaded"
+        " build), with --workers for concurrency; there is no free-threaded"
+        " ASGI mode on this toolchain."
     )
 
 
