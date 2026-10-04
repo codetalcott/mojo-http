@@ -57,6 +57,8 @@ def test_asgi_refusal_names_the_build_the_issue_and_the_fix() raises:
     assert_true(msg.find("modular/modular#5726") >= 0, msg)
     assert_true(msg.find("GIL-enabled CPython") >= 0, msg)
     assert_true(msg.find("--workers") >= 0, msg)
+    # Where an agent meets it: uv picked 3.14t for a project with no pin.
+    assert_true(msg.find("put 3.13 in .python-version") >= 0, msg)
 
 
 def test_exit_code_is_sysexits_ex_config() raises:

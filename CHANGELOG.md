@@ -22,6 +22,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   says only "Payload Too Large", and the application never sees the
   request, so until now nothing in any log said which setting refused an
   upload.
+- **`docs/RUNNING.md`'s "Coming from uvicorn"**: the behaviour a uvicorn
+  command line does not show, one line each, linking to where each is
+  described: buffered and capped bodies, the body timer, the longer
+  keep-alive, the access log off and in JSON, forwarded headers not
+  applied, exit 1 for a failed lifespan startup, and ASGI refused on a
+  free-threaded CPython. That refusal now says how to pin a GIL build
+  with uv (`3.13` in `.python-version`); uv had picked 3.14t for
+  franchise-assessment.
 
 ### Changed
 

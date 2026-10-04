@@ -213,6 +213,35 @@ default port, and m0serve prints a line at startup naming the value it
 ignored and what it used instead. `--doctor` prints the values the server
 would use.
 
+## Coming from uvicorn
+
+What a uvicorn command line does not show. `m0serve --doctor APP` prints
+the values this server would use, and `m0serve --help` names every flag.
+
+- **A request body is buffered, and capped.** It arrives whole before the
+  application runs, and one over `--max-body` (`M0_MAX_BODY`) is answered
+  `413` without reaching it. uvicorn streams bodies and caps none.
+  [Limits and lifecycle](#limits-and-lifecycle).
+- **A body that stops arriving is refused** after `--body-timeout`
+  (`M0_BODY_TIMEOUT`). uvicorn has no body timer.
+- **An idle keep-alive connection is kept longer** than uvicorn's
+  `--timeout-keep-alive` keeps it: `--idle-timeout`.
+- **The access log is off until `--access-log`** (`M0_ACCESS_LOG`), and is
+  JSON lines ([its fields](#observability)). uvicorn logs requests by
+  default, as text.
+- **Forwarded headers are not applied.** The client is the socket's peer
+  and the scheme `http`; `X-Forwarded-For` and `X-Forwarded-Proto` reach
+  the application as ordinary headers, for it to trust (Django's
+  `SECURE_PROXY_SSL_HEADER`, Werkzeug's `ProxyFix`, or uvicorn's own
+  `ProxyHeadersMiddleware` around an ASGI application). uvicorn applies
+  them for the proxies `--forwarded-allow-ips` names.
+- **A lifespan startup that fails exits 1**, where uvicorn exits 3
+  ([Install and start](#install-and-start)).
+- **ASGI needs a GIL-enabled CPython.** A free-threaded build, which uv may
+  pick for a project with no pin, is refused with exit 78
+  ([why](ROADMAP.md#known-issues)). With uv, put `3.13` in
+  `.python-version`; the refusal says so too.
+
 ## Platforms
 
 macOS arm64 (13+), Linux x86_64 and aarch64 (glibc; the exact floor is in
