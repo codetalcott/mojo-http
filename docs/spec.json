@@ -818,6 +818,22 @@
       "evidence": "`test_health.mojo:test_health_register_unhealthy` (every PR)"
     },
     {
+      "id": "F20",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The access line is written straight into one buffer and is byte for byte the record `format_json` renders for the same fields",
+      "status": "verified",
+      "evidence": "`test_log.mojo:test_format_access_is_format_json_byte_for_byte` (every PR) \u2014 a plain GET, a HEAD with a quote and a backslash in its path and no address, and a 413 from an IPv6 peer. The line skips `LogEntry`, whose lists and per-number strings were most of its cost: about 170 ns a line against about 680, measured on an M-series Mac with the wall-clock read included"
+    },
+    {
+      "id": "F21",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The access record's `status`, `dur_us` and `bytes` are JSON numbers, and its `time` is the wall clock: RFC 3339 in UTC with milliseconds, read once per line with the second cached per loop",
+      "status": "verified",
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--access-log`: the three fields parse as integers, `ts` is gone, and `time` matches the format and lies within a minute of the runner's clock. Numbers were strings, so `jq 'select(.status >= 500)'` matched every line, and `ts` was a monotonic count from an arbitrary origin; the calendar arithmetic against Python's `datetime` at the epoch, leap days and 9999: `test_log.mojo:test_rfc3339_second_is_the_civil_date_in_utc`"
+    },
+    {
       "id": "F8",
       "section": "F",
       "category": "F. Observability",

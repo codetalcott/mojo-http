@@ -3968,26 +3968,41 @@ rec=$(grep '"msg":"access"' "$SMOKE_DIR/serve-access.log" | tail -1)
 [ -n "$rec" ] || fail '--access-log produced no access record'
 echo "$rec" | grep -q '"path":"/method"' || fail "the access record names no path: $rec"
 echo "$rec" | grep -q '"method":"GET"' || fail "the access record names no method: $rec"
-echo "$rec" | grep -q '"status":"200"' || fail "the access record carries no status: $rec"
+echo "$rec" | grep -q '"status":200,' || fail "the access record carries no status, as a number: $rec"
 python3 -c "import json,sys; json.loads(sys.argv[1])" "$rec" || fail "the access record is not valid JSON: $rec"
+# Its numbers are JSON numbers, and its time the wall clock (F20): RFC 3339
+# in UTC with milliseconds, within a minute of this machine's. Both were
+# strings, `ts` a monotonic count from an arbitrary origin.
+python3 - "$rec" <<'PYREC' || fail "the access record's numbers or time are wrong: $rec"
+import json, re, sys, time
+from datetime import datetime, timezone
+r = json.loads(sys.argv[1])
+for k in ("status", "dur_us", "bytes"):
+    assert type(r[k]) is int, (k, r[k])
+assert "ts" not in r, r
+assert re.fullmatch("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z", r["time"]), r["time"]
+t = datetime.strptime(r["time"], "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=timezone.utc).timestamp()
+assert abs(t - time.time()) < 60, (r["time"], time.time())
+PYREC
 # `bytes` is the body as sent (F2): the head never, a file body sent with
 # sendfile always, a HEAD's nothing. It was the encoded buffer -- head plus
 # an in-memory body, none of a file -- so a 64-byte body logged 366 and a
 # static file about its own head's size.
-echo "$rec" | grep -q '"bytes":"'"$body_len"'"' || fail "an in-memory body of $body_len bytes is not the record's bytes: $rec"
+echo "$rec" | grep -q '"bytes":'"$body_len"'[,}]' || fail "an in-memory body of $body_len bytes is not the record's bytes: $rec"
 curl -s -o /dev/null -I http://127.0.0.1:$port/method
 file_len=$(wc -c < apps/django_realtime/static/app.css | tr -d ' ')
 curl -s -o /dev/null http://127.0.0.1:$port/assets/app.css
 sleep 1
 rec=$(grep '"method":"HEAD"' "$SMOKE_DIR/serve-access.log" | tail -1)
-echo "$rec" | grep -q '"bytes":"0"' || fail "a HEAD's record counts a body: $rec"
+echo "$rec" | grep -q '"bytes":0[,}]' || fail "a HEAD's record counts a body: $rec"
 rec=$(grep '"path":"/assets/app.css"' "$SMOKE_DIR/serve-access.log" | tail -1)
-echo "$rec" | grep -q '"bytes":"'"$file_len"'"' || fail "a static file of $file_len bytes is not the record's bytes: $rec"
+echo "$rec" | grep -q '"bytes":'"$file_len"'[,}]' || fail "a static file of $file_len bytes is not the record's bytes: $rec"
 echo "smoke-serve OK"
 python3 scripts/emit.py --covers C1 --task smoke-serve
 python3 scripts/emit.py --covers C3 --task smoke-serve
 python3 scripts/emit.py --covers D6 --task smoke-serve
 python3 scripts/emit.py --covers F2 --task smoke-serve
+python3 scripts/emit.py --covers F21 --task smoke-serve
 python3 scripts/emit.py --covers F3 --task smoke-serve
 python3 scripts/emit.py --covers F4 --task smoke-serve
 python3 scripts/emit.py --covers J7 --task smoke-serve

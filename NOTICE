@@ -1226,6 +1226,12 @@ lightbug_http
         nothing), with three probes. A client that vanished from a stream
         with nothing in flight had held its slot for good.
 
+      - loop/state.mojo (2026-10-04): `LoopState.log_clock`, the access
+        log's wall clock (`m0_http.log.LogClock`), its second cached per
+        loop beside `date_cache`, and passed to `log_access`, which now
+        writes `time` as RFC 3339 UTC with milliseconds and its numbers as
+        JSON numbers.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

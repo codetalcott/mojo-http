@@ -8,6 +8,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The access log's numbers are JSON numbers, and its time is the wall
+  clock** (SPEC F20, F21). `status`, `dur_us` and `bytes` were strings, so
+  `jq 'select(.status >= 500)'` matched every line: jq sorts strings after
+  numbers. `ts`, a monotonic millisecond count from an arbitrary origin
+  that ordered one process's lines and said nothing else, is replaced by
+  `time`: RFC 3339 in UTC with milliseconds,
+  `"time":"2026-10-04T17:02:51.789Z"`, which matches a line against an
+  application's own log. A record now reads
+  `{"time":…,"level":"INFO","msg":"access","method":"GET","path":"/","status":200,"dur_us":1234,"bytes":64,"remote_addr":"127.0.0.1"}`,
+  and `docs/RUNNING.md` lists the fields. A consumer that parsed the
+  quoted numbers, or read `ts`, needs a change. Nothing in this
+  repository's own consumers or in the applications known to run on
+  m0serve parsed either. The line also got cheaper. It is written on the
+  event loop for every response, now straight into one buffer with the
+  second's prefix cached per loop. That is about 170 ns a line, the
+  wall-clock read included, against about 680 ns before, measured with
+  the line built and not printed.
+
 ### Fixed
 
 - **An ASGI application whose lifespan startup fails no longer leaves a
