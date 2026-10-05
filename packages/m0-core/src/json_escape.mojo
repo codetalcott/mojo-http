@@ -3,16 +3,37 @@ JSON String Escape — SIMD-accelerated JSON string escaping.
 
 Generic escape logic with no dependency on any serialization format.
 
-Uses 64-byte SIMD scan for bulk safe-range detection + memcpy, falling
-back to scalar scan for the tail.
+Uses 64-byte SIMD scan for bulk safe-range detection + memcpy, then an
+8-byte SWAR scan for the tail and a scalar scan for its last few bytes.
 
 `escape_json_string` allocates and returns a String;
 `escape_json_string_into` appends to a buffer the caller owns, which is
 what anything assembling several escaped values into one document wants.
 """
 
+from std.bit import count_trailing_zeros
 from std.memory import unsafe_memcpy
-from .hashing import hex_nibble
+from .hashing import _load_u64, hex_nibble
+
+
+comptime _ONES: UInt64 = 0x0101010101010101
+comptime _HIGHS: UInt64 = 0x8080808080808080
+
+
+def _swar_escape_mask(w: UInt64) -> UInt64:
+    """High bit of each byte of `w` that needs JSON escape, exact up to and
+    including the lowest flagged byte.
+
+    The has-zero / has-less-than tricks: a borrow can only flag a byte above
+    one that is truly flagged, so the lowest set bit is always right, and
+    that is the only bit the caller reads.
+    """
+    var q = w ^ (_ONES * 0x22)
+    var b = w ^ (_ONES * 0x5C)
+    var is_quote = (q - _ONES) & ~q
+    var is_bslash = (b - _ONES) & ~b
+    var is_ctrl = (w - _ONES * 0x20) & ~w
+    return (is_quote | is_bslash | is_ctrl) & _HIGHS
 
 
 def simd_find_escape_char(ptr: Pointer[UInt8, _], length: Int) -> Int:
@@ -73,13 +94,20 @@ def escape_json_string_into(mut out: List[UInt8], s: String):
         if remaining >= 64:
             found = simd_find_escape_char(ptr.unsafe_offset(pos), remaining)
 
-        if found == -1:
-            var scan_start = pos + ((remaining // 64) * 64) if remaining >= 64 else pos
-            for j in range(scan_start, slen):
-                var b = bytes[j]
-                if b == 0x22 or b == 0x5C or b < 0x20:
-                    found = j - pos
+        if found == -1 and remaining % 64 != 0:
+            var j = slen - remaining % 64
+            while j + 8 <= slen:
+                var m = _swar_escape_mask(_load_u64(ptr, j))
+                if m != 0:
+                    found = j + Int(count_trailing_zeros(m) >> 3) - pos
                     break
+                j += 8
+            if found == -1:
+                for k in range(j, slen):
+                    var b = bytes[k]
+                    if b == 0x22 or b == 0x5C or b < 0x20:
+                        found = k - pos
+                        break
 
         if found == -1:
             var count = slen - pos
