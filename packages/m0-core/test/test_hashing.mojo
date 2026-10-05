@@ -53,6 +53,11 @@ def test_wyhash64_pinned_a() raises:
     assert_equal(wyhash64_string("a"), UInt64(0x3CF845EB0C3F00C0))
 
 
+def test_wyhash64_pinned_20byte() raises:
+    """Pinned: wyhash64 on a 20-byte input — two 8-byte words then a 4-byte tail."""
+    assert_equal(wyhash64_string("etag-for-a-20B-input"), UInt64(0xEACF2E81790B23C6))
+
+
 def test_wyhash64_pinned_64byte() raises:
     """Pinned: wyhash64 on a 64-byte input crossing the 32-byte block boundary."""
     var s = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"

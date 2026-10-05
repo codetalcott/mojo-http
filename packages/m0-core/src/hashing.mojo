@@ -79,26 +79,15 @@ comptime _SECRET3: UInt64 = 0x589965CC75374CC3
 def _wymix(a: UInt64, b: UInt64) -> UInt64:
     """wyhash-style mixing: fold the high and low 64 bits of the 128-bit product `a * b`.
 
-    Mojo does not currently expose UInt128, so this assembles the 128-bit
-    product schoolbook-style from four 32x32 -> 64 partial products.
+    One widening multiply: `UInt128` is in the standard library at the 1.1.0
+    pin, and the stdlib's own AHash folds its product the same way. This
+    replaced four 32x32 partial products on 2026-10-04, which gave the same
+    value for every input (every length 0..300, 20 million random pairs and
+    the edge values) at half the throughput. The pinned vectors in
+    `test_hashing.mojo` hold the output, since every served ETag is one.
     """
-    var a_lo: UInt64 = a & 0xFFFFFFFF
-    var a_hi: UInt64 = a >> 32
-    var b_lo: UInt64 = b & 0xFFFFFFFF
-    var b_hi: UInt64 = b >> 32
-
-    var ll = a_lo * b_lo
-    var lh = a_lo * b_hi
-    var hl = a_hi * b_lo
-    var hh = a_hi * b_hi
-
-    # mid = lh + hl, propagating carry into the high half
-    var mid_lo = (lh & 0xFFFFFFFF) + (hl & 0xFFFFFFFF) + (ll >> 32)
-    var mid_hi = (lh >> 32) + (hl >> 32) + (mid_lo >> 32)
-
-    var lo = (ll & 0xFFFFFFFF) | (mid_lo << 32)
-    var hi = hh + mid_hi
-    return lo ^ hi
+    var product = UInt128(a) * UInt128(b)
+    return product.cast[DType.uint64]() ^ (product >> 64).cast[DType.uint64]()
 
 
 def _load_u64(ptr: Pointer[UInt8, _], offset: Int) -> UInt64:
