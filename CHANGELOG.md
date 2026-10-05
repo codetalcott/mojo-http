@@ -61,6 +61,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **`wyhash64` multiplies once** (the ETag hash in `m0-core`). Its mixer
+  assembled the 128-bit product from four 32x32 partial products behind a
+  note that Mojo exposed no `UInt128`; it does at the 1.1.0 pin, and the
+  stdlib's own AHash folds a `UInt128` product the same way. The one
+  widening multiply gives the same value for every input — the pinned
+  vectors, every length to 300 and 20 million random pairs agree, so no
+  served ETag moves — at about twice the throughput at every size, measured
+  on an M-series Mac: 4.5 to 7.3 GB/s on 16 bytes, 11.6 to 22 GB/s on a
+  megabyte. A 20-byte vector joins the pinned set, covering the word path
+  between the short tail and the 32-byte block. `std.hashlib`'s AHash was
+  measured beside it and is the slower of the two above 64 bytes; the
+  ETag hash stays in `m0-core`, where its outputs are this repository's.
+
 - **An SVG from a static mount is sandboxed** (SPEC J14). Its 200, 206
   and 304 carry `Content-Security-Policy: default-src 'none';
   style-src 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:;

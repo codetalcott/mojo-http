@@ -9,9 +9,10 @@ dependency so the wire format stays usable on its own.
 """
 
 # Import from the top-level package, not `lightbug_http.http`. Reaching
-# straight into the subpackage leaves the parent uninitialised, and
-# `lightbug_http/uri.mojo`'s bare `from hashlib.hash import ...` then fails to
-# resolve for anything consuming this module through its .mojoc.
+# straight into the subpackage leaves the parent uninitialised: a bare
+# `from hashlib.hash import ...` that `lightbug_http/uri.mojo` once carried
+# (gone since) then failed to resolve for anything consuming this module
+# through its .mojoc.
 from lightbug_http import HTTPRequest
 
 
