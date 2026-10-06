@@ -8,6 +8,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The benchmark page's ASGI per-core verdict is corrected.** It said
+  uvloop leads the executor per core on macOS and that Linux answers at or
+  above parity. The macOS figure had crossed 1.0 at the 1.10.0 re-record,
+  and both a container and a rented x86-64 box put the default executor a
+  little behind uvloop per core (0.91x, 0.94x). The one-thread loop
+  (`M0_INVERTED=1`) leads uvloop per core everywhere measured, 1.27–1.42x,
+  and at 16 connections it also serves more than the default on Linux
+  ([the record](docs/notes/asgi-per-core.md)).
+
 ## [1.11.0] — 2026-10-06
 
 What an application moved from uvicorn met, fixed. franchise-assessment's

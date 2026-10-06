@@ -191,7 +191,6 @@ def compute_quantities(layer_medians, asgi_medians, isolation, hold_ms):
         "asgi-vs-uvicorn": am0["rps"] / auv["rps"],
         "asgi-per-core-vs-uvicorn": am0["rps_per_core"] / auv["rps_per_core"],
         "asgi-vs-uvloop": am0["rps"] / auvl["rps"],
-        "uvloop-per-core-lead": auvl["rps_per_core"] / am0["rps_per_core"],
         "asgi-per-core-vs-uvloop": am0["rps_per_core"] / auvl["rps_per_core"],
         # The one-thread rows' distance in throughput, as a percentage of
         # the comparator's.

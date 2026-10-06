@@ -1,0 +1,25 @@
+# python3 selftime.py sample-inv.txt 18 (macOS sample, 10 s under wrk -t2 -c16, apps/asgi_bare, M0_INVERTED=1)
+=== Thread_25981731   DispatchQueue_1: com.apple.main-thread  (s  total=7469
+  by library: libsystem_kernel.dylib=39.6%, libpython3.13.dylib=36.2%, m0serve=13.1%, libAsyncRTRuntimeGlobals.dylib=3.5%, loop.cpython-313-darwin.so=3.5%, libdyld.dylib=1.5%, libsystem_platform.dylib=1.3%, libKGENCompilerRTShared.dylib=0.5%
+   16.0%  _PyEval_EvalFrameDefault  [libpython3.13.dylib]
+   13.3%  kevent  [libsystem_kernel.dylib]
+   13.2%  __recvfrom  [libsystem_kernel.dylib]
+   11.9%  __sendto  [libsystem_kernel.dylib]
+    3.2%  ::AnyType]($0,$1,lightbug_http::loop::state::LoopState,::SIMD[DType.in  [m0serve]
+    1.6%  _PyObject_Free  [libpython3.13.dylib]
+    1.5%  _tlv_get_addr  [libdyld.dylib]
+    1.4%  $4]](lightbug_http::header::Headers,::Span[$0, $1, ::SIMD[DType.uint8,  [m0serve]
+    1.2%  ???  [libAsyncRTRuntimeGlobals.dylib]
+    1.0%  mach_absolute_time  [libsystem_kernel.dylib]
+    1.0%  _PyObject_Malloc  [libpython3.13.dylib]
+    0.8%  list_dealloc  [libpython3.13.dylib]
+    0.8%  __pyx_f_6uvloop_4loop_6Handle__run  [loop.cpython-313-darwin.so]
+    0.8%  $1]](::Span[$0, $1, ::SIMD[DType.uint8, 1], $2, AddressSpace.GENERIC],  [m0serve]
+    0.7%  subtype_dealloc  [libpython3.13.dylib]
+    0.7%  std::collections::optional::Optional::take(::Optional[$0]){conforms_to  [m0serve]
+    0.7%  dict_get  [libpython3.13.dylib]
+    0.7%  PackedCache<35>::TryGet(unsigned long, unsigned int*) const  [libAsyncRTRuntimeGlobals.dylib]
+=== Thread_25981735: 🔥 Thread0  total=7469
+=== Thread_25981736: 🔥 Thread1  total=7469
+=== Thread_25981737: 🔥 Thread2  total=7469
+=== Thread_25981738: 🔥 Thread3  total=7469
