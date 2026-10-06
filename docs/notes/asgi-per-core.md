@@ -108,8 +108,8 @@ callback inside asyncio.
   - The channel is the densest ordering seam in the tree:
     [loop-inversion.md](loop-inversion.md) records a job that overtook a
     slot's disconnect tag on it. Anything that leaves it has to keep its
-    order against everything that stays. Nothing here is built; it would
-    start as an experiment patch measured against this note's numbers.
+    order against everything that stays. The completion half was tried
+    the same day as an experiment patch and measured flat (below).
 - **The inversion as a default** stays declined, for the reasons recorded
   on 2026-09-08: they are about switching execution models on detection,
   and the topologies it cannot serve, not about these numbers.
@@ -117,3 +117,52 @@ callback inside asyncio.
   answers at or above parity. The macOS figure had already crossed 1.0,
   and two Linux environments now answer below it. The row is corrected to
   this note.
+
+## The completion half, tried the same day
+
+`exec-ring-experiment.patch` beside the data is the experiment, behind
+`M0_EXEC_RING`:
+
+- the executor's `complete_many` pushes its slots onto the completion
+  ring the pool already uses, reads the loop's parked flag once, and pokes
+  only a parked loop (the pool's `complete` protocol for N slots);
+- the drain reads the channel before the ring (the next section says why).
+
+It was measured with a fresh server for every arm, the arms alternated
+every round, CPU from the process's own time, six rounds against `M0_EXEC_RING=0`
+and uvicorn+uvloop. Paired within each round:
+
+| environment | per core, on / off | requests per second, on / off |
+|---|---|---|
+| macOS | 0.97–1.09, median 1.00 | 0.90–1.07; five of six rounds 5–10 % lower, p50 about 10 µs higher |
+| container | 0.99–1.04, median 1.00 | 0.98–1.03, median 1.02 |
+
+**Flat, so not built.** The saving exists only for a completion that finds
+the loop busy. One that finds it parked still pays a poke. The pool's ring
+paid because it took both directions off the socket, the jobs as well as
+the completions. The executor's submit direction cannot follow: the
+executor parks in asyncio's selector, which only an fd wakes, and neither
+asyncio nor uvloop offers the check-before-parking that the ring's
+protocol needs. The macOS throughput loss was not traced further.
+
+## A window found on the way
+
+`drain_completions_into` reads the completion ring, then the channel. A
+`--blocking-threads` stream completes its head onto the ring
+(`blocking_pool.mojo`: begin frame, then `complete(slot)`, then the body)
+and sends an abort on the channel. If that push and that send both land
+between the drain's two reads, the drain takes the abort without its head.
+The loop drops an abort for a slot that is not streaming, takes the head
+at the next drain, and the stream stays open, kept alive by its heartbeat.
+
+A pool thread sends such an abort before the loop has seen the head only
+when the chunk channel refuses the body's first frames: once credit has
+come back, the head was taken. Reading the channel first closes the
+window, because anything on the channel was pushed to the ring before it.
+That is the experiment's second edit.
+
+Fixed the same day on that argument (#563). No test can place a push
+between two reads inside one call, so `test_offload.mojo` pins the
+channel-first order instead, and fails when the drain is put back
+ring-first.
+

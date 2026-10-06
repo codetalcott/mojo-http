@@ -69,7 +69,7 @@ Everything else is opt-in:
 | `--mount PREFIX=hold` | a stream held against a grant the application signed | needs `--realtime` and `M0_GRANT_KEY`; the application renders `m0serve.grant.stream_url(PREFIX, channel, session=...)` into an `EventSource` and the mount holds on a Mojo pool thread, never asking Python; `M0_GRANT_KEY_PREV` rotates the key, `M0_GRANT_COOKIE` names the session cookie (`sessionid`); [the note](notes/grant-verified-holds.md) |
 | `--threads N` | free-threaded CPython (3.13t+), N loops in one process | WSGI only on this toolchain: an ASGI app is refused with exit 78 ([why](ROADMAP.md#known-issues)) |
 | `--reload [--reload-dir DIR]` | development | re-forks workers when a watched `.py` changes |
-| `M0_INVERTED=1` | an ASGI app on **one** usable CPU | environment variable, not a flag: the Mojo event loop runs inside the asyncio loop on one thread instead of beside it on two. Unmounted, pool-free ASGI only. [Measured](notes/inversion-on-a-constrained-box.md): 1.14x the default at saturation on one CPU, and slower than it from two cores up |
+| `M0_INVERTED=1` | an ASGI app on **one** usable CPU | environment variable, not a flag: the Mojo event loop runs inside the asyncio loop on one thread instead of beside it on two. Unmounted, pool-free ASGI without `--realtime` only. [Measured](notes/inversion-on-a-constrained-box.md): 1.14x the default at saturation on one CPU, and slower than it from two cores up. At 16 connections it is the most work per core in every environment measured, and on Linux the most requests too ([the record](notes/asgi-per-core.md)) |
 
 The modes compose the way you would hope: `--workers` multiplies whatever
 each worker runs, `--realtime` sits beside a pool or a mount, and a mounted

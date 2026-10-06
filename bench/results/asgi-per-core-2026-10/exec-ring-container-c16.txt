@@ -1,0 +1,23 @@
+{"name": "ring off", "rps": 105403.67, "p50_us": 151.0, "p99_us": 250.0, "cores": 1.306, "rps_per_core": 80729, "round": 1}
+{"name": "ring on", "rps": 108988.83, "p50_us": 145.0, "p99_us": 195.0, "cores": 1.337, "rps_per_core": 81536, "round": 1}
+{"name": "uvicorn uvloop", "rps": 86662.81, "p50_us": 178.0, "p99_us": 321.0, "cores": 0.999, "rps_per_core": 86790, "round": 1}
+{"name": "ring off", "rps": 105785.06, "p50_us": 152.0, "p99_us": 273.0, "cores": 1.296, "rps_per_core": 81630, "round": 2}
+{"name": "ring on", "rps": 108690.17, "p50_us": 145.0, "p99_us": 224.0, "cores": 1.331, "rps_per_core": 81691, "round": 2}
+{"name": "uvicorn uvloop", "rps": 86937.41, "p50_us": 178.0, "p99_us": 286.0, "cores": 0.999, "rps_per_core": 87067, "round": 2}
+{"name": "ring off", "rps": 110027.94, "p50_us": 143.0, "p99_us": 241.0, "cores": 1.335, "rps_per_core": 82390, "round": 3}
+{"name": "ring on", "rps": 108119.7, "p50_us": 145.0, "p99_us": 243.0, "cores": 1.331, "rps_per_core": 81262, "round": 3}
+{"name": "uvicorn uvloop", "rps": 88368.33, "p50_us": 175.0, "p99_us": 258.0, "cores": 1.0, "rps_per_core": 88392, "round": 3}
+{"name": "ring off", "rps": 107628.54, "p50_us": 145.0, "p99_us": 315.0, "cores": 1.307, "rps_per_core": 82378, "round": 4}
+{"name": "ring on", "rps": 110540.71, "p50_us": 143.0, "p99_us": 197.0, "cores": 1.34, "rps_per_core": 82477, "round": 4}
+{"name": "uvicorn uvloop", "rps": 88418.3, "p50_us": 175.0, "p99_us": 280.0, "cores": 0.997, "rps_per_core": 88674, "round": 4}
+{"name": "ring off", "rps": 106828.21, "p50_us": 150.0, "p99_us": 227.0, "cores": 1.308, "rps_per_core": 81659, "round": 5}
+{"name": "ring on", "rps": 106965.89, "p50_us": 146.0, "p99_us": 298.0, "cores": 1.32, "rps_per_core": 81005, "round": 5}
+{"name": "uvicorn uvloop", "rps": 88063.1, "p50_us": 176.0, "p99_us": 270.0, "cores": 0.999, "rps_per_core": 88193, "round": 5}
+{"name": "ring off", "rps": 108784.82, "p50_us": 148.0, "p99_us": 212.0, "cores": 1.319, "rps_per_core": 82459, "round": 6}
+{"name": "ring on", "rps": 111177.88, "p50_us": 135.0, "p99_us": 283.0, "cores": 1.292, "rps_per_core": 86035, "round": 6}
+{"name": "uvicorn uvloop", "rps": 87786.2, "p50_us": 176.0, "p99_us": 276.0, "cores": 0.998, "rps_per_core": 87919, "round": 6}
+ring off         rps    107228  cores 1.31  rps/core    82018  spread 4.3%
+ring on          rps    108840  cores 1.33  rps/core    81614  spread 3.9%
+uvicorn uvloop   rps     87925  cores 1.00  rps/core    88056  spread 2.0%
+paired on/off per-core: [1.01, 1.001, 0.986, 1.001, 0.992, 1.043]
+paired on/off rps:      [1.034, 1.027, 0.983, 1.027, 1.001, 1.022]
