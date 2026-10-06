@@ -544,7 +544,11 @@ def test_single_and_batched_completions_both_reach_the_drain() raises:
     """The blocking pool's one-slot `complete` (the ring) and the executor's
     batch (the channel) are two producers with no order between them — they
     name different slots — and one drain delivers every slot of both, the
-    ring's in push order and the channel's in datagram order."""
+    channel's in datagram order and THEN the ring's in push order. The
+    channel goes first on purpose: a stream's abort rides it and its head
+    rides the ring, pushed before the abort was sent, so reading the channel
+    first is what guarantees a drain never holds an abort without its head
+    (`drain_completions_into`'s docstring). This pins that order."""
     var pool = OffloadPool(16)
     pool.complete(2)
     assert_true(pool.complete_many([3, 4]))
@@ -552,10 +556,10 @@ def test_single_and_batched_completions_both_reach_the_drain() raises:
     var done = pool.drain_completions()
     assert_equal(len(done), 4)
     if pool.ring_active():
-        assert_equal(done[0], 2)
-        assert_equal(done[1], 9)
-        assert_equal(done[2], 3)
-        assert_equal(done[3], 4)
+        assert_equal(done[0], 3)
+        assert_equal(done[1], 4)
+        assert_equal(done[2], 2)
+        assert_equal(done[3], 9)
     else:
         assert_equal(done[0], 2)
         assert_equal(done[1], 3)

@@ -2081,18 +2081,27 @@ struct OffloadPool(Movable):
     def drain_completions_into(mut self, mut done: List[Int], read_fd: Bool) raises:
         """Every finished slot waiting for the loop, appended to `done`.
 
-        The completion ring first — every pool thread's completions, in
-        publish order — then, with `read_fd`, the channel: executor batches,
-        stream aborts, and wake datagrams (skipped). The channel's
-        registration is edge-triggered, so it is read until EAGAIN — the
-        same contract, and the same reason, as `drain_bus_channel`. A
-        caller that only wants what is in memory (the loop, at the top and
-        bottom of a pass) passes `read_fd=False` and pays no syscall.
+        With `read_fd`, the channel first: executor batches, stream aborts,
+        and wake datagrams (skipped). The channel's registration is
+        edge-triggered, so it is read until EAGAIN — the same contract, and
+        the same reason, as `drain_bus_channel`. Then the completion ring:
+        every pool thread's completions, in publish order. A caller that
+        only wants what is in memory (the loop, at the top and bottom of a
+        pass) passes `read_fd=False` and pays no syscall.
 
-        An abort sent after a completion on the ring is handled after it:
-        the loop takes the ring's list first, and the datagram was sent
-        after the push.
+        The CHANNEL FIRST is load-bearing. A pool thread's stream pushes its
+        head onto the ring and only afterwards sends that stream's abort on
+        the channel, so an abort this drain takes off the channel has its
+        head on the ring by the time the ring is read, and the loop applies
+        a batch's completions before its aborts. Read ring-first, a push and
+        a send that both landed between the two reads delivered the abort
+        without its head: the loop dropped it as an abort for a slot that is
+        not streaming, took the head at the next drain, and the stream stayed
+        open for good, kept alive by its heartbeat
+        (docs/notes/asgi-per-core.md, "A window found on the way").
         """
+        if read_fd:
+            self._drain_channel_into(done)
         if self.ring_enabled:
             var slot = 0
             # Bounded by the ring's capacity so producers pushing at full
@@ -2101,8 +2110,9 @@ struct OffloadPool(Movable):
             while budget > 0 and self.done_ring.pop(slot):
                 done.append(slot)
                 budget -= 1
-        if not read_fd:
-            return
+
+    def _drain_channel_into(mut self, mut done: List[Int]) raises:
+        """`drain_completions_into`'s channel half, read until EAGAIN."""
         # `_drain_buf` is sized for the largest datagram the channel
         # carries — a full completion batch — and not for one completion:
         # a SOCK_DGRAM `recv` into a short buffer silently discards the
