@@ -8,7 +8,34 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.11.0] — 2026-10-06
+
+What an application moved from uvicorn met, fixed. franchise-assessment's
+move onto m0serve found a lifespan startup that failed without a word, an
+access log whose numbers were strings and whose byte count was the
+response head, static files served without the security headers its
+middleware set (and, for some types, as downloads where Starlette
+displayed them), and two limits only a flag could reach. Each is fixed
+here, and `docs/RUNNING.md` says in a few lines what a uvicorn command
+line does not show. The access log's line changes shape (Changed, below);
+the served contract is unchanged; the `m0` wheel ships as `m0 0.7.0`.
+
 ### Added
+
+- **`m0 0.7.0`: this release's framework, for applications built with
+  `m0`.** What changed since `m0 0.6.0` for someone writing an
+  application:
+  - New: `StaticFiles(..., headers=...)` (J11), and `static_headers`,
+    `svg_policy_for` and `SVG_SANDBOX_POLICY` in `m0_http`. Every
+    `StaticFiles` answer carries `X-Content-Type-Options: nosniff` (J12),
+    an SVG carries a sandboxing `Content-Security-Policy` (J14), and the
+    type table follows Python's `mimetypes` (J13).
+  - What an application may have to change: whatever reads its access
+    log (`M0_ACCESS_LOG`), whose numbers are now JSON numbers and whose
+    `ts` is now `time` (F20, F21); and an SVG served by `StaticFiles` that
+    scripts itself, which stops scripting.
+  - Nothing an application built by `m0 0.6.0` must act on otherwise: the
+    templates are unchanged, and `m0 doctor` names no scaffold file.
 
 - **Static files carry their types** (SPEC J13). The table behind
   `--static` and `StaticFiles` knew 19 extensions and sent everything
@@ -143,6 +170,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   second's prefix cached per loop. That is about 170 ns a line, the
   wall-clock read included, against about 680 ns before, measured with
   the line built and not printed.
+
 ### Fixed
 
 - **`--doctor` reports the static mounts as valid JSON**, escaped where
@@ -171,7 +199,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and a `--static` file logged about the size of its own head. It now
   counts the body, a file body included, and nothing for a HEAD or a 304.
   That is what `log_access` named the value all along (`body_size`), and
-  what gunicorn's and Apache's `%b` report. The field stays a string. With
+  what gunicorn's and Apache's `%b` report. With
   `--metrics`, `http_bytes_sent_total` still counts head and body, and now
   includes file bodies, which it also left out.
 
@@ -7472,6 +7500,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.11.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.11.0
 [1.10.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.10.0
 [1.9.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.9.0
 [1.8.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.8.0
