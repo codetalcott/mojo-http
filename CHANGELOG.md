@@ -19,6 +19,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and at 16 connections it also serves more than the default on Linux
   ([the record](docs/notes/asgi-per-core.md)).
 
+### Fixed
+
+- **A `--blocking-threads` stream's abort can no longer be lost beside its
+  head.** The loop read the completion ring and then the completion
+  channel. A pool thread completes a stream's head onto the ring and, when
+  the chunk channel refuses the body, sends that stream's abort on the
+  channel. If the push and the send both landed between the loop's two
+  reads, the loop met the abort with no head, dropped it as an abort for a
+  slot that is not streaming, and then opened the stream, which stayed
+  open, kept alive by its heartbeat. The loop now reads the channel first,
+  so an abort it takes always has its head on the ring
+  ([the record](docs/notes/asgi-per-core.md)). The window is too narrow to
+  reproduce on demand; `test_offload.mojo` pins the new order.
+
 ## [1.11.0] — 2026-10-06
 
 What an application moved from uvicorn met, fixed. franchise-assessment's
