@@ -1,8 +1,8 @@
 # Exercising the server against real applications
 
-**A record. Last run 2026-10-02**, against m0serve 1.8.0 on main at
-`d624ae7`, all four applications, six rows, in the newest section
-below. The full pass it re-runs was **2026-09-01 and
+**A record. Last run 2026-10-06**, against m0serve 1.11.0 on the release
+branch at `3e64f2a`, all four applications, six rows, in the newest
+section below. The full pass it re-runs was **2026-09-01 and
 2026-09-02**, against 0.16.0 (`bin/m0serve` from the tree at `c823198`),
 macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
 below and in the history of this file.
@@ -271,6 +271,59 @@ renews through the view when a grant expires — the browser side of that,
 gate yet. The application layer's own soak was unchanged by it (NOT MET
 then; recorded below on 2026-10-02): this is the server holding for textshelf, not textshelf on `Views`
 and `Fragment`.
+
+## Re-soak — 2026-10-06, against 1.11.0 on the release branch at `3e64f2a`, all four applications
+
+**The staleness rule, ahead of the release.** The 1.8.0 pass is two
+minors behind 1.10.0, the limit, so 1.11.0 would have read it STALE. What
+moved under these applications since: an ASGI application's lifespan
+startup is now waited for before the ready banner, and a failed one exits
+1 (L33), which is the path both ASGI rows start on and the textshelf
+row's restart takes; the loop counts a response's body as sent, file
+bodies included, and `--metrics`, which every row sets, counts file
+bodies with it (F2); and `--max-body`, which the color-separation rows
+set to `64m`, gained an environment form and a first-refusal notice
+beside it. The access log, whose line changed shape (F20, F21), is off
+in every row, as it was before.
+
+The 2026-10-02 checkouts under `/tmp/soak/` had survived and were used
+as they were: transcripts at `00dcb7a`, color-separation at `65c5445`,
+textshelf at `7981657` against its scratch database `textshelf_soak`,
+bakerydemo at `c8f8255`. Every reference capture was re-recorded first,
+and no manifest needed a change. `bin/m0serve` was rebuilt from the
+release branch and reports `m0serve 1.11.0`, and textshelf's venv, which
+imports `m0serve.m0pub`, carries the 1.11.0 wheel. CPython 3.13.6
+(3.12.11 for color-separation and bakerydemo), macOS 27 on an M4. Raw
+driver outputs and the scripts that drove it are in
+`bench/soak/2026-10-06/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 30,159 | 0 | SIGTERM ×2, drains 138 ms max (window 721 ms) | 119.6 → 124.2 MB | 86 → 88 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions, 199 logins | 180 | 15,306 | 0 | SIGTERM ×2, drains 143 ms max (window 2055 ms) | 153.1 → 148.8 MB | 86 → 85 / 13 → 13 |
+| color-separation | WSGI, pool 8, 303 uploads | 120 | 45,643 | 0 | SIGTERM ×1, drains 195 ms max (window 951 ms) | 1.07 → 1.35 GB (finding 6) | 148 → 146 / 20 → 18 |
+| color-separation | ASGI executor vs uvicorn, 246 uploads | 90 | 17,960 | 0 | — | 1.12 → 1.41 GB (finding 6) | 124 → 122 / 28 → 32 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 75,605 | 0 | SIGTERM ×1, drains 37 ms max (window 1011 ms) | 172.3 → 206.8 MB | 98 → 85 / 16 → 17 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 22,221 | 0 | — | 492.1 → 163.7 MB (the startup transient) | 98 → 96 / 13 → 13 |
+
+**206,894 responses verified byte for byte, zero failures.** Each row
+ends with its active connections within one of where they began and
+never above the nine its populations open, free slots mirroring them:
+the last sample is taken with traffic still in flight, as on 2026-10-02.
+One upload of 303 was cut by the WSGI row's restart and counted as
+tolerated, as one of 256 was then.
+
+bakerydemo verified 15,306 against 21,490 in the same 180 s, signed in
+199 times against 311, and its longest restart window was 2,055 ms
+against 1,177. The machine was not quiet: the rows began minutes after a
+stage of sabotage builds, while Spotlight was indexing the new release
+worktree, and another session's `node` process held a core. The row
+asserts bytes rather than rate, so the figure is recorded and not
+explained.
+
+**Nothing was found on the wire,** and nothing moved with the
+applications: the four checkouts are the last pass's, and so is every
+manifest.
 
 ## Re-soak — 2026-10-02, against 1.8.0 on main at `d624ae7`, all four applications
 
@@ -1039,14 +1092,14 @@ Django.
 
 ## The application layer
 
-**Last run 2026-10-02**, against m0-http 1.8.0 — `unotes` at `21673f2`, built by `m0` 0.4.0 as published (framework commit `b1dca5b`), macOS 26 on an M4.
+**Last run 2026-10-06**, against m0-http 1.11.0 — `unotes` at `97b3c1c`, built by the `m0` 0.7.0 wheel cut from the release branch at `3e64f2a`, ahead of its upload, macOS 27 on an M4.
 
 The application is [`unotes`](https://github.com/codetalcott/unotes), a
 reader over a private notes corpus, written outside this repository on the
 documented path: `m0 new` from `m0` 0.1.0 as published, `Views` and
 `Fragment[Htmx]`, a login on `m0_http.login`, the corpus read from SQLite
 through `m0_sqlite`, deployed as an image to Fly.io, and taken through
-three upgrades (0.2.0, 0.3.0, 0.4.0) with `m0 doctor`. Its `SOAK_LOG.md` is
+four upgrades (0.2.0 to 0.5.0) with `m0 doctor`. Its `SOAK_LOG.md` is
 the running record. It was written to exercise the layer, by this
 repository's owner: it is the layer's first application outside `apps/`,
 not an independent adopter, and what it found is rows here already —
@@ -1055,7 +1108,8 @@ at run time (O17, O18, N39, N40), the scaffold's login guidance, and the
 login module and `auth` template (N43–N45).
 
 **The synthetic soak.** `scripts/soak.py` against a local `bin/server` on
-the real corpus, `tools/soak_manifest.json` its manifest. The
+the real corpus, `tools/soak_manifest.json` its manifest, driven by
+`bench/soak/2026-10-06/layer_unotes.sh`. The
 reference is the same binary's answer to each route alone; every response
 under load is compared with it, status, headers and a digest of the body,
 the scan figure and the CSRF token normalised. Six keep-alive bursts over
@@ -1066,21 +1120,25 @@ every 40 s with everything in flight.
 
 | row | seconds | verified byte for byte | failures | restarts | worst drain | RSS | fds, threads |
 |---|---|---|---|---|---|---|---|
-| two workers, forked | 180 | 1,748,962 | 0 | 4, each exit 0 | 3 ms | 17,296 → 17,312 kB | 54 → 55, 2 → 2 |
-| two loops on threads | 90 | 864,732 | 0 | 2, each exit 0 | 38 ms | 23,072 → 23,072 kB | 39 → 37, 7 → 7 |
+| two workers, forked | 180 | 1,409,040 | 0 | 4, each exit 0 | 4 ms | 17,296 → 17,296 kB | 54 → 54, 2 → 2 |
+| two loops on threads | 90 | 814,210 | 0 | 2, each exit 0 | 45 ms | 23,024 → 23,152 kB | 37 → 37, 7 → 7 |
 
-6,484 and 3,238 abandonments in the two rows. A request that met a restart
-and was refused or cut is counted apart and not as a failure (12,375 and
-6,824), within a window of at most 516 ms a restart.
+6,005 and 3,037 abandonments in the two rows. A request that met a restart
+and was refused or cut is counted apart and not as a failure (11,035 and
+6,397), within a window of at most 525 ms a restart. The login population
+stays off (`--bulk 0`): the manifest sets no interval for it, and on
+2026-10-02 it signed in about 170 times a second until the client ran out
+of local ports, every failure `OSError 49` on a connect and no response
+wrong (unotes' SOAK_LOG, finding 15).
 
-A first attempt at each row failed for the client's reason and is recorded
-because a rerun that passes is not an explanation: the driver's login
-population was left on, the manifest sets no interval for it, and about 170
-logins a second used up the client's local ports. Every one of its 232,946
-and 132,239 failures was `OSError 49` on a connect; 668,856 and 338,161
-responses were verified in those runs with none wrong, and the server
-exited 0 on each restart. The rows above are the same runs with that
-population off.
+The application's source is the commit it deployed on `m0` 0.5.0; only
+the pin moved, in a scratch clone, to a wheel built from this release's
+tree. `m0 doctor` read framework 1.11.0 and named the same six scaffold
+files the application has always edited, `m0 test` passed 3 of 3 files
+(16 tests), and `smoke.sh` passed. The 2026-10-02 run, on 0.4.0, verified
+1,748,962 and 864,732 in the same times, with the same zero; this one ran
+beside another session's busy `node` process, and the rows assert bytes,
+not rate.
 
 **The deployed instance**, `unotes.fly.dev` on a `shared-cpu-1x`, on
 `m0` 0.4.0 since 2026-09-30. Signed in on 2026-10-02: the list, a note and
@@ -1099,7 +1157,8 @@ phone that sleeps and reconnects, were taken on the deployed instance on
 2026-09-24 with the phone emulated (the application's log, "the real use
 the log owed").
 
-**What this does not show.** Traffic from anyone but its owner, an
+**What this does not show.** The framework as published: this run's is
+the release branch's, in a wheel not yet on the index. Traffic from anyone but its owner, an
 application with writes (unotes reads), a stream, or a second author's
 habits. The layer's write path is gated by `apps/fragment_notes`,
 `apps/datastar_todo` and `apps/table_notes` inside the tree and has no
