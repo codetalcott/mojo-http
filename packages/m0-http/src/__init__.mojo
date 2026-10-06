@@ -60,6 +60,7 @@ from .sse import (
     sse_data_payload,
     NO_EVENT_ID,
     SSERegistry,
+    ReplayJournal,
     sse_response,
     SSE_CONTENT_TYPE,
 )

@@ -179,11 +179,12 @@ data: hello from curl
 SSE delivery verified (event id 1)
 ```
 
-Every publish takes a unique id from a counter shared across workers, so a
-client that reconnects with `Last-Event-ID` is not re-sent what it already
-has. That is all the id does: a hold keeps no journal, so an event published
-while a client was disconnected is not delivered when it reconnects. Keep a
-catch-up path — a fetch on reconnect — for anything a client must not miss.
+Every publish takes a unique id from a counter shared across workers, and
+the server journals the last 64 of them (`--replay-frames`). A client that
+reconnects with `Last-Event-ID` is not re-sent what it already has, and is
+sent what it missed; one further behind than the journal reaches is sent an
+`m0-gap` event instead, so listen for it and fetch the current state there
+rather than polling beside the stream.
 
 ## 5. Two tabs
 

@@ -49,9 +49,12 @@ from std.ffi import c_int, external_call, get_errno
 from std.python import Python
 from std.time import sleep
 
-from m0_http import SSERegistry, StaticFiles, sse_data_payload
+from m0_http import (
+    SSERegistry, ReplayJournal, StaticFiles, sse_data_payload,
+    shared_id_addr, shared_load,
+)
 from m0_http.sse.registry import MAX_PENDING_BYTES
-from m0_http.sse.format import NO_EVENT_ID
+from m0_http.sse.format import NO_EVENT_ID, format_sse_event_bytes
 
 from .app import WSGIApp
 from .cli import match_mount, is_compiled_mount
@@ -161,6 +164,13 @@ struct WSGIHandler(ThreadHandler):
     var mounts: List[StaticFiles]
     var streams: SSERegistry
     """Slots held open as SSE streams; capacity 0 unless `--realtime`."""
+    var replay: ReplayJournal
+    """The last `--replay-frames` numbered frames delivered through this
+    loop, so a stream that reconnects with `Last-Event-ID` is caught up on
+    what it missed (`_resume`); keeps nothing unless `--realtime`."""
+    var shared_id: Int
+    """The shared event counter's address (`M0_SHARED_ID_ADDR`), 0 without
+    one: where `_resume` reads the newest id allocated anywhere."""
     var sockets: SSERegistry
     """Slots held open as WebSockets; capacity 0 unless `--realtime`.
 
@@ -379,6 +389,7 @@ struct WSGIHandler(ThreadHandler):
         var health_path: String = String(""),
         asgi_streaming: Bool = False,
         var root_prefix: String = String(""),
+        replay_frames: Int = 64,
     ):
         # One slot is exactly the unmounted case; `mount` grows it.
         self.apps = List[WSGIApp](capacity=1)
@@ -411,6 +422,14 @@ struct WSGIHandler(ThreadHandler):
         var slots = REALTIME_SLOTS if (realtime or asgi_streaming) else 0
         self.streams = SSERegistry(slots)
         self.sockets = SSERegistry(slots)
+        self.replay = ReplayJournal(replay_frames if realtime else 0)
+        self.shared_id = shared_id_addr() if realtime else 0
+        if self.shared_id != 0:
+            # Frames siblings published before this loop existed — a
+            # respawned worker's case — are history it does not have, so a
+            # client resuming from before them is told so rather than
+            # silently served the live feed alone.
+            self.replay.start_after(shared_load(self.shared_id))
         self.asgi_done = List[Bool](capacity=slots)
         self.exec_lane = List[Int](capacity=slots)
         self.hold_lane = List[Int](capacity=slots)
@@ -460,6 +479,7 @@ struct WSGIHandler(ThreadHandler):
         return Self(
             app^, Self.mounts_for(opts), opts.realtime, opts.health_path,
             asgi_streaming=opts.asgi_streaming,
+            replay_frames=opts.replay_frames,
         )
 
     @staticmethod
@@ -524,6 +544,7 @@ struct WSGIHandler(ThreadHandler):
             first^, Self.mounts_for(opts), opts.realtime, opts.health_path,
             asgi_streaming=opts.asgi_streaming,
             root_prefix=opts.mount_prefixes[head],
+            replay_frames=opts.replay_frames,
         )
         handler.route_prefixes = opts.mount_prefixes.copy()
         if only_mount >= 0:
@@ -914,12 +935,13 @@ struct WSGIHandler(ThreadHandler):
                     return _hold_unavailable()
                 resp.headers["x-worker"] = String(getpid())
                 return resp^
-            # A reconnecting client tells us where it left off; the
-            # registry's delivery filter then declines to re-send what it
-            # already has.
-            self.streams.subscribe(
-                slot, hold.channel, request_last_event_id(req)
-            )
+            # A reconnecting client tells us where it left off: the
+            # registry's delivery filter declines to re-send what it
+            # already has, and `_resume` queues what it missed, or says
+            # that it cannot.
+            var last = request_last_event_id(req)
+            self.streams.subscribe(slot, hold.channel, last)
+            self._resume(slot, hold.channel, last)
             resp.headers["x-worker"] = String(getpid())
             return resp^
 
@@ -1322,14 +1344,14 @@ struct WSGIHandler(ThreadHandler):
                 # in the registries the loop actually drains. The frame's
                 # id field carries the request's `Last-Event-ID` and its
                 # payload the channel; the pool thread has already
-                # rewritten the response into the stream's head.
-                self.streams.subscribe(
-                    slot,
-                    String(StringSpan(unsafe_from_utf8=Span(frame))),
-                    event_id,
-                )
+                # rewritten the response into the stream's head. The
+                # catch-up is queued here too, behind the head the loop
+                # has yet to finish and ahead of any live frame.
+                var chan = String(StringSpan(unsafe_from_utf8=Span(frame)))
+                self.streams.subscribe(slot, chan, event_id)
                 self._clear_lost(slot)
                 self._set_stream_gen(slot, STREAM_GEN_HELD)
+                self._resume(slot, chan, event_id)
             elif ub[1] == UInt8(ord("H")):
                 # A socket hold taken on a pool thread. Subscribe it here,
                 # where the registries are drained, and remember the lane:
@@ -1435,6 +1457,9 @@ struct WSGIHandler(ThreadHandler):
                         )
             else:
                 _send_bus_frame_tag(self.asgi_notify_fd, event_id, url, frame)
+        # Journaled before it is queued, whether or not anyone is subscribed
+        # now: the client it is for is the one that is away.
+        self.replay.record(url, event_id, frame)
         _ = self.streams.notify_frame(url, event_id, frame)
         if self.sockets.has_subscribers(url):
             # The bus carries SSE frames; a socket needs an RFC 6455 frame.
@@ -1446,6 +1471,49 @@ struct WSGIHandler(ThreadHandler):
             _ = self.sockets.notify_frame(
                 url, event_id, encode_ws_frame(WS_OP_TEXT, Span(data))
             )
+
+    def _resume(mut self, slot: Int, url: String, last_id: Int):
+        """Catch a stream that reconnected with `Last-Event-ID` up, or say
+        that it cannot be.
+
+        Nothing for a first visit (`last_id` 0): a new consumer starts from
+        the live feed, which is SSE's own rule. A resuming one is served
+        every journaled frame of its channel after `last_id`, in order,
+        ahead of anything live — or, when the journal cannot supply them
+        all (SPEC I33: the id is below the journal's floor, or the frames
+        would not fit the outbox), none of them and one unnumbered
+        `event: m0-gap` frame whose data names the id it presented and the
+        newest id allocated, so the client can fetch what it missed
+        instead of trusting a stream with a hole in it. An id AHEAD of the
+        counter — a previous incarnation's, which numbered from 1 again —
+        is a gap too, and the subscription is clamped to the head, since
+        taken literally it would suppress every frame until the counter
+        passed it.
+        """
+        if last_id <= 0:
+            return
+        var head = self._event_head()
+        var gap = False
+        if last_id > head:
+            self.streams.subscribe(slot, url, head)
+            gap = True
+        elif not self.replay.catch_up(self.streams, slot, url, last_id):
+            gap = True
+        if gap:
+            _ = self.streams.queue_frame(
+                slot, NO_EVENT_ID,
+                format_sse_event_bytes(
+                    NO_EVENT_ID, String("m0-gap"),
+                    String('{"last_event_id":', last_id, ',"head":', head, "}"),
+                ),
+            )
+
+    def _event_head(self) -> Int:
+        """The newest event id allocated anywhere: the shared counter's
+        value, or the newest this loop has seen where there is no page."""
+        if self.shared_id != 0:
+            return shared_load(self.shared_id)
+        return self.replay.head
 
     def _clear_lost(mut self, slot: Int):
         """A slot subscribing is a NEW stream; whatever the last one lost is

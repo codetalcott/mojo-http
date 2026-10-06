@@ -10,4 +10,5 @@ from .format import (
     NO_EVENT_ID,
 )
 from .registry import SSERegistry, MAX_PENDING_BYTES
+from .replay import ReplayJournal
 from .response import sse_response, SSE_CONTENT_TYPE, SSE_OPEN_COMMENT

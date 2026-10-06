@@ -43,6 +43,8 @@ comptime DEFAULT_ATTRIBUTE = "application"
 
 comptime DEFAULT_PORT = 8000
 """The port uvicorn and gunicorn default to; the in-repo rows always pass `--port`."""
+comptime DEFAULT_REPLAY_FRAMES = 64
+"""`--replay-frames`' default: `DatastarStream`'s journal depth, per loop."""
 
 comptime EXIT_CONFIG = 78
 """`EX_CONFIG` from sysexits: the configuration names something absent.
@@ -203,6 +205,11 @@ struct ServeOptions(Copyable, Movable):
     var max_body: Int
     """Request body cap in bytes (`--max-body`, `M0_MAX_BODY`); -1 leaves
     `ServerConfig`'s default alone."""
+    var replay_frames: Int
+    """`--replay-frames` / `M0_REPLAY_FRAMES`: how many published frames
+    each loop journals so a held stream that reconnects with
+    `Last-Event-ID` is caught up on what it missed (SPEC I33); 0 keeps
+    none, so every such reconnect that missed a frame is told so."""
     var max_keepalive_requests: Int
     """`--max-keepalive-requests`: requests a keep-alive connection may carry
     before the server closes it (0 = never); -1 leaves the environment's
@@ -316,6 +323,7 @@ struct ServeOptions(Copyable, Movable):
         self.qos = False
         self.spawn_workers = False
         self.max_body = -1
+        self.replay_frames = DEFAULT_REPLAY_FRAMES
         self.max_keepalive_requests = -1
         self.idle_timeout = -1
         self.body_timeout = -1
@@ -378,6 +386,17 @@ struct ServeOptions(Copyable, Movable):
                     _ignored(
                         "M0_BODY_TIMEOUT", raw, "a whole number of seconds",
                         String(defaults.body_read_timeout),
+                    )
+                )
+        raw = getenv("M0_REPLAY_FRAMES", "")
+        if raw.byte_length() > 0:
+            try:
+                opts.replay_frames = parse_replay_frames(raw)
+            except:
+                opts.env_ignored.append(
+                    _ignored(
+                        "M0_REPLAY_FRAMES", raw, "a whole number of frames",
+                        String(DEFAULT_REPLAY_FRAMES),
                     )
                 )
         # What `AppConfig` read leniently, said when it fell back. The test
@@ -519,6 +538,24 @@ def parse_size(text: String) raises -> Int:
         raise Error(
             "--max-body must be a size like 4m or 4194304, got '" + text + "'"
         )
+
+
+def parse_replay_frames(text: String) raises -> Int:
+    """`--replay-frames`: a whole number of frames, 0 for no journal."""
+    var frames: Int
+    try:
+        frames = parse_int(String(text.strip()), "--replay-frames")
+    except:
+        raise Error(
+            "--replay-frames must be a whole number of frames (0 = none),"
+            " got '" + text + "'"
+        )
+    if frames < 0:
+        raise Error(
+            "--replay-frames must be a whole number of frames (0 = none),"
+            " got '" + text + "'"
+        )
+    return frames
 
 
 def _is_tchar(b: UInt8) -> Bool:
@@ -1389,6 +1426,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--static-cache-control"
         or name == "--static-header"
         or name == "--max-body"
+        or name == "--replay-frames"
         or name == "--max-keepalive-requests"
         or name == "--idle-timeout"
         or name == "--body-timeout"
@@ -1521,6 +1559,8 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         opts.static_header_values.append(header[1])
     elif name == "--max-body":
         opts.max_body = parse_size(value)
+    elif name == "--replay-frames":
+        opts.replay_frames = parse_replay_frames(value)
     elif name == "--max-keepalive-requests":
         var cap = parse_int(value, "--max-keepalive-requests")
         if cap < 0:
@@ -1696,6 +1736,10 @@ def usage() -> String:
         "  --body-timeout SECONDS      refuse a request body still arriving this\n"
         "                              long after its headers (default 30,\n"
         "                              0 = never; M0_BODY_TIMEOUT)\n"
+        "  --replay-frames N           journal the last N published frames per\n"
+        "                              loop, so a held stream reconnecting with\n"
+        "                              Last-Event-ID is caught up (default 64,\n"
+        "                              0 = none; M0_REPLAY_FRAMES)\n"
         "  --metrics                   serve Prometheus metrics at /__metrics\n"
         "  --realtime                  hold SSE streams and WebSockets the app\n"
         "                              approves with M0-Hold; publish with m0pub.py\n"

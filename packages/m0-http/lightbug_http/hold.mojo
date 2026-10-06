@@ -224,11 +224,11 @@ def request_last_event_id(req: HTTPRequest) -> Int:
     integer cannot name one of them and is treated as absent rather than
     guessed at.
 
-    Passed straight to `SSERegistry.subscribe`, whose delivery filter is
+    Passed to `SSERegistry.subscribe`, whose delivery filter is
     `event_id > last_event_id`: a client reconnecting at 12 is not re-sent
-    event 12. Note that suppression is all this buys on a raw `SSERegistry` —
-    replaying events 13..N needs a journal, which `DatastarStream` has and
-    the plain registry does not.
+    event 12. Suppression is all a raw `SSERegistry` buys; replaying
+    13..N is a journal's job — `DatastarStream`'s, or on the WSGI side
+    `m0_http.ReplayJournal` through `WSGIHandler._resume` (SPEC I33).
     """
     var raw = req.headers.get("last-event-id")
     if not raw:
