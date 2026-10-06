@@ -732,6 +732,41 @@ names an `m0` the index lacks.
   `docker builder prune` is the prune that frees what the image rules
   leave and nothing else.
 
+`m0 0.7.0`: tag `m0-v0.7.0` at `1222e33`, 2026-10-06, cut beside m0serve
+1.11.0 and pushed first; `v1.11.0` was pushed once the index had it.
+- Step 1: `sabotage-m0-wheel` 25 of 25 (724 s). `sabotage-scaffold` 66 of
+  66: the 62 rules that build no image in one run (1426 s), then each of
+  the four image rules with `--only` (97–112 s each), a `docker builder
+  prune` and an `fstrim` of `/var/lib/docker` between them. The run began
+  at 6.5 GiB free; a builder prune and an `fstrim` of both colima disks
+  made it 16 GiB, and it stayed above 15 GiB from then on.
+- Step 3: the local wheel, built on the merge commit, was
+  `m0-0.7.0-py3-none-any.whl`, 681,880 bytes, and a scaffold from it
+  pinned `m0==0.7.0`.
+- Step 4: `build` green at the first attempt ("m0 0.7.0, cut from
+  1222e33…"), and `publish-pypi` green after approval; "Tests passed on"
+  named the pull request head (`a3b8cd0`) that the labelled merge carries.
+  The file on the index is 681,880 bytes with the local wheel's SHA-256:
+  both were cut from the merge commit, so 0.6.0's one-byte difference did
+  not recur.
+- Step 5 on macOS arm64: the first `uvx --refresh-package m0 m0 new`, a
+  minute after the upload, wrote a scaffold pinning `m0==0.6.0`. The index
+  page is cached for 600 s, and the fresh one listed 0.7.0; `uvx --refresh`
+  then pinned `m0==0.7.0`, and `uv.lock` named it from pypi.org. The first
+  build took 13 s, `smoke.sh` passed, `m0 test` passed, and every `m0
+  doctor` check passed, `scaffold` naming no file. `m0 image` built in
+  30 s with the base layers present: 103.6 MB, 2.93 MB of it the app,
+  `libsqlite3-0` installed and no interpreter.
+- Step 6: 8 blocks passed against the published package; a plain
+  `uvx m0 --version` read `m0 0.7.0` beside it.
+- The pre-release run, for the record: both soaks ran on the release
+  branch, the application layer's against unotes built by this wheel's
+  local twin (REAL_APP_VALIDATION.md), so both read 1.11.0 at the release.
+  `bench-linux-conclusions` read ASGI against uvicorn+uvloop per core as
+  INVERTS, at macOS 1.01 against Linux 0.92, where the 1.10.0 run read
+  0.99 against 0.94. Both sides are near parity, and the macOS ratio
+  crossed 1.0 with its 1.10.0 re-record.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
