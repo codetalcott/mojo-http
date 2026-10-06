@@ -81,9 +81,12 @@ jobs:
         if: runner.os == 'Linux'
         timeout-minutes: 3
         run: sudo apt-get update -qq && sudo apt-get install -y -qq libsqlite3-dev patchelf
-      # The runner images are PINNED, and the pin IS the floor: a Mojo binary
-      # inherits the build host's SDK and glibc, so `macos-latest` would mean
-      # the wheel's reach changed whenever GitHub rotated images. Do not
+      # The runner images are PINNED. On macOS the pin IS the floor: a Mojo
+      # binary inherits the build host's SDK, so `macos-latest` would mean
+      # the wheel's reach changed whenever GitHub rotated images. On Linux
+      # the floor is the toolchain's own runtime libraries (glibc 2.35 and
+      # GCC 12's libstdc++, docs/notes/the-floor-is-the-runtime.md), which a
+      # host cannot lower; the pin keeps the measurement from moving. Do not
       # "modernize" these to -latest without moving the documented floors.
       - run: uv run poe build-all
       - run: uv run poe smoke-wheel

@@ -29,6 +29,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   one this incarnation never allocated, and the registry took it
   literally, suppressing every frame until the counter passed it. It is
   now clamped to the newest id and reported as an `m0-gap`.
+- **The platform note on RHEL 9 is corrected.** The README and the known
+  issue said the Linux floor was the build host's and that a
+  `manylinux_2_34` container build would reach glibc 2.34. Measured on the
+  1.11.0 wheels, the floor is the Mojo runtime's own (`GLIBC_2.35` in
+  `libAsyncRTRuntimeGlobals.so`, GCC 12's libstdc++ in
+  `libKGENCompilerRTShared.so`), so no build of ours lowers it; the wheel
+  tag script now names the file that set the floor on every build
+  ([the measurement](docs/notes/the-floor-is-the-runtime.md)).
 
 - **The benchmark page's ASGI per-core verdict is corrected.** It said
   uvloop leads the executor per core on macOS and that Linux answers at or

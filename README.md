@@ -134,11 +134,14 @@ time.
 
 **The exact floors live in the wheel filename**, because they are measured
 from the built binary rather than copied from the toolchain's own tag. macOS
-is pinned at 13.0; Linux currently measures `manylinux_2_35`, so Ubuntu
-22.04, Debian 12 and newer. An older distribution is declined by `pip`
-rather than installed and crashed at startup — RHEL 9 and its rebuilds sit
-at glibc 2.34 and miss by one minor version. Reaching them means building
-inside a `manylinux_2_34` container rather than relabelling the artifact.
+is pinned at 13.0; Linux measures `manylinux_2_35`, so Ubuntu 22.04,
+Debian 12 and newer. An older distribution is declined by `pip` rather
+than installed and crashed at startup — RHEL 9 and its rebuilds sit at
+glibc 2.34 and miss by one minor version. The floor is the Mojo runtime's,
+not the build host's: the toolchain's `libAsyncRTRuntimeGlobals.so` needs
+`GLIBC_2.35`, and its `libKGENCompilerRTShared.so` a libstdc++ newer than
+RHEL 9's, so a build in a `manylinux_2_34` container would not reach it
+either ([the measurement](docs/notes/the-floor-is-the-runtime.md)).
 
 To **write an application in Mojo** (preview), the `m0` package writes the
 project and installs the toolchain into it:

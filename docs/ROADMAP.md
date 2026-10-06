@@ -65,14 +65,26 @@ somebody else's Django projects inside the pull request that trips it.
   beside the WSGI ones (SPEC M23), the mixed phase `smoke-hybrid` carried
   as phase 3t until 2026-09-14.
 
-- **The Linux wheel misses RHEL 9 by one glibc minor.** The binary requires
-  glibc 2.35 (the Mojo toolchain's output, not the build image's) and the
-  wheel is tagged `manylinux_2_35`, which covers Ubuntu 22.04 and Debian 12
-  but not RHEL 9 at 2.34. `pip` declines the wheel rather than installing
-  one that crashes. Reaching 2.34 means building inside a `manylinux_2_34`
-  container; deferred until a release needs the reach.
+- **The Linux wheel misses RHEL 9 by one glibc minor.** The wheel is tagged
+  `manylinux_2_35`, which covers Ubuntu 22.04 and Debian 12 but not RHEL 9
+  at 2.34; `pip` declines it rather than installing one that crashes. The
+  floor is set by the Mojo runtime the wheel bundles, not by the build
+  host: measured on the 1.11.0 wheels, `_bin/m0serve` itself needs only
+  `GLIBC_2.34`, `libAsyncRTRuntimeGlobals.so` needs `__rseq_size@GLIBC_2.35`
+  and `libKGENCompilerRTShared.so` needs
+  `std::condition_variable::wait@GLIBCXX_3.4.30`, GCC 12's libstdc++, which
+  RHEL 9 does not ship. So building inside a `manylinux_2_34` container,
+  the closer this issue once named, would neither lower the tag nor make
+  the wheel run there — and the pinned compiler itself fails to start in
+  that container on the same symbol
+  ([the measurement](notes/the-floor-is-the-runtime.md)).
 
-  **Closed by:** none — outside the server's own behaviour.
+  **Closed by:** none — the toolchain's runtime. It retires itself the
+  release whose wheel's `libAsyncRTRuntimeGlobals.so` needs nothing above
+  `GLIBC_2.34` and whose `libKGENCompilerRTShared.so` nothing above
+  `GLIBCXX_3.4.29`: `wheel_tag.py` then measures `manylinux_2_34` on its
+  own and names the file that set it in the build log, and the release's
+  consume job installs on a 2.34 host.
 
 - **Under `--workers`, which worker wins an accept is CPU placement, not
   load.** Two workers sharing one listener: the worker on the client's own

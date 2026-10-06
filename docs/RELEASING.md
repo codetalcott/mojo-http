@@ -502,9 +502,12 @@ Four properties of this that are easy to get wrong later:
 
 - **The platform tag is measured, not declared.** `scripts/wheel_tag.py`
   reads `LC_BUILD_VERSION` and versioned glibc symbols out of the staged
-  binaries and takes the strictest floor across all of them. Copying the
-  toolchain's own tag would have shipped a `macosx_13_0` wheel containing a
-  binary that requires macOS 26.
+  binaries and takes the strictest floor across all of them, naming the
+  file that set it. Copying the toolchain's own tag would have shipped a
+  `macosx_13_0` wheel containing a binary that requires macOS 26. On Linux
+  the file is the toolchain's runtime library, not the binary, so the
+  floor moves with the Mojo pin and not with the runner
+  (docs/notes/the-floor-is-the-runtime.md).
 
 - **There is no ABI tag, on purpose.** `m0serve` does not link libpython, so
   one wheel per platform serves CPython 3.10–3.14 including free-threaded

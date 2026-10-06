@@ -10,11 +10,14 @@ binary it emits inherits the BUILD HOST's SDK — `bin/m0serve` built on macOS
 installs cleanly on macOS 15 and then fails in dyld, which is a worse failure
 than not installing at all.
 
-**Linux.** `manylinux_2_34` is the toolchain's tag; a binary linked on
-ubuntu-latest (glibc 2.39) requires 2.39 through symbol versioning regardless.
-Measuring gives an honest `manylinux_2_39_x86_64`. If a lower floor is wanted
-the mechanism is building inside a `manylinux_2_34` container — not relabelling
-the artifact.
+**Linux.** `manylinux_2_34` is the toolchain's tag, and the binary m0serve
+builds meets it; the runtime libraries the wheel bundles beside it do not.
+Measured on the 1.11.0 wheels, `libAsyncRTRuntimeGlobals.so` needs
+`GLIBC_2.35` and `libKGENCompilerRTShared.so` needs GCC 12's libstdc++
+(docs/notes/the-floor-is-the-runtime.md), so the honest tag is
+`manylinux_2_35` and a lower one is Modular's to give, not a container's.
+The note printed beside the tag names the file that set it, so that the
+floor is read off the build rather than attributed to the host.
 
 **The ABI segment is always `py3-none`**, and that is not an oversight:
 m0serve does not link libpython. `std.python` `dlopen`s the interpreter at run
@@ -145,13 +148,22 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
-    if len(tags) > 1:
-        print(
-            f"wheel-tag: note: floors differ across files, taking the "
-            f"strictest ({strictest}): "
-            + ", ".join(f"{t} <- {os.path.basename(v[0])}" for t, v in tags.items()),
-            file=sys.stderr,
-        )
+    # Always, not only when floors differ: the file that sets the floor is
+    # the answer to "why this tag", and it was the runtime library, not the
+    # build host, when the question was last asked.
+    print(
+        f"wheel-tag: floor {strictest} set by "
+        f"{os.path.basename(tags[strictest][0])}"
+        + (
+            "; the others: "
+            + ", ".join(
+                f"{t} <- {os.path.basename(v[0])}"
+                for t, v in tags.items() if t != strictest
+            )
+            if len(tags) > 1 else ""
+        ),
+        file=sys.stderr,
+    )
     print(f"py3-none-{strictest}")
     return 0
 
