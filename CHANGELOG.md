@@ -73,6 +73,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   between the short tail and the 32-byte block. `std.hashlib`'s AHash was
   measured beside it and is the slower of the two above 64 bytes; the
   ETag hash stays in `m0-core`, where its outputs are this repository's.
+- **Short JSON strings are escaped a word at a time** (`m0-core`'s
+  `escape_json_string_into`). After its last full 64-byte block a string
+  was scanned byte by byte, so every string under 64 bytes took the scalar
+  loop, and those are most of what it escapes: access-log fields, Datastar
+  signal values, JSON reply fields. The tail is now scanned eight bytes per
+  step as one 64-bit word, and skipped when the 64-byte blocks covered it.
+  The output is byte-identical over 26,055 cases, every length to 300 in
+  five shapes among them; measured on an M-series Mac, 8-byte strings run
+  1.53x faster, 24-byte ones 1.56 to 1.85x, 64-byte strings with specials
+  1.37x, and clean 64-byte strings 0.96x.
 
 - **An SVG from a static mount is sandboxed** (SPEC J14). Its 200, 206
   and 304 carry `Content-Security-Policy: default-src 'none';
