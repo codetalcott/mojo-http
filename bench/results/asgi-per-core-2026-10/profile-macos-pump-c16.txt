@@ -1,0 +1,58 @@
+# python3 selftime.py sample-pump.txt 18 (macOS sample, 10 s under wrk -t2 -c16, apps/asgi_bare, pump)
+=== Thread_25975956   DispatchQueue_1: com.apple.main-thread  (s  total=6808
+  by library: libsystem_kernel.dylib=76.4%, m0serve=20.6%, libAsyncRTRuntimeGlobals.dylib=2.6%, libsystem_c.dylib=0.1%, <unknown binary>=0.1%, libKGENCompilerRTShared.dylib=0.1%, libsystem_m.dylib=0.1%, libsystem_pthread.dylib=0.1%
+   34.9%  kevent  [libsystem_kernel.dylib]
+   22.7%  __recvfrom  [libsystem_kernel.dylib]
+   16.9%  __sendto  [libsystem_kernel.dylib]
+   14.4%  ::AnyType]($0,$1,lightbug_http::loop::state::LoopState,::SIMD[DType.in  [m0serve]
+    1.5%  mach_absolute_time  [libsystem_kernel.dylib]
+    1.0%  ???  [libAsyncRTRuntimeGlobals.dylib]
+    0.9%  $1]](::Span[$0, $1, ::SIMD[DType.uint8, 1], $2, AddressSpace.GENERIC],  [m0serve]
+    0.9%  $4]](lightbug_http::header::Headers,::Span[$0, $1, ::SIMD[DType.uint8,  [m0serve]
+    0.8%  $1]](lightbug_http::io::bytes::ByteReader[$0, $2],::Span[True, $1, lig  [m0serve]
+    0.5%  std::collections::optional::Optional::take(::Optional[$0]){conforms_to  [m0serve]
+    0.4%  PackedCache<35>::TryGet(unsigned long, unsigned int*) const  [libAsyncRTRuntimeGlobals.dylib]
+    0.4%  lightbug_http::server::ConnectionProvision::prepare_for_new_request(li  [m0serve]
+    0.2%  lightbug_http::http::request::HTTPRequest::from_parsed(::String,lightb  [m0serve]
+    0.2%  lightbug_http::offload::OffloadPool::drain_completions_into(lightbug_h  [m0serve]
+    0.2%  ::Movable]($2$),Ts.values`=[[typevalue<#kgen.instref<std::collections:  [m0serve]
+    0.2%  lightbug_http::offload::OffloadLoopState::flush_lane(lightbug_http::of  [m0serve]
+    0.2%  $0]](lightbug_http::io::bytes::ByteReader[$0, $1],::SIMD[DType.uint8,   [m0serve]
+    0.2%  $2]](::List[$0],::Span[$1, $2, $0, $3, AddressSpace.GENERIC]){conforms  [m0serve]
+=== Thread_25975959: 🔥 Thread0  total=6808
+=== Thread_25975960: 🔥 Thread1  total=6808
+=== Thread_25975961: 🔥 Thread2  total=6808
+=== Thread_25975962: 🔥 Thread3  total=6808
+=== Thread_25976013  total=6808
+  by library: libsystem_kernel.dylib=48.3%, libpython3.13.dylib=32.5%, loop.cpython-313-darwin.so=5.4%, m0serve=4.8%, libAsyncRTRuntimeGlobals.dylib=2.7%, libsystem_malloc.dylib=1.6%, libdyld.dylib=1.5%, libsystem_platform.dylib=1.3%
+   34.1%  kevent  [libsystem_kernel.dylib]
+   13.6%  _PyEval_EvalFrameDefault  [libpython3.13.dylib]
+    8.4%  __sendto  [libsystem_kernel.dylib]
+    3.8%  read  [libsystem_kernel.dylib]
+    1.5%  _tlv_get_addr  [libdyld.dylib]
+    1.3%  __pyx_f_6uvloop_4loop_6Handle__run  [loop.cpython-313-darwin.so]
+    1.2%  mach_absolute_time  [libsystem_kernel.dylib]
+    1.2%  ???  [libAsyncRTRuntimeGlobals.dylib]
+    1.1%  _PyObject_Malloc  [libpython3.13.dylib]
+    1.1%  ???  [libKGENCompilerRTShared.dylib]
+    1.0%  _PyObject_Free  [libpython3.13.dylib]
+    0.7%  __pyx_f_6uvloop_4loop_4Loop__on_idle  [loop.cpython-313-darwin.so]
+    0.6%  __Pyx_PyObject_FastCallDict  [loop.cpython-313-darwin.so]
+    0.6%  list_dealloc  [libpython3.13.dylib]
+    0.6%  set_discard_key.llvm.9550801988717878965  [libpython3.13.dylib]
+    0.6%  _PyFunction_Vectorcall  [libpython3.13.dylib]
+    0.6%  _platform_memmove  [libsystem_platform.dylib]
+    0.5%  _PyDict_SetItem_Take2  [libpython3.13.dylib]
+
+# python3 callers.py sample-pump.txt __sendto,__recvfrom,read
+=== Thread_25975956   DispatchQueue_1: com.a :: __recvfrom  (1546 samples)
+    1338  ::AnyType] <- ::AnyType]
+     207  lightbug_http::offload::OffloadPool::drain_completions_into <- m0serve::_serve_offloaded
+       1  ::AnyType] <- m0serve::_serve_offloaded
+=== Thread_25975956   DispatchQueue_1: com.a :: __sendto  (1153 samples)
+     823  ::AnyType] <- m0serve::_serve_offloaded
+     330  lightbug_http::offload::OffloadLoopState::flush_lane <- m0serve::_serve_offloaded
+=== Thread_25976013 :: read  (265 samples)
+     265  _Py_read <- os_read
+=== Thread_25976013 :: __sendto  (575 samples)
+     575  lightbug_http::offload::OffloadPool::complete_many <- __pyx_f_6uvloop_4loop_6Handle__run

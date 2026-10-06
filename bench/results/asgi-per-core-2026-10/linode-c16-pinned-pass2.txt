@@ -1,0 +1,16 @@
+{"name": "m0serve asgi pump", "rps": 28823.04, "p50_us": 542.0, "p99_us": 789.0, "cores": 1.219, "rps_per_core": 23635, "round": 1}
+{"name": "m0serve asgi inverted", "rps": 29945.43, "p50_us": 510.0, "p99_us": 860.0, "cores": 0.999, "rps_per_core": 29968, "round": 1}
+{"name": "uvicorn asyncio", "rps": 12731.15, "p50_us": 1210.0, "p99_us": 1590.0, "cores": 0.998, "rps_per_core": 12762, "round": 1}
+{"name": "uvicorn uvloop", "rps": 23727.55, "p50_us": 554.0, "p99_us": 1300.0, "cores": 0.999, "rps_per_core": 23752, "round": 1}
+{"name": "m0serve asgi pump", "rps": 29279.92, "p50_us": 538.0, "p99_us": 772.0, "cores": 1.226, "rps_per_core": 23885, "round": 2}
+{"name": "m0serve asgi inverted", "rps": 29722.64, "p50_us": 525.0, "p99_us": 819.0, "cores": 0.996, "rps_per_core": 29831, "round": 2}
+{"name": "uvicorn asyncio", "rps": 15890.74, "p50_us": 960.0, "p99_us": 1400.0, "cores": 0.996, "rps_per_core": 15949, "round": 2}
+{"name": "uvicorn uvloop", "rps": 25426.5, "p50_us": 558.0, "p99_us": 1260.0, "cores": 0.998, "rps_per_core": 25484, "round": 2}
+{"name": "m0serve asgi pump", "rps": 27935.77, "p50_us": 553.0, "p99_us": 810.0, "cores": 1.232, "rps_per_core": 22673, "round": 3}
+{"name": "m0serve asgi inverted", "rps": 33029.96, "p50_us": 451.0, "p99_us": 825.0, "cores": 0.998, "rps_per_core": 33099, "round": 3}
+{"name": "uvicorn asyncio", "rps": 15963.07, "p50_us": 980.0, "p99_us": 1370.0, "cores": 0.998, "rps_per_core": 15999, "round": 3}
+{"name": "uvicorn uvloop", "rps": 25215.13, "p50_us": 545.0, "p99_us": 1270.0, "cores": 0.998, "rps_per_core": 25270, "round": 3}
+m0serve asgi pump        rps     28823  cores 1.23  rps/core    23635  spread 4.7%
+m0serve asgi inverted    rps     29945  cores 1.00  rps/core    29968  spread 11.0%
+uvicorn asyncio          rps     15891  cores 1.00  rps/core    15949  spread 20.3%
+uvicorn uvloop           rps     25215  cores 1.00  rps/core    25270  spread 6.7%
