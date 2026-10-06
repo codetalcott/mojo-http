@@ -1,0 +1,91 @@
+diff --git a/packages/m0-http/lightbug_http/offload.mojo b/packages/m0-http/lightbug_http/offload.mojo
+index ab0301e..8266fe9 100644
+--- a/packages/m0-http/lightbug_http/offload.mojo
++++ b/packages/m0-http/lightbug_http/offload.mojo
+@@ -845,6 +845,11 @@ struct OffloadPool(Movable):
+     """The in-memory handoff (module docstring). Off under `M0_POOL_RING=0`,
+     and always off for a disabled pool."""
+ 
++    var exec_ring: Bool
++    """EXPERIMENT (docs/notes/asgi-per-core.md): the executor's
++    `complete_many` takes the completion ring too, and pokes only a parked
++    loop. Off under `M0_EXEC_RING=0`, and wherever the ring is off."""
++
+     var job_rings: List[Ring]
+     """Per lane, the ring `submit` pushes onto and `next_job` pops from. An
+     executor lane gets one too and never uses it (its jobs are batched
+@@ -984,6 +989,7 @@ struct OffloadPool(Movable):
+         self.hold_notify_fd = -1
+         self.sweep_every_pass = False
+         self.ring_enabled = capacity > 0 and getenv("M0_POOL_RING", "") != "0"
++        self.exec_ring = self.ring_enabled and getenv("M0_EXEC_RING", "") != "0"
+         self.elastic = self.ring_enabled and getenv("M0_POOL_ELASTIC", "") != "0"
+         self.debug = getenv("M0_POOL_DEBUG", "") != ""
+         self.thread_base = 0
+@@ -2081,18 +2087,27 @@ struct OffloadPool(Movable):
+     def drain_completions_into(mut self, mut done: List[Int], read_fd: Bool) raises:
+         """Every finished slot waiting for the loop, appended to `done`.
+ 
+-        The completion ring first — every pool thread's completions, in
+-        publish order — then, with `read_fd`, the channel: executor batches,
+-        stream aborts, and wake datagrams (skipped). The channel's
+-        registration is edge-triggered, so it is read until EAGAIN — the
+-        same contract, and the same reason, as `drain_bus_channel`. A
+-        caller that only wants what is in memory (the loop, at the top and
+-        bottom of a pass) passes `read_fd=False` and pays no syscall.
++        With `read_fd`, the channel first: executor batches, stream aborts,
++        and wake datagrams (skipped). The channel's registration is
++        edge-triggered, so it is read until EAGAIN — the same contract, and
++        the same reason, as `drain_bus_channel`. Then the completion ring:
++        every pool thread's completions, and the executor's under
++        `exec_ring`, in publish order. A caller that only wants what is in
++        memory (the loop, at the top and bottom of a pass) passes
++        `read_fd=False` and pays no syscall.
+ 
+         An abort sent after a completion on the ring is handled after it:
+-        the loop takes the ring's list first, and the datagram was sent
+-        after the push.
++        the abort was sent after the push, so the ring read that follows
++        the channel read finds the completion, and the loop applies a
++        batch's completions before its aborts.
+         """
++        if read_fd:
++            self._drain_channel_into(done)
++        # The ring AFTER the channel: a producer pushes a head onto the ring
++        # before it sends that stream's abort, so an abort this drain took
++        # off the channel has its head on the ring by now. Read the other
++        # way round, a push and a send landing between the two reads
++        # delivered the abort without its head, and the loop dropped it.
+         if self.ring_enabled:
+             var slot = 0
+             # Bounded by the ring's capacity so producers pushing at full
+@@ -2101,8 +2116,9 @@ struct OffloadPool(Movable):
+             while budget > 0 and self.done_ring.pop(slot):
+                 done.append(slot)
+                 budget -= 1
+-        if not read_fd:
+-            return
++
++    def _drain_channel_into(mut self, mut done: List[Int]) raises:
++        """`drain_completions_into`'s channel half, read until EAGAIN."""
+         # `_drain_buf` is sized for the largest datagram the channel
+         # carries — a full completion batch — and not for one completion:
+         # a SOCK_DGRAM `recv` into a short buffer silently discards the
+@@ -2443,6 +2459,17 @@ struct OffloadPool(Movable):
+         """
+         if len(slots) == 0:
+             return True
++        if self.exec_ring:
++            # `complete`'s protocol for N: push every slot, THEN read the
++            # loop's flag once and poke only a parked loop.
++            for i in range(len(slots)):
++                for _ in range(64):
++                    if self.done_ring.push(slots[i]):
++                        break
++                    _sched_yield()
++            if atomic_at(self.wake_base)[].load() != 0:
++                self._poke(self.complete_write)
++            return True
+         var msg = _encode_completions(slots)
+         return send_bounded(self.complete_write, Span(msg))
+ 
