@@ -161,7 +161,8 @@ come back, the head was taken. Reading the channel first closes the
 window, because anything on the channel was pushed to the ring before it.
 That is the experiment's second edit.
 
-It is not fixed here. No test can place a push between two reads inside
-one call, the shape has not been seen, and the repository lands a fix
-with its gate. It is recorded for that decision.
+Fixed the same day on that argument (#563). No test can place a push
+between two reads inside one call, so `test_offload.mojo` pins the
+channel-first order instead, and fails when the drain is put back
+ring-first.
 
