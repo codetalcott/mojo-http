@@ -93,16 +93,24 @@ worker. Inbound WebSocket messages arrive at the application as a `POST` to
 must be CSRF-exempt. Channel names beginning with a control byte are
 reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
 
-**A hold replays nothing.** Event ids are numbered from one counter across
-every worker, and a client that reconnects with `Last-Event-ID` is not
-re-sent an event it already has — that is all the id buys. A plain
-`M0-Hold: stream` subscribes to the loop's registry, which keeps no journal,
-so an event published while a client was disconnected (a phone asleep, a
-proxy that dropped the stream) is not delivered when it reconnects. An
-application whose clients must not miss events keeps its own catch-up — a
-fetch on reconnect, or a poll beside the stream — and the stream is the
-fast path, not the record. Only `DatastarStream`, the Mojo-side fan-out,
-journals frames for replay (README, "SSE replay is journal-deep").
+**A hold replays what the journal holds, and says when it cannot.** Event
+ids are numbered from one counter across every worker, and each loop
+journals the last `--replay-frames` published frames (`M0_REPLAY_FRAMES`,
+default 64; 0 keeps none). A client that reconnects with `Last-Event-ID`
+is not re-sent what it already has, and is sent every frame of its channel
+published while it was away — a phone asleep, a proxy that dropped the
+stream — in order, before anything live. When the journal cannot supply
+all of them (the client is further behind than the journal is deep, the
+worker it reached was started after the frames went out, or the id is from
+a server that has since restarted and numbered from 1 again) it is sent
+none of them and one unnumbered `event: m0-gap` frame, whose data names the
+id it presented and the newest id allocated; the live feed follows. A client
+that listens for `m0-gap` and fetches the current state needs no poll
+beside the stream. The journal is per process and in memory: a restart
+begins it empty, and the gap frame is what a client reconnecting across
+one receives. A first connection, without the header, starts from the live
+feed. The Mojo-side `DatastarStream` keeps a journal of its own with the
+same all-or-nothing rule (README, "SSE replay is journal-deep").
 
 Work that has to outlive its request can publish from a child process the
 view starts. Pass the bus and the event-id page by descriptor:
@@ -223,7 +231,7 @@ has the Flask version of the whole thing, and CI drives that exact file.
 
 These flags have an `M0_*` variable: `--host`, `--port`, `--workers`,
 `--threads`, `--blocking-threads`, `--access-log`, `--qos`,
-`--spawn-workers`, `--max-body`, `--body-timeout`,
+`--spawn-workers`, `--max-body`, `--body-timeout`, `--replay-frames`,
 `--max-keepalive-requests` and `--pg-listen`, each named in `--help`.
 `M0_SSE_HEARTBEAT_MS` and `M0_APP_TICK_MS` have no flag. A flag beats the
 variable, which beats the default. Flags are strict: `--port 80eighty` is

@@ -157,7 +157,16 @@ Python-only projects it serves; there is no `server.mojo` in them.
 `M0-Channel`, `m0pub.publish()`, inbound WebSocket messages as a POST) is
 [QUICKSTART.md](QUICKSTART.md), which `poe smoke-quickstart` executes, then
 `docs/QUICKSTART_NEXT.md`, against the tree's own wheel: editing either can
-break CI. The seam is the fork's `lightbug_http/hold.mojo`. A Mojo view on
+break CI. The seam is the fork's `lightbug_http/hold.mojo`. **A hold that
+reconnects with `Last-Event-ID` is caught up by `WSGIHandler._resume`** from
+the loop's `ReplayJournal` (`--replay-frames`, SPEC I33, D65;
+docs/notes/a-hold-that-replays.md) — one site, reached by the inline
+subscribe and the `h` frame alike, so a Mojo mount's and a hold mount's
+holds are covered too; all or nothing, and a gap is one unnumbered
+`m0-gap` frame, never a partial history. The handler has TWO constructor
+calls, `build` and `for_options`: a new per-loop setting goes through both,
+or the pool path (the default under `--realtime`) runs without it, which is
+how the first run of its smoke found the flag reaching nothing. A Mojo view on
 `--mount X=mojo` holds with the same two headers from its `MojoPool` thread,
 only under `--realtime`; a streaming response that is not a hold is still
 refused from a pool thread, and a `websocket` instruction degrades there
@@ -922,7 +931,7 @@ elsewhere), `M0_MAX_KEEPALIVE_REQUESTS` (the keep-alive cap; 0 = never close
 for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and
 `M0_GRANT_COOKIE` (the hold mount's key, its previous key during a rotation,
 and the cookie a grant binds to; `sessionid`), `M0_SPAWN_WORKERS`,
-`M0_PG_LISTEN`, `M0_MAX_BODY` and `M0_BODY_TIMEOUT` (the env forms of those
+`M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT` and `M0_REPLAY_FRAMES` (the env forms of those
 m0serve flags, read by m0serve's `from_env`, which reports every `M0_*`
 value it cannot read rather than ignoring it silently), `M0_INVERTED` (`1`
 runs the loop inside the executor's asyncio loop, where the topology

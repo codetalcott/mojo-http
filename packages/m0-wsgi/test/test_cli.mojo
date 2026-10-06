@@ -11,6 +11,7 @@ from std.os import setenv
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
 from src.cli import (
+    DEFAULT_REPLAY_FRAMES,
     ServeOptions,
     parse_args,
     parse_app_spec,
@@ -428,7 +429,7 @@ def _clear_env():
         String("M0_ACCESS_LOG"), String("M0_SSE_HEARTBEAT_MS"), String("M0_APP_TICK_MS"),
         String("M0_BLOCKING_THREADS"), String("M0_QOS"), String("M0_SPAWN_WORKERS"),
         String("M0_MAX_KEEPALIVE_REQUESTS"), String("M0_MAX_BODY"),
-        String("M0_BODY_TIMEOUT"),
+        String("M0_BODY_TIMEOUT"), String("M0_REPLAY_FRAMES"),
     ]:
         _ = setenv(name, "", True)
 
@@ -780,7 +781,7 @@ def test_usage_mentions_every_flag() raises:
         String("--static"), String("--static-cache-control"), String("--static-header"),
         String("--access-log"),
         String("--max-body"), String("--max-keepalive-requests"), String("--metrics"), String("--realtime"),
-        String("--body-timeout"),
+        String("--body-timeout"), String("--replay-frames"),
         String("--health-path"), String("--reload"), String("--reload-dir"),
         String("--protocol"), String("--blocking-threads"), String("--mount"),
         String("--help"), String("--version"), String("--doctor"),
@@ -1479,6 +1480,54 @@ def test_serves_offloaded_is_an_executor_a_pool_or_an_asgi_lane() raises:
     assert_false(serves_offloaded(mixed, False, 0))
     mixed.asgi_mounts.append(1)
     assert_true(serves_offloaded(mixed, False, 0))
+
+
+# --- the replay journal's depth (SPEC I33) ----------------------------------
+
+
+def test_replay_frames_defaults_to_the_datastar_depth() raises:
+    assert_equal(_parse([String("m.wsgi")]).replay_frames, DEFAULT_REPLAY_FRAMES)
+    assert_equal(DEFAULT_REPLAY_FRAMES, 64)
+
+
+def test_replay_frames_is_a_whole_number_and_zero_is_none() raises:
+    assert_equal(_parse([String("m.wsgi"), String("--replay-frames"), String("0")]).replay_frames, 0)
+    assert_equal(_parse([String("m.wsgi"), String("--replay-frames"), String("500")]).replay_frames, 500)
+    assert_true(_fails([String("m.wsgi"), String("--replay-frames"), String("-1")]))
+    assert_true(_fails([String("m.wsgi"), String("--replay-frames"), String("many")]))
+    assert_true(_fails([String("m.wsgi"), String("--replay-frames")]))
+    try:
+        _ = _parse([String("m.wsgi"), String("--replay-frames"), String("many")])
+        assert_true(False, "junk was accepted")
+    except e:
+        assert_true(String(e).find("--replay-frames") >= 0, String(e))
+        assert_true(String(e).find("'many'") >= 0, String(e))
+
+
+def test_from_env_reads_replay_frames_and_the_flag_wins() raises:
+    _clear_env()
+    _ = setenv("M0_REPLAY_FRAMES", "8", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.replay_frames, 8)
+    assert_equal(len(seed.env_ignored), 0)
+    var opts = parse_args(
+        [String("m.wsgi"), String("--replay-frames"), String("3")], seed
+    )
+    assert_equal(opts.replay_frames, 3)
+    _clear_env()
+
+
+def test_from_env_ignores_an_unreadable_replay_depth_and_says_so() raises:
+    _clear_env()
+    _ = setenv("M0_REPLAY_FRAMES", "lots", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.replay_frames, DEFAULT_REPLAY_FRAMES)
+    assert_equal(len(seed.env_ignored), 1)
+    assert_equal(
+        seed.env_ignored[0],
+        "ignoring M0_REPLAY_FRAMES='lots', not a whole number of frames; using 64",
+    )
+    _clear_env()
 
 
 def main() raises:

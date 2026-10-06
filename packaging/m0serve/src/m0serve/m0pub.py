@@ -33,9 +33,9 @@ globally across every worker, and the number goes in two places: the bus
 datagram's id field, and an `id:` line on the SSE frame. That is what
 engages the registry's redelivery filter (`event_id > last_event_ids[slot]`)
 and what lets a reconnecting client's `Last-Event-ID` suppress an event it
-already has. Suppression is all it buys: a plain `M0-Hold: stream` keeps no
-journal, so an event published while a client was disconnected is not
-replayed when it reconnects, and catch-up stays the application's.
+already has and be caught up on what it missed: each loop journals the last
+`--replay-frames` published frames, and a client further behind than that
+is sent one `m0-gap` event, on which it fetches the current state.
 
 This file exists in two places — here, and shipped inside the m0serve wheel
 as `m0serve.m0pub` — and check-docs holds the copies byte-identical. Two

@@ -41,7 +41,11 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
   subscriber on every worker. Inbound WebSocket messages arrive as POSTs to
   `/ws/message` with `M0-Channel`/`M0-Slot`/`M0-Opcode` headers. `--realtime`
   composes with `--blocking-threads` and `--mount`; it is refused only where
-  nothing could take a hold (an ASGI-only server).
+  nothing could take a hold (an ASGI-only server). A stream that reconnects
+  with `Last-Event-ID` is sent what it missed from a per-loop journal of
+  `--replay-frames` frames (`M0_REPLAY_FRAMES`, 64), or one unnumbered
+  `event: m0-gap` frame when the journal cannot supply all of it; listen
+  for `m0-gap` and fetch, instead of polling beside the stream.
 - `--static PREFIX=DIR` serves files from the server with sendfile, ETags
   and byte ranges; a miss falls through to the application.
 - SIGTERM drains in-flight work and exits 0; the server runs as PID 1

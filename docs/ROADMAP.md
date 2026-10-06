@@ -65,22 +65,6 @@ somebody else's Django projects inside the pull request that trips it.
   beside the WSGI ones (SPEC M23), the mixed phase `smoke-hybrid` carried
   as phase 3t until 2026-09-14.
 
-- **A WSGI hold replays nothing on reconnect.** `M0-Hold: stream`
-  subscribes to the loop's `SSERegistry`, whose `Last-Event-ID` handling is
-  the redelivery filter alone (`event_id > last_event_id`): a reconnecting
-  client is not re-sent what it has, and events published while it was gone
-  are not delivered. Only `DatastarStream` keeps the bounded journal
-  (SPEC I10). RUNNING.md and the m0pub docstring said "replay covers them"
-  until 2026-09-17, and an application that believed it dropped its own
-  catch-up path; desk keeps a poll beside the stream for this reason.
-
-  **Closed by:** none — a bounded per-channel journal in the registry (the
-  `DatastarStream` shape, sized in frames, restored by the application if
-  it must survive a restart) would retire it, gated by a smoke that
-  reconnects a WSGI hold with `Last-Event-ID` after a publish; whether to
-  build it is an open decision, and until it is taken the docs say
-  suppression only.
-
 - **The Linux wheel misses RHEL 9 by one glibc minor.** The binary requires
   glibc 2.35 (the Mojo toolchain's output, not the build image's) and the
   wheel is tagged `manylinux_2_35`, which covers Ubuntu 22.04 and Debian 12
@@ -261,6 +245,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- **A WSGI hold replayed nothing on reconnect** (`M0-Hold: stream` subscribed to a registry whose `Last-Event-ID` handling was the redelivery filter alone, so every application kept a poll beside the stream) — resolved 2026-10-06 (I33, D65): each loop journals the last `--replay-frames` published frames and a reconnecting hold is caught up from it, all or nothing, with one unnumbered `m0-gap` event where the journal cannot supply what was missed, and an id from a previous incarnation clamped rather than left to starve the client. The write-up is [A hold that replays — 2026-10-06](notes/a-hold-that-replays.md).
 - <!-- observed: asgi_bare and wsgi_bare under m0serve, curl, 2026-09-23; FastHTML's examples under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**Two ASGI loading and scope differences from uvicorn** (a request whose chunked body the loop decoded reached the application with both `transfer-encoding: chunked` and a `content-length`, and a GET with a `content-length: 0` and a `connection: keep-alive` its client never sent; a module calling `asyncio.create_task` at import, FastHTML's first official example, failed to load with a bare `RuntimeError: no running event loop`) — resolved 2026-09-23 by L25 and L26. A parsed request carries the headers its client sent: the outgoing constructor it used to be built through no longer fills in a length, a `Connection` and a `Host`, and a de-chunked body is described by its length with its `chunked` coding removed. The WSGI environ follows, mapping the same headers. The import is refused by name, with the fix, a lifespan startup handler, from the server, `--doctor` and discovery alike; uvicorn refuses the same module without `--reload`. Both conformance steps read the scope and the environ back, and the ASGI step loads the module.
 - <!-- observed: asgi_bare and wsgi_bare under m0serve at da6de53, raw sockets, 2026-09-23; FastHTML's examples under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**The gateway rewrote parts of an application's response head** (a redirect, a 204 and FastHTML's default 404 page went out as `application/octet-stream`, a `FileResponse` HEAD as `content-length: 0`, and every 204 and 304 with `content-length: 0`, a native one included) — resolved 2026-09-23 by A21 and K12: the gateway relays the head as sent, adding only the framing that is the server's — a buffered body's measured length, and on a HEAD the application's own — and the event loop drops a length and a body from every 1xx and 204, whoever set them, keeping only a 304's own length. Found beside them and fixed with them (L27): a HEAD to a streaming ASGI route was streamed like a GET, and the loop wrote the whole body after the head, 10,000 of 10,000 bytes, where a keep-alive client reads its next response; a HEAD to a hold or a native SSE route was held as the stream a GET opens, the same way. `scripts/head_probe.py` reads each head in both conformance steps, and a request after it on the same connection.
 - <!-- observed: FastHTML's `xtermjs` example under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**A process the application started inherited the server's sockets** (FastHTML's terminal example took 10 s to close a WebSocket, because the shell it had started held the connection) — resolved 2026-09-23 by G16: every descriptor the server creates is close-on-exec, atomically on Linux and by a second call straight after on macOS; the spawned-worker hand-off keeps exactly the descriptors the new image adopts across its own exec, where it used to keep them across every exec in every mode; and `m0pub` writes only to a bus it can see, never into a child's own file on an inherited number. `smoke-exec-inherit` requires a child started with `close_fds=False` to hold nothing of the server's in six shapes.

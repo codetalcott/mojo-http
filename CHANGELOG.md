@@ -8,7 +8,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **A held stream that reconnects is caught up.** Each loop journals the
+  last `--replay-frames` published frames (`M0_REPLAY_FRAMES`, default 64;
+  0 keeps none), and a `M0-Hold: stream` that reconnects with
+  `Last-Event-ID` is sent every frame of its channel it missed, in order,
+  before the live feed — whether the hold was taken inline, on a pool
+  thread, by a Mojo mount or by a hold mount. When the journal cannot
+  supply all of them, the client is sent none and one unnumbered
+  `event: m0-gap` frame whose data names the id it presented and the
+  newest id allocated, so it can fetch instead of polling beside the
+  stream (SPEC I33; [the record](docs/notes/a-hold-that-replays.md)).
+  `--doctor` reports `replay_frames`.
+
 ### Changed
+
+- **A `Last-Event-ID` ahead of the counter no longer starves the stream.**
+  A client holding an id from a server that has since restarted presented
+  one this incarnation never allocated, and the registry took it
+  literally, suppressing every frame until the counter passed it. It is
+  now clamped to the newest id and reported as an `m0-gap`.
 
 - **The benchmark page's ASGI per-core verdict is corrected.** It said
   uvloop leads the executor per core on macOS and that Linux answers at or

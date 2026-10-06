@@ -2703,7 +2703,9 @@ stop $pid
 #
 # Self-calibrating: /publish reports the id it allocated, so the assertions
 # never assume where the counter happens to be after earlier phases.
-spawn rt3.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC"
+# `--replay-frames 4`: phase 3b wants a journal it can push a client past
+# with a handful of publishes.
+spawn rt3.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --replay-frames 4 --static-cache-control "$CC"
 wait_ready http://localhost:$port/health $pid
 
 warm=$(curl -s -X POST -d channel=dedup -d msg=warmup http://localhost:$port/publish)
@@ -2711,33 +2713,120 @@ id0=$(echo "$warm" | grep -o '"id": [0-9-]*' | tr -dc '0-9-')
 [ -n "$id0" ] || fail "publish reported no id: $warm"
 [ "$id0" -gt 0 ] || fail "ids are not being allocated (id=$id0) — is M0_CORE_LIB reachable?"
 
-# Resume as a reconnecting client would, one past the last id we know of.
-# The registry delivers only ids strictly greater than that.
-resume=$((id0 + 1))
-curl -sN --max-time 10 -H "Last-Event-ID: $resume" \
+# Resume as a reconnecting client would, holding the last id it saw. The
+# registry delivers only ids strictly greater than that, and the journal
+# replays only what is after it, so the warmup is not sent twice. (This
+# used to resume one PAST the last id, which the server now reads as an id
+# it never allocated — phase 3b's stale arm — rather than take literally.)
+curl -sN --max-time 10 -H "Last-Event-ID: $id0" \
   "http://localhost:$port/events?channel=dedup&token=letmein" > "$out/dedup" &
 sse_d=$!
 sleep 2
 
-sup=$(curl -s -X POST -d channel=dedup -d msg=SUPPRESSED http://localhost:$port/publish)
-sup_id=$(echo "$sup" | grep -o '"id": [0-9-]*' | tr -dc '0-9-')
-[ "$sup_id" = "$resume" ] || fail "expected the next id to be $resume, got $sup_id ($sup)"
-sleep 1
 del=$(curl -s -X POST -d channel=dedup -d msg=DELIVERED http://localhost:$port/publish)
 del_id=$(echo "$del" | grep -o '"id": [0-9-]*' | tr -dc '0-9-')
+[ "$del_id" = "$((id0 + 1))" ] || fail "expected the next id to be $((id0 + 1)), got $del_id ($del)"
 sleep 2
 kill $sse_d 2>/dev/null
 wait $sse_d 2>/dev/null
 
 # The whole point: an event the client already has is not re-sent, and the
 # next one is — with its id on the wire, so the client can resume again.
-grep -q 'SUPPRESSED' "$out/dedup" \
-  && fail "event $sup_id was redelivered to a client that resumed at $resume"
+grep -q 'warmup' "$out/dedup" \
+  && fail "event $id0 was redelivered to a client that resumed at $id0"
 grep -q '^data: DELIVERED' "$out/dedup" \
   || fail "event $del_id never reached the resumed client"
 grep -q "^id: $del_id" "$out/dedup" \
   || { echo "=== dedup stream ==="; cat "$out/dedup"; fail "no id: line on the wire"; }
+grep -q 'm0-gap' "$out/dedup" \
+  && fail "a client resuming at the last id it saw was told it had a gap"
 
+# Phase 3b: replay (SPEC I33). The journal behind `--replay-frames` catches
+# a reconnecting client up on what it missed, in order and ahead of the
+# live feed; past the journal, or from an id this server never allocated,
+# it is sent nothing from history and one unnumbered `event: m0-gap` frame
+# so it can fetch instead of trusting a stream with a hole in it.
+# `replay_round` runs against whichever server is up, so both ways a hold
+# reaches the loop's registries are covered: this server's default pool
+# (the hold travels as an `h` frame) and phase 3c's `--blocking-threads 0`
+# (the loop subscribes inline).
+pub_id() {
+  curl -s -X POST -d "channel=$1" -d "msg=$2" http://localhost:$port/publish \
+    | grep -o '"id": [0-9-]*' | tr -dc '0-9-'
+}
+replay_round() {
+  label=$1
+  before=$(pub_id replay before)
+  [ "$before" -gt 0 ] || fail "$label: publish reported no id"
+  # Two frames go out while the client is away, and one on another
+  # channel, which it must not be handed.
+  m1=$(pub_id replay missed-one)
+  m2=$(pub_id replay missed-two)
+  _=$(pub_id elsewhere not-mine)
+  curl -sN --max-time 6 -H "Last-Event-ID: $before" \
+    "http://localhost:$port/events?channel=replay&token=letmein" > "$out/rp_$label" &
+  rp=$!
+  sleep 1
+  live=$(pub_id replay live-after)
+  sleep 1
+  kill $rp 2>/dev/null; wait $rp 2>/dev/null
+  grep -q "^id: $m1" "$out/rp_$label" \
+    || { echo "=== $label replay stream ==="; cat "$out/rp_$label"; fail "$label: missed frame $m1 was not replayed"; }
+  grep -q "^id: $m2" "$out/rp_$label" || fail "$label: missed frame $m2 was not replayed"
+  grep -q '^data: live-after' "$out/rp_$label" || fail "$label: the live frame after the replay never arrived"
+  grep -q 'data: before' "$out/rp_$label" && fail "$label: the frame the client already had was re-sent"
+  grep -q 'not-mine' "$out/rp_$label" && fail "$label: another channel's frame was replayed"
+  grep -q 'm0-gap' "$out/rp_$label" && fail "$label: a covered reconnect was told it had a gap"
+  seq=$(grep -E -o 'missed-one|missed-two|live-after' "$out/rp_$label" | xargs)
+  [ "$seq" = "missed-one missed-two live-after" ] || fail "$label: replay out of order: $seq"
+
+  # Past the journal: five publishes on another channel push the 4-frame
+  # journal's floor past $live, so a client resuming from it is owed a
+  # frame the journal no longer has. It gets no history — not the other
+  # channel's frames either — and the gap frame, unnumbered, naming the
+  # id it presented; the live feed follows.
+  i=0
+  while [ $i -lt 5 ]; do _=$(pub_id elsewhere filler); i=$((i + 1)); done
+  curl -sN --max-time 6 -H "Last-Event-ID: $live" \
+    "http://localhost:$port/events?channel=replay&token=letmein" > "$out/gap_$label" &
+  gp=$!
+  sleep 1
+  after=$(pub_id replay after-gap)
+  sleep 1
+  kill $gp 2>/dev/null; wait $gp 2>/dev/null
+  grep -q '^event: m0-gap' "$out/gap_$label" \
+    || { echo "=== $label gap stream ==="; cat "$out/gap_$label"; fail "$label: a reconnect past the journal was not told so"; }
+  grep -q '"last_event_id":'"$live," "$out/gap_$label" || fail "$label: the gap frame does not name the id presented"
+  grep -q 'filler' "$out/gap_$label" && fail "$label: another channel's frames were replayed after a gap"
+  grep -q '^data: after-gap' "$out/gap_$label" || fail "$label: the live feed did not follow the gap frame"
+  ids=$(grep -c '^id: ' "$out/gap_$label")
+  [ "$ids" = "1" ] || { cat "$out/gap_$label"; fail "$label: expected one numbered frame (the live one) after a gap, saw $ids"; }
+
+  # An id this server never allocated — a previous incarnation's — is a
+  # gap too, and taken literally it would suppress every frame until the
+  # counter passed it; the live feed must still arrive.
+  curl -sN --max-time 6 -H "Last-Event-ID: 999999999" \
+    "http://localhost:$port/events?channel=replay&token=letmein" > "$out/stale_$label" &
+  sp=$!
+  sleep 1
+  _=$(pub_id replay after-stale)
+  sleep 1
+  kill $sp 2>/dev/null; wait $sp 2>/dev/null
+  grep -q '^event: m0-gap' "$out/stale_$label" \
+    || { cat "$out/stale_$label"; fail "$label: a stale Last-Event-ID was not reported as a gap"; }
+  grep -q '^data: after-stale' "$out/stale_$label" \
+    || { cat "$out/stale_$label"; fail "$label: a stale Last-Event-ID suppressed the live feed"; }
+  echo "phase 3b ($label): replayed $m1 and $m2 from the journal, a gap past it, a stale id clamped"
+}
+replay_round pool
+
+stop $pid
+
+# Phase 3c: the same round with the hold taken on the loop itself
+# (`--blocking-threads 0`), the inline subscribe.
+spawn rt3c.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --blocking-threads 0 --replay-frames 4 --static-cache-control "$CC"
+wait_ready http://localhost:$port/health $pid
+replay_round inline
 stop $pid
 
 # Phase 4: the same fan-out across THREADS, where the GIL is off.
@@ -2962,6 +3051,7 @@ echo "smoke-django-realtime OK"
 python3 scripts/emit.py --covers F6 --task smoke-django-realtime
 python3 scripts/emit.py --covers I11 --task smoke-django-realtime
 python3 scripts/emit.py --covers L27 --task smoke-django-realtime
+python3 scripts/emit.py --covers I33 --task smoke-django-realtime
 """
 
 # The WebSocket half of the realtime demo. Kept a separate task from
@@ -7598,18 +7688,31 @@ curl -s $B/health | grep -q '"subscribers":0' \
   || fail "the slot was not unsubscribed after the client left: $(curl -s $B/health)"
 
 # --- phase 3: the reconnect cursor reaches the subscription -------------
-# Last-Event-ID: 3 while the counter stands at 1 -- ids 2 and 3 must be
-# muted and id 4 delivered, which is only true if the pool thread read the
-# header off the request and the loop subscribed with it.
-curl -s -N --max-time 4 -H 'Last-Event-ID: 3' "$B/native/hold?channel=news" > "$out"/body3 &
+# `second` (id 2) goes out while nobody is held; a client then resuming at
+# 1 must be sent 2 from the loop's journal and not 1, then `third` live --
+# which is only true if the pool thread read the header off the request
+# and the loop subscribed and caught up with it (SPEC I33, through the
+# same `h` frame a WSGI pool thread sends). It used to resume at 3 while
+# the counter stood at 1, an id the server now reads as a previous
+# incarnation's: the second client here presents one and must be told so
+# with an `m0-gap` frame, and still receive `fourth`.
+curl -s -X POST "$B/publish?channel=news&msg=second" > /dev/null
+curl -s -N --max-time 4 -H 'Last-Event-ID: 1' "$B/native/hold?channel=news" > "$out"/body3 &
 c3=$!
 sleep 1
-for m in second third fourth; do
-  curl -s -X POST "$B/publish?channel=news&msg=$m" > /dev/null
-done
+curl -s -X POST "$B/publish?channel=news&msg=third" > /dev/null
 wait $c3
-grep -q '^data: fourth$' "$out"/body3 || fail "id 4 did not reach a client resuming at 3"
-grep -q '^data: second$\\|^data: third$' "$out"/body3 && fail "an event at or below the client's Last-Event-ID was re-sent"
+grep -q '^data: second$' "$out"/body3 || fail "id 2, published while the client was away, was not replayed to a client resuming at 1"
+grep -q '^data: third$' "$out"/body3 || fail "id 3 did not reach a client resuming at 1"
+grep -q '^data: first$' "$out"/body3 && fail "an event at or below the client's Last-Event-ID was re-sent"
+grep -q 'm0-gap' "$out"/body3 && fail "a client the journal covered was told it had a gap"
+curl -s -N --max-time 4 -H 'Last-Event-ID: 99' "$B/native/hold?channel=news" > "$out"/body3s &
+c3s=$!
+sleep 1
+curl -s -X POST "$B/publish?channel=news&msg=fourth" > /dev/null
+wait $c3s
+grep -q '^event: m0-gap$' "$out"/body3s || fail "an id the server never allocated was not reported as a gap"
+grep -q '^data: fourth$' "$out"/body3s || fail "id 4 did not reach a client resuming from a stale id"
 
 # --- phase 4: the Mojo lane holds while the Python pool is busy ---------
 # Both WSGI threads inside 1.5 s views; the hold rides the Mojo lane's own

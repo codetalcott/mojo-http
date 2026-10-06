@@ -1338,6 +1338,14 @@
       "evidence": "`test_stream.mojo:test_a_replay_larger_than_the_outbox_is_not_served_in_part` (every PR) \u2014 thirty 3 KB frames used to arrive as frames 1\u201321 with 22\u201330 refused, leaving the client nine changes behind with a clean log; now nothing is queued, the resync arrives, and the live feed resumes at 31. Beside it, one test per source of a gap and a control that a replay which fits is whole; `poe sabotage-datastar-sdk` reverts the rollback, the eviction and history checks, the ahead check, the late worker's floor and the refusal count, each caught. On the wire, `Smoke test the Datastar todo demo` reconnects thirteen 2 KB adds behind and requires the newest todo and no replayed id; with the rollback reverted it fails there"
     },
     {
+      "id": "I33",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A held stream that reconnects with `Last-Event-ID` is caught up: each loop journals the last `--replay-frames` numbered frames it delivered (`M0_REPLAY_FRAMES`; 64; 0 keeps none), and a WSGI hold \u2014 subscribed inline or forwarded from a pool thread as an `h` frame, which is also how a Mojo mount's and a hold mount's arrive \u2014 is sent every frame of its channel after the id it presented, in order and ahead of the live feed. All or nothing, as I30: an id below the journal's floor (a frame evicted, or published before a respawned worker joined, the floor being one number for every channel so a server with a channel per visitor keeps nothing that grows), frames that would not fit the outbox, or an id ahead of the counter (a previous incarnation's, clamped to the head so it suppresses nothing) get no history and one unnumbered `event: m0-gap` frame naming the id presented and the head, then the live feed. A first visit gets the live feed alone",
+      "status": "verified",
+      "evidence": "`Smoke test the Django realtime example` (every PR) \u2014 phase 3b, once against the default pool and once under `--blocking-threads 0`: two frames missed and replayed in order ahead of a live one with another channel's left out, a client pushed past a 4-frame journal told so and served nothing from history, a stale id told so and not starved. `test_replay.mojo` holds the journal's rules on their own"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",
