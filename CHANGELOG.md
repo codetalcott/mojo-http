@@ -55,6 +55,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   byte as it was given, and the writers check the transcoded bytes again
   before they send them. Rebuild a Mojo application against this release.
 
+- **A response whose application sets `Server` carries one `Server`
+  line** (SPEC A26). The server wrote its default `server: lightbug_http`
+  whatever the headers held, so an application that named itself, built
+  in Mojo or a Python application on m0serve, sent two. The default is now
+  written only when the application set none.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every

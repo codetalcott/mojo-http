@@ -1249,6 +1249,11 @@ lightbug_http
         and the cookie jar's latin-1 writer now also drop a value whose
         TRANSCODED bytes hold CR, LF or NUL.
 
+      - http/response.mojo (2026-10-07): `encode` and `encode_into` write
+        the default `server: lightbug_http` line only when the response
+        carries no `Server` header, as `write_to` already did (SPEC A26).
+        An application's own `Server` went out beside the default.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
