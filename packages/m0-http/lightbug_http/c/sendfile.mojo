@@ -52,8 +52,9 @@ struct SendFileResult(Copyable, Movable):
     advanced offset. Not an error."""
 
     var error: Bool
-    """The call failed for a reason that is not EAGAIN/EINTR. A caller
-    should close the connection."""
+    """The call failed for a reason that is not EAGAIN/EINTR, or found the
+    end of the file with bytes still asked for. A caller should close the
+    connection."""
 
     def __init__(out self, sent: Int, again: Bool, error: Bool):
         self.sent = sent
@@ -70,6 +71,14 @@ def send_file(out_fd: Int, in_fd: Int, offset: Int, count: Int) -> SendFileResul
     Does not move either descriptor's file position: the offset is passed
     per call, so several responses may stream from one open file at once
     without a lock. The caller advances its own offset by `sent`.
+
+    A file shorter than `count` sends what it has; the call that then finds
+    no byte left is reported `failed()`. Both kernels answer end of file as
+    success with nothing sent, and that answer, passed on, read as "no
+    progress": the loop waited for writability on a socket that had room,
+    and a file truncated after its head promised a length spun its slot
+    (review record LF16). The head is on the wire, so nothing can finish
+    the response honestly; closing is at least an error the client sees.
     """
     if count <= 0:
         return SendFileResult(0, False, False)
@@ -103,6 +112,9 @@ def send_file(out_fd: Int, in_fd: Int, offset: Int, count: Int) -> SendFileResul
         )
         var wrote = Int(sent_len)
         if rc == 0:
+            if wrote == 0:
+                # Success with no bytes, `count` above 0: end of file.
+                return SendFileResult(0, False, True)
             return SendFileResult(wrote, False, False)
         var err = get_errno()
         if err in [err.EAGAIN, err.EWOULDBLOCK, err.EINTR]:
@@ -115,7 +127,10 @@ def send_file(out_fd: Int, in_fd: Int, offset: Int, count: Int) -> SendFileResul
         var rc = external_call[
             "sendfile", Int, c_int, c_int, type_of(Pointer(to=off)), Int
         ](c_int(out_fd), c_int(in_fd), Pointer(to=off), count)
-        if rc >= 0:
+        if rc == 0:
+            # `count` is above 0, so this is end of file.
+            return SendFileResult(0, False, True)
+        if rc > 0:
             return SendFileResult(Int(rc), False, False)
         var err = get_errno()
         if err in [err.EAGAIN, err.EWOULDBLOCK, err.EINTR]:

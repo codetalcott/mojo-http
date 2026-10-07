@@ -1246,6 +1246,14 @@ lightbug_http
         and a ping's pong sent ahead of the Close. It built a fresh result,
         which dropped both (review record LF9).
 
+      - c/sendfile.mojo, loop/response.mojo (2026-10-07): `send_file`
+        reports end of file, success with no bytes while `count` is above
+        0 on both kernels, as `failed()`, so `_pump_body_fd` closes the
+        connection. It came back as no progress, which the pump answered
+        as a full socket by re-arming a write one-shot that fired at once
+        on every pass (review record LF16); the pump's comment on that
+        answer says so.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

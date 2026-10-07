@@ -149,5 +149,45 @@ def test_offset_skips_the_prefix() raises:
     _close_fd(send_fd)
 
 
+def test_the_end_of_the_file_is_a_failure() raises:
+    """A file shorter than the count asked for sends what it has, and the
+    call that finds no byte left reports a failure, never a call that
+    merely moved nothing.
+
+    Both kernels answer end of file as success with no bytes (Linux returns
+    0, Darwin 0 with `*len` 0). That came back as `(0, False, False)`,
+    which the loop reads as "the socket is full" and waits for
+    writability on a socket that has room: a file truncated after its head
+    promised a length spun its slot (review record LF16). Nothing can
+    finish such a response honestly, so the connection closes.
+    """
+    var path = String("/tmp/m0_sendfile_eof.txt")
+    var body = String("short")
+    _write_temp(path, body)
+
+    var pair = _socketpair_stream()
+    var recv_fd = pair[0]
+    var send_fd = pair[1]
+
+    var fd = open(path, "r")
+    var in_fd = Int(fd._get_raw_fd())
+    # The file has 5 bytes; 16 are asked for, as a stale length would.
+    var first = send_file(send_fd, in_fd, 0, 16)
+    var at_end = send_file(send_fd, in_fd, body.byte_length(), 16)
+    fd.close()
+
+    assert_true(not first.failed(), "a short file's bytes were refused")
+    assert_equal(first.sent, body.byte_length())
+    assert_true(
+        at_end.failed(),
+        "end of file was reported as no progress, not as a failure",
+    )
+    assert_equal(at_end.sent, 0)
+    assert_true(not at_end.again)
+
+    _close_fd(recv_fd)
+    _close_fd(send_fd)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

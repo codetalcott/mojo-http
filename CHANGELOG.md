@@ -56,6 +56,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   depended on how TCP split the bytes. Both are now kept, the Close sent
   after the pong.
 
+- **A static file that shrinks while it is served no longer spins its
+  connection** (SPEC J15). When a file ended before the `Content-Length`
+  its response had already sent, the server read the end of the file as
+  a socket that could take nothing yet and waited for room it already
+  had: the connection spun on the event loop until the idle timeout
+  closed it, and for good with idle timeouts off. It now closes at once,
+  and the client sees a response shorter than its length, an error it
+  can detect.
+
 ### Changed
 
 - **`m0 --help` names the templates** (SPEC N27;
