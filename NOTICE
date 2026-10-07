@@ -1269,6 +1269,9 @@ lightbug_http
         faulty_framing` names it, and `_process_request` asks it before
         `from_parsed` consumes the head. `parse_request_headers` requires
         `Host` for every minor version from 1, where it asked for 1 exactly.
+        The `/__metrics` branch of `_process_request` no longer resets
+        `should_close` to False, so that answer closes when the request
+        asked, as every other does.
 
       - header.mojo, http/request.mojo (2026-10-07): `Connection` is read
         as a token list (RFC 9110 §7.6.1, SPEC B17).

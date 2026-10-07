@@ -78,7 +78,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server compared the whole value with `close`: `Connection: close, TE`
   kept the connection alive and answered the request pipelined behind
   it. Each option is now read on its own, case-insensitively, and an
-  HTTP/1.0 client's `keep-alive` is read the same way.
+  HTTP/1.0 client's `keep-alive` is read the same way. Under `--metrics`
+  the `/__metrics` answer kept its connection alive whatever the request
+  asked; it now closes as every other answer does, for this and for an
+  HTTP/1.0 chunked request alike.
 
 - **A request whose target is a whole URL takes its host from the URL**
   (SPEC B16). RFC 9112 §3.2.2 says a server receiving `GET

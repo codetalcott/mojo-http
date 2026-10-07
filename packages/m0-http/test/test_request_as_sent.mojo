@@ -170,6 +170,10 @@ def test_connection_is_read_as_a_list_of_tokens() raises:
     assert_true(_closes("TE,close"))
     assert_true(_closes("Upgrade , CLOSE ,"))
     assert_true(_closes(", ,close"))
+    # OWS is SP or HTAB (RFC 9110 §5.6.3), around any member.
+    assert_true(_closes("\tclose\t, TE"))
+    assert_true(_closes("TE,\tclose"))
+    assert_false(_closes("\tkeep-alive\t,TE", "1.0"))
     # A member must BE the token: neither a longer nor a shorter one.
     assert_false(_closes("closed"))
     assert_false(_closes("close-ish, TE"))

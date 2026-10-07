@@ -797,7 +797,11 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             status_text="OK",
         )
         response.headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8"
-        st.provision_pool.provisions[slot].should_close = False
+        # `should_close` stays as the request set it above. This branch
+        # reset it to False, so a scrape asking `Connection: close`, or an
+        # HTTP/1.0 chunked POST whose framing closes the connection (SPEC
+        # B15), was kept alive here alone. A scrape that asks nothing is
+        # still kept, which a scraper holding one connection relies on.
     else:
         # The before hook first, ON THE LOOP, in every mode. A handler that
         # answers here never becomes a job: m0serve's answers its static

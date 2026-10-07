@@ -659,6 +659,10 @@ def test_an_absolute_form_authority_replaces_host() raises:
         _header("GET http://h.example:8080/ HTTP/1.1\r\nHost: x\r\n\r\n", "host"),
         "h.example:8080",
     )
+    # An IPv6 literal and its port: the colons inside it end nothing.
+    var v6 = String("GET http://[::1]:8080/p HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_header(v6, "host"), "[::1]:8080")
+    assert_equal(_path_of(v6), "/p")
     # HTTP/1.0 needs no Host field, and gets the target's.
     assert_equal(_header("GET http://h.example/p HTTP/1.0\r\n\r\n", "host"), "h.example")
     # HTTP/1.1 still needs one sent (RFC 9112 §3.2), whatever the target says.
@@ -681,6 +685,11 @@ def test_an_absolute_form_authority_ends_at_a_query() raises:
     var raw = String("GET http://h?q=1 HTTP/1.1\r\nHost: x\r\n\r\n")
     assert_equal(_path_of(raw), "/?q=1")
     assert_equal(_header(raw, "host"), "h")
+    # A `#` ends it too, and what follows reduces as an origin-form
+    # target's would, the fragment kept on the path.
+    var frag = String("GET http://h#f HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_path_of(frag), "/#f")
+    assert_equal(_header(frag, "host"), "h")
     # An `@` past the authority is data, as in an origin-form target.
     assert_equal(
         _path_of("GET http://h/p?x=a@b HTTP/1.1\r\nHost: x\r\n\r\n"), "/p?x=a@b"
