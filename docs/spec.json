@@ -1082,6 +1082,14 @@
       "evidence": "`Smoke test what a child process the application starts inherits` (every PR) \u2014 a view starts a child with close_fds=False in six shapes (the pool, the loop, forked and spawned workers, `--realtime`, the ASGI executor) and requires it to hold no descriptor above 2: the server started with none there, so each would be its own. Before the fix every shape failed, the child holding 8 to 46 of them: connections, the listener, every channel, the shutdown pipe, the shared page. `test_cloexec.mojo` holds each creation helper, including those no shape reaches (the per-loop listener dups and fan-out pipes of `--threads`), and `test_respawn.mojo` that the spawn's own exec keeps exactly what the new image adopts. On macOS each creation call (`accept`, `socket`, `socketpair`, `pipe`, `recvmsg`) is followed by a second that marks the descriptor, so a fork and exec on another thread in the instant between can still inherit that one, as under CPython there; Linux creates each close-on-exec atomically. A child that forks WITHOUT exec (`os.fork`, multiprocessing's fork start method) inherits everything, which no descriptor flag can prevent"
     },
     {
+      "id": "G20",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "The shared page the workers map is created with mode 0o600, its owner's alone, as `shared_file_fd` asks: on Darwin arm64 `shm_open`'s mode, a variadic argument, goes on the stack where the callee reads it, as `fcntl`'s argument does; and a raise after the open closes the descriptor",
+      "status": "verified",
+      "evidence": "`test_cloexec.mojo:test_the_shared_page_is_its_owners_alone` (every PR) \u2014 it bites on the macOS leg only, Linux passing variadic arguments in registers; `test_a_page_that_cannot_be_sized_is_closed` holds the close. Before the fix (review record LF17) the mode went as a third fixed argument, in a register the callee never reads, and the page took its mode from the stack: measured as 0o0, 0o1 and 0o744"
+    },
+    {
       "id": "H1",
       "section": "H",
       "category": "H. TLS",
@@ -1160,6 +1168,14 @@
       "capability": "A fragmented control frame is a protocol error",
       "status": "verified",
       "evidence": "`test_websocket.mojo:test_fragmented_control_frame_is_protocol_error` (every PR)"
+    },
+    {
+      "id": "I34",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A message parsed from the same read as a protocol violation is still delivered, and a ping in that read still answered, the 1002 Close going out after its pong: what the application receives does not depend on how TCP split the bytes",
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_a_message_before_a_violation_is_delivered` (every PR) \u2014 with `test_a_pong_before_a_violation_goes_out_ahead_of_the_close` beside it. Before the fix (review record LF9) a refusal answered with a fresh result, dropping both, while a peer's own Close kept them"
     },
     {
       "id": "I7",
@@ -1376,6 +1392,14 @@
       "capability": "A file response whose head the socket cannot take at once still sends its file: the write-ready path that finishes the head pumps the file after it, as the eager path does",
       "status": "verified",
       "evidence": "`Smoke test zero-copy static file serving` (every PR) \u2014 1000 requests for a small `--static` file pipelined on one connection to a client that reads more slowly than the server answers, each head made 12 KB by a long `--static-cache-control` so the send buffer fills at a head on both kernels, and every response must arrive with its own file. Before the fix a head that needed a second send went straight to the keep-alive reset with the file unsent, and the client read the next head where the body belonged: at response 37 on macOS and 173 in the Linux container, every run. With 5000-byte files and short heads, 19 of 78 stalls fell on a head over 20 MB, because XNU's sendfile refuses below the send low-water mark"
+    },
+    {
+      "id": "J15",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "A file body that ends before the length its head promised, as a static file truncated while it is served does, closes the connection at the next write event, the client reading EOF where the bytes ran out, rather than leaving its slot waiting for room the socket already has",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_file_that_ends_early_closes_its_connection` (every PR) \u2014 over this OS's multiplexer, the file truncated mid-transfer where the transfer has got to; `test_sendfile.mojo:test_the_end_of_the_file_is_a_failure` holds the binding's answer. Before the fix (review record LF16) `sendfile`'s end of file read as no progress: the write one-shot was re-armed and fired at once, pass after pass, until the idle timeout reaped the slot, and for good with idle timeouts off"
     },
     {
       "id": "J2",

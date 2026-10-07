@@ -70,6 +70,32 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `LiveHandler.before_request`. `smoke-scaffold` now serves `live` behind
   a pool.
 
+- **A WebSocket message is no longer lost when a frame the server refuses
+  follows it in the same read** (SPEC I34). A frame the protocol forbids
+  (a reserved opcode, an unmasked frame, a text frame that is not UTF-8)
+  ends the connection with a Close, and that refusal discarded everything
+  parsed from the same read before it: a complete message never reached
+  the application, and a ping went unanswered. Whether a message arrived
+  depended on how TCP split the bytes. Both are now kept, the Close sent
+  after the pong.
+
+- **A static file that shrinks while it is served no longer spins its
+  connection** (SPEC J15). When a file ended before the `Content-Length`
+  its response had already sent, the server read the end of the file as
+  a socket that could take nothing yet and waited for room it already
+  had: the connection spun on the event loop until the idle timeout
+  closed it, and for good with idle timeouts off. It now closes at once,
+  and the client sees a response shorter than its length, an error it
+  can detect.
+
+- **The page workers share is created private on macOS** (SPEC G20). The
+  server asked `shm_open` for mode `0o600` in a register, where Apple
+  silicon passes that argument on the stack, so the page took whatever
+  mode the stack held: measured as `0o000`, `0o001` and `0o744`, the last
+  readable by any user who opened it by name before the server unlinked
+  it a moment later. It is now created `0o600`. A page that cannot be
+  sized no longer leaks its descriptor. Linux was not affected.
+
 ### Changed
 
 - **`m0 --help` names the templates** (SPEC N27;

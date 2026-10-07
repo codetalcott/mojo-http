@@ -1254,6 +1254,30 @@ lightbug_http
         carries no `Server` header, as `write_to` already did (SPEC A26).
         An application's own `Server` went out beside the default.
 
+      - websocket.mojo (2026-10-07): `WSState._fail` takes the result
+        `feed` has built so far and adds its Close to it, so a message
+        parsed before a protocol violation in the same read is delivered
+        and a ping's pong sent ahead of the Close. It built a fresh result,
+        which dropped both (review record LF9).
+
+      - c/sendfile.mojo, loop/response.mojo (2026-10-07): `send_file`
+        reports end of file, success with no bytes while `count` is above
+        0 on both kernels, as `failed()`, so `_pump_body_fd` closes the
+        connection. It came back as no progress, which the pump answered
+        as a full socket by re-arming a write one-shot that fired at once
+        on every pass (review record LF16); the pump's comment on that
+        answer says so.
+
+      - c/process.mojo, c/fcntl.mojo (2026-10-07): `_shm_open` calls
+        `shm_open` in `_fcntl`'s Darwin shape, the mode ninth, past six
+        dummies, on the stack where a variadic callee reads it. It went as
+        a third fixed argument, in x2, and the shared page took its mode
+        from the stack: 0o0, 0o1 and 0o744 where 0o600 was asked.
+        `shared_file_fd` closes the descriptor when `ftruncate` or
+        `set_cloexec` raises after the open, and c/fcntl.mojo's docstring
+        names the variadic calls the fork makes on Darwin (review record
+        LF17).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

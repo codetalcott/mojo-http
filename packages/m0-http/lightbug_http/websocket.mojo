@@ -508,9 +508,17 @@ struct WSState(Movable):
         self.closing = False
         self.inbound_suspended = False
 
-    def _fail(mut self, code: Int) -> WSParseResult:
-        var res = WSParseResult()
-        res.reply = close_frame(code)
+    def _fail(mut self, var res: WSParseResult, code: Int) -> WSParseResult:
+        """End the connection on a protocol violation, keeping what this
+        `feed` parsed before it.
+
+        `res` is the result built so far: its complete messages are still
+        delivered and its pongs still sent, the Close after them. A fresh
+        result here dropped them, so whether the application saw a message
+        depended on whether TCP put the bad frame in the same read (review
+        record LF9) -- the peer's own Close already kept them.
+        """
+        res.reply.extend(Span(close_frame(code)))
         res.close_after_reply = True
         res.close_code = code
         self.buffer.clear()
@@ -522,8 +530,9 @@ struct WSState(Movable):
         """Consume received bytes; return whatever became actionable.
 
         Partial frames stay buffered for the next feed. On a protocol
-        violation the result carries a close frame and `close_after_reply`
-        — the connection is done either way.
+        violation the result carries what was parsed before it, then a
+        close frame and `close_after_reply` — the connection is done
+        either way.
         """
         self.buffer.extend(data)
 
@@ -540,10 +549,10 @@ struct WSState(Movable):
             var opcode = b0 & 0x0F
             if (b0 & 0x70) != 0:
                 # RSV bits without a negotiated extension.
-                return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
             if (b1 & 0x80) == 0:
                 # Client frames MUST be masked (§5.1).
-                return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
 
             var header = 2
             var plen = b1 & 0x7F
@@ -559,11 +568,11 @@ struct WSState(Movable):
                 for j in range(8):
                     plen64 = (plen64 << 8) | UInt64(self.buffer[i + 2 + j])
                 if plen64 > UInt64(self.max_message_size):
-                    return self._fail(WS_CLOSE_TOO_BIG)
+                    return self._fail(res^, WS_CLOSE_TOO_BIG)
                 plen = Int(plen64)
                 header = 10
             if plen > self.max_message_size:
-                return self._fail(WS_CLOSE_TOO_BIG)
+                return self._fail(res^, WS_CLOSE_TOO_BIG)
 
             var mask_at = i + header
             header += 4
@@ -584,7 +593,7 @@ struct WSState(Movable):
             if opcode >= 0x8:
                 # Control frames: never fragmented, payload <= 125 (§5.5).
                 if not fin or plen > 125:
-                    return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                    return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                 if opcode == WS_OP_PING:
                     var pong = encode_ws_frame(WS_OP_PONG, Span(payload))
                     res.reply.extend(Span(pong))
@@ -607,20 +616,20 @@ struct WSState(Movable):
                     # there is a body, the first two bytes MUST be a 2-byte
                     # unsigned integer").
                     if len(payload) == 1:
-                        return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                        return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                     if len(payload) >= 2:
                         var close_code = (
                             (Int(payload[0]) << 8) | Int(payload[1])
                         )
                         if not close_code_is_valid_from_peer(close_code):
-                            return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                            return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                         # Anything after the code is a reason, and a reason
                         # is text: invalid UTF-8 there is 1007, the same
                         # answer a text frame gets (§8.1).
                         if len(payload) > 2 and not is_valid_utf8(
                             Span(payload)[2:]
                         ):
-                            return self._fail(WS_CLOSE_INVALID_DATA)
+                            return self._fail(res^, WS_CLOSE_INVALID_DATA)
                     var echo_body = List[UInt8]()
                     if len(payload) >= 2:
                         echo_body.append(payload[0])
@@ -634,15 +643,15 @@ struct WSState(Movable):
                     self.buffer.clear()
                     return res^
                 else:
-                    return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                    return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
             elif opcode == WS_OP_TEXT or opcode == WS_OP_BINARY:
                 if self.frag_opcode != -1:
                     # A new data frame may not interleave with a fragmented
                     # message in progress (§5.4).
-                    return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                    return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                 if fin:
                     if opcode == WS_OP_TEXT and not is_valid_utf8(Span(payload)):
-                        return self._fail(WS_CLOSE_INVALID_DATA)
+                        return self._fail(res^, WS_CLOSE_INVALID_DATA)
                     res.msg_opcodes.append(opcode)
                     res.msg_payloads.append(payload^)
                 else:
@@ -650,9 +659,9 @@ struct WSState(Movable):
                     self.frag_payload = payload^
             elif opcode == WS_OP_CONT:
                 if self.frag_opcode == -1:
-                    return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                    return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                 if len(self.frag_payload) + plen > self.max_message_size:
-                    return self._fail(WS_CLOSE_TOO_BIG)
+                    return self._fail(res^, WS_CLOSE_TOO_BIG)
                 self.frag_payload.extend(Span(payload))
                 if fin:
                     # Validated on the ASSEMBLED message: a multi-byte
@@ -661,14 +670,14 @@ struct WSState(Movable):
                     if self.frag_opcode == WS_OP_TEXT and not is_valid_utf8(
                         Span(self.frag_payload)
                     ):
-                        return self._fail(WS_CLOSE_INVALID_DATA)
+                        return self._fail(res^, WS_CLOSE_INVALID_DATA)
                     res.msg_opcodes.append(self.frag_opcode)
                     res.msg_payloads.append(self.frag_payload.copy())
                     self.frag_opcode = -1
                     self.frag_payload.clear()
             else:
                 # Reserved data opcodes 0x3–0x7.
-                return self._fail(WS_CLOSE_PROTOCOL_ERROR)
+                return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
 
         # Keep only the unparsed tail.
         if i > 0:

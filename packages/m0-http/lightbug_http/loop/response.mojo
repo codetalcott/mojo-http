@@ -172,8 +172,11 @@ def _pump_body_fd(mut provision: ConnectionProvision, fd_val: Int) -> Int:
         if r.again:
             return BODY_FD_MORE
         if r.sent == 0:
-            # Neither progress nor a reason: treat as would-block rather
-            # than spinning the loop on this connection forever.
+            # Neither progress nor a reason, which `send_file` no longer
+            # answers: end of file is `failed()` (review record LF16).
+            # Waiting for writability on this answer is what spun a slot
+            # whose file had been truncated; it stays only so that no
+            # answer can keep this loop calling `sendfile`.
             return BODY_FD_MORE
 
     provision.close_body_fd()
