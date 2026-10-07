@@ -65,6 +65,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and the client sees a response shorter than its length, an error it
   can detect.
 
+- **The page workers share is created private on macOS** (SPEC G20). The
+  server asked `shm_open` for mode `0o600` in a register, where Apple
+  silicon passes that argument on the stack, so the page took whatever
+  mode the stack held: measured as `0o000`, `0o001` and `0o744`, the last
+  readable by any user who opened it by name before the server unlinked
+  it a moment later. It is now created `0o600`. A page that cannot be
+  sized no longer leaks its descriptor. Linux was not affected.
+
 ### Changed
 
 - **`m0 --help` names the templates** (SPEC N27;

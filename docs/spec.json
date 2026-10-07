@@ -1066,6 +1066,14 @@
       "evidence": "`Smoke test what a child process the application starts inherits` (every PR) \u2014 a view starts a child with close_fds=False in six shapes (the pool, the loop, forked and spawned workers, `--realtime`, the ASGI executor) and requires it to hold no descriptor above 2: the server started with none there, so each would be its own. Before the fix every shape failed, the child holding 8 to 46 of them: connections, the listener, every channel, the shutdown pipe, the shared page. `test_cloexec.mojo` holds each creation helper, including those no shape reaches (the per-loop listener dups and fan-out pipes of `--threads`), and `test_respawn.mojo` that the spawn's own exec keeps exactly what the new image adopts. On macOS each creation call (`accept`, `socket`, `socketpair`, `pipe`, `recvmsg`) is followed by a second that marks the descriptor, so a fork and exec on another thread in the instant between can still inherit that one, as under CPython there; Linux creates each close-on-exec atomically. A child that forks WITHOUT exec (`os.fork`, multiprocessing's fork start method) inherits everything, which no descriptor flag can prevent"
     },
     {
+      "id": "G20",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "The shared page the workers map is created with mode 0o600, its owner's alone, as `shared_file_fd` asks: on Darwin arm64 `shm_open`'s mode, a variadic argument, goes on the stack where the callee reads it, as `fcntl`'s argument does; and a raise after the open closes the descriptor",
+      "status": "verified",
+      "evidence": "`test_cloexec.mojo:test_the_shared_page_is_its_owners_alone` (every PR) \u2014 it bites on the macOS leg only, Linux passing variadic arguments in registers; `test_a_page_that_cannot_be_sized_is_closed` holds the close. Before the fix (review record LF17) the mode went as a third fixed argument, in a register the callee never reads, and the page took its mode from the stack: measured as 0o0, 0o1 and 0o744"
+    },
+    {
       "id": "H1",
       "section": "H",
       "category": "H. TLS",

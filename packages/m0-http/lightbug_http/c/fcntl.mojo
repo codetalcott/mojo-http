@@ -7,6 +7,12 @@ variadic argument on the stack (see `_fcntl`), and because a second
 here, importing nothing from this package, so the lowest layers (`socket`,
 `socketpair`, `pipe`, `fdpass`) can mark what they create close-on-exec
 without an import cycle through `kqueue`, which imports `socket`.
+
+The variadic libc functions the fork calls on Darwin are `fcntl` here and
+`shm_open` (`_shm_open` in `c/process.mojo`), and each takes `_fcntl`'s
+shape there, its variadic arguments declared after dummies that fill
+x0-x7 so that they land on the stack, as any variadic function added
+later must.
 """
 
 from std.ffi import c_int, external_call, get_errno

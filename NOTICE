@@ -1254,6 +1254,16 @@ lightbug_http
         on every pass (review record LF16); the pump's comment on that
         answer says so.
 
+      - c/process.mojo, c/fcntl.mojo (2026-10-07): `_shm_open` calls
+        `shm_open` in `_fcntl`'s Darwin shape, the mode ninth, past six
+        dummies, on the stack where a variadic callee reads it. It went as
+        a third fixed argument, in x2, and the shared page took its mode
+        from the stack: 0o0, 0o1 and 0o744 where 0o600 was asked.
+        `shared_file_fd` closes the descriptor when `ftruncate` or
+        `set_cloexec` raises after the open, and c/fcntl.mojo's docstring
+        names the variadic calls the fork makes on Darwin (review record
+        LF17).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
