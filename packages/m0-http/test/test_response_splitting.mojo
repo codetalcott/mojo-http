@@ -276,7 +276,7 @@ def _str(b: List[Byte]) -> String:
 def _overlongs() -> List[List[Byte]]:
     """An ASCII control in a longer form than UTF-8 allows: CR, LF and NUL
     in three bytes and LF and NUL in four, the record's five, then CR and LF
-    in two, whose lead bytes 0xC0 and 0xC1 no transcoder ever decoded."""
+    in two, whose lead bytes 0xC0 and 0xC1 this transcoder never decoded."""
     var all = List[List[Byte]]()
     all.append(_seq(0xE0, 0x80, 0x8D))
     all.append(_seq(0xE0, 0x80, 0x8A))

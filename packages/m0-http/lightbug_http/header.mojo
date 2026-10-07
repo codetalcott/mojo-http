@@ -364,9 +364,10 @@ def encode_latin1_header_value(value: String) -> List[UInt8]:
     An overlong sequence is invalid UTF-8 too, and must stay bytes: this
     runs AFTER the writers have refused a value holding CR, LF or NUL
     (SPEC G2), and decoding the three-byte `E0 80 8D` or the four-byte
-    `F0 80 80 8A` -- which `unquote` makes of `%E0%80%8D` in a `?next=` a
-    view redirects to -- wrote the real CR or LF it encodes, splitting the
-    response the refusal had passed (SPEC G19). Restricting the decode to
+    `F0 80 80 8A` -- which `unquote` makes of `%E0%80%8D` or
+    `%F0%80%80%8A` in a `?next=` a view redirects to -- wrote the real CR
+    or LF it encodes, splitting the response the refusal had passed
+    (SPEC G19). Restricting the decode to
     the two lead bytes whose sequences land in U+0080–U+00FF is the whole
     rule: no output byte below 0x80 can come from anything but itself.
     """
