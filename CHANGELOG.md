@@ -55,11 +55,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   byte as it was given, and the writers check the transcoded bytes again
   before they send them. Rebuild a Mojo application against this release.
 
-- **A response whose application sets `Server` carries one `Server`
-  line** (SPEC A26). The server wrote its default `server: lightbug_http`
+- **A response whose application sets `Server` no longer carries two
+  `Server` lines** (SPEC A26). The server wrote its default `server: lightbug_http`
   whatever the headers held, so an application that named itself, built
   in Mojo or a Python application on m0serve, sent two. The default is now
   written only when the application set none.
+
 - **A request head with a bare LF is refused with 400** (SPEC B12). The
   parser ended a head at a bare-LF empty line (`\r\n\n`), while the
   event loop frames a head by the first CRLFCRLF, and the bytes between
