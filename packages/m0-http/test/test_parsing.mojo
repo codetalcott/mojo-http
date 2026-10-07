@@ -496,6 +496,71 @@ def test_a_header_line_cut_between_cr_and_lf_is_incomplete() raises:
     assert_true(_accepted(String("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")))
 
 
+# --- One line terminator: CRLF (SPEC B12) ------------------------------------
+#
+# The event loop frames a head by its first CRLFCRLF and hands the parser
+# exactly that many bytes. A parser that also ended a head at a bare LF
+# stopped short of the loop's frame, and whatever lay between was lost: the
+# two wire shapes below are what `apps/hello` did with them (one answer for
+# two requests; a body answered as a request). A bare LF anywhere in a
+# request head is refused, invalid rather than incomplete.
+
+
+def test_a_bare_lf_in_a_request_head_is_rejected() raises:
+    """Every line of a request head ends in CRLF, the empty one included.
+
+    covers: B12
+    """
+    # The empty line that ends the head.
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\n\n"))
+    # A field line.
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\nAccept: */*\r\n\r\n"))
+    # The request line.
+    assert_true(_rejected("GET / HTTP/1.1\nHost: x\r\n\r\n"))
+    # An empty line before the request line.
+    assert_true(_rejected("\nGET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    # All of them, the shape the old parser accepted whole.
+    assert_true(_rejected("GET / HTTP/1.1\nHost: x\n\n"))
+
+
+def test_a_bare_lf_is_invalid_before_the_rest_arrives() raises:
+    """Refused at the LF, not left waiting for more bytes.
+
+    "Incomplete" keeps the bytes in the buffer for the next read to
+    reinterpret; the head is already unframeable at the LF.
+    """
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\n"))
+    assert_true(_rejected("GET / HTTP/1.1\n"))
+
+
+def test_the_two_bare_lf_wire_shapes_are_rejected() raises:
+    """What the loop hands the parser for each shape `apps/hello` lost.
+
+    The loop's frame runs to the first CRLFCRLF, so the parser sees the
+    first head, the bare LF, and everything up to that CRLFCRLF: the second
+    request's head, or the `Content-Length` that described the body.
+    """
+    assert_true(
+        _rejected(
+            "GET /health HTTP/1.1\r\nHost: x\r\n\n"
+            "GET /health HTTP/1.1\r\nHost: x\r\n\r\n"
+        )
+    )
+    assert_true(
+        _rejected(
+            "POST /health HTTP/1.1\r\nHost: x\r\n\nContent-Length: 33\r\n\r\n"
+        )
+    )
+
+
+def test_an_empty_crlf_line_before_the_request_line_is_still_skipped() raises:
+    """RFC 9112 §2.2's robustness rule stands for a CRLF empty line."""
+    var raw = String("\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_true(_accepted(raw))
+    var parsed = parse_request_headers(raw.as_bytes())
+    assert_equal(parsed.bytes_consumed, raw.byte_length())
+
+
 # --- Request target normalization: RFC 9112 3.2.2 ----------------------------
 
 
@@ -576,8 +641,8 @@ def test_request_targets_end_at_the_space_at_every_length() raises:
         assert_equal(_path_of(raw), path)
 
 
-def test_a_bare_lf_ends_the_line_even_with_a_cr_further_on() raises:
-    """A lone LF is a line terminator here (RFC 9112 §2.2 allows it).
+def test_a_bare_lf_is_found_even_with_a_cr_further_on() raises:
+    """The value scan stops at the FIRST control byte, LF included.
 
     The wide scan used to look for the first CR and only then for any
     other control byte, so a value ended by a bare LF ran on to the next
@@ -588,6 +653,10 @@ def test_a_bare_lf_ends_the_line_even_with_a_cr_further_on() raises:
     header), or the scalar tail scanned it correctly, and the Accept
     line's CR must fall inside that first 64-byte chunk (lane 35 here,
     the LF at lane 17), or the wide scan's second stage found the LF.
+
+    A request head's bare LF is refused now (SPEC B12), and that answer
+    still depends on the scan: a scan that skipped the LF to the CR would
+    end the line at a CRLF, with a Host value holding an LF, and accept it.
     """
     var raw = (
         String(
@@ -599,8 +668,7 @@ def test_a_bare_lf_ends_the_line_even_with_a_cr_further_on() raises:
         + String("p") * 70
         + "\r\n\r\n"
     )
-    assert_equal(_header(raw, "host"), "example.com")
-    assert_equal(_header(raw, "accept"), "text/html")
+    assert_true(_rejected(raw))
 
 
 def test_a_control_byte_in_a_field_name_is_invalid() raises:

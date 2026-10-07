@@ -1240,6 +1240,16 @@ lightbug_http
         writes `time` as RFC 3339 UTC with milliseconds and its numbers as
         JSON numbers.
 
+      - http/parsing.mojo, loop/request.mojo (2026-10-07): a request head
+        is CRLF only (SPEC B12). `parse_headers` and `scan_to_eol` take a
+        `strict` parameter, which the request parser sets, refusing a bare
+        LF at a field line's end and at the empty line; the request line
+        and an empty line before it refuse one too. The response parser
+        keeps the lenient reading. `_handle_read_headers` answers 400 and
+        closes when `bytes_consumed` is not the loop's own CRLFCRLF frame:
+        a head the parser ended at a bare LF inside that frame lost the
+        request pipelined behind it, or the `Content-Length` after it.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

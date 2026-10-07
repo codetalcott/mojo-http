@@ -271,7 +271,7 @@ def create_string_from_reader[origin: ImmOrigin](reader: ByteReader[origin], sta
 
 
 def scan_to_eol[
-    origin: ImmOrigin
+    origin: ImmOrigin, //, strict: Bool = False
 ](mut buf: ByteReader[origin], mut start: Int, mut length: Int) raises HTTPParseError:
     """Advance past one field value to its line end, reported as an offset pair.
 
@@ -282,6 +282,9 @@ def scan_to_eol[
     `Headers` blob — the `String` it used to build was a copy made to be
     copied again, and at twelve headers per request that copying was a
     third of the whole user-space request (`scripts/probes/bench_http_parts.mojo`).
+
+    `strict` is a request head's rule: the line ends in CRLF and nothing
+    else, so a bare LF is a ParseError (`parse_headers` says why).
     """
     var token_start = buf.read_pos
 
@@ -310,7 +313,7 @@ def scan_to_eol[
             raise ParseError()
         length = buf.read_pos - 1 - token_start
         buf.increment()
-    elif current_byte == BytesConstant.LF:
+    elif current_byte == BytesConstant.LF and not strict:
         length = buf.read_pos - token_start
         buf.increment()
     else:
@@ -432,13 +435,27 @@ def parse_http_version[origin: ImmOrigin](mut buf: ByteReader[origin], mut minor
 
 
 def parse_headers[
-    buf_origin: ImmOrigin, header_origin: MutOrigin
+    buf_origin: ImmOrigin, header_origin: MutOrigin, //, strict: Bool = False
 ](
     mut buf: ByteReader[buf_origin],
     headers: Span[HTTPHeader, header_origin],
     mut num_headers: Int,
     max_headers: Int,
 ) raises HTTPParseError:
+    """Parse field lines up to and including the empty line that ends them.
+
+    `strict` is a request head's rule, which the request parser asks for:
+    every line, the empty one included, ends in CRLF, and a bare LF is a
+    ParseError (SPEC B12). RFC 9112 §2.2 lets a recipient accept a lone LF,
+    and this parser did -- but the event loop frames a head by the first
+    CRLFCRLF (`find_header_end`) and hands this parser exactly that many
+    bytes, so a head this parser ended at `\\r\\n\\n` while the loop read on
+    to a later CRLFCRLF lost whatever lay between: a request pipelined
+    behind it vanished, and a `Content-Length` after the bare LF was never
+    read, its body served as the next request. One terminator for both
+    framers is what keeps them agreeing. The response parser keeps the
+    lenient reading; nothing frames a response by CRLFCRLF.
+    """
     while buf.available():
         var byte = try_peek(buf)
         if not byte:
@@ -454,6 +471,8 @@ def parse_headers[
             buf.increment()
             return
         elif byte.value() == BytesConstant.LF:
+            comptime if strict:
+                raise ParseError()
             buf.increment()
             return
 
@@ -486,7 +505,7 @@ def parse_headers[
 
         var value_start = 0
         var value_len = 0
-        scan_to_eol(buf, value_start, value_len)
+        scan_to_eol[strict=strict](buf, value_start, value_len)
 
         # Trailing OWS comes off the LENGTH. This used to re-slice the value
         # into a third String when any was present.
@@ -536,6 +555,9 @@ def http_parse_request_headers[
             if not byte:
                 return -2
 
+            # Empty lines before the request line are skipped (RFC 9112
+            # §2.2), and each is a CRLF: a bare LF anywhere in a request
+            # head is refused (`parse_headers` says why).
             if byte.value() == BytesConstant.CR:
                 buf.increment()
                 var next = try_peek(buf)
@@ -545,7 +567,7 @@ def http_parse_request_headers[
                     break
                 buf.increment()
             elif byte.value() == BytesConstant.LF:
-                buf.increment()
+                return -1
             else:
                 break
 
@@ -600,6 +622,8 @@ def http_parse_request_headers[
         if not byte:
             return -2
 
+        # The request line ends in CRLF; a bare LF is refused here as in
+        # the field lines below.
         if byte.value() == BytesConstant.CR:
             buf.increment()
             var next = try_peek(buf)
@@ -608,12 +632,10 @@ def http_parse_request_headers[
             if next.value() != BytesConstant.LF:
                 return -1
             buf.increment()
-        elif byte.value() == BytesConstant.LF:
-            buf.increment()
         else:
             return -1
 
-        parse_headers(buf, headers, num_headers, max_headers)
+        parse_headers[strict=True](buf, headers, num_headers, max_headers)
 
         return buf.read_pos
     except e:

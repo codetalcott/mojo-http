@@ -459,6 +459,24 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             _close_slot(handler, backend, st, slot, fd_val)
             return
 
+        # Two framers read this head: `find_header_end` above, which
+        # `request_end` and the body's start are taken from, and the
+        # parser, which decided where the fields stop. They must name the
+        # same byte. When they did not -- a parser that ended the head at a
+        # bare-LF empty line, inside what this loop framed as one head --
+        # the request pipelined behind it vanished, and a `Content-Length`
+        # past the bare LF was never read, its body answered as the next
+        # request (SPEC B12). The parser now refuses a bare LF, so the two
+        # agree; this refuses any head they would read differently, so a
+        # future parser change cannot reopen the gap silently. Belt and
+        # braces, deliberately: no gate fails with only this removed
+        # (sabotage-verified), and with only the parser's rule removed the
+        # wire probe still passes because of it.
+        if parsed.bytes_consumed != header_end_offset:
+            _send_error_to_fd(fd_val, BadRequest())
+            _close_slot(handler, backend, st, slot, fd_val)
+            return
+
         if parsed.path.byte_length() > st.config.max_request_uri_length:
             _send_error_to_fd(fd_val, URITooLong())
             _close_slot(handler, backend, st, slot, fd_val)

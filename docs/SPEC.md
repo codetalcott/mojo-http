@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**337 capabilities: 311 verified, 0 implemented, 0 planned, 26 out of scope.** Of the 311 verified, 304 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**338 capabilities: 312 verified, 0 implemented, 0 planned, 26 out of scope.** Of the 312 verified, 305 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -88,6 +88,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | B9 | PortSwigger-style desync scanning | out of scope | the scanner probes a proxy/server PAIR for disagreement about framing; this server has no proxy in front of it in any gate, so there is no second parser to disagree with. The shapes it looks for are unit-tested directly above (B1-B7), and fuzzing the decoder itself is G13 |
 | B10 | More than one `Host` field line rejected, on any HTTP version and across letter case (RFC 9112 §3.2) | verified | `test_parsing.mojo:test_a_second_host_line_is_rejected` (every PR) — the parser kept the last line and served the request, so a proxy routing on the first `Host` and an application reading the last (Django's `HTTP_HOST`) disagreed about the site; two lines that agree are refused too |
 | B11 | More than one `Transfer-Encoding` field line rejected, across letter case | verified | `test_parsing.mojo:test_a_second_transfer_encoding_line_is_rejected` (every PR) — field lines combine into one list (RFC 9110 §5.3), so two `chunked` lines are the `chunked, chunked` B3's rule refuses on one line, which the last line alone read as a single `chunked` |
+| B12 | A bare LF anywhere in a request head (the request line, a field line, the empty line that ends the head, an empty line before the request line) rejected; a head the parser and the loop's CRLFCRLF frame end at different bytes refused 400 | verified | `test_parsing.mojo:test_a_bare_lf_in_a_request_head_is_rejected` (every PR) — the parser ended a head at a bare-LF empty line while the loop framed it by the first CRLFCRLF, so on `apps/hello` a request pipelined behind `\r\n\n` got no answer and a `Content-Length` after the bare LF was never read, its body answered as a request. The loop also compares the parser's `bytes_consumed` with its own frame, so the two cannot disagree silently again. `Smoke test pipelined requests` sends both shapes and requires one 400 and a close |
 
 ## C. Connection management and denial of service
 

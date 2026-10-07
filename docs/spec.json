@@ -290,6 +290,14 @@
       "evidence": "`test_parsing.mojo:test_a_second_transfer_encoding_line_is_rejected` (every PR) \u2014 field lines combine into one list (RFC 9110 \u00a75.3), so two `chunked` lines are the `chunked, chunked` B3's rule refuses on one line, which the last line alone read as a single `chunked`"
     },
     {
+      "id": "B12",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A bare LF anywhere in a request head (the request line, a field line, the empty line that ends the head, an empty line before the request line) rejected; a head the parser and the loop's CRLFCRLF frame end at different bytes refused 400",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_bare_lf_in_a_request_head_is_rejected` (every PR) \u2014 the parser ended a head at a bare-LF empty line while the loop framed it by the first CRLFCRLF, so on `apps/hello` a request pipelined behind `rnn` got no answer and a `Content-Length` after the bare LF was never read, its body answered as a request. The loop also compares the parser's `bytes_consumed` with its own frame, so the two cannot disagree silently again. `Smoke test pipelined requests` sends both shapes and requires one 400 and a close"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",

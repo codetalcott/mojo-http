@@ -38,6 +38,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A request head with a bare LF is refused with 400** (SPEC B12). The
+  parser ended a head at a bare-LF empty line (`\r\n\n`), while the
+  event loop frames a head by the first CRLFCRLF, and the bytes between
+  the two were lost: a request pipelined behind such a head got no
+  answer, and a `Content-Length` after the bare LF was never read, so the
+  body it described was answered as a request of its own. Every line of
+  a request head must now end in CRLF, and the loop also refuses any head
+  the parser ends at a different byte than its own frame, then closes the
+  connection. A client that ends request lines with a lone LF is refused;
+  none is known. `smoke-pipelining` sends both shapes.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every
