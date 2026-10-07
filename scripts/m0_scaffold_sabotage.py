@@ -139,6 +139,11 @@ SABOTAGES = [
      '    print("    uv run m0 build && bin/server --host 127.0.0.1 --port 8080")\n',
      '    print("    uv run m0 build && bin/server --port 8080")\n',
      "did not print the next command", NEW),
+    ("new: the top-level help lists no template", "views", M0 + "cli.py",
+     '        epilog="templates, for `m0 new NAME --template T`:\\n"\n'
+     '        + new.listing(new.TEMPLATES, indent="  "),\n',
+     "",
+     "m0 --help lists the templates []", NEW),
     ("new: the next commands are not printed", "views", M0 + "new.py",
      '    print("    uv sync")\n',
      "",
@@ -204,7 +209,7 @@ SABOTAGES = [
 
     # --- auth, on the wire ----------------------------------------------------
     ("new: the auth template's variables are not printed", "auth", M0 + "new.py",
-     "        print(\"    \" + ENV_HINT[args.template])\n",
+     "        print(\"    \" + ENV_HINT[template])\n",
      "        pass\n",
      "did not print the next command 'export APP_KEY", NEW),
     ("new: the app's name opens the entry file's docstring bare [auth]", "auth",

@@ -49,6 +49,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **`m0 --help` names the templates** (SPEC N27;
+  docs/notes/what-the-agent-runs-asked-for.md). Every Mojo run without the
+  skill ran `m0 --help`, then a bare `m0 new .` before it knew a
+  template's name, took `views`, and wrote its application a second time.
+  The top-level help now lists the four, a line each, and an `m0 new`
+  given no template says it took the default and lists the others. For
+  the next `m0`.
+
 - **The pages say what the agent runs had to find out.** Both quickstarts
   serve on `127.0.0.1`. The Python quickstart says where libpython comes
   from, what `publish()` does with a line break, and that a form post

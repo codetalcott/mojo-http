@@ -207,6 +207,17 @@ def check_new(work, whl, template, name, pin, m0v):
     new = [uv, "tool", "run", "--offline", "--no-cache", "--python", python,
            "--from", str(whl), "m0", "new"]
 
+    # The agent runs' first command, before `m0 new --help`: every run that
+    # found no template named here took the default and wrote twice.
+    done = sh(new[:-1] + ["--help"], work, bare, "m0 --help")
+    lines = done.stdout.splitlines()
+    heading = "templates, for `m0 new NAME --template T`:"
+    listed = [ln.split()[0] for ln in lines[lines.index(heading) + 1:] if ln.strip()] \
+        if heading in lines else []
+    if sorted(listed) != sorted(WRITES):
+        fail("m0 --help lists the templates %s, and they are %s:\n%s" % (
+            listed, sorted(WRITES), done.stdout))
+
     done = sh(new + ["Not_A_Name", "--template", template], work, bare, "m0 new Not_A_Name", code=2)
     want = ("m0 new: 'Not_A_Name' is not a usable name (lowercase letters, digits and "
             "hyphens, starting with a letter and ending with a letter or digit, "
@@ -268,8 +279,9 @@ def check_new(work, whl, template, name, pin, m0v):
     if done.stderr.strip().splitlines()[-1] != want:
         fail("a second m0 new . said:\n  %s\nwant:\n  %s" % (done.stderr.strip(), want))
     shutil.rmtree(here)
-    print("new[%s]: %d files, both pins, no token; a second run and a bad name are 2; "
-          "`m0 new .` writes the current directory" % (template, len(wrote)))
+    print("new[%s]: m0 --help lists every template; %d files, both pins, no token; "
+          "a second run and a bad name are 2; `m0 new .` writes the current directory"
+          % (template, len(wrote)))
     return project
 
 

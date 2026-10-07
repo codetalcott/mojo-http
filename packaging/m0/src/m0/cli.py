@@ -27,29 +27,32 @@ def _parser():
     parser = argparse.ArgumentParser(
         prog="m0",
         allow_abbrev=False,
-        description="Write, build, test and check a Mojo web application "
+        # Raw, so the templates' column survives; the description is broken
+        # by hand for the same reason.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Write, build, test and check a Mojo web application\n"
         "against the framework source this wheel carries.",
+        epilog="templates, for `m0 new NAME --template T`:\n"
+        + new.listing(new.TEMPLATES, indent="  "),
     )
     parser.add_argument("--version", action="version", version=f"m0 {checks.m0_version()}")
     sub = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
 
     p = sub.add_parser(
         "new", allow_abbrev=False,
-        help="write an application into ./NAME, or `.` for the empty current directory; "
-        "needs no toolchain and no network",
+        help="write an application from a template (listed below) into ./NAME, or `.` "
+        "for the empty current directory; needs no toolchain and no network",
     )
     p.add_argument("name", metavar="NAME",
                    help="the directory, the project and the deploy's app name at once; "
                    "`.` is the current directory, named for itself")
     # A closed set of what exists and is gated on the wire; it grows by a
     # value, never by a flag per feature (docs/DECISIONS.md D44).
-    p.add_argument("--template", choices=new.TEMPLATES, default="views",
-                   help="views: a server-rendered list swapped by htmx 4 (default); "
-                   "live: a producer pushing state to every tab over SSE, with Datastar; "
-                   "board: a list every tab shares, a message one tab posts pushed to "
-                   "every open tab; "
-                   "auth: the views list behind a login, with a signed session and "
-                   "a CSRF token on every write")
+    # No argparse default: `new` says when it took one.
+    p.add_argument("--template", choices=new.TEMPLATES, default=None,
+                   help="; ".join(
+                       f"{t}: {new.ABOUT[t]}" + (" (the default)" if t == new.DEFAULT else "")
+                       for t in new.TEMPLATES))
     p.set_defaults(run=new.run)
 
     p = sub.add_parser(

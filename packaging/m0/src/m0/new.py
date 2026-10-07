@@ -27,7 +27,18 @@ from pathlib import Path
 
 from m0 import checks, paths
 
-TEMPLATES = ("views", "live", "board", "auth")
+# One line per template, read by `m0 --help`, `m0 new --help` and what a
+# bare `m0 new` prints, so the three cannot disagree. The top-level help is
+# where the agent runs chose: every run without a skill ran `m0 --help`,
+# then `m0 new .` before it knew a name, took `views`, and wrote again.
+ABOUT = {
+    "views": "a server-rendered list swapped by htmx 4",
+    "live": "a producer pushing state to every tab over SSE, with Datastar",
+    "board": "a list every tab shares, a message one tab posts reaching every open tab",
+    "auth": "the views list behind a login, with a signed session and a CSRF token on every write",
+}
+TEMPLATES = tuple(ABOUT)
+DEFAULT = "views"
 
 # A letter first and a letter or digit last: a trailing hyphen is no
 # PEP 508 project name, no image reference and no DNS label (the deploy's
@@ -124,12 +135,24 @@ def render(text, app, m0_version, mojo_version, max_version):
     )
 
 
+def listing(names, indent="    "):
+    """A line per template, the name in a column: the help's and `new`'s."""
+    width = max(len(n) for n in TEMPLATES)
+    return "\n".join(
+        f"{indent}{n:<{width}}  {ABOUT[n]}" + (" (the default)" if n == DEFAULT else "")
+        for n in names
+    )
+
+
 def _usage(message):
     print(f"m0 new: {message}", file=sys.stderr)
     return 2
 
 
 def run(args):
+    # None when `--template` was not given: a default taken is said, with
+    # the others, and a template chosen is not second-guessed.
+    template = args.template or DEFAULT
     target = Path(args.name)
     # `.` names the directory it is: `m0 new .` writes the current directory
     # and takes its name, which the agent runs asked for -- every run wrote
@@ -155,7 +178,7 @@ def run(args):
 
     root = paths.PACKAGE / "templates"
     sources = [(root / "_common" / n, n) for n in COMMON]
-    sources += [(root / args.template / n, n) for n in MANIFEST[args.template]]
+    sources += [(root / template / n, n) for n in MANIFEST[template]]
     missing = [str(src) for src, _ in sources if not src.is_file()]
     if missing:
         print(
@@ -177,21 +200,29 @@ def run(args):
         if name in EXECUTABLE:
             out.chmod(0o755)
 
+    said = template + (", the default" if args.template is None else "")
     if here:
-        print(f"m0: wrote the current directory as {app} (template: {args.template})")
+        print(f"m0: wrote the current directory as {app} (template: {said})")
     else:
-        print(f"m0: wrote {shown} (template: {args.template})")
+        print(f"m0: wrote {shown} (template: {said})")
     print()
     if not here:
         print(f"    cd {args.name}")
     print("    uv sync")
-    if args.template in ENV_HINT:
-        print("    " + ENV_HINT[args.template])
+    if template in ENV_HINT:
+        print("    " + ENV_HINT[template])
     # This machine alone: without `--host` the server listens on every
     # interface.
     print("    uv run m0 build && bin/server --host 127.0.0.1 --port 8080")
     print()
     print("AGENTS.md is the page to read first; `uv run m0 test` is the fast loop.")
+    if args.template is None:
+        # Said while the directory is still a minute old: each run that took
+        # the default found `board` only after it had written `views`.
+        print()
+        print(f"{DEFAULT} is the default; the others, for `m0 new NAME --template T` "
+              "into an empty directory:")
+        print(listing([t for t in TEMPLATES if t != DEFAULT]))
 
     early = [check(target) for name, check in checks.CHECKS if name in EARLY_CHECKS]
     failing = [r for r in early if not r.ok]
