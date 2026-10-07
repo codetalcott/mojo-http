@@ -1240,6 +1240,15 @@ lightbug_http
         writes `time` as RFC 3339 UTC with milliseconds and its numbers as
         JSON numbers.
 
+      - header.mojo, cookie/response_cookie_jar.mojo (2026-10-07):
+        `encode_latin1_header_value` decodes only the two-byte sequences
+        `C2 80` to `C3 BF` (U+0080 to U+00FF) and passes every other byte
+        through (SPEC G19). It decoded three- and four-byte sequences too,
+        overlong ones included, after the writers had refused CR, LF and
+        NUL, so `E0 80 8D E0 80 8A` went out as a CRLF. The header writer
+        and the cookie jar's latin-1 writer now also drop a value whose
+        TRANSCODED bytes hold CR, LF or NUL.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
