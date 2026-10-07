@@ -110,8 +110,22 @@ machine's: three runs still chose the port the desk server holds, and
 each read the bind failure in its log and moved. The skill did not change
 the first port choice.
 
-## Not measured yet
+## The Mojo track after the release
 
-The doc lines reach an agent once the site is deployed, and the `m0`
-changes once a release publishes them, so the Mojo track, with and
-without the `m0` skill, is re-run after the next `m0` release.
+Ten more runs of the Mojo brief, with `m0 0.9.0` on PyPI and the site
+deployed from these pages, five of them with the `m0` skill loaded:
+
+| track | tool calls, median (range) | wall clock | cost |
+|---|---|---|---|
+| m0 0.8.0, the pages before this change | 33 (24–34) | 196 s | $1.14 |
+| m0 0.9.0, these pages | 14 (11–25) | 100 s | $0.46 |
+| m0 0.9.0, with the skill | 8 (8–9) | 65 s | $0.29 |
+
+All ten met the contract. Every run wrote `--template board` with `m0 new
+.`, and none read the framework's source, where every earlier run had.
+
+One stumble is left. Two runs without the skill ran a bare `m0 new .`
+before they knew the templates' names, which the top-level `m0 --help`
+does not list. They got `views`, could not write again into a directory
+that was no longer empty, and wrote `board` elsewhere and copied it over:
+those are the 15- and 25-call runs.
