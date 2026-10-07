@@ -1932,6 +1932,7 @@ python3 scripts/emit.py --covers A1 --task smoke-pipelining
 python3 scripts/emit.py --covers A6 --task smoke-pipelining
 python3 scripts/emit.py --covers B12 --task smoke-pipelining
 python3 scripts/emit.py --covers B15 --task smoke-pipelining
+python3 scripts/emit.py --covers B17 --task smoke-pipelining
 """
 
 [tool.poe.tasks.smoke-ws]

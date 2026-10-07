@@ -19,9 +19,10 @@ And the two shapes where the parser and the loop disagreed about where a
 head ends (SPEC B12): a bare-LF empty line with a request behind it, which
 was answered once for two requests, and a bare LF with a `Content-Length`
 behind it, whose body was answered as a request. Each must be refused: one
-400, then the connection closed. An HTTP/1.0 request with a chunked body
-must close the connection behind its answer, and did not (SPEC B15): one
-200, then the close.
+400, then the connection closed. Two requests that must close the
+connection behind their answer, and did not, do the same with a 200: an
+HTTP/1.0 request with a chunked body (SPEC B15), and `Connection: close`
+listed with another option (SPEC B17).
 
 usage: pipeline_probe.py PORT
 """
@@ -158,6 +159,14 @@ check_closed_after(
     b"POST /health HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n"
     b"Transfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n"
     % (len(BODY), BODY) + GET, [200])
+
+# SPEC B17. Connection is a list of tokens (RFC 9110 §7.6.1): `close`
+# among others still closes. The whole value was compared, so the
+# request behind `close, TE` was answered too.
+check_closed_after(
+    "Connection: close among other options, a request behind it",
+    b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close, TE\r\n"
+    b"TE: trailers\r\n\r\n" + GET, [200])
 
 # A second request sent only after the first is in flight — no pipelining
 # in the same packet, but the bytes can arrive while the loop is still

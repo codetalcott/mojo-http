@@ -825,6 +825,45 @@ struct Headers(Copyable, Writable):
                 return False
         return True
 
+    def has_token_ignore_case(self, key: String, token: String) -> Bool:
+        """Whether `key`'s value lists `token`, case-insensitively.
+
+        For a field whose value is a comma-separated list of tokens
+        (RFC 9110 §5.6.1), such as `Connection` (§7.6.1): each member is
+        compared whole, with the optional whitespace around it removed and
+        empty members skipped. `value_equals_ignore_case` compares the
+        whole value, which read `Connection: close, TE` as not closing
+        (SPEC B17). Allocation-free, like it, because the `Connection`
+        check runs on every request.
+        """
+        var i = self._find(key.as_bytes())
+        if i < 0:
+            return False
+        var value = self.value_span(i)
+        var want = token.as_bytes()
+        var n = len(value)
+        var start = 0
+        while start <= n:
+            var end = start
+            while end < n and value[end] != 0x2C:  # the list's comma
+                end += 1
+            var a = start
+            var b = end
+            while a < b and (value[a] == 0x20 or value[a] == 0x09):
+                a += 1
+            while b > a and (value[b - 1] == 0x20 or value[b - 1] == 0x09):
+                b -= 1
+            if b - a == len(want):
+                var same = True
+                for j in range(len(want)):
+                    if ascii_lower_byte(value[a + j]) != ascii_lower_byte(want[j]):
+                        same = False
+                        break
+                if same:
+                    return True
+            start = end + 1
+        return False
+
     def keys(self) -> List[String]:
         """Snapshot of every header name present, lowercased.
 

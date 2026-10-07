@@ -1270,6 +1270,14 @@ lightbug_http
         `from_parsed` consumes the head. `parse_request_headers` requires
         `Host` for every minor version from 1, where it asked for 1 exactly.
 
+      - header.mojo, http/request.mojo (2026-10-07): `Connection` is read
+        as a token list (RFC 9110 §7.6.1, SPEC B17).
+        `Headers.has_token_ignore_case` is new beside
+        `value_equals_ignore_case`, allocation-free, and
+        `HTTPRequest.connection_close` asks it for `close` and, on
+        HTTP/1.0, `keep-alive`. The whole value was compared, so
+        `Connection: close, TE` kept the connection alive.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

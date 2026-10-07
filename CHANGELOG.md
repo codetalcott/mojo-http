@@ -73,6 +73,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   through `HTTP/1.9`, which are served as HTTP/1.1, now need a `Host`
   field as HTTP/1.1 does; one without was served.
 
+- **`Connection: close` closes wherever it stands in the list** (SPEC
+  B17). `Connection` is a list of options (RFC 9110 §7.6.1), and the
+  server compared the whole value with `close`: `Connection: close, TE`
+  kept the connection alive and answered the request pipelined behind
+  it. Each option is now read on its own, case-insensitively, and an
+  HTTP/1.0 client's `keep-alive` is read the same way.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every

@@ -322,6 +322,14 @@
       "evidence": "`Smoke test pipelined requests` (every PR) \u2014 an HTTP/1.0 chunked POST asking for keep-alive was de-chunked and kept alive, so the request pipelined behind it was answered too; RFC 9112 \u00a76.1 calls that framing faulty, and the probe requires one 200 and a close. `test_parsing.mojo:test_a_later_http1_minor_version_requires_host` holds the other half: the `Host` check asked for minor version 1 exactly, and `GET / HTTP/1.2` with no `Host` was served"
     },
     {
+      "id": "B17",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "`Connection` read as a list of case-insensitive option tokens (RFC 9110 \u00a77.6.1): `close` anywhere in it closes the connection behind the answer, and an HTTP/1.0 `keep-alive` anywhere in it keeps one",
+      "status": "verified",
+      "evidence": "`test_request_as_sent.mojo:test_connection_is_read_as_a_list_of_tokens` (every PR) \u2014 the whole value was compared with `close`, so `Connection: close, TE` kept the connection alive and the request pipelined behind it was answered; a member must be the token itself, `closed` closing nothing. `Smoke test pipelined requests` sends that shape and requires one 200 and a close"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",
