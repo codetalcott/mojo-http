@@ -326,6 +326,7 @@ The engineering record: long-form, dated, kept as written.
 - [A login in the layer — 2026-09-27](notes/a-login-in-the-layer.md)
 - [A resource over a table — 2026-10-02](notes/a-resource-over-a-table.md)
 - [A database that remembers what changed — 2026-10-02](notes/a-database-that-remembers-what-changed.md)
+- [What the agent runs asked for — 2026-10-07](notes/what-the-agent-runs-asked-for.md)
 - [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
 - [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
 - [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)

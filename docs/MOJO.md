@@ -15,14 +15,15 @@ every core.
 ```bash
 uvx m0 new shop
 cd shop && uv sync
-uv run m0 build && bin/server --port 8080
+uv run m0 build && bin/server --host 127.0.0.1 --port 8080
 ```
 
 It suits an application whose cost is work on the server per request, per
 tick or per connection: a simulation pushed to every open tab, a filtered
 scan over data held in memory, thousands of held streams. It has no ORM, no
-admin, no template engine and no form library. An application that needs
-those is a Django application, and [m0serve](RUNNING.md) serves it;
+admin and no template engine; `form(req)` parses a urlencoded form, and
+the view validates it. An application that needs those is a Django
+application, and [m0serve](RUNNING.md) serves it;
 [the two share a process](MOJO_RAMP.md) when one route needs to be fast.
 
 macOS arm64 and glibc Linux (x86-64, aarch64). Windows and musl are
@@ -41,11 +42,31 @@ refused by `m0 doctor`, with no fix to offer.
 - [From m0serve to Mojo](MOJO_RAMP.md): one views module as a mount inside
   m0serve and as a binary of its own.
 
+[llms.txt](../llms.txt) indexes every page, and each page is Markdown at
+its URL with `.md` in place of the trailing slash (`/mojo/views.md`). The
+[m0 skill](../skills/m0/SKILL.md) is the short form for a coding agent.
+
+## The API
+
+What an application is written with, and the page that holds each piece.
+
+| piece | what it is | page |
+|---|---|---|
+| `serve[H, P](config)`, `AppHandler`, `ViewsApp[S]`, `Producer`, `HostContext` | `main`, the handler built per worker, work on a cadence | [The host](MOJO_HOST.md) |
+| `Views[S]`: `add_read`, `add_write`, `add_loop`, `resource` | the table of views, each a free function | [Views](MOJO_VIEWS.md#views) |
+| `form(req)`, `reply` | a urlencoded form; `html`, `json`, `redirect`, `no_content`, `problem` | [Views](MOJO_VIEWS.md#views) |
+| `Fragment[Htmx]`, `Fragment[Datastar]`, `Html`, `el`, `void`, `attr`, `text` | rendering, with the swap attributes generated from the fragment's id | [Fragments](MOJO_VIEWS.md#fragments) |
+| `page_or_fragment`, `PageShell` | a document or the bare fragment from one view | [A page or a fragment](MOJO_VIEWS.md#a-page-or-a-fragment) |
+| `url_for`, `Query`, `Mount` | routes as constants, reversed and encoded | [URLs](MOJO_VIEWS.md#urls) |
+| `Login`, `csrf_refusal` | one user behind a signed session | [Sessions](MOJO_VIEWS.md#sessions) |
+| `DatastarStream`, `Feed`, `Cached` | a stream of whole states, a stream of what changed, a rendering kept until the data changes | [Streams](MOJO_VIEWS.md#streams) |
+| `m0_sqlite`, `m0_postgres` | the bindings, their libraries opened at run time | the scaffold's `AGENTS.md`; [Deploy](MOJO_DEPLOY.md) for what an image carries |
+
 ## The `m0` command
 
 | command | does |
 |---|---|
-| `m0 new NAME` | writes a project from the `views`, `live` or `auth` template; needs no toolchain |
+| `m0 new NAME` | writes a project from the `views`, `live`, `board` or `auth` template, into `./NAME`, or into the empty current directory as `m0 new .`; needs no toolchain |
 | `m0 build` | `src/server.mojo` to `bin/server`; with the release option, a relocatable `dist/` |
 | `m0 test` | runs `test/test_*.mojo`; links nothing |
 | `m0 dev` | builds, serves, rebuilds on save; swaps only after a build succeeds |

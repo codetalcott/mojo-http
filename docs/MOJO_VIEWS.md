@@ -86,6 +86,21 @@ so a missing form cannot be read as an empty one. The `Form` keeps every
 value of a repeated key; `first("title")` is the usual read. Multipart is
 not parsed.
 
+A view answers with an `HTTPResponse`, and `reply` builds the usual ones:
+
+| call | answers |
+|---|---|
+| `reply.html(body)` | 200, `text/html` |
+| `reply.json(status, text, body)` | the status and reason phrase given, `application/json`, the body verbatim |
+| `reply.redirect(status, location)` | a 3xx with `Location` |
+| `reply.no_content()` | 204 |
+| `reply.empty(status, text)` | the status, no body |
+| `reply.problem(status, title, detail, instance)` | an RFC 9457 `application/problem+json` body; all four arguments are required, and `instance` is the request's path |
+
+`reply.problem` is for a route no browser swaps; an error a person may see
+is a fragment with its status ([below](#a-page-or-a-fragment)).
+`reply.param_int(s)` reads a `:id` capture, -1 for anything but a number.
+
 ## Fragments
 
 A `Fragment` writes its root id once and generates every attribute that
@@ -148,8 +163,13 @@ carries. The event follows the element, a form submitting, a field
 changing, anything else clicking. The URL sits inside a JavaScript string,
 so one carrying `'`, `\`, CR or LF is refused; `url_for` encodes them.
 A request header is refused too: Datastar spells one inside the action,
-so a Datastar write carries its CSRF token in a field. Otherwise, moving an
-application between the two is the type parameter and the script tag.
+so a Datastar write carries its CSRF token in a field. Datastar 1.0
+applies an action's answer only when its status is 200: a 204 does
+nothing and any other status is dropped, so an error fragment answered
+with a 422 never reaches the page. Keep an invalid submission in the
+browser (`required`) and answer a client that bypasses it with
+`reply.problem`. Otherwise, moving an application between the two is the
+type parameter and the script tag.
 
 **Your own.** `Vocabulary` is a trait an application may conform to:
 `swap` writes the attributes, `h.open_kind()` says which element is open,
@@ -413,6 +433,20 @@ The rules the `live` scaffold follows:
   frame at once.
 - The registry's capacity is at least `ctx.capacity`.
 - What workers and the producer share lives on the `page_slots` page.
+
+A view sends through the same stream:
+`st.stream.patch_elements(EVENTS, render_board(st.messages))` numbers one
+frame and queues it for this process's subscribers. The view runs
+`on_loop=True`, as does every view that reads or writes what the stream
+sends, because under `--blocking-threads` each pool thread builds a state
+of its own and nothing drains its stream. Other workers' subscribers are
+reached through the bus: the handler's `make` calls
+`stream.enable_bus(ctx.bus, ctx.worker, ctx.id_addr)` and its
+`sse_peer_frame` forwards to `deliver_peer`. `ViewsApp` does not forward
+`sse_peer_frame`, so that takes an `AppHandler` of the application's own,
+as `apps/datastar_todo` has. The `board` scaffold sends from a view and
+keeps its list in one process (`max_workers() -> 1`); `live` sends from a
+producer.
 
 ## Not built
 

@@ -526,6 +526,51 @@ class New(unittest.TestCase):
             )
             self.assertEqual(sorted(os.listdir(target)), ["keep"])
 
+    def test_dot_writes_the_empty_current_directory_named_for_it(self):
+        """`m0 new .`: every agent run wrote `./NAME` and moved the files up
+        a level; this writes where it stands, prints no `cd`, and refuses a
+        directory with something in it or a name that is not usable."""
+        here = os.getcwd()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / "corner-here"
+                target.mkdir()
+                os.chdir(target)
+                code, out, err = self._new([".", "--template", "board"])
+                self.assertEqual((code, err), (0, ""))
+                wrote = sorted(
+                    str(p.relative_to(target)) for p in target.rglob("*") if p.is_file()
+                )
+                self.assertEqual(wrote, new.written_paths("board"))
+                self.assertIn('name = "corner-here"', (target / "pyproject.toml").read_text())
+                self.assertIn("m0: wrote the current directory as corner-here", out)
+                self.assertNotIn("    cd ", out)
+
+                code, _, err = self._new(["."])
+                self.assertEqual(code, 2)
+                self.assertEqual(
+                    err,
+                    "m0 new: the current directory is not empty "
+                    "(empty it, or name a new directory)\n",
+                )
+
+                bad = Path(tmp) / "My_App"
+                bad.mkdir()
+                os.chdir(bad)
+                code, _, err = self._new(["."])
+                self.assertEqual(code, 2)
+                self.assertTrue(err.startswith(
+                    "m0 new: the current directory's name 'My_App' is not a usable name"), err)
+                self.assertEqual(os.listdir(bad), [])
+        finally:
+            os.chdir(here)
+
+    def test_the_next_command_serves_this_machine_alone(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, _ = self._new([str(Path(tmp) / "corner-shop")])
+            self.assertEqual(code, 0)
+            self.assertIn("    uv run m0 build && bin/server --host 127.0.0.1 --port 8080\n", out)
+
     def test_a_failing_early_check_is_said_and_new_still_exits_0(self):
         """`new` runs before a venv exists, so it asks only what it can --
         and a machine with no C compiler still gets its application."""

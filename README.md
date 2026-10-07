@@ -7,7 +7,9 @@
 
 *(New here? The documentation site is [m0serve.dev](https://m0serve.dev):
 the quickstart, the operations guide and the capability matrix, with
-[docs/README.md](docs/README.md) as the map. For where the project stands,
+[docs/README.md](docs/README.md) as the map; for an agent, [llms.txt](llms.txt)
+at the site's root indexes every page, each also served as Markdown with
+`.md` in place of its trailing slash. For where the project stands,
 run `uv run poe milestones` — it computes what is left for 1.0 rather than
 reporting what someone last wrote down.)*
 

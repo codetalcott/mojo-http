@@ -6,6 +6,48 @@ Notable changes to `mojo-http`. Format follows
 in a minor release: `m0serve`'s flags and environment variables, the
 `M0-Hold`/`M0-Channel` response headers, and `m0pub.publish()`.
 
+## [Unreleased]
+
+### Added
+
+- **`m0 new --template board`, and `m0 new .`** (SPEC N27, N52, D66;
+  docs/notes/what-the-agent-runs-asked-for.md). The follow-ups from the
+  agent usability runs, where every Mojo run wrote `./NAME` and moved it
+  up a level, then deleted half of `live` to get a list a request pushes.
+  - `board` is a list every tab shares whose sender is a view: a POST
+    appends and publishes the whole board through the state's
+    `DatastarStream`, with no producer and no database. Its views run on
+    the loop, and the gate serves it behind a handler pool.
+  - `m0 new .` writes the empty current directory and takes its name.
+  - The printed next step serves on `127.0.0.1`.
+
+- **Skills for m0serve and m0** in `skills/`, written from where the
+  agent runs looked.
+
+### Fixed
+
+- **The `live` scaffold's stream behind a handler pool.** Its `/events`
+  view was not `on_loop`, and its handler answered only stateless loop
+  routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every
+  stream was refused 409. A project an earlier `m0` wrote takes the same
+  two lines: `on_loop=True` on the `/events` registration in
+  `src/views.mojo`, and `self.views.answer_on_loop(req, self.state)` in
+  `LiveHandler.before_request`. `smoke-scaffold` now serves `live` behind
+  a pool.
+
+### Changed
+
+- **The pages say what the agent runs had to find out.** Both quickstarts
+  serve on `127.0.0.1`. The Python quickstart says where libpython comes
+  from, what `publish()` does with a line break, and that a form post
+  meets Django's CSRF check. The home page and the Mojo overview point an
+  agent at `llms.txt` and each page's Markdown. The overview maps the API
+  to its pages; the views page gives `reply`, `reply.problem`'s four
+  arguments, and Datastar 1.0's rule that an action's answer applies only
+  on a 200. The scaffold's `AGENTS.md` names the reference pages before
+  the installed source, so `m0 doctor` reports it as changed in a project
+  an earlier `m0` wrote.
+
 ## [1.12.0] — 2026-10-06
 
 A held stream that reconnects is caught up on what it missed. Two of the

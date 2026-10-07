@@ -86,12 +86,21 @@ WRITES = {
                        "test/test_views.mojo"],
     "auth": COMMON + ["src/pages.mojo", "src/server.mojo", "src/views.mojo",
                       "test/test_auth.mojo"],
+    "board": COMMON + ["src/pages.mojo", "src/server.mojo", "src/views.mojo",
+                       "test/test_board.mojo"],
     "live": COMMON + ["src/board.mojo", "src/pages.mojo", "src/server.mojo",
                       "src/store.mojo", "src/views.mojo", "src/wave.mojo",
                       "test/test_live.mojo"],
 }
 TEST_FILE = {"views": "test/test_views.mojo", "live": "test/test_live.mojo",
-             "auth": "test/test_auth.mojo"}
+             "board": "test/test_board.mojo", "auth": "test/test_auth.mojo"}
+# What a template's server is started with beyond its port. `board` and
+# `live` are served behind a handler pool: a view that opens a stream, or
+# touches what one sends, must run on the loop, and only a pool shows one
+# that does not (`live`'s stream was refused 409 behind one until
+# 2026-10-07). Their own smoke.sh serves them without one, so both shapes
+# are on the wire.
+SERVE_ARGS = {"board": ["--blocking-threads", "2"], "live": ["--blocking-threads", "2"]}
 
 # What a template's server needs in its environment to serve at all; `auth`
 # refuses to start without all three (exit 78, naming the variable), and
@@ -113,6 +122,7 @@ VARY = "HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request, HX
 PARTIAL = {"HX-Request-Type": "partial"}
 PLAIN_FORM = {"Content-Type": "application/x-www-form-urlencoded"}
 FORM = dict(PARTIAL, **PLAIN_FORM)
+DATASTAR_FORM = dict(PLAIN_FORM, **{"Datastar-Request": "true"})
 
 RED_TEST = '''
 
@@ -208,7 +218,7 @@ def check_new(work, whl, template, name, pin, m0v):
 
     done = sh(new + [name, "--template", template], work, bare, "uvx --offline m0 new")
     project = work / name
-    lines = ["cd " + name, "uv sync", "uv run m0 build && bin/server --port 8080"]
+    lines = ["cd " + name, "uv sync", "uv run m0 build && bin/server --host 127.0.0.1 --port 8080"]
     if template == "auth":
         lines.insert(2, AUTH_HINT)
     for line in lines:
@@ -243,8 +253,23 @@ def check_new(work, whl, template, name, pin, m0v):
         fail("a second m0 new said:\n  %s\nwant:\n  %s" % (done.stderr.strip(), want))
     if {rel: (project / rel).read_bytes() for rel in tree_of(project)} != before:
         fail("a refused m0 new changed the tree")
-    print("new[%s]: %d files, both pins, no token; a second run and a bad name are 2" % (
-        template, len(wrote)))
+    # `m0 new .`: the current directory, named for itself, and no `cd`.
+    here = work / ("%s-here" % name)
+    here.mkdir()
+    done = sh(new + [".", "--template", template], here, bare, "m0 new .")
+    if tree_of(here) != sorted(WRITES[template]):
+        fail("m0 new . --template %s wrote\n  %s" % (template, tree_of(here)))
+    if 'name = "%s-here"' % name not in (here / "pyproject.toml").read_text():
+        fail("m0 new . did not name the project after its directory")
+    if "    cd " in done.stdout:
+        fail("m0 new . printed a cd:\n" + done.stdout)
+    done = sh(new + ["."], here, bare, "m0 new . onto its own output", code=2)
+    want = "m0 new: the current directory is not empty (empty it, or name a new directory)"
+    if done.stderr.strip().splitlines()[-1] != want:
+        fail("a second m0 new . said:\n  %s\nwant:\n  %s" % (done.stderr.strip(), want))
+    shutil.rmtree(here)
+    print("new[%s]: %d files, both pins, no token; a second run and a bad name are 2; "
+          "`m0 new .` writes the current directory" % (template, len(wrote)))
     return project
 
 
@@ -308,8 +333,8 @@ def wire_views(port):
     print("wire[views]: document, fragment, Vary, 422 fragment with an alert, create, 404, delete")
 
 
-def live_frames(stream, enough, seconds=5):
-    """The #live patch-elements frames an open /events stream delivers, in
+def live_frames(stream, enough, seconds=5, root="live"):
+    """The #ROOT patch-elements frames an open /events stream delivers, in
     order, until `enough(frames)` or `seconds` pass. A stream that ends or
     goes quiet for the socket's timeout ends the read, not the smoke: the
     caller's assertion names what was missing."""
@@ -324,7 +349,7 @@ def live_frames(stream, enough, seconds=5):
         line = raw.decode().rstrip("\n")
         if line.startswith("event: "):
             event = line[7:]
-        elif line.startswith('data: elements <section id="live"') and event == "datastar-patch-elements":
+        elif line.startswith('data: elements <section id="%s"' % root) and event == "datastar-patch-elements":
             frames.append(line)
     return frames
 
@@ -341,7 +366,7 @@ def wire_live(port):
 
     # ONE stream, open across the kick: the producer steps only while
     # somebody watches, and the frame a kick lifts is one a viewer receives.
-    with urllib.request.urlopen("http://127.0.0.1:%d/events" % port, timeout=5) as stream:
+    with open_stream("http://127.0.0.1:%d/events" % port) as stream:
         frames = live_frames(stream, lambda fs: len(set(fs)) >= 2)
         if len(set(frames)) < 2:
             fail("%d differing patch-elements frame(s) for #live inside five seconds" % len(set(frames)))
@@ -499,7 +524,64 @@ def deploy_auth(project, env, port):
           "Secure session cookie")
 
 
-WIRE = {"views": wire_views, "live": wire_live, "auth": wire_auth}
+def open_stream(url):
+    """An open `/events` stream, or a failure naming its status: a stream
+    opened off the loop is refused 409, and that is an answer to report."""
+    try:
+        return urllib.request.urlopen(url, timeout=5)
+    except urllib.error.HTTPError as e:
+        fail("GET %s answered %d, not a stream" % (urllib.parse.urlsplit(url).path, e.code))
+
+
+def wire_board(port):
+    """Served under `--blocking-threads 2`, so a view that touches the state
+    off the loop sends to a pool thread's stream, which nothing drains."""
+    status, _, _, body = request(port, "GET", "/")
+    if status != 200 or DATASTAR_TAG not in body:
+        fail("GET / is not the document with the pinned Datastar tag: %s" % body[:300])
+    if '<section id="board"' not in body or '<section id="compose"' not in body:
+        fail("GET / lacks the board or the form: %s" % body[:600])
+    if "contentType: &#x27;form&#x27;" not in body or " data-bind:text" not in body:
+        fail("the form does not post its fields with its input bound to $text")
+
+    events = "http://127.0.0.1:%d/events" % port
+    # Two tabs, two streams open at once; `urlopen` returns once the head
+    # is in, by which time the slot is subscribed.
+    with open_stream(events) as one, open_stream(events) as two:
+        status, _, headers, body = request(port, "POST", "/messages", DATASTAR_FORM,
+                                           b"text=hello+%3Cb%3E")
+        if (status, body) != (200, '{"text":""}') or \
+                not headers.get("Content-Type", "").startswith("application/json"):
+            fail("POST /messages answered %d %s %r, not the signal patch emptying $text"
+                 % (status, headers.get("Content-Type"), body[:200]))
+        want = "<li>hello &lt;b&gt;</li>"
+        for which, stream in (("first", one), ("second", two)):
+            frames = live_frames(stream, lambda fs: any(want in f for f in fs), root="board")
+            if not any(want in f for f in frames):
+                fail("the %s stream did not receive the message, escaped, inside five seconds: "
+                     "%d frame(s)" % (which, len(frames)))
+
+    # A tab that opens its stream after the post is sent the newest board at once.
+    with open_stream(events) as late:
+        frames = live_frames(late, bool, seconds=3, root="board")
+        if not frames or "<li>hello &lt;b&gt;</li>" not in frames[0]:
+            fail("a stream opened after the post was not sent the newest board at once")
+
+    status, reason, headers, body = request(port, "POST", "/messages", DATASTAR_FORM, b"text=")
+    if (status, reason) != (422, "Unprocessable Content") or \
+            headers.get("Content-Type") != "application/problem+json" or \
+            '"instance":"/messages"' not in body:
+        fail("an empty message answered %d %s %s: %s" % (
+            status, reason, headers.get("Content-Type"), body[:200]))
+    status, _, _, body = request(port, "GET", "/")
+    if body.count("<li>") != 1 or "hello &lt;b&gt;" not in body:
+        fail("the document does not hold the board as it stands: %s" % body[-600:])
+    print("wire[board]: under a handler pool, a post reaching two open streams escaped, "
+          "the poster's input emptied, a late stream sent the newest board, a 422 "
+          "problem+json, the document holding the board")
+
+
+WIRE = {"views": wire_views, "live": wire_live, "board": wire_board, "auth": wire_auth}
 
 
 # --- one template ------------------------------------------------------------
@@ -566,7 +648,8 @@ def check_test(project, env, template):
 def serve_and_probe(project, env, template, name, port, pin, m0v, servers):
     phase("wire [%s]" % template)
     serve_env = dict(env, **SERVE_ENV.get(template, {}))
-    server = subprocess.Popen([str(project / "bin" / "server"), "--port", str(port)],
+    server = subprocess.Popen([str(project / "bin" / "server"), "--port", str(port)]
+                              + SERVE_ARGS.get(template, []),
                               cwd=project, env=serve_env, stdout=subprocess.PIPE,
                               stderr=subprocess.STDOUT, text=True)
     servers.append(server)

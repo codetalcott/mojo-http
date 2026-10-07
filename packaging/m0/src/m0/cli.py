@@ -35,15 +35,19 @@ def _parser():
 
     p = sub.add_parser(
         "new", allow_abbrev=False,
-        help="write an application into ./NAME; needs no toolchain and no network",
+        help="write an application into ./NAME, or `.` for the empty current directory; "
+        "needs no toolchain and no network",
     )
     p.add_argument("name", metavar="NAME",
-                   help="the directory, the project and the deploy's app name at once")
+                   help="the directory, the project and the deploy's app name at once; "
+                   "`.` is the current directory, named for itself")
     # A closed set of what exists and is gated on the wire; it grows by a
     # value, never by a flag per feature (docs/DECISIONS.md D44).
     p.add_argument("--template", choices=new.TEMPLATES, default="views",
                    help="views: a server-rendered list swapped by htmx 4 (default); "
                    "live: a producer pushing state to every tab over SSE, with Datastar; "
+                   "board: a list every tab shares, a message one tab posts pushed to "
+                   "every open tab; "
                    "auth: the views list behind a login, with a signed session and "
                    "a CSRF token on every write")
     p.set_defaults(run=new.run)

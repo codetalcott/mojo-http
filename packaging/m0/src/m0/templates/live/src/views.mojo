@@ -5,7 +5,9 @@ Route placement is the thing to get right in a streaming app:
 - `add_loop` — stateless, answered on the event loop (`/health`).
 - `add_read` — the state borrowed.
 - `add_write` — the state `mut`. Opening the stream is a WRITE: it
-  subscribes a connection slot and changes the viewer count.
+  subscribes a connection slot and changes the viewer count. It is also
+  `on_loop=True`: under `--blocking-threads` each pool thread has a
+  handler of its own, and only the loop's stream is drained.
 """
 
 from lightbug_http import HTTPRequest, HTTPResponse
@@ -96,7 +98,7 @@ def live_urls() raises -> Views[LiveState]:
     var v = Views[LiveState]()
     v.add_loop("GET", HEALTH, health)
     v.add_read("GET", PAGE, page)
-    v.add_write("GET", EVENTS, events)
+    v.add_write("GET", EVENTS, events, on_loop=True)
     v.add_read("POST", KICK, kick)
     v.add_read("GET", STATS, stats)
     return v^

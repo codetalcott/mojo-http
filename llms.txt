@@ -75,8 +75,9 @@ Mojo on the framework m0serve is built from: one compiled binary, no Python
 at run time. `m0` is pure Python and versioned apart from m0serve. Toolchain
 platforms: macOS arm64, glibc Linux x86_64 and aarch64.
 
-- `uvx m0 new NAME [--template views|live]` writes a project and needs no
-  toolchain and no network. Inside it every command is `uv run m0 ...`;
+- `uvx m0 new NAME [--template views|live|board|auth]` writes `./NAME`, or
+  the empty current directory as `m0 new .`, and needs no toolchain and no
+  network. Inside it every command is `uv run m0 ...`;
   `uv sync` installs the two exact pins, `m0` and the one `mojo` it was
   tested on. `m0` runs the `mojo` in its own environment, never `PATH`'s,
   and refuses any other version. There is no override.

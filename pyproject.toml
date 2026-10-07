@@ -8249,11 +8249,11 @@ deps = ["build-core", "build-http", "build-datastar", "build-sqlite"]
 # (a scaffold's sync cannot resolve offline from a locked sync's cache,
 # measured); `m0` itself is `<version>+tree`, which no index can serve.
 [tool.poe.tasks.smoke-scaffold]
-help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor (the scaffold matching itself, an edit named), the wire (a 422 fragment; two differing Datastar frames, and a kick lifting every bar of a later one; a login, a CSRF token on every write and the DELETE's in a header), the scaffold's own smoke.sh (live: the kick count back after a restart)"
+help = "m0 new outside the tree, per template: the written manifest, uv run m0 build/test/doctor (the scaffold matching itself, an edit named), the wire (a 422 fragment; two differing Datastar frames, and a kick lifting every bar of a later one; behind a handler pool, a post reaching two open streams; a login, a CSRF token on every write and the DELETE's in a header), the scaffold's own smoke.sh (live: the kick count back after a restart)"
 deps = ["build-m0-wheel"]
 shell = """
 . scripts/smoke/lib.sh
-# The driver counts its ports up from this one: a server per template (three),
+# The driver counts its ports up from this one: a server per template (four),
 # each template's own smoke.sh ten above it, and the auth deploy twenty above.
 python3 scripts/m0_scaffold_smoke.py dist/m0 $(free_port 21) || exit 1
 python3 scripts/emit.py --covers N27 --task smoke-scaffold
@@ -8262,6 +8262,7 @@ python3 scripts/emit.py --covers N34 --task smoke-scaffold
 python3 scripts/emit.py --covers N40 --task smoke-scaffold
 python3 scripts/emit.py --covers N42 --task smoke-scaffold
 python3 scripts/emit.py --covers N45 --task smoke-scaffold
+python3 scripts/emit.py --covers N52 --task smoke-scaffold
 """
 
 # SPEC N30. `uv run m0 dev` on a scaffolded app: build-then-swap, asked of a

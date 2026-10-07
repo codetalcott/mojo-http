@@ -141,12 +141,13 @@ PY
 ## 3. Serve it
 
 ```bash serve
-m0serve realtime:application --realtime --health-path /health --port 8000
+m0serve realtime:application --realtime --health-path /health --host 127.0.0.1 --port 8000
 ```
 
 `--realtime` turns the `M0-` headers into held connections and wires the
-publish bus. Without it the same app still serves, and the hold views return
-short responses.
+publish bus. Without it the same app still serves, the hold views return
+short responses, and a `publish()` reaches nobody. `--host 127.0.0.1` binds
+this machine alone; without it the server listens on every interface.
 
 ## 4. Verify
 
@@ -202,6 +203,11 @@ The integration is two headers on the view that approves a subscription,
 `INSTALLED_APPS` entry, no middleware. Under any other WSGI server the same
 views return short plain responses.
 
+The binary resolves libpython from the `python3` on `PATH`, so a start
+script activates the project's virtualenv, or puts its `bin/` first on
+`PATH`, before it runs `m0serve`; `MOJO_PYTHON_LIBRARY` names the library
+outright.
+
 A fuller example, with token auth, channel isolation and static files served
 by the server, is [`apps/django_realtime`](apps/django_realtime/); CI drives
 it with a raw RFC 6455 probe.
@@ -218,6 +224,16 @@ The hold moves the connection out of Python. Authorization stays in the view.
   the channel name comes from a request, so does the blast radius. The
   server refuses only its own reserved namespace (channel names opening
   with a `\x01` byte); every other name is yours to police.
+- **`publish(channel, data)` sends `data` as one event.** Each line of it
+  becomes one `data:` field, and the client joins the fields with a
+  newline again, so a payload keeps its line breaks. The return value is
+  the number of worker channels written; a `0` means the event went
+  nowhere: a frame over the size limit, a refused channel, or no m0serve
+  underneath, as under gunicorn.
+- **A view a browser form posts to is yours to protect.** `publish` and
+  `ws_message` are `csrf_exempt` above so `curl` can post to them; a form
+  in your own page sends Django's CSRF token as usual, and the view keeps
+  the decorator off.
 - **The WebSocket handshake carries no `Origin` check.** If you authenticate
   sockets with cookies, a page on any origin can open one and the browser
   will attach them. Check `Origin` in the view that approves the upgrade, or

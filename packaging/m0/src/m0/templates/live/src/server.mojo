@@ -115,7 +115,10 @@ struct LiveHandler(AppHandler):
         return board_slots(workers)
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
-        return self.views.answer_on_loop(req)
+        # With the state: `/events` is an `on_loop` route, answered here on
+        # the loop's own handler, whose stream the loop drains. Behind a
+        # handler pool, a stream opened on a pool thread is refused 409.
+        return self.views.answer_on_loop(req, self.state)
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         return self.views.dispatch(req, self.state)

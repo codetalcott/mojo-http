@@ -2,8 +2,13 @@
 
 A web application in Mojo on the `m0` framework: one compiled binary, no
 Python at run time. This page is the rules that are not obvious from the
-code. The framework's own source is installed and readable — `uv run m0
-include` prints where. Grep it before guessing an API.
+code. The reference is two pages: https://m0serve.dev/mojo/host/ (what
+`main` hands over, workers and threads, flags, every refusal) and
+https://m0serve.dev/mojo/views/ (the views table, `reply`, fragments and
+their vocabularies, a page or a fragment from one view, URLs, sessions,
+streams); each is Markdown at its URL with `.md` in place of the trailing
+slash. The framework's own source is installed and readable too — `uv run
+m0 include` prints where — for what the pages leave out.
 
 ## Commands
 
@@ -24,8 +29,9 @@ functions a test can reach** — a renderer that takes values, a state struct
 with methods — and keep views thin. A test is also the only thing that
 vouches for a function nothing calls yet: in an imported module the compiler
 does not diagnose one, malformed signature included, so a green build says
-nothing about it. `bin/server --port 8080` runs the app;
-`--doctor` prints its configuration and starts nothing.
+nothing about it. `bin/server --host 127.0.0.1 --port 8080` runs the app on
+this machine alone (without `--host`, on every interface); `--doctor`
+prints its configuration and starts nothing.
 
 Every refusal, from `m0` and from the binary, is exit **78** and one line
 naming the fix. Exit 1 is the compiler's or a test's own failure; exit 2 is
@@ -54,6 +60,9 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   `M0_WORKERS=2` is then refused rather than served as two different
   copies. Move the state out (a database, the shared page) before raising it.
 - `form(req)` is `None` unless the body is a urlencoded form. Check it.
+- `reply.html(body)`, `reply.json(status, text, body)`, `reply.redirect(status,
+  url)`, `reply.no_content()`, and `reply.problem(status, title, detail,
+  instance)`, which takes all four: `instance` is the request's path.
 - `read_signals(req)` is Datastar's signal store as JSON text: the query on
   GET and DELETE, the body otherwise. An action sent with `{contentType:
   'form'}` carries no signals: read it with `form(req)`. The Datastar frame
@@ -61,6 +70,8 @@ functions in `test/test_*.mojo`; adding one needs no registration.
 
 ## Rendering
 
+- `void(tag, attrs)` writes a void element (`<input>`, `<br>`, `<img>`);
+  `el` closes its tag, so `el("input", …)` renders `</input>`.
 - `Fragment[V]("id")` writes the root id once; `f.el(tag, verb, url, …)`
   and `f.swap(verb, url)` generate the attributes that target it. **Never
   type an `hx-*` or `data-on:*` swap attribute by hand**, and never retype
@@ -78,6 +89,11 @@ functions in `test/test_*.mojo`; adding one needs no registration.
 - **htmx 4 swaps every answer, 4xx included.** An error a person may see is
   the fragment with the message in it and the right status
   (`status=422`); `reply.problem` is for routes no browser swaps.
+- **Datastar 1.0 applies an action's answer only on a 200**: a 204 does
+  nothing and a 4xx is dropped. Keep an invalid submission in the browser
+  (`required`), and answer a client that bypasses it with `reply.problem`.
+  An `application/json` answer is a signal patch: `{"text":""}` empties
+  an input bound with `data-bind:text`.
 - Moving a `Fragment[Htmx]` app to Datastar is `Fragment[Datastar]` and the
   script tag. A Datastar URL sits inside a JavaScript string: build it with
   `url_for`, which encodes; a URL carrying `'`, `\`, CR or LF is refused.
@@ -86,7 +102,7 @@ functions in `test/test_*.mojo`; adding one needs no registration.
 
 `--template auth` has one: the list behind a signed session, every write
 carrying a CSRF token. `m0_http.login` is the glue it is written on, and
-what a `views` or `live` application adds the day it needs one.
+what a `views`, `board` or `live` application adds the day it needs one.
 
 - `Login.from_env("APP", "NAME-session")` reads `APP_KEY` (at least 32
   bytes), `APP_PASSWORD` and `APP_SECURE`, and raises naming what is
@@ -130,12 +146,23 @@ what a `views` or `live` application adds the day it needs one.
 
 ## Streaming (SSE)
 
-- Opening a stream is an `add_write` view: it subscribes a connection slot.
+- Opening a stream is an `add_write(..., on_loop=True)` view: it
+  subscribes a connection slot, and only the loop's handler is drained.
 - A stream registry's capacity must be at least the server's connection
   count (`ctx.capacity`): slots index it directly.
 - **Every frame is the full state, never a delta.** A slow viewer's 64 KB
   outbox DROPS frames, it does not queue them; a dropped full frame is
   healed by the next one.
+- A view sends through the state's stream: `st.stream.patch_elements(url,
+  html)` reaches this process's subscribers. Every view that reads or
+  writes what a stream sends is `on_loop=True`: under
+  `--blocking-threads` each pool thread builds a state of its own, and
+  nothing drains its stream. The `board` template sends from a view;
+  `live` from a producer.
+- Other workers' subscribers are reached through the bus: `make` calls
+  `stream.enable_bus(ctx.bus, ctx.worker, ctx.id_addr)` and the handler's
+  `sse_peer_frame` forwards to `deliver_peer`. `ViewsApp` does not forward
+  `sse_peer_frame`, so that is an `AppHandler` of your own.
 - Work on a cadence goes in a `Producer` (`step` returns the nanoseconds to
   the next step), never in the loop's `tick`, which stalls every
   connection. Number frames with `out.next_id()`, and COUNT a publish that
