@@ -49,6 +49,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   connection. A client that ends request lines with a lone LF is refused;
   none is known. `smoke-pipelining` sends both shapes.
 
+- **A folded field line is refused with 400** (SPEC B13). A request
+  field line opening with a space or a tab (obs-fold, RFC 9112 §5.2) was
+  accepted as a field with an empty name: a WSGI application saw an
+  environ key `HTTP_`, and the folded text never joined the field it
+  continued. Such a request is now refused.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every

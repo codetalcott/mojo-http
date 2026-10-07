@@ -561,6 +561,33 @@ def test_an_empty_crlf_line_before_the_request_line_is_still_skipped() raises:
     assert_equal(parsed.bytes_consumed, raw.byte_length())
 
 
+# --- obs-fold: RFC 9112 5.2 (SPEC B13) ---------------------------------------
+
+
+def test_an_obs_fold_line_is_rejected() raises:
+    """A field line opening with SP or HTAB continues the one before it.
+
+    RFC 9112 §5.2: a server MUST either refuse such a message with 400 or
+    replace each fold with SP; this one refuses. The parser used to accept
+    the line as a field with an EMPTY name, which reached a WSGI
+    application as the environ key `HTTP_`, and the folded text never
+    joined the value it continued.
+
+    covers: B13
+    """
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nX-A: 1\r\n folded\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nX-A: 1\r\n\tfolded\r\n\r\n"))
+    # A fold of Host itself, and one before any field at all.
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\n y\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.1\r\n folded\r\nHost: x\r\n\r\n"))
+
+
+def test_an_obs_fold_is_invalid_before_its_line_ends() raises:
+    """Refused at the SP that opens the line, not left waiting for more."""
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\n "))
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\n\t"))
+
+
 # --- Request target normalization: RFC 9112 3.2.2 ----------------------------
 
 
@@ -1107,10 +1134,8 @@ def test_a_separator_in_a_field_name_is_invalid_at_every_position() raises:
     var bad = String("()<>@,;\\\"/[]?={} ")
     for b in bad.as_bytes():
         for pos in range(0, 40):
-            if b == 0x20 and pos == 0:
-                # A line opening with SP is an obs-fold continuation of the
-                # previous field (RFC 9112 §5.2), not a name: accepted.
-                continue
+            # A line opening with SP (pos 0) is an obs-fold continuation of
+            # the previous field, refused for that reason (SPEC B13).
             var raw = List[UInt8]()
             raw.extend("GET / HTTP/1.1\r\nHost: x\r\n".as_bytes())
             for _ in range(pos):

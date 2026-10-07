@@ -1250,6 +1250,11 @@ lightbug_http
         a head the parser ended at a bare LF inside that frame lost the
         request pipelined behind it, or the `Content-Length` after it.
 
+      - http/parsing.mojo (2026-10-07): a request head refuses an obs-fold
+        line (SPEC B13). Under `strict`, `parse_headers` raises where a
+        line opens with SP or HTAB; it used to record the line as a field
+        with an empty name, which `parse_request_headers` stored as `""`.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

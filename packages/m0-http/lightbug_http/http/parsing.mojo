@@ -444,9 +444,10 @@ def parse_headers[
 ) raises HTTPParseError:
     """Parse field lines up to and including the empty line that ends them.
 
-    `strict` is a request head's rule, which the request parser asks for:
-    every line, the empty one included, ends in CRLF, and a bare LF is a
-    ParseError (SPEC B12). RFC 9112 §2.2 lets a recipient accept a lone LF,
+    `strict` is a request head's rules, which the request parser asks for:
+    a line opening with SP or HTAB (obs-fold) is a ParseError (SPEC B13),
+    and every line, the empty one included, ends in CRLF, a bare LF being
+    a ParseError too (SPEC B12). RFC 9112 §2.2 lets a recipient accept a lone LF,
     and this parser did -- but the event loop frames a head by the first
     CRLFCRLF (`find_header_end`) and hands this parser exactly that many
     bytes, so a head this parser ended at `\\r\\n\\n` while the loop read on
@@ -454,7 +455,7 @@ def parse_headers[
     behind it vanished, and a `Content-Length` after the bare LF was never
     read, its body served as the next request. One terminator for both
     framers is what keeps them agreeing. The response parser keeps the
-    lenient reading; nothing frames a response by CRLFCRLF.
+    lenient readings; nothing frames a response by CRLFCRLF.
     """
     while buf.available():
         var byte = try_peek(buf)
@@ -500,6 +501,11 @@ def parse_headers[
         else:
             # obs-fold continuation: no name, the value joins the previous
             # field's. An empty span, exactly what the empty String was.
+            # A request refuses it (RFC 9112 §5.2, SPEC B13): kept, it was
+            # a field named "" -- `HTTP_` in a WSGI environ -- and the
+            # folded text never joined the value it continued.
+            comptime if strict:
+                raise ParseError()
             headers[num_headers].name_start = 0
             headers[num_headers].name_len = 0
 

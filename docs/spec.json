@@ -298,6 +298,14 @@
       "evidence": "`test_parsing.mojo:test_a_bare_lf_in_a_request_head_is_rejected` (every PR) \u2014 the parser ended a head at a bare-LF empty line while the loop framed it by the first CRLFCRLF, so on `apps/hello` a request pipelined behind `rnn` got no answer and a `Content-Length` after the bare LF was never read, its body answered as a request. The loop also compares the parser's `bytes_consumed` with its own frame, so the two cannot disagree silently again. `Smoke test pipelined requests` sends both shapes and requires one 400 and a close"
     },
     {
+      "id": "B13",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A field line opening with SP or HTAB (obs-fold, RFC 9112 \u00a75.2) rejected",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_an_obs_fold_line_is_rejected` (every PR) \u2014 the parser took the line as a field with an EMPTY name, which reached a WSGI application as the environ key `HTTP_`, and the folded text never joined the value it continued; the RFC allows refusing it or replacing the fold with SP, and this server refuses, at the SP, before the line ends"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",
