@@ -16,6 +16,8 @@ length and a body that a handler set on a 1xx or 204 itself -- Django's
 a 304's. The rule's call sites are the wire's to prove: `scripts/head_probe.py`
 sends a 204 carrying a length and seven bytes and reads the next response on
 the same connection.
+
+The head's one `Server` line is held here too (SPEC A26).
 """
 
 from std.ffi import c_int, external_call
@@ -219,6 +221,59 @@ def test_a_204_on_the_wire_carries_no_length_and_no_body() raises:
     assert_false("content-length" in wire.lower(), wire)
     assert_false("ignored" in wire, wire)
     assert_true(wire.endswith("\r\n\r\n"), wire)
+
+
+def _server_lines(wire: String) raises -> List[String]:
+    """Every head line naming `Server`, whatever its case."""
+    var found = List[String]()
+    var head = wire.split("\r\n\r\n")[0]
+    for line in head.split("\r\n"):
+        if line.lower().startswith("server:"):
+            found.append(String(line))
+    return found^
+
+
+def _with_server(server: String) -> HTTPResponse:
+    var headers = Headers()
+    if server:
+        headers = Headers(Header("Server", server))
+    return HTTPResponse(
+        body_bytes=String("ok").as_bytes(), headers=headers^, status_code=200, status_text="OK"
+    )
+
+
+def test_a_server_header_the_application_set_is_the_only_one() raises:
+    """A response whose application set `Server` carries that line and no
+    default beside it, from both encoders and the printed form; one that
+    set none carries the default once. The encoders wrote the default
+    whatever the headers held, so an application naming itself sent two
+    `Server` lines, which RFC 9110 §10.2.4's grammar cannot join into one.
+
+    covers: A26
+    """
+    for writer in range(3):
+        var mine = _with_server("my-app/1.0")
+        var wire: String
+        if writer == 0:
+            wire = String(unsafe_from_utf8=mine^.encode())
+        elif writer == 1:
+            wire = String(unsafe_from_utf8=mine^.encode_into(Bytes(capacity=256)))
+        else:
+            wire = String(mine)
+        var lines = _server_lines(wire)
+        assert_equal(len(lines), 1, wire)
+        assert_equal(lines[0], "server: my-app/1.0", wire)
+
+        var plain = _with_server("")
+        if writer == 0:
+            wire = String(unsafe_from_utf8=plain^.encode())
+        elif writer == 1:
+            wire = String(unsafe_from_utf8=plain^.encode_into(Bytes(capacity=256)))
+        else:
+            wire = String(plain)
+        lines = _server_lines(wire)
+        assert_equal(len(lines), 1, wire)
+        assert_equal(lines[0], "server: lightbug_http", wire)
 
 
 def main() raises:

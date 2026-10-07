@@ -355,51 +355,36 @@ def encode_latin1_header_value(value: String) -> List[UInt8]:
 
     HTTP/1.1 header field values must be representable in ISO-8859-1 (RFC 9110 §5.5).
     - Codepoints U+0000–U+007F: single byte, passed through unchanged.
-    - Codepoints U+0080–U+00FF: encoded as their single ISO-8859-1 byte.
-    - Codepoints above U+00FF: cannot be represented in ISO-8859-1; the raw UTF-8
-      bytes are written as-is (best-effort fallback — use RFC 8187 encoding instead).
-    - Invalid UTF-8 byte sequences (obs-text from parsing): passed through as-is.
+    - Codepoints U+0080–U+00FF, the two-byte sequences `C2 80` to `C3 BF`:
+      encoded as their single ISO-8859-1 byte. Nothing else is decoded.
+    - Every other byte goes out as it came in: a codepoint above U+00FF has
+      no ISO-8859-1 byte (best-effort fallback — use RFC 8187 encoding
+      instead), and invalid UTF-8 (obs-text from parsing) is not UTF-8.
+
+    An overlong sequence is invalid UTF-8 too, and must stay bytes: this
+    runs AFTER the writers have refused a value holding CR, LF or NUL
+    (SPEC G2), and decoding the three-byte `E0 80 8D` or the four-byte
+    `F0 80 80 8A` -- which `unquote` makes of `%E0%80%8D` or
+    `%F0%80%80%8A` in a `?next=` a view redirects to -- wrote the real CR
+    or LF it encodes, splitting the response the refusal had passed
+    (SPEC G19). Restricting the decode to
+    the two lead bytes whose sequences land in U+0080–U+00FF is the whole
+    rule: no output byte below 0x80 can come from anything but itself.
     """
     var utf8 = value.as_bytes()
-    var out = List[UInt8](capacity=len(utf8))
+    var n = len(utf8)
+    var out = List[UInt8](capacity=n)
     var i = 0
-    while i < len(utf8):
+    while i < n:
         var b = utf8[i]
-        if b < 0x80:
-            out.append(b)
-            i += 1
-        else:
-            var seq_len = 0
-            var codepoint = 0
-            if b >= 0xC2 and b <= 0xDF and i + 1 < len(utf8):
-                var b2 = utf8[i + 1]
-                if b2 >= 0x80 and b2 <= 0xBF:
-                    seq_len = 2
-                    codepoint = ((Int(b) & 0x1F) << 6) | (Int(b2) & 0x3F)
-            elif b >= 0xE0 and b <= 0xEF and i + 2 < len(utf8):
-                var b2 = utf8[i + 1]
-                var b3 = utf8[i + 2]
-                if b2 >= 0x80 and b2 <= 0xBF and b3 >= 0x80 and b3 <= 0xBF:
-                    seq_len = 3
-                    codepoint = ((Int(b) & 0x0F) << 12) | ((Int(b2) & 0x3F) << 6) | (Int(b3) & 0x3F)
-            elif b >= 0xF0 and b <= 0xF7 and i + 3 < len(utf8):
-                var b2 = utf8[i + 1]
-                var b3 = utf8[i + 2]
-                var b4 = utf8[i + 3]
-                if b2 >= 0x80 and b2 <= 0xBF and b3 >= 0x80 and b3 <= 0xBF and b4 >= 0x80 and b4 <= 0xBF:
-                    seq_len = 4
-                    codepoint = ((Int(b) & 0x07) << 18) | ((Int(b2) & 0x3F) << 12) | ((Int(b3) & 0x3F) << 6) | (Int(b4) & 0x3F)
-
-            if seq_len > 0 and codepoint <= 0xFF:
-                out.append(UInt8(codepoint))
-                i += seq_len
-            elif seq_len > 0:
-                for j in range(seq_len):
-                    out.append(utf8[i + j])
-                i += seq_len
-            else:
-                out.append(b)
-                i += 1
+        if (b == 0xC2 or b == 0xC3) and i + 1 < n:
+            var b2 = utf8[i + 1]
+            if b2 >= 0x80 and b2 <= 0xBF:
+                out.append(((b & 0x03) << 6) | (b2 & 0x3F))
+                i += 2
+                continue
+        out.append(b)
+        i += 1
     return out^
 
 
@@ -1021,6 +1006,11 @@ struct Headers(Copyable, Writable):
         end its own head and write headers, or a body, of its choosing.
         Dropped rather than raised: the application has run and its body
         is real, and the header is the one part that cannot be sent.
+
+        A value above ASCII is asked again AFTER its transcode, since those
+        are the bytes that go out: the transcoder once decoded an overlong
+        CR or LF into the real byte past the first look (SPEC G19), and the
+        second look keeps any such bug a dropped header, not a split.
         """
         for i in range(self.count()):
             var name = self.name_span(i)
@@ -1034,6 +1024,8 @@ struct Headers(Copyable, Writable):
                 var latin1 = encode_latin1_header_value(
                     String(unsafe_from_utf8=value)
                 )
+                if span_breaks_header_line(Span(latin1)):
+                    continue
                 writer.write_header_line(name, Span(latin1))
 
     def __str__(self) -> String:

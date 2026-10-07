@@ -180,7 +180,8 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
 
 def _write_set_cookie_latin1(mut writer: ByteWriter, value: String):
     """One `Set-Cookie` line in latin-1, or nothing for a value holding CR,
-    LF or NUL: `Headers.write_latin1_to`'s rules, for one header."""
+    LF or NUL: `Headers.write_latin1_to`'s rules, for one header, the
+    transcoded bytes asked again before they go out (SPEC G19)."""
     var bytes = value.as_bytes()
     var kind = header_value_kind(bytes)
     if kind == HEADER_VALUE_BREAKS:
@@ -189,4 +190,6 @@ def _write_set_cookie_latin1(mut writer: ByteWriter, value: String):
         writer.write_header_line(HeaderKey.SET_COOKIE.as_bytes(), bytes)
     else:
         var latin1 = encode_latin1_header_value(value)
+        if span_breaks_header_line(Span(latin1)):
+            return
         writer.write_header_line(HeaderKey.SET_COOKIE.as_bytes(), Span(latin1))

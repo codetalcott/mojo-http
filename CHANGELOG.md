@@ -38,6 +38,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A header value can no longer split a response with an overlong UTF-8
+  sequence** (SPEC G19). The latin-1 transcoder that writes every response
+  head decoded three- and four-byte sequences as well as two-byte ones,
+  AFTER the check that drops a header carrying CR, LF or NUL, so the
+  overlong forms `E0 80 8D` and `E0 80 8A` went out as a real CRLF. A Mojo
+  view that redirected to a request's `next` with `reply.redirect` could be
+  made to send a `Set-Cookie`, or a body, of the request's choosing:
+  `?next=/%E0%80%8D%E0%80%8ASet-Cookie:%20sid%3Dx` did it, and a header or
+  `Set-Cookie` value a view built from request data was open the same way.
+  Every response built in Mojo was exposed: a `Views` application's, the
+  Mojo host's, and a Mojo mount's in m0serve. Python applications on
+  m0serve were not: a `str` header reaches the server as CPython's UTF-8,
+  which is never overlong, and a `bytes` value is re-encoded byte by byte.
+  The transcoder now decodes only U+0080 to U+00FF and writes every other
+  byte as it was given, and the writers check the transcoded bytes again
+  before they send them. Rebuild a Mojo application against this release.
+
+- **A response whose application sets `Server` carries one `Server`
+  line** (SPEC A26). The server wrote its default `server: lightbug_http`
+  whatever the headers held, so an application that named itself, built
+  in Mojo or a Python application on m0serve, sent two. The default is now
+  written only when the application set none.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every

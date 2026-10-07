@@ -16,6 +16,11 @@ Every case is judged on the BYTES a writer produced: the injected marker
 must be absent from all of them, every head line must be free of CR, LF and
 NUL between its CRLFs, and the clean neighbours must still be there --
 without them, dropping everything would pass.
+
+The latin-1 transcoder runs AFTER the refusal has looked, so it must never
+make a CR, LF or NUL of its own (SPEC G19): it decoded the overlong forms
+`E0 80 8D` and `E0 80 8A` to a real CRLF, which `unquote` hands a view from
+`?next=%E0%80%8D%E0%80%8A...`.
 """
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
@@ -27,6 +32,7 @@ from lightbug_http.header import (
     HEADER_VALUE_ASCII,
     HEADER_VALUE_BREAKS,
     HEADER_VALUE_HIGH,
+    encode_latin1_header_value,
     header_value_kind,
     span_breaks_header_line,
 )
@@ -243,6 +249,221 @@ def test_a_tab_and_bytes_above_ascii_are_content_not_framing() raises:
     latin.append(0x0D)
     latin.append(0x0A)
     assert_true(_find(Span(wire), Span(latin)) >= 0, "a latin-1 value was refused")
+
+
+def _seq(a: Int, b: Int = -1, c: Int = -1, d: Int = -1) -> List[Byte]:
+    var s = List[Byte]()
+    for v in [a, b, c, d]:
+        if v >= 0:
+            s.append(UInt8(v))
+    return s^
+
+
+def _cat(before: String, seq: List[Byte], after: String) -> List[Byte]:
+    """`before`, the raw bytes of `seq`, then `after`."""
+    var b = List[Byte](before.as_bytes())
+    b.extend(Span(seq))
+    b.extend(after.as_bytes())
+    return b^
+
+
+def _str(b: List[Byte]) -> String:
+    """`b` as a String, whether or not it is UTF-8, as a request's bytes
+    become one."""
+    return String(unsafe_from_utf8=Span(b))
+
+
+def _overlongs() -> List[List[Byte]]:
+    """An ASCII control in a longer form than UTF-8 allows: CR, LF and NUL
+    in three bytes and LF and NUL in four, the record's five, then CR and LF
+    in two, whose lead bytes 0xC0 and 0xC1 this transcoder never decoded."""
+    var all = List[List[Byte]]()
+    all.append(_seq(0xE0, 0x80, 0x8D))
+    all.append(_seq(0xE0, 0x80, 0x8A))
+    all.append(_seq(0xF0, 0x80, 0x80, 0x8A))
+    all.append(_seq(0xF0, 0x80, 0x80, 0x80))
+    all.append(_seq(0xE0, 0x80, 0x80))
+    all.append(_seq(0xC0, 0x8D))
+    all.append(_seq(0xC1, 0x8A))
+    return all^
+
+
+def test_the_transcoder_maps_only_latin1_and_passes_the_rest_verbatim() raises:
+    """`encode_latin1_header_value` turns exactly the two-byte sequences
+    `C2 80` to `C3 BF` (U+0080 to U+00FF) into their latin-1 byte. Every
+    other sequence goes out as the bytes it came in as: one above U+00FF
+    has no latin-1 byte, and an overlong one is not UTF-8 -- the three- and
+    four-byte forms of CR, LF and NUL decoded to the real byte, AFTER the
+    writer had looked for one.
+
+    covers: G19
+    """
+    var overlongs = _overlongs()
+    for k in range(len(overlongs)):
+        var given = _cat("a", overlongs[k], "b")
+        var out = encode_latin1_header_value(_str(given))
+        assert_equal(len(out), len(given), String("overlong ", k, " changed length"))
+        for i in range(len(given)):
+            assert_equal(Int(out[i]), Int(given[i]), String("overlong ", k, " byte ", i))
+        assert_false(span_breaks_header_line(Span(out)), String("overlong ", k))
+    # The latin-1 range, both ends and the middle: one byte each.
+    var latin = List[List[Byte]]()
+    latin.append(_seq(0xC2, 0x80))
+    latin.append(_seq(0xC3, 0xA9))
+    latin.append(_seq(0xC3, 0xBF))
+    var want = [0x80, 0xE9, 0xFF]
+    for k in range(len(latin)):
+        var out = encode_latin1_header_value(_str(_cat("a", latin[k], "b")))
+        assert_equal(len(out), 3)
+        assert_equal(Int(out[1]), want[k])
+    # Above U+00FF, well formed, and malformed beside the range: verbatim.
+    var verbatim = List[List[Byte]]()
+    verbatim.append(_seq(0xC4, 0x80))
+    verbatim.append(_seq(0xE2, 0x82, 0xAC))
+    verbatim.append(_seq(0xF0, 0x9F, 0x98, 0x80))
+    verbatim.append(_seq(0xC3, 0x41))
+    verbatim.append(_seq(0xC3))
+    for k in range(len(verbatim)):
+        var given = _cat("a", verbatim[k], "")
+        var out = encode_latin1_header_value(_str(given))
+        assert_equal(len(out), len(given), String("sequence ", k, " changed length"))
+        for i in range(len(given)):
+            assert_equal(Int(out[i]), Int(given[i]), String("sequence ", k, " byte ", i))
+
+
+def _overlong_headers() -> Headers:
+    """A clean pair with each of the record's overlong values between them,
+    and a clean `é` beside them."""
+    var cr_lf = _seq(0xE0, 0x80, 0x8D)
+    cr_lf.extend(Span(_seq(0xE0, 0x80, 0x8A)))
+    return Headers(
+        Header("x-before", "fine"),
+        Header("x-cr-lf", _str(_cat("/", cr_lf, "Set-Cookie: hijack=1"))),
+        Header("x-lf4", _str(_cat("a", _seq(0xF0, 0x80, 0x80, 0x8A), "X-Hijack: 1"))),
+        Header("x-nul3", _str(_cat("a", _seq(0xE0, 0x80, 0x80), "hijack"))),
+        Header("x-nul4", _str(_cat("a", _seq(0xF0, 0x80, 0x80, 0x80), "hijack"))),
+        Header("x-latin", _str(_cat("caf", _seq(0xC3, 0xA9), ""))),
+        Header("x-after", "fine too"),
+    )
+
+
+def _line(name: String, value: List[Byte]) -> List[Byte]:
+    """`\\r\\nname: value\\r\\n`: one whole head line, bounded on both sides."""
+    var b = List[Byte](String("\r\n", name, ": ").as_bytes())
+    b.extend(Span(value))
+    b.extend(String("\r\n").as_bytes())
+    return b^
+
+
+def _assert_overlongs_kept_whole(wire: List[Byte], clean: List[Byte], latin1: Bool) raises:
+    """Five more head lines than the clean pair's and not one more: each
+    overlong value kept on its own line, byte for byte as it was given --
+    so neither transcoded into a break nor dropped as one -- and the `é`
+    in latin-1 where the writer transcodes."""
+    assert_equal(
+        _head_lines(wire), _head_lines(clean) + 5, "an overlong value split or lost a line"
+    )
+    var cr_lf = _seq(0xE0, 0x80, 0x8D)
+    cr_lf.extend(Span(_seq(0xE0, 0x80, 0x8A)))
+    var kept = List[List[Byte]]()
+    kept.append(_line("x-cr-lf", _cat("/", cr_lf, "Set-Cookie: hijack=1")))
+    kept.append(_line("x-lf4", _cat("a", _seq(0xF0, 0x80, 0x80, 0x8A), "X-Hijack: 1")))
+    kept.append(_line("x-nul3", _cat("a", _seq(0xE0, 0x80, 0x80), "hijack")))
+    kept.append(_line("x-nul4", _cat("a", _seq(0xF0, 0x80, 0x80, 0x80), "hijack")))
+    for k in range(len(kept)):
+        assert_true(
+            _find(Span(wire), Span(kept[k])) >= 0,
+            String("overlong header ", k, " was not written as it was given"),
+        )
+    assert_false(_has(wire, "\r\nSet-Cookie"), "an overlong CRLF started a header")
+    assert_false(_has(wire, "\nX-Hijack"), "an overlong LF started a header")
+    var cafe = _seq(0xE9) if latin1 else _seq(0xC3, 0xA9)
+    assert_true(
+        _find(Span(wire), Span(_line("x-latin", _cat("caf", cafe, "")))) >= 0,
+        "the clean latin-1 value beside them did not go out as it should",
+    )
+
+
+def test_an_overlong_line_break_is_not_a_way_past_the_refusal() raises:
+    """A header value carrying the overlong form of CR, LF or NUL goes out
+    with its bytes as given, on a line of its own, from every head writer:
+    the transcoder decoded each to the real byte after the refusal had
+    looked, and wrote the split G2 refuses.
+
+    covers: G19
+    """
+    _assert_overlongs_kept_whole(
+        _encoded(_response(_overlong_headers())), _encoded(_response(_clean_headers())), True
+    )
+    _assert_overlongs_kept_whole(
+        _encoded_into(_response(_overlong_headers())),
+        _encoded_into(_response(_clean_headers())),
+        True,
+    )
+    _assert_overlongs_kept_whole(
+        _text(_response(_overlong_headers())), _text(_response(_clean_headers())), False
+    )
+
+
+def _jar_with_overlongs() -> ResponseCookieJar:
+    var cr_lf = _seq(0xE0, 0x80, 0x8D)
+    cr_lf.extend(Span(_seq(0xE0, 0x80, 0x8A)))
+    var jar = ResponseCookieJar()
+    jar.add_raw(_str(_cat("b=", cr_lf, "Set-Cookie: hijack=1")))
+    jar.add_raw(_str(_cat("c=", _seq(0xF0, 0x80, 0x80, 0x8A), "X-Hijack: 1")))
+    jar.add_raw(_str(_cat("d=", _seq(0xE0, 0x80, 0x80), "x")))
+    jar.add_raw(_str(_cat("e=", _seq(0xF0, 0x80, 0x80, 0x80), "x")))
+    jar.add_raw(_str(_cat("g=caf", _seq(0xC3, 0xA9), "")))
+    jar.set_cookie(Cookie("f", _str(_cat("6", cr_lf, "X-Hijack: 1"))))
+    return jar^
+
+
+def _assert_overlong_cookies_kept_whole(
+    wire: List[Byte], clean: List[Byte], latin1: Bool
+) raises:
+    assert_equal(
+        _head_lines(wire), _head_lines(clean) + 6, "an overlong cookie split or lost a line"
+    )
+    var cr_lf = _seq(0xE0, 0x80, 0x8D)
+    cr_lf.extend(Span(_seq(0xE0, 0x80, 0x8A)))
+    var kept = List[List[Byte]]()
+    kept.append(_line("set-cookie", _cat("b=", cr_lf, "Set-Cookie: hijack=1")))
+    kept.append(_line("set-cookie", _cat("c=", _seq(0xF0, 0x80, 0x80, 0x8A), "X-Hijack: 1")))
+    kept.append(_line("set-cookie", _cat("d=", _seq(0xE0, 0x80, 0x80), "x")))
+    kept.append(_line("set-cookie", _cat("e=", _seq(0xF0, 0x80, 0x80, 0x80), "x")))
+    kept.append(_line("set-cookie", _cat("f=6", cr_lf, "X-Hijack: 1")))
+    for k in range(len(kept)):
+        assert_true(
+            _find(Span(wire), Span(kept[k])) >= 0,
+            String("overlong Set-Cookie ", k, " was not written as it was given"),
+        )
+    assert_false(_has(wire, "\r\nSet-Cookie"), "an overlong CRLF started a header")
+    assert_false(_has(wire, "\nX-Hijack"), "an overlong LF started a header")
+    var cafe = _seq(0xE9) if latin1 else _seq(0xC3, 0xA9)
+    assert_true(
+        _find(Span(wire), Span(_line("set-cookie", _cat("g=caf", cafe, "")))) >= 0,
+        "the clean latin-1 cookie beside them did not go out as it should",
+    )
+
+
+def test_an_overlong_line_break_in_a_cookie_is_not_a_way_past_the_refusal() raises:
+    """The cookie jar's latin-1 writer is the header writer's rule for one
+    header, so an overlong CR, LF or NUL in a line handed to `add_raw`, or
+    in a `Cookie` a view built, goes out as given, never as a break.
+
+    covers: G19
+    """
+    var r1 = _response(Headers())
+    r1.cookies = _jar_with_overlongs()
+    _assert_overlong_cookies_kept_whole(_encoded(r1^), _encoded(_response(Headers())), True)
+    var r2 = _response(Headers())
+    r2.cookies = _jar_with_overlongs()
+    _assert_overlong_cookies_kept_whole(
+        _encoded_into(r2^), _encoded_into(_response(Headers())), True
+    )
+    var r3 = _response(Headers())
+    r3.cookies = _jar_with_overlongs()
+    _assert_overlong_cookies_kept_whole(_text(r3), _text(_response(Headers())), False)
 
 
 def test_the_scan_finds_each_byte_at_every_position() raises:
