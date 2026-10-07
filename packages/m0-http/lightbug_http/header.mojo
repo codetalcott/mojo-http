@@ -307,6 +307,23 @@ struct ParsedRequestHeaders(Movable):
             return "chunked" in te.value().lower()
         return False
 
+    def faulty_framing(self) -> Bool:
+        """Whether RFC 9112 §6.1 calls this request's framing faulty.
+
+        An HTTP/1.0 message carrying `Transfer-Encoding` MUST be treated as
+        if its framing were faulty, and the connection closed after it is
+        processed (SPEC B15). HTTP/1.0 predates the field, so a 1.0 hop in
+        front may have framed the body by something else entirely, and the
+        bytes after it are not trusted to be the next request. The loop
+        serves the request and closes, whatever its `Connection` asked;
+        it de-chunked the body and kept the connection alive, so a request
+        pipelined behind it was answered.
+        """
+        return (
+            self.protocol == "HTTP/1.0"
+            and self.headers.known_index(KH_TRANSFER_ENCODING) >= 0
+        )
+
     def expects_body(self) -> Bool:
         """Check if this request expects a body based on method and Content-Length."""
         var cl = self.content_length()
@@ -1238,7 +1255,11 @@ def parse_request_headers(
     #
     # Whitespace-only values ("Host: " / "Host: \t") are stripped to "" by
     # the parser's OWS skip and are rejected by the same check.
-    if minor_version == 1 and host_len <= 0:
+    #
+    # Every minor version from 1 up: HTTP/1.2 to HTTP/1.9 are processed as
+    # HTTP/1.1, the highest this server implements (RFC 9110 §2.5), and the
+    # check that asked for 1 exactly served them with no Host (SPEC B15).
+    if minor_version >= 1 and host_len <= 0:
         raise RequestParseError(InvalidHTTPRequestError())
 
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.

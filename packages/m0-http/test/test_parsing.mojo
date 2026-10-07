@@ -211,6 +211,36 @@ def test_http11_requires_host_to_be_present_at_all() raises:
     assert_true(_rejected("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n"))
 
 
+def test_a_later_http1_minor_version_requires_host() raises:
+    """HTTP/1.2 to HTTP/1.9 are processed as HTTP/1.1 (RFC 9110 §2.5), so
+    they need Host too. The check asked for minor version 1 exactly, and
+    `GET / HTTP/1.2` with no Host was served.
+
+    covers: B15
+    """
+    assert_true(_rejected("GET / HTTP/1.2\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.9\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.2\r\nHost: \r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.2\r\nHost: x\r\n\r\n"))
+
+
+def test_an_http10_request_with_transfer_encoding_has_faulty_framing() raises:
+    """RFC 9112 §6.1, the head's half: the loop closes behind a request
+    `faulty_framing` names, and `Smoke test pipelined requests` holds that
+    half on the wire."""
+    var te10 = String(
+        "POST / HTTP/1.0\r\nConnection: keep-alive\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+    )
+    assert_true(parse_request_headers(te10.as_bytes()).faulty_framing())
+    var te11 = String(
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    assert_false(parse_request_headers(te11.as_bytes()).faulty_framing())
+    var cl10 = String("POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n")
+    assert_false(parse_request_headers(cl10.as_bytes()).faulty_framing())
+
+
 def test_a_second_host_line_is_rejected() raises:
     """RFC 9112 §3.2: a server MUST answer 400 to "any request message
     that contains more than one Host header field line". The parser kept

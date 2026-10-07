@@ -1263,6 +1263,13 @@ lightbug_http
         section's; any other byte returns -1. The section used to skip any
         run of CR and take a bare LF, or any line, as a line end.
 
+      - header.mojo, loop/request.mojo (2026-10-07): an HTTP/1.0 request
+        carrying `Transfer-Encoding` closes its connection after the
+        response (RFC 9112 §6.1, SPEC B15): `ParsedRequestHeaders.
+        faulty_framing` names it, and `_process_request` asks it before
+        `from_parsed` consumes the head. `parse_request_headers` requires
+        `Host` for every minor version from 1, where it asked for 1 exactly.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

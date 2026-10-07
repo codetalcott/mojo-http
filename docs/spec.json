@@ -314,6 +314,14 @@
       "evidence": "`test_parsing.mojo:test_a_trailer_line_must_end_in_crlf` (every PR) \u2014 B5's rule for the chunk header, applied to the trailer. The section skipped any run of CR and took a bare LF, or any line at all, so `0rnn` ended a body a stricter hop in front still reads as open, and `XY` in a trailer was served where llhttp and h11 both refuse it. `test_a_trailer_line_must_be_a_field_line` holds the name and colon, `test_a_trailer_split_at_every_byte_still_decodes` that each state waits at a buffer's end, and `poe sabotage-trailers` reverts each of these rules too"
     },
     {
+      "id": "B15",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "An HTTP/1.0 request carrying `Transfer-Encoding` answered, then its connection closed, whatever its `Connection` asks (RFC 9112 \u00a76.1); HTTP/1.2 to HTTP/1.9 need `Host` as HTTP/1.1 does (RFC 9110 \u00a72.5)",
+      "status": "verified",
+      "evidence": "`Smoke test pipelined requests` (every PR) \u2014 an HTTP/1.0 chunked POST asking for keep-alive was de-chunked and kept alive, so the request pipelined behind it was answered too; RFC 9112 \u00a76.1 calls that framing faulty, and the probe requires one 200 and a close. `test_parsing.mojo:test_a_later_http1_minor_version_requires_host` holds the other half: the `Host` check asked for minor version 1 exactly, and `GET / HTTP/1.2` with no `Host` was served"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",

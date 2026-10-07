@@ -735,6 +735,9 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
 ):
     """Build request, call handler, encode response, register for write."""
     var parsed = st.provision_pool.provisions[slot].parsed_headers.take()
+    # Asked of the head before `from_parsed` consumes it: the request it
+    # builds no longer carries the `chunked` it de-chunked.
+    var faulty_framing = parsed.faulty_framing()
 
     var body = Bytes()
     if st.provision_pool.provisions[slot].body_state:
@@ -766,7 +769,9 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     request.slot_id = slot
     request.remote_addr = st.provision_pool.provisions[slot].peer_host
     request.remote_port = st.provision_pool.provisions[slot].peer_port
-    st.provision_pool.provisions[slot].should_close = (not st.tcp_keep_alive) or request.connection_close()
+    st.provision_pool.provisions[slot].should_close = (
+        (not st.tcp_keep_alive) or faulty_framing or request.connection_close()
+    )
     var request_method = request.method
     var request_path = request.uri.path
 

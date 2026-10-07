@@ -64,6 +64,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   400, as a bare LF in a chunk extension already was. Trailers are still
   discarded, never handed to the application.
 
+- **An HTTP/1.0 request with a chunked body closes its connection behind
+  the answer** (SPEC B15). RFC 9112 §6.1 calls `Transfer-Encoding` on an
+  HTTP/1.0 message faulty framing, and asks for the connection to close
+  after it. Such a request was de-chunked and, with `Connection:
+  keep-alive`, kept alive, so a request pipelined behind it was answered
+  too. It is now answered and the connection closed. And `HTTP/1.2`
+  through `HTTP/1.9`, which are served as HTTP/1.1, now need a `Host`
+  field as HTTP/1.1 does; one without was served.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every

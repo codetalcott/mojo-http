@@ -19,7 +19,9 @@ And the two shapes where the parser and the loop disagreed about where a
 head ends (SPEC B12): a bare-LF empty line with a request behind it, which
 was answered once for two requests, and a bare LF with a `Content-Length`
 behind it, whose body was answered as a request. Each must be refused: one
-400, then the connection closed.
+400, then the connection closed. An HTTP/1.0 request with a chunked body
+must close the connection behind its answer, and did not (SPEC B15): one
+200, then the close.
 
 usage: pipeline_probe.py PORT
 """
@@ -122,29 +124,40 @@ def read_to_close(payload, timeout=4.0):
             pass
 
 
-def check_refused(label, payload):
-    """One answer, a 400, and the connection closed behind it."""
+def check_closed_after(label, payload, want):
+    """Exactly the statuses `want`, then the connection closed: whatever
+    was pipelined behind them is never answered."""
     phase(label)
     buf, closed = read_to_close(payload)
     # By pattern, not by line: a pipelined status line follows the body
     # before it with no CRLF between.
-    statuses = re.findall(rb"HTTP/1\.1 (\d{3})", buf)
-    if statuses != [b"400"] or not closed:
-        failures.append("%s: wanted one 400 and a close, saw statuses %s, "
-                        "closed=%s" % (label, statuses, closed))
+    statuses = [int(x) for x in re.findall(rb"HTTP/1\.1 (\d{3})", buf)]
+    if statuses != want or not closed:
+        failures.append("%s: wanted %s and a close, saw statuses %s, "
+                        "closed=%s" % (label, want, statuses, closed))
 
 
 # SPEC B12. The loop frames a head by its first CRLFCRLF; a parser that
 # also ended one at a bare LF stopped short of it, and what lay between
 # was lost. Measured on apps/hello before the fix: the first shape got ONE
 # 200 for two requests, the second TWO 200s (its body served as a request).
-check_refused(
+check_closed_after(
     "a bare-LF empty line with a request pipelined behind it",
-    b"GET /health HTTP/1.1\r\nHost: x\r\n\n" + GET)
-check_refused(
+    b"GET /health HTTP/1.1\r\nHost: x\r\n\n" + GET, [400])
+check_closed_after(
     "a bare LF with a Content-Length behind it covering a request",
     b"POST /health HTTP/1.1\r\nHost: x\r\n\nContent-Length: %d\r\n\r\n"
-    % len(GET) + GET)
+    % len(GET) + GET, [400])
+
+# SPEC B15. RFC 9112 §6.1: an HTTP/1.0 message carrying Transfer-Encoding
+# has faulty framing, and the connection closes after it, whatever its
+# Connection says. Served here and kept alive, so the request behind it
+# was answered too (one more 200).
+check_closed_after(
+    "an HTTP/1.0 chunked body asking for keep-alive, a request behind it",
+    b"POST /health HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n"
+    b"Transfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n"
+    % (len(BODY), BODY) + GET, [200])
 
 # A second request sent only after the first is in flight — no pipelining
 # in the same packet, but the bytes can arrive while the loop is still
