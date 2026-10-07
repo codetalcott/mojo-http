@@ -2,7 +2,7 @@ import std.sys as sys
 from std.sys import size_of
 
 from lightbug_http.io.bytes import Bytes
-from lightbug_http.strings import BytesConstant
+from lightbug_http.strings import BytesConstant, is_token_char
 from std.memory import unsafe_memcpy
 
 
@@ -18,6 +18,9 @@ struct DecoderState(Equatable, ImplicitlyCopyable):
     comptime IN_CHUNK_DATA_EXPECT_LF = Self(5)
     comptime IN_TRAILERS_LINE_HEAD = Self(6)
     comptime IN_TRAILERS_LINE_MIDDLE = Self(7)
+    comptime IN_TRAILERS_LINE_NAME = Self(8)
+    comptime IN_TRAILERS_LINE_EXPECT_LF = Self(9)
+    comptime IN_TRAILERS_END_EXPECT_LF = Self(10)
 
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
@@ -205,33 +208,80 @@ struct HTTPChunkedDecoder(Defaultable):
                 src += 1
                 self._state = DecoderState.IN_CHUNK_SIZE
 
+            # The trailer section (RFC 9112 §7.1.2): field lines, each a
+            # name of token characters, a colon and a value, then an empty
+            # line -- every line ending in CRLF, or the body is invalid, as
+            # B5 holds the chunk header to (SPEC B14). The section used to
+            # skip any run of CR and take a bare LF, or any line at all, so
+            # `0\r\n\n` ended a body a stricter hop in front still
+            # read as open. Discarded either way: nothing here reaches the
+            # application, and a framing field in it changes nothing.
             elif self._state == DecoderState.IN_TRAILERS_LINE_HEAD:
-                while src < buffer_len:
-                    if buf[src] != BytesConstant.CR:
-                        break
-                    src += 1
-
                 if src >= buffer_len:
                     break
 
-                if buf[src] == BytesConstant.LF:
+                if buf[src] == BytesConstant.CR:
                     src += 1
-                    ret = buffer_len - src
-                    break
+                    self._state = DecoderState.IN_TRAILERS_END_EXPECT_LF
+                    continue
 
-                self._state = DecoderState.IN_TRAILERS_LINE_MIDDLE
+                # A field line opens with its name: a token character.
+                # A bare LF, whitespace (an obs-fold) or a colon (an empty
+                # name) is no field line.
+                if not is_token_char(buf[src]):
+                    return (-1, dst)
+                src += 1
+                self._state = DecoderState.IN_TRAILERS_LINE_NAME
 
-            elif self._state == DecoderState.IN_TRAILERS_LINE_MIDDLE:
+            elif self._state == DecoderState.IN_TRAILERS_LINE_NAME:
                 while src < buffer_len:
-                    if buf[src] == BytesConstant.LF:
+                    if buf[src] == BytesConstant.COLON:
                         break
+                    if not is_token_char(buf[src]):
+                        return (-1, dst)
                     src += 1
 
                 if src >= buffer_len:
                     break
 
                 src += 1
+                self._state = DecoderState.IN_TRAILERS_LINE_MIDDLE
+
+            elif self._state == DecoderState.IN_TRAILERS_LINE_MIDDLE:
+                # The value, to its CR.
+                while src < buffer_len:
+                    if buf[src] == BytesConstant.CR:
+                        break
+                    if buf[src] == BytesConstant.LF:
+                        return (-1, dst)
+                    src += 1
+
+                if src >= buffer_len:
+                    break
+
+                src += 1
+                self._state = DecoderState.IN_TRAILERS_LINE_EXPECT_LF
+
+            elif self._state == DecoderState.IN_TRAILERS_LINE_EXPECT_LF:
+                if src >= buffer_len:
+                    break
+
+                if buf[src] != BytesConstant.LF:
+                    return (-1, dst)
+
+                src += 1
                 self._state = DecoderState.IN_TRAILERS_LINE_HEAD
+
+            elif self._state == DecoderState.IN_TRAILERS_END_EXPECT_LF:
+                if src >= buffer_len:
+                    break
+
+                if buf[src] != BytesConstant.LF:
+                    return (-1, dst)
+
+                src += 1
+                ret = buffer_len - src
+                break
 
         # Move remaining data to beginning of buffer
         if dst != src and src < buffer_len:

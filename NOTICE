@@ -1255,6 +1255,14 @@ lightbug_http
         line opens with SP or HTAB; it used to record the line as a field
         with an empty name, which `parse_request_headers` stored as `""`.
 
+      - http/chunked.mojo (2026-10-07): the trailer states require field
+        lines ending in CRLF (SPEC B14). `IN_TRAILERS_LINE_NAME` reads a
+        name of token characters to its colon, `IN_TRAILERS_LINE_MIDDLE`
+        the value to its CR, and `IN_TRAILERS_LINE_EXPECT_LF` and
+        `IN_TRAILERS_END_EXPECT_LF` the LF after a line's CR and after the
+        section's; any other byte returns -1. The section used to skip any
+        run of CR and take a bare LF, or any line, as a line end.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

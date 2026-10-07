@@ -55,6 +55,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   environ key `HTTP_`, and the folded text never joined the field it
   continued. Such a request is now refused.
 
+- **A chunked request body's trailer is held to field lines ending in
+  CRLF** (SPEC B14). After the last chunk the trailer section skipped any
+  run of CR, took a bare LF as a line end, and took any line as a field,
+  so `0\r\n\n` ended a body that a stricter proxy in front still reads
+  as open, and a trailer line with no colon was served where Node's
+  llhttp and h11 refuse it. Each now makes the body invalid, answered
+  400, as a bare LF in a chunk extension already was. Trailers are still
+  discarded, never handed to the application.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every

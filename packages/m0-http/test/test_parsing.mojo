@@ -1111,6 +1111,70 @@ def test_an_ordinary_trailer_does_not_trip_the_abuse_guard() raises:
     assert_equal(got[1].byte_length(), 8 * 8192)
 
 
+def test_a_trailer_line_must_end_in_crlf() raises:
+    """Every trailer line, and the empty one that ends the section, ends in
+    CRLF; anything else makes the body invalid -- B5's rule for the chunk
+    header, applied to the trailer.
+
+    The trailer states skipped any run of CR and took a bare LF as a line
+    end, so `0\\r\\n\\n` ended a body that a stricter hop in front reads
+    as still open, its next bytes the trailer. Each shape below was a
+    complete body with nothing left over.
+
+    covers: B14
+    """
+    # A bare LF ends the trailer section.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\n\n")[0], -1)
+    # A bare LF ends a trailer field line.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX-A: 1\n\r\n")[0], -1)
+    # A run of CR before the LF.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\n\r\r\n")[0], -1)
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX-A: 1\r\r\n\r\n")[0], -1)
+    # A CR inside a trailer line that no LF follows.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX-A: 1\rX\r\n\r\n")[0], -1)
+
+
+def test_a_trailer_line_must_be_a_field_line() raises:
+    """A name of token characters, then a colon (RFC 9112 §7.1.2, whose
+    trailer section is field lines). Refused by llhttp and h11 alike; this
+    decoder discarded whatever the line held.
+
+    The no-colon shape was the differential run's finding: `XY` served
+    here, refused by both references.
+    """
+    # No colon.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nXY\r\n\r\n")[0], -1)
+    # An empty name.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\n: v\r\n\r\n")[0], -1)
+    # A line opening with whitespace (an obs-fold, or a name with a space).
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\n X: v\r\n\r\n")[0], -1)
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX-A: 1\r\n\tmore\r\n\r\n")[0], -1)
+    # A separator inside the name.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX A: v\r\n\r\n")[0], -1)
+    # And the ordinary line still decodes: a name, a colon, any value.
+    var got = _decode_trailing("5\r\nhello\r\n0\r\nX-A:\r\nX-B: a b:c\r\n\r\n")
+    assert_equal(got[0], 0)
+    assert_equal(got[1], "hello")
+
+
+def test_a_trailer_split_at_every_byte_still_decodes() raises:
+    """A segment boundary anywhere in the trailer is a partial read.
+
+    The stricter states each wait at a buffer's end -- between CR and LF
+    above all -- rather than answering invalid to a body the next read
+    completes.
+    """
+    var raw = String("5\r\nhello\r\n0\r\nX-Checksum: abc\r\nX-B: 2\r\n\r\n")
+    for piece in range(1, 8):
+        var got = _feed_incrementally(raw, piece, consume_trailer=True)
+        assert_equal(got[0], 0, String("piece ", piece))
+        assert_equal(got[1], "hello")
+    # And a refused shape is refused however it arrives.
+    var bad = String("5\r\nhello\r\n0\r\nX-A: 1\n\r\n")
+    for piece in range(1, 8):
+        assert_equal(_feed_incrementally(bad, piece, consume_trailer=True)[0], -1)
+
+
 def test_tchar_table_matches_the_rfc_list() raises:
     """`is_token_char` over every byte, against RFC 9110 §5.6.2 spelled out."""
     var tchars = String(

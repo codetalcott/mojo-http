@@ -79,7 +79,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Trailer fields consumed and discarded, not surfaced to the application",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_a_trailer_section_is_consumed_whole` (every PR) \u2014 with seven more beside it: the framing fields a trailer must not honour, the pipelined tail surviving it, the section bounded by the abuse ratio, and `test_without_consume_trailer_the_body_ends_at_the_zero_chunk` as the other half. `poe sabotage-trailers` reverts each of the six rules and requires a failure for every one"
+      "evidence": "`test_parsing.mojo:test_a_trailer_section_is_consumed_whole` (every PR) \u2014 with seven more beside it: the framing fields a trailer must not honour, the pipelined tail surviving it, the section bounded by the abuse ratio, and `test_without_consume_trailer_the_body_ends_at_the_zero_chunk` as the other half. `poe sabotage-trailers` reverts each of the rules, these and B14's, and requires a failure for every one"
     },
     {
       "id": "A11",
@@ -304,6 +304,14 @@
       "capability": "A field line opening with SP or HTAB (obs-fold, RFC 9112 \u00a75.2) rejected",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_an_obs_fold_line_is_rejected` (every PR) \u2014 the parser took the line as a field with an EMPTY name, which reached a WSGI application as the environ key `HTTP_`, and the folded text never joined the value it continued; the RFC allows refusing it or replacing the fold with SP, and this server refuses, at the SP, before the line ends"
+    },
+    {
+      "id": "B14",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A chunked request body's trailer section held to field lines ending in CRLF: a bare LF, a run of CR, a CR no LF follows, a line with no name or no colon makes the body invalid",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_trailer_line_must_end_in_crlf` (every PR) \u2014 B5's rule for the chunk header, applied to the trailer. The section skipped any run of CR and took a bare LF, or any line at all, so `0rnn` ended a body a stricter hop in front still reads as open, and `XY` in a trailer was served where llhttp and h11 both refuse it. `test_a_trailer_line_must_be_a_field_line` holds the name and colon, `test_a_trailer_split_at_every_byte_still_decodes` that each state waits at a buffer's end, and `poe sabotage-trailers` reverts each of these rules too"
     },
     {
       "id": "C1",
