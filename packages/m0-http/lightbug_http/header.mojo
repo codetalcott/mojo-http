@@ -315,9 +315,9 @@ struct ParsedRequestHeaders(Movable):
         processed (SPEC B15). HTTP/1.0 predates the field, so a 1.0 hop in
         front may have framed the body by something else entirely, and the
         bytes after it are not trusted to be the next request. The loop
-        serves the request and closes, whatever its `Connection` asked;
-        it de-chunked the body and kept the connection alive, so a request
-        pipelined behind it was answered.
+        serves the request and closes, whatever its `Connection` asked. It
+        used to de-chunk the body and keep the connection alive, so a
+        request pipelined behind it was answered too.
         """
         return (
             self.protocol == "HTTP/1.0"
