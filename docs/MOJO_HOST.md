@@ -48,6 +48,16 @@ frames with `out.next_id()`: the counter is shared memory, so it survives a
 worker being replaced. `publish` returns `False` for a frame a channel
 refused; count those. `NoProducer` is the default.
 
+A view sends too, through a `DatastarStream` the state or the handler
+holds: a frame it publishes reaches the subscribers of the worker that
+answered the request. Every other worker's are reached once `make` has
+called `stream.enable_bus(ctx.bus, ctx.worker, ctx.id_addr)` and the
+handler forwards `sse_peer_frame` to `deliver_peer`; `ViewsApp` forwards
+the other three stream hooks and not that one, so this takes an
+`AppHandler` of the application's own, which `apps/datastar_todo` is.
+Without the bus a frame stays in its process, the `board` scaffold's
+shape (`max_workers() -> 1`).
+
 `HostContext`, the argument to every `make`:
 
 | field | meaning |

@@ -14,7 +14,7 @@ fresh server numbers from 1 again, so a `Last-Event-ID` from a previous
 server means nothing to the new one.
 
 ```bash serve
-m0serve realtime:application --realtime --workers 2 --health-path /health --port 8000
+m0serve realtime:application --realtime --workers 2 --health-path /health --host 127.0.0.1 --port 8000
 ```
 
 ```bash verify
@@ -111,7 +111,7 @@ PY
 Serve it with two workers, as the Django file was:
 
 ```bash serve
-m0serve realtime_flask:app --realtime --workers 2 --health-path /health --port 8000
+m0serve realtime_flask:app --realtime --workers 2 --health-path /health --host 127.0.0.1 --port 8000
 ```
 
 The checks are the two-worker ones above, plus the WebSocket handshake: a
@@ -238,7 +238,7 @@ is what wires a pool thread's hold to the event loop, and refuses to start
 without the key.
 
 ```bash serve
-m0serve --mount /=granted:application --mount /rt=hold --realtime --health-path /health --port 8000
+m0serve --mount /=granted:application --mount /rt=hold --realtime --health-path /health --host 127.0.0.1 --port 8000
 ```
 
 Ask for a grant as a signed-in browser would, open the URL it returns with

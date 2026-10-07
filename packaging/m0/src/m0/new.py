@@ -1,4 +1,7 @@
-"""`m0 new NAME [--template views|live|auth]`: write an application.
+"""`m0 new NAME [--template views|live|board|auth]`: write an application.
+
+`m0 new .` writes the current directory, which must be empty, and names
+the application after it.
 
 Needs no toolchain and no network, which is what lets it run as `uvx m0 new`
 before anything is installed: it copies files this wheel carries and
@@ -24,7 +27,7 @@ from pathlib import Path
 
 from m0 import checks, paths
 
-TEMPLATES = ("views", "live", "auth")
+TEMPLATES = ("views", "live", "board", "auth")
 
 # A letter first and a letter or digit last: a trailing hyphen is no
 # PEP 508 project name, no image reference and no DNS label (the deploy's
@@ -66,6 +69,13 @@ MANIFEST = {
         "src/views.mojo",
         "src/wave.mojo",
         "test/test_live.mojo",
+    ),
+    "board": (
+        "smoke.sh",
+        "src/pages.mojo",
+        "src/server.mojo",
+        "src/views.mojo",
+        "test/test_board.mojo",
     ),
     "auth": (
         "smoke.sh",
@@ -121,14 +131,23 @@ def _usage(message):
 
 def run(args):
     target = Path(args.name)
-    app = target.name
+    # `.` names the directory it is: `m0 new .` writes the current directory
+    # and takes its name, which the agent runs asked for -- every run wrote
+    # `./NAME` and then moved the files up a level.
+    here = target.resolve() == Path.cwd().resolve()
+    app = target.name or target.resolve().name
     if not NAME.match(app) or len(app) > NAME_MAX:
+        whose = "the current directory's name " if here else ""
         return _usage(
-            f"'{app}' is not a usable name (lowercase letters, digits and "
+            f"{whose}'{app}' is not a usable name (lowercase letters, digits and "
             f"hyphens, starting with a letter and ending with a letter or digit, "
             f"at most {NAME_MAX})"
         )
     shown = args.name if os.path.isabs(args.name) else f"./{args.name}"
+    if here and any(target.iterdir()):
+        return _usage(
+            "the current directory is not empty (empty it, or name a new directory)"
+        )
     if target.exists() and (not target.is_dir() or any(target.iterdir())):
         return _usage(
             f"{shown} exists and is not empty (choose another name, or empty it)"
@@ -158,13 +177,19 @@ def run(args):
         if name in EXECUTABLE:
             out.chmod(0o755)
 
-    print(f"m0: wrote {shown} (template: {args.template})")
+    if here:
+        print(f"m0: wrote the current directory as {app} (template: {args.template})")
+    else:
+        print(f"m0: wrote {shown} (template: {args.template})")
     print()
-    print(f"    cd {args.name}")
+    if not here:
+        print(f"    cd {args.name}")
     print("    uv sync")
     if args.template in ENV_HINT:
         print("    " + ENV_HINT[args.template])
-    print("    uv run m0 build && bin/server --port 8080")
+    # This machine alone: without `--host` the server listens on every
+    # interface.
+    print("    uv run m0 build && bin/server --host 127.0.0.1 --port 8080")
     print()
     print("AGENTS.md is the page to read first; `uv run m0 test` is the fast loop.")
 

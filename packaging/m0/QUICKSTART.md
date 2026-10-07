@@ -19,7 +19,8 @@ cd shop
 uv sync
 ```
 
-`m0 new` writes `./shop` and needs neither a toolchain nor a network.
+`m0 new` writes `./shop`, or the empty current directory as `m0 new .`,
+and needs neither a toolchain nor a network.
 `uv sync` installs the two packages `pyproject.toml` pins exactly: `m0`, and
 the one `mojo` that `m0` release was tested on. The toolchain is a few
 hundred megabytes the first time and comes from uv's cache after that.
@@ -35,8 +36,10 @@ shop/
   AGENTS.md          the rules that are not obvious from the code
 ```
 
-`--template live` writes another: a producer thread that pushes its whole
-state to every open tab over Server-Sent Events, with Datastar. `--template
+`--template board` writes another: a list every tab shares, where a message
+one tab posts reaches every open tab over Server-Sent Events, with
+Datastar. `--template live` writes a producer thread that pushes its whole
+state the same way, on a cadence. `--template
 auth` writes the `views` list behind a login, a CSRF token on every write,
 and prints the variables it will not start without.
 
@@ -53,12 +56,12 @@ The first build takes 13–15 s, a build after an edit 10–13 s, and
 `uv run m0 test` 2–4 s, so put logic where a test can reach it.
 
 ```bash serve
-bin/server --port 8080
+bin/server --host 127.0.0.1 --port 8080
 ```
 
 Open <http://127.0.0.1:8080/>. Add an item, open it, delete it: each is one
 request whose answer replaces the `<section id="items">` element. Stop the
-server with Ctrl-C.
+server with Ctrl-C. Without `--host` the server listens on every interface.
 
 From a second terminal, in `shop/`:
 
@@ -108,7 +111,7 @@ from the binary is exit 78 and one line naming the fix.
 ## 5. Rebuild on save
 
 ```bash serve
-uv run m0 dev -- --port 8080
+uv run m0 dev -- --host 127.0.0.1 --port 8080
 ```
 
 `m0 dev` builds, serves `bin/server` with whatever follows `--`, and watches

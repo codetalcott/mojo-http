@@ -27,6 +27,14 @@ pip install m0serve
 m0serve myproject.wsgi --realtime
 ```
 
+For an agent: [llms.txt](../../llms.txt) is the operating contract and an
+index of every page, and each page is Markdown at its URL with `.md` in
+place of the trailing slash (`/quickstart.md`); `/llms-full.txt` is the
+main pages in one file, and [spec.json](../../docs/spec.json) the
+capability matrix as data. Two agent skills carry what a coding agent
+looks for first: [m0serve](../../skills/m0serve/SKILL.md) and
+[m0](../../skills/m0/SKILL.md).
+
 [demo.m0serve.dev](https://demo.m0serve.dev) is this running: open it in two
 tabs and type in either. The page names the version serving it.
 
@@ -81,12 +89,6 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
 - macOS arm64 and Linux x86_64 and aarch64. CPython 3.10 to 3.14, with
   free-threaded builds for WSGI only. Not supported: Intel Mac, Windows,
   musl.
-
-## For agents
-
-[llms.txt](../../llms.txt) is the operating contract and an index of every
-page as Markdown; `/llms-full.txt` is the main pages in one file;
-[spec.json](../../docs/spec.json) is the capability matrix as data.
 
 ## Underneath
 

@@ -4,6 +4,7 @@ task, with only PyPI and the docs site reachable, scored from their
 transcripts.
 
     python3 scripts/agent_runs.py run --track python --out STAGE --archive DIR [--n 5]
+    python3 scripts/agent_runs.py run ... --plugin-dir PLUGIN   # the same, a skill loaded
     python3 scripts/agent_runs.py probe RUN_DIR          # re-run the contract probe
     python3 scripts/agent_runs.py score RUN_DIR          # re-score one run
     python3 scripts/agent_runs.py summary DIR            # table over every run under DIR
@@ -31,6 +32,12 @@ included, which the first pilot found), and the finished run moves to
     score.json       counts read off the transcript, and the flagged results
     score.md         the same, to read
 
+`--plugin-dir PLUGIN` loads one Claude Code plugin into every session of
+the run, for measuring a skill against the baseline. The plugin is copied
+beside the run, outside the denied tree, and its manifest and a hash of
+its files go into `result.json`, so a run says which text it measured; the
+Skill tool is allowed only then, and the score counts its calls.
+
 The score is counts, not judgement: tool calls to the end, calls before
 the first flagged result, the flagged results themselves (an `is_error`
 tool result, or a Bash result whose first lines look like a failure), the
@@ -54,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -121,8 +129,19 @@ def claude_env() -> dict:
     return env
 
 
+def plugin_identity(plugin: Path) -> dict:
+    """The plugin's name and version, and a hash over every file it holds."""
+    manifest = json.loads((plugin / ".claude-plugin" / "plugin.json").read_text())
+    h = hashlib.sha256()
+    for f in sorted(p for p in plugin.rglob("*") if p.is_file()):
+        h.update(str(f.relative_to(plugin)).encode() + b"\0" + f.read_bytes())
+    return {"name": manifest.get("name"), "version": manifest.get("version"),
+            "sha256": h.hexdigest()[:16]}
+
+
 def run_one(track: str, run_dir: Path, model: str | None, budget: float,
-            timeout_s: int, sandbox_settings: Path | None) -> dict:
+            timeout_s: int, sandbox_settings: Path | None,
+            plugin_dir: Path | None = None) -> dict:
     cfg = TRACKS[track]
     run_dir.mkdir(parents=True, exist_ok=False)
     work = run_dir / "work"
@@ -130,6 +149,13 @@ def run_one(track: str, run_dir: Path, model: str | None, budget: float,
     brief = (BRIEFS / cfg["brief"]).read_text()
     (run_dir / "brief.md").write_text(brief)
     allowed = ALWAYS_ALLOWED + [f"WebFetch(domain:{d})" for d in cfg["domains"]]
+    plugin = None
+    if plugin_dir:
+        # Beside the run and outside the work directory: the session reads
+        # it through the plugin loader, and the agent's tree stays its own.
+        plugin = run_dir / "plugin"
+        shutil.copytree(plugin_dir, plugin)
+        allowed = allowed + ["Skill"]
     cmd = [
         "claude", "-p", brief,
         "--output-format", "stream-json", "--verbose",
@@ -146,6 +172,8 @@ def run_one(track: str, run_dir: Path, model: str | None, budget: float,
         cmd += ["--model", model]
     if sandbox_settings:
         cmd += ["--settings", str(sandbox_settings)]
+    if plugin:
+        cmd += ["--plugin-dir", str(plugin)]
     (run_dir / "command.json").write_text(json.dumps(cmd, indent=1))
     started = time.time()
     with open(run_dir / "transcript.jsonl", "wb") as out, \
@@ -170,6 +198,8 @@ def run_one(track: str, run_dir: Path, model: str | None, budget: float,
         pass
     wall = time.time() - started
     result = {"exit": proc.returncode, "timed_out": timed_out, "wall_s": round(wall, 1)}
+    if plugin:
+        result["plugin"] = plugin_identity(plugin)
     for line in (run_dir / "transcript.jsonl").read_text(errors="replace").splitlines():
         try:
             m = json.loads(line)
@@ -364,6 +394,8 @@ def score(run_dir: Path) -> dict:
                                  c["input"].get("file_path") or "")[:200],
                      "result_head": c.get("result_head", "")[:300]} for c in flagged],
         "docs_fetched": fetched,
+        "plugin": result.get("plugin"),
+        "skills_invoked": [c["input"].get("skill") for c in calls if c["tool"] == "Skill"],
         "server_flags_used": flags_used,
         "violations": violations,
         "num_turns": result.get("num_turns"),
@@ -399,12 +431,13 @@ def summary(out: Path) -> str:
     for d in sorted(p for p in out.iterdir() if p.is_dir() and (p / "transcript.jsonl").exists()):
         s = json.loads((d / "score.json").read_text()) if (d / "score.json").exists() else score(d)
         rows.append(s)
-    lines = ["| run | model | probe | tool calls | before 1st flag | flagged | docs fetched | turns | cost | wall |",
-             "|---|---|---|---|---|---|---|---|---|---|"]
+    lines = ["| run | model | probe | tool calls | before 1st flag | flagged | docs fetched | skill calls | turns | cost | wall |",
+             "|---|---|---|---|---|---|---|---|---|---|---|"]
     for s in rows:
         lines.append(f"| {s['run']} | {s['model']} | {'PASS' if s['probe_ok'] else 'FAIL'} | "
                      f"{s['tool_calls']} | {s['calls_before_first_flag']} | {len(s['flagged'])} | "
-                     f"{len(s['docs_fetched'])} | {s['num_turns']} | {s['cost_usd']} | {s['wall_s']} |")
+                     f"{len(s['docs_fetched'])} | {len(s.get('skills_invoked') or [])} | "
+                     f"{s['num_turns']} | {s['cost_usd']} | {s['wall_s']} |")
     text = "\n".join(lines) + "\n"
     (out / "summary.md").write_text(text)
     return text
@@ -425,6 +458,8 @@ def main() -> int:
     r.add_argument("--budget", type=float, default=8.0, help="USD per session")
     r.add_argument("--timeout", type=int, default=1800, help="seconds per session")
     r.add_argument("--sandbox-settings", type=Path, default=None)
+    r.add_argument("--plugin-dir", type=Path, default=None,
+                   help="load this Claude Code plugin into every session (a skill under test)")
     r.add_argument("--archive", type=Path, default=None,
                    help="move each finished run here (the stage may not be under ~/projects)")
     p = sub.add_parser("probe")
@@ -443,7 +478,8 @@ def main() -> int:
         for i in range(a.start, a.start + a.n):
             run_dir = a.out / f"{a.track}-{i}"
             print(f"== {run_dir} starting {dt.datetime.now():%H:%M:%S}", flush=True)
-            res = run_one(a.track, run_dir, a.model, a.budget, a.timeout, a.sandbox_settings)
+            res = run_one(a.track, run_dir, a.model, a.budget, a.timeout, a.sandbox_settings,
+                          a.plugin_dir)
             print(f"   session: {res.get('subtype')} turns={res.get('num_turns')} "
                   f"cost={res.get('total_cost_usd')} wall={res['wall_s']}s", flush=True)
             v = probe(run_dir, TRACKS[a.track]["ready_s"])
