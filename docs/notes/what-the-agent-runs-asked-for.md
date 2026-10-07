@@ -94,9 +94,24 @@ upstream is this directory. The run harness gained `--plugin-dir`, which
 loads a plugin into every session of a run and records its version and a
 hash of its files.
 
+## The Python track with its skill
+
+Five more runs of the Python brief, with the `m0serve` skill loaded and
+the site as it stood before this change:
+
+| track | tool calls, median (range) | wall clock | cost |
+|---|---|---|---|
+| m0serve, no skill | 13 (13–15) | 88 s | $0.37 |
+| m0serve, with the skill | 8 (7–10) | 74 s | $0.27 |
+
+All five met the contract, each invoked the skill first, and each fetched
+one page, the quickstart as Markdown. Every flagged result was this
+machine's: three runs still chose the port the desk server holds, and
+each read the bind failure in its log and moved. The skill did not change
+the first port choice.
+
 ## Not measured yet
 
-The re-runs. The doc lines reach an agent once the site is deployed, and
-the `m0` changes once a release publishes them, so the Mojo track is
-re-run after the next `m0` release. The Python track with its skill
-loaded measures the skill alone, against the site as it stands.
+The doc lines reach an agent once the site is deployed, and the `m0`
+changes once a release publishes them, so the Mojo track, with and
+without the `m0` skill, is re-run after the next `m0` release.
