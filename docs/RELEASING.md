@@ -805,6 +805,38 @@ the scaffold and quickstart had run against it.
   INVERTS again, macOS 1.01 against Linux 0.92, as the benchmark page now
   says.
 
+`m0 0.9.0`: tag `m0-v0.9.0` at `c977202`, 2026-10-07, the first `m0`
+published on its own rather than beside an m0serve release. It carries
+#569: the `board` template, `m0 new .`, and `live`'s stream behind a
+handler pool. The framework's source is unchanged since 0.8.0.
+
+- Step 1: `sabotage-m0-wheel` 25 of 25 (692 s). `sabotage-scaffold` 80 of
+  80: the 68 rules outside `image:` in one run (1525 s), then each of the
+  twelve `image:` rules with `--only` (68–159 s each), a `docker builder
+  prune` and an `fstrim` between them. The run began at 6.4 GiB free,
+  after removing three images earlier gate runs had left. A `while read`
+  loop over the labels ran only the first: `uv run` read the rest of the
+  list from standard input, so give each command `< /dev/null`.
+- Step 3: the local wheel, built on the merge commit, was
+  `m0-0.9.0-py3-none-any.whl`, 694,090 bytes, and a scaffold from it
+  pinned `m0==0.9.0`.
+- Step 4: the merge was made by hand, which started a `Tests` run on the
+  merge commit itself; the build job reads that run before the pull
+  request head, so the tag waited until it passed. `build` was green at
+  the first attempt, and `publish-pypi` green after approval. The job's
+  log could not be read while the run waited, so its wheel artifact was
+  downloaded instead: the local wheel's SHA-256, `_build_info.json`
+  naming `c977202` and a clean tree. The file on the index has the same
+  size and SHA-256.
+- Step 5 on macOS arm64: `uvx --refresh m0 new probe` pinned `m0==0.9.0`,
+  and `uv.lock` named it from pypi.org. The first build took 12 s and
+  printed no warning, `smoke.sh` passed, `m0 test` passed, and every `m0
+  doctor` check passed, `scaffold` naming no file. `m0 image` built in
+  27 s with the base layers present: 103.6 MB, 2.93 MB of it the app,
+  `libsqlite3-0` installed and no interpreter. A `board` project written
+  with `m0 new .` built with no warning, and its `smoke.sh` passed.
+- Step 6: 8 blocks passed against the published package.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
