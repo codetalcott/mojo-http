@@ -10,6 +10,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **`m0 0.9.0`, published on its own**, for applications built with `m0`.
+  What changed since `m0 0.8.0` for someone writing an application:
+  - New, `m0 new --template board`: a list every tab shares, whose sender
+    is a view publishing through the state's `DatastarStream`.
+  - New, `m0 new .`: writes the empty current directory, named for it.
+  - The next step `m0 new` prints serves on `127.0.0.1`.
+  - Fixed, `live` behind a handler pool: a project `m0 0.8.0` or earlier
+    wrote takes the two lines under Fixed below.
+  - The scaffold's `AGENTS.md` changed, so `m0 doctor` names it in a
+    project an earlier `m0` wrote. The framework's own source is
+    unchanged since `m0 0.8.0`.
+
 - **`m0 new --template board`, and `m0 new .`** (SPEC N27, N52, D66;
   docs/notes/what-the-agent-runs-asked-for.md). The follow-ups from the
   agent usability runs, where every Mojo run wrote `./NAME` and moved it
