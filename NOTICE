@@ -1240,6 +1240,12 @@ lightbug_http
         writes `time` as RFC 3339 UTC with milliseconds and its numbers as
         JSON numbers.
 
+      - websocket.mojo (2026-10-07): `WSState._fail` takes the result
+        `feed` has built so far and adds its Close to it, so a message
+        parsed before a protocol violation in the same read is delivered
+        and a ping's pong sent ahead of the Close. It built a fresh result,
+        which dropped both (review record LF9).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

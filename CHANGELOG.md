@@ -47,6 +47,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `LiveHandler.before_request`. `smoke-scaffold` now serves `live` behind
   a pool.
 
+- **A WebSocket message is no longer lost when a frame the server refuses
+  follows it in the same read** (SPEC I34). A frame the protocol forbids
+  (a reserved opcode, an unmasked frame, a text frame that is not UTF-8)
+  ends the connection with a Close, and that refusal discarded everything
+  parsed from the same read before it: a complete message never reached
+  the application, and a ping went unanswered. Whether a message arrived
+  depended on how TCP split the bytes. Both are now kept, the Close sent
+  after the pong.
+
 ### Changed
 
 - **`m0 --help` names the templates** (SPEC N27;

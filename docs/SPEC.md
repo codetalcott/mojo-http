@@ -8,7 +8,7 @@ each with its evidence: a CI step and its cadence, a test function, a
 roadmap heading, or the reason for a refusal.
 
 <!-- generated: spec-rollup -- edit the tables below, not this block -->
-**337 capabilities: 311 verified, 0 implemented, 0 planned, 26 out of scope.** Of the 311 verified, 304 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
+**338 capabilities: 312 verified, 0 implemented, 0 planned, 26 out of scope.** Of the 312 verified, 305 are gated on every pull request, 3 weekly, 1 monthly, and 3 before a release. Every pull-request-gated row's coverage is declared IN its gate (`covers:` in the cited test, or a recorder coverage call in what the cited step runs), and the checker requires the declaration and the citation to agree; the weekly, monthly and pre-release rows keep declared-static citations, their runs being absent from PR CI.
 <!-- /generated: spec-rollup -->
 
 ## How to read this page
@@ -230,6 +230,7 @@ that found, is in [the traceability note](notes/traceability.md).
 | I4 | Close frame echoed with its code, connection marked for close | verified | `test_websocket.mojo:test_close_is_echoed_with_code_then_closes` (every PR) |
 | I5 | Invalid UTF-8 in a text frame closes 1007 | verified | `test_websocket.mojo:test_invalid_utf8_text_closes_1007` (every PR) |
 | I6 | A fragmented control frame is a protocol error | verified | `test_websocket.mojo:test_fragmented_control_frame_is_protocol_error` (every PR) |
+| I34 | A message parsed from the same read as a protocol violation is still delivered, and a ping in that read still answered, the 1002 Close going out after its pong: what the application receives does not depend on how TCP split the bytes | verified | `test_websocket.mojo:test_a_message_before_a_violation_is_delivered` (every PR) — with `test_a_pong_before_a_violation_goes_out_ahead_of_the_close` beside it. Before the fix (review record LF9) a refusal answered with a fresh result, dropping both, while a peer's own Close kept them |
 | I7 | Wrong `Sec-WebSocket-Version` answers 426 advertising 13 | verified | `test_websocket.mojo:test_wrong_version_is_426_advertising_13` (every PR) |
 | I8 | Cross-worker WebSocket fan-out over the broadcast bus | verified | `Smoke test the WebSocket chat demo` (every PR) |
 | I9 | Server-Sent Events, with heartbeats and disconnect cleanup | verified | `Smoke test the Datastar counter` (every PR) |
