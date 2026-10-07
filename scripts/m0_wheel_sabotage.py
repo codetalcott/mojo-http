@@ -181,6 +181,11 @@ SABOTAGES = [
      '    if args.command == "build" and args.release and args.target_cpu == "native":\n',
      "    if False:\n",
      "test_m0.py failed", UNIT),
+    ("a default taken names no other template (unit)",
+     M0 + "new.py",
+     "    if args.template is None:\n",
+     "    if False:\n",
+     "test_m0.py failed", UNIT),
 ]
 
 
@@ -191,7 +196,7 @@ def _said(out: str) -> str:
 
 
 # Named for what they run, so `--only unit` still selects by label: the
-# three unit-held rules say "(unit)". A rule the smoke's ARMS hold runs with
+# four unit-held rules say "(unit)". A rule the smoke's ARMS hold runs with
 # the unit phase off; one only a unit test can hold, with it on.
 GATES = {
     ARM: "smoke-m0-wheel",

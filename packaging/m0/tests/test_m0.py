@@ -571,6 +571,33 @@ class New(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertIn("    uv run m0 build && bin/server --host 127.0.0.1 --port 8080\n", out)
 
+    def test_the_top_level_help_names_every_template_with_its_line(self):
+        """`m0 --help` is where the agent runs chose: every run without a
+        skill ran it, then `m0 new .` before it knew a template's name, took
+        the default, and wrote its application twice."""
+        lines = cli._parser().format_help().splitlines()
+        at = lines.index("templates, for `m0 new NAME --template T`:")
+        listed = [ln.split(None, 1) for ln in lines[at + 1:] if ln.strip()]
+        self.assertEqual([name for name, _ in listed], list(new.TEMPLATES))
+        for name, about in listed:
+            self.assertTrue(about.startswith(new.ABOUT[name]), name)
+        self.assertIn("(the default)", dict(listed)[new.DEFAULT])
+
+    def test_a_default_taken_is_said_with_the_others_and_a_choice_is_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out, _ = self._new([str(Path(tmp) / "corner-shop")])
+            self.assertEqual(code, 0)
+            self.assertIn(f"(template: {new.DEFAULT}, the default)\n", out)
+            for name in new.TEMPLATES:
+                self.assertEqual(new.ABOUT[name] in out, name != new.DEFAULT, name)
+            for chosen in (new.DEFAULT, "board"):
+                code, out, _ = self._new(
+                    [str(Path(tmp) / f"corner-{chosen}"), "--template", chosen])
+                self.assertEqual(code, 0)
+                self.assertIn(f"(template: {chosen})\n", out)
+                for name in new.TEMPLATES:
+                    self.assertNotIn(new.ABOUT[name], out, (chosen, name))
+
     def test_a_failing_early_check_is_said_and_new_still_exits_0(self):
         """`new` runs before a venv exists, so it asks only what it can --
         and a machine with no C compiler still gets its application."""

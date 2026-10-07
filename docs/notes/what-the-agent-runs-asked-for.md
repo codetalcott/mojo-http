@@ -124,8 +124,14 @@ deployed from these pages, five of them with the `m0` skill loaded:
 All ten met the contract. Every run wrote `--template board` with `m0 new
 .`, and none read the framework's source, where every earlier run had.
 
-One stumble is left. Two runs without the skill ran a bare `m0 new .`
-before they knew the templates' names, which the top-level `m0 --help`
-does not list. They got `views`, could not write again into a directory
-that was no longer empty, and wrote `board` elsewhere and copied it over:
-those are the 15- and 25-call runs.
+One stumble was left, in all five runs without the skill. Each ran
+`m0 --help`, which did not list the templates, then a bare `m0 new .`
+before it knew one's name. Each got `views` and replaced it with `board`
+once `m0 new --help` had named it. In two, the session refused the
+`rm -rf` that emptied the directory, and those are the 15- and 25-call
+runs.
+
+So the top-level help now lists the four templates, a line each, and an
+`m0 new` given no template says it took the default and lists the other
+three (SPEC N27). Both read one table in `new.py`, which `m0 new --help`
+reads too. The next `m0` release carries it.
