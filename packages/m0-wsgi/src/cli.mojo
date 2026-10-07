@@ -35,7 +35,7 @@ from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig, listen_host
 
 
-comptime M0SERVE_VERSION = "1.11.0"
+comptime M0SERVE_VERSION = "1.12.0"
 """Reported by `--version`. Bumped with the release (see docs/RELEASING.md)."""
 
 comptime DEFAULT_ATTRIBUTE = "application"

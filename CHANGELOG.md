@@ -6,9 +6,23 @@ Notable changes to `mojo-http`. Format follows
 in a minor release: `m0serve`'s flags and environment variables, the
 `M0-Hold`/`M0-Channel` response headers, and `m0pub.publish()`.
 
-## [Unreleased]
+## [1.12.0] — 2026-10-06
+
+A held stream that reconnects is caught up on what it missed. Two of the
+known issues were taken up: the first, a WSGI hold that replayed nothing,
+is retired by a per-loop journal; the second, the RHEL 9 glibc floor, was
+measured and found to be the Mojo runtime's, so its record is corrected
+rather than closed. A `Last-Event-ID` from a previous incarnation is
+clamped instead of starving the stream. The served contract is unchanged,
+with one addition, the `m0-gap` event; the `m0` wheel ships as `m0 0.8.0`.
 
 ### Added
+
+- **`m0 0.8.0`: this release's framework, for applications built with
+  `m0`.** What changed since `m0 0.7.0` for someone writing an
+  application: new, `m0_http.ReplayJournal` (`m0_http.sse.replay`), the
+  bounded journal m0serve's holds are caught up from, usable beside an
+  application's own `SSERegistry`. Nothing an application has to change.
 
 - **A held stream that reconnects is caught up.** Each loop journals the
   last `--replay-frames` published frames (`M0_REPLAY_FRAMES`, default 64;
@@ -7553,6 +7567,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.12.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.12.0
 [1.11.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.11.0
 [1.10.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.10.0
 [1.9.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.9.0
