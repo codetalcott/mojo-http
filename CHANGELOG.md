@@ -80,6 +80,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   it. Each option is now read on its own, case-insensitively, and an
   HTTP/1.0 client's `keep-alive` is read the same way.
 
+- **A request whose target is a whole URL takes its host from the URL**
+  (SPEC B16). RFC 9112 §3.2.2 says a server receiving `GET
+  http://example.com/p HTTP/1.1` uses the target's host and ignores the
+  `Host` field. The server threw the target's host away and kept `Host`,
+  so an application routing on `Host` (Django's `HTTP_HOST`) read a site
+  the target never named. The target's `host[:port]` now replaces `Host`.
+  The scheme is matched in any case (`HTTP://h/p` reached the application
+  as the path `HTTP://h/p`), a query straight after the host is kept
+  (`http://h?q=1` lost it), and a target with no host (`http:///p`) or
+  with a userinfo (`http://user@h/`) is refused with 400.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every

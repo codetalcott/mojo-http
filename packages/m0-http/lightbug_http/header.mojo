@@ -1112,6 +1112,33 @@ struct Headers(Copyable, Writable):
         return True
 
 
+def _http_scheme_len(target: Span[Byte, _]) -> Int:
+    """The length of an `http://` or `https://` opening `target`, or 0.
+
+    In any letter case: a scheme is case-insensitive (RFC 3986 §3.1), and
+    `HTTP://h/p` was left whole, reaching the application as a path with
+    no leading slash.
+    """
+    var n = len(target)
+    if n < 7:
+        return 0
+    if (
+        ascii_lower_byte(target[0]) != 0x68  # h
+        or ascii_lower_byte(target[1]) != 0x74  # t
+        or ascii_lower_byte(target[2]) != 0x74  # t
+        or ascii_lower_byte(target[3]) != 0x70  # p
+    ):
+        return 0
+    var i = 4
+    if ascii_lower_byte(target[4]) == 0x73:  # s
+        i = 5
+    if i + 3 > n:
+        return 0
+    if target[i] != 0x3A or target[i + 1] != 0x2F or target[i + 2] != 0x2F:  # "://"
+        return 0
+    return i + 3
+
+
 def parse_request_headers(
     buffer: Span[Byte, _],
     last_len: Int = 0,
@@ -1167,22 +1194,36 @@ def parse_request_headers(
 
     # Phase 1a: Normalize absolute-form request targets (RFC 9112 §3.2.2).
     # Proxies and some HTTP clients send "GET http://host/path HTTP/1.1".
-    # Strip scheme + authority so the handler only sees the path component.
-    if path.startswith("http://") or path.startswith("https://"):
-        var sep = 7 if path.startswith("http://") else 8
-        var path_bytes = path.as_bytes()
-        var found_slash = False
-        for i in range(sep, len(path_bytes)):
-            if path_bytes[i] == 47:  # ASCII '/'
-                # Materialize into a temp first: constructing directly into
-                # `path` while `path_bytes` still borrows it now trips the
-                # aliasing check.
-                var trimmed = String(path[byte=i:])
-                path = trimmed^
-                found_slash = True
+    # The handler sees the path and query; the authority becomes the Host
+    # below, after the Host field's own checks (SPEC B16).
+    var authority = Bytes()
+    var scheme_len = _http_scheme_len(path.as_bytes())
+    if scheme_len > 0:
+        var target = path.as_bytes()
+        # The authority runs to the first `/`, `?` or `#` (RFC 3986 §3.2).
+        var end = scheme_len
+        while end < len(target):
+            var c = target[end]
+            if c == 0x2F or c == 0x3F or c == 0x23:  # '/', '?', '#'
                 break
-        if not found_slash:
-            path = "/"
+            end += 1
+        # No host to replace Host with: `http:///p`.
+        if end == scheme_len:
+            raise RequestParseError(InvalidHTTPRequestError())
+        # A userinfo is to be treated as an error (RFC 9110 §4.2.4): it is
+        # how a target hides the host it really names.
+        for k in range(scheme_len, end):
+            if target[k] == 0x40:  # '@'
+                raise RequestParseError(InvalidHTTPRequestError())
+        authority = Bytes(target[scheme_len:end])
+        # Sliced as bytes, never `[byte=a:b]`: the target is request data
+        # and may not be UTF-8 (SPEC G14). Built whole before `path` is
+        # assigned, while `target` still borrows it.
+        var reduced = String()
+        if end == len(target) or target[end] != 0x2F:
+            reduced = "/"
+        reduced += String(unsafe_from_utf8=target[end:])
+        path = reduced^
 
     var headers = Headers()
     # Every name and value is a slice of the bytes consumed, so that is the
@@ -1300,6 +1341,14 @@ def parse_request_headers(
     # check that asked for 1 exactly served them with no Host (SPEC B15).
     if minor_version >= 1 and host_len <= 0:
         raise RequestParseError(InvalidHTTPRequestError())
+
+    # RFC 9112 §3.2.2: with an absolute-form target the server MUST ignore
+    # the received Host and use the target's authority. It was thrown away
+    # and Host kept, so an application routing on Host read a site the
+    # target never named (SPEC B16). The sent Host is still required and
+    # checked above: §3.2 asks for it whatever the target says.
+    if scheme_len > 0:
+        headers._set_bytes(HeaderKey.HOST.as_bytes(), Span(authority), KH_HOST)
 
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
     # Reject e.g. "Transfer-Encoding: chunked, zorg".

@@ -644,6 +644,79 @@ def test_absolute_form_with_no_path_becomes_root() raises:
     )
 
 
+def test_an_absolute_form_authority_replaces_host() raises:
+    """RFC 9112 §3.2.2: a server MUST ignore the received Host and use the
+    target's authority instead. The authority was thrown away and Host
+    kept, so an application routing on Host read a site the target never
+    named.
+
+    covers: B16
+    """
+    var raw = String("GET http://h.example/p?q=1 HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_path_of(raw), "/p?q=1")
+    assert_equal(_header(raw, "host"), "h.example")
+    assert_equal(
+        _header("GET http://h.example:8080/ HTTP/1.1\r\nHost: x\r\n\r\n", "host"),
+        "h.example:8080",
+    )
+    # HTTP/1.0 needs no Host field, and gets the target's.
+    assert_equal(_header("GET http://h.example/p HTTP/1.0\r\n\r\n", "host"), "h.example")
+    # HTTP/1.1 still needs one sent (RFC 9112 §3.2), whatever the target says.
+    assert_true(_rejected("GET http://h.example/p HTTP/1.1\r\n\r\n"))
+
+
+def test_an_absolute_form_scheme_matches_in_any_case() raises:
+    """A scheme is case-insensitive (RFC 3986 §3.1). `HTTP://h/p` was left
+    whole, and reached the application as a path with no leading slash."""
+    var raw = String("GET HTTP://h/p HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_path_of(raw), "/p")
+    assert_equal(_header(raw, "host"), "h")
+    assert_equal(_path_of("GET Https://h/a HTTP/1.1\r\nHost: x\r\n\r\n"), "/a")
+    assert_equal(_path_of("GET hTtP://h HTTP/1.1\r\nHost: x\r\n\r\n"), "/")
+
+
+def test_an_absolute_form_authority_ends_at_a_query() raises:
+    """The authority runs to the first `/`, `?` or `#` (RFC 3986 §3.2): a
+    query straight after it is the target's, and was dropped."""
+    var raw = String("GET http://h?q=1 HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_path_of(raw), "/?q=1")
+    assert_equal(_header(raw, "host"), "h")
+    # An `@` past the authority is data, as in an origin-form target.
+    assert_equal(
+        _path_of("GET http://h/p?x=a@b HTTP/1.1\r\nHost: x\r\n\r\n"), "/p?x=a@b"
+    )
+
+
+def test_an_absolute_form_target_without_a_usable_authority_is_rejected() raises:
+    """An empty authority names no host to replace Host with, and a
+    userinfo is to be treated as an error (RFC 9110 §4.2.4): it is how a
+    target hides the host it really names."""
+    assert_true(_rejected("GET http:///p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http:// HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET https://?q=1 HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http://u@h/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http://u:pw@h/ HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+
+def test_an_absolute_form_target_with_bytes_above_ascii_is_answered() raises:
+    """SPEC G14: the target is request data, and may not be UTF-8. The
+    reduction slices it as bytes, never with a codepoint-asserting slice."""
+    var raw = List[UInt8]()
+    raw.extend("GET http://h".as_bytes())
+    raw.append(0xFF)
+    raw.extend("/a".as_bytes())
+    raw.append(0x80)
+    raw.extend(" HTTP/1.1\r\nHost: x\r\n\r\n".as_bytes())
+    var parsed = parse_request_headers(Span(raw))
+    var path = parsed.path.as_bytes()
+    assert_equal(len(path), 3)
+    assert_equal(path[0], UInt8(0x2F))
+    assert_equal(path[2], UInt8(0x80))
+    var host = parsed.headers.get("host").value().as_bytes()
+    assert_equal(len(host), 2)
+    assert_equal(host[1], UInt8(0xFF))
+
+
 def test_origin_form_target_is_untouched() raises:
     assert_equal(
         _path_of("GET /orders/7 HTTP/1.1\r\nHost: x\r\n\r\n"), "/orders/7"

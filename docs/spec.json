@@ -322,6 +322,14 @@
       "evidence": "`Smoke test pipelined requests` (every PR) \u2014 an HTTP/1.0 chunked POST asking for keep-alive was de-chunked and kept alive, so the request pipelined behind it was answered too; RFC 9112 \u00a76.1 calls that framing faulty, and the probe requires one 200 and a close. `test_parsing.mojo:test_a_later_http1_minor_version_requires_host` holds the other half: the `Host` check asked for minor version 1 exactly, and `GET / HTTP/1.2` with no `Host` was served"
     },
     {
+      "id": "B16",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "An absolute-form target's authority replaces `Host` (RFC 9112 \u00a73.2.2), its `http`/`https` scheme matched in any letter case and its authority ending at the first `/`, `?` or `#`; an empty authority or a userinfo refused 400",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_an_absolute_form_authority_replaces_host` (every PR) \u2014 the authority was thrown away and the sent `Host` kept, so an application routing on `Host` read a site the target never named; `HTTP://h/p` was left whole, a path with no leading slash; `http://h?q=1` lost its query; and `http:///p` was served as `/p`. The sent `Host` is still required on HTTP/1.1 (\u00a73.2). Four tests beside it hold the scheme's case, the query, the refusals and a target that is not UTF-8 (G14), each failing alone when its rule is reverted"
+    },
+    {
       "id": "B17",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

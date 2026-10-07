@@ -1278,6 +1278,15 @@ lightbug_http
         HTTP/1.0, `keep-alive`. The whole value was compared, so
         `Connection: close, TE` kept the connection alive.
 
+      - header.mojo (2026-10-07): an absolute-form target's authority
+        replaces `Host` (RFC 9112 §3.2.2, SPEC B16). `_http_scheme_len`
+        matches `http://` and `https://` in any case, the authority ends at
+        the first `/`, `?` or `#`, an empty one or one holding `@` is
+        refused, and the reduction slices the target as bytes rather than
+        with `[byte=a:b]` (SPEC G14). The authority was dropped and `Host`
+        kept, `HTTP://` was left unreduced, and a query straight after the
+        authority was lost.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
