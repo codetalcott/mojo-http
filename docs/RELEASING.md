@@ -770,6 +770,41 @@ names an `m0` the index lacks.
   0.99 against 0.94. Both sides are near parity, and the macOS ratio
   crossed 1.0 with its 1.10.0 re-record.
 
+`m0 0.8.0`: tag `m0-v0.8.0` at `7ceec8c`, 2026-10-07, cut beside m0serve
+1.12.0 and pushed first; `v1.12.0` was pushed once the index had it and
+the scaffold and quickstart had run against it.
+
+- Step 1: `sabotage-m0-wheel` 25 of 25 (616 s). `sabotage-scaffold` 66 of
+  66: the 62 rules that build no image in one run (1438 s), then each of
+  the four image rules with `--only` (94–425 s each, the first cold), a
+  `docker builder prune` and an `fstrim` of `/var/lib/docker` between
+  them. The run began at 4.2 GiB free; a builder prune, an `fstrim` and
+  removing images no gate needs made it 8 GiB, and it stayed between 7
+  and 12 GiB with trims between the container gates.
+- Step 3: the local wheel, built on the branch head, was
+  `m0-0.8.0-py3-none-any.whl`, 684,540 bytes, and a scaffold from it
+  pinned `m0==0.8.0`.
+- Step 4: `build` green at the first attempt ("Tests passed on" named the
+  pull request head, `fc57207`, that the labelled merge carries), and
+  `publish-pypi` green after approval. The file on the index is 684,541
+  bytes: one byte more than the local wheel, which was cut from the branch
+  head rather than the merge commit (the 0.6.0 difference; build the local
+  wheel on the merge commit if the sizes are to agree).
+- Step 5 on macOS arm64: `uvx --refresh-package m0 m0 new`, minutes after
+  the upload, wrote a scaffold pinning `m0==0.8.0` at the first try. The
+  first build took 30 s, `smoke.sh` passed, `m0 test` passed, and `m0
+  image` built in 29 s with the base layers present: 103.6 MB, 2.93 MB of
+  it the app, `libsqlite3-0` installed and no interpreter.
+- Step 6: 8 blocks passed against the published package.
+- The pre-release run, for the record: every gate in this page, run on
+  the release branch from the main checkout with the peer session paused
+  for the quiet stage. Both soaks stood at 1.11.0, one minor behind, so
+  neither was re-run. All six macOS bench kinds were two minors behind
+  and were re-recorded at 1.12.0; every figure moved within noise.
+  `bench-linux-conclusions` read ASGI against uvicorn+uvloop per core as
+  INVERTS again, macOS 1.01 against Linux 0.92, as the benchmark page now
+  says.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
