@@ -60,6 +60,61 @@ in a minor release: `m0serve`'s flags and environment variables, the
   whatever the headers held, so an application that named itself, built
   in Mojo or a Python application on m0serve, sent two. The default is now
   written only when the application set none.
+- **A request head with a bare LF is refused with 400** (SPEC B12). The
+  parser ended a head at a bare-LF empty line (`\r\n\n`), while the
+  event loop frames a head by the first CRLFCRLF, and the bytes between
+  the two were lost: a request pipelined behind such a head got no
+  answer, and a `Content-Length` after the bare LF was never read, so the
+  body it described was answered as a request of its own. Every line of
+  a request head must now end in CRLF, and the loop also refuses any head
+  the parser ends at a different byte than its own frame, then closes the
+  connection. A client that ends request lines with a lone LF is refused;
+  none is known. `smoke-pipelining` sends both shapes.
+
+- **A folded field line is refused with 400** (SPEC B13). A request
+  field line opening with a space or a tab (obs-fold, RFC 9112 §5.2) was
+  accepted as a field with an empty name: a WSGI application saw an
+  environ key `HTTP_`, and the folded text never joined the field it
+  continued. Such a request is now refused.
+
+- **A chunked request body's trailer is held to field lines ending in
+  CRLF** (SPEC B14). After the last chunk the trailer section skipped any
+  run of CR, took a bare LF as a line end, and took any line as a field,
+  so `0\r\n\n` ended a body that a stricter proxy in front still reads
+  as open, and a trailer line with no colon was served where Node's
+  llhttp and h11 refuse it. Each now makes the body invalid, answered
+  400, as a bare LF in a chunk extension already was. Trailers are still
+  discarded, never handed to the application.
+
+- **An HTTP/1.0 request with a chunked body closes its connection behind
+  the answer** (SPEC B15). RFC 9112 §6.1 calls `Transfer-Encoding` on an
+  HTTP/1.0 message faulty framing, and asks for the connection to close
+  after it. Such a request was de-chunked and, with `Connection:
+  keep-alive`, kept alive, so a request pipelined behind it was answered
+  too. It is now answered and the connection closed. And `HTTP/1.2`
+  through `HTTP/1.9`, which are served as HTTP/1.1, now need a `Host`
+  field as HTTP/1.1 does; one without was served.
+
+- **`Connection: close` closes wherever it stands in the list** (SPEC
+  B17). `Connection` is a list of options (RFC 9110 §7.6.1), and the
+  server compared the whole value with `close`: `Connection: close, TE`
+  kept the connection alive and answered the request pipelined behind
+  it. Each option is now read on its own, case-insensitively, and an
+  HTTP/1.0 client's `keep-alive` is read the same way. Under `--metrics`
+  the `/__metrics` answer kept its connection alive whatever the request
+  asked; it now closes as every other answer does, for this and for an
+  HTTP/1.0 chunked request alike.
+
+- **A request whose target is a whole URL takes its host from the URL**
+  (SPEC B16). RFC 9112 §3.2.2 says a server receiving `GET
+  http://example.com/p HTTP/1.1` uses the target's host and ignores the
+  `Host` field. The server threw the target's host away and kept `Host`,
+  so an application routing on `Host` (Django's `HTTP_HOST`) read a site
+  the target never named. The target's `host[:port]` now replaces `Host`.
+  The scheme is matched in any case (`HTTP://h/p` reached the application
+  as the path `HTTP://h/p`), a query straight after the host is kept
+  (`http://h?q=1` lost it), and a target with no host (`http:///p`) or
+  with a userinfo (`http://user@h/`) is refused with 400.
 
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop

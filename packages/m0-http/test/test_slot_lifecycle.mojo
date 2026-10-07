@@ -519,6 +519,62 @@ def test_a_file_that_ends_early_closes_its_connection() raises:
     remove(path)
 
 
+def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
+    """One request to `/__metrics`, metrics on, read through `_on_read` over
+    a real stream pair: the reply as the client read it, lowercased, and
+    whether the loop closed the slot behind it."""
+    var config = _config()
+    config.enable_metrics = True
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(config)
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    var raw = request.as_bytes()
+    var sent = send(FileDescriptor(peer), raw, UInt(len(raw)), 0)
+    assert_equal(Int(sent), len(raw))
+    _on_read(app, backend, st, fd, False)
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var closed = st.slot_fds[slot] == UNUSED
+    if not closed:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    return (String(unsafe_from_utf8=Span(got)).lower(), closed)
+
+
+def test_the_metrics_path_honours_a_requested_close() raises:
+    """`/__metrics` is answered by the loop itself, and its branch reset
+    `should_close` to False after the request had set it: a scrape asking
+    `Connection: close` (SPEC B17's token list included), or an HTTP/1.0
+    chunked POST, whose faulty framing closes the connection (SPEC B15),
+    was kept alive there. The scrape that asks nothing stays open, which is
+    what a scraper holding one connection relies on."""
+    var asked = _metrics_exchange(
+        "GET /__metrics HTTP/1.1\r\nHost: x\r\nConnection: close, TE\r\n\r\n"
+    )
+    assert_true("200 ok" in asked[0], asked[0])
+    assert_true("connection: close" in asked[0], asked[0])
+    assert_true(asked[1], "the slot stayed open after Connection: close")
+
+    var faulty = _metrics_exchange(
+        "POST /__metrics HTTP/1.0\r\nConnection: keep-alive\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+    )
+    assert_true("connection: close" in faulty[0], faulty[0])
+    assert_true(faulty[1], "the slot stayed open after faulty framing")
+
+    var plain = _metrics_exchange("GET /__metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_true("connection: keep-alive" in plain[0], plain[0])
+    assert_false(plain[1], "a scrape asking nothing was closed")
+
+
 def test_a_stale_body_expiry_is_retired() raises:
     """#412's retire, on its own: a body timer's expiry that reaches a slot
     no longer reading its body is DELETED, not only skipped. The body can

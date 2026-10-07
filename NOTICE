@@ -1278,6 +1278,56 @@ lightbug_http
         names the variadic calls the fork makes on Darwin (review record
         LF17).
 
+      - http/parsing.mojo, loop/request.mojo (2026-10-07): a request head
+        is CRLF only (SPEC B12). `parse_headers` and `scan_to_eol` take a
+        `strict` parameter, which the request parser sets, refusing a bare
+        LF at a field line's end and at the empty line; the request line
+        and an empty line before it refuse one too. The response parser
+        keeps the lenient reading. `_handle_read_headers` answers 400 and
+        closes when `bytes_consumed` is not the loop's own CRLFCRLF frame:
+        a head the parser ended at a bare LF inside that frame lost the
+        request pipelined behind it, or the `Content-Length` after it.
+
+      - http/parsing.mojo (2026-10-07): a request head refuses an obs-fold
+        line (SPEC B13). Under `strict`, `parse_headers` raises where a
+        line opens with SP or HTAB; it used to record the line as a field
+        with an empty name, which `parse_request_headers` stored as `""`.
+
+      - http/chunked.mojo (2026-10-07): the trailer states require field
+        lines ending in CRLF (SPEC B14). `IN_TRAILERS_LINE_NAME` reads a
+        name of token characters to its colon, `IN_TRAILERS_LINE_MIDDLE`
+        the value to its CR, and `IN_TRAILERS_LINE_EXPECT_LF` and
+        `IN_TRAILERS_END_EXPECT_LF` the LF after a line's CR and after the
+        section's; any other byte returns -1. The section used to skip any
+        run of CR and take a bare LF, or any line, as a line end.
+
+      - header.mojo, loop/request.mojo (2026-10-07): an HTTP/1.0 request
+        carrying `Transfer-Encoding` closes its connection after the
+        response (RFC 9112 §6.1, SPEC B15): `ParsedRequestHeaders.
+        faulty_framing` names it, and `_process_request` asks it before
+        `from_parsed` consumes the head. `parse_request_headers` requires
+        `Host` for every minor version from 1, where it asked for 1 exactly.
+        The `/__metrics` branch of `_process_request` no longer resets
+        `should_close` to False, so that answer closes when the request
+        asked, as every other does.
+
+      - header.mojo, http/request.mojo (2026-10-07): `Connection` is read
+        as a token list (RFC 9110 §7.6.1, SPEC B17).
+        `Headers.has_token_ignore_case` is new beside
+        `value_equals_ignore_case`, allocation-free, and
+        `HTTPRequest.connection_close` asks it for `close` and, on
+        HTTP/1.0, `keep-alive`. The whole value was compared, so
+        `Connection: close, TE` kept the connection alive.
+
+      - header.mojo (2026-10-07): an absolute-form target's authority
+        replaces `Host` (RFC 9112 §3.2.2, SPEC B16). `_http_scheme_len`
+        matches `http://` and `https://` in any case, the authority ends at
+        the first `/`, `?` or `#`, an empty one or one holding `@` is
+        refused, and the reduction slices the target as bytes rather than
+        with `[byte=a:b]` (SPEC G14). The authority was dropped and `Host`
+        kept, `HTTP://` was left unreduced, and a query straight after the
+        authority was lost.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

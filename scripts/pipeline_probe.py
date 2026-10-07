@@ -15,8 +15,18 @@ a second request sent while the first response is in flight; and a
 pipelined burst followed by half-close (the tail must still be answered,
 then the connection closed).
 
+And the two shapes where the parser and the loop disagreed about where a
+head ends (SPEC B12): a bare-LF empty line with a request behind it, which
+was answered once for two requests, and a bare LF with a `Content-Length`
+behind it, whose body was answered as a request. Each must be refused: one
+400, then the connection closed. Two requests that must close the
+connection behind their answer, and did not, do the same with a 200: an
+HTTP/1.0 request with a chunked body (SPEC B15), and `Connection: close`
+listed with another option (SPEC B17).
+
 usage: pipeline_probe.py PORT
 """
+import re
 import socket
 import sys
 
@@ -89,6 +99,74 @@ check("GET behind Content-Length POST", CL + GET, 2)
 check("GET behind chunked POST", CHUNKED + GET, 2)
 check("chunked POST behind GET behind chunked POST", CHUNKED + GET + CHUNKED, 3)
 check("pipelined burst then half-close", GET * 4, 4, half_close=True)
+
+
+def read_to_close(payload, timeout=4.0):
+    """Send `payload`, read until the server closes; (bytes, closed)."""
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=timeout)
+    try:
+        s.sendall(payload)
+        s.settimeout(timeout)
+        buf = b""
+        while True:
+            try:
+                c = s.recv(65536)
+            except socket.timeout:
+                return buf, False
+            except ConnectionResetError:
+                return buf, True
+            if not c:
+                return buf, True
+            buf += c
+    finally:
+        try:
+            s.close()
+        except OSError:
+            pass
+
+
+def check_closed_after(label, payload, want):
+    """Exactly the statuses `want`, then the connection closed: whatever
+    was pipelined behind them is never answered."""
+    phase(label)
+    buf, closed = read_to_close(payload)
+    # By pattern, not by line: a pipelined status line follows the body
+    # before it with no CRLF between.
+    statuses = [int(x) for x in re.findall(rb"HTTP/1\.1 (\d{3})", buf)]
+    if statuses != want or not closed:
+        failures.append("%s: wanted %s and a close, saw statuses %s, "
+                        "closed=%s" % (label, want, statuses, closed))
+
+
+# SPEC B12. The loop frames a head by its first CRLFCRLF; a parser that
+# also ended one at a bare LF stopped short of it, and what lay between
+# was lost. Measured on apps/hello before the fix: the first shape got ONE
+# 200 for two requests, the second TWO 200s (its body served as a request).
+check_closed_after(
+    "a bare-LF empty line with a request pipelined behind it",
+    b"GET /health HTTP/1.1\r\nHost: x\r\n\n" + GET, [400])
+check_closed_after(
+    "a bare LF with a Content-Length behind it covering a request",
+    b"POST /health HTTP/1.1\r\nHost: x\r\n\nContent-Length: %d\r\n\r\n"
+    % len(GET) + GET, [400])
+
+# SPEC B15. RFC 9112 §6.1: an HTTP/1.0 message carrying Transfer-Encoding
+# has faulty framing, and the connection closes after it, whatever its
+# Connection says. Served here and kept alive, so the request behind it
+# was answered too (one more 200).
+check_closed_after(
+    "an HTTP/1.0 chunked body asking for keep-alive, a request behind it",
+    b"POST /health HTTP/1.0\r\nHost: x\r\nConnection: keep-alive\r\n"
+    b"Transfer-Encoding: chunked\r\n\r\n%x\r\n%s\r\n0\r\n\r\n"
+    % (len(BODY), BODY) + GET, [200])
+
+# SPEC B17. Connection is a list of tokens (RFC 9110 §7.6.1): `close`
+# among others still closes. The whole value was compared, so the
+# request behind `close, TE` was answered too.
+check_closed_after(
+    "Connection: close among other options, a request behind it",
+    b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close, TE\r\n"
+    b"TE: trailers\r\n\r\n" + GET, [200])
 
 # A second request sent only after the first is in flight — no pipelining
 # in the same packet, but the bytes can arrive while the loop is still
