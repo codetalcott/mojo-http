@@ -68,8 +68,8 @@ def fail(where, msg):
     failures.append("%s: %s" % (where, msg))
 
 
-# ONE scrape connection, kept alive for the whole probe (the metrics path
-# keeps its connection open whatever the request says), so the count it
+# ONE scrape connection, kept alive for the whole probe (a scrape asking
+# for no close keeps its connection open), so the count it
 # reads always includes exactly one slot of its own -- a scrape per call
 # would race its own previous connection's close.
 _scrape = None

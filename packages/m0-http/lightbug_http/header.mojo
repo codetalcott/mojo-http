@@ -307,6 +307,23 @@ struct ParsedRequestHeaders(Movable):
             return "chunked" in te.value().lower()
         return False
 
+    def faulty_framing(self) -> Bool:
+        """Whether RFC 9112 §6.1 calls this request's framing faulty.
+
+        An HTTP/1.0 message carrying `Transfer-Encoding` MUST be treated as
+        if its framing were faulty, and the connection closed after it is
+        processed (SPEC B15). HTTP/1.0 predates the field, so a 1.0 hop in
+        front may have framed the body by something else entirely, and the
+        bytes after it are not trusted to be the next request. The loop
+        serves the request and closes, whatever its `Connection` asked. It
+        used to de-chunk the body and keep the connection alive, so a
+        request pipelined behind it was answered too.
+        """
+        return (
+            self.protocol == "HTTP/1.0"
+            and self.headers.known_index(KH_TRANSFER_ENCODING) >= 0
+        )
+
     def expects_body(self) -> Bool:
         """Check if this request expects a body based on method and Content-Length."""
         var cl = self.content_length()
@@ -355,51 +372,36 @@ def encode_latin1_header_value(value: String) -> List[UInt8]:
 
     HTTP/1.1 header field values must be representable in ISO-8859-1 (RFC 9110 §5.5).
     - Codepoints U+0000–U+007F: single byte, passed through unchanged.
-    - Codepoints U+0080–U+00FF: encoded as their single ISO-8859-1 byte.
-    - Codepoints above U+00FF: cannot be represented in ISO-8859-1; the raw UTF-8
-      bytes are written as-is (best-effort fallback — use RFC 8187 encoding instead).
-    - Invalid UTF-8 byte sequences (obs-text from parsing): passed through as-is.
+    - Codepoints U+0080–U+00FF, the two-byte sequences `C2 80` to `C3 BF`:
+      encoded as their single ISO-8859-1 byte. Nothing else is decoded.
+    - Every other byte goes out as it came in: a codepoint above U+00FF has
+      no ISO-8859-1 byte (best-effort fallback — use RFC 8187 encoding
+      instead), and invalid UTF-8 (obs-text from parsing) is not UTF-8.
+
+    An overlong sequence is invalid UTF-8 too, and must stay bytes: this
+    runs AFTER the writers have refused a value holding CR, LF or NUL
+    (SPEC G2), and decoding the three-byte `E0 80 8D` or the four-byte
+    `F0 80 80 8A` -- which `unquote` makes of `%E0%80%8D` or
+    `%F0%80%80%8A` in a `?next=` a view redirects to -- wrote the real CR
+    or LF it encodes, splitting the response the refusal had passed
+    (SPEC G19). Restricting the decode to
+    the two lead bytes whose sequences land in U+0080–U+00FF is the whole
+    rule: no output byte below 0x80 can come from anything but itself.
     """
     var utf8 = value.as_bytes()
-    var out = List[UInt8](capacity=len(utf8))
+    var n = len(utf8)
+    var out = List[UInt8](capacity=n)
     var i = 0
-    while i < len(utf8):
+    while i < n:
         var b = utf8[i]
-        if b < 0x80:
-            out.append(b)
-            i += 1
-        else:
-            var seq_len = 0
-            var codepoint = 0
-            if b >= 0xC2 and b <= 0xDF and i + 1 < len(utf8):
-                var b2 = utf8[i + 1]
-                if b2 >= 0x80 and b2 <= 0xBF:
-                    seq_len = 2
-                    codepoint = ((Int(b) & 0x1F) << 6) | (Int(b2) & 0x3F)
-            elif b >= 0xE0 and b <= 0xEF and i + 2 < len(utf8):
-                var b2 = utf8[i + 1]
-                var b3 = utf8[i + 2]
-                if b2 >= 0x80 and b2 <= 0xBF and b3 >= 0x80 and b3 <= 0xBF:
-                    seq_len = 3
-                    codepoint = ((Int(b) & 0x0F) << 12) | ((Int(b2) & 0x3F) << 6) | (Int(b3) & 0x3F)
-            elif b >= 0xF0 and b <= 0xF7 and i + 3 < len(utf8):
-                var b2 = utf8[i + 1]
-                var b3 = utf8[i + 2]
-                var b4 = utf8[i + 3]
-                if b2 >= 0x80 and b2 <= 0xBF and b3 >= 0x80 and b3 <= 0xBF and b4 >= 0x80 and b4 <= 0xBF:
-                    seq_len = 4
-                    codepoint = ((Int(b) & 0x07) << 18) | ((Int(b2) & 0x3F) << 12) | ((Int(b3) & 0x3F) << 6) | (Int(b4) & 0x3F)
-
-            if seq_len > 0 and codepoint <= 0xFF:
-                out.append(UInt8(codepoint))
-                i += seq_len
-            elif seq_len > 0:
-                for j in range(seq_len):
-                    out.append(utf8[i + j])
-                i += seq_len
-            else:
-                out.append(b)
-                i += 1
+        if (b == 0xC2 or b == 0xC3) and i + 1 < n:
+            var b2 = utf8[i + 1]
+            if b2 >= 0x80 and b2 <= 0xBF:
+                out.append(((b & 0x03) << 6) | (b2 & 0x3F))
+                i += 2
+                continue
+        out.append(b)
+        i += 1
     return out^
 
 
@@ -808,6 +810,45 @@ struct Headers(Copyable, Writable):
                 return False
         return True
 
+    def has_token_ignore_case(self, key: String, token: String) -> Bool:
+        """Whether `key`'s value lists `token`, case-insensitively.
+
+        For a field whose value is a comma-separated list of tokens
+        (RFC 9110 §5.6.1), such as `Connection` (§7.6.1): each member is
+        compared whole, with the optional whitespace around it removed and
+        empty members skipped. `value_equals_ignore_case` compares the
+        whole value, which read `Connection: close, TE` as not closing
+        (SPEC B17). Allocation-free, like it, because the `Connection`
+        check runs on every request.
+        """
+        var i = self._find(key.as_bytes())
+        if i < 0:
+            return False
+        var value = self.value_span(i)
+        var want = token.as_bytes()
+        var n = len(value)
+        var start = 0
+        while start <= n:
+            var end = start
+            while end < n and value[end] != 0x2C:  # the list's comma
+                end += 1
+            var a = start
+            var b = end
+            while a < b and (value[a] == 0x20 or value[a] == 0x09):
+                a += 1
+            while b > a and (value[b - 1] == 0x20 or value[b - 1] == 0x09):
+                b -= 1
+            if b - a == len(want):
+                var same = True
+                for j in range(len(want)):
+                    if ascii_lower_byte(value[a + j]) != ascii_lower_byte(want[j]):
+                        same = False
+                        break
+                if same:
+                    return True
+            start = end + 1
+        return False
+
     def keys(self) -> List[String]:
         """Snapshot of every header name present, lowercased.
 
@@ -1021,6 +1062,11 @@ struct Headers(Copyable, Writable):
         end its own head and write headers, or a body, of its choosing.
         Dropped rather than raised: the application has run and its body
         is real, and the header is the one part that cannot be sent.
+
+        A value above ASCII is asked again AFTER its transcode, since those
+        are the bytes that go out: the transcoder once decoded an overlong
+        CR or LF into the real byte past the first look (SPEC G19), and the
+        second look keeps any such bug a dropped header, not a split.
         """
         for i in range(self.count()):
             var name = self.name_span(i)
@@ -1034,6 +1080,8 @@ struct Headers(Copyable, Writable):
                 var latin1 = encode_latin1_header_value(
                     String(unsafe_from_utf8=value)
                 )
+                if span_breaks_header_line(Span(latin1)):
+                    continue
                 writer.write_header_line(name, Span(latin1))
 
     def __str__(self) -> String:
@@ -1054,6 +1102,33 @@ struct Headers(Copyable, Writable):
                 if a[k] != b[k]:
                     return False
         return True
+
+
+def _http_scheme_len(target: Span[Byte, _]) -> Int:
+    """The length of an `http://` or `https://` opening `target`, or 0.
+
+    In any letter case: a scheme is case-insensitive (RFC 3986 §3.1), and
+    `HTTP://h/p` was left whole, reaching the application as a path with
+    no leading slash.
+    """
+    var n = len(target)
+    if n < 7:
+        return 0
+    if (
+        ascii_lower_byte(target[0]) != 0x68  # h
+        or ascii_lower_byte(target[1]) != 0x74  # t
+        or ascii_lower_byte(target[2]) != 0x74  # t
+        or ascii_lower_byte(target[3]) != 0x70  # p
+    ):
+        return 0
+    var i = 4
+    if ascii_lower_byte(target[4]) == 0x73:  # s
+        i = 5
+    if i + 3 > n:
+        return 0
+    if target[i] != 0x3A or target[i + 1] != 0x2F or target[i + 2] != 0x2F:  # "://"
+        return 0
+    return i + 3
 
 
 def parse_request_headers(
@@ -1111,22 +1186,36 @@ def parse_request_headers(
 
     # Phase 1a: Normalize absolute-form request targets (RFC 9112 §3.2.2).
     # Proxies and some HTTP clients send "GET http://host/path HTTP/1.1".
-    # Strip scheme + authority so the handler only sees the path component.
-    if path.startswith("http://") or path.startswith("https://"):
-        var sep = 7 if path.startswith("http://") else 8
-        var path_bytes = path.as_bytes()
-        var found_slash = False
-        for i in range(sep, len(path_bytes)):
-            if path_bytes[i] == 47:  # ASCII '/'
-                # Materialize into a temp first: constructing directly into
-                # `path` while `path_bytes` still borrows it now trips the
-                # aliasing check.
-                var trimmed = String(path[byte=i:])
-                path = trimmed^
-                found_slash = True
+    # The handler sees the path and query; the authority becomes the Host
+    # below, after the Host field's own checks (SPEC B16).
+    var authority = Bytes()
+    var scheme_len = _http_scheme_len(path.as_bytes())
+    if scheme_len > 0:
+        var target = path.as_bytes()
+        # The authority runs to the first `/`, `?` or `#` (RFC 3986 §3.2).
+        var end = scheme_len
+        while end < len(target):
+            var c = target[end]
+            if c == 0x2F or c == 0x3F or c == 0x23:  # '/', '?', '#'
                 break
-        if not found_slash:
-            path = "/"
+            end += 1
+        # No host to replace Host with: `http:///p`.
+        if end == scheme_len:
+            raise RequestParseError(InvalidHTTPRequestError())
+        # A userinfo is to be treated as an error (RFC 9110 §4.2.4): it is
+        # how a target hides the host it really names.
+        for k in range(scheme_len, end):
+            if target[k] == 0x40:  # '@'
+                raise RequestParseError(InvalidHTTPRequestError())
+        authority = Bytes(target[scheme_len:end])
+        # Sliced as bytes, never `[byte=a:b]`: the target is request data
+        # and may not be UTF-8 (SPEC G14). Built whole before `path` is
+        # assigned, while `target` still borrows it.
+        var reduced = String()
+        if end == len(target) or target[end] != 0x2F:
+            reduced = "/"
+        reduced += String(unsafe_from_utf8=target[end:])
+        path = reduced^
 
     var headers = Headers()
     # Every name and value is a slice of the bytes consumed, so that is the
@@ -1238,8 +1327,20 @@ def parse_request_headers(
     #
     # Whitespace-only values ("Host: " / "Host: \t") are stripped to "" by
     # the parser's OWS skip and are rejected by the same check.
-    if minor_version == 1 and host_len <= 0:
+    #
+    # Every minor version from 1 up: HTTP/1.2 to HTTP/1.9 are processed as
+    # HTTP/1.1, the highest this server implements (RFC 9110 §2.5), and the
+    # check that asked for 1 exactly served them with no Host (SPEC B15).
+    if minor_version >= 1 and host_len <= 0:
         raise RequestParseError(InvalidHTTPRequestError())
+
+    # RFC 9112 §3.2.2: with an absolute-form target the server MUST ignore
+    # the received Host and use the target's authority. It was thrown away
+    # and Host kept, so an application routing on Host read a site the
+    # target never named (SPEC B16). The sent Host is still required and
+    # checked above: §3.2 asks for it whatever the target says.
+    if scheme_len > 0:
+        headers._set_bytes(HeaderKey.HOST.as_bytes(), Span(authority), KH_HOST)
 
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
     # Reject e.g. "Transfer-Encoding: chunked, zorg".

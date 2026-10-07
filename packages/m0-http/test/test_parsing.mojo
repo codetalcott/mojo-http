@@ -211,6 +211,36 @@ def test_http11_requires_host_to_be_present_at_all() raises:
     assert_true(_rejected("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n"))
 
 
+def test_a_later_http1_minor_version_requires_host() raises:
+    """HTTP/1.2 to HTTP/1.9 are processed as HTTP/1.1 (RFC 9110 §2.5), so
+    they need Host too. The check asked for minor version 1 exactly, and
+    `GET / HTTP/1.2` with no Host was served.
+
+    covers: B15
+    """
+    assert_true(_rejected("GET / HTTP/1.2\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.9\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.2\r\nHost: \r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.2\r\nHost: x\r\n\r\n"))
+
+
+def test_an_http10_request_with_transfer_encoding_has_faulty_framing() raises:
+    """RFC 9112 §6.1, the head's half: the loop closes behind a request
+    `faulty_framing` names, and `Smoke test pipelined requests` holds that
+    half on the wire."""
+    var te10 = String(
+        "POST / HTTP/1.0\r\nConnection: keep-alive\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+    )
+    assert_true(parse_request_headers(te10.as_bytes()).faulty_framing())
+    var te11 = String(
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    assert_false(parse_request_headers(te11.as_bytes()).faulty_framing())
+    var cl10 = String("POST / HTTP/1.0\r\nContent-Length: 0\r\n\r\n")
+    assert_false(parse_request_headers(cl10.as_bytes()).faulty_framing())
+
+
 def test_a_second_host_line_is_rejected() raises:
     """RFC 9112 §3.2: a server MUST answer 400 to "any request message
     that contains more than one Host header field line". The parser kept
@@ -496,6 +526,98 @@ def test_a_header_line_cut_between_cr_and_lf_is_incomplete() raises:
     assert_true(_accepted(String("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")))
 
 
+# --- One line terminator: CRLF (SPEC B12) ------------------------------------
+#
+# The event loop frames a head by its first CRLFCRLF and hands the parser
+# exactly that many bytes. A parser that also ended a head at a bare LF
+# stopped short of the loop's frame, and whatever lay between was lost: the
+# two wire shapes below are what `apps/hello` did with them (one answer for
+# two requests; a body answered as a request). A bare LF anywhere in a
+# request head is refused, invalid rather than incomplete.
+
+
+def test_a_bare_lf_in_a_request_head_is_rejected() raises:
+    """Every line of a request head ends in CRLF, the empty one included.
+
+    covers: B12
+    """
+    # The empty line that ends the head.
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\n\n"))
+    # A field line.
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\nAccept: */*\r\n\r\n"))
+    # The request line.
+    assert_true(_rejected("GET / HTTP/1.1\nHost: x\r\n\r\n"))
+    # An empty line before the request line.
+    assert_true(_rejected("\nGET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    # All of them, the shape the old parser accepted whole.
+    assert_true(_rejected("GET / HTTP/1.1\nHost: x\n\n"))
+
+
+def test_a_bare_lf_is_invalid_before_the_rest_arrives() raises:
+    """Refused at the LF, not left waiting for more bytes.
+
+    "Incomplete" keeps the bytes in the buffer for the next read to
+    reinterpret; the head is already unframeable at the LF.
+    """
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\n"))
+    assert_true(_rejected("GET / HTTP/1.1\n"))
+
+
+def test_the_two_bare_lf_wire_shapes_are_rejected() raises:
+    """What the loop hands the parser for each shape `apps/hello` lost.
+
+    The loop's frame runs to the first CRLFCRLF, so the parser sees the
+    first head, the bare LF, and everything up to that CRLFCRLF: the second
+    request's head, or the `Content-Length` that described the body.
+    """
+    assert_true(
+        _rejected(
+            "GET /health HTTP/1.1\r\nHost: x\r\n\n"
+            "GET /health HTTP/1.1\r\nHost: x\r\n\r\n"
+        )
+    )
+    assert_true(
+        _rejected(
+            "POST /health HTTP/1.1\r\nHost: x\r\n\nContent-Length: 33\r\n\r\n"
+        )
+    )
+
+
+def test_an_empty_crlf_line_before_the_request_line_is_still_skipped() raises:
+    """RFC 9112 §2.2's robustness rule stands for a CRLF empty line."""
+    var raw = String("\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_true(_accepted(raw))
+    var parsed = parse_request_headers(raw.as_bytes())
+    assert_equal(parsed.bytes_consumed, raw.byte_length())
+
+
+# --- obs-fold: RFC 9112 5.2 (SPEC B13) ---------------------------------------
+
+
+def test_an_obs_fold_line_is_rejected() raises:
+    """A field line opening with SP or HTAB continues the one before it.
+
+    RFC 9112 §5.2: a server MUST either refuse such a message with 400 or
+    replace each fold with SP; this one refuses. The parser used to accept
+    the line as a field with an EMPTY name, which reached a WSGI
+    application as the environ key `HTTP_`, and the folded text never
+    joined the value it continued.
+
+    covers: B13
+    """
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nX-A: 1\r\n folded\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\nX-A: 1\r\n\tfolded\r\n\r\n"))
+    # A fold of Host itself, and one before any field at all.
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\n y\r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.1\r\n folded\r\nHost: x\r\n\r\n"))
+
+
+def test_an_obs_fold_is_invalid_before_its_line_ends() raises:
+    """Refused at the SP that opens the line, not left waiting for more."""
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\n "))
+    assert_true(_rejected("GET / HTTP/1.1\r\nHost: x\r\n\t"))
+
+
 # --- Request target normalization: RFC 9112 3.2.2 ----------------------------
 
 
@@ -520,6 +642,88 @@ def test_absolute_form_with_no_path_becomes_root() raises:
     assert_equal(
         _path_of("GET http://example.com HTTP/1.1\r\nHost: x\r\n\r\n"), "/"
     )
+
+
+def test_an_absolute_form_authority_replaces_host() raises:
+    """RFC 9112 §3.2.2: a server MUST ignore the received Host and use the
+    target's authority instead. The authority was thrown away and Host
+    kept, so an application routing on Host read a site the target never
+    named.
+
+    covers: B16
+    """
+    var raw = String("GET http://h.example/p?q=1 HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_path_of(raw), "/p?q=1")
+    assert_equal(_header(raw, "host"), "h.example")
+    assert_equal(
+        _header("GET http://h.example:8080/ HTTP/1.1\r\nHost: x\r\n\r\n", "host"),
+        "h.example:8080",
+    )
+    # An IPv6 literal and its port: the colons inside it end nothing.
+    var v6 = String("GET http://[::1]:8080/p HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_header(v6, "host"), "[::1]:8080")
+    assert_equal(_path_of(v6), "/p")
+    # HTTP/1.0 needs no Host field, and gets the target's.
+    assert_equal(_header("GET http://h.example/p HTTP/1.0\r\n\r\n", "host"), "h.example")
+    # HTTP/1.1 still needs one sent (RFC 9112 §3.2), whatever the target says.
+    assert_true(_rejected("GET http://h.example/p HTTP/1.1\r\n\r\n"))
+
+
+def test_an_absolute_form_scheme_matches_in_any_case() raises:
+    """A scheme is case-insensitive (RFC 3986 §3.1). `HTTP://h/p` was left
+    whole, and reached the application as a path with no leading slash."""
+    var raw = String("GET HTTP://h/p HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_path_of(raw), "/p")
+    assert_equal(_header(raw, "host"), "h")
+    assert_equal(_path_of("GET Https://h/a HTTP/1.1\r\nHost: x\r\n\r\n"), "/a")
+    assert_equal(_path_of("GET hTtP://h HTTP/1.1\r\nHost: x\r\n\r\n"), "/")
+
+
+def test_an_absolute_form_authority_ends_at_a_query() raises:
+    """The authority runs to the first `/`, `?` or `#` (RFC 3986 §3.2): a
+    query straight after it is the target's, and was dropped."""
+    var raw = String("GET http://h?q=1 HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_path_of(raw), "/?q=1")
+    assert_equal(_header(raw, "host"), "h")
+    # A `#` ends it too, and what follows reduces as an origin-form
+    # target's would, the fragment kept on the path.
+    var frag = String("GET http://h#f HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_equal(_path_of(frag), "/#f")
+    assert_equal(_header(frag, "host"), "h")
+    # An `@` past the authority is data, as in an origin-form target.
+    assert_equal(
+        _path_of("GET http://h/p?x=a@b HTTP/1.1\r\nHost: x\r\n\r\n"), "/p?x=a@b"
+    )
+
+
+def test_an_absolute_form_target_without_a_usable_authority_is_rejected() raises:
+    """An empty authority names no host to replace Host with, and a
+    userinfo is to be treated as an error (RFC 9110 §4.2.4): it is how a
+    target hides the host it really names."""
+    assert_true(_rejected("GET http:///p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http:// HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET https://?q=1 HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http://u@h/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http://u:pw@h/ HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+
+def test_an_absolute_form_target_with_bytes_above_ascii_is_answered() raises:
+    """SPEC G14: the target is request data, and may not be UTF-8. The
+    reduction slices it as bytes, never with a codepoint-asserting slice."""
+    var raw = List[UInt8]()
+    raw.extend("GET http://h".as_bytes())
+    raw.append(0xFF)
+    raw.extend("/a".as_bytes())
+    raw.append(0x80)
+    raw.extend(" HTTP/1.1\r\nHost: x\r\n\r\n".as_bytes())
+    var parsed = parse_request_headers(Span(raw))
+    var path = parsed.path.as_bytes()
+    assert_equal(len(path), 3)
+    assert_equal(path[0], UInt8(0x2F))
+    assert_equal(path[2], UInt8(0x80))
+    var host = parsed.headers.get("host").value().as_bytes()
+    assert_equal(len(host), 2)
+    assert_equal(host[1], UInt8(0xFF))
 
 
 def test_origin_form_target_is_untouched() raises:
@@ -576,8 +780,8 @@ def test_request_targets_end_at_the_space_at_every_length() raises:
         assert_equal(_path_of(raw), path)
 
 
-def test_a_bare_lf_ends_the_line_even_with_a_cr_further_on() raises:
-    """A lone LF is a line terminator here (RFC 9112 §2.2 allows it).
+def test_a_bare_lf_is_found_even_with_a_cr_further_on() raises:
+    """The value scan stops at the FIRST control byte, LF included.
 
     The wide scan used to look for the first CR and only then for any
     other control byte, so a value ended by a bare LF ran on to the next
@@ -588,6 +792,10 @@ def test_a_bare_lf_ends_the_line_even_with_a_cr_further_on() raises:
     header), or the scalar tail scanned it correctly, and the Accept
     line's CR must fall inside that first 64-byte chunk (lane 35 here,
     the LF at lane 17), or the wide scan's second stage found the LF.
+
+    A request head's bare LF is refused now (SPEC B12), and that answer
+    still depends on the scan: a scan that skipped the LF to the CR would
+    end the line at a CRLF, with a Host value holding an LF, and accept it.
     """
     var raw = (
         String(
@@ -599,8 +807,7 @@ def test_a_bare_lf_ends_the_line_even_with_a_cr_further_on() raises:
         + String("p") * 70
         + "\r\n\r\n"
     )
-    assert_equal(_header(raw, "host"), "example.com")
-    assert_equal(_header(raw, "accept"), "text/html")
+    assert_true(_rejected(raw))
 
 
 def test_a_control_byte_in_a_field_name_is_invalid() raises:
@@ -1016,6 +1223,70 @@ def test_an_ordinary_trailer_does_not_trip_the_abuse_guard() raises:
     assert_equal(got[1].byte_length(), 8 * 8192)
 
 
+def test_a_trailer_line_must_end_in_crlf() raises:
+    """Every trailer line, and the empty one that ends the section, ends in
+    CRLF; anything else makes the body invalid -- B5's rule for the chunk
+    header, applied to the trailer.
+
+    The trailer states skipped any run of CR and took a bare LF as a line
+    end, so `0\\r\\n\\n` ended a body that a stricter hop in front reads
+    as still open, its next bytes the trailer. Each shape below was a
+    complete body with nothing left over.
+
+    covers: B14
+    """
+    # A bare LF ends the trailer section.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\n\n")[0], -1)
+    # A bare LF ends a trailer field line.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX-A: 1\n\r\n")[0], -1)
+    # A run of CR before the LF.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\n\r\r\n")[0], -1)
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX-A: 1\r\r\n\r\n")[0], -1)
+    # A CR inside a trailer line that no LF follows.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX-A: 1\rX\r\n\r\n")[0], -1)
+
+
+def test_a_trailer_line_must_be_a_field_line() raises:
+    """A name of token characters, then a colon (RFC 9112 §7.1.2, whose
+    trailer section is field lines). Refused by llhttp and h11 alike; this
+    decoder discarded whatever the line held.
+
+    The no-colon shape was the differential run's finding: `XY` served
+    here, refused by both references.
+    """
+    # No colon.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nXY\r\n\r\n")[0], -1)
+    # An empty name.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\n: v\r\n\r\n")[0], -1)
+    # A line opening with whitespace (an obs-fold, or a name with a space).
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\n X: v\r\n\r\n")[0], -1)
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX-A: 1\r\n\tmore\r\n\r\n")[0], -1)
+    # A separator inside the name.
+    assert_equal(_decode_trailing("5\r\nhello\r\n0\r\nX A: v\r\n\r\n")[0], -1)
+    # And the ordinary line still decodes: a name, a colon, any value.
+    var got = _decode_trailing("5\r\nhello\r\n0\r\nX-A:\r\nX-B: a b:c\r\n\r\n")
+    assert_equal(got[0], 0)
+    assert_equal(got[1], "hello")
+
+
+def test_a_trailer_split_at_every_byte_still_decodes() raises:
+    """A segment boundary anywhere in the trailer is a partial read.
+
+    The stricter states each wait at a buffer's end -- between CR and LF
+    above all -- rather than answering invalid to a body the next read
+    completes.
+    """
+    var raw = String("5\r\nhello\r\n0\r\nX-Checksum: abc\r\nX-B: 2\r\n\r\n")
+    for piece in range(1, 8):
+        var got = _feed_incrementally(raw, piece, consume_trailer=True)
+        assert_equal(got[0], 0, String("piece ", piece))
+        assert_equal(got[1], "hello")
+    # And a refused shape is refused however it arrives.
+    var bad = String("5\r\nhello\r\n0\r\nX-A: 1\n\r\n")
+    for piece in range(1, 8):
+        assert_equal(_feed_incrementally(bad, piece, consume_trailer=True)[0], -1)
+
+
 def test_tchar_table_matches_the_rfc_list() raises:
     """`is_token_char` over every byte, against RFC 9110 §5.6.2 spelled out."""
     var tchars = String(
@@ -1039,10 +1310,8 @@ def test_a_separator_in_a_field_name_is_invalid_at_every_position() raises:
     var bad = String("()<>@,;\\\"/[]?={} ")
     for b in bad.as_bytes():
         for pos in range(0, 40):
-            if b == 0x20 and pos == 0:
-                # A line opening with SP is an obs-fold continuation of the
-                # previous field (RFC 9112 §5.2), not a name: accepted.
-                continue
+            # A line opening with SP (pos 0) is an obs-fold continuation of
+            # the previous field, refused for that reason (SPEC B13).
             var raw = List[UInt8]()
             raw.extend("GET / HTTP/1.1\r\nHost: x\r\n".as_bytes())
             for _ in range(pos):

@@ -3,7 +3,7 @@ from lightbug_http.cookie import ResponseCookieJar
 from lightbug_http.header import (
     HeaderKey, Headers, ParsedResponseHeaders, parse_response_headers, write_header,
     span_breaks_header_line,
-    KH_CONNECTION, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_DATE,
+    KH_CONNECTION, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_DATE, KH_SERVER,
 )
 from lightbug_http.http.date import http_date_now
 from lightbug_http.http.encodable import Encodable
@@ -465,7 +465,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         writer.write(self.protocol, whitespace, self.status_code, whitespace)
         if not span_breaks_header_line(self.status_text.as_bytes()):
             writer.write(self.status_text)
-        writer.write(lineBreak, "server: lightbug_http", lineBreak)
+        writer.write(lineBreak)
+        if self.headers.known_index(KH_SERVER) < 0:
+            writer.write("server: lightbug_http", lineBreak)
         if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)
@@ -502,7 +504,9 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         writer.write(self.protocol, whitespace, self.status_code, whitespace)
         if not span_breaks_header_line(self.status_text.as_bytes()):
             writer.write(self.status_text)
-        writer.write(lineBreak, "server: lightbug_http", lineBreak)
+        writer.write(lineBreak)
+        if self.headers.known_index(KH_SERVER) < 0:
+            writer.write("server: lightbug_http", lineBreak)
         if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)

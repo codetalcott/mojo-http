@@ -151,6 +151,41 @@ def test_http10_closes_unless_it_asks_to_keep_alive() raises:
     )
 
 
+def _closes(connection: String, version: String = "1.1") raises -> Bool:
+    var raw = String("GET / HTTP/", version, "\r\nHost: a\r\nConnection: ")
+    raw += connection + "\r\n\r\n"
+    return request_from(raw).connection_close()
+
+
+def test_connection_is_read_as_a_list_of_tokens() raises:
+    """RFC 9110 §7.6.1: `Connection` lists option tokens, so `close` closes
+    wherever it stands, and a 1.0 `keep-alive` keeps alive the same way.
+    The whole value was compared, and `close, TE` kept the connection,
+    answering the request pipelined behind it.
+
+    covers: B17
+    """
+    assert_true(_closes("close, TE"))
+    assert_true(_closes("TE, close"))
+    assert_true(_closes("TE,close"))
+    assert_true(_closes("Upgrade , CLOSE ,"))
+    assert_true(_closes(", ,close"))
+    # OWS is SP or HTAB (RFC 9110 §5.6.3), around any member.
+    assert_true(_closes("\tclose\t, TE"))
+    assert_true(_closes("TE,\tclose"))
+    assert_false(_closes("\tkeep-alive\t,TE", "1.0"))
+    # A member must BE the token: neither a longer nor a shorter one.
+    assert_false(_closes("closed"))
+    assert_false(_closes("close-ish, TE"))
+    assert_false(_closes("clos"))
+    assert_false(_closes("TE"))
+    # HTTP/1.0 persists when `keep-alive` is among the options.
+    assert_false(_closes("keep-alive, Upgrade", "1.0"))
+    assert_false(_closes("Upgrade,Keep-Alive", "1.0"))
+    assert_true(_closes("keep-alive-ish", "1.0"))
+    assert_true(_closes("keep-alive, close", "1.0"))
+
+
 def test_the_outgoing_constructor_still_fills_its_headers() raises:
     """The client's constructor keeps filling what a client must send."""
     var req = HTTPRequest(URI.parse("http://example.com/x"), body=Bytes("hi".as_bytes()))

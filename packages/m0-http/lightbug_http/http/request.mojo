@@ -321,16 +321,20 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         `Connection: close` the outgoing constructor used to write into every
         HTTP/1.0 request that sent none (SPEC L25).
 
-        RFC 9110 §7.6.1: Connection option tokens are case-insensitive.
+        RFC 9110 §7.6.1: `Connection` is a list of option tokens, each
+        case-insensitive, so `close` closes wherever it stands in the list
+        and `keep-alive` keeps a 1.0 connection likewise. The whole value
+        was compared, and `Connection: close, TE` kept the connection
+        alive, answering the request pipelined behind it (SPEC B17).
 
         Answered against the header bytes directly — the `get(...).lower()`
         form built two Strings per request just to compare four characters.
         """
-        if self.headers.value_equals_ignore_case(HeaderKey.CONNECTION, "close"):
+        if self.headers.has_token_ignore_case(HeaderKey.CONNECTION, "close"):
             return True
         if self.protocol != strHttp10:
             return False
-        return not self.headers.value_equals_ignore_case(
+        return not self.headers.has_token_ignore_case(
             HeaderKey.CONNECTION, "keep-alive"
         )
 

@@ -13,7 +13,7 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from lightbug_http.header import Header, Headers, HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.io.bytes import Bytes
-from lightbug_http.uri import URI
+from lightbug_http.uri import URI, unquote
 
 from src.reply import (
     accept_header,
@@ -173,6 +173,31 @@ def test_redirect_percent_encodes_a_control_byte_in_its_target() raises:
     ordinary.append(String(""))
     for target in ordinary:
         assert_equal(redirect(301, target).headers[HeaderKey.LOCATION], target)
+
+
+def test_redirect_to_an_overlong_line_break_keeps_the_head_whole() raises:
+    """`?next=/%E0%80%8D%E0%80%8ASet-Cookie:...` decodes to the overlong
+    forms of CR and LF, bytes above 0x7F that `redirect` leaves alone as it
+    leaves UTF-8 alone. The head writer's latin-1 transcoder turned them
+    into a real CRLF after the refusal had looked, so the target wrote a
+    `Set-Cookie` of its own. Judged on both encoders' bytes: the `location`
+    line goes out as given, and no line follows it that the view did not
+    write.
+
+    covers: G19
+    """
+    var target = unquote(String("/%E0%80%8D%E0%80%8ASet-Cookie:%20sid%3Dx"))
+    var want = _with_byte(_with_byte(_with_byte("/", 0xE0, ""), 0x80, ""), 0x8D, "")
+    want = _with_byte(_with_byte(_with_byte(want, 0xE0, ""), 0x80, ""), 0x8A, "Set-Cookie: sid=x")
+    assert_equal(target, want)
+    assert_equal(redirect(303, target).headers[HeaderKey.LOCATION], want)
+    var line = String("\r\nlocation: ", want, "\r\n")
+    var encoded = String(unsafe_from_utf8=redirect(303, target).encode())
+    assert_true(line in encoded, encoded)
+    assert_false("\r\nSet-Cookie" in encoded, encoded)
+    var into = String(unsafe_from_utf8=redirect(303, target).encode_into(Bytes(capacity=256)))
+    assert_true(line in into, into)
+    assert_false("\r\nSet-Cookie" in into, into)
 
 
 def test_problem_is_rfc9457_shaped() raises:

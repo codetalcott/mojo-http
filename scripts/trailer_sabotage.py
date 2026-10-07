@@ -7,10 +7,11 @@ guard nobody has broken on purpose is a guard nobody knows works.
 The trailer states were the decoder's genuinely untested region -- the
 round-trip tests set `consume_trailer = True` but their wire carried no
 trailer section, so every state below `IN_TRAILERS_LINE_HEAD` was reached by
-no test at all (SPEC A10). Each entry here is one rule those states implement,
-and every one must be caught by `test_parsing.mojo` -- at run time: a
-sabotage that does not compile is a miss (`sabotage_lib.py`, which owns
-everything around the table).
+no test at all (SPEC A10). Each entry here is one rule those states implement
+-- consuming the section whole, and since SPEC B14 holding every line of it
+to a field line ending in CRLF -- and every one must be caught by
+`test_parsing.mojo` -- at run time: a sabotage that does not compile is a
+miss (`sabotage_lib.py`, which owns everything around the table).
 
     python3 scripts/trailer_sabotage.py
     python3 scripts/trailer_sabotage.py --only "abuse ratio"
@@ -50,28 +51,107 @@ SABOTAGES = [
     ),
     (
         "the trailer's terminating CRLF is left behind",
-        """                if buf[src] == BytesConstant.LF:
-                    src += 1
-                    ret = buffer_len - src
-                    break""",
-        """                if buf[src] == BytesConstant.LF:
-                    ret = buffer_len - src
-                    break""",
+        """                src += 1
+                ret = buffer_len - src
+                break""",
+        """                ret = buffer_len - src
+                break""",
     ),
     (
         "a trailer line is copied into the body instead of discarded",
-        """            elif self._state == DecoderState.IN_TRAILERS_LINE_MIDDLE:
+        """                # The value, to its CR.
                 while src < buffer_len:
-                    if buf[src] == BytesConstant.LF:
+                    if buf[src] == BytesConstant.CR:
                         break
+                    if buf[src] == BytesConstant.LF:
+                        return (-1, dst)
                     src += 1""",
-        """            elif self._state == DecoderState.IN_TRAILERS_LINE_MIDDLE:
+        """                # The value, to its CR.
                 while src < buffer_len:
-                    if buf[src] == BytesConstant.LF:
+                    if buf[src] == BytesConstant.CR:
                         break
+                    if buf[src] == BytesConstant.LF:
+                        return (-1, dst)
                     var _bp = buf.unsafe_ptr()
                     _bp[unsafe_offset = dst] = _bp[unsafe_offset = src]
                     dst += 1
+                    src += 1""",
+    ),
+    # The CRLF and field-line rules (SPEC B14). Each puts back one thing
+    # the trailer states used to accept.
+    (
+        "a bare LF ends the trailer section",
+        """                if buf[src] == BytesConstant.CR:
+                    src += 1
+                    self._state = DecoderState.IN_TRAILERS_END_EXPECT_LF
+                    continue""",
+        """                if buf[src] == BytesConstant.LF:
+                    src += 1
+                    ret = buffer_len - src
+                    break
+                if buf[src] == BytesConstant.CR:
+                    src += 1
+                    self._state = DecoderState.IN_TRAILERS_END_EXPECT_LF
+                    continue""",
+    ),
+    (
+        "a bare LF ends a trailer field line",
+        """                    if buf[src] == BytesConstant.LF:
+                        return (-1, dst)
+                    src += 1""",
+        """                    if buf[src] == BytesConstant.LF:
+                        src -= 1
+                        break
+                    src += 1""",
+    ),
+    (
+        "a run of CR before the section's last LF is skipped",
+        """                if buf[src] != BytesConstant.LF:
+                    return (-1, dst)
+
+                src += 1
+                ret = buffer_len - src""",
+        """                if buf[src] == BytesConstant.CR:
+                    src += 1
+                    continue
+                if buf[src] != BytesConstant.LF:
+                    return (-1, dst)
+
+                src += 1
+                ret = buffer_len - src""",
+    ),
+    (
+        "a run of CR before a field line's LF is skipped",
+        """                if buf[src] != BytesConstant.LF:
+                    return (-1, dst)
+
+                src += 1
+                self._state = DecoderState.IN_TRAILERS_LINE_HEAD""",
+        """                if buf[src] == BytesConstant.CR:
+                    src += 1
+                    continue
+                if buf[src] != BytesConstant.LF:
+                    return (-1, dst)
+
+                src += 1
+                self._state = DecoderState.IN_TRAILERS_LINE_HEAD""",
+    ),
+    (
+        "a trailer line need not open with a name",
+        """                if not is_token_char(buf[src]):
+                    return (-1, dst)
+                src += 1
+                self._state = DecoderState.IN_TRAILERS_LINE_NAME""",
+        """                self._state = DecoderState.IN_TRAILERS_LINE_MIDDLE""",
+    ),
+    (
+        "a trailer line need not have a colon",
+        """                    if not is_token_char(buf[src]):
+                        return (-1, dst)
+                    src += 1""",
+        """                    if not is_token_char(buf[src]):
+                        src -= 1
+                        break
                     src += 1""",
     ),
     (

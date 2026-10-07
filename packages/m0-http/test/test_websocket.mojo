@@ -496,6 +496,63 @@ def test_unknown_opcode_is_protocol_error() raises:
     assert_equal(_close_code(res.reply), WS_CLOSE_PROTOCOL_ERROR)
 
 
+def _reserved_opcode_frame() raises -> List[UInt8]:
+    """`83 80 <mask>`: FIN, reserved data opcode 3, masked, no payload."""
+    return encode_ws_frame_masked(0x3, List[UInt8](), _mask())
+
+
+def test_a_message_before_a_violation_is_delivered() raises:
+    """A complete message parsed from the same read as a protocol violation
+    is delivered, and the violation still earns its 1002 Close.
+
+    The refusal used to answer with a fresh result, dropping what the same
+    `feed` had already parsed, while the loop delivers a result's messages
+    even when it closes: whether the application saw the message depended
+    on whether TCP put the bad frame in the same read (review record LF9).
+
+    covers: I34
+    """
+    var state = WSState(1 << 20)
+    var bytes = encode_ws_frame_masked(WS_OP_TEXT, "hi".as_bytes(), _mask())
+    bytes.extend(Span(_reserved_opcode_frame()))
+    var res = state.feed(Span(bytes))
+    assert_equal(
+        len(res.msg_opcodes), 1,
+        "the message parsed before the violation was dropped",
+    )
+    assert_equal(res.msg_opcodes[0], WS_OP_TEXT)
+    assert_equal(
+        String(StringSpan(unsafe_from_utf8=Span(res.msg_payloads[0]))), "hi"
+    )
+    assert_true(res.close_after_reply)
+    assert_equal(res.close_code, WS_CLOSE_PROTOCOL_ERROR)
+    var expected = close_frame(WS_CLOSE_PROTOCOL_ERROR)
+    assert_equal(len(res.reply), len(expected))
+    for j in range(len(expected)):
+        assert_equal(res.reply[j], expected[j])
+    assert_equal(len(state.buffer), 0)
+
+
+def test_a_pong_before_a_violation_goes_out_ahead_of_the_close() raises:
+    """A ping parsed from the same read as a protocol violation is still
+    answered: its pong, then the 1002 Close, in that order (review record
+    LF9; RFC 6455 §5.5.2 says MUST)."""
+    var state = WSState(1 << 20)
+    var bytes = encode_ws_frame_masked(WS_OP_PING, "marco".as_bytes(), _mask())
+    bytes.extend(Span(_reserved_opcode_frame()))
+    var res = state.feed(Span(bytes))
+    assert_true(res.close_after_reply)
+    assert_equal(res.close_code, WS_CLOSE_PROTOCOL_ERROR)
+    var expected = encode_ws_frame(WS_OP_PONG, "marco".as_bytes())
+    expected.extend(Span(close_frame(WS_CLOSE_PROTOCOL_ERROR)))
+    assert_equal(
+        len(res.reply), len(expected),
+        "the reply is not the pong followed by the Close",
+    )
+    for j in range(len(expected)):
+        assert_equal(res.reply[j], expected[j])
+
+
 def test_oversized_message_is_too_big() raises:
     var state = WSState(16)  # tiny cap for the test
     var payload = List[UInt8]()

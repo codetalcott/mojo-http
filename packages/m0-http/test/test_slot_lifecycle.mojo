@@ -28,6 +28,7 @@ that send it.
 """
 
 from std.ffi import c_int, external_call, get_errno
+from std.os import remove
 from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
@@ -36,7 +37,9 @@ from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.kqueue import (
     EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
 )
+from lightbug_http.c.fcntl import dup_cloexec
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
+from lightbug_http.c.process import getpid
 from lightbug_http.c.socket import close, recv, send
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
@@ -425,6 +428,151 @@ def test_a_file_body_is_counted_as_sent() raises:
     st.slot_send_offset[slot] = 180
     _record_response(st, slot)
     assert_equal(st.metrics.bytes_sent_total, 5180)
+
+
+# Larger than either kernel's buffers for an `AF_UNIX` stream pair, so the
+# transfer stops part way with the file still owed.
+comptime FILE_BYTES = 4 << 20
+
+
+def test_a_file_that_ends_early_closes_its_connection() raises:
+    """A file body that ends before the length its head promised closes the
+    connection on the next write event, rather than waiting for room on a
+    socket that has it for bytes the file no longer holds.
+
+    The head and the first part of a large file go out until the socket is
+    full; the file is then truncated where the transfer has got to, and
+    the peer reads. `sendfile` finds the end of the file, and used to
+    report it as no progress, which the pump took for a full socket
+    (`BODY_FD_MORE`): the write one-shot was re-armed and fired at once,
+    pass after pass, moving nothing and so refreshing no deadline, until
+    the idle timeout reaped the slot, and for good with idle timeouts off
+    (review record LF16). Nothing can finish the response honestly, so the
+    connection closes, and the peer reads EOF where the bytes ran out.
+    Over this OS's multiplexer, so the spin is the real one.
+
+    covers: J15
+    """
+    var path = String("/tmp/m0_lifecycle_truncated_body_") + String(getpid())
+    with open(path, "w") as f:
+        f.write(String("b") * FILE_BYTES)
+    var file = open(path, "r")
+    var body_fd = dup_cloexec(Int(file._get_raw_fd()))
+    file.close()
+
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var app = NoApp()
+    var backend = PlatformBackend()
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    var head = String("HTTP/1.1 200 OK\r\nContent-Length: ") + String(
+        FILE_BYTES
+    ) + "\r\n\r\n"
+    st.slot_response[slot] = Bytes(head.as_bytes())
+    st.slot_send_offset[slot] = 0
+    st.provision_pool.provisions[slot].body_fd = body_fd
+    st.provision_pool.provisions[slot].body_fd_offset = 0
+    st.provision_pool.provisions[slot].body_fd_remaining = FILE_BYTES
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+
+    _on_write(app, backend, st, fd)
+    var sent_of_file = st.provision_pool.provisions[slot].body_fd_offset
+    assert_equal(st.slot_fds[slot], fd, "the transfer ended before the socket filled")
+    assert_true(sent_of_file > 0)
+    assert_true(sent_of_file < FILE_BYTES)
+
+    # The file now ends where the transfer has got to.
+    with open(path, "w") as f:
+        f.write(String("b") * sent_of_file)
+    var got = List[UInt8]()
+    var eof = _read_available(peer, got)
+    assert_false(eof)
+
+    var writable = 0
+    while st.slot_fds[slot] != UNUSED and writable < 50:
+        var n = backend.wait(1000)
+        var reported = False
+        for i in range(n):
+            if (
+                Int(backend.event_ident(i)) == fd
+                and backend.event_filter(i) == EVFILT_WRITE
+            ):
+                reported = True
+        if not reported:
+            break
+        writable += 1
+        _on_write(app, backend, st, fd)
+    assert_equal(
+        st.slot_fds[slot], UNUSED,
+        String("a file that ended early left its slot waiting to write: ")
+        + "reported writable " + String(writable) + " times, moving nothing",
+    )
+    assert_equal(writable, 1)
+    assert_true(_read_available(peer, got), "the peer read no EOF")
+    assert_equal(len(got), head.byte_length() + sent_of_file)
+    close(FileDescriptor(peer))
+    remove(path)
+
+
+def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
+    """One request to `/__metrics`, metrics on, read through `_on_read` over
+    a real stream pair: the reply as the client read it, lowercased, and
+    whether the loop closed the slot behind it."""
+    var config = _config()
+    config.enable_metrics = True
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(config)
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    var raw = request.as_bytes()
+    var sent = send(FileDescriptor(peer), raw, UInt(len(raw)), 0)
+    assert_equal(Int(sent), len(raw))
+    _on_read(app, backend, st, fd, False)
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var closed = st.slot_fds[slot] == UNUSED
+    if not closed:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    return (String(unsafe_from_utf8=Span(got)).lower(), closed)
+
+
+def test_the_metrics_path_honours_a_requested_close() raises:
+    """`/__metrics` is answered by the loop itself, and its branch reset
+    `should_close` to False after the request had set it: a scrape asking
+    `Connection: close` (SPEC B17's token list included), or an HTTP/1.0
+    chunked POST, whose faulty framing closes the connection (SPEC B15),
+    was kept alive there. The scrape that asks nothing stays open, which is
+    what a scraper holding one connection relies on."""
+    var asked = _metrics_exchange(
+        "GET /__metrics HTTP/1.1\r\nHost: x\r\nConnection: close, TE\r\n\r\n"
+    )
+    assert_true("200 ok" in asked[0], asked[0])
+    assert_true("connection: close" in asked[0], asked[0])
+    assert_true(asked[1], "the slot stayed open after Connection: close")
+
+    var faulty = _metrics_exchange(
+        "POST /__metrics HTTP/1.0\r\nConnection: keep-alive\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n0\r\n\r\n"
+    )
+    assert_true("connection: close" in faulty[0], faulty[0])
+    assert_true(faulty[1], "the slot stayed open after faulty framing")
+
+    var plain = _metrics_exchange("GET /__metrics HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_true("connection: keep-alive" in plain[0], plain[0])
+    assert_false(plain[1], "a scrape asking nothing was closed")
 
 
 def test_a_stale_body_expiry_is_retired() raises:

@@ -3,11 +3,13 @@
 A child an application starts with `exec` keeps every descriptor that is
 not, and the server's are client connections, the listener and its own
 channels: a connection the server closes then stays open in the child. One
-test per creation helper, each read back with `F_GETFD`.
+test per creation helper, each read back with `F_GETFD`. The shared page's
+mode, and its descriptor when it cannot be sized, are here too (SPEC G20).
 """
 
-from std.ffi import c_int
-from std.testing import assert_true, assert_false, TestSuite
+from std.ffi import c_int, external_call, get_errno
+from std.sys.info import CompilationTarget
+from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.c.fcntl import set_cloexec, is_cloexec, clear_cloexec, dup_cloexec
 from lightbug_http.c.socketpair import socketpair_dgram
@@ -108,6 +110,77 @@ def test_the_shared_page_is_close_on_exec() raises:
     var fd = shared_file_fd(4096)
     assert_true(is_cloexec(fd))
     close_fd(fd)
+
+
+def _mode_of(fd: Int) raises -> Int:
+    """The permission bits of the file `fd` names, from `fstat`.
+
+    `st_mode` is a 2-byte `mode_t` at offset 4 of `struct stat` on macOS,
+    and a 4-byte one at offset 24 on Linux x86-64 and 16 on Linux aarch64.
+    """
+    var buf = List[UInt8](capacity=256)
+    for _ in range(256):
+        buf.append(0)
+    var rc = external_call["fstat", c_int, c_int, type_of(buf.unsafe_ptr())](
+        c_int(fd), buf.unsafe_ptr()
+    )
+    if rc != 0:
+        raise Error("fstat failed, errno: ", get_errno())
+    var mode: Int
+    comptime if CompilationTarget.is_macos():
+        mode = Int(buf.unsafe_ptr().unsafe_offset(4).unsafe_bitcast[UInt16]()[])
+    elif CompilationTarget.is_x86():
+        mode = Int(buf.unsafe_ptr().unsafe_offset(24).unsafe_bitcast[UInt32]()[])
+    else:
+        mode = Int(buf.unsafe_ptr().unsafe_offset(16).unsafe_bitcast[UInt32]()[])
+    _ = buf
+    return mode & 0o777
+
+
+def test_the_shared_page_is_its_owners_alone() raises:
+    """The shared page is created with mode 0o600, as `shared_file_fd` asks.
+
+    `shm_open` is variadic (`int shm_open(const char *, int, ...)`), and
+    Darwin arm64 passes a variadic argument on the stack. Called with the
+    mode as a third fixed argument, it put 0o600 in a register the callee
+    never reads, and the page took its mode from whatever the stack held:
+    measured as 0o0 and 0o1 (review record LF17). The call now takes
+    `_fcntl`'s shape there (`c/fcntl.mojo`). Linux passes variadic
+    arguments in registers, so this bites on the macOS leg only. Several
+    pages, because the stack's leftovers vary from call to call.
+
+    covers: G20
+    """
+    for _ in range(4):
+        var fd = shared_file_fd(4096)
+        var mode = _mode_of(fd)
+        close_fd(fd)
+        assert_equal(
+            mode, 0o600,
+            String("the shared page was created with mode ") + oct(mode),
+        )
+
+
+def test_a_page_that_cannot_be_sized_is_closed() raises:
+    """A page `ftruncate` refuses (here a negative length) raises with its
+    descriptor closed, not leaked (review record LF17): the next descriptor
+    made takes the number a leaked page would still hold."""
+    var before = socketpair_dgram()
+    close_fd(before[0])
+    close_fd(before[1])
+    var raised = False
+    try:
+        _ = shared_file_fd(-1)
+    except:
+        raised = True
+    assert_true(raised, "a negative length was not refused")
+    var after = socketpair_dgram()
+    close_fd(after[0])
+    close_fd(after[1])
+    assert_equal(
+        after[0], before[0],
+        "the refused page's descriptor is still open",
+    )
 
 
 def main() raises:

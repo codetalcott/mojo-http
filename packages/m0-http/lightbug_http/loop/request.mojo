@@ -459,6 +459,24 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             _close_slot(handler, backend, st, slot, fd_val)
             return
 
+        # Two framers read this head: `find_header_end` above, which
+        # `request_end` and the body's start are taken from, and the
+        # parser, which decided where the fields stop. They must name the
+        # same byte. When they did not -- a parser that ended the head at a
+        # bare-LF empty line, inside what this loop framed as one head --
+        # the request pipelined behind it vanished, and a `Content-Length`
+        # past the bare LF was never read, its body answered as the next
+        # request (SPEC B12). The parser now refuses a bare LF, so the two
+        # agree; this refuses any head they would read differently, so a
+        # future parser change cannot reopen the gap silently. Belt and
+        # braces, deliberately: no gate fails with only this removed
+        # (sabotage-verified), and with only the parser's rule removed the
+        # wire probe still passes because of it.
+        if parsed.bytes_consumed != header_end_offset:
+            _send_error_to_fd(fd_val, BadRequest())
+            _close_slot(handler, backend, st, slot, fd_val)
+            return
+
         if parsed.path.byte_length() > st.config.max_request_uri_length:
             _send_error_to_fd(fd_val, URITooLong())
             _close_slot(handler, backend, st, slot, fd_val)
@@ -717,6 +735,9 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
 ):
     """Build request, call handler, encode response, register for write."""
     var parsed = st.provision_pool.provisions[slot].parsed_headers.take()
+    # Asked of the head before `from_parsed` consumes it: the request it
+    # builds no longer carries the `chunked` it de-chunked.
+    var faulty_framing = parsed.faulty_framing()
 
     var body = Bytes()
     if st.provision_pool.provisions[slot].body_state:
@@ -748,7 +769,9 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     request.slot_id = slot
     request.remote_addr = st.provision_pool.provisions[slot].peer_host
     request.remote_port = st.provision_pool.provisions[slot].peer_port
-    st.provision_pool.provisions[slot].should_close = (not st.tcp_keep_alive) or request.connection_close()
+    st.provision_pool.provisions[slot].should_close = (
+        (not st.tcp_keep_alive) or faulty_framing or request.connection_close()
+    )
     var request_method = request.method
     var request_path = request.uri.path
 
@@ -774,7 +797,11 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             status_text="OK",
         )
         response.headers["Content-Type"] = "text/plain; version=0.0.4; charset=utf-8"
-        st.provision_pool.provisions[slot].should_close = False
+        # `should_close` stays as the request set it above. This branch
+        # reset it to False, so a scrape asking `Connection: close`, or an
+        # HTTP/1.0 chunked POST whose framing closes the connection (SPEC
+        # B15), was kept alive here alone. A scrape that asks nothing is
+        # still kept, which a scraper holding one connection relies on.
     else:
         # The before hook first, ON THE LOOP, in every mode. A handler that
         # answers here never becomes a job: m0serve's answers its static

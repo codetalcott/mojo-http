@@ -275,6 +275,7 @@ def ignore_sigpipe():
 
 from std.sys.info import CompilationTarget
 from lightbug_http.c.fcntl import set_cloexec
+from lightbug_http.c.pipe import close_fd
 
 
 def _c_string(s: String) -> List[UInt8]:
@@ -402,6 +403,31 @@ def fd_identity(fd: Int) raises -> Tuple[Int, Int]:
     return (dev, ino)
 
 
+def _shm_open(name: List[UInt8], oflag: c_int, mode: Int) -> c_int:
+    """`shm_open(name, oflag, mode)`, `name` NUL-terminated, in the shape
+    its variadic declaration needs on each target.
+
+    `int shm_open(const char *, int, ...)` takes the mode as a variadic
+    argument, which Darwin arm64 passes on the stack, as `_fcntl` in
+    `c/fcntl.mojo` sets out. The Darwin branch takes that shape: the name
+    and flags in x0/x1, six zero dummies burning x2-x7, the mode ninth, on
+    the stack at sp+0. Declared with three fixed arguments it went in x2,
+    which the callee never reads, and the page took its mode from whatever
+    the stack held: measured as 0o0, 0o1 and 0o744 where 0o600 was asked
+    (review record LF17). Linux passes variadic arguments in registers,
+    so the plain three-argument form is right there.
+    """
+    comptime if CompilationTarget.is_macos():
+        return external_call[
+            "shm_open", c_int, type_of(name.unsafe_ptr()), c_int,
+            Int, Int, Int, Int, Int, Int, Int,
+        ](name.unsafe_ptr(), oflag, 0, 0, 0, 0, 0, 0, mode)
+    else:
+        return external_call[
+            "shm_open", c_int, type_of(name.unsafe_ptr()), c_int, c_int
+        ](name.unsafe_ptr(), oflag, c_int(mode))
+
+
 def shared_file_fd(length: Int) raises -> Int:
     """An fd backing `length` bytes of shared memory, by which a spawned
     worker maps the same page.
@@ -410,15 +436,15 @@ def shared_file_fd(length: Int) raises -> Int:
     fd is the only handle, sized with `ftruncate`. Close-on-exec: the spawn
     hand-off keeps it across the one exec that adopts it, and a child an
     application starts with `pass_fds=m0pub.child_fds()` gets it that way.
+    Mode 0o600 (`_shm_open` says why that needs a shape of its own on
+    Darwin), and a raise after the open closes the descriptor.
     """
     var attempt = 0
     while True:
         var name = _c_string(
             "/m0-" + String(getpid()) + "-" + String(attempt)
         )
-        var fd = external_call[
-            "shm_open", c_int, type_of(name.unsafe_ptr()), c_int, c_int
-        ](name.unsafe_ptr(), c_int(_O_RDWR | _O_CREAT | _O_EXCL), c_int(0o600))
+        var fd = _shm_open(name, c_int(_O_RDWR | _O_CREAT | _O_EXCL), 0o600)
         if fd >= 0:
             _ = external_call["shm_unlink", c_int, type_of(name.unsafe_ptr())](
                 name.unsafe_ptr()
@@ -426,12 +452,18 @@ def shared_file_fd(length: Int) raises -> Int:
             _ = name
             var rc = external_call["ftruncate", c_int, c_int, Int](fd, length)
             if rc != 0:
-                raise Error("ftruncate on the shared page failed, errno: ", get_errno())
+                var errno = get_errno()
+                close_fd(Int(fd))
+                raise Error("ftruncate on the shared page failed, errno: ", errno)
             # Close-on-exec like every descriptor the server creates (SPEC
             # G16): `shm_open` sets it on both platforms, and this says so
             # rather than relying on it. The spawn hand-off
             # (`_exec_if_spawning`) clears it for the one exec that needs it.
-            set_cloexec(Int(fd))
+            try:
+                set_cloexec(Int(fd))
+            except e:
+                close_fd(Int(fd))
+                raise e^
             return Int(fd)
         var errno = get_errno()
         _ = name

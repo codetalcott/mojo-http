@@ -38,6 +38,85 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A header value can no longer split a response with an overlong UTF-8
+  sequence** (SPEC G19). The latin-1 transcoder that writes every response
+  head decoded three- and four-byte sequences as well as two-byte ones,
+  AFTER the check that drops a header carrying CR, LF or NUL, so the
+  overlong forms `E0 80 8D` and `E0 80 8A` went out as a real CRLF. A Mojo
+  view that redirected to a request's `next` with `reply.redirect` could be
+  made to send a `Set-Cookie`, or a body, of the request's choosing:
+  `?next=/%E0%80%8D%E0%80%8ASet-Cookie:%20sid%3Dx` did it, and a header or
+  `Set-Cookie` value a view built from request data was open the same way.
+  Every response built in Mojo was exposed: a `Views` application's, the
+  Mojo host's, and a Mojo mount's in m0serve. Python applications on
+  m0serve were not: a `str` header reaches the server as CPython's UTF-8,
+  which is never overlong, and a `bytes` value is re-encoded byte by byte.
+  The transcoder now decodes only U+0080 to U+00FF and writes every other
+  byte as it was given, and the writers check the transcoded bytes again
+  before they send them. Rebuild a Mojo application against this release.
+
+- **A response whose application sets `Server` no longer carries two
+  `Server` lines** (SPEC A26). The server wrote its default `server: lightbug_http`
+  whatever the headers held, so an application that named itself, built
+  in Mojo or a Python application on m0serve, sent two. The default is now
+  written only when the application set none.
+
+- **A request head with a bare LF is refused with 400** (SPEC B12). The
+  parser ended a head at a bare-LF empty line (`\r\n\n`), while the
+  event loop frames a head by the first CRLFCRLF, and the bytes between
+  the two were lost: a request pipelined behind such a head got no
+  answer, and a `Content-Length` after the bare LF was never read, so the
+  body it described was answered as a request of its own. Every line of
+  a request head must now end in CRLF, and the loop also refuses any head
+  the parser ends at a different byte than its own frame, then closes the
+  connection. A client that ends request lines with a lone LF is refused;
+  none is known. `smoke-pipelining` sends both shapes.
+
+- **A folded field line is refused with 400** (SPEC B13). A request
+  field line opening with a space or a tab (obs-fold, RFC 9112 §5.2) was
+  accepted as a field with an empty name: a WSGI application saw an
+  environ key `HTTP_`, and the folded text never joined the field it
+  continued. Such a request is now refused.
+
+- **A chunked request body's trailer is held to field lines ending in
+  CRLF** (SPEC B14). After the last chunk the trailer section skipped any
+  run of CR, took a bare LF as a line end, and took any line as a field,
+  so `0\r\n\n` ended a body that a stricter proxy in front still reads
+  as open, and a trailer line with no colon was served where Node's
+  llhttp and h11 refuse it. Each now makes the body invalid, answered
+  400, as a bare LF in a chunk extension already was. Trailers are still
+  discarded, never handed to the application.
+
+- **An HTTP/1.0 request with a chunked body closes its connection behind
+  the answer** (SPEC B15). RFC 9112 §6.1 calls `Transfer-Encoding` on an
+  HTTP/1.0 message faulty framing, and asks for the connection to close
+  after it. Such a request was de-chunked and, with `Connection:
+  keep-alive`, kept alive, so a request pipelined behind it was answered
+  too. It is now answered and the connection closed. And `HTTP/1.2`
+  through `HTTP/1.9`, which are served as HTTP/1.1, now need a `Host`
+  field as HTTP/1.1 does; one without was served.
+
+- **`Connection: close` closes wherever it stands in the list** (SPEC
+  B17). `Connection` is a list of options (RFC 9110 §7.6.1), and the
+  server compared the whole value with `close`: `Connection: close, TE`
+  kept the connection alive and answered the request pipelined behind
+  it. Each option is now read on its own, case-insensitively, and an
+  HTTP/1.0 client's `keep-alive` is read the same way. Under `--metrics`
+  the `/__metrics` answer kept its connection alive whatever the request
+  asked; it now closes as every other answer does, for this and for an
+  HTTP/1.0 chunked request alike.
+
+- **A request whose target is a whole URL takes its host from the URL**
+  (SPEC B16). RFC 9112 §3.2.2 says a server receiving `GET
+  http://example.com/p HTTP/1.1` uses the target's host and ignores the
+  `Host` field. The server threw the target's host away and kept `Host`,
+  so an application routing on `Host` (Django's `HTTP_HOST`) read a site
+  the target never named. The target's `host[:port]` now replaces `Host`.
+  The scheme is matched in any case (`HTTP://h/p` reached the application
+  as the path `HTTP://h/p`), a query straight after the host is kept
+  (`http://h?q=1` lost it), and a target with no host (`http:///p`) or
+  with a userinfo (`http://user@h/`) is refused with 400.
+
 - **The `live` scaffold's stream behind a handler pool.** Its `/events`
   view was not `on_loop`, and its handler answered only stateless loop
   routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every
@@ -46,6 +125,32 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `src/views.mojo`, and `self.views.answer_on_loop(req, self.state)` in
   `LiveHandler.before_request`. `smoke-scaffold` now serves `live` behind
   a pool.
+
+- **A WebSocket message is no longer lost when a frame the server refuses
+  follows it in the same read** (SPEC I34). A frame the protocol forbids
+  (a reserved opcode, an unmasked frame, a text frame that is not UTF-8)
+  ends the connection with a Close, and that refusal discarded everything
+  parsed from the same read before it: a complete message never reached
+  the application, and a ping went unanswered. Whether a message arrived
+  depended on how TCP split the bytes. Both are now kept, the Close sent
+  after the pong.
+
+- **A static file that shrinks while it is served no longer spins its
+  connection** (SPEC J15). When a file ended before the `Content-Length`
+  its response had already sent, the server read the end of the file as
+  a socket that could take nothing yet and waited for room it already
+  had: the connection spun on the event loop until the idle timeout
+  closed it, and for good with idle timeouts off. It now closes at once,
+  and the client sees a response shorter than its length, an error it
+  can detect.
+
+- **The page workers share is created private on macOS** (SPEC G20). The
+  server asked `shm_open` for mode `0o600` in a register, where Apple
+  silicon passes that argument on the stack, so the page took whatever
+  mode the stack held: measured as `0o000`, `0o001` and `0o744`, the last
+  readable by any user who opened it by name before the server unlinked
+  it a moment later. It is now created `0o600`. A page that cannot be
+  sized no longer leaks its descriptor. Linux was not affected.
 
 ### Changed
 

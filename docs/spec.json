@@ -79,7 +79,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Trailer fields consumed and discarded, not surfaced to the application",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_a_trailer_section_is_consumed_whole` (every PR) \u2014 with seven more beside it: the framing fields a trailer must not honour, the pipelined tail surviving it, the section bounded by the abuse ratio, and `test_without_consume_trailer_the_body_ends_at_the_zero_chunk` as the other half. `poe sabotage-trailers` reverts each of the six rules and requires a failure for every one"
+      "evidence": "`test_parsing.mojo:test_a_trailer_section_is_consumed_whole` (every PR) \u2014 with seven more beside it: the framing fields a trailer must not honour, the pipelined tail surviving it, the section bounded by the abuse ratio, and `test_without_consume_trailer_the_body_ends_at_the_zero_chunk` as the other half. `poe sabotage-trailers` reverts each of the rules, these and B14's, and requires a failure for every one"
     },
     {
       "id": "A11",
@@ -202,6 +202,14 @@
       "evidence": "`Smoke test the Mojo host` (every PR) \u2014 `apps/host_check`, built, as one process: after `kill -PIPE` it must still answer `/health`, and again after a client asks for a 300 ms `/slow` and resets 50 ms in, so the answer is written to a reset socket. The signal is the arm that tells a fixed build from a broken one on both legs. Measured on Linux (a Debian container, 2026-09-29) with `ignore_sigpipe` made a no-op: `kill -PIPE` ended the server, the producer's write ended it and `kill -PIPE` ended the supervisor, 10 rounds in 10 each, and both steps failed at their `kill -PIPE` arm. The resetting client ended it in none of 10: there the send after an RST fails with `ECONNRESET` and raises no signal. In the same step, a one-worker server whose producer's `make` writes to a closed pipe before the loop starts must serve, the write failing with `EPIPE`, and the two-worker supervisor must survive `kill -PIPE`, then hold streams on both workers and reap both on SIGTERM; `Smoke test spawned workers` sends m0serve's supervisor `kill -PIPE` and requires both workers answering and the reap after. Measured before the fix, on macOS: that client ended a fresh built server with status 141 in 10 of 10 rounds, as did one leaving an 8 MB response after 1 KB (event loop and the then-blocking `Server.serve` alike), SSE subscribers resetting on 1 ms beats ended it within 8 to 34 resets, and `kill -PIPE` ended every shape. With the loop's ignore alone, `kill -PIPE` ended either supervisor with 141 and orphaned its workers, a stdout reader that left ended the host with 141 at its next line, and the producer's write ended the server before it served, with one worker and under `M0_THREADS=2` alike, and killed worker 0 on every respawn under `M0_WORKERS=2`. The unit halves are `test_sigpipe.mojo:test_a_write_to_a_closed_pipe_is_an_error_not_the_end` and `test_kill_pipe_does_not_end_the_process`, which provoke the signal, and `test_serve_runs_the_event_loop_which_ignores_sigpipe` and `test_listen_and_serve_runs_the_event_loop_which_ignores_sigpipe`, which run each public entry point until its closed shutdown pipe ends the loop and read the disposition back; each puts the default back first, so under `mojo run` too a missing ignore fails it"
     },
     {
+      "id": "A26",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A response carries at most one `Server` header: the application's when it sets one, the server's default otherwise; none when G2 drops the application's",
+      "status": "verified",
+      "evidence": "`test_response_head.mojo:test_a_server_header_the_application_set_is_the_only_one` (every PR) \u2014 on the bytes of both encoders and the printed form. `encode` and `encode_into` wrote `server: lightbug_http` whatever the headers held, so an application that named itself, built in Mojo or served through the gateway, sent two `Server` lines, which RFC 9110 \u00a710.2.4's grammar, a product list rather than a comma-separated one, cannot join into one; the printed form already asked first. Found by the 2026-10-07 fork review"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
@@ -288,6 +296,54 @@
       "capability": "More than one `Transfer-Encoding` field line rejected, across letter case",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_a_second_transfer_encoding_line_is_rejected` (every PR) \u2014 field lines combine into one list (RFC 9110 \u00a75.3), so two `chunked` lines are the `chunked, chunked` B3's rule refuses on one line, which the last line alone read as a single `chunked`"
+    },
+    {
+      "id": "B12",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A bare LF anywhere in a request head (the request line, a field line, the empty line that ends the head, an empty line before the request line) rejected with 400",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_bare_lf_in_a_request_head_is_rejected` (every PR) \u2014 the parser ended a head at an empty line that was a bare LF while the loop framed it by the first CRLFCRLF, so on `apps/hello` a request pipelined behind a field line's CRLF and then a bare LF got no answer, and a `Content-Length` after the bare LF was never read, its body answered as a request. `Smoke test pipelined requests` sends both shapes and requires one 400 and a close. Beside the rule sits an UNGATED backstop: the loop answers 400 and closes when the parser's `bytes_consumed` is not its own CRLFCRLF frame. With the strict parser it is unreachable, and no gate fails with it removed alone; sabotage showed it working, the probe passing on it alone with the parser's rule reverted"
+    },
+    {
+      "id": "B13",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A field line opening with SP or HTAB (obs-fold, RFC 9112 \u00a75.2) rejected",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_an_obs_fold_line_is_rejected` (every PR) \u2014 the parser took the line as a field with an EMPTY name, which reached a WSGI application as the environ key `HTTP_`, and the folded text never joined the value it continued; the RFC allows refusing it or replacing the fold with SP, and this server refuses, at the SP, before the line ends"
+    },
+    {
+      "id": "B14",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A chunked request body's trailer section held to field lines ending in CRLF: a bare LF, a run of CR, a CR no LF follows, a line with no name or no colon makes the body invalid",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_trailer_line_must_end_in_crlf` (every PR) \u2014 B5's rule for the chunk header, applied to the trailer. The section skipped any run of CR and took a bare LF, or any line at all, so a last chunk followed by a bare LF ended a body a stricter hop in front still reads as open, and `XY` in a trailer was served where llhttp and h11 both refuse it. `test_a_trailer_line_must_be_a_field_line` holds the name and colon, `test_a_trailer_split_at_every_byte_still_decodes` that each state waits at a buffer's end, and `poe sabotage-trailers` reverts each of these rules too"
+    },
+    {
+      "id": "B15",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "An HTTP/1.0 request carrying `Transfer-Encoding` answered, then its connection closed, whatever its `Connection` asks (RFC 9112 \u00a76.1); HTTP/1.2 to HTTP/1.9 need `Host` as HTTP/1.1 does (RFC 9110 \u00a72.5)",
+      "status": "verified",
+      "evidence": "`Smoke test pipelined requests` (every PR) \u2014 an HTTP/1.0 chunked POST asking for keep-alive was de-chunked and kept alive, so the request pipelined behind it was answered too; RFC 9112 \u00a76.1 calls that framing faulty, and the probe requires one 200 and a close. `test_parsing.mojo:test_a_later_http1_minor_version_requires_host` holds the other half: the `Host` check asked for minor version 1 exactly, and `GET / HTTP/1.2` with no `Host` was served. `test_slot_lifecycle.mojo:test_the_metrics_path_honours_a_requested_close` holds this close, and B17's, on the loop's own `/__metrics` answer, which reset it"
+    },
+    {
+      "id": "B16",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "An absolute-form target's authority replaces `Host` (RFC 9112 \u00a73.2.2), its `http`/`https` scheme matched in any letter case and its authority ending at the first `/`, `?` or `#`; an empty authority or a userinfo refused 400",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_an_absolute_form_authority_replaces_host` (every PR) \u2014 the authority was thrown away and the sent `Host` kept, so an application routing on `Host` read a site the target never named; `HTTP://h/p` was left whole, a path with no leading slash; `http://h?q=1` lost its query; and `http:///p` was served as `/p`. The sent `Host` is still required on HTTP/1.1 (\u00a73.2). Four tests beside it hold the scheme's case, the query, the refusals and a target that is not UTF-8 (G14), each failing alone when its rule is reverted"
+    },
+    {
+      "id": "B17",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "One `Connection` field line read as a list of case-insensitive option tokens (RFC 9110 \u00a77.6.1): `close` anywhere in it closes the connection behind the answer, and an HTTP/1.0 `keep-alive` anywhere in it keeps one",
+      "status": "verified",
+      "evidence": "`test_request_as_sent.mojo:test_connection_is_read_as_a_list_of_tokens` (every PR) \u2014 the whole value was compared with `close`, so `Connection: close, TE` kept the connection alive and the request pipelined behind it was answered; a member must be the token itself, `closed` closing nothing. `Smoke test pipelined requests` sends that shape and requires one 200 and a close. Two `Connection` field lines are not combined into one list (RFC 9110 \u00a75.3): the last is kept, so a `close` on the first is lost (review record LF40, after the release)"
     },
     {
       "id": "C1",
@@ -938,6 +994,14 @@
       "evidence": "`test_response_splitting.mojo:test_an_injected_header_is_dropped_and_its_neighbours_kept` (every PR) \u2014 `Headers.write_latin1_to` and the cookie jar's writer, judged on the bytes each encoder writes, with `test_an_injected_cookie_line_is_dropped_and_the_others_sent` beside it and a position sweep of the scanner. The refusal lived only in m0-wsgi until 2026-09-28, so a head built in Mojo -- a view's, the Mojo host's, a `--mount X=mojo` pool thread's -- went out uninspected. `Conformance test the WSGI bridge` still sends an injecting WSGI route over a socket and requires the clean header and none of the injected ones. `test_reply.mojo:test_redirect_percent_encodes_a_control_byte_in_its_target` holds the constructor's side: `reply.redirect` percent-encodes every C0 control byte and DEL in its target, as `url_for` encodes one, so a `Location` a view built from request data is kept rather than dropped, and an ordinary target is byte-identical."
     },
     {
+      "id": "G19",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "An overlong UTF-8 encoding is not a way past G2: the header writers' latin-1 transcoder decodes only the two-byte sequences of U+0080 to U+00FF, so the overlong form of CR, LF or NUL in a header value or a `Set-Cookie` line goes out as the bytes it was given",
+      "status": "verified",
+      "evidence": "`test_response_splitting.mojo:test_an_overlong_line_break_is_not_a_way_past_the_refusal` (every PR) \u2014 on the bytes of both encoders and the printed form, with `test_an_overlong_line_break_in_a_cookie_is_not_a_way_past_the_refusal` for the cookie jar's writer, `test_the_transcoder_maps_only_latin1_and_passes_the_rest_verbatim` for the transcoder's table, and `test_reply.mojo:test_redirect_to_an_overlong_line_break_keeps_the_head_whole` for `reply.redirect`. The transcoder decoded three- and four-byte sequences too, AFTER `Headers.write_latin1_to` had refused CR, LF and NUL, so `E0 80 8D E0 80 8A` went out as a real CRLF. `unquote` makes those bytes of `?next=%E0%80%8D%E0%80%8A...`, and `reply.redirect` percent-encodes control bytes but leaves bytes above 0x7F alone, as it must for UTF-8, so a Mojo view redirecting to a request's `next` wrote a `Set-Cookie`, or a body, of the request's choosing: every response built in Mojo was exposed (a view's, the Mojo host's, a pool thread's under a Mojo mount). The gateway was not: a WSGI or ASGI `str` crosses as CPython's UTF-8, which is never overlong, and a `bytes` value is re-encoded byte by byte into two-byte sequences that decode back to the bytes given. Restoring the three- and four-byte branches fails all four tests. Beside the fix, `Headers.write_latin1_to` and the cookie jar's latin-1 writer drop a value whose TRANSCODED bytes hold CR, LF or NUL: an ungated backstop, unreachable with the fixed transcoder, whose removal alone fails nothing; with the old transcoder it turns the split into a dropped header, and with both reverted the head carries the split. Found by the 2026-10-07 fork review"
+    },
+    {
       "id": "G3",
       "section": "G",
       "category": "G. Security hardening",
@@ -1066,6 +1130,14 @@
       "evidence": "`Smoke test what a child process the application starts inherits` (every PR) \u2014 a view starts a child with close_fds=False in six shapes (the pool, the loop, forked and spawned workers, `--realtime`, the ASGI executor) and requires it to hold no descriptor above 2: the server started with none there, so each would be its own. Before the fix every shape failed, the child holding 8 to 46 of them: connections, the listener, every channel, the shutdown pipe, the shared page. `test_cloexec.mojo` holds each creation helper, including those no shape reaches (the per-loop listener dups and fan-out pipes of `--threads`), and `test_respawn.mojo` that the spawn's own exec keeps exactly what the new image adopts. On macOS each creation call (`accept`, `socket`, `socketpair`, `pipe`, `recvmsg`) is followed by a second that marks the descriptor, so a fork and exec on another thread in the instant between can still inherit that one, as under CPython there; Linux creates each close-on-exec atomically. A child that forks WITHOUT exec (`os.fork`, multiprocessing's fork start method) inherits everything, which no descriptor flag can prevent"
     },
     {
+      "id": "G20",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "The shared page the workers map is created with mode 0o600, its owner's alone, as `shared_file_fd` asks: on Darwin arm64 `shm_open`'s mode, a variadic argument, goes on the stack where the callee reads it, as `fcntl`'s argument does; and a raise after the open closes the descriptor",
+      "status": "verified",
+      "evidence": "`test_cloexec.mojo:test_the_shared_page_is_its_owners_alone` (every PR) \u2014 it bites on the macOS leg only, Linux passing variadic arguments in registers; `test_a_page_that_cannot_be_sized_is_closed` holds the close. Before the fix (review record LF17) the mode went as a third fixed argument, in a register the callee never reads, and the page took its mode from the stack: measured as 0o0, 0o1 and 0o744"
+    },
+    {
       "id": "H1",
       "section": "H",
       "category": "H. TLS",
@@ -1144,6 +1216,14 @@
       "capability": "A fragmented control frame is a protocol error",
       "status": "verified",
       "evidence": "`test_websocket.mojo:test_fragmented_control_frame_is_protocol_error` (every PR)"
+    },
+    {
+      "id": "I34",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A message parsed from the same read as a protocol violation is still delivered, and a ping in that read still answered, the 1002 Close going out after its pong: what the application receives does not depend on how TCP split the bytes",
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_a_message_before_a_violation_is_delivered` (every PR) \u2014 with `test_a_pong_before_a_violation_goes_out_ahead_of_the_close` beside it. Before the fix (review record LF9) a refusal answered with a fresh result, dropping both, while a peer's own Close kept them"
     },
     {
       "id": "I7",
@@ -1360,6 +1440,14 @@
       "capability": "A file response whose head the socket cannot take at once still sends its file: the write-ready path that finishes the head pumps the file after it, as the eager path does",
       "status": "verified",
       "evidence": "`Smoke test zero-copy static file serving` (every PR) \u2014 1000 requests for a small `--static` file pipelined on one connection to a client that reads more slowly than the server answers, each head made 12 KB by a long `--static-cache-control` so the send buffer fills at a head on both kernels, and every response must arrive with its own file. Before the fix a head that needed a second send went straight to the keep-alive reset with the file unsent, and the client read the next head where the body belonged: at response 37 on macOS and 173 in the Linux container, every run. With 5000-byte files and short heads, 19 of 78 stalls fell on a head over 20 MB, because XNU's sendfile refuses below the send low-water mark"
+    },
+    {
+      "id": "J15",
+      "section": "J",
+      "category": "J. Static file serving",
+      "capability": "A file body that ends before the length its head promised, as a static file truncated while it is served does, closes the connection at the next write event, the client reading EOF where the bytes ran out, rather than leaving its slot waiting for room the socket already has",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_file_that_ends_early_closes_its_connection` (every PR) \u2014 over this OS's multiplexer, the file truncated mid-transfer where the transfer has got to; `test_sendfile.mojo:test_the_end_of_the_file_is_a_failure` holds the binding's answer. Before the fix (review record LF16) `sendfile`'s end of file read as no progress: the write one-shot was re-armed and fired at once, pass after pass, until the idle timeout reaped the slot, and for good with idle timeouts off"
     },
     {
       "id": "J2",
