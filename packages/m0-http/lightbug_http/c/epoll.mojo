@@ -13,6 +13,7 @@ from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import ExternalMutPointer
+from lightbug_http.c.socket_error import SysError
 
 
 # Re-export kqueue canonical filter constants so EpollBackend callers can
@@ -132,32 +133,47 @@ def _fill_event(ev: ExternalMutPointer[UInt32], events: UInt32, data: UInt64):
     ev[unsafe_offset=EPOLL_DATA_WORD + 1] = UInt32(data >> 32)
 
 
-def epoll_ctl_add(epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64) raises:
-    """Register fd with epoll (EPOLL_CTL_ADD)."""
+def epoll_ctl_add(
+    epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64
+) raises SysError:
+    """Register fd with epoll (EPOLL_CTL_ADD).
+
+    Raises:
+        SysError: `epoll_ctl ADD` and its errno: EEXIST for an fd already
+            registered, the one a caller may answer with MOD.
+    """
     var ev = stack_allocation[EPOLL_EVENT_WORDS, UInt32]()
     _fill_event(ev, events, data)
     var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_ADD, c_int(fd), ev)
     if result == -1:
-        var errno = get_errno()
-        raise Error("epoll_ctl ADD failed, errno: ", errno)
+        raise SysError("epoll_ctl ADD", get_errno())
 
 
-def epoll_ctl_mod(epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64) raises:
-    """Modify fd's epoll registration (EPOLL_CTL_MOD)."""
+def epoll_ctl_mod(
+    epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64
+) raises SysError:
+    """Modify fd's epoll registration (EPOLL_CTL_MOD).
+
+    Raises:
+        SysError: `epoll_ctl MOD` and its errno: ENOENT for an fd not
+            registered, the one a caller may answer with ADD.
+    """
     var ev = stack_allocation[EPOLL_EVENT_WORDS, UInt32]()
     _fill_event(ev, events, data)
     var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_MOD, c_int(fd), ev)
     if result == -1:
-        var errno = get_errno()
-        raise Error("epoll_ctl MOD failed, errno: ", errno)
+        raise SysError("epoll_ctl MOD", get_errno())
 
 
-def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises:
-    """Remove fd from epoll (EPOLL_CTL_DEL). event pointer is ignored."""
+def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises SysError:
+    """Remove fd from epoll (EPOLL_CTL_DEL). event pointer is ignored.
+
+    Raises:
+        SysError: `epoll_ctl DEL` and its errno.
+    """
     var result = _epoll_ctl(c_int(epfd.value), EPOLL_CTL_DEL, c_int(fd), None)
     if result == -1:
-        var errno = get_errno()
-        raise Error("epoll_ctl DEL failed, errno: ", errno)
+        raise SysError("epoll_ctl DEL", get_errno())
 
 
 def epoll_wait(

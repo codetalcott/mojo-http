@@ -1393,6 +1393,20 @@ lightbug_http
         heartbeat of 65536 the app tick's), and one past the regions was
         dropped (review record LF18).
 
+      - c/kqueue.mojo, c/kqueue_backend.mojo, c/epoll.mojo,
+        c/epoll_backend.mojo, event_loop_backend.mojo, and m0-wsgi's
+        asgi_executor.mojo (2026-10-08): `KqueueBackend` and
+        `EpollBackend` have destructors that close the multiplexer (and,
+        on epoll, every timerfd still in the map) and free the event
+        buffer; neither closed anything, so every loop that returned left
+        them open. The inverted executor, which hands the backend to
+        asyncio by address, keeps it alive past `run_forever_inverted`
+        with `_ = backend`. `kevent_poll_ns` takes its timespec from the
+        stack, where it was `malloc`ed and freed per wait. The
+        `epoll_ctl` wrappers raise `SysError`, and `EpollBackend` falls
+        back from ADD to MOD on EEXIST alone and from MOD to ADD on ENOENT
+        alone, where it fell back on any errno (review record LF21).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

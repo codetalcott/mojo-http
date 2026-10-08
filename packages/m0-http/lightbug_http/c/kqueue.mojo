@@ -7,7 +7,6 @@ implement a single-threaded, non-blocking HTTP server.
 """
 
 from std.memory import stack_allocation
-from std.memory.alloc import unsafe_alloc
 from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget, size_of
 
@@ -157,8 +156,11 @@ def kevent_poll_ns(
 ) raises -> Int:
     """Poll kqueue for events with a timeout in nanoseconds: `kevent`'s
     timespec carries them whole (measured on an Apple M4 at about 13 µs
-    for a 10 µs timeout and 1.14 ms for 1 ms, the kernel's leeway)."""
-    var ts = unsafe_alloc[timespec_t](count=1)
+    for a 10 µs timeout and 1.14 ms for 1 ms, the kernel's leeway).
+
+    The timespec is on the stack, as `kevent_register_one`'s change is: it
+    was `malloc`ed and freed on every wait (review record LF21)."""
+    var ts = stack_allocation[1, timespec_t]()
     ts[] = timespec_t(
         Int64(timeout_ns // 1_000_000_000),
         Int64(timeout_ns % 1_000_000_000),
@@ -166,7 +168,6 @@ def kevent_poll_ns(
     var result = _kevent(
         Int32(kq.value), None, c_int(0), eventlist, c_int(max_events), ts,
     )
-    ts.unsafe_free()
 
     if result == -1:
         var errno = get_errno()

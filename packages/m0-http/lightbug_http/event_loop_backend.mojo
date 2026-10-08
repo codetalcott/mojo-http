@@ -144,7 +144,12 @@ trait ConstructibleBackend(EventLoopBackend):
     """
 
     def __init__(out self) raises:
-        """Open the OS multiplexer (`kqueue()` / `epoll_create1`)."""
+        """Open the OS multiplexer (`kqueue()` / `epoll_create1`).
+
+        The backend closes it, and every descriptor it opened beside it
+        (epoll's timerfds), when it is destroyed: whoever holds a backend
+        by address past its last use keeps it alive with `_ = backend`.
+        """
         ...
 
     def multiplexer_fd(self) -> Int:

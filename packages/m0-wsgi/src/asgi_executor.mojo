@@ -1304,6 +1304,11 @@ def serve_inverted(
     _ = st
     _ = port_obj
     handler.shutdown()
+    # The port reaches the backend through `backend_ptr`, so its last
+    # tracked use is the `multiplexer_fd()` above: destroyed there, it
+    # would close the multiplexer asyncio watches (a backend closes its fd
+    # when destroyed, LF21). Kept to the end, past the shutdown.
+    _ = backend
     _ = native
     _ = state
 

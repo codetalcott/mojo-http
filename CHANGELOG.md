@@ -23,6 +23,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   timeout. Every timer now has a slot of its own below descriptor 2^20,
   the ceiling Linux's default `fs.nr_open` sets.
 
+- **A server that returns gives back its kqueue or epoll descriptor**
+  (fork review LF21, SPEC C13). Exposed: a Mojo application that serves,
+  returns and serves again in one process (`Server.serve_nonblocking`,
+  `listen_and_serve`), and the Mojo host's `M0_THREADS` loops as they
+  end; m0serve and a host process exit when their loops do, so they
+  never reached it. Each return left its multiplexer open, and on Linux
+  every timerfd the loop still held. The backend now closes them when the
+  loop is done with it. On Linux, an epoll registration the kernel
+  refuses is now reported with its own error: a refused ADD was retried as
+  a MOD, whose ENOENT was reported in its place.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

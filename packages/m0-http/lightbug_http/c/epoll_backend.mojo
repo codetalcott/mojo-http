@@ -26,7 +26,7 @@ from lightbug_http.c.epoll import (
 from lightbug_http.c.fcntl import O_CLOEXEC, O_NONBLOCK
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
-from std.ffi import c_int
+from std.ffi import ErrNo, c_int
 from std.memory.alloc import unsafe_alloc
 
 
@@ -94,8 +94,17 @@ struct EpollBackend(ConstructibleBackend):
         self._timer_fds = List[Int32](length=_TIMER_MAP_START, fill=-1)
         self._n_ready = 0
         self._no_pwait2 = False
-    # Note: _events is a process-lifetime allocation.
-    # No __del__ needed; the OS reclaims it on process exit.
+
+    def __deinit__(deinit self):
+        """Close every timerfd still held, then the epoll instance, and free
+        the event buffer. A loop's backend is destroyed when the loop
+        returns, and none of the three used to be released until the
+        process exited (review record LF21)."""
+        for tfd in self._timer_fds:
+            if tfd >= 0:
+                close_fd(Int(tfd))
+        close_fd(self.epfd.value)
+        self._events.unsafe_free()
 
     # --- EventLoopBackend methods ---
 
@@ -167,7 +176,11 @@ struct EpollBackend(ConstructibleBackend):
         """Edge-triggered read (connection socket).
 
         Tries ADD first (new fd); falls back to MOD (re-arm after
-        EPOLLONESHOT disarmed the fd — still registered but inactive).
+        EPOLLONESHOT disarmed the fd — still registered but inactive) only
+        when ADD fails with EEXIST, the one errno that means the fd is
+        registered. Any other failure is ADD's to report: it used to fall
+        back on every errno, and an ADD refused for ELOOP, ENOSPC or EPERM
+        was reported as MOD's ENOENT (review record LF21).
 
         EPOLLRDHUP is in the mask so a peer's half-close surfaces as
         EV_EOF (see `event_flags`), exactly as kqueue reports it on the
@@ -189,7 +202,9 @@ struct EpollBackend(ConstructibleBackend):
         comptime _R = EPOLLIN | EPOLLRDHUP | EPOLLET
         try:
             epoll_ctl_add(self.epfd, fd, _R, UInt64(fd))
-        except:
+        except add_err:
+            if add_err.errno != ErrNo.EEXIST:
+                raise add_err
             epoll_ctl_mod(self.epfd, fd, _R, UInt64(fd))
 
     def try_add_read(mut self, fd: Int):
@@ -208,10 +223,13 @@ struct EpollBackend(ConstructibleBackend):
         read events for keep-alive.
         """
         comptime _W = EPOLLOUT | EPOLLET | EPOLLONESHOT
-        # Try MOD first (fd already registered for reads); fall back to ADD.
+        # Try MOD first (fd already registered for reads); fall back to ADD
+        # only when MOD finds the fd unregistered (ENOENT).
         try:
             epoll_ctl_mod(self.epfd, fd, _W, UInt64(fd))
-        except:
+        except mod_err:
+            if mod_err.errno != ErrNo.ENOENT:
+                raise mod_err
             epoll_ctl_add(self.epfd, fd, _W, UInt64(fd))
 
     def try_add_write_oneshot(mut self, fd: Int):
