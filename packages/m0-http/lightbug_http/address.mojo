@@ -168,9 +168,6 @@ struct ParseEmptyAddressError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseMissingClosingBracketError(CustomError, TrivialRegisterPassable):
@@ -178,9 +175,6 @@ struct ParseMissingClosingBracketError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -190,9 +184,6 @@ struct ParseMissingPortError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseUnexpectedBracketError(CustomError, TrivialRegisterPassable):
@@ -200,9 +191,6 @@ struct ParseUnexpectedBracketError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -212,9 +200,6 @@ struct ParseEmptyPortError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseInvalidPortNumberError(CustomError, TrivialRegisterPassable):
@@ -222,9 +207,6 @@ struct ParseInvalidPortNumberError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -234,9 +216,6 @@ struct ParsePortOutOfRangeError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseMissingSeparatorError(CustomError, TrivialRegisterPassable):
@@ -244,9 +223,6 @@ struct ParseMissingSeparatorError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -256,9 +232,6 @@ struct ParseTooManyColonsError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseIPProtocolPortError(CustomError, TrivialRegisterPassable):
@@ -266,9 +239,6 @@ struct ParseIPProtocolPortError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 

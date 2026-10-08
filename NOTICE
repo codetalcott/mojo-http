@@ -1535,6 +1535,14 @@ lightbug_http
         `AddressParseError` recorded a decorator long gone (review record
         LF27).
 
+      - utils/error.mojo, address.mojo, connection.mojo, server.mojo,
+        c/network.mojo (2026-10-08): `CustomError`'s docstring promised
+        default `write_to` and `__str__` methods it did not have. `__str__`
+        is now the trait's, and the fifteen copies are gone; `write_to`
+        stays each conformer's, because `Writable` already defaults it (to
+        the struct's name) and Mojo 1.1 refuses a refining trait's second
+        default. The docstring says so (review record LF29).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

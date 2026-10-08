@@ -330,9 +330,6 @@ struct ProvisionPoolExhaustedError(CustomError, ImplicitlyCopyable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(self.message)
 
-    def __str__(self) -> String:
-        return String(self)
-
 
 @fieldwise_init
 struct ProvisionError(Movable, Writable):
