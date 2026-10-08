@@ -198,6 +198,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   fork review; with a sleep holding that moment open, 24 messages of 24
   waited.
 
+- **A pool test no longer times out on a busy machine** (fork review
+  LF68, SPEC I39). The test that a WebSocket message wakes a pool thread
+  parked on its own channel waited for the count of parked threads to
+  dip, which lasts only until the woken thread parks again, tens of
+  microseconds later; a test thread descheduled across that moment failed
+  at its two-second bound with the message served. It now waits for the
+  message to be taken. The server was not at fault: a sleep at each of
+  four points of the pool's park path never lost the message, and a sleep
+  after the test's send failed the old test every time.
+
 - **A cross-worker bus frame is delivered whole or not at all** (SPEC
   I40). Exposed: a publish whose channel name and frame together passed
   about 69.6 KB, through `m0pub.publish()`, `scope["state"]["m0"]`,

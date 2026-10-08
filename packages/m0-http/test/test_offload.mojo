@@ -1777,8 +1777,9 @@ comptime _BLK_SERVED = 11
 """Block slot an echo thread counts its jobs in; read after the join."""
 
 comptime _BLK_WS_SERVED = 12
-"""Block slot an echo thread counts the WebSocket messages it took in;
-read after the join."""
+"""Block slot an echo thread counts the WebSocket messages it took in,
+stored atomically as each is taken, so a test can wait on the delivery
+itself (review LF68); read after the join too."""
 
 
 def _echo_thread[slow: Bool](arg: Int) -> Int:
@@ -1800,6 +1801,7 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
             break
         if job.kind == JOB_WS_MESSAGE:
             ws_served += 1
+            atomic_at(block.slot_addr(_BLK_WS_SERVED))[].store(Int64(ws_served))
             continue
         if job.kind != JOB_REQUEST:
             continue
@@ -1813,7 +1815,6 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
         served += 1
     pool.unregister_thread(tid, 0)
     block.set(_BLK_SERVED, served)
-    block.set(_BLK_WS_SERVED, ws_served)
     block.set(BLK_STATUS, STATUS_OK)
     return 0
 
@@ -1999,7 +2000,20 @@ def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
     thread, which polls the socket first thing. The echo thread counts the
     message as served (it answers nothing for it) and parks again; without
     the wake it would sit parked and the message with it — CI's WebSocket
-    smoke, "only pings arriving"."""
+    smoke, "only pings arriving".
+
+    The test waits for the message's DELIVERY, the count the echo thread
+    stores as it takes it, never for the parked count's dip: the wake
+    retires that count on the sender's side and the woken thread restores
+    it as it parks again, tens of microseconds later, so a test thread
+    descheduled across the window saw the count back at one and timed out
+    with the message served (review LF68: once in a whole-suite run at a
+    load of 12; a 5 ms sleep after the send failed it in 5 runs of 5,
+    while 5 ms sleeps at four points of the pool's park path failed it in
+    none).
+
+    covers: I39
+    """
     var pool = OffloadPool(8)
     if not pool.elastic_active():
         return
@@ -2009,15 +2023,15 @@ def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
     for b in String("hello").as_bytes():
         payload.append(b)
     assert_true(pool.send_ws_message(0, 3, 1, String("chan"), Span(payload)))
-    # The thread wakes for it: parked count drops, then it parks again.
+    var taken = atomic_at(threads.block(0).slot_addr(_BLK_WS_SERVED))
     var deadline = perf_counter_ns() + 2_000_000_000
-    var woke = False
-    while perf_counter_ns() < deadline:
-        if pool.parked_count(0) == 0:
-            woke = True
-            break
+    while taken[].load() == 0:
+        assert_true(
+            perf_counter_ns() < deadline,
+            "the parked thread was never woken for the message",
+        )
         sleep(0.0001)
-    assert_true(woke)
+    # Taken, it answers nothing for it and parks again.
     _await_parked(pool, 1)
     pool.stop(1)
     threads.join_all()
