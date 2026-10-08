@@ -226,8 +226,8 @@ def test_an_empty_host_is_accepted_when_the_target_names_no_authority() raises:
 def test_the_version_is_http_slash_1_dot_one_digit() raises:
     """`parse_http_version` reads `HTTP/1.` and one digit, then the line's
     CRLF: any other name, major, case or trailing byte is invalid, and the
-    protocol a request reaches the application with is the one it sent
-    (review audit A3)."""
+    protocol a request reaches the application with is the one it sent; and
+    a request line with no method is invalid too (review audit A3)."""
     for v in [
         "HTTP/2.0", "HTTP/1.x", "HTTP/1.10", "HTTP/1.1 ", "http/1.1",
         "HTTP/01.1", "HTTP1.1", "HTTP/1.", "HTTP/1.1x", "HTTPS/1.1", "HTTP/1",
@@ -235,6 +235,9 @@ def test_the_version_is_http_slash_1_dot_one_digit() raises:
         var raw = String("GET / ", v, "\r\nHost: x\r\n\r\n")
         assert_true(_rejected(raw), String("accepted version ", repr(String(v))))
     assert_false(_accepted("GET / H\r\n\r\n"))
+    # And the line opens with its method: an empty one (the line opening
+    # with SP) is invalid, `parse_token` reporting a token of no bytes.
+    assert_true(_rejected(" / HTTP/1.1\r\nHost: x\r\n\r\n"), "served an empty method")
     for minor in range(10):
         var raw = String("GET / HTTP/1.", minor, "\r\nHost: x\r\n\r\n")
         var parsed = parse_request_headers(raw.as_bytes())
