@@ -1634,6 +1634,12 @@ lightbug_http
         or bytes above 0x7F. `add_raw` lines are unchanged (review record
         LF55, SPEC G2).
 
+      - cookie/response_cookie_jar.mojo (2026-10-08): `ResponseCookieKey`
+        keys no `Path`, an empty one and one not starting with `/` as the
+        default-path (RFC 6265 §5.1.4, §5.2.4), apart from `/`, which it
+        defaulted to, so a Path-less cookie replaced a `Path=/` one of the
+        same name in the jar (review record LF65).
+
       - http/common_response.mojo (2026-10-08): `NotFound`'s body is
         `Not Found`, where it was `path <path> not found`, a request's own
         bytes reflected into a `text/plain` answer carrying no `nosniff`;

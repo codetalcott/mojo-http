@@ -225,23 +225,38 @@ def test_a_built_cookie_writes_every_attribute() raises:
 
 
 def test_one_cookie_per_name_domain_and_path() raises:
-    """The jar keys a built cookie by name, domain and path (RFC 6265 §5.3
-    step 11): setting the same three again replaces the first, and a second
-    path or domain is a second cookie. No domain is the host's, no path
-    `/`."""
+    """The jar keys a built cookie by name, domain and path, the three a
+    browser keys it by (RFC 6265 §5.3 step 11): setting the same three
+    again replaces the first, and a second path or domain is a second
+    cookie. No domain is the host's. No path is the request's directory
+    (§5.1.4's default-path, §5.2.4), not `/`: a cookie with no `Path` and
+    one with `Path=/` are two cookies to a browser at `/app/x`, and the jar
+    kept only the second (review record LF65). An empty `Path`, or one
+    that does not start with `/`, is the default-path too (§5.2.4)."""
     var jar = ResponseCookieJar()
     jar.set_cookie(Cookie("a", "1"))
     jar.set_cookie(Cookie("a", "2", path=String("/")))
-    assert_equal(len(jar), 1)
+    assert_equal(len(jar), 2)
     jar.set_cookie(Cookie("a", "3", path=String("/x")))
     jar.set_cookie(Cookie("a", "4", domain=String("example.test")))
-    assert_equal(len(jar), 3)
+    jar.set_cookie(Cookie("a", "5", path=String("/")))
+    assert_equal(len(jar), 4)
     var wire = _wire(jar^)
-    assert_equal(_count(wire, "set-cookie: "), 3)
-    assert_true("set-cookie: a=2; Path=/\r\n" in wire, wire)
+    assert_equal(_count(wire, "set-cookie: "), 4)
+    assert_true("set-cookie: a=1\r\n" in wire, wire)
+    assert_true("set-cookie: a=5; Path=/\r\n" in wire, wire)
     assert_true("set-cookie: a=3; Path=/x\r\n" in wire, wire)
     assert_true("set-cookie: a=4; Domain=example.test\r\n" in wire, wire)
-    assert_false("a=1" in wire, wire)
+    assert_false("a=2" in wire, wire)
+    # An empty Path and a relative one are the default-path: the same
+    # cookie as no Path, so the last of the three is kept.
+    var defaults = ResponseCookieJar()
+    defaults.set_cookie(Cookie("b", "1"))
+    defaults.set_cookie(Cookie("b", "2", path=String("")))
+    defaults.set_cookie(Cookie("b", "3", path=String("rel")))
+    assert_equal(len(defaults), 1)
+    var only = _wire(defaults^)
+    assert_true("set-cookie: b=3; Path=rel\r\n" in only, only)
 
 
 def _with(a: String, b: UInt8, c: String) -> String:

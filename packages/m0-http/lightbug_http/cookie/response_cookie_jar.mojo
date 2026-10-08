@@ -30,7 +30,13 @@ struct ResponseCookieKey(ImplicitlyCopyable, KeyElement):
     ):
         self.name = name
         self.domain = domain.or_else("")
-        self.path = path.or_else("/")
+        # No `Path`, an empty one, or one not starting with `/` is the
+        # default-path, the request's directory (RFC 6265 §5.1.4, §5.2.4),
+        # so all three key alike and apart from `/`. Keyed as `/`, a cookie
+        # with no Path replaced one with `Path=/` in the jar, where a
+        # browser keeps both (review record LF65).
+        var p = path.or_else("")
+        self.path = p if p.startswith("/") else ""
 
     def __eq__(self: Self, other: Self) -> Bool:
         return self.name == other.name and self.domain == other.domain and self.path == other.path

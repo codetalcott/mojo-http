@@ -69,6 +69,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   hands `add_raw`, which is how every WSGI and ASGI application's cookies
   arrive, is still sent as given.
 
+- **A built cookie with no `Path` and one with `Path=/` are two cookies.**
+  Exposed: an m0 application that sets the same cookie name twice in one
+  response through `ResponseCookieJar.set_cookie`, once without a `Path`
+  and once with `Path=/`. The jar treated a missing `Path` as `/` and kept
+  only the second. A browser gives a cookie with no `Path` the request's
+  directory (RFC 6265 §5.1.4), so it stores both. Both are now sent. An
+  empty `Path`, or one not starting with `/`, means the same as none.
+
 - **`NotFound(path)` no longer writes the path into its body.** Exposed:
   an m0 application that answers with `lightbug_http`'s `NotFound`, as the
   WebSocket examples do. The body was `path <path> not found`, the
