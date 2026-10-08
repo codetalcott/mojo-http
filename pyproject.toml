@@ -6479,9 +6479,10 @@ help = "Revert each rule that keeps CR, LF and NUL out of a head and insist the 
 deps = ["build-core", "build-http"]
 cmd = "python3 scripts/header_bytes_sabotage.py"
 
-# SPEC G13. The request decoder is a pure function over bytes, so the harness
-# needs no socket and no server: mutate a seed corpus, assert the invariants,
-# and stay reproducible from `--seed` so a CI failure can be replayed exactly.
+# SPEC G13, B29, B30. The request decoder and the loop's framing decision are
+# pure functions over bytes, so the harness needs no socket and no server:
+# mutate a seed corpus, assert the invariants, and stay reproducible from
+# `--seed` so a CI failure can be replayed exactly.
 # 20k iterations is a couple of seconds, which is why this runs every PR
 # rather than weekly; `fuzz-request-long` is the deeper sweep for a release.
 [tool.poe.tasks.fuzz-request]
@@ -6489,6 +6490,8 @@ help = "Fuzz the request/chunked decoders against their invariants"
 shell = """
 mojo run -I packages/m0-http -I packages/m0-core scripts/fuzz_request.mojo --iterations 20000 || exit 1
 python3 scripts/emit.py --covers G13 --task fuzz-request
+python3 scripts/emit.py --covers B29 --task fuzz-request
+python3 scripts/emit.py --covers B30 --task fuzz-request
 """
 
 [tool.poe.tasks.fuzz-request-long]

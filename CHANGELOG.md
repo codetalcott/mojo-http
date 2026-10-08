@@ -10,6 +10,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A request head is answered the same however its bytes arrive** (SPEC
+  B29). A request sent after two empty lines was refused with 400 when it
+  arrived in one read and served when a read ended between the empty
+  lines: where the server looked for the end of the head depended on how
+  much the read before had brought. It is refused either way now. Where a
+  head ends and how its body is framed is decided in one place, which the
+  request fuzzer that runs on every change holds to this, and to a chunked
+  body read a piece at a time (SPEC B30).
+
 - **A client that half-closes is answered with `Connection: close`, and
   its connection ends behind the answer** (SPEC A27). A client that shuts
   down its write side after its request has sent its last one, but when

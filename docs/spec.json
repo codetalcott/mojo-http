@@ -351,7 +351,7 @@
       "category": "B. Request smuggling (CWE-444)",
       "capability": "A bare LF anywhere in a request head (the request line, a field line, the empty line that ends the head, an empty line before the request line) rejected with 400",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_a_bare_lf_in_a_request_head_is_rejected` (every PR) \u2014 the parser ended a head at an empty line that was a bare LF while the loop framed it by the first CRLFCRLF, so on `apps/hello` a request pipelined behind a field line's CRLF and then a bare LF got no answer, and a `Content-Length` after the bare LF was never read, its body answered as a request. `Smoke test pipelined requests` sends both shapes and requires one 400 and a close. Beside the rule sits an UNGATED backstop: the loop answers 400 and closes when the parser's `bytes_consumed` is not its own CRLFCRLF frame. With the strict parser it is unreachable, and no gate fails with it removed alone; sabotage showed it working, the probe passing on it alone with the parser's rule reverted"
+      "evidence": "`test_parsing.mojo:test_a_bare_lf_in_a_request_head_is_rejected` (every PR) \u2014 the parser ended a head at an empty line that was a bare LF while the loop framed it by the first CRLFCRLF, so on `apps/hello` a request pipelined behind a field line's CRLF and then a bare LF got no answer, and a `Content-Length` after the bare LF was never read, its body answered as a request. `Smoke test pipelined requests` sends both shapes and requires one 400 and a close. Beside the rule sits a backstop, in the loop's framing decision since B29: a head the parser ends anywhere but its CRLFCRLF frame is answered 400 and closed. With the strict parser it is unreachable, so no gate fails with it removed alone; `Sabotage the decoder invariants the fuzzer checks` reaches it by reverting the parser's rule with it and without it. With it, the decision stays a refusal and only the parser's own invariant fails (the wire probe passes on it alone too); without it, LF2 as it shipped, the fuzzer's framing invariant fails"
     },
     {
       "id": "B13",
@@ -448,6 +448,22 @@
       "capability": "A control byte other than HTAB, or DEL, in a chunked body's trailer field value makes the body invalid, as it makes a head's field value (RFC 9110 \u00a75.5)",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_a_control_byte_in_a_trailer_value_is_refused` (every PR) \u2014 B14 held the trailer to field lines ending in CRLF but took any byte but LF in a value, NUL and VT included, where a head's value refuses them. The trailer is discarded, so this keeps one rule for field content rather than closing an exposure (review record LF4's deferred minor). `poe sabotage-trailers` reverts it with B14's rules"
+    },
+    {
+      "id": "B29",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "The event loop frames a request head by one pure decision (`frame_request_head`): the head end it frames by is where the parser stops over those bytes, or the request is refused; a head split across reads is framed as it is whole; a refusal stays one, and a framed request is unchanged, whatever arrives behind it",
+      "status": "verified",
+      "evidence": "`Fuzz the request decoder` (every PR) \u2014 the loop asked its two framers, `find_header_end` and the parser, inline, and when they disagreed (B12) the bytes between were lost. The decision is now one function, run over the unmutated corpus fed a byte at a time and over 20k mutations split at random reads, each call told how far the last scanned, as the loop calls it. Its first run found a split the loop answered differently: with one to three bytes scanned the terminator search began at them, so two empty lines and then a request, refused 400 whole, were served when a read ended inside the first CRLFCRLF; the search now starts at the buffer's first byte. `Sabotage the decoder invariants the fuzzer checks` reverts that fix and drops the byte before a read's new bytes from the bare-LF scan, each failing the split invariant, and reverts LF2 twice, as B12 says"
+    },
+    {
+      "id": "B30",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A chunked request body fed to its connection's one decoder a read at a time decodes as it does whole (the same answer, the same body, the bytes behind it kept for the next request), and a body the decoder completes ends every framing line in CRLF, never a bare LF",
+      "status": "verified",
+      "evidence": "`Fuzz the request decoder` (every PR) \u2014 a walker of the fuzzer's own reads each completed body line by line against its decoded bytes, and the decoder is fed in the loop's layout, `[decoded][pending][new]`, at random reads and a byte at a time, over the mutations and over the body of each request the framing decision frames as chunked (B29). `Sabotage the decoder invariants the fuzzer checks` ends a body at a bare-LF empty trailer line (B14's defect, which `poe sabotage-trailers` puts back against the unit tests) and refuses a read that ends just after a chunk's data, and each fails its invariant"
     },
     {
       "id": "C1",
@@ -1271,7 +1287,7 @@
       "category": "G. Security hardening",
       "capability": "Parser fuzzing in CI",
       "status": "verified",
-      "evidence": "`Fuzz the request decoder` (every PR) \u2014 20k mutations of a seed corpus against `parse_request_headers` and the chunked decoder, replayable from the seed it prints; asserts determinism, that an INVALID request cannot become valid by appending, that a parsed one is unchanged by bytes after it, and that the decoder's counts index its buffer. `poe fuzz-request-long` is the release sweep (8 seeds x 250k). The run refuses to pass on thin coverage, and `Sabotage the decoder invariants the fuzzer checks` breaks each invariant so \"no findings\" cannot mean \"checks nothing\""
+      "evidence": "`Fuzz the request decoder` (every PR) \u2014 20k mutations of a seed corpus against `parse_request_headers`, the loop's framing decision (B29) and the chunked decoder (B30), replayable from the seed it prints; asserts determinism, that an INVALID request cannot become valid by appending, that a parsed one is unchanged by bytes after it, and that the decoder's counts index its buffer. `poe fuzz-request-long` is the release sweep (8 seeds x 250k). The run refuses to pass on thin coverage, and `Sabotage the decoder invariants the fuzzer checks` breaks each invariant so \"no findings\" cannot mean \"checks nothing\""
     },
     {
       "id": "G14",
