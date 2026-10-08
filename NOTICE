@@ -1346,6 +1346,15 @@ lightbug_http
         was 400 (review record LF39). `from_parsed`'s and
         `_drop_final_chunked`'s comments say no other coding reaches them.
 
+      - http/parsing.mojo, header.mojo (2026-10-08): the request-target
+        scan stops at a byte above ASCII as at a control byte, a ParseError
+        (`_stop_lanes` and `_find_stop`, which the token scanner shares,
+        whose tchar check refused such a byte already), and
+        `parse_request_headers` refuses a target that is not origin-form,
+        an `http`/`https` absolute-form, or `*` on OPTIONS (RFC 9112 §3.2,
+        SPEC B19). `GET p`, `GET h:80` and `/caf\xe9` were served (review
+        record LF37).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -1226,6 +1226,17 @@ def parse_request_headers(
     # below, after the Host field's own checks (SPEC B16).
     var authority = Bytes()
     var scheme_len = _http_scheme_len(path.as_bytes())
+    # RFC 9112 §3.2: a request target takes one of four forms. Origin-form
+    # opens with `/`; absolute-form is an `http` or `https` URI (the scheme
+    # matched above); asterisk-form is `*` and only for a server-wide
+    # OPTIONS (§3.2.4); authority-form is CONNECT's alone, which is refused
+    # above. Anything else is 400 (SPEC B19): `GET p` and `GET h:80` were
+    # served, the application reading a path with no leading slash. The
+    # bytes a target may hold are the scanner's rule (`http/parsing.mojo`);
+    # this is the shape. A `%` escape is the application's to decode.
+    if scheme_len == 0 and path.as_bytes()[0] != 0x2F:  # '/'
+        if not (path == "*" and method == "OPTIONS"):
+            raise RequestParseError(InvalidHTTPRequestError())
     if scheme_len > 0:
         var target = path.as_bytes()
         # The authority runs to the first `/`, `?` or `#` (RFC 3986 §3.2).

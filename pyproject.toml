@@ -9585,6 +9585,9 @@ code=$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://localhost:$por
 # in Accept, in If-None-Match and in Range used to trap a String slice on
 # the loop thread and kill the process. Each must be answered and the
 # server must still be up. Raw sockets, because curl will not send the byte.
+# A raw byte above ASCII in a target is refused 400 by the parser (SPEC
+# B19), so the static path carries it as `%80`, which the URI decodes to
+# the byte itself before the mount slices the path.
 python3 - "$port" <<'PY' || fail 'a request carrying a byte that is not UTF-8 got no answer'
 import socket, sys
 port = int(sys.argv[1])
@@ -9594,9 +9597,9 @@ def req(line, headers=b""):
     head = s.recv(4096).split(b"\\r\\n")[0]
     s.close()
     assert head.startswith(b"HTTP/1.1 "), (line, headers, head)
-req(b"GET /static/\\x80%41.css")
-req(b"GET /static/\\x80/x.css")
-req(b"GET /static/x.\\x80")
+req(b"GET /static/%80%41.css")
+req(b"GET /static/%80/x.css")
+req(b"GET /static/x.%80")
 req(b"GET /notes", b"Accept: text/html;q=\\x80, \\x80/x\\r\\n")
 req(b"GET /notes/1", b"If-None-Match: \\"\\x80\\", W/\\"\\x80\\r\\n")
 req(b"GET /static/styles.css", b"Range: bytes=\\x80-\\r\\n")

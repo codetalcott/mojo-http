@@ -775,23 +775,82 @@ def test_an_absolute_form_target_without_a_usable_authority_is_rejected() raises
     assert_true(_rejected("GET http://u:pw@h/ HTTP/1.1\r\nHost: x\r\n\r\n"))
 
 
-def test_an_absolute_form_target_with_bytes_above_ascii_is_answered() raises:
-    """SPEC G14: the target is request data, and may not be UTF-8. The
-    reduction slices it as bytes, never with a codepoint-asserting slice."""
+def _target_with(prefix: String, byte: UInt8, suffix: String) -> List[UInt8]:
+    """A request head whose target holds `byte` between `prefix` and
+    `suffix`, the rest of the head after them."""
     var raw = List[UInt8]()
-    raw.extend("GET http://h".as_bytes())
-    raw.append(0xFF)
-    raw.extend("/a".as_bytes())
-    raw.append(0x80)
+    raw.extend(prefix.as_bytes())
+    raw.append(byte)
+    raw.extend(suffix.as_bytes())
     raw.extend(" HTTP/1.1\r\nHost: x\r\n\r\n".as_bytes())
-    var parsed = parse_request_headers(Span(raw))
-    var path = parsed.path.as_bytes()
-    assert_equal(len(path), 3)
-    assert_equal(path[0], UInt8(0x2F))
-    assert_equal(path[2], UInt8(0x80))
-    var host = parsed.headers.get("host").value().as_bytes()
-    assert_equal(len(host), 2)
-    assert_equal(host[1], UInt8(0xFF))
+    return raw^
+
+
+def _invalid_bytes(raw: List[UInt8]) -> Bool:
+    """`_rejected` for a head that is not a String's bytes."""
+    try:
+        var parsed = parse_request_headers(Span(raw))
+        _ = parsed^
+        return False
+    except e:
+        return e.isa[InvalidHTTPRequestError]()
+
+
+def test_an_absolute_form_target_with_bytes_above_ascii_is_refused() raises:
+    """SPEC G14: the target is request data, and may not be UTF-8. The
+    reduction slices it as bytes, never with a codepoint-asserting slice,
+    and since SPEC B19 such a target is refused before it gets there."""
+    assert_true(_invalid_bytes(_target_with("GET http://h", 0xFF, "/a")))
+    assert_true(_invalid_bytes(_target_with("GET http://h/a", 0x80, "")))
+
+
+def test_a_request_target_must_take_one_of_the_four_forms() raises:
+    """RFC 9112 §3.2: origin-form opens with `/`; absolute-form is an
+    `http` or `https` URI; asterisk-form is `*`, for OPTIONS only;
+    authority-form is CONNECT's, which is refused 501 (SPEC B18). `GET p`
+    and `GET h:80` were served, the application reading a path with no
+    leading slash.
+
+    covers: B19
+    """
+    assert_true(_rejected("GET p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET h:80 HTTP/1.1\r\nHost: h\r\n\r\n"))
+    assert_true(_rejected("GET ?q=1 HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET ftp://h/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET * HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("OPTIONS *x HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("options * HTTP/1.1\r\nHost: x\r\n\r\n"))
+    # The four forms, the controls.
+    assert_equal(_path_of("GET /p HTTP/1.1\r\nHost: x\r\n\r\n"), "/p")
+    assert_equal(_path_of("GET HTTP://h/p HTTP/1.1\r\nHost: x\r\n\r\n"), "/p")
+    assert_equal(_path_of("OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n"), "*")
+    assert_true(_accepted("OPTIONS /p HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+
+def test_a_byte_above_ascii_in_the_request_target_is_rejected() raises:
+    """No URI byte is above ASCII (RFC 3986 §2): a client percent-encodes
+    one. `/caf<0xE9>` was served, where h11 and llhttp refuse it, and the
+    application read a path that is not UTF-8. Refused wherever the byte
+    sits -- at every offset across the scanner's 64-, 16- and one-byte
+    widths, in the query, before the rest of the line has arrived -- and
+    a `%` escape is left for the application to decode.
+
+    covers: B19
+    """
+    assert_true(_invalid_bytes(_target_with("GET /caf", 0xE9, "")))
+    assert_true(_invalid_bytes(_target_with("GET /?q=", 0x80, "x")))
+    for n in range(0, 141):
+        var prefix = String("GET /") + String("p") * n
+        assert_true(_invalid_bytes(_target_with(prefix, 0xFF, "")), String(n))
+    # Invalid at once, not incomplete: nothing after it can make it a URI.
+    var partial = List[UInt8]()
+    partial.extend("GET /caf".as_bytes())
+    partial.append(0xE9)
+    assert_true(_invalid_bytes(partial))
+    assert_equal(
+        _path_of("GET /caf%C3%A9?x=%E9 HTTP/1.1\r\nHost: x\r\n\r\n"),
+        "/caf%C3%A9?x=%E9",
+    )
 
 
 def test_origin_form_target_is_untouched() raises:

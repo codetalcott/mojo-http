@@ -24,6 +24,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   400. The server decodes `chunked` only, and now says so with 501, as RFC
   9112 §6.1 asks. A list with `chunked` out of place or twice is still 400.
 
+- **A request target that is not a URI the server serves is answered 400**
+  (SPEC B19). `GET p` and `GET host:80` reached the application as a path
+  with no leading slash, and a target holding a raw byte above ASCII
+  (`/caf\xe9`) as a path that is not UTF-8. A target now opens with `/`,
+  is an `http` or `https` URI, or is `*` on an `OPTIONS` request; a
+  non-ASCII character must be percent-encoded, as every browser does, and
+  the escape still reaches the application undecoded.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

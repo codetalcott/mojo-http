@@ -335,7 +335,7 @@
       "category": "B. Request smuggling (CWE-444)",
       "capability": "An absolute-form target's authority replaces `Host` (RFC 9112 \u00a73.2.2), its `http`/`https` scheme matched in any letter case and its authority ending at the first `/`, `?` or `#`; an empty authority or a userinfo refused 400",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_an_absolute_form_authority_replaces_host` (every PR) \u2014 the authority was thrown away and the sent `Host` kept, so an application routing on `Host` read a site the target never named; `HTTP://h/p` was left whole, a path with no leading slash; `http://h?q=1` lost its query; and `http:///p` was served as `/p`. The sent `Host` is still required on HTTP/1.1 (\u00a73.2). Four tests beside it hold the scheme's case, the query, the refusals and a target that is not UTF-8 (G14), each failing alone when its rule is reverted"
+      "evidence": "`test_parsing.mojo:test_an_absolute_form_authority_replaces_host` (every PR) \u2014 the authority was thrown away and the sent `Host` kept, so an application routing on `Host` read a site the target never named; `HTTP://h/p` was left whole, a path with no leading slash; `http://h?q=1` lost its query; and `http:///p` was served as `/p`. The sent `Host` is still required on HTTP/1.1 (\u00a73.2). Four tests beside it hold the scheme's case, the query, the refusals and a target that is not UTF-8 (G14), refused before the reduction since B19, each failing alone when its rule is reverted"
     },
     {
       "id": "B17",
@@ -352,6 +352,14 @@
       "capability": "A `CONNECT` request refused with 501 before any application sees it, and its connection closed",
       "status": "verified",
       "evidence": "`test_slot_lifecycle.mojo:test_connect_is_answered_501_and_closed` (every PR) \u2014 CONNECT asks for a tunnel (RFC 9110 \u00a79.3.6), which this server does not implement, yet the request reached the application, and one that answers every method answered it 200: a front end forwarding CONNECT reads a 2xx as an open tunnel, so whatever the client sent next went through unparsed (review record LF36). The refusal needs a well-formed head, a malformed one staying 400, and the method name is case-sensitive. `test_parsing.mojo:test_connect_is_refused_as_not_implemented` holds the parser's half, and `Smoke test pipelined requests` sends CONNECT with a request pipelined behind it and requires one 501 and a close"
+    },
+    {
+      "id": "B19",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A request target outside RFC 9112 \u00a73.2's forms, or holding a byte above ASCII, refused with 400: origin-form opens with `/`, absolute-form is `http` or `https`, `*` is OPTIONS's alone and authority-form CONNECT's (B18); a `%` escape is left to the application",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_request_target_must_take_one_of_the_four_forms` (every PR) \u2014 `GET p` and `GET h:80` were served, the application reading a path with no leading slash, and `/caf<0xE9>` was served where h11 and llhttp both refuse it, the application reading a path that is not UTF-8 (review record LF37). `GET *` was served too, as h11 and llhttp serve it; RFC 9112 \u00a73.2.4 gives `*` to OPTIONS alone. The bytes are the target scanner's rule and the forms `parse_request_headers`'; `test_a_byte_above_ascii_in_the_request_target_is_rejected` holds the bytes at every offset across the scanner's widths, and that such a target is invalid before its line ends. Every other VCHAR is still accepted, as h11 accepts it: browsers send braces, a vertical bar and a caret unescaped in a query"
     },
     {
       "id": "B21",
