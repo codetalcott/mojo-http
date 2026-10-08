@@ -129,6 +129,10 @@ A flag overrides its `M0_` variable, which overrides the default.
 | `--doctor` | | print the configuration, start nothing |
 | `--help` | | |
 
+A variable the host cannot read, such as `M0_PORT=80eighty` or a number too
+large for an `Int`, falls back to its default without a word: unlike
+m0serve, the host does not name a value it could not read.
+
 `host_config()` is an `AppConfig` with the command line applied, for an
 application that prints its own address before serving. `serve(AppConfig())`
 applies the flags itself.
