@@ -174,6 +174,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   connect to; it now names the port the kernel chose. m0serve prints its
   own startup line and was not affected.
 
+- **A listen address with an IPv6 zone is refused on every platform, and
+  a refused listen address says why** (fork review LF48). Exposed: m0serve
+  or a Mojo host given `--host fe80::1%en0`, and a Mojo application passing
+  such an address to `Server.listen_and_serve`. On macOS, whose libc reads
+  the zone into the address, it listened on that interface's link-local
+  address and was reported without its zone; on Linux it was refused as
+  not an address. It is now refused at startup on both, as a listen
+  address takes no zone. Every refused listen address now names the rule
+  it broke: the error read "Failed to parse listen address" and stopped
+  there, and now goes on with the reason ("... takes no IPv6 zone",
+  "missing port separator", "too many colons").
+
 - **`Socket.receive` and `TCPConnection.read` into a full buffer read what
   is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
   that reads a socket through either, into a `Bytes` with no room past its

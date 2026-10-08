@@ -3,7 +3,6 @@ from std.time import sleep
 from lightbug_http.address import (
     HostPort,
     NetworkType,
-    ParseError,
     TCPAddr,
     is_ipv6_literal,
     join_host_port,
@@ -21,7 +20,6 @@ from lightbug_http.socket import (
     SocketRecvError,
     TCPSocket,
 )
-from lightbug_http.utils.error import CustomError
 from std.utils import Variant
 
 
@@ -30,11 +28,20 @@ comptime default_buffer_size = 4096
 
 
 @fieldwise_init
-struct AddressParseError(CustomError, ImplicitlyCopyable):
+struct AddressParseError(Movable, Writable):
+    """A listen address `parse_address` refused, with the rule it broke.
+
+    It carried no reason, so every refusal read the same (review record
+    LF48): `--host fe80::1%en0` was "Failed to parse listen address" and
+    nothing more.
+    """
+
     comptime message = "ListenerError: Failed to parse listen address"
+    var reason: String
+    """The `ParseError`'s text."""
 
     def write_to[W: Writer, //](self, mut writer: W):
-        writer.write(Self.message)
+        writer.write(Self.message, ": ", self.reason)
 
 
 @fieldwise_init
@@ -49,8 +56,8 @@ struct ListenerError(Movable, Writable):
     var value: Self.type
 
     @implicit
-    def __init__(out self, value: AddressParseError):
-        self.value = value
+    def __init__(out self, var value: AddressParseError):
+        self.value = value^
 
     @implicit
     def __init__(out self, value: SysError):
@@ -196,8 +203,8 @@ struct ListenConfig:
         var local: HostPort
         try:
             local = parse_address[network](address)
-        except ParseError:
-            raise AddressParseError()
+        except parse_err:
+            raise AddressParseError(String(parse_err))
 
         # The family is the address's (review R15). Every listener was
         # IPv4 whatever it was given, and AF_INET6 held OpenBSD's number,

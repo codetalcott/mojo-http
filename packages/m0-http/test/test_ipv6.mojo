@@ -288,8 +288,8 @@ def test_a_host_that_is_not_an_address_is_refused_at_bind() raises:
     other family than the network's, are each refused at startup as not a
     valid address, never listened on.
 
-    An IPv6 zone (`fe80::1%lo0`) is not among them: macOS's `inet_pton`
-    reads it and Linux's refuses it (review record LF48).
+    An IPv6 zone (`fe80::1%lo0`) is not among them: the parser refuses
+    it before either libc sees it (review record LF48).
     """
     var refused: List[String] = [
         ":0", "[]:0", "LOCALHOST:0", "example.com:0", "[[::1]:0",
@@ -409,6 +409,30 @@ def test_a_port_is_decimal_digits() raises:
     assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("127.0.0.1:0")).port), 0)
     assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("127.0.0.1:080")).port), 80)
     assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("[::1]:65535")).port), 65535)
+
+
+def test_an_ipv6_zone_is_refused() raises:
+    """A listen host carrying an IPv6 zone (`fe80::1%lo0`) is refused, the
+    same on every platform (review record LF48).
+
+    macOS's `inet_pton` reads a zone, writing the interface's index into
+    the address (KAME's embedded form), so `[fe80::1%lo0]:8080` listened
+    there on lo0's link-local address and was reported without its zone;
+    glibc's refuses one, so Linux refused it at bind as not an address. A
+    listener carries no zone, so the parser refuses it first, and says so
+    through `ListenConfig.listen`.
+    """
+    var zoned: List[String] = [
+        "[fe80::1%lo0]:0", "[::1%lo0]:0", "[fe80::1%]:0", "[fe80::1%1]:0",
+    ]
+    for address in zoned:
+        with assert_raises(contains="IPv6 zone"):
+            _ = parse_address[NetworkType.tcp](StringSpan(address))
+        with assert_raises(contains="IPv6 zone"):
+            var ln = ListenConfig(max_bind_retries=1, quiet=True).listen(address)
+            _ = ln^
+    with assert_raises(contains="IPv6 zone"):
+        _ = parse_address[NetworkType.tcp6](StringSpan("[fe80::1%en0]:8080"))
 
 
 def test_a_uri_behind_an_ipv6_server_address_parses() raises:

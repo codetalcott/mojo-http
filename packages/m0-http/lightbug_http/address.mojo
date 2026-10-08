@@ -134,6 +134,14 @@ struct ParseTooManyColonsError(CustomError, TrivialRegisterPassable):
 
 
 @fieldwise_init
+struct ParseZoneError(CustomError, TrivialRegisterPassable):
+    comptime message = "ParseError: Failed to parse address: a listen address takes no IPv6 zone ('%')"
+
+    def write_to[W: Writer, //](self, mut writer: W):
+        writer.write(Self.message)
+
+
+@fieldwise_init
 struct ParseError(Movable, Writable):
     """Typed error variant for address parsing functions."""
 
@@ -147,6 +155,7 @@ struct ParseError(Movable, Writable):
         ParsePortOutOfRangeError,
         ParseMissingSeparatorError,
         ParseTooManyColonsError,
+        ParseZoneError,
     ]
     var value: Self.type
 
@@ -186,6 +195,10 @@ struct ParseError(Movable, Writable):
     def __init__(out self, value: ParseTooManyColonsError):
         self.value = value
 
+    @implicit
+    def __init__(out self, value: ParseZoneError):
+        self.value = value
+
     def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[ParseEmptyAddressError]():
             writer.write(self.value[ParseEmptyAddressError])
@@ -205,6 +218,8 @@ struct ParseError(Movable, Writable):
             writer.write(self.value[ParseMissingSeparatorError])
         elif self.value.isa[ParseTooManyColonsError]():
             writer.write(self.value[ParseTooManyColonsError])
+        elif self.value.isa[ParseZoneError]():
+            writer.write(self.value[ParseZoneError])
 
 
 def parse_ipv6_bracketed_address[
@@ -325,6 +340,11 @@ def parse_address[
         host = StringSpan(unsafe_from_utf8=address.as_bytes()[:colon_index])
         if host.find(":") != -1:
             raise ParseTooManyColonsError()
+    # A listener carries no zone. macOS's `inet_pton` reads one into the
+    # address and glibc's refuses it, so `[fe80::1%lo0]:8080` listened on
+    # one platform and not the other (review record LF48).
+    if host.find("%") != -1:
+        raise ParseZoneError()
 
     port = parse_port(
         StringSpan(unsafe_from_utf8=address.as_bytes()[colon_index + 1 :])

@@ -1603,6 +1603,14 @@ lightbug_http
         it named the address it was given: a listener asked for port 0
         printed port 0 (review record LF47).
 
+      - address.mojo, connection.mojo (2026-10-08): `parse_address` refuses
+        a host carrying an IPv6 zone (`%`) with `ParseZoneError`; macOS's
+        `inet_pton` read the zone into the address (KAME's embedded form)
+        and glibc's refused it, so the same address listened on one
+        platform and not the other. `AddressParseError` carries the
+        refusal's text, which `ListenConfig.listen` used to drop, and is
+        no longer a `CustomError` (review record LF48).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
