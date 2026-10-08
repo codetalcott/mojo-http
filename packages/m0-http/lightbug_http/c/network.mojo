@@ -16,9 +16,6 @@ struct InetNtopEAFNOSUPPORTError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct InetNtopENOSPCError(CustomError, TrivialRegisterPassable):
@@ -27,9 +24,6 @@ struct InetNtopENOSPCError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct InetPtonInvalidAddressError(CustomError, TrivialRegisterPassable):
@@ -37,9 +31,6 @@ struct InetPtonInvalidAddressError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init

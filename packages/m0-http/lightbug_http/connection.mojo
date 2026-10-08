@@ -32,15 +32,10 @@ comptime default_buffer_size = 4096
 
 @fieldwise_init
 struct AddressParseError(CustomError, ImplicitlyCopyable):
-    # Phase 0: @register_passable("trivial") removed — zero-field struct is
-    # trivially movable without the decorator (deprecated in Mojo nightly).
     comptime message = "ListenerError: Failed to parse listen address"
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -431,9 +426,10 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
     def write(self, buf: Span[Byte, _]) raises -> UInt:
         """Write all data to the TCP connection, handling partial sends.
 
-        Untyped on purpose: the client writes and reads in one `try` beside
-        errors of its own, which `SendError`'s `Error` arm used to absorb
-        and a `SysError` cannot.
+        Untyped on purpose: its callers are the tests' client
+        (`test/loopback.mojo`), which writes and reads in one `try` beside
+        errors of its own, and a `SysError` cannot carry those. The server
+        writes through the event loop, never through this.
 
         Args:
             buf: Buffer containing data to write.

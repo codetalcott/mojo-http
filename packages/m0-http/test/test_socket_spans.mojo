@@ -14,9 +14,12 @@ from std.ffi import c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_true
 
+from lightbug_http.address import NetworkType, TCPAddr
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import recv, send, spare_capacity
+from lightbug_http.connection import TCPConnection
+from lightbug_http.socket import EOF, Socket
 
 comptime _UNTOUCHED: UInt8 = 0xAA
 comptime _SENT: UInt8 = 0x41
@@ -105,6 +108,97 @@ def test_spare_capacity_is_the_room_past_the_length() raises:
     _ = buf
     close_fd(pair[0])
     close_fd(pair[1])
+
+
+def _adopt(fd: Int) -> Socket[TCPAddr[NetworkType.tcp4]]:
+    """A `Socket` over `fd`, which it closes when destroyed."""
+    return Socket[TCPAddr[NetworkType.tcp4]](
+        fd=FileDescriptor(fd),
+        local_address=TCPAddr[NetworkType.tcp4](ip="127.0.0.1", port=0),
+    )
+
+
+def _receive(
+    sock: Socket[TCPAddr[NetworkType.tcp4]], mut buf: List[UInt8], what: String
+) raises -> Int:
+    """`sock.receive(buf)`, a raise restated as what was being received."""
+    try:
+        return Int(sock.receive(buf))
+    except e:
+        raise Error(what, " raised ", e)
+
+
+def _read(
+    conn: TCPConnection[NetworkType.tcp4], mut buf: List[UInt8], what: String
+) raises -> Int:
+    """`conn.read(buf)`, a raise restated as what was being read."""
+    try:
+        return Int(conn.read(buf))
+    except e:
+        raise Error(what, " raised ", e)
+
+
+def _full_list() -> List[UInt8]:
+    """A list of 1s whose length is its capacity: no room past it."""
+    var buf = List[UInt8]()
+    buf.append(1)
+    while len(buf) < buf.capacity():
+        buf.append(1)
+    return buf^
+
+
+def test_a_receive_into_a_full_buffer_reads_what_is_waiting() raises:
+    """`Socket.receive`, and `TCPConnection.read` over it, into a list with
+    no room past its length read the bytes waiting, growing the list, where
+    they reported the peer's EOF; and EOF still comes once the peer has
+    closed (review record LF34).
+
+    It lent `recv` the list's spare capacity, which a full list does not
+    have, and a `recv` into zero bytes returns 0, the count EOF returns:
+    a full buffer, or a `Bytes()` never given a capacity, read as a
+    closed connection with the peer's bytes still waiting. The last arm
+    holds the other side: a real close is still EOF, not a read of 0.
+
+    covers: A32
+    """
+    var pair = _stream_pair()
+    var out = List[UInt8](length=5, fill=_SENT)
+    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out), 0)), 5)
+    var sock = _adopt(pair[0])
+
+    var buf = _full_list()
+    var had = len(buf)
+    var n = _receive(sock, buf, "a receive into a full buffer")
+    assert_equal(n, 5, "a receive into a full buffer did not read what was waiting")
+    assert_equal(len(buf), had + 5, "the bytes read were not added to the buffer")
+    for i in range(had):
+        assert_equal(buf[i], 1, "the buffer's own bytes were overwritten")
+    for i in range(had, had + 5):
+        assert_equal(buf[i], _SENT, "the bytes read are not the bytes sent")
+
+    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out)[:2], 0)), 2)
+    var empty = List[UInt8]()
+    n = _receive(sock, empty, "a receive into a Bytes()")
+    assert_equal(n, 2, "a receive into a Bytes() did not read what was waiting")
+    assert_equal(len(empty), 2)
+    close_fd(pair[1])
+
+    # The same through a connection, on a pair of its own, then the close.
+    var other = _stream_pair()
+    var conn = TCPConnection(_adopt(other[0]))
+    assert_equal(Int(send(FileDescriptor(other[1]), Span(out)[:3], 0)), 3)
+    var full = _full_list()
+    had = len(full)
+    n = _read(conn, full, "a read into a full buffer")
+    assert_equal(n, 3, "a read into a full buffer did not read what was waiting")
+    assert_equal(len(full), had + 3, "the bytes read were not added to the buffer")
+    close_fd(other[1])
+    var eof = False
+    try:
+        _ = conn.read(full)
+    except e:
+        eof = e.isa[EOF]()
+    assert_true(eof, "a read after the peer closed did not raise EOF")
 
 
 def main() raises:

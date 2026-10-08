@@ -5,17 +5,6 @@ from lightbug_http.header import Header, HeaderKey
 from std.utils import Variant
 
 
-@fieldwise_init
-struct InvalidCookieError(Movable, Writable, TrivialRegisterPassable):
-    """Error raised when a cookie is invalid."""
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write("InvalidCookieError: Invalid cookie format")
-
-    def __str__(self) -> String:
-        return String(self)
-
-
 struct Cookie(Copyable):
     comptime EXPIRES = "Expires"
     comptime MAX_AGE = "Max-Age"
@@ -39,41 +28,6 @@ struct Cookie(Copyable):
     var domain: Optional[String]
     var path: Optional[String]
     var max_age: Optional[Duration]
-
-    @staticmethod
-    def from_set_header(header_str: String) raises InvalidCookieError -> Self:
-        var parts = header_str.split(Cookie.SEPARATOR)
-        if len(parts) < 1:
-            raise InvalidCookieError()
-
-        var cookie = Cookie("", String(parts[0]), path=String("/"))
-        if Cookie.EQUAL in parts[0]:
-            var name_value = parts[0].split(Cookie.EQUAL)
-            cookie.name = String(name_value[0])
-            cookie.value = String(name_value[1])
-
-        for i in range(1, len(parts)):
-            var part = parts[i]
-            if part == Cookie.PARTITIONED:
-                cookie.partitioned = True
-            elif part == Cookie.SECURE:
-                cookie.secure = True
-            elif part == Cookie.HTTP_ONLY:
-                cookie.http_only = True
-            elif part.startswith(Cookie.SAME_SITE):
-                cookie.same_site = SameSite.from_string(String(part.removeprefix(Cookie.SAME_SITE + Cookie.EQUAL)))
-            elif part.startswith(Cookie.DOMAIN):
-                cookie.domain = String(part.removeprefix(Cookie.DOMAIN + Cookie.EQUAL))
-            elif part.startswith(Cookie.PATH):
-                cookie.path = String(part.removeprefix(Cookie.PATH + Cookie.EQUAL))
-            elif part.startswith(Cookie.MAX_AGE):
-                cookie.max_age = Duration.from_string(String(part.removeprefix(Cookie.MAX_AGE + Cookie.EQUAL)))
-            elif part.startswith(Cookie.EXPIRES):
-                var expires = Expiration.from_string(String(part.removeprefix(Cookie.EXPIRES + Cookie.EQUAL)))
-                if expires:
-                    cookie.expires = expires.value().copy()
-
-        return cookie^
 
     def __init__(
         out self,
@@ -101,10 +55,6 @@ struct Cookie(Copyable):
 
     def __str__(self) -> String:
         return String("Name: ", self.name, " Value: ", self.value)
-
-    def clear_cookie(mut self):
-        self.max_age = Optional[Duration](None)
-        self.expires = Expiration.invalidate()
 
     def to_header(self) raises -> Header:
         return Header(HeaderKey.SET_COOKIE, self.build_header_value())

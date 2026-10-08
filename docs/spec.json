@@ -210,6 +210,22 @@
       "evidence": "`test_response_head.mojo:test_a_server_header_the_application_set_is_the_only_one` (every PR) \u2014 on the bytes of both encoders and the printed form. `encode` and `encode_into` wrote `server: lightbug_http` whatever the headers held, so an application that named itself, built in Mojo or served through the gateway, sent two `Server` lines, which RFC 9110 \u00a710.2.4's grammar, a product list rather than a comma-separated one, cannot join into one; the printed form already asked first. Found by the 2026-10-07 fork review"
     },
     {
+      "id": "A31",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A bracketed listen address takes its port from after the one colon that follows `]`: `[::1]:8:0` is refused as too many colons, not served on port 0",
+      "status": "verified",
+      "evidence": "`test_ipv6.mojo:test_a_colon_inside_a_bracketed_address_port_is_refused` (every PR) \u2014 `parse_address` read the port after the LAST colon wherever the bracket closed, so `[::1]:8:0` listened on `::1` at a port the kernel chose and `[::1]:8:80` on port 80 (review record LF33). Reached by an address a Mojo application passes `Server.listen_and_serve`; m0serve and the Mojo host bracket the `--host` they are given themselves"
+    },
+    {
+      "id": "A32",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "`Socket.receive` and `TCPConnection.read` into a buffer with no room past its length read what is waiting, growing the buffer, and report EOF only for the peer's",
+      "status": "verified",
+      "evidence": "`test_socket_spans.mojo:test_a_receive_into_a_full_buffer_reads_what_is_waiting` (every PR) \u2014 the buffer's spare capacity was lent to `recv` as it stood, and a `recv` into zero bytes returns 0, the count EOF returns, so a full buffer, or a `Bytes()` never given a capacity, raised EOF with the peer's bytes still waiting (review record LF34). The test reads through both, each on a real socket pair, and requires a read after the peer has closed to raise EOF still. The server reads through the event loop and never called these; an application, and the tests' client, did"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
@@ -978,6 +994,14 @@
       "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--access-log`: the three fields parse as integers, `ts` is gone, and `time` matches the format and lies within a minute of the runner's clock. Numbers were strings, so `jq 'select(.status >= 500)'` matched every line, and `ts` was a monotonic count from an arbitrary origin; the calendar arithmetic against Python's `datetime` at the epoch, leap days and 9999: `test_log.mojo:test_rfc3339_second_is_the_civil_date_in_utc`"
     },
     {
+      "id": "F23",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "`http_requests_total` counts requests answered, as each response's head lands, and every one with a status from 100 to 599 is in exactly one class of `http_responses_total`, a 101 in `1xx`, so for those statuses the classes sum to the total",
+      "status": "verified",
+      "evidence": "`test_metrics.mojo:test_every_answered_request_is_in_one_status_class` (every PR) \u2014 a 101 Switching Protocols, the answer to every WebSocket upgrade, was in the total and in no class, and the total's help text said \"received\" of a count the loop takes per response (review record LF32). The count stays per response: counting at receipt would move it into the event loop, and a count labelled by status is taken at completion, as Prometheus's Go `promhttp` counter takes it once the handler returns. A request whose connection closes before its response lands is in neither"
+    },
+    {
       "id": "F8",
       "section": "F",
       "category": "F. Observability",
@@ -1096,6 +1120,14 @@
       "capability": "A `Set-Cookie` line's bytes above 0x7F go out in ISO-8859-1, as every other header's do: a WSGI application's latin-1 code points, and an ASGI application's own bytes",
       "status": "verified",
       "evidence": "`test_response_cookies.mojo:test_a_line_above_ascii_goes_out_latin1_like_every_header` (every PR) \u2014 on the bytes of both encoders. The bridge stores every header as UTF-8 and the header writer transcodes it back, but the cookie jar wrote its lines' UTF-8 as it stood: `bin/m0serve` sent a WSGI application's `cafxe9` as `cafxc3xa9`, and an ASGI application's own `cafxc3xa9` as `cafxc3x83xc2xa9`"
+    },
+    {
+      "id": "G22",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "Two request cookie jars are equal when they hold the same names with the same values, whatever their number and order",
+      "status": "verified",
+      "evidence": "`test_request_cookies.mojo:test_jars_holding_the_same_cookies_are_equal` (every PR) \u2014 `RequestCookieJar.__eq__` compared every cookie of one jar with every cookie of the other, so a jar of two or more was unequal even to a jar parsed from the same field (review record LF30). The test holds a changed value, a changed name and a missing cookie unequal too. The server never compares jars; an application with `==` did"
     },
     {
       "id": "G4",

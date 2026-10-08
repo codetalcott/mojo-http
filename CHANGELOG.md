@@ -133,6 +133,38 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `SOMAXCONN` (4096 on Linux, 128 on macOS), or the system's setting if
   that is lower. macOS's limit was and stays 128.
 
+- **Two request cookie jars of two or more cookies compare equal** (fork
+  review LF30, SPEC G22). Exposed: an m0 application that compares
+  `RequestCookieJar`s with `==`. A jar of two or more cookies was unequal
+  even to a jar parsed from the same `Cookie` field, since every cookie of
+  one was compared with every cookie of the other. Jars are now equal when
+  they hold the same names with the same values, in any order. The server
+  itself never compares jars.
+
+- **A bracketed listen address with a colon in its port is refused**
+  (fork review LF33, SPEC A31). Exposed: a Mojo application that passes
+  `Server.listen_and_serve` an IPv6 address such as `[::1]:8:0`. The port
+  was read after the last colon, so that address listened on a port the
+  kernel chose, and `[::1]:8:80` on port 80. It is now refused at startup
+  as too many colons, as Go's `net.SplitHostPort` refuses it.
+
+- **`Socket.receive` and `TCPConnection.read` into a full buffer read what
+  is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
+  that reads a socket through either, into a `Bytes` with no room past its
+  length (one already full, or a `Bytes()` never given a capacity). The
+  read asked for zero bytes and reported the peer's EOF with its bytes
+  still waiting. The buffer now grows by 4 KB before the read. The server
+  itself reads through its event loop and never called these.
+
+- **`/__metrics` counts a 101 in a `1xx` status class** (fork review LF32,
+  SPEC F23). Exposed: m0serve and Mojo applications run with `--metrics`
+  that hold WebSockets. Each upgrade's 101 Switching Protocols was in
+  `http_requests_total` and in none of `http_responses_total`'s classes,
+  so the classes summed to less than the total. It is now in
+  `http_responses_total{status="1xx"}`, and `http_requests_total`'s help
+  text says what it has always counted: requests answered, as each
+  response's head lands, not requests received.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**
@@ -179,6 +211,40 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Linux's other names. Nothing served changes; an application built with
   the `m0` wheel that named one passes `O_CLOEXEC` or `O_NONBLOCK` from
   `lightbug_http.c.fcntl`, the same values.
+
+- **The fork's response parser, its `Set-Cookie` parser and unused
+  helpers** (fork review LF26). Nothing served changes: the server parses
+  requests, never responses, and writes an application's `Set-Cookie` as
+  given. The `m0` wheel ships the fork's source, so an application built
+  with `m0` that named one of these needs its own copy:
+  `HTTPResponse.from_bytes`, the `HTTPResponse` constructor from a
+  `ByteReader`, `read_body` and `read_chunks`;
+  `lightbug_http.header.parse_response_headers` and
+  `ParsedResponseHeaders`, `lightbug_http.http.parsing`'s
+  `http_parse_response_headers`, `get_token_to_eol` and `try_peek_at`;
+  the response parse errors, `lightbug_http.header`'s
+  `ResponseParseError`, `InvalidHTTPResponseError` and
+  `IncompleteHTTPResponseError`, and `lightbug_http.http.response`'s
+  `ResponseParseError`, `ResponseHeaderParseError` and
+  `ResponseBodyReadError`; `ResponseCookieJar.from_headers`;
+  `Cookie.from_set_header`, which dropped `expires`, a capitalised
+  `SameSite` and any attribute it did not know; `Cookie.clear_cookie`;
+  with `lightbug_http.cookie`'s `CookieParseError` (the request side's,
+  `lightbug_http.http.request.CookieParseError`, stays),
+  `InvalidCookieError`, `Expiration.invalidate` and the `from_string` of
+  `Expiration`, `Duration` and `SameSite`;
+  `ParsedRequestHeaders.expects_body`, which missed a chunked
+  body on any method but POST, PUT and PATCH; `write_header_latin1`,
+  which wrote a header holding CR or LF where `Headers.write_latin1_to`
+  drops it; `HTTPChunkedDecoder.is_in_chunk_data`;
+  `lightbug_http.strings`' `find_all`, `is_printable_ascii`,
+  `IS_PRINTABLE_ASCII_MASK`, `BytesConstant.CRLF` and
+  `BytesConstant.DOUBLE_CRLF`; and
+  `lightbug_http.io.bytes`' `is_newline`, `is_space` and `bufis`, and
+  `ByteReader`'s `read_line`, `read_word`, `skip_whitespace`,
+  `skip_carriage_return` and `consume`. `parse_headers` and `scan_to_eol`
+  lose their `strict` parameter and always read a request head's rules;
+  the lenient reading was the response parser's.
 
 ## [1.12.1] — 2026-10-07
 

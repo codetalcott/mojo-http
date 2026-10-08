@@ -56,7 +56,15 @@ struct ServerMetrics(Movable):
     """Counters and gauges tracking server activity."""
 
     var requests_total: Int
-    """Total HTTP requests received (monotonic)."""
+    """HTTP requests answered: one per response, counted as its head lands
+    (monotonic). Each with a status from 100 to 599 is in exactly one class
+    below; nothing range-checks an application's status, and one outside
+    those is in the total alone. A request whose connection closes before
+    its response lands is not counted."""
+
+    var responses_1xx: Int
+    """Responses with 1xx status: a 101 Switching Protocols, the answer to
+    a WebSocket upgrade (monotonic)."""
 
     var responses_2xx: Int
     """Responses with 2xx status (monotonic)."""
@@ -105,6 +113,7 @@ struct ServerMetrics(Movable):
 
     def __init__(out self):
         self.requests_total = 0
+        self.responses_1xx = 0
         self.responses_2xx = 0
         self.responses_3xx = 0
         self.responses_4xx = 0
@@ -135,11 +144,18 @@ struct ServerMetrics(Movable):
         self.latency_bands[latency_bucket_index(elapsed_us)] += 1
 
     def record_response(mut self, status_code: Int, bytes_sent: Int):
-        """Record a completed response."""
+        """Record a completed response: one request answered, in its class.
+
+        A 101 was counted in `requests_total` and in no class, so the
+        classes summed to less than the total on a server holding
+        WebSockets (review record LF32).
+        """
         self.requests_total += 1
         self.bytes_sent_total += bytes_sent
         var bucket = status_code // 100
-        if bucket == 2:
+        if bucket == 1:
+            self.responses_1xx += 1
+        elif bucket == 2:
             self.responses_2xx += 1
         elif bucket == 3:
             self.responses_3xx += 1
@@ -178,11 +194,12 @@ struct ServerMetrics(Movable):
     def to_text(self) -> String:
         """Prometheus text exposition format (text/plain; version=0.0.4)."""
         return String(
-            "# HELP http_requests_total Total HTTP requests received\n",
+            "# HELP http_requests_total Total HTTP requests answered\n",
             "# TYPE http_requests_total counter\n",
             "http_requests_total ", String(self.requests_total), "\n",
             "# HELP http_responses_total HTTP responses by status class\n",
             "# TYPE http_responses_total counter\n",
+            'http_responses_total{status="1xx"} ', String(self.responses_1xx), "\n",
             'http_responses_total{status="2xx"} ', String(self.responses_2xx), "\n",
             'http_responses_total{status="3xx"} ', String(self.responses_3xx), "\n",
             'http_responses_total{status="4xx"} ', String(self.responses_4xx), "\n",
