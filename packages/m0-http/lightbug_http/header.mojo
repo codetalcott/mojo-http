@@ -4,8 +4,8 @@ from lightbug_http.http.parsing import (
     _first_lane,
     http_parse_request_headers,
 )
-from lightbug_http.io.bytes import ByteReader, Bytes, ByteWriter
-from lightbug_http.strings import CR, LF, BytesConstant, lineBreak
+from lightbug_http.io.bytes import Bytes, ByteWriter
+from lightbug_http.strings import BytesConstant, lineBreak
 from std.collections.span import Span
 from std.utils import Variant
 
@@ -115,9 +115,6 @@ struct HeaderKeyNotFoundError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("HeaderKeyNotFoundError: Key not found in headers")
 
-    def __str__(self) -> String:
-        return String(self)
-
 
 @fieldwise_init
 struct InvalidHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
@@ -126,9 +123,6 @@ struct InvalidHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("InvalidHTTPRequestError: Not a valid HTTP request")
 
-    def __str__(self) -> String:
-        return String(self)
-
 
 @fieldwise_init
 struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
@@ -136,9 +130,6 @@ struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("IncompleteHTTPRequestError: Incomplete HTTP request")
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -152,9 +143,6 @@ struct UnsupportedHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("UnsupportedHTTPRequestError: Not implemented by this server")
 
-    def __str__(self) -> String:
-        return String(self)
-
 
 @fieldwise_init
 struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
@@ -162,9 +150,6 @@ struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("EmptyBufferError: No data available in buffer")
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -199,10 +184,6 @@ struct RequestParseError(Movable, Writable):
     def __init__(out self, value: UnsupportedHTTPRequestError):
         self.value = value
 
-    def is_incomplete(self) -> Bool:
-        """Returns True if this error indicates we need more data."""
-        return self.value.isa[IncompleteHTTPRequestError]()
-
     def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[InvalidHTTPRequestError]():
             writer.write(self.value[InvalidHTTPRequestError])
@@ -215,12 +196,6 @@ struct RequestParseError(Movable, Writable):
 
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -259,16 +234,25 @@ struct ParsedRequestHeaders(Movable):
         is made of. The `chunked`-must-be-last check in `parse_request_line`
         had the same gap and is fixed with it.
 
-        The lowercase copy costs an allocation, but only for requests that
-        carry the header at all: the `get` returns None for everything else
-        and this returns on the line above.
+        The FINAL coding is asked, in the value's bytes with ASCII case
+        folding and nothing else, as `parse_request_headers` asks it: a
+        Unicode `lower()` read KELVIN SIGN as `k` (review record LF58). A
+        parsed request carrying the header has `chunked` last, or the parse
+        refused it, so this is True exactly when the header is there.
         """
-        if self.headers.known_index(KH_TRANSFER_ENCODING) < 0:
+        var i = self.headers.known_index(KH_TRANSFER_ENCODING)
+        if i < 0:
             return False
-        var te = self.headers.get(HeaderKey.TRANSFER_ENCODING)
-        if te:
-            return "chunked" in te.value().lower()
-        return False
+        var te = self.headers.value_span(i)
+        var b = len(te)
+        var a = b
+        while a > 0 and te[a - 1] != 0x2C:  # the last member, after its comma
+            a -= 1
+        while a < b and (te[a] == 0x20 or te[a] == 0x09):
+            a += 1
+        while b > a and (te[b - 1] == 0x20 or te[b - 1] == 0x09):
+            b -= 1
+        return name_is(te[a:b], "chunked")
 
     def faulty_framing(self) -> Bool:
         """Whether RFC 9112 §6.1 calls this request's framing faulty.
@@ -293,9 +277,6 @@ struct Header(Copyable, Writable):
 
     var key: String
     var value: String
-
-    def __str__(self) -> String:
-        return String(self)
 
     def write_to[T: Writer, //](self, mut writer: T):
         writer.write(self.key, ": ", self.value, lineBreak)
@@ -354,6 +335,23 @@ def ascii_lower_byte(b: Byte) -> Byte:
     allocation.
     """
     return (b | 0x20) if (b >= 0x41 and b <= 0x5A) else b
+
+
+def ascii_lowercase(s: Span[Byte, _]) -> String:
+    """`s` with its ASCII letters lowercased and every other byte as it was.
+
+    The folding a protocol token or a media type asks for (RFC 9110 §5.6.2,
+    §8.3.1: case-insensitive in ASCII). `String.lower()` is not it: it reads
+    its input as UTF-8 and folds by Unicode's rules, so KELVIN SIGN
+    (U+212A) becomes `k` and an overlong `C1 A2` becomes `b` -- ASCII made
+    of bytes a request sent, which no other hop reads that way (review
+    records LF58, LF63). Bytes in, bytes out: a value need not be UTF-8
+    (SPEC G14).
+    """
+    var out = List[Byte](capacity=len(s))
+    for i in range(len(s)):
+        out.append(ascii_lower_byte(s[i]))
+    return String(unsafe_from_utf8=Span(out))
 
 
 @always_inline
@@ -1005,9 +1003,6 @@ struct Headers(Copyable, Writable):
                     continue
                 writer.write_header_line(name, Span(latin1))
 
-    def __str__(self) -> String:
-        return String(self)
-
     def __eq__(self, other: Headers) -> Bool:
         if len(self._idx) != len(other._idx):
             return False
@@ -1052,21 +1047,121 @@ def _http_scheme_len(target: Span[Byte, _]) -> Int:
     return i + 3
 
 
+@always_inline
+def _is_hexdig(c: Byte) -> Bool:
+    return (
+        (c >= 0x30 and c <= 0x39)
+        or (c >= 0x41 and c <= 0x46)
+        or (c >= 0x61 and c <= 0x66)
+    )
+
+
+@always_inline
+def _is_unreserved_or_sub_delim(c: Byte) -> Bool:
+    """RFC 3986 §2.3's unreserved (ALPHA / DIGIT / `-` `.` `_` `~`) and
+    §2.2's sub-delims (`!` `$` `&` `'` `(` `)` `*` `+` `,` `;` `=`): every
+    byte a reg-name may hold unescaped."""
+    if (c >= 0x61 and c <= 0x7A) or (c >= 0x41 and c <= 0x5A) or (c >= 0x30 and c <= 0x39):
+        return True
+    return (
+        c == 0x2D or c == 0x2E or c == 0x5F or c == 0x7E  # - . _ ~
+        or c == 0x21 or c == 0x24 or c == 0x26 or c == 0x27  # ! $ & '
+        or (c >= 0x28 and c <= 0x2C)  # ( ) * + ,
+        or c == 0x3B or c == 0x3D  # ; =
+    )
+
+
+def host_value_is_valid(value: Span[Byte, _]) -> Bool:
+    """Whether `value` is `uri-host [ ":" port ]` (RFC 9110 §7.2), the one
+    shape a `Host` field value may take.
+
+    The host is RFC 3986 §3.2.2's: a bracketed IP literal -- an IPv6
+    address's hex digits, colons and dots, or `v`, hex digits, a dot and
+    then unreserved, sub-delims or colons for an IPvFuture -- or a
+    reg-name of unreserved bytes, sub-delims and `%` escapes, which an
+    IPv4 address is too. The port is digits, any number of them (§3.2.3),
+    none included. An empty host before a port is refused: an `http`
+    authority with an empty host is invalid (RFC 9110 §4.2.1). The EMPTY
+    value is the caller's to judge (SPEC B20), and this answers False.
+
+    A server MUST answer 400 to a `Host` with an invalid field value (RFC
+    9112 §3.2). `Host: a b` and `Host: u@a` were served, as h11 and llhttp
+    serve them, and an application reading the site from `Host` --
+    Django's `get_host`, a router keyed on it -- read a name no client can
+    have meant (review record LF64). Bytes, never a String: the value is
+    request data and may not be UTF-8 (SPEC G14), and a byte above ASCII
+    is no part of a uri-host.
+    """
+    var n = len(value)
+    var i = 0
+    if n > 0 and value[0] == 0x5B:  # '['
+        i = 1
+        if i < n and (value[i] == 0x76 or value[i] == 0x56):  # 'v' / 'V'
+            # IPvFuture: "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
+            i += 1
+            var hex_from = i
+            while i < n and _is_hexdig(value[i]):
+                i += 1
+            if i == hex_from or i >= n or value[i] != 0x2E:  # '.'
+                return False
+            i += 1
+            var rest_from = i
+            while i < n and (_is_unreserved_or_sub_delim(value[i]) or value[i] == 0x3A):
+                i += 1
+            if i == rest_from:
+                return False
+        else:
+            # IPv6address: hex digits, colons, and the dots of an embedded
+            # IPv4 address; at least one colon.
+            var colons = 0
+            while i < n and (_is_hexdig(value[i]) or value[i] == 0x3A or value[i] == 0x2E):
+                if value[i] == 0x3A:
+                    colons += 1
+                i += 1
+            if colons == 0:
+                return False
+        if i >= n or value[i] != 0x5D:  # ']'
+            return False
+        i += 1
+    else:
+        while i < n and value[i] != 0x3A:  # ':'
+            var c = value[i]
+            if c == 0x25:  # '%': pct-encoded is "%" HEXDIG HEXDIG
+                if i + 2 >= n or not _is_hexdig(value[i + 1]) or not _is_hexdig(value[i + 2]):
+                    return False
+                i += 3
+                continue
+            if not _is_unreserved_or_sub_delim(c):
+                return False
+            i += 1
+        if i == 0:
+            return False
+    if i == n:
+        return True
+    if value[i] != 0x3A:
+        return False
+    i += 1
+    while i < n:
+        if value[i] < 0x30 or value[i] > 0x39:
+            return False
+        i += 1
+    return True
+
+
 def parse_request_headers(
     buffer: Span[Byte, _],
-    last_len: Int = 0,
 ) raises RequestParseError -> ParsedRequestHeaders:
     """Parse HTTP request headers from a buffer.
 
     This function parses the request line (method, path, protocol) and all headers
-    from the given buffer. It uses incremental parsing - if the request is incomplete,
-    it raises IncompleteHTTPRequestError.
+    from the given buffer, from its start: a head that has not all arrived
+    raises IncompleteHTTPRequestError. The event loop calls it once, on the
+    head `find_header_end` has framed; a `last_len` that resumed a rescan
+    for the terminator, which framing had already found, went with
+    `is_complete` (review record LF61).
 
     Args:
         buffer: The buffer containing the HTTP request data.
-        last_len: Number of bytes that were already parsed in a previous call.
-                  Use 0 for first parse attempt, or the previous buffer length
-                  for incremental parsing.
 
     Returns:
         ParsedRequestHeaders containing all parsed information and bytes consumed.
@@ -1096,7 +1191,6 @@ def parse_request_headers(
         minor_version,
         headers_array,
         num_headers,
-        last_len,
     )
 
     if ret < 0:
@@ -1139,6 +1233,10 @@ def parse_request_headers(
         for k in range(scheme_len, end):
             if target[k] == 0x40:  # '@'
                 raise RequestParseError(InvalidHTTPRequestError())
+        # The authority becomes the request's Host below, so it is held to
+        # Host's own shape (SPEC B27): `http://a"b/` named no host either.
+        if not host_value_is_valid(target[scheme_len:end]):
+            raise RequestParseError(InvalidHTTPRequestError())
         authority = Bytes(target[scheme_len:end])
         # Sliced as bytes, never `[byte=a:b]`: the target is request data
         # and may not be UTF-8 (SPEC G14). Built whole before `path` is
@@ -1233,6 +1331,10 @@ def parse_request_headers(
             if kid == KH_HOST:
                 if host_len >= 0:
                     raise RequestParseError(InvalidHTTPRequestError())
+                # A value that is not `uri-host [ ":" port ]` is 400 too
+                # (RFC 9112 §3.2, SPEC B27); the empty one is B20's, below.
+                if len(value) > 0 and not host_value_is_valid(value):
+                    raise RequestParseError(InvalidHTTPRequestError())
                 host_len = len(value)
             elif kid == KH_TRANSFER_ENCODING:
                 if seen_transfer_encoding:
@@ -1311,17 +1413,22 @@ def parse_request_headers(
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
     # Reject e.g. "Transfer-Encoding: chunked, zorg".
     if seen_transfer_encoding:
-        # `get` for the value rather than the loop's span: a second line
-        # was refused in the loop, so the one stored is the only one, and
-        # this path runs only for requests that carry the header at all.
-        var te_str = headers.get(HeaderKey.TRANSFER_ENCODING).value().lower()
-        # Lowercased before the test, not only for `last_te`: transfer-coding
-        # names are case-insensitive (RFC 9112 §7.1), so testing the raw
-        # value let `Transfer-Encoding: CHUNKED` skip this check entirely —
-        # and skip being recognised as a chunked body at all. See
-        # `is_chunked_body`.
-        var te_parts = te_str.split(",")
-        var last_te = String(String(te_parts[len(te_parts) - 1]).strip())
+        # The stored value as bytes: a second line was refused in the loop,
+        # so the one stored is the only one, and this path runs only for
+        # requests that carry the header at all.
+        #
+        # Each member is compared with ASCII case folding and nothing else:
+        # transfer-coding names are case-insensitive (RFC 9112 §7.1), so
+        # testing the raw value let `Transfer-Encoding: CHUNKED` skip this
+        # check entirely -- and skip being recognised as a chunked body at
+        # all (see `is_chunked_body`). It was `String.lower()`, which folds
+        # by Unicode's rules and reads the value as UTF-8: KELVIN SIGN
+        # (U+212A) lowered to `k`, so `chun<U+212A>ed` was framed as
+        # chunked where every other hop reads an unknown coding, and a lead
+        # byte that is no UTF-8 swallowed the comma behind it (review record
+        # LF58). A field value is bytes, obs-text included (SPEC G14).
+        var te = headers.value_span(headers.known_index(KH_TRANSFER_ENCODING))
+        var te_len = len(te)
         # `chunked` ONLY last: a sender MUST NOT apply it more than once
         # (RFC 9112 §6.1). The loop decodes one layer, so `chunked, chunked`
         # reached the application as a still-chunked body described by a
@@ -1329,15 +1436,29 @@ def parse_request_headers(
         # members mean nothing (RFC 9110 §5.6.1); any other member is a
         # coding, noted for the 501 below.
         var other_coding = False
-        for i in range(len(te_parts) - 1):
-            var member = String(String(te_parts[i]).strip())
-            if member == "chunked":
+        var last_is_chunked = False
+        var start = 0
+        while start <= te_len:
+            var stop = start
+            while stop < te_len and te[stop] != 0x2C:  # ','
+                stop += 1
+            var a = start
+            var b = stop
+            while a < b and (te[a] == 0x20 or te[a] == 0x09):
+                a += 1
+            while b > a and (te[b - 1] == 0x20 or te[b - 1] == 0x09):
+                b -= 1
+            var is_chunked = name_is(te[a:b], "chunked")
+            if stop == te_len:
+                last_is_chunked = is_chunked
+            elif is_chunked:
                 raise RequestParseError(InvalidHTTPRequestError())
-            if member.byte_length() > 0:
+            elif b > a:
                 other_coding = True
+            start = stop + 1
         # RFC 9112 §6.3: if a request carries Transfer-Encoding, the FINAL
         # coding must be `chunked` — that is the only one that says where
-        # the body ends. Testing `"chunked" in te_str` first let
+        # the body ends. Testing for `chunked` anywhere in the value let
         # `Transfer-Encoding: gzip` past both this check and
         # `is_chunked_body`, so with no Content-Length either the request
         # was dispatched as bodyless while its body stayed in the buffer:
@@ -1345,7 +1466,7 @@ def parse_request_headers(
         # block, and the one member of the family left open. The answer is
         # a MUST: 400, then close -- a lone `gzip`, a list naming no coding
         # or ending in an empty member, `chunked;x=1`.
-        if last_te != "chunked":
+        if not last_is_chunked:
             raise RequestParseError(InvalidHTTPRequestError())
         # With `chunked` final, any coding before it is one this server
         # does not implement, and a server that receives a transfer coding

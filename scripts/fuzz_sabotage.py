@@ -125,29 +125,13 @@ SABOTAGES = [
         "    var actual_start = search_start - 3 if search_start > 3 else search_start",
         "a head split across reads was framed differently from the same bytes whole",
     ),
-    (
-        # The second: a bare CR before the request line was skipped with
-        # the empty lines, the method read from the byte after it -- served
-        # whole, refused by the incremental check when a read had ended
-        # after the CR.
-        "a bare CR before the request line is skipped as an empty line",
-        PARSING,
-        "            if byte.value() == BytesConstant.CR:\n"
-        "                buf.increment()\n"
-        "                var next = try_peek(buf)\n"
-        "                if not next:\n"
-        "                    return -2\n"
-        "                if next.value() != BytesConstant.LF:\n"
-        "                    return -1",
-        "            if byte.value() == BytesConstant.CR:\n"
-        "                buf.increment()\n"
-        "                var next = try_peek(buf)\n"
-        "                if not next:\n"
-        "                    return -2\n"
-        "                if next.value() != BytesConstant.LF:\n"
-        "                    break",
-        "a head split across reads was framed differently from the same bytes whole",
-    ),
+    # The second defect it found (LF67), a bare CR before the request line
+    # skipped with the empty lines, has no arm here: the split invariant
+    # saw its revert only through `is_complete`, a rescan of a head already
+    # framed, which review record LF61 deleted. With it gone a split read
+    # and a whole one take the same path, the revert serves both alike, and
+    # the fix is held by `test_parsing.mojo:test_a_bare_cr_before_the_request_line_is_rejected`
+    # (SPEC B29).
     (
         "a bare LF is asked of a read's new bytes without the byte before them",
         FRAMING,

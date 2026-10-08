@@ -8,8 +8,7 @@ from lightbug_http.header import (
 from lightbug_http.http.date import http_date_now
 from lightbug_http.http.encodable import Encodable
 from lightbug_http.io.bytes import Bytes, ByteWriter
-from lightbug_http.strings import CR, LF, http, lineBreak, strHttp11, whitespace
-from lightbug_http.uri import URI
+from lightbug_http.strings import lineBreak, strHttp11, whitespace
 
 
 def is_bodiless_status(code: Int) -> Bool:
@@ -60,85 +59,8 @@ def enforce_bodiless_framing(mut response: HTTPResponse):
         response.body_fd_len = 0
 
 
-struct StatusCode:
-    """HTTP status codes (RFC 9110)."""
-
-    # 1xx Informational
-    comptime CONTINUE = 100
-    comptime SWITCHING_PROTOCOLS = 101
-    comptime PROCESSING = 102
-    comptime EARLY_HINTS = 103
-
-    # 2xx Success
-    comptime OK = 200
-    comptime CREATED = 201
-    comptime ACCEPTED = 202
-    comptime NON_AUTHORITATIVE_INFORMATION = 203
-    comptime NO_CONTENT = 204
-    comptime RESET_CONTENT = 205
-    comptime PARTIAL_CONTENT = 206
-    comptime MULTI_STATUS = 207
-    comptime ALREADY_REPORTED = 208
-    comptime IM_USED = 226
-
-    # 3xx Redirection
-    comptime MULTIPLE_CHOICES = 300
-    comptime MOVED_PERMANENTLY = 301
-    comptime FOUND = 302
-    comptime SEE_OTHER = 303
-    comptime NOT_MODIFIED = 304
-    comptime USE_PROXY = 305
-    comptime TEMPORARY_REDIRECT = 307
-    comptime PERMANENT_REDIRECT = 308
-
-    # 4xx Client Errors
-    comptime BAD_REQUEST = 400
-    comptime UNAUTHORIZED = 401
-    comptime PAYMENT_REQUIRED = 402
-    comptime FORBIDDEN = 403
-    comptime NOT_FOUND = 404
-    comptime METHOD_NOT_ALLOWED = 405
-    comptime NOT_ACCEPTABLE = 406
-    comptime PROXY_AUTHENTICATION_REQUIRED = 407
-    comptime REQUEST_TIMEOUT = 408
-    comptime CONFLICT = 409
-    comptime GONE = 410
-    comptime LENGTH_REQUIRED = 411
-    comptime PRECONDITION_FAILED = 412
-    comptime REQUEST_ENTITY_TOO_LARGE = 413
-    comptime REQUEST_URI_TOO_LONG = 414
-    comptime UNSUPPORTED_MEDIA_TYPE = 415
-    comptime REQUESTED_RANGE_NOT_SATISFIABLE = 416
-    comptime EXPECTATION_FAILED = 417
-    comptime IM_A_TEAPOT = 418
-    comptime MISDIRECTED_REQUEST = 421
-    comptime UNPROCESSABLE_ENTITY = 422
-    comptime LOCKED = 423
-    comptime FAILED_DEPENDENCY = 424
-    comptime TOO_EARLY = 425
-    comptime UPGRADE_REQUIRED = 426
-    comptime PRECONDITION_REQUIRED = 428
-    comptime TOO_MANY_REQUESTS = 429
-    comptime REQUEST_HEADER_FIELDS_TOO_LARGE = 431
-    comptime UNAVAILABLE_FOR_LEGAL_REASONS = 451
-
-    # 5xx Server Errors
-    comptime INTERNAL_SERVER_ERROR = 500
-    comptime INTERNAL_ERROR = 500  # Alias for backwards compatibility
-    comptime NOT_IMPLEMENTED = 501
-    comptime BAD_GATEWAY = 502
-    comptime SERVICE_UNAVAILABLE = 503
-    comptime GATEWAY_TIMEOUT = 504
-    comptime HTTP_VERSION_NOT_SUPPORTED = 505
-    comptime VARIANT_ALSO_NEGOTIATES = 506
-    comptime INSUFFICIENT_STORAGE = 507
-    comptime LOOP_DETECTED = 508
-    comptime NOT_EXTENDED = 510
-    comptime NETWORK_AUTHENTICATION_REQUIRED = 511
-
-
 @fieldwise_init
-struct HTTPResponse(Encodable, Movable, Sized, Writable):
+struct HTTPResponse(Encodable, Movable, Writable):
     var headers: Headers
     var cookies: ResponseCookieJar
     var body_raw: Bytes
@@ -262,9 +184,6 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         # cached value first). Formatting a date per construction was pure
         # per-request overhead — measured ~9% of hello-world throughput.
 
-    def __len__(self) -> Int:
-        return len(self.body_raw)
-
     def get_body(self) -> StringSpan[origin_of(self.body_raw)]:
         return StringSpan(unsafe_from_utf8=Span(self.body_raw))
 
@@ -273,14 +192,6 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         self.headers.set_known(
             KH_CONNECTION, HeaderKey.CONNECTION.as_bytes(), "close".as_bytes()
         )
-
-    def connection_close(self) -> Bool:
-        """RFC 9110 §7.6.1: Connection option tokens are case-insensitive.
-
-        Compared against the header bytes directly; see the request-side
-        twin for why the String-building form was worth replacing.
-        """
-        return self.headers.value_equals_ignore_case(HeaderKey.CONNECTION, "close")
 
     @always_inline
     def set_connection_keep_alive(mut self):
@@ -292,25 +203,6 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     def set_content_length(mut self, l: Int):
         self.headers.set_int_known(
             KH_CONTENT_LENGTH, HeaderKey.CONTENT_LENGTH.as_bytes(), l
-        )
-
-    @always_inline
-    def content_length(self) -> Int:
-        var header_val = self.headers.get(HeaderKey.CONTENT_LENGTH)
-        if not header_val:
-            return 0
-        try:
-            return Int(header_val.value())
-        except:
-            return 0
-
-    @always_inline
-    def is_redirect(self) -> Bool:
-        return (
-            self.status_code == StatusCode.MOVED_PERMANENTLY
-            or self.status_code == StatusCode.FOUND
-            or self.status_code == StatusCode.TEMPORARY_REDIRECT
-            or self.status_code == StatusCode.PERMANENT_REDIRECT
         )
 
     def write_to[T: Writer](self, mut writer: T):
@@ -395,6 +287,3 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         writer.write(lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
-
-    def __str__(self) -> String:
-        return String(self)

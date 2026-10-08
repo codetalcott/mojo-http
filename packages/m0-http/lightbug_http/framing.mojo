@@ -162,7 +162,7 @@ def frame_request_head(
 
     var parsed: ParsedRequestHeaders
     try:
-        parsed = parse_request_headers(buffer[:head_end], scanned)
+        parsed = parse_request_headers(buffer[:head_end])
     except parse_err:
         # A well-formed request for what this server does not implement is
         # 501 (SPEC B18), anything malformed 400.

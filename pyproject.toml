@@ -1943,6 +1943,27 @@ echo "smoke-large-request OK"
 python3 scripts/emit.py --covers A13 --task smoke-large-request
 """
 
+# A connection that closes hands the buffers a large request grew back to
+# the allocator (review record LF25). Closing cleared a slot's receive
+# buffer, which keeps its capacity, and a slot is never rebuilt: 64
+# concurrent 4 MiB uploads pinned some 400 MB to the slots they used, and
+# each 64 more on other slots pinned as much again. The probe starts the
+# server itself, since it reads that process's memory.
+[tool.poe.tasks.smoke-slot-buffers]
+help = "The buffers a large upload grew serve connections on other slots once its connection closes"
+shell = """
+. scripts/smoke/lib.sh
+out=$SMOKE_DIR
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo -o "$out/hello" || exit 1
+python3 scripts/slot_buffer_probe.py "$out/hello" $(free_port) "$out/sb.log" > "$out/sb.out" 2>&1 \
+  || { cat "$out/sb.out"; fail; }
+cat "$out/sb.out"
+ratio=$(grep '^footprint_rounds_ratio ' "$out/sb.out" | cut -d' ' -f2)
+python3 scripts/emit.py slot_buffers.footprint_rounds_ratio "$ratio" --unit x --limit 2.5 --task smoke-slot-buffers
+echo "smoke-slot-buffers OK"
+python3 scripts/emit.py --covers C17 --task smoke-slot-buffers
+"""
+
 # RFC 9112 §9.3: a server MUST be able to receive pipelined requests. The
 # bytes of request N+1 arrive in the same read that completes request N and
 # get no readiness event of their own, so answering them takes deliberate

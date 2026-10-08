@@ -280,6 +280,52 @@ def test_a_server_header_the_application_set_is_the_only_one() raises:
         assert_equal(lines[0], "server: lightbug_http", wire)
 
 
+def _lines_named(wire: String, name: String) raises -> List[String]:
+    """Every head line named `name`, whatever its case."""
+    var found = List[String]()
+    var head = wire.split("\r\n\r\n")[0]
+    for line in head.split("\r\n"):
+        if line.lower().startswith(name + ":"):
+            found.append(String(line))
+    return found^
+
+
+def test_a_response_carries_one_date_and_its_connection() raises:
+    """Both encoders write one `Date` when the response has none (an IMF
+    date, 29 bytes) and the application's when it set one; a constructed
+    response says `keep-alive` unless it was given a `Connection`, and
+    `set_connection_close` makes it `close` (review audit A3)."""
+    for writer in range(2):
+        var plain = HTTPResponse(body_bytes=String("ok").as_bytes())
+        var dated = HTTPResponse(
+            body_bytes=String("ok").as_bytes(),
+            headers=Headers(Header("Date", "Thu, 08 Oct 2026 00:00:00 GMT")),
+        )
+        var closing = HTTPResponse(body_bytes=String("ok").as_bytes())
+        closing.set_connection_close()
+        var a: String
+        var b: String
+        var c: String
+        if writer == 0:
+            a = String(unsafe_from_utf8=plain^.encode())
+            b = String(unsafe_from_utf8=dated^.encode())
+            c = String(unsafe_from_utf8=closing^.encode())
+        else:
+            a = String(unsafe_from_utf8=plain^.encode_into(Bytes(capacity=256)))
+            b = String(unsafe_from_utf8=dated^.encode_into(Bytes(capacity=256)))
+            c = String(unsafe_from_utf8=closing^.encode_into(Bytes(capacity=256)))
+        var dates = _lines_named(a, "date")
+        assert_equal(len(dates), 1, a)
+        assert_equal(dates[0].byte_length(), String("date: ").byte_length() + 29, a)
+        var given = _lines_named(b, "date")
+        assert_equal(len(given), 1, b)
+        assert_equal(given[0], "date: Thu, 08 Oct 2026 00:00:00 GMT", b)
+        assert_equal(_lines_named(a, "connection")[0], "connection: keep-alive", a)
+        var conn = _lines_named(c, "connection")
+        assert_equal(len(conn), 1, c)
+        assert_equal(conn[0], "connection: close", c)
+
+
 
 def _says(r: HTTPResponse, code: Int, reason: String, body: String) raises:
     assert_equal(r.status_code, code, reason)

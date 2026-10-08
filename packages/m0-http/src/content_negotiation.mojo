@@ -10,6 +10,8 @@ Supports quality factors, case-insensitive media ranges, subtype wildcards
 specific ones regardless of the order they appear in the header.
 """
 
+from lightbug_http.header import ascii_lowercase
+
 
 struct AcceptResult(Copyable, Movable):
     """Parsed Accept header negotiation result."""
@@ -33,7 +35,7 @@ struct AcceptResult(Copyable, Movable):
         Only matches types passed to `parse_accept` as extra types; the four
         standard types have their own fields. Comparison is case-insensitive.
         """
-        return _contains(self.extra_types, media_type.lower())
+        return _contains(self.extra_types, ascii_lowercase(media_type.as_bytes()))
 
 
 def _parse_quality(s: String) -> Float64:
@@ -120,7 +122,7 @@ def parse_accept(accept: String, extra: List[String]) -> AcceptResult:
     # a caller registering `application/vnd.acme+cbor` wants clients to ask for
     # it, not to receive it because they sent `Accept: */*`.
     for j in range(len(extra)):
-        var vendor = extra[j].lower()
+        var vendor = ascii_lowercase(extra[j].as_bytes())
         if _last_quality(ranges, qualities, vendor) > 0.0:
             if not _contains(result.extra_types, vendor):
                 result.extra_types.append(vendor^)
@@ -150,7 +152,10 @@ def _split_media_range(
     else:
         media_type = _trim(part)
 
-    ranges.append(media_type.lower())
+    # ASCII folding only: Unicode `String.lower()` read KELVIN SIGN as `k`
+    # and an overlong `C1 A2` as `b`, so a range the client never sent
+    # matched a registered vendor type (review record LF63).
+    ranges.append(ascii_lowercase(media_type.as_bytes()))
     qualities.append(quality)
 
 

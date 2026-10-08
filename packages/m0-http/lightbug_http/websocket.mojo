@@ -184,10 +184,12 @@ def websocket_upgrade(req: HTTPRequest) -> Optional[HTTPResponse]:
     `426` with the supported version for a version mismatch, `400` for a
     malformed attempt (missing key, wrong method).
     """
-    var upgrade_hdr = req.headers.get(HeaderKey.UPGRADE)
-    if not upgrade_hdr:
-        return None
-    if upgrade_hdr.value().lower() != "websocket":
+    # `websocket` as an ASCII case-insensitive value (RFC 6455 §4.2.1), in
+    # the header's bytes. It was compared after Unicode `String.lower()`,
+    # which reads KELVIN SIGN (U+212A) as `k` and an overlong `C1 B7` as
+    # `w`, so `websoc<U+212A>et` was upgraded where every other hop reads
+    # an unknown protocol (review record LF63).
+    if not req.headers.value_equals_ignore_case(HeaderKey.UPGRADE, "websocket"):
         return None
 
     if req.method != "GET":
@@ -243,8 +245,8 @@ def is_ws_upgrade_response(resp: HTTPResponse) -> Bool:
     """
     if resp.status_code != 101:
         return False
-    var upgrade_hdr = resp.headers.get(HeaderKey.UPGRADE)
-    return Bool(upgrade_hdr) and upgrade_hdr.value().lower() == "websocket"
+    # In ASCII case only, as `websocket_upgrade` asks it (review record LF63).
+    return resp.headers.value_equals_ignore_case(HeaderKey.UPGRADE, "websocket")
 
 
 # --- Frames (RFC 6455 §5) -----------------------------------------------------
@@ -506,10 +508,17 @@ struct WSState(Movable):
         self.inbound_suspended = False
 
     def reset(mut self):
-        """Back to a fresh connection's state (slot reuse)."""
-        self.buffer.clear()
+        """Back to a fresh connection's state (slot reuse).
+
+        The buffers are replaced, not cleared: cleared, a message still
+        being assembled, or a frame still arriving, when the socket closed
+        stayed allocated into the slot's next socket, up to the message cap
+        each, until that socket's first fragmented message or first whole
+        frame replaced it (review record LF25).
+        """
+        self.buffer = List[UInt8]()
         self.frag_opcode = -1
-        self.frag_payload.clear()
+        self.frag_payload = List[UInt8]()
         self.closing = False
         self.inbound_suspended = False
 
@@ -690,10 +699,15 @@ struct WSState(Movable):
                         Span(self.frag_payload)
                     ):
                         return self._fail(res^, WS_CLOSE_INVALID_DATA)
+                    # Moved out, not copied: the copy cost a second pass
+                    # over the message, and the cleared original kept the
+                    # message's capacity until the next fragmented message
+                    # on the slot, through a close and into its next socket
+                    # (review record LF25).
                     res.msg_opcodes.append(self.frag_opcode)
-                    res.msg_payloads.append(self.frag_payload.copy())
+                    res.msg_payloads.append(self.frag_payload^)
+                    self.frag_payload = List[UInt8]()
                     self.frag_opcode = -1
-                    self.frag_payload.clear()
             else:
                 # Reserved data opcodes 0x3–0x7.
                 return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)

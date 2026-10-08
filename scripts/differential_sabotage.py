@@ -102,10 +102,21 @@ SABOTAGES = [
         """            if kid == KH_HOST:
                 if host_len >= 0:
                     raise RequestParseError(InvalidHTTPRequestError())
-                host_len = len(value)""",
+                # A value that is not""",
         """            if kid == KH_HOST:
-                host_len = len(value)""",
+                # A value that is not""",
         "two_host",
+    ),
+    (
+        # SPEC B27, review record LF64: `Host: a b` was served, as both
+        # references serve it, where RFC 9112 §3.2 asks for 400.
+        "a Host value that is no uri-host is served (B27)",
+        HEADER,
+        """                if len(value) > 0 and not host_value_is_valid(value):
+                    raise RequestParseError(InvalidHTTPRequestError())""",
+        """                if False:
+                    raise RequestParseError(InvalidHTTPRequestError())""",
+        "host_with_space",
     ),
     (
         # SPEC B21, review record LF39: `gzip, chunked` was de-chunked and

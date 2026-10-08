@@ -2,7 +2,7 @@
  "about": [
   "The differential corpus's frozen outcomes (SPEC B25): one row per case of differential_corpus.py, in its order. differential_probe.py says what an outcome's tokens mean, the h= fingerprint among them.",
   "ours is the gate: what this server answers, frozen against apps/request_echo by `poe freeze-differential`. `poe smoke-differential` fails on any case that answers otherwise.",
-  "h11 and llhttp are the references' outcomes, read the same way from differential_echo_h11.py (h11 0.16) and differential_echo_node.js (Node 24's llhttp) by the same task, for reading a row; nothing compares them. Read a row against them by verdict, the fingerprint aside: this server hands its application a chunked body de-chunked, with a Content-Length in place of its Transfer-Encoding, an absolute-form target as origin-form with its authority as Host (B16), and OPTIONS * as / (LF41), so those fingerprints differ from the references' by design.",
+  "h11 and llhttp are the references' outcomes, read the same way from differential_echo_h11.py (h11 0.16) and differential_echo_node.js (Node 24's llhttp) by the same task, for reading a row; nothing compares them. Read a row against them by verdict, the fingerprint aside: this server hands its application a chunked body de-chunked, with a Content-Length in place of its Transfer-Encoding, and an absolute-form target as origin-form with its authority as Host (B16), so those fingerprints differ from the references' by design. OPTIONS *'s `request_uri` is `*`, as both references read it (review records LF41, LF62).",
   "note: why ours differs from both references on purpose. known_divergence: an outcome frozen as it is although it looks wrong, with the record that would change it."
  ],
  "cases": {
@@ -71,8 +71,8 @@
   "two_host": {"ours": ["400"], "h11": ["400"], "llhttp": ["GET bl=0 h=dcd9e2e7"]},
   "two_host_case": {"ours": ["400"], "h11": ["400"], "llhttp": ["GET bl=0 h=dcd9e2e7"]},
   "empty_host": {"ours": ["GET bl=0 h=c2c03966"], "h11": ["GET bl=0 h=c2c03966"], "llhttp": ["GET bl=0 h=c2c03966"]},
-  "host_with_space": {"ours": ["GET bl=0 h=18f18550"], "h11": ["GET bl=0 h=18f18550"], "llhttp": ["GET bl=0 h=18f18550"], "known_divergence": "review record LF64: RFC 9112 §3.2 asks for 400 on a Host whose value is invalid, and `a b` is no uri-host (RFC 9110 §7.2); served, as both references serve it. LF64's fix re-freezes this row"},
-  "host_with_userinfo": {"ours": ["GET bl=0 h=a0662ab4"], "h11": ["GET bl=0 h=a0662ab4"], "llhttp": ["GET bl=0 h=a0662ab4"], "known_divergence": "review record LF64: RFC 9112 §3.2 asks for 400 on a Host whose value is invalid, and `u@a` is no uri-host (RFC 9110 §7.2: no userinfo); served, as both references serve it. LF64's fix re-freezes this row"},
+  "host_with_space": {"ours": ["400"], "h11": ["GET bl=0 h=18f18550"], "llhttp": ["GET bl=0 h=18f18550"], "note": "SPEC B27, review record LF64: RFC 9112 §3.2 asks for 400 on a Host whose value is invalid, and `a b` is no uri-host (RFC 9110 §7.2); both references serve it"},
+  "host_with_userinfo": {"ours": ["400"], "h11": ["GET bl=0 h=a0662ab4"], "llhttp": ["GET bl=0 h=a0662ab4"], "note": "SPEC B27, review record LF64: RFC 9112 §3.2 asks for 400 on a Host whose value is invalid, and `u@a` is no uri-host (RFC 9110 §7.2: no userinfo); both references serve it"},
   "host_bad_port": {"ours": ["GET bl=0 h=d0797d35"], "h11": ["GET bl=0 h=d0797d35"], "llhttp": ["GET bl=0 h=d0797d35"]},
   "cl_ok": {"ours": ["POST bl=5 h=4e1d32af"], "h11": ["POST bl=5 h=4e1d32af"], "llhttp": ["POST bl=5 h=4e1d32af"]},
   "cl_plus": {"ours": ["400"], "h11": ["400"], "llhttp": ["400"]},

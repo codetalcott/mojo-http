@@ -51,6 +51,7 @@ from lightbug_http.websocket import (
 )
 from lightbug_http.loop.state import (
     LoopState,
+    SLOT_BUFFER_KEEP,
     TIMER_BODY,
     UNUSED,
     WS_CLOSE_LINGER_NS,
@@ -420,6 +421,83 @@ def test_a_closed_slot_lets_go_of_its_response() raises:
     assert_equal(st.slot_response[slot].capacity(), 0, "the closed slot kept its response")
     assert_equal(st.slot_send_offset[slot], 0)
     close(FileDescriptor(pair[1]))
+
+
+def _close_with_buffers(
+    mut st: LoopState, recv_capacity: Int, encode_capacity: Int
+) raises -> Int:
+    """Open a connection on `st`, grow its receive and encode buffers to the
+    capacities given, close it, and return its slot."""
+    var app = NoApp()
+    var backend = FakeBackend()
+    var pair = _stream_pair()
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = pair[0]
+    st.fd_to_slot[pair[0]] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].recv_buffer = Bytes(length=recv_capacity, fill=0x61)
+    st.provision_pool.provisions[slot].encoding_buffer = Bytes(capacity=encode_capacity)
+    _close_slot(app, backend, st, slot, pair[0])
+    close(FileDescriptor(pair[1]))
+    assert_equal(st.slot_fds[slot], UNUSED)
+    return slot
+
+
+def test_a_closed_slot_gives_back_a_grown_buffer() raises:
+    """`_close_slot` gives back a receive or encode buffer a large request
+    or response grew past `SLOT_BUFFER_KEEP` (review record LF25). Cleared,
+    each kept its capacity, and a slot is never rebuilt: a burst of uploads
+    stayed resident for the life of the process. The slot's next connection
+    starts from one read, as its first did.
+
+    covers: C17
+    """
+    var st = _loop(_config())
+    var slot = _close_with_buffers(st, 4 << 20, 4 << 20)
+    assert_equal(
+        st.provision_pool.provisions[slot].recv_buffer.capacity(),
+        st.provision_pool.buffer_size,
+        "the closed slot kept its grown receive buffer",
+    )
+    assert_equal(len(st.provision_pool.provisions[slot].recv_buffer), 0)
+    assert_equal(
+        st.provision_pool.provisions[slot].encoding_buffer.capacity(),
+        st.provision_pool.buffer_size,
+        "the closed slot kept its grown encode buffer",
+    )
+
+
+def test_a_closed_slot_keeps_an_ordinary_buffer() raises:
+    """At or under `SLOT_BUFFER_KEEP` the buffers stay, so ordinary requests
+    and pages reuse them from one connection to the next."""
+    var st = _loop(_config())
+    var slot = _close_with_buffers(st, SLOT_BUFFER_KEEP, SLOT_BUFFER_KEEP)
+    assert_equal(st.provision_pool.provisions[slot].recv_buffer.capacity(), SLOT_BUFFER_KEEP)
+    assert_equal(len(st.provision_pool.provisions[slot].recv_buffer), 0)
+    assert_equal(st.provision_pool.provisions[slot].encoding_buffer.capacity(), SLOT_BUFFER_KEEP)
+
+
+def test_a_closed_slot_keeps_buffers_within_its_configured_size() raises:
+    """A server configured to read more than `SLOT_BUFFER_KEEP` at a time
+    gives every slot buffers that size from its first connection, and those
+    are the slot's ordinary buffers: past `SLOT_BUFFER_KEEP` the threshold
+    is the configured size, so a close does not trade each for a new one of
+    the same size. Held with buffers between the two sizes, which a close
+    must leave as they are; a replacement AT the configured size cannot be
+    told from no replacement, since the allocator hands the block it just
+    took back straight back (tried: the same address both ways)."""
+    var config = _config()
+    config.socket_buffer_size = 4 * SLOT_BUFFER_KEEP
+    var st = _loop(config)
+    var slot = _close_with_buffers(st, 2 * SLOT_BUFFER_KEEP, 2 * SLOT_BUFFER_KEEP)
+    assert_equal(
+        st.provision_pool.provisions[slot].recv_buffer.capacity(), 2 * SLOT_BUFFER_KEEP,
+        "the close replaced a receive buffer within the configured size",
+    )
+    assert_equal(
+        st.provision_pool.provisions[slot].encoding_buffer.capacity(), 2 * SLOT_BUFFER_KEEP,
+        "the close replaced an encode buffer within the configured size",
+    )
 
 
 def test_a_request_begins_with_no_idle_deadline() raises:

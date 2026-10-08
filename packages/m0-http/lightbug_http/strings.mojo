@@ -1,7 +1,6 @@
 from lightbug_http.io.bytes import byte
 
 
-comptime http = "http"
 comptime strHttp11 = "HTTP/1.1"
 comptime strHttp10 = "HTTP/1.0"
 

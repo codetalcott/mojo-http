@@ -449,7 +449,9 @@ def _server_wide_options() raises -> HTTPRequest:
         "OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n".as_bytes()
     )
     try:
-        return HTTPRequest.from_parsed("127.0.0.1:8080", parsed^, Bytes(), 8192)
+        return HTTPRequest.from_parsed(
+            "127.0.0.1", Optional[UInt16](8080), parsed^, Bytes(), 8192
+        )
     except:
         raise Error("fixture request failed to build")
 

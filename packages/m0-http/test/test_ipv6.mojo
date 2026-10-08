@@ -436,9 +436,11 @@ def test_an_ipv6_zone_is_refused() raises:
 
 
 def test_a_uri_behind_an_ipv6_server_address_parses() raises:
-    """The loop puts the server's own address in front of a target that
-    carries a query, so on `::` every such request was `[::]:8080/x?a=1`,
-    and the port's colon was taken from inside the brackets: 400."""
+    """The loop put the server's own address in front of a target that
+    carried a query, so on `::` every such request was `[::]:8080/x?a=1`,
+    and the port's colon was taken from inside the brackets: 400. It
+    splits the address with this parser once now (`split_server_address`,
+    review record LF54), which holds the bracketed form the same way."""
     var u = URI.parse(String("[::]:8080/x?a=1"))
     assert_equal(u.path, "/x")
     assert_equal(u.query_string, "a=1")
