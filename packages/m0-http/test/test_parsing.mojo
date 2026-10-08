@@ -898,6 +898,34 @@ def test_origin_form_target_is_untouched() raises:
 # --- Field value normalization: RFC 9110 5.5 ---------------------------------
 
 
+def test_repeated_connection_lines_are_joined_in_linear_space() raises:
+    """Joining the `Connection` lines (SPEC B22) costs what the lines hold,
+    once. Joining each line onto the value stored so far appended the
+    whole list again to the header store's blob, which never overwrites:
+    98 lines in a 32 KB head left a 1.5 MB blob, the parse taking 88 times
+    as long as one of 98 other lines, on the loop thread. The blob stays
+    within the head's own size, and the value is the lines joined
+    comma-SP, in order.
+
+    covers: B22
+    """
+    var line = String("v") * 300
+    var raw = String("GET / HTTP/1.1\r\nHost: x\r\n")
+    var want = String()
+    for i in range(98):
+        raw += String("Connection: ", line, i, "\r\n")
+        if i > 0:
+            want += ", "
+        want += String(line, i)
+    raw += "\r\n"
+    var parsed = parse_request_headers(raw.as_bytes())
+    assert_equal(parsed.headers.get("connection").value(), want)
+    assert_true(
+        len(parsed.headers._buf) <= raw.byte_length(),
+        String("blob ", len(parsed.headers._buf), " for a head of ", raw.byte_length()),
+    )
+
+
 def test_header_values_are_ows_trimmed() raises:
     """Untrimmed values turn " application/json" into a negotiation miss."""
     assert_equal(

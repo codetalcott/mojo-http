@@ -1274,6 +1274,9 @@ def parse_request_headers(
     # -1 while no Host field has been seen; its length after. A second Host
     # line is refused where it is met, so there is only ever the one.
     var host_len = -1
+    # The `Connection` lines after the first, joined onto it (SPEC B22);
+    # empty, and never allocated, for a request with one line or none.
+    var connection = Bytes()
 
     # The header array holds OFFSETS into `buffer`; every name and value is a
     # slice of it. Sliced from an immutable view, or two slices of one
@@ -1359,15 +1362,25 @@ def parse_request_headers(
                 # this field, the list the loop acts on for every request;
                 # a request carries no `Set-Cookie`, which never combines,
                 # and its `Cookie` lines are joined below, with "; ".
+                #
+                # Joined OUTSIDE the store and set once after the loop, as
+                # `Cookie` is: the store's blob never overwrites, so setting
+                # the list so far at every line left a copy of it each
+                # time -- 98 lines of a 32 KB head made a 1.5 MB blob.
                 var at = headers.known_index(KH_CONNECTION)
                 if at >= 0:
-                    var joined = Bytes(headers.value_span(at))
-                    joined.append(0x2C)  # ','
-                    joined.append(0x20)
-                    joined.extend(value)
-                    headers._set_bytes(name_bytes, Span(joined), kid)
+                    if len(connection) == 0:
+                        connection.extend(headers.value_span(at))
+                    connection.append(0x2C)  # ','
+                    connection.append(0x20)
+                    connection.extend(value)
                     continue
             headers._set_bytes(name_bytes, value, kid)
+
+    if len(connection) > 0:
+        headers._set_bytes(
+            HeaderKey.CONNECTION.as_bytes(), Span(connection), KH_CONNECTION
+        )
 
     # Put the cookies back as one `Cookie` field. RFC 6265 §5.4 sends a single
     # header, but HTTP/2 downgrades and some proxies split it across several,

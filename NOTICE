@@ -1361,7 +1361,8 @@ lightbug_http
 
       - header.mojo, loop/request.mojo (2026-10-08): `parse_request_headers`
         combines repeated `Connection` lines into one value, comma-SP, in
-        order (RFC 9110 §5.3, SPEC B22); `set_bytes` kept the last line, so
+        order (RFC 9110 §5.3, SPEC B22), joined outside the store and set
+        once after the field loop; `set_bytes` kept the last line, so
         `close` on an earlier one was lost. The new `holds_bare_lf` finds an
         LF no CR precedes from a start offset, and `_handle_read_headers`
         asks it of the bytes a read added to a head `find_header_end` has
