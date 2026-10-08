@@ -156,6 +156,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   still waiting. The buffer now grows by 4 KB before the read. The server
   itself reads through its event loop and never called these.
 
+- **`/__metrics` counts a 101 in a `1xx` status class** (fork review LF32,
+  SPEC F23). Exposed: m0serve and Mojo applications run with `--metrics`
+  that hold WebSockets. Each upgrade's 101 Switching Protocols was in
+  `http_requests_total` and in none of `http_responses_total`'s classes,
+  so the classes summed to less than the total. It is now in
+  `http_responses_total{status="1xx"}`, and `http_requests_total`'s help
+  text says what it has always counted: requests answered, as each
+  response's head lands, not requests received.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

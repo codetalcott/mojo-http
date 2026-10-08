@@ -91,6 +91,44 @@ def test_histogram_reaches_the_exposition() raises:
     assert_true(text.find('http_request_duration_us_bucket{le="+Inf"} 1\n') >= 0)
 
 
+def test_every_answered_request_is_in_one_status_class() raises:
+    """`http_requests_total` counts requests answered, and each is in one
+    class of `http_responses_total`, a 101 in `1xx` (review record LF32).
+
+    A 101 Switching Protocols, the answer to every WebSocket upgrade, was
+    in the total and in no class, so the classes summed to less than the
+    total on any server holding WebSockets, and the total's help text said
+    "received" of a count taken as each response's head lands.
+
+    covers: F23
+    """
+    var m = ServerMetrics()
+    m.record_response(101, 129)
+    m.record_response(200, 10)
+    m.record_response(304, 0)
+    m.record_response(404, 5)
+    m.record_response(503, 7)
+    m.record_response(101, 129)
+    assert_equal(m.requests_total, 6)
+    assert_equal(m.responses_1xx, 2, "a 101 is in no status class")
+    assert_equal(
+        m.responses_1xx + m.responses_2xx + m.responses_3xx
+        + m.responses_4xx + m.responses_5xx,
+        m.requests_total,
+        "the status classes do not sum to the total",
+    )
+    var text = m.to_text()
+    assert_true(
+        text.find('http_responses_total{status="1xx"} 2\n') >= 0,
+        "the 1xx class is not in the exposition",
+    )
+    assert_true(text.find("http_requests_total 6\n") >= 0)
+    assert_true(
+        text.find("# HELP http_requests_total Total HTTP requests answered\n") >= 0,
+        "the total's help text does not say what it counts",
+    )
+
+
 def test_empty_histogram_is_well_formed() raises:
     var m = ServerMetrics()
     var text = m.histogram_text()

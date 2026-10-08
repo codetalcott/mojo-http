@@ -1559,6 +1559,12 @@ lightbug_http
         spare capacity to `recv`, which read zero bytes into it and
         reported EOF (review record LF34, SPEC A32).
 
+      - metrics.mojo (2026-10-08): `ServerMetrics` counts a 1xx response in
+        a `responses_1xx` class (`http_responses_total{status="1xx"}`), and
+        `requests_total`'s docstring and help text say "answered" where
+        they said "received": the count is taken per response, as its head
+        lands (review record LF32, SPEC F23).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
