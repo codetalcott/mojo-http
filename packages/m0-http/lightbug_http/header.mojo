@@ -4,8 +4,8 @@ from lightbug_http.http.parsing import (
     _first_lane,
     http_parse_request_headers,
 )
-from lightbug_http.io.bytes import ByteReader, Bytes, ByteWriter
-from lightbug_http.strings import CR, LF, BytesConstant, lineBreak
+from lightbug_http.io.bytes import Bytes, ByteWriter
+from lightbug_http.strings import BytesConstant, lineBreak
 from std.collections.span import Span
 from std.utils import Variant
 

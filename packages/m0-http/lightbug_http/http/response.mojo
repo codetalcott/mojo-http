@@ -8,8 +8,7 @@ from lightbug_http.header import (
 from lightbug_http.http.date import http_date_now
 from lightbug_http.http.encodable import Encodable
 from lightbug_http.io.bytes import Bytes, ByteWriter
-from lightbug_http.strings import CR, LF, http, lineBreak, strHttp11, whitespace
-from lightbug_http.uri import URI
+from lightbug_http.strings import lineBreak, strHttp11, whitespace
 
 
 def is_bodiless_status(code: Int) -> Bool:
