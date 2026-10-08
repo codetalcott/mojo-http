@@ -134,10 +134,14 @@ rules of 2026-09-05):
   round-robin, so every job landed on the coldest thread and its cold
   interpreter thread state. Pills go to those channels too (`stop`),
   and a WebSocket message sent on the lane socket is followed by a wake
-  to a parked thread, which polls the socket first thing. A thread that
-  never registered (a test's, or every thread under the knob) parks on
-  the lane socket under the old rule: one poke per parked thread, never
-  one per push.
+  to a parked thread, which polls the socket first thing. That wake
+  finds only a thread already parked, so a thread on its way to its
+  own channel looks at the lane socket AFTER announcing the park, as it
+  re-checks the ring (`_park_on_own`): a message that landed while no
+  thread was parked is taken there rather than left on the socket until
+  a later job wakes the lane (SPEC I39). A thread that never registered
+  (a test's, or every thread under the knob) parks on the lane socket
+  under the old rule: one poke per parked thread, never one per push.
 
 The spin is what makes a pool thread's park rare rather than free. At
 130–180k rps the gap between jobs on one thread is a microsecond or two,
