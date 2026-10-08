@@ -1526,6 +1526,15 @@ lightbug_http
         codepoint, are byte slices, so the fork holds none of the form
         that traps on a request's text (review record LF26).
 
+      - http/chunked.mojo, server.mojo, connection.mojo (2026-10-08):
+        comments the code contradicted. The chunked decoder was called the
+        client's, and reads a request's body; `listen_and_serve_nonblocking`
+        and `serve_nonblocking` named kqueue alone, and run epoll on Linux;
+        `TCPConnection.write` named a client that left with the connect
+        path, and its callers are the tests'; and a "Phase 0" note on
+        `AddressParseError` recorded a decorator long gone (review record
+        LF27).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -350,11 +350,11 @@ def decode_hex(ch: Byte) -> Int:
 
 # --- Encoder ---------------------------------------------------------------
 #
-# The decoder above is the client's; this is the server's. They are the two
-# halves of RFC 9112 §7.1 and live together so the framing rules have one
-# home: `chunk-size` in lowercase hex with no extensions, CRLF, the data,
-# CRLF, and a zero-size chunk plus a bare CRLF to end (no trailers, which is
-# what lets a reader stop at `0\r\n\r\n`).
+# The decoder above reads a request's chunked body; this writes a
+# response's. They are the two halves of RFC 9112 §7.1 and live together so
+# the framing rules have one home: `chunk-size` in lowercase hex with no
+# extensions, CRLF, the data, CRLF, and a zero-size chunk plus a bare CRLF
+# to end (no trailers, which is what lets a reader stop at `0\r\n\r\n`).
 
 
 comptime _HEX_DIGITS = "0123456789abcdef"
