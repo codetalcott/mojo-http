@@ -239,10 +239,18 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
         body_st.bytes_read += Int(bytes_read)
         st.provision_pool.provisions[slot].body_state = body_st
 
-    if len(st.provision_pool.provisions[slot].recv_buffer) > st.config.recv_buffer_limit():
-        _send_error_to_fd(fd_val, BadRequest())
-        _close_slot(handler, backend, st, slot, fd_val)
-        return False
+    # No check of the whole buffer's size here: it holds the head, and the
+    # next pipelined request behind the body, as well as the body. Measured,
+    # it refused a body within both caps -- 400 for a `Content-Length` body
+    # whose last read also brought the next request, once head, body and
+    # that request passed `recv_buffer_limit()`, and 400 and a close rather
+    # than the 413 and linger every size refusal gets (`_refuse_too_large`)
+    # for a chunked body over the cap behind a long head (review record
+    # LF70). The buffer is bounded without it: a `Content-Length` body is
+    # at most the cap the framing checked, plus one read past it; a chunked
+    # one is held to both of its bounds after each decode, below, and the
+    # decoder consumes every byte it is handed until the body ends, so what
+    # waits undecoded is at most one read.
 
     # Phase 1b: chunked body decode, resumed not restarted.
     #
@@ -261,24 +269,6 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
         var decoded_so_far = body_st.bytes_read
         var tail_start = raw_body_start + decoded_so_far
         var buf_len = len(st.provision_pool.provisions[slot].recv_buffer)
-        # The cap is on the DECODED body plus whatever raw
-        # tail is still buffered — the same quantity the old
-        # code compared, now that consumed framing bytes are
-        # dropped as they are decoded.
-        # Two bounds, because a chunked body has two sizes.
-        # The decoded body is what the application sees; the
-        # raw stream is what the connection cost. Framing is
-        # consumed and dropped as it is decoded, so without
-        # the second an attacker could send the body limit
-        # in real data and then keep going in chunk-extension
-        # bytes, bounded only by the decoder's ratio guard.
-        if (
-            buf_len - raw_body_start > st.config.max_request_body_size
-            or st.provision_pool.provisions[slot].chunk_decoder._total_read
-            > 2 * st.config.max_request_body_size
-        ):
-            _refuse_too_large(handler, backend, st, slot, fd_val)
-            return False
         if buf_len > tail_start:
             var ret: Int
             var produced: Int
@@ -304,6 +294,25 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
             decoded_so_far += produced
             body_st.bytes_read = decoded_so_far
             st.provision_pool.provisions[slot].body_state = body_st
+            # Two bounds, because a chunked body has two sizes, each
+            # measured after the decode as the head path measures them.
+            # The decoded body is what the application sees; the raw
+            # stream is what the connection cost. Framing is consumed and
+            # dropped as it is decoded, so without the second an attacker
+            # could send the body limit in real data and then keep going
+            # in chunk-extension bytes, bounded only by the decoder's ratio
+            # guard. Measured before the decode, as the decoded body plus
+            # the raw tail still buffered, the first counted that tail's
+            # framing and the next pipelined request as body: a body at
+            # the cap was refused 413 when its framing came after its head
+            # and answered when it came with it (review record LF70).
+            if (
+                decoded_so_far > st.config.max_request_body_size
+                or st.provision_pool.provisions[slot].chunk_decoder._total_read
+                > 2 * st.config.max_request_body_size
+            ):
+                _refuse_too_large(handler, backend, st, slot, fd_val)
+                return False
             if ret >= 0:
                 # Complete. `pending_bytes` bytes past the
                 # chunked data stay in the buffer: they are

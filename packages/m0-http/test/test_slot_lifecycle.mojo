@@ -689,6 +689,13 @@ def _exchange(
     var config = _config()
     config.enable_metrics = metrics
     var app = NoApp()
+    return _exchange_with(app, config, parts)
+
+
+def _exchange_with[H: HTTPService](
+    mut app: H, config: ServerConfig, parts: List[String]
+) raises -> Tuple[String, Bool]:
+    """`_exchange` over a handler and a configuration of the caller's."""
     var backend = FakeBackend()
     var st = _loop(config)
     var pair = _stream_pair()
@@ -718,6 +725,103 @@ def _exchange(
 def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
     """One request to `/__metrics`, metrics on (`_exchange`)."""
     return _exchange([request], metrics=True)
+
+
+struct BodyLength(HTTPService):
+    """Answers every request with the length of the body it was handed."""
+
+    def __init__(out self):
+        pass
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK(String("body=", len(req.body_raw)), "text/plain")
+
+
+def _answers(reply: String) -> Int:
+    """How many `200 OK` answers a lowercased reply holds."""
+    return len(reply.split("http/1.1 200 ok")) - 1
+
+
+def _tight_caps() -> ServerConfig:
+    """Caps a test can reach: a head of at most 128 bytes, a body of at
+    most 64, and no floor under the receive buffer, whose limit is then
+    their sum."""
+    var config = _config()
+    config.max_total_header_size = 128
+    config.max_request_body_size = 64
+    config.recv_buffer_max = 0
+    return config^
+
+
+def _padded_head(start: String, length: Int) -> String:
+    """`start`'s field lines, then an `X-Pad` field making the head
+    `length` bytes long."""
+    var head = start + "X-Pad: "
+    return head + String("p") * (length - head.byte_length() - 4) + "\r\n\r\n"
+
+
+def test_a_body_within_the_caps_is_answered_however_its_reads_fall() raises:
+    """A body within both caps is answered whatever shares the reads that
+    bring it, and one over the body cap is refused 413 whatever its head's
+    size (review record LF70). The body path measured the receive buffer,
+    which holds the head and the next pipelined request as well as the
+    body, and a chunked body's framing before it was decoded: a
+    `Content-Length` body with the next request behind it in the read that
+    completed it was refused 400 once head, body and that request passed
+    the buffer's limit; a chunked body at the cap was refused 413 when its
+    framing, or a request behind it, came after its head, and answered
+    when they came with it; and a chunked body over the cap behind a head
+    near its own cap was refused 400 and closed rather than 413 and
+    lingered (SPEC A20). Each is measured as the head path measures it:
+    the decoded body, and the raw bytes it cost.
+
+    covers: C18
+    """
+    var config = _tight_caps()
+    assert_equal(config.recv_buffer_limit(), 192)
+    var app = BodyLength()
+    var next = String("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+
+    var cl_head = _padded_head(
+        "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 64\r\n", 120
+    )
+    var cl = _exchange_with(app, config, [cl_head, String("b") * 64 + next])
+    assert_equal(_answers(cl[0]), 2, "a Content-Length body at the cap: " + cl[0])
+    assert_true("body=64" in cl[0], cl[0])
+    assert_false(cl[1], "the connection closed behind a body within the caps")
+
+    var chunked = String(
+        "POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    var at_cap = String("40\r\n") + String("b") * 64 + "\r\n0\r\n\r\n"
+    var with_head = _exchange_with(app, config, [chunked + at_cap])
+    assert_equal(_answers(with_head[0]), 1, "with its head: " + with_head[0])
+    assert_true("body=64" in with_head[0], with_head[0])
+    var after_head = _exchange_with(app, config, [chunked, at_cap])
+    assert_equal(
+        _answers(after_head[0]), 1,
+        "a chunked body at the cap after its head: " + after_head[0],
+    )
+    assert_true("body=64" in after_head[0], after_head[0])
+
+    var under = String("32\r\n") + String("b") * 50 + "\r\n0\r\n\r\n"
+    var behind = _exchange_with(app, config, [chunked, under + next])
+    assert_equal(
+        _answers(behind[0]), 2,
+        "a chunked body under the cap with a request behind it: " + behind[0],
+    )
+    assert_true("body=50" in behind[0], behind[0])
+
+    var big_head = _padded_head(
+        "POST /d HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n", 120
+    )
+    var over = _exchange_with(
+        app, config, [big_head, String("50\r\n") + String("b") * 80 + "\r\n"]
+    )
+    assert_true(
+        "413 payload too large" in over[0],
+        "a chunked body over the cap behind a long head: " + over[0],
+    )
 
 
 def test_connect_is_answered_501_and_closed() raises:

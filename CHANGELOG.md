@@ -429,6 +429,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
   it to the system. A fragmented WebSocket message now reaches the
   application without being copied once more.
 
+- **A request body within `--max-body` is accepted however its bytes
+  arrive** (SPEC C18, fork review LF70). Three uploads within the limits
+  were refused depending on how the client's writes fell. A body whose
+  last bytes came in the same read as the next pipelined request was
+  answered `400 Bad Request` when the headers and body were both near
+  their limits; a chunked body at `--max-body` was refused `413` when its
+  chunks came after its headers and accepted when they came with them;
+  and a chunked body over the limit behind long headers got `400` and an
+  immediate close, where every other oversized body gets `413` and the
+  lingering close that lets a client still uploading read it. Each body is
+  now measured by its own size and, for a chunked one, what its framing
+  cost, as a body arriving with its headers always was.
+
 ### Changed
 
 - **A port outside 1-65535 is refused with exit 78, from a flag or the

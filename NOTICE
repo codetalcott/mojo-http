@@ -1858,6 +1858,18 @@ lightbug_http
         (review record LF25). The threshold is `buffer_size` instead when
         that is larger, so a configured read size past 64 KiB is kept.
 
+      - loop/request.mojo, server_config.mojo (2026-10-08): `_read_body`
+        no longer compares the whole receive buffer with
+        `recv_buffer_limit()`, and holds a chunked body to its decoded size
+        and its raw cost after each decode, as the head path does, where it
+        measured the decoded body plus the raw tail before decoding. The
+        buffer holds the head and the next pipelined request beside the
+        body: a `Content-Length` body with the next request in its last
+        read was refused 400, a chunked body at the cap 413 when its
+        framing or a request behind it came after the head, and a chunked
+        body over the cap behind a long head 400 and closed rather than
+        413 and lingered (review record LF70, SPEC C18).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
