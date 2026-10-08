@@ -8,6 +8,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **On Linux, a connection on a descriptor numbered 65536 or above no
+  longer disturbs another's timer, or the application's tick** (fork
+  review LF18, SPEC C11). Exposed: Linux servers whose descriptor limit
+  (`ulimit -n`) lets a connection reach descriptor 65536, m0serve and Mojo
+  applications alike. The epoll backend kept each timer in one of five
+  regions of 65536 slots, so a higher descriptor's timer took another's
+  slot: an SSE stream on descriptor 65536 re-armed the `M0_APP_TICK_MS`
+  tick and, when it ended, stopped the tick for good; a request body read
+  on descriptor 131072 + k re-armed descriptor k's heartbeat; and a stream
+  at or above 131072 got no heartbeat, a body at or above 262144 no read
+  timeout. Every timer now has a slot of its own below descriptor 2^20,
+  the ceiling Linux's default `fs.nr_open` sets.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

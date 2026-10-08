@@ -1385,6 +1385,14 @@ lightbug_http
         to fill; every caller's count was the span's own or now slices the
         span to it (review record LF20).
 
+      - c/epoll_backend.mojo (2026-10-08): `_timer_slot` is `fd * 5 +
+        kind` and `_timer_fds` a list that grows with the descriptors
+        timers are set for, starting at 1024 of them. The map was five
+        fixed regions of 65536, `kind * 65536 + fd`, so a descriptor at or
+        above 65536 took another kind's slot for a lower one (the SSE
+        heartbeat of 65536 the app tick's), and one past the regions was
+        dropped (review record LF18).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

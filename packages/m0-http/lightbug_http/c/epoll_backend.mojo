@@ -8,12 +8,8 @@ On Linux, timers are implemented via timerfd + epoll. The high bit (bit 63)
 of the epoll data field marks a timerfd event so event_filter() can return
 EVFILT_TIMER; bits 0–62 carry the original ident for event_ident().
 
-_timer_fds layout (5 * 65536 entries, value = timerfd or -1):
-  slot 0: header     ident in [0x100000, 0x10FFFF]  → index = ident - 0x100000
-  slot 1: body       ident in [0x200000, 0x20FFFF]  → index = 65536 + ident - 0x200000
-  slot 2: idle       ident in [0x300000, 0x30FFFF]  → index = 2*65536 + ident - 0x300000
-  slot 3: heartbeat  ident in [0x400000, 0x40FFFF]  → index = 3*65536 + ident - 0x400000
-  slot 4: app tick   ident 0x500000 (one per loop)  → index = 4*65536 + ident - 0x500000
+`_timer_fds` holds each timer's timerfd (or -1) at `_timer_slot(ident)`,
+`fd * 5 + kind`, and grows with the descriptors timers are set for.
 """
 
 from lightbug_http.c.epoll import (
@@ -40,37 +36,35 @@ comptime _MAX_EVENTS = 64
 # The remaining 63 bits carry the original ident value.
 comptime _TIMER_FLAG: UInt64 = 1 << 63
 
-# Timer slot bases — must match loop/state.mojo's TIMER_HEADER/BODY/IDLE/
-# SSE_HEARTBEAT/APP_TICK.
-comptime _TIMER_HEADER: UInt = 0x100000
-comptime _TIMER_BODY: UInt = 0x200000
-comptime _TIMER_IDLE: UInt = 0x300000
-comptime _TIMER_SSE_HEARTBEAT: UInt = 0x400000
-comptime _TIMER_APP_TICK: UInt = 0x500000
-comptime _TIMER_FD_MAP_SIZE: Int = 5 * 65536
+# A timer's ident is `TIMER_<kind> + fd` (loop/state.mojo): the kinds are
+# 0x100000 apart from 0x100000 (header, body, idle, SSE heartbeat, app
+# tick), so the kind is the ident's bits from 20 up and the fd the 20 below.
+comptime _TIMER_KIND_SHIFT = 20
+comptime _TIMER_KINDS = 5
+comptime _TIMER_FD_MASK: UInt = (1 << 20) - 1
+comptime _TIMER_MAP_START = _TIMER_KINDS * 1024
+"""Slots the map starts with: every kind for descriptors below 1024."""
 
 
 @always_inline
 def _timer_slot(ident: UInt) -> Int:
-    """Map a timer ident to an index in the _timer_fds flat array.
+    """A timer ident's index in `_timer_fds`: `fd * 5 + kind`, so every
+    (kind, descriptor) pair has a slot of its own at any descriptor number,
+    and the map grows with the highest descriptor a timer is set for; -1
+    for an ident outside the five kinds.
 
-    Layout (4 * 65536 entries):
-      slot 0: header     ident in [0x100000, 0x10FFFF]  → index = ident - 0x100000
-      slot 1: body       ident in [0x200000, 0x20FFFF]  → index = 65536 + ident - 0x200000
-      slot 2: idle       ident in [0x300000, 0x30FFFF]  → index = 2*65536 + ident - 0x300000
-      slot 3: heartbeat  ident in [0x400000, 0x40FFFF]  → index = 3*65536 + ident - 0x400000
-      slot 4: app tick   ident 0x500000 (one per loop)  → index = 4*65536 + ident - 0x500000
+    The slot was `kind * 65536 + fd` in a map of five 65536-entry regions,
+    so a descriptor at or above 65536 took the next kind's slot for a lower
+    one -- descriptor 65536's heartbeat the app tick's -- and adding or
+    deleting its timer re-armed or closed the other's timerfd (review
+    record LF18). A descriptor at or above 2^20 cannot be told from a lower
+    one by its ident at all; it needs `fs.nr_open` raised past its default
+    of 1048576.
     """
-    if ident >= _TIMER_APP_TICK:
-        return 4 * 65536 + Int(ident - _TIMER_APP_TICK)
-    elif ident >= _TIMER_SSE_HEARTBEAT:
-        return 3 * 65536 + Int(ident - _TIMER_SSE_HEARTBEAT)
-    elif ident >= _TIMER_IDLE:
-        return 2 * 65536 + Int(ident - _TIMER_IDLE)
-    elif ident >= _TIMER_BODY:
-        return 65536 + Int(ident - _TIMER_BODY)
-    else:
-        return Int(ident - _TIMER_HEADER)
+    var kind = Int(ident >> _TIMER_KIND_SHIFT) - 1
+    if kind < 0 or kind >= _TIMER_KINDS:
+        return -1
+    return Int(ident & _TIMER_FD_MASK) * _TIMER_KINDS + kind
 
 
 
@@ -84,7 +78,7 @@ struct EpollBackend(ConstructibleBackend):
     var _events: Pointer[UInt32, MutUntrackedOrigin]
     var _n_ready: Int
     # _timer_fds[_timer_slot(ident)] = timerfd value, or -1 if no timer.
-    var _timer_fds: Pointer[Int32, MutUntrackedOrigin]
+    var _timer_fds: List[Int32]
     # The kernel refused `epoll_pwait2` once; `wait_ns` rounds up to
     # `epoll_wait`'s milliseconds from then on.
     var _no_pwait2: Bool
@@ -97,13 +91,11 @@ struct EpollBackend(ConstructibleBackend):
         self._events = unsafe_alloc[UInt32](count=_MAX_EVENTS * EPOLL_EVENT_WORDS)
         for i in range(_MAX_EVENTS * EPOLL_EVENT_WORDS):
             self._events[unsafe_offset=i] = 0
-        self._timer_fds = unsafe_alloc[Int32](count=_TIMER_FD_MAP_SIZE)
-        for i in range(_TIMER_FD_MAP_SIZE):
-            self._timer_fds[unsafe_offset=i] = -1
+        self._timer_fds = List[Int32](length=_TIMER_MAP_START, fill=-1)
         self._n_ready = 0
         self._no_pwait2 = False
-    # Note: _events and _timer_fds are process-lifetime allocations.
-    # No __del__ needed; the OS reclaims them on process exit.
+    # Note: _events is a process-lifetime allocation.
+    # No __del__ needed; the OS reclaims it on process exit.
 
     # --- EventLoopBackend methods ---
 
@@ -240,9 +232,11 @@ struct EpollBackend(ConstructibleBackend):
 
     def try_add_timer(mut self, ident: UInt, timeout_ms: Int):
         var slot = _timer_slot(ident)
-        if slot < 0 or slot >= _TIMER_FD_MAP_SIZE:
+        if slot < 0:
             return
-        var existing_tfd = Int(self._timer_fds[unsafe_offset=slot])
+        if slot >= len(self._timer_fds):
+            self._timer_fds.resize(max(slot + 1, 2 * len(self._timer_fds)), -1)
+        var existing_tfd = Int(self._timer_fds[slot])
         if existing_tfd >= 0:
             # Re-arm the existing timerfd (avoids epoll re-registration).
             try:
@@ -269,13 +263,13 @@ struct EpollBackend(ConstructibleBackend):
             close_fd(tfd)
             return
 
-        self._timer_fds[unsafe_offset=slot] = Int32(tfd)
+        self._timer_fds[slot] = Int32(tfd)
 
     def try_delete_timer(mut self, ident: UInt):
         var slot = _timer_slot(ident)
-        if slot < 0 or slot >= _TIMER_FD_MAP_SIZE:
+        if slot < 0 or slot >= len(self._timer_fds):
             return
-        var tfd = Int(self._timer_fds[unsafe_offset=slot])
+        var tfd = Int(self._timer_fds[slot])
         if tfd < 0:
             return
         try:
@@ -283,4 +277,4 @@ struct EpollBackend(ConstructibleBackend):
         except:
             pass
         close_fd(tfd)
-        self._timer_fds[unsafe_offset=slot] = -1
+        self._timer_fds[slot] = -1
