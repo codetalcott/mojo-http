@@ -18,7 +18,7 @@ from lightbug_http.address import NetworkType, TCPAddr
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import recv, send, spare_capacity
-from lightbug_http.socket import Socket
+from lightbug_http.socket import EOF, Socket
 
 comptime _UNTOUCHED: UInt8 = 0xAA
 comptime _SENT: UInt8 = 0x41
@@ -163,6 +163,39 @@ def test_a_receive_into_a_full_buffer_reads_what_is_waiting() raises:
     assert_equal(n, 2, "a receive into a Bytes() did not read what was waiting")
     assert_equal(len(empty), 2)
     close_fd(pair[1])
+
+
+def test_a_receive_at_the_peers_eof_raises_eof() raises:
+    """`Socket.receive` reports the peer's EOF as `EOF`, after the bytes the
+    peer sent before it, and leaves the buffer as it was; both forms.
+
+    covers: A32
+    """
+    var pair = _stream_pair()
+    var out = List[UInt8](length=3, fill=_SENT)
+    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out), 0)), 3)
+    close_fd(pair[1])
+    var sock = _adopt(pair[0])
+
+    var buf = List[UInt8](capacity=16)
+    assert_equal(_receive(sock, buf, "a receive of the bytes before EOF"), 3)
+    var eof = False
+    var text = String()
+    try:
+        _ = sock.receive(buf)
+    except e:
+        eof = e.isa[EOF]()
+        text = String(e)
+    assert_true(eof, "a receive at the peer's EOF did not raise EOF: " + text)
+    assert_equal(text, "EOF")
+    assert_equal(len(buf), 3, "a receive at EOF changed the buffer")
+
+    eof = False
+    try:
+        _ = sock.receive(16)
+    except e:
+        eof = e.isa[EOF]()
+    assert_true(eof, "receive(size) at the peer's EOF did not raise EOF")
 
 
 def main() raises:

@@ -551,6 +551,45 @@ def test_a_closed_socket_does_not_make_what_took_its_number_listen() raises:
     close_fd(old[1])
 
 
+def test_a_closed_socket_names_nothing() raises:
+    """`get_sock_name` on a closed socket raises `SocketClosedError` without
+    asking the kernel, so it never reports the address of the socket that
+    took its number; on an open descriptor that is not a socket it raises
+    the call's own error.
+
+    covers: D1
+    """
+    var old = _stream_pair()
+    var number = old[0]
+    var sock = _adopt(number)
+    var fresh = _tcp_socket()
+    sock.close()
+    _move_to(fresh, number)
+    _ = external_call["listen", c_int, c_int, c_int](c_int(number), c_int(8))
+    assert_true(_local_port(number) > 0, "the newcomer is not bound")
+
+    var text: String
+    try:
+        var named = sock.get_sock_name()
+        text = String("named ", named[0], ":", named[1])
+    except e:
+        text = String(e)
+    assert_equal(text, "SocketClosedError")
+    _ = sock^
+
+    var not_a_socket = _adopt(Int(external_call["dup", c_int, c_int](c_int(2))))
+    text = String()
+    try:
+        _ = not_a_socket.get_sock_name()
+    except e:
+        text = String(e)
+    assert_true(text.startswith("getsockname: "), text)
+    assert_true(text.find(String("(errno ", Int(ErrNo.ENOTSOCK.value), ")")) != -1, text)
+
+    close_fd(number)
+    close_fd(old[1])
+
+
 def test_a_closed_listener_hands_over_no_number() raises:
     """`into_fd` on a closed listener gives its new owner no descriptor, so
     the close that owner makes, as the event loop's drain does, leaves the
