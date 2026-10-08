@@ -140,7 +140,6 @@ struct LoopState(Movable):
     chunked stream that ends takes it back from here
     (`_chunked_stream_ends`). `_finish_response` writes it for every
     response, so no slot inherits a previous connection's."""
-    var fd_map_size: Int
     var fd_to_slot: List[Int]
     var active_count: Int
     var metrics: ServerMetrics
@@ -260,7 +259,6 @@ struct LoopState(Movable):
         self.slot_idle_deadline = slot_idle_deadline^
         self.slot_ws_state = slot_ws_state^
         self.slot_close_after_stream = slot_close_after_stream^
-        self.fd_map_size = fd_map_size
         self.fd_to_slot = fd_to_slot^
         self.active_count = 0
         self.metrics = metrics^
@@ -773,6 +771,11 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     st.slot_sse[slot] = False
     st.slot_ws[slot] = False
     st.slot_ws_state[slot].reset()
+    # The answer still owed goes with the connection. Left, a client that
+    # vanished with a large response unsent held its buffer until the slot
+    # answered someone else (review record LF26).
+    st.slot_response[slot] = Bytes()
+    st.slot_send_offset[slot] = 0
     # A client that vanished mid-transfer still leaves an open file behind.
     # This is the one place every close goes through, which is why the
     # release lives here rather than beside each caller.

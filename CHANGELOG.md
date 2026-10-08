@@ -50,6 +50,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   for the client's Close without reading until the application resumes
   it, or until the two-second close linger ends it.
 
+### Removed
+
+- **`LoopState.fd_map_size`, and the event loop's handling of an idle
+  timer**: the field was set and never read, and nothing arms an idle
+  timer (idle deadlines are swept), so its branch could not run. Nothing
+  served changes. A connection that closes with part of a response still
+  unsent now gives that buffer back at once, rather than when its slot
+  next answers someone.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

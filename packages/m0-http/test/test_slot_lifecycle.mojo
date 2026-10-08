@@ -64,7 +64,7 @@ from lightbug_http.loop.state import (
     _stream_idle,
     _ws_linger,
 )
-from lightbug_http.loop.state import _farewell_streams
+from lightbug_http.loop.state import _close_slot, _farewell_streams
 from lightbug_http.websocket import WS_CLOSE_GOING_AWAY
 from lightbug_http.c.socket import ShutdownOption, shutdown
 from lightbug_http.loop.response import _finish_response
@@ -397,6 +397,29 @@ def test_a_close_landing_leaves_a_suspended_sockets_reads_alone() raises:
     _ws_linger(backend, st, other, FD)
     assert_true(st.slot_read_armed[other])
     assert_true(backend.read)
+
+
+def test_a_closed_slot_lets_go_of_its_response() raises:
+    """`_close_slot`, the one place every close goes through, releases the
+    answer still owed (review record LF26): a client that vanished with a
+    large response unsent held its buffer until the slot answered someone
+    else."""
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = pair[0]
+    st.fd_to_slot[pair[0]] = slot
+    st.active_count = 1
+    st.slot_response[slot] = Bytes(length=1 << 20, fill=0x61)
+    st.slot_send_offset[slot] = 4096
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    _close_slot(app, backend, st, slot, pair[0])
+    assert_equal(st.slot_fds[slot], UNUSED)
+    assert_equal(st.slot_response[slot].capacity(), 0, "the closed slot kept its response")
+    assert_equal(st.slot_send_offset[slot], 0)
+    close(FileDescriptor(pair[1]))
 
 
 def test_a_request_begins_with_no_idle_deadline() raises:
