@@ -116,7 +116,6 @@ struct HeaderKeyNotFoundError(Movable, Writable, TrivialRegisterPassable):
         writer.write("HeaderKeyNotFoundError: Key not found in headers")
 
 
-
 @fieldwise_init
 struct InvalidHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when the HTTP request is malformed."""
@@ -125,14 +124,12 @@ struct InvalidHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
         writer.write("InvalidHTTPRequestError: Not a valid HTTP request")
 
 
-
 @fieldwise_init
 struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when the HTTP request is incomplete (need more data)."""
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("IncompleteHTTPRequestError: Incomplete HTTP request")
-
 
 
 @fieldwise_init
@@ -147,14 +144,12 @@ struct UnsupportedHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
         writer.write("UnsupportedHTTPRequestError: Not implemented by this server")
 
 
-
 @fieldwise_init
 struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when buffer has no data available."""
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("EmptyBufferError: No data available in buffer")
-
 
 
 @fieldwise_init
@@ -201,7 +196,6 @@ struct RequestParseError(Movable, Writable):
 
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
-
 
 
 @fieldwise_init
@@ -283,7 +277,6 @@ struct Header(Copyable, Writable):
 
     var key: String
     var value: String
-
 
     def write_to[T: Writer, //](self, mut writer: T):
         writer.write(self.key, ": ", self.value, lineBreak)
@@ -992,7 +985,6 @@ struct Headers(Copyable, Writable):
                 if span_breaks_header_line(Span(latin1)):
                     continue
                 writer.write_header_line(name, Span(latin1))
-
 
     def __eq__(self, other: Headers) -> Bool:
         if len(self._idx) != len(other._idx):

@@ -50,8 +50,6 @@ struct ServerError(Movable, Writable):
             writer.write(self.value[Error])
 
 
-
-
 # ServerConfig imported from lightbug_http.server_config to break circular
 # dependency between server.mojo and event_loop.mojo.
 
@@ -336,7 +334,6 @@ struct ProvisionError(Movable, Writable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(self.value[ProvisionPoolExhaustedError])
-
 
 
 struct ProvisionPool(Movable):

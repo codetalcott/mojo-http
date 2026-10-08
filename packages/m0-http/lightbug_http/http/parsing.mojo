@@ -191,14 +191,12 @@ struct ParseError(Movable, Writable, TrivialRegisterPassable):
         writer.write("ParseError: Invalid HTTP syntax")
 
 
-
 @fieldwise_init
 struct IncompleteError(Movable, Writable, TrivialRegisterPassable):
     """Need more data to complete parsing."""
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("IncompleteError: Need more data")
-
 
 
 @fieldwise_init
@@ -224,7 +222,6 @@ struct HTTPParseError(Movable, Writable):
 
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
-
 
 
 @always_inline

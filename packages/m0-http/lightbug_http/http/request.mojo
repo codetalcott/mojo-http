@@ -392,4 +392,3 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         writer.write(lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
-
