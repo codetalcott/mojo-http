@@ -508,10 +508,11 @@ struct WSState(Movable):
     def reset(mut self):
         """Back to a fresh connection's state (slot reuse).
 
-        The buffers are replaced, not cleared: a message still being
-        assembled, or a frame still arriving, when the socket closed would
-        otherwise stay allocated for the slot's next socket, up to the
-        message cap each (review record LF25).
+        The buffers are replaced, not cleared: cleared, a message still
+        being assembled, or a frame still arriving, when the socket closed
+        stayed allocated into the slot's next socket, up to the message cap
+        each, until that socket's first fragmented message or first whole
+        frame replaced it (review record LF25).
         """
         self.buffer = List[UInt8]()
         self.frag_opcode = -1
@@ -698,7 +699,8 @@ struct WSState(Movable):
                         return self._fail(res^, WS_CLOSE_INVALID_DATA)
                     # Moved out, not copied: the copy cost a second pass
                     # over the message, and the cleared original kept the
-                    # capacity of the largest message the socket ever sent
+                    # message's capacity until the next fragmented message
+                    # on the slot, through a close and into its next socket
                     # (review record LF25).
                     res.msg_opcodes.append(self.frag_opcode)
                     res.msg_payloads.append(self.frag_payload^)

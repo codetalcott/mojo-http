@@ -955,10 +955,10 @@ jobs:
         run: uv run poe smoke-large-request
       # What a large request leaves behind. Closing a connection cleared its
       # slot's receive buffer, which keeps the capacity, and a slot is never
-      # rebuilt: 64 concurrent 4 MiB uploads pinned some 400 MB for the life
-      # of the process, and each 64 more on other slots pinned that again
+      # rebuilt: 64 concurrent 4 MiB uploads pinned some 400 MB to the slots
+      # they used, and each 64 more on other slots pinned as much again
       # (review record LF25). The probe reads the server's own memory.
-      - name: Smoke test the memory a closed connection gives back
+      - name: Smoke test that a closed connection's buffers serve other slots
         run: uv run poe smoke-slot-buffers
       # RFC 9112 §9.3: pipelined requests get no readiness event of their
       # own — the read that completes request N consumed request N+1's

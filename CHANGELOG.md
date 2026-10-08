@@ -222,17 +222,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   text says what it has always counted: requests answered, as each
   response's head lands, not requests received.
 
-- **A connection that took a large upload gives the memory back when it
-  closes** (fork review LF25, SPEC C17, I42). Exposed: m0serve and Mojo
-  applications that accept large request bodies. A connection's receive
-  buffer grows to the largest request it holds, and closing the connection
-  kept that buffer for the next connection on the same slot: a burst of 64
-  concurrent 4 MB uploads left the process holding about 400 MB for the
-  rest of its life, and the next burst on other slots that much again. A
-  buffer grown past 64 KB is now released when its connection closes, as is
-  the buffer a large response left on a keep-alive connection, and a
-  WebSocket's buffers when the socket closes. A fragmented WebSocket message
-  now reaches the application without being copied once more.
+- **The memory a large upload grew is reused by later connections, not
+  kept for its connection's slot** (fork review LF25, SPEC C17, I42).
+  Exposed: m0serve and Mojo applications that accept large request bodies.
+  A connection's receive buffer grows to the largest request it holds, and
+  closing the connection kept that buffer for the next connection on the
+  same slot alone: a burst of 64 concurrent 4 MB uploads pinned about
+  400 MB to the slots it used, and a second burst arriving while those slots
+  were busy added as much again. A buffer grown past 64 KB now goes back to
+  the allocator when its connection closes, as does the buffer a large
+  response left on a keep-alive connection, and a WebSocket's buffers when
+  the socket closes, so later bursts reuse that memory instead of adding
+  to it. The process's resident size after a burst can still stay near its
+  peak: the allocator keeps what is freed for reuse rather than returning
+  it to the system. A fragmented WebSocket message now reaches the
+  application without being copied once more.
 
 ### Changed
 

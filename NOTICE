@@ -1640,9 +1640,12 @@ lightbug_http
         `WSState.feed` moves an assembled fragmented message out (`^`)
         where it copied it and cleared the original, and `WSState.reset`
         replaces both buffers where it cleared them (SPEC C17, I42).
-        Cleared, each kept the capacity of the largest request, response
-        or message its slot had held, for the life of the process (review
-        record LF25).
+        Cleared, an HTTP buffer kept the capacity of the largest request or
+        response its slot had held, pinned to that slot for the life of the
+        process, and a WebSocket buffer the capacity of its slot's last
+        fragmented message or partial frame until the next replaced it
+        (review record LF25). The threshold is `buffer_size` instead when
+        that is larger, so a configured read size past 64 KiB is kept.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

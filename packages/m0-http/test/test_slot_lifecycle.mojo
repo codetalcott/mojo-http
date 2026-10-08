@@ -477,6 +477,29 @@ def test_a_closed_slot_keeps_an_ordinary_buffer() raises:
     assert_equal(st.provision_pool.provisions[slot].encoding_buffer.capacity(), SLOT_BUFFER_KEEP)
 
 
+def test_a_closed_slot_keeps_buffers_within_its_configured_size() raises:
+    """A server configured to read more than `SLOT_BUFFER_KEEP` at a time
+    gives every slot buffers that size from its first connection, and those
+    are the slot's ordinary buffers: past `SLOT_BUFFER_KEEP` the threshold
+    is the configured size, so a close does not trade each for a new one of
+    the same size. Held with buffers between the two sizes, which a close
+    must leave as they are; a replacement AT the configured size cannot be
+    told from no replacement, since the allocator hands the block it just
+    took back straight back (tried: the same address both ways)."""
+    var config = _config()
+    config.socket_buffer_size = 4 * SLOT_BUFFER_KEEP
+    var st = _loop(config)
+    var slot = _close_with_buffers(st, 2 * SLOT_BUFFER_KEEP, 2 * SLOT_BUFFER_KEEP)
+    assert_equal(
+        st.provision_pool.provisions[slot].recv_buffer.capacity(), 2 * SLOT_BUFFER_KEEP,
+        "the close replaced a receive buffer within the configured size",
+    )
+    assert_equal(
+        st.provision_pool.provisions[slot].encoding_buffer.capacity(), 2 * SLOT_BUFFER_KEEP,
+        "the close replaced an encode buffer within the configured size",
+    )
+
+
 def test_a_request_begins_with_no_idle_deadline() raises:
     """B2: the keep-alive deadline bounds the wait BETWEEN requests, and a
     request's first bytes end it -- left standing it cut an upload begun

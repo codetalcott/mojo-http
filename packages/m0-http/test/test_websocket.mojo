@@ -296,7 +296,7 @@ def test_an_assembled_message_is_moved_out_whole() raises:
     """A fragmented message reaches the application in the buffer it was
     assembled in, every byte in place, and the parser keeps nothing of it
     (review record LF25): it was copied out, and the cleared original kept
-    the capacity of the largest message the socket ever sent.
+    the message's capacity until the next fragmented message on the slot.
 
     The test reserves the whole message in the parser's buffer before the
     last fragment, so the last append cannot move it; the message the
@@ -343,7 +343,8 @@ def test_a_closed_sockets_parser_lets_go_of_its_buffers() raises:
     """`reset`, which `_close_slot` calls when a WebSocket's slot closes,
     gives back a fragmented message still being assembled and a frame
     still arriving (review record LF25): cleared, both kept their capacity
-    for the slot's next socket, up to the message cap each.
+    into the slot's next socket, up to the message cap each, until that
+    socket's first fragmented message or first whole frame replaced it.
 
     covers: I42
     """
