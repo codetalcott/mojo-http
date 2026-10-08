@@ -36,13 +36,12 @@ comptime EPOLL_CTL_ADD: c_int = 1
 comptime EPOLL_CTL_DEL: c_int = 2
 comptime EPOLL_CTL_MOD: c_int = 3
 
-# --- epoll_create1 flags ---
-comptime EPOLL_CLOEXEC: c_int = 0x80000  # O_CLOEXEC on Linux
+# `epoll_create1` and `timerfd_create` take c/fcntl.mojo's `O_CLOEXEC` and
+# `O_NONBLOCK`: Linux defines EPOLL_CLOEXEC, TFD_CLOEXEC and TFD_NONBLOCK
+# as those.
 
 # --- timerfd constants ---
 comptime CLOCK_MONOTONIC: c_int = 1
-comptime TFD_NONBLOCK: c_int = 0x800    # O_NONBLOCK on Linux
-comptime TFD_CLOEXEC: c_int = 0x80000  # O_CLOEXEC on Linux
 
 
 # glibc packs `struct epoll_event` ONLY on x86_64:

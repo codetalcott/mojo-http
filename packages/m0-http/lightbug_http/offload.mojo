@@ -161,7 +161,7 @@ channel are sized for that many.
 from std.collections import Optional
 from std.ffi import ErrNo, c_int, external_call
 
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import (
     send, recv, close, setsockopt, SocketOption, SOL_SOCKET,
 )

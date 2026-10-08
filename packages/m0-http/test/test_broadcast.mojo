@@ -15,7 +15,7 @@ from lightbug_http.broadcast import (
     encode_bus_frame, decode_bus_frame, drain_bus_channel,
     publish_to_channels,
 )
-from lightbug_http.c.kqueue import set_nonblocking, is_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking, is_nonblocking
 from lightbug_http.c.socketpair import socketpair_dgram
 
 from src.multiworker import SharedAtomics, shared_fetch_add, shared_load, shared_store

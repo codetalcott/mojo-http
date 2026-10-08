@@ -34,7 +34,7 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http.address import NetworkType, TCPAddr, binary_port_to_int
 from lightbug_http.c.fcntl import F_GETFD, _fcntl
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.network import SocketAddress
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.socket import (

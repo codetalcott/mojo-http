@@ -1,9 +1,9 @@
 """`kqueue` FFI wrappers for non-blocking IO multiplexing on macOS.
 
-Provides kqueue() and kevent() wrappers, and `set_nonblocking` over
-`fcntl.mojo`'s `_fcntl` (the program's one `fcntl` declaration), following
-the same FFI pattern as socket.mojo. Used by event_loop.mojo to implement a
-single-threaded, non-blocking HTTP server.
+Provides kqueue() and kevent() wrappers, following the same FFI pattern as
+socket.mojo, and the filter and flag constants `EventLoopBackend` uses as
+its canonical names on both platforms. Used by `KqueueBackend` to
+implement a single-threaded, non-blocking HTTP server.
 """
 
 from std.memory import stack_allocation
@@ -12,8 +12,6 @@ from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget, size_of
 
 from lightbug_http.c.aliases import ExternalMutPointer
-from lightbug_http.c.socket import O_NONBLOCK, setsockopt
-from lightbug_http.c.fcntl import _fcntl
 
 
 # --- kqueue filter constants ---
@@ -28,10 +26,6 @@ comptime EV_ONESHOT: UInt16 = 0x0010
 comptime EV_CLEAR: UInt16 = 0x0020
 comptime EV_EOF: UInt16 = 0x8000
 comptime EV_ERROR: UInt16 = 0x4000
-
-# --- fcntl commands ---
-comptime F_GETFL: c_int = 3
-comptime F_SETFL: c_int = 4
 
 
 @fieldwise_init
@@ -180,53 +174,3 @@ def kevent_poll_ns(
             return 0
         raise Error("kevent_poll failed, errno: ", errno)
     return Int(result)
-
-
-def set_nonblocking(fd: FileDescriptor) raises:
-    """Set a file descriptor to non-blocking mode via fcntl().
-
-    Works on both platforms — including ARM64 macOS, where this was a
-    silent no-op until `_fcntl` learned the Darwin variadic convention (see
-    its docstring). Callers written while the no-op stood carry their own
-    belt-and-braces (MSG_DONTWAIT on the broadcast bus, event_data-based
-    accept counting on the listen socket); those stay, because they are
-    also correct and they document the history.
-    """
-    var fd_c = c_int(fd.value)
-    var flags = _fcntl(fd_c, F_GETFL)
-    if flags == -1:
-        var errno = get_errno()
-        raise Error("fcntl F_GETFL failed, errno: ", errno)
-    var result = _fcntl(fd_c, F_SETFL, flags | c_int(O_NONBLOCK))
-    if result == -1:
-        var errno = get_errno()
-        raise Error("fcntl F_SETFL failed, errno: ", errno)
-
-
-def set_tcp_nodelay(fd: FileDescriptor):
-    """Disable Nagle's algorithm on a TCP socket (best-effort).
-
-    The event loop writes each response with a single send(), so there is
-    nothing for Nagle to usefully coalesce — it only delays the response
-    when a previous small segment is still unacknowledged. Every mainstream
-    server (Go net/http, nginx, node) disables it on accepted sockets.
-    IPPROTO_TCP=6 and TCP_NODELAY=1 on both Linux and macOS.
-    """
-    try:
-        setsockopt(fd, c_int(6), c_int(1), c_int(1))
-    except:
-        pass
-
-
-def is_nonblocking(fd: FileDescriptor) raises -> Bool:
-    """Whether O_NONBLOCK is set — F_GETFL truth, not what a caller hoped.
-
-    F_GETFL takes no variadic argument, so it has always been reliable on
-    every platform; that is what makes this the right probe for asserting
-    `set_nonblocking` actually took effect.
-    """
-    var flags = _fcntl(c_int(fd.value), F_GETFL)
-    if flags == -1:
-        var errno = get_errno()
-        raise Error("fcntl F_GETFL failed, errno: ", errno)
-    return (Int(flags) & O_NONBLOCK) != 0

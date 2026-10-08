@@ -24,7 +24,7 @@ queues them with `notify_frame` exactly as if it had broadcast them itself.
 """
 
 
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import (
     send, recv, setsockopt, SocketOption, SOL_SOCKET,
 )

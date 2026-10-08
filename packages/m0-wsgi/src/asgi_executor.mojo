@@ -41,7 +41,7 @@ from std.collections import Optional
 
 from lightbug_http.accept_share import AcceptShare
 from lightbug_http.broadcast import encode_bus_frame
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError

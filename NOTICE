@@ -1350,6 +1350,22 @@ lightbug_http
         test/loopback.mojo, `connect` and `create_connection` over a
         literal address (review record LF26, owner decision 6).
 
+      - c/fcntl.mojo, c/kqueue.mojo, c/socket.mojo, c/pipe.mojo,
+        c/socketpair.mojo, c/fdpass.mojo, c/epoll.mojo,
+        c/epoll_backend.mojo (2026-10-08): one declaration of each, in the
+        module that owns it. `close` is bound once, `c/socket.mojo`'s
+        `_close`, which `close_fd` and the epoll backend's timerfd closes
+        call, where five sites each declared it. `SOL_SOCKET` is
+        c/socket.mojo's alone (c/fdpass.mojo had a copy). `O_CLOEXEC`
+        and `O_NONBLOCK` are c/fcntl.mojo's, with `F_GETFL`, `F_SETFL`,
+        `set_nonblocking` and `is_nonblocking`, which lived in
+        c/kqueue.mojo and serve Linux too; the copies of `O_CLOEXEC`
+        under four more names (`_O_CLOEXEC_LINUX`, `_SOCK_CLOEXEC_LINUX`,
+        `EPOLL_CLOEXEC`, `TFD_CLOEXEC`) and `TFD_NONBLOCK` are gone.
+        `set_tcp_nodelay` is c/socket.mojo's, naming `IPPROTO_TCP` and
+        `TCP_NODELAY` where it passed 6 and 1. c/kqueue.mojo now imports
+        nothing from the package (review record LF28).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

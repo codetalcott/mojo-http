@@ -47,7 +47,8 @@ from lightbug_http.accept_share import (
     STATE_PARKED,
 )
 from lightbug_http.c.fdpass import RECV_FD_EMPTY, send_fd
-from lightbug_http.c.kqueue import EVFILT_READ, set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
+from lightbug_http.c.kqueue import EVFILT_READ
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import recv, send

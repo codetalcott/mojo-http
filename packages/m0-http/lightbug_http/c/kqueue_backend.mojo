@@ -6,7 +6,7 @@ can be parameterized over the backend type.
 
 from lightbug_http.c.kqueue import (
     kevent_t, ev_set, kqueue, kevent_register_one, kevent_register_pair,
-    kevent_poll, kevent_poll_ns, set_nonblocking,
+    kevent_poll, kevent_poll_ns,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT, EV_EOF, EV_ERROR,
 )

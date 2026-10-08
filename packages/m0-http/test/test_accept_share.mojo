@@ -25,9 +25,9 @@ from lightbug_http.accept_share import (
 )
 from lightbug_http.c.fdpass import (
     send_fd, recv_fd, FDPASS_MAX_PAYLOAD, RECV_FD_EMPTY, RECV_FD_REFUSED,
-    _CMSG_HDR, _SCM_RIGHTS, _SOL_SOCKET, _msghdr, _sendmsg, _store_u32,
+    _CMSG_HDR, _SCM_RIGHTS, _msghdr, _sendmsg, _store_u32,
 )
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import iovec_t, send, recv, close, setsockopt, SocketOption, SOL_SOCKET
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
@@ -103,10 +103,10 @@ def _send_raw(channel: Int, data_len: Int, fds: List[Int]) -> Bool:
         control.append(0)
     _store_u32(control, 0, UInt32(used))
     comptime if CompilationTarget.is_macos():
-        _store_u32(control, 4, UInt32(_SOL_SOCKET))
+        _store_u32(control, 4, UInt32(SOL_SOCKET))
         _store_u32(control, 8, UInt32(_SCM_RIGHTS))
     else:
-        _store_u32(control, 8, UInt32(_SOL_SOCKET))
+        _store_u32(control, 8, UInt32(SOL_SOCKET))
         _store_u32(control, 12, UInt32(_SCM_RIGHTS))
     for i in range(len(fds)):
         _store_u32(control, _CMSG_HDR + 4 * i, UInt32(fds[i]))

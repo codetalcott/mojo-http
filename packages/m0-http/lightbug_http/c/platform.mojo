@@ -20,10 +20,10 @@ backend is not), which is why the trait carries the initializer rather
 than this module carrying a `make_backend()`.
 
 Both backend modules are imported unconditionally, on both platforms. That
-is already the case for `c/kqueue.mojo` (imported by `broadcast.mojo`
-everywhere for `set_nonblocking`); the syscall wrappers are only emitted
-where a caller instantiates them, so the epoll arm costs macOS nothing and
-the kqueue arm costs Linux nothing.
+is already the case for `c/kqueue.mojo`, whose filter constants are the
+canonical names on both (`event_loop_backend.mojo`); the syscall wrappers
+are only emitted where a caller instantiates them, so the epoll arm costs
+macOS nothing and the kqueue arm costs Linux nothing.
 
 `scripts/check_docs.py::check_backend_seam` refuses a backend constructed
 anywhere but here, so the five sites cannot quietly come back.

@@ -11,7 +11,7 @@ from lightbug_http.c.network import (
     socklen_t,
 )
 from lightbug_http.c.socket_error import SysError
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
+from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
 
 
 @fieldwise_init
@@ -87,15 +87,11 @@ comptime IPPROTO_IPV6 = 41
 # TCP_KEEPIDLE on Linux and TCP_KEEPALIVE on macOS: one name here, two
 # numbers.
 comptime IPPROTO_TCP = 6
+comptime TCP_NODELAY = 1
 comptime TCP_KEEPIDLE = 0x10 if _IS_MACOS else 4
 comptime TCP_KEEPINTVL = 0x101 if _IS_MACOS else 5
 comptime TCP_KEEPCNT = 0x102 if _IS_MACOS else 6
 comptime IPV6_V6ONLY = 27 if _IS_MACOS else 26
-
-
-# File open option flags (platform-specific)
-comptime O_NONBLOCK = 4 if CompilationTarget.is_macos() else 2048
-comptime O_CLOEXEC = 16777216 if CompilationTarget.is_macos() else 524288
 
 
 # Socket Type constants. SOCK_STREAM is the only one a `Socket` is made
@@ -273,6 +269,21 @@ def set_tcp_keepalive(
     setsockopt(socket, c_int(IPPROTO_TCP), c_int(TCP_KEEPINTVL), c_int(interval_s))
     setsockopt(socket, c_int(IPPROTO_TCP), c_int(TCP_KEEPCNT), c_int(count))
     setsockopt(socket, c_int(SOL_SOCKET), SocketOption.SO_KEEPALIVE.value, c_int(1))
+
+
+def set_tcp_nodelay(fd: FileDescriptor):
+    """Disable Nagle's algorithm on a TCP socket (best-effort).
+
+    The event loop writes each response with a single send(), so there is
+    nothing for Nagle to usefully coalesce — it only delays the response
+    when a previous small segment is still unacknowledged. Every mainstream
+    server (Go net/http, nginx, node) disables it on accepted sockets.
+    `TCP_NODELAY` is 1 on both Linux and macOS.
+    """
+    try:
+        setsockopt(fd, c_int(IPPROTO_TCP), c_int(TCP_NODELAY), c_int(1))
+    except:
+        pass
 
 
 def _getsockname[

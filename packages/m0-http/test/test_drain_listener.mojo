@@ -29,7 +29,8 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.fcntl import F_GETFD, _fcntl
-from lightbug_http.c.kqueue import EVFILT_READ, set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
+from lightbug_http.c.kqueue import EVFILT_READ
 from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.socket import recv, send

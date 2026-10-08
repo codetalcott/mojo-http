@@ -19,8 +19,7 @@ _timer_fds layout (5 * 65536 entries, value = timerfd or -1):
 from lightbug_http.c.epoll import (
     itimerspec_t,
     EPOLLIN, EPOLLOUT, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP, EPOLLRDHUP,
-    EPOLL_CLOEXEC,
-    CLOCK_MONOTONIC, TFD_NONBLOCK, TFD_CLOEXEC,
+    CLOCK_MONOTONIC,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_EOF,
     EPOLL_EVENT_WORDS, epoll_event_mask, epoll_event_data,
@@ -28,8 +27,10 @@ from lightbug_http.c.epoll import (
     epoll_pwait2_ns,
     timerfd_create, set_timerfd_ms,
 )
+from lightbug_http.c.fcntl import O_CLOEXEC, O_NONBLOCK
+from lightbug_http.c.pipe import close_fd
 from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
-from std.ffi import c_int, external_call
+from std.ffi import c_int
 from std.memory.alloc import unsafe_alloc
 
 
@@ -89,7 +90,7 @@ struct EpollBackend(ConstructibleBackend):
     var _no_pwait2: Bool
 
     def __init__(out self) raises:
-        var epfd_raw = epoll_create1(EPOLL_CLOEXEC)
+        var epfd_raw = epoll_create1(c_int(O_CLOEXEC))
         if epfd_raw == -1:
             raise Error("epoll_create1 failed")
         self.epfd = FileDescriptor(Int(epfd_raw))
@@ -251,21 +252,21 @@ struct EpollBackend(ConstructibleBackend):
             return
 
         # Create a new timerfd, arm it, and register it with epoll.
-        var tfd_raw = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC)
+        var tfd_raw = timerfd_create(CLOCK_MONOTONIC, c_int(O_NONBLOCK | O_CLOEXEC))
         if tfd_raw == -1:
             return
         var tfd = Int(tfd_raw)
         try:
             set_timerfd_ms(tfd, timeout_ms)
         except:
-            _ = external_call["close", c_int, c_int](c_int(tfd))
+            close_fd(tfd)
             return
 
         # Encode original ident in epoll data (high bit set → timer event).
         try:
             epoll_ctl_add(self.epfd, tfd, EPOLLIN, _TIMER_FLAG | UInt64(ident))
         except:
-            _ = external_call["close", c_int, c_int](c_int(tfd))
+            close_fd(tfd)
             return
 
         self._timer_fds[unsafe_offset=slot] = Int32(tfd)
@@ -281,5 +282,5 @@ struct EpollBackend(ConstructibleBackend):
             epoll_ctl_del(self.epfd, tfd)
         except:
             pass
-        _ = external_call["close", c_int, c_int](c_int(tfd))
+        close_fd(tfd)
         self._timer_fds[unsafe_offset=slot] = -1

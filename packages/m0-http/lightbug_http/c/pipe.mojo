@@ -12,19 +12,13 @@ from std.memory.alloc import unsafe_alloc
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import ExternalMutPointer
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
-
-comptime _O_CLOEXEC_LINUX = 0x80000
+from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
+from lightbug_http.c.socket import _close
 
 
 def _pipe(fds: ExternalMutPointer[c_int]) -> c_int:
     """Raw pipe() syscall."""
     return external_call["pipe", c_int](fds)
-
-
-def _close(fd: c_int) -> c_int:
-    """Raw close() syscall."""
-    return external_call["close", c_int, c_int](fd)
 
 
 def close_fd(fd: Int):
@@ -132,7 +126,7 @@ def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
         ret = _pipe(fds)
     else:
         # pipe2(O_CLOEXEC): born close-on-exec, with no window.
-        ret = external_call["pipe2", c_int](fds, c_int(_O_CLOEXEC_LINUX))
+        ret = external_call["pipe2", c_int](fds, c_int(O_CLOEXEC))
     if ret == -1:
         var errno = get_errno()
         fds.unsafe_free()

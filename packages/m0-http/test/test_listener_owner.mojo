@@ -36,7 +36,7 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from lightbug_http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.address import NetworkType
 from lightbug_http.c.fcntl import F_DUPFD_CLOEXEC, F_GETFD, _fcntl
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.pipe import ShutdownHandle, close_fd, create_shutdown_pipe
 from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.process import (

@@ -35,9 +35,9 @@ from std.time import perf_counter_ns
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.kqueue import (
-    EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
+    EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE,
 )
-from lightbug_http.c.fcntl import dup_cloexec
+from lightbug_http.c.fcntl import dup_cloexec, set_nonblocking
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.process import getpid
 from lightbug_http.c.socket import close, recv, send

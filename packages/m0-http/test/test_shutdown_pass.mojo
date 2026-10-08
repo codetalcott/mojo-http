@@ -24,8 +24,9 @@ from std.time import perf_counter_ns
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.broadcast import encode_bus_frame
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.kqueue import (
-    EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
+    EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE,
 )
 from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.platform import MSG_DONTWAIT

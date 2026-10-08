@@ -8,6 +8,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The fork's descriptor helpers live in the module that owns them**
+  (fork review LF28). Nothing served changes. An application built with
+  the `m0` wheel that imported one of these from the old place imports it
+  from the new: `set_nonblocking`, `is_nonblocking`, `F_GETFL` and
+  `F_SETFL` from `lightbug_http.c.fcntl`, no longer `lightbug_http.c.kqueue`
+  (they serve Linux too); `O_NONBLOCK` and `O_CLOEXEC` from
+  `lightbug_http.c.fcntl`, no longer `lightbug_http.c.socket`; and
+  `set_tcp_nodelay` from `lightbug_http.c.socket`. Linux's
+  `EPOLL_CLOEXEC`, `TFD_CLOEXEC` and `TFD_NONBLOCK`, which
+  `lightbug_http.c.epoll` declared as copies of those flags, are gone:
+  pass `O_CLOEXEC` and `O_NONBLOCK`.
+
 ### Removed
 
 - **The fork's client connect path, and the last of its dead C bindings**
