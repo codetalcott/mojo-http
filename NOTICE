@@ -1517,7 +1517,9 @@ lightbug_http
         `is_newline`, `is_space`, `bufis`, and `ByteReader`'s `read_line`
         (a bare CR moved it two bytes), `read_word`, `skip_whitespace`,
         `skip_carriage_return` (two bytes per CR) and `consume` (review
-        record LF26).
+        record LF26). `parse_headers` and `scan_to_eol` lost their
+        `strict` parameter, whose lenient default (a bare LF ending a line,
+        an obs-fold line kept) only the response parser had asked for.
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

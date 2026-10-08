@@ -267,7 +267,7 @@ def create_string_from_reader[origin: ImmOrigin](reader: ByteReader[origin], sta
 
 
 def scan_to_eol[
-    origin: ImmOrigin, //, strict: Bool = False
+    origin: ImmOrigin, //
 ](mut buf: ByteReader[origin], mut start: Int, mut length: Int) raises HTTPParseError:
     """Advance past one field value to its line end, reported as an offset pair.
 
@@ -277,8 +277,8 @@ def scan_to_eol[
     copied again, and at twelve headers per request that copying was a
     third of the whole user-space request (`scripts/probes/bench_http_parts.mojo`).
 
-    `strict` is a request head's rule: the line ends in CRLF and nothing
-    else, so a bare LF is a ParseError (`parse_headers` says why).
+    The line ends in CRLF and nothing else, so a bare LF is a ParseError
+    (`parse_headers` says why).
     """
     var token_start = buf.read_pos
 
@@ -306,9 +306,6 @@ def scan_to_eol[
         if next_byte.value() != BytesConstant.LF:
             raise ParseError()
         length = buf.read_pos - 1 - token_start
-        buf.increment()
-    elif current_byte == BytesConstant.LF and not strict:
-        length = buf.read_pos - token_start
         buf.increment()
     else:
         raise ParseError()
@@ -421,7 +418,7 @@ def parse_http_version[origin: ImmOrigin](mut buf: ByteReader[origin], mut minor
 
 
 def parse_headers[
-    buf_origin: ImmOrigin, header_origin: MutOrigin, //, strict: Bool = False
+    buf_origin: ImmOrigin, header_origin: MutOrigin, //
 ](
     mut buf: ByteReader[buf_origin],
     headers: Span[HTTPHeader, header_origin],
@@ -430,18 +427,19 @@ def parse_headers[
 ) raises HTTPParseError:
     """Parse field lines up to and including the empty line that ends them.
 
-    `strict` is a request head's rules, which the request parser asks for:
-    a line opening with SP or HTAB (obs-fold) is a ParseError (SPEC B13),
-    and every line, the empty one included, ends in CRLF, a bare LF being
-    a ParseError too (SPEC B12). RFC 9112 §2.2 lets a recipient accept a lone LF,
+    A request head's rules: a line opening with SP or HTAB (obs-fold) is a
+    ParseError (SPEC B13), and every line, the empty one included, ends in
+    CRLF, a bare LF being a ParseError too (SPEC B12). RFC 9112 §2.2 lets
+    a recipient accept a lone LF,
     and this parser did -- but the event loop frames a head by the first
     CRLFCRLF (`find_header_end`) and hands this parser exactly that many
     bytes, so a head this parser ended at `\\r\\n\\n` while the loop read on
     to a later CRLFCRLF lost whatever lay between: a request pipelined
     behind it vanished, and a `Content-Length` after the bare LF was never
     read, its body served as the next request. One terminator for both
-    framers is what keeps them agreeing. The lenient readings were the
-    response parser's, deleted with it.
+    framers is what keeps them agreeing. The lenient readings, a
+    `strict=False` this parser and `scan_to_eol` defaulted to, were the
+    response parser's alone, and went with it.
     """
     while buf.available():
         var byte = try_peek(buf)
@@ -458,10 +456,7 @@ def parse_headers[
             buf.increment()
             return
         elif byte.value() == BytesConstant.LF:
-            comptime if strict:
-                raise ParseError()
-            buf.increment()
-            return
+            raise ParseError()
 
         if num_headers >= max_headers:
             raise ParseError()
@@ -485,19 +480,15 @@ def parse_headers[
                     break
                 buf.increment()
         else:
-            # obs-fold continuation: no name, the value joins the previous
-            # field's. An empty span, exactly what the empty String was.
-            # A request refuses it (RFC 9112 §5.2, SPEC B13): kept, it was
-            # a field named "" -- `HTTP_` in a WSGI environ -- and the
-            # folded text never joined the value it continued.
-            comptime if strict:
-                raise ParseError()
-            headers[num_headers].name_start = 0
-            headers[num_headers].name_len = 0
+            # obs-fold continuation. A request refuses it (RFC 9112 §5.2,
+            # SPEC B13): kept, it was a field named "" -- `HTTP_` in a WSGI
+            # environ -- and the folded text never joined the value it
+            # continued.
+            raise ParseError()
 
         var value_start = 0
         var value_len = 0
-        scan_to_eol[strict=strict](buf, value_start, value_len)
+        scan_to_eol(buf, value_start, value_len)
 
         # Trailing OWS comes off the LENGTH. This used to re-slice the value
         # into a third String when any was present.
@@ -631,7 +622,7 @@ def http_parse_request_headers[
         else:
             return -1
 
-        parse_headers[strict=True](buf, headers, num_headers, max_headers)
+        parse_headers(buf, headers, num_headers, max_headers)
 
         return buf.read_pos
     except e:

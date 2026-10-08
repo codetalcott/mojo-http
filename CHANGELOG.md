@@ -203,7 +203,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `BytesConstant.CRLF` and `BytesConstant.DOUBLE_CRLF`; and
   `lightbug_http.io.bytes`' `is_newline`, `is_space` and `bufis`, and
   `ByteReader`'s `read_line`, `read_word`, `skip_whitespace`,
-  `skip_carriage_return` and `consume`.
+  `skip_carriage_return` and `consume`. `parse_headers` and `scan_to_eol`
+  lose their `strict` parameter and always read a request head's rules;
+  the lenient reading was the response parser's.
 
 ## [1.12.1] — 2026-10-07
 
