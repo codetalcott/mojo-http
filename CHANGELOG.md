@@ -39,7 +39,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   application reads `*` as `req.uri.path`; a WSGI application reads it as
   `PATH_INFO` and an ASGI one as `path` and `raw_path`, as gunicorn and
   uvicorn hand it on. Under m0serve the root mount answers it; with no
-  root mount it is answered 404, as any path no mount claims.
+  root mount it is answered 404, as any path no mount claims. The view
+  table (`Views`) reads `*` as a path of one segment: a table with a
+  one-segment parameter route such as `/:slug` answers `OPTIONS *` as that
+  route's preflight, 204 with its `Allow`, and a route registered for
+  `OPTIONS` there runs with `*` as its parameter; a table with no such
+  route answers 404.
 
 - **`URI.parse` reads a query that follows the host directly** (SPEC A35).
   Exposed: an m0 application whose tests build a request with

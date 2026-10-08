@@ -5,8 +5,9 @@ SPEC section N is the framework layer's; N2 is this file's row.
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.header import HeaderKey
+from lightbug_http.header import HeaderKey, parse_request_headers
 from lightbug_http.http import HTTPRequest, HTTPResponse
+from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI
 
 from src import reply
@@ -439,6 +440,44 @@ def test_options_on_a_registered_path_is_204_with_allow() raises:
     assert_equal(resp.headers[HeaderKey.ALLOW], "GET, HEAD, OPTIONS")
     # On a path nothing serves it is a 404, like any other method.
     resp = v.dispatch(_req(String("OPTIONS"), String("/nope")), st)
+    assert_equal(resp.status_code, 404)
+
+
+def _server_wide_options() raises -> HTTPRequest:
+    """`OPTIONS *` as the server builds it from the wire."""
+    var parsed = parse_request_headers(
+        "OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n".as_bytes()
+    )
+    try:
+        return HTTPRequest.from_parsed("127.0.0.1:8080", parsed^, Bytes(), 8192)
+    except:
+        raise Error("fixture request failed to build")
+
+
+def test_a_server_wide_options_routes_as_a_path_of_one_segment() raises:
+    """`OPTIONS *` reaches a Mojo application with `*` as its path (SPEC
+    B19, review record LF41), and the router reads `*` as a path of one
+    segment. A table with a one-segment parameter route answers it as that
+    route's preflight, 204 with the route's `Allow`; a route registered for
+    OPTIONS itself runs with `*` as its parameter; a table with no such
+    route answers 404, as for any path it does not serve.
+
+    covers: B19
+    """
+    var req = _server_wide_options()
+    assert_equal(req.uri.path, "*")
+    var st = Counter()
+    var slug = Views[Counter]()
+    slug.add_read(String("GET"), String("/:slug"), _detail)
+    var resp = slug.dispatch(_server_wide_options(), st)
+    assert_equal(resp.status_code, 204)
+    assert_equal(resp.headers[HeaderKey.ALLOW], "GET, HEAD, OPTIONS")
+    var own = Views[Counter]()
+    own.add_read(String("OPTIONS"), String("/:slug"), _detail)
+    resp = own.dispatch(_server_wide_options(), st)
+    assert_equal(resp.status_code, 200)
+    assert_equal(_body(resp), "<p>id *</p>")
+    resp = _table().dispatch(_server_wide_options(), st)
     assert_equal(resp.status_code, 404)
 
 
