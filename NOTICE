@@ -1653,6 +1653,15 @@ lightbug_http
         above 3 and so missed a terminator at the buffer's start (SPEC A38,
         review record LF59).
 
+      - http/request.mojo, loop/state.mojo, loop/request.mojo
+        (2026-10-08): `HTTPRequest.from_parsed` takes the server's host and
+        port, which `LoopState` splits from its address once
+        (`split_server_address`), and parses the target alone, so
+        `uri.host`, `uri.port` and `uri.full_uri` are the same for every
+        target shape (SPEC A37). The fast path put the whole address in
+        `host`, and the full parse read the address prefixed to the target
+        (review record LF54).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

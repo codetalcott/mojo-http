@@ -119,6 +119,24 @@ struct RequestMethod:
 comptime strSlash = "/"
 
 
+def split_server_address(address: String) -> Tuple[String, Optional[UInt16]]:
+    """The host and port of the address a server listens on, as a parsed
+    request's `uri.host` and `uri.port` carry them: `127.0.0.1:8973` is
+    (`127.0.0.1`, 8973), `[::1]:8080` (`[::1]`, 8080), and a scheme or a
+    missing port is allowed (`http://localhost` is (`localhost`, None)).
+
+    Split ONCE, where a loop is built (`LoopState`), and handed to every
+    `HTTPRequest.from_parsed` it makes: a request's URI names the server the
+    same way whatever its target's shape (SPEC A37). An address `URI.parse`
+    refuses -- an unclosed `[` -- is the host whole, with no port.
+    """
+    try:
+        var u = URI.parse(address)
+        return (u.host, u.port)
+    except:
+        return (address, None)
+
+
 @fieldwise_init
 struct HTTPRequest(Copyable, Encodable, Writable):
     """Represents a parsed HTTP request.
@@ -151,7 +169,8 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     @staticmethod
     def from_parsed(
-        server_addr: String,
+        server_host: String,
+        server_port: Optional[UInt16],
         var parsed: ParsedRequestHeaders,
         var body: Bytes,
         max_uri_length: Int,
@@ -162,8 +181,20 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         should use header.mojo's parse_request_headers() to parse the headers,
         then read the body separately, and finally call this method.
 
+        The URI names the server the same way whatever the target's shape
+        (SPEC A37): `uri.host` and `uri.port` are the address the server
+        listens on, split once by `split_server_address`, and `uri.full_uri`
+        is the request target as the application reads it -- origin-form,
+        an absolute-form target already reduced to its path (B16), whose
+        authority is the request's `Host` header. They used to depend on
+        the target: a path with no query or escape got the whole address in
+        `host` and no port, one with either got them split by a parse of
+        the address and the target together, and `full_uri` was the target
+        alone or the address prefixed to it (review record LF54).
+
         Args:
-            server_addr: The server address (used for URI construction).
+            server_host: The host of the address the server listens on.
+            server_port: Its port, if the address names one.
             parsed: The parsed request headers from parse_request_headers().
             body: The request body bytes.
             max_uri_length: Maximum allowed URI length.
@@ -201,19 +232,22 @@ struct HTTPRequest(Copyable, Encodable, Writable):
                 query_string="",
                 queries=QueryMap(),
                 _hash="",
-                host=server_addr,
-                port=None,
+                host=server_host,
+                port=server_port,
                 full_uri=parsed.path,
                 request_uri=parsed.path,
                 username="",
                 password="",
             )
         else:
-            var full_uri_string = String(server_addr, parsed.path)
+            # The target alone: a path (or `*`) has no authority for the
+            # parse to find, and the server's comes from the caller.
             try:
-                parsed_uri = URI.parse(full_uri_string)
+                parsed_uri = URI.parse(parsed.path)
             except uri_err:
                 raise RequestBuildError(URIParseError())
+            parsed_uri.host = server_host
+            parsed_uri.port = server_port
 
         # Asked before the headers move into the request below.
         var dechunked = parsed.is_chunked_body()

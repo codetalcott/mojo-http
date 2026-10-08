@@ -27,18 +27,22 @@ from lightbug_http.header import (
     KH_TRANSFER_ENCODING,
     parse_request_headers,
 )
-from lightbug_http.http import HTTPRequest
+from lightbug_http.http import HTTPRequest, split_server_address
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI
 
 
-def request_from(raw: String, body: String = "") raises -> HTTPRequest:
+def request_from(
+    raw: String, body: String = "", server_addr: String = "http://localhost"
+) raises -> HTTPRequest:
     """Parse a request the way the server's read path does: the header parse,
-    then `from_parsed` with the body the loop read (decoded, if chunked)."""
+    then `from_parsed` with the body the loop read (decoded, if chunked) and
+    the server's address split as the loop splits it."""
     var parsed = parse_request_headers(raw.as_bytes())
+    var host_port = split_server_address(server_addr)
     try:
         return HTTPRequest.from_parsed(
-            "http://localhost", parsed^, Bytes(body.as_bytes()), 8192
+            host_port[0], host_port[1], parsed^, Bytes(body.as_bytes()), 8192
         )
     except:
         raise Error("fixture request failed to build")
@@ -199,6 +203,53 @@ def test_repeated_connection_lines_are_read_as_one_list() raises:
     assert_false(
         request_from(head + "Connection: keep-alive\r\nConnection: TE\r\n\r\n").connection_close()
     )
+
+
+def test_the_uri_names_the_server_the_same_way_whatever_the_target() raises:
+    """`uri.host` and `uri.port` are the address the server listens on, and
+    `uri.full_uri` the request target as the application reads it, for
+    every target shape and scheme case. They depended on the target: with
+    the loop on `0.0.0.0:8973`, `GET /x` read host `0.0.0.0:8973` and no
+    port, `GET /x?q=1` host `0.0.0.0` and port 8973; `full_uri` was `/x`
+    for the first and `0.0.0.0:8973/x?q=1` for the second, and `GET
+    HTTP://h/p` differed from `GET http://h/p?q=1` the same way (review
+    record LF54). The authority an absolute-form target names is the
+    request's `Host` (B16), not its URI's.
+
+    covers: A37
+    """
+    var addrs = [
+        (String("0.0.0.0:8973"), String("0.0.0.0"), 8973),
+        (String("127.0.0.1:8080"), String("127.0.0.1"), 8080),
+        (String("[::1]:8080"), String("[::1]"), 8080),
+        (String("http://localhost"), String("localhost"), -1),
+        (String("127.0.0.1"), String("127.0.0.1"), -1),
+    ]
+    # (request line, Host value, full_uri)
+    var targets = [
+        (String("GET /x"), String("a"), String("/x")),
+        (String("GET /x?q=1"), String("a"), String("/x?q=1")),
+        (String("GET /a%20b"), String("a"), String("/a%20b")),
+        (String("GET /a%20b?q=1"), String("a"), String("/a%20b?q=1")),
+        (String("GET http://h/p?q=1"), String("h"), String("/p?q=1")),
+        (String("GET HTTP://h/p"), String("h"), String("/p")),
+        (String("GET http://h:81/p"), String("h:81"), String("/p")),
+        (String("GET https://h"), String("h"), String("/")),
+        (String("OPTIONS *"), String("a"), String("*")),
+    ]
+    for a in addrs:
+        for t in targets:
+            var raw = String(t[0], " HTTP/1.1\r\nHost: a\r\n\r\n")
+            var req = request_from(raw, server_addr=a[0])
+            var where = String(a[0], " ", t[0])
+            assert_equal(req.uri.host, a[1], where)
+            if a[2] < 0:
+                assert_false(Bool(req.uri.port), where)
+            else:
+                assert_true(Bool(req.uri.port), where)
+                assert_equal(Int(req.uri.port.value()), a[2], where)
+            assert_equal(req.uri.full_uri, t[2], where)
+            assert_equal(req.headers.get(HeaderKey.HOST).value(), t[1], where)
 
 
 def test_the_outgoing_constructor_still_fills_its_headers() raises:

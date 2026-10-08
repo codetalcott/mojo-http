@@ -252,6 +252,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the second. It is refused either way now. One empty line before a
   request is still skipped, as RFC 9112 asks.
 
+- **`req.uri.host`, `req.uri.port` and `req.uri.full_uri` no longer depend
+  on the request's target** (fork review LF54, SPEC A37). Exposed: a Mojo
+  application that reads them. With the server on `0.0.0.0:8973`, `GET /x`
+  read host `0.0.0.0:8973` and no port while `GET /x?q=1` read host
+  `0.0.0.0` and port 8973, and `full_uri` was `/x` for one and
+  `0.0.0.0:8973/x?q=1` for the other. Every request now reads the
+  server's host and port, and `full_uri` is the target as the application
+  sees it (`/x?q=1`). The host a client asked for is the `Host` header,
+  which for `GET http://h/p` is `h`. `HTTPRequest.from_parsed` takes the
+  server's host and port, split once by `split_server_address`, where it
+  took the whole address.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

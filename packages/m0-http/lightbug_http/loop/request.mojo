@@ -792,7 +792,8 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     var request: HTTPRequest
     try:
         request = HTTPRequest.from_parsed(
-            st.server_address,
+            st.server_host,
+            st.server_port,
             parsed^,
             body^,
             st.config.max_request_uri_length,

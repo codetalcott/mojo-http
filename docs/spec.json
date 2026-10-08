@@ -258,6 +258,14 @@
       "evidence": "`test_slot_lifecycle.mojo:test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest` (every PR) \u2014 two pipelined requests and a half-close behind a send buffer filled first, so the first answer waits, and the EOF's read event dispatched to the waiting slot. The read path set `should_close` for the EOF, and the connection closed as that answer landed, the request behind it unanswered. Only a stale event reached such a slot: a slot waiting to write holds no read registration on either backend, so the EOF had to be in the same batch as a pool thread's or the executor's completion that left its answer part sent (`--blocking-threads`, ASGI); answers the loop ran itself were not affected. Found by lane L of the 2026-10-07 fork review"
     },
     {
+      "id": "A37",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A parsed request's URI names the server the same way whatever its target's shape: `uri.host` and `uri.port` are the address the server listens on, split once per loop, and `uri.full_uri` the request target as the application reads it (an absolute-form one reduced to its path, B16); the authority a client names is the `Host` header's",
+      "status": "verified",
+      "evidence": "`test_request_as_sent.mojo:test_the_uri_names_the_server_the_same_way_whatever_the_target` (every PR) \u2014 they depended on the target: with the loop on `0.0.0.0:8973`, `GET /x` read host `0.0.0.0:8973` and no port and `GET /x?q=1` host `0.0.0.0` and port 8973, and `full_uri` was the target for one and the address prefixed to it for the other, so the scheme's letter case changed what an application read (review record LF54). Nothing in the tree reads the three on a parsed request (the gateway's `SERVER_NAME` and `SERVER_PORT` are its configuration's); the target is parsed alone, no longer behind the address"
+    },
+    {
       "id": "A38",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",

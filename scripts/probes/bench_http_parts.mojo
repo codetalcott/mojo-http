@@ -43,7 +43,8 @@ from src.router import Router
 
 
 comptime N = 20000
-comptime SERVER_ADDR = "127.0.0.1:8080"
+comptime SERVER_HOST = "127.0.0.1"
+comptime SERVER_PORT = Optional[UInt16](8080)
 comptime MAX_URI = 8192
 
 
@@ -86,7 +87,7 @@ def _parse(span: Span[Byte, _]) raises -> ParsedRequestHeaders:
 
 def _build(var parsed: ParsedRequestHeaders) raises -> HTTPRequest:
     try:
-        return HTTPRequest.from_parsed(SERVER_ADDR, parsed^, Bytes(), MAX_URI)
+        return HTTPRequest.from_parsed(SERVER_HOST, SERVER_PORT, parsed^, Bytes(), MAX_URI)
     except:
         raise Error("from_parsed failed on the browser GET")
 
