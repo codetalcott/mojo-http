@@ -1648,6 +1648,75 @@ lightbug_http
         bytes reflected into a `text/plain` answer carrying no `nosniff`;
         its `path` argument is kept, now optional (review record LF57).
 
+      - loop/response.mojo (2026-10-08): `_finish_response` closes the
+        connection behind the answer to a half-closed client's last request
+        (`_answers_the_last_request`: `peer_eof`, nothing buffered past
+        `request_end`, and one more read, which a FIN keeps from blocking,
+        returning nothing), for every response, a pool thread's included
+        (SPEC A27). The EOF's `should_close` was replaced by the request's
+        own `Connection`, so the answer said `keep-alive` and an epoll slot
+        waited for the idle sweep (review record LF11).
+
+      - loop/state.mojo, loop/response.mojo, loop/streams.mojo
+        (2026-10-08): `LoopState.slot_close_after_stream` keeps what a
+        stream's request asked of the connection, written by the
+        transition `_keep_stream_close`, which `_finish_response` calls for
+        every response before a stream's head clears `should_close`; the
+        head says `Connection: close` when it is
+        set, and `_chunked_stream_ends`, the transition both of the outbox
+        drain's chunked-end sites now share, restores the close (SPEC A28).
+        The end took the keep-alive path whatever the request had asked
+        (review record LF13).
+
+      - loop/state.mojo, loop/streams.mojo (2026-10-08):
+        `_takes_an_out_of_band_frame` answers whether a stream may take a
+        frame its application did not write now -- not an SSE stream of
+        the chunk channel, not a WebSocket that has sent its Close, not a
+        frame half sent -- for `_heartbeat`, whose three checks it replaces,
+        and for `_farewell_streams`, which asked none of them and wrote
+        into all three (SPEC D12, D13, review record LF12).
+
+      - loop/request.mojo, loop/state.mojo (2026-10-08):
+        `_handle_read_headers` stamps `slot_header_start` at a request's
+        first bytes whatever `header_read_timeout` is, and only the timeout
+        check asks for it to be on; `_record_response` computes one duration
+        for the metrics and the access log, 0 without a stamp (SPEC F22).
+        The access log subtracted a stamp the timeout's absence had never
+        taken, so every request after a connection's first, which the
+        accept stamps, logged the time since boot as its `dur_us` (review
+        record LF14).
+
+      - loop/state.mojo (2026-10-08): `_ws_linger` arms reads only for a
+        socket whose inbound is not suspended, as `_stream_idle` does, so
+        `take_ws_resumes` stays the one thing that re-arms a suspended
+        socket (SPEC I41, review record LF15).
+
+      - loop/state.mojo, loop/timers.mojo (2026-10-08): `LoopState`
+        loses `fd_map_size`, which nothing read; `_on_timer` loses its
+        idle-timer branch, which nothing armed and which would have closed
+        a slot out on a pool thread; `_close_slot` releases
+        `slot_response` (review record LF26).
+
+      - loop/response.mojo (2026-10-08): `_pump_body_fd` answers a
+        `send_file` result of no bytes and no reason, which `send_file` no
+        longer gives for a count above 0, as fatal rather than as a full
+        socket, so a regression there closes the connection instead of
+        spinning its slot (review record LF16, a follow-up).
+
+      - loop/request.mojo (2026-10-08): `_handle_read_headers` closes an
+        incomplete head on `peer_eof` only after a read of nothing, or a
+        shorter one, behind the FIN; a read that filled its buffer is
+        re-armed and the head read on (SPEC A29). It closed a half-closed
+        head longer than one read with the rest still in the socket
+        (review record LF42).
+
+      - loop/request.mojo (2026-10-08): `_on_read`'s EOF branch sets
+        `peer_eof` alone, no longer `should_close`, so a slot whose answer
+        was still going out takes the keep-alive transition when it lands
+        and answers what was pipelined behind it; the last request's answer
+        closes (`_answers_the_last_request`; SPEC A30). The flag closed the
+        connection as that answer landed (review record LF43).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

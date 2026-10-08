@@ -226,6 +226,38 @@
       "evidence": "`test_socket_spans.mojo:test_a_receive_into_a_full_buffer_reads_what_is_waiting` (every PR) \u2014 the buffer's spare capacity was lent to `recv` as it stood, and a `recv` into zero bytes returns 0, the count EOF returns, so a full buffer, or a `Bytes()` never given a capacity, raised EOF with the peer's bytes still waiting (review record LF34). The test reads through both, each on a real socket pair, and requires a read after the peer has closed to raise EOF still. The server reads through the event loop and never called these; an application, and the tests' client, did"
     },
     {
+      "id": "A27",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A client that half-closes has sent its last request: the answer to the request that ends what it sent says `Connection: close`, and the connection ends behind it; a request pipelined ahead of that one, in the same read or still in the socket, is answered first, with the connection kept",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_half_closed_request_is_answered_with_a_close` (every PR) \u2014 one read event carrying the EOF with the bytes, as both backends report a FIN that arrived beside them, for one request, two in one read, and a first request exactly one read long with the second still in the socket. The EOF set the close and the request's own `Connection` replaced it, so the answer said `keep-alive`, and on epoll, the FIN's edge spent, the slot waited for the idle sweep, for good with idle timeouts off. `Smoke test a half-closed client` runs it on the wire on both legs: a half-closed burst of 200 pipelined requests whose last answer must close, and single requests whose connections must end within 5 s. Found by the 2026-10-07 fork review"
+    },
+    {
+      "id": "A28",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A chunked response stream ends as its request asked: after `Connection: close`, on a server with keep-alive off, or for a client that has half-closed, its head says `Connection: close` and the connection closes once the terminator lands; otherwise it says `keep-alive` and the connection waits for the next request",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_chunked_stream_keeps_the_close_its_request_asked_for` (every PR) \u2014 a channel stream from head to terminator, for each of the three and for a request that asked nothing, which keeps its connection. A stream's head clears the close, or the head landing would end the slot, and the stream's end then took the keep-alive path whatever the request had said, under a head that said `keep-alive`: measured on m0serve with the bare ASGI app's `/chunks` and `Connection: close`. Found by the 2026-10-07 fork review"
+    },
+    {
+      "id": "A29",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A half-closed request whose head is longer than one read is read to its end and answered, the FIN arriving with its first bytes or after them",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_half_closed_head_longer_than_a_read_is_answered` (every PR) \u2014 a head one and a half reads long, written and half-closed before the first read, every event carrying the EOF. The read path took one buffer, found the head incomplete, and closed the slot because the event said the peer had half-closed, with the rest of the head still in the socket; it now closes an incomplete head only after a read of nothing, or a shorter one, behind the FIN. `Smoke test a half-closed client` sends a 6 KB head fifteen times on both legs (14 of 15 reset on macOS without the fix). Found by lane L of the 2026-10-07 fork review"
+    },
+    {
+      "id": "A30",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A client that pipelines and half-closes is answered every request it sent when its EOF is dispatched to a slot whose answer is still going out: the connection closes only after the last request, not after that answer",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest` (every PR) \u2014 two pipelined requests and a half-close behind a send buffer filled first, so the first answer waits, and the EOF's read event dispatched to the waiting slot. The read path set `should_close` for the EOF, and the connection closed as that answer landed, the request behind it unanswered. Only a stale event reached such a slot: a slot waiting to write holds no read registration on either backend, so the EOF had to be in the same batch as a pool thread's or the executor's completion that left its answer part sent (`--blocking-threads`, ASGI); answers the loop ran itself were not affected. Found by lane L of the 2026-10-07 fork review"
+    },
+    {
       "id": "A35",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
@@ -434,6 +466,22 @@
       "evidence": "`test_parsing.mojo:test_a_control_byte_in_a_trailer_value_is_refused` (every PR) \u2014 B14 held the trailer to field lines ending in CRLF but took any byte but LF in a value, NUL and VT included, where a head's value refuses them. The trailer is discarded, so this keeps one rule for field content rather than closing an exposure (review record LF4's deferred minor). `poe sabotage-trailers` reverts it with B14's rules"
     },
     {
+      "id": "B25",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "The differential corpus: requests that probe framing and field parsing (line endings, folding, field names, the request line, `Host`, `Content-Length`, `Transfer-Encoding`, chunked bodies and trailers, `Expect`, `Connection`, pipelining), each sent on a connection of its own and half-closed, are answered as `scripts/differential_expected.json` freezes them: the requests the application saw, each by its method, its body length and a fingerprint of its target, protocol and header lines, every other response by its status, and the close; and the server serves a plain GET after them",
+      "status": "verified",
+      "evidence": "`Smoke test the differential request corpus` (every PR) \u2014 the fork review's D0 run sent these cases to this server, to h11 0.16 and to Node 24's llhttp (2026-10-07), and where this server was wrong it was fixed (B12-B24). The table freezes its answers since, both references' beside them for reading a row, and a note on each case where this server differs from both on purpose (B11, B16, B18, B19, an incomplete head at EOF). A change to the parser or the loop that moves an answer, or changes which request the application is handed, fails naming the case; one that moves it on purpose re-freezes the row with `poe freeze-differential`, which asks the references too (their echoes are in `scripts/`, never a CI dependency). A server that stops closing a half-closed connection fails at the third such case in a row, at 1 s each. Two answers are frozen although they look wrong, each marked a known divergence: `Host: a b` and `Host: u@a` are served, as both references serve them, where RFC 9112 \u00a73.2 asks for 400 on a `Host` whose value is invalid (review record LF64, whose fix re-freezes both rows). The server is `apps/request_echo`, a test-only echo whose application names every request it is handed"
+    },
+    {
+      "id": "B26",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "The differential corpus notices a request rule undone: the bare-LF head end (B12, with the check that the two framers agree), the bare-LF field-line end (B12), the obs-fold refusal (B13), the refusal of `Content-Length` beside `Transfer-Encoding` (B1), of a second `Host` (B10), the 501 for a coding before `chunked` (B21), the CONNECT refusal (B18) and the HTTP/1.0 client spared a 100 Continue (RFC 9110 \u00a710.1.1), each reverted alone, fail B25's smoke naming the case that shows it",
+      "status": "verified",
+      "evidence": "`sabotage-differential` (pre-release) \u2014 each rule is held on every pull request by a gate of its own, its row's (A11 for the 100 Continue); this shows the corpus holds it too, so a re-frozen table cannot quietly accept what a rule refuses. The parser's bare-LF head end alone is not caught, and is not meant to be: the loop refuses a head its two framers end at different bytes, so that arm reverts both. Pre-release because each arm builds the echo server again, cold: the first whole run, its baseline and eight arms, took 73 s on the reference Mac (2026-10-08) and caught all eight"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",
@@ -600,6 +648,22 @@
       "capability": "An ASGI application's work still running at shutdown is bounded: background work gets the drain's 3 s grace, is then cancelled and named, and lifespan shutdown still runs",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a response whose background task never ends, then SIGTERM: the process must exit and write the lifespan shutdown marker. Before, the post-pill gather waited on every HTTP task, the 5 s thread join gave up, and the process left without shutting the application down (exit 0, no marker). `poe test-shim` holds the rest: work inside the grace finishes, a task that swallows its cancellation is left behind after half a second and never reaches the executor again, and the drain starts once"
+    },
+    {
+      "id": "D12",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "A chunked response stream open at SIGTERM ends with its terminator or EOF, never with bytes the client's chunked parser cannot read",
+      "status": "verified",
+      "evidence": "`Smoke test graceful shutdown` (every PR) \u2014 m0serve on the bare ASGI app, `/stream-forever` read through a strict chunked parser, SIGTERM, then the parser to EOF, and m0serve exiting 0 (`scripts/drain_stream_probe.py`). The drain's farewell wrote an SSE close comment, `: close`, into the chunked stream raw, where the client reads a chunk size. Found by the 2026-10-07 fork review"
+    },
+    {
+      "id": "D13",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "The drain's farewell to streams goes only where a heartbeat may: an idle SSE stream gets its close comment and an idle WebSocket a Close carrying 1001, and a WebSocket that has sent its Close, a stream with a frame half sent, and an SSE stream its application writes through the chunk channel are closed as they stand",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_the_farewell_writes_only_into_a_stream_that_takes_one` (every PR) \u2014 the five shapes over stream pairs, each read to EOF. The farewell asked none of the heartbeat's questions: a second Close, bytes inside a frame, and a comment in a chunked or chunk-channel stream. One predicate, `_takes_an_out_of_band_frame`, now answers for both. Found by the 2026-10-07 fork review"
     },
     {
       "id": "D6",
@@ -1098,6 +1162,14 @@
       "evidence": "`Smoke test connections that stop reading` (every PR) \u2014 a chunked 8 MiB `/stream` and a `/ws/flood` WebSocket, each read by a client that stalls first so their frames finish through the write-ready path, must leave exactly one `--access-log` record each; before the fix (review record R3) they left 5 and 2, each frame the write-ready path finished being recorded as a response of its own, counted by `--metrics` and timed as the stream's age, and a chunked stream recorded once more when its terminator landed. The count is `test_slot_lifecycle.mojo:test_a_stream_is_recorded_once`"
     },
     {
+      "id": "F22",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "A request's `dur_us` in the access log, and its sample in the latency histogram, run from the request's first bytes whatever `header_read_timeout` is; a connection's first request from its accept",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_the_access_log_times_a_request_without_a_header_timeout` (every PR) \u2014 a keep-alive request read with the header timeout off, its slot's stamp zeroed as the keep-alive reset leaves it, the access line read off the loop's stdout. A keep-alive request's first bytes were stamped only while the timeout was on, and the access log subtracted the stamp anyway: with it off every request after a connection's first logged the time since the machine booted (658229997495 in the test's first run), and the histogram, which asked for a stamp first, recorded nothing for them. The accept's own stamp timed the first request. Found by the 2026-10-07 fork review"
+    },
+    {
       "id": "G1",
       "section": "G",
       "category": "G. Security hardening",
@@ -1274,12 +1346,28 @@
       "evidence": "`test_cloexec.mojo:test_the_shared_page_is_its_owners_alone` (every PR) \u2014 it bites on the macOS leg only, Linux passing variadic arguments in registers; `test_a_page_that_cannot_be_sized_is_closed` holds the close. Before the fix (review record LF17) the mode went as a third fixed argument, in a register the callee never reads, and the page took its mode from the stack: measured as 0o0, 0o1 and 0o744"
     },
     {
+      "id": "G24",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "No byte string, whatever its UTF-8 shape, puts CR, LF or NUL inside a head line: every header name and value, reason phrase, `Server` value, `Set-Cookie` line and `reply.redirect` target is written by `encode`, `encode_into` and the printed form as exactly the lines G2 and G19 give, or dropped as G2 says",
+      "status": "verified",
+      "evidence": "`test_header_bytes.mojo:test_random_bytes_never_put_a_line_break_in_a_head` (every PR) \u2014 G2 and G19 as a property: 4000 seeded cases a run (the seed is printed, and `M0_HEADER_BYTES_SEED` replays one), made of bytes biased toward every UTF-8 lead, lone continuations and the continuation bytes that decode to CR, LF and NUL in an overlong form. The oracle is a model of the rules, not an absence of CR: the head must hold, line for line, the lines the rules keep (a header or cookie with a raw break in what was given is dropped, any other is written as given with only `C2`/`C3` plus a continuation turned into one latin-1 byte), the body after it must be the body given, and no line may hold CR, LF or NUL, so an extra line, an altered one and a line lost that the rules keep all fail, as does dropping everything. `poe sabotage-header-bytes` puts back LF1's decode with and without the backstops, each writer's refusal, the redirect's percent-encoding and the emptied reason phrase, and requires this test to fail for every one"
+    },
+    {
       "id": "G21",
       "section": "G",
       "category": "G. Security hardening",
       "capability": "A `recv` or `send` the server makes moves the bytes of the span it is given and no others: the length is the span's own, so no caller can name more than its buffer holds, and a read into a list's spare capacity takes that room and no more (`spare_capacity`)",
       "status": "verified",
       "evidence": "`test_socket_spans.mojo:test_recv_writes_only_inside_the_span_it_is_given` (every PR) \u2014 with `test_send_sends_only_the_span_it_is_given` and `test_spare_capacity_is_the_room_past_the_length` beside it. Both calls took a length beside the span that the span did not have to back, and the loop's body, WebSocket and lingering reads passed an empty span with a capacity count; a count above a span's length was written past its end, measured on the old signature as 64 bytes received into a 10-byte span, 54 of them past it (review record LF20). Each half sabotaged fails its own test: `recv` or `send` taking 16 bytes more than its span, and `spare_capacity` starting at the list's first byte"
+    },
+    {
+      "id": "G25",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "No variadic libc function is called through `external_call` outside its sanctioned wrapper, and neither the fork nor m0-http's `src/` holds a `[byte=` slice outside a reasoned allowlist: Darwin arm64 passes variadic arguments on the stack, so `fcntl` and `shm_open` take `_fcntl`'s shape (dummies fill x0-x7) in one file each and `syscall` is Linux's alone, and a `[byte=a:b]` slice asserts a codepoint boundary, a trap on a request's non-UTF-8 bytes",
+      "status": "verified",
+      "evidence": "`Run the shim tests and the compile gates` (every PR) \u2014 `poe fork-lint` reads every `.mojo` under `packages/`, `apps/`, `scripts/` and `packaging/` for a variadic symbol in `scripts/fork_lint.py`'s `VARIADIC` list (the list lives in the lint; the sanctioned files are its `SANCTIONED`, and `c/fcntl.mojo`'s docstring is checked to name each), a call whose symbol is not a string literal in any quoting style, and the fork and `src/` for `[byte=` however spaced or split (`ALLOWED_BYTE_SLICES`: the constant hex tables and the static mount's configured prefix, keyed by file and line snippet, a stale entry refused); comments, docstrings and strings are not read. Its selftest plants a fixed-argument `shm_open` and a `[byte=` slice of a request string, each refused naming file and line, and passes a clean sample. Pure text, so the two defects of review records LF17 cannot return unseen; it does not see a variadic function reached through `dlopen` (m0-sqlite, m0-postgres)"
     },
     {
       "id": "H1",
@@ -1616,6 +1704,14 @@
       "capability": "A bus datagram is delivered whole or not at all: the loop reads every datagram a publisher can send whole, up to `BUS_DATAGRAM_MAX` (a channel name of `MAX_CHANNEL` bytes and a frame of `BUS_MAX_FRAME`, 131,081 bytes), into one buffer it keeps for its life, and a longer one -- cut by the kernel, or longer than any publisher sends -- or a malformed one is refused and counted, `http_bus_frames_refused_total` on `/__metrics` (the stream chunk channel, which an executor or a streaming pool writes in the same codec, is drained by the same reader and counted with it), while the drain goes on to the next; an empty datagram, which no publisher sends and which is also how macOS's `recv` reports a datagram pair's end, ends the drain uncounted",
       "status": "verified",
       "evidence": "`test_broadcast.mojo:test_a_long_channel_with_a_whole_frame_arrives_whole` (every PR) \u2014 a 5,000-byte channel with a 64 KB frame and the largest datagram of all arrive whole, last byte included; `test_a_datagram_longer_than_any_publisher_sends_is_refused_and_counted` (one the kernel cut, one a byte too long that it did not, and one too short for the header, each refused and counted, the frame behind them delivered) and `test_the_loop_reports_a_refused_bus_datagram_on_its_metrics` (the loop's own reader, its count on `/__metrics`) beside it. Before the fix (review record LF23) the drain read into a 69,642-byte buffer allocated and zero-filled for every drain, and the 5,000-byte channel's frame reached its subscribers 64,632 bytes long. The length a cut datagram returns is the buffer's on macOS and on Linux alike (measured in the colima VM, kernel 6.8), so a datagram that fills the one-byte-longer buffer is the refusal on both, where `MSG_TRUNC` passed to `recv` reports the real length on Linux and nothing on macOS. Sabotaged four ways (the old buffer, no length check, no count of a malformed datagram, the count not reaching the metrics), each caught"
+    },
+    {
+      "id": "I41",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A WebSocket whose inbound the application has suspended stays suspended through this side's close: the socket lingers for the peer's Close without reading until the application resumes it, or the linger's deadline ends the wait",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_close_landing_leaves_a_suspended_sockets_reads_alone` (every PR) \u2014 over a registration kept as epoll keeps it, a suspended socket's Close lands through the write-ready path and the linger adds no read interest; one not suspended lingers reading. `_ws_linger` armed the reads `_stream_idle` refuses a suspended socket, so the socket undid its own backpressure and the parked queue grew with what the client sent next. Found by the 2026-10-07 fork review"
     },
     {
       "id": "J1",
