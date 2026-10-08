@@ -53,10 +53,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `F_SETFL` from `lightbug_http.c.fcntl`, no longer `lightbug_http.c.kqueue`
   (they serve Linux too); `O_NONBLOCK` and `O_CLOEXEC` from
   `lightbug_http.c.fcntl`, no longer `lightbug_http.c.socket`; and
-  `set_tcp_nodelay` from `lightbug_http.c.socket`. Linux's
-  `EPOLL_CLOEXEC`, `TFD_CLOEXEC` and `TFD_NONBLOCK`, which
-  `lightbug_http.c.epoll` declared as copies of those flags, are gone:
-  pass `O_CLOEXEC` and `O_NONBLOCK`.
+  `set_tcp_nodelay` from `lightbug_http.c.socket`.
 
 - **`recv` and `send` take their length from the span they are given**
   (fork review LF20, SPEC G21). Nothing served changes. The two calls in
@@ -87,6 +84,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Linux's on macOS too; `lightbug_http.c.network`'s `addrinfo`, laid out
   as Linux's on every platform, `in6_addr` and `sockaddr_in6`;
   `try_writev`; and `kevent_register`, `EV_ENABLE` and `EV_DISABLE`.
+
+- **`lightbug_http.c.epoll`'s `EPOLL_CLOEXEC`, `TFD_CLOEXEC` and
+  `TFD_NONBLOCK`** (fork review LF28), copies of the open flags under
+  Linux's other names. Nothing served changes; an application built with
+  the `m0` wheel that named one passes `O_CLOEXEC` or `O_NONBLOCK` from
+  `lightbug_http.c.fcntl`, the same values.
 
 ## [1.12.1] — 2026-10-07
 

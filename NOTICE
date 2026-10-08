@@ -1364,7 +1364,7 @@ lightbug_http
         `EPOLL_CLOEXEC`, `TFD_CLOEXEC`) and `TFD_NONBLOCK` are gone.
         `set_tcp_nodelay` is c/socket.mojo's, naming `IPPROTO_TCP` and
         `TCP_NODELAY` where it passed 6 and 1. c/kqueue.mojo now imports
-        nothing from the package (review record LF28).
+        nothing from the package but c/aliases.mojo (review record LF28).
 
       - c/pipe.mojo (2026-10-08): two comments the code contradicted.
         `close_fd`'s said close() fails only with EBADF and that it

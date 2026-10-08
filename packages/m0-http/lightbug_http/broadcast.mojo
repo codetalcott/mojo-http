@@ -33,7 +33,7 @@ from lightbug_http.c.platform import MSG_DONTWAIT
 
 # Per-call non-blocking I/O. `set_nonblocking` was a silent no-op on ARM64
 # macOS until `_fcntl` learned the Darwin variadic convention (see
-# c/kqueue.mojo) — a blocking recv() inside the drain loop wedged the event
+# c/fcntl.mojo) — a blocking recv() inside the drain loop wedged the event
 # loop until the next datagram arrived. O_NONBLOCK works now, but the
 # per-call flag stays: it makes each recv/send non-blocking by construction
 # rather than by fd state, and it costs nothing.
