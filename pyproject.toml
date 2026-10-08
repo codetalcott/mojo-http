@@ -1240,7 +1240,7 @@ default_item_type = "ref"
 # job, after its own `build-all`.
 [tool.poe.tasks.test-packages]
 help = "test-all's first half: the packages' tests but m0-sqlite's, the fork and host compiles, the Datastar SDK's conformance, the scaffold's templates, the decoder's sabotage and fuzzer (CI's unit-tests job)"
-sequence = ["check-fork-package", "check-host-package", "test-core", "test-http", "sabotage-mojo-suite", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "check-templates", "test-wsgi", "sabotage-trailers", "fuzz-request", "test-postgres"]
+sequence = ["check-fork-package", "check-host-package", "test-core", "test-http", "sabotage-mojo-suite", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "check-templates", "test-wsgi", "sabotage-trailers", "sabotage-header-bytes", "fuzz-request", "test-postgres"]
 default_item_type = "ref"
 
 # The executor shim's rules; the probes' phase stamps and m0-sqlite's
@@ -6435,6 +6435,14 @@ cmd = "python3 scripts/pool_sabotage.py"
 help = "Revert each chunked-trailer rule and insist test_parsing fails for it"
 deps = ["build-core", "build-http"]
 cmd = "python3 scripts/trailer_sabotage.py"
+
+# SPEC G24. The header-bytes property passes when nothing is wrong, so each
+# arm puts back one defect it exists to find (LF1's overlong decode among
+# them) and the property's own test must be the one that fails.
+[tool.poe.tasks.sabotage-header-bytes]
+help = "Revert each rule that keeps CR, LF and NUL out of a head and insist the header-bytes property fails for it"
+deps = ["build-core", "build-http"]
+cmd = "python3 scripts/header_bytes_sabotage.py"
 
 # SPEC G13. The request decoder is a pure function over bytes, so the harness
 # needs no socket and no server: mutate a seed corpus, assert the invariants,
