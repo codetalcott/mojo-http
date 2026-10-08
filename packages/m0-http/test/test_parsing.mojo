@@ -223,6 +223,67 @@ def test_http11_accepts_a_real_host() raises:
     assert_true(_accepted("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"))
 
 
+def _with_host(value: String) -> String:
+    return String("GET / HTTP/1.1\r\nHost: ", value, "\r\n\r\n")
+
+
+def test_an_invalid_host_value_is_rejected() raises:
+    """RFC 9112 §3.2: a server MUST answer 400 to a `Host` field with an
+    invalid value, and the one valid shape is `uri-host [ ":" port ]` (RFC
+    9110 §7.2). `Host: a b` and `Host: u@a` were served, as h11 and llhttp
+    serve them (review record LF64). An absolute-form target's authority,
+    which replaces Host (B16), is held to the same shape.
+
+    covers: B27
+    """
+    var bad = [
+        "a b", "u@a", "a/b", "a?b", "a#b", "a\tb", "a\"b", "a<b>", "a\\b",
+        "a%", "a%4", "a%zz", ":80", "a:8x", "a:80:90", "a::80",
+        "[::1", "[::1]x", "[]", "[1.2.3.4]", "[v1]", "[v.x]",
+        "[vg.x]", "[v1.]", "[::1%25lo0]", "::1", "a]", "[a b]",
+    ]
+    for v in bad:
+        assert_true(_rejected(_with_host(v)), String("served Host: ", v))
+    # A byte above ASCII is no part of a uri-host: a raw UTF-8 name, and a
+    # byte that is not UTF-8 at all.
+    var raw = List[UInt8]()
+    raw.extend("GET / HTTP/1.1\r\nHost: caf".as_bytes())
+    raw.append(0xC3)
+    raw.append(0xA9)
+    raw.extend("\r\n\r\n".as_bytes())
+    assert_true(_invalid_bytes(raw), "served a Host holding UTF-8")
+    raw = List[UInt8]()
+    raw.extend("GET / HTTP/1.1\r\nHost: a".as_bytes())
+    raw.append(0xFF)
+    raw.extend("\r\n\r\n".as_bytes())
+    assert_true(_invalid_bytes(raw), "served a Host holding 0xFF")
+
+    var good = [
+        "example.com", "example.com:8080", "EXAMPLE.COM", "a:", "127.0.0.1",
+        "127.0.0.1:8973", "[::1]", "[::1]:8080", "[2001:db8::1]:443",
+        "[::ffff:10.0.0.1]", "[v1.x]", "[vF.a:b]", "my_host.local",
+        "a%2Db", "xn--caf-dma.example", "a.b-c~d!e$f&g'h(i)j*k+l,m;n=o",
+        "a:99999", "[::1]:",
+    ]
+    for v in good:
+        assert_true(_accepted(_with_host(v)), String("refused Host: ", v))
+        assert_equal(_header(_with_host(v), "host"), v)
+    # OWS around the value is the field's, not the host's.
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost: \t example.com \t\r\n\r\n"))
+
+    # The authority of an absolute-form target, which replaces Host.
+    assert_true(_rejected("GET http://a\"b/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http://h:8x/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http://[::1/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_equal(
+        _header("GET http://[::1]:80/p HTTP/1.1\r\nHost: x\r\n\r\n", "host"),
+        "[::1]:80",
+    )
+    # The Host sent beside an absolute-form target is still checked: §3.2
+    # asks it of every request.
+    assert_true(_rejected("GET http://h/p HTTP/1.1\r\nHost: a b\r\n\r\n"))
+
+
 def test_http10_without_host_is_accepted() raises:
     """The Host requirement is HTTP/1.1's; 1.0 predates it."""
     assert_true(_accepted("GET / HTTP/1.0\r\n\r\n"))

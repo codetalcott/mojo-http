@@ -1634,6 +1634,12 @@ lightbug_http
         closes (`_answers_the_last_request`; SPEC A30). The flag closed the
         connection as that answer landed (review record LF43).
 
+      - header.mojo (2026-10-08): `host_value_is_valid` holds a `Host`
+        field value, and an absolute-form target's authority, to
+        `uri-host [ ":" port ]` (RFC 9110 §7.2, RFC 3986 §3.2.2-3.2.3),
+        and `parse_request_headers` refuses one that is not, 400 (SPEC
+        B27). It served `Host: a b` and `Host: u@a` (review record LF64).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

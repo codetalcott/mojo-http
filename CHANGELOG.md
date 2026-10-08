@@ -222,6 +222,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   text says what it has always counted: requests answered, as each
   response's head lands, not requests received.
 
+- **A `Host` that names no host is refused with 400** (fork review LF64,
+  SPEC B27). Exposed: m0serve and every Mojo application. A request whose
+  `Host` was not a host name, an IP address or a bracketed IPv6 address,
+  with an optional port of digits -- `Host: a b`, `Host: u@a`, a name in
+  raw UTF-8 -- was served, and an application that reads the site from
+  `Host` read it. RFC 9112 asks for 400, which is now the answer, and so
+  is it for an absolute-form target (`GET http://.../`) whose authority
+  has the same fault. An empty `Host` is still accepted where the target
+  names no authority. A client sends an internationalized name as
+  punycode, as browsers do.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

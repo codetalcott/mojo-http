@@ -1052,6 +1052,107 @@ def _http_scheme_len(target: Span[Byte, _]) -> Int:
     return i + 3
 
 
+@always_inline
+def _is_hexdig(c: Byte) -> Bool:
+    return (
+        (c >= 0x30 and c <= 0x39)
+        or (c >= 0x41 and c <= 0x46)
+        or (c >= 0x61 and c <= 0x66)
+    )
+
+
+@always_inline
+def _is_unreserved_or_sub_delim(c: Byte) -> Bool:
+    """RFC 3986 §2.3's unreserved (ALPHA / DIGIT / `-` `.` `_` `~`) and
+    §2.2's sub-delims (`!` `$` `&` `'` `(` `)` `*` `+` `,` `;` `=`): every
+    byte a reg-name may hold unescaped."""
+    if (c >= 0x61 and c <= 0x7A) or (c >= 0x41 and c <= 0x5A) or (c >= 0x30 and c <= 0x39):
+        return True
+    return (
+        c == 0x2D or c == 0x2E or c == 0x5F or c == 0x7E  # - . _ ~
+        or c == 0x21 or c == 0x24 or c == 0x26 or c == 0x27  # ! $ & '
+        or (c >= 0x28 and c <= 0x2C)  # ( ) * + ,
+        or c == 0x3B or c == 0x3D  # ; =
+    )
+
+
+def host_value_is_valid(value: Span[Byte, _]) -> Bool:
+    """Whether `value` is `uri-host [ ":" port ]` (RFC 9110 §7.2), the one
+    shape a `Host` field value may take.
+
+    The host is RFC 3986 §3.2.2's: a bracketed IP literal -- an IPv6
+    address's hex digits, colons and dots, or `v`, hex digits, a dot and
+    then unreserved, sub-delims or colons for an IPvFuture -- or a
+    reg-name of unreserved bytes, sub-delims and `%` escapes, which an
+    IPv4 address is too. The port is digits, any number of them (§3.2.3),
+    none included. An empty host before a port is refused: an `http`
+    authority with an empty host is invalid (RFC 9110 §4.2.1). The EMPTY
+    value is the caller's to judge (SPEC B20), and this answers False.
+
+    A server MUST answer 400 to a `Host` with an invalid field value (RFC
+    9112 §3.2). `Host: a b` and `Host: u@a` were served, as h11 and llhttp
+    serve them, and an application reading the site from `Host` --
+    Django's `get_host`, a router keyed on it -- read a name no client can
+    have meant (review record LF64). Bytes, never a String: the value is
+    request data and may not be UTF-8 (SPEC G14), and a byte above ASCII
+    is no part of a uri-host.
+    """
+    var n = len(value)
+    var i = 0
+    if n > 0 and value[0] == 0x5B:  # '['
+        i = 1
+        if i < n and (value[i] == 0x76 or value[i] == 0x56):  # 'v' / 'V'
+            # IPvFuture: "v" 1*HEXDIG "." 1*( unreserved / sub-delims / ":" )
+            i += 1
+            var hex_from = i
+            while i < n and _is_hexdig(value[i]):
+                i += 1
+            if i == hex_from or i >= n or value[i] != 0x2E:  # '.'
+                return False
+            i += 1
+            var rest_from = i
+            while i < n and (_is_unreserved_or_sub_delim(value[i]) or value[i] == 0x3A):
+                i += 1
+            if i == rest_from:
+                return False
+        else:
+            # IPv6address: hex digits, colons, and the dots of an embedded
+            # IPv4 address; at least one colon.
+            var colons = 0
+            while i < n and (_is_hexdig(value[i]) or value[i] == 0x3A or value[i] == 0x2E):
+                if value[i] == 0x3A:
+                    colons += 1
+                i += 1
+            if colons == 0:
+                return False
+        if i >= n or value[i] != 0x5D:  # ']'
+            return False
+        i += 1
+    else:
+        while i < n and value[i] != 0x3A:  # ':'
+            var c = value[i]
+            if c == 0x25:  # '%': pct-encoded is "%" HEXDIG HEXDIG
+                if i + 2 >= n or not _is_hexdig(value[i + 1]) or not _is_hexdig(value[i + 2]):
+                    return False
+                i += 3
+                continue
+            if not _is_unreserved_or_sub_delim(c):
+                return False
+            i += 1
+        if i == 0:
+            return False
+    if i == n:
+        return True
+    if value[i] != 0x3A:
+        return False
+    i += 1
+    while i < n:
+        if value[i] < 0x30 or value[i] > 0x39:
+            return False
+        i += 1
+    return True
+
+
 def parse_request_headers(
     buffer: Span[Byte, _],
     last_len: Int = 0,
@@ -1139,6 +1240,10 @@ def parse_request_headers(
         for k in range(scheme_len, end):
             if target[k] == 0x40:  # '@'
                 raise RequestParseError(InvalidHTTPRequestError())
+        # The authority becomes the request's Host below, so it is held to
+        # Host's own shape (SPEC B27): `http://a"b/` named no host either.
+        if not host_value_is_valid(target[scheme_len:end]):
+            raise RequestParseError(InvalidHTTPRequestError())
         authority = Bytes(target[scheme_len:end])
         # Sliced as bytes, never `[byte=a:b]`: the target is request data
         # and may not be UTF-8 (SPEC G14). Built whole before `path` is
@@ -1232,6 +1337,10 @@ def parse_request_headers(
             # alone read as one `chunked`.
             if kid == KH_HOST:
                 if host_len >= 0:
+                    raise RequestParseError(InvalidHTTPRequestError())
+                # A value that is not `uri-host [ ":" port ]` is 400 too
+                # (RFC 9112 §3.2, SPEC B27); the empty one is B20's, below.
+                if len(value) > 0 and not host_value_is_valid(value):
                     raise RequestParseError(InvalidHTTPRequestError())
                 host_len = len(value)
             elif kid == KH_TRANSFER_ENCODING:

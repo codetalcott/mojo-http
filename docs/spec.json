@@ -450,6 +450,14 @@
       "evidence": "`test_parsing.mojo:test_a_control_byte_in_a_trailer_value_is_refused` (every PR) \u2014 B14 held the trailer to field lines ending in CRLF but took any byte but LF in a value, NUL and VT included, where a head's value refuses them. The trailer is discarded, so this keeps one rule for field content rather than closing an exposure (review record LF4's deferred minor). `poe sabotage-trailers` reverts it with B14's rules"
     },
     {
+      "id": "B27",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A `Host` field value that is not `uri-host [ \":\" port ]` (RFC 9110 \u00a77.2) refused with 400: the host a bracketed IP literal, or a reg-name of RFC 3986's unreserved bytes, sub-delims and `%` escapes (an IPv4 address is one), and the port digits; an empty host before a port refused, and the empty value left to B20. An absolute-form target's authority, which replaces `Host` (B16), is held to the same shape",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_an_invalid_host_value_is_rejected` (every PR) \u2014 `Host: a b` and `Host: u@a` were served, where RFC 9112 \u00a73.2 asks for 400 to a `Host` with an invalid field value; h11 and llhttp serve both, so an application routing on the name read one no client can have meant (review record LF64). A byte above ASCII is refused, raw UTF-8 included: a reg-name carries a non-ASCII name `%`-escaped or as punycode"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",
