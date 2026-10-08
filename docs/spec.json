@@ -450,6 +450,22 @@
       "evidence": "`test_parsing.mojo:test_a_control_byte_in_a_trailer_value_is_refused` (every PR) \u2014 B14 held the trailer to field lines ending in CRLF but took any byte but LF in a value, NUL and VT included, where a head's value refuses them. The trailer is discarded, so this keeps one rule for field content rather than closing an exposure (review record LF4's deferred minor). `poe sabotage-trailers` reverts it with B14's rules"
     },
     {
+      "id": "B25",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "The differential corpus: requests that probe framing and field parsing (line endings, folding, field names, the request line, `Host`, `Content-Length`, `Transfer-Encoding`, chunked bodies and trailers, `Expect`, `Connection`, pipelining), each sent on a connection of its own and half-closed, are answered as `scripts/differential_expected.json` freezes them: the requests the application saw, each by its method, its body length and a fingerprint of its target, protocol and header lines, every other response by its status, and the close; and the server serves a plain GET after them",
+      "status": "verified",
+      "evidence": "`Smoke test the differential request corpus` (every PR) \u2014 the fork review's D0 run sent these cases to this server, to h11 0.16 and to Node 24's llhttp (2026-10-07), and where this server was wrong it was fixed (B12-B24). The table freezes its answers since, both references' beside them for reading a row, and a note on each case where this server differs from both on purpose (B11, B16, B18, B19, an incomplete head at EOF). A change to the parser or the loop that moves an answer, or changes which request the application is handed, fails naming the case; one that moves it on purpose re-freezes the row with `poe freeze-differential`, which asks the references too (their echoes are in `scripts/`, never a CI dependency). A server that stops closing a half-closed connection fails at the third such case in a row, at 1 s each. Two answers are frozen although they look wrong, each marked a known divergence: `Host: a b` and `Host: u@a` are served, as both references serve them, where RFC 9112 \u00a73.2 asks for 400 on a `Host` whose value is invalid (review record LF64, whose fix re-freezes both rows). The server is `apps/request_echo`, a test-only echo whose application names every request it is handed"
+    },
+    {
+      "id": "B26",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "The differential corpus notices a request rule undone: the bare-LF head end (B12, with the check that the two framers agree), the bare-LF field-line end (B12), the obs-fold refusal (B13), the refusal of `Content-Length` beside `Transfer-Encoding` (B1), of a second `Host` (B10), the 501 for a coding before `chunked` (B21), the CONNECT refusal (B18) and the HTTP/1.0 client spared a 100 Continue (RFC 9110 \u00a710.1.1), each reverted alone, fail B25's smoke naming the case that shows it",
+      "status": "verified",
+      "evidence": "`sabotage-differential` (pre-release) \u2014 each rule is held on every pull request by a gate of its own, its row's (A11 for the 100 Continue); this shows the corpus holds it too, so a re-frozen table cannot quietly accept what a rule refuses. The parser's bare-LF head end alone is not caught, and is not meant to be: the loop refuses a head its two framers end at different bytes, so that arm reverts both. Pre-release because each arm builds the echo server again, cold: the first whole run, its baseline and eight arms, took 73 s on the reference Mac (2026-10-08) and caught all eight"
+    },
+    {
       "id": "B29",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
