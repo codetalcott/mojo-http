@@ -176,7 +176,7 @@ from std.time import perf_counter_ns, sleep
 
 from lightbug_http.accept_share import AcceptShare
 from lightbug_http.address import NetworkType
-from lightbug_http.address import parse_address
+from lightbug_http.address import join_host_port, parse_address
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.process import getpid, process_exit
@@ -833,19 +833,19 @@ def host_checks(
     # The address, parsed as the listener will parse it: a refusal it makes,
     # such as a `%` in the host (an IPv6 zone), failed at the bind with 1
     # while the doctor said 0 (review record LF48).
-    # Not asked when the port check refused: parsing would refuse the same
-    # port again, two failures for one cause.
+    # A port out of range is the `port` check's alone: the host is parsed
+    # with a placeholder port then, so this fails on the host's own cause
+    # and the doctor reports a bad host and a bad port at once, each by its
+    # own check.
     var address = config.address()
     var port_ok = config.port >= 1 and config.port <= 65535
+    var parsed = address if port_ok else join_host_port(config.host, "1")
     var unparsed = String("")
-    if port_ok:
-        try:
-            _ = parse_address[NetworkType.tcp](StringSpan(address))
-        except parse_err:
-            unparsed = String(parse_err)
-    if not port_ok:
-        out.append(HostCheck("address", String(address, " not parsed: the port is refused")))
-    elif unparsed.byte_length() > 0:
+    try:
+        _ = parse_address[NetworkType.tcp](StringSpan(parsed))
+    except parse_err:
+        unparsed = String(parse_err)
+    if unparsed.byte_length() > 0:
         out.append(HostCheck(
             "address",
             String("cannot listen on ", address, ": ", unparsed),

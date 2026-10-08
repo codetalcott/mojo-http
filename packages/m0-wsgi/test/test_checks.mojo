@@ -360,15 +360,18 @@ def test_a_forked_worker_beside_the_parallel_runtime_is_refused_with_2() raises:
 
 
 def test_a_port_out_of_range_is_one_failure_not_two() raises:
-    """A port past 65535 fails the `port` rule alone: the `address` rule,
-    which would refuse the same port while parsing, is not asked, so the
-    doctor lists one failure for one cause."""
+    """A port past 65535 fails the `port` rule alone: `address` parses the
+    host with a placeholder port, so it fails only on the host's own cause.
+    A bad port with a good host is one failure; a bad port with a bad host
+    is two, each named, so the doctor reports every problem at once."""
     var high = _opts([String("app.wsgi")])
     high.port = 70000
-    var checks = flag_checks(high, _facts())
-    assert_equal(_failed(checks), "port")
-    assert_equal(checks[1].name, "address")
-    assert_true(checks[1].detail.find("not parsed") >= 0, checks[1].detail)
+    assert_equal(_failed(flag_checks(high, _facts())), "port")
+    var both = _opts([String("app.wsgi"), String("--host"), String("fe80::1%en0")])
+    both.port = 0
+    assert_equal(_failed(flag_checks(both, _facts())), "port,address")
+    var host_only = _opts([String("app.wsgi"), String("--host"), String("fe80::1%en0")])
+    assert_equal(_failed(flag_checks(host_only, _facts())), "address")
 
 
 def test_the_first_failure_is_the_earliest_rule_not_the_largest_code() raises:

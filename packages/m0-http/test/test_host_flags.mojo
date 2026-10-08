@@ -260,22 +260,33 @@ def test_a_listen_address_that_does_not_parse_is_refused() raises:
     assert_false(Bool(host_refusal(_parse("--host", "localhost").config)), "localhost was refused")
 
 
+def _failed_checks(config: AppConfig) -> String:
+    """The names of `host_checks`' failures, in order, comma-separated."""
+    var checks = host_checks(config)
+    var out = String("")
+    for i in range(len(checks)):
+        if not checks[i].ok:
+            if out.byte_length() > 0:
+                out += ","
+            out += checks[i].name
+    return out^
+
+
 def test_a_port_out_of_range_is_one_failure_not_two() raises:
-    """A port past 65535 fails the `port` check alone: the `address` check,
-    which would refuse the same port while parsing, is not asked, so the
-    doctor lists one failure for one cause.
+    """A port past 65535 fails the `port` check alone: `address` parses the
+    host with a placeholder port, so it fails only on the host's own cause.
+    A bad port with a good host is one failure; a bad port with a bad host
+    is two, each named, so the doctor reports every problem at once.
 
     covers: E31
     """
-    var checks = host_checks(_parse("--port", "70000").config)
-    var failed = List[String]()
-    for i in range(len(checks)):
-        if not checks[i].ok:
-            failed.append(checks[i].name)
-    assert_equal(len(failed), 1, "more than the port check failed")
-    assert_equal(failed[0], "port")
-    assert_equal(checks[1].name, "address")
-    assert_true("not parsed" in checks[1].detail, checks[1].detail)
+    assert_equal(_failed_checks(_parse("--port", "70000").config), "port")
+    assert_equal(_failed_checks(_parse("--port", "0").config), "port")
+    assert_equal(
+        _failed_checks(_parse("--port", "0", "--host", "fe80::1%en0").config),
+        "port,address",
+    )
+    assert_equal(_failed_checks(_parse("--host", "fe80::1%en0").config), "address")
 
 
 def test_prefork_is_refused_when_the_parallel_runtime_is_linked() raises:

@@ -36,7 +36,7 @@ from std.os import getenv
 from std.os.path import isdir
 from std.sys.info import CompilationTarget
 
-from lightbug_http.address import NetworkType, parse_address
+from lightbug_http.address import NetworkType, join_host_port, parse_address
 from lightbug_http.c.process import process_exit
 from m0_http import GRANT_KEY_ENV, threads_conflict
 from m0_http.parallel_runtime import parallel_runtime_linked
@@ -317,18 +317,19 @@ def flag_checks(opts: ServeOptions, facts: CheckFacts) -> List[ServeCheck]:
     # such as a `%` in the host (an IPv6 zone), failed at the bind with 1
     # while the doctor said 0 (review record LF48). Exit 78, as the Mojo
     # host's `address` check.
-    # Not asked when the port rule refused: parsing would refuse the same
-    # port again, two failures for one cause.
+    # A port out of range is the `port` rule's alone: the host is parsed
+    # with a placeholder port then, so this fails on the host's own cause
+    # and the doctor reports a bad host and a bad port at once, each by its
+    # own rule.
     var address = opts.address()
     var port_ok = opts.port >= 1 and opts.port <= 65535
+    var parsed = address if port_ok else join_host_port(opts.host, "1")
     var unparsed = String("")
-    if port_ok:
-        try:
-            _ = parse_address[NetworkType.tcp](StringSpan(address))
-        except parse_err:
-            unparsed = String(parse_err)
-    _rule(out, "address", unparsed.byte_length() == 0,
-        address if port_ok else address + " not parsed: the port is refused",
+    try:
+        _ = parse_address[NetworkType.tcp](StringSpan(parsed))
+    except parse_err:
+        unparsed = String(parse_err)
+    _rule(out, "address", unparsed.byte_length() == 0, address,
         "cannot listen on " + address + ": " + unparsed,
         "set --host (M0_HOST) to an IPv4 or IPv6 address, or localhost,"
         + " and --port (M0_PORT) to a port from 1 to 65535", EXIT_CONFIG)
