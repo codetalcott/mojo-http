@@ -359,6 +359,18 @@ def test_a_forked_worker_beside_the_parallel_runtime_is_refused_with_2() raises:
     assert_true(checks[len(checks) - 1].detail.find("exec") >= 0, checks[len(checks) - 1].detail)
 
 
+def test_a_port_out_of_range_is_one_failure_not_two() raises:
+    """A port past 65535 fails the `port` rule alone: the `address` rule,
+    which would refuse the same port while parsing, is not asked, so the
+    doctor lists one failure for one cause."""
+    var high = _opts([String("app.wsgi")])
+    high.port = 70000
+    var checks = flag_checks(high, _facts())
+    assert_equal(_failed(checks), "port")
+    assert_equal(checks[1].name, "address")
+    assert_true(checks[1].detail.find("not parsed") >= 0, checks[1].detail)
+
+
 def test_the_first_failure_is_the_earliest_rule_not_the_largest_code() raises:
     """Four pairs where the codes differ, so a reorder changes the exit."""
     # A port the environment set to 0 (78) before a missing directory (1).

@@ -833,13 +833,19 @@ def host_checks(
     # The address, parsed as the listener will parse it: a refusal it makes,
     # such as a `%` in the host (an IPv6 zone), failed at the bind with 1
     # while the doctor said 0 (review record LF48).
+    # Not asked when the port check refused: parsing would refuse the same
+    # port again, two failures for one cause.
     var address = config.address()
+    var port_ok = config.port >= 1 and config.port <= 65535
     var unparsed = String("")
-    try:
-        _ = parse_address[NetworkType.tcp](StringSpan(address))
-    except parse_err:
-        unparsed = String(parse_err)
-    if unparsed.byte_length() > 0:
+    if port_ok:
+        try:
+            _ = parse_address[NetworkType.tcp](StringSpan(address))
+        except parse_err:
+            unparsed = String(parse_err)
+    if not port_ok:
+        out.append(HostCheck("address", String(address, " not parsed: the port is refused")))
+    elif unparsed.byte_length() > 0:
         out.append(HostCheck(
             "address",
             String("cannot listen on ", address, ": ", unparsed),
