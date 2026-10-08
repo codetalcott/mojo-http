@@ -986,6 +986,14 @@
       "evidence": "`Smoke test connections that stop reading` (every PR) \u2014 a chunked 8 MiB `/stream` and a `/ws/flood` WebSocket, each read by a client that stalls first so their frames finish through the write-ready path, must leave exactly one `--access-log` record each; before the fix (review record R3) they left 5 and 2, each frame the write-ready path finished being recorded as a response of its own, counted by `--metrics` and timed as the stream's age, and a chunked stream recorded once more when its terminator landed. The count is `test_slot_lifecycle.mojo:test_a_stream_is_recorded_once`"
     },
     {
+      "id": "F22",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "A request's `dur_us` in the access log, and its sample in the latency histogram, run from the request's first bytes whatever `header_read_timeout` is",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_the_access_log_times_a_request_without_a_header_timeout` (every PR) \u2014 a request read with the header timeout off, the access line read off the loop's stdout. The first bytes were stamped only while the timeout was on, and the access log subtracted the stamp anyway: with it off every line's `dur_us` was the time since the machine booted (658229997495 in the test's first run), and the histogram, which asked for a stamp first, recorded nothing. Found by the 2026-10-07 fork review"
+    },
+    {
       "id": "G1",
       "section": "G",
       "category": "G. Security hardening",

@@ -548,6 +548,15 @@ def _record_response(mut st: LoopState, slot: Int):
     """
     if st.provision_pool.provisions[slot].response_status == 0:
         return
+    # The request's duration, for the metrics and the access log alike: from
+    # its first bytes, which `_handle_read_headers` stamps whatever the
+    # header timeout. Only when a stamp exists: the keep-alive reset zeroes
+    # it, so a send that completed without a request behind it has no
+    # duration to claim, and `now - 0` is the time since boot (LF14).
+    var timed = st.slot_header_start[slot] > 0
+    var elapsed_us = 0
+    if timed and (st.config.enable_metrics or st.config.access_log):
+        elapsed_us = Int((perf_counter_ns() - st.slot_header_start[slot]) / 1000)
     # Phase 4e: record completed response metrics
     if st.config.enable_metrics:
         # Head and body as sent: the encoded buffer, then any file body,
@@ -557,18 +566,11 @@ def _record_response(mut st: LoopState, slot: Int):
             st.slot_send_offset[slot]
             + st.provision_pool.provisions[slot].response_file_len,
         )
-        # The latency sample, from the same clock the access log reads below.
-        # Only when a header stamp exists: the keep-alive reset zeroes it, so
-        # a send that completed without a request behind it has no duration
-        # to claim, and `now - 0` would sample the epoch as a latency.
-        if st.slot_header_start[slot] > 0:
-            st.metrics.record_duration(
-                Int((perf_counter_ns() - st.slot_header_start[slot]) / 1000)
-            )
+        if timed:
+            st.metrics.record_duration(elapsed_us)
         st.metrics.active_connections = st.active_count
     # Phase 4d: the structured access log, before any reset of the provision.
     if st.config.access_log and st.provision_pool.provisions[slot].log_method.byte_length() > 0:
-        var elapsed_us = Int((perf_counter_ns() - st.slot_header_start[slot]) / 1000)
         log_access(
             st.log_clock,
             st.provision_pool.provisions[slot].log_method,

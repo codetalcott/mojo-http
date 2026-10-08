@@ -18,6 +18,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   good with `--idle-timeout 0`) waiting for a request that could not come.
   Requests pipelined ahead of the last one are still answered first.
 
+- **The access log times a request when the header timeout is off** (SPEC
+  F22). A server whose `ServerConfig` set `header_read_timeout = 0` logged
+  every request's `dur_us` as the time since the machine booted, and
+  recorded no latency on `/__metrics`. Both now run from the request's
+  first bytes, as they always did with the timeout on. m0serve and the
+  Mojo host keep the default of 10 s, and were not affected.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

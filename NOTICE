@@ -1337,6 +1337,14 @@ lightbug_http
         own `Connection`, so the answer said `keep-alive` and an epoll slot
         waited for the idle sweep (review record LF11).
 
+      - loop/request.mojo, loop/state.mojo (2026-10-08):
+        `_handle_read_headers` stamps `slot_header_start` at a request's
+        first bytes whatever `header_read_timeout` is, and only the timeout
+        check asks for it to be on; `_record_response` computes one duration
+        for the metrics and the access log, 0 without a stamp (SPEC F22).
+        The access log subtracted a stamp the timeout's absence had never
+        taken, so `dur_us` was the time since boot (review record LF14).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

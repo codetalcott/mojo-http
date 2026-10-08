@@ -717,6 +717,66 @@ def test_a_half_closed_request_is_answered_with_a_close() raises:
     assert_true(full[1])
 
 
+def test_the_access_log_times_a_request_without_a_header_timeout() raises:
+    """A request's duration runs from its first bytes whatever the header
+    timeout (review record LF14). The header clock was stamped only while
+    `header_read_timeout` was above 0, and the access log subtracted it
+    anyway: with the timeout off every line's `dur_us` was the time since
+    the machine booted, and the metrics' latency, which asked for a stamp
+    first, recorded nothing.
+
+    covers: F22
+    """
+    var config = _config()
+    config.header_read_timeout = 0
+    config.access_log = True
+    config.enable_metrics = True
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(config)
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    _send_all(peer, "GET /timed HTTP/1.1\r\nHost: x\r\n\r\n")
+
+    var out = _stream_pair()
+    var saved = Int(external_call["dup", c_int, c_int](c_int(1)))
+    assert_true(saved >= 0)
+    _ = external_call["dup2", c_int, c_int, c_int](c_int(out[1]), c_int(1))
+    _on_read(app, backend, st, fd, False)
+    _ = external_call["dup2", c_int, c_int, c_int](c_int(saved), c_int(1))
+    close(FileDescriptor(saved))
+    close(FileDescriptor(out[1]))
+    var logged = List[UInt8]()
+    _ = _read_available(out[0], logged)
+    close(FileDescriptor(out[0]))
+    var line = String(unsafe_from_utf8=Span(logged))
+
+    var at = line.find('"dur_us":')
+    assert_true(at >= 0, "no access line was written: " + line)
+    var digits = String()
+    for b in line.as_bytes()[at + 9 :]:
+        if b < 0x30 or b > 0x39:
+            break
+        digits += chr(Int(b))
+    var dur_us = Int(digits)
+    assert_true(
+        dur_us < 1_000_000,
+        String("a request answered at once was logged as taking ")
+        + String(dur_us) + "us: " + line,
+    )
+    assert_equal(st.metrics.latency_count, 1, "the latency was not recorded")
+    assert_true(st.metrics.latency_sum_us < 1_000_000)
+    assert_equal(st.slot_header_start[slot], 0, "the keep-alive reset kept the stamp")
+    close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+
+
 def test_a_send_deadline_leaves_a_websockets_close_linger() raises:
     """`_arm_send_deadline` skips a stream, and the skip is what keeps a
     WebSocket's close linger. A socket the handler closed itself

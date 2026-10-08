@@ -354,21 +354,23 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     before kqueue registration) and from the EVFILT_READ handler.
     """
     var entry_keepalive = st.provision_pool.provisions[slot].keepalive_count
-    if st.config.header_read_timeout > 0:
-        # 0 means "no request in progress" — the first bytes of a keep-alive
-        # request start the clock here rather than inheriting a deadline from
-        # whenever the previous response happened to finish.
-        if st.slot_header_start[slot] == 0:
-            # A request's first bytes: stamp, and nothing to measure yet.
-            # (Reading the clock twice here was a fifth of the loop's
-            # clock calls.)
-            st.slot_header_start[slot] = perf_counter_ns()
-        else:
-            var elapsed_s = (perf_counter_ns() - st.slot_header_start[slot]) / 1_000_000_000
-            if elapsed_s >= Int(st.config.header_read_timeout):
-                _send_error_to_fd(fd_val, RequestTimeout())
-                _close_slot(handler, backend, st, slot, fd_val)
-                return
+    # 0 means "no request in progress" — the first bytes of a keep-alive
+    # request start the clock here rather than inheriting a deadline from
+    # whenever the previous response happened to finish.
+    if st.slot_header_start[slot] == 0:
+        # A request's first bytes: stamp, and nothing to measure yet.
+        # (Reading the clock twice here was a fifth of the loop's clock
+        # calls.) Whatever the header timeout: the access log and the
+        # metrics time the request from here, and with the timeout off the
+        # log subtracted a stamp never taken, so every line's `dur_us` was
+        # the time since boot (review record LF14).
+        st.slot_header_start[slot] = perf_counter_ns()
+    elif st.config.header_read_timeout > 0:
+        var elapsed_s = (perf_counter_ns() - st.slot_header_start[slot]) / 1_000_000_000
+        if elapsed_s >= Int(st.config.header_read_timeout):
+            _send_error_to_fd(fd_val, RequestTimeout())
+            _close_slot(handler, backend, st, slot, fd_val)
+            return
 
     # Phase 2a: recv straight into the connection's buffer, past whatever
     # it already holds. Still exactly ONE read of `recv_staging.capacity()`
