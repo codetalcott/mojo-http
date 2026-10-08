@@ -109,6 +109,18 @@ def HeadersTooLarge() -> HTTPResponse:
     )
 
 
+def NotImplemented() -> HTTPResponse:
+    """501: the request asks for something this server does not implement
+    (RFC 9110 §15.6.2) -- the `CONNECT` method, or a transfer coding before
+    the final `chunked`."""
+    return HTTPResponse(
+        "Not Implemented".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=501,
+        status_text="Not Implemented",
+    )
+
+
 def InternalError() -> HTTPResponse:
     return HTTPResponse(
         "Failed to process request".as_bytes(),

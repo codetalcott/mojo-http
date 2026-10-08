@@ -707,11 +707,16 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       cold interpreter thread state per job, and the rest of the gap.
       Pills go to those channels (`stop`), and a `TAG_WS_MESSAGE` on the
       lane socket is followed by a wake to a parked thread, which polls
-      the socket first thing. What must not change: announce, re-check,
-      block on the pool side and push, read, poke on the loop side —
-      every transition into spinning or parking re-checks the ring AFTER
-      announcing itself, which is what lets `submit` read three counters
-      non-atomically and skip the wake. `M0_POOL_ELASTIC=0` is the A/B
+      the socket first thing; that wake finds only a thread already
+      parked, so a thread parking on its own channel looks at the lane
+      socket after announcing the park (`_park_on_own`, SPEC I39). What
+      must not change: announce, re-check, block on the pool side and
+      push, read, poke on the loop side — every transition into spinning
+      or parking re-checks the ring AFTER announcing itself, which is what
+      lets `submit` read three counters non-atomically and skip the wake,
+      and a park on a thread's own channel re-checks the lane socket
+      after announcing too, which is what lets `send_ws_message` send and
+      then wake only a parked thread. `M0_POOL_ELASTIC=0` is the A/B
       knob (every idle thread spins, every push into a parked lane pokes
       the lane socket, the chain), `M0_POOL_WAKE_AGE_US` the threshold
       for measurement, and `M0_POOL_DEBUG=1` prints each lane's wake

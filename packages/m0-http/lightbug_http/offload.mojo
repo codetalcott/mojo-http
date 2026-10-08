@@ -134,10 +134,14 @@ rules of 2026-09-05):
   round-robin, so every job landed on the coldest thread and its cold
   interpreter thread state. Pills go to those channels too (`stop`),
   and a WebSocket message sent on the lane socket is followed by a wake
-  to a parked thread, which polls the socket first thing. A thread that
-  never registered (a test's, or every thread under the knob) parks on
-  the lane socket under the old rule: one poke per parked thread, never
-  one per push.
+  to a parked thread, which polls the socket first thing. That wake
+  finds only a thread already parked, so a thread on its way to its
+  own channel looks at the lane socket AFTER announcing the park, as it
+  re-checks the ring (`_park_on_own`): a message that landed while no
+  thread was parked is taken there rather than left on the socket until
+  a later job wakes the lane (SPEC I39). A thread that never registered
+  (a test's, or every thread under the knob) parks on the lane socket
+  under the old rule: one poke per parked thread, never one per push.
 
 The spin is what makes a pool thread's park rare rather than free. At
 130–180k rps the gap between jobs on one thread is a microsecond or two,
@@ -161,7 +165,7 @@ channel are sized for that many.
 from std.collections import Optional
 from std.ffi import ErrNo, c_int, external_call
 
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import (
     send, recv, close, setsockopt, SocketOption, SOL_SOCKET,
 )
@@ -548,7 +552,7 @@ def _offer_until(fd: Int, datagram: List[UInt8], deadline_ns: Int) -> Bool:
     never the loop's."""
     while True:
         try:
-            _ = send(FileDescriptor(fd), Span(datagram), UInt(len(datagram)), 0)
+            _ = send(FileDescriptor(fd), Span(datagram), 0)
             return True
         except e:
             if not (
@@ -846,10 +850,11 @@ struct OffloadPool(Movable):
     and always off for a disabled pool."""
 
     var job_rings: List[Ring]
-    """Per lane, the ring `submit` pushes onto and `next_job` pops from. An
-    executor lane gets one too and never uses it (its jobs are batched
-    datagrams); a lane past `_WAKE_MAX_LANES` gets a disabled ring, which
-    both sides read as "this lane is datagrams"."""
+    """Per lane, the ring `submit` pushes onto and `next_job` pops from:
+    `job_rings[i]` is lane `i`'s, rings on or off. An executor lane gets one
+    too and never uses it (its jobs are batched datagrams). Without rings
+    every one is disabled, which both sides read as "this lane is
+    datagrams"."""
 
     var done_ring: Ring
     """The one completion ring: every pool thread pushes, the loop pops."""
@@ -943,11 +948,12 @@ struct OffloadPool(Movable):
     def __init__(out self, capacity: Int) raises:
         """`capacity == 0` builds a disabled pool: no descriptors, no storage.
 
-        The threaded path constructs one per loop unconditionally, because
-        Mojo 1.0's `Optional` wants `ImplicitlyCopyable` and this type is
-        deliberately not. A disabled pool costs a struct rather than four
-        descriptors per loop; nothing consults it, since the loop is handed
-        `offload_addr = 0`.
+        The threaded mode's loop and the Mojo host's worker build one where
+        they run no pool, so the pool is a local that always exists: the
+        threaded mode reads its channels afterwards without a branch
+        (`chunk_active()` is false on it). A disabled pool costs a struct
+        rather than four descriptors per loop; nothing else consults it,
+        since the loop is handed `offload_addr = 0`.
         """
         # One slot minimum, even for a disabled pool, so every per-slot
         # table has an entry to index; `self.capacity` is what says whether
@@ -1017,11 +1023,16 @@ struct OffloadPool(Movable):
                     self.spin = us * 1000
             except:
                 pass
+        # Lane 0's ring, a disabled one without rings, so that
+        # `job_rings[i]` is lane i's either way: `add_lane` appends from
+        # lane 1 on whatever the knob says.
         self.job_rings = List[Ring]()
+        self.job_rings.append(
+            Ring(OFFLOAD_MAX_INFLIGHT) if self.ring_enabled else Ring()
+        )
         self.done_ring = Ring()
         self.wake_base = 0
         if self.ring_enabled:
-            self.job_rings.append(Ring(OFFLOAD_MAX_INFLIGHT))
             self.done_ring = Ring(OFFLOAD_MAX_INFLIGHT * 2)
             self.wake_base = external_call["malloc", Int, Int](_WAKE_BYTES)
             for w in range(_WAKE_BYTES // 8):
@@ -1188,10 +1199,12 @@ struct OffloadPool(Movable):
             return False
         # A thread parked on its own channel is not watching the lane
         # socket; wake the most recently parked one, which polls the socket
-        # first thing. No parked thread means a spinner or a busy one polls
-        # it within `POOL_DGRAM_POLL_NS`. Without the wake the message sat
-        # until a thread happened to spin: CI's WebSocket smoke saw "only
-        # pings arriving".
+        # first thing. No parked thread means every thread of the lane is
+        # busy, spinning or on its way to park: one that keeps working
+        # polls the socket once per `POOL_DGRAM_POLL_NS`, and one that
+        # parks looks at it after announcing the park (`_park_on_own`).
+        # Without the wake the message sat until a thread happened to
+        # spin: CI's WebSocket smoke saw "only pings arriving".
         _ = self._wake_registered(lane)
         return True
 
@@ -1316,8 +1329,9 @@ struct OffloadPool(Movable):
 
     def _new_lane_ring(self) -> Ring:
         """A ring for the lane about to be appended, or a disabled one when
-        rings are off or the wake block has no line left for it."""
-        if self.ring_enabled and len(self.job_rings) < _WAKE_MAX_LANES:
+        rings are off. A lane past the wake block's last line never gets
+        here: `add_lane` refuses it first."""
+        if self.ring_enabled:
             return Ring(OFFLOAD_MAX_INFLIGHT)
         return Ring()
 
@@ -1472,7 +1486,7 @@ struct OffloadPool(Movable):
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(buf), UInt(_JOB_BYTES), flags)
+                n = recv(fd, Span(buf)[:_JOB_BYTES], flags)
             except recv_err:
                 if recv_err.interrupted():
                     if flags != 0:
@@ -1493,14 +1507,19 @@ struct OffloadPool(Movable):
         `JOB_NONE` for a wake — the caller then looks at the lane socket
         and the ring again.
 
-        Announce (sequence, state, count), re-check the ring, block. The
-        re-check races the loop's `_wake_registered`, and the state word
-        settles it: whoever moves it off PARKED first owns the transition
-        and retires the parked count. If the loop won, its poke is in
-        flight for THIS thread and is consumed here, so the channel holds
-        nothing stale at the next park; a pill read in that position is
-        remembered (`_TR_PILL`) and answered at the next call, after the
-        job in hand."""
+        Announce (sequence, state, count), re-check the ring AND the lane
+        socket, block. The lane socket is where `send_ws_message` puts an
+        inbound WebSocket message, and the wake that follows it finds only
+        a thread already PARKED: a message that lands while every thread
+        of the lane is between its last poll of the socket and this
+        announcement wakes nobody. A thread that then blocked here without
+        looking left the message on the socket until a later job woke the
+        lane, which on a quiet lane is never (review LF22: 24 messages of
+        24 sent with a sleep holding that window open). One non-blocking
+        `recv` after the announcement closes it, in the order the ring's
+        re-check keeps: the loop sends, then reads the state; this side
+        stores the state, then reads the socket. Whatever either re-check
+        finds leaves the park through `_leave_park`."""
         var rec = self._rec(thread)
         var state = atomic_at(rec + _TR_STATE)
         var parked_reg = atomic_at(self._parked_reg_addr(lane))
@@ -1510,14 +1529,15 @@ struct OffloadPool(Movable):
         _ = parked_reg[].fetch_add(1)
         var slot = 0
         if ring.pop(slot):
-            var expected = Int64(_TS_PARKED)
-            if state[].compare_exchange(expected, Int64(_TS_RUNNING)):
-                _ = parked_reg[].fetch_add(-1)
-            else:
-                if self._recv_own(thread, buf, 0) == _OWN_PILL:
-                    atomic_at(rec + _TR_PILL)[].store(1)
-                state[].store(Int64(_TS_RUNNING))
+            self._leave_park(lane, thread)
             return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
+        var polled = self._recv_datagram(
+            lane, FileDescriptor(self.submit_read_fd(lane)), len(buf), buf,
+            MSG_DONTWAIT,
+        )
+        if polled.kind != JOB_NONE:
+            self._leave_park(lane, thread)
+            return polled^
         var got = self._recv_own(thread, buf, 0)
         var expected = Int64(_TS_PARKED)
         if state[].compare_exchange(expected, Int64(_TS_RUNNING)):
@@ -1529,6 +1549,27 @@ struct OffloadPool(Movable):
         if got == _OWN_PILL or got == _OWN_DEAD:
             return PoolJob(JOB_STOP, _POISON, 0, 0, 0, 0, 0)
         return _none_job()
+
+    def _leave_park(self, lane: Int, thread: Int):
+        """Take `thread` off PARKED for what its re-check found, racing the
+        loop's `_wake_registered`; the state word settles it. Whoever moves
+        it off PARKED first owns the transition and retires the parked
+        count. If the loop won, its poke is in flight for THIS thread and
+        is consumed here, so the channel holds nothing stale at the next
+        park; a pill read in that position is remembered (`_TR_PILL`) and
+        answered at the next call, after the job in hand. The poke is read
+        into a buffer of its own: the caller's may hold the payload of the
+        job found."""
+        var rec = self._rec(thread)
+        var state = atomic_at(rec + _TR_STATE)
+        var expected = Int64(_TS_PARKED)
+        if state[].compare_exchange(expected, Int64(_TS_RUNNING)):
+            _ = atomic_at(self._parked_reg_addr(lane))[].fetch_add(-1)
+            return
+        var own_buf = List[UInt8](length=_JOB_BYTES, fill=0)
+        if self._recv_own(thread, own_buf, 0) == _OWN_PILL:
+            atomic_at(rec + _TR_PILL)[].store(1)
+        state[].store(Int64(_TS_RUNNING))
 
     def wake_age_ns(self) -> Int:
         """See `wake_age`."""
@@ -1878,7 +1919,7 @@ struct OffloadPool(Movable):
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(buf), UInt(cap), flags)
+                n = recv(fd, Span(buf)[:cap], flags)
             except recv_err:
                 if recv_err.interrupted():
                     if flags != 0:
@@ -2061,7 +2102,6 @@ struct OffloadPool(Movable):
             _ = send(
                 FileDescriptor(self.submit_write_fd(lane)),
                 Span(job),
-                UInt(len(job)),
                 0,
             )
         except:
@@ -2084,7 +2124,7 @@ struct OffloadPool(Movable):
         With `read_fd`, the channel first: executor batches, stream aborts,
         and wake datagrams (skipped). The channel's registration is
         edge-triggered, so it is read until EAGAIN — the same contract, and
-        the same reason, as `drain_bus_channel`. Then the completion ring:
+        the same reason, as `BusReader.drain`. Then the completion ring:
         every pool thread's completions, in publish order. A caller that
         only wants what is in memory (the loop, at the top and bottom of a
         pass) passes `read_fd=False` and pays no syscall.
@@ -2123,7 +2163,7 @@ struct OffloadPool(Movable):
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(self._drain_buf), UInt(cap), 0)
+                n = recv(fd, Span(self._drain_buf)[:cap], 0)
             except:
                 break  # EAGAIN: drained
             if n == 0:
@@ -2487,7 +2527,7 @@ def drain_ack_fd(fd: Int):
         buf.append(0)
     for _ in range(4096):
         try:
-            var n = recv(FileDescriptor(fd), Span(buf), UInt(8), MSG_DONTWAIT)
+            var n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
             if n == 0:
                 return
         except:

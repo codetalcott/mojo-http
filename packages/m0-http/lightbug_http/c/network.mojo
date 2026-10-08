@@ -166,11 +166,6 @@ struct in_addr(TrivialRegisterPassable):
 
 
 @fieldwise_init
-struct in6_addr(TrivialRegisterPassable):
-    var s6_addr: StaticTuple[UInt8, 16]
-
-
-@fieldwise_init
 struct InetAddress(TrivialRegisterPassable):
     """An address in network byte order, as `inet_pton` writes it: the four
     bytes of an IPv4 address, or the sixteen of an IPv6 one, from
@@ -242,15 +237,6 @@ struct sockaddr_in(TrivialRegisterPassable):
         self.sin_zero = StaticTuple[c_char, 8](0, 0, 0, 0, 0, 0, 0, 0)
 
 
-@fieldwise_init
-struct sockaddr_in6(TrivialRegisterPassable):
-    var sin6_family: sa_family_t
-    var sin6_port: in_port_t
-    var sin6_flowinfo: c_uint
-    var sin6_addr: in6_addr
-    var sin6_scope_id: c_uint
-
-
 comptime SOCKADDR_STORAGE_SIZE = 128
 """`sizeof(struct sockaddr_storage)` on macOS and Linux: room for any
 address family's `sockaddr`, an IPv6 one's 28 bytes included."""
@@ -315,8 +301,8 @@ def sockaddr_host_port(sa: Pointer[UInt8, _], length: Int) -> Tuple[String, Int]
 
 
 struct SocketAddress(Movable):
-    """A socket address, in storage any family's fits: what `bind` and
-    `connect` are given and what `getsockname` and `getpeername` fill.
+    """A socket address, in storage any family's fits: what `bind` is
+    given and what `getsockname` and `getpeername` fill.
 
     It used to be one 16-byte `sockaddr`, which an IPv6 address (28 bytes)
     does not fit: the kernel truncated one it filled before its address
@@ -409,28 +395,6 @@ struct SocketAddress(Movable):
         return sockaddr_host_port(
             self.addr.unsafe_bitcast[UInt8](), Int(self.length)
         )
-
-
-@fieldwise_init
-struct addrinfo(TrivialRegisterPassable):
-    var ai_flags: c_int
-    var ai_family: c_int
-    var ai_socktype: c_int
-    var ai_protocol: c_int
-    var ai_addrlen: socklen_t
-    var ai_addr: ExternalMutPointer[sockaddr]
-    var ai_canonname: ExternalMutPointer[c_char]
-    var ai_next: ExternalMutPointer[c_void]
-
-    def __init__(out self):
-        self.ai_flags = 0
-        self.ai_family = 0
-        self.ai_socktype = 0
-        self.ai_protocol = 0
-        self.ai_addrlen = 0
-        self.ai_addr = ExternalMutPointer[sockaddr](unsafe_from_address=0)
-        self.ai_canonname = ExternalMutPointer[c_char](unsafe_from_address=0)
-        self.ai_next = ExternalMutPointer[c_void](unsafe_from_address=0)
 
 
 def _inet_ntop(

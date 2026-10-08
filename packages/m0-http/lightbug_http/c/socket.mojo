@@ -11,7 +11,7 @@ from lightbug_http.c.network import (
     socklen_t,
 )
 from lightbug_http.c.socket_error import SysError
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
+from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
 
 
 @fieldwise_init
@@ -45,9 +45,8 @@ comptime SOL_SOCKET = 0xFFFF if _IS_MACOS else 1
 # Socket option flags — platform-specific values resolved at compile time.
 # Only the options this server sets, each checked against the macOS SDK's
 # <sys/socket.h> and Linux's asm-generic/socket.h, which x86-64 and arm64
-# share (SO_RCVTIMEO there is SO_RCVTIMEO_OLD on a 64-bit target). The
-# upstream list carried twenty-two options nothing set, several with
-# OpenBSD's numbers: its SO_TIMESTAMP, 0x0800, is 0x0400 on macOS.
+# share. The upstream list carried twenty-two options nothing set, several
+# with OpenBSD's numbers: its SO_TIMESTAMP, 0x0800, is 0x0400 on macOS.
 @fieldwise_init
 struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     var value: c_int
@@ -56,7 +55,6 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     comptime SO_REUSEPORT = Self(c_int(0x0200 if _IS_MACOS else 15))
     comptime SO_SNDBUF = Self(c_int(0x1001 if _IS_MACOS else 7))
     comptime SO_RCVBUF = Self(c_int(0x1002 if _IS_MACOS else 8))
-    comptime SO_RCVTIMEO = Self(c_int(0x1006 if _IS_MACOS else 20))
 
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
@@ -72,8 +70,6 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
             writer.write("SO_SNDBUF")
         elif self == Self.SO_RCVBUF:
             writer.write("SO_RCVBUF")
-        elif self == Self.SO_RCVTIMEO:
-            writer.write("SO_RCVTIMEO")
         else:
             writer.write("SocketOption(", self.value, ")")
 
@@ -91,15 +87,21 @@ comptime IPPROTO_IPV6 = 41
 # TCP_KEEPIDLE on Linux and TCP_KEEPALIVE on macOS: one name here, two
 # numbers.
 comptime IPPROTO_TCP = 6
+comptime TCP_NODELAY = 1
 comptime TCP_KEEPIDLE = 0x10 if _IS_MACOS else 4
 comptime TCP_KEEPINTVL = 0x101 if _IS_MACOS else 5
 comptime TCP_KEEPCNT = 0x102 if _IS_MACOS else 6
 comptime IPV6_V6ONLY = 27 if _IS_MACOS else 26
 
-
-# File open option flags (platform-specific)
-comptime O_NONBLOCK = 4 if CompilationTarget.is_macos() else 2048
-comptime O_CLOEXEC = 16777216 if CompilationTarget.is_macos() else 524288
+comptime SOMAXCONN = 128 if _IS_MACOS else 4096
+"""The listen backlog a server asks for: each platform's own `SOMAXCONN`
+(the macOS SDK's <sys/socket.h>; Linux's since 5.4). The kernel clamps a
+backlog to its setting, `kern.ipc.somaxconn` (128 by default) or
+`net.core.somaxconn` (4096 by default since 5.4, 128 before), so this asks
+for as many as a default system grants. The listener asked for 128, which
+on Linux overflowed under a burst of new connections while the loop was
+busy: the kernel drops the handshakes past a full queue, and their clients
+retry a second later (review record LF19)."""
 
 
 # Socket Type constants. SOCK_STREAM is the only one a `Socket` is made
@@ -277,6 +279,21 @@ def set_tcp_keepalive(
     setsockopt(socket, c_int(IPPROTO_TCP), c_int(TCP_KEEPINTVL), c_int(interval_s))
     setsockopt(socket, c_int(IPPROTO_TCP), c_int(TCP_KEEPCNT), c_int(count))
     setsockopt(socket, c_int(SOL_SOCKET), SocketOption.SO_KEEPALIVE.value, c_int(1))
+
+
+def set_tcp_nodelay(fd: FileDescriptor):
+    """Disable Nagle's algorithm on a TCP socket (best-effort).
+
+    The event loop writes each response with a single send(), so there is
+    nothing for Nagle to usefully coalesce — it only delays the response
+    when a previous small segment is still unacknowledged. Every mainstream
+    server (Go net/http, nginx, node) disables it on accepted sockets.
+    `TCP_NODELAY` is 1 on both Linux and macOS.
+    """
+    try:
+        setsockopt(fd, c_int(IPPROTO_TCP), c_int(TCP_NODELAY), c_int(1))
+    except:
+        pass
 
 
 def _getsockname[
@@ -561,57 +578,6 @@ def accept_with_peer(
     return (FileDescriptor(Int(result)), peer[0], peer[1])
 
 
-def _connect[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr, origin], address_len: socklen_t) -> c_int:
-    """Libc POSIX `connect` function.
-
-    Args:
-        socket: A File Descriptor.
-        address: A Pointer to the address to connect to.
-        address_len: The size of the address.
-
-    Returns:
-        0 on success, -1 on error.
-
-    #### C Function
-    ```c
-    int connect(int socket, const struct sockaddr *address, socklen_t address_len)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/connect.3p.html
-    """
-    return external_call[
-        "connect",
-        c_int,
-        type_of(socket),
-        type_of(address),
-        type_of(address_len),
-    ](socket, address, address_len)
-
-
-def connect(socket: FileDescriptor, mut address: SocketAddress) raises SysError:
-    """Libc POSIX `connect` function.
-
-    Args:
-        socket: A File Descriptor.
-        address: The address to connect to.
-
-    Raises:
-        SysError: If the call fails, whatever its errno.
-
-    #### C Function
-    ```c
-    int connect(int socket, const struct sockaddr *address, socklen_t address_len)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/connect.3p.html .
-    """
-    var result = _connect(c_int(socket.value), address.unsafe_ptr(), address.length)
-    if result == -1:
-        raise SysError("connect", get_errno())
-
-
 def _recv(
     socket: c_int,
     buffer: Pointer[c_void, _],
@@ -649,13 +615,18 @@ def _recv(
 
 def recv[
     origin: MutOrigin
-](socket: FileDescriptor, buffer: Span[c_uchar, origin], length: c_size_t, flags: c_int,) raises SysError -> c_size_t:
-    """Libc POSIX `recv` function.
+](socket: FileDescriptor, buffer: Span[c_uchar, origin], flags: c_int) raises SysError -> c_size_t:
+    """Libc POSIX `recv` function, into the bytes of `buffer` and no others.
+
+    The length is the span's own (review record LF20). It was a separate
+    argument the span did not have to back: callers passed an empty span
+    and a capacity count, and a count above the span's length was written
+    past its end. To fill a list's spare capacity, pass
+    `spare_capacity(list)` and grow the list by what this returns.
 
     Args:
         socket: A File Descriptor.
-        buffer: A Pointer to the buffer to store the received data.
-        length: The size of the buffer.
+        buffer: The bytes to receive into; `len(buffer)` is the most read.
         flags: Flags to control the behaviour of the function.
 
     Returns:
@@ -673,11 +644,37 @@ def recv[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/recv.3p.html .
     """
-    var result = _recv(Int32(socket.value), buffer.unsafe_ptr().unsafe_bitcast[c_void](), length, flags)
+    var result = _recv(
+        Int32(socket.value),
+        buffer.unsafe_ptr().unsafe_bitcast[c_void](),
+        c_size_t(len(buffer)),
+        flags,
+    )
     if result == -1:
         raise SysError("recv", get_errno())
 
     return UInt(result)
+
+
+def spare_capacity[
+    origin: MutOrigin, //
+](ref [origin] buffer: List[UInt8]) -> Span[UInt8, origin]:
+    """The bytes of `buffer` past its length and within its capacity: the
+    span a `recv` fills in place, after which the caller grows the list's
+    length by what it received.
+
+    Args:
+        buffer: The list whose spare capacity to lend.
+
+    Returns:
+        A span of `buffer.capacity() - len(buffer)` bytes, starting at
+        `buffer[len(buffer)]`.
+    """
+    var have = len(buffer)
+    return Span[UInt8, origin](
+        unsafe_ptr=buffer.unsafe_ptr().unsafe_offset(have),
+        length=buffer.capacity() - have,
+    )
 
 
 def _send(
@@ -717,13 +714,14 @@ def _send(
 
 def send[
     origin: ImmOrigin
-](socket: FileDescriptor, buffer: Span[c_uchar, origin], length: c_size_t, flags: c_int,) raises SysError -> c_size_t:
-    """Libc POSIX `send` function.
+](socket: FileDescriptor, buffer: Span[c_uchar, origin], flags: c_int) raises SysError -> c_size_t:
+    """Libc POSIX `send` function, of the bytes of `buffer` and no others.
+
+    The length is the span's own (review record LF20), as `recv`'s is.
 
     Args:
         socket: A File Descriptor.
-        buffer: A Pointer to the buffer to send.
-        length: The size of the buffer.
+        buffer: The bytes to send; `len(buffer)` is the most sent.
         flags: Flags to control the behaviour of the function.
 
     Returns:
@@ -741,74 +739,28 @@ def send[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/send.3p.html .
     """
-    var result = _send(Int32(socket.value), buffer.unsafe_ptr().unsafe_bitcast[c_void](), length, flags)
+    var result = _send(
+        Int32(socket.value),
+        buffer.unsafe_ptr().unsafe_bitcast[c_void](),
+        c_size_t(len(buffer)),
+        flags,
+    )
     if result == -1:
         raise SysError("send", get_errno())
 
     return UInt(result)
 
 
-# --- Vectored I/O (writev) ---
-
-
 @fieldwise_init
 struct iovec_t(TrivialRegisterPassable):
-    """POSIX struct iovec for scatter-gather I/O.
+    """POSIX `struct iovec`: one buffer of a `sendmsg`/`recvmsg` message
+    (`c/fdpass.mojo`).
 
     Layout matches C: void *iov_base (8 bytes) + size_t iov_len (8 bytes).
     """
 
     var iov_base: UInt
     var iov_len: UInt
-
-
-def _writev(
-    fd: c_int,
-    iov: Pointer[iovec_t, ...],
-    iovcnt: c_int,
-) -> c_ssize_t:
-    """Libc POSIX `writev` function.
-
-    Args:
-        fd: A file descriptor.
-        iov: Pointer to an array of iovec structures.
-        iovcnt: Number of iovec structures.
-
-    Returns:
-        The number of bytes written or -1 in case of failure.
-
-    #### C Function
-    ```c
-    ssize_t writev(int fd, const struct iovec *iov, int iovcnt)
-    ```
-    """
-    return external_call[
-        "writev",
-        c_ssize_t,
-        type_of(fd),
-        type_of(iov),
-        type_of(iovcnt),
-    ](fd, iov, iovcnt)
-
-
-def try_writev(
-    fd: FileDescriptor,
-    iov: Pointer[iovec_t, ...],
-    iovcnt: Int,
-) -> Int:
-    """Libc POSIX `writev` — scatter-gather write (non-raising).
-
-    Returns bytes written on success, -1 for EAGAIN/EWOULDBLOCK,
-    -2 for fatal errors (connection reset, bad fd, etc.).
-    """
-    var result = _writev(Int32(fd.value), iov, c_int(iovcnt))
-    if result == -1:
-        var errno = get_errno()
-        if errno in [errno.EAGAIN, errno.EWOULDBLOCK]:
-            return -1
-        return -2
-
-    return Int(result)
 
 
 def _shutdown(socket: c_int, how: c_int) -> c_int:

@@ -6,10 +6,11 @@ can be parameterized over the backend type.
 
 from lightbug_http.c.kqueue import (
     kevent_t, ev_set, kqueue, kevent_register_one, kevent_register_pair,
-    kevent_poll, kevent_poll_ns, set_nonblocking,
+    kevent_poll, kevent_poll_ns,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
     EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT, EV_EOF, EV_ERROR,
 )
+from lightbug_http.c.pipe import close_fd
 from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
 from std.memory.alloc import unsafe_alloc
 
@@ -30,8 +31,14 @@ struct KqueueBackend(ConstructibleBackend):
         for i in range(_MAX_EVENTS):
             self._events[unsafe_offset=i] = kevent_t(0, 0, 0, 0, 0, 0)
         self._n_ready = 0
-    # Note: _events is process-lifetime (server runs until process exit).
-    # No __del__ needed; OS reclaims the allocation on process exit.
+
+    def __deinit__(deinit self):
+        """Close the kqueue and free the event buffer. A loop's backend is
+        destroyed when the loop returns -- `Server.serve_nonblocking`, a
+        thread of the host's, a test -- and neither used to be released
+        until the process exited (review record LF21)."""
+        close_fd(self.kq.value)
+        self._events.unsafe_free()
 
     # --- EventLoopBackend methods ---
 

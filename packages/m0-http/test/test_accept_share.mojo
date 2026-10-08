@@ -25,9 +25,9 @@ from lightbug_http.accept_share import (
 )
 from lightbug_http.c.fdpass import (
     send_fd, recv_fd, FDPASS_MAX_PAYLOAD, RECV_FD_EMPTY, RECV_FD_REFUSED,
-    _CMSG_HDR, _SCM_RIGHTS, _SOL_SOCKET, _msghdr, _sendmsg, _store_u32,
+    _CMSG_HDR, _SCM_RIGHTS, _msghdr, _sendmsg, _store_u32,
 )
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import iovec_t, send, recv, close, setsockopt, SocketOption, SOL_SOCKET
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
@@ -80,7 +80,7 @@ def _peer_gone(fd: Int) -> Bool:
     var buf = List[UInt8](capacity=1)
     buf.append(0)
     try:
-        return Int(recv(FileDescriptor(fd), Span(buf), UInt(1), MSG_DONTWAIT)) == 0
+        return Int(recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)) == 0
     except:
         return False
 
@@ -103,10 +103,10 @@ def _send_raw(channel: Int, data_len: Int, fds: List[Int]) -> Bool:
         control.append(0)
     _store_u32(control, 0, UInt32(used))
     comptime if CompilationTarget.is_macos():
-        _store_u32(control, 4, UInt32(_SOL_SOCKET))
+        _store_u32(control, 4, UInt32(SOL_SOCKET))
         _store_u32(control, 8, UInt32(_SCM_RIGHTS))
     else:
-        _store_u32(control, 8, UInt32(_SOL_SOCKET))
+        _store_u32(control, 8, UInt32(SOL_SOCKET))
         _store_u32(control, 12, UInt32(_SCM_RIGHTS))
     for i in range(len(fds)):
         _store_u32(control, _CMSG_HDR + 4 * i, UInt32(fds[i]))
@@ -137,11 +137,11 @@ def test_a_descriptor_crosses_a_socketpair_with_its_payload() raises:
     # reference is closed.
     close(FileDescriptor(conn[0]))
     var msg = _bytes("ping")
-    _ = send(FileDescriptor(conn[1]), Span(msg), UInt(len(msg)), 0)
+    _ = send(FileDescriptor(conn[1]), Span(msg), 0)
     var buf = List[UInt8](capacity=16)
     for _ in range(16):
         buf.append(0)
-    var n = recv(FileDescriptor(got), Span(buf), UInt(16), MSG_DONTWAIT)
+    var n = recv(FileDescriptor(got), Span(buf), MSG_DONTWAIT)
     assert_equal(Int(n), 4)
     assert_equal(String(from_utf8_lossy=Span(buf)[:4]), "ping")
     # An empty channel answers that it is empty, not a stale descriptor.
@@ -180,7 +180,7 @@ def test_a_datagram_without_a_descriptor_is_not_a_connection() raises:
     Both used to answer -1."""
     var channel = _nonblocking_pair()
     var msg = _bytes("no fd here")
-    _ = send(FileDescriptor(channel[1]), Span(msg), UInt(len(msg)), 0)
+    _ = send(FileDescriptor(channel[1]), Span(msg), 0)
     var payload = List[UInt8]()
     assert_equal(recv_fd(channel[0], payload), RECV_FD_REFUSED)
     assert_equal(recv_fd(channel[0], payload), RECV_FD_EMPTY)
@@ -210,7 +210,7 @@ def test_a_zero_length_datagram_still_hands_over_its_descriptor() raises:
     close(FileDescriptor(got))
     assert_true(_peer_gone(conn[1]), "a reference to the passed descriptor is still open")
     var empty = List[UInt8]()
-    _ = send(FileDescriptor(channel[1]), Span(empty), UInt(0), 0)
+    _ = send(FileDescriptor(channel[1]), Span(empty), 0)
     assert_equal(recv_fd(channel[0], payload), RECV_FD_EMPTY)
     close(FileDescriptor(conn[1]))
     close(FileDescriptor(channel[0]))
@@ -422,7 +422,7 @@ struct _DescriptorLost(HandoffPost):
 
     def post(mut self, channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
         try:
-            return Int(send(FileDescriptor(channel), Span(payload), UInt(len(payload)), 0)) > 0
+            return Int(send(FileDescriptor(channel), Span(payload), 0)) > 0
         except:
             return False
 
@@ -768,7 +768,7 @@ def _request_intact(fd: Int) -> Bool:
     buf.append(0)
     try:
         return Int(
-            recv(FileDescriptor(fd), Span(buf), UInt(1), _MSG_PEEK | MSG_DONTWAIT)
+            recv(FileDescriptor(fd), Span(buf), _MSG_PEEK | MSG_DONTWAIT)
         ) == 1
     except:
         return False
@@ -810,8 +810,8 @@ def test_a_handoff_in_flight_is_beyond_the_kernels_collector() raises:
         var conn = _stream_pair()
         var ctl = _stream_pair()
         var request = _bytes("GET / HTTP/1.1\r\n")
-        _ = send(FileDescriptor(conn[1]), Span(request), UInt(len(request)), 0)
-        _ = send(FileDescriptor(ctl[1]), Span(request), UInt(len(request)), 0)
+        _ = send(FileDescriptor(conn[1]), Span(request), 0)
+        _ = send(FileDescriptor(ctl[1]), Span(request), 0)
         assert_true(w0.send(1, conn[0], "10.0.0.8", 8008))
         assert_true(send_fd(plain[1], ctl[0], _bytes("c")))
         close(FileDescriptor(conn[0]))  # only the messages in flight hold them now

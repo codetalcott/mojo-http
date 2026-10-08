@@ -13,6 +13,7 @@ The constants the loop's modules share are here too: the timer idents,
 """
 
 from lightbug_http.accept_share import AcceptShare
+from lightbug_http.broadcast import BusReader
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import send, close
 from lightbug_http.connection import ConnectionState
@@ -149,6 +150,9 @@ struct LoopState(Movable):
     var shutdown_read_fd: Int
     var bus_read_fd: Int
     var peer_bus_fd: Int
+    var bus_reader: BusReader
+    """What drains both bus channels: one buffer, and the count of
+    datagrams refused that `/__metrics` reports."""
     var accept_share: AcceptShare
     """This worker's view of accept sharing; inactive with one worker."""
     var stop_addr: Int
@@ -264,6 +268,7 @@ struct LoopState(Movable):
         self.shutdown_read_fd = shutdown_read_fd
         self.bus_read_fd = bus_read_fd
         self.peer_bus_fd = peer_bus_fd
+        self.bus_reader = BusReader()
         self.accept_share = accept_share.copy()
         self.stop_addr = 0
         self.accept_batch = _accept_batch_from_env()
@@ -612,7 +617,7 @@ def _farewell_streams[T: HTTPService, B: EventLoopBackend](
             else:
                 farewell = List[UInt8](String(": close\n\n").as_bytes())
             try:
-                _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), UInt(len(farewell)), 0)
+                _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), 0)
             except:
                 pass
             _close_slot(handler, backend, st, s, st.slot_fds[s])

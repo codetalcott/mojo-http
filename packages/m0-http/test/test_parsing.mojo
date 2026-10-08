@@ -19,7 +19,9 @@ from lightbug_http.header import (
     parse_request_headers,
     InvalidHTTPRequestError,
     IncompleteHTTPRequestError,
+    UnsupportedHTTPRequestError,
     HeaderKey,
+    holds_bare_lf,
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.io.bytes import Bytes
@@ -38,6 +40,18 @@ def _rejected(raw: String) -> Bool:
         return False
     except e:
         return e.isa[InvalidHTTPRequestError]()
+
+
+def _unsupported(raw: String) -> Bool:
+    """True only if the request is refused as asking for what this server
+    does not implement, which the loop answers 501 rather than 400."""
+    var bytes = raw.as_bytes()
+    try:
+        var parsed = parse_request_headers(bytes)
+        _ = parsed^
+        return False
+    except e:
+        return e.isa[UnsupportedHTTPRequestError]()
 
 
 def _accepted(raw: String) -> Bool:
@@ -153,11 +167,14 @@ def test_chunked_must_be_the_last_transfer_encoding() raises:
 
 
 def test_chunked_last_in_a_list_is_accepted() raises:
-    """The rule is about position, not about rejecting every encoding list."""
+    """The rule is about position, not about rejecting every encoding list:
+    empty members mean nothing (RFC 9110 §5.6.1). A real coding before
+    `chunked` is refused, but as not implemented (SPEC B21), never as a
+    `chunked` out of place."""
     assert_true(
         _accepted(
             "POST / HTTP/1.1\r\nHost: x\r\n"
-            "Transfer-Encoding: gzip, chunked\r\n\r\n"
+            "Transfer-Encoding: , chunked\r\n\r\n"
         )
     )
 
@@ -181,17 +198,25 @@ def test_single_content_length_is_accepted() raises:
 # --- Host: RFC 9110 7.2 ------------------------------------------------------
 
 
-def test_http11_requires_a_non_empty_host() raises:
-    """An empty Host lets a request be routed by whatever the next hop guesses.
+def test_an_empty_host_is_accepted_when_the_target_names_no_authority() raises:
+    """RFC 9110 §7.2: a client whose target URI has no authority MUST send
+    `Host` with an EMPTY value, and an origin-form or asterisk-form target
+    names none. Every empty Host was refused, where h11 and llhttp accept
+    it. OWS trimming turns "Host: \\t" into "", read the same way. An
+    absolute-form target names its authority, which Host must then be, so
+    an empty one there is still refused -- and a missing Host is refused
+    whatever the target.
 
-    covers: A14
+    covers: B20
     """
-    assert_true(_rejected("GET / HTTP/1.1\r\nHost: \r\n\r\n"))
-
-
-def test_http11_rejects_a_whitespace_only_host() raises:
-    """OWS trimming turns "Host: \\t" into "", which must still be rejected."""
-    assert_true(_rejected("GET / HTTP/1.1\r\nHost:\t\r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost:\r\n\r\n"))
+    assert_equal(_header("GET / HTTP/1.1\r\nHost: \r\n\r\n", "host"), "")
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost:\t\r\n\r\n"))
+    assert_true(_accepted("OPTIONS * HTTP/1.1\r\nHost:\r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.2\r\nHost:\r\n\r\n"))
+    assert_true(_rejected("GET http://h/p HTTP/1.1\r\nHost:\r\n\r\n"))
+    assert_true(_rejected("GET HTTPS://h HTTP/1.1\r\nHost: \r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
 
 
 def test_http11_accepts_a_real_host() raises:
@@ -206,7 +231,10 @@ def test_http10_without_host_is_accepted() raises:
 def test_http11_requires_host_to_be_present_at_all() raises:
     """RFC 9112 3.2 asks for 400, and the empty-Host check did not cover
     this: `headers.get()` returned None, which short-circuited the `and`
-    and let the request through with its target host unstated."""
+    and let the request through with its target host unstated.
+
+    covers: A14
+    """
     assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
     assert_true(_rejected("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n"))
 
@@ -220,7 +248,7 @@ def test_a_later_http1_minor_version_requires_host() raises:
     """
     assert_true(_rejected("GET / HTTP/1.2\r\n\r\n"))
     assert_true(_rejected("GET / HTTP/1.9\r\n\r\n"))
-    assert_true(_rejected("GET / HTTP/1.2\r\nHost: \r\n\r\n"))
+    assert_true(_rejected("GET http://h/ HTTP/1.2\r\nHost: \r\n\r\n"))
     assert_true(_accepted("GET / HTTP/1.2\r\nHost: x\r\n\r\n"))
 
 
@@ -311,10 +339,10 @@ def test_a_second_transfer_encoding_line_is_rejected() raises:
             "Transfer-Encoding: chunked\r\n\r\n"
         )
     )
-    # The control: the same codings on ONE line keep working.
+    # The control: ONE line keeps working.
     assert_true(
         _accepted(
-            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
         )
     )
 
@@ -361,6 +389,10 @@ def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises
     server that does not check this dispatches the request as bodyless and
     leaves the body in the buffer for the next reader to find.
 
+    The answer is RFC 9112 §6.3's MUST, 400 and a close, even for a coding
+    this server does not implement: only one before a FINAL `chunked` is
+    the 501 (SPEC B21), its body's end being known.
+
     covers: B3
     """
     assert_true(
@@ -400,15 +432,88 @@ def test_chunked_applied_twice_is_rejected() raises:
 
 
 def test_chunked_as_the_last_coding_is_still_accepted() raises:
-    """The control: a legitimate `gzip, chunked` must keep working."""
+    """The control: a lone `chunked`, in any case and with empty members
+    before it, keeps working."""
     assert_true(
         _accepted(
-            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: ,, chunked\r\n\r\n"
         )
     )
     assert_true(
         _accepted("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED\r\n\r\n")
     )
+
+
+def test_a_transfer_coding_other_than_chunked_is_not_implemented() raises:
+    """RFC 9112 §6.1: a server that receives a transfer coding it does not
+    understand SHOULD answer 501. This one decodes `chunked` and nothing
+    else, and `gzip, chunked` was de-chunked and handed to the application
+    still gzipped. A coding before a final `chunked` is refused as not
+    implemented. Where `chunked` is NOT final the body's end cannot be
+    known, and §6.3's MUST is 400 whatever the codings: a lone `gzip`,
+    `chunked;x=1`, `chunked` out of place or twice, a list naming nothing
+    or ending in an empty member -- and 400 wins where a list is both.
+
+    covers: B21
+    """
+    var head = String("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: ")
+    assert_true(_unsupported(head + "gzip, chunked\r\n\r\n"))
+    assert_true(_unsupported(head + "GZIP,chunked\r\n\r\n"))
+    assert_true(_unsupported(head + "deflate, gzip, chunked\r\n\r\n"))
+    assert_true(_unsupported(head + "gzip,,chunked\r\n\r\n"))
+    assert_true(_rejected(head + "gzip\r\n\r\n"))
+    assert_true(_rejected(head + "gzip, deflate\r\n\r\n"))
+    assert_true(_rejected(head + "chunked;x=1\r\n\r\n"))
+    assert_true(_rejected(head + "chunked, gzip\r\n\r\n"))
+    assert_true(_rejected(head + "gzip, chunked, chunked\r\n\r\n"))
+    assert_true(_rejected(head + "\r\n\r\n"))
+    assert_true(_rejected(head + "gzip,\r\n\r\n"))
+    assert_true(_accepted(head + "chunked\r\n\r\n"))
+
+
+# --- What this server does not implement: 501, not 400 ----------------------
+
+
+def test_connect_is_refused_as_not_implemented() raises:
+    """CONNECT asks for a tunnel (RFC 9110 §9.3.6), which this server does
+    not implement, so it is refused before any application sees it --
+    whatever its target or version. An application answering it 2xx (as
+    one answering every method does) told a front end forwarding it that
+    the tunnel was open, and the client's next bytes went through
+    unparsed. The refusal needs an otherwise well-formed request (a
+    malformed one is 400, `test_a_malformed_connect_is_still_400`), and
+    the method name is case-sensitive.
+
+    covers: B18
+    """
+    assert_true(_unsupported("CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n"))
+    assert_true(_unsupported("CONNECT h:443 HTTP/1.0\r\n\r\n"))
+    assert_true(_unsupported("CONNECT / HTTP/1.1\r\nHost: h\r\n\r\n"))
+    assert_false(_unsupported("connect / HTTP/1.1\r\nHost: h\r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost: h\r\n\r\n"))
+
+
+def test_a_malformed_connect_is_still_400() raises:
+    """CONNECT is refused 501 only once every rule that answers 400 has
+    passed, as a list of transfer codings that is both malformed and
+    unimplemented is 400 (SPEC B21): a bare LF in the head, two `Host`
+    lines, `Content-Length` beside `Transfer-Encoding`, a `Content-Length`
+    that is not a digit run, no `Host` at all. The CONNECT check ran ahead
+    of the field rules, and each of these was answered 501.
+
+    covers: B18
+    """
+    var line = String("CONNECT h:443 HTTP/1.1\r\n")
+    assert_true(_rejected("CONNECT h:443 HTTP/1.1\nHost: h:443\r\n\r\n"))
+    assert_true(_rejected(line + "Host: h:443\r\nHost: i:443\r\n\r\n"))
+    assert_true(
+        _rejected(
+            line + "Host: h:443\r\nContent-Length: 5\r\n"
+            "Transfer-Encoding: chunked\r\n\r\n"
+        )
+    )
+    assert_true(_rejected(line + "Host: h:443\r\nContent-Length: 5x\r\n\r\n"))
+    assert_true(_rejected(line + "\r\n"))
 
 
 # --- Content-Length must be a plain digit run (RFC 9112 6.3) ----------------
@@ -583,6 +688,30 @@ def test_the_two_bare_lf_wire_shapes_are_rejected() raises:
     )
 
 
+def test_a_bare_lf_is_found_in_a_head_still_arriving_at_every_offset() raises:
+    """`holds_bare_lf`, which the loop asks of a head with no CRLFCRLF yet
+    (SPEC B23): an LF no CR comes right before is found at every offset
+    across its 64-lane and one-byte widths, a CRLF at every offset is not,
+    and the byte before `start` is read as the LF's predecessor -- a read
+    ending on CR and the next opening with LF are a CRLF.
+
+    covers: B23
+    """
+    for at in range(0, 141):
+        var pad = String("a") * at
+        var bare = pad + "\nb" + String("c") * 70
+        assert_true(holds_bare_lf(bare.as_bytes()), String("bare LF at ", at))
+        var crlf = pad + "\r\nb" + String("c") * 70
+        assert_false(holds_bare_lf(crlf.as_bytes()), String("CRLF at ", at))
+        # Scanned from the LF itself: its CR sits before `start`.
+        assert_false(holds_bare_lf(crlf.as_bytes(), at + 1), String("split at ", at))
+        # A bare LF before `start` was the last scan's to find.
+        assert_false(holds_bare_lf(bare.as_bytes(), at + 1), String("past at ", at))
+    assert_true(holds_bare_lf("\n".as_bytes()))
+    assert_false(holds_bare_lf("".as_bytes()))
+    assert_false(holds_bare_lf("ab\r\n".as_bytes(), 9))
+
+
 def test_an_empty_crlf_line_before_the_request_line_is_still_skipped() raises:
     """RFC 9112 §2.2's robustness rule stands for a CRLF empty line."""
     var raw = String("\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
@@ -707,23 +836,82 @@ def test_an_absolute_form_target_without_a_usable_authority_is_rejected() raises
     assert_true(_rejected("GET http://u:pw@h/ HTTP/1.1\r\nHost: x\r\n\r\n"))
 
 
-def test_an_absolute_form_target_with_bytes_above_ascii_is_answered() raises:
-    """SPEC G14: the target is request data, and may not be UTF-8. The
-    reduction slices it as bytes, never with a codepoint-asserting slice."""
+def _target_with(prefix: String, byte: UInt8, suffix: String) -> List[UInt8]:
+    """A request head whose target holds `byte` between `prefix` and
+    `suffix`, the rest of the head after them."""
     var raw = List[UInt8]()
-    raw.extend("GET http://h".as_bytes())
-    raw.append(0xFF)
-    raw.extend("/a".as_bytes())
-    raw.append(0x80)
+    raw.extend(prefix.as_bytes())
+    raw.append(byte)
+    raw.extend(suffix.as_bytes())
     raw.extend(" HTTP/1.1\r\nHost: x\r\n\r\n".as_bytes())
-    var parsed = parse_request_headers(Span(raw))
-    var path = parsed.path.as_bytes()
-    assert_equal(len(path), 3)
-    assert_equal(path[0], UInt8(0x2F))
-    assert_equal(path[2], UInt8(0x80))
-    var host = parsed.headers.get("host").value().as_bytes()
-    assert_equal(len(host), 2)
-    assert_equal(host[1], UInt8(0xFF))
+    return raw^
+
+
+def _invalid_bytes(raw: List[UInt8]) -> Bool:
+    """`_rejected` for a head that is not a String's bytes."""
+    try:
+        var parsed = parse_request_headers(Span(raw))
+        _ = parsed^
+        return False
+    except e:
+        return e.isa[InvalidHTTPRequestError]()
+
+
+def test_an_absolute_form_target_with_bytes_above_ascii_is_refused() raises:
+    """SPEC G14: the target is request data, and may not be UTF-8. The
+    reduction slices it as bytes, never with a codepoint-asserting slice,
+    and since SPEC B19 such a target is refused before it gets there."""
+    assert_true(_invalid_bytes(_target_with("GET http://h", 0xFF, "/a")))
+    assert_true(_invalid_bytes(_target_with("GET http://h/a", 0x80, "")))
+
+
+def test_a_request_target_must_take_one_of_the_four_forms() raises:
+    """RFC 9112 §3.2: origin-form opens with `/`; absolute-form is an
+    `http` or `https` URI; asterisk-form is `*`, for OPTIONS only;
+    authority-form is CONNECT's, which is refused 501 (SPEC B18). `GET p`
+    and `GET h:80` were served, the application reading a path with no
+    leading slash.
+
+    covers: B19
+    """
+    assert_true(_rejected("GET p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET h:80 HTTP/1.1\r\nHost: h\r\n\r\n"))
+    assert_true(_rejected("GET ?q=1 HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET ftp://h/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET * HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("OPTIONS *x HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("options * HTTP/1.1\r\nHost: x\r\n\r\n"))
+    # The four forms, the controls.
+    assert_equal(_path_of("GET /p HTTP/1.1\r\nHost: x\r\n\r\n"), "/p")
+    assert_equal(_path_of("GET HTTP://h/p HTTP/1.1\r\nHost: x\r\n\r\n"), "/p")
+    assert_equal(_path_of("OPTIONS * HTTP/1.1\r\nHost: x\r\n\r\n"), "*")
+    assert_true(_accepted("OPTIONS /p HTTP/1.1\r\nHost: x\r\n\r\n"))
+
+
+def test_a_byte_above_ascii_in_the_request_target_is_rejected() raises:
+    """No URI byte is above ASCII (RFC 3986 §2): a client percent-encodes
+    one. `/caf<0xE9>` was served, where h11 and llhttp refuse it, and the
+    application read a path that is not UTF-8. Refused wherever the byte
+    sits -- at every offset across the scanner's 64-, 16- and one-byte
+    widths, in the query, before the rest of the line has arrived -- and
+    a `%` escape is left for the application to decode.
+
+    covers: B19
+    """
+    assert_true(_invalid_bytes(_target_with("GET /caf", 0xE9, "")))
+    assert_true(_invalid_bytes(_target_with("GET /?q=", 0x80, "x")))
+    for n in range(0, 141):
+        var prefix = String("GET /") + String("p") * n
+        assert_true(_invalid_bytes(_target_with(prefix, 0xFF, "")), String(n))
+    # Invalid at once, not incomplete: nothing after it can make it a URI.
+    var partial = List[UInt8]()
+    partial.extend("GET /caf".as_bytes())
+    partial.append(0xE9)
+    assert_true(_invalid_bytes(partial))
+    assert_equal(
+        _path_of("GET /caf%C3%A9?x=%E9 HTTP/1.1\r\nHost: x\r\n\r\n"),
+        "/caf%C3%A9?x=%E9",
+    )
 
 
 def test_origin_form_target_is_untouched() raises:
@@ -733,6 +921,34 @@ def test_origin_form_target_is_untouched() raises:
 
 
 # --- Field value normalization: RFC 9110 5.5 ---------------------------------
+
+
+def test_repeated_connection_lines_are_joined_in_linear_space() raises:
+    """Joining the `Connection` lines (SPEC B22) costs what the lines hold,
+    once. Joining each line onto the value stored so far appended the
+    whole list again to the header store's blob, which never overwrites:
+    98 lines in a 32 KB head left a 1.5 MB blob, the parse taking 88 times
+    as long as one of 98 other lines, on the loop thread. The blob stays
+    within the head's own size, and the value is the lines joined
+    comma-SP, in order.
+
+    covers: B22
+    """
+    var line = String("v") * 300
+    var raw = String("GET / HTTP/1.1\r\nHost: x\r\n")
+    var want = String()
+    for i in range(98):
+        raw += String("Connection: ", line, i, "\r\n")
+        if i > 0:
+            want += ", "
+        want += String(line, i)
+    raw += "\r\n"
+    var parsed = parse_request_headers(raw.as_bytes())
+    assert_equal(parsed.headers.get("connection").value(), want)
+    assert_true(
+        len(parsed.headers._buf) <= raw.byte_length(),
+        String("blob ", len(parsed.headers._buf), " for a head of ", raw.byte_length()),
+    )
 
 
 def test_header_values_are_ows_trimmed() raises:
@@ -1267,6 +1483,22 @@ def test_a_trailer_line_must_be_a_field_line() raises:
     var got = _decode_trailing("5\r\nhello\r\n0\r\nX-A:\r\nX-B: a b:c\r\n\r\n")
     assert_equal(got[0], 0)
     assert_equal(got[1], "hello")
+
+
+def test_a_control_byte_in_a_trailer_value_is_refused() raises:
+    """A trailer line is a field line, and its value holds field content
+    (RFC 9110 §5.5): a control byte other than HTAB, or DEL, makes the
+    body invalid, as it makes a head's field value. The trailer is
+    discarded, so this is the head's rule kept, not an exposure closed.
+
+    covers: B24
+    """
+    for bad in ["\x00", "\x01", "\x0b", "\x1f", "\x7f"]:
+        var raw = String("5\r\nhello\r\n0\r\nX-A: a") + bad + "b\r\n\r\n"
+        assert_equal(_decode_trailing(raw)[0], -1, String("byte ", Int(bad.as_bytes()[0])))
+    var tab = _decode_trailing("5\r\nhello\r\n0\r\nX-A: a\tb c\r\n\r\n")
+    assert_equal(tab[0], 0)
+    assert_equal(tab[1], "hello")
 
 
 def test_a_trailer_split_at_every_byte_still_decodes() raises:
