@@ -570,6 +570,14 @@
       "evidence": "`test_backend_fds.mojo:test_a_destroyed_backend_closes_what_it_opened` (every PR) \u2014 a backend that armed two timers is let go, and the process must hold exactly the descriptors it held before; with the kqueue backend's close removed it fails naming the multiplexer still open. Neither backend closed anything (review record LF21): every `Server.serve_nonblocking` that returned, and every loop thread of the host's that ended, left its multiplexer open for the life of the process. `test_epoll_reports_the_registration_that_failed` holds the other half on the Linux leg: `add_read` fell back from ADD to MOD on any errno, so an ADD refused with ELOOP was reported as MOD's ENOENT; it falls back on EEXIST alone, and `add_write_oneshot` from MOD to ADD on ENOENT alone. Run in the m0lin Linux container (aarch64) both pass; with the any-errno fallback restored the second fails on MOD's `No such file or directory (errno 2)`, and with the epoll destructor's timerfd closes removed the first fails, 9 descriptors open against 7"
     },
     {
+      "id": "C17",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A connection that closes gives back a receive or encode buffer a large request or response grew past 64 KiB, so a burst of uploads does not stay resident for the life of the process: the slot's next connection starts from one read, as a slot's first does, and a slot whose buffers stayed at or under 64 KiB keeps them for its next connection",
+      "status": "verified",
+      "evidence": "`Smoke test the memory a closed connection gives back` (every PR) \u2014 `scripts/slot_buffer_probe.py` holds 64 keep-alive 4 MiB uploads open on apps/hello, whose memory (the physical footprint on macOS, VmRSS plus VmSwap on Linux) must rise at least 128 MiB, the control that the buffers grew; it closes them, then three times fills every slot used so far with idle connections and lands 64 more uploads on slots never used. The server's memory above its start may never pass 2.5 times what the first round cost. Before the fix (review record LF25) a closing slot cleared its buffer, which kept the capacity, and a slot is never rebuilt: 64 uploads left apps/hello at 431-448 MB resident against 14 MB after 64 small requests, and each round on other slots added 386-402 MB, 3.6-3.9 times one round after three; with it, 1.1-1.4. One burst's resident size is not the measure: the allocator keeps what is freed for reuse, and 283-309 MB stayed resident after one burst with the fix, all of it serving the next. `test_slot_lifecycle.mojo:test_a_closed_slot_gives_back_a_grown_buffer` holds each buffer's capacity at the close, with `test_a_closed_slot_keeps_an_ordinary_buffer` beside it. Sabotaged three ways (no shed, which fails the smoke and the test; the encode buffer's shed alone removed; the threshold dropped to zero), each caught"
+    },
+    {
       "id": "D1",
       "section": "D",
       "category": "D. Graceful shutdown and restart",
@@ -1688,6 +1696,14 @@
       "capability": "A WebSocket whose inbound the application has suspended stays suspended through this side's close: the socket lingers for the peer's Close without reading until the application resumes it, or the linger's deadline ends the wait",
       "status": "verified",
       "evidence": "`test_slot_lifecycle.mojo:test_a_close_landing_leaves_a_suspended_sockets_reads_alone` (every PR) \u2014 over a registration kept as epoll keeps it, a suspended socket's Close lands through the write-ready path and the linger adds no read interest; one not suspended lingers reading. `_ws_linger` armed the reads `_stream_idle` refuses a suspended socket, so the socket undid its own backpressure and the parked queue grew with what the client sent next. Found by the 2026-10-07 fork review"
+    },
+    {
+      "id": "I42",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A fragmented WebSocket message reaches the application in the buffer it was assembled in, every byte in place, rather than copied out of it, and a socket's parser keeps none of its buffers once the socket closes",
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_an_assembled_message_is_moved_out_whole` (every PR) \u2014 three fragments, the last split across two reads, arrive whole, and the message must sit at the address the parser assembled it at, the parser keeping no capacity after; `test_a_closed_sockets_parser_lets_go_of_its_buffers` beside it resets a parser holding a message mid-assembly and a frame mid-arrival. Before the fix (review record LF25) the message was copied out and the original cleared, which kept the capacity of the largest message the socket ever sent, up to the message cap, and closing the socket cleared both buffers the same way, keeping them for the slot's next socket. Each half reverted fails its test at an assertion"
     },
     {
       "id": "J1",

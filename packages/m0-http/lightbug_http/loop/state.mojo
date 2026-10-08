@@ -67,6 +67,13 @@ comptime ACCEPT_BATCH = 16
 # seconds; 0 sets nothing, as the server did before.
 comptime STREAM_KEEPALIVE_S = 15
 comptime STREAM_KEEPALIVE_PROBES = 3
+# The most of a grown buffer a slot keeps once its connection closes. A
+# slot's receive and encode buffers start at one read (4 KiB) and grow to
+# the largest request or response they have held; `_close_slot` gives back
+# one past this, so a burst of uploads does not stay resident for the life
+# of the process (review record LF25). Ordinary requests and pages stay
+# under it and keep their buffers warm from one connection to the next.
+comptime SLOT_BUFFER_KEEP = 64 * 1024
 comptime UNUSED: Int = -1
 
 
@@ -813,6 +820,22 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
         st.fd_to_slot[fd_val] = UNUSED
     st.provision_pool.provisions[slot].prepare_for_new_request()
     st.provision_pool.provisions[slot].keepalive_count = 0
+    # A buffer a large request or response grew goes with the connection
+    # (review record LF25). Cleared, it kept its capacity, and a slot is
+    # never rebuilt: 64 concurrent 4 MiB uploads pinned some 400 MB for the
+    # life of the process, and each 64 more on other slots as much again.
+    # Replaced, the memory goes back to the allocator for any connection,
+    # and the slot's next connection starts from one read, as its first did.
+    # Nothing outside the loop holds either buffer: a request's body is
+    # copied out of the receive buffer before it is handed on.
+    if st.provision_pool.provisions[slot].recv_buffer.capacity() > SLOT_BUFFER_KEEP:
+        st.provision_pool.provisions[slot].recv_buffer = Bytes(
+            capacity=st.provision_pool.buffer_size
+        )
+    if st.provision_pool.provisions[slot].encoding_buffer.capacity() > SLOT_BUFFER_KEEP:
+        st.provision_pool.provisions[slot].encoding_buffer = Bytes(
+            capacity=st.provision_pool.buffer_size
+        )
     if release_provision:
         st.provision_pool.release(slot)
     st.active_count -= 1

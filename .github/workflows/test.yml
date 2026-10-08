@@ -758,7 +758,7 @@ jobs:
     #
     # Where a step goes: a server's smokes stay in one job, because smokes
     # that compile one app share the runner's compile cache -- apps/hello's
-    # seven here, and the counter and the accept batch with the shutdown
+    # eight here, and the counter and the accept batch with the shutdown
     # smoke that compiles their apps first; host_check's three in
     # `smoke-app-layer`. Each job builds the packages and the serve CLI
     # before its first smoke. Every step after it whose task depends on
@@ -953,6 +953,13 @@ jobs:
       # epoll_ctl -- re-registering after every read cost two (R2).
       - name: Smoke test a request larger than one read
         run: uv run poe smoke-large-request
+      # What a large request leaves behind. Closing a connection cleared its
+      # slot's receive buffer, which keeps the capacity, and a slot is never
+      # rebuilt: 64 concurrent 4 MiB uploads pinned some 400 MB for the life
+      # of the process, and each 64 more on other slots pinned that again
+      # (review record LF25). The probe reads the server's own memory.
+      - name: Smoke test the memory a closed connection gives back
+        run: uv run poe smoke-slot-buffers
       # RFC 9112 §9.3: pipelined requests get no readiness event of their
       # own — the read that completes request N consumed request N+1's
       # bytes with it — so answering them takes deliberate machinery, on
