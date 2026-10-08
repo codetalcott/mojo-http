@@ -846,10 +846,11 @@ struct OffloadPool(Movable):
     and always off for a disabled pool."""
 
     var job_rings: List[Ring]
-    """Per lane, the ring `submit` pushes onto and `next_job` pops from. An
-    executor lane gets one too and never uses it (its jobs are batched
-    datagrams); a lane past `_WAKE_MAX_LANES` gets a disabled ring, which
-    both sides read as "this lane is datagrams"."""
+    """Per lane, the ring `submit` pushes onto and `next_job` pops from:
+    `job_rings[i]` is lane `i`'s, rings on or off. An executor lane gets one
+    too and never uses it (its jobs are batched datagrams). Without rings
+    every one is disabled, which both sides read as "this lane is
+    datagrams"."""
 
     var done_ring: Ring
     """The one completion ring: every pool thread pushes, the loop pops."""
@@ -1017,11 +1018,16 @@ struct OffloadPool(Movable):
                     self.spin = us * 1000
             except:
                 pass
+        # Lane 0's ring, a disabled one without rings, so that
+        # `job_rings[i]` is lane i's either way: `add_lane` appends from
+        # lane 1 on whatever the knob says.
         self.job_rings = List[Ring]()
+        self.job_rings.append(
+            Ring(OFFLOAD_MAX_INFLIGHT) if self.ring_enabled else Ring()
+        )
         self.done_ring = Ring()
         self.wake_base = 0
         if self.ring_enabled:
-            self.job_rings.append(Ring(OFFLOAD_MAX_INFLIGHT))
             self.done_ring = Ring(OFFLOAD_MAX_INFLIGHT * 2)
             self.wake_base = external_call["malloc", Int, Int](_WAKE_BYTES)
             for w in range(_WAKE_BYTES // 8):
@@ -1318,8 +1324,9 @@ struct OffloadPool(Movable):
 
     def _new_lane_ring(self) -> Ring:
         """A ring for the lane about to be appended, or a disabled one when
-        rings are off or the wake block has no line left for it."""
-        if self.ring_enabled and len(self.job_rings) < _WAKE_MAX_LANES:
+        rings are off. A lane past the wake block's last line never gets
+        here: `add_lane` refuses it first."""
+        if self.ring_enabled:
             return Ring(OFFLOAD_MAX_INFLIGHT)
         return Ring()
 

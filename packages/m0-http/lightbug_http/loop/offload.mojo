@@ -71,10 +71,13 @@ def _run_inline[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slots: List[Int],
 ) raises -> Int:
     """Run parked requests on the loop: `_process_request`'s queue-full tail,
-    applied to the slots a batch could not carry. Returns how many ran."""
+    applied to the slots a batch could not carry. Returns how many the
+    handler ran: a slot no longer offloaded is skipped, and one whose
+    client left is released unanswered, neither of them counted."""
     if len(slots) == 0:
         return 0
     ref pool = st.offload.pool()[]
+    var ran = 0
     for i in range(len(slots)):
         var slot = slots[i]
         if slot < 0 or slot >= len(st.slot_fds) or not st.offload.offloaded[slot]:
@@ -97,10 +100,11 @@ def _run_inline[T: HTTPService, B: EventLoopBackend](
         except:
             response = InternalError()
             st.provision_pool.provisions[slot].should_close = True
+        ran += 1
         handler.after_response(request_method, request_path, response)
         _finish_response(handler, backend, st, slot, st.slot_fds[slot], response^)
         _drain_pipelined(handler, backend, st, slot, st.slot_fds[slot])
-    return len(slots)
+    return ran
 
 
 def _service_completions[T: HTTPService, B: EventLoopBackend](

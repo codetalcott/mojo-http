@@ -8,7 +8,8 @@ What is NOT covered here is the concurrency itself; that is what
 `poe smoke-blocking-threads` measures against a live server.
 """
 
-from std.ffi import c_int, external_call
+from std.ffi import c_int, external_call, get_errno
+from std.memory.alloc import unsafe_alloc
 from std.os import setenv
 from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
@@ -17,10 +18,13 @@ from std.time import perf_counter_ns, sleep
 from lightbug_http.http import HTTPResponse, OK
 from lightbug_http.http.request import HTTPRequest
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.c.socket import recv
+from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.socket import close, recv
 from lightbug_http.event_loop import _wait_for_events
 from lightbug_http.event_loop_backend import EventLoopBackend
+from lightbug_http.loop.offload import _run_inline
 from lightbug_http.loop.state import LoopState
+from lightbug_http.service import HTTPService
 from lightbug_http.offload import (
     JOB_STOP, JOB_REQUEST, JOB_NONE, JOB_WS_MESSAGE,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
@@ -1556,6 +1560,82 @@ def test_a_wake_datagram_is_not_a_job() raises:
     assert_equal(_next_slot(pool), -1)
 
 
+def _stream_pair() raises -> Tuple[Int, Int]:
+    """An `AF_UNIX` `SOCK_STREAM` pair, non-blocking at both ends: the first
+    end is the server's side of a connection, the second the client's."""
+    var fds = unsafe_alloc[c_int](count=2)
+    var rc = external_call[
+        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
+    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
+    if rc != 0:
+        var errno = get_errno()
+        fds.unsafe_free()
+        raise Error("socketpair() failed, errno: ", errno)
+    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
+    fds.unsafe_free()
+    set_nonblocking(FileDescriptor(pair[0]))
+    set_nonblocking(FileDescriptor(pair[1]))
+    return pair
+
+
+struct _InlineApp(HTTPService):
+    """Counts the requests the loop ran itself."""
+
+    var calls: Int
+
+    def __init__(out self):
+        self.calls = 0
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        self.calls += 1
+        return OK(String("inline"))
+
+
+def test_run_inline_counts_only_the_requests_it_ran() raises:
+    """`_run_inline` answers how many requests the handler ran, not how
+    many slots it was handed. Of three, one is no longer offloaded and is
+    skipped, one's client left while its request sat in the buffer and is
+    released unanswered, and one is answered on its connection: one ran.
+    It answered `len(slots)`, three here (review record LF31). Both callers
+    discard the count today, so this test is what keeps it honest."""
+    var pool = OffloadPool(8)
+    var config = ServerConfig()
+    config.max_connections = 8
+    var st = LoopState(
+        FileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+    )
+    var backend = PlatformBackend()
+    var app = _InlineApp()
+    var skipped = st.provision_pool.borrow()
+    var gone = st.provision_pool.borrow()
+    pool.park_request(gone, _request("/gone"))
+    st.offload.offloaded[gone] = True
+    st.offload.inflight += 1
+    var live = st.provision_pool.borrow()
+    var pair = _stream_pair()
+    st.slot_fds[live] = pair[0]
+    st.fd_to_slot[pair[0]] = live
+    st.active_count = 1
+    pool.park_request(live, _request("/live"))
+    st.offload.offloaded[live] = True
+    st.offload.inflight += 1
+    var slots = List[Int]()
+    slots.append(skipped)
+    slots.append(gone)
+    slots.append(live)
+    assert_equal(_run_inline(app, backend, st, slots), 1)
+    assert_equal(app.calls, 1)
+    assert_equal(st.offload.inflight, 0)
+    var buf = _job_buffer()
+    var n = recv(FileDescriptor(pair[1]), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+    var reply = String(unsafe_from_utf8=Span(buf)[: Int(n)])
+    assert_true(reply.startswith("HTTP/1.1 200"), reply)
+    close(FileDescriptor(pair[0]))
+    close(FileDescriptor(pair[1]))
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+
+
 def test_ring_off_is_the_datagram_handoff() raises:
     """`M0_POOL_RING=0`: no rings, no flags, and the two crossings are the
     socketpair syscalls they were — the A/B arm."""
@@ -1565,6 +1645,11 @@ def test_ring_off_is_the_datagram_handoff() raises:
     assert_false(pool.ring_active())
     assert_false(pool.loop_parked())
     assert_false(pool.done_pending())
+    # Lane i's ring is `job_rings[i]` on either hand-off: a disabled one
+    # each here (review record LF31; lane 1's sat at index 0).
+    pool.add_lane(String(""))
+    pool.add_lane(String("/x"))
+    assert_equal(len(pool.job_rings), 2)
     pool.park_request(1, _request("/a"))
     assert_true(pool.submit(1))
     assert_equal(_next_slot(pool), 1)
