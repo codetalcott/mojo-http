@@ -14,9 +14,3 @@ struct Duration(Copyable, ImplicitlyCopyable):
         self.total_seconds += hours * 60 * 60
         self.total_seconds += days * 24 * 60 * 60
 
-    @staticmethod
-    def from_string(str: String) -> Optional[Self]:
-        try:
-            return Duration(seconds=Int(str))
-        except:
-            return Optional[Self](None)

@@ -1491,6 +1491,34 @@ lightbug_http
         `_deliver_bus_frames` takes the `LoopState`; `drain_bus_channel`
         remains, a reader of its own per call.
 
+      - http/response.mojo, header.mojo, http/parsing.mojo, cookie/*.mojo,
+        http/chunked.mojo, strings.mojo, io/bytes.mojo (2026-10-08): dead
+        inherited code removed, each name searched for across the
+        repository, the `m0` templates and the one application outside it,
+        then the fork compiled whole. The response parser, which nothing
+        served called (its status-message trim held the fork's one
+        `[byte=` slice that could trap): `HTTPResponse.from_bytes`, the
+        `ByteReader` constructor, `read_body`, `read_chunks`,
+        `parse_response_headers`, `ParsedResponseHeaders`,
+        `http_parse_response_headers`, `get_token_to_eol` and the response
+        parse errors (`ResponseParseError` in both modules,
+        `ResponseHeaderParseError`, `ResponseBodyReadError`,
+        `InvalidHTTPResponseError`, `IncompleteHTTPResponseError`). The
+        `Set-Cookie` parser: `ResponseCookieJar.from_headers`,
+        `Cookie.from_set_header`, `Cookie.clear_cookie` (a browser kept
+        the cookie: the stub `Expiration` writes no `Expires`),
+        `CookieParseError`,
+        `InvalidCookieError`, `Expiration.invalidate` and the three
+        `from_string`s. Helpers a caller would have been misled by:
+        `ParsedRequestHeaders.expects_body` (chunked counted only for
+        POST, PUT and PATCH) and `write_header_latin1` (no G2 drop). And
+        the unused: `is_in_chunk_data`, `try_peek_at`, `find_all`,
+        `is_printable_ascii`, `BytesConstant.CRLF` and `DOUBLE_CRLF`,
+        `is_newline`, `is_space`, `bufis`, and `ByteReader`'s `read_line`
+        (a bare CR moved it two bytes), `read_word`, `skip_whitespace`,
+        `skip_carriage_return` (two bytes per CR) and `consume` (review
+        record LF26).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

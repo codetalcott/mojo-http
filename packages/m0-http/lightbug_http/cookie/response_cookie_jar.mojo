@@ -13,18 +13,7 @@ from lightbug_http.header import (
 from lightbug_http.io.bytes import ByteWriter
 from std.utils import Variant
 
-from lightbug_http.cookie.cookie import Cookie, InvalidCookieError
-
-
-@fieldwise_init
-struct CookieParseError(Movable, Writable, TrivialRegisterPassable):
-    """Error raised when a cookie header string fails to parse."""
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write("CookieParseError: Failed to parse cookie header string")
-
-    def __str__(self) -> String:
-        return String(self)
+from lightbug_http.cookie.cookie import Cookie
 
 
 @fieldwise_init
@@ -65,7 +54,7 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
     upstream — is not: the line IS the header, and the server's job is to
     transmit it. Parsing it into a `Cookie` and serialising that back was
     lossy in four ways, each measured against Django on a real project:
-    `Expiration` is a stub whose `from_string` parses nothing, so `expires=`
+    `Expiration` is a stub whose `from_string` parsed nothing, so `expires=`
     vanished; `SameSite.from_string` matched only lowercase values, so
     `SameSite=Lax` vanished; `parts[0].split("=")` cut a value at its first
     `=`, which base64 padding puts at the end; and any attribute this struct
@@ -128,13 +117,6 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
     @always_inline
     def empty(self) -> Bool:
         return len(self) == 0
-
-    def from_headers(mut self, headers: List[String]) raises CookieParseError:
-        for header in headers:
-            try:
-                self.set_cookie(Cookie.from_set_header(header))
-            except:
-                raise CookieParseError()
 
     # fn encode_to(mut self, mut writer: ByteWriter):
     #     for cookie in self._inner.values():

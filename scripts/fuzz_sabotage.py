@@ -40,10 +40,10 @@ SABOTAGES = [
     (
         "bytes_consumed reports the whole buffer, not the header block",
         HEADER,
-        # Anchored on the REQUEST constructor: the response parser ends with
-        # a byte-identical `cookies=... bytes_consumed=ret,` tail, and the
-        # fuzzer never calls it, so the short anchor would sabotage code
-        # under no test and report the invariant unguarded.
+        # Anchored on the REQUEST constructor: the response parser, deleted
+        # since, ended with a byte-identical `cookies=... bytes_consumed=ret,`
+        # tail the fuzzer never called, so the short anchor sabotaged code
+        # under no test and reported the invariant unguarded.
         "    return ParsedRequestHeaders(\n        method=method^,\n"
         "        path=path^,\n        protocol=protocol^,\n"
         "        headers=headers^,\n        cookies=cookies^,\n"

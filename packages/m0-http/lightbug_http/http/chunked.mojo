@@ -335,10 +335,6 @@ struct HTTPChunkedDecoder(Defaultable):
 
         return (ret, new_bufsz)
 
-    def is_in_chunk_data(self) -> Bool:
-        """Check if decoder is currently in chunk data state."""
-        return self._state == DecoderState.IN_CHUNK_DATA
-
 
 def decode_hex(ch: Byte) -> Int:
     """Decode hexadecimal character."""

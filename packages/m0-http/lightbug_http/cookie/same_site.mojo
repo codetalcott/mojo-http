@@ -10,16 +10,6 @@ struct SameSite(Copyable, ImplicitlyCopyable, Writable):
     comptime LAX = "lax"
     comptime STRICT = "strict"
 
-    @staticmethod
-    def from_string(str: String) -> Optional[Self]:
-        if str == SameSite.NONE:
-            return materialize[SameSite.none]()
-        elif str == SameSite.LAX:
-            return materialize[SameSite.lax]()
-        elif str == SameSite.STRICT:
-            return materialize[SameSite.strict]()
-        return None
-
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 

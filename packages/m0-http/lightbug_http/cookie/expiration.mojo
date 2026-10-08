@@ -13,14 +13,6 @@ struct Expiration(Copyable):
     def session() -> Self:
         return Self(variant=0)
 
-    @staticmethod
-    def from_string(str: String) -> Optional[Expiration]:
-        return None
-
-    @staticmethod
-    def invalidate() -> Self:
-        return Self(variant=1)
-
     def is_session(self) -> Bool:
         return self.variant == 0
 

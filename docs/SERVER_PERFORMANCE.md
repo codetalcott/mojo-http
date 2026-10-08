@@ -77,7 +77,7 @@ Each was measured in isolation against the previous step, same session:
    The constructor no longer stamps Date; the event loop injects a cached
    string (falling back to `encode()`'s own stamp for responses sent outside
    the loop).
-5. **ASCII fast path for header encoding** (`write_header_latin1`). The
+5. **ASCII fast path for header encoding** (`Headers.write_latin1_to`). The
    ISO-8859-1 transcode allocated a scratch buffer per header per response;
    pure-ASCII values (all of them, in practice) are now written directly.
 6. **Request construction on the cheap** (`HTTPRequest.from_parsed`): the

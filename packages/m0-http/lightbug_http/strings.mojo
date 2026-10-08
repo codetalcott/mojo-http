@@ -19,8 +19,6 @@ struct BytesConstant:
     comptime colon = byte[colonChar]()
     comptime CR = byte[CR]()
     comptime LF = byte[LF]()
-    comptime CRLF = "\r\n".as_bytes()
-    comptime DOUBLE_CRLF = "\r\n\r\n".as_bytes()
     comptime TAB = byte["\t"]()
     comptime COLON = byte[":"]()
     comptime SEMICOLON = byte[";"]()
@@ -53,22 +51,6 @@ struct BytesConstant:
     comptime BACKTICK = byte["`"]()
     comptime PIPE = byte["|"]()
     comptime TILDE = byte["~"]()
-
-
-def find_all(s: String, sub_str: String) -> List[Int]:
-    var match_idxs = List[Int]()
-    var current_idx: Int = s.find(sub_str)
-    while current_idx > -1:
-        match_idxs.append(current_idx)
-        current_idx = s.find(sub_str, start=current_idx + 1)
-    return match_idxs^
-
-
-comptime IS_PRINTABLE_ASCII_MASK = 0o137
-
-
-def is_printable_ascii(c: UInt8) -> Bool:
-    return (c - 0x20) < IS_PRINTABLE_ASCII_MASK
 
 
 # Token character map - represents which characters are valid in tokens

@@ -3,9 +3,8 @@ from lightbug_http.http.parsing import (
     HTTPHeader,
     _first_lane,
     http_parse_request_headers,
-    http_parse_response_headers,
 )
-from lightbug_http.io.bytes import ByteReader, Bytes, ByteWriter, byte, is_newline, is_space
+from lightbug_http.io.bytes import ByteReader, Bytes, ByteWriter
 from lightbug_http.strings import CR, LF, BytesConstant, lineBreak
 from std.collections.span import Span
 from std.utils import Variant
@@ -158,28 +157,6 @@ struct UnsupportedHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
 
 
 @fieldwise_init
-struct InvalidHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
-    """Error raised when the HTTP response is malformed."""
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write("InvalidHTTPResponseError: Not a valid HTTP response")
-
-    def __str__(self) -> String:
-        return String(self)
-
-
-@fieldwise_init
-struct IncompleteHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
-    """Error raised when the HTTP response is incomplete."""
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write("IncompleteHTTPResponseError: Incomplete HTTP response")
-
-    def __str__(self) -> String:
-        return String(self)
-
-
-@fieldwise_init
 struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when buffer has no data available."""
 
@@ -235,47 +212,6 @@ struct RequestParseError(Movable, Writable):
             writer.write(self.value[EmptyBufferError])
         elif self.value.isa[UnsupportedHTTPRequestError]():
             writer.write(self.value[UnsupportedHTTPRequestError])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
-
-@fieldwise_init
-struct ResponseParseError(Movable, Writable):
-    """Error variant for HTTP response parsing."""
-
-    comptime type = Variant[InvalidHTTPResponseError, IncompleteHTTPResponseError, EmptyBufferError]
-    var value: Self.type
-
-    @implicit
-    def __init__(out self, value: InvalidHTTPResponseError):
-        self.value = value
-
-    @implicit
-    def __init__(out self, value: IncompleteHTTPResponseError):
-        self.value = value
-
-    @implicit
-    def __init__(out self, value: EmptyBufferError):
-        self.value = value
-
-    def is_incomplete(self) -> Bool:
-        """Returns True if this error indicates we need more data."""
-        return self.value.isa[IncompleteHTTPResponseError]()
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self.value.isa[InvalidHTTPResponseError]():
-            writer.write(self.value[InvalidHTTPResponseError])
-        elif self.value.isa[IncompleteHTTPResponseError]():
-            writer.write(self.value[IncompleteHTTPResponseError])
-        elif self.value.isa[EmptyBufferError]():
-            writer.write(self.value[EmptyBufferError])
 
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
@@ -351,29 +287,6 @@ struct ParsedRequestHeaders(Movable):
             and self.headers.known_index(KH_TRANSFER_ENCODING) >= 0
         )
 
-    def expects_body(self) -> Bool:
-        """Check if this request expects a body based on method and Content-Length."""
-        var cl = self.content_length()
-        if cl > 0:
-            return True
-        if self.method == "POST" or self.method == "PUT" or self.method == "PATCH":
-            if self.is_chunked_body():
-                return True
-        return False
-
-
-@fieldwise_init
-struct ParsedResponseHeaders(Movable):
-    """Result of parsing HTTP response headers."""
-
-    var protocol: String
-    var status: Int
-    var status_message: String
-    var headers: Headers
-    var cookies: List[String]
-    var bytes_consumed: Int
-
-
 @fieldwise_init
 struct Header(Copyable, Writable):
     """A single HTTP header key-value pair."""
@@ -430,25 +343,6 @@ def encode_latin1_header_value(value: String) -> List[UInt8]:
         out.append(b)
         i += 1
     return out^
-
-
-def write_header_latin1(mut writer: ByteWriter, key: String, value: String):
-    """Write a header with the value transcoded to ISO-8859-1."""
-    writer.write(key, ": ")
-    # ASCII fast path: transcoding only changes bytes >= 0x80, so a pure
-    # ASCII value (the overwhelmingly common case) can be written directly
-    # instead of allocating a transcode buffer per header per response.
-    var bytes = value.as_bytes()
-    var all_ascii = True
-    for i in range(len(bytes)):
-        if bytes[i] >= 0x80:
-            all_ascii = False
-            break
-    if all_ascii:
-        writer.write(value)
-    else:
-        writer.consuming_write(encode_latin1_header_value(value))
-    writer.write(lineBreak)
 
 
 @always_inline
@@ -1488,93 +1382,6 @@ def parse_request_headers(
         method=method^,
         path=path^,
         protocol=protocol^,
-        headers=headers^,
-        cookies=cookies^,
-        bytes_consumed=ret,
-    )
-
-
-def parse_response_headers(
-    buffer: Span[Byte, _],
-    last_len: Int = 0,
-) raises ResponseParseError -> ParsedResponseHeaders:
-    """Parse HTTP response headers from a buffer.
-
-    Args:
-        buffer: The buffer containing the HTTP response data.
-        last_len: Number of bytes already parsed in previous call (0 for first attempt).
-
-    Returns:
-        ParsedResponseHeaders containing all parsed information and bytes consumed.
-
-    Raises:
-        ResponseParseError: If parsing fails (invalid or incomplete response).
-    """
-    if len(buffer) == 0:
-        raise ResponseParseError(EmptyBufferError())
-
-    if len(buffer) < 5:
-        raise ResponseParseError(IncompleteHTTPResponseError())
-
-    if not (
-        buffer[0] == BytesConstant.H
-        and buffer[1] == BytesConstant.T
-        and buffer[2] == BytesConstant.T
-        and buffer[3] == BytesConstant.P
-        and buffer[4] == BytesConstant.SLASH
-    ):
-        raise ResponseParseError(InvalidHTTPResponseError())
-
-    var minor_version = -1
-    var status = 0
-    var msg = String()
-    var max_headers = 100
-    # Uninitialized for the reason the request parser gives.
-    var headers_array = Array[HTTPHeader, 100](uninitialized=True)
-    var num_headers = max_headers
-
-    var ret = http_parse_response_headers(
-        buffer.unsafe_ptr(),
-        len(buffer),
-        minor_version,
-        status,
-        msg,
-        headers_array,
-        num_headers,
-        last_len,
-    )
-
-    if ret < 0:
-        if ret == -1:
-            raise ResponseParseError(InvalidHTTPResponseError())
-        else:  # ret == -2
-            raise ResponseParseError(IncompleteHTTPResponseError())
-
-    # Build headers dict and extract cookies. Offsets into `buffer`, sliced
-    # from an immutable view for the same reason as the request parser.
-    var headers = Headers()
-    headers.reserve(ret, num_headers)
-    var cookies = List[String]()
-    var view = buffer.as_imm()
-
-    for i in range(num_headers):
-        # One `ref` to the element: two separate subscripts would invalidate
-        # the first interior reference before the second is taken.
-        ref h = headers_array[i]
-        var name_bytes = view[h.name_start : h.name_start + h.name_len]
-        var value = view[h.value_start : h.value_start + h.value_len]
-
-        if name_is(name_bytes, HeaderKey.SET_COOKIE):
-            cookies.append(String(unsafe_from_utf8=value))
-        else:
-            headers.set_bytes(name_bytes, value)
-
-    var protocol = String("HTTP/1.", minor_version)
-
-    return ParsedResponseHeaders(
-        protocol=protocol^,
-        status=status,
-        status_message=msg^,
         headers=headers^,
         cookies=cookies^,
         bytes_consumed=ret,
