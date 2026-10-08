@@ -1,5 +1,4 @@
-from lightbug_http.io.bytes import ByteReader, Bytes, ByteView
-from lightbug_http.strings import http, https, strHttp10, strHttp11
+from lightbug_http.io.bytes import ByteReader
 
 
 def _hex_upper(v: Int) -> String:
@@ -103,10 +102,8 @@ comptime QueryMap = Dict[String, String]
 
 
 struct QueryDelimiters:
-    comptime STRING_START = "?"
     comptime ITEM = "&"
     comptime ITEM_ASSIGN = "="
-    comptime PLUS_ESCAPED_SPACE = "+"
 
 
 def scheme_separator(uri: StringSpan) -> Int:
@@ -199,11 +196,7 @@ def authority_end(uri: StringSpan, authority_start: Int) -> Int:
 
 
 struct URIDelimiters:
-    comptime SCHEMA = "://"
     comptime PATH = "/"
-    comptime ROOT_PATH = "/"
-    comptime CHAR_ESCAPE = "%"
-    comptime AUTHORITY = "@"
     comptime QUERY = "?"
     comptime SCHEME = ":"
 
@@ -228,20 +221,13 @@ struct URIParseError(Writable):
 
 @fieldwise_init
 struct URI(Copyable, Writable):
-    var _original_path: String
     var scheme: String
     var path: String
     var query_string: String
     var queries: QueryMap
-    var _hash: String
     var host: String
     var port: Optional[UInt16]
-
-    var full_uri: String
     var request_uri: String
-
-    var username: String
-    var password: String
 
     @staticmethod
     def parse(var uri: String) raises URIParseError -> URI:
@@ -268,27 +254,11 @@ struct URI(Copyable, Writable):
         # Assume http if no scheme is provided, fairly safe given the context of lightbug.
         var scheme: String = "http"
         if scheme_sep >= 0:
+            # `scheme_separator` found `://` at `scheme_sep` with nothing but
+            # scheme characters before it, none of them a colon: the first
+            # colon is that separator's, and the `://` follows it.
             scheme = String(reader.read_until(UInt8(ord(URIDelimiters.SCHEME))))
-            # `uri.as_bytes()` is now bound to an interior origin of `uri`,
-            # so the reader's slices carry that origin rather than the whole
-            # string's.
-            var scheme_delimiter: ByteView[
-                origin_of(uri)._get_owned_interior["bytes"]
-            ]
-            try:
-                scheme_delimiter = reader.read_bytes(3)
-            except EndOfReaderError:
-                raise URIParseError(
-                    "URI.parse: Incomplete URI, expected scheme delimiter after scheme but reached the end of the URI."
-                )
-
-            if scheme_delimiter != "://".as_bytes():
-                raise URIParseError(
-                    String(
-                        "URI.parse: Invalid URI format, scheme should be followed by `://`. Received: ",
-                        uri,
-                    )
-                )
+            reader.increment(3)
 
         # Parse the user info, if exists: only an `@` inside the authority
         # ends one (`userinfo_separator`).
@@ -343,28 +313,15 @@ struct URI(Copyable, Writable):
         else:
             host = String(host_and_port)
 
-        # Reads until either the start of the query string, or the end of the uri.
-        var unquote_reader = reader.copy()
-        var original_path_bytes = unquote_reader.read_until(UInt8(ord(URIDelimiters.QUERY)))
-        var original_path: String
-        if not original_path_bytes:
-            original_path = "/"
-        else:
-            original_path = unquote(String(original_path_bytes), disallowed_escapes=["/"])
-
+        # A URL that ends with its authority has the path `/`.
         var result = URI(
-            _original_path=original_path,
             scheme=scheme,
-            path=original_path,
+            path="/",
             query_string="",
             queries=QueryMap(),
-            _hash="",
             host=host,
             port=port,
-            full_uri=uri,
-            request_uri=original_path,
-            username="",
-            password="",
+            request_uri="/",
         )
 
         # Parse the path
@@ -424,23 +381,12 @@ struct URI(Copyable, Writable):
         result.query_string = query^
         return result^
 
-    def __str__(self) -> String:
-        var result = String(self.scheme, URIDelimiters.SCHEMA, self.host, self.path)
-        if self.query_string.byte_length() > 0:
-            result.write(QueryDelimiters.STRING_START, self.query_string)
-        return result^
-
-    def __repr__(self) -> String:
-        return String(self)
-
     def __eq__(self, other: URI) -> Bool:
         return (
             self.scheme == other.scheme
             and self.host == other.host
             and self.path == other.path
             and self.query_string == other.query_string
-            and self._original_path == other._original_path
-            and self.full_uri == other.full_uri
             and self.request_uri == other.request_uri
         )
 
@@ -453,19 +399,9 @@ struct URI(Copyable, Writable):
             repr(self.host),
             ", path=",
             repr(self.path),
-            ", _original_path=",
-            repr(self._original_path),
             ", query_string=",
             repr(self.query_string),
-            ", full_uri=",
-            repr(self.full_uri),
             ", request_uri=",
             repr(self.request_uri),
             ")",
         )
-
-    def is_https(self) -> Bool:
-        return self.scheme == https
-
-    def is_http(self) -> Bool:
-        return self.scheme == http or self.scheme.byte_length() == 0

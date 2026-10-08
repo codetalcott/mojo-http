@@ -268,6 +268,28 @@ in a minor release: `m0serve`'s flags and environment variables, the
   lose their `strict` parameter and always read a request head's rules;
   the lenient reading was the response parser's.
 
+- **The fork's unused URI, cookie, response and byte helpers** (fork
+  review LF52). Nothing served changes, and no application in the tree,
+  the `m0` templates or the one outside it named any of these; an
+  application built with `m0` that did needs its own copy. From
+  `lightbug_http.uri`: `URI`'s `username`, `password`, `full_uri`,
+  `_original_path` and `_hash` fields (always empty, or the path again),
+  its `__str__`, `__repr__`, `is_http` and `is_https`, and the unused
+  `QueryDelimiters` and `URIDelimiters` constants. From
+  `lightbug_http.cookie`: `Expiration`, a stub that could only say
+  "session", with `Cookie`'s `expires` field and argument (a `Cookie` sets
+  its lifetime with `max_age`); `Cookie.to_header` and `Cookie.__str__`;
+  `SameSite.__eq__`; `RequestCookieJar`'s constructor from cookies,
+  `parse_cookies`, `empty`, `encode_to` and its `in` for a `Cookie`; and
+  `ResponseCookieJar`'s constructors from cookies, its `[]`, `get` and
+  `in`. From `lightbug_http.http`: the two `OK` overloads taking `Bytes`,
+  `SeeOther` (also exported from `lightbug_http`; `m0_http.reply.redirect`
+  builds every redirect) and `BadRequest(message)`. From
+  `lightbug_http.io.bytes`: `OutOfBoundsError`, `ByteReader`'s
+  `read_bytes(n)`, `as_bytes` and `in`, and `ByteView`'s comparisons,
+  `in`, `as_bytes` and `__str__`. From `lightbug_http.strings`: `https`,
+  `colonChar` and the seventeen `BytesConstant` bytes nothing reads.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

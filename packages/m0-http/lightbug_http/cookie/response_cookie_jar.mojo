@@ -11,7 +11,6 @@ from lightbug_http.header import (
     write_header,
 )
 from lightbug_http.io.bytes import ByteWriter
-from std.utils import Variant
 
 from lightbug_http.cookie.cookie import Cookie
 
@@ -32,9 +31,6 @@ struct ResponseCookieKey(ImplicitlyCopyable, KeyElement):
         self.domain = domain.or_else("")
         self.path = path.or_else("/")
 
-    def __ne__(self: Self, other: Self) -> Bool:
-        return not (self == other)
-
     def __eq__(self: Self, other: Self) -> Bool:
         return self.name == other.name and self.domain == other.domain and self.path == other.path
 
@@ -54,7 +50,7 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
     upstream — is not: the line IS the header, and the server's job is to
     transmit it. Parsing it into a `Cookie` and serialising that back was
     lossy in four ways, each measured against Django on a real project:
-    `Expiration` is a stub whose `from_string` parsed nothing, so `expires=`
+    `Expiration` was a stub whose `from_string` parsed nothing, so `expires=`
     vanished; `SameSite.from_string` matched only lowercase values, so
     `SameSite=Lax` vanished; `parts[0].split("=")` cut a value at its first
     `=`, which base64 padding puts at the end; and any attribute this struct
@@ -66,48 +62,12 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
         self._inner = Dict[ResponseCookieKey, Cookie]()
         self.raw = List[String]()
 
-    def __init__(out self, *cookies: Cookie):
-        self._inner = Dict[ResponseCookieKey, Cookie]()
-        self.raw = List[String]()
-        for cookie in cookies:
-            self.set_cookie(cookie)
-
-    def __init__(out self, cookies: List[Cookie]):
-        self._inner = Dict[ResponseCookieKey, Cookie]()
-        self.raw = List[String]()
-        for cookie in cookies:
-            self.set_cookie(cookie)
-
-    @always_inline
-    def __setitem__(mut self, key: ResponseCookieKey, value: Cookie):
-        self._inner[key] = value.copy()
-
-    def __getitem__(self, key: ResponseCookieKey) raises -> Cookie:
-        return self._inner[key].copy()
-
-    def get(self, key: ResponseCookieKey) -> Optional[Cookie]:
-        try:
-            return self[key]
-        except:
-            return None
-
-    @always_inline
-    def __contains__(self, key: ResponseCookieKey) -> Bool:
-        return key in self._inner
-
-    @always_inline
-    def __contains__(self, key: Cookie) -> Bool:
-        return ResponseCookieKey(key.name, key.domain, key.path) in self
-
-    def __str__(self) -> String:
-        return String(self)
-
     def __len__(self) -> Int:
         return len(self._inner) + len(self.raw)
 
     @always_inline
     def set_cookie(mut self, cookie: Cookie):
-        self[ResponseCookieKey(cookie.name, cookie.domain, cookie.path)] = cookie
+        self._inner[ResponseCookieKey(cookie.name, cookie.domain, cookie.path)] = cookie.copy()
 
     @always_inline
     def add_raw(mut self, line: String):
@@ -117,11 +77,6 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
     @always_inline
     def empty(self) -> Bool:
         return len(self) == 0
-
-    # fn encode_to(mut self, mut writer: ByteWriter):
-    #     for cookie in self._inner.values():
-    #         var v = cookie[].build_header_value()
-    #         write_header(writer, HeaderKey.SET_COOKIE, v)
 
     def write_to[T: Writer](self, mut writer: T):
         """One `Set-Cookie` line per cookie, the built ones first.

@@ -201,18 +201,13 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         var parsed_uri: URI
         if not needs_full_parse:
             parsed_uri = URI(
-                _original_path=parsed.path,
                 scheme="http",
                 path=parsed.path,
                 query_string="",
                 queries=QueryMap(),
-                _hash="",
                 host=server_addr,
                 port=None,
-                full_uri=parsed.path,
                 request_uri=parsed.path,
-                username="",
-                password="",
             )
         else:
             var full_uri_string = String(server_addr, parsed.path)

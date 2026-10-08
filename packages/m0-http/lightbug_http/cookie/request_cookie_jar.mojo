@@ -1,7 +1,4 @@
-from . import Cookie
-from lightbug_http.header import Header, HeaderKey, Headers, write_header
-from lightbug_http.io.bytes import ByteWriter
-from lightbug_http.strings import lineBreak
+from lightbug_http.header import Header, HeaderKey, write_header
 
 
 @fieldwise_init
@@ -10,17 +7,6 @@ struct RequestCookieJar(Copyable, Writable):
 
     def __init__(out self):
         self._inner = Dict[String, String]()
-
-    def __init__(out self, *cookies: Cookie):
-        self._inner = Dict[String, String]()
-        for cookie in cookies:
-            self._inner[cookie.name] = cookie.value
-
-    def parse_cookies(mut self, headers: Headers) raises:
-        var cookie_header = headers.get(HeaderKey.COOKIE)
-        if not cookie_header:
-            return None
-        self.add_pairs(cookie_header.value())
 
     def add_pairs(mut self, header_value: String):
         """Parse one `Cookie` field value — `a=1; b=2` — into the jar.
@@ -50,15 +36,8 @@ struct RequestCookieJar(Copyable, Writable):
             self._inner[name] = String(unsafe_from_utf8=chunk.as_bytes()[eq + 1 :])
 
     @always_inline
-    def empty(self) -> Bool:
-        return len(self._inner) == 0
-
-    @always_inline
     def __contains__(self, key: String) -> Bool:
         return key in self._inner
-
-    def __contains__(self, key: Cookie) -> Bool:
-        return key.name in self
 
     @always_inline
     def __getitem__(self, key: String) raises -> String:
@@ -84,18 +63,10 @@ struct RequestCookieJar(Copyable, Writable):
             header_value.append(cookie.key + equal + cookie.value)
         return Header(HeaderKey.COOKIE, StaticString("; ").join(header_value))
 
-    def encode_to(mut self, mut writer: ByteWriter):
-        var header = self.to_header()
-        if header:
-            write_header(writer, header.value().key, header.value().value)
-
     def write_to[T: Writer](self, mut writer: T):
         var header = self.to_header()
         if header:
             write_header(writer, header.value().key, header.value().value)
-
-    def __str__(self) -> String:
-        return String(self)
 
     def __eq__(self, other: RequestCookieJar) -> Bool:
         """Whether both jars hold the same names with the same values.

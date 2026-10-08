@@ -3,7 +3,7 @@
 `ResponseCookieJar` has two halves. A Mojo handler builds `Cookie` values and
 the jar serialises them; an application behind the WSGI/ASGI bridge hands the
 server finished `Set-Cookie` lines, and those must be transmitted exactly as
-written. Parsing them into `Cookie` first was lossy — `Expiration` is a stub,
+written. Parsing them into `Cookie` first was lossy — `Expiration` was a stub,
 `SameSite` matched only lowercase values, a value was cut at its first `=` —
 so Django's `sessionid` reached the browser without `expires` or `SameSite`,
 on every response of three real projects. `add_raw` is the path the bridge
