@@ -593,23 +593,36 @@ def _banner_of(address: String) raises -> Tuple[String, Int]:
         raise Error("pipe() failed, errno ", get_errno())
     var r = Int(fds[0])
     var w = Int(fds[1])
-    var saved = Int(external_call["dup", c_int, c_int](c_int(1)))
-    _ = external_call["dup2", c_int, c_int, c_int](c_int(w), c_int(1))
     var port: Int
+    var text: String
+    # The pipe's ends are closed on every path, a failed `dup`, a failed
+    # `dup2` and a `listen` that raises among them, and stdout is put back
+    # whenever it was moved.
     try:
-        var ln = ListenConfig(max_bind_retries=1).listen(address)
-        port = Int(ln.socket.local_address.port)
-        _ = ln^
-    finally:
-        _ = external_call["dup2", c_int, c_int, c_int](c_int(saved), c_int(1))
-        close_fd(saved)
+        var saved = Int(external_call["dup", c_int, c_int](c_int(1)))
+        if saved < 0:
+            raise Error("dup(1) failed, errno ", get_errno())
+        try:
+            if Int(external_call["dup2", c_int, c_int, c_int](c_int(w), c_int(1))) != 1:
+                raise Error("dup2() onto stdout failed, errno ", get_errno())
+            var ln = ListenConfig(max_bind_retries=1).listen(address)
+            port = Int(ln.socket.local_address.port)
+            _ = ln^
+        finally:
+            _ = external_call["dup2", c_int, c_int, c_int](c_int(saved), c_int(1))
+            close_fd(saved)
         close_fd(w)
-    var buf = List[UInt8](length=4096, fill=0)
-    var n = Int(external_call["read", Int](c_int(r), buf.unsafe_ptr(), 4096))
-    close_fd(r)
-    if n < 0:
-        raise Error("read() failed, errno ", get_errno())
-    return (String(unsafe_from_utf8=Span(buf)[:n]), port)
+        w = -1
+        var buf = List[UInt8](length=4096, fill=0)
+        var n = Int(external_call["read", Int](c_int(r), buf.unsafe_ptr(), 4096))
+        if n < 0:
+            raise Error("read() failed, errno ", get_errno())
+        text = String(unsafe_from_utf8=Span(buf)[:n])
+    finally:
+        if w >= 0:
+            close_fd(w)
+        close_fd(r)
+    return (text^, port)
 
 
 def test_the_banner_names_the_port_bound() raises:

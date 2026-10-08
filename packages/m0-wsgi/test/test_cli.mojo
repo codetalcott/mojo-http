@@ -699,21 +699,25 @@ def test_from_env_names_a_number_too_large_for_an_int() raises:
     _clear_env()
     _ = setenv("M0_PORT", "18446744073709551696", True)
     _ = setenv("M0_WORKERS", "9223372036854775808", True)
-    var seed = ServeOptions.from_env()
-    assert_equal(seed.port, DEFAULT_PORT)
-    assert_equal(seed.workers, 1)
-    assert_equal(len(seed.env_ignored), 2)
-    assert_equal(
-        seed.env_ignored[0],
-        "ignoring M0_PORT='18446744073709551696', not a whole number up to"
-        " 9223372036854775807; using 8000",
-    )
-    assert_equal(
-        seed.env_ignored[1],
-        "ignoring M0_WORKERS='9223372036854775808', not a whole number up to"
-        " 9223372036854775807; using 1",
-    )
-    _clear_env()
+    # Cleared on every path: a failed assertion must not leave the two
+    # variables set for the tests after it.
+    try:
+        var seed = ServeOptions.from_env()
+        assert_equal(seed.port, DEFAULT_PORT)
+        assert_equal(seed.workers, 1)
+        assert_equal(len(seed.env_ignored), 2)
+        assert_equal(
+            seed.env_ignored[0],
+            "ignoring M0_PORT='18446744073709551696', not a whole number up to"
+            " 9223372036854775807; using 8000",
+        )
+        assert_equal(
+            seed.env_ignored[1],
+            "ignoring M0_WORKERS='9223372036854775808', not a whole number up to"
+            " 9223372036854775807; using 1",
+        )
+    finally:
+        _clear_env()
 
 
 def test_a_port_out_of_range_is_refused_whichever_way_it_came() raises:
