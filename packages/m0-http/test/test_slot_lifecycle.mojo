@@ -1043,12 +1043,13 @@ struct OneChunkStream(HTTPService):
 
 
 def _chunked_stream_exchange(
-    asked_close: Bool, keep_alive: Bool = True
+    asked_close: Bool, keep_alive: Bool = True, half_closed: Bool = False,
 ) raises -> Tuple[String, Bool]:
     """A chunked stream from a channel producer, from its head to its
     terminator, for a request that asked for a close or did not, on a
-    server with keep-alive on or off: what the client read, lowercased, and
-    whether the loop closed the slot once the terminator landed."""
+    server with keep-alive on or off, from a client that has half-closed or
+    not: what the client read, lowercased, and whether the loop closed the
+    slot once the terminator landed."""
     var pool = OffloadPool(8)
     pool.enable_stream_channel()
     var acks = make_stream_ack_pair()
@@ -1071,6 +1072,11 @@ def _chunked_stream_exchange(
     # What `_process_request` decides before the handler runs.
     st.provision_pool.provisions[slot].should_close = asked_close or not keep_alive
     st.provision_pool.provisions[slot].state = ConnectionState.processing()
+    if half_closed:
+        # The request was the last bytes the client sent: its EOF reached
+        # the read path (`peer_eof`), and nothing is buffered behind it.
+        shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+        st.provision_pool.provisions[slot].peer_eof = True
     var response = OK("", "text/plain")
     response.sse_streaming = True
     _finish_response(app, backend, st, slot, fd, response^)
@@ -1095,11 +1101,12 @@ def _chunked_stream_exchange(
 def test_a_chunked_stream_keeps_the_close_its_request_asked_for() raises:
     """A chunked stream answers its request whole, so once its terminator
     lands the connection does what the request asked: closes after
-    `Connection: close`, or on a server with keep-alive off, and stays
-    otherwise; the head says which (review record LF13). A stream's head
-    clears `should_close`, or the head landing would close the slot, and
-    the stream's end took the keep-alive path whatever the request had
-    said, under a head that said `keep-alive`.
+    `Connection: close`, on a server with keep-alive off, or for a client
+    that has half-closed (LF11's close), and stays otherwise; the head says
+    which (review record LF13). A stream's head clears `should_close`, or
+    the head landing would close the slot, and the stream's end took the
+    keep-alive path whatever the request had said, under a head that said
+    `keep-alive`.
 
     covers: A28
     """
@@ -1112,6 +1119,12 @@ def test_a_chunked_stream_keeps_the_close_its_request_asked_for() raises:
     var off = _chunked_stream_exchange(False, keep_alive=False)
     assert_true("connection: close" in off[0], off[0])
     assert_true(off[1], "a server with keep-alive off kept the connection")
+
+    var half = _chunked_stream_exchange(False, half_closed=True)
+    assert_true("transfer-encoding: chunked" in half[0], half[0])
+    assert_true("connection: close" in half[0], half[0])
+    assert_true(half[0].endswith("9\r\none-chunk\r\n0\r\n\r\n"), half[0])
+    assert_true(half[1], "a half-closed client's stream kept the connection")
 
     var kept = _chunked_stream_exchange(False)
     assert_true("transfer-encoding: chunked" in kept[0], kept[0])
