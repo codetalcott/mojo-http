@@ -21,6 +21,7 @@ from lightbug_http.c.socket import (
     setsockopt,
     shutdown,
     socket,
+    spare_capacity,
 )
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.connection import default_buffer_size
@@ -467,7 +468,7 @@ struct Socket[
             SysError: If the send fails; EBADF on a closed socket, which
                 sends nothing (see `close`).
         """
-        return send(self.fd, buffer, UInt(len(buffer)), 0)
+        return send(self.fd, buffer, 0)
 
     def _receive(self, mut buffer: Bytes) raises SocketRecvError -> UInt:
         """Receive data from the socket into the buffer.
@@ -483,14 +484,7 @@ struct Socket[
                 EBADF on a closed socket, which reads nothing (see `close`)
                 -- or EOF if 0 bytes are received.
         """
-        var bytes_received: UInt
-        var size = len(buffer)
-        bytes_received = recv(
-            self.fd,
-            Span(buffer)[size:],
-            UInt(buffer.capacity() - len(buffer)),
-            0,
-        )
+        var bytes_received = recv(self.fd, spare_capacity(buffer), 0)
         buffer._len += Int(bytes_received)
 
         if bytes_received == 0:

@@ -183,7 +183,7 @@ def _stream_pair() raises -> Tuple[Int, Int]:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), UInt(len(b)), 0)), len(b))
+    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> List[UInt8]:
@@ -193,7 +193,7 @@ def _read_all(fd: Int) -> List[UInt8]:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:
@@ -369,7 +369,7 @@ def test_a_bus_frame_behind_the_stop_is_delivered() raises:
     var handler = Recorder()
     var payload = List[UInt8](String("data: x\n\n").as_bytes())
     var dg = encode_bus_frame("/events", 7, Span(payload))
-    _ = send(FileDescriptor(bus[1]), Span(dg), UInt(len(dg)), 0)
+    _ = send(FileDescriptor(bus[1]), Span(dg), 0)
 
     backend.push(pipe[0], EVFILT_READ)
     backend.push(bus[0], EVFILT_READ)

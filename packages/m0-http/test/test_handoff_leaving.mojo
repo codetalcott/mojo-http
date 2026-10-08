@@ -188,7 +188,7 @@ def _stream_pair() raises -> Tuple[Int, Int]:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), UInt(len(b)), 0)), len(b))
+    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> String:
@@ -198,7 +198,7 @@ def _read_all(fd: Int) -> String:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:
@@ -215,7 +215,7 @@ def _peer_gone(fd: Int) -> Bool:
     var buf = List[UInt8](capacity=1)
     buf.append(0)
     try:
-        return Int(recv(FileDescriptor(fd), Span(buf), UInt(1), MSG_DONTWAIT)) == 0
+        return Int(recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)) == 0
     except:
         return False
 

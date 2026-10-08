@@ -45,7 +45,7 @@ def _read_ack(fd: Int) raises -> Tuple[Int, Int]:
     var buf = List[UInt8](capacity=ACK_BYTES)
     for _ in range(ACK_BYTES):
         buf.append(0)
-    var n = recv(FileDescriptor(fd), Span(buf), UInt(ACK_BYTES), 0)
+    var n = recv(FileDescriptor(fd), Span(buf), 0)
     assert_equal(Int(n), ACK_BYTES)
     return decode_ack(Span(buf))
 
@@ -514,7 +514,7 @@ def _read_datagram(fd: Int) raises -> List[UInt8]:
     var buf = List[UInt8](capacity=4096)
     for _ in range(4096):
         buf.append(0)
-    var n = recv(FileDescriptor(fd), Span(buf), UInt(4096), 0)
+    var n = recv(FileDescriptor(fd), Span(buf), 0)
     var out = List[UInt8](capacity=Int(n))
     for i in range(Int(n)):
         out.append(buf[i])
@@ -677,7 +677,7 @@ def test_a_websocket_message_fills_its_datagram_and_not_a_byte_more() raises:
     var big = List[UInt8](capacity=WS_DATAGRAM_MAX + 64)
     for _ in range(WS_DATAGRAM_MAX + 64):
         big.append(0)
-    var n = recv(FileDescriptor(pool.submit_read), Span(big), UInt(len(big)), 0)
+    var n = recv(FileDescriptor(pool.submit_read), Span(big), 0)
     assert_equal(Int(n), WS_DATAGRAM_MAX)
     assert_equal(Int(big[WS_DATAGRAM_MAX - 1]), (room - 1) & 0xFF)
 
@@ -816,7 +816,7 @@ def _try_read(fd: Int) -> Int:
     for _ in range(64):
         buf.append(0)
     try:
-        var n = recv(FileDescriptor(fd), Span(buf), UInt(64), MSG_DONTWAIT)
+        var n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         return Int(n)
     except:
         return -1

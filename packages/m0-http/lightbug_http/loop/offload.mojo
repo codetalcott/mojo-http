@@ -164,7 +164,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
         if len(last) > 0:
             var out = encode_chunk(Span(last)) if st.offload.chunked[abort_slot] else Bytes(Span(last))
             try:
-                _ = send(FileDescriptor(st.slot_fds[abort_slot]), Span(out), UInt(len(out)), 0)
+                _ = send(FileDescriptor(st.slot_fds[abort_slot]), Span(out), 0)
             except:
                 pass
         st.offload.clear_stream(abort_slot)

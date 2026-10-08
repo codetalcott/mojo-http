@@ -1374,6 +1374,17 @@ lightbug_http
         on either backend, and any event on it is the stop (review record
         LF27).
 
+      - c/socket.mojo, socket.mojo, offload.mojo, broadcast.mojo,
+        loop/request.mojo, loop/response.mojo, loop/streams.mojo,
+        loop/state.mojo, loop/offload.mojo (2026-10-08): `recv` and `send`
+        take the length from the span they are given, where they took it
+        as an argument beside the span; the loop's body, WebSocket and
+        lingering reads passed an empty span and a capacity count, and a
+        count above a span's length was written past its end.
+        `spare_capacity` lends a list's room past its length for a `recv`
+        to fill; every caller's count was the span's own or now slices the
+        span to it (review record LF20).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

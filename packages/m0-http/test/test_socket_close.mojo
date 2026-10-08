@@ -118,7 +118,7 @@ def _reads_eof(fd: Int) raises -> Bool:
     its peer has shut down; False when the read would wait."""
     var buf = List[UInt8](length=16, fill=0)
     try:
-        return recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), 0) == 0
+        return recv(FileDescriptor(fd), Span(buf), 0) == 0
     except e:
         if e.would_block():
             return False
@@ -130,7 +130,7 @@ def _queued(fd: Int) raises -> Int:
     a read would wait, 0 at end-of-file."""
     var buf = List[UInt8](length=64, fill=0)
     try:
-        return Int(recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), _MSG_PEEK))
+        return Int(recv(FileDescriptor(fd), Span(buf), _MSG_PEEK))
     except e:
         if e.would_block():
             return -1
@@ -345,7 +345,7 @@ def test_a_closed_socket_takes_nothing_from_what_took_its_number() raises:
     var newcomer = _stream_pair()
     sock.close()
     _move_to(newcomer[0], number)
-    _ = send(FileDescriptor(newcomer[1]), "x".as_bytes(), UInt(1), 0)
+    _ = send(FileDescriptor(newcomer[1]), "x".as_bytes(), 0)
     assert_equal(_queued(number), 1, "the newcomer's byte did not arrive")
 
     var errno = 0
@@ -396,7 +396,7 @@ def test_a_closed_connection_neither_writes_nor_reads_what_took_its_number() rai
     var newcomer = _stream_pair()
     conn.close()
     _move_to(newcomer[0], number)
-    _ = send(FileDescriptor(newcomer[1]), "x".as_bytes(), UInt(1), 0)
+    _ = send(FileDescriptor(newcomer[1]), "x".as_bytes(), 0)
 
     var wrote = True
     try:

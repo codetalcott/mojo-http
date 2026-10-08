@@ -180,7 +180,7 @@ def _move_to(fd: Int, number: Int) raises:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), UInt(len(b)), 0)), len(b))
+    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> String:
@@ -190,7 +190,7 @@ def _read_all(fd: Int) -> String:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:

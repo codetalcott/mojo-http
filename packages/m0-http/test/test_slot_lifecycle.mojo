@@ -209,7 +209,7 @@ def test_a_write_wait_holds_no_read_interest() raises:
     var backend = PlatformBackend()
     backend.add_read(rx)
     var one = String("m")
-    _ = send(FileDescriptor(tx), one.as_bytes(), UInt(1), 0)
+    _ = send(FileDescriptor(tx), one.as_bytes(), 0)
 
     var n = backend.wait(1000)
     assert_equal(n, 1)
@@ -537,7 +537,7 @@ def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
     st.active_count = 1
     st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
     var raw = request.as_bytes()
-    var sent = send(FileDescriptor(peer), raw, UInt(len(raw)), 0)
+    var sent = send(FileDescriptor(peer), raw, 0)
     assert_equal(Int(sent), len(raw))
     _on_read(app, backend, st, fd, False)
     var got = List[UInt8]()
@@ -835,7 +835,7 @@ def _a_websocket_owed_a_close_echo(
     mask.append(0x21)
     mask.append(0x3D)
     var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(code), mask)
-    var sent = send(FileDescriptor(peer), Span(frame), UInt(len(frame)), 0)
+    var sent = send(FileDescriptor(peer), Span(frame), 0)
     assert_equal(Int(sent), len(frame))
     return (fd, peer, slot, filler)
 
@@ -851,7 +851,7 @@ def _fill_send_buffer(fd: Int) raises -> Int:
         while True:
             var sent: UInt
             try:
-                sent = send(FileDescriptor(fd), Span(chunk)[:size], UInt(size), 0)
+                sent = send(FileDescriptor(fd), Span(chunk)[:size], 0)
             except err:
                 if err.would_block():
                     break
@@ -870,7 +870,7 @@ def _read_available(fd: Int, mut got: List[UInt8]) raises -> Bool:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except err:
             if err.would_block():
                 return False
@@ -948,7 +948,7 @@ def _discard_all(fd: Int):
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:

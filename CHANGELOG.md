@@ -22,6 +22,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `lightbug_http.c.epoll` declared as copies of those flags, are gone:
   pass `O_CLOEXEC` and `O_NONBLOCK`.
 
+- **`recv` and `send` take their length from the span they are given**
+  (fork review LF20, SPEC G21). Nothing served changes. The two calls in
+  `lightbug_http.c.socket` took a length beside the span, which the span
+  did not have to back: a count above the span's length was written past
+  its end. They now read or write `len(span)` bytes and no more, so an
+  application built with the `m0` wheel that called one drops the length
+  argument, slicing the span to the count it meant. To receive into a
+  list's spare capacity, pass `spare_capacity(list)` and grow the list by
+  what `recv` returns.
+
 ### Removed
 
 - **The fork's client connect path, and the last of its dead C bindings**

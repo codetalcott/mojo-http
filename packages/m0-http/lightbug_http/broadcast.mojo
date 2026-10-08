@@ -197,7 +197,6 @@ def publish_to_channels(
             _ = send(
                 FileDescriptor(write_fds[w]),
                 Span(datagram),
-                UInt(len(datagram)),
                 MSG_DONTWAIT,
             )
             sent += 1
@@ -301,7 +300,7 @@ def drain_bus_channel(read_fd: Int) raises -> List[BusFrame]:
     while True:
         var n: UInt
         try:
-            n = recv(fd, Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(fd, Span(buf), MSG_DONTWAIT)
         except:
             break  # EAGAIN: drained (or the channel died; either way, done)
         if n == 0:

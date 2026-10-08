@@ -548,7 +548,7 @@ def _offer_until(fd: Int, datagram: List[UInt8], deadline_ns: Int) -> Bool:
     never the loop's."""
     while True:
         try:
-            _ = send(FileDescriptor(fd), Span(datagram), UInt(len(datagram)), 0)
+            _ = send(FileDescriptor(fd), Span(datagram), 0)
             return True
         except e:
             if not (
@@ -1472,7 +1472,7 @@ struct OffloadPool(Movable):
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(buf), UInt(_JOB_BYTES), flags)
+                n = recv(fd, Span(buf)[:_JOB_BYTES], flags)
             except recv_err:
                 if recv_err.interrupted():
                     if flags != 0:
@@ -1878,7 +1878,7 @@ struct OffloadPool(Movable):
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(buf), UInt(cap), flags)
+                n = recv(fd, Span(buf)[:cap], flags)
             except recv_err:
                 if recv_err.interrupted():
                     if flags != 0:
@@ -2061,7 +2061,6 @@ struct OffloadPool(Movable):
             _ = send(
                 FileDescriptor(self.submit_write_fd(lane)),
                 Span(job),
-                UInt(len(job)),
                 0,
             )
         except:
@@ -2123,7 +2122,7 @@ struct OffloadPool(Movable):
         while True:
             var n: UInt
             try:
-                n = recv(fd, Span(self._drain_buf), UInt(cap), 0)
+                n = recv(fd, Span(self._drain_buf)[:cap], 0)
             except:
                 break  # EAGAIN: drained
             if n == 0:
@@ -2487,7 +2486,7 @@ def drain_ack_fd(fd: Int):
         buf.append(0)
     for _ in range(4096):
         try:
-            var n = recv(FileDescriptor(fd), Span(buf), UInt(8), MSG_DONTWAIT)
+            var n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
             if n == 0:
                 return
         except:

@@ -10,7 +10,7 @@ and discarded until the client stops (`_reject_and_linger`).
 """
 
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import recv, shutdown, ShutdownOption
+from lightbug_http.c.socket import recv, shutdown, spare_capacity, ShutdownOption
 from lightbug_http.connection import ConnectionState
 from lightbug_http.header import (
     HeaderKey, ParsedRequestHeaders, find_header_end, parse_request_headers,
@@ -207,8 +207,7 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     try:
         bytes_read = recv(
             fd_desc,
-            Span(st.provision_pool.provisions[slot].recv_staging),
-            UInt(want),
+            spare_capacity(st.provision_pool.provisions[slot].recv_staging),
             0,
         )
     except recv_err:
@@ -394,7 +393,6 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 unsafe_ptr=st.provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(have),
                 length=want,
             ),
-            UInt(want),
             0,
         )
         recv_eof = bytes_read == 0
@@ -974,15 +972,13 @@ def _linger_discard[T: HTTPService, B: EventLoopBackend](
     starts a loopback receive buffer below the budget, and a client still
     sending raises an edge per segment), so no gate fails without it.
     """
-    var cap = st.provision_pool.provisions[slot].recv_staging.capacity()
     for _ in range(LINGER_READS_PER_EVENT):
         st.provision_pool.provisions[slot].recv_staging.clear()
         var n: UInt
         try:
             n = recv(
                 FileDescriptor(fd_val),
-                Span(st.provision_pool.provisions[slot].recv_staging),
-                UInt(cap),
+                spare_capacity(st.provision_pool.provisions[slot].recv_staging),
                 0,
             )
         except linger_err:

@@ -605,13 +605,18 @@ def _recv(
 
 def recv[
     origin: MutOrigin
-](socket: FileDescriptor, buffer: Span[c_uchar, origin], length: c_size_t, flags: c_int,) raises SysError -> c_size_t:
-    """Libc POSIX `recv` function.
+](socket: FileDescriptor, buffer: Span[c_uchar, origin], flags: c_int) raises SysError -> c_size_t:
+    """Libc POSIX `recv` function, into the bytes of `buffer` and no others.
+
+    The length is the span's own (review record LF20). It was a separate
+    argument the span did not have to back: callers passed an empty span
+    and a capacity count, and a count above the span's length was written
+    past its end. To fill a list's spare capacity, pass
+    `spare_capacity(list)` and grow the list by what this returns.
 
     Args:
         socket: A File Descriptor.
-        buffer: A Pointer to the buffer to store the received data.
-        length: The size of the buffer.
+        buffer: The bytes to receive into; `len(buffer)` is the most read.
         flags: Flags to control the behaviour of the function.
 
     Returns:
@@ -629,11 +634,37 @@ def recv[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/recv.3p.html .
     """
-    var result = _recv(Int32(socket.value), buffer.unsafe_ptr().unsafe_bitcast[c_void](), length, flags)
+    var result = _recv(
+        Int32(socket.value),
+        buffer.unsafe_ptr().unsafe_bitcast[c_void](),
+        c_size_t(len(buffer)),
+        flags,
+    )
     if result == -1:
         raise SysError("recv", get_errno())
 
     return UInt(result)
+
+
+def spare_capacity[
+    origin: MutOrigin, //
+](ref [origin] buffer: List[UInt8]) -> Span[UInt8, origin]:
+    """The bytes of `buffer` past its length and within its capacity: the
+    span a `recv` fills in place, after which the caller grows the list's
+    length by what it received.
+
+    Args:
+        buffer: The list whose spare capacity to lend.
+
+    Returns:
+        A span of `buffer.capacity() - len(buffer)` bytes, starting at
+        `buffer[len(buffer)]`.
+    """
+    var have = len(buffer)
+    return Span[UInt8, origin](
+        unsafe_ptr=buffer.unsafe_ptr().unsafe_offset(have),
+        length=buffer.capacity() - have,
+    )
 
 
 def _send(
@@ -673,13 +704,14 @@ def _send(
 
 def send[
     origin: ImmOrigin
-](socket: FileDescriptor, buffer: Span[c_uchar, origin], length: c_size_t, flags: c_int,) raises SysError -> c_size_t:
-    """Libc POSIX `send` function.
+](socket: FileDescriptor, buffer: Span[c_uchar, origin], flags: c_int) raises SysError -> c_size_t:
+    """Libc POSIX `send` function, of the bytes of `buffer` and no others.
+
+    The length is the span's own (review record LF20), as `recv`'s is.
 
     Args:
         socket: A File Descriptor.
-        buffer: A Pointer to the buffer to send.
-        length: The size of the buffer.
+        buffer: The bytes to send; `len(buffer)` is the most sent.
         flags: Flags to control the behaviour of the function.
 
     Returns:
@@ -697,7 +729,12 @@ def send[
     #### Notes:
     * Reference: https://man7.org/linux/man-pages/man3/send.3p.html .
     """
-    var result = _send(Int32(socket.value), buffer.unsafe_ptr().unsafe_bitcast[c_void](), length, flags)
+    var result = _send(
+        Int32(socket.value),
+        buffer.unsafe_ptr().unsafe_bitcast[c_void](),
+        c_size_t(len(buffer)),
+        flags,
+    )
     if result == -1:
         raise SysError("send", get_errno())
 

@@ -290,7 +290,7 @@ def test_a_hold_sends_the_loop_its_frame_and_completes_with_the_head() raises:
     var buf = List[UInt8](capacity=256)
     for _ in range(256):
         buf.append(0)
-    var n = recv(FileDescriptor(loop_end), Span(buf), UInt(256), MSG_DONTWAIT)
+    var n = recv(FileDescriptor(loop_end), Span(buf), MSG_DONTWAIT)
     assert_true(n > 10, "no hold frame on the loop's channel; the slot would never be subscribed")
     var decoded = decode_bus_frame(Span(buf)[0:Int(n)])
     assert_true(Bool(decoded), "the frame did not decode as a bus frame")
