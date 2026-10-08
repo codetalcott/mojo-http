@@ -135,7 +135,9 @@ struct HTTPChunkedDecoder(Defaultable):
                 self._state = DecoderState.IN_CHUNK_SIZE_END
 
             # After the size: `chunk-size [ chunk-ext ] CRLF`, an extension
-            # opening with `;` behind optional whitespace (RFC 9112 §7.1.1).
+            # opening with `;` behind optional whitespace (RFC 9112 §7.1.1's
+            # BWS). Whitespace before a bare CR is a leniency, kept as h11
+            # keeps it (llhttp refuses it).
             # The bytes here went to the extension state, which skipped to
             # the CR whatever they were, so `5 5` was a chunk of 5 where
             # h11 and llhttp refuse it and a parser that strips whitespace

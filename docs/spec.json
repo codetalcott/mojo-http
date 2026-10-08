@@ -493,9 +493,9 @@
       "id": "B28",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "A chunk header is the size, then optional whitespace, then a `;`-opened extension or the CRLF (RFC 9112 \u00a77.1.1): any other byte after the size, and a control byte other than HTAB, or DEL, in an extension, makes the body invalid",
+      "capability": "A chunk header is the size, then a `;`-opened extension, whitespace allowed before the `;` (RFC 9112 \u00a77.1.1's BWS), or the CRLF: any other byte after the size, and a control byte other than HTAB, or DEL, in an extension, makes the body invalid; whitespace before a bare CRLF is a leniency kept",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_a_chunk_size_line_is_the_size_then_extensions` (every PR) \u2014 the bytes after the size were skipped to the CR whatever they were, so `5 5` was a chunk of 5 where h11 and llhttp refuse it and a parser that strips whitespace reads 0x55, and an extension's NUL or VT was taken where a head's field value and a trailer's refuse them (B24) (review record LF60). Whitespace before the CRLF is still taken, as h11 takes it; each shape is held fed whole and in pieces of one to five bytes"
+      "evidence": "`test_parsing.mojo:test_a_chunk_size_line_is_the_size_then_extensions` (every PR) \u2014 the bytes after the size were skipped to the CR whatever they were, so `5 5` was a chunk of 5 where h11 and llhttp refuse it and a parser that strips whitespace reads 0x55, and an extension's NUL or VT was taken where a head's field value and a trailer's refuse them (B24) (review record LF60). Whitespace before a bare CRLF (`5 rn`) is no part of the grammar, whose BWS stands only before a `;`: it is still taken, as h11 takes it and llhttp refuses it (B25's `chunk_size_trailing_space`). Each shape is held fed whole and in pieces of one to five bytes"
     },
     {
       "id": "C1",

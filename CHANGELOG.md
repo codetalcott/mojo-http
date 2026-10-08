@@ -273,7 +273,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   five bytes where other servers refuse it or read 0x55, and a control
   byte inside a chunk extension was accepted. Such a body is now refused
   with 400. A chunk extension (`5;name=value`) is still accepted and
-  ignored, and so is whitespace between the size and the line's end.
+  ignored, and so, as a leniency (the grammar has none), is whitespace
+  between the size and the line's end.
 
 - **`HTTPRequest.encode()` writes the target it was given** (fork review
   LF62, SPEC A38). Exposed: a Mojo application that writes a request out
