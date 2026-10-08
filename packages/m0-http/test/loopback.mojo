@@ -58,21 +58,23 @@ def create_connection(
         Error: If `host` is not an IPv4 literal, or if `connect` fails, with
             its errno. The descriptor is closed either way.
     """
-    var fd = FileDescriptor(
-        Int(socket(AddressFamily.AF_INET.value, SocketType.SOCK_STREAM.value, c_int(0)))
-    )
     var remote = SocketAddress(
         AddressFamily.AF_INET, port, inet_pton[AddressFamily.AF_INET](host)
     )
+    var fd = FileDescriptor(
+        Int(socket(AddressFamily.AF_INET.value, SocketType.SOCK_STREAM.value, c_int(0)))
+    )
+    var near: Tuple[String, Int]
+    var far: Tuple[String, Int]
     try:
         connect(fd, remote)
+        var local = SocketAddress()
+        getsockname(fd, local)
+        near = local.host_port()
+        far = getpeername(fd).host_port()
     except e:
         close_fd(fd.value)
         raise Error(e)
-    var local = SocketAddress()
-    getsockname(fd, local)
-    var near = local.host_port()
-    var far = getpeername(fd).host_port()
     var sock = Socket[TCPAddr[NetworkType.tcp4]](
         fd=fd,
         local_address=TCPAddr[NetworkType.tcp4](near[0], UInt16(near[1])),
