@@ -454,6 +454,11 @@ def parse_address[
         var bracket_offset: UInt16
         (host, bracket_offset) = parse_ipv6_bracketed_address(address)
         validate_no_brackets(address, bracket_offset)
+        # The port follows the colon after `]`, so that colon must be the
+        # last: `[::1]:8:0` read port 0 from after the last colon, and
+        # listened on a port the kernel chose (review record LF33).
+        if Int(bracket_offset) != colon_index:
+            raise ParseTooManyColonsError()
     else:
         host = StringSpan(unsafe_from_utf8=address.as_bytes()[:colon_index])
         if host.find(":") != -1:

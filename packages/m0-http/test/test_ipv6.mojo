@@ -245,6 +245,28 @@ def test_bracketed_addresses_parse() raises:
     assert_equal(join_host_port("0.0.0.0", "8080"), "0.0.0.0:8080")
 
 
+def test_a_colon_inside_a_bracketed_address_port_is_refused() raises:
+    """After `]` comes one colon and the port: `[::1]:8:0` is refused, not
+    read as port 0 (review record LF33).
+
+    The port was the text after the LAST colon, wherever the bracket
+    closed, so `[::1]:8:0` listened on `::1` at a port the kernel picked,
+    and `[::1]:8:80` on port 80. A port is now the text after the colon
+    that follows `]`, and a colon in it is too many.
+
+    covers: A31
+    """
+    with assert_raises(contains="too many colons"):
+        _ = parse_address[NetworkType.tcp](StringSpan("[::1]:8:0"))
+    with assert_raises(contains="too many colons"):
+        _ = parse_address[NetworkType.tcp](StringSpan("[::1]:8:80"))
+    with assert_raises(contains="too many colons"):
+        _ = parse_address[NetworkType.tcp6](StringSpan("[::]::80"))
+    var hp = parse_address[NetworkType.tcp](StringSpan("[::1]:80"))
+    assert_equal(hp.host, "::1")
+    assert_equal(Int(hp.port), 80)
+
+
 def test_a_uri_behind_an_ipv6_server_address_parses() raises:
     """The loop puts the server's own address in front of a target that
     carries a query, so on `::` every such request was `[::]:8080/x?a=1`,

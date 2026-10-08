@@ -210,6 +210,14 @@
       "evidence": "`test_response_head.mojo:test_a_server_header_the_application_set_is_the_only_one` (every PR) \u2014 on the bytes of both encoders and the printed form. `encode` and `encode_into` wrote `server: lightbug_http` whatever the headers held, so an application that named itself, built in Mojo or served through the gateway, sent two `Server` lines, which RFC 9110 \u00a710.2.4's grammar, a product list rather than a comma-separated one, cannot join into one; the printed form already asked first. Found by the 2026-10-07 fork review"
     },
     {
+      "id": "A31",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A bracketed listen address takes its port from after the one colon that follows `]`: `[::1]:8:0` is refused as too many colons, not served on port 0",
+      "status": "verified",
+      "evidence": "`test_ipv6.mojo:test_a_colon_inside_a_bracketed_address_port_is_refused` (every PR) \u2014 `parse_address` read the port after the LAST colon wherever the bracket closed, so `[::1]:8:0` listened on `::1` at a port the kernel chose and `[::1]:8:80` on port 80 (review record LF33). Reached by an address a Mojo application passes `Server.listen_and_serve`; m0serve and the Mojo host bracket the `--host` they are given themselves"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

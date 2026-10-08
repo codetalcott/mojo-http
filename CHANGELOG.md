@@ -141,6 +141,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   they hold the same names with the same values, in any order. The server
   itself never compares jars.
 
+- **A bracketed listen address with a colon in its port is refused**
+  (fork review LF33, SPEC A31). Exposed: a Mojo application that passes
+  `Server.listen_and_serve` an IPv6 address such as `[::1]:8:0`. The port
+  was read after the last colon, so that address listened on a port the
+  kernel chose, and `[::1]:8:80` on port 80. It is now refused at startup
+  as too many colons, as Go's `net.SplitHostPort` refuses it.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

@@ -1549,6 +1549,11 @@ lightbug_http
         pair that differed, so jars of two or more cookies were never equal
         (review record LF30, SPEC G22).
 
+      - address.mojo (2026-10-08): `parse_address` refuses a bracketed
+        address whose colon after `]` is not its last (`[::1]:8:0`), where
+        it read the port after the last colon (review record LF33, SPEC
+        A31).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
