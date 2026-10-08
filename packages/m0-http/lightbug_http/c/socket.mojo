@@ -15,25 +15,13 @@ from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
 
 
 @fieldwise_init
-struct ShutdownOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
+struct ShutdownOption(Copyable, TrivialRegisterPassable):
+    """`shutdown`'s `how`: the two this server asks for, the same numbers on
+    macOS and Linux (<sys/socket.h>)."""
+
     var value: c_int
-    comptime SHUT_RD = Self(0)
     comptime SHUT_WR = Self(1)
     comptime SHUT_RDWR = Self(2)
-
-    def __eq__(self, other: Self) -> Bool:
-        return self.value == other.value
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self == Self.SHUT_RD:
-            writer.write("SHUT_RD")
-        elif self == Self.SHUT_WR:
-            writer.write("SHUT_WR")
-        else:
-            writer.write("SHUT_RDWR")
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 # Platform-specific socket constants.
@@ -48,33 +36,13 @@ comptime SOL_SOCKET = 0xFFFF if _IS_MACOS else 1
 # share. The upstream list carried twenty-two options nothing set, several
 # with OpenBSD's numbers: its SO_TIMESTAMP, 0x0800, is 0x0400 on macOS.
 @fieldwise_init
-struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
+struct SocketOption(Copyable, TrivialRegisterPassable):
     var value: c_int
     comptime SO_REUSEADDR = Self(c_int(0x0004 if _IS_MACOS else 2))
     comptime SO_KEEPALIVE = Self(c_int(0x0008 if _IS_MACOS else 9))
     comptime SO_REUSEPORT = Self(c_int(0x0200 if _IS_MACOS else 15))
     comptime SO_SNDBUF = Self(c_int(0x1001 if _IS_MACOS else 7))
     comptime SO_RCVBUF = Self(c_int(0x1002 if _IS_MACOS else 8))
-
-    def __eq__(self, other: Self) -> Bool:
-        return self.value == other.value
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self == Self.SO_REUSEADDR:
-            writer.write("SO_REUSEADDR")
-        elif self == Self.SO_KEEPALIVE:
-            writer.write("SO_KEEPALIVE")
-        elif self == Self.SO_REUSEPORT:
-            writer.write("SO_REUSEPORT")
-        elif self == Self.SO_SNDBUF:
-            writer.write("SO_SNDBUF")
-        elif self == Self.SO_RCVBUF:
-            writer.write("SO_RCVBUF")
-        else:
-            writer.write("SocketOption(", self.value, ")")
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 # The IPv6 level and the one option set there (macOS SDK <netinet6/in6.h>,
@@ -107,21 +75,9 @@ retry a second later (review record LF19)."""
 # Socket Type constants. SOCK_STREAM is the only one a `Socket` is made
 # with; the AF_UNIX datagram channels spell theirs in c/socketpair.mojo.
 @fieldwise_init
-struct SocketType(Copyable, Equatable, Writable, TrivialRegisterPassable):
+struct SocketType(Copyable, TrivialRegisterPassable):
     var value: c_int
     comptime SOCK_STREAM = Self(1)
-
-    def __eq__(self, other: Self) -> Bool:
-        return self.value == other.value
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self == Self.SOCK_STREAM:
-            writer.write("SOCK_STREAM")
-        else:
-            writer.write("SocketType(", self.value, ")")
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 def _socket(domain: c_int, type: c_int, protocol: c_int) -> c_int:
@@ -349,67 +305,6 @@ def getsockname(socket: FileDescriptor, mut address: SocketAddress) raises SysEr
     if result == -1:
         raise SysError("getsockname", get_errno())
     address.length = sockaddr_size
-
-
-def _getpeername[
-    origin: MutOrigin
-](sockfd: c_int, addr: Pointer[sockaddr, _], address_len: Pointer[socklen_t, origin],) -> c_int:
-    """Libc POSIX `getpeername` function.
-
-    Args:
-        sockfd: A File Descriptor.
-        addr: A Pointer to a buffer to store the address of the peer.
-        address_len: A Pointer to the size of the buffer.
-
-    Returns:
-        0 on success, -1 on error.
-
-    #### C Function
-    ```c
-    int getpeername(int socket, struct sockaddr *restrict addr, socklen_t *restrict address_len)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man2/getpeername.2.html .
-    """
-    return external_call[
-        "getpeername",
-        c_int,  # FnName, RetType
-        type_of(sockfd),
-        type_of(addr),
-        type_of(address_len),  # Args
-    ](sockfd, addr, address_len)
-
-
-def getpeername(file_descriptor: FileDescriptor) raises SysError -> SocketAddress:
-    """Libc POSIX `getpeername` function.
-
-    Args:
-        file_descriptor: A File Descriptor.
-
-    Raises:
-        SysError: If the call fails, whatever its errno.
-
-    #### C Function
-    ```c
-    int getpeername(int socket, struct sockaddr *restrict addr, socklen_t *restrict address_len)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man2/getpeername.2.html .
-    """
-    var remote_address = SocketAddress()
-    var sockaddr_size = SocketAddress.CAPACITY
-    var result = _getpeername(
-        Int32(file_descriptor.value),
-        remote_address.unsafe_ptr(),
-        Pointer(to=sockaddr_size),
-    )
-    if result == -1:
-        raise SysError("getpeername", get_errno())
-    remote_address.length = sockaddr_size
-
-    return remote_address^
 
 
 def _bind[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr, origin], address_len: socklen_t) -> c_int:

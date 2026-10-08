@@ -32,7 +32,7 @@ from std.ffi import ErrNo, c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.address import NetworkType, TCPAddr, binary_port_to_int
+from lightbug_http.address import NetworkType, TCPAddr
 from lightbug_http.c.fcntl import F_GETFD, _fcntl
 from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.network import SocketAddress
@@ -175,7 +175,7 @@ def _local_port(fd: Int) raises -> Int:
     """The port `fd` is bound to; 0 when it is not bound."""
     var address = SocketAddress()
     getsockname(FileDescriptor(fd), address)
-    return binary_port_to_int(address.as_sockaddr_in().sin_port)
+    return address.host_port()[1]
 
 
 def _errno_of(e: SysError) -> Int:

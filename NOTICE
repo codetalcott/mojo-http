@@ -1565,6 +1565,29 @@ lightbug_http
         they said "received": the count is taken per response, as its head
         lands (review record LF32, SPEC F23).
 
+      - address.mojo, socket.mojo, connection.mojo, c/socket.mojo,
+        c/network.mojo, c/address.mojo (2026-10-08): dead inherited code
+        removed, each name searched for across the repository, the `m0`
+        templates and the one application outside it, then the fork, the
+        Mojo host and m0-wsgi compiled whole. The `ip`, `ip4`, `ip6`,
+        `udp`, `unix` and `empty` networks, which nothing listened on, with
+        `parse_address`'s branch for them and `ParseIPProtocolPortError`;
+        `TCPAddr`'s zone, which nothing set, its family predicates and its
+        text forms (`__str__` wrote `host:port`, `String()` the fields);
+        `binary_port_to_int` and `ntohs`, which only a test called;
+        `Socket.remote_address`, which nothing read, and with it
+        `get_peer_name` and the `getpeername` binding; `Socket`'s
+        constructor without a family (it crashed the compiler when called
+        from outside the fork), `__enter__` and text forms;
+        `NoTLSListener` and `TCPConnection` methods nothing called; the
+        `CLOSED` connection state, which nothing set; error-variant arms
+        nothing raised (`ListenerError`'s `Error`, `SocketNameError`'s
+        `InetNtopError`) and accessors nothing read; `as_sockaddr_in`,
+        `sockaddr`'s constructor (the type is only cast to),
+        `AddressFamily.is_inet`, `INET_ADDRSTRLEN`, `SHUT_RD`; and the
+        text forms and comparisons of the C constants' types. Review audit
+        A1 (record LF44) lists each with its evidence.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

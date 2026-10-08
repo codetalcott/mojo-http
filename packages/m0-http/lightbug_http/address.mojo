@@ -1,10 +1,3 @@
-from std.ffi import c_uchar
-
-from lightbug_http.c.address import AddressFamily
-from lightbug_http.c.aliases import c_void
-from lightbug_http.c.network import InetPtonError, ntohs
-from lightbug_http.c.socket import socket
-from lightbug_http.socket import Socket
 from lightbug_http.utils.error import CustomError
 from std.utils import Variant
 
@@ -26,30 +19,13 @@ struct AddressConstants:
 trait Addr(
     Copyable,
     Defaultable,
-    Equatable,
     ImplicitlyCopyable,
     Deinitable,
-    Writable,
 ):
-    comptime _type: StaticString
+    """What `Socket` needs of its address type: a placeholder before `bind`
+    (`Defaultable`) and one built from what the kernel names (`ip`, `port`)."""
 
     def __init__(out self, ip: String, port: UInt16):
-        ...
-
-    @always_inline
-    def address_family(self) -> Int:
-        ...
-
-    @always_inline
-    def is_v4(self) -> Bool:
-        ...
-
-    @always_inline
-    def is_v6(self) -> Bool:
-        ...
-
-    @always_inline
-    def is_unix(self) -> Bool:
         ...
 
 
@@ -57,7 +33,6 @@ trait Addr(
 struct NetworkType(Equatable, ImplicitlyCopyable):
     var value: UInt8
 
-    comptime empty = Self(0)
     comptime tcp = Self(1)
     """TCP in the family the address names, as Go's "tcp" is: a listener
     on `::` or `::1` is IPv6 -- `::` dual-stack, taking IPv4 too -- and one
@@ -65,100 +40,26 @@ struct NetworkType(Equatable, ImplicitlyCopyable):
     only."""
     comptime tcp4 = Self(2)
     comptime tcp6 = Self(3)
-    comptime udp = Self(4)
-    comptime ip = Self(7)
-    comptime ip4 = Self(8)
-    comptime ip6 = Self(9)
-    comptime unix = Self(10)
 
     def __eq__(self, other: NetworkType) -> Bool:
         return self.value == other.value
 
-    def is_ip_protocol(self) -> Bool:
-        """Check if the network type is an IP protocol."""
-        return self in (NetworkType.ip, NetworkType.ip4, NetworkType.ip6)
-
-    def is_ipv4(self) -> Bool:
-        """Check if the network type is IPv4."""
-        return self in (NetworkType.tcp4, NetworkType.ip4)
-
     def is_ipv6(self) -> Bool:
         """Check if the network type is IPv6."""
-        return self in (NetworkType.tcp6, NetworkType.ip6)
+        return self == NetworkType.tcp6
 
 
-# @fieldwise_init
 struct TCPAddr[network: NetworkType = NetworkType.tcp4](Addr, ImplicitlyCopyable):
-    comptime _type = "TCPAddr"
     var ip: String
     var port: UInt16
-    var zone: String  # IPv6 addressing zone
 
     def __init__(out self):
         self.ip = "127.0.0.1"
         self.port = 8000
-        self.zone = ""
 
     def __init__(out self, ip: String = "127.0.0.1", port: UInt16 = 8000):
         self.ip = ip
         self.port = port
-        self.zone = ""
-
-    def __init__(out self, ip: String, port: UInt16, zone: String):
-        self.ip = ip
-        self.port = port
-        self.zone = zone
-
-    @always_inline
-    def address_family(self) -> Int:
-        if self.is_v4():
-            return Int(AddressFamily.AF_INET.value)
-        elif self.is_v6():
-            return Int(AddressFamily.AF_INET6.value)
-        else:
-            return Int(AddressFamily.AF_UNSPEC.value)
-
-    @always_inline
-    def is_v4(self) -> Bool:
-        comptime if Self.network == NetworkType.tcp:
-            return not is_ipv6_literal(self.ip)
-        return Self.network == NetworkType.tcp4
-
-    @always_inline
-    def is_v6(self) -> Bool:
-        comptime if Self.network == NetworkType.tcp:
-            return is_ipv6_literal(self.ip)
-        return Self.network == NetworkType.tcp6
-
-    @always_inline
-    def is_unix(self) -> Bool:
-        return False
-
-    def __eq__(self, other: Self) -> Bool:
-        return self.ip == other.ip and self.port == other.port and self.zone == other.zone
-
-    def __ne__(self, other: Self) -> Bool:
-        return not self == other
-
-    def __str__(self) -> String:
-        if self.zone != "":
-            return join_host_port(self.ip + "%" + self.zone, String(self.port))
-        return join_host_port(self.ip, String(self.port))
-
-    def __repr__(self) -> String:
-        return String(self)
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write(
-            "TCPAddr(",
-            "ip=",
-            repr(self.ip),
-            ", port=",
-            String(self.port),
-            ", zone=",
-            repr(self.zone),
-            ")",
-        )
 
 
 @fieldwise_init
@@ -234,16 +135,6 @@ struct ParseTooManyColonsError(CustomError, TrivialRegisterPassable):
 
 
 @fieldwise_init
-struct ParseIPProtocolPortError(CustomError, TrivialRegisterPassable):
-    comptime message = "ParseError: IP protocol addresses should not include ports"
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write(Self.message)
-
-
-
-
-@fieldwise_init
 struct ParseError(Movable, Writable):
     """Typed error variant for address parsing functions."""
 
@@ -257,7 +148,6 @@ struct ParseError(Movable, Writable):
         ParsePortOutOfRangeError,
         ParseMissingSeparatorError,
         ParseTooManyColonsError,
-        ParseIPProtocolPortError,
     ]
     var value: Self.type
 
@@ -297,10 +187,6 @@ struct ParseError(Movable, Writable):
     def __init__(out self, value: ParseTooManyColonsError):
         self.value = value
 
-    @implicit
-    def __init__(out self, value: ParseIPProtocolPortError):
-        self.value = value
-
     def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[ParseEmptyAddressError]():
             writer.write(self.value[ParseEmptyAddressError])
@@ -320,17 +206,6 @@ struct ParseError(Movable, Writable):
             writer.write(self.value[ParseMissingSeparatorError])
         elif self.value.isa[ParseTooManyColonsError]():
             writer.write(self.value[ParseTooManyColonsError])
-        elif self.value.isa[ParseIPProtocolPortError]():
-            writer.write(self.value[ParseIPProtocolPortError])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 def parse_ipv6_bracketed_address[
@@ -363,16 +238,9 @@ def parse_ipv6_bracketed_address[
 
 def validate_no_brackets[
     origin: ImmOrigin
-](address: StringSpan[origin], start_idx: UInt16, end_idx: Optional[UInt16] = None,) raises ParseError:
-    """Validate that the address segment contains no brackets."""
-    var segment: StringSpan[origin]
-
-    if end_idx is None:
-        segment = StringSpan(unsafe_from_utf8=address.as_bytes()[Int(start_idx) :])
-    else:
-        segment = StringSpan(
-            unsafe_from_utf8=address.as_bytes()[Int(start_idx) : Int(end_idx.value())]
-        )
+](address: StringSpan[origin], start_idx: UInt16) raises ParseError:
+    """Validate that the address from `start_idx` on contains no brackets."""
+    var segment = StringSpan(unsafe_from_utf8=address.as_bytes()[Int(start_idx) :])
 
     if segment.find("[") != -1:
         raise ParseUnexpectedBracketError()
@@ -431,15 +299,6 @@ def parse_address[
             # `tcp` too: `localhost` is the IPv4 loopback, as it always was.
             return HostPort(AddressConstants.IPV4_LOCALHOST, DEFAULT_IP_PORT)
 
-    comptime if network.is_ip_protocol():
-        if network == NetworkType.ip6 and address.find(":") != -1:
-            return HostPort(String(address), DEFAULT_IP_PORT)
-
-        if address.find(":") != -1:
-            raise ParseIPProtocolPortError()
-
-        return HostPort(String(address), DEFAULT_IP_PORT)
-
     var colon_index = address.rfind(":")
     if colon_index == -1:
         raise ParseMissingSeparatorError()
@@ -490,14 +349,3 @@ def join_host_port(host: String, port: String) -> String:
         return String("[", host, "]:", port)
     return String(host, ":", port)
 
-
-def binary_port_to_int(port: UInt16) -> Int:
-    """Convert a binary port to an integer.
-
-    Args:
-        port: The binary port.
-
-    Returns:
-        The port as an integer.
-    """
-    return Int(ntohs(port))

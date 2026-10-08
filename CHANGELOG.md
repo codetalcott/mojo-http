@@ -239,6 +239,30 @@ in a minor release: `m0serve`'s flags and environment variables, the
   lose their `strict` parameter and always read a request head's rules;
   the lenient reading was the response parser's.
 
+- **The fork's network and address code that nothing calls** (fork review
+  LF44). Nothing served changes. The `m0` wheel ships the fork's source,
+  so an application built with `m0` that named one of these needs its own
+  copy: `NetworkType`'s `udp`, `ip`, `ip4`, `ip6`, `unix` and `empty`,
+  `is_ip_protocol` and `is_ipv4`, and `ParseIPProtocolPortError`, which
+  only an `ip` network raised; `TCPAddr`'s zone (the field and its
+  constructor), `address_family`, `is_v4`, `is_v6`, `is_unix`, `==`,
+  `__str__`, `__repr__` and `write_to`, with the `Addr` requirements
+  behind them; `binary_port_to_int` and `ntohs`; `Socket`'s
+  `remote_address`, its constructor without a family, `get_peer_name`,
+  `__enter__`, `__str__`, `__repr__` and `write_to`, and the `getpeername`
+  binding; `NoTLSListener`'s constructor that made its own socket,
+  `shutdown`, `teardown` and `addr`; `TCPConnection`'s `shutdown`,
+  `teardown`, `local_addr` and `remote_addr`; `ConnectionState.closed`;
+  `ListenerError`'s `Error` arm and `SocketNameError`'s `InetNtopError`
+  arm, neither ever raised; the `__getitem__` and `__str__` of the
+  address, listener and socket error variants, and the `isa` of
+  `ParseError`, `ListenerError` and `SocketNameError`;
+  `SocketAddress.as_sockaddr_in` and `sockaddr`'s constructor;
+  `AddressFamily.is_inet`, `AddressLength.INET_ADDRSTRLEN` and
+  `ShutdownOption.SHUT_RD`; and the `write_to` and `__str__` of
+  `AddressFamily`, `AddressLength`, `ShutdownOption`, `SocketOption` and
+  `SocketType`, with the `==` of the last four.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

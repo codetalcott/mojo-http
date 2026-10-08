@@ -14,7 +14,6 @@ from std.testing import TestSuite, assert_equal
 from lightbug_http.address import (
     ParseEmptyAddressError,
     ParseEmptyPortError,
-    ParseIPProtocolPortError,
     ParseInvalidPortNumberError,
     ParseMissingClosingBracketError,
     ParseMissingPortError,
@@ -55,7 +54,7 @@ def test_a_conformer_gets_str_from_the_trait() raises:
 
 
 def test_every_address_error_reads_as_its_message() raises:
-    """The ten listen-address parse errors."""
+    """The nine listen-address parse errors."""
     _reads_as_its_message(ParseEmptyAddressError())
     _reads_as_its_message(ParseMissingClosingBracketError())
     _reads_as_its_message(ParseMissingPortError())
@@ -65,7 +64,6 @@ def test_every_address_error_reads_as_its_message() raises:
     _reads_as_its_message(ParsePortOutOfRangeError())
     _reads_as_its_message(ParseMissingSeparatorError())
     _reads_as_its_message(ParseTooManyColonsError())
-    _reads_as_its_message(ParseIPProtocolPortError())
 
 
 def test_every_other_error_reads_as_its_message() raises:
