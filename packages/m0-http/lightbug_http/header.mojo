@@ -1544,10 +1544,12 @@ def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[In
     if len(buffer) < 4:
         return None
 
-    # Adjust search start to account for partial matches at boundary
-    var actual_start = search_start
-    if actual_start > 3:
-        actual_start -= 3
+    # Back up three bytes, so a terminator the last read cut short is found
+    # whole: from ANY resume point, down to 0. It backed up only from one
+    # above 3, so a read that ended one to three bytes into a head opening
+    # with two empty lines resumed past the terminator at 0, and the head
+    # was framed at a later one (review record LF59, SPEC A38).
+    var actual_start = search_start - 3 if search_start > 3 else 0
 
     var buf_len = len(buffer)
     var ptr = buffer.unsafe_ptr()

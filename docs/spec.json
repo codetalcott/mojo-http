@@ -258,6 +258,14 @@
       "evidence": "`test_slot_lifecycle.mojo:test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest` (every PR) \u2014 two pipelined requests and a half-close behind a send buffer filled first, so the first answer waits, and the EOF's read event dispatched to the waiting slot. The read path set `should_close` for the EOF, and the connection closed as that answer landed, the request behind it unanswered. Only a stale event reached such a slot: a slot waiting to write holds no read registration on either backend, so the EOF had to be in the same batch as a pool thread's or the executor's completion that left its answer part sent (`--blocking-threads`, ASGI); answers the loop ran itself were not affected. Found by lane L of the 2026-10-07 fork review"
     },
     {
+      "id": "A38",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A request head is framed at its first CRLFCRLF wherever the read before it ended: the terminator scan backs up three bytes from any resume point, down to the buffer's start, so one cut short by a read is found whole",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_head_is_framed_at_its_first_crlfcrlf_whatever_the_resume_point` (every PR) \u2014 it backed up only from a resume point above 3, so a read that ended one to three bytes into a head opening with two empty lines resumed past the terminator at 0: that head was served when its first read held only `rn`, and refused when it arrived whole (review record LF59). Every offset of the terminator across the scan's 64-lane loads and its scalar tail, from every resume point before it, is held"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

@@ -1648,6 +1648,11 @@ lightbug_http
         rules (KELVIN SIGN to `k`) and reads the value as UTF-8 (review
         record LF58).
 
+      - header.mojo (2026-10-08): `find_header_end` backs up three bytes
+        from any `search_start`, down to 0, where it backed up only from one
+        above 3 and so missed a terminator at the buffer's start (SPEC A38,
+        review record LF59).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

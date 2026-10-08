@@ -18,6 +18,7 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from lightbug_http.header import (
     Headers,
     ParsedRequestHeaders,
+    find_header_end,
     parse_request_headers,
     InvalidHTTPRequestError,
     IncompleteHTTPRequestError,
@@ -843,6 +844,41 @@ def test_a_bare_lf_is_found_in_a_head_still_arriving_at_every_offset() raises:
     assert_true(holds_bare_lf("\n".as_bytes()))
     assert_false(holds_bare_lf("".as_bytes()))
     assert_false(holds_bare_lf("ab\r\n".as_bytes(), 9))
+
+
+def test_a_head_is_framed_at_its_first_crlfcrlf_whatever_the_resume_point() raises:
+    """`find_header_end` finds the first CRLFCRLF at every offset across its
+    64-lane loads and its scalar tail, and from every point a previous read
+    can have ended before the terminator was whole: it backs up three bytes
+    so a terminator split across two reads is found.
+
+    It backed up only from a resume point above 3. A read that ended one to
+    three bytes in, inside a head that opens with two empty lines, resumed
+    past the terminator at 0: `\\r\\n` then `\\r\\nGET / ...` was framed at
+    the request's own end and served, where the same bytes in one read are
+    framed at 0 and refused (review record LF59) -- one request, two
+    framings, by where a TCP segment ended.
+
+    covers: A38
+    """
+    for p in range(150):
+        var buf = List[UInt8]()
+        for _ in range(p):
+            buf.append(0x61)
+        buf.extend("\r\n\r\n".as_bytes())
+        for _ in range(70):
+            buf.append(0x62)
+        buf.extend("\r\n\r\n".as_bytes())
+        for s in range(p + 4):
+            var end = find_header_end(Span(buf), s)
+            assert_true(Bool(end), String("missed the terminator at ", p, " from ", s))
+            assert_equal(end.value(), p + 4, String("terminator at ", p, " from ", s))
+    assert_false(Bool(find_header_end("\r\n\r".as_bytes())))
+    assert_false(Bool(find_header_end("".as_bytes())))
+    var none = String("GET / HTTP/1.1\r\nHost: x\r\n") * 8
+    assert_false(Bool(find_header_end(none.as_bytes())))
+    assert_false(Bool(find_header_end(none.as_bytes(), 100)))
+    assert_false(Bool(find_header_end("\r\n\r\n".as_bytes(), 9)))
 
 
 def test_an_empty_crlf_line_before_the_request_line_is_still_skipped() raises:
