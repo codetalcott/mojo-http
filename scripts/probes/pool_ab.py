@@ -42,6 +42,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
+from bench_record import _tree_is_dirty  # noqa: E402
 from pool_spike_probe import run_config  # noqa: E402
 from probelib import free_port, server  # noqa: E402
 
@@ -78,12 +79,18 @@ def fair(arm):
 
 
 def spread(values):
+    """Median and range, or None for a measure no cell produced (a fair arm
+    whose probe printed nothing, say): the record keeps the run either way."""
+    if not values:
+        return None
     return {"median": statistics.median(values), "min": min(values), "max": max(values)}
 
 
 def differs(a, b):
     """-1 when B's range sits wholly below A's, 1 wholly above, 0 when they
-    overlap."""
+    overlap or either arm has no values."""
+    if a is None or b is None:
+        return 0
     if b["max"] < a["min"]:
         return -1
     if b["min"] > a["max"]:
@@ -102,17 +109,26 @@ def main():
     now = datetime.datetime.now(datetime.timezone.utc)
     out_dir = args.out or os.path.join(ROOT, "bench", "results", "pool-ab-" + now.strftime("%Y-%m"))
 
-    def git(*a):
-        return subprocess.run(["git", *a], capture_output=True, text=True, cwd=ROOT).stdout
-
+    sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True,
+                         cwd=ROOT).stdout.strip()
     record = {
         "b": args.b, "rounds": args.rounds, "fast_requests": args.fast_requests,
-        "environment": {"git_sha": git("rev-parse", "HEAD").strip(),
-                        "git_dirty": bool(git("status", "--porcelain").strip()),
+        # bench_record's rule: an untracked artifact under bench/results/ --
+        # this runner's own last one, say -- does not make the tree dirty.
+        "environment": {"git_sha": sha, "git_dirty": _tree_is_dirty(),
                         "os": platform.platform(), "machine": platform.machine(),
                         "recorded_utc": now.isoformat()},
         "cells": [],
     }
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, "pool-ab-%s-%s.json" % (args.b, now.strftime("%Y%m%dT%H%M%SZ")))
+
+    def save():
+        """Written after every cell, so a cell that fails keeps the ones
+        before it."""
+        with open(path, "w") as fh:
+            json.dump(record, fh, indent=1)
+
     for r in range(args.rounds):
         for arm in arms:
             for slow in SLOWS:
@@ -120,11 +136,13 @@ def main():
                         "machine": machine()}
                 cell.update(pooled(arm, slow, args.fast_requests))
                 record["cells"].append(cell)
+                save()
                 print("round %d %-5s slow=%d p50 %.4f ms   %s" % (
                     r + 1, arm, slow, cell["p50_ms"], cell["machine"]["uptime"]), flush=True)
             cell = {"round": r + 1, "arm": arm, "measure": "fair", "machine": machine()}
             cell.update(fair(arm))
             record["cells"].append(cell)
+            save()
             print("round %d %-5s fair ms_per_request %s long_waits %s in_order %s" % (
                 r + 1, arm, cell["ms_per_request"], cell["long_waits"], cell["in_order"]),
                 flush=True)
@@ -138,9 +156,15 @@ def main():
         a, b = spread(values("A", measure, key)), spread(values(args.b, measure, key))
         signs[measure] = differs(a, b)
         summary[measure] = {"key": key, "A": a, args.b: b, "b_vs_a": signs[measure]}
-        print("%-14s %-15s A median %.4f (%.4f-%.4f)  %s median %.4f (%.4f-%.4f)  %s" % (
-            measure, key, a["median"], a["min"], a["max"], args.b, b["median"], b["min"], b["max"],
-            {-1: "B lower", 0: "overlap", 1: "B higher"}[signs[measure]]))
+
+        def shown(s):
+            return "no values" if s is None else "median %.4f (%.4f-%.4f)" % (
+                s["median"], s["min"], s["max"])
+
+        print("%-14s %-15s A %s  %s %s  %s" % (
+            measure, key, shown(a), args.b, shown(b),
+            "missing" if a is None or b is None
+            else {-1: "B lower", 0: "overlap", 1: "B higher"}[signs[measure]]))
     # The one rule: slow 1 and slow 2 agreeing, or the fair arm.
     woken = signs["pooled_slow1"] if signs["pooled_slow1"] == signs["pooled_slow2"] else 0
     if woken and signs["fair"] and woken != signs["fair"]:
@@ -150,11 +174,7 @@ def main():
     record["summary"] = summary
     record["verdict"] = verdict
     print("verdict:", verdict)
-
-    os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, "pool-ab-%s-%s.json" % (args.b, now.strftime("%Y%m%dT%H%M%SZ")))
-    with open(path, "w") as fh:
-        json.dump(record, fh, indent=1)
+    save()
     print("wrote", os.path.relpath(path, ROOT) if path.startswith(ROOT + os.sep) else path)
 
 

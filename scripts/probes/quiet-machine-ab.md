@@ -7,7 +7,7 @@ the owner's agreement, nothing else compiling, and never a `pkill` by name.
 
 | record | arm A | arm B | when B shows (the rule below) |
 |---|---|---|---|
-| LF24 | `main`: the wake page's lane records and the thread block's records 64 bytes apart, each block from `malloc` | each record on a 128-byte line of its own (Apple silicon's line): both strides 128 and both blocks 128-aligned | take B |
+| LF24 | `main`: the wake page's lane records and the thread block's records 64 bytes apart, each block from `malloc` | each record on a 128-byte line of its own (Apple silicon's line): both strides 128 and both blocks 128-aligned | B shows faster: take B |
 | LF22 | `main`: a thread that parks looks at its lane socket once, non-blocking, after announcing the park | that look removed | report it; the owner rules |
 
 **The rule, for both.** A measure differs when the two arms' ranges over the
@@ -83,11 +83,14 @@ LF24 and LF22 lines.
 
 ## What changes the code
 
-- **LF24, B shows**: take it -- both strides and both alignments, which
-  makes the docstrings' "each lane on its own cache line" and "One cache
-  line per thread" true on Apple silicon -- with the artifact.
-- **LF24, B does not show**: the strides stay, but those two docstrings are
-  false today on any machine: both blocks come from `malloc`, which
+- **LF24, B shows faster**: take it -- both strides and both alignments,
+  which makes offload.mojo's three cache-line claims true on Apple silicon
+  (`_WAKE_BYTES`'s "each lane on its own cache line", `_THREAD_STRIDE`'s
+  "One cache line per thread", and `add_lane`'s "each lane's wake words are
+  one cache line") -- with the artifact. B slower, or "mixed", is the
+  no-change branch below.
+- **LF24, B does not show faster**: the strides stay, but those three claims
+  are false today on any machine: both blocks come from `malloc`, which
   promises 16-byte alignment, so a 64-byte record can straddle two lines.
   Correct them to say so, with the artifact.
 - **LF22**: B does strictly less, so it can only tie or win. Report the
