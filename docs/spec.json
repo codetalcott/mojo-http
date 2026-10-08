@@ -506,6 +506,22 @@
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a response whose background task never ends, then SIGTERM: the process must exit and write the lifespan shutdown marker. Before, the post-pill gather waited on every HTTP task, the 5 s thread join gave up, and the process left without shutting the application down (exit 0, no marker). `poe test-shim` holds the rest: work inside the grace finishes, a task that swallows its cancellation is left behind after half a second and never reaches the executor again, and the drain starts once"
     },
     {
+      "id": "D12",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "A chunked response stream open at SIGTERM ends with its terminator or EOF, never with bytes the client's chunked parser cannot read",
+      "status": "verified",
+      "evidence": "`Smoke test graceful shutdown` (every PR) \u2014 m0serve on the bare ASGI app, `/stream-forever` read through a strict chunked parser, SIGTERM, then the parser to EOF, and m0serve exiting 0 (`scripts/drain_stream_probe.py`). The drain's farewell wrote an SSE close comment, `: close`, into the chunked stream raw, where the client reads a chunk size. Found by the 2026-10-07 fork review"
+    },
+    {
+      "id": "D13",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "The drain's farewell to streams goes only where a heartbeat may: an idle SSE stream gets its close comment and an idle WebSocket a Close carrying 1001, and a WebSocket that has sent its Close, a stream with a frame half sent, and an SSE stream its application writes through the chunk channel are closed as they stand",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_the_farewell_writes_only_into_a_stream_that_takes_one` (every PR) \u2014 the five shapes over stream pairs, each read to EOF. The farewell asked none of the heartbeat's questions: a second Close, bytes inside a frame, and a comment in a chunked or chunk-channel stream. One predicate, `_takes_an_out_of_band_frame`, now answers for both. Found by the 2026-10-07 fork review"
+    },
+    {
       "id": "D6",
       "section": "D",
       "category": "D. Graceful shutdown and restart",

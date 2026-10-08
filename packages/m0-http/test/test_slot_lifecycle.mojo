@@ -64,6 +64,8 @@ from lightbug_http.loop.state import (
     _stream_idle,
     _ws_linger,
 )
+from lightbug_http.loop.state import _farewell_streams
+from lightbug_http.websocket import WS_CLOSE_GOING_AWAY
 from lightbug_http.c.socket import ShutdownOption, shutdown
 from lightbug_http.loop.response import _finish_response
 from lightbug_http.loop.streams import _drain_outboxes
@@ -860,6 +862,82 @@ def test_a_chunked_stream_keeps_the_close_its_request_asked_for() raises:
     assert_true("connection: keep-alive" in kept[0], kept[0])
     assert_true(kept[0].endswith("0\r\n\r\n"), kept[0])
     assert_false(kept[1], "a stream its request did not ask to close was closed")
+
+
+def test_the_farewell_writes_only_into_a_stream_that_takes_one() raises:
+    """The drain's farewell asks what the heartbeat asks
+    (`_takes_an_out_of_band_frame`; review record LF12). An idle SSE
+    stream gets its close comment and an idle WebSocket a Close carrying
+    1001; a WebSocket that has sent its Close, a stream with a frame half
+    sent, and an SSE stream its application writes through the chunk
+    channel get nothing, and are closed as they stand. The farewell wrote
+    into all five: a second Close, bytes inside a frame, and a comment the
+    client's chunked parser read as a chunk size.
+
+    covers: D13
+    """
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    var acks = make_stream_ack_pair()
+    var config = _config()
+    config.max_connections = 8
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = LoopState(
+        FileDescriptor(-1), config, String(""), True, offload_addr=pool.addr(),
+    )
+    var peers = List[Int]()
+    var slots = List[Int]()
+    for shape in range(5):
+        var pair = _stream_pair()
+        var slot = st.provision_pool.borrow()
+        st.slot_fds[slot] = pair[0]
+        st.fd_to_slot[pair[0]] = slot
+        st.active_count += 1
+        if shape == 0 or shape == 3 or shape == 4:
+            st.slot_sse[slot] = True
+            st.provision_pool.provisions[slot].state = ConnectionState.streaming_sse()
+        else:
+            st.slot_ws[slot] = True
+            st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+        if shape == 2:
+            st.slot_ws_state[slot].closing = True
+        elif shape == 3:
+            st.provision_pool.provisions[slot].state = ConnectionState.responding()
+        elif shape == 4:
+            pool.set_slot_ack_fd(slot, acks[1])
+        peers.append(pair[1])
+        slots.append(slot)
+
+    _farewell_streams(app, backend, st)
+
+    var going = close_frame(WS_CLOSE_GOING_AWAY)
+    var expected = List[List[UInt8]]()
+    expected.append(List[UInt8](String(": close\n\n").as_bytes()))
+    expected.append(going.copy())
+    for _ in range(3):
+        expected.append(List[UInt8]())
+    var names = List[String]()
+    names.append("an idle SSE stream")
+    names.append("an idle WebSocket")
+    names.append("a WebSocket that has sent its Close")
+    names.append("a stream with a frame half sent")
+    names.append("a chunk-channel SSE stream")
+    for shape in range(5):
+        assert_equal(st.slot_fds[slots[shape]], UNUSED, names[shape] + " was left open")
+        var got = List[UInt8]()
+        assert_true(_read_available(peers[shape], got), names[shape] + " read no EOF")
+        assert_equal(
+            len(got), len(expected[shape]),
+            names[shape] + " was sent " + String(len(got)) + " bytes",
+        )
+        for i in range(len(got)):
+            assert_equal(Int(got[i]), Int(expected[shape][i]), names[shape])
+        close(FileDescriptor(peers[shape]))
+    close(FileDescriptor(acks[0]))
+    close(FileDescriptor(acks[1]))
+    # The loop holds the pool by its address, which keeps nothing alive.
+    _ = pool
 
 
 def test_the_access_log_times_a_request_without_a_header_timeout() raises:

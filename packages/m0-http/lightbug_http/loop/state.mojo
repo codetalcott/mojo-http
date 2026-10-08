@@ -636,25 +636,71 @@ def _notice_once(mut notice: String):
     notice = String("")
 
 
+def _takes_an_out_of_band_frame(st: LoopState, slot: Int) -> Bool:
+    """Whether a stream may take a frame its application did not write,
+    now: a heartbeat (`_heartbeat`), or the drain's farewell
+    (`_farewell_streams`). One answer for both, because the farewell asked
+    none of these and wrote into each (review record LF12).
+
+    - **A stream the application writes through the chunk channel** (an
+      executor's, or a pool thread's WSGI iterable), when it is SSE: no
+      comment. An SSE event may span two chunks, and a comment landing
+      between them corrupts the frame for any parser, Datastar's included;
+      and a chunked one would read the comment, written raw, as a chunk
+      size it cannot parse. Asked per SLOT, not per server: under
+      `--realtime --mount` a held stream shares the loop with an
+      executor's, and a hold is one frame per event with nothing to land
+      between. A WebSocket's frames are atomic, so its pings and its Close
+      stay.
+    - **A WebSocket that has sent its Close** and lingers for the peer's
+      (RFC 6455 §5.5.1): nothing follows a Close (§1.4: after sending one
+      "a peer does not send any further data"). A heartbeat ping raced the
+      peer's own reply -- a client that read our Close, answered it and
+      waited for the FIN read 0x89 0x02 "hb" instead, in 3 rounds of 30
+      under CPU hogs (`stress-asgi`) -- and a farewell was a second Close.
+      The linger's own deadline bounds a dead peer here.
+    - **A frame half sent**: the slot is RESPONDING, not idle in its
+      stream, and anything written now lands inside that frame.
+    """
+    if st.slot_ws[slot]:
+        if st.slot_ws_state[slot].closing:
+            return False
+        return (
+            st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.STREAMING_WS
+        )
+    if st.slot_sse[slot]:
+        if st.offload.slot_channel_stream(slot):
+            return False
+        return (
+            st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.STREAMING_SSE
+        )
+    return False
+
+
 def _farewell_streams[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ):
     """Tell every streaming client the server is going, and close it: an
-    SSE close comment, or a WebSocket Close (1001 going away). Best effort
-    -- one send, whatever it takes -- because the connection closes either
-    way, and `_close_slot` tells the handler, which is what lets a producer
-    thread see its disconnect and come back before a bounded join."""
+    SSE close comment, or a WebSocket Close (1001 going away), to a stream
+    that may take one (`_takes_an_out_of_band_frame`); the rest are closed
+    as they stand, which a client reads as EOF. Best effort -- one send,
+    whatever it takes -- because the connection closes either way, and
+    `_close_slot` tells the handler, which is what lets a producer thread
+    see its disconnect and come back before a bounded join."""
     for s in range(st.max_conns):
         if (st.slot_sse[s] or st.slot_ws[s]) and st.slot_fds[s] != UNUSED:
-            var farewell: List[UInt8]
-            if st.slot_ws[s]:
-                farewell = close_frame(WS_CLOSE_GOING_AWAY)
-            else:
-                farewell = List[UInt8](String(": close\n\n").as_bytes())
-            try:
-                _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), UInt(len(farewell)), 0)
-            except:
-                pass
+            if _takes_an_out_of_band_frame(st, s):
+                var farewell: List[UInt8]
+                if st.slot_ws[s]:
+                    farewell = close_frame(WS_CLOSE_GOING_AWAY)
+                else:
+                    farewell = List[UInt8](String(": close\n\n").as_bytes())
+                try:
+                    _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), UInt(len(farewell)), 0)
+                except:
+                    pass
             _close_slot(handler, backend, st, s, st.slot_fds[s])
 
 

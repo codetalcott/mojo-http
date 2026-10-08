@@ -25,6 +25,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the connection stayed open after the body ended. It now says `close`
   and closes once the body is complete, as an unstreamed response does.
 
+- **A stream open when the server is told to stop ends cleanly** (SPEC
+  D12, D13). The drain says goodbye to every open stream before closing
+  it, and wrote that goodbye where nothing may be written: into a streamed
+  ASGI or WSGI body, where a client's chunked parser failed on it; into a
+  WebSocket that had already sent its Close, as a second one; and into the
+  middle of a frame still going out. Those streams now close as they
+  stand, and the client reads the end of the connection; an SSE stream or
+  WebSocket the server writes itself still gets its goodbye.
+
 - **The access log times a request when the header timeout is off** (SPEC
   F22). A server whose `ServerConfig` set `header_read_timeout = 0` logged
   every request's `dur_us` as the time since the machine booted, and

@@ -1347,6 +1347,14 @@ lightbug_http
         The end took the keep-alive path whatever the request had asked
         (review record LF13).
 
+      - loop/state.mojo, loop/streams.mojo (2026-10-08):
+        `_takes_an_out_of_band_frame` answers whether a stream may take a
+        frame its application did not write now -- not an SSE stream of
+        the chunk channel, not a WebSocket that has sent its Close, not a
+        frame half sent -- for `_heartbeat`, whose three checks it replaces,
+        and for `_farewell_streams`, which asked none of them and wrote
+        into all three (SPEC D12, D13, review record LF12).
+
       - loop/request.mojo, loop/state.mojo (2026-10-08):
         `_handle_read_headers` stamps `slot_header_start` at a request's
         first bytes whatever `header_read_timeout` is, and only the timeout
