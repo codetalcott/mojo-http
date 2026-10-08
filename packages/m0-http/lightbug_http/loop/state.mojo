@@ -133,7 +133,14 @@ struct LoopState(Movable):
     var slot_read_armed: List[Bool]
     var slot_idle_deadline: List[Int]
     var slot_ws_state: List[WSState]
-    var fd_map_size: Int
+    var slot_close_after_stream: List[Bool]
+    """The stream's request asked for the connection to close behind it:
+    `Connection: close`, an HTTP/1.0 request without keep-alive, a server
+    with keep-alive off, a client that has half-closed. A stream's head
+    clears `should_close`, or the head landing would close the slot, so a
+    chunked stream that ends takes it back from here
+    (`_chunked_stream_ends`). `_keep_stream_close` writes it for every
+    response, so no slot inherits a previous connection's."""
     var fd_to_slot: List[Int]
     var active_count: Int
     var metrics: ServerMetrics
@@ -214,6 +221,7 @@ struct LoopState(Movable):
         # Per-slot WebSocket frame parser. Always allocated, tiny while unused;
         # reset (not reallocated) when a slot is reused.
         var slot_ws_state = List[WSState](capacity=max_conns)
+        var slot_close_after_stream = List[Bool](capacity=max_conns)
 
         for _ in range(max_conns):
             slot_fds.append(UNUSED)
@@ -225,6 +233,7 @@ struct LoopState(Movable):
             slot_read_armed.append(False)
             slot_idle_deadline.append(0)
             slot_ws_state.append(WSState(config.max_request_body_size))
+            slot_close_after_stream.append(False)
 
         var fd_map_size = 65536
         var fd_to_slot = List[Int](capacity=fd_map_size)
@@ -253,7 +262,7 @@ struct LoopState(Movable):
         self.slot_read_armed = slot_read_armed^
         self.slot_idle_deadline = slot_idle_deadline^
         self.slot_ws_state = slot_ws_state^
-        self.fd_map_size = fd_map_size
+        self.slot_close_after_stream = slot_close_after_stream^
         self.fd_to_slot = fd_to_slot^
         self.active_count = 0
         self.metrics = metrics^
@@ -306,7 +315,9 @@ struct LoopState(Movable):
 #             a slot taken (`_admit_connection`) starts at 0 and a refused
 #             upload's linger is `_reject_and_linger`'s own
 #   phases    `_end_request` (keep-alive), `_stream_idle`, `_ws_linger`,
-#             `_record_response`, `_farewell_streams`
+#             `_chunked_stream_ends`, `_record_response`, `_farewell_streams`
+#   close     `_keep_stream_close` (a response's, before a stream's head
+#             clears `should_close`), `_chunked_stream_ends` (takes it back)
 
 
 @always_inline
@@ -418,7 +429,7 @@ def _end_request[B: EventLoopBackend](
     st.provision_pool.provisions[slot].prepare_for_new_request(keep_pipelined=True)
     # Park the buffer just sent as the slot's encode scratch instead of
     # dropping its allocation. The swap hands back whatever was parked
-    # there — the empty stand-in `_process_request` left behind — so the
+    # there — the empty stand-in `_finish_response` left behind — so the
     # two rotate for the life of the connection.
     swap(st.slot_response[slot], st.provision_pool.provisions[slot].encoding_buffer)
     st.slot_response[slot].clear()
@@ -528,12 +539,54 @@ def _ws_linger[B: EventLoopBackend](
     mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
 ):
     """This side's Close has LANDED: linger for the peer's (`_arm_ws_linger`)
-    in frame mode, reading -- the peer's reply is a read."""
+    in frame mode, reading -- the peer's reply is a read.
+
+    Unless the handler has suspended the socket's inbound: its reads come
+    back from `take_ws_resumes` alone, as in `_stream_idle`, and the peer's
+    Close waits in the socket with the rest until then, or the linger's
+    deadline ends the wait. Arming them here undid the suspension, and the
+    parked queue grew with what the client sent next (review record LF15).
+    """
     _arm_ws_linger(st, slot)
     st.slot_response[slot] = Bytes()
     st.slot_send_offset[slot] = 0
     st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
-    _ = _arm_reads(backend, st, slot, fd_val)
+    if not st.slot_ws_state[slot].inbound_suspended:
+        _ = _arm_reads(backend, st, slot, fd_val)
+
+
+@always_inline
+def _keep_stream_close(mut st: LoopState, slot: Int) -> Bool:
+    """A response is about to go out: keep what its request asked of the
+    connection, `should_close`, for a stream's end, and return it.
+
+    A stream's head clears `should_close`, or the head landing would close
+    the slot; a chunked stream that ends takes the close back from here
+    (`_chunked_stream_ends`). Written for every response, so no slot
+    carries a previous connection's (review record LF13).
+    """
+    var close_after = st.provision_pool.provisions[slot].should_close
+    st.slot_close_after_stream[slot] = close_after
+    return close_after
+
+
+@always_inline
+def _chunked_stream_ends(mut st: LoopState, slot: Int):
+    """A chunked stream's terminator is going out: the message is complete,
+    and once it lands the connection does what its request asked -- the
+    keep-alive transition, or a close (`_after_send`).
+
+    The stream's head cleared `should_close`, so the head landing would not
+    close the slot, and the request's answer to "does the connection stay"
+    went with it: a request that asked for `Connection: close`, or one on a
+    server with keep-alive off, had its chunked stream answered with
+    `keep-alive` and its connection kept (review record LF13).
+    `slot_close_after_stream` held it for here.
+    """
+    st.slot_sse[slot] = False
+    st.offload.chunked[slot] = False
+    if st.slot_close_after_stream[slot]:
+        st.provision_pool.provisions[slot].should_close = True
 
 
 @always_inline
@@ -553,6 +606,15 @@ def _record_response(mut st: LoopState, slot: Int):
     """
     if st.provision_pool.provisions[slot].response_status == 0:
         return
+    # The request's duration, for the metrics and the access log alike: from
+    # its first bytes, which `_handle_read_headers` stamps whatever the
+    # header timeout. Only when a stamp exists: the keep-alive reset zeroes
+    # it, so a send that completed without a request behind it has no
+    # duration to claim, and `now - 0` is the time since boot (LF14).
+    var timed = st.slot_header_start[slot] > 0
+    var elapsed_us = 0
+    if timed and (st.config.enable_metrics or st.config.access_log):
+        elapsed_us = Int((perf_counter_ns() - st.slot_header_start[slot]) / 1000)
     # Phase 4e: record completed response metrics
     if st.config.enable_metrics:
         # Head and body as sent: the encoded buffer, then any file body,
@@ -562,18 +624,11 @@ def _record_response(mut st: LoopState, slot: Int):
             st.slot_send_offset[slot]
             + st.provision_pool.provisions[slot].response_file_len,
         )
-        # The latency sample, from the same clock the access log reads below.
-        # Only when a header stamp exists: the keep-alive reset zeroes it, so
-        # a send that completed without a request behind it has no duration
-        # to claim, and `now - 0` would sample the epoch as a latency.
-        if st.slot_header_start[slot] > 0:
-            st.metrics.record_duration(
-                Int((perf_counter_ns() - st.slot_header_start[slot]) / 1000)
-            )
+        if timed:
+            st.metrics.record_duration(elapsed_us)
         st.metrics.active_connections = st.active_count
     # Phase 4d: the structured access log, before any reset of the provision.
     if st.config.access_log and st.provision_pool.provisions[slot].log_method.byte_length() > 0:
-        var elapsed_us = Int((perf_counter_ns() - st.slot_header_start[slot]) / 1000)
         log_access(
             st.log_clock,
             st.provision_pool.provisions[slot].log_method,
@@ -601,25 +656,71 @@ def _notice_once(mut notice: String):
     notice = String("")
 
 
+def _takes_an_out_of_band_frame(st: LoopState, slot: Int) -> Bool:
+    """Whether a stream may take a frame its application did not write,
+    now: a heartbeat (`_heartbeat`), or the drain's farewell
+    (`_farewell_streams`). One answer for both, because the farewell asked
+    none of these and wrote into each (review record LF12).
+
+    - **A stream the application writes through the chunk channel** (an
+      executor's, or a pool thread's WSGI iterable), when it is SSE: no
+      comment. An SSE event may span two chunks, and a comment landing
+      between them corrupts the frame for any parser, Datastar's included;
+      and a chunked one would read the comment, written raw, as a chunk
+      size it cannot parse. Asked per SLOT, not per server: under
+      `--realtime --mount` a held stream shares the loop with an
+      executor's, and a hold is one frame per event with nothing to land
+      between. A WebSocket's frames are atomic, so its pings and its Close
+      stay.
+    - **A WebSocket that has sent its Close** and lingers for the peer's
+      (RFC 6455 §5.5.1): nothing follows a Close (§1.4: after sending one
+      "a peer does not send any further data"). A heartbeat ping raced the
+      peer's own reply -- a client that read our Close, answered it and
+      waited for the FIN read 0x89 0x02 "hb" instead, in 3 rounds of 30
+      under CPU hogs (`stress-asgi`) -- and a farewell was a second Close.
+      The linger's own deadline bounds a dead peer here.
+    - **A frame half sent**: the slot is RESPONDING, not idle in its
+      stream, and anything written now lands inside that frame.
+    """
+    if st.slot_ws[slot]:
+        if st.slot_ws_state[slot].closing:
+            return False
+        return (
+            st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.STREAMING_WS
+        )
+    if st.slot_sse[slot]:
+        if st.offload.slot_channel_stream(slot):
+            return False
+        return (
+            st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.STREAMING_SSE
+        )
+    return False
+
+
 def _farewell_streams[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ):
     """Tell every streaming client the server is going, and close it: an
-    SSE close comment, or a WebSocket Close (1001 going away). Best effort
-    -- one send, whatever it takes -- because the connection closes either
-    way, and `_close_slot` tells the handler, which is what lets a producer
-    thread see its disconnect and come back before a bounded join."""
+    SSE close comment, or a WebSocket Close (1001 going away), to a stream
+    that may take one (`_takes_an_out_of_band_frame`); the rest are closed
+    as they stand, which a client reads as EOF. Best effort -- one send,
+    whatever it takes -- because the connection closes either way, and
+    `_close_slot` tells the handler, which is what lets a producer thread
+    see its disconnect and come back before a bounded join."""
     for s in range(st.max_conns):
         if (st.slot_sse[s] or st.slot_ws[s]) and st.slot_fds[s] != UNUSED:
-            var farewell: List[UInt8]
-            if st.slot_ws[s]:
-                farewell = close_frame(WS_CLOSE_GOING_AWAY)
-            else:
-                farewell = List[UInt8](String(": close\n\n").as_bytes())
-            try:
-                _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), 0)
-            except:
-                pass
+            if _takes_an_out_of_band_frame(st, s):
+                var farewell: List[UInt8]
+                if st.slot_ws[s]:
+                    farewell = close_frame(WS_CLOSE_GOING_AWAY)
+                else:
+                    farewell = List[UInt8](String(": close\n\n").as_bytes())
+                try:
+                    _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), 0)
+                except:
+                    pass
             _close_slot(handler, backend, st, s, st.slot_fds[s])
 
 
@@ -692,6 +793,11 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     st.slot_sse[slot] = False
     st.slot_ws[slot] = False
     st.slot_ws_state[slot].reset()
+    # The answer still owed goes with the connection. Left, a client that
+    # vanished with a large response unsent held its buffer until the slot
+    # answered someone else (review record LF26).
+    st.slot_response[slot] = Bytes()
+    st.slot_send_offset[slot] = 0
     # A client that vanished mid-transfer still leaves an open file behind.
     # This is the one place every close goes through, which is why the
     # release lives here rather than beside each caller.

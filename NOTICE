@@ -1491,6 +1491,149 @@ lightbug_http
         `_deliver_bus_frames` takes the `LoopState`; `drain_bus_channel`
         remains, a reader of its own per call.
 
+      - http/response.mojo, header.mojo, http/parsing.mojo, cookie/*.mojo,
+        http/chunked.mojo, strings.mojo, io/bytes.mojo (2026-10-08): dead
+        inherited code removed, each name searched for across the
+        repository, the `m0` templates and the one application outside it,
+        then the fork compiled whole. The response parser, which nothing
+        served called (its status-message trim held the fork's one
+        `[byte=` slice that could trap): `HTTPResponse.from_bytes`, the
+        `ByteReader` constructor, `read_body`, `read_chunks`,
+        `parse_response_headers`, `ParsedResponseHeaders`,
+        `http_parse_response_headers`, `get_token_to_eol` and the response
+        parse errors (`ResponseParseError` in both modules,
+        `ResponseHeaderParseError`, `ResponseBodyReadError`,
+        `InvalidHTTPResponseError`, `IncompleteHTTPResponseError`). The
+        `Set-Cookie` parser: `ResponseCookieJar.from_headers`,
+        `Cookie.from_set_header`, `Cookie.clear_cookie` (a browser kept
+        the cookie: the stub `Expiration` writes no `Expires`),
+        `CookieParseError`,
+        `InvalidCookieError`, `Expiration.invalidate` and the three
+        `from_string`s. Helpers a caller would have been misled by:
+        `ParsedRequestHeaders.expects_body` (chunked counted only for
+        POST, PUT and PATCH) and `write_header_latin1` (no G2 drop). And
+        the unused: `is_in_chunk_data`, `try_peek_at`, `find_all`,
+        `is_printable_ascii`, `BytesConstant.CRLF` and `DOUBLE_CRLF`,
+        `is_newline`, `is_space`, `bufis`, and `ByteReader`'s `read_line`
+        (a bare CR moved it two bytes), `read_word`, `skip_whitespace`,
+        `skip_carriage_return` (two bytes per CR) and `consume` (review
+        record LF26). `parse_headers` and `scan_to_eol` lost their
+        `strict` parameter, whose lenient default (a bare LF ending a line,
+        an obs-fold line kept) only the response parser had asked for.
+
+      - address.mojo, uri.mojo (2026-10-08): the last six `[byte=a:b]`
+        slices, each cut beside an ASCII delimiter and so never mid-
+        codepoint, are byte slices, so the fork holds none of the form
+        that traps on a request's text (review record LF26).
+
+      - http/chunked.mojo, server.mojo, connection.mojo (2026-10-08):
+        comments the code contradicted. The chunked decoder was called the
+        client's, and reads a request's body; `listen_and_serve_nonblocking`
+        and `serve_nonblocking` named kqueue alone, and run epoll on Linux;
+        `TCPConnection.write` named a client that left with the connect
+        path, and its callers are the tests'; and a "Phase 0" note on
+        `AddressParseError` recorded a decorator long gone (review record
+        LF27).
+
+      - utils/error.mojo, address.mojo, connection.mojo, server.mojo,
+        c/network.mojo (2026-10-08): `CustomError`'s docstring promised
+        default `write_to` and `__str__` methods it did not have. `__str__`
+        is now the trait's, and the fifteen copies are gone; `write_to`
+        stays each conformer's, because `Writable` already defaults it (to
+        the struct's name) and Mojo 1.1 refuses a refining trait's second
+        default. The docstring says so (review record LF29).
+
+      - cookie/request_cookie_jar.mojo (2026-10-08): `RequestCookieJar.__eq__`
+        looks each name up in the other jar. It compared every entry of one
+        jar with every entry of the other and answered False at the first
+        pair that differed, so jars of two or more cookies were never equal
+        (review record LF30, SPEC G22).
+
+      - address.mojo (2026-10-08): `parse_address` refuses a bracketed
+        address whose colon after `]` is not its last (`[::1]:8:0`), where
+        it read the port after the last colon (review record LF33, SPEC
+        A31).
+
+      - socket.mojo (2026-10-08): `Socket._receive` grows a buffer with no
+        room past its length by `default_buffer_size` before lending its
+        spare capacity to `recv`, which read zero bytes into it and
+        reported EOF (review record LF34, SPEC A32).
+
+      - metrics.mojo (2026-10-08): `ServerMetrics` counts a 1xx response in
+        a `responses_1xx` class (`http_responses_total{status="1xx"}`), and
+        `requests_total`'s docstring and help text say "answered" where
+        they said "received": the count is taken per response, as its head
+        lands (review record LF32, SPEC F23).
+
+      - loop/response.mojo (2026-10-08): `_finish_response` closes the
+        connection behind the answer to a half-closed client's last request
+        (`_answers_the_last_request`: `peer_eof`, nothing buffered past
+        `request_end`, and one more read, which a FIN keeps from blocking,
+        returning nothing), for every response, a pool thread's included
+        (SPEC A27). The EOF's `should_close` was replaced by the request's
+        own `Connection`, so the answer said `keep-alive` and an epoll slot
+        waited for the idle sweep (review record LF11).
+
+      - loop/state.mojo, loop/response.mojo, loop/streams.mojo
+        (2026-10-08): `LoopState.slot_close_after_stream` keeps what a
+        stream's request asked of the connection, written by the
+        transition `_keep_stream_close`, which `_finish_response` calls for
+        every response before a stream's head clears `should_close`; the
+        head says `Connection: close` when it is
+        set, and `_chunked_stream_ends`, the transition both of the outbox
+        drain's chunked-end sites now share, restores the close (SPEC A28).
+        The end took the keep-alive path whatever the request had asked
+        (review record LF13).
+
+      - loop/state.mojo, loop/streams.mojo (2026-10-08):
+        `_takes_an_out_of_band_frame` answers whether a stream may take a
+        frame its application did not write now -- not an SSE stream of
+        the chunk channel, not a WebSocket that has sent its Close, not a
+        frame half sent -- for `_heartbeat`, whose three checks it replaces,
+        and for `_farewell_streams`, which asked none of them and wrote
+        into all three (SPEC D12, D13, review record LF12).
+
+      - loop/request.mojo, loop/state.mojo (2026-10-08):
+        `_handle_read_headers` stamps `slot_header_start` at a request's
+        first bytes whatever `header_read_timeout` is, and only the timeout
+        check asks for it to be on; `_record_response` computes one duration
+        for the metrics and the access log, 0 without a stamp (SPEC F22).
+        The access log subtracted a stamp the timeout's absence had never
+        taken, so every request after a connection's first, which the
+        accept stamps, logged the time since boot as its `dur_us` (review
+        record LF14).
+
+      - loop/state.mojo (2026-10-08): `_ws_linger` arms reads only for a
+        socket whose inbound is not suspended, as `_stream_idle` does, so
+        `take_ws_resumes` stays the one thing that re-arms a suspended
+        socket (SPEC I41, review record LF15).
+
+      - loop/state.mojo, loop/timers.mojo (2026-10-08): `LoopState`
+        loses `fd_map_size`, which nothing read; `_on_timer` loses its
+        idle-timer branch, which nothing armed and which would have closed
+        a slot out on a pool thread; `_close_slot` releases
+        `slot_response` (review record LF26).
+
+      - loop/response.mojo (2026-10-08): `_pump_body_fd` answers a
+        `send_file` result of no bytes and no reason, which `send_file` no
+        longer gives for a count above 0, as fatal rather than as a full
+        socket, so a regression there closes the connection instead of
+        spinning its slot (review record LF16, a follow-up).
+
+      - loop/request.mojo (2026-10-08): `_handle_read_headers` closes an
+        incomplete head on `peer_eof` only after a read of nothing, or a
+        shorter one, behind the FIN; a read that filled its buffer is
+        re-armed and the head read on (SPEC A29). It closed a half-closed
+        head longer than one read with the rest still in the socket
+        (review record LF42).
+
+      - loop/request.mojo (2026-10-08): `_on_read`'s EOF branch sets
+        `peer_eof` alone, no longer `should_close`, so a slot whose answer
+        was still going out takes the keep-alive transition when it lands
+        and answers what was pipelined behind it; the last request's answer
+        closes (`_answers_the_last_request`; SPEC A30). The flag closed the
+        connection as that answer landed (review record LF43).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -18,7 +18,8 @@ from lightbug_http.websocket import encode_ws_frame, WS_OP_PING
 
 from lightbug_http.loop.state import (
     LoopState, TIMER_SSE_HEARTBEAT, UNUSED, _arm_reads, _arm_ws_linger,
-    _await_write, _close_slot, _rearm_reads, _stop_reads, _ws_linger,
+    _await_write, _chunked_stream_ends, _close_slot, _rearm_reads,
+    _stop_reads, _takes_an_out_of_band_frame, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
@@ -61,35 +62,14 @@ def _heartbeat[T: HTTPService, B: EventLoopBackend](
     # expired-and-unrearmed timer would be returned by every
     # subsequent epoll_wait: a heartbeat storm at loop speed.
     backend.try_add_timer(timer_ident, st.config.sse_heartbeat_ms)
-    # An executor's stream: no comment injection. An SSE
-    # event may span two chunks, and a `: heartbeat` landing
-    # between them corrupts the frame for any parser
-    # (Datastar's included). Dead clients are still
-    # discovered — by chunk-send failures and read-EOF, both
-    # of which close the slot. WS pings are frame-atomic and
-    # stay. Asked per SLOT, not per server: under
-    # `--realtime --mount` a held stream shares this loop
-    # with an executor's, and a hold is one frame per event
-    # with nothing to land between — the heartbeat is what
-    # keeps it alive through an idle proxy.
-    if not hb_is_ws and st.offload.slot_channel_stream(hb_slot):
-        return
-    if hb_is_ws and st.slot_ws_state[hb_slot].closing:
-        # This side has sent its Close and is lingering for the
-        # peer's (RFC 6455 §5.5.1). Nothing follows a Close --
-        # §1.4: after sending one "a peer does not send any
-        # further data" -- and a ping here raced the peer's own
-        # reply: a client that read our Close, answered it and
-        # waited for the FIN read 0x89 0x02 "hb" instead, in
-        # 3 rounds of 30 under CPU hogs (`stress-asgi`; the
-        # 300 ms beat landed inside the window between the Close
-        # going out and the reply being read, which the hogs
-        # widen). The heartbeat's other job, finding a dead
-        # peer, is the linger's own bound on this slot.
-        return
-    var hb_idle_kind = ConnectionState.STREAMING_WS if hb_is_ws else ConnectionState.STREAMING_SSE
-    if st.provision_pool.provisions[hb_slot].state.kind != hb_idle_kind:
-        # Mid-send of a real event; skip this beat, keep the next.
+    # Skip this beat, keep the next, for a stream that may not take a frame
+    # its application did not write now: an SSE stream the application
+    # writes through the chunk channel, a WebSocket lingering after its
+    # Close, a frame half sent (`_takes_an_out_of_band_frame`). Dead clients
+    # of a channel stream are still discovered -- by chunk-send failures
+    # and read-EOF, both of which close the slot -- and a hold's heartbeat
+    # is what keeps it alive through an idle proxy.
+    if not _takes_an_out_of_band_frame(st, hb_slot):
         return
     if hb_is_ws:
         st.slot_response[hb_slot] = Bytes(Span(encode_ws_frame(WS_OP_PING, "hb".as_bytes())))
@@ -384,12 +364,12 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                         st.offload.clear_stream(s)
                         if framed:
                             # The terminator landed: the message is
-                            # complete and the connection is reusable.
+                            # complete and the connection is reusable,
+                            # unless its request asked otherwise.
                             # Clearing the stream flag is what routes
                             # `_after_send` down its keep-alive path
                             # instead of back into streaming.
-                            st.slot_sse[s] = False
-                            st.offload.chunked[s] = False
+                            _chunked_stream_ends(st, s)
                             _after_send(handler, backend, st, s, st.slot_fds[s])
                             _drain_pipelined(handler, backend, st, s, st.slot_fds[s])
                         elif st.slot_ws[s] and st.config.idle_timeout > 0:
@@ -428,9 +408,9 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                         # Same flush, but the message ends with the
                         # terminator already in this buffer — so the
                         # write-ready completion must finish it as a
-                        # keep-alive response, not a close.
-                        st.slot_sse[s] = False
-                        st.offload.chunked[s] = False
+                        # keep-alive response, or the close its request
+                        # asked for.
+                        _chunked_stream_ends(st, s)
                     _ = _await_write(backend, st, s, st.slot_fds[s])
             elif ended:
                 # End marked with nothing left to send. Only reachable

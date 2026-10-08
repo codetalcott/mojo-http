@@ -1,5 +1,5 @@
 from lightbug_http.io.bytes import ByteReader, Bytes, create_string_from_ptr
-from lightbug_http.strings import BytesConstant, is_printable_ascii, is_token_char
+from lightbug_http.strings import BytesConstant, is_token_char
 from std.math import iota
 from std.utils import Variant
 
@@ -249,14 +249,6 @@ def try_peek[origin: ImmOrigin](reader: ByteReader[origin]) -> Optional[UInt8]:
     return None
 
 
-def try_peek_at[origin: ImmOrigin](reader: ByteReader[origin], offset: Int) -> Optional[UInt8]:
-    """Try to peek at byte at relative offset, returns None if out of bounds."""
-    var abs_pos = reader.read_pos + offset
-    if abs_pos < len(reader._inner):
-        return reader._inner[abs_pos]
-    return None
-
-
 def try_get_byte[origin: ImmOrigin](mut reader: ByteReader[origin]) -> Optional[UInt8]:
     """Try to get current byte and advance, returns None if unavailable."""
     if reader.available():
@@ -275,20 +267,18 @@ def create_string_from_reader[origin: ImmOrigin](reader: ByteReader[origin], sta
 
 
 def scan_to_eol[
-    origin: ImmOrigin, //, strict: Bool = False
+    origin: ImmOrigin, //
 ](mut buf: ByteReader[origin], mut start: Int, mut length: Int) raises HTTPParseError:
     """Advance past one field value to its line end, reported as an offset pair.
 
-    `start` and `length` index `buf`'s underlying span; nothing is copied.
-    `get_token_to_eol` is this plus a `String`, for the two callers that
-    need one (the response status message); `parse_headers` uses this
-    directly, because a header's value only ever becomes bytes in the
+    `start` and `length` index `buf`'s underlying span; nothing is copied,
+    because a header's value only ever becomes bytes in the
     `Headers` blob — the `String` it used to build was a copy made to be
     copied again, and at twelve headers per request that copying was a
     third of the whole user-space request (`scripts/probes/bench_http_parts.mojo`).
 
-    `strict` is a request head's rule: the line ends in CRLF and nothing
-    else, so a bare LF is a ParseError (`parse_headers` says why).
+    The line ends in CRLF and nothing else, so a bare LF is a ParseError
+    (`parse_headers` says why).
     """
     var token_start = buf.read_pos
 
@@ -317,20 +307,9 @@ def scan_to_eol[
             raise ParseError()
         length = buf.read_pos - 1 - token_start
         buf.increment()
-    elif current_byte == BytesConstant.LF and not strict:
-        length = buf.read_pos - token_start
-        buf.increment()
     else:
         raise ParseError()
     start = token_start
-
-
-def get_token_to_eol[
-    origin: ImmOrigin
-](mut buf: ByteReader[origin], mut token: String, mut token_len: Int) raises HTTPParseError:
-    var start = 0
-    scan_to_eol(buf, start, token_len)
-    token = create_string_from_reader(buf, start, token_len)
 
 
 def is_complete[origin: ImmOrigin](mut buf: ByteReader[origin], last_len: Int) raises HTTPParseError:
@@ -439,7 +418,7 @@ def parse_http_version[origin: ImmOrigin](mut buf: ByteReader[origin], mut minor
 
 
 def parse_headers[
-    buf_origin: ImmOrigin, header_origin: MutOrigin, //, strict: Bool = False
+    buf_origin: ImmOrigin, header_origin: MutOrigin, //
 ](
     mut buf: ByteReader[buf_origin],
     headers: Span[HTTPHeader, header_origin],
@@ -448,18 +427,19 @@ def parse_headers[
 ) raises HTTPParseError:
     """Parse field lines up to and including the empty line that ends them.
 
-    `strict` is a request head's rules, which the request parser asks for:
-    a line opening with SP or HTAB (obs-fold) is a ParseError (SPEC B13),
-    and every line, the empty one included, ends in CRLF, a bare LF being
-    a ParseError too (SPEC B12). RFC 9112 §2.2 lets a recipient accept a lone LF,
+    A request head's rules: a line opening with SP or HTAB (obs-fold) is a
+    ParseError (SPEC B13), and every line, the empty one included, ends in
+    CRLF, a bare LF being a ParseError too (SPEC B12). RFC 9112 §2.2 lets
+    a recipient accept a lone LF,
     and this parser did -- but the event loop frames a head by the first
     CRLFCRLF (`find_header_end`) and hands this parser exactly that many
     bytes, so a head this parser ended at `\\r\\n\\n` while the loop read on
     to a later CRLFCRLF lost whatever lay between: a request pipelined
     behind it vanished, and a `Content-Length` after the bare LF was never
     read, its body served as the next request. One terminator for both
-    framers is what keeps them agreeing. The response parser keeps the
-    lenient readings; nothing frames a response by CRLFCRLF.
+    framers is what keeps them agreeing. The lenient readings, a
+    `strict=False` this parser and `scan_to_eol` defaulted to, were the
+    response parser's alone, and went with it.
     """
     while buf.available():
         var byte = try_peek(buf)
@@ -476,10 +456,7 @@ def parse_headers[
             buf.increment()
             return
         elif byte.value() == BytesConstant.LF:
-            comptime if strict:
-                raise ParseError()
-            buf.increment()
-            return
+            raise ParseError()
 
         if num_headers >= max_headers:
             raise ParseError()
@@ -503,19 +480,15 @@ def parse_headers[
                     break
                 buf.increment()
         else:
-            # obs-fold continuation: no name, the value joins the previous
-            # field's. An empty span, exactly what the empty String was.
-            # A request refuses it (RFC 9112 §5.2, SPEC B13): kept, it was
-            # a field named "" -- `HTTP_` in a WSGI environ -- and the
-            # folded text never joined the value it continued.
-            comptime if strict:
-                raise ParseError()
-            headers[num_headers].name_start = 0
-            headers[num_headers].name_len = 0
+            # obs-fold continuation. A request refuses it (RFC 9112 §5.2,
+            # SPEC B13): kept, it was a field named "" -- `HTTP_` in a WSGI
+            # environ -- and the folded text never joined the value it
+            # continued.
+            raise ParseError()
 
         var value_start = 0
         var value_len = 0
-        scan_to_eol[strict=strict](buf, value_start, value_len)
+        scan_to_eol(buf, value_start, value_len)
 
         # Trailing OWS comes off the LENGTH. This used to re-slice the value
         # into a third String when any was present.
@@ -647,82 +620,6 @@ def http_parse_request_headers[
                 return -1
             buf.increment()
         else:
-            return -1
-
-        parse_headers[strict=True](buf, headers, num_headers, max_headers)
-
-        return buf.read_pos
-    except e:
-        if e.isa[IncompleteError]():
-            return -2
-        else:
-            return -1
-
-
-def http_parse_response_headers[
-    buf_origin: ImmOrigin, header_origin: MutOrigin
-](
-    buf_start: Pointer[UInt8, buf_origin],
-    len: Int,
-    mut minor_version: Int,
-    mut status: Int,
-    mut msg: String,
-    headers: Span[HTTPHeader, header_origin],
-    mut num_headers: Int,
-    last_len: Int,
-) -> Int:
-    """Parse HTTP response headers. Returns bytes consumed or negative error code."""
-    var max_headers = num_headers
-
-    minor_version = -1
-    status = 0
-    msg = String()
-    var msg_len = 0
-    num_headers = 0
-
-    var buf_span = Span[UInt8, buf_origin](unsafe_ptr=buf_start, length=len)
-    var buf = ByteReader(buf_span)
-
-    try:
-        if last_len != 0:
-            is_complete(buf, last_len)
-
-        parse_http_version(buf, minor_version)
-
-        var byte = try_peek(buf)
-        if not byte or byte.value() != BytesConstant.whitespace:
-            return -1
-
-        while buf.available():
-            byte = try_peek(buf)
-            if not byte or byte.value() != BytesConstant.whitespace:
-                break
-            buf.increment()
-
-        if buf.remaining() < 4:
-            return -2
-
-        status = 0
-        for _ in range(3):
-            byte = try_get_byte(buf)
-            if not byte:
-                return -2
-            if byte.value() < BytesConstant.ZERO or byte.value() > BytesConstant.NINE:
-                return -1
-            status = status * 10 + Int(byte.value() - BytesConstant.ZERO)
-
-        get_token_to_eol(buf, msg, msg_len)
-
-        if msg_len > 0 and msg[byte=0:1] == " ":
-            var i = 0
-            while i < msg_len and msg[byte=i : i + 1] == " ":
-                i += 1
-            # Materialize into a temp first — constructing directly into `msg`
-            # while the slice still borrows it now trips the aliasing check.
-            var trimmed = String(msg[byte=i:])
-            msg = trimmed^
-            msg_len -= i
-        elif msg_len > 0 and msg[byte=0:1] != String(" "):
             return -1
 
         parse_headers(buf, headers, num_headers, max_headers)

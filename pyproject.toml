@@ -1253,7 +1253,7 @@ default_item_type = "ref"
 # `build-all`.
 [tool.poe.tasks.test-gates]
 help = "test-all's second half: the shim's rules, the phase stamps, m0-sqlite and its sabotage, and the compile gates (CI's unit-gates job)"
-sequence = ["test-shim", "check-phase-stamps", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
+sequence = ["test-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -1379,6 +1379,15 @@ cmd = "python3 scripts/zero_alloca_check.py --sabotage"
 [tool.poe.tasks.check-copyback]
 help = "No struct written through its address (the asyncio executor's state) is passed by value in m0serve's IR"
 cmd = "python3 scripts/copyback_guard.py"
+
+# A variadic libc function called through external_call outside its
+# sanctioned wrapper (Darwin arm64 passes variadic arguments on the stack,
+# review record LF17), and any `[byte=` slice in the fork (SPEC G14): pure
+# text, a second. The selftest runs first, so "no findings" cannot mean the
+# rules read nothing (SPEC G25).
+[tool.poe.tasks.fork-lint]
+help = "No variadic libc symbol called outside its wrapper, no [byte=] slice in the fork (SPEC G25)"
+shell = "python3 scripts/fork_lint.py --selftest && python3 scripts/fork_lint.py"
 
 [tool.poe.tasks.check-app-vocabulary]
 help = "An app OUTSIDE the repo defines a Vocabulary (htmx 4): attributes asserted in both tiers, read by the vendored hxlint (SPEC N21)"
@@ -1586,6 +1595,18 @@ wait $pid 2>/dev/null || rc=$?
   || fail 'both m0serve workers did not report a clean exit'
 grep -q 'killed by signal' "$SMOKE_DIR/shutdown5.log" && fail 'an m0serve worker died of the signal instead of draining'
 
+# A chunked stream open at SIGTERM ends with a terminator or EOF, never a
+# chunk the client cannot parse (review record LF12). The drain's farewell
+# to streams wrote an SSE close comment into an application's chunked
+# stream raw, which a client's chunked parser reads as a chunk size; it now
+# asks what the heartbeat asks before it writes anything.
+spawn shutdown6.log bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port
+wait_ready http://localhost:$port/ $pid
+python3 scripts/drain_stream_probe.py $port $pid   || fail
+rc=0
+wait $pid 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ]   || fail "m0serve exited $rc after a drain with a stream open, want 0"
+
 # Idle keep-alive connections must not hold the drain open. `active_count`
 # counts a merely-open connection the same as one mid-request, so before the
 # shutdown path closed finished slots this waited the full 5s DRAIN_TIMEOUT_NS
@@ -1634,6 +1655,7 @@ fi
 echo "smoke-shutdown OK"
 python3 scripts/emit.py --covers D1 --task smoke-shutdown
 python3 scripts/emit.py --covers D2 --task smoke-shutdown
+python3 scripts/emit.py --covers D12 --task smoke-shutdown
 """
 
 # The probe speaks RFC 6455 by hand (stdlib sockets, no websocket library),

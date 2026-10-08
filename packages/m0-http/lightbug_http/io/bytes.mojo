@@ -1,5 +1,4 @@
 from lightbug_http.connection import default_buffer_size
-from lightbug_http.strings import BytesConstant
 from std.collections.span import ContiguousSlice, _SpanIter
 from std.memory import unsafe_memcpy
 
@@ -11,16 +10,6 @@ comptime Bytes = List[Byte]
 def byte[s: StringSpan]() -> Byte:
     comptime assert s.byte_length() == 1, "StringSpan must be of length 1 to convert to Byte."
     return s.as_bytes()[0]
-
-
-@always_inline
-def is_newline(b: Byte) -> Bool:
-    return b == BytesConstant.LF or b == BytesConstant.CR
-
-
-@always_inline
-def is_space(b: Byte) -> Bool:
-    return b == BytesConstant.whitespace
 
 
 struct ByteWriter(Writer):
@@ -294,50 +283,8 @@ struct ByteReader[origin: ImmOrigin](Copyable, Sized):
         return self._inner[start : self.read_pos]
 
     @always_inline
-    def read_word(mut self) -> ByteView[Self.origin]:
-        return self.read_until(BytesConstant.whitespace)
-
-    def read_line(mut self) -> ByteView[Self.origin]:
-        var start = self.read_pos
-        for i in range(start, len(self._inner)):
-            if is_newline(self._inner[i]):
-                break
-            self.increment()
-
-        # If we are at the end of the buffer, there is no newline to check for.
-        var ret = self._inner[start : self.read_pos]
-        if not self.available():
-            return ret
-
-        if self._inner[self.read_pos] == BytesConstant.CR:
-            self.increment(2)
-        else:
-            self.increment()
-        return ret
-
-    @always_inline
-    def skip_whitespace(mut self):
-        for i in range(self.read_pos, len(self._inner)):
-            if is_space(self._inner[i]):
-                self.increment()
-            else:
-                break
-
-    @always_inline
-    def skip_carriage_return(mut self):
-        for i in range(self.read_pos, len(self._inner)):
-            if self._inner[i] == BytesConstant.CR:
-                self.increment(2)
-            else:
-                break
-
-    @always_inline
     def increment(mut self, v: Int = 1):
         self.read_pos += v
-
-    @always_inline
-    def consume(var self, bytes_len: Int = -1) -> Bytes:
-        return Bytes(self^._inner[self.read_pos : self.read_pos + len(self) + 1])
 
 
 def create_string_from_ptr[origin: ImmOrigin](ptr: Pointer[UInt8, origin], length: Int) -> String:
@@ -350,8 +297,3 @@ def create_string_from_ptr[origin: ImmOrigin](ptr: Pointer[UInt8, origin], lengt
 
     # Copy raw bytes directly - this preserves the exact bytes from HTTP messages
     return String(unsafe_from_utf8=Span(unsafe_ptr=ptr, length=length))
-
-
-def bufis(s: String, t: String) -> Bool:
-    """Check if string s equals t."""
-    return s == t

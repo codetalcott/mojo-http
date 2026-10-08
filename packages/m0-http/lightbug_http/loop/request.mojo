@@ -118,8 +118,15 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
         #
         # A stream has no request left to answer, so those still
         # close here. Everything else falls through to the read
-        # path, which finishes the buffered request; keep-alive
-        # is off, because the peer cannot send another.
+        # path, which finishes the buffered request, and the answer
+        # to the last one the peer sent closes the connection
+        # (`_answers_the_last_request`). Not `should_close` here:
+        # on a slot whose answer was still going out it closed the
+        # connection as that answer landed, and the requests
+        # pipelined behind it, read already or still in the socket,
+        # went unanswered (review record LF43). The keep-alive
+        # transition answers them, and its drain's read finds the
+        # EOF again.
         var _eof_state = st.provision_pool.provisions[slot].state.kind
         if _eof_state == ConnectionState.STREAMING_SSE:
             _close_slot(handler, backend, st, slot, fd_val)
@@ -134,7 +141,6 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
             # socket holds nothing more.
             ws_peer_eof = True
         else:
-            st.provision_pool.provisions[slot].should_close = True
             st.provision_pool.provisions[slot].peer_eof = True
 
     if st.provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_WS:
@@ -354,21 +360,24 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     before kqueue registration) and from the EVFILT_READ handler.
     """
     var entry_keepalive = st.provision_pool.provisions[slot].keepalive_count
-    if st.config.header_read_timeout > 0:
-        # 0 means "no request in progress" — the first bytes of a keep-alive
-        # request start the clock here rather than inheriting a deadline from
-        # whenever the previous response happened to finish.
-        if st.slot_header_start[slot] == 0:
-            # A request's first bytes: stamp, and nothing to measure yet.
-            # (Reading the clock twice here was a fifth of the loop's
-            # clock calls.)
-            st.slot_header_start[slot] = perf_counter_ns()
-        else:
-            var elapsed_s = (perf_counter_ns() - st.slot_header_start[slot]) / 1_000_000_000
-            if elapsed_s >= Int(st.config.header_read_timeout):
-                _send_error_to_fd(fd_val, RequestTimeout())
-                _close_slot(handler, backend, st, slot, fd_val)
-                return
+    # 0 means "no request in progress" — the first bytes of a keep-alive
+    # request start the clock here rather than inheriting a deadline from
+    # whenever the previous response happened to finish.
+    if st.slot_header_start[slot] == 0:
+        # A request's first bytes: stamp, and nothing to measure yet.
+        # (Reading the clock twice here was a fifth of the loop's clock
+        # calls.) Whatever the header timeout: the access log and the
+        # metrics time the request from here, and with the timeout off the
+        # log subtracted a stamp never taken, so every keep-alive request
+        # after a connection's first (the accept stamps that one) logged
+        # the time since boot (review record LF14).
+        st.slot_header_start[slot] = perf_counter_ns()
+    elif st.config.header_read_timeout > 0:
+        var elapsed_s = (perf_counter_ns() - st.slot_header_start[slot]) / 1_000_000_000
+        if elapsed_s >= Int(st.config.header_read_timeout):
+            _send_error_to_fd(fd_val, RequestTimeout())
+            _close_slot(handler, backend, st, slot, fd_val)
+            return
 
     # Phase 2a: recv straight into the connection's buffer, past whatever
     # it already holds. Still exactly ONE read of `recv_staging.capacity()`
@@ -648,9 +657,17 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     #
     # Before the re-arm below, and returning: a connection whose peer has
     # gone will never produce the readiness that re-arming asks for.
+    #
+    # Only once this read has taken everything before the FIN: a read of
+    # nothing, or a shorter one. `peer_eof` from the event says the FIN has
+    # arrived, not that one read took what was ahead of it, and a read that
+    # filled its buffer closed a head longer than one read with the rest of
+    # it still in the socket, the request unanswered (review record LF42).
+    # Such a read is re-armed below, and the next one goes on.
     if (
         st.slot_fds[slot] != UNUSED
         and st.provision_pool.provisions[slot].peer_eof
+        and (recv_eof or bytes_read < UInt(want))
         and st.provision_pool.provisions[slot].state.kind
         == ConnectionState.READING_HEADERS
     ):

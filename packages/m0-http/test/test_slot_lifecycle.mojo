@@ -62,7 +62,14 @@ from lightbug_http.loop.state import (
     _record_response,
     _stop_reads,
     _stream_idle,
+    _ws_linger,
 )
+from lightbug_http.loop.state import _close_slot, _farewell_streams
+from lightbug_http.websocket import WS_CLOSE_GOING_AWAY
+from lightbug_http.c.socket import ShutdownOption, shutdown
+from lightbug_http.loop.response import _finish_response
+from lightbug_http.loop.streams import _drain_outboxes
+from lightbug_http.offload import OffloadPool, make_stream_ack_pair
 from lightbug_http.loop.timers import _on_timer
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
@@ -349,6 +356,70 @@ def test_the_linger_arms_once() raises:
     st.slot_idle_deadline[1] = 12345
     _arm_ws_linger(st, 1)
     assert_equal(st.slot_idle_deadline[1], 12345)
+
+
+def test_a_close_landing_leaves_a_suspended_sockets_reads_alone() raises:
+    """This side's Close has landed on a WebSocket whose inbound the
+    handler had suspended: the slot lingers for the peer's Close, and its
+    reads stay off until the handler resumes them (review record LF15).
+    `_ws_linger` armed them, which `_stream_idle` had refused to do for
+    the same socket since the inbound backpressure landed: the socket
+    undid its own suspension, and the parked queue grew with whatever the
+    client sent next. `take_ws_resumes` is the only thing that may re-arm
+    a suspended slot.
+
+    covers: I41
+    """
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    st.slot_ws[slot] = True
+    st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+    assert_true(_arm_reads(backend, st, slot, FD))
+    _stop_reads(backend, st, slot, FD)
+    st.slot_ws_state[slot].inbound_suspended = True
+    # The Close goes out through the write-ready path, and lands.
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    assert_true(_await_write(backend, st, slot, FD))
+    var adds = backend.read_adds
+    _ws_linger(backend, st, slot, FD)
+    assert_equal(st.provision_pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
+    assert_true(st.slot_ws_state[slot].closing)
+    assert_true(st.slot_idle_deadline[slot] > 0)
+    assert_equal(backend.read_adds, adds, "the linger re-armed a suspended socket's reads")
+    assert_false(st.slot_read_armed[slot])
+
+    # A socket that is not suspended lingers reading: the peer's Close is a
+    # read.
+    var other = st.provision_pool.borrow()
+    st.slot_ws[other] = True
+    st.provision_pool.provisions[other].state = ConnectionState.responding()
+    _ws_linger(backend, st, other, FD)
+    assert_true(st.slot_read_armed[other])
+    assert_true(backend.read)
+
+
+def test_a_closed_slot_lets_go_of_its_response() raises:
+    """`_close_slot`, the one place every close goes through, releases the
+    answer still owed (review record LF26): a client that vanished with a
+    large response unsent held its buffer until the slot answered someone
+    else."""
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = pair[0]
+    st.fd_to_slot[pair[0]] = slot
+    st.active_count = 1
+    st.slot_response[slot] = Bytes(length=1 << 20, fill=0x61)
+    st.slot_send_offset[slot] = 4096
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    _close_slot(app, backend, st, slot, pair[0])
+    assert_equal(st.slot_fds[slot], UNUSED)
+    assert_equal(st.slot_response[slot].capacity(), 0, "the closed slot kept its response")
+    assert_equal(st.slot_send_offset[slot], 0)
+    close(FileDescriptor(pair[1]))
 
 
 def test_a_request_begins_with_no_idle_deadline() raises:
@@ -741,6 +812,469 @@ def test_a_stale_body_expiry_is_retired() raises:
         st.slot_fds[slot] = UNUSED
         st.fd_to_slot[FD] = UNUSED
         st.provision_pool.release(slot)
+
+
+def _send_all(fd: Int, text: String) raises:
+    """Write `text` on `fd` in one send, which a fresh stream pair takes
+    whole."""
+    var raw = text.as_bytes()
+    var sent = send(FileDescriptor(fd), raw, 0)
+    assert_equal(Int(sent), len(raw))
+
+
+def _half_closed_exchange(request: String) raises -> Tuple[String, Bool]:
+    """`request` written by a client that then shut down its write side,
+    read by ONE event that carries the EOF with the bytes, which is how
+    both backends report a FIN that arrived beside them: the reply as the
+    client read it, lowercased, and whether the loop closed the slot."""
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    _send_all(peer, request)
+    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+    _on_read(app, backend, st, fd, True)
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var closed = st.slot_fds[slot] == UNUSED
+    if not closed:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    return (String(unsafe_from_utf8=Span(got)).lower(), closed)
+
+
+def test_a_half_closed_request_is_answered_with_a_close() raises:
+    """A client that half-closes after its request has sent its last one,
+    so the answer says `Connection: close` and the connection ends behind
+    it (review record LF11). The EOF set `should_close` and the request's
+    own reading of `Connection` replaced it: the answer said `keep-alive`,
+    and the slot waited for a next request no event would announce -- on
+    epoll the edge that carried the FIN was spent, so it stayed until the
+    idle sweep, and for good with idle timeouts off. kqueue's level trigger
+    reported the EOF again and hid the hold, not the header.
+
+    A request pipelined behind it is still answered: only the LAST request
+    the client sent closes the connection. Behind it in the same read, and
+    behind it in the socket, where a read that filled its buffer ended
+    exactly at the first request's last byte: the EOF says the FIN has
+    arrived, not that everything ahead of it has been read.
+
+    covers: A27
+    """
+    var one = _half_closed_exchange("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_true("200 ok" in one[0], one[0])
+    assert_true("connection: close" in one[0], one[0])
+    assert_false("keep-alive" in one[0], one[0])
+    assert_true(one[1], "a half-closed request's connection stayed open")
+
+    var two = _half_closed_exchange(
+        "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+    )
+    var reply = two[0]
+    var answers = List[String]()
+    for part in reply.split("http/1.1 200 ok"):
+        answers.append(String(part))
+    assert_equal(len(answers), 3, reply)
+    assert_true("connection: keep-alive" in answers[1], reply)
+    assert_true("connection: close" in answers[2], reply)
+    assert_true(two[1], "the last pipelined request left its connection open")
+
+    # The first request exactly one read long, the second still in the
+    # socket when the first is answered.
+    var sizing = _loop(_config())
+    var want = sizing.provision_pool.provisions[
+        sizing.provision_pool.borrow()
+    ].recv_staging.capacity()
+    var head = String("GET /a HTTP/1.1\r\nHost: x\r\nX-Pad: ")
+    var first = head + String("p") * (want - head.byte_length() - 4) + "\r\n\r\n"
+    assert_equal(first.byte_length(), want)
+    var full = _half_closed_exchange(
+        first + "GET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+    )
+    var full_reply = full[0]
+    var full_answers = List[String]()
+    for part in full_reply.split("http/1.1 200 ok"):
+        full_answers.append(String(part))
+    assert_equal(
+        len(full_answers), 3,
+        "a request still in the socket behind a half-close went unanswered: "
+        + full_reply,
+    )
+    assert_true("connection: keep-alive" in full_answers[1], full_reply)
+    assert_true("connection: close" in full_answers[2], full_reply)
+    assert_true(full[1])
+
+
+def test_a_half_closed_head_longer_than_a_read_is_answered() raises:
+    """A head larger than one read, its FIN arriving with its first bytes,
+    is read to its end and answered (review record LF42). The read path
+    took one buffer, found the head incomplete, and closed the slot
+    because the event said the peer had half-closed, with the rest of the
+    head still in the socket: the client's request went unanswered. The
+    EOF says the FIN has arrived; only a read of nothing, or a shorter one
+    behind it, says nothing more is coming. The next read takes the rest:
+    the drain's, in the same event, or the re-armed one, which both
+    backends report again.
+
+    covers: A29
+    """
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    var want = st.provision_pool.provisions[slot].recv_staging.capacity()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    var head = String("GET /long HTTP/1.1\r\nHost: x\r\nX-Pad: ")
+    head += String("p") * (want + want // 2) + "\r\n\r\n"
+    _send_all(peer, head)
+    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+
+    # The event that brings the first bytes carries the EOF; while the slot
+    # stays open, its re-armed registration reports it again.
+    var events = 0
+    while st.slot_fds[slot] != UNUSED and events < 3:
+        _on_read(app, backend, st, fd, True)
+        events += 1
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var reply = String(unsafe_from_utf8=Span(got)).lower()
+    assert_true(
+        reply.startswith("http/1.1 200 ok"),
+        "a half-closed head longer than one read went unanswered: " + reply,
+    )
+    assert_true("connection: close" in reply, reply)
+    assert_equal(st.slot_fds[slot], UNUSED)
+    close(FileDescriptor(peer))
+
+
+def test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest() raises:
+    """A client that pipelines, half-closes, and reads slowly is answered
+    every request it sent (review record LF43). The first answer waited on
+    a full socket when the EOF arrived, and the read path's `should_close`
+    then closed the connection as soon as that answer landed: the request
+    pipelined behind it, already in the buffer, went unanswered. The
+    keep-alive transition answers it, and the drain's read finds the EOF,
+    so the last one closes (`_answers_the_last_request`).
+
+    Only a stale event reaches a slot waiting to write, which holds no read
+    registration on either backend: an EOF in the same batch as a pool
+    thread's or the executor's completion whose answer went out in part.
+    This dispatches that event to the waiting slot directly.
+
+    covers: A30
+    """
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    var filler = _fill_send_buffer(fd)
+    _send_all(peer, "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+
+    # The requests are read, and the first answer waits on the full socket.
+    _on_read(app, backend, st, fd, False)
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind, ConnectionState.RESPONDING,
+    )
+    # The EOF arrives while it waits.
+    _on_read(app, backend, st, fd, True)
+
+    var got = List[UInt8]()
+    var rounds = 0
+    while st.slot_fds[slot] != UNUSED and rounds < 1000:
+        _ = _read_available(peer, got)
+        if (
+            st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.RESPONDING
+        ):
+            _on_write(app, backend, st, fd)
+        else:
+            # Between requests with its reads armed: the registration
+            # reports the EOF, as both backends do.
+            _on_read(app, backend, st, fd, True)
+        rounds += 1
+    _ = _read_available(peer, got)
+    var reply = String(unsafe_from_utf8=Span(got)[filler:])
+    var answers = len(reply.split("HTTP/1.1 200 OK")) - 1
+    assert_equal(
+        answers, 2,
+        "a request pipelined behind a slow answer went unanswered: " + reply,
+    )
+    assert_true("connection: close" in reply.lower(), reply)
+    assert_equal(st.slot_fds[slot], UNUSED, "the connection was left open")
+    close(FileDescriptor(peer))
+
+
+struct OneChunkStream(HTTPService):
+    """A channel stream's producer, as the loop sees it: one payload
+    queued, and the stream over once it is drained."""
+
+    var drained: Bool
+
+    def __init__(out self):
+        self.drained = False
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        if self.drained:
+            return List[UInt8]()
+        self.drained = True
+        return List[UInt8](String("one-chunk").as_bytes())
+
+    def sse_is_streaming(self, slot: Int) -> Bool:
+        return not self.drained
+
+
+def _chunked_stream_exchange(
+    asked_close: Bool, keep_alive: Bool = True, half_closed: Bool = False,
+) raises -> Tuple[String, Bool]:
+    """A chunked stream from a channel producer, from its head to its
+    terminator, for a request that asked for a close or did not, on a
+    server with keep-alive on or off, from a client that has half-closed or
+    not: what the client read, lowercased, and whether the loop closed the
+    slot once the terminator landed."""
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    var acks = make_stream_ack_pair()
+    var app = OneChunkStream()
+    var backend = FakeBackend()
+    var st = LoopState(
+        FileDescriptor(-1), _config(), String(""), keep_alive,
+        offload_addr=pool.addr(),
+    )
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    pool.set_slot_ack_fd(slot, acks[1])
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.offload.http11[slot] = True
+    st.offload.is_head[slot] = False
+    # What `_process_request` decides before the handler runs.
+    st.provision_pool.provisions[slot].should_close = asked_close or not keep_alive
+    st.provision_pool.provisions[slot].state = ConnectionState.processing()
+    if half_closed:
+        # The request was the last bytes the client sent: its EOF reached
+        # the read path (`peer_eof`), and nothing is buffered behind it.
+        shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+        st.provision_pool.provisions[slot].peer_eof = True
+    var response = OK("", "text/plain")
+    response.sse_streaming = True
+    _finish_response(app, backend, st, slot, fd, response^)
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind,
+        ConnectionState.STREAMING_SSE,
+    )
+    _drain_outboxes(app, backend, st)
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var closed = st.slot_fds[slot] == UNUSED
+    if not closed:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    close(FileDescriptor(acks[0]))
+    close(FileDescriptor(acks[1]))
+    # The loop holds the pool by its address, which keeps nothing alive.
+    _ = pool
+    return (String(unsafe_from_utf8=Span(got)).lower(), closed)
+
+
+def test_a_chunked_stream_keeps_the_close_its_request_asked_for() raises:
+    """A chunked stream answers its request whole, so once its terminator
+    lands the connection does what the request asked: closes after
+    `Connection: close`, on a server with keep-alive off, or for a client
+    that has half-closed (LF11's close), and stays otherwise; the head says
+    which (review record LF13). A stream's head clears `should_close`, or
+    the head landing would close the slot, and the stream's end took the
+    keep-alive path whatever the request had said, under a head that said
+    `keep-alive`.
+
+    covers: A28
+    """
+    var asked = _chunked_stream_exchange(True)
+    assert_true("transfer-encoding: chunked" in asked[0], asked[0])
+    assert_true("connection: close" in asked[0], asked[0])
+    assert_true(asked[0].endswith("9\r\none-chunk\r\n0\r\n\r\n"), asked[0])
+    assert_true(asked[1], "Connection: close kept the connection after the stream")
+
+    var off = _chunked_stream_exchange(False, keep_alive=False)
+    assert_true("connection: close" in off[0], off[0])
+    assert_true(off[1], "a server with keep-alive off kept the connection")
+
+    var half = _chunked_stream_exchange(False, half_closed=True)
+    assert_true("transfer-encoding: chunked" in half[0], half[0])
+    assert_true("connection: close" in half[0], half[0])
+    assert_true(half[0].endswith("9\r\none-chunk\r\n0\r\n\r\n"), half[0])
+    assert_true(half[1], "a half-closed client's stream kept the connection")
+
+    var kept = _chunked_stream_exchange(False)
+    assert_true("transfer-encoding: chunked" in kept[0], kept[0])
+    assert_true("connection: keep-alive" in kept[0], kept[0])
+    assert_true(kept[0].endswith("0\r\n\r\n"), kept[0])
+    assert_false(kept[1], "a stream its request did not ask to close was closed")
+
+
+def test_the_farewell_writes_only_into_a_stream_that_takes_one() raises:
+    """The drain's farewell asks what the heartbeat asks
+    (`_takes_an_out_of_band_frame`; review record LF12). An idle SSE
+    stream gets its close comment and an idle WebSocket a Close carrying
+    1001; a WebSocket that has sent its Close, a stream with a frame half
+    sent, and an SSE stream its application writes through the chunk
+    channel get nothing, and are closed as they stand. The farewell wrote
+    into all five: a second Close, bytes inside a frame, and a comment the
+    client's chunked parser read as a chunk size.
+
+    covers: D13
+    """
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    var acks = make_stream_ack_pair()
+    var config = _config()
+    config.max_connections = 8
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = LoopState(
+        FileDescriptor(-1), config, String(""), True, offload_addr=pool.addr(),
+    )
+    var peers = List[Int]()
+    var slots = List[Int]()
+    for shape in range(5):
+        var pair = _stream_pair()
+        var slot = st.provision_pool.borrow()
+        st.slot_fds[slot] = pair[0]
+        st.fd_to_slot[pair[0]] = slot
+        st.active_count += 1
+        if shape == 0 or shape == 3 or shape == 4:
+            st.slot_sse[slot] = True
+            st.provision_pool.provisions[slot].state = ConnectionState.streaming_sse()
+        else:
+            st.slot_ws[slot] = True
+            st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+        if shape == 2:
+            st.slot_ws_state[slot].closing = True
+        elif shape == 3:
+            st.provision_pool.provisions[slot].state = ConnectionState.responding()
+        elif shape == 4:
+            pool.set_slot_ack_fd(slot, acks[1])
+        peers.append(pair[1])
+        slots.append(slot)
+
+    _farewell_streams(app, backend, st)
+
+    var going = close_frame(WS_CLOSE_GOING_AWAY)
+    var expected = List[List[UInt8]]()
+    expected.append(List[UInt8](String(": close\n\n").as_bytes()))
+    expected.append(going.copy())
+    for _ in range(3):
+        expected.append(List[UInt8]())
+    var names = List[String]()
+    names.append("an idle SSE stream")
+    names.append("an idle WebSocket")
+    names.append("a WebSocket that has sent its Close")
+    names.append("a stream with a frame half sent")
+    names.append("a chunk-channel SSE stream")
+    for shape in range(5):
+        assert_equal(st.slot_fds[slots[shape]], UNUSED, names[shape] + " was left open")
+        var got = List[UInt8]()
+        assert_true(_read_available(peers[shape], got), names[shape] + " read no EOF")
+        assert_equal(
+            len(got), len(expected[shape]),
+            names[shape] + " was sent " + String(len(got)) + " bytes",
+        )
+        for i in range(len(got)):
+            assert_equal(Int(got[i]), Int(expected[shape][i]), names[shape])
+        close(FileDescriptor(peers[shape]))
+    close(FileDescriptor(acks[0]))
+    close(FileDescriptor(acks[1]))
+    # The loop holds the pool by its address, which keeps nothing alive.
+    _ = pool
+
+
+def test_the_access_log_times_a_request_without_a_header_timeout() raises:
+    """A keep-alive request's duration runs from its first bytes whatever
+    the header timeout (review record LF14). The keep-alive reset zeroes
+    the header clock, and it was stamped again only while
+    `header_read_timeout` was above 0; the access log subtracted it anyway:
+    with the timeout off every request after a connection's first logged
+    the time since the machine booted, and the metrics' latency, which
+    asked for a stamp first, recorded nothing for it. (The accept stamps a
+    connection's first request.) The slot here starts with the clock at 0,
+    as that reset leaves it.
+
+    covers: F22
+    """
+    var config = _config()
+    config.header_read_timeout = 0
+    config.access_log = True
+    config.enable_metrics = True
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(config)
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    _send_all(peer, "GET /timed HTTP/1.1\r\nHost: x\r\n\r\n")
+
+    var out = _stream_pair()
+    var saved = Int(external_call["dup", c_int, c_int](c_int(1)))
+    assert_true(saved >= 0)
+    _ = external_call["dup2", c_int, c_int, c_int](c_int(out[1]), c_int(1))
+    _on_read(app, backend, st, fd, False)
+    _ = external_call["dup2", c_int, c_int, c_int](c_int(saved), c_int(1))
+    close(FileDescriptor(saved))
+    close(FileDescriptor(out[1]))
+    var logged = List[UInt8]()
+    _ = _read_available(out[0], logged)
+    close(FileDescriptor(out[0]))
+    var line = String(unsafe_from_utf8=Span(logged))
+
+    var at = line.find('"dur_us":')
+    assert_true(at >= 0, "no access line was written: " + line)
+    var digits = String()
+    for b in line.as_bytes()[at + 9 :]:
+        if b < 0x30 or b > 0x39:
+            break
+        digits += chr(Int(b))
+    var dur_us = Int(digits)
+    assert_true(
+        dur_us < 1_000_000,
+        String("a request answered at once was logged as taking ")
+        + String(dur_us) + "us: " + line,
+    )
+    assert_equal(st.metrics.latency_count, 1, "the latency was not recorded")
+    assert_true(st.metrics.latency_sum_us < 1_000_000)
+    assert_equal(st.slot_header_start[slot], 0, "the keep-alive reset kept the stamp")
+    close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
 
 
 def test_a_send_deadline_leaves_a_websockets_close_linger() raises:

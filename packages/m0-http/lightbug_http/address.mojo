@@ -168,9 +168,6 @@ struct ParseEmptyAddressError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseMissingClosingBracketError(CustomError, TrivialRegisterPassable):
@@ -178,9 +175,6 @@ struct ParseMissingClosingBracketError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -190,9 +184,6 @@ struct ParseMissingPortError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseUnexpectedBracketError(CustomError, TrivialRegisterPassable):
@@ -200,9 +191,6 @@ struct ParseUnexpectedBracketError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -212,9 +200,6 @@ struct ParseEmptyPortError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseInvalidPortNumberError(CustomError, TrivialRegisterPassable):
@@ -222,9 +207,6 @@ struct ParseInvalidPortNumberError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -234,9 +216,6 @@ struct ParsePortOutOfRangeError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseMissingSeparatorError(CustomError, TrivialRegisterPassable):
@@ -244,9 +223,6 @@ struct ParseMissingSeparatorError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 @fieldwise_init
@@ -256,9 +232,6 @@ struct ParseTooManyColonsError(CustomError, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
 
-    def __str__(self) -> String:
-        return Self.message
-
 
 @fieldwise_init
 struct ParseIPProtocolPortError(CustomError, TrivialRegisterPassable):
@@ -266,9 +239,6 @@ struct ParseIPProtocolPortError(CustomError, TrivialRegisterPassable):
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)
-
-    def __str__(self) -> String:
-        return Self.message
 
 
 
@@ -385,7 +355,10 @@ def parse_ipv6_bracketed_address[
     if address.as_bytes()[colon_index] != UInt8(ord(":")):
         raise ParseMissingPortError()
 
-    return address[byte=1:end_bracket_index], UInt16(end_bracket_index + 1)
+    return (
+        StringSpan(unsafe_from_utf8=address.as_bytes()[1:end_bracket_index]),
+        UInt16(end_bracket_index + 1),
+    )
 
 
 def validate_no_brackets[
@@ -395,9 +368,11 @@ def validate_no_brackets[
     var segment: StringSpan[origin]
 
     if end_idx is None:
-        segment = address[byte=Int(start_idx) :]
+        segment = StringSpan(unsafe_from_utf8=address.as_bytes()[Int(start_idx) :])
     else:
-        segment = address[byte=Int(start_idx) : Int(end_idx.value())]
+        segment = StringSpan(
+            unsafe_from_utf8=address.as_bytes()[Int(start_idx) : Int(end_idx.value())]
+        )
 
     if segment.find("[") != -1:
         raise ParseUnexpectedBracketError()
@@ -472,19 +447,26 @@ def parse_address[
     var host: StringSpan[origin]
     var port: UInt16
 
-    # TODO (Mikhail): StringSpan does byte level slicing, so this can be
-    # invalid for multi-byte UTF-8 characters. Perhaps we instead assert that it's
-    # an ascii string instead.
+    # Every slice below is cut beside a `[`, `]` or `:`, and an ASCII byte
+    # is never inside a multi-byte UTF-8 sequence, so each is whole text.
+    # Sliced as bytes all the same: the fork holds no `[byte=a:b]` slice.
     if address.byte_length() > 0 and address.as_bytes()[0] == UInt8(ord("[")):
         var bracket_offset: UInt16
         (host, bracket_offset) = parse_ipv6_bracketed_address(address)
         validate_no_brackets(address, bracket_offset)
+        # The port follows the colon after `]`, so that colon must be the
+        # last: `[::1]:8:0` read port 0 from after the last colon, and
+        # listened on a port the kernel chose (review record LF33).
+        if Int(bracket_offset) != colon_index:
+            raise ParseTooManyColonsError()
     else:
-        host = address[byte=:colon_index]
+        host = StringSpan(unsafe_from_utf8=address.as_bytes()[:colon_index])
         if host.find(":") != -1:
             raise ParseTooManyColonsError()
 
-    port = parse_port(address[byte=colon_index + 1 :])
+    port = parse_port(
+        StringSpan(unsafe_from_utf8=address.as_bytes()[colon_index + 1 :])
+    )
     if host == AddressConstants.LOCALHOST:
 
         comptime if network.is_ipv6():

@@ -1,42 +1,15 @@
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.cookie import ResponseCookieJar
 from lightbug_http.header import (
-    HeaderKey, Headers, ParsedResponseHeaders, parse_response_headers, write_header,
+    HeaderKey, Headers, write_header,
     span_breaks_header_line,
     KH_CONNECTION, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_DATE, KH_SERVER,
 )
 from lightbug_http.http.date import http_date_now
 from lightbug_http.http.encodable import Encodable
-from lightbug_http.io.bytes import ByteReader, Bytes, ByteWriter
+from lightbug_http.io.bytes import Bytes, ByteWriter
 from lightbug_http.strings import CR, LF, http, lineBreak, strHttp11, whitespace
 from lightbug_http.uri import URI
-from std.utils import Variant
-
-
-@fieldwise_init
-struct ResponseHeaderParseError(ImplicitlyCopyable):
-    """Failed to parse response headers."""
-
-    var detail: String
-
-    def message(self) -> String:
-        return String("Failed to parse response headers: ", self.detail)
-
-
-@fieldwise_init
-struct ResponseBodyReadError(ImplicitlyCopyable):
-    """Failed to read response body."""
-
-    var detail: String
-
-    def message(self) -> String:
-        return String("Failed to read response body: ", self.detail)
-
-
-comptime ResponseParseError = Variant[
-    ResponseHeaderParseError,
-    ResponseBodyReadError,
-]
 
 
 def is_bodiless_status(code: Int) -> Bool:
@@ -210,44 +183,6 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
     whatever connection recycled the slot. 0 (`STREAM_GEN_NONE` in
     `offload.mojo`) means "not a channel stream"."""
 
-    @staticmethod
-    def from_bytes(b: Span[Byte, _]) raises ResponseParseError -> HTTPResponse:
-        var cookies = ResponseCookieJar()
-
-        var properties: ParsedResponseHeaders
-        try:
-            properties = parse_response_headers(b)
-        except parse_err:
-            raise ResponseParseError(ResponseHeaderParseError(detail=String(parse_err)))
-
-        try:
-            cookies.from_headers(properties.cookies^)
-        except cookie_err:
-            raise ResponseParseError(ResponseHeaderParseError(detail=String(cookie_err)))
-
-        # Create reader at the position after headers
-        var reader = ByteReader(b)
-        try:
-            _ = reader.read_bytes(properties.bytes_consumed)
-        except bounds_err:
-            raise ResponseParseError(ResponseBodyReadError(detail=String(bounds_err)))
-
-        # Fields leave `properties` by swap — the ctor takes them by `var`
-        # now, and a struct with a field moved out cannot be destroyed.
-        var taken_headers = Headers()
-        swap(taken_headers, properties.headers)
-        try:
-            return HTTPResponse(
-                reader=reader,
-                headers=taken_headers^,
-                cookies=cookies^,
-                protocol=properties.protocol,
-                status_code=properties.status,
-                status_text=properties.status_message,
-            )
-        except body_err:
-            raise ResponseParseError(ResponseBodyReadError(detail=String(body_err)))
-
     def __init__(
         out self,
         body_bytes: Span[Byte, _],
@@ -327,38 +262,6 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
         # cached value first). Formatting a date per construction was pure
         # per-request overhead — measured ~9% of hello-world throughput.
 
-    def __init__(
-        out self,
-        mut reader: ByteReader,
-        var headers: Headers = Headers(),
-        var cookies: ResponseCookieJar = ResponseCookieJar(),
-        status_code: Int = 200,
-        status_text: String = "OK",
-        protocol: String = strHttp11,
-    ) raises:
-        self.headers = headers^
-        self.cookies = cookies^
-        if self.headers.known_index(KH_CONTENT_TYPE) < 0:
-            self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
-        self.status_code = status_code
-        self.status_text = status_text
-        self.protocol = protocol
-        self.body_raw = Bytes(reader.read_bytes().as_bytes())
-        self.sse_streaming = False
-        self.body_fd = -1
-        self.body_fd_offset = 0
-        self.body_fd_len = 0
-        self.stream_gen = 0
-        self.set_content_length(len(self.body_raw))
-        if self.headers.known_index(KH_CONNECTION) < 0:
-            self.set_connection_keep_alive()
-        if self.headers.known_index(KH_CONTENT_LENGTH) < 0:
-            self.set_content_length(len(self.body_raw))
-        # No Date header here: encode() adds one at wire-write time if the
-        # response still lacks it (and the event loop injects a per-second
-        # cached value first). Formatting a date per construction was pure
-        # per-request overhead — measured ~9% of hello-world throughput.
-
     def __len__(self) -> Int:
         return len(self.body_raw)
 
@@ -409,28 +312,6 @@ struct HTTPResponse(Encodable, Movable, Sized, Writable):
             or self.status_code == StatusCode.TEMPORARY_REDIRECT
             or self.status_code == StatusCode.PERMANENT_REDIRECT
         )
-
-    @always_inline
-    def read_body(mut self, mut r: ByteReader) raises:
-        try:
-            self.body_raw = Bytes(r.read_bytes(self.content_length()).as_bytes())
-            self.set_content_length(len(self.body_raw))
-        except e:
-            raise Error(String(e))
-
-    def read_chunks(mut self, chunks: Span[Byte, _]) raises:
-        var reader = ByteReader(chunks)
-        while True:
-            var size = atol(String(reader.read_line()), 16)
-            if size == 0:
-                break
-            try:
-                var data = reader.read_bytes(size).as_bytes()
-                reader.skip_carriage_return()
-                self.set_content_length(self.content_length() + len(data))
-                self.body_raw.extend(data)
-            except e:
-                raise Error(String(e))
 
     def write_to[T: Writer](self, mut writer: T):
         # The status line's rule is `encode`'s, so the text is the wire's.

@@ -330,9 +330,6 @@ struct ProvisionPoolExhaustedError(CustomError, ImplicitlyCopyable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(self.message)
 
-    def __str__(self) -> String:
-        return String(self)
-
 
 @fieldwise_init
 struct ProvisionError(Movable, Writable):
@@ -568,7 +565,7 @@ struct Server(Movable):
         bus_read_fd: Int = -1,
         offload_addr: Int = 0,
     ) raises ServerError:
-        """Listen and serve using the non-blocking kqueue event loop.
+        """Listen and serve on the non-blocking event loop, kqueue or epoll.
 
         Parameters:
             T: The type of HTTPService that handles incoming requests.
@@ -614,7 +611,7 @@ struct Server(Movable):
         offload_addr: Int = 0,
         accept_share: AcceptShare = AcceptShare(),
     ) raises ServerError:
-        """Serve HTTP requests using the non-blocking kqueue event loop.
+        """Serve HTTP requests on the non-blocking event loop, kqueue or epoll.
 
         The listener is handed to the loop, which closes it once, as its
         drain begins (review B26). It used to be borrowed, and its owner
