@@ -273,6 +273,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   with 400. A chunk extension (`5;name=value`) is still accepted and
   ignored, and so is whitespace between the size and the line's end.
 
+- **`HTTPRequest.encode()` writes the target it was given** (fork review
+  LF62, SPEC A37). Exposed: a Mojo application that writes a request out
+  (a proxy view, a test), and `String(req)`. The request line carried the
+  percent-decoded path: `/a%20b` went out as `/a b`, an encoded CR LF in a
+  URL as a real line break that split the request, and `OPTIONS *` as
+  `OPTIONS /`. It now carries `req.uri.request_uri`, the target as it
+  arrived or as the URL spelled it.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

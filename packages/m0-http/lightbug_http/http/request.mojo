@@ -248,6 +248,10 @@ struct HTTPRequest(Copyable, Encodable, Writable):
                 raise RequestBuildError(URIParseError())
             parsed_uri.host = server_host
             parsed_uri.port = server_port
+            # The target as it arrived, which the parse gave as `/` for an
+            # asterisk-form `*`; the writers send it back (review record
+            # LF62).
+            parsed_uri.request_uri = parsed.path
 
         # Asked before the headers move into the request below.
         var dechunked = parsed.is_chunked_body()
@@ -375,16 +379,25 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             HeaderKey.CONNECTION, "keep-alive"
         )
 
+    def _target(self) -> String:
+        """The request target the writers send: the URI's `request_uri`,
+        as it arrived or as the URL spelled it, escapes and all.
+
+        They wrote `uri.path`, which is percent-DECODED, and its query: so
+        `/a%20b` went out as `/a b`, no longer one request line's target,
+        an encoded CR LF as the real bytes, a request line split in two,
+        and an asterisk-form `*` as `/` (review record LF62).
+        """
+        if self.uri.request_uri.byte_length() == 0:
+            return strSlash
+        return self.uri.request_uri
+
     def write_to[T: Writer, //](self, mut writer: T):
         """Write the request in HTTP format to a writer."""
-        var path = self.uri.path if self.uri.path.byte_length() > 1 else strSlash
-        if self.uri.query_string.byte_length() > 0:
-            path.write("?", self.uri.query_string)
-
         writer.write(
             self.method,
             whitespace,
-            path,
+            self._target(),
             whitespace,
             self.protocol,
             lineBreak,
@@ -403,15 +416,11 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     def encode(deinit self) -> Bytes:
         """Encode request as bytes, consuming the request."""
-        var path = self.uri.path if self.uri.path.byte_length() > 1 else strSlash
-        if self.uri.query_string.byte_length() > 0:
-            path.write("?", self.uri.query_string)
-
         var writer = ByteWriter()
         writer.write(
             self.method,
             whitespace,
-            path,
+            self._target(),
             whitespace,
             self.protocol,
             lineBreak,

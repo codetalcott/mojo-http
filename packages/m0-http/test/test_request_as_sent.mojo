@@ -252,6 +252,43 @@ def test_the_uri_names_the_server_the_same_way_whatever_the_target() raises:
             assert_equal(req.headers.get(HeaderKey.HOST).value(), t[1], where)
 
 
+def _request_line(var req: HTTPRequest) -> String:
+    """The first line `encode` writes, CRLF excluded."""
+    var wire = req^.encode()
+    var end = 0
+    while end < len(wire) and wire[end] != 0x0D:
+        end += 1
+    return String(unsafe_from_utf8=Span(wire)[:end])
+
+
+def test_a_request_is_written_with_its_target_as_received() raises:
+    """`encode` and `write_to` write the request target as it arrived or as
+    the URL gave it: the percent-DECODED path went into the request line,
+    so `/a%20b` went out as `/a b` (no longer one request line's target),
+    an encoded CR LF as the real bytes (a split line), and an asterisk-form
+    `OPTIONS *` as `OPTIONS /` (review record LF62).
+
+    covers: A37
+    """
+    var head = String(" HTTP/1.1\r\nHost: a\r\n\r\n")
+    var targets = ["/a%20b?x=1", "/a%20b", "/x?q=a%26b", "/p", "*", "/"]
+    for t in targets:
+        var method = String("OPTIONS") if String(t) == "*" else String("GET")
+        var line = String(method, " ", t, " HTTP/1.1")
+        var req = request_from(String(method, " ", t, head))
+        assert_equal(req.uri.request_uri, String(t))
+        assert_true(String(req).startswith(line + "\r\n"), String("write_to: ", t))
+        assert_equal(_request_line(req^), line)
+    # A URL's escapes stay escapes: never a CR LF the request line splits on.
+    var built = HTTPRequest(URI.parse("http://example.com/x%0D%0AEvil:%201?a=%0A"))
+    assert_equal(_request_line(built^), "GET /x%0D%0AEvil:%201?a=%0A HTTP/1.1")
+    # An absolute-form target is written as the path it was reduced to.
+    assert_equal(
+        _request_line(request_from("GET http://h/p?q=1 HTTP/1.1\r\nHost: h\r\n\r\n")),
+        "GET /p?q=1 HTTP/1.1",
+    )
+
+
 def test_the_outgoing_constructor_still_fills_its_headers() raises:
     """The client's constructor keeps filling what a client must send."""
     var req = HTTPRequest(URI.parse("http://example.com/x"), body=Bytes("hi".as_bytes()))
