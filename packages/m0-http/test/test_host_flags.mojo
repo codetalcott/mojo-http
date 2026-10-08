@@ -168,8 +168,9 @@ def test_what_cannot_be_read_is_a_usage_error() raises:
     assert_true("must be a number" in _refused("--workers", "2x"))
     assert_true("must be a number" in _refused("--workers", "-1"))
     assert_true("must be a number" in _refused("--workers="))
-    assert_true("1-65535" in _refused("--port", "0"))
-    assert_true("1-65535" in _refused("--port", "70000"))
+    # A port out of range is read; `host_checks` refuses it with 78 (LF56).
+    assert_equal(_refused("--port", "0"), "")
+    assert_equal(_refused("--port", "70000"), "")
     assert_true("--host must not be empty" in _refused("--host", " "))
     assert_true("--qos takes no value" in _refused("--qos=1"))
     assert_true("--doctor takes no value" in _refused("--doctor=json"))
@@ -204,29 +205,35 @@ def test_a_count_that_cannot_be_served_is_a_refusal_not_a_usage_error() raises:
     assert_true(Bool(host_refusal(_parse("--spawn-workers").config)))
 
 
-def test_an_environment_port_of_0_is_refused_as_the_flag_is() raises:
-    """`M0_PORT=0` is read, then refused by the `port` check, as `--port 0`
-    is refused while the flags are read (review record LF56).
+def test_a_port_out_of_range_is_refused_whichever_way_it_came() raises:
+    """A port outside 1-65535 is read, then refused with 78 by the `port`
+    check, whether `--port` or `M0_PORT` named it (review record LF56).
 
     The environment took 0 and the host listened on a port the kernel
-    chose, while the flag refuses it: one setting, answered two ways. A
-    port above 65535 is refused the same way, where it failed at the bind.
-    A port the flag names is checked by the flag, before this.
+    chose, while `--port 0` was a usage error: one setting answered two
+    ways, where a value that cannot be served is one refusal whichever way
+    it arrived (E31). Both are now the same 78, in the same words.
 
     covers: E31
     """
     _ = setenv("M0_PORT", "0", True)
-    var zero = host_refusal(AppConfig())
-    var by_flag = host_refusal(_parse("--port", "8080").config)
+    var by_env = host_refusal(AppConfig())
+    var over = host_refusal(_parse("--port", "8080").config)
     _ = setenv("M0_PORT", "70000", True)
-    var high = host_refusal(AppConfig())
+    var high_env = host_refusal(AppConfig())
     _ = unsetenv("M0_PORT")
-    assert_true(Bool(zero), "M0_PORT=0 was served")
-    assert_true("M0_PORT must be 1-65535, got 0" in zero.value(), zero.value())
-    assert_true("--port (M0_PORT)" in zero.value(), zero.value())
-    assert_true(Bool(high), "M0_PORT=70000 was served")
-    assert_true("got 70000" in high.value(), high.value())
-    assert_false(Bool(by_flag), "--port 8080 over M0_PORT=0 was refused")
+    var by_flag = host_refusal(_parse("--port", "0").config)
+    var high_flag = host_refusal(_parse("--port", "70000").config)
+    assert_true(Bool(by_env), "M0_PORT=0 was served")
+    assert_true(Bool(by_flag), "--port 0 was served")
+    assert_equal(by_flag.value(), by_env.value())
+    assert_true("M0_PORT must be 1-65535, got 0" in by_env.value(), by_env.value())
+    assert_true("--port (M0_PORT)" in by_env.value(), by_env.value())
+    assert_true(Bool(high_env), "M0_PORT=70000 was served")
+    assert_true(Bool(high_flag), "--port 70000 was served")
+    assert_true("got 70000" in high_env.value(), high_env.value())
+    assert_equal(high_flag.value(), high_env.value())
+    assert_false(Bool(over), "--port 8080 over M0_PORT=0 was refused")
     assert_false(Bool(host_refusal(AppConfig())), "the default port was refused")
 
 

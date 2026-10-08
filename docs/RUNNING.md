@@ -237,8 +237,8 @@ These flags have an `M0_*` variable: `--host`, `--port`, `--workers`,
 variable, which beats the default. Flags are strict: `--port 80eighty` is
 a usage error. Variables are lenient: `M0_PORT=80eighty` serves on the
 default port, and m0serve prints a line at startup naming the value it
-ignored and what it used instead. A port the variable names outside
-1-65535, 0 among them, is refused with 78 as the flag's is refused with 2.
+ignored and what it used instead. A port outside 1-65535, 0 among them, is
+read and then refused with 78, whether `--port` or `M0_PORT` names it.
 `--doctor` prints the values the server would use.
 
 ## Coming from uvicorn

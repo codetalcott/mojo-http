@@ -12,17 +12,17 @@ I chose that", as `M0_WORKERS=1` is.
 
 **Strict where the environment is lenient.** `M0_PORT=abc` is the default
 port; `--port abc` is exit 2 with the usage. So is an unknown flag, a missing
-value, a value on a boolean, a port outside 1-65535, and any positional: a
-host application takes no arguments of its own, and its own configuration
-stays in its own variables, checked in its `main` before `serve` is called.
+value, a value on a boolean, and any positional: a host application takes no
+arguments of its own, and its own configuration stays in its own variables,
+checked in its `main` before `serve` is called.
 The reading is `m0_http.cmdline`, which m0serve's parser reads with too, so
 the two command lines refuse the same things in the same words.
 
 **What is NOT a usage error.** A count the host cannot serve --
 `--workers 0`, both modes at once, more workers than the application's state
 allows -- is a REFUSAL, exit 78, decided by `host_checks` whichever way the
-number arrived. One path, so `M0_THREADS=0` and `--threads 0` cannot be
-answered differently. (m0serve answers its `--workers 0` with 2; it has no
+number arrived; so is a port outside 1-65535 (review record LF56). One
+path, so `M0_THREADS=0` and `--threads 0` cannot be answered differently. (m0serve answers its `--workers 0` with 2; it has no
 env-side refusal to agree with.)
 
 **The overlay is idempotent**, which is what lets it run twice: `serve`
@@ -167,9 +167,9 @@ def _apply(mut config: AppConfig, name: String, value: String) raises:
             raise Error("--host must not be empty")
         config.host = listen_host(host)
     elif name == "--port":
+        # A port out of range is read: `host_checks`' `port` refuses it with
+        # 78, as it refuses `M0_PORT` (review record LF56).
         var port = parse_int(value, "--port")
-        if port < 1 or port > 65535:
-            raise Error("--port must be 1-65535, got " + value)
         config.port = port
         # `AppConfig` derives the base URL from the port it resolved; keep
         # that true of the port a flag moved, unless the URL was given.

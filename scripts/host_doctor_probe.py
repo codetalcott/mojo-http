@@ -169,11 +169,13 @@ def main() -> int:
     p = P()
     rows.append(("--workers 0", ["--port", str(p), "--workers", "0"], {}, 78,
                  {"check": "workers-count"}))
-    # The environment's port 0: read, then refused by the first check, as
-    # --port 0 is refused while the flags are read (review record LF56). It
-    # served on a port the kernel chose.
+    # A port outside 1-65535, whichever way it came: read, then refused by
+    # the first check (review record LF56). The environment's 0 served on a
+    # port the kernel chose, and the flag's was a usage error.
     rows.append(("an environment port of 0", [], {"M0_PORT": "0"}, 78,
                  {"check": "port"}))
+    rows.append(("--port 0", ["--port", "0"], {}, 78, {"check": "port"}))
+    rows.append(("--port 70000", ["--port", "70000"], {}, 78, {"check": "port"}))
     p = P()
     rows.append(("more workers than the application serves", ["--port", str(p), "--workers", "2"],
                  {"M0_HOSTCHECK_MAX_WORKERS": "1"}, 78,
@@ -194,7 +196,6 @@ def main() -> int:
     for name, args in (
         ("an unknown flag", ["--prot", "9"]),
         ("a port that is not a number", ["--port", "abc"]),
-        ("a port out of range", ["--port", "70000"]),
         ("a flag with no value", ["--workers"]),
         ("a value on a boolean", ["--qos=1"]),
         ("a positional", ["notes.db"]),

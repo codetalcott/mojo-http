@@ -1465,10 +1465,9 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
             raise Error("--host must not be empty")
         opts.host = listen_host(host)
     elif name == "--port":
-        var port = parse_int(value, "--port")
-        if port < 1 or port > 65535:
-            raise Error("--port must be between 1 and 65535, got " + value)
-        opts.port = port
+        # A port out of range is read: the `port` check refuses it with 78
+        # before the bind, as it refuses `M0_PORT` (review record LF56).
+        opts.port = parse_int(value, "--port")
     elif name == "--workers":
         var workers = parse_int(value, "--workers")
         if workers < 1:

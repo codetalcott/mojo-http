@@ -186,9 +186,12 @@ def test_non_numeric_port_is_an_error() raises:
     assert_true(_fails([String("m.wsgi"), String("--port"), String("80eighty")]))
 
 
-def test_port_out_of_range_is_an_error() raises:
-    assert_true(_fails([String("m.wsgi"), String("--port"), String("0")]))
-    assert_true(_fails([String("m.wsgi"), String("--port"), String("65536")]))
+def test_a_port_out_of_range_is_read_not_a_usage_error() raises:
+    """`--port 0` and `--port 65536` are read: the `port` check refuses
+    them with 78, as it refuses `M0_PORT` (review record LF56)."""
+    assert_false(_fails([String("m.wsgi"), String("--port"), String("0")]))
+    assert_equal(_parse([String("m.wsgi"), String("--port"), String("0")]).port, 0)
+    assert_equal(_parse([String("m.wsgi"), String("--port"), String("65536")]).port, 65536)
     assert_equal(_parse([String("m.wsgi"), String("--port"), String("65535")]).port, 65535)
 
 
@@ -713,41 +716,39 @@ def test_from_env_names_a_number_too_large_for_an_int() raises:
     _clear_env()
 
 
-def test_an_environment_port_of_0_is_refused_as_the_flag_is() raises:
-    """`M0_PORT=0` is read, then refused with 78 by the `port` check, which
-    words it as `--port 0` is refused (review record LF56).
+def test_a_port_out_of_range_is_refused_whichever_way_it_came() raises:
+    """A port outside 1-65535 is refused with 78 by the `port` check,
+    whether `M0_PORT` or `--port` named it (review record LF56).
 
     The environment took 0, and m0serve served on a port the kernel chose
-    while its startup line said `:0`; the flag refuses 0 as a usage error.
-    A port above 65535 is refused the same way, where it failed at the
-    bind. A port the flag names is the flag's to refuse, before this.
+    while its startup line said `:0`; `--port 0` was a usage error, exit 2.
+    Both are now the one check's 78, in the same words, and a port above
+    65535 likewise, where the variable's failed at the bind.
 
     covers: M2
     """
+    var facts = CheckFacts(False, False, True)
     _clear_env()
     _ = setenv("M0_PORT", "0", True)
     var seed = ServeOptions.from_env()
-    var zero = first_refusal(flag_checks(parse_args([String("m.wsgi")], seed), CheckFacts(False, False, True)))
-    var flagged = first_refusal(
-        flag_checks(parse_args([String("m.wsgi"), String("--port"), String("8000")], seed), CheckFacts(False, False, True))
+    var by_env = first_refusal(flag_checks(parse_args([String("m.wsgi")], seed), facts))
+    var over = first_refusal(
+        flag_checks(parse_args([String("m.wsgi"), String("--port"), String("8000")], seed), facts)
     )
     _ = setenv("M0_PORT", "70000", True)
-    var high = first_refusal(
-        flag_checks(parse_args([String("m.wsgi")], ServeOptions.from_env()), CheckFacts(False, False, True))
-    )
+    var high = first_refusal(flag_checks(parse_args([String("m.wsgi")], ServeOptions.from_env()), facts))
     _clear_env()
-    assert_true(Bool(zero), "M0_PORT=0 was served")
-    assert_equal(zero.value().name, "port")
-    assert_equal(zero.value().code, EXIT_CONFIG)
-    assert_equal(zero.value().detail, "M0_PORT must be between 1 and 65535, got 0")
-    assert_true("--port (M0_PORT)" in zero.value().fix, zero.value().fix)
-    var flag_error = String("")
-    try:
-        _ = parse_args([String("m.wsgi"), String("--port"), String("0")], ServeOptions())
-    except e:
-        flag_error = String(e)
-    assert_true("must be between 1 and 65535, got 0" in flag_error, flag_error)
-    assert_false(Bool(flagged), "--port 8000 over M0_PORT=0 was refused")
+    var by_flag = first_refusal(
+        flag_checks(parse_args([String("m.wsgi"), String("--port"), String("0")], ServeOptions()), facts)
+    )
+    assert_true(Bool(by_env), "M0_PORT=0 was served")
+    assert_true(Bool(by_flag), "--port 0 was served")
+    for refusal in [by_env.value().copy(), by_flag.value().copy()]:
+        assert_equal(refusal.name, "port")
+        assert_equal(refusal.code, EXIT_CONFIG)
+        assert_equal(refusal.detail, "M0_PORT must be between 1 and 65535, got 0")
+        assert_true("--port (M0_PORT)" in refusal.fix, refusal.fix)
+    assert_false(Bool(over), "--port 8000 over M0_PORT=0 was refused")
     assert_true(Bool(high), "M0_PORT=70000 was served")
     assert_equal(high.value().detail, "M0_PORT must be between 1 and 65535, got 70000")
 
