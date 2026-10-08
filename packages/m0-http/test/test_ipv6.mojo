@@ -618,9 +618,10 @@ def test_the_banner_names_the_port_bound() raises:
     LF47).
 
     It named the port it was asked for: `Lightbug is listening on
-    http://127.0.0.1:0`, a port no client can connect to. The Mojo host
-    prints no address of its own, so this line is the one a host
-    application started with `M0_PORT=0` had.
+    http://127.0.0.1:0`, a port no client can connect to. Reached by an
+    application that passes `Server.listen_and_serve` or
+    `ListenConfig.listen` a port of 0 itself; m0serve and the Mojo host
+    refuse a port of 0 (LF56).
 
     covers: F25
     """
