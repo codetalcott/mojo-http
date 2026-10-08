@@ -134,8 +134,6 @@ def _latin1_jar() -> ResponseCookieJar:
 
 
 def _assert_latin1_on_the_wire(wire: List[Byte]) raises:
-    var e9 = List[Byte]()
-    e9.append(0xE9)
     var wsgi = List[Byte]()
     wsgi.append(0xE9)
     wsgi.extend(String("; Path=/").as_bytes())
@@ -151,9 +149,11 @@ def _assert_latin1_on_the_wire(wire: List[Byte]) raises:
         _bytes_find(wire, _line("set-cookie: asgi=caf", asgi^)) >= 0,
         "an ASGI application's own cookie bytes did not reach the wire as sent",
     )
+    # A built cookie's value above 0x7E is no cookie-octet: the jar drops
+    # the line rather than write it in either encoding (review record LF55).
     assert_true(
-        _bytes_find(wire, _line("set-cookie: built=", e9^)) >= 0,
-        "a built cookie's value was not written as latin-1",
+        _bytes_find(wire, List[Byte](String("set-cookie: built=").as_bytes())) < 0,
+        "a built cookie whose value is not cookie-octets was written",
     )
     # And the ordinary header beside it, which always went out latin-1:
     # the cookie now agrees with it.
@@ -242,6 +242,59 @@ def test_one_cookie_per_name_domain_and_path() raises:
     assert_true("set-cookie: a=3; Path=/x\r\n" in wire, wire)
     assert_true("set-cookie: a=4; Domain=example.test\r\n" in wire, wire)
     assert_false("a=1" in wire, wire)
+
+
+def _dropping_jar() -> ResponseCookieJar:
+    """Built cookies that would break their line, three that would not,
+    and an application's raw line that is none of the jar's business."""
+    var jar = ResponseCookieJar()
+    jar.set_cookie(Cookie("theme", "dark; Domain=evil.test; Max-Age=99999999"))
+    jar.set_cookie(Cookie("a b", "1"))
+    jar.set_cookie(Cookie("c=d", "1"))
+    jar.set_cookie(Cookie("", "1"))
+    jar.set_cookie(Cookie("q", 'x"y'))
+    jar.set_cookie(Cookie("lone", '"'))
+    jar.set_cookie(Cookie("sp", "a b"))
+    jar.set_cookie(Cookie("cm", "a,b"))
+    jar.set_cookie(Cookie("bs", "a\\b"))
+    jar.set_cookie(Cookie("hi", "é"))
+    jar.set_cookie(Cookie("tab", "a\tb"))
+    jar.set_cookie(Cookie("p", "1", path=String("/; Domain=evil.test")))
+    jar.set_cookie(Cookie("d", "1", domain=String("x.test; Secure")))
+    jar.set_cookie(Cookie("ok", "v=1", path=String("/a b")))
+    jar.set_cookie(Cookie("quoted", '"ab"'))
+    jar.set_cookie(Cookie("empty", ""))
+    jar.add_raw("raw=a b; c")
+    return jar^
+
+
+def _assert_only_the_clean_lines(wire: String) raises:
+    assert_equal(_count(wire, "set-cookie: "), 4, wire)
+    assert_true("set-cookie: ok=v=1; Path=/a b\r\n" in wire, wire)
+    assert_true('set-cookie: quoted="ab"\r\n' in wire, wire)
+    assert_true("set-cookie: empty=\r\n" in wire, wire)
+    assert_true("set-cookie: raw=a b; c\r\n" in wire, wire)
+    assert_false("evil.test" in wire, wire)
+    assert_false("Max-Age=99999999" in wire, wire)
+
+
+def test_a_built_cookie_that_would_break_its_line_is_dropped() raises:
+    """A `Cookie` a view builds is dropped, as a header carrying CR or LF
+    is (G2), when its name is not a token (RFC 6265 §4.1.1, `a b`, `c=d`,
+    empty) or its value holds a byte outside cookie-octet (a `;`, a space,
+    a comma, a backslash, a DQUOTE inside, a byte above 0x7E, a control)
+    -- a value wrapped in DQUOTEs is allowed -- or its Domain or Path holds
+    a `;` or a control byte. Written as it was, `Cookie("theme", "dark;
+    Domain=evil.test")` set a cookie for another site (review record LF55).
+    An application's `add_raw` line still goes out verbatim (G3). Held on
+    both writers: the text form and the bytes `encode` sends.
+
+    covers: G2
+    """
+    _assert_only_the_clean_lines(_wire(_dropping_jar()))
+    var resp = HTTPResponse(owned_body=Bytes(), cookies=_dropping_jar())
+    var sent = resp^.encode()
+    _assert_only_the_clean_lines(String(unsafe_from_utf8=Span(sent)))
 
 
 def main() raises:

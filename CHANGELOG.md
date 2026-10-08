@@ -55,6 +55,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   (`http://127.0.0.1:/x`), which raised, is read as no port, the scheme's
   default, as RFC 3986 §3.2.3 allows.
 
+- **A cookie a Mojo view builds can no longer add attributes of its own**
+  (SPEC G2). Exposed: an m0 application that builds a `Cookie` from
+  request data and sets it with `ResponseCookieJar.set_cookie`. Each field
+  was written as given, so `Cookie("theme", "dark; Domain=evil.test")`
+  went out as `theme=dark; Domain=evil.test`, a cookie for another site.
+  A built cookie whose name is not a token, whose value holds a byte
+  outside RFC 6265's cookie-octets (a `;`, a space, a comma, a backslash,
+  a quote inside, a byte above 0x7E; one pair of quotes around the value
+  is allowed), or whose `Domain` or `Path` holds a `;` or a control byte,
+  is now dropped from the response, as a header holding a line break is.
+  Encode such a value before building the cookie. A `Set-Cookie` line an
+  application hands `add_raw`, which is how every WSGI and ASGI
+  application's cookies arrive, is still sent as given.
+
 - **An empty `Host` is accepted when the target names no host** (SPEC
   B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
   when the URI it requests has no authority, and every empty `Host` was

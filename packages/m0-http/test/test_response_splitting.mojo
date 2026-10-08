@@ -422,7 +422,7 @@ def _assert_overlong_cookies_kept_whole(
     wire: List[Byte], clean: List[Byte], latin1: Bool
 ) raises:
     assert_equal(
-        _head_lines(wire), _head_lines(clean) + 6, "an overlong cookie split or lost a line"
+        _head_lines(wire), _head_lines(clean) + 5, "an overlong cookie split or lost a line"
     )
     var cr_lf = _seq(0xE0, 0x80, 0x8D)
     cr_lf.extend(Span(_seq(0xE0, 0x80, 0x8A)))
@@ -431,12 +431,12 @@ def _assert_overlong_cookies_kept_whole(
     kept.append(_line("set-cookie", _cat("c=", _seq(0xF0, 0x80, 0x80, 0x8A), "X-Hijack: 1")))
     kept.append(_line("set-cookie", _cat("d=", _seq(0xE0, 0x80, 0x80), "x")))
     kept.append(_line("set-cookie", _cat("e=", _seq(0xF0, 0x80, 0x80, 0x80), "x")))
-    kept.append(_line("set-cookie", _cat("f=6", cr_lf, "X-Hijack: 1")))
     for k in range(len(kept)):
         assert_true(
             _find(Span(wire), Span(kept[k])) >= 0,
             String("overlong Set-Cookie ", k, " was not written as it was given"),
         )
+    assert_false(_has(wire, "f=6"), "a built cookie that is not cookie-octets was written")
     assert_false(_has(wire, "\r\nSet-Cookie"), "an overlong CRLF started a header")
     assert_false(_has(wire, "\nX-Hijack"), "an overlong LF started a header")
     var cafe = _seq(0xE9) if latin1 else _seq(0xC3, 0xA9)
@@ -448,8 +448,9 @@ def _assert_overlong_cookies_kept_whole(
 
 def test_an_overlong_line_break_in_a_cookie_is_not_a_way_past_the_refusal() raises:
     """The cookie jar's latin-1 writer is the header writer's rule for one
-    header, so an overlong CR, LF or NUL in a line handed to `add_raw`, or
-    in a `Cookie` a view built, goes out as given, never as a break.
+    header, so an overlong CR, LF or NUL in a line handed to `add_raw` goes
+    out as given, never as a break. A `Cookie` a view built holding one is
+    dropped whole: its bytes are no cookie-octets (review record LF55).
 
     covers: G19
     """

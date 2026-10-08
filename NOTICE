@@ -1623,6 +1623,14 @@ lightbug_http
         is data, not a fragment to cut (RFC 9112 §3.2). Tests pin each
         (review record LF53, SPEC G28, B19).
 
+      - cookie/response_cookie_jar.mojo (2026-10-08): both writers drop a
+        built `Cookie` the new `built_cookie_is_well_formed` refuses: a
+        name that is not a token, a value outside cookie-octet (one pair of
+        DQUOTEs allowed), a `Domain` or `Path` holding a `;` or a control
+        byte (RFC 6265 §4.1.1). Each field was written as given, so a value
+        added attributes (`dark; Domain=evil.test`). `add_raw` lines are
+        unchanged (review record LF55, SPEC G2).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

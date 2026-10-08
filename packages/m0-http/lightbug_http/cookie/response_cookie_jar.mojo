@@ -11,6 +11,7 @@ from lightbug_http.header import (
     write_header,
 )
 from lightbug_http.io.bytes import ByteWriter
+from lightbug_http.strings import is_token_char
 
 from lightbug_http.cookie.cookie import Cookie
 
@@ -85,9 +86,14 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
         header (SPEC G2): a cookie is a header value like any other, and a
         CRLF in one -- a `Cookie` a view built from request data, or a line
         an application handed `add_raw` -- would end the line and start a
-        header of its own. The jar's other lines still go out.
+        header of its own. The jar's other lines still go out. A built
+        `Cookie` that is not well formed is dropped too
+        (`built_cookie_is_well_formed`); an `add_raw` line is the
+        application's and goes out as given.
         """
         for cookie in self._inner.values():
+            if not built_cookie_is_well_formed(cookie):
+                continue
             var v = cookie.build_header_value()
             if not span_breaks_header_line(v.as_bytes()):
                 write_header(writer, HeaderKey.SET_COOKIE, v)
@@ -110,9 +116,70 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
         this drops (SPEC G2).
         """
         for cookie in self._inner.values():
+            if not built_cookie_is_well_formed(cookie):
+                continue
             _write_set_cookie_latin1(writer, cookie.build_header_value())
         for line in self.raw:
             _write_set_cookie_latin1(writer, line)
+
+
+@always_inline
+def _is_cookie_octet(c: UInt8) -> Bool:
+    """RFC 6265 §4.1.1's cookie-octet: visible ASCII but DQUOTE, comma,
+    semicolon and backslash."""
+    return (
+        c == 0x21
+        or (c >= 0x23 and c <= 0x2B)
+        or (c >= 0x2D and c <= 0x3A)
+        or (c >= 0x3C and c <= 0x5B)
+        or (c >= 0x5D and c <= 0x7E)
+    )
+
+
+@always_inline
+def _is_attribute_value(text: String) -> Bool:
+    """RFC 6265 §4.1.1's `Domain` and `Path` values: any CHAR but the
+    controls (DEL among them) and `;`."""
+    for c in text.as_bytes():
+        if c < 0x20 or c >= 0x7F or c == 0x3B:
+            return False
+    return True
+
+
+def built_cookie_is_well_formed(cookie: Cookie) -> Bool:
+    """Whether a `Cookie` a view built can be written as one `Set-Cookie`
+    line meaning what its fields say (RFC 6265 §4.1.1).
+
+    The name is a token; the value is cookie-octets, optionally wrapped in
+    one pair of DQUOTEs; a `Domain` or `Path` holds no control byte and no
+    `;`. Each field was written as given, so a value from request data
+    added attributes of its own: `Cookie("theme", "dark; Domain=evil.test")`
+    went out as `theme=dark; Domain=evil.test`, a cookie for another site,
+    and a name with a space or an `=` was a different cookie in every
+    browser (review record LF55). The jar's writers drop one that is not,
+    as a header holding CR or LF is dropped (SPEC G2), never raising: the
+    view has run and its response is real.
+    """
+    var name = cookie.name.as_bytes()
+    if len(name) == 0:
+        return False
+    for c in name:
+        if not is_token_char(c):
+            return False
+    var value = cookie.value.as_bytes()
+    var start = 0
+    var end = len(value)
+    if end >= 2 and value[0] == 0x22 and value[end - 1] == 0x22:
+        start = 1
+        end -= 1
+    for i in range(start, end):
+        if not _is_cookie_octet(value[i]):
+            return False
+    if cookie.domain and not _is_attribute_value(cookie.domain.value()):
+        return False
+    if cookie.path and not _is_attribute_value(cookie.path.value()):
+        return False
+    return True
 
 
 def _write_set_cookie_latin1(mut writer: ByteWriter, value: String):
