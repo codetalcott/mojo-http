@@ -65,12 +65,18 @@ def test_epoll_reports_the_registration_that_failed() raises:
     comptime if not CompilationTarget.is_macos():
         var outer = EpollBackend()
         var inner = EpollBackend()
+        var outer_fd = outer.multiplexer_fd()
         outer.add_read(inner.multiplexer_fd())
         var text = String("")
         try:
-            inner.add_read(outer.multiplexer_fd())
+            inner.add_read(outer_fd)
         except e:
             text = String(e)
+        # Both alive to here: a backend closes its epoll instance when it is
+        # destroyed, and reading `outer`'s number would otherwise be its
+        # last use, closing it before the add (EBADF, measured on Linux).
+        _ = outer
+        _ = inner
         assert_true(text != "", "an add that closes a loop of epoll instances was accepted")
         assert_true(
             text.find("epoll_ctl ADD") >= 0 and text.find("(errno 40)") >= 0,
