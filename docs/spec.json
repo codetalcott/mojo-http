@@ -1266,6 +1266,14 @@
       "evidence": "`test_socket_spans.mojo:test_recv_writes_only_inside_the_span_it_is_given` (every PR) \u2014 with `test_send_sends_only_the_span_it_is_given` and `test_spare_capacity_is_the_room_past_the_length` beside it. Both calls took a length beside the span that the span did not have to back, and the loop's body, WebSocket and lingering reads passed an empty span with a capacity count; a count above a span's length was written past its end, measured on the old signature as 64 bytes received into a 10-byte span, 54 of them past it (review record LF20). Each half sabotaged fails its own test: `recv` or `send` taking 16 bytes more than its span, and `spare_capacity` starting at the list's first byte"
     },
     {
+      "id": "G25",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "No variadic libc function is called through `external_call` outside its sanctioned wrapper, and neither the fork nor m0-http's `src/` holds a `[byte=` slice outside a reasoned allowlist: Darwin arm64 passes variadic arguments on the stack, so `fcntl` and `shm_open` take `_fcntl`'s shape (dummies fill x0-x7) in one file each and `syscall` is Linux's alone, and a `[byte=a:b]` slice asserts a codepoint boundary, a trap on a request's non-UTF-8 bytes",
+      "status": "verified",
+      "evidence": "`Run the shim tests and the compile gates` (every PR) \u2014 `poe fork-lint` reads every `.mojo` under `packages/`, `apps/`, `scripts/` and `packaging/` for a variadic symbol in `scripts/fork_lint.py`'s `VARIADIC` list (the list lives in the lint; the sanctioned files are its `SANCTIONED`, and `c/fcntl.mojo`'s docstring is checked to name each), a call whose symbol is not a string literal in any quoting style, and the fork and `src/` for `[byte=` however spaced or split (`ALLOWED_BYTE_SLICES`: the constant hex tables and the static mount's configured prefix, keyed by file and line snippet, a stale entry refused); comments, docstrings and strings are not read. Its selftest plants a fixed-argument `shm_open` and a `[byte=` slice of a request string, each refused naming file and line, and passes a clean sample. Pure text, so the two defects of review records LF17 cannot return unseen; it does not see a variadic function reached through `dlopen` (m0-sqlite, m0-postgres)"
+    },
+    {
       "id": "H1",
       "section": "H",
       "category": "H. TLS",

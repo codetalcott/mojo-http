@@ -1253,7 +1253,7 @@ default_item_type = "ref"
 # `build-all`.
 [tool.poe.tasks.test-gates]
 help = "test-all's second half: the shim's rules, the phase stamps, m0-sqlite and its sabotage, and the compile gates (CI's unit-gates job)"
-sequence = ["test-shim", "check-phase-stamps", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
+sequence = ["test-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -1379,6 +1379,15 @@ cmd = "python3 scripts/zero_alloca_check.py --sabotage"
 [tool.poe.tasks.check-copyback]
 help = "No struct written through its address (the asyncio executor's state) is passed by value in m0serve's IR"
 cmd = "python3 scripts/copyback_guard.py"
+
+# A variadic libc function called through external_call outside its
+# sanctioned wrapper (Darwin arm64 passes variadic arguments on the stack,
+# review record LF17), and any `[byte=` slice in the fork (SPEC G14): pure
+# text, a second. The selftest runs first, so "no findings" cannot mean the
+# rules read nothing (SPEC G25).
+[tool.poe.tasks.fork-lint]
+help = "No variadic libc symbol called outside its wrapper, no [byte=] slice in the fork (SPEC G25)"
+shell = "python3 scripts/fork_lint.py --selftest && python3 scripts/fork_lint.py"
 
 [tool.poe.tasks.check-app-vocabulary]
 help = "An app OUTSIDE the repo defines a Vocabulary (htmx 4): attributes asserted in both tiers, read by the vendored hxlint (SPEC N21)"
