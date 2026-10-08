@@ -1372,13 +1372,17 @@ def parse_request_headers(
     # which leaves the request's target host unstated in any deployment
     # that routes or caches on it.
     #
-    # Whitespace-only values ("Host: " / "Host: \t") are stripped to "" by
-    # the parser's OWS skip and are rejected by the same check.
+    # An EMPTY value is what RFC 9110 §7.2 asks a client to send when the
+    # target URI has no authority, so it is accepted unless the request
+    # target names one -- absolute-form, whose Host must be that authority
+    # (SPEC B20). Every empty Host was refused, where h11 and llhttp accept
+    # it. Whitespace-only values ("Host: " / "Host: \t") are stripped to ""
+    # by the parser's OWS skip and read the same way.
     #
     # Every minor version from 1 up: HTTP/1.2 to HTTP/1.9 are processed as
     # HTTP/1.1, the highest this server implements (RFC 9110 §2.5), and the
     # check that asked for 1 exactly served them with no Host (SPEC B15).
-    if minor_version >= 1 and host_len <= 0:
+    if minor_version >= 1 and (host_len < 0 or (host_len == 0 and scheme_len > 0)):
         raise RequestParseError(InvalidHTTPRequestError())
 
     # RFC 9112 §3.2.2: with an absolute-form target the server MUST ignore

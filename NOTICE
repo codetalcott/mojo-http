@@ -1355,6 +1355,10 @@ lightbug_http
         SPEC B19). `GET p`, `GET h:80` and `/caf\xe9` were served (review
         record LF37).
 
+      - header.mojo (2026-10-08): `parse_request_headers` accepts an empty
+        `Host` on HTTP/1.1 unless the target is absolute-form (RFC 9110
+        §7.2, SPEC B20). Every empty one was refused (review record LF38).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

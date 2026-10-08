@@ -32,6 +32,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   non-ASCII character must be percent-encoded, as every browser does, and
   the escape still reaches the application undecoded.
 
+- **An empty `Host` is accepted when the target names no host** (SPEC
+  B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
+  when the URI it requests has no authority, and every empty `Host` was
+  answered 400. It is accepted on an origin-form (`/path`) or `*` target,
+  and the application reads an empty `HTTP_HOST`; beside an absolute-form
+  target (`http://host/path`) it is still refused, as is a missing `Host`.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

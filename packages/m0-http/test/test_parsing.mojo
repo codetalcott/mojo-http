@@ -197,17 +197,25 @@ def test_single_content_length_is_accepted() raises:
 # --- Host: RFC 9110 7.2 ------------------------------------------------------
 
 
-def test_http11_requires_a_non_empty_host() raises:
-    """An empty Host lets a request be routed by whatever the next hop guesses.
+def test_an_empty_host_is_accepted_when_the_target_names_no_authority() raises:
+    """RFC 9110 §7.2: a client whose target URI has no authority MUST send
+    `Host` with an EMPTY value, and an origin-form or asterisk-form target
+    names none. Every empty Host was refused, where h11 and llhttp accept
+    it. OWS trimming turns "Host: \\t" into "", read the same way. An
+    absolute-form target names its authority, which Host must then be, so
+    an empty one there is still refused -- and a missing Host is refused
+    whatever the target.
 
-    covers: A14
+    covers: B20
     """
-    assert_true(_rejected("GET / HTTP/1.1\r\nHost: \r\n\r\n"))
-
-
-def test_http11_rejects_a_whitespace_only_host() raises:
-    """OWS trimming turns "Host: \\t" into "", which must still be rejected."""
-    assert_true(_rejected("GET / HTTP/1.1\r\nHost:\t\r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost:\r\n\r\n"))
+    assert_equal(_header("GET / HTTP/1.1\r\nHost: \r\n\r\n", "host"), "")
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost:\t\r\n\r\n"))
+    assert_true(_accepted("OPTIONS * HTTP/1.1\r\nHost:\r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.2\r\nHost:\r\n\r\n"))
+    assert_true(_rejected("GET http://h/p HTTP/1.1\r\nHost:\r\n\r\n"))
+    assert_true(_rejected("GET HTTPS://h HTTP/1.1\r\nHost: \r\n\r\n"))
+    assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
 
 
 def test_http11_accepts_a_real_host() raises:
@@ -222,7 +230,10 @@ def test_http10_without_host_is_accepted() raises:
 def test_http11_requires_host_to_be_present_at_all() raises:
     """RFC 9112 3.2 asks for 400, and the empty-Host check did not cover
     this: `headers.get()` returned None, which short-circuited the `and`
-    and let the request through with its target host unstated."""
+    and let the request through with its target host unstated.
+
+    covers: A14
+    """
     assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
     assert_true(_rejected("POST / HTTP/1.1\r\nContent-Length: 0\r\n\r\n"))
 
@@ -236,7 +247,7 @@ def test_a_later_http1_minor_version_requires_host() raises:
     """
     assert_true(_rejected("GET / HTTP/1.2\r\n\r\n"))
     assert_true(_rejected("GET / HTTP/1.9\r\n\r\n"))
-    assert_true(_rejected("GET / HTTP/1.2\r\nHost: \r\n\r\n"))
+    assert_true(_rejected("GET http://h/ HTTP/1.2\r\nHost: \r\n\r\n"))
     assert_true(_accepted("GET / HTTP/1.2\r\nHost: x\r\n\r\n"))
 
 

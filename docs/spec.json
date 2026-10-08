@@ -111,7 +111,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "`Host` required on HTTP/1.1",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_http11_requires_a_non_empty_host` (every PR)"
+      "evidence": "`test_parsing.mojo:test_http11_requires_host_to_be_present_at_all` (every PR) \u2014 an empty one is accepted where the target names no authority (B20)"
     },
     {
       "id": "A15",
@@ -360,6 +360,14 @@
       "capability": "A request target outside RFC 9112 \u00a73.2's forms, or holding a byte above ASCII, refused with 400: origin-form opens with `/`, absolute-form is `http` or `https`, `*` is OPTIONS's alone and authority-form CONNECT's (B18); a `%` escape is left to the application",
       "status": "verified",
       "evidence": "`test_parsing.mojo:test_a_request_target_must_take_one_of_the_four_forms` (every PR) \u2014 `GET p` and `GET h:80` were served, the application reading a path with no leading slash, and `/caf<0xE9>` was served where h11 and llhttp both refuse it, the application reading a path that is not UTF-8 (review record LF37). `GET *` was served too, as h11 and llhttp serve it; RFC 9112 \u00a73.2.4 gives `*` to OPTIONS alone. The bytes are the target scanner's rule and the forms `parse_request_headers`'; `test_a_byte_above_ascii_in_the_request_target_is_rejected` holds the bytes at every offset across the scanner's widths, and that such a target is invalid before its line ends. Every other VCHAR is still accepted, as h11 accepts it: browsers send braces, a vertical bar and a caret unescaped in a query"
+    },
+    {
+      "id": "B20",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "An empty `Host` accepted on HTTP/1.1 when the request target names no authority (origin-form, or `*`), as RFC 9110 \u00a77.2 asks a client to send it; refused beside an absolute-form target, whose authority `Host` must be, and a missing `Host` still refused",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_an_empty_host_is_accepted_when_the_target_names_no_authority` (every PR) \u2014 every empty `Host` was refused with 400, where h11 and llhttp accept it (review record LF38). The application reads an empty `Host` (WSGI's `HTTP_HOST`); one routing on it decides what an empty one means"
     },
     {
       "id": "B21",
