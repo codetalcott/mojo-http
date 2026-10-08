@@ -1595,7 +1595,7 @@ lightbug_http
         compiled whole: `URI`'s `username`, `password`, `full_uri`,
         `_original_path` (always the path) and `_hash` (always empty),
         `__str__`, `__repr__`, `is_http`, `is_https` and six delimiter
-        constants; `URI.parse`'s two refusals after the scheme, which
+        constants, and `URIParseError.__str__`; `URI.parse`'s two refusals after the scheme, which
         `scheme_separator` had already made unreachable, and its first
         decode of every path, which the second overwrote; the
         `Expiration` stub and `Cookie.expires`, `Cookie.to_header`,
@@ -1607,7 +1607,7 @@ lightbug_http
         `__setitem__`, `__getitem__`, `get`, both `__contains__` and
         `__str__`, with a commented-out `encode_to`; `OK` from `Bytes`
         (both), `SeeOther` and `BadRequest(message)`; `OutOfBoundsError`,
-        `ByteReader.read_bytes(n)`, `as_bytes` and `__contains__`;
+        `EndOfReaderError.__str__`, `ByteReader.read_bytes(n)`, `as_bytes` and `__contains__`;
         `ByteView`'s `__eq__` (three), `__ne__`, `__contains__` (two),
         `as_bytes` and `__str__`, with its `Equatable` conformance;
         `strings.https`, `colonChar` and seventeen `BytesConstant` bytes

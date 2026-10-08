@@ -142,9 +142,6 @@ struct EndOfReaderError(Writable):
     def write_to[W: Writer, //](self, mut writer: W) -> None:
         writer.write(self.message)
 
-    def __str__(self) -> String:
-        return self.message.copy()
-
 
 struct ByteReader[origin: ImmOrigin](Copyable, Sized):
     var _inner: Span[Byte, Self.origin]

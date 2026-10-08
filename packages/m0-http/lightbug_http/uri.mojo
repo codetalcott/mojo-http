@@ -215,9 +215,6 @@ struct URIParseError(Writable):
     def write_to[W: Writer, //](self, mut writer: W) -> None:
         writer.write(self.message)
 
-    def __str__(self) -> String:
-        return self.message.copy()
-
 
 @fieldwise_init
 struct URI(Copyable, Writable):
@@ -331,7 +328,7 @@ struct URI(Copyable, Writable):
         var path_delimiter: Byte
         try:
             path_delimiter = reader.peek()
-        except EndOfReaderError:
+        except:
             return result^
 
         var path: String = "/"
@@ -359,7 +356,7 @@ struct URI(Copyable, Writable):
         var query_delimiter: Byte
         try:
             query_delimiter = reader.peek()
-        except EndOfReaderError:
+        except:
             return result^
 
         var query: String = ""
