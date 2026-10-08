@@ -18,9 +18,17 @@ def BadRequest() -> HTTPResponse:
     )
 
 
-def NotFound(path: String) -> HTTPResponse:
+def NotFound(path: String = "") -> HTTPResponse:
+    """404, with a fixed body.
+
+    `path` is taken and not written. The body was `path <path> not found`,
+    which put a request's own bytes, markup included, into the server's
+    answer, with no `X-Content-Type-Options` to keep a browser from
+    sniffing it (review record LF57). Nothing read the text; the argument
+    stays so that every caller's `NotFound(path)` builds.
+    """
     return HTTPResponse(
-        body_bytes=String("path ", path, " not found").as_bytes(),
+        body_bytes=String("Not Found").as_bytes(),
         headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
         status_code=404,
         status_text="Not Found",

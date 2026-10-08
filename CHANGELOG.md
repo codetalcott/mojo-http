@@ -69,6 +69,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   application hands `add_raw`, which is how every WSGI and ASGI
   application's cookies arrive, is still sent as given.
 
+- **`NotFound(path)` no longer writes the path into its body.** Exposed:
+  an m0 application that answers with `lightbug_http`'s `NotFound`, as the
+  WebSocket examples do. The body was `path <path> not found`, the
+  request's own bytes, markup included, in the server's answer; it is now
+  `Not Found`. The argument is still accepted, and may be left out.
+
 - **An empty `Host` is accepted when the target names no host** (SPEC
   B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
   when the URI it requests has no authority, and every empty `Host` was

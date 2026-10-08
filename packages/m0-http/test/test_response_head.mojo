@@ -295,9 +295,9 @@ def test_the_server_s_own_answers_say_what_they_are() raises:
     """The responses the loop sends itself (`common_response.mojo`): each
     status with its RFC 9110 §15 reason phrase, a `text/plain` body that
     says it, and a length that matches. `NotFound` and `OK` are the two an
-    application builds too."""
+    application builds too; `NotFound`'s body is fixed (LF57)."""
     _says(BadRequest(), 400, "Bad Request", "Bad Request")
-    _says(NotFound("/x"), 404, "Not Found", "path /x not found")
+    _says(NotFound("/x"), 404, "Not Found", "Not Found")
     _says(RequestTimeout(), 408, "Request Timeout", "Request Timeout")
     _says(PayloadTooLarge(), 413, "Payload Too Large", "Payload Too Large")
     _says(URITooLong(), 414, "URI Too Long", "URI Too Long")
@@ -319,6 +319,21 @@ def test_the_server_s_own_answers_say_what_they_are() raises:
     var wire = String(unsafe_from_utf8=Span(URITooLong().encode()))
     assert_true(wire.startswith("HTTP/1.1 414 URI Too Long\r\n"), wire)
 
+
+def test_a_404_does_not_reflect_its_path() raises:
+    """`NotFound(path)` wrote the path into its body, `path /x not found`:
+    a request's own bytes, markup included, in the server's answer, sent
+    without `X-Content-Type-Options` for a browser to sniff (review record
+    LF57). Nothing read the reflected text, so the body is fixed; the
+    argument is still taken, so a caller's `NotFound(path)` builds."""
+    var probe = String("/<script>alert(1)</script>")
+    var r = NotFound(probe)
+    var body = String(unsafe_from_utf8=Span(r.body_raw))
+    assert_equal(body, "Not Found")
+    assert_equal(body, String(unsafe_from_utf8=Span(NotFound().body_raw)))
+    var wire = String(unsafe_from_utf8=Span(NotFound(probe).encode()))
+    assert_false("<script>" in wire, wire)
+    assert_false("alert" in wire, wire)
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

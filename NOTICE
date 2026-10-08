@@ -1631,6 +1631,11 @@ lightbug_http
         added attributes (`dark; Domain=evil.test`). `add_raw` lines are
         unchanged (review record LF55, SPEC G2).
 
+      - http/common_response.mojo (2026-10-08): `NotFound`'s body is
+        `Not Found`, where it was `path <path> not found`, a request's own
+        bytes reflected into a `text/plain` answer carrying no `nosniff`;
+        its `path` argument is kept, now optional (review record LF57).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
