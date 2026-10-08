@@ -90,6 +90,63 @@ in a minor release: `m0serve`'s flags and environment variables, the
   non-ASCII character must be percent-encoded, as every browser does, and
   the escape still reaches the application undecoded.
 
+- **A server-wide `OPTIONS *` reaches the application as `*`** (SPEC
+  B19). It arrived as `OPTIONS /`, so an application could not tell a
+  question about the whole server from one about its root page. A Mojo
+  application reads `*` as `req.uri.path`; a WSGI application reads it as
+  `PATH_INFO` and an ASGI one as `path` and `raw_path`, as gunicorn and
+  uvicorn hand it on. Under m0serve the root mount answers it; with no
+  root mount it is answered 404, as any path no mount claims. The view
+  table (`Views`) reads `*` as a path of one segment: a table with a
+  one-segment parameter route such as `/:slug` answers `OPTIONS *` as that
+  route's preflight, 204 with its `Allow`, and a route registered for
+  `OPTIONS` there runs with `*` as its parameter; a table with no such
+  route answers 404.
+
+- **`URI.parse` reads a query that follows the host directly** (SPEC A35).
+  Exposed: an m0 application whose tests build a request with
+  `URI.parse("http://127.0.0.1?x=1")`. The host was `127.0.0.1?x=1` and
+  the request carried no query; with a port, `http://127.0.0.1:80?x=1`,
+  the query was dropped. The path is `/` and the query `x=1`, as for
+  `http://127.0.0.1/?x=1`. A `#` right after the host ends it too:
+  `http://127.0.0.1#top` is host `127.0.0.1` and path `/`, where the host
+  was `127.0.0.1#top`. A request from the wire was never affected.
+
+- **`URI.parse` refuses a port that is not one** (SPEC A36). Exposed: an
+  m0 application that parses a URL with `URI.parse`, its tests' request
+  builders among them. `:99999` was read as port 34463, `:65536` as port
+  0 and `:8x` as port 8; each now raises. An empty port
+  (`http://127.0.0.1:/x`), which raised, is read as no port, the scheme's
+  default, as RFC 3986 §3.2.3 allows.
+
+- **A cookie a Mojo view builds can no longer add attributes of its own**
+  (SPEC G2). Exposed: an m0 application that builds a `Cookie` from
+  request data and sets it with `ResponseCookieJar.set_cookie`. Each field
+  was written as given, so `Cookie("theme", "dark; Domain=evil.test")`
+  went out as `theme=dark; Domain=evil.test`, a cookie for another site.
+  A built cookie whose name is not a token (`a b`, `c=d`, an empty name),
+  or whose value, `Domain` or `Path` holds a `;` or a control byte, is now
+  dropped from the response, silently, as a header holding a line break
+  is: nothing is logged. Every other value is written as before, a space,
+  a comma, quotes, a backslash or a byte above 0x7F included, so a base64
+  or JSON value goes out unchanged. A `Set-Cookie` line an application
+  hands `add_raw`, which is how every WSGI and ASGI application's cookies
+  arrive, is still sent as given.
+
+- **A built cookie with no `Path` and one with `Path=/` are two cookies.**
+  Exposed: an m0 application that sets the same cookie name twice in one
+  response through `ResponseCookieJar.set_cookie`, once without a `Path`
+  and once with `Path=/`. The jar treated a missing `Path` as `/` and kept
+  only the second. A browser gives a cookie with no `Path` the request's
+  directory (RFC 6265 §5.1.4), so it stores both. Both are now sent. An
+  empty `Path`, or one not starting with `/`, means the same as none.
+
+- **`NotFound(path)` no longer writes the path into its body.** Exposed:
+  an m0 application that answers with `lightbug_http`'s `NotFound`, as the
+  WebSocket examples do. The body was `path <path> not found`, the
+  request's own bytes, markup included, in the server's answer; it is now
+  `Not Found`. The argument is still accepted, and may be left out.
+
 - **An empty `Host` is accepted when the target names no host** (SPEC
   B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
   when the URI it requests has no authority, and every empty `Host` was
@@ -406,6 +463,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `ShutdownOption.SHUT_RD`; and the `write_to` and `__str__` of
   `AddressFamily`, `AddressLength`, `ShutdownOption`, `SocketOption` and
   `SocketType`, with the `==` of the last four.
+- **The fork's unused URI, cookie, response and byte helpers** (fork
+  review LF52). Nothing served changes, and no application in the tree,
+  the `m0` templates or the one outside it named any of these; an
+  application built with `m0` that did needs its own copy. From
+  `lightbug_http.uri`: `URI`'s `username`, `password`, `full_uri`,
+  `_original_path` and `_hash` fields (always empty, or the path again),
+  its `__str__`, `__repr__`, `is_http` and `is_https`, the unused
+  `QueryDelimiters` and `URIDelimiters` constants, and
+  `URIParseError.__str__` (`String(error)` still writes it). From
+  `lightbug_http.cookie`: `Expiration`, a stub that could only say
+  "session", with `Cookie`'s `expires` field and argument (a `Cookie` sets
+  its lifetime with `max_age`); `Cookie.to_header` and `Cookie.__str__`;
+  `SameSite.__eq__`; `RequestCookieJar`'s constructor from cookies,
+  `parse_cookies`, `empty`, `encode_to` and its `in` for a `Cookie`; and
+  `ResponseCookieJar`'s constructors from cookies, its `[]`, `get` and
+  `in`. From `lightbug_http.http`: the two `OK` overloads taking `Bytes`,
+  `SeeOther` (also exported from `lightbug_http`; `m0_http.reply.redirect`
+  builds every redirect) and `BadRequest(message)`. From
+  `lightbug_http.io.bytes`: `OutOfBoundsError`, `EndOfReaderError.__str__`,
+  `ByteReader`'s `read_bytes(n)`, `as_bytes` and `in`, and `ByteView`'s
+  comparisons, `in`, truth test, `as_bytes` and `__str__`. From
+  `lightbug_http.strings`: `https`, `colonChar` and the seventeen
+  `BytesConstant` bytes nothing reads.
 
 ## [1.12.1] — 2026-10-07
 

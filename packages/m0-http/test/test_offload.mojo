@@ -31,7 +31,7 @@ from lightbug_http.offload import (
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
     POOL_FREE_WAKE_AGE_NS, POOL_WAKE_WAIT_MS, _WAKE_MAX_LANES,
-    WS_DATAGRAM_MAX, ws_message_room,
+    WS_DATAGRAM_MAX, ws_message_room, match_path_prefix,
     send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
     encode_ack, decode_ack,
 )
@@ -2295,6 +2295,29 @@ def test_a_lane_past_the_wake_block_is_refused() raises:
         assert_equal(pool.thread_count(last), 1)
         pool.note_thread(last, -1)
         assert_equal(pool.thread_count(last), 0)
+
+
+def test_the_root_mount_takes_a_server_wide_options() raises:
+    """`*` is the one request target that does not start with `/`, and the
+    root mount (the empty prefix) takes it: a server-wide `OPTIONS *`
+    reaches the root application, which reads `*` (review record LF41),
+    where it would otherwise be answered 404 by no mount at all. A
+    prefixed mount still matches only on a segment boundary.
+
+    covers: B19
+    """
+    var mounts = List[String]()
+    mounts.append(String(""))
+    mounts.append(String("/app"))
+    assert_equal(match_path_prefix(mounts, String("*")), 0)
+    assert_equal(match_path_prefix(mounts, String("/")), 0)
+    assert_equal(match_path_prefix(mounts, String("/app/x")), 1)
+    assert_equal(match_path_prefix(mounts, String("/application")), 0)
+    var prefixed = List[String]()
+    prefixed.append(String("/app"))
+    assert_equal(match_path_prefix(prefixed, String("*")), -1)
+    assert_equal(match_path_prefix(prefixed, String("/app")), 0)
+    assert_equal(match_path_prefix(prefixed, String("/application")), -1)
 
 
 def main() raises:

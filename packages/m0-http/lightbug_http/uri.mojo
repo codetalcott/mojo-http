@@ -1,5 +1,4 @@
-from lightbug_http.io.bytes import ByteReader, Bytes, ByteView
-from lightbug_http.strings import http, https, strHttp10, strHttp11
+from lightbug_http.io.bytes import ByteReader
 
 
 def _hex_upper(v: Int) -> String:
@@ -103,10 +102,8 @@ comptime QueryMap = Dict[String, String]
 
 
 struct QueryDelimiters:
-    comptime STRING_START = "?"
     comptime ITEM = "&"
     comptime ITEM_ASSIGN = "="
-    comptime PLUS_ESCAPED_SPACE = "+"
 
 
 def scheme_separator(uri: StringSpan) -> Int:
@@ -163,28 +160,40 @@ def userinfo_separator(uri: StringSpan, authority_start: Int) -> Int:
     encode `@` in what they build, which is what kept it rare; a typed or
     hand-built URL does not.
 
-    RFC 3986 §3.2 ends the authority at the first `/`, `?` or `#`, and a
-    userinfo lives inside the authority, so the `@` only counts before all
-    three. The first one found is the separator: a userinfo cannot contain
-    `@`, so a second one leaves a host that fails to resolve rather than
-    one chosen from what follows it.
+    A userinfo lives inside the authority, so the `@` only counts before
+    `authority_end`, the one rule for where the authority ends. The first
+    one found is the separator: a userinfo cannot contain `@`, so a second
+    one leaves a host that fails to resolve rather than one chosen from
+    what follows it.
+    """
+    var bytes = uri.as_bytes()
+    for i in range(authority_start, authority_end(uri, authority_start)):
+        if bytes[i] == UInt8(ord("@")):
+            return i
+    return -1
+
+
+def authority_end(uri: StringSpan, authority_start: Int) -> Int:
+    """Index of the `/`, `?` or `#` that ends an authority, or the end of
+    `uri` (RFC 3986 §3.2). `userinfo_separator` and `URI.parse` both ask
+    it, so the two cannot disagree about where the authority ends.
+
+    The authority ran to the first `/` alone, so a query right after it
+    was read as part of the host: `http://h?q=1` parsed as host `h?q=1`
+    with no query, and `http://h:80?q=1` as port 80 with its query thrown
+    away (review record LF50). It ignored a `#` too, which the userinfo
+    scan stopped at, so `http://h#x` was a host `h#x`.
     """
     var bytes = uri.as_bytes()
     for i in range(authority_start, len(bytes)):
         var c = bytes[i]
-        if c == UInt8(ord("@")):
-            return i
         if c == UInt8(ord("/")) or c == UInt8(ord("?")) or c == UInt8(ord("#")):
-            return -1
-    return -1
+            return i
+    return len(bytes)
 
 
 struct URIDelimiters:
-    comptime SCHEMA = "://"
     comptime PATH = "/"
-    comptime ROOT_PATH = "/"
-    comptime CHAR_ESCAPE = "%"
-    comptime AUTHORITY = "@"
     comptime QUERY = "?"
     comptime SCHEME = ":"
 
@@ -203,26 +212,16 @@ struct URIParseError(Writable):
     def write_to[W: Writer, //](self, mut writer: W) -> None:
         writer.write(self.message)
 
-    def __str__(self) -> String:
-        return self.message.copy()
-
 
 @fieldwise_init
 struct URI(Copyable, Writable):
-    var _original_path: String
     var scheme: String
     var path: String
     var query_string: String
     var queries: QueryMap
-    var _hash: String
     var host: String
     var port: Optional[UInt16]
-
-    var full_uri: String
     var request_uri: String
-
-    var username: String
-    var password: String
 
     @staticmethod
     def parse(var uri: String) raises URIParseError -> URI:
@@ -234,45 +233,40 @@ struct URI(Copyable, Writable):
         # reference while the reader holds one invalidates it.
         var scheme_sep = scheme_separator(uri)
         var userinfo_at = userinfo_separator(uri, scheme_sep + 3 if scheme_sep >= 0 else 0)
+        var host_start = userinfo_at + 1 if userinfo_at >= 0 else (
+            scheme_sep + 3 if scheme_sep >= 0 else 0
+        )
+        # The byte the authority ends at: whichever of `/`, `?` and `#`
+        # comes first, so reading to it reads the authority whole. After a
+        # `#` comes a fragment, which no request carries: neither the path
+        # nor the query below reads it, and the path stays `/`.
+        var host_end = authority_end(uri, host_start)
+        var authority_delimiter = UInt8(ord(URIDelimiters.PATH))
+        if host_end < uri.byte_length():
+            authority_delimiter = uri.as_bytes()[host_end]
         var reader = ByteReader(uri.as_bytes())
 
         # Parse the scheme, if exists.
         # Assume http if no scheme is provided, fairly safe given the context of lightbug.
         var scheme: String = "http"
         if scheme_sep >= 0:
+            # `scheme_separator` found `://` at `scheme_sep` with nothing but
+            # scheme characters before it, none of them a colon: the first
+            # colon is that separator's, and the `://` follows it.
             scheme = String(reader.read_until(UInt8(ord(URIDelimiters.SCHEME))))
-            # `uri.as_bytes()` is now bound to an interior origin of `uri`,
-            # so the reader's slices carry that origin rather than the whole
-            # string's.
-            var scheme_delimiter: ByteView[
-                origin_of(uri)._get_owned_interior["bytes"]
-            ]
-            try:
-                scheme_delimiter = reader.read_bytes(3)
-            except EndOfReaderError:
-                raise URIParseError(
-                    "URI.parse: Incomplete URI, expected scheme delimiter after scheme but reached the end of the URI."
-                )
+            reader.increment(3)
 
-            if scheme_delimiter != "://".as_bytes():
-                raise URIParseError(
-                    String(
-                        "URI.parse: Invalid URI format, scheme should be followed by `://`. Received: ",
-                        uri,
-                    )
-                )
-
-        # Parse the user info, if exists: only an `@` inside the authority
-        # ends one (`userinfo_separator`).
-        # TODO (@thatstoasty): Store the user information (username and password) if it exists.
+        # Skip a userinfo, if there is one: only an `@` inside the authority
+        # ends one (`userinfo_separator`). It is never stored. RFC 9110
+        # §4.2.4 forbids one in an `http` or `https` URI a message carries
+        # and asks a recipient to treat one as an error, which the header
+        # parse does for a request target (SPEC B16), so only a caller's own
+        # URL brings one here.
         if userinfo_at >= 0:
             reader.increment(userinfo_at + 1 - reader.read_pos)
 
-        # TODOs (@thatstoasty)
-        # Handle string host
-        # A query right after the domain is a valid uri, but it's equivalent to example.com/?query
-        # so we should add the normalization of paths
-        var host_and_port = reader.read_until(UInt8(ord(URIDelimiters.PATH)))
+        # The host and port run to the authority's end (`authority_end`).
+        var host_and_port = reader.read_until(authority_delimiter)
         # An IPv6 literal is bracketed (RFC 3986 section 3.2.2), and its
         # colons are not the port's: `[::1]:8080`. The port's colon is the
         # first after the `]`, and the brackets stay in `host`, as a `Host`
@@ -295,54 +289,45 @@ struct URI(Copyable, Writable):
         var port: Optional[UInt16] = None
         if colon != -1:
             host = String(host_and_port[:colon])
-            var port_end = colon + 1
-            # loop through the post colon chunk until we find a non-digit character
+            # RFC 3986 §3.2.3: the port is every byte after the colon, all
+            # digits, and an empty one is the scheme's default. It was the
+            # digits up to the first other byte, narrowed to 16 bits, so
+            # `:8x` was port 8, `:99999` port 34463 and `:65536` port 0,
+            # and the empty port was refused (review record LF51).
+            var value = 0
+            var digits = 0
             for b in host_and_port[colon + 1 :]:
                 if b < PortBounds.ZERO or b > PortBounds.NINE:
-                    break
-                port_end += 1
-
-            try:
-                port = UInt16(atol(String(host_and_port[colon + 1 : port_end])))
-            except conversion_err:
-                raise URIParseError(
-                    String(
-                        "URI.parse: Failed to convert port number from a String to Integer, received: ",
-                        uri,
+                    raise URIParseError(
+                        String("URI.parse: a port is digits only: ", uri)
                     )
-                )
+                value = value * 10 + Int(b - PortBounds.ZERO)
+                if value > 65535:
+                    raise URIParseError(
+                        String("URI.parse: a port above 65535: ", uri)
+                    )
+                digits += 1
+            if digits > 0:
+                port = UInt16(value)
         else:
             host = String(host_and_port)
 
-        # Reads until either the start of the query string, or the end of the uri.
-        var unquote_reader = reader.copy()
-        var original_path_bytes = unquote_reader.read_until(UInt8(ord(URIDelimiters.QUERY)))
-        var original_path: String
-        if not original_path_bytes:
-            original_path = "/"
-        else:
-            original_path = unquote(String(original_path_bytes), disallowed_escapes=["/"])
-
+        # A URL that ends with its authority has the path `/`.
         var result = URI(
-            _original_path=original_path,
             scheme=scheme,
-            path=original_path,
+            path="/",
             query_string="",
             queries=QueryMap(),
-            _hash="",
             host=host,
             port=port,
-            full_uri=uri,
-            request_uri=original_path,
-            username="",
-            password="",
+            request_uri="/",
         )
 
         # Parse the path
         var path_delimiter: Byte
         try:
             path_delimiter = reader.peek()
-        except EndOfReaderError:
+        except:
             return result^
 
         var path: String = "/"
@@ -357,6 +342,11 @@ struct URI(Copyable, Writable):
                 String(reader.read_until(UInt8(ord(URIDelimiters.QUERY)))),
                 disallowed_escapes=["/"],
             )
+        elif path_delimiter == UInt8(ord(URIDelimiters.QUERY)):
+            # A query right after the authority: the path is empty, which
+            # is `/` (RFC 9110 §4.2.3), and the query is read below.
+            var request_uri_reader = reader.copy()
+            request_uri = String("/", String(request_uri_reader.read_bytes()))
 
         result.request_uri = request_uri
         result.path = path
@@ -365,12 +355,15 @@ struct URI(Copyable, Writable):
         var query_delimiter: Byte
         try:
             query_delimiter = reader.peek()
-        except EndOfReaderError:
+        except:
             return result^
 
         var query: String = ""
         if query_delimiter == UInt8(ord(URIDelimiters.QUERY)):
-            # TODO: Handle fragments for anchors
+            # The query runs to the end. A request target has no fragment
+            # (RFC 9112 §3.2), so a `#` that arrives in one is data the
+            # header parse accepted as any other visible byte (SPEC B19),
+            # kept in the query or the path as h11 keeps it, never a cut.
             query = String(reader.read_bytes()[1:])
 
         var queries = QueryMap()
@@ -390,23 +383,12 @@ struct URI(Copyable, Writable):
         result.query_string = query^
         return result^
 
-    def __str__(self) -> String:
-        var result = String(self.scheme, URIDelimiters.SCHEMA, self.host, self.path)
-        if self.query_string.byte_length() > 0:
-            result.write(QueryDelimiters.STRING_START, self.query_string)
-        return result^
-
-    def __repr__(self) -> String:
-        return String(self)
-
     def __eq__(self, other: URI) -> Bool:
         return (
             self.scheme == other.scheme
             and self.host == other.host
             and self.path == other.path
             and self.query_string == other.query_string
-            and self._original_path == other._original_path
-            and self.full_uri == other.full_uri
             and self.request_uri == other.request_uri
         )
 
@@ -419,19 +401,9 @@ struct URI(Copyable, Writable):
             repr(self.host),
             ", path=",
             repr(self.path),
-            ", _original_path=",
-            repr(self._original_path),
             ", query_string=",
             repr(self.query_string),
-            ", full_uri=",
-            repr(self.full_uri),
             ", request_uri=",
             repr(self.request_uri),
             ")",
         )
-
-    def is_https(self) -> Bool:
-        return self.scheme == https
-
-    def is_http(self) -> Bool:
-        return self.scheme == http or self.scheme.byte_length() == 0

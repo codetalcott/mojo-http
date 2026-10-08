@@ -687,9 +687,11 @@ def match_path_prefix(prefixes: List[String], path: String) -> Int:
     """Index of the longest prefix in `prefixes` that `path` falls under, or -1.
 
     A prefix matches only on a segment boundary, so `/app` covers `/app` and
-    `/app/x` but never `/application`. The empty prefix is the root and needs
-    no special case: every request target starts with `/`, so it matches at
-    length 0 and any deeper prefix outranks it.
+    `/app/x` but never `/application`. The empty prefix is the root: it
+    matches every path at length 0, and any deeper prefix outranks it. That
+    includes `*`, the one target that does not start with `/`: a
+    server-wide `OPTIONS *` is the root application's to answer, as it is
+    the one application's under gunicorn or uvicorn (review record LF41).
 
     Lives here rather than in the WSGI layer because both callers need the
     same answer and there must be exactly one of it -- `m0serve`'s mount
@@ -706,7 +708,7 @@ def match_path_prefix(prefixes: List[String], path: String) -> Int:
             continue
         if not path.startswith(prefix):
             continue
-        if path.byte_length() > n and path.as_bytes()[n] != UInt8(ord("/")):
+        if n > 0 and path.byte_length() > n and path.as_bytes()[n] != UInt8(ord("/")):
             continue
         best = i
         best_len = n

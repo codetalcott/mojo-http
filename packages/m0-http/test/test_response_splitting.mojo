@@ -449,7 +449,9 @@ def _assert_overlong_cookies_kept_whole(
 def test_an_overlong_line_break_in_a_cookie_is_not_a_way_past_the_refusal() raises:
     """The cookie jar's latin-1 writer is the header writer's rule for one
     header, so an overlong CR, LF or NUL in a line handed to `add_raw`, or
-    in a `Cookie` a view built, goes out as given, never as a break.
+    in a `Cookie` a view built, goes out as given, never as a break: its
+    bytes are above 0x7F, not the `;` or control byte LF55 drops a built
+    cookie for.
 
     covers: G19
     """

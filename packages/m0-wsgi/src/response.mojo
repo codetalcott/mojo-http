@@ -13,7 +13,7 @@ one — and Django routinely sets two (`sessionid` and `csrftoken`) on the same
 response. `ResponseCookieJar` emits one line per cookie, so every `Set-Cookie`
 is routed there instead — as a **verbatim line** (`ResponseCookieJar.raw`),
 never parsed into a `Cookie` and re-serialised. That round trip was lossy:
-`Expiration` is a stub, `SameSite=Lax` failed a lowercase-only match, and a
+`Expiration` was a stub, `SameSite=Lax` failed a lowercase-only match, and a
 value was cut at its first `=`. Serving three real Django projects, every
 session and CSRF cookie reached the browser without `expires` or `SameSite`
 (2026-08-26, docs/REAL_APP_VALIDATION.md). The application's line is the
