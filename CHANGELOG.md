@@ -18,6 +18,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   good with `--idle-timeout 0`) waiting for a request that could not come.
   Requests pipelined ahead of the last one are still answered first.
 
+- **A streamed response honours `Connection: close`** (SPEC A28). An ASGI
+  application's streamed body, or a WSGI application's streamed iterable
+  on a pool thread, goes out chunked over HTTP/1.1, and when the request
+  asked for `Connection: close` the response still said `keep-alive` and
+  the connection stayed open after the body ended. It now says `close`
+  and closes once the body is complete, as an unstreamed response does.
+
 - **The access log times a request when the header timeout is off** (SPEC
   F22). A server whose `ServerConfig` set `header_read_timeout = 0` logged
   every request's `dur_us` as the time since the machine booted, and

@@ -65,6 +65,9 @@ from lightbug_http.loop.state import (
     _ws_linger,
 )
 from lightbug_http.c.socket import ShutdownOption, shutdown
+from lightbug_http.loop.response import _finish_response
+from lightbug_http.loop.streams import _drain_outboxes
+from lightbug_http.offload import OffloadPool, make_stream_ack_pair
 from lightbug_http.loop.timers import _on_timer
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
@@ -757,6 +760,106 @@ def test_a_half_closed_request_is_answered_with_a_close() raises:
     assert_true("connection: keep-alive" in full_answers[1], full_reply)
     assert_true("connection: close" in full_answers[2], full_reply)
     assert_true(full[1])
+
+
+struct OneChunkStream(HTTPService):
+    """A channel stream's producer, as the loop sees it: one payload
+    queued, and the stream over once it is drained."""
+
+    var drained: Bool
+
+    def __init__(out self):
+        self.drained = False
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        if self.drained:
+            return List[UInt8]()
+        self.drained = True
+        return List[UInt8](String("one-chunk").as_bytes())
+
+    def sse_is_streaming(self, slot: Int) -> Bool:
+        return not self.drained
+
+
+def _chunked_stream_exchange(
+    asked_close: Bool, keep_alive: Bool = True
+) raises -> Tuple[String, Bool]:
+    """A chunked stream from a channel producer, from its head to its
+    terminator, for a request that asked for a close or did not, on a
+    server with keep-alive on or off: what the client read, lowercased, and
+    whether the loop closed the slot once the terminator landed."""
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    var acks = make_stream_ack_pair()
+    var app = OneChunkStream()
+    var backend = FakeBackend()
+    var st = LoopState(
+        FileDescriptor(-1), _config(), String(""), keep_alive,
+        offload_addr=pool.addr(),
+    )
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    pool.set_slot_ack_fd(slot, acks[1])
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.offload.http11[slot] = True
+    st.offload.is_head[slot] = False
+    # What `_process_request` decides before the handler runs.
+    st.provision_pool.provisions[slot].should_close = asked_close or not keep_alive
+    st.provision_pool.provisions[slot].state = ConnectionState.processing()
+    var response = OK("", "text/plain")
+    response.sse_streaming = True
+    _finish_response(app, backend, st, slot, fd, response^)
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind,
+        ConnectionState.STREAMING_SSE,
+    )
+    _drain_outboxes(app, backend, st)
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var closed = st.slot_fds[slot] == UNUSED
+    if not closed:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    close(FileDescriptor(acks[0]))
+    close(FileDescriptor(acks[1]))
+    # The loop holds the pool by its address, which keeps nothing alive.
+    _ = pool
+    return (String(unsafe_from_utf8=Span(got)).lower(), closed)
+
+
+def test_a_chunked_stream_keeps_the_close_its_request_asked_for() raises:
+    """A chunked stream answers its request whole, so once its terminator
+    lands the connection does what the request asked: closes after
+    `Connection: close`, or on a server with keep-alive off, and stays
+    otherwise; the head says which (review record LF13). A stream's head
+    clears `should_close`, or the head landing would close the slot, and
+    the stream's end took the keep-alive path whatever the request had
+    said, under a head that said `keep-alive`.
+
+    covers: A28
+    """
+    var asked = _chunked_stream_exchange(True)
+    assert_true("transfer-encoding: chunked" in asked[0], asked[0])
+    assert_true("connection: close" in asked[0], asked[0])
+    assert_true(asked[0].endswith("9\r\none-chunk\r\n0\r\n\r\n"), asked[0])
+    assert_true(asked[1], "Connection: close kept the connection after the stream")
+
+    var off = _chunked_stream_exchange(False, keep_alive=False)
+    assert_true("connection: close" in off[0], off[0])
+    assert_true(off[1], "a server with keep-alive off kept the connection")
+
+    var kept = _chunked_stream_exchange(False)
+    assert_true("transfer-encoding: chunked" in kept[0], kept[0])
+    assert_true("connection: keep-alive" in kept[0], kept[0])
+    assert_true(kept[0].endswith("0\r\n\r\n"), kept[0])
+    assert_false(kept[1], "a stream its request did not ask to close was closed")
 
 
 def test_the_access_log_times_a_request_without_a_header_timeout() raises:

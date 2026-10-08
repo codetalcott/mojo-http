@@ -281,6 +281,14 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # reads frames from here on, never a next request.
     if not upgraded_ws and _answers_the_last_request(st, slot, fd_val):
         st.provision_pool.provisions[slot].should_close = True
+    # What the request asked of the connection, before a stream's head
+    # clears it below (so the head landing does not close the slot). A
+    # chunked stream that ends takes it back (`_chunked_stream_ends`), and
+    # the head says it now: a request asking for `Connection: close` had
+    # its chunked stream answered `keep-alive` and its connection kept, and
+    # so did every request on a server with keep-alive off (LF13).
+    var close_after = st.provision_pool.provisions[slot].should_close
+    st.slot_close_after_stream[slot] = close_after
 
     # A HEAD's response is its head (RFC 9110 §9.3.2), whatever a handler
     # made of it: a hold approved on a HEAD -- an `M0-Hold` view that answers
@@ -359,7 +367,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # The handshake already set "Connection: Upgrade"; a keep-alive or
         # close rewrite here would corrupt the upgrade.
         pass
-    elif st.provision_pool.provisions[slot].should_close:
+    elif st.provision_pool.provisions[slot].should_close or close_after:
         response.set_connection_close()
     else:
         response.set_connection_keep_alive()

@@ -132,6 +132,14 @@ struct LoopState(Movable):
     var slot_read_armed: List[Bool]
     var slot_idle_deadline: List[Int]
     var slot_ws_state: List[WSState]
+    var slot_close_after_stream: List[Bool]
+    """The stream's request asked for the connection to close behind it:
+    `Connection: close`, an HTTP/1.0 request without keep-alive, a server
+    with keep-alive off, a client that has half-closed. A stream's head
+    clears `should_close`, or the head landing would close the slot, so a
+    chunked stream that ends takes it back from here
+    (`_chunked_stream_ends`). `_finish_response` writes it for every
+    response, so no slot inherits a previous connection's."""
     var fd_map_size: Int
     var fd_to_slot: List[Int]
     var active_count: Int
@@ -210,6 +218,7 @@ struct LoopState(Movable):
         # Per-slot WebSocket frame parser. Always allocated, tiny while unused;
         # reset (not reallocated) when a slot is reused.
         var slot_ws_state = List[WSState](capacity=max_conns)
+        var slot_close_after_stream = List[Bool](capacity=max_conns)
 
         for _ in range(max_conns):
             slot_fds.append(UNUSED)
@@ -221,6 +230,7 @@ struct LoopState(Movable):
             slot_read_armed.append(False)
             slot_idle_deadline.append(0)
             slot_ws_state.append(WSState(config.max_request_body_size))
+            slot_close_after_stream.append(False)
 
         var fd_map_size = 65536
         var fd_to_slot = List[Int](capacity=fd_map_size)
@@ -249,6 +259,7 @@ struct LoopState(Movable):
         self.slot_read_armed = slot_read_armed^
         self.slot_idle_deadline = slot_idle_deadline^
         self.slot_ws_state = slot_ws_state^
+        self.slot_close_after_stream = slot_close_after_stream^
         self.fd_map_size = fd_map_size
         self.fd_to_slot = fd_to_slot^
         self.active_count = 0
@@ -301,7 +312,7 @@ struct LoopState(Movable):
 #             a slot taken (`_admit_connection`) starts at 0 and a refused
 #             upload's linger is `_reject_and_linger`'s own
 #   phases    `_end_request` (keep-alive), `_stream_idle`, `_ws_linger`,
-#             `_record_response`, `_farewell_streams`
+#             `_chunked_stream_ends`, `_record_response`, `_farewell_streams`
 
 
 @always_inline
@@ -537,6 +548,25 @@ def _ws_linger[B: EventLoopBackend](
     st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
     if not st.slot_ws_state[slot].inbound_suspended:
         _ = _arm_reads(backend, st, slot, fd_val)
+
+
+@always_inline
+def _chunked_stream_ends(mut st: LoopState, slot: Int):
+    """A chunked stream's terminator is going out: the message is complete,
+    and once it lands the connection does what its request asked -- the
+    keep-alive transition, or a close (`_after_send`).
+
+    The stream's head cleared `should_close`, so the head landing would not
+    close the slot, and the request's answer to "does the connection stay"
+    went with it: a request that asked for `Connection: close`, or one on a
+    server with keep-alive off, had its chunked stream answered with
+    `keep-alive` and its connection kept (review record LF13).
+    `slot_close_after_stream` held it for here.
+    """
+    st.slot_sse[slot] = False
+    st.offload.chunked[slot] = False
+    if st.slot_close_after_stream[slot]:
+        st.provision_pool.provisions[slot].should_close = True
 
 
 @always_inline

@@ -19,7 +19,8 @@ from lightbug_http.websocket import encode_ws_frame, WS_OP_PING
 
 from lightbug_http.loop.state import (
     LoopState, TIMER_SSE_HEARTBEAT, UNUSED, _arm_reads, _arm_ws_linger,
-    _await_write, _close_slot, _rearm_reads, _stop_reads, _ws_linger,
+    _await_write, _chunked_stream_ends, _close_slot, _rearm_reads,
+    _stop_reads, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
@@ -382,12 +383,12 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                         st.offload.clear_stream(s)
                         if framed:
                             # The terminator landed: the message is
-                            # complete and the connection is reusable.
+                            # complete and the connection is reusable,
+                            # unless its request asked otherwise.
                             # Clearing the stream flag is what routes
                             # `_after_send` down its keep-alive path
                             # instead of back into streaming.
-                            st.slot_sse[s] = False
-                            st.offload.chunked[s] = False
+                            _chunked_stream_ends(st, s)
                             _after_send(handler, backend, st, s, st.slot_fds[s])
                             _drain_pipelined(handler, backend, st, s, st.slot_fds[s])
                         elif st.slot_ws[s] and st.config.idle_timeout > 0:
@@ -426,9 +427,9 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                         # Same flush, but the message ends with the
                         # terminator already in this buffer — so the
                         # write-ready completion must finish it as a
-                        # keep-alive response, not a close.
-                        st.slot_sse[s] = False
-                        st.offload.chunked[s] = False
+                        # keep-alive response, or the close its request
+                        # asked for.
+                        _chunked_stream_ends(st, s)
                     _ = _await_write(backend, st, s, st.slot_fds[s])
             elif ended:
                 # End marked with nothing left to send. Only reachable
