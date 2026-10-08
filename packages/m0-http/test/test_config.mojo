@@ -15,7 +15,7 @@ refusing to start.
 from std.os import setenv
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.config import AppConfig, listen_host, threads_conflict
+from src.config import AppConfig, listen_host, parse_env_int, threads_conflict
 from lightbug_http.server_config import ServerConfig
 
 
@@ -72,6 +72,28 @@ def test_a_negative_port_falls_back_to_the_default() raises:
     """The '-' is not a digit, so this takes the same path as any junk."""
     var c = _with("M0_PORT", "-1")
     assert_equal(c.port, 8080)
+
+
+def test_a_number_too_large_for_an_int_falls_back_to_the_default() raises:
+    """A value whose digits overflow an `Int` is unreadable, as `80eighty`
+    is, and falls back to the default (review record LF49).
+
+    The digits were accumulated with no overflow check, so the number
+    wrapped: `M0_PORT=18446744073709551696` (2^64 + 80) served on port 80,
+    `M0_WORKERS=18446744073709551618` (2^64 + 2) forked two workers, and one
+    past the largest `Int` read as the most negative. The largest `Int`
+    still reads as itself, leading zeros and all.
+    """
+    assert_equal(_with("M0_PORT", "18446744073709551696").port, 8080)
+    assert_equal(_with("M0_WORKERS", "18446744073709551618").workers, 1)
+    assert_equal(_with("M0_PORT", "9223372036854775808").port, 8080)
+    assert_equal(_with("M0_PORT", "99999999999999999999999999").port, 8080)
+    assert_equal(_with("M0_PORT", "9223372036854775807").port, 9223372036854775807)
+    assert_equal(_with("M0_PORT", "0009223372036854775807").port, 9223372036854775807)
+    assert_false(Bool(parse_env_int("18446744073709551696")))
+    assert_false(Bool(parse_env_int("80eighty")))
+    assert_false(Bool(parse_env_int("")))
+    assert_equal(parse_env_int("080").value(), 80)
 
 
 def test_workers_is_read_from_the_environment() raises:

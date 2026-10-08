@@ -14,7 +14,6 @@ from std.testing import TestSuite, assert_equal
 from lightbug_http.address import (
     ParseEmptyAddressError,
     ParseEmptyPortError,
-    ParseIPProtocolPortError,
     ParseInvalidPortNumberError,
     ParseMissingClosingBracketError,
     ParseMissingPortError,
@@ -22,13 +21,13 @@ from lightbug_http.address import (
     ParsePortOutOfRangeError,
     ParseTooManyColonsError,
     ParseUnexpectedBracketError,
+    ParseZoneError,
 )
 from lightbug_http.c.network import (
     InetNtopEAFNOSUPPORTError,
     InetNtopENOSPCError,
     InetPtonInvalidAddressError,
 )
-from lightbug_http.connection import AddressParseError
 from lightbug_http.server import ProvisionPoolExhaustedError
 from lightbug_http.utils.error import CustomError
 
@@ -65,12 +64,11 @@ def test_every_address_error_reads_as_its_message() raises:
     _reads_as_its_message(ParsePortOutOfRangeError())
     _reads_as_its_message(ParseMissingSeparatorError())
     _reads_as_its_message(ParseTooManyColonsError())
-    _reads_as_its_message(ParseIPProtocolPortError())
+    _reads_as_its_message(ParseZoneError())
 
 
 def test_every_other_error_reads_as_its_message() raises:
-    """The listener's, the provision pool's and the `inet_*` bindings'."""
-    _reads_as_its_message(AddressParseError())
+    """The provision pool's and the `inet_*` bindings'."""
     _reads_as_its_message(ProvisionPoolExhaustedError())
     _reads_as_its_message(InetNtopEAFNOSUPPORTError())
     _reads_as_its_message(InetNtopENOSPCError())

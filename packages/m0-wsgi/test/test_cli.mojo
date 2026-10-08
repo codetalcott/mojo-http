@@ -45,9 +45,11 @@ from src.cli import (
     pool_thread_count,
     serves_offloaded,
     DEFAULT_PORT,
+    EXIT_CONFIG,
     M0SERVE_VERSION,
     MAX_AUTO_BLOCKING_THREADS,
 )
+from src.checks import CheckFacts, first_refusal, flag_checks
 from m0_http.config import AppConfig
 from lightbug_http.server_config import ServerConfig
 
@@ -184,9 +186,12 @@ def test_non_numeric_port_is_an_error() raises:
     assert_true(_fails([String("m.wsgi"), String("--port"), String("80eighty")]))
 
 
-def test_port_out_of_range_is_an_error() raises:
-    assert_true(_fails([String("m.wsgi"), String("--port"), String("0")]))
-    assert_true(_fails([String("m.wsgi"), String("--port"), String("65536")]))
+def test_a_port_out_of_range_is_read_not_a_usage_error() raises:
+    """`--port 0` and `--port 65536` are read: the `port` check refuses
+    them with 78, as it refuses `M0_PORT` (review record LF56)."""
+    assert_false(_fails([String("m.wsgi"), String("--port"), String("0")]))
+    assert_equal(_parse([String("m.wsgi"), String("--port"), String("0")]).port, 0)
+    assert_equal(_parse([String("m.wsgi"), String("--port"), String("65536")]).port, 65536)
     assert_equal(_parse([String("m.wsgi"), String("--port"), String("65535")]).port, 65535)
 
 
@@ -681,6 +686,100 @@ def test_from_env_says_which_lenient_values_it_ignored() raises:
     )
     _clear_env()
     assert_equal(len(ServeOptions.from_env().env_ignored), 0)
+
+
+def test_from_env_names_a_number_too_large_for_an_int() raises:
+    """A number whose digits overflow an `Int` is unreadable (review record
+    LF49): `AppConfig` falls back from it, and `from_env` says so, naming
+    the largest it reads. It used to wrap, so `M0_PORT=18446744073709551696`
+    served on port 80 with nothing said.
+
+    covers: F19
+    """
+    _clear_env()
+    _ = setenv("M0_PORT", "18446744073709551696", True)
+    _ = setenv("M0_WORKERS", "9223372036854775808", True)
+    # Cleared on every path: a failed assertion must not leave the two
+    # variables set for the tests after it.
+    try:
+        var seed = ServeOptions.from_env()
+        assert_equal(seed.port, DEFAULT_PORT)
+        assert_equal(seed.workers, 1)
+        assert_equal(len(seed.env_ignored), 2)
+        assert_equal(
+            seed.env_ignored[0],
+            "ignoring M0_PORT='18446744073709551696', not a whole number up to"
+            " 9223372036854775807; using 8000",
+        )
+        assert_equal(
+            seed.env_ignored[1],
+            "ignoring M0_WORKERS='9223372036854775808', not a whole number up to"
+            " 9223372036854775807; using 1",
+        )
+    finally:
+        _clear_env()
+
+
+def test_a_port_out_of_range_is_refused_whichever_way_it_came() raises:
+    """A port outside 1-65535 is refused with 78 by the `port` check,
+    whether `M0_PORT` or `--port` named it (review record LF56).
+
+    The environment took 0, and m0serve served on a port the kernel chose
+    while its startup line said `:0`; `--port 0` was a usage error, exit 2.
+    Both are now the one check's 78, in the same words, and a port above
+    65535 likewise, where the variable's failed at the bind.
+
+    covers: M2
+    """
+    var facts = CheckFacts(False, False, True)
+    _clear_env()
+    _ = setenv("M0_PORT", "0", True)
+    var seed = ServeOptions.from_env()
+    var by_env = first_refusal(flag_checks(parse_args([String("m.wsgi")], seed), facts))
+    var over = first_refusal(
+        flag_checks(parse_args([String("m.wsgi"), String("--port"), String("8000")], seed), facts)
+    )
+    _ = setenv("M0_PORT", "70000", True)
+    var high = first_refusal(flag_checks(parse_args([String("m.wsgi")], ServeOptions.from_env()), facts))
+    _clear_env()
+    var by_flag = first_refusal(
+        flag_checks(parse_args([String("m.wsgi"), String("--port"), String("0")], ServeOptions()), facts)
+    )
+    assert_true(Bool(by_env), "M0_PORT=0 was served")
+    assert_true(Bool(by_flag), "--port 0 was served")
+    for refusal in [by_env.value().copy(), by_flag.value().copy()]:
+        assert_equal(refusal.name, "port")
+        assert_equal(refusal.code, EXIT_CONFIG)
+        assert_equal(refusal.detail, "M0_PORT must be between 1 and 65535, got 0")
+        assert_true("--port (M0_PORT)" in refusal.fix, refusal.fix)
+    assert_false(Bool(over), "--port 8000 over M0_PORT=0 was refused")
+    assert_true(Bool(high), "M0_PORT=70000 was served")
+    assert_equal(high.value().detail, "M0_PORT must be between 1 and 65535, got 70000")
+
+
+def test_a_listen_address_that_does_not_parse_is_refused() raises:
+    """A listen address `parse_address` refuses, such as a host holding a
+    `%` (an IPv6 zone), is the `address` check's 78, before the bind, so
+    `--doctor` says what the server does: the server failed at the bind
+    with 1 while the doctor said 0 (review record LF48).
+
+    covers: M5
+    """
+    var facts = CheckFacts(False, False, True)
+    var zoned = first_refusal(
+        flag_checks(parse_args([String("m.wsgi"), String("--host"), String("fe80::1%en0")], ServeOptions()), facts)
+    )
+    assert_true(Bool(zoned), "--host fe80::1%en0 was served")
+    assert_equal(zoned.value().name, "address")
+    assert_equal(zoned.value().code, EXIT_CONFIG)
+    assert_true("cannot listen on [fe80::1%en0]:8000: " in zoned.value().detail, zoned.value().detail)
+    assert_true("'%'" in zoned.value().detail, zoned.value().detail)
+    assert_true("--host (M0_HOST)" in zoned.value().fix, zoned.value().fix)
+    for host in [String("::1"), String("::"), String("0.0.0.0"), String("localhost")]:
+        assert_false(
+            Bool(first_refusal(flag_checks(parse_args([String("m.wsgi"), String("--host"), host], ServeOptions()), facts))),
+            host + " was refused",
+        )
 
 
 def test_format_size_is_what_parse_size_reads_back() raises:

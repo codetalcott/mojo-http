@@ -205,6 +205,60 @@ in a minor release: `m0serve`'s flags and environment variables, the
   kernel chose, and `[::1]:8:80` on port 80. It is now refused at startup
   as too many colons, as Go's `net.SplitHostPort` refuses it.
 
+- **A listen address of `localhost` with no port is refused** (fork review
+  LF45, SPEC A33). Exposed: a Mojo application that passes
+  `Server.listen_and_serve` (or `ListenConfig.listen`) the bare word
+  `localhost`. It was read as the loopback at port 0, so the server
+  listened on a port the kernel chose and named it to no one. It is now
+  refused at startup as missing its port, as `127.0.0.1` alone always
+  was; `localhost:8080` is unchanged. m0serve and the Mojo host always
+  pass a port.
+
+- **A listen address's port must be digits** (fork review LF46, SPEC
+  A34). Exposed: a Mojo application that passes `Server.listen_and_serve`
+  (or `ListenConfig.listen`) an address whose port text is not plain
+  digits. The port was read the way `Int()` reads a number, taking a sign,
+  whitespace and underscores, so `127.0.0.1:-0` listened on a port the
+  kernel chose and `127.0.0.1:+80`, `127.0.0.1: 80` or `127.0.0.1:8_0` on
+  port 80. Such a port is now refused at startup. m0serve and the Mojo
+  host check `--port` themselves and pass it on as digits.
+
+- **The "listening on" line names the port the server is bound to**
+  (fork review LF47, SPEC F25). Exposed: a Mojo application that passes
+  `Server.listen_and_serve` (or `ListenConfig.listen`) a port of 0, such as
+  an application not on the Mojo host, which takes a port the kernel
+  chooses. The line read `Lightbug is listening on http://127.0.0.1:0`, a
+  port nothing can connect to; it now names the port the kernel chose.
+  m0serve and the Mojo host refuse a port of 0 (LF56, below) and never
+  reach it.
+
+- **A listen address with an IPv6 zone is refused on every platform, and
+  a refused listen address says why** (fork review LF48, SPEC E31, M5).
+  Exposed: m0serve or a Mojo host given `--host fe80::1%en0`, and a Mojo
+  application passing such an address to `Server.listen_and_serve`. On
+  macOS, whose libc reads the zone into the address, it listened on that
+  interface's link-local address and was reported without its zone; on
+  Linux it was refused as not an address. A listen host may not contain
+  `%` now, on either. m0serve and the host refuse such an address at
+  startup with exit 78, before anything is bound, as the new `address`
+  check that `--doctor` reports too: the server used to fail at the bind
+  with exit 1 while the doctor said 0. Every refused listen address now
+  names the rule it broke: the error read "Failed to parse listen address"
+  and stopped there, and now goes on with the reason ("a listen host may
+  not contain '%'", "missing port separator", "too many colons").
+  `AddressParseError` carries that reason (`AddressParseError(reason)`)
+  and is no longer a `CustomError` or `ImplicitlyCopyable`.
+
+- **An `M0_*` number too large to hold is ignored, not wrapped** (fork
+  review LF49, SPEC F19). Exposed: m0serve and Mojo host applications
+  started with a numeric `M0_*` variable whose digits pass 2^63, such as
+  `M0_PORT=18446744073709551696`. The digits were added up with no
+  overflow check, so that value served on port 80, and
+  `M0_WORKERS=18446744073709551618` forked two workers. Such a value is
+  now read as unreadable, as `M0_PORT=80eighty` always was: the default
+  is used, and m0serve's startup says so, naming the largest number it
+  reads.
+
 - **`Socket.receive` and `TCPConnection.read` into a full buffer read what
   is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
   that reads a socket through either, into a `Bytes` with no room past its
@@ -223,6 +277,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   response's head lands, not requests received.
 
 ### Changed
+
+- **A port outside 1-65535 is refused with exit 78, from a flag or the
+  environment alike** (fork review LF56, SPEC E30, E31, M2). Affects
+  m0serve and Mojo host applications given `--port 0`, `M0_PORT=0`, or a
+  port past 65535. `M0_PORT=0` served on a port the kernel chose, which
+  m0serve's startup line named as `:0`, while `--port 0` was a usage error
+  (exit 2). Both are now read and then refused at startup with exit 78,
+  before anything is bound, as a count the server will not serve already
+  was: `M0_PORT must be between 1 and 65535, got 0` from m0serve and
+  `M0_PORT must be 1-65535, got 0` from the host, the fix naming `--port`
+  and `M0_PORT`. `--doctor` reports it as the `port` check, now the first
+  of each list. A script that read exit 2 for `--port 0` reads 78 now.
 
 - **The fork's descriptor helpers live in the module that owns them**
   (fork review LF28). Nothing served changes. An application built with
@@ -308,6 +374,38 @@ in a minor release: `m0serve`'s flags and environment variables, the
   could not run. Nothing served changes. A connection that closes with
   part of a response still unsent now gives that buffer back at once,
   rather than when its slot next answers someone.
+
+- **The fork's network and address code that nothing calls** (fork review
+  LF44, LF45, LF48). Nothing served changes. The `m0` wheel ships the
+  fork's source, so an application built with `m0` that named one of these
+  needs its own copy: `NetworkType`'s `udp`, `ip`, `ip4`, `ip6`, `unix`
+  and `empty`, `is_ip_protocol` and `is_ipv4`, and
+  `ParseIPProtocolPortError`, which only an `ip` network raised;
+  `lightbug_http.address.DEFAULT_IP_PORT`; `validate_no_brackets`'
+  `end_idx` parameter, never passed; `TCPAddr`'s zone (the field and its
+  constructor), `address_family`, `is_v4`, `is_v6`, `is_unix`, `==`,
+  `__str__`, `__repr__` and `write_to`, with the `Addr` requirements
+  behind them; `binary_port_to_int` and `ntohs`; `Socket`'s
+  `remote_address`, with the `remote_address` parameter of both
+  constructors that remain, its constructor without a family,
+  `get_peer_name`, `__enter__`, `__str__`, `__repr__` and `write_to`, and
+  the `getpeername` binding; `NoTLSListener`'s constructor that made its
+  own socket, `shutdown`, `teardown` and `addr`; `TCPConnection`'s
+  `shutdown`, `teardown`, `local_addr` and `remote_addr`;
+  `ConnectionState.closed` and `ConnectionState.CLOSED`;
+  `AddressParseError`'s `CustomError` and `ImplicitlyCopyable` conformances
+  and its empty constructor (it now takes the refusal's text,
+  `AddressParseError(reason)`, and moves);
+  `ListenerError`'s `Error` arm and `SocketNameError`'s `InetNtopError`
+  arm, neither ever raised; the `__getitem__` and `__str__` of the
+  address, listener, socket and `inet_*` error variants, and the `isa` of
+  `ParseError`, `ListenerError`, `SocketNameError`, `InetNtopError` and
+  `InetPtonError`;
+  `SocketAddress.as_sockaddr_in` and `sockaddr`'s constructor;
+  `AddressFamily.is_inet`, `AddressLength.INET_ADDRSTRLEN` and
+  `ShutdownOption.SHUT_RD`; and the `write_to` and `__str__` of
+  `AddressFamily`, `AddressLength`, `ShutdownOption`, `SocketOption` and
+  `SocketType`, with the `==` of the last four.
 
 ## [1.12.1] — 2026-10-07
 

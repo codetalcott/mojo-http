@@ -168,8 +168,9 @@ def test_what_cannot_be_read_is_a_usage_error() raises:
     assert_true("must be a number" in _refused("--workers", "2x"))
     assert_true("must be a number" in _refused("--workers", "-1"))
     assert_true("must be a number" in _refused("--workers="))
-    assert_true("1-65535" in _refused("--port", "0"))
-    assert_true("1-65535" in _refused("--port", "70000"))
+    # A port out of range is read; `host_checks` refuses it with 78 (LF56).
+    assert_equal(_refused("--port", "0"), "")
+    assert_equal(_refused("--port", "70000"), "")
     assert_true("--host must not be empty" in _refused("--host", " "))
     assert_true("--qos takes no value" in _refused("--qos=1"))
     assert_true("--doctor takes no value" in _refused("--doctor=json"))
@@ -202,6 +203,90 @@ def test_a_count_that_cannot_be_served_is_a_refusal_not_a_usage_error() raises:
     var both = host_refusal(_parse("--workers", "2", "--threads", "2").config)
     assert_true("mutually exclusive" in both.value())
     assert_true(Bool(host_refusal(_parse("--spawn-workers").config)))
+
+
+def test_a_port_out_of_range_is_refused_whichever_way_it_came() raises:
+    """A port outside 1-65535 is read, then refused with 78 by the `port`
+    check, whether `--port` or `M0_PORT` named it (review record LF56).
+
+    The environment took 0 and the host listened on a port the kernel
+    chose, while `--port 0` was a usage error: one setting answered two
+    ways, where a value that cannot be served is one refusal whichever way
+    it arrived (E31). Both are now the same 78, in the same words.
+
+    covers: E31
+    """
+    _ = setenv("M0_PORT", "0", True)
+    var by_env = host_refusal(AppConfig())
+    var over = host_refusal(_parse("--port", "8080").config)
+    _ = setenv("M0_PORT", "70000", True)
+    var high_env = host_refusal(AppConfig())
+    _ = unsetenv("M0_PORT")
+    var by_flag = host_refusal(_parse("--port", "0").config)
+    var high_flag = host_refusal(_parse("--port", "70000").config)
+    assert_true(Bool(by_env), "M0_PORT=0 was served")
+    assert_true(Bool(by_flag), "--port 0 was served")
+    assert_equal(by_flag.value(), by_env.value())
+    assert_true("M0_PORT must be 1-65535, got 0" in by_env.value(), by_env.value())
+    assert_true("--port (M0_PORT)" in by_env.value(), by_env.value())
+    assert_true(Bool(high_env), "M0_PORT=70000 was served")
+    assert_true(Bool(high_flag), "--port 70000 was served")
+    assert_true("got 70000" in high_env.value(), high_env.value())
+    assert_equal(high_flag.value(), high_env.value())
+    assert_false(Bool(over), "--port 8080 over M0_PORT=0 was refused")
+    assert_false(Bool(host_refusal(AppConfig())), "the default port was refused")
+
+
+def test_a_listen_address_that_does_not_parse_is_refused() raises:
+    """A listen address `parse_address` refuses, such as a host holding a
+    `%` (an IPv6 zone), is the `address` check's 78 whether `--host` or
+    `M0_HOST` named it, so `--doctor` says what the server does; the
+    server used to fail at the bind with 1 while the doctor said 0
+    (review record LF48).
+
+    covers: E31
+    """
+    var by_flag = host_refusal(_parse("--host", "fe80::1%en0").config)
+    _ = setenv("M0_HOST", "fe80::1%en0", True)
+    var by_env = host_refusal(AppConfig())
+    _ = unsetenv("M0_HOST")
+    assert_true(Bool(by_flag), "--host fe80::1%en0 was served")
+    assert_true(Bool(by_env), "M0_HOST=fe80::1%en0 was served")
+    assert_equal(by_flag.value(), by_env.value())
+    assert_true("cannot listen on [fe80::1%en0]:8080: " in by_flag.value(), by_flag.value())
+    assert_true("'%'" in by_flag.value(), by_flag.value())
+    assert_true("--host (M0_HOST)" in by_flag.value(), by_flag.value())
+    assert_false(Bool(host_refusal(_parse("--host", "::1").config)), "::1 was refused")
+    assert_false(Bool(host_refusal(_parse("--host", "localhost").config)), "localhost was refused")
+
+
+def _failed_checks(config: AppConfig) -> String:
+    """The names of `host_checks`' failures, in order, comma-separated."""
+    var checks = host_checks(config)
+    var out = String("")
+    for i in range(len(checks)):
+        if not checks[i].ok:
+            if out.byte_length() > 0:
+                out += ","
+            out += checks[i].name
+    return out^
+
+
+def test_a_port_out_of_range_is_one_failure_not_two() raises:
+    """A port past 65535 fails the `port` check alone: `address` parses the
+    host with a placeholder port, so it fails only on the host's own cause.
+    A bad port with a good host is one failure; a bad port with a bad host
+    is two, each named, so the doctor reports every problem at once.
+
+    covers: E31
+    """
+    assert_equal(_failed_checks(_parse("--port", "70000").config), "port")
+    assert_equal(_failed_checks(_parse("--port", "0").config), "port")
+    assert_equal(
+        _failed_checks(_parse("--port", "0", "--host", "fe80::1%en0").config),
+        "port,address",
+    )
+    assert_equal(_failed_checks(_parse("--host", "fe80::1%en0").config), "address")
 
 
 def test_prefork_is_refused_when_the_parallel_runtime_is_linked() raises:
@@ -281,19 +366,22 @@ def test_the_checks_are_whole_and_in_the_order_serve_refuses() raises:
     covers: E31
     """
     var clean = host_checks(AppConfig())
-    assert_equal(len(clean), 8)
+    assert_equal(len(clean), 10)
     for i in range(len(clean)):
         assert_true(clean[i].ok, clean[i].name + " failed on a default config")
         assert_equal(clean[i].fix, "")
-    assert_equal(clean[0].name, "workers-count")
-    assert_equal(clean[3].name, "workers-vs-threads")
+    assert_equal(clean[0].name, "port")
+    assert_equal(clean[1].name, "address")
+    assert_equal(clean[2].name, "workers-count")
+    assert_equal(clean[5].name, "workers-vs-threads")
+    assert_equal(clean[len(clean) - 1].name, "workers-vs-parallel-runtime")
     # Two failures: too many workers for the app, and both modes at once.
     var two = host_checks(_parse("--workers", "2", "--threads", "2").config, 1)
-    assert_equal(len(two), 8)
-    assert_false(two[1].ok)
+    assert_equal(len(two), 10)
     assert_false(two[3].ok)
+    assert_false(two[5].ok)
     var first = host_refusal(_parse("--workers", "2", "--threads", "2").config, 1)
-    assert_true(two[1].detail in first.value())
+    assert_true(two[3].detail in first.value())
     assert_true("M0_WORKERS=2" in first.value())
 
 
