@@ -83,5 +83,54 @@ def test_a_port_is_digits_up_to_65535() raises:
     assert_equal(empty.path, "/x")
 
 
+def test_a_hash_in_a_target_is_data() raises:
+    """A request target carries no fragment (RFC 9112 §3.2), and the header
+    parse accepts a `#` as any other visible byte (SPEC B19), as h11 does.
+    It reaches the application where it was sent, in the path or the query,
+    as uvicorn's h11 server hands it on; an inherited TODO had it cut away
+    as an anchor. This is the wire's shape: the server's address, then a
+    target holding a `%` or a `?`.
+
+    covers: B19
+    """
+    var query = URI.parse("127.0.0.1:8080/a?x=1#frag")
+    assert_equal(query.path, "/a")
+    assert_equal(query.query_string, "x=1#frag")
+    assert_equal(query.queries["x"], "1#frag")
+    assert_equal(query.request_uri, "/a?x=1#frag")
+    var path = URI.parse("127.0.0.1:8080/a%20b#frag?x=1")
+    assert_equal(path.path, "/a b#frag")
+    assert_equal(path.query_string, "x=1")
+
+
+def test_the_query_items_edges() raises:
+    """The query loop over the wire's targets: empty items, an item with no
+    `=` (an empty value), one with no name (skipped), a value holding `=`,
+    `+` and escapes decoded after the split, a repeated name (the last
+    wins), an empty query, and a `?` inside the query.
+    """
+    var uri = URI.parse(
+        "127.0.0.1:8080/p?&&=v&k&a=1&a=2&b=1=2&c+d=e+f&g%3Dh=i%26j"
+    )
+    assert_equal(uri.path, "/p")
+    assert_equal(uri.queries["k"], "")
+    assert_false("" in uri.queries)
+    assert_equal(uri.queries["a"], "2")
+    assert_equal(uri.queries["b"], "1=2")
+    assert_equal(uri.queries["c d"], "e f")
+    assert_equal(uri.queries["g=h"], "i&j")
+    assert_equal(len(uri.queries), 5)
+    var empty = URI.parse("127.0.0.1:8080/p?")
+    assert_equal(empty.path, "/p")
+    assert_equal(empty.query_string, "")
+    assert_equal(len(empty.queries), 0)
+    assert_equal(empty.request_uri, "/p?")
+    var inner = URI.parse("127.0.0.1:8080/p?next=/q?r=1")
+    assert_equal(inner.queries["next"], "/q?r=1")
+    var root = URI.parse("127.0.0.1:8080/?x")
+    assert_equal(root.path, "/")
+    assert_equal(root.queries["x"], "")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

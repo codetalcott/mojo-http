@@ -21,6 +21,16 @@ struct RequestCookieJar(Copyable, Writable):
         A pair with no `=` at all is skipped rather than stored under an empty
         name — RFC 6265 §5.2 says to ignore it, and the empty-name entry it
         used to create could be clobbered by the next such pair.
+
+        A value is kept as it was sent, double quotes included. RFC 6265
+        §4.1.1 allows a cookie-value wrapped in DQUOTEs, and its successor
+        draft (draft-ietf-httpbis-rfc6265bis-22 §4.1.1) says the quotes are
+        not stripped: they are part of the value, stored and sent back
+        with it. So a value an application set quoted comes back as it set
+        it, the response jar writing values verbatim. (Go's `net/http`
+        strips one pair and records that it did.) A WSGI or ASGI
+        application parses the raw `Cookie` header itself and is not
+        reached by this.
         """
         for chunk_ref in header_value.split(";"):
             var chunk = String(chunk_ref).strip()
@@ -32,7 +42,6 @@ struct RequestCookieJar(Copyable, Writable):
             var name = String(String(unsafe_from_utf8=chunk.as_bytes()[:eq]).strip())
             if name.byte_length() == 0:
                 continue
-            # TODO value must be "unquoted"
             self._inner[name] = String(unsafe_from_utf8=chunk.as_bytes()[eq + 1 :])
 
     @always_inline

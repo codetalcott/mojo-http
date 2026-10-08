@@ -1614,6 +1614,15 @@ lightbug_http
         left from the token check `TCHAR_LO`/`TCHAR_HI` replaced (review
         record LF52).
 
+      - uri.mojo, cookie/request_cookie_jar.mojo (2026-10-08): three
+        inherited TODOs that asked for what the RFCs rule out are replaced
+        by what the code does and why, behaviour unchanged: a request
+        cookie's DQUOTEs are part of its value (RFC 6265 §4.1.1, as
+        draft-ietf-httpbis-rfc6265bis-22 reads it), a userinfo is skipped
+        and never stored (RFC 9110 §4.2.4), and a `#` in a request target
+        is data, not a fragment to cut (RFC 9112 §3.2). Tests pin each
+        (review record LF53, SPEC G28, B19).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

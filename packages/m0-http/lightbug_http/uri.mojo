@@ -260,9 +260,12 @@ struct URI(Copyable, Writable):
             scheme = String(reader.read_until(UInt8(ord(URIDelimiters.SCHEME))))
             reader.increment(3)
 
-        # Parse the user info, if exists: only an `@` inside the authority
-        # ends one (`userinfo_separator`).
-        # TODO (@thatstoasty): Store the user information (username and password) if it exists.
+        # Skip a userinfo, if there is one: only an `@` inside the authority
+        # ends one (`userinfo_separator`). It is never stored. RFC 9110
+        # §4.2.4 forbids one in an `http` or `https` URI a message carries
+        # and asks a recipient to treat one as an error, which the header
+        # parse does for a request target (SPEC B16), so only a caller's own
+        # URL brings one here.
         if userinfo_at >= 0:
             reader.increment(userinfo_at + 1 - reader.read_pos)
 
@@ -361,7 +364,10 @@ struct URI(Copyable, Writable):
 
         var query: String = ""
         if query_delimiter == UInt8(ord(URIDelimiters.QUERY)):
-            # TODO: Handle fragments for anchors
+            # The query runs to the end. A request target has no fragment
+            # (RFC 9112 §3.2), so a `#` that arrives in one is data the
+            # header parse accepted as any other visible byte (SPEC B19),
+            # kept in the query or the path as h11 keeps it, never a cut.
             query = String(reader.read_bytes()[1:])
 
         var queries = QueryMap()
