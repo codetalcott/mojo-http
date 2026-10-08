@@ -231,7 +231,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   is it for an absolute-form target (`GET http://.../`) whose authority
   has the same fault. An empty `Host` is still accepted where the target
   names no authority. A client sends an internationalized name as
-  punycode, as browsers do.
+  punycode, as browsers do. An IPv6 zone ID in `Host` (`[fe80::1%25eth0]`,
+  or the raw `%eth0` older Python `http.client` builds send) is refused
+  too, deliberately: browsers, curl and Go never send one.
 
 - **A `Transfer-Encoding` that only Unicode reads as `chunked` is
   refused** (fork review LF58, SPEC B3). Exposed: m0serve and every Mojo

@@ -275,7 +275,7 @@ def test_an_invalid_host_value_is_rejected() raises:
         "a b", "u@a", "a/b", "a?b", "a#b", "a\tb", "a\"b", "a<b>", "a\\b",
         "a%", "a%4", "a%zz", ":80", "a:8x", "a:80:90", "a::80",
         "[::1", "[::1]x", "[]", "[1.2.3.4]", "[v1]", "[v.x]",
-        "[vg.x]", "[v1.]", "[::1%25lo0]", "::1", "a]", "[a b]",
+        "[vg.x]", "[v1.]", "[::1%25lo0]", "[fe80::1%eth0]", "::1", "a]", "[a b]",
     ]
     for v in bad:
         assert_true(_rejected(_with_host(v)), String("served Host: ", v))
