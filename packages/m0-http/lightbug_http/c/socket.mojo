@@ -45,9 +45,8 @@ comptime SOL_SOCKET = 0xFFFF if _IS_MACOS else 1
 # Socket option flags — platform-specific values resolved at compile time.
 # Only the options this server sets, each checked against the macOS SDK's
 # <sys/socket.h> and Linux's asm-generic/socket.h, which x86-64 and arm64
-# share (SO_RCVTIMEO there is SO_RCVTIMEO_OLD on a 64-bit target). The
-# upstream list carried twenty-two options nothing set, several with
-# OpenBSD's numbers: its SO_TIMESTAMP, 0x0800, is 0x0400 on macOS.
+# share. The upstream list carried twenty-two options nothing set, several
+# with OpenBSD's numbers: its SO_TIMESTAMP, 0x0800, is 0x0400 on macOS.
 @fieldwise_init
 struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     var value: c_int
@@ -56,7 +55,6 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
     comptime SO_REUSEPORT = Self(c_int(0x0200 if _IS_MACOS else 15))
     comptime SO_SNDBUF = Self(c_int(0x1001 if _IS_MACOS else 7))
     comptime SO_RCVBUF = Self(c_int(0x1002 if _IS_MACOS else 8))
-    comptime SO_RCVTIMEO = Self(c_int(0x1006 if _IS_MACOS else 20))
 
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
@@ -72,8 +70,6 @@ struct SocketOption(Copyable, Equatable, Writable, TrivialRegisterPassable):
             writer.write("SO_SNDBUF")
         elif self == Self.SO_RCVBUF:
             writer.write("SO_RCVBUF")
-        elif self == Self.SO_RCVTIMEO:
-            writer.write("SO_RCVTIMEO")
         else:
             writer.write("SocketOption(", self.value, ")")
 
@@ -561,57 +557,6 @@ def accept_with_peer(
     return (FileDescriptor(Int(result)), peer[0], peer[1])
 
 
-def _connect[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr, origin], address_len: socklen_t) -> c_int:
-    """Libc POSIX `connect` function.
-
-    Args:
-        socket: A File Descriptor.
-        address: A Pointer to the address to connect to.
-        address_len: The size of the address.
-
-    Returns:
-        0 on success, -1 on error.
-
-    #### C Function
-    ```c
-    int connect(int socket, const struct sockaddr *address, socklen_t address_len)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/connect.3p.html
-    """
-    return external_call[
-        "connect",
-        c_int,
-        type_of(socket),
-        type_of(address),
-        type_of(address_len),
-    ](socket, address, address_len)
-
-
-def connect(socket: FileDescriptor, mut address: SocketAddress) raises SysError:
-    """Libc POSIX `connect` function.
-
-    Args:
-        socket: A File Descriptor.
-        address: The address to connect to.
-
-    Raises:
-        SysError: If the call fails, whatever its errno.
-
-    #### C Function
-    ```c
-    int connect(int socket, const struct sockaddr *address, socklen_t address_len)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/connect.3p.html .
-    """
-    var result = _connect(c_int(socket.value), address.unsafe_ptr(), address.length)
-    if result == -1:
-        raise SysError("connect", get_errno())
-
-
 def _recv(
     socket: c_int,
     buffer: Pointer[c_void, _],
@@ -748,67 +693,16 @@ def send[
     return UInt(result)
 
 
-# --- Vectored I/O (writev) ---
-
-
 @fieldwise_init
 struct iovec_t(TrivialRegisterPassable):
-    """POSIX struct iovec for scatter-gather I/O.
+    """POSIX `struct iovec`: one buffer of a `sendmsg`/`recvmsg` message
+    (`c/fdpass.mojo`).
 
     Layout matches C: void *iov_base (8 bytes) + size_t iov_len (8 bytes).
     """
 
     var iov_base: UInt
     var iov_len: UInt
-
-
-def _writev(
-    fd: c_int,
-    iov: Pointer[iovec_t, ...],
-    iovcnt: c_int,
-) -> c_ssize_t:
-    """Libc POSIX `writev` function.
-
-    Args:
-        fd: A file descriptor.
-        iov: Pointer to an array of iovec structures.
-        iovcnt: Number of iovec structures.
-
-    Returns:
-        The number of bytes written or -1 in case of failure.
-
-    #### C Function
-    ```c
-    ssize_t writev(int fd, const struct iovec *iov, int iovcnt)
-    ```
-    """
-    return external_call[
-        "writev",
-        c_ssize_t,
-        type_of(fd),
-        type_of(iov),
-        type_of(iovcnt),
-    ](fd, iov, iovcnt)
-
-
-def try_writev(
-    fd: FileDescriptor,
-    iov: Pointer[iovec_t, ...],
-    iovcnt: Int,
-) -> Int:
-    """Libc POSIX `writev` — scatter-gather write (non-raising).
-
-    Returns bytes written on success, -1 for EAGAIN/EWOULDBLOCK,
-    -2 for fatal errors (connection reset, bad fd, etc.).
-    """
-    var result = _writev(Int32(fd.value), iov, c_int(iovcnt))
-    if result == -1:
-        var errno = get_errno()
-        if errno in [errno.EAGAIN, errno.EWOULDBLOCK]:
-            return -1
-        return -2
-
-    return Int(result)
 
 
 def _shutdown(socket: c_int, how: c_int) -> c_int:

@@ -26,7 +26,6 @@ from lightbug_http.c.socket import (
     accept_with_peer,
     bind,
     close,
-    connect,
     getpeername,
     getsockname,
     listen,
@@ -38,7 +37,8 @@ from lightbug_http.c.socket import (
 )
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.connection import ListenConfig, create_connection
+from lightbug_http.connection import ListenConfig
+from test.loopback import create_connection
 from lightbug_http.loop.accept import _accept_retries
 
 
@@ -135,13 +135,6 @@ def test_every_wrapper_raises_on_a_descriptor_that_is_not_open() raises:
     except e:
         err = e
     _expect(err, "accept", ErrNo.EBADF)
-
-    err = None
-    try:
-        connect(bad, addr)
-    except e:
-        err = e
-    _expect(err, "connect", ErrNo.EBADF)
 
     err = None
     try:

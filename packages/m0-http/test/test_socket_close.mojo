@@ -14,8 +14,8 @@ tree closes a socket and keeps it, but the type allowed both.
 B27 mended the destructor and `close()`; every other method went on passing
 the old number to the kernel (B27b): a `send` wrote into the newcomer, a
 `receive` took its bytes, a `shutdown` shut it down, a socket option or a
-`bind`, `listen` or `connect` landed on it, and `into_fd` handed it to an
-owner that would close it. `close()` now leaves the socket holding no
+`bind` or `listen` landed on it, and `into_fd` handed it to an owner that
+would close it. `close()` now leaves the socket holding no
 number at all, so each refuses with EBADF, or does nothing where that is
 its contract.
 
@@ -42,7 +42,6 @@ from lightbug_http.c.socket import (
     ShutdownOption,
     SocketOption,
     accept_with_peer,
-    getpeername,
     getsockname,
     recv,
     send,
@@ -155,24 +154,6 @@ def _option(fd: Int, name: c_int) raises -> Int:
     return result
 
 
-def _receive_timeout_seconds(fd: Int) raises -> Int:
-    """The whole seconds of `fd`'s `SO_RCVTIMEO`; 0 when it has none."""
-    var tv = unsafe_alloc[Int64](count=2)
-    var size = unsafe_alloc[UInt32](count=1)
-    tv[unsafe_offset=0] = 0
-    tv[unsafe_offset=1] = 0
-    size[unsafe_offset=0] = 16
-    var rc = external_call[
-        "getsockopt", c_int, c_int, c_int, c_int, type_of(tv), type_of(size)
-    ](c_int(fd), c_int(SOL_SOCKET), SocketOption.SO_RCVTIMEO.value, tv, size)
-    var seconds = Int(tv[unsafe_offset=0])
-    tv.unsafe_free()
-    size.unsafe_free()
-    if rc != 0:
-        raise Error("getsockopt() failed, errno: ", get_errno())
-    return seconds
-
-
 def _is_listening(fd: Int) raises -> Bool:
     """Whether `fd` listens: a non-blocking `accept` on it finds no
     connection waiting (EAGAIN) rather than a socket that does not listen
@@ -195,15 +176,6 @@ def _local_port(fd: Int) raises -> Int:
     var address = SocketAddress()
     getsockname(FileDescriptor(fd), address)
     return binary_port_to_int(address.as_sockaddr_in().sin_port)
-
-
-def _is_connected(fd: Int) -> Bool:
-    """Whether `fd` has a peer."""
-    try:
-        _ = getpeername(FileDescriptor(fd))
-        return True
-    except:
-        return False
 
 
 def _errno_of(e: SysError) -> Int:
@@ -515,37 +487,6 @@ def test_a_closed_socket_sets_no_option_on_what_took_its_number() raises:
     close_fd(old[1])
 
 
-def test_a_closed_socket_sets_no_timeout_on_what_took_its_number() raises:
-    """`set_timeout` on a closed socket is refused with EBADF, and the
-    socket that took its number keeps waiting for as long as it did.
-
-    covers: D1
-    """
-    var old = _stream_pair()
-    var number = old[0]
-    var sock = _adopt(number)
-    var newcomer = _stream_pair()
-    sock.close()
-    _move_to(newcomer[0], number)
-    assert_equal(_receive_timeout_seconds(number), 0)
-
-    var errno = 0
-    try:
-        sock.set_timeout(5)
-    except e:
-        errno = _errno_of(e)
-
-    assert_equal(
-        _receive_timeout_seconds(number), 0,
-        "a closed socket's set_timeout set SO_RCVTIMEO on the socket that took its number",
-    )
-    assert_equal(errno, _EBADF, "a closed socket's set_timeout was not refused with EBADF")
-
-    close_fd(number)
-    close_fd(newcomer[1])
-    close_fd(old[1])
-
-
 def test_a_closed_socket_binds_nothing_it_does_not_hold() raises:
     """`bind` on a closed socket is refused with EBADF, and the socket that
     took its number stays unbound.
@@ -608,41 +549,6 @@ def test_a_closed_socket_does_not_make_what_took_its_number_listen() raises:
 
     close_fd(number)
     close_fd(old[1])
-
-
-def test_a_closed_socket_does_not_connect_what_took_its_number() raises:
-    """`connect` on a closed socket is refused with EBADF, and the socket
-    that took its number stays unconnected.
-
-    covers: D1
-    """
-    var ln = ListenConfig(max_bind_retries=1, quiet=True).listen("127.0.0.1:0")
-    var port = ln.addr().port
-    var old = _stream_pair()
-    var number = old[0]
-    var sock = _adopt(number)
-    var fresh = _tcp_socket()
-    sock.close()
-    _move_to(fresh, number)
-
-    var errno = 0
-    var ip = String("127.0.0.1")
-    try:
-        sock.connect(ip, port)
-    except e:
-        var text = String(e)
-        if text.find("Bad file descriptor") >= 0 or text.find("errno 9)") >= 0:
-            errno = _EBADF
-
-    assert_false(
-        _is_connected(number),
-        "a closed socket's connect connected the socket that took its number",
-    )
-    assert_equal(errno, _EBADF, "a closed socket's connect was not refused with EBADF")
-
-    close_fd(number)
-    close_fd(old[1])
-    ln.close()
 
 
 def test_a_closed_listener_hands_over_no_number() raises:

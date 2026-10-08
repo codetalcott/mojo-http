@@ -31,7 +31,8 @@ from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import recv, send
 from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.connection import ConnectionState, ListenConfig, create_connection
+from lightbug_http.connection import ConnectionState, ListenConfig
+from test.loopback import create_connection
 from lightbug_http.event_loop import run_pass_once
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.loop.accept import _admit_connection

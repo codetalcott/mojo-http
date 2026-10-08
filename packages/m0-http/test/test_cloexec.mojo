@@ -17,7 +17,8 @@ from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.socket import socket as c_socket, accept_with_peer
 from lightbug_http.c.fdpass import send_fd, recv_fd
 from lightbug_http.c.process import shared_file_fd
-from lightbug_http.connection import ListenConfig, create_connection
+from lightbug_http.connection import ListenConfig
+from test.loopback import create_connection
 from src.threads import dup_fd
 
 

@@ -1328,6 +1328,28 @@ lightbug_http
         kept, `HTTP://` was left unreduced, and a query straight after the
         authority was lost.
 
+      - socket.mojo, address.mojo, connection.mojo, c/socket.mojo,
+        c/network.mojo, c/address.mojo, c/kqueue.mojo (2026-10-08): the
+        client connect path, which no caller outside the tests had used
+        since the HTTP client left, removed with the dead bindings beside
+        it, each name searched for across the repository, the `m0`
+        templates and the one application outside it, then the fork
+        compiled whole: `Socket.connect`, `create_connection`, the
+        `connect` binding, `get_ip_address`, `getaddrinfo` and
+        `_getaddrinfo`, `CAddrInfo` and its iterator (which never ended on
+        Linux, `addrinfo_unix.has_next` reading `ai_addr`),
+        `AnAddrInfo`, `addrinfo_macos`, `addrinfo_unix`, `freeaddrinfo`,
+        `gai_strerror` and the three `getaddrinfo` error types;
+        `TCPConnection.set_recv_timeout`, `Socket.set_timeout` and
+        `SO_RCVTIMEO`; `NetworkType`'s four type lists;
+        `AddressInformation`, whose `AI_ALL`, `AI_ADDRCONFIG` and
+        `AI_V4MAPPED` were Linux's values on macOS; c/network.mojo's
+        `addrinfo` (Linux's field order everywhere), `in6_addr` and
+        `sockaddr_in6`; `_writev` and `try_writev`; `kevent_register`,
+        `EV_ENABLE` and `EV_DISABLE`. The tests' client is
+        test/loopback.mojo, `connect` and `create_connection` over a
+        literal address (review record LF26, owner decision 6).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

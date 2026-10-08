@@ -1,44 +1,6 @@
 from std.ffi import c_int
 from std.sys.info import CompilationTarget
 
-from lightbug_http.c.aliases import ExternalImmutPointer, ExternalMutPointer, c_void
-
-
-@fieldwise_init
-struct AddressInformation(Copyable, Equatable, Writable, TrivialRegisterPassable):
-    var value: c_int
-    comptime AI_PASSIVE = Self(1)
-    comptime AI_CANONNAME = Self(2)
-    comptime AI_NUMERICHOST = Self(4)
-    comptime AI_V4MAPPED = Self(8)
-    comptime AI_ALL = Self(16)
-    comptime AI_ADDRCONFIG = Self(32)
-    comptime AI_IDN = Self(64)
-
-    def __eq__(self, other: Self) -> Bool:
-        return self.value == other.value
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        if self == Self.AI_PASSIVE:
-            writer.write("AI_PASSIVE")
-        elif self == Self.AI_CANONNAME:
-            writer.write("AI_CANONNAME")
-        elif self == Self.AI_NUMERICHOST:
-            writer.write("AI_NUMERICHOST")
-        elif self == Self.AI_V4MAPPED:
-            writer.write("AI_V4MAPPED")
-        elif self == Self.AI_ALL:
-            writer.write("AI_ALL")
-        elif self == Self.AI_ADDRCONFIG:
-            writer.write("AI_ADDRCONFIG")
-        elif self == Self.AI_IDN:
-            writer.write("AI_IDN")
-        else:
-            writer.write("ShutdownOption(", self.value, ")")
-
-    def __str__(self) -> String:
-        return String(self)
-
 
 # AF_UNSPEC and AF_INET are 0 and 2 everywhere. AF_INET6 is not: upstream
 # took 24 from OpenBSD's <sys/socket.h>, which on macOS names no family at

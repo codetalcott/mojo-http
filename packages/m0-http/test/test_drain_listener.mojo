@@ -33,7 +33,8 @@ from lightbug_http.c.kqueue import EVFILT_READ, set_nonblocking
 from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.socket import recv, send
-from lightbug_http.connection import ListenConfig, create_connection
+from lightbug_http.connection import ListenConfig
+from test.loopback import create_connection
 from lightbug_http.event_loop import prepare_loop
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.loop.accept import _admit_connection

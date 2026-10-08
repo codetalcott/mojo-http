@@ -8,6 +8,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Removed
+
+- **The fork's client connect path, and the last of its dead C bindings**
+  (fork review LF26). Nothing served changes: m0serve and the Mojo host
+  never open a connection, and reached none of it. The `m0` wheel ships
+  the fork's source, so an application built with `m0` that named one of
+  these needs its own copy: `Socket.connect` and
+  `lightbug_http.connection.create_connection`, with the `connect(2)`
+  binding in `lightbug_http.c.socket`; the `getaddrinfo` machinery under
+  them in `lightbug_http.address` (`getaddrinfo`, `get_ip_address`,
+  `CAddrInfo`, `AnAddrInfo`, `addrinfo_macos`, `addrinfo_unix`,
+  `freeaddrinfo`, `gai_strerror` and their three error types), whose
+  iterator never ended on Linux; `TCPConnection.set_recv_timeout`,
+  `Socket.set_timeout` and `SocketOption.SO_RCVTIMEO`; `NetworkType`'s
+  `SUPPORTED_TYPES`, `TCP_TYPES`, `UDP_TYPES` and `IP_TYPES`;
+  `lightbug_http.c.address.AddressInformation`, whose `AI_*` values were
+  Linux's on macOS too; `lightbug_http.c.network`'s `addrinfo`, laid out
+  as Linux's on every platform, `in6_addr` and `sockaddr_in6`;
+  `try_writev`; and `kevent_register`, `EV_ENABLE` and `EV_DISABLE`.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

@@ -42,7 +42,8 @@ from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.process import (
     SIG_DFL, SIGINT, SIGTERM, _raw_signal, getpid, kill_process,
 )
-from lightbug_http.connection import ListenConfig, TCPConnection, create_connection
+from lightbug_http.connection import ListenConfig, TCPConnection
+from test.loopback import create_connection
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.server import Server

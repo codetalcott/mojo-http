@@ -24,8 +24,6 @@ comptime EVFILT_TIMER: Int16 = -7
 # --- kqueue flag constants ---
 comptime EV_ADD: UInt16 = 0x0001
 comptime EV_DELETE: UInt16 = 0x0002
-comptime EV_ENABLE: UInt16 = 0x0004
-comptime EV_DISABLE: UInt16 = 0x0008
 comptime EV_ONESHOT: UInt16 = 0x0010
 comptime EV_CLEAR: UInt16 = 0x0020
 comptime EV_EOF: UInt16 = 0x8000
@@ -145,20 +143,6 @@ def kevent_register_pair(kq: FileDescriptor, first: kevent_t, second: kevent_t) 
         if errno == errno.ENOENT:
             return
         raise Error("kevent_register_pair failed, errno: " + String(errno))
-
-
-def kevent_register(kq: FileDescriptor, changes: Span[kevent_t, ...]) raises:
-    """Submit kevent changes without polling for events.
-
-    One syscall per change rather than a batched changelist: nothing in
-    the repo calls this (the loop registers one event at a time), and the
-    batched body it replaced carried a heap allocation plus two latent
-    bugs that sat unnoticed exactly because the function was dead — its
-    parametric signature meant the body was only ever type-checked once
-    something instantiated it.
-    """
-    for i in range(len(changes)):
-        kevent_register_one(kq, changes[i])
 
 
 def kevent_poll(

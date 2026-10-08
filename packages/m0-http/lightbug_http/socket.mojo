@@ -1,12 +1,7 @@
-from std.ffi import ErrNo, c_uint, get_errno
+from std.ffi import ErrNo, c_uint
 from std.sys.info import CompilationTarget
 
-from lightbug_http.c.aliases import c_void
-
-from lightbug_http.address import (
-    Addr,
-    get_ip_address,
-)
+from lightbug_http.address import Addr
 from lightbug_http.c.address import AddressFamily, AddressLength
 from lightbug_http.c.network import InetNtopError, InetPtonError, SocketAddress, inet_pton
 from lightbug_http.c.socket import (
@@ -16,10 +11,8 @@ from lightbug_http.c.socket import (
     ShutdownOption,
     SocketOption,
     SocketType,
-    _setsockopt,
     bind,
     close,
-    connect,
     getpeername,
     getsockname,
     listen,
@@ -461,24 +454,6 @@ struct Socket[
         """
         setsockopt(self.fd, Int32(IPPROTO_IPV6), Int32(IPV6_V6ONLY), Int32(1 if ipv6_only else 0))
 
-    def connect(mut self, mut ip_address: String, port: UInt16) raises -> None:
-        """Connect to a remote socket at address.
-
-        Args:
-            ip_address: The IP address to connect to.
-            port: The port number to connect to.
-
-        Raises:
-            Error: If connecting to the remote socket fails; the SysError
-                of an EBADF on a closed socket (see `close`).
-        """
-        var ip = get_ip_address(ip_address, Self.address_family, Self.sock_type)
-        var remote_address = SocketAddress(address_family=Self.address_family, port=port, binary_ip=ip)
-        connect(self.fd, remote_address)
-
-        var remote = self.get_peer_name()
-        self.remote_address = Self.address(remote[0], remote[1])
-
     def send(self, buffer: Span[Byte, _]) raises SysError -> UInt:
         """Send what `buffer` holds, or as much of it as the socket takes.
 
@@ -587,12 +562,12 @@ struct Socket[
         Nor does any other method reach it (review B27b): the socket keeps
         no number once it is closed, holding -1 in its place, which the
         kernel refuses with EBADF whatever the call. `send`, `receive`,
-        `bind`, `listen`, `connect` and the options each raise that EBADF
-        as their own failure, `shutdown` does nothing, and `into_fd` hands
-        over -1. Each of those passed the old number on, by then usually
-        another descriptor's: a `send` wrote into it, a `receive` took its
-        bytes, a `shutdown` ended its connection, a `bind`, `listen` or
-        option landed on it, and the owner `into_fd` handed it to closed it.
+        `bind`, `listen` and the options each raise that EBADF as their own
+        failure, `shutdown` does nothing, and `into_fd` hands over -1. Each
+        of those passed the old number on, by then usually another
+        descriptor's: a `send` wrote into it, a `receive` took its bytes, a
+        `shutdown` ended its connection, a `bind`, `listen` or option landed
+        on it, and the owner `into_fd` handed it to closed it.
         One guard here rather than one in each method, so a method added
         later, and a caller that reads `fd` itself, are covered too.
 
@@ -636,29 +611,6 @@ struct Socket[
         except close_err:
             if close_err.errno != ErrNo.EBADF:
                 raise close_err
-
-    def set_timeout(self, seconds: Int) raises SysError:
-        """Set the receive timeout for the socket.
-
-        Args:
-            seconds: The timeout duration in seconds.
-
-        Raises:
-            SysError: If setting the socket option fails; EBADF on a
-                closed socket (see `close`).
-        """
-        # SO_RCVTIMEO requires a timeval struct: {tv_sec: Int64, tv_usec: Int64}
-        # (16 bytes on both macOS and Linux 64-bit).
-        var timeval: Array[Int64, 2] = [Int64(seconds), Int64(0)]
-        var result = _setsockopt(
-            Int32(self.fd.value),
-            Int32(SOL_SOCKET),
-            SocketOption.SO_RCVTIMEO.value,
-            Pointer(to=timeval).unsafe_bitcast[c_void](),
-            16,
-        )
-        if result == -1:
-            raise SysError("setsockopt", get_errno())
 
 
 comptime TCPSocket[address: Addr] = Socket[
