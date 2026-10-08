@@ -25,10 +25,9 @@ HTTP/1.0 request with a chunked body (SPEC B15), `Connection: close`
 listed with another option (SPEC B17), and `Connection: close` on the first
 of two `Connection` lines (SPEC B22). A head of bare LFs, which no CRLFCRLF
 ever frames, is refused with 400 at once, not at the header timeout (SPEC
-B23). A request for what this server does
-not implement is refused with 501, then the connection closed: CONNECT
-(SPEC B18), and a body in a transfer coding other than `chunked` (SPEC
-B21).
+B23). A request for what this server does not implement is refused with
+501, then the connection closed: CONNECT (SPEC B18), and a chunked body in
+another transfer coding as well (SPEC B21).
 
 usage: pipeline_probe.py PORT
 """
