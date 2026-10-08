@@ -31,6 +31,7 @@ from lightbug_http.offload import (
     send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
     encode_ack, decode_ack,
 )
+from lightbug_http.ring import atomic_at
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.uri import URI
 
@@ -1690,6 +1691,10 @@ comptime _SLOW_HOLD_S = 0.2
 comptime _BLK_SERVED = 11
 """Block slot an echo thread counts its jobs in; read after the join."""
 
+comptime _BLK_WS_SERVED = 12
+"""Block slot an echo thread counts the WebSocket messages it took in;
+read after the join."""
+
 
 def _echo_thread[slow: Bool](arg: Int) -> Int:
     """A pool thread that answers every job with a 200, until its pill —
@@ -1703,10 +1708,14 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
     var buf = _job_buffer()
     var tid = pool.register_thread(0)
     var served = 0
+    var ws_served = 0
     while True:
         var job = pool.next_job(0, buf, tid)
         if job.kind == JOB_STOP:
             break
+        if job.kind == JOB_WS_MESSAGE:
+            ws_served += 1
+            continue
         if job.kind != JOB_REQUEST:
             continue
         _ = pool.take_request(job.slot)
@@ -1719,6 +1728,7 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
         served += 1
     pool.unregister_thread(tid, 0)
     block.set(_BLK_SERVED, served)
+    block.set(_BLK_WS_SERVED, ws_served)
     block.set(BLK_STATUS, STATUS_OK)
     return 0
 
@@ -1928,6 +1938,56 @@ def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
     threads.join_all()
     assert_true(threads.all_ok())
     assert_equal(threads.block(0).get(_BLK_SERVED), 0)
+    assert_equal(threads.block(0).get(_BLK_WS_SERVED), 1)
+
+
+def test_a_websocket_message_sent_while_the_thread_is_on_its_way_to_park_is_taken() raises:
+    """The parking-in-progress case of the test above: the message lands
+    while the lane's one thread is not parked, so `send_ws_message`
+    wakes nobody, and the thread's next park must find it on the lane
+    socket by itself. Here the thread is inside a 200 ms view when the
+    message is sent, and the lane's poll clock is moved past the end of
+    the test, standing in for a thread that polled the socket a moment
+    before it parked: the poll on that cadence never comes round, so the
+    only look at the socket is the one `_park_on_own` takes after
+    announcing the park. Without it the thread blocks on its own channel
+    with the message left on the socket until something else wakes the
+    lane -- the pill, here (review LF22, where the window was held open
+    by a sleep before the announcement: 24 messages of 24 stranded).
+
+    covers: I39
+    """
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(1)
+    _spawn_echo[True](pool, threads, 1)
+    pool.park_request(_SLOW_SLOT, _request("/slow"))
+    assert_true(pool.submit(_SLOW_SLOT))
+    # Taken: the ring is empty and nobody is parked, so the thread is
+    # inside the view, its last poll of the socket already made.
+    var deadline = perf_counter_ns() + 2_000_000_000
+    while pool.jobs_pending() or pool.parked_count(0) != 0:
+        assert_true(perf_counter_ns() < deadline, "the slow job was never taken")
+        sleep(0.0001)
+    atomic_at(pool._poll_addr(0))[].store(
+        Int64(perf_counter_ns() + 60_000_000_000)
+    )
+    var payload = List[UInt8]()
+    for b in String("hello").as_bytes():
+        payload.append(b)
+    assert_true(pool.send_ws_message(0, 3, 1, String("chan"), Span(payload)))
+    assert_equal(pool.parked_count(0), 0)
+    assert_true(_await_completion(pool, _SLOW_SLOT, 2_000_000_000) >= 0)
+    _await_parked(pool, 1)
+    pool.stop(1)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    assert_equal(threads.block(0).get(_BLK_SERVED), 1)
+    assert_equal(
+        threads.block(0).get(_BLK_WS_SERVED), 1,
+        "the message was left on the lane socket when the thread parked",
+    )
 
 
 def test_sequential_jobs_with_idle_gaps_stay_on_one_thread() raises:

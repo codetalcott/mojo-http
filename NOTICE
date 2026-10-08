@@ -1328,6 +1328,14 @@ lightbug_http
         kept, `HTTP://` was left unreduced, and a query straight after the
         authority was lost.
 
+      - offload.mojo (2026-10-08): a pool thread parking on its own wake
+        channel looks at its lane socket once more after announcing the
+        park, beside the ring (SPEC I39), through `_leave_park`, which both
+        re-checks share. An inbound WebSocket message that reached the lane
+        socket while no thread of the lane was parked woke nobody, and a
+        thread that then parked left it there until a later job woke the
+        lane.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

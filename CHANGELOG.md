@@ -8,6 +8,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **An inbound WebSocket message no longer waits on a quiet pool lane for
+  the next request** (SPEC I39). Exposed: m0serve under `--realtime` with
+  a handler pool, its default, where a Python view holds a WebSocket with
+  `M0-Hold: websocket`. Each message is handed to the pool with a wake for
+  a thread that is parked, and one that arrived while none was (every
+  thread busy, spinning, or a moment from parking) woke nobody: the thread
+  that parked next did not look for it, and the view was handed it only
+  when a later request woke the pool, on a quiet server never. A thread now
+  looks for a message once more after it announces its park. Found by the
+  fork review; with a sleep holding that moment open, 24 messages of 24
+  waited.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP
