@@ -24,8 +24,8 @@ from lightbug_http.websocket import is_ws_upgrade_response
 
 from lightbug_http.loop.state import (
     LoopState, STREAM_KEEPALIVE_PROBES, UNUSED, _arm_send_deadline,
-    _await_write, _close_slot, _end_request, _record_response, _stream_idle,
-    _ws_linger,
+    _await_write, _close_slot, _end_request, _keep_stream_close,
+    _record_response, _stream_idle, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 
@@ -293,8 +293,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # the head says it now: a request asking for `Connection: close` had
     # its chunked stream answered `keep-alive` and its connection kept, and
     # so did every request on a server with keep-alive off (LF13).
-    var close_after = st.provision_pool.provisions[slot].should_close
-    st.slot_close_after_stream[slot] = close_after
+    var close_after = _keep_stream_close(st, slot)
 
     # A HEAD's response is its head (RFC 9110 §9.3.2), whatever a handler
     # made of it: a hold approved on a HEAD -- an `M0-Hold` view that answers

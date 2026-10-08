@@ -139,7 +139,7 @@ struct LoopState(Movable):
     with keep-alive off, a client that has half-closed. A stream's head
     clears `should_close`, or the head landing would close the slot, so a
     chunked stream that ends takes it back from here
-    (`_chunked_stream_ends`). `_finish_response` writes it for every
+    (`_chunked_stream_ends`). `_keep_stream_close` writes it for every
     response, so no slot inherits a previous connection's."""
     var fd_to_slot: List[Int]
     var active_count: Int
@@ -316,6 +316,8 @@ struct LoopState(Movable):
 #             upload's linger is `_reject_and_linger`'s own
 #   phases    `_end_request` (keep-alive), `_stream_idle`, `_ws_linger`,
 #             `_chunked_stream_ends`, `_record_response`, `_farewell_streams`
+#   close     `_keep_stream_close` (a response's, before a stream's head
+#             clears `should_close`), `_chunked_stream_ends` (takes it back)
 
 
 @always_inline
@@ -551,6 +553,21 @@ def _ws_linger[B: EventLoopBackend](
     st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
     if not st.slot_ws_state[slot].inbound_suspended:
         _ = _arm_reads(backend, st, slot, fd_val)
+
+
+@always_inline
+def _keep_stream_close(mut st: LoopState, slot: Int) -> Bool:
+    """A response is about to go out: keep what its request asked of the
+    connection, `should_close`, for a stream's end, and return it.
+
+    A stream's head clears `should_close`, or the head landing would close
+    the slot; a chunked stream that ends takes the close back from here
+    (`_chunked_stream_ends`). Written for every response, so no slot
+    carries a previous connection's (review record LF13).
+    """
+    var close_after = st.provision_pool.provisions[slot].should_close
+    st.slot_close_after_stream[slot] = close_after
+    return close_after
 
 
 @always_inline

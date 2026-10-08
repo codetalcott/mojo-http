@@ -1502,9 +1502,10 @@ lightbug_http
 
       - loop/state.mojo, loop/response.mojo, loop/streams.mojo
         (2026-10-08): `LoopState.slot_close_after_stream` keeps what a
-        stream's request asked of the connection, written by
-        `_finish_response` for every response before a stream's head
-        clears `should_close`; the head says `Connection: close` when it is
+        stream's request asked of the connection, written by the
+        transition `_keep_stream_close`, which `_finish_response` calls for
+        every response before a stream's head clears `should_close`; the
+        head says `Connection: close` when it is
         set, and `_chunked_stream_ends`, the transition both of the outbox
         drain's chunked-end sites now share, restores the close (SPEC A28).
         The end took the keep-alive path whatever the request had asked
