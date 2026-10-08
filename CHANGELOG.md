@@ -322,6 +322,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
   as Linux's on every platform, `in6_addr` and `sockaddr_in6`;
   `try_writev`; and `kevent_register`, `EV_ENABLE` and `EV_DISABLE`.
 
+- **Dead parts of the fork's request, response and server types** (fork
+  review LF61). Nothing served changes. The `m0` wheel ships the fork's
+  source, so an application built with `m0` that named one of these needs
+  its own copy: `lightbug_http.StatusCode` (`lightbug_http.http.response.
+  StatusCode`), whose one reader was `HTTPResponse.is_redirect`, which left
+  303 out; `HTTPResponse.content_length()`, `connection_close()` and
+  `len(response)`; `lightbug_http.http.request.RequestMethod`,
+  `RequestBodyTooLargeError` and `CookieParseError`, which nothing raised
+  (`RequestBuildError` is `URITooLongError` or `URIParseError`);
+  `HTTPRequest.set_connection_close()` and its `==` and `is not`;
+  `Server.max_request_body_size()`, `max_request_uri_length()` and their
+  setters (set `ServerConfig`'s fields); `ProvisionPool.size()`;
+  `RequestParseError.is_incomplete()` (ask `isa[IncompleteHTTPRequestError]()`);
+  and `parse_request_headers`' `last_len` argument, whose rescan for the
+  end of a head the server had already framed changed no answer.
+
 - **`lightbug_http.c.epoll`'s `EPOLL_CLOEXEC`, `TFD_CLOEXEC` and
   `TFD_NONBLOCK`** (fork review LF28), copies of the open flags under
   Linux's other names. Nothing served changes; an application built with
@@ -345,8 +361,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `ResponseBodyReadError`; `ResponseCookieJar.from_headers`;
   `Cookie.from_set_header`, which dropped `expires`, a capitalised
   `SameSite` and any attribute it did not know; `Cookie.clear_cookie`;
-  with `lightbug_http.cookie`'s `CookieParseError` (the request side's,
-  `lightbug_http.http.request.CookieParseError`, stays),
+  with `lightbug_http.cookie`'s `CookieParseError` (the request side's
+  went too, below),
   `InvalidCookieError`, `Expiration.invalidate` and the `from_string` of
   `Expiration`, `Duration` and `SameSite`;
   `ParsedRequestHeaders.expects_body`, which missed a chunked

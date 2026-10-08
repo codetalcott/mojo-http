@@ -115,8 +115,6 @@ struct HeaderKeyNotFoundError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("HeaderKeyNotFoundError: Key not found in headers")
 
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -126,8 +124,6 @@ struct InvalidHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("InvalidHTTPRequestError: Not a valid HTTP request")
 
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -137,8 +133,6 @@ struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("IncompleteHTTPRequestError: Incomplete HTTP request")
 
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -152,8 +146,6 @@ struct UnsupportedHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("UnsupportedHTTPRequestError: Not implemented by this server")
 
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -163,8 +155,6 @@ struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("EmptyBufferError: No data available in buffer")
 
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -199,10 +189,6 @@ struct RequestParseError(Movable, Writable):
     def __init__(out self, value: UnsupportedHTTPRequestError):
         self.value = value
 
-    def is_incomplete(self) -> Bool:
-        """Returns True if this error indicates we need more data."""
-        return self.value.isa[IncompleteHTTPRequestError]()
-
     def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[InvalidHTTPRequestError]():
             writer.write(self.value[InvalidHTTPRequestError])
@@ -216,11 +202,6 @@ struct RequestParseError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -303,8 +284,6 @@ struct Header(Copyable, Writable):
     var key: String
     var value: String
 
-    def __str__(self) -> String:
-        return String(self)
 
     def write_to[T: Writer, //](self, mut writer: T):
         writer.write(self.key, ": ", self.value, lineBreak)
@@ -1014,8 +993,6 @@ struct Headers(Copyable, Writable):
                     continue
                 writer.write_header_line(name, Span(latin1))
 
-    def __str__(self) -> String:
-        return String(self)
 
     def __eq__(self, other: Headers) -> Bool:
         if len(self._idx) != len(other._idx):
@@ -1164,19 +1141,18 @@ def host_value_is_valid(value: Span[Byte, _]) -> Bool:
 
 def parse_request_headers(
     buffer: Span[Byte, _],
-    last_len: Int = 0,
 ) raises RequestParseError -> ParsedRequestHeaders:
     """Parse HTTP request headers from a buffer.
 
     This function parses the request line (method, path, protocol) and all headers
-    from the given buffer. It uses incremental parsing - if the request is incomplete,
-    it raises IncompleteHTTPRequestError.
+    from the given buffer, from its start: a head that has not all arrived
+    raises IncompleteHTTPRequestError. The event loop calls it once, on the
+    head `find_header_end` has framed; a `last_len` that resumed a rescan
+    for the terminator, which framing had already found, went with
+    `is_complete` (review record LF61).
 
     Args:
         buffer: The buffer containing the HTTP request data.
-        last_len: Number of bytes that were already parsed in a previous call.
-                  Use 0 for first parse attempt, or the previous buffer length
-                  for incremental parsing.
 
     Returns:
         ParsedRequestHeaders containing all parsed information and bytes consumed.
@@ -1206,7 +1182,6 @@ def parse_request_headers(
         minor_version,
         headers_array,
         num_headers,
-        last_len,
     )
 
     if ret < 0:

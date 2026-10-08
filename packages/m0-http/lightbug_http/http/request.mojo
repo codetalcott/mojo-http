@@ -68,14 +68,6 @@ struct URITooLongError(ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct RequestBodyTooLargeError(ImplicitlyCopyable):
-    """Request body exceeded maximum size."""
-
-    def message(self) -> String:
-        return "Request body exceeds maximum allowed size"
-
-
-@fieldwise_init
 struct URIParseError(ImplicitlyCopyable):
     """Failed to parse request URI."""
 
@@ -83,37 +75,7 @@ struct URIParseError(ImplicitlyCopyable):
         return "Malformed request URI"
 
 
-@fieldwise_init
-struct CookieParseError(ImplicitlyCopyable):
-    """Failed to parse cookies."""
-
-    var detail: String
-
-    def message(self) -> String:
-        return String("Invalid cookies: ", self.detail)
-
-
-comptime RequestBuildError = Variant[
-    URITooLongError,
-    RequestBodyTooLargeError,
-    URIParseError,
-    CookieParseError,
-]
-
-
-@fieldwise_init
-struct RequestMethod:
-    """HTTP request method constants."""
-
-    var value: String
-
-    comptime get = RequestMethod("GET")
-    comptime post = RequestMethod("POST")
-    comptime put = RequestMethod("PUT")
-    comptime delete = RequestMethod("DELETE")
-    comptime head = RequestMethod("HEAD")
-    comptime patch = RequestMethod("PATCH")
-    comptime options = RequestMethod("OPTIONS")
+comptime RequestBuildError = Variant[URITooLongError, URIParseError]
 
 
 comptime strSlash = "/"
@@ -203,7 +165,8 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             A fully constructed HTTPRequest.
 
         Raises:
-            RequestBuildError: If URI is too long, URI parsing fails, or cookie parsing fails.
+            RequestBuildError: If the target is longer than `max_uri_length`,
+                or `URI.parse` refuses it.
         """
         if parsed.path.byte_length() > max_uri_length:
             raise RequestBuildError(URITooLongError())
@@ -343,10 +306,6 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         """Get the request body as a string slice."""
         return StringSpan(unsafe_from_utf8=Span(self.body_raw))
 
-    def set_connection_close(mut self):
-        """Set the Connection header to 'close'."""
-        self.headers[HeaderKey.CONNECTION] = "close"
-
     def set_content_length(mut self, length: Int):
         """Set the Content-Length header."""
         self.headers.set_int_known(
@@ -434,18 +393,3 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
 
-    def __str__(self) -> String:
-        return String(self)
-
-    def __eq__(self, other: HTTPRequest) -> Bool:
-        return (
-            self.method == other.method
-            and self.protocol == other.protocol
-            and self.uri == other.uri
-            and self.headers == other.headers
-            and self.cookies == other.cookies
-            and len(self.body_raw) == len(other.body_raw)
-        )
-
-    def __isnot__(self, other: HTTPRequest) -> Bool:
-        return not self.__eq__(other)

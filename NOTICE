@@ -1675,6 +1675,24 @@ lightbug_http
         target as it arrived in `request_uri`, `*` included (SPEC A37,
         review record LF62).
 
+      - header.mojo, http/parsing.mojo, http/request.mojo,
+        http/response.mojo, server.mojo, __init__.mojo, loop/request.mojo
+        (2026-10-08): dead inherited code removed, each name searched for
+        across the repository, the `m0` templates and the one application
+        outside it, then the fork compiled whole: `StatusCode` and
+        `HTTPResponse.is_redirect`, `content_length`, `connection_close`
+        and `__len__` (and `Sized`); `RequestMethod`,
+        `RequestBodyTooLargeError` and the request side's
+        `CookieParseError`; `HTTPRequest.set_connection_close`, `__eq__`
+        and `__isnot__`; `Server`'s four body-size and URI-length
+        accessors; `ProvisionPool.size`; `RequestParseError.is_incomplete`;
+        the `__getitem__` of four error variants and the `isa` of two;
+        fifteen `__str__`s that were `String(self)` on a type that is not
+        `Stringable`; and `is_complete` with the `last_len` argument of
+        `parse_request_headers` and `http_parse_request_headers`, a rescan
+        for the CRLFCRLF `find_header_end` had already framed (review
+        record LF61).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

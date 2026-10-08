@@ -460,7 +460,6 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         try:
             parsed = parse_request_headers(
                 Span(st.provision_pool.provisions[slot].recv_buffer)[:header_end_offset],
-                st.provision_pool.provisions[slot].last_parse_len,
             )
         except parse_err:
             # A well-formed request for what this server does not

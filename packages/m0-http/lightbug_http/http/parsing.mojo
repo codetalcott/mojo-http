@@ -190,8 +190,6 @@ struct ParseError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("ParseError: Invalid HTTP syntax")
 
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -201,8 +199,6 @@ struct IncompleteError(Movable, Writable, TrivialRegisterPassable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("IncompleteError: Need more data")
 
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -229,11 +225,6 @@ struct HTTPParseError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 @always_inline
@@ -310,37 +301,6 @@ def scan_to_eol[
     else:
         raise ParseError()
     start = token_start
-
-
-def is_complete[origin: ImmOrigin](mut buf: ByteReader[origin], last_len: Int) raises HTTPParseError:
-    var ret_cnt = 0
-    var start_offset = 0 if last_len < 3 else last_len - 3
-
-    var scan_buf = ByteReader(buf._inner)
-    scan_buf.read_pos = start_offset
-
-    while scan_buf.available():
-        var byte = try_get_byte(scan_buf)
-        if not byte:
-            raise IncompleteError()
-
-        if byte.value() == BytesConstant.CR:
-            var next = try_peek(scan_buf)
-            if not next:
-                raise IncompleteError()
-            if next.value() != BytesConstant.LF:
-                raise ParseError()
-            scan_buf.increment()
-            ret_cnt += 1
-        elif byte.value() == BytesConstant.LF:
-            ret_cnt += 1
-        else:
-            ret_cnt = 0
-
-        if ret_cnt == 2:
-            return
-
-    raise IncompleteError()
 
 
 def scan_token[
@@ -515,7 +475,6 @@ def http_parse_request_headers[
     mut minor_version: Int,
     headers: Span[HTTPHeader, header_origin],
     mut num_headers: Int,
-    last_len: Int,
 ) -> Int:
     """Parse HTTP request headers. Returns bytes consumed or negative error code."""
     var max_headers = num_headers
@@ -530,9 +489,6 @@ def http_parse_request_headers[
     var buf = ByteReader(buf_span)
 
     try:
-        if last_len != 0:
-            is_complete(buf, last_len)
-
         while buf.available():
             var byte = try_peek(buf)
             if not byte:
