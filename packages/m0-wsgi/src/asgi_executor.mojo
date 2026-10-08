@@ -41,7 +41,7 @@ from std.collections import Optional
 
 from lightbug_http.accept_share import AcceptShare
 from lightbug_http.broadcast import encode_bus_frame
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
@@ -722,9 +722,12 @@ struct ExecutorPort(Movable, Writable):
         ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
             unsafe_from_address=self.handler_addr
         )[]
+        ref st = Pointer[LoopState, MutUntrackedOrigin](
+            unsafe_from_address=self.loop_addr
+        )[]
         for _ in range(_HAND_OVER_TRIES):
             try:
-                _deliver_bus_frames(handler, pool.stream_chunk_read)
+                _deliver_bus_frames(handler, st, pool.stream_chunk_read)
             except e:
                 print(
                     "inverted executor: handing the chunk channel to the loop raised: "
@@ -1304,6 +1307,11 @@ def serve_inverted(
     _ = st
     _ = port_obj
     handler.shutdown()
+    # The port reaches the backend through `backend_ptr`, so its last
+    # tracked use is the `multiplexer_fd()` above: destroyed there, it
+    # would close the multiplexer asyncio watches (a backend closes its fd
+    # when destroyed, LF21). Kept to the end, past the shutdown.
+    _ = backend
     _ = native
     _ = state
 

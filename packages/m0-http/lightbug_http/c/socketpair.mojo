@@ -20,13 +20,11 @@ from std.ffi import c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
 from std.sys.info import CompilationTarget
 
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
+from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
 
 
 comptime AF_UNIX = 1
 comptime SOCK_DGRAM = 2
-comptime _SOCK_CLOEXEC_LINUX = 0x80000
-"""Linux only: macOS refuses it in a socket type (EPROTONOSUPPORT, measured)."""
 
 
 def socketpair_dgram() raises -> Tuple[Int, Int]:
@@ -44,7 +42,7 @@ def socketpair_dgram() raises -> Tuple[Int, Int]:
     comptime if not CompilationTarget.is_macos():
         # Born close-on-exec, with no instant in which another thread's
         # fork and exec could inherit the pair.
-        sock_type = SOCK_DGRAM | _SOCK_CLOEXEC_LINUX
+        sock_type = SOCK_DGRAM | O_CLOEXEC
     var rc = external_call[
         "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
     ](c_int(AF_UNIX), c_int(sock_type), c_int(0), fds)

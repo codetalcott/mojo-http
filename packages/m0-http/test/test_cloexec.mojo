@@ -17,7 +17,8 @@ from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.socket import socket as c_socket, accept_with_peer
 from lightbug_http.c.fdpass import send_fd, recv_fd
 from lightbug_http.c.process import shared_file_fd
-from lightbug_http.connection import ListenConfig, create_connection
+from lightbug_http.connection import ListenConfig
+from test.loopback import create_connection
 from src.threads import dup_fd
 
 
@@ -144,7 +145,7 @@ def test_the_shared_page_is_its_owners_alone() raises:
     Darwin arm64 passes a variadic argument on the stack. Called with the
     mode as a third fixed argument, it put 0o600 in a register the callee
     never reads, and the page took its mode from whatever the stack held:
-    measured as 0o0 and 0o1 (review record LF17). The call now takes
+    measured as 0o0, 0o1 and 0o744 (review record LF17). The call now takes
     `_fcntl`'s shape there (`c/fcntl.mojo`). Linux passes variadic
     arguments in registers, so this bites on the macOS leg only. Several
     pages, because the stack's leftovers vary from call to call.

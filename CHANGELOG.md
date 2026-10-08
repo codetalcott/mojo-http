@@ -10,6 +10,86 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A `CONNECT` request is answered 501 and its connection closed** (SPEC
+  B18). It reached the application, and one that answers every method
+  answered it 200, which a proxy forwarding `CONNECT` reads as an open
+  tunnel: whatever the client sent next would pass through it unparsed.
+  This server implements no tunnel, so no application, on m0serve or the
+  Mojo host, receives `CONNECT` any more.
+
+- **A chunked request body in another transfer coding as well is answered
+  501 and its connection closed** (SPEC B21). `Transfer-Encoding: gzip,
+  chunked` was de-chunked and the body handed to the application still
+  gzipped. The server decodes `chunked` only, and now says so with 501, as
+  RFC 9112 §6.1 asks. A `Transfer-Encoding` whose last coding is not
+  `chunked` (a lone `gzip`, `chunked, gzip`) is still 400, as RFC 9112
+  §6.3 requires.
+
+- **A request target that is not a URI the server serves is answered 400**
+  (SPEC B19). `GET p` and `GET host:80` reached the application as a path
+  with no leading slash, and a target holding a raw byte above ASCII
+  (`/caf\xe9`) as a path that is not UTF-8. A target now opens with `/`,
+  is an `http` or `https` URI, or is `*` on an `OPTIONS` request; a
+  non-ASCII character must be percent-encoded, as every browser does, and
+  the escape still reaches the application undecoded.
+
+- **An empty `Host` is accepted when the target names no host** (SPEC
+  B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
+  when the URI it requests has no authority, and every empty `Host` was
+  answered 400. It is accepted on an origin-form (`/path`) or `*` target,
+  and the application reads an empty `HTTP_HOST`; beside an absolute-form
+  target (`http://host/path`) it is still refused, as is a missing `Host`.
+
+- **`Connection: close` closes the connection whichever `Connection` line
+  carries it** (SPEC B22). A request with two `Connection` lines was read
+  by its last alone, so `close` on the first was lost and the connection
+  kept open. The lines are now one list, in order, as RFC 9110 §5.3 reads
+  them, and the application sees them combined.
+
+- **A request head with a bare LF is answered 400 as soon as it arrives**
+  (SPEC B23). A head of bare-LF lines (`GET / HTTP/1.1\nHost: x\n\n`) was
+  never served, but got no answer until the client closed or the header
+  timeout sent 408, holding a connection slot meanwhile.
+
+- **A chunked body whose trailer value holds a control byte is refused
+  with 400** (SPEC B24), as a request header's value is. Trailers are
+  discarded, so no application ever read one; the two rules now agree.
+- **An inbound WebSocket message no longer waits on a quiet pool lane for
+  the next request** (SPEC I39). Exposed: m0serve under `--realtime` with
+  a handler pool, its default, where a Python view holds a WebSocket with
+  `M0-Hold: websocket`. Each message is handed to the pool with a wake for
+  a thread that is parked, and one that arrived while none was (every
+  thread busy, spinning, or a moment from parking) woke nobody: the thread
+  that parked next did not look for it, and the view was handed it only
+  when a later request woke the pool, on a quiet server never. A thread now
+  looks for a message once more after it announces its park. Found by the
+  fork review; with a sleep holding that moment open, 24 messages of 24
+  waited.
+
+- **A cross-worker bus frame is delivered whole or not at all** (SPEC
+  I40). Exposed: a publish whose channel name and frame together passed
+  about 69.6 KB, through `m0pub.publish()`, `scope["state"]["m0"]`,
+  `BroadcastBus.publish` or `DatastarStream` with the bus: a 5,000-byte
+  channel with a 64 KB frame reached the other workers' subscribers 904
+  bytes short, the end of the frame silently missing, though every
+  publisher had accepted it. Each loop now reads every datagram a
+  publisher can send whole, up to a 65,535-byte channel with a 65,536-byte
+  frame, into one buffer it keeps instead of allocating and zeroing 70 KB
+  on every drain. A datagram longer than that, or malformed, is refused
+  and counted: `http_bus_frames_refused_total` on `/__metrics`, which
+  counts the stream chunk channel's datagrams too (an ASGI executor and a
+  streaming `--blocking-threads` pool write that channel in the same
+  codec, and the same reader drains it).
+
+- **A `DatastarStream` reads a `Last-Event-ID` the way the server's held
+  streams do.** Exposed: an m0 application that calls `DatastarStream.open`
+  with a request it built itself, whose `Last-Event-ID` carries whitespace
+  around the id. `open` read `" 12 "` as 0 and replayed the whole journal
+  where the client had seen up to 12; it now resumes after 12. The stream
+  and the server's held streams share one parser
+  (`lightbug_http.hold.request_last_event_id`), so the two cannot read an
+  id differently again. A request from the wire was never affected: the
+  server trims the whitespace before either parser sees the value.
 - **WebSocket frames and upgrades the RFC calls malformed are refused with
   1002 or 400** (SPEC I35-I38). A client frame whose 64-bit length has its
   high bit set, or whose length is not in the shortest encoding that holds
@@ -19,6 +99,86 @@ in a minor release: `m0serve`'s flags and environment variables, the
   request must list `upgrade` as a whole token of `Connection`
   (`Connection: notupgrade` was accepted) and must be HTTP/1.1; an
   HTTP/1.0 request is answered 400.
+- **On Linux, a connection on a descriptor numbered 65536 or above no
+  longer disturbs another's timer, or the application's tick** (fork
+  review LF18, SPEC C11). Exposed: Linux servers whose descriptor limit
+  (`ulimit -n`) lets a connection reach descriptor 65536, m0serve and Mojo
+  applications alike. The epoll backend kept each timer in one of five
+  regions of 65536 slots, so a higher descriptor's timer took another's
+  slot: an SSE stream on descriptor 65536 re-armed the `M0_APP_TICK_MS`
+  tick and, when it ended, stopped the tick for good; a request body read
+  on descriptor 131072 + k re-armed descriptor k's heartbeat; and a stream
+  at or above 131072 got no heartbeat, a body at or above 262144 no read
+  timeout. Every timer now has a slot of its own at any descriptor below
+  2^20, which a process reaches only with a descriptor limit
+  (`RLIMIT_NOFILE`) above a million.
+
+- **A server that returns gives back its kqueue or epoll descriptor**
+  (fork review LF21, SPEC C13). Exposed: a Mojo application that serves,
+  returns and serves again in one process (`Server.serve_nonblocking`,
+  `listen_and_serve`), and the Mojo host's `M0_THREADS` loops as they
+  end; m0serve and a host process exit when their loops do, so they
+  never reached it. Each return left its multiplexer open, and on Linux
+  every timerfd the loop still held. The backend now closes them when the
+  loop is done with it. On Linux, an epoll registration the kernel
+  refuses is now reported with its own error: a refused ADD was retried as
+  a MOD, whose ENOENT was reported in its place.
+
+- **On Linux, a burst of new connections queues instead of being
+  dropped** (fork review LF19, SPEC C12). Exposed: Linux servers, m0serve
+  and Mojo applications alike. The listener asked the kernel for an accept
+  queue of 128, so while the loop was busy -- a slow pass, a batch of
+  accepts -- connections past the 128th were dropped at the handshake, and
+  each client waited a second or more to retry. The queue is now up to
+  `SOMAXCONN` (4096 on Linux, 128 on macOS), or the system's setting if
+  that is lower. macOS's limit was and stays 128.
+
+### Changed
+
+- **The fork's descriptor helpers live in the module that owns them**
+  (fork review LF28). Nothing served changes. An application built with
+  the `m0` wheel that imported one of these from the old place imports it
+  from the new: `set_nonblocking`, `is_nonblocking`, `F_GETFL` and
+  `F_SETFL` from `lightbug_http.c.fcntl`, no longer `lightbug_http.c.kqueue`
+  (they serve Linux too); `O_NONBLOCK` and `O_CLOEXEC` from
+  `lightbug_http.c.fcntl`, no longer `lightbug_http.c.socket`; and
+  `set_tcp_nodelay` from `lightbug_http.c.socket`.
+
+- **`recv` and `send` take their length from the span they are given**
+  (fork review LF20, SPEC G21). Nothing served changes. The two calls in
+  `lightbug_http.c.socket` took a length beside the span, which the span
+  did not have to back: a count above the span's length was written past
+  its end. They now read or write `len(span)` bytes and no more, so an
+  application built with the `m0` wheel that called one drops the length
+  argument, slicing the span to the count it meant. To receive into a
+  list's spare capacity, pass `spare_capacity(list)` and grow the list by
+  what `recv` returns.
+
+### Removed
+
+- **The fork's client connect path, and the last of its dead C bindings**
+  (fork review LF26). Nothing served changes: m0serve and the Mojo host
+  never open a connection, and reached none of it. The `m0` wheel ships
+  the fork's source, so an application built with `m0` that named one of
+  these needs its own copy: `Socket.connect` and
+  `lightbug_http.connection.create_connection`, with the `connect(2)`
+  binding in `lightbug_http.c.socket`; the `getaddrinfo` machinery under
+  them in `lightbug_http.address` (`getaddrinfo`, `get_ip_address`,
+  `CAddrInfo`, `AnAddrInfo`, `addrinfo_macos`, `addrinfo_unix`,
+  `freeaddrinfo`, `gai_strerror` and their three error types), whose
+  iterator never ended on Linux; `TCPConnection.set_recv_timeout`,
+  `Socket.set_timeout` and `SocketOption.SO_RCVTIMEO`; `NetworkType`'s
+  `SUPPORTED_TYPES`, `TCP_TYPES`, `UDP_TYPES` and `IP_TYPES`;
+  `lightbug_http.c.address.AddressInformation`, whose `AI_*` values were
+  Linux's on macOS too; `lightbug_http.c.network`'s `addrinfo`, laid out
+  as Linux's on every platform, `in6_addr` and `sockaddr_in6`;
+  `try_writev`; and `kevent_register`, `EV_ENABLE` and `EV_DISABLE`.
+
+- **`lightbug_http.c.epoll`'s `EPOLL_CLOEXEC`, `TFD_CLOEXEC` and
+  `TFD_NONBLOCK`** (fork review LF28), copies of the open flags under
+  Linux's other names. Nothing served changes; an application built with
+  the `m0` wheel that named one passes `O_CLOEXEC` or `O_NONBLOCK` from
+  `lightbug_http.c.fcntl`, the same values.
 
 ## [1.12.1] — 2026-10-07
 

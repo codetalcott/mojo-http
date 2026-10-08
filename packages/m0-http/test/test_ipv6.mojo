@@ -42,13 +42,13 @@ from lightbug_http.c.socket import (
     SocketType,
     accept_with_peer,
     bind,
-    connect,
     getsockname,
     socket,
 )
 from lightbug_http.connection import ListenConfig
 from lightbug_http.socket import Socket
 from lightbug_http.uri import URI
+from test.loopback import connect
 
 
 # --- helpers -------------------------------------------------------------------

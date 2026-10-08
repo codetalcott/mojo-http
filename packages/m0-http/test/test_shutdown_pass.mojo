@@ -24,14 +24,16 @@ from std.time import perf_counter_ns
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.broadcast import encode_bus_frame
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.kqueue import (
-    EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
+    EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE,
 )
 from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import recv, send
 from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.connection import ConnectionState, ListenConfig, create_connection
+from lightbug_http.connection import ConnectionState, ListenConfig
+from test.loopback import create_connection
 from lightbug_http.event_loop import run_pass_once
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.loop.accept import _admit_connection
@@ -181,7 +183,7 @@ def _stream_pair() raises -> Tuple[Int, Int]:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), UInt(len(b)), 0)), len(b))
+    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> List[UInt8]:
@@ -191,7 +193,7 @@ def _read_all(fd: Int) -> List[UInt8]:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:
@@ -367,7 +369,7 @@ def test_a_bus_frame_behind_the_stop_is_delivered() raises:
     var handler = Recorder()
     var payload = List[UInt8](String("data: x\n\n").as_bytes())
     var dg = encode_bus_frame("/events", 7, Span(payload))
-    _ = send(FileDescriptor(bus[1]), Span(dg), UInt(len(dg)), 0)
+    _ = send(FileDescriptor(bus[1]), Span(dg), 0)
 
     backend.push(pipe[0], EVFILT_READ)
     backend.push(bus[0], EVFILT_READ)

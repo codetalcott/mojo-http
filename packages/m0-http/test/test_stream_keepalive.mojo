@@ -26,7 +26,8 @@ from std.testing import TestSuite, assert_equal, assert_true
 
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.socket import accept_with_peer, set_tcp_keepalive
-from lightbug_http.connection import ListenConfig, create_connection
+from lightbug_http.connection import ListenConfig
+from test.loopback import create_connection
 from lightbug_http.loop.state import (
     STREAM_KEEPALIVE_S,
     _stream_keepalive_from_env,

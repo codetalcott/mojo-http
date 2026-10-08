@@ -8,7 +8,8 @@ What is NOT covered here is the concurrency itself; that is what
 `poe smoke-blocking-threads` measures against a live server.
 """
 
-from std.ffi import c_int, external_call
+from std.ffi import c_int, external_call, get_errno
+from std.memory.alloc import unsafe_alloc
 from std.os import setenv
 from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
@@ -17,10 +18,13 @@ from std.time import perf_counter_ns, sleep
 from lightbug_http.http import HTTPResponse, OK
 from lightbug_http.http.request import HTTPRequest
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.c.socket import recv
+from lightbug_http.c.fcntl import set_nonblocking
+from lightbug_http.c.socket import close, recv
 from lightbug_http.event_loop import _wait_for_events
 from lightbug_http.event_loop_backend import EventLoopBackend
+from lightbug_http.loop.offload import _run_inline
 from lightbug_http.loop.state import LoopState
+from lightbug_http.service import HTTPService
 from lightbug_http.offload import (
     JOB_STOP, JOB_REQUEST, JOB_NONE, JOB_WS_MESSAGE,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
@@ -31,6 +35,7 @@ from lightbug_http.offload import (
     send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
     encode_ack, decode_ack,
 )
+from lightbug_http.ring import atomic_at
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.uri import URI
 
@@ -45,7 +50,7 @@ def _read_ack(fd: Int) raises -> Tuple[Int, Int]:
     var buf = List[UInt8](capacity=ACK_BYTES)
     for _ in range(ACK_BYTES):
         buf.append(0)
-    var n = recv(FileDescriptor(fd), Span(buf), UInt(ACK_BYTES), 0)
+    var n = recv(FileDescriptor(fd), Span(buf), 0)
     assert_equal(Int(n), ACK_BYTES)
     return decode_ack(Span(buf))
 
@@ -514,7 +519,7 @@ def _read_datagram(fd: Int) raises -> List[UInt8]:
     var buf = List[UInt8](capacity=4096)
     for _ in range(4096):
         buf.append(0)
-    var n = recv(FileDescriptor(fd), Span(buf), UInt(4096), 0)
+    var n = recv(FileDescriptor(fd), Span(buf), 0)
     var out = List[UInt8](capacity=Int(n))
     for i in range(Int(n)):
         out.append(buf[i])
@@ -677,7 +682,7 @@ def test_a_websocket_message_fills_its_datagram_and_not_a_byte_more() raises:
     var big = List[UInt8](capacity=WS_DATAGRAM_MAX + 64)
     for _ in range(WS_DATAGRAM_MAX + 64):
         big.append(0)
-    var n = recv(FileDescriptor(pool.submit_read), Span(big), UInt(len(big)), 0)
+    var n = recv(FileDescriptor(pool.submit_read), Span(big), 0)
     assert_equal(Int(n), WS_DATAGRAM_MAX)
     assert_equal(Int(big[WS_DATAGRAM_MAX - 1]), (room - 1) & 0xFF)
 
@@ -816,7 +821,7 @@ def _try_read(fd: Int) -> Int:
     for _ in range(64):
         buf.append(0)
     try:
-        var n = recv(FileDescriptor(fd), Span(buf), UInt(64), MSG_DONTWAIT)
+        var n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         return Int(n)
     except:
         return -1
@@ -1555,6 +1560,82 @@ def test_a_wake_datagram_is_not_a_job() raises:
     assert_equal(_next_slot(pool), -1)
 
 
+def _stream_pair() raises -> Tuple[Int, Int]:
+    """An `AF_UNIX` `SOCK_STREAM` pair, non-blocking at both ends: the first
+    end is the server's side of a connection, the second the client's."""
+    var fds = unsafe_alloc[c_int](count=2)
+    var rc = external_call[
+        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
+    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
+    if rc != 0:
+        var errno = get_errno()
+        fds.unsafe_free()
+        raise Error("socketpair() failed, errno: ", errno)
+    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
+    fds.unsafe_free()
+    set_nonblocking(FileDescriptor(pair[0]))
+    set_nonblocking(FileDescriptor(pair[1]))
+    return pair
+
+
+struct _InlineApp(HTTPService):
+    """Counts the requests the loop ran itself."""
+
+    var calls: Int
+
+    def __init__(out self):
+        self.calls = 0
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        self.calls += 1
+        return OK(String("inline"))
+
+
+def test_run_inline_counts_only_the_requests_it_ran() raises:
+    """`_run_inline` answers how many requests the handler ran, not how
+    many slots it was handed. Of three, one is no longer offloaded and is
+    skipped, one's client left while its request sat in the buffer and is
+    released unanswered, and one is answered on its connection: one ran.
+    It answered `len(slots)`, three here (review record LF31). Both callers
+    discard the count today, so this test is what keeps it honest."""
+    var pool = OffloadPool(8)
+    var config = ServerConfig()
+    config.max_connections = 8
+    var st = LoopState(
+        FileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+    )
+    var backend = PlatformBackend()
+    var app = _InlineApp()
+    var skipped = st.provision_pool.borrow()
+    var gone = st.provision_pool.borrow()
+    pool.park_request(gone, _request("/gone"))
+    st.offload.offloaded[gone] = True
+    st.offload.inflight += 1
+    var live = st.provision_pool.borrow()
+    var pair = _stream_pair()
+    st.slot_fds[live] = pair[0]
+    st.fd_to_slot[pair[0]] = live
+    st.active_count = 1
+    pool.park_request(live, _request("/live"))
+    st.offload.offloaded[live] = True
+    st.offload.inflight += 1
+    var slots = List[Int]()
+    slots.append(skipped)
+    slots.append(gone)
+    slots.append(live)
+    assert_equal(_run_inline(app, backend, st, slots), 1)
+    assert_equal(app.calls, 1)
+    assert_equal(st.offload.inflight, 0)
+    var buf = _job_buffer()
+    var n = recv(FileDescriptor(pair[1]), Span(buf), MSG_DONTWAIT)
+    var reply = String(unsafe_from_utf8=Span(buf)[: Int(n)])
+    assert_true(reply.startswith("HTTP/1.1 200"), reply)
+    close(FileDescriptor(pair[0]))
+    close(FileDescriptor(pair[1]))
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+
+
 def test_ring_off_is_the_datagram_handoff() raises:
     """`M0_POOL_RING=0`: no rings, no flags, and the two crossings are the
     socketpair syscalls they were — the A/B arm."""
@@ -1564,6 +1645,11 @@ def test_ring_off_is_the_datagram_handoff() raises:
     assert_false(pool.ring_active())
     assert_false(pool.loop_parked())
     assert_false(pool.done_pending())
+    # Lane i's ring is `job_rings[i]` on either hand-off: a disabled one
+    # each here (review record LF31; lane 1's sat at index 0).
+    pool.add_lane(String(""))
+    pool.add_lane(String("/x"))
+    assert_equal(len(pool.job_rings), 2)
     pool.park_request(1, _request("/a"))
     assert_true(pool.submit(1))
     assert_equal(_next_slot(pool), 1)
@@ -1690,6 +1776,10 @@ comptime _SLOW_HOLD_S = 0.2
 comptime _BLK_SERVED = 11
 """Block slot an echo thread counts its jobs in; read after the join."""
 
+comptime _BLK_WS_SERVED = 12
+"""Block slot an echo thread counts the WebSocket messages it took in;
+read after the join."""
+
 
 def _echo_thread[slow: Bool](arg: Int) -> Int:
     """A pool thread that answers every job with a 200, until its pill —
@@ -1703,10 +1793,14 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
     var buf = _job_buffer()
     var tid = pool.register_thread(0)
     var served = 0
+    var ws_served = 0
     while True:
         var job = pool.next_job(0, buf, tid)
         if job.kind == JOB_STOP:
             break
+        if job.kind == JOB_WS_MESSAGE:
+            ws_served += 1
+            continue
         if job.kind != JOB_REQUEST:
             continue
         _ = pool.take_request(job.slot)
@@ -1719,6 +1813,7 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
         served += 1
     pool.unregister_thread(tid, 0)
     block.set(_BLK_SERVED, served)
+    block.set(_BLK_WS_SERVED, ws_served)
     block.set(BLK_STATUS, STATUS_OK)
     return 0
 
@@ -1928,6 +2023,56 @@ def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
     threads.join_all()
     assert_true(threads.all_ok())
     assert_equal(threads.block(0).get(_BLK_SERVED), 0)
+    assert_equal(threads.block(0).get(_BLK_WS_SERVED), 1)
+
+
+def test_a_websocket_message_sent_while_the_thread_is_on_its_way_to_park_is_taken() raises:
+    """The parking-in-progress case of the test above: the message lands
+    while the lane's one thread is not parked, so `send_ws_message`
+    wakes nobody, and the thread's next park must find it on the lane
+    socket by itself. Here the thread is inside a 200 ms view when the
+    message is sent, and the lane's poll clock is moved past the end of
+    the test, standing in for a thread that polled the socket a moment
+    before it parked: the poll on that cadence never comes round, so the
+    only look at the socket is the one `_park_on_own` takes after
+    announcing the park. Without it the thread blocks on its own channel
+    with the message left on the socket until something else wakes the
+    lane -- the pill, here (review LF22, where the window was held open
+    by a sleep before the announcement: 24 messages of 24 stranded).
+
+    covers: I39
+    """
+    var pool = OffloadPool(8)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(1)
+    _spawn_echo[True](pool, threads, 1)
+    pool.park_request(_SLOW_SLOT, _request("/slow"))
+    assert_true(pool.submit(_SLOW_SLOT))
+    # Taken: the ring is empty and nobody is parked, so the thread is
+    # inside the view, its last poll of the socket already made.
+    var deadline = perf_counter_ns() + 2_000_000_000
+    while pool.jobs_pending() or pool.parked_count(0) != 0:
+        assert_true(perf_counter_ns() < deadline, "the slow job was never taken")
+        sleep(0.0001)
+    atomic_at(pool._poll_addr(0))[].store(
+        Int64(perf_counter_ns() + 60_000_000_000)
+    )
+    var payload = List[UInt8]()
+    for b in String("hello").as_bytes():
+        payload.append(b)
+    assert_true(pool.send_ws_message(0, 3, 1, String("chan"), Span(payload)))
+    assert_equal(pool.parked_count(0), 0)
+    assert_true(_await_completion(pool, _SLOW_SLOT, 2_000_000_000) >= 0)
+    _await_parked(pool, 1)
+    pool.stop(1)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    assert_equal(threads.block(0).get(_BLK_SERVED), 1)
+    assert_equal(
+        threads.block(0).get(_BLK_WS_SERVED), 1,
+        "the message was left on the lane socket when the thread parked",
+    )
 
 
 def test_sequential_jobs_with_idle_gaps_stay_on_one_thread() raises:

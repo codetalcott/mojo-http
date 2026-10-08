@@ -10,9 +10,9 @@ runs `func` itself is the whole request.
 """
 
 from lightbug_http.c.fdpass import RECV_FD_EMPTY
-from lightbug_http.c.kqueue import set_nonblocking, set_tcp_nodelay
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import accept_with_peer, close
+from lightbug_http.c.socket import accept_with_peer, close, set_tcp_nodelay
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.connection import ConnectionState
 from lightbug_http.service import HTTPService

@@ -1,12 +1,13 @@
-"""`fcntl(2)`: its one declaration in the program, and the descriptor flags
-built on it.
+"""`fcntl(2)`: its one declaration in the program, and the descriptor and
+file-status flags built on it.
 
 One declaration because `fcntl` is variadic and Darwin arm64 passes a
 variadic argument on the stack (see `_fcntl`), and because a second
 `external_call["fcntl"]` with another signature does not compile. It lives
 here, importing nothing from this package, so the lowest layers (`socket`,
-`socketpair`, `pipe`, `fdpass`) can mark what they create close-on-exec
-without an import cycle through `kqueue`, which imports `socket`.
+`socketpair`, `pipe`, `fdpass`, `epoll`) can mark what they create
+close-on-exec, and anything can make a descriptor non-blocking, without
+an import cycle.
 
 The variadic libc functions the fork calls on Darwin are `fcntl` here and
 `shm_open` (`_shm_open` in `c/process.mojo`), and each takes `_fcntl`'s
@@ -20,8 +21,22 @@ from std.sys.info import CompilationTarget
 
 comptime F_GETFD = 1
 comptime F_SETFD = 2
+comptime F_GETFL = 3
+comptime F_SETFL = 4
 comptime FD_CLOEXEC = 1
 comptime F_DUPFD_CLOEXEC = 67 if CompilationTarget.is_macos() else 1030
+
+comptime O_NONBLOCK = 0x4 if CompilationTarget.is_macos() else 0x800
+"""The file-status flag `set_nonblocking` sets. Linux's `TFD_NONBLOCK` is
+this value (its headers define it as `O_NONBLOCK`)."""
+
+comptime O_CLOEXEC = 0x1000000 if CompilationTarget.is_macos() else 0x80000
+"""Close-on-exec at creation. On Linux `SOCK_CLOEXEC`, `EPOLL_CLOEXEC` and
+`TFD_CLOEXEC` are this value (its headers define each as `O_CLOEXEC`), so
+`socket`, `accept4`, `socketpair`, `pipe2`, `epoll_create1` and
+`timerfd_create` take it as it is. macOS refuses it in a socket type
+(EPROTONOSUPPORT, measured): there the creation helpers mark the
+descriptor with `F_SETFD` right after."""
 
 
 def _fcntl(fd: c_int, cmd: c_int, arg: c_int = 0) -> c_int:
@@ -91,3 +106,38 @@ def dup_cloexec(fd: Int) raises -> Int:
     if rc < 0:
         raise Error("fcntl F_DUPFD_CLOEXEC failed, errno: ", get_errno())
     return Int(rc)
+
+
+def set_nonblocking(fd: FileDescriptor) raises:
+    """Set a file descriptor to non-blocking mode via fcntl().
+
+    Works on both platforms — including ARM64 macOS, where this was a
+    silent no-op until `_fcntl` learned the Darwin variadic convention (see
+    its docstring). Callers written while the no-op stood carry their own
+    belt-and-braces (MSG_DONTWAIT on the broadcast bus, event_data-based
+    accept counting on the listen socket); those stay, because they are
+    also correct and they document the history.
+    """
+    var fd_c = c_int(fd.value)
+    var flags = _fcntl(fd_c, c_int(F_GETFL))
+    if flags == -1:
+        var errno = get_errno()
+        raise Error("fcntl F_GETFL failed, errno: ", errno)
+    var result = _fcntl(fd_c, c_int(F_SETFL), flags | c_int(O_NONBLOCK))
+    if result == -1:
+        var errno = get_errno()
+        raise Error("fcntl F_SETFL failed, errno: ", errno)
+
+
+def is_nonblocking(fd: FileDescriptor) raises -> Bool:
+    """Whether O_NONBLOCK is set — F_GETFL truth, not what a caller hoped.
+
+    F_GETFL takes no variadic argument, so it has always been reliable on
+    every platform; that is what makes this the right probe for asserting
+    `set_nonblocking` actually took effect.
+    """
+    var flags = _fcntl(c_int(fd.value), c_int(F_GETFL))
+    if flags == -1:
+        var errno = get_errno()
+        raise Error("fcntl F_GETFL failed, errno: ", errno)
+    return (Int(flags) & O_NONBLOCK) != 0

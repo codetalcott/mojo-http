@@ -10,15 +10,16 @@ and discarded until the client stops (`_reject_and_linger`).
 """
 
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import recv, shutdown, ShutdownOption
+from lightbug_http.c.socket import recv, shutdown, spare_capacity, ShutdownOption
 from lightbug_http.connection import ConnectionState
 from lightbug_http.header import (
-    HeaderKey, ParsedRequestHeaders, find_header_end, parse_request_headers,
+    HeaderKey, ParsedRequestHeaders, UnsupportedHTTPRequestError,
+    find_header_end, holds_bare_lf, parse_request_headers,
 )
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.http.common_response import (
     BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge,
-    PayloadTooLarge,
+    NotImplemented, PayloadTooLarge,
 )
 from lightbug_http.strings import strHttp11, strHttp10
 from lightbug_http.io.bytes import Bytes
@@ -207,8 +208,7 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     try:
         bytes_read = recv(
             fd_desc,
-            Span(st.provision_pool.provisions[slot].recv_staging),
-            UInt(want),
+            spare_capacity(st.provision_pool.provisions[slot].recv_staging),
             0,
         )
     except recv_err:
@@ -394,7 +394,6 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 unsafe_ptr=st.provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(have),
                 length=want,
             ),
-            UInt(want),
             0,
         )
         recv_eof = bytes_read == 0
@@ -455,7 +454,13 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 st.provision_pool.provisions[slot].last_parse_len,
             )
         except parse_err:
-            _send_error_to_fd(fd_val, BadRequest())
+            # A well-formed request for what this server does not
+            # implement is 501 (SPEC B18), anything malformed 400; both
+            # close (`_send_error_to_fd` says so on the wire).
+            if parse_err.isa[UnsupportedHTTPRequestError]():
+                _send_error_to_fd(fd_val, NotImplemented())
+            else:
+                _send_error_to_fd(fd_val, BadRequest())
             _close_slot(handler, backend, st, slot, fd_val)
             return
 
@@ -621,6 +626,20 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             st.provision_pool.provisions[slot].request_end = header_end_offset
             st.provision_pool.provisions[slot].state = ConnectionState.processing()
             _process_request(handler, backend, st, slot, fd_val)
+
+    elif holds_bare_lf(
+        Span(st.provision_pool.provisions[slot].recv_buffer),
+        st.provision_pool.provisions[slot].last_parse_len,
+    ):
+        # A head still arriving that holds a bare LF can only be refused
+        # (SPEC B12), so it is refused now (SPEC B23): one of bare LFs only
+        # holds no CRLFCRLF for `find_header_end` to frame, the parser
+        # never ran, and the slot waited for its peer's EOF or the header
+        # timeout's 408. Only the bytes since the last scan are asked
+        # (`last_parse_len`), so a head arriving in pieces is scanned once.
+        _send_error_to_fd(fd_val, BadRequest())
+        _close_slot(handler, backend, st, slot, fd_val)
+        return
 
     # Headers that can never arrive: the peer half-closed while the request
     # was still incomplete, so waiting for the rest only holds the slot
@@ -974,15 +993,13 @@ def _linger_discard[T: HTTPService, B: EventLoopBackend](
     starts a loopback receive buffer below the budget, and a client still
     sending raises an edge per segment), so no gate fails without it.
     """
-    var cap = st.provision_pool.provisions[slot].recv_staging.capacity()
     for _ in range(LINGER_READS_PER_EVENT):
         st.provision_pool.provisions[slot].recv_staging.clear()
         var n: UInt
         try:
             n = recv(
                 FileDescriptor(fd_val),
-                Span(st.provision_pool.provisions[slot].recv_staging),
-                UInt(cap),
+                spare_capacity(st.provision_pool.provisions[slot].recv_staging),
                 0,
             )
         except linger_err:

@@ -36,9 +36,10 @@ writing while it compiles `src/`.
 """
 
 from lightbug_http.c.kqueue import (
-    set_nonblocking, EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER, EV_EOF, EV_ERROR,
+    EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER, EV_EOF, EV_ERROR,
 )
 from lightbug_http.accept_share import AcceptShare
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import close
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.offload import POOL_WAKE_WAIT_MS
@@ -392,16 +393,15 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
 
         # --- Cross-worker broadcast channel ---
         # Registration is edge-triggered, so every waiting datagram must
-        # be consumed now; drain_bus_channel reads until EAGAIN. The
+        # be consumed now; the loop's `BusReader` reads until EAGAIN. The
         # handler queues each frame for its local subscribers, and the
         # SSE outbox drain at the bottom of this pass sends them out.
         var _ident = Int(backend.event_ident(i))
         var _is_bus = st.bus_read_fd >= 0 and _ident == st.bus_read_fd
         var _is_peer_bus = st.peer_bus_fd >= 0 and _ident == st.peer_bus_fd
         if _is_bus or _is_peer_bus:
-            _deliver_bus_frames(
-                handler, st.bus_read_fd if _is_bus else st.peer_bus_fd
-            )
+            var _bus_fd = st.bus_read_fd if _is_bus else st.peer_bus_fd
+            _deliver_bus_frames(handler, st, _bus_fd)
             continue
 
         # --- Accept sharing: connections a sibling accepted for us ---

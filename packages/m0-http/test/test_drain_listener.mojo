@@ -29,11 +29,13 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.fcntl import F_GETFD, _fcntl
-from lightbug_http.c.kqueue import EVFILT_READ, set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
+from lightbug_http.c.kqueue import EVFILT_READ
 from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.socket import recv, send
-from lightbug_http.connection import ListenConfig, create_connection
+from lightbug_http.connection import ListenConfig
+from test.loopback import create_connection
 from lightbug_http.event_loop import prepare_loop
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.loop.accept import _admit_connection
@@ -178,7 +180,7 @@ def _move_to(fd: Int, number: Int) raises:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), UInt(len(b)), 0)), len(b))
+    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> String:
@@ -188,7 +190,7 @@ def _read_all(fd: Int) -> String:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:
