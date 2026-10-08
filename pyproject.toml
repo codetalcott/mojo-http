@@ -1595,6 +1595,18 @@ wait $pid 2>/dev/null || rc=$?
   || fail 'both m0serve workers did not report a clean exit'
 grep -q 'killed by signal' "$SMOKE_DIR/shutdown5.log" && fail 'an m0serve worker died of the signal instead of draining'
 
+# A chunked stream open at SIGTERM ends with a terminator or EOF, never a
+# chunk the client cannot parse (review record LF12). The drain's farewell
+# to streams wrote an SSE close comment into an application's chunked
+# stream raw, which a client's chunked parser reads as a chunk size; it now
+# asks what the heartbeat asks before it writes anything.
+spawn shutdown6.log bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port
+wait_ready http://localhost:$port/ $pid
+python3 scripts/drain_stream_probe.py $port $pid   || fail
+rc=0
+wait $pid 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ]   || fail "m0serve exited $rc after a drain with a stream open, want 0"
+
 # Idle keep-alive connections must not hold the drain open. `active_count`
 # counts a merely-open connection the same as one mid-request, so before the
 # shutdown path closed finished slots this waited the full 5s DRAIN_TIMEOUT_NS
@@ -1643,6 +1655,7 @@ fi
 echo "smoke-shutdown OK"
 python3 scripts/emit.py --covers D1 --task smoke-shutdown
 python3 scripts/emit.py --covers D2 --task smoke-shutdown
+python3 scripts/emit.py --covers D12 --task smoke-shutdown
 """
 
 # The probe speaks RFC 6455 by hand (stdlib sockets, no websocket library),
