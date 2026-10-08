@@ -14,7 +14,9 @@ dual-stack listener is reported as IPv4 (`127.0.0.1`, not
 address an application sees.
 
 Each test says which rule it holds; `smoke-ipv6` holds the same rules on
-the wire, through m0serve and the Mojo host.
+the wire, through m0serve and the Mojo host. The listen address's rules
+for either family live here too (review records LF33, LF45-LF47): how it
+is parsed, and the banner that names it once bound.
 """
 
 from std.ffi import ErrNo, c_int, external_call, get_errno
@@ -439,6 +441,56 @@ def test_dual_stack_is_set_not_inherited() raises:
         "127.0.0.1 reached a tcp6 [::] listener",
     )
     _ = v6^
+
+
+def _banner_of(address: String) raises -> Tuple[String, Int]:
+    """What `ListenConfig.listen(address)` prints with its banner on, read
+    from a pipe standing in for stdout during the call, and the port the
+    listener is bound to."""
+    var fds = List[c_int](length=2, fill=-1)
+    if external_call["pipe", c_int](fds.unsafe_ptr()) != 0:
+        raise Error("pipe() failed, errno ", get_errno())
+    var r = Int(fds[0])
+    var w = Int(fds[1])
+    var saved = Int(external_call["dup", c_int, c_int](c_int(1)))
+    _ = external_call["dup2", c_int, c_int, c_int](c_int(w), c_int(1))
+    var port: Int
+    try:
+        var ln = ListenConfig(max_bind_retries=1).listen(address)
+        port = Int(ln.socket.local_address.port)
+        _ = ln^
+    finally:
+        _ = external_call["dup2", c_int, c_int, c_int](c_int(saved), c_int(1))
+        close_fd(saved)
+        close_fd(w)
+    var buf = List[UInt8](length=4096, fill=0)
+    var n = Int(external_call["read", Int](c_int(r), buf.unsafe_ptr(), 4096))
+    close_fd(r)
+    if n < 0:
+        raise Error("read() failed, errno ", get_errno())
+    return (String(unsafe_from_utf8=Span(buf)[:n]), port)
+
+
+def test_the_banner_names_the_port_bound() raises:
+    """The listening banner names the port the listener is bound to, so a
+    server asked for port 0 says which one the kernel chose (review record
+    LF47).
+
+    It named the port it was asked for: `Lightbug is listening on
+    http://127.0.0.1:0`, a port no client can connect to. The Mojo host
+    prints no address of its own, so this line is the one a host
+    application started with `M0_PORT=0` had.
+    """
+    for address in [String("127.0.0.1:0"), String("[::1]:0")]:
+        var got = _banner_of(address)
+        var text = got[0]
+        var port = got[1]
+        assert_true(port > 0, "the listener is not bound")
+        var host = String("[::1]") if address.startswith("[") else String("127.0.0.1")
+        assert_true(
+            text.find("http://" + host + ":" + String(port) + "\n") != -1,
+            String("the banner does not name the port bound (", port, "): ", repr(text)),
+        )
 
 
 def main() raises:

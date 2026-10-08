@@ -284,11 +284,15 @@ struct ListenConfig:
         except listen_err:
             raise listen_err
 
+        # The address the socket is bound to, as `bind` read it back: the
+        # port asked for named port 0 where the kernel had chosen one
+        # (review record LF47).
+        var bound = socket.local_address
         var listener = NoTLSListener(socket^)
         var msg = String(
             "\n🔥🐝 Lightbug is listening on ",
             "http://",
-            join_host_port(addr.ip, String(addr.port)),
+            join_host_port(bound.ip, String(bound.port)),
         )
         if not self.quiet:
             print(msg)

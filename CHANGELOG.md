@@ -166,6 +166,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   port 80. Such a port is now refused at startup. m0serve and the Mojo
   host check `--port` themselves and pass it on as digits.
 
+- **The "listening on" line names the port the server is bound to**
+  (fork review LF47). Exposed: a Mojo host application started with
+  `M0_PORT=0`, and a Mojo application that passes `Server.listen_and_serve`
+  a port of 0, both of which take a port the kernel chooses. The line read
+  `Lightbug is listening on http://127.0.0.1:0`, a port nothing can
+  connect to; it now names the port the kernel chose. m0serve prints its
+  own startup line and was not affected.
+
 - **`Socket.receive` and `TCPConnection.read` into a full buffer read what
   is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
   that reads a socket through either, into a `Bytes` with no room past its

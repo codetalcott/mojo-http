@@ -1598,6 +1598,11 @@ lightbug_http
         underscores, so `-0` was port 0 and `+80`, ` 80` and `8_0` were 80
         (review record LF46, SPEC A34).
 
+      - connection.mojo (2026-10-08): `ListenConfig.listen`'s banner names
+        the address the socket is bound to, as `bind` read it back, where
+        it named the address it was given: a listener asked for port 0
+        printed port 0 (review record LF47).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
