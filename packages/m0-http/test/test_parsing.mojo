@@ -166,11 +166,14 @@ def test_chunked_must_be_the_last_transfer_encoding() raises:
 
 
 def test_chunked_last_in_a_list_is_accepted() raises:
-    """The rule is about position, not about rejecting every encoding list."""
+    """The rule is about position, not about rejecting every encoding list:
+    empty members mean nothing (RFC 9110 §5.6.1). A real coding before
+    `chunked` is refused, but as not implemented (SPEC B21), never as a
+    `chunked` out of place."""
     assert_true(
         _accepted(
             "POST / HTTP/1.1\r\nHost: x\r\n"
-            "Transfer-Encoding: gzip, chunked\r\n\r\n"
+            "Transfer-Encoding: , chunked\r\n\r\n"
         )
     )
 
@@ -324,10 +327,10 @@ def test_a_second_transfer_encoding_line_is_rejected() raises:
             "Transfer-Encoding: chunked\r\n\r\n"
         )
     )
-    # The control: the same codings on ONE line keep working.
+    # The control: ONE line keeps working.
     assert_true(
         _accepted(
-            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
         )
     )
 
@@ -374,20 +377,23 @@ def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises
     server that does not check this dispatches the request as bodyless and
     leaves the body in the buffer for the next reader to find.
 
+    Each is a coding this server does not implement, so the refusal is
+    501 (SPEC B21), where it was 400; refused either way, never served.
+
     covers: B3
     """
     assert_true(
-        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
+        _unsupported("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
     )
     assert_true(
-        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: identity\r\n\r\n")
+        _unsupported("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: identity\r\n\r\n")
     )
     # A loose substring match would let these through as "chunked".
     assert_true(
-        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: xchunked\r\n\r\n")
+        _unsupported("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: xchunked\r\n\r\n")
     )
     assert_true(
-        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked-foo\r\n\r\n")
+        _unsupported("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked-foo\r\n\r\n")
     )
 
 
@@ -413,15 +419,42 @@ def test_chunked_applied_twice_is_rejected() raises:
 
 
 def test_chunked_as_the_last_coding_is_still_accepted() raises:
-    """The control: a legitimate `gzip, chunked` must keep working."""
+    """The control: a lone `chunked`, in any case and with empty members
+    before it, keeps working."""
     assert_true(
         _accepted(
-            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+            "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: ,, chunked\r\n\r\n"
         )
     )
     assert_true(
         _accepted("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED\r\n\r\n")
     )
+
+
+def test_a_transfer_coding_other_than_chunked_is_not_implemented() raises:
+    """RFC 9112 §6.1: a server that receives a transfer coding it does not
+    understand SHOULD answer 501. This one decodes `chunked` and nothing
+    else, and `gzip, chunked` was de-chunked and handed to the application
+    still gzipped. A coding before the final `chunked`, or one alone, is
+    refused as not implemented; the malformed lists stay 400 -- `chunked`
+    out of place or twice, a list naming nothing or ending in an empty
+    member -- and the malformed answer wins where a list is both.
+
+    covers: B21
+    """
+    var head = String("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: ")
+    assert_true(_unsupported(head + "gzip, chunked\r\n\r\n"))
+    assert_true(_unsupported(head + "GZIP,chunked\r\n\r\n"))
+    assert_true(_unsupported(head + "deflate, gzip, chunked\r\n\r\n"))
+    assert_true(_unsupported(head + "gzip,,chunked\r\n\r\n"))
+    assert_true(_unsupported(head + "gzip\r\n\r\n"))
+    assert_true(_unsupported(head + "gzip, deflate\r\n\r\n"))
+    assert_true(_unsupported(head + "chunked;x=1\r\n\r\n"))
+    assert_true(_rejected(head + "chunked, gzip\r\n\r\n"))
+    assert_true(_rejected(head + "gzip, chunked, chunked\r\n\r\n"))
+    assert_true(_rejected(head + "\r\n\r\n"))
+    assert_true(_rejected(head + "gzip,\r\n\r\n"))
+    assert_true(_accepted(head + "chunked\r\n\r\n"))
 
 
 # --- What this server does not implement: 501, not 400 ----------------------

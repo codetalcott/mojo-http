@@ -99,6 +99,10 @@ def _seed_corpus() -> List[String]:
     c.append("GET / HTTP/1.0\r\n\r\n")
     # Refused as not implemented (501), not as malformed.
     c.append("CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n")
+    c.append(
+        "POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+        "5\r\nhello\r\n0\r\n\r\n"
+    )
     # Long-ish header block: the 8 KB-class shapes that stalled reads.
     c.append(
         "GET / HTTP/1.1\r\nHost: x\r\nCookie: " + String("a") * 600 + "\r\n\r\n"

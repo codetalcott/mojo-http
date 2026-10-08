@@ -11,8 +11,8 @@ that an application proxying the request would forward.
 
 Now a parsed request keeps its headers as sent, with one rewrite: a body the
 loop de-chunked is a sized body, so it is described by its length and the
-final `chunked` coding is removed (any other coding stays, because the body
-is still in it). And since `Connection: close` is no longer written into
+final `chunked` coding is removed (no other coding reaches it: the parser
+refuses one with 501, SPEC B21). And since `Connection: close` is no longer written into
 every HTTP/1.0 request, `connection_close()` reads the protocol itself
 (RFC 9112 §9.3): 1.0 closes unless it asked to keep alive.
 """
@@ -81,23 +81,9 @@ def test_a_dechunked_request_carries_its_length_and_no_transfer_encoding() raise
     assert_true(req.headers.known_index(KH_TRANSFER_ENCODING) < 0)
 
 
-def test_a_dechunked_request_keeps_its_other_transfer_codings() raises:
-    """Only the final `chunked` goes: a gzip coding still describes the body.
-
-    covers: L25
-    """
-    var req = request_from(
-        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
-        "zipped",
-    )
-    assert_equal(req.headers.get(HeaderKey.TRANSFER_ENCODING).value(), "gzip")
-    assert_equal(req.headers.get(HeaderKey.CONTENT_LENGTH).value(), "6")
-
-
 def test_empty_list_elements_leave_no_empty_transfer_encoding() raises:
     """RFC 9110 §5.6.1: empty list elements are accepted and mean nothing, so
-    `, chunked` is a lone `chunked` -- no empty field beside the length --
-    and `gzip,,chunked` keeps `gzip`.
+    `, chunked` is a lone `chunked` -- no empty field beside the length.
 
     covers: L25
     """
@@ -106,10 +92,6 @@ def test_empty_list_elements_leave_no_empty_transfer_encoding() raises:
     )
     assert_true(bare.headers.known_index(KH_TRANSFER_ENCODING) < 0)
     assert_equal(bare.headers.get(HeaderKey.CONTENT_LENGTH).value(), "3")
-    var gz = request_from(
-        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip,,chunked\r\n\r\n", "abc"
-    )
-    assert_equal(gz.headers.get(HeaderKey.TRANSFER_ENCODING).value(), "gzip")
 
 
 def test_transfer_encoding_case_does_not_matter() raises:

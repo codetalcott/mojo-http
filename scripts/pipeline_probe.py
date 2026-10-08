@@ -24,7 +24,8 @@ connection behind their answer, and did not, do the same with a 200: an
 HTTP/1.0 request with a chunked body (SPEC B15), and `Connection: close`
 listed with another option (SPEC B17). A request for what this server does
 not implement is refused with 501, then the connection closed: CONNECT
-(SPEC B18).
+(SPEC B18), and a body in a transfer coding other than `chunked` (SPEC
+B21).
 
 usage: pipeline_probe.py PORT
 """
@@ -177,6 +178,14 @@ check_closed_after(
 check_closed_after(
     "CONNECT, a request behind it",
     b"CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n" + GET, [501])
+
+# SPEC B21. A coding the loop cannot decode: 501 and a close. `gzip,
+# chunked` was de-chunked and served still gzipped, and the connection
+# kept, so the request behind it was answered too.
+check_closed_after(
+    "a gzip, chunked body, a request behind it",
+    b"POST /health HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip, chunked\r\n"
+    b"\r\n%x\r\n%s\r\n0\r\n\r\n" % (len(BODY), BODY) + GET, [501])
 
 # A second request sent only after the first is in flight — no pipelining
 # in the same packet, but the bytes can arrive while the loop is still

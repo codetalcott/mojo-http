@@ -354,6 +354,14 @@
       "evidence": "`test_slot_lifecycle.mojo:test_connect_is_answered_501_and_closed` (every PR) \u2014 CONNECT asks for a tunnel (RFC 9110 \u00a79.3.6), which this server does not implement, yet the request reached the application, and one that answers every method answered it 200: a front end forwarding CONNECT reads a 2xx as an open tunnel, so whatever the client sent next went through unparsed (review record LF36). The refusal needs a well-formed head, a malformed one staying 400, and the method name is case-sensitive. `test_parsing.mojo:test_connect_is_refused_as_not_implemented` holds the parser's half, and `Smoke test pipelined requests` sends CONNECT with a request pipelined behind it and requires one 501 and a close"
     },
     {
+      "id": "B21",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A transfer coding other than `chunked`, alone or before the final `chunked`, refused with 501 and the connection closed (RFC 9112 \u00a76.1); a list naming `chunked` out of place or twice, or ending in an empty member, stays 400",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_transfer_coding_other_than_chunked_is_not_implemented` (every PR) \u2014 this server decodes `chunked` and nothing else, yet `gzip, chunked` was de-chunked and its body handed to the application still gzipped, where h11 refuses it, and a lone `gzip` was answered 400 as if malformed (review record LF39). B3's shapes are refused 501 now, not 400. `test_slot_lifecycle.mojo:test_a_transfer_coding_it_cannot_decode_is_answered_501_and_closed` holds the loop's answer, and `Smoke test pipelined requests` sends a `gzip, chunked` body with a request pipelined behind it and requires one 501 and a close"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",
@@ -1855,7 +1863,7 @@
       "category": "L. ASGI 3.0",
       "capability": "A de-chunked request's scope carries `content-length` and not the `chunked` coding the loop removed, and no header the client did not send",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a chunked POST and a GET, read back from the scope on the executor and on the buffered hatch: the de-chunked one must carry its length and no `transfer-encoding`, and the GET neither a `content-length` nor a `connection` curl never sent. Before the fix every parsed request went through the outgoing constructor, which filled in a length, a `Connection` and a `Host`, so a GET carried `content-length: 0` and `connection: keep-alive` and a chunked request both halves of a contradictory pair an application proxying it would forward. A `gzip, chunked` body keeps its `gzip`, and HTTP/1.0 still closes by default, now read from the protocol (`test_request_as_sent.mojo`). The WSGI environ follows, since it maps the same headers: `Conformance test the WSGI bridge` sends the same two requests to `/environ`"
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a chunked POST and a GET, read back from the scope on the executor and on the buffered hatch: the de-chunked one must carry its length and no `transfer-encoding`, and the GET neither a `content-length` nor a `connection` curl never sent. Before the fix every parsed request went through the outgoing constructor, which filled in a length, a `Connection` and a `Host`, so a GET carried `content-length: 0` and `connection: keep-alive` and a chunked request both halves of a contradictory pair an application proxying it would forward. A `gzip, chunked` body never gets this far, refused 501 by the parser (B21), and HTTP/1.0 still closes by default, now read from the protocol (`test_request_as_sent.mojo`). The WSGI environ follows, since it maps the same headers: `Conformance test the WSGI bridge` sends the same two requests to `/environ`"
     },
     {
       "id": "L26",
