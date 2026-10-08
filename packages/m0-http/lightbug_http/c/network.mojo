@@ -60,15 +60,6 @@ struct InetNtopError(Movable, Writable):
         elif self.value.isa[Error]():
             writer.write(self.value[Error])
 
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
 
 @fieldwise_init
 struct InetPtonError(Movable, Writable):
@@ -91,15 +82,6 @@ struct InetPtonError(Movable, Writable):
         elif self.value.isa[Error]():
             writer.write(self.value[Error])
 
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
 
 def htons(hostshort: c_ushort) -> c_ushort:
     """Libc POSIX `htons` function.
@@ -119,26 +101,6 @@ def htons(hostshort: c_ushort) -> c_ushort:
     * Reference: https://man7.org/linux/man-pages/man3/htonl.3p.html .
     """
     return external_call["htons", c_ushort, type_of(hostshort)](hostshort)
-
-
-def ntohs(netshort: c_ushort) -> c_ushort:
-    """Libc POSIX `ntohs` function.
-
-    Args:
-        netshort: A 16-bit integer in network byte order.
-
-    Returns:
-        The value provided in host byte order.
-
-    #### C Function
-    ```c
-    uint16_t ntohs(uint16_t netshort)
-    ```
-
-    #### Notes:
-    * Reference: https://man7.org/linux/man-pages/man3/htonl.3p.html .
-    """
-    return external_call["ntohs", c_ushort, type_of(netshort)](netshort)
 
 
 comptime sa_family_t = c_ushort
@@ -187,16 +149,11 @@ struct InetAddress(TrivialRegisterPassable):
 
 
 struct sockaddr(TrivialRegisterPassable):
+    """POSIX `struct sockaddr`, the type the calls take an address as. Never
+    built: an address is a `SocketAddress`'s storage, cast to this."""
+
     var sa_family: sa_family_t
     var sa_data: StaticTuple[c_char, 14]
-
-    def __init__(
-        out self,
-        family: sa_family_t = 0,
-        data: StaticTuple[c_char, 14] = StaticTuple[c_char, 14](),
-    ):
-        self.sa_family = family
-        self.sa_data = data
 
 
 @fieldwise_init
@@ -293,7 +250,7 @@ def sockaddr_host_port(sa: Pointer[UInt8, _], length: Int) -> Tuple[String, Int]
 
 struct SocketAddress(Movable):
     """A socket address, in storage any family's fits: what `bind` is
-    given and what `getsockname` and `getpeername` fill.
+    given and what `getsockname` fills.
 
     It used to be one 16-byte `sockaddr`, which an IPv6 address (28 bytes)
     does not fit: the kernel truncated one it filled before its address
@@ -373,9 +330,6 @@ struct SocketAddress(Movable):
         origin: Origin, address_space: AddressSpace, //
     ](ref [origin, address_space]self) -> Pointer[sockaddr, origin, address_space=address_space]:
         return self.addr.unsafe_mut_cast[origin.mut]().unsafe_origin_cast[origin]().unsafe_address_space_cast[address_space]()
-
-    def as_sockaddr_in(mut self) -> ref [origin_of(self)] sockaddr_in:
-        return self.unsafe_ptr().unsafe_bitcast[sockaddr_in]()[]
 
     def family(self) -> Int:
         """The address family the address carries."""

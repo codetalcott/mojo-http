@@ -1,10 +1,8 @@
-from std.sys.info import CompilationTarget
 from std.time import sleep
 
 from lightbug_http.address import (
     HostPort,
     NetworkType,
-    ParseError,
     TCPAddr,
     is_ipv6_literal,
     join_host_port,
@@ -22,7 +20,6 @@ from lightbug_http.socket import (
     SocketRecvError,
     TCPSocket,
 )
-from lightbug_http.utils.error import CustomError
 from std.utils import Variant
 
 
@@ -31,11 +28,20 @@ comptime default_buffer_size = 4096
 
 
 @fieldwise_init
-struct AddressParseError(CustomError, ImplicitlyCopyable):
+struct AddressParseError(Movable, Writable):
+    """A listen address `parse_address` refused, with the rule it broke.
+
+    It carried no reason, so every refusal read the same (review record
+    LF48): `--host fe80::1%en0` was "Failed to parse listen address" and
+    nothing more.
+    """
+
     comptime message = "ListenerError: Failed to parse listen address"
+    var reason: String
+    """The `ParseError`'s text."""
 
     def write_to[W: Writer, //](self, mut writer: W):
-        writer.write(Self.message)
+        writer.write(Self.message, ": ", self.reason)
 
 
 @fieldwise_init
@@ -46,12 +52,12 @@ struct ListenerError(Movable, Writable):
     a SysError from `socket` or `listen`, a SocketBindError from the bind.
     """
 
-    comptime type = Variant[AddressParseError, SysError, SocketBindError, Error]
+    comptime type = Variant[AddressParseError, SysError, SocketBindError]
     var value: Self.type
 
     @implicit
-    def __init__(out self, value: AddressParseError):
-        self.value = value
+    def __init__(out self, var value: AddressParseError):
+        self.value = value^
 
     @implicit
     def __init__(out self, value: SysError):
@@ -61,10 +67,6 @@ struct ListenerError(Movable, Writable):
     def __init__(out self, var value: SocketBindError):
         self.value = value^
 
-    @implicit
-    def __init__(out self, var value: Error):
-        self.value = value^
-
     def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[AddressParseError]():
             writer.write(self.value[AddressParseError])
@@ -72,17 +74,6 @@ struct ListenerError(Movable, Writable):
             writer.write(self.value[SysError])
         elif self.value.isa[SocketBindError]():
             writer.write(self.value[SocketBindError])
-        elif self.value.isa[Error]():
-            writer.write(self.value[Error])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
 
     def address_in_use(self) -> Bool:
         """Whether this is a bind refused with EADDRINUSE, its retries spent
@@ -119,12 +110,6 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp](Movable):
     def __init__(out self, var socket: TCPSocket[TCPAddr[Self.network]]):
         self.socket = socket^
 
-    def __init__(out self) raises SysError:
-        comptime if Self.network == NetworkType.tcp6:
-            self.socket = Socket[TCPAddr[Self.network]](family=AddressFamily.AF_INET6)
-        else:
-            self.socket = Socket[TCPAddr[Self.network]](family=AddressFamily.AF_INET)
-
     def close(mut self) raises SysError -> None:
         """Close the listener socket.
 
@@ -132,22 +117,6 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp](Movable):
             SysError: If close fails (excludes EBADF).
         """
         return self.socket.close()
-
-    def shutdown(mut self) raises SysError:
-        """Shutdown the listener socket.
-
-        Raises:
-            SysError: If shutdown fails with EINVAL.
-        """
-        return self.socket.shutdown()
-
-    def teardown(deinit self) raises SysError:
-        """Teardown the listener socket on destruction.
-
-        Raises:
-            SysError: If close fails during teardown.
-        """
-        self.socket^.teardown()
 
     def into_fd(deinit self) -> FileDescriptor:
         """Hand the listener's descriptor over without closing it.
@@ -160,9 +129,6 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp](Movable):
         part of the process's descriptor.
         """
         return self.socket^.into_fd()
-
-    def addr(self) -> TCPAddr[Self.network]:
-        return self.socket.local_address
 
 
 struct ListenConfig:
@@ -237,8 +203,8 @@ struct ListenConfig:
         var local: HostPort
         try:
             local = parse_address[network](address)
-        except ParseError:
-            raise AddressParseError()
+        except parse_err:
+            raise AddressParseError(String(parse_err))
 
         # The family is the address's (review R15). Every listener was
         # IPv4 whatever it was given, and AF_INET6 held OpenBSD's number,
@@ -325,11 +291,15 @@ struct ListenConfig:
         except listen_err:
             raise listen_err
 
+        # The address the socket is bound to, as `bind` read it back: the
+        # port asked for named port 0 where the kernel had chosen one
+        # (review record LF47).
+        var bound = socket.local_address
         var listener = NoTLSListener(socket^)
         var msg = String(
             "\n🔥🐝 Lightbug is listening on ",
             "http://",
-            join_host_port(addr.ip, String(addr.port)),
+            join_host_port(bound.ip, String(bound.port)),
         )
         if not self.quiet:
             print(msg)
@@ -348,7 +318,6 @@ struct ConnectionState(Copyable):
     - reading_body: Reading request body based on Content-Length
     - processing: Invoking application handler
     - responding: Sending response to client
-    - closed: Connection finished
     - streaming_sse: SSE stream idle, waiting for events to push
     - streaming_ws: WebSocket connection, exchanging frames
     - lingering: an error was sent before the request was read; the
@@ -360,7 +329,6 @@ struct ConnectionState(Copyable):
     comptime READING_BODY = 1
     comptime PROCESSING = 2
     comptime RESPONDING = 3
-    comptime CLOSED = 4
     comptime STREAMING_SSE = 5
     comptime STREAMING_WS = 6
     comptime LINGERING = 7
@@ -385,10 +353,6 @@ struct ConnectionState(Copyable):
     @staticmethod
     def responding() -> Self:
         return ConnectionState(Self.RESPONDING)
-
-    @staticmethod
-    def closed() -> Self:
-        return ConnectionState(Self.CLOSED)
 
     @staticmethod
     def streaming_sse() -> Self:
@@ -454,28 +418,5 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
         """
         self.socket.close()
 
-    def shutdown(mut self) raises SysError:
-        """Shutdown the TCP connection.
-
-        Raises:
-            SysError: If shutdown fails with EINVAL.
-        """
-        self.socket.shutdown()
-
-    def teardown(deinit self) raises SysError:
-        """Teardown the connection on destruction.
-
-        Raises:
-            SysError: If close fails during teardown.
-        """
-        self.socket^.teardown()
-
     def is_closed(self) -> Bool:
         return self.socket._closed
-
-    # TODO: Switch to property or return ref when trait supports attributes.
-    def local_addr(self) -> TCPAddr[Self.network]:
-        return self.socket.local_address
-
-    def remote_addr(self) -> TCPAddr[Self.network]:
-        return self.socket.remote_address

@@ -129,6 +129,10 @@ A flag overrides its `M0_` variable, which overrides the default.
 | `--doctor` | | print the configuration, start nothing |
 | `--help` | | |
 
+A variable the host cannot read, such as `M0_PORT=80eighty` or a number too
+large for an `Int`, falls back to its default without a word: unlike
+m0serve, the host does not name a value it could not read.
+
 `host_config()` is an `AppConfig` with the command line applied, for an
 application that prints its own address before serving. `serve(AppConfig())`
 applies the flags itself.
@@ -149,6 +153,8 @@ the host applies them:
 
 | check | refused when |
 |---|---|
+| `port` | `M0_PORT` is outside 1-65535 |
+| `address` | the listen address does not parse, such as a `%` (an IPv6 zone) in `M0_HOST` |
 | `workers-count` | `M0_WORKERS` is below 1 |
 | `workers-vs-application` | `M0_WORKERS` is above the application's `max_workers()` |
 | `threads-count` | `M0_THREADS` is below 1 |
@@ -158,7 +164,8 @@ the host applies them:
 | `spawned-marker` | `M0_WORKER_SPAWNED` is inherited from an m0serve worker |
 | `workers-vs-parallel-runtime` | `M0_WORKERS` is above 1 and the binary links MAX's parallel runtime |
 
-A count is refused the same way whether it came from a flag or a variable.
+A count or a port is refused the same way whether it came from a flag or a
+variable.
 
 ## The doctor
 

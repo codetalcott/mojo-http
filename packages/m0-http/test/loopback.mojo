@@ -18,7 +18,7 @@ from lightbug_http.address import NetworkType, TCPAddr
 from lightbug_http.c.address import AddressFamily
 from lightbug_http.c.network import SocketAddress, inet_pton, sockaddr, socklen_t
 from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.socket import SocketType, getpeername, getsockname, socket
+from lightbug_http.c.socket import SocketType, getsockname, socket
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.connection import TCPConnection
 from lightbug_http.socket import Socket
@@ -49,10 +49,7 @@ def create_connection(
     """A blocking TCP connection to `host:port`, `host` an IPv4 literal.
 
     The socket is adopted once connected (`Socket(fd=...)`), so it is born
-    connected and its destructor shuts it down and closes it. Built from
-    the descriptor rather than with `Socket()`: on the pinned toolchain
-    `Socket[TCPAddr[NetworkType.tcp4]]()` called from outside the fork
-    crashes the compiler.
+    connected and its destructor shuts it down and closes it.
 
     Raises:
         Error: If `host` is not an IPv4 literal, or if `connect` fails, with
@@ -65,19 +62,16 @@ def create_connection(
         Int(socket(AddressFamily.AF_INET.value, SocketType.SOCK_STREAM.value, c_int(0)))
     )
     var near: Tuple[String, Int]
-    var far: Tuple[String, Int]
     try:
         connect(fd, remote)
         var local = SocketAddress()
         getsockname(fd, local)
         near = local.host_port()
-        far = getpeername(fd).host_port()
     except e:
         close_fd(fd.value)
         raise Error(e)
     var sock = Socket[TCPAddr[NetworkType.tcp4]](
         fd=fd,
         local_address=TCPAddr[NetworkType.tcp4](near[0], UInt16(near[1])),
-        remote_address=TCPAddr[NetworkType.tcp4](far[0], UInt16(far[1])),
     )
     return TCPConnection(sock^)

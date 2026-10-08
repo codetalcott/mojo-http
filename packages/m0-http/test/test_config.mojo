@@ -15,7 +15,7 @@ refusing to start.
 from std.os import setenv
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from src.config import AppConfig, listen_host, threads_conflict
+from src.config import AppConfig, listen_host, parse_env_int, threads_conflict
 from lightbug_http.server_config import ServerConfig
 
 
@@ -72,6 +72,28 @@ def test_a_negative_port_falls_back_to_the_default() raises:
     """The '-' is not a digit, so this takes the same path as any junk."""
     var c = _with("M0_PORT", "-1")
     assert_equal(c.port, 8080)
+
+
+def test_a_number_too_large_for_an_int_falls_back_to_the_default() raises:
+    """A value whose digits overflow an `Int` is unreadable, as `80eighty`
+    is, and falls back to the default (review record LF49).
+
+    The digits were accumulated with no overflow check, so the number
+    wrapped: `M0_PORT=18446744073709551696` (2^64 + 80) served on port 80,
+    `M0_WORKERS=18446744073709551618` (2^64 + 2) forked two workers, and one
+    past the largest `Int` read as the most negative. The largest `Int`
+    still reads as itself, leading zeros and all.
+    """
+    assert_equal(_with("M0_PORT", "18446744073709551696").port, 8080)
+    assert_equal(_with("M0_WORKERS", "18446744073709551618").workers, 1)
+    assert_equal(_with("M0_PORT", "9223372036854775808").port, 8080)
+    assert_equal(_with("M0_PORT", "99999999999999999999999999").port, 8080)
+    assert_equal(_with("M0_PORT", "9223372036854775807").port, 9223372036854775807)
+    assert_equal(_with("M0_PORT", "0009223372036854775807").port, 9223372036854775807)
+    assert_false(Bool(parse_env_int("18446744073709551696")))
+    assert_false(Bool(parse_env_int("80eighty")))
+    assert_false(Bool(parse_env_int("")))
+    assert_equal(parse_env_int("080").value(), 80)
 
 
 def test_workers_is_read_from_the_environment() raises:
@@ -300,6 +322,31 @@ def test_recv_buffer_limit_covers_headers_plus_body() raises:
     # The field is still a floor a Mojo caller may raise for its own reasons.
     sc.recv_buffer_max = 256 * 1024 * 1024
     assert_equal(sc.recv_buffer_limit(), 256 * 1024 * 1024)
+
+
+
+def test_server_config_defaults_are_the_documented_ones() raises:
+    """`ServerConfig()` is every server's starting point, and docs/RUNNING.md,
+    docs/MOJO_HOST.md and the README state its defaults: a change to one is
+    a change to what every deployment gets, so it is made here on purpose
+    or not at all."""
+    var sc = ServerConfig()
+    assert_equal(sc.max_connections, 1024)
+    assert_equal(sc.max_keepalive_requests, 1000)
+    assert_equal(sc.recv_buffer_max, 2 * 1024 * 1024)
+    assert_equal(sc.max_request_body_size, 4 * 1024 * 1024)
+    assert_equal(sc.max_request_uri_length, 8192)
+    assert_equal(sc.max_total_header_size, 32 * 1024)
+    assert_equal(sc.header_read_timeout, 10)
+    assert_equal(sc.body_read_timeout, 30)
+    assert_equal(sc.idle_timeout, 60)
+    assert_false(sc.access_log)
+    assert_false(sc.enable_metrics)
+    assert_equal(sc.sse_heartbeat_ms, 15000)
+    assert_equal(sc.app_tick_ms, 0)
+    assert_equal(sc.body_size_notice, "")
+    assert_equal(sc.body_timeout_notice, "")
+    assert_true(sc.socket_buffer_size > 0)
 
 
 def main() raises:

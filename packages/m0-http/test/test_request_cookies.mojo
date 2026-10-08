@@ -150,6 +150,11 @@ def test_hand_built_request_still_writes_its_jar() raises:
     var wire = String(unsafe_from_utf8=req^.encode())
 
     assert_true("token=xyz" in wire)
+    # An empty jar writes no field at all: `to_header` has none to give.
+    assert_false(RequestCookieJar().to_header())
+    var bare = HTTPRequest(uri=URI.parse("http://example.com/"))
+    var bare_wire = String(unsafe_from_utf8=bare^.encode()).lower()
+    assert_false("cookie:" in bare_wire, bare_wire)
 
 
 def _raw(*bytes: Int) -> String:
@@ -178,6 +183,49 @@ def test_a_cookie_value_that_is_not_utf8_does_not_trap() raises:
     # The name side is sliced too.
     jar.add_pairs(_raw(0x80) + String("=v"))
     assert_equal(jar[_raw(0x80)], "v")
+
+
+def test_a_quoted_value_keeps_its_quotes() raises:
+    """RFC 6265 §4.1.1 lets a cookie-value be wrapped in DQUOTEs, and its
+    successor draft (draft-ietf-httpbis-rfc6265bis-22 §4.1.1) says the
+    quotes are part of the value. An inherited TODO asked for them to be
+    stripped; the jar keeps what the client sent, so a value an application
+    set quoted reaches it as it set it.
+
+    covers: G28
+    """
+    var jar = RequestCookieJar()
+    jar.add_pairs('a="x y"; b=""; c="; d="q\\"r"')
+    assert_equal(jar["a"], '"x y"')
+    assert_equal(jar["b"], '""')
+    assert_equal(jar["c"], '"')
+    assert_equal(jar["d"], '"q\\"r"')
+
+
+def test_the_pairs_edges() raises:
+    """What reaches `add_pairs` from the wire is the joined `Cookie` lines:
+    an empty value, separators with nothing between them, a pair with an
+    empty name, whitespace beside the `=`, a repeated name.
+
+    covers: G28
+    """
+    var empty = RequestCookieJar()
+    empty.add_pairs("")
+    empty.add_pairs("  ;; ; ")
+    assert_equal(len(empty._inner), 0)
+    var jar = RequestCookieJar()
+    jar.add_pairs("=v; a=1;; b = 2 ; c=; =; d=4;")
+    assert_false("" in jar, "a pair with no name is skipped")
+    assert_equal(jar["a"], "1")
+    # The name is trimmed; the value keeps what follows its `=`.
+    assert_equal(jar["b"], " 2")
+    assert_equal(jar["c"], "")
+    assert_equal(jar["d"], "4")
+    assert_equal(len(jar._inner), 4)
+    # A repeated name keeps its last value, as Django's `parse_cookie`.
+    var twice = RequestCookieJar()
+    twice.add_pairs("s=first; s=second")
+    assert_equal(twice["s"], "second")
 
 
 def test_jars_holding_the_same_cookies_are_equal() raises:

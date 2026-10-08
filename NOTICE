@@ -1565,6 +1565,135 @@ lightbug_http
         they said "received": the count is taken per response, as its head
         lands (review record LF32, SPEC F23).
 
+      - address.mojo, socket.mojo, connection.mojo, c/socket.mojo,
+        c/network.mojo, c/address.mojo (2026-10-08): dead inherited code
+        removed, each name searched for across the repository, the `m0`
+        templates and the one application outside it, then the fork, the
+        Mojo host and m0-wsgi compiled whole. The `ip`, `ip4`, `ip6`,
+        `udp`, `unix` and `empty` networks, which nothing listened on, with
+        `parse_address`'s branch for them and `ParseIPProtocolPortError`;
+        `TCPAddr`'s zone, which nothing set, its family predicates and its
+        text forms (`__str__` wrote `host:port`, `String()` the fields);
+        `binary_port_to_int` and `ntohs`, which only a test called;
+        `Socket.remote_address`, which nothing read, and with it
+        `get_peer_name` and the `getpeername` binding; `Socket`'s
+        constructor without a family (it crashed the compiler when called
+        from outside the fork), `__enter__` and text forms;
+        `NoTLSListener` and `TCPConnection` methods nothing called; the
+        `CLOSED` connection state, which nothing set; error-variant arms
+        nothing raised (`ListenerError`'s `Error`, `SocketNameError`'s
+        `InetNtopError`) and accessors nothing read; `as_sockaddr_in`,
+        `sockaddr`'s constructor (the type is only cast to),
+        `AddressFamily.is_inet`, `INET_ADDRSTRLEN`, `SHUT_RD`; and the
+        text forms and comparisons of the C constants' types. Review audit
+        A1 (record LF44) lists each with its evidence.
+
+      - address.mojo (2026-10-08): `parse_address` refuses `localhost` with
+        no port as missing its separator, where it returned the loopback at
+        port 0 and the listener took a port the kernel chose (review record
+        LF45, SPEC A33).
+
+      - address.mojo (2026-10-08): `parse_port` takes ASCII digits only.
+        It read the port with `Int()`, which takes a sign, whitespace and
+        underscores, so `-0` was port 0 and `+80`, ` 80` and `8_0` were 80
+        (review record LF46, SPEC A34).
+
+      - connection.mojo (2026-10-08): `ListenConfig.listen`'s banner names
+        the address the socket is bound to, as `bind` read it back, where
+        it named the address it was given: a listener asked for port 0
+        printed port 0 (review record LF47, SPEC F25).
+
+      - address.mojo, connection.mojo (2026-10-08): `parse_address` refuses
+        a host carrying an IPv6 zone (`%`) with `ParseZoneError`; macOS's
+        `inet_pton` read the zone into the address (KAME's embedded form)
+        and glibc's refused it, so the same address listened on one
+        platform and not the other. `AddressParseError` carries the
+        refusal's text, which `ListenConfig.listen` used to drop, and is
+        no longer a `CustomError` (review record LF48).
+
+      - http/request.mojo, offload.mojo (2026-10-08): `from_parsed` builds
+        an asterisk-form target's URI as it builds an origin-form one, so a
+        server-wide `OPTIONS *` reaches the application with `*` as its path
+        and request target, where the URI parser, handed the server's
+        address and `*`, answered `/`; and `match_path_prefix` lets the
+        empty (root) prefix match a path that does not start with `/`, so
+        m0serve's root mount takes it (review record LF41, SPEC B19).
+
+      - uri.mojo (2026-10-08): `URI.parse` ends the authority at the first
+        `/` or `?` (the new `authority_end`), where it read to the first `/`
+        alone, and a query right after the authority is the query of the
+        path `/`, its request URI `/?query`. `http://h?q=1` parsed as host
+        `h?q=1` with no query (review record LF50, SPEC A35). The inherited
+        TODO asking for that normalisation is gone. `authority_end` stops
+        at a `#` too, and `userinfo_separator` scans to it, so one rule
+        says where the authority ends (RFC 3986 §3.2): `http://h#x` parsed
+        as host `h#x`.
+
+      - uri.mojo (2026-10-08): `URI.parse` reads the port as every byte
+        after the authority's colon, refusing a non-digit or a value above
+        65535, and an empty port as none (RFC 3986 §3.2.3). It read the
+        digits up to the first other byte through `atol` and narrowed them
+        to 16 bits: `:8x` was 8, `:99999` 34463, `:65536` 0, and `:` raised
+        (review record LF51, SPEC A36).
+
+      - uri.mojo, cookie/*, http/common_response.mojo, http/request.mojo,
+        io/bytes.mojo, strings.mojo, __init__.mojo (2026-10-08): the
+        inherited code the fork review's audit of these files found with no
+        caller, each name searched for across the repository, the `m0`
+        templates and the one application outside it, then the fork
+        compiled whole: `URI`'s `username`, `password`, `full_uri`,
+        `_original_path` (always the path) and `_hash` (always empty),
+        `__str__`, `__repr__`, `is_http`, `is_https` and six delimiter
+        constants, and `URIParseError.__str__`; `URI.parse`'s two refusals after the scheme, which
+        `scheme_separator` had already made unreachable, and its first
+        decode of every path, which the second overwrote; the
+        `Expiration` stub and `Cookie.expires`, `Cookie.to_header`,
+        `Cookie.__str__`, `SameSite.__eq__`; `RequestCookieJar`'s
+        constructor from cookies, `parse_cookies`, `empty`, `encode_to`,
+        `__str__` and `__contains__` for a `Cookie`;
+        `ResponseCookieKey.__ne__` (Equatable's default stands);
+        `ResponseCookieJar`'s two constructors from cookies,
+        `__setitem__`, `__getitem__`, `get`, both `__contains__` and
+        `__str__`, with a commented-out `encode_to`; `OK` from `Bytes`
+        (both), `SeeOther` and `BadRequest(message)`; `OutOfBoundsError`,
+        `EndOfReaderError.__str__`, `ByteReader.read_bytes(n)`, `as_bytes` and `__contains__`;
+        `ByteView`'s `__eq__` (three), `__ne__`, `__contains__` (two),
+        `as_bytes`, `__str__` and `__bool__`, with its `Equatable` and
+        `Boolable` conformances;
+        `strings.https`, `colonChar` and seventeen `BytesConstant` bytes
+        left from the token check `TCHAR_LO`/`TCHAR_HI` replaced (review
+        record LF52).
+
+      - uri.mojo, cookie/request_cookie_jar.mojo (2026-10-08): three
+        inherited TODOs that asked for what the RFCs rule out are replaced
+        by what the code does and why, behaviour unchanged: a request
+        cookie's DQUOTEs are part of its value (RFC 6265 §4.1.1, as
+        draft-ietf-httpbis-rfc6265bis-22 reads it), a userinfo is skipped
+        and never stored (RFC 9110 §4.2.4), and a `#` in a request target
+        is data, not a fragment to cut (RFC 9112 §3.2). Tests pin each
+        (review record LF53, SPEC G28, B19).
+
+      - cookie/response_cookie_jar.mojo (2026-10-08): both writers drop,
+        silently, a built `Cookie` the new `built_cookie_is_well_formed`
+        refuses: a name that is not a token (RFC 6265 §4.1.1), or a value,
+        `Domain` or `Path` holding a `;` or a control byte (C0 or DEL).
+        Each field was written as given, so a value added attributes
+        (`dark; Domain=evil.test`). Any other byte passes: cookie-octet is
+        a SHOULD for a server, and browsers store a space, a comma, quotes
+        or bytes above 0x7F. `add_raw` lines are unchanged (review record
+        LF55, SPEC G2).
+
+      - cookie/response_cookie_jar.mojo (2026-10-08): `ResponseCookieKey`
+        keys no `Path`, an empty one and one not starting with `/` as the
+        default-path (RFC 6265 §5.1.4, §5.2.4), apart from `/`, which it
+        defaulted to, so a Path-less cookie replaced a `Path=/` one of the
+        same name in the jar (review record LF65).
+
+      - http/common_response.mojo (2026-10-08): `NotFound`'s body is
+        `Not Found`, where it was `path <path> not found`, a request's own
+        bytes reflected into a `text/plain` answer carrying no `nosniff`;
+        its `path` argument is kept, now optional (review record LF57).
+
       - loop/response.mojo (2026-10-08): `_finish_response` closes the
         connection behind the answer to a half-closed client's last request
         (`_answers_the_last_request`: `peer_eof`, nothing buffered past
@@ -1648,17 +1777,12 @@ lightbug_http
         rules (KELVIN SIGN to `k`) and reads the value as UTF-8 (review
         record LF58).
 
-      - header.mojo (2026-10-08): `find_header_end` backs up three bytes
-        from any `search_start`, down to 0, where it backed up only from one
-        above 3 and so missed a terminator at the buffer's start (review
-        record LF66; LF59 is its duplicate).
-
       - http/request.mojo, loop/state.mojo, loop/request.mojo
         (2026-10-08): `HTTPRequest.from_parsed` takes the server's host and
         port, which `LoopState` splits from its address once
         (`split_server_address`), and parses the target alone, so
-        `uri.host`, `uri.port` and `uri.full_uri` are the same for every
-        target shape (SPEC A37). The fast path put the whole address in
+        `uri.host` and `uri.port` are the same for every target shape (SPEC
+        A37). The fast path put the whole address in
         `host`, and the full parse read the address prefixed to the target
         (review record LF54).
 
@@ -1700,6 +1824,25 @@ lightbug_http
         and an overlong `C1 B7` as `w`; `ascii_lowercase` folds a whole
         value byte by byte for a caller that needs the string (review
         record LF63).
+      - framing.mojo (new), loop/request.mojo (2026-10-08):
+        `frame_request_head` is the loop's framing decision for a request
+        head -- the CRLFCRLF search, the parse, the refusal of a head the
+        two framers end apart, the size, target and length refusals, the
+        bare-LF scan of a head still arriving, the body's framing and
+        `request_end` -- moved out of `_handle_read_headers`, which acts on
+        its answer (SPEC B29).
+
+      - header.mojo (2026-10-08): `find_header_end` backs off three bytes
+        from `search_start` and never before the buffer's first byte; it
+        started AT 1 to 3, so a CRLFCRLF opening the buffer was missed by a
+        split read (review record LF66, SPEC B29; A3's LF59, the same
+        defect and fix, is its duplicate).
+
+      - http/parsing.mojo (2026-10-08): `http_parse_request_headers`
+        refuses a CR that no LF follows before the request line (RFC 9112
+        §2.2) rather than skipping it with the empty lines and reading the
+        method from the byte after it, which `is_complete` refused when a
+        read had ended after the CR (review record LF67, SPEC B29).
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

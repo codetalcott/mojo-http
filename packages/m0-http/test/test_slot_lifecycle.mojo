@@ -745,6 +745,34 @@ def test_a_bare_lf_in_a_head_still_arriving_is_answered_400_at_once() raises:
     assert_false(long[1], "a long head of CRLFs still arriving was closed")
 
 
+def test_empty_lines_before_a_request_are_answered_alike_split_or_whole() raises:
+    """Two empty lines and then a request are refused 400 in one read, and
+    in two reads however the first ended. The loop tells the framer how
+    much it scanned, and the terminator search began there when that was
+    one to three bytes, so it missed the CRLFCRLF the empty lines make and
+    served the request behind them (review record LF66). One empty line is
+    skipped, split or whole (RFC 9112 §2.2).
+
+    covers: B29
+    """
+    var request = String("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    var whole = _exchange(["\r\n\r\n" + request])
+    assert_true("400 bad request" in whole[0], whole[0])
+    assert_true(whole[1], "the slot stayed open after the 400")
+    var empty_lines = String("\r\n\r\n")
+    for n in range(1, 4):
+        var first = String(unsafe_from_utf8=empty_lines.as_bytes()[:n])
+        var rest = String(unsafe_from_utf8=empty_lines.as_bytes()[n:])
+        var split = _exchange([first, rest + request])
+        assert_true(
+            "400 bad request" in split[0],
+            String("a first read of ", n, " bytes: ", split[0]),
+        )
+        assert_true(split[1], "the slot stayed open after the 400")
+    var one = _exchange(["\r\n", request])
+    assert_true("200 ok" in one[0], one[0])
+
+
 def test_the_metrics_path_honours_a_requested_close() raises:
     """`/__metrics` is answered by the loop itself, and its branch reset
     `should_close` to False after the request had set it: a scrape asking

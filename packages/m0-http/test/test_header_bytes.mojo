@@ -14,9 +14,11 @@ head writer: `encode`, `encode_into` and the printed form.
 The oracle is a model of the rules, not "no CR": the bytes a writer put
 between the status line and the blank line must be, line for line, the lines
 the rules say. A header or cookie holding CR, LF or NUL in what was GIVEN is
-dropped, and any other is written as given with only `C2`/`C3` plus a
-continuation byte turned into one latin-1 byte (the text form writes the
-bytes as they are). So an extra line, an altered line, a line lost that the
+dropped, and so is a built cookie whose value holds a `;` or any other
+control byte (C0 or DEL), which could add an attribute (review record LF55;
+its name here is the token `f`); any other is written as given with only
+`C2`/`C3` plus a continuation byte turned into one latin-1 byte (the text
+form writes the bytes as they are). So an extra line, an altered line, a line lost that the
 rules keep, a body that is not the one handed in, and a CR, LF or NUL inside
 any line all fail -- and a writer that dropped everything fails too, which
 "no CR on the wire" alone would pass.
@@ -104,6 +106,15 @@ def _is_break(b: Byte) -> Bool:
 def _breaks(b: List[Byte]) -> Bool:
     for i in range(len(b)):
         if _is_break(b[i]):
+            return True
+    return False
+
+
+def _adds_an_attribute(b: List[Byte]) -> Bool:
+    """LF55's rule for a built cookie's value, in its own words: a `;` or a
+    control byte (C0 or DEL) drops the cookie. A byte above 0x7F does not."""
+    for i in range(len(b)):
+        if b[i] < 0x20 or b[i] == 0x7F or b[i] == 0x3B:
             return True
     return False
 
@@ -398,6 +409,9 @@ struct Tally(Copyable):
     var transcoded: Int
     var overlong_kept: Int
     var kept_cookie: Int
+    var built_dropped: Int
+    """Built cookies LF55 dropped that G2 would have kept: a `;` or a
+    control byte other than CR, LF and NUL."""
     var emptied_reason: Int
     var redirects: Int
 
@@ -464,7 +478,7 @@ def _check(
 
 def _run(seed: Int, iterations: Int) raises -> Tally:
     var rng = Rng(UInt64(seed))
-    var t = Tally(0, 0, 0, 0, 0, 0, 0)
+    var t = Tally(0, 0, 0, 0, 0, 0, 0, 0)
     for it in range(iterations):
         var c = _case(rng, it)
         for writer in range(WRITERS):
@@ -486,7 +500,12 @@ def _run(seed: Int, iterations: Int) raises -> Tally:
                 _ = _expect(expected, "server", c.server, latin1)
             _ = _expect(expected, "set-cookie", List[Byte](String("a=1; Path=/").as_bytes()), latin1)
             var raw_kept = _expect(expected, "set-cookie", c.cookie_raw, latin1)
-            var built_kept = _expect(expected, "set-cookie", _cookie_line_value(c), latin1)
+            # A built cookie is dropped for a `;` or a control byte in its
+            # value (LF55) before G2's line-break rule is asked.
+            var built_lf55 = _adds_an_attribute(c.cookie_value)
+            var built_kept = not built_lf55 and _expect(
+                expected, "set-cookie", _cookie_line_value(c), latin1
+            )
             var reason_ok = not _breaks(c.reason)
             var status = List[Byte](String("HTTP/1.1 200 ").as_bytes())
             if reason_ok:
@@ -505,6 +524,8 @@ def _run(seed: Int, iterations: Int) raises -> Tally:
                     t.dropped_value += 1
                 if raw_kept and built_kept:
                     t.kept_cookie += 1
+                if built_lf55 and not _breaks(c.cookie_value):
+                    t.built_dropped += 1
                 if not reason_ok:
                     t.emptied_reason += 1
 
@@ -540,7 +561,8 @@ def test_random_bytes_never_put_a_line_break_in_a_head() raises:
     print(
         "header-bytes kept", t.kept_value, "dropped", t.dropped_value,
         "transcoded", t.transcoded, "with-a-lead", t.overlong_kept,
-        "cookies kept", t.kept_cookie, "reasons emptied", t.emptied_reason,
+        "cookies kept", t.kept_cookie, "built cookies dropped", t.built_dropped,
+        "reasons emptied", t.emptied_reason,
         "redirects", t.redirects,
     )
     # A run that dropped everything, or kept only ASCII, proved nothing.
@@ -549,6 +571,10 @@ def test_random_bytes_never_put_a_line_break_in_a_head() raises:
     assert_true(t.transcoded * 10 > ITERATIONS, "the transcoder must have work to do")
     assert_true(t.overlong_kept * 4 > ITERATIONS, "lead bytes must reach the transcoder")
     assert_true(t.kept_cookie * 4 > ITERATIONS, "cookies must be KEPT")
+    assert_true(
+        t.built_dropped * 50 > ITERATIONS,
+        "some built cookies must hold a `;` or a control byte G2 lets through",
+    )
     assert_true(t.emptied_reason * 20 > ITERATIONS, "some reason phrases must be emptied")
 
 

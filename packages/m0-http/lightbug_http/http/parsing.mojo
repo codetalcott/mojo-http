@@ -493,14 +493,17 @@ def http_parse_request_headers[
 
             # Empty lines before the request line are skipped (RFC 9112
             # §2.2), and each is a CRLF: a bare LF anywhere in a request
-            # head is refused (`parse_headers` says why).
+            # head is refused (`parse_headers` says why), and so is a bare
+            # CR, which §2.2 makes invalid. This skipped one and read the
+            # method from the byte after it, so `\rGET` was served whole
+            # and refused when a read had ended after the CR (SPEC B29).
             if byte.value() == BytesConstant.CR:
                 buf.increment()
                 var next = try_peek(buf)
                 if not next:
                     return -2
                 if next.value() != BytesConstant.LF:
-                    break
+                    return -1
                 buf.increment()
             elif byte.value() == BytesConstant.LF:
                 return -1

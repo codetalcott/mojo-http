@@ -27,7 +27,11 @@ from lightbug_http.c.fcntl import is_cloexec
 from lightbug_http.header import (
     Header, Headers, HeaderKey, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_TRANSFER_ENCODING,
 )
-from lightbug_http.http import HTTPResponse, enforce_bodiless_framing, is_bodiless_status
+from lightbug_http.http import (
+    HTTPResponse, enforce_bodiless_framing, is_bodiless_status, OK, BadRequest,
+    NotFound, RequestTimeout, PayloadTooLarge, URITooLong, HeadersTooLarge,
+    InternalError, NotImplemented,
+)
 from lightbug_http.io.bytes import Bytes
 
 
@@ -321,6 +325,61 @@ def test_a_response_carries_one_date_and_its_connection() raises:
         assert_equal(len(conn), 1, c)
         assert_equal(conn[0], "connection: close", c)
 
+
+
+def _says(r: HTTPResponse, code: Int, reason: String, body: String) raises:
+    assert_equal(r.status_code, code, reason)
+    assert_equal(r.status_text, reason)
+    assert_equal(r.headers.get(HeaderKey.CONTENT_TYPE).value(), "text/plain")
+    assert_equal(String(unsafe_from_utf8=Span(r.body_raw)), body)
+    assert_equal(
+        r.headers.get(HeaderKey.CONTENT_LENGTH).value(), String(body.byte_length())
+    )
+
+
+def test_the_server_s_own_answers_say_what_they_are() raises:
+    """The responses the loop sends itself (`common_response.mojo`): each
+    status with its RFC 9110 §15 reason phrase, a `text/plain` body that
+    says it, and a length that matches. `NotFound` and `OK` are the two an
+    application builds too; `NotFound`'s body is fixed (LF57)."""
+    _says(BadRequest(), 400, "Bad Request", "Bad Request")
+    _says(NotFound("/x"), 404, "Not Found", "Not Found")
+    _says(RequestTimeout(), 408, "Request Timeout", "Request Timeout")
+    _says(PayloadTooLarge(), 413, "Payload Too Large", "Payload Too Large")
+    _says(URITooLong(), 414, "URI Too Long", "URI Too Long")
+    _says(
+        HeadersTooLarge(),
+        431,
+        "Request Header Fields Too Large",
+        "Request Header Fields Too Large",
+    )
+    _says(InternalError(), 500, "Internal Server Error", "Failed to process request")
+    _says(NotImplemented(), 501, "Not Implemented", "Not Implemented")
+    var ok = OK("hi", "application/json")
+    assert_equal(ok.status_code, 200)
+    assert_equal(ok.headers.get(HeaderKey.CONTENT_TYPE).value(), "application/json")
+    assert_equal(String(unsafe_from_utf8=Span(ok.body_raw)), "hi")
+    assert_equal(
+        OK("x").headers.get(HeaderKey.CONTENT_TYPE).value(), "text/plain"
+    )
+    var wire = String(unsafe_from_utf8=Span(URITooLong().encode()))
+    assert_true(wire.startswith("HTTP/1.1 414 URI Too Long\r\n"), wire)
+
+
+def test_a_404_does_not_reflect_its_path() raises:
+    """`NotFound(path)` wrote the path into its body, `path /x not found`:
+    a request's own bytes, markup included, in the server's answer, sent
+    without `X-Content-Type-Options` for a browser to sniff (review record
+    LF57). Nothing read the reflected text, so the body is fixed; the
+    argument is still taken, so a caller's `NotFound(path)` builds."""
+    var probe = String("/<script>alert(1)</script>")
+    var r = NotFound(probe)
+    var body = String(unsafe_from_utf8=Span(r.body_raw))
+    assert_equal(body, "Not Found")
+    assert_equal(body, String(unsafe_from_utf8=Span(NotFound().body_raw)))
+    var wire = String(unsafe_from_utf8=Span(NotFound(probe).encode()))
+    assert_false("<script>" in wire, wire)
+    assert_false("alert" in wire, wire)
 
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

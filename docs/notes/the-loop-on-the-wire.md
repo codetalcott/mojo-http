@@ -230,6 +230,6 @@ what the server builds for itself; a line a WSGI/ASGI application returned
 IS the header, and `ResponseCookieJar.add_raw` transmits it unparsed —
 subject only to the CR/LF refusal above. Round-tripping it through
 `Cookie.from_set_header` + `build_header_value` silently dropped `expires`
-(the `Expiration` stub parses nothing), `SameSite` (lowercase-only match),
+(the `Expiration` stub, since removed, parsed nothing), `SameSite` (lowercase-only match),
 everything after the first `=` in a value, and any unmodelled attribute — on
 every Django session and CSRF cookie of every app.

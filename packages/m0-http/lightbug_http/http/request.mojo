@@ -145,14 +145,14 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
         The URI names the server the same way whatever the target's shape
         (SPEC A37): `uri.host` and `uri.port` are the address the server
-        listens on, split once by `split_server_address`, and `uri.full_uri`
-        is the request target as the application reads it -- origin-form,
-        an absolute-form target already reduced to its path (B16), whose
-        authority is the request's `Host` header. They used to depend on
-        the target: a path with no query or escape got the whole address in
-        `host` and no port, one with either got them split by a parse of
-        the address and the target together, and `full_uri` was the target
-        alone or the address prefixed to it (review record LF54).
+        listens on, split once by `split_server_address`, and
+        `uri.request_uri` is the request target as it arrived (SPEC A38) --
+        origin-form, an absolute-form target already reduced to its path
+        (B16) whose authority is the request's `Host` header, or `*`. They
+        used to depend on the target: a path with no query or escape got
+        the whole address in `host` and no port, one with either got them
+        split by a parse of the address and the target together (review
+        record LF54).
 
         Args:
             server_host: The host of the address the server listens on.
@@ -179,7 +179,13 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         # string needs no URI parsing at all — every derived field is the
         # path itself. This is the overwhelmingly common case for API
         # traffic; anything else falls back to the full parser.
-        var needs_full_parse = (
+        #
+        # The asterisk-form target of a server-wide OPTIONS (RFC 9112
+        # §3.2.4; the header parse admits `*` for OPTIONS alone) takes the
+        # same path, so the application reads `*`: the parser below, handed
+        # the address and `*`, answered `/`, and `OPTIONS *` reached the
+        # application as `OPTIONS /` (review record LF41).
+        var needs_full_parse = parsed.path != "*" and (
             parsed.path.byte_length() == 0
             or parsed.path.as_bytes()[0] != 0x2F  # '/'
             or ("%" in parsed.path)
@@ -189,31 +195,25 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         var parsed_uri: URI
         if not needs_full_parse:
             parsed_uri = URI(
-                _original_path=parsed.path,
                 scheme="http",
                 path=parsed.path,
                 query_string="",
                 queries=QueryMap(),
-                _hash="",
                 host=server_host,
                 port=server_port,
-                full_uri=parsed.path,
                 request_uri=parsed.path,
-                username="",
-                password="",
             )
         else:
-            # The target alone: a path (or `*`) has no authority for the
-            # parse to find, and the server's comes from the caller.
+            # The target alone: a path has no authority for the parse to
+            # find, and the server's comes from the caller (LF54).
             try:
                 parsed_uri = URI.parse(parsed.path)
             except uri_err:
                 raise RequestBuildError(URIParseError())
             parsed_uri.host = server_host
             parsed_uri.port = server_port
-            # The target as it arrived, which the parse gave as `/` for an
-            # asterisk-form `*`; the writers send it back (review record
-            # LF62).
+            # The target as it arrived, escapes and all, which the writers
+            # send back (review record LF62).
             parsed_uri.request_uri = parsed.path
 
         # Asked before the headers move into the request below.

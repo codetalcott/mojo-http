@@ -2,9 +2,9 @@
 the application saw, so a client can tell a request served from one refused.
 
 The answer is 200 and one JSON object of hex strings (bytes stay exact
-whatever they are): the method, the target, `request_uri`, the host, the
-protocol, every header line as received, the body's length and its first 512
-bytes. Every refusal is the loop's own, before this handler runs, so any
+whatever they are): the method, the target as the application routes on it
+(`request_uri`), the host, the protocol, every header line as received, the
+body's length and its first 512 bytes. Every refusal is the loop's own, before this handler runs, so any
 other status is a request the server did not serve.
 
 `poe smoke-differential` builds and serves it for
@@ -32,8 +32,6 @@ struct Echo(HTTPService):
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         var s = String('{"method":"')
         s += hexs(req.method.as_bytes())
-        s += '","target":"'
-        s += hexs(req.uri.full_uri.as_bytes())
         s += '","request_uri":"'
         s += hexs(req.uri.request_uri.as_bytes())
         s += '","host":"'

@@ -208,14 +208,13 @@ def test_repeated_connection_lines_are_read_as_one_list() raises:
 
 def test_the_uri_names_the_server_the_same_way_whatever_the_target() raises:
     """`uri.host` and `uri.port` are the address the server listens on, and
-    `uri.full_uri` the request target as the application reads it, for
+    `uri.request_uri` the request target as the application reads it, for
     every target shape and scheme case. They depended on the target: with
     the loop on `0.0.0.0:8973`, `GET /x` read host `0.0.0.0:8973` and no
-    port, `GET /x?q=1` host `0.0.0.0` and port 8973; `full_uri` was `/x`
-    for the first and `0.0.0.0:8973/x?q=1` for the second, and `GET
-    HTTP://h/p` differed from `GET http://h/p?q=1` the same way (review
-    record LF54). The authority an absolute-form target names is the
-    request's `Host` (B16), not its URI's.
+    port, `GET /x?q=1` host `0.0.0.0` and port 8973, and `GET HTTP://h/p`
+    differed from `GET http://h/p?q=1` the same way (review record LF54).
+    The authority an absolute-form target names is the request's `Host`
+    (B16), not its URI's.
 
     covers: A37
     """
@@ -226,7 +225,7 @@ def test_the_uri_names_the_server_the_same_way_whatever_the_target() raises:
         (String("http://localhost"), String("localhost"), -1),
         (String("127.0.0.1"), String("127.0.0.1"), -1),
     ]
-    # (request line, Host value, full_uri)
+    # (request line, Host value, request_uri)
     var targets = [
         (String("GET /x"), String("a"), String("/x")),
         (String("GET /x?q=1"), String("a"), String("/x?q=1")),
@@ -249,7 +248,7 @@ def test_the_uri_names_the_server_the_same_way_whatever_the_target() raises:
             else:
                 assert_true(Bool(req.uri.port), where)
                 assert_equal(Int(req.uri.port.value()), a[2], where)
-            assert_equal(req.uri.full_uri, t[2], where)
+            assert_equal(req.uri.request_uri, t[2], where)
             assert_equal(req.headers.get(HeaderKey.HOST).value(), t[1], where)
 
 
@@ -288,6 +287,28 @@ def test_a_request_is_written_with_its_target_as_received() raises:
         _request_line(request_from("GET http://h/p?q=1 HTTP/1.1\r\nHost: h\r\n\r\n")),
         "GET /p?q=1 HTTP/1.1",
     )
+def test_a_server_wide_options_reaches_the_application_as_an_asterisk() raises:
+    """`OPTIONS *` names the server, not its root (RFC 9112 §3.2.4), and
+    the application reads `*` as its path and its request target: both were
+    `/`, so an application could not tell it from `OPTIONS /` (review record
+    LF41). Both spellings of the server's address are held, and `OPTIONS /`
+    stays the root.
+
+    covers: B19
+    """
+    for addr in [String("http://localhost"), String("127.0.0.1:8973")]:
+        var req = request_from(
+            "OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n", server_addr=addr
+        )
+        assert_equal(req.method, "OPTIONS")
+        assert_equal(req.uri.path, "*", addr)
+        assert_equal(req.uri.request_uri, "*", addr)
+        assert_equal(req.uri.query_string, "", addr)
+        var root = request_from(
+            "OPTIONS / HTTP/1.1\r\nHost: a\r\n\r\n", server_addr=addr
+        )
+        assert_equal(root.uri.path, "/", addr)
+        assert_equal(root.uri.request_uri, "/", addr)
 
 
 def test_the_outgoing_constructor_still_fills_its_headers() raises:

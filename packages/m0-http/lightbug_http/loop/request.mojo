@@ -12,10 +12,13 @@ and discarded until the client stops (`_reject_and_linger`).
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import recv, shutdown, spare_capacity, ShutdownOption
 from lightbug_http.connection import ConnectionState
-from lightbug_http.header import (
-    HeaderKey, ParsedRequestHeaders, UnsupportedHTTPRequestError,
-    find_header_end, holds_bare_lf, parse_request_headers,
+from lightbug_http.framing import (
+    BODY_CHUNKED, BODY_NONE, FRAME_REFUSED, FRAME_REQUEST, REFUSED_BARE_LF,
+    REFUSED_BODY_TOO_LARGE, REFUSED_FRAMERS_DISAGREE, REFUSED_HEAD_TOO_LARGE,
+    REFUSED_MALFORMED, REFUSED_NOT_IMPLEMENTED, REFUSED_URI_TOO_LONG,
+    frame_request_head,
 )
+from lightbug_http.header import HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.http.common_response import (
     BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge,
@@ -439,75 +442,38 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         _close_slot(handler, backend, st, slot, fd_val)
         return
 
-    var search_start = st.provision_pool.provisions[slot].last_parse_len
-    if search_start > 3:
-        search_start -= 3
-
-    var header_end = find_header_end(
+    # The framing decision is `frame_request_head`'s alone: where the head
+    # ends, whether the parser agrees, how the body is framed, and where the
+    # request ends when the head says. This acts on it, and frames nothing
+    # itself (SPEC B29). A framed request's parsed head lands in the slot.
+    var framing = frame_request_head(
         Span(st.provision_pool.provisions[slot].recv_buffer),
-        search_start,
+        st.provision_pool.provisions[slot].last_parse_len,
+        st.config.max_total_header_size,
+        st.config.max_request_uri_length,
+        st.config.max_request_body_size,
+        st.provision_pool.provisions[slot].parsed_headers,
     )
 
-    if header_end:
-        var header_end_offset = header_end.value()
-
-        if header_end_offset > st.config.max_total_header_size:
-            _send_error_to_fd(fd_val, HeadersTooLarge())
-            _close_slot(handler, backend, st, slot, fd_val)
-            return
-
-        var parsed: ParsedRequestHeaders
-        try:
-            parsed = parse_request_headers(
-                Span(st.provision_pool.provisions[slot].recv_buffer)[:header_end_offset],
-            )
-        except parse_err:
-            # A well-formed request for what this server does not
-            # implement is 501 (SPEC B18), anything malformed 400; both
-            # close (`_send_error_to_fd` says so on the wire).
-            if parse_err.isa[UnsupportedHTTPRequestError]():
-                _send_error_to_fd(fd_val, NotImplemented())
-            else:
-                _send_error_to_fd(fd_val, BadRequest())
-            _close_slot(handler, backend, st, slot, fd_val)
-            return
-
-        # Two framers read this head: `find_header_end` above, which
-        # `request_end` and the body's start are taken from, and the
-        # parser, which decided where the fields stop. They must name the
-        # same byte. When they did not -- a parser that ended the head at a
-        # bare-LF empty line, inside what this loop framed as one head --
-        # the request pipelined behind it vanished, and a `Content-Length`
-        # past the bare LF was never read, its body answered as the next
-        # request (SPEC B12). The parser now refuses a bare LF, so the two
-        # agree; this refuses any head they would read differently, so a
-        # future parser change cannot reopen the gap silently. Belt and
-        # braces, deliberately: no gate fails with only this removed
-        # (sabotage-verified), and with only the parser's rule removed the
-        # wire probe still passes because of it.
-        if parsed.bytes_consumed != header_end_offset:
-            _send_error_to_fd(fd_val, BadRequest())
-            _close_slot(handler, backend, st, slot, fd_val)
-            return
-
-        if parsed.path.byte_length() > st.config.max_request_uri_length:
-            _send_error_to_fd(fd_val, URITooLong())
-            _close_slot(handler, backend, st, slot, fd_val)
-            return
-
-        var content_length = parsed.content_length()
-        var is_chunked = parsed.is_chunked_body()
-
-        if not is_chunked and content_length > st.config.max_request_body_size:
+    if framing.outcome == FRAME_REFUSED:
+        # A body over the cap is answered while it may still be arriving
+        # (`_refuse_too_large`); every other refusal closes at once, and
+        # says so on the wire (`_send_error_to_fd`).
+        if framing.rule == REFUSED_BODY_TOO_LARGE:
             _refuse_too_large(handler, backend, st, slot, fd_val)
-            return
+        else:
+            _send_error_to_fd(fd_val, _refusal(framing.rule))
+            _close_slot(handler, backend, st, slot, fd_val)
+        return
 
-
+    if framing.outcome == FRAME_REQUEST:
+        var header_end_offset = framing.head_end
+        var content_length = framing.content_length
+        var is_chunked = framing.body == BODY_CHUNKED
 
         var body_bytes_in_buffer = len(st.provision_pool.provisions[slot].recv_buffer) - header_end_offset
-        st.provision_pool.provisions[slot].parsed_headers = parsed^
 
-        if content_length > 0 or is_chunked:
+        if framing.body != BODY_NONE:
             # RFC 9110 §10.1.1, and two rules an exact `== "100-continue"`
             # got wrong. The expectation-name is CASE-INSENSITIVE, so a
             # client sending `100-Continue` -- the capitalisation most
@@ -540,9 +506,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             # Content-Length, only at completion for chunked (0 until then).
             # Bytes past it are the next pipelined request; see
             # `ConnectionProvision.request_end`.
-            st.provision_pool.provisions[slot].request_end = (
-                0 if is_chunked else header_end_offset + content_length
-            )
+            st.provision_pool.provisions[slot].request_end = framing.request_end
             st.provision_pool.provisions[slot].state = ConnectionState.reading_body()
 
             # Phase 1b: decode whatever of the body arrived with the headers,
@@ -631,23 +595,9 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     UInt(fd_val) + TIMER_BODY, st.config.body_read_timeout * 1000
                 )
         else:
-            st.provision_pool.provisions[slot].request_end = header_end_offset
+            st.provision_pool.provisions[slot].request_end = framing.request_end
             st.provision_pool.provisions[slot].state = ConnectionState.processing()
             _process_request(handler, backend, st, slot, fd_val)
-
-    elif holds_bare_lf(
-        Span(st.provision_pool.provisions[slot].recv_buffer),
-        st.provision_pool.provisions[slot].last_parse_len,
-    ):
-        # A head still arriving that holds a bare LF can only be refused
-        # (SPEC B12), so it is refused now (SPEC B23): one of bare LFs only
-        # holds no CRLFCRLF for `find_header_end` to frame, the parser
-        # never ran, and the slot waited for its peer's EOF or the header
-        # timeout's 408. Only the bytes since the last scan are asked
-        # (`last_parse_len`), so a head arriving in pieces is scanned once.
-        _send_error_to_fd(fd_val, BadRequest())
-        _close_slot(handler, backend, st, slot, fd_val)
-        return
 
     # Headers that can never arrive: the peer half-closed while the request
     # was still incomplete, so waiting for the rest only holds the slot
@@ -926,6 +876,31 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
         handler.after_response(request_method, request_path, response)
 
     _finish_response(handler, backend, st, slot, fd_val, response^)
+
+
+def _refusal(rule: Int) -> HTTPResponse:
+    """The answer to a head `frame_request_head` refused, by its rule.
+
+    Every rule it refuses by is named here but the body's, which is
+    answered while the body may still be arriving (`_refuse_too_large`).
+    A rule this does not know is a 500 and a line on stdout, never a
+    silent 400: a refusal added to the framer is answered as it means only
+    once it is added here too.
+    """
+    if (
+        rule == REFUSED_BARE_LF
+        or rule == REFUSED_MALFORMED
+        or rule == REFUSED_FRAMERS_DISAGREE
+    ):
+        return BadRequest()
+    if rule == REFUSED_HEAD_TOO_LARGE:
+        return HeadersTooLarge()
+    if rule == REFUSED_URI_TOO_LONG:
+        return URITooLong()
+    if rule == REFUSED_NOT_IMPLEMENTED:
+        return NotImplemented()
+    print("event loop: a request head refused by a rule with no answer:", rule, flush=True)
+    return InternalError()
 
 
 def _refuse_too_large[T: HTTPService, B: EventLoopBackend](

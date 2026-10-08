@@ -14,7 +14,9 @@ dual-stack listener is reported as IPv4 (`127.0.0.1`, not
 address an application sees.
 
 Each test says which rule it holds; `smoke-ipv6` holds the same rules on
-the wire, through m0serve and the Mojo host.
+the wire, through m0serve and the Mojo host. The listen address's rules
+for either family live here too (review records LF33, LF45-LF47): how it
+is parsed, and the banner that names it once bound.
 """
 
 from std.ffi import ErrNo, c_int, external_call, get_errno
@@ -39,6 +41,8 @@ from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.socket import (
     IPPROTO_IPV6,
     IPV6_V6ONLY,
+    SOL_SOCKET,
+    SocketOption,
     SocketType,
     accept_with_peer,
     bind,
@@ -221,7 +225,86 @@ def test_a_v4_mapped_peer_reads_as_ipv4() raises:
     assert_equal(got[1], 0)
 
 
+def test_the_inet_calls_refuse_a_family_they_cannot_read() raises:
+    """`inet_ntop` and `inet_pton` raise what the call reports for a family
+    other than IPv4 and IPv6: EAFNOSUPPORT, read after the call, as its own
+    error for `inet_ntop` and as the code in `inet_pton`'s. And the longest
+    IPv6 text fits `inet_ntop`'s buffer (`INET6_ADDRSTRLEN`)."""
+    var loopback = inet_pton[AddressFamily.AF_INET6](String("::1"))
+    with assert_raises(contains="(EAFNOSUPPORT)"):
+        _ = inet_ntop[AddressFamily.AF_UNSPEC](loopback)
+    with assert_raises(
+        contains=String("Error code: ", ErrNo.EAFNOSUPPORT)
+    ):
+        _ = inet_pton[AddressFamily.AF_UNSPEC](String("127.0.0.1"))
+    with assert_raises(contains="not a valid address"):
+        _ = inet_pton[AddressFamily.AF_INET6](String("::1::2"))
+    var longest = String("ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff")
+    assert_equal(
+        inet_ntop[AddressFamily.AF_INET6](inet_pton[AddressFamily.AF_INET6](longest)),
+        longest,
+    )
+    assert_equal(
+        inet_ntop[AddressFamily.AF_INET6](
+            inet_pton[AddressFamily.AF_INET6](String("::ffff:255.255.255.255"))
+        ),
+        "::ffff:255.255.255.255",
+    )
+
+
 # --- parsing an address ---------------------------------------------------------
+
+
+def test_each_malformed_address_is_refused_by_its_own_rule() raises:
+    """Every refusal `parse_address` makes, each in its own rule's words,
+    and through `ListenConfig.listen` as one that names the listen address.
+
+    covers: A33
+    """
+    var cases: List[Tuple[String, String]] = [
+        ("", "received empty address string"),
+        ("[::1", "missing ']'"),
+        ("[::1]", "missing port in address"),
+        ("[::1]80", "missing port in address"),
+        ("[::1]:8]0", "unexpectedly contained brackets"),
+        ("[::1]:[80", "unexpectedly contained brackets"),
+        ("127.0.0.1:", "port string is empty"),
+        ("127.0.0.1:http", "invalid integer value"),
+        ("127.0.0.1:65536", "out of range"),
+        ("127.0.0.1", "missing port separator"),
+        ("::1:80", "too many colons"),
+    ]
+    for refusal in cases:
+        with assert_raises(contains=refusal[1]):
+            _ = parse_address[NetworkType.tcp](StringSpan(refusal[0]))
+        with assert_raises(contains="Failed to parse listen address"):
+            var ln = ListenConfig(max_bind_retries=1, quiet=True).listen(refusal[0])
+            _ = ln^
+
+
+def test_a_host_that_is_not_an_address_is_refused_at_bind() raises:
+    """The parser leaves the host to `inet_pton`, at bind: an empty host, a
+    name other than `localhost`, a stray bracket, and an address of the
+    other family than the network's, are each refused at startup as not a
+    valid address, never listened on.
+
+    An IPv6 zone (`fe80::1%lo0`) is not among them: the parser refuses
+    it before either libc sees it (review record LF48).
+    """
+    var refused: List[String] = [
+        ":0", "[]:0", "LOCALHOST:0", "example.com:0", "[[::1]:0",
+        "127.0.0.1]:0", "1.2.3:0",
+    ]
+    for address in refused:
+        with assert_raises(contains="not a valid address"):
+            var ln = ListenConfig(max_bind_retries=1, quiet=True).listen(address)
+            _ = ln^
+    with assert_raises(contains="not a valid address"):
+        var v4 = ListenConfig(max_bind_retries=1, quiet=True).listen[NetworkType.tcp4]("[::1]:0")
+        _ = v4^
+    with assert_raises(contains="not a valid address"):
+        var v6 = ListenConfig(max_bind_retries=1, quiet=True).listen[NetworkType.tcp6]("127.0.0.1:0")
+        _ = v6^
 
 
 def test_bracketed_addresses_parse() raises:
@@ -265,6 +348,91 @@ def test_a_colon_inside_a_bracketed_address_port_is_refused() raises:
     var hp = parse_address[NetworkType.tcp](StringSpan("[::1]:80"))
     assert_equal(hp.host, "::1")
     assert_equal(Int(hp.port), 80)
+
+
+def test_an_address_without_a_port_is_refused() raises:
+    """`localhost` alone is refused as missing its port, as `127.0.0.1`
+    alone always was, in every network (review record LF45).
+
+    It was read as the loopback at port 0, so `listen_and_serve("localhost")`
+    listened on a port the kernel chose, which no client was told of. A
+    port named after it is kept: `localhost:80` is the loopback's port 80,
+    IPv6's under `tcp6`.
+
+    covers: A33
+    """
+    with assert_raises(contains="missing port separator"):
+        _ = parse_address[NetworkType.tcp](StringSpan("localhost"))
+    with assert_raises(contains="missing port separator"):
+        _ = parse_address[NetworkType.tcp4](StringSpan("localhost"))
+    with assert_raises(contains="missing port separator"):
+        _ = parse_address[NetworkType.tcp6](StringSpan("localhost"))
+    with assert_raises(contains="missing port separator"):
+        _ = parse_address[NetworkType.tcp](StringSpan("127.0.0.1"))
+    with assert_raises(contains="Failed to parse listen address"):
+        var ln = ListenConfig(max_bind_retries=1, quiet=True).listen("localhost")
+        _ = ln^
+    var hp = parse_address[NetworkType.tcp](StringSpan("localhost:80"))
+    assert_equal(hp.host, "127.0.0.1")
+    assert_equal(Int(hp.port), 80)
+    hp = parse_address[NetworkType.tcp6](StringSpan("localhost:80"))
+    assert_equal(hp.host, "::1")
+    assert_equal(Int(hp.port), 80)
+
+
+def test_a_port_is_decimal_digits() raises:
+    """A listen address's port is ASCII digits and nothing else (review
+    record LF46).
+
+    It was read by `Int()`, which takes what Python's `int()` takes: a sign,
+    whitespace around the number and underscores between its digits. So
+    `127.0.0.1:-0` listened on a port the kernel chose, and `:+80`, `: 80`,
+    `:8_0` and `:80` with a newline after it on port 80. A port is now one
+    or more ASCII digits (RFC 3986's `port = *DIGIT`, the empty one refused
+    as before) naming a number from 0 to 65535: `080` is port 80.
+
+    covers: A34
+    """
+    var refused: List[String] = [
+        "+80", "-0", "-1", " 80", "80 ", "\t80", "80\n", "8_0", "0x50", "8 0",
+        "٨٠",
+    ]
+    for port in refused:
+        with assert_raises(contains="invalid integer value"):
+            _ = parse_address[NetworkType.tcp](StringSpan("127.0.0.1:" + port))
+        with assert_raises(contains="invalid integer value"):
+            _ = parse_address[NetworkType.tcp](StringSpan("[::1]:" + port))
+    with assert_raises(contains="Port number out of range"):
+        _ = parse_address[NetworkType.tcp](StringSpan("127.0.0.1:65536"))
+    with assert_raises(contains="port string is empty"):
+        _ = parse_address[NetworkType.tcp](StringSpan("127.0.0.1:"))
+    assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("127.0.0.1:0")).port), 0)
+    assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("127.0.0.1:080")).port), 80)
+    assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("[::1]:65535")).port), 65535)
+
+
+def test_an_ipv6_zone_is_refused() raises:
+    """A listen host carrying an IPv6 zone (`fe80::1%lo0`) is refused, the
+    same on every platform (review record LF48).
+
+    macOS's `inet_pton` reads a zone, writing the interface's index into
+    the address (KAME's embedded form), so `[fe80::1%lo0]:8080` listened
+    there on lo0's link-local address and was reported without its zone;
+    glibc's refuses one, so Linux refused it at bind as not an address. A
+    listener carries no zone, so the parser refuses it first, and says so
+    through `ListenConfig.listen`.
+    """
+    var zoned: List[String] = [
+        "[fe80::1%lo0]:0", "[::1%lo0]:0", "[fe80::1%]:0", "[fe80::1%1]:0",
+    ]
+    for address in zoned:
+        with assert_raises(contains="IPv6 zone"):
+            _ = parse_address[NetworkType.tcp](StringSpan(address))
+        with assert_raises(contains="IPv6 zone"):
+            var ln = ListenConfig(max_bind_retries=1, quiet=True).listen(address)
+            _ = ln^
+    with assert_raises(contains="IPv6 zone"):
+        _ = parse_address[NetworkType.tcp6](StringSpan("[fe80::1%en0]:8080"))
 
 
 def test_a_uri_behind_an_ipv6_server_address_parses() raises:
@@ -380,6 +548,121 @@ def test_dual_stack_is_set_not_inherited() raises:
         "127.0.0.1 reached a tcp6 [::] listener",
     )
     _ = v6^
+
+
+def _socket_option(fd: Int, name: c_int) raises -> Int:
+    """An integer `SOL_SOCKET` option of `fd`, as the kernel holds it."""
+    var value = c_int(-1)
+    var size = c_int(4)
+    var rc = external_call["getsockopt", c_int](
+        c_int(fd), c_int(SOL_SOCKET), name, Pointer(to=value), Pointer(to=size)
+    )
+    if rc != 0:
+        raise Error("getsockopt failed, errno ", get_errno())
+    return Int(value)
+
+
+def test_a_listener_shares_its_port_only_when_asked() raises:
+    """A listener sets `SO_REUSEADDR`, so a restart binds past the previous
+    server's TIME_WAIT, and `SO_REUSEPORT` only under `reuse_port`, so a
+    second server on its port fails to bind rather than share it.
+
+    covers: D6
+    """
+    var plain = ListenConfig(max_bind_retries=1, quiet=True).listen("127.0.0.1:0")
+    var fd = Int(plain.socket.fd.value)
+    assert_true(_socket_option(fd, SocketOption.SO_REUSEADDR.value) != 0, "SO_REUSEADDR is off")
+    assert_equal(_socket_option(fd, SocketOption.SO_REUSEPORT.value), 0, "SO_REUSEPORT is on unasked")
+    var taken = "127.0.0.1:" + String(plain.socket.local_address.port)
+    with assert_raises(contains="bind: "):
+        var second = ListenConfig(max_bind_retries=1, quiet=True).listen(taken)
+        _ = second^
+    _ = plain^
+    var shared = ListenConfig(max_bind_retries=1, reuse_port=True, quiet=True).listen("127.0.0.1:0")
+    assert_true(
+        _socket_option(Int(shared.socket.fd.value), SocketOption.SO_REUSEPORT.value) != 0,
+        "reuse_port did not set SO_REUSEPORT",
+    )
+    _ = shared^
+
+
+comptime _OpaqueMut = Pointer[NoneType, MutUntrackedOrigin]
+"""`read(2)`'s buffer type as every declaration in the m0-http test
+program spells it (`src/threads.mojo`): `test-http` builds all the test
+files as one program, where a second `external_call["read"]` with another
+signature is a conflicting declaration."""
+
+
+def _banner_of(address: String) raises -> Tuple[String, Int]:
+    """What `ListenConfig.listen(address)` prints with its banner on, read
+    from a pipe standing in for stdout during the call, and the port the
+    listener is bound to."""
+    var fds = List[c_int](length=2, fill=-1)
+    if external_call["pipe", c_int](fds.unsafe_ptr()) != 0:
+        raise Error("pipe() failed, errno ", get_errno())
+    var r = Int(fds[0])
+    var w = Int(fds[1])
+    var port: Int
+    var text: String
+    # The pipe's ends are closed on every path, a failed `dup`, a failed
+    # `dup2` and a `listen` that raises among them, and stdout is put back
+    # whenever it was moved.
+    try:
+        var saved = Int(external_call["dup", c_int, c_int](c_int(1)))
+        if saved < 0:
+            raise Error("dup(1) failed, errno ", get_errno())
+        try:
+            if Int(external_call["dup2", c_int, c_int, c_int](c_int(w), c_int(1))) != 1:
+                raise Error("dup2() onto stdout failed, errno ", get_errno())
+            var ln = ListenConfig(max_bind_retries=1).listen(address)
+            port = Int(ln.socket.local_address.port)
+            _ = ln^
+        finally:
+            _ = external_call["dup2", c_int, c_int, c_int](c_int(saved), c_int(1))
+            close_fd(saved)
+        close_fd(w)
+        w = -1
+        var buf = List[UInt8](length=4096, fill=0)
+        var n = external_call["read", Int, Int, _OpaqueMut, Int](
+            r,
+            buf.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
+                MutUntrackedOrigin
+            ](),
+            4096,
+        )
+        if n < 0:
+            raise Error("read() failed, errno ", get_errno())
+        text = String(unsafe_from_utf8=Span(buf)[:n])
+    finally:
+        if w >= 0:
+            close_fd(w)
+        close_fd(r)
+    return (text^, port)
+
+
+def test_the_banner_names_the_port_bound() raises:
+    """The listening banner names the port the listener is bound to, so a
+    server asked for port 0 says which one the kernel chose (review record
+    LF47).
+
+    It named the port it was asked for: `Lightbug is listening on
+    http://127.0.0.1:0`, a port no client can connect to. Reached by an
+    application that passes `Server.listen_and_serve` or
+    `ListenConfig.listen` a port of 0 itself; m0serve and the Mojo host
+    refuse a port of 0 (LF56).
+
+    covers: F25
+    """
+    for address in [String("127.0.0.1:0"), String("[::1]:0")]:
+        var got = _banner_of(address)
+        var text = got[0]
+        var port = got[1]
+        assert_true(port > 0, "the listener is not bound")
+        var host = String("[::1]") if address.startswith("[") else String("127.0.0.1")
+        assert_true(
+            text.find("http://" + host + ":" + String(port) + "\n") != -1,
+            String("the banner does not name the port bound (", port, "): ", repr(text)),
+        )
 
 
 def main() raises:

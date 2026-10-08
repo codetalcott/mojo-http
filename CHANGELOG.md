@@ -10,6 +10,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A request head is answered the same however its bytes arrive** (SPEC
+  B29, fork review LF66; A3's LF59 is its duplicate). A request sent after
+  two empty lines was refused with 400 when it
+  arrived in one read and served when a read ended between the empty
+  lines: where the server looked for the end of the head depended on how
+  much the read before had brought. It is refused either way now. Where a
+  head ends and how its body is framed is decided in one place, which the
+  request fuzzer that runs on every change holds to this, and to a chunked
+  body read a piece at a time (SPEC B30).
+
+- **A carriage return before a request's first line is refused** (SPEC
+  B29, fork review LF67). A request whose first line came after a lone
+  carriage return (a CR with no line feed behind it) was served when it
+  arrived in one piece, its method read from the byte after the CR, and
+  refused when it arrived in two. RFC 9112 makes a lone CR invalid; it is
+  answered 400 either way now. Empty lines before a request, each a CR and
+  a line feed, are still skipped.
+
 - **A client that half-closes is answered with `Connection: close`, and
   its connection ends behind the answer** (SPEC A27). A client that shuts
   down its write side after its request has sent its last one, but when
@@ -89,6 +107,63 @@ in a minor release: `m0serve`'s flags and environment variables, the
   is an `http` or `https` URI, or is `*` on an `OPTIONS` request; a
   non-ASCII character must be percent-encoded, as every browser does, and
   the escape still reaches the application undecoded.
+
+- **A server-wide `OPTIONS *` reaches the application as `*`** (SPEC
+  B19). It arrived as `OPTIONS /`, so an application could not tell a
+  question about the whole server from one about its root page. A Mojo
+  application reads `*` as `req.uri.path`; a WSGI application reads it as
+  `PATH_INFO` and an ASGI one as `path` and `raw_path`, as gunicorn and
+  uvicorn hand it on. Under m0serve the root mount answers it; with no
+  root mount it is answered 404, as any path no mount claims. The view
+  table (`Views`) reads `*` as a path of one segment: a table with a
+  one-segment parameter route such as `/:slug` answers `OPTIONS *` as that
+  route's preflight, 204 with its `Allow`, and a route registered for
+  `OPTIONS` there runs with `*` as its parameter; a table with no such
+  route answers 404.
+
+- **`URI.parse` reads a query that follows the host directly** (SPEC A35).
+  Exposed: an m0 application whose tests build a request with
+  `URI.parse("http://127.0.0.1?x=1")`. The host was `127.0.0.1?x=1` and
+  the request carried no query; with a port, `http://127.0.0.1:80?x=1`,
+  the query was dropped. The path is `/` and the query `x=1`, as for
+  `http://127.0.0.1/?x=1`. A `#` right after the host ends it too:
+  `http://127.0.0.1#top` is host `127.0.0.1` and path `/`, where the host
+  was `127.0.0.1#top`. A request from the wire was never affected.
+
+- **`URI.parse` refuses a port that is not one** (SPEC A36). Exposed: an
+  m0 application that parses a URL with `URI.parse`, its tests' request
+  builders among them. `:99999` was read as port 34463, `:65536` as port
+  0 and `:8x` as port 8; each now raises. An empty port
+  (`http://127.0.0.1:/x`), which raised, is read as no port, the scheme's
+  default, as RFC 3986 §3.2.3 allows.
+
+- **A cookie a Mojo view builds can no longer add attributes of its own**
+  (SPEC G2). Exposed: an m0 application that builds a `Cookie` from
+  request data and sets it with `ResponseCookieJar.set_cookie`. Each field
+  was written as given, so `Cookie("theme", "dark; Domain=evil.test")`
+  went out as `theme=dark; Domain=evil.test`, a cookie for another site.
+  A built cookie whose name is not a token (`a b`, `c=d`, an empty name),
+  or whose value, `Domain` or `Path` holds a `;` or a control byte, is now
+  dropped from the response, silently, as a header holding a line break
+  is: nothing is logged. Every other value is written as before, a space,
+  a comma, quotes, a backslash or a byte above 0x7F included, so a base64
+  or JSON value goes out unchanged. A `Set-Cookie` line an application
+  hands `add_raw`, which is how every WSGI and ASGI application's cookies
+  arrive, is still sent as given.
+
+- **A built cookie with no `Path` and one with `Path=/` are two cookies.**
+  Exposed: an m0 application that sets the same cookie name twice in one
+  response through `ResponseCookieJar.set_cookie`, once without a `Path`
+  and once with `Path=/`. The jar treated a missing `Path` as `/` and kept
+  only the second. A browser gives a cookie with no `Path` the request's
+  directory (RFC 6265 §5.1.4), so it stores both. Both are now sent. An
+  empty `Path`, or one not starting with `/`, means the same as none.
+
+- **`NotFound(path)` no longer writes the path into its body.** Exposed:
+  an m0 application that answers with `lightbug_http`'s `NotFound`, as the
+  WebSocket examples do. The body was `path <path> not found`, the
+  request's own bytes, markup included, in the server's answer; it is now
+  `Not Found`. The argument is still accepted, and may be left out.
 
 - **An empty `Host` is accepted when the target names no host** (SPEC
   B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
@@ -205,6 +280,60 @@ in a minor release: `m0serve`'s flags and environment variables, the
   kernel chose, and `[::1]:8:80` on port 80. It is now refused at startup
   as too many colons, as Go's `net.SplitHostPort` refuses it.
 
+- **A listen address of `localhost` with no port is refused** (fork review
+  LF45, SPEC A33). Exposed: a Mojo application that passes
+  `Server.listen_and_serve` (or `ListenConfig.listen`) the bare word
+  `localhost`. It was read as the loopback at port 0, so the server
+  listened on a port the kernel chose and named it to no one. It is now
+  refused at startup as missing its port, as `127.0.0.1` alone always
+  was; `localhost:8080` is unchanged. m0serve and the Mojo host always
+  pass a port.
+
+- **A listen address's port must be digits** (fork review LF46, SPEC
+  A34). Exposed: a Mojo application that passes `Server.listen_and_serve`
+  (or `ListenConfig.listen`) an address whose port text is not plain
+  digits. The port was read the way `Int()` reads a number, taking a sign,
+  whitespace and underscores, so `127.0.0.1:-0` listened on a port the
+  kernel chose and `127.0.0.1:+80`, `127.0.0.1: 80` or `127.0.0.1:8_0` on
+  port 80. Such a port is now refused at startup. m0serve and the Mojo
+  host check `--port` themselves and pass it on as digits.
+
+- **The "listening on" line names the port the server is bound to**
+  (fork review LF47, SPEC F25). Exposed: a Mojo application that passes
+  `Server.listen_and_serve` (or `ListenConfig.listen`) a port of 0, such as
+  an application not on the Mojo host, which takes a port the kernel
+  chooses. The line read `Lightbug is listening on http://127.0.0.1:0`, a
+  port nothing can connect to; it now names the port the kernel chose.
+  m0serve and the Mojo host refuse a port of 0 (LF56, below) and never
+  reach it.
+
+- **A listen address with an IPv6 zone is refused on every platform, and
+  a refused listen address says why** (fork review LF48, SPEC E31, M5).
+  Exposed: m0serve or a Mojo host given `--host fe80::1%en0`, and a Mojo
+  application passing such an address to `Server.listen_and_serve`. On
+  macOS, whose libc reads the zone into the address, it listened on that
+  interface's link-local address and was reported without its zone; on
+  Linux it was refused as not an address. A listen host may not contain
+  `%` now, on either. m0serve and the host refuse such an address at
+  startup with exit 78, before anything is bound, as the new `address`
+  check that `--doctor` reports too: the server used to fail at the bind
+  with exit 1 while the doctor said 0. Every refused listen address now
+  names the rule it broke: the error read "Failed to parse listen address"
+  and stopped there, and now goes on with the reason ("a listen host may
+  not contain '%'", "missing port separator", "too many colons").
+  `AddressParseError` carries that reason (`AddressParseError(reason)`)
+  and is no longer a `CustomError` or `ImplicitlyCopyable`.
+
+- **An `M0_*` number too large to hold is ignored, not wrapped** (fork
+  review LF49, SPEC F19). Exposed: m0serve and Mojo host applications
+  started with a numeric `M0_*` variable whose digits pass 2^63, such as
+  `M0_PORT=18446744073709551696`. The digits were added up with no
+  overflow check, so that value served on port 80, and
+  `M0_WORKERS=18446744073709551618` forked two workers. Such a value is
+  now read as unreadable, as `M0_PORT=80eighty` always was: the default
+  is used, and m0serve's startup says so, naming the largest number it
+  reads.
+
 - **`Socket.receive` and `TCPConnection.read` into a full buffer read what
   is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
   that reads a socket through either, into a `Bytes` with no room past its
@@ -246,25 +375,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   ASCII, and that request is refused with 400 like any other whose last
   coding is not `chunked`.
 
-- **A request opening with two empty lines gets one answer however it
-  arrives** (fork review LF66; LF59 is its duplicate). Exposed: m0serve and
-  every Mojo application. Such a request is refused with 400 when it
-  arrives in one piece, and was served when the first piece the server
-  read held only the first empty line: the scan for the end of the headers
-  resumed past the second. It is refused either way now. One empty line
-  before a request is still skipped, as RFC 9112 asks.
-
-- **`req.uri.host`, `req.uri.port` and `req.uri.full_uri` no longer depend
-  on the request's target** (fork review LF54, SPEC A37). Exposed: a Mojo
-  application that reads them. With the server on `0.0.0.0:8973`, `GET /x`
-  read host `0.0.0.0:8973` and no port while `GET /x?q=1` read host
-  `0.0.0.0` and port 8973, and `full_uri` was `/x` for one and
-  `0.0.0.0:8973/x?q=1` for the other. Every request now reads the
-  server's host and port, and `full_uri` is the target as the application
-  sees it (`/x?q=1`). The host a client asked for is the `Host` header,
-  which for `GET http://h/p` is `h`. `HTTPRequest.from_parsed` takes the
-  server's host and port, split once by `split_server_address`, where it
-  took the whole address.
+- **`req.uri.host` and `req.uri.port` no longer depend on the request's
+  target** (fork review LF54, SPEC A37). Exposed: a Mojo application that
+  reads them. With the server on `0.0.0.0:8973`, `GET /x` read host
+  `0.0.0.0:8973` and no port while `GET /x?q=1` read host `0.0.0.0` and
+  port 8973. Every request now reads the server's host and port. The host
+  a client asked for is the `Host` header, which for `GET http://h/p` is
+  `h`. `HTTPRequest.from_parsed` takes the server's host and port, split
+  once by `split_server_address`, where it took the whole address.
 
 - **A chunked request body whose chunk header holds something other than
   the size and an extension is refused** (fork review LF60, SPEC B28).
@@ -297,6 +415,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   arrived or as the URL spelled it.
 
 ### Changed
+
+- **A port outside 1-65535 is refused with exit 78, from a flag or the
+  environment alike** (fork review LF56, SPEC E30, E31, M2). Affects
+  m0serve and Mojo host applications given `--port 0`, `M0_PORT=0`, or a
+  port past 65535. `M0_PORT=0` served on a port the kernel chose, which
+  m0serve's startup line named as `:0`, while `--port 0` was a usage error
+  (exit 2). Both are now read and then refused at startup with exit 78,
+  before anything is bound, as a count the server will not serve already
+  was: `M0_PORT must be between 1 and 65535, got 0` from m0serve and
+  `M0_PORT must be 1-65535, got 0` from the host, the fix naming `--port`
+  and `M0_PORT`. `--doctor` reports it as the `port` check, now the first
+  of each list. A script that read exit 2 for `--port 0` reads 78 now.
 
 - **The fork's descriptor helpers live in the module that owns them**
   (fork review LF28). Nothing served changes. An application built with
@@ -413,6 +543,61 @@ in a minor release: `m0serve`'s flags and environment variables, the
   could not run. Nothing served changes. A connection that closes with
   part of a response still unsent now gives that buffer back at once,
   rather than when its slot next answers someone.
+
+- **The fork's network and address code that nothing calls** (fork review
+  LF44, LF45, LF48). Nothing served changes. The `m0` wheel ships the
+  fork's source, so an application built with `m0` that named one of these
+  needs its own copy: `NetworkType`'s `udp`, `ip`, `ip4`, `ip6`, `unix`
+  and `empty`, `is_ip_protocol` and `is_ipv4`, and
+  `ParseIPProtocolPortError`, which only an `ip` network raised;
+  `lightbug_http.address.DEFAULT_IP_PORT`; `validate_no_brackets`'
+  `end_idx` parameter, never passed; `TCPAddr`'s zone (the field and its
+  constructor), `address_family`, `is_v4`, `is_v6`, `is_unix`, `==`,
+  `__str__`, `__repr__` and `write_to`, with the `Addr` requirements
+  behind them; `binary_port_to_int` and `ntohs`; `Socket`'s
+  `remote_address`, with the `remote_address` parameter of both
+  constructors that remain, its constructor without a family,
+  `get_peer_name`, `__enter__`, `__str__`, `__repr__` and `write_to`, and
+  the `getpeername` binding; `NoTLSListener`'s constructor that made its
+  own socket, `shutdown`, `teardown` and `addr`; `TCPConnection`'s
+  `shutdown`, `teardown`, `local_addr` and `remote_addr`;
+  `ConnectionState.closed` and `ConnectionState.CLOSED`;
+  `AddressParseError`'s `CustomError` and `ImplicitlyCopyable` conformances
+  and its empty constructor (it now takes the refusal's text,
+  `AddressParseError(reason)`, and moves);
+  `ListenerError`'s `Error` arm and `SocketNameError`'s `InetNtopError`
+  arm, neither ever raised; the `__getitem__` and `__str__` of the
+  address, listener, socket and `inet_*` error variants, and the `isa` of
+  `ParseError`, `ListenerError`, `SocketNameError`, `InetNtopError` and
+  `InetPtonError`;
+  `SocketAddress.as_sockaddr_in` and `sockaddr`'s constructor;
+  `AddressFamily.is_inet`, `AddressLength.INET_ADDRSTRLEN` and
+  `ShutdownOption.SHUT_RD`; and the `write_to` and `__str__` of
+  `AddressFamily`, `AddressLength`, `ShutdownOption`, `SocketOption` and
+  `SocketType`, with the `==` of the last four.
+- **The fork's unused URI, cookie, response and byte helpers** (fork
+  review LF52). Nothing served changes, and no application in the tree,
+  the `m0` templates or the one outside it named any of these; an
+  application built with `m0` that did needs its own copy. From
+  `lightbug_http.uri`: `URI`'s `username`, `password`, `full_uri`,
+  `_original_path` and `_hash` fields (always empty, or the path again),
+  its `__str__`, `__repr__`, `is_http` and `is_https`, the unused
+  `QueryDelimiters` and `URIDelimiters` constants, and
+  `URIParseError.__str__` (`String(error)` still writes it). From
+  `lightbug_http.cookie`: `Expiration`, a stub that could only say
+  "session", with `Cookie`'s `expires` field and argument (a `Cookie` sets
+  its lifetime with `max_age`); `Cookie.to_header` and `Cookie.__str__`;
+  `SameSite.__eq__`; `RequestCookieJar`'s constructor from cookies,
+  `parse_cookies`, `empty`, `encode_to` and its `in` for a `Cookie`; and
+  `ResponseCookieJar`'s constructors from cookies, its `[]`, `get` and
+  `in`. From `lightbug_http.http`: the two `OK` overloads taking `Bytes`,
+  `SeeOther` (also exported from `lightbug_http`; `m0_http.reply.redirect`
+  builds every redirect) and `BadRequest(message)`. From
+  `lightbug_http.io.bytes`: `OutOfBoundsError`, `EndOfReaderError.__str__`,
+  `ByteReader`'s `read_bytes(n)`, `as_bytes` and `in`, and `ByteView`'s
+  comparisons, `in`, truth test, `as_bytes` and `__str__`. From
+  `lightbug_http.strings`: `https`, `colonChar` and the seventeen
+  `BytesConstant` bytes nothing reads.
 
 ## [1.12.1] — 2026-10-07
 

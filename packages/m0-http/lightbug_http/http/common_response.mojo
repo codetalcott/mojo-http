@@ -1,43 +1,11 @@
-from lightbug_http.cookie import Cookie, ResponseCookieJar
 from lightbug_http.header import Header, HeaderKey, Headers
 from lightbug_http.http.response import HTTPResponse
-from lightbug_http.io.bytes import Bytes
 
 
 def OK(body: String, content_type: String = "text/plain") -> HTTPResponse:
     return HTTPResponse(
         headers=Headers(Header(HeaderKey.CONTENT_TYPE, content_type)),
         body_bytes=body.as_bytes(),
-    )
-
-
-def OK(body: Bytes, content_type: String = "text/plain") -> HTTPResponse:
-    return HTTPResponse(
-        headers=Headers(Header(HeaderKey.CONTENT_TYPE, content_type)),
-        body_bytes=body,
-    )
-
-
-def OK(body: Bytes, content_type: String, content_encoding: String) -> HTTPResponse:
-    return HTTPResponse(
-        headers=Headers(
-            Header(HeaderKey.CONTENT_TYPE, content_type),
-            Header(HeaderKey.CONTENT_ENCODING, content_encoding),
-        ),
-        body_bytes=body,
-    )
-
-
-def SeeOther(location: String, content_type: String, var cookies: List[Cookie] = []) -> HTTPResponse:
-    return HTTPResponse(
-        "See Other".as_bytes(),
-        cookies=ResponseCookieJar(cookies^),
-        headers=Headers(
-            Header(HeaderKey.LOCATION, location),
-            Header(HeaderKey.CONTENT_TYPE, content_type),
-        ),
-        status_code=303,
-        status_text="See Other",
     )
 
 
@@ -50,23 +18,17 @@ def BadRequest() -> HTTPResponse:
     )
 
 
-def BadRequest(message: String) -> HTTPResponse:
-    """Bad Request with a specific error message.
+def NotFound(path: String = "") -> HTTPResponse:
+    """404, with a fixed body.
 
-    Args:
-        message: Specific explanation of what went wrong with the request.
+    `path` is taken and not written. The body was `path <path> not found`,
+    which put a request's own bytes, markup included, into the server's
+    answer, with no `X-Content-Type-Options` to keep a browser from
+    sniffing it (review record LF57). Nothing read the text; the argument
+    stays so that every caller's `NotFound(path)` builds.
     """
     return HTTPResponse(
-        String("Bad Request: ", message).as_bytes(),
-        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
-        status_code=400,
-        status_text="Bad Request",
-    )
-
-
-def NotFound(path: String) -> HTTPResponse:
-    return HTTPResponse(
-        body_bytes=String("path ", path, " not found").as_bytes(),
+        body_bytes=String("Not Found").as_bytes(),
         headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
         status_code=404,
         status_text="Not Found",

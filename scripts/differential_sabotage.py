@@ -30,6 +30,7 @@ from sabotage_lib import POE, Command, rule, run
 PARSING = Path("packages/m0-http/lightbug_http/http/parsing.mojo")
 HEADER = Path("packages/m0-http/lightbug_http/header.mojo")
 REQUEST = Path("packages/m0-http/lightbug_http/loop/request.mojo")
+FRAMING = Path("packages/m0-http/lightbug_http/framing.mojo")
 
 # (label, file, old, new, the case whose MISMATCH line must appear); a rule
 # that takes two edits gives a tuple of each.
@@ -38,24 +39,24 @@ SABOTAGES = [
         # SPEC B12, the review's P2: the parser ended a head at a bare-LF
         # empty line while the loop framed it by the first CRLFCRLF, so a
         # request pipelined behind it was answered once for two. Two edits:
-        # the loop also refuses a head its two framers end at different
-        # bytes, so with either rule still in place the case stays a 400
-        # (measured, and the loop's comment says so).
+        # the loop's framing decision also refuses a head its two framers
+        # end at different bytes, so with either rule still in place the
+        # case stays a 400 (measured, and framing.mojo says so).
         "a bare LF ends the head (B12)",
-        (PARSING, REQUEST),
+        (PARSING, FRAMING),
         ("""            buf.increment()
             return
         elif byte.value() == BytesConstant.LF:
             raise ParseError()""",
-         """        if parsed.bytes_consumed != header_end_offset:
-            _send_error_to_fd(fd_val, BadRequest())"""),
+         """    if parsed.bytes_consumed != head_end:
+        return HeadFraming.refused(REFUSED_FRAMERS_DISAGREE)"""),
         ("""            buf.increment()
             return
         elif byte.value() == BytesConstant.LF:
             buf.increment()
             return""",
-         """        if False:
-            _send_error_to_fd(fd_val, BadRequest())"""),
+         """    if False:
+        return HeadFraming.refused(REFUSED_FRAMERS_DISAGREE)"""),
         "lf_blank_then_request",
     ),
     (

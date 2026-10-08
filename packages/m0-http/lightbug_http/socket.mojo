@@ -1,9 +1,8 @@
-from std.ffi import ErrNo, c_uint
-from std.sys.info import CompilationTarget
+from std.ffi import ErrNo
 
 from lightbug_http.address import Addr
-from lightbug_http.c.address import AddressFamily, AddressLength
-from lightbug_http.c.network import InetNtopError, InetPtonError, SocketAddress, inet_pton
+from lightbug_http.c.address import AddressFamily
+from lightbug_http.c.network import InetPtonError, SocketAddress, inet_pton
 from lightbug_http.c.socket import (
     IPPROTO_IPV6,
     IPV6_V6ONLY,
@@ -13,7 +12,6 @@ from lightbug_http.c.socket import (
     SocketType,
     bind,
     close,
-    getpeername,
     getsockname,
     listen,
     recv,
@@ -65,24 +63,14 @@ struct SocketRecvError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
 
 @fieldwise_init
 struct SocketNameError(Movable, Writable):
-    """Error variant for `get_sock_name` and `get_peer_name`.
-    Can be a SysError from getsockname or getpeername (its `op` says which),
-    or SocketClosedError. The InetNtopError arm is kept for callers that
-    match it; nothing raises it since the address is read by
-    `SocketAddress.host_port`, which reports an address it cannot format as
-    `("", 0)`.
+    """Error variant for `get_sock_name`: a SysError from getsockname, or
+    SocketClosedError for a socket that has closed its descriptor.
     """
 
-    comptime type = Variant[SysError, SocketClosedError, InetNtopError]
+    comptime type = Variant[SysError, SocketClosedError]
     var value: Self.type
 
     @implicit
@@ -93,26 +81,11 @@ struct SocketNameError(Movable, Writable):
     def __init__(out self, value: SocketClosedError):
         self.value = value
 
-    @implicit
-    def __init__(out self, var value: InetNtopError):
-        self.value = value^
-
     def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[SysError]():
             writer.write(self.value[SysError])
         elif self.value.isa[SocketClosedError]():
             writer.write("SocketClosedError")
-        elif self.value.isa[InetNtopError]():
-            writer.write(self.value[InetNtopError])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 @fieldwise_init
@@ -147,12 +120,6 @@ struct SocketBindError(Movable, Writable):
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
 
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
 
 trait DescriptorClose:
     """How `Socket.close_with` closes its descriptor. The socket's own is
@@ -180,26 +147,20 @@ struct Socket[
     address: Addr,
     sock_type: SocketType = SocketType.SOCK_STREAM,
     address_family: AddressFamily = AddressFamily.AF_INET,
-](Movable, Writable):
+](Movable):
     """Represents a network file descriptor. Wraps around a file descriptor and provides network functions.
 
     Parameters:
         address: The type of address the socket uses.
         sock_type: The type of socket (SOCK_STREAM for TCP).
-        address_family: The address family a socket is made with when none
-            is given (`family`).
-
-    Args:
-        local_address: The local address of the socket (local address if bound).
-        remote_address: The remote address of the socket (peer's address if connected).
+        address_family: The family a socket made from a descriptor is in
+            when none is given (`family`).
     """
 
     var fd: FileDescriptor
     """The file descriptor of the socket."""
     var local_address: Self.address
     """The local address of the socket (local address if bound)."""
-    var remote_address: Self.address
-    """The remote address of the socket (peer's address if connected)."""
     var _closed: Bool
     """Whether the socket is closed."""
     var _connected: Bool
@@ -213,37 +174,15 @@ struct Socket[
 
     def __init__(
         out self,
-        local_address: Self.address = Self.address(),
-        remote_address: Self.address = Self.address(),
-    ) raises SysError:
-        """Create a new socket object.
-
-        Args:
-            local_address: The local address of the socket (local address if bound).
-            remote_address: The remote address of the socket (peer's address if connected).
-
-        Raises:
-            SysError: If the socket creation fails.
-        """
-        self = Self(
-            family=Self.address_family,
-            local_address=local_address,
-            remote_address=remote_address,
-        )
-
-    def __init__(
-        out self,
         *,
         family: AddressFamily,
         local_address: Self.address = Self.address(),
-        remote_address: Self.address = Self.address(),
     ) raises SysError:
         """Create a new socket in `family`, whatever `address_family` says.
 
         Args:
             family: `AF_INET` or `AF_INET6`.
             local_address: The local address of the socket (local address if bound).
-            remote_address: The remote address of the socket (peer's address if connected).
 
         Raises:
             SysError: If the socket creation fails.
@@ -251,7 +190,6 @@ struct Socket[
         # Protocol 0: the family's default for the type, TCP for a stream.
         self.fd = FileDescriptor(Int(socket(family.value, Self.sock_type.value, 0)))
         self.local_address = local_address
-        self.remote_address = remote_address
         self._closed = False
         self._connected = False
         self.family = family
@@ -260,7 +198,6 @@ struct Socket[
         out self,
         fd: FileDescriptor,
         local_address: Self.address,
-        remote_address: Self.address = Self.address(),
         family: AddressFamily = Self.address_family,
     ):
         """
@@ -269,12 +206,10 @@ struct Socket[
         Args:
             fd: The file descriptor of the socket.
             local_address: The local address of the socket (local address if bound).
-            remote_address: The remote address of the socket (peer's address if connected).
             family: The family the descriptor's socket was made in.
         """
         self.fd = fd
         self.local_address = local_address
-        self.remote_address = remote_address
         self._closed = False
         self._connected = True
         self.family = family
@@ -307,42 +242,12 @@ struct Socket[
         """
         return self.fd
 
-    def __enter__(var self) -> Self:
-        return self^
-
     def __deinit__(deinit self):
         """Close the socket when the object is deleted."""
         try:
             self^.teardown()
         except teardown_err:
             pass
-
-    def __str__(self) -> String:
-        return String(self)
-
-    def __repr__(self) -> String:
-        return String(self)
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        writer.write(
-            "Socket[",
-            Self.address._type,
-            ", ",
-            self.family,
-            "]",
-            "(",
-            "fd=",
-            self.fd.value,
-            ", local_address=",
-            repr(self.local_address),
-            ", remote_address=",
-            repr(self.remote_address),
-            ", _closed=",
-            self._closed,
-            ", _connected=",
-            self._connected,
-            ")",
-        )
 
     def listen(self, backlog: UInt = 0) raises SysError:
         """Enable a server to accept connections.
@@ -405,23 +310,6 @@ struct Socket[
         var local_address = SocketAddress()
         getsockname(self.fd, local_address)
         var named = local_address.host_port()
-        return (named[0], UInt16(named[1]))
-
-    def get_peer_name(self) raises SocketNameError -> Tuple[String, UInt16]:
-        """Return the address of the peer connected to the socket.
-
-        Returns:
-            The address of the peer connected to the socket.
-
-        Raises:
-            SocketNameError: If socket is closed or getpeername fails.
-        """
-        if self._closed:
-            raise SocketClosedError()
-
-        # TODO: Add check to see if the socket is bound and error if not.
-        var peer_address = getpeername(self.fd)
-        var named = peer_address.host_port()
         return (named[0], UInt16(named[1]))
 
     def set_socket_option(self, option_name: SocketOption, var option_value: Int = 1) raises SysError:

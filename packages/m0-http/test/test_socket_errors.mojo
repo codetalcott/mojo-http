@@ -26,7 +26,6 @@ from lightbug_http.c.socket import (
     accept_with_peer,
     bind,
     close,
-    getpeername,
     getsockname,
     listen,
     recv,
@@ -107,13 +106,6 @@ def test_every_wrapper_raises_on_a_descriptor_that_is_not_open() raises:
     except e:
         err = e
     _expect(err, "getsockname", ErrNo.EBADF)
-
-    err = None
-    try:
-        _ = getpeername(bad)
-    except e:
-        err = e
-    _expect(err, "getpeername", ErrNo.EBADF)
 
     err = None
     try:

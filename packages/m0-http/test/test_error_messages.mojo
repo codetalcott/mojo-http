@@ -14,7 +14,6 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from lightbug_http.address import (
     ParseEmptyAddressError,
     ParseEmptyPortError,
-    ParseIPProtocolPortError,
     ParseInvalidPortNumberError,
     ParseMissingClosingBracketError,
     ParseMissingPortError,
@@ -22,6 +21,7 @@ from lightbug_http.address import (
     ParsePortOutOfRangeError,
     ParseTooManyColonsError,
     ParseUnexpectedBracketError,
+    ParseZoneError,
 )
 from lightbug_http.c.network import (
     InetNtopEAFNOSUPPORTError,
@@ -74,12 +74,11 @@ def test_every_address_error_reads_as_its_message() raises:
     _reads_as_its_message(ParsePortOutOfRangeError())
     _reads_as_its_message(ParseMissingSeparatorError())
     _reads_as_its_message(ParseTooManyColonsError())
-    _reads_as_its_message(ParseIPProtocolPortError())
+    _reads_as_its_message(ParseZoneError())
 
 
 def test_every_other_error_reads_as_its_message() raises:
-    """The listener's, the provision pool's and the `inet_*` bindings'."""
-    _reads_as_its_message(AddressParseError())
+    """The provision pool's and the `inet_*` bindings'."""
     _reads_as_its_message(ProvisionPoolExhaustedError())
     _reads_as_its_message(InetNtopEAFNOSUPPORTError())
     _reads_as_its_message(InetNtopENOSPCError())
@@ -118,8 +117,8 @@ def test_every_variant_error_writes_the_error_it_holds() raises:
         "HeaderKeyNotFoundError: Key not found in headers",
     )
     assert_equal(
-        String(ServerError(ListenerError(AddressParseError()))),
-        AddressParseError.message,
+        String(ServerError(ListenerError(AddressParseError("no port")))),
+        String(AddressParseError.message, ": no port"),
     )
     assert_equal(
         String(ServerError(ProvisionError(ProvisionPoolExhaustedError()))),

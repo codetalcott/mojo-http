@@ -3,7 +3,7 @@
 `ResponseCookieJar` has two halves. A Mojo handler builds `Cookie` values and
 the jar serialises them; an application behind the WSGI/ASGI bridge hands the
 server finished `Set-Cookie` lines, and those must be transmitted exactly as
-written. Parsing them into `Cookie` first was lossy — `Expiration` is a stub,
+written. Parsing them into `Cookie` first was lossy — `Expiration` was a stub,
 `SameSite` matched only lowercase values, a value was cut at its first `=` —
 so Django's `sessionid` reached the browser without `expires` or `SameSite`,
 on every response of three real projects. `add_raw` is the path the bridge
@@ -12,7 +12,7 @@ takes now, and these tests are what hold it verbatim.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.cookie import Cookie, ResponseCookieJar
+from lightbug_http.cookie import Cookie, Duration, ResponseCookieJar, SameSite
 from lightbug_http.header import Header, Headers
 from lightbug_http.http import HTTPResponse
 from lightbug_http.io.bytes import Bytes
@@ -185,6 +185,152 @@ def test_a_line_above_ascii_goes_out_latin1_like_every_header() raises:
         cookies=_latin1_jar(),
     )
     _assert_latin1_on_the_wire(r2^.encode_into(Bytes(capacity=256)))
+
+
+
+def test_a_built_cookie_writes_every_attribute() raises:
+    """`Cookie.build_header_value`: `name=value`, then each attribute that is
+    set, in one order -- `Max-Age` from a `Duration` in any units, `Domain`,
+    `Path`, `Secure`, `HttpOnly`, `SameSite` in each of its three values,
+    `Partitioned` -- and nothing for one that is not."""
+    assert_equal(Cookie("a", "1").build_header_value(), "a=1")
+    var full = Cookie(
+        "sid",
+        "v=1",
+        max_age=Duration(seconds=5, minutes=1, hours=1, days=1),
+        domain=String("example.test"),
+        path=String("/app"),
+        same_site=SameSite.strict,
+        secure=True,
+        http_only=True,
+        partitioned=True,
+    )
+    assert_equal(
+        full.build_header_value(),
+        "sid=v=1; Max-Age=90065; Domain=example.test; Path=/app; Secure;"
+        " HttpOnly; SameSite=strict; Partitioned",
+    )
+    assert_equal(
+        Cookie("a", "1", same_site=SameSite.lax).build_header_value(),
+        "a=1; SameSite=lax",
+    )
+    assert_equal(
+        Cookie("a", "1", same_site=SameSite.none, secure=True).build_header_value(),
+        "a=1; Secure; SameSite=none",
+    )
+    assert_equal(
+        Cookie("a", "", max_age=Duration(seconds=0)).build_header_value(),
+        "a=; Max-Age=0",
+    )
+
+
+def test_one_cookie_per_name_domain_and_path() raises:
+    """The jar keys a built cookie by name, domain and path, the three a
+    browser keys it by (RFC 6265 §5.3 step 11): setting the same three
+    again replaces the first, and a second path or domain is a second
+    cookie. No domain is the host's. No path is the request's directory
+    (§5.1.4's default-path, §5.2.4), not `/`: a cookie with no `Path` and
+    one with `Path=/` are two cookies to a browser at `/app/x`, and the jar
+    kept only the second (review record LF65). An empty `Path`, or one
+    that does not start with `/`, is the default-path too (§5.2.4)."""
+    var jar = ResponseCookieJar()
+    jar.set_cookie(Cookie("a", "1"))
+    jar.set_cookie(Cookie("a", "2", path=String("/")))
+    assert_equal(len(jar), 2)
+    jar.set_cookie(Cookie("a", "3", path=String("/x")))
+    jar.set_cookie(Cookie("a", "4", domain=String("example.test")))
+    jar.set_cookie(Cookie("a", "5", path=String("/")))
+    assert_equal(len(jar), 4)
+    var wire = _wire(jar^)
+    assert_equal(_count(wire, "set-cookie: "), 4)
+    assert_true("set-cookie: a=1\r\n" in wire, wire)
+    assert_true("set-cookie: a=5; Path=/\r\n" in wire, wire)
+    assert_true("set-cookie: a=3; Path=/x\r\n" in wire, wire)
+    assert_true("set-cookie: a=4; Domain=example.test\r\n" in wire, wire)
+    assert_false("a=2" in wire, wire)
+    # An empty Path and a relative one are the default-path: the same
+    # cookie as no Path, so the last of the three is kept.
+    var defaults = ResponseCookieJar()
+    defaults.set_cookie(Cookie("b", "1"))
+    defaults.set_cookie(Cookie("b", "2", path=String("")))
+    defaults.set_cookie(Cookie("b", "3", path=String("rel")))
+    assert_equal(len(defaults), 1)
+    var only = _wire(defaults^)
+    assert_true("set-cookie: b=3; Path=rel\r\n" in only, only)
+
+
+def _with(a: String, b: UInt8, c: String) -> String:
+    """`a`, the one byte `b`, then `c`."""
+    var l = List[UInt8](a.as_bytes())
+    l.append(b)
+    l.extend(c.as_bytes())
+    return String(unsafe_from_utf8=Span(l))
+
+
+def _dropping_jar() -> ResponseCookieJar:
+    """Built cookies that would add an attribute or end their line, the
+    shapes of value browsers store and applications send, and an
+    application's raw line that is none of the jar's business."""
+    var jar = ResponseCookieJar()
+    # Dropped: a `;` or a control byte in the value, the Domain or the
+    # Path, or a name that is not a token.
+    jar.set_cookie(Cookie("theme", "dark; Domain=evil.test; Max-Age=99999999"))
+    jar.set_cookie(Cookie("tab", "a\tb"))
+    jar.set_cookie(Cookie("del", _with("a", 0x7F, "b")))
+    jar.set_cookie(Cookie("p", "1", path=String("/; Domain=evil.test")))
+    jar.set_cookie(Cookie("pc", "1", path=String("/a\tb")))
+    jar.set_cookie(Cookie("d", "1", domain=String("x.test; Secure")))
+    jar.set_cookie(Cookie("dc", "1", domain=_with("x.test", 0x01, "")))
+    jar.set_cookie(Cookie("a b", "1"))
+    jar.set_cookie(Cookie("c=d", "1"))
+    jar.set_cookie(Cookie("", "1"))
+    # Kept: base64, a JSON-ish value, a space, a comma, a backslash, a
+    # quoted value, an empty one, and a Path holding a space.
+    jar.set_cookie(Cookie("b64", "a+b/c=="))
+    jar.set_cookie(Cookie("prefs", '{"theme":"dark","n":[1,2]}'))
+    jar.set_cookie(Cookie("flash", "Note saved"))
+    jar.set_cookie(Cookie("bs", "a\\b"))
+    jar.set_cookie(Cookie("quoted", '"ab"'))
+    jar.set_cookie(Cookie("empty", ""))
+    jar.set_cookie(Cookie("ok", "v=1", path=String("/a b")))
+    jar.add_raw("raw=a b; c")
+    return jar^
+
+
+def _assert_only_the_clean_lines(wire: String) raises:
+    assert_equal(_count(wire, "set-cookie: "), 8, wire)
+    assert_true("set-cookie: b64=a+b/c==\r\n" in wire, wire)
+    assert_true('set-cookie: prefs={"theme":"dark","n":[1,2]}\r\n' in wire, wire)
+    assert_true("set-cookie: flash=Note saved\r\n" in wire, wire)
+    assert_true("set-cookie: bs=a\\b\r\n" in wire, wire)
+    assert_true('set-cookie: quoted="ab"\r\n' in wire, wire)
+    assert_true("set-cookie: empty=\r\n" in wire, wire)
+    assert_true("set-cookie: ok=v=1; Path=/a b\r\n" in wire, wire)
+    assert_true("set-cookie: raw=a b; c\r\n" in wire, wire)
+    assert_false("evil.test" in wire, wire)
+    assert_false("Max-Age=99999999" in wire, wire)
+    assert_false("x.test" in wire, wire)
+
+
+def test_a_built_cookie_that_would_break_its_line_is_dropped() raises:
+    """A `Cookie` a view builds is dropped when a field of it could add an
+    attribute or end its line: a `;` or a control byte (DEL among them) in
+    its value, its Domain or its Path, or a name that is not a token
+    (RFC 6265 §4.1.1: `a b`, `c=d`, empty). Written as it was,
+    `Cookie("theme", "dark; Domain=evil.test")` set a cookie for another
+    site (review record LF55). Every other value goes out as given --
+    base64, JSON, a space, a comma, a quote, a byte above 0x7F -- since
+    browsers store them and cookie-octet is a SHOULD for a server, not a
+    reason to lose an application's cookie. The drop is silent, as G2's.
+    An application's `add_raw` line still goes out verbatim (G3). Held on
+    both writers: the text form and the bytes `encode` sends.
+
+    covers: G2
+    """
+    _assert_only_the_clean_lines(_wire(_dropping_jar()))
+    var resp = HTTPResponse(owned_body=Bytes(), cookies=_dropping_jar())
+    var sent = resp^.encode()
+    _assert_only_the_clean_lines(String(unsafe_from_utf8=Span(sent)))
 
 
 def main() raises:
