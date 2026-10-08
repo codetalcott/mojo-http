@@ -26,7 +26,8 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, timer_ident: UInt,
 ):
     """A timer fired: the application tick, a stream's heartbeat, or a
-    request's body or idle timer."""
+    request's body timer. Nothing arms a timer of any other kind: idle,
+    send and header deadlines are swept (`_sweep_deadlines`)."""
     # Application tick: hand the handler its scheduled wakeup.
     if timer_ident >= TIMER_APP_TICK:
         # Re-arm FIRST — one-shot on both backends, and on epoll
@@ -48,13 +49,11 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
         _heartbeat(handler, backend, st, timer_ident)
         return
 
-    var fd_val: Int
-    if timer_ident >= TIMER_IDLE:
-        fd_val = Int(timer_ident - TIMER_IDLE)
-    elif timer_ident >= TIMER_BODY:
-        fd_val = Int(timer_ident - TIMER_BODY)
-    else:
+    # A body timer, the one kind left. Idle deadlines are swept, never
+    # armed, so nothing has an idle timer to fire (review record LF26).
+    if timer_ident < TIMER_BODY or timer_ident >= TIMER_IDLE:
         return
+    var fd_val = Int(timer_ident - TIMER_BODY)
 
     if fd_val >= len(st.fd_to_slot):
         return
@@ -75,7 +74,7 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
     # then reaches the timer. Retired rather than skipped, because
     # epoll's timerfd is level-triggered and an unread expiry is
     # reported by every wait after it.
-    if timer_ident < TIMER_IDLE and (
+    if (
         st.provision_pool.provisions[slot].state.kind
         != ConnectionState.READING_BODY
         or st.offload.offloaded[slot]
@@ -83,12 +82,10 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
         backend.try_delete_timer(timer_ident)
         return
 
-    # Phase 1d: idle timeout is expected client behaviour — close cleanly.
-    # Only send 408 for header/body timeouts on the first request.
-    if timer_ident < TIMER_IDLE:
-        # A body that stopped arriving, refused whichever request it was.
-        _notice_once(st.config.body_timeout_notice)
-    if timer_ident < TIMER_IDLE and st.provision_pool.provisions[slot].keepalive_count == 0:
+    # A body that stopped arriving, refused whichever request it was; the
+    # 408 goes only to a connection's first request.
+    _notice_once(st.config.body_timeout_notice)
+    if st.provision_pool.provisions[slot].keepalive_count == 0:
         _send_error_to_fd(fd_val, RequestTimeout())
 
     _close_slot(handler, backend, st, slot, fd_val)

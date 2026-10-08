@@ -10,6 +10,63 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A client that half-closes is answered with `Connection: close`, and
+  its connection ends behind the answer** (SPEC A27). A client that shuts
+  down its write side after its request has sent its last one, but when
+  the request did not itself ask for a close the answer said `keep-alive`,
+  and on Linux the connection was then held until the idle timeout (for
+  good with `--idle-timeout 0`) waiting for a request that could not come.
+  Requests pipelined ahead of the last one are still answered first.
+
+- **A half-closed request with a long head is answered** (SPEC A29). A
+  client that sent a request whose headers were longer than 4 KB (a large
+  cookie, a long token) and then shut down its write side could have its
+  connection closed with no answer, the rest of its headers still unread.
+  It is now read to its end and answered.
+
+- **A client that pipelines and half-closes gets every answer when the
+  first comes from a pool thread or the ASGI executor** (SPEC A30). With
+  `--blocking-threads` or an ASGI application, when that answer went out
+  only in part and the client's half-close was seen in the same moment,
+  the connection closed as soon as the answer finished, and the requests
+  pipelined behind it were never answered. They are now, and the
+  connection closes after the last. Answers the event loop runs itself
+  were not affected.
+
+- **A streamed response honours `Connection: close`** (SPEC A28). An ASGI
+  application's streamed body, or a WSGI application's streamed iterable
+  on a pool thread, goes out chunked over HTTP/1.1, and when the request
+  asked for `Connection: close` the response still said `keep-alive` and
+  the connection stayed open after the body ended. It now says `close`
+  and closes once the body is complete, as an unstreamed response does.
+
+- **A stream open when the server is told to stop ends cleanly** (SPEC
+  D12, D13). The drain says goodbye to every open stream before closing
+  it, and wrote that goodbye where nothing may be written: into a streamed
+  ASGI or WSGI body, where a client's chunked parser failed on it; into a
+  WebSocket that had already sent its Close, as a second one; and into the
+  middle of a frame still going out. Those streams now close as they
+  stand, and the client reads the end of the connection; an SSE stream or
+  WebSocket the server writes itself still gets its goodbye.
+
+- **The access log times a keep-alive request when the header timeout is
+  off** (SPEC F22). A server whose `ServerConfig` set
+  `header_read_timeout = 0` logged the `dur_us` of every request after a
+  connection's first as the time since the machine booted, and recorded
+  no latency for them on `/__metrics`. They now run from the request's
+  first bytes, as they always did with the timeout on; a connection's
+  first request is timed from its accept, as before. m0serve and the Mojo
+  host keep the default of 10 s, and were not affected.
+
+- **A WebSocket the application has stopped reading stays stopped while
+  its close completes** (SPEC I41). When an application falls behind the
+  messages a client sends, the server stops reading that socket until the
+  application catches up. Once the server's Close went out it started
+  reading again, so the messages queued for a slow application kept
+  growing for as long as the client went on sending. The socket now waits
+  for the client's Close without reading until the application resumes
+  it, or until the two-second close linger ends it.
+
 - **A `CONNECT` request is answered 501 and its connection closed** (SPEC
   B18). It reached the application, and one that answers every method
   answered it 200, which a proxy forwarding `CONNECT` reads as an open
@@ -287,23 +344,36 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `ByteReader`, `read_body` and `read_chunks`;
   `lightbug_http.header.parse_response_headers` and
   `ParsedResponseHeaders`, `lightbug_http.http.parsing`'s
-  `http_parse_response_headers`, `get_token_to_eol` and `try_peek_at`,
-  and the response parse errors; `ResponseCookieJar.from_headers`;
+  `http_parse_response_headers`, `get_token_to_eol` and `try_peek_at`;
+  the response parse errors, `lightbug_http.header`'s
+  `ResponseParseError`, `InvalidHTTPResponseError` and
+  `IncompleteHTTPResponseError`, and `lightbug_http.http.response`'s
+  `ResponseParseError`, `ResponseHeaderParseError` and
+  `ResponseBodyReadError`; `ResponseCookieJar.from_headers`;
   `Cookie.from_set_header`, which dropped `expires`, a capitalised
   `SameSite` and any attribute it did not know; `Cookie.clear_cookie`;
-  with `CookieParseError`, `InvalidCookieError`, `Expiration.invalidate`
-  and the `from_string` of `Expiration`, `Duration` and `SameSite`;
+  with `lightbug_http.cookie`'s `CookieParseError` (the request side's,
+  `lightbug_http.http.request.CookieParseError`, stays),
+  `InvalidCookieError`, `Expiration.invalidate` and the `from_string` of
+  `Expiration`, `Duration` and `SameSite`;
   `ParsedRequestHeaders.expects_body`, which missed a chunked
   body on any method but POST, PUT and PATCH; `write_header_latin1`,
   which wrote a header holding CR or LF where `Headers.write_latin1_to`
   drops it; `HTTPChunkedDecoder.is_in_chunk_data`;
   `lightbug_http.strings`' `find_all`, `is_printable_ascii`,
-  `BytesConstant.CRLF` and `BytesConstant.DOUBLE_CRLF`; and
+  `IS_PRINTABLE_ASCII_MASK`, `BytesConstant.CRLF` and
+  `BytesConstant.DOUBLE_CRLF`; and
   `lightbug_http.io.bytes`' `is_newline`, `is_space` and `bufis`, and
   `ByteReader`'s `read_line`, `read_word`, `skip_whitespace`,
   `skip_carriage_return` and `consume`. `parse_headers` and `scan_to_eol`
   lose their `strict` parameter and always read a request head's rules;
   the lenient reading was the response parser's.
+- **`LoopState.fd_map_size`, and the event loop's handling of an idle
+  timer** (fork review LF26): the field was set and never read, and
+  nothing arms an idle timer (idle deadlines are swept), so its branch
+  could not run. Nothing served changes. A connection that closes with
+  part of a response still unsent now gives that buffer back at once,
+  rather than when its slot next answers someone.
 
 - **The fork's network and address code that nothing calls** (fork review
   LF44, LF45, LF48). Nothing served changes. The `m0` wheel ships the

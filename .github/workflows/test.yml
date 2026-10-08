@@ -226,6 +226,15 @@ jobs:
       - name: Sabotage the chunked trailer rules
         run: uv run poe sabotage-trailers
 
+      # SPEC G24. The header-bytes property (`test_header_bytes.mojo`, run by
+      # `test-packages`) passes when nothing is wrong; this puts back LF1's
+      # overlong decode, G2's refusals and the redirect's encoding one at a
+      # time and requires that test to fail for each.
+      # `test-packages` runs the same sabotage (about 50 s); this named step is
+      # the second run, the one SPEC G24 cites, as for the trailer rules above.
+      - name: Sabotage the header-bytes property
+        run: uv run poe sabotage-header-bytes
+
       # SPEC G13. The request decoder is a pure function over bytes, so the
       # fuzz harness needs no socket: mutate a seed corpus, assert the
       # invariants, and stay replayable from --seed. `sabotage-fuzz` is the
@@ -348,6 +357,7 @@ jobs:
           python3 scripts/emit.py --covers N28 --task step
           python3 scripts/emit.py --covers L31 --task step
           python3 scripts/emit.py --covers I27 --task step
+          python3 scripts/emit.py --covers G25 --task step
           set -o pipefail
           uv run poe test-gates 2>&1 | tee -a compile.log
       - name: Check the compiler warning count has not grown
@@ -950,6 +960,13 @@ jobs:
       # first request of a burst.
       - name: Smoke test pipelined requests
         run: uv run poe smoke-pipelining
+      # SPEC B25: the requests the fork review sent to this server, to h11
+      # and to llhttp, each on its own connection, its answer frozen in
+      # scripts/differential_expected.json: which requests the application
+      # saw, and each refusal's status. A parser or loop change that moves
+      # one answer fails here naming the case.
+      - name: Smoke test the differential request corpus
+        run: uv run poe smoke-differential
 
       # The keep-alive request cap must close the connection, not destroy
       # the response it fires on. A stream and a WebSocket upgrade each own

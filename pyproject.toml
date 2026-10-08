@@ -1240,7 +1240,7 @@ default_item_type = "ref"
 # job, after its own `build-all`.
 [tool.poe.tasks.test-packages]
 help = "test-all's first half: the packages' tests but m0-sqlite's, the fork and host compiles, the Datastar SDK's conformance, the scaffold's templates, the decoder's sabotage and fuzzer (CI's unit-tests job)"
-sequence = ["check-fork-package", "check-host-package", "test-core", "test-http", "sabotage-mojo-suite", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "check-templates", "test-wsgi", "sabotage-trailers", "fuzz-request", "test-postgres"]
+sequence = ["check-fork-package", "check-host-package", "test-core", "test-http", "sabotage-mojo-suite", "test-datastar", "check-datastar-sdk", "sabotage-datastar-sdk", "test-apps", "check-templates", "test-wsgi", "sabotage-trailers", "sabotage-header-bytes", "fuzz-request", "test-postgres"]
 default_item_type = "ref"
 
 # The executor shim's rules; the probes' phase stamps and m0-sqlite's
@@ -1253,7 +1253,7 @@ default_item_type = "ref"
 # `build-all`.
 [tool.poe.tasks.test-gates]
 help = "test-all's second half: the shim's rules, the phase stamps, m0-sqlite and its sabotage, and the compile gates (CI's unit-gates job)"
-sequence = ["test-shim", "check-phase-stamps", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
+sequence = ["test-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -1379,6 +1379,15 @@ cmd = "python3 scripts/zero_alloca_check.py --sabotage"
 [tool.poe.tasks.check-copyback]
 help = "No struct written through its address (the asyncio executor's state) is passed by value in m0serve's IR"
 cmd = "python3 scripts/copyback_guard.py"
+
+# A variadic libc function called through external_call outside its
+# sanctioned wrapper (Darwin arm64 passes variadic arguments on the stack,
+# review record LF17), and any `[byte=` slice in the fork (SPEC G14): pure
+# text, a second. The selftest runs first, so "no findings" cannot mean the
+# rules read nothing (SPEC G25).
+[tool.poe.tasks.fork-lint]
+help = "No variadic libc symbol called outside its wrapper, no [byte=] slice in the fork (SPEC G25)"
+shell = "python3 scripts/fork_lint.py --selftest && python3 scripts/fork_lint.py"
 
 [tool.poe.tasks.check-app-vocabulary]
 help = "An app OUTSIDE the repo defines a Vocabulary (htmx 4): attributes asserted in both tiers, read by the vendored hxlint (SPEC N21)"
@@ -1586,6 +1595,18 @@ wait $pid 2>/dev/null || rc=$?
   || fail 'both m0serve workers did not report a clean exit'
 grep -q 'killed by signal' "$SMOKE_DIR/shutdown5.log" && fail 'an m0serve worker died of the signal instead of draining'
 
+# A chunked stream open at SIGTERM ends with a terminator or EOF, never a
+# chunk the client cannot parse (review record LF12). The drain's farewell
+# to streams wrote an SSE close comment into an application's chunked
+# stream raw, which a client's chunked parser reads as a chunk size; it now
+# asks what the heartbeat asks before it writes anything.
+spawn shutdown6.log bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port $port
+wait_ready http://localhost:$port/ $pid
+python3 scripts/drain_stream_probe.py $port $pid   || fail
+rc=0
+wait $pid 2>/dev/null || rc=$?
+[ "$rc" -eq 0 ]   || fail "m0serve exited $rc after a drain with a stream open, want 0"
+
 # Idle keep-alive connections must not hold the drain open. `active_count`
 # counts a merely-open connection the same as one mid-request, so before the
 # shutdown path closed finished slots this waited the full 5s DRAIN_TIMEOUT_NS
@@ -1634,6 +1655,7 @@ fi
 echo "smoke-shutdown OK"
 python3 scripts/emit.py --covers D1 --task smoke-shutdown
 python3 scripts/emit.py --covers D2 --task smoke-shutdown
+python3 scripts/emit.py --covers D12 --task smoke-shutdown
 """
 
 # The probe speaks RFC 6455 by hand (stdlib sockets, no websocket library),
@@ -1946,6 +1968,58 @@ python3 scripts/emit.py --covers B18 --task smoke-pipelining
 python3 scripts/emit.py --covers B21 --task smoke-pipelining
 python3 scripts/emit.py --covers B22 --task smoke-pipelining
 python3 scripts/emit.py --covers B23 --task smoke-pipelining
+"""
+
+# SPEC B25: the differential corpus. The fork review's D0 sent these
+# requests to this server, to h11 and to Node's llhttp and compared what
+# each handed its application; what this server answers now is frozen per
+# case in scripts/differential_expected.json, and any parser or loop change
+# that moves one answer fails here naming the case. apps/request_echo is a
+# test-only server whose application names every request it is handed, so
+# the probe tells a request served from one refused, and which request it
+# was; its entry file is not `server.mojo`, so `build-apps` leaves it to
+# this task. The server must outlive the corpus: the probe ends on a plain
+# GET, and the process must still be running behind it.
+[tool.poe.tasks.smoke-differential]
+help = "Every request of the differential corpus is answered as its frozen table says"
+shell = """
+. scripts/smoke/lib.sh
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/request_echo/echo.mojo -o "$SMOKE_DIR/request_echo" || exit 1
+port=$(free_port)
+spawn echo.log env M0_PORT=$port "$SMOKE_DIR/request_echo"
+wait_ready http://localhost:$port/ $pid
+python3 scripts/differential_probe.py $port || fail
+_smoke_running $pid || fail 'the echo server died during the corpus'
+echo "smoke-differential OK"
+python3 scripts/emit.py --covers B25 --task smoke-differential
+"""
+
+# How the differential table grows (scripts/differential_corpus.py): the
+# echo's answers become the `ours` column, and the two reference echoes'
+# the `h11` and `llhttp` columns, which are for reading a row and which no
+# gate compares. h11 is in the dev venv; the llhttp column is left as it was
+# where `node` is not on PATH. Not run by CI: read the table's diff after it.
+[tool.poe.tasks.freeze-differential]
+help = "Re-freeze scripts/differential_expected.json from the echo server and the h11 and llhttp references"
+shell = """
+. scripts/smoke/lib.sh
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/request_echo/echo.mojo -o "$SMOKE_DIR/request_echo" || exit 1
+port=$(free_port)
+spawn echo.log env M0_PORT=$port "$SMOKE_DIR/request_echo"
+wait_ready http://localhost:$port/ $pid
+python3 scripts/differential_probe.py $port --freeze ours || fail
+h11_port=$(free_port)
+spawn h11.log python3 scripts/differential_echo_h11.py $h11_port
+wait_ready http://localhost:$h11_port/ $pid
+python3 scripts/differential_probe.py $h11_port --freeze h11 || fail
+if command -v node > /dev/null 2>&1; then
+  node_port=$(free_port)
+  spawn node.log node scripts/differential_echo_node.js $node_port
+  wait_ready http://localhost:$node_port/ $pid
+  python3 scripts/differential_probe.py $node_port --freeze llhttp || fail
+else
+  echo "freeze-differential: no node on PATH, so the llhttp column is left as it was"
+fi
 """
 
 [tool.poe.tasks.smoke-ws]
@@ -6477,6 +6551,23 @@ cmd = "python3 scripts/pool_sabotage.py"
 help = "Revert each chunked-trailer rule and insist test_parsing fails for it"
 deps = ["build-core", "build-http"]
 cmd = "python3 scripts/trailer_sabotage.py"
+
+# SPEC G24. The header-bytes property passes when nothing is wrong, so each
+# arm puts back one defect it exists to find (LF1's overlong decode among
+# them) and the property's own test must be the one that fails.
+[tool.poe.tasks.sabotage-header-bytes]
+help = "Revert each rule that keeps CR, LF and NUL out of a head and insist the header-bytes property fails for it"
+deps = ["build-core", "build-http"]
+cmd = "python3 scripts/header_bytes_sabotage.py"
+
+# SPEC B26. The differential corpus passes when nothing is wrong, so each arm
+# puts back one rule of the fork's request parser or loop, and
+# `smoke-differential` must fail naming the case that shows it. Pre-release
+# (docs/RELEASING.md): each arm builds the echo server again, cold.
+[tool.poe.tasks.sabotage-differential]
+help = "PRE-RELEASE: revert each request rule the differential corpus holds and insist smoke-differential fails naming the case (SPEC B26)"
+deps = ["build-core", "build-http"]
+cmd = "python3 scripts/differential_sabotage.py"
 
 # SPEC G13. The request decoder is a pure function over bytes, so the harness
 # needs no socket and no server: mutate a seed corpus, assert the invariants,
