@@ -61,6 +61,7 @@ def _ws_request(
     version: String = "13",
     key: String = "dGhlIHNhbXBsZSBub25jZQ==",
     method: String = "GET",
+    protocol: String = "HTTP/1.1",
 ) raises -> HTTPRequest:
     var headers = Headers(
         Header(HeaderKey.HOST, "localhost"),
@@ -70,7 +71,10 @@ def _ws_request(
         Header("Sec-WebSocket-Key", key),
     )
     return HTTPRequest(
-        URI.parse("http://localhost/ws"), headers=headers^, method=method
+        URI.parse("http://localhost/ws"),
+        headers=headers^,
+        method=method,
+        protocol=protocol,
     )
 
 
@@ -161,6 +165,32 @@ def test_connection_without_upgrade_token_is_400() raises:
     var resp_opt = websocket_upgrade(_ws_request(connection="keep-alive"))
     assert_true(Bool(resp_opt))
     assert_equal(resp_opt.take().status_code, 400)
+
+
+def test_connection_token_is_matched_whole_not_as_a_substring() raises:
+    """Declared coverage.
+
+    covers: I38
+    """
+    var resp_opt = websocket_upgrade(_ws_request(connection="notupgrade"))
+    assert_true(Bool(resp_opt))
+    assert_equal(resp_opt.take().status_code, 400)
+    # The token list still works: other members, any case, spaces around.
+    var ok = websocket_upgrade(_ws_request(connection="keep-alive,  UPGRADE "))
+    assert_true(Bool(ok))
+    assert_equal(ok.take().status_code, 101)
+
+
+def test_http_1_0_upgrade_is_400() raises:
+    """Declared coverage.
+
+    covers: I38
+    """
+    var resp_opt = websocket_upgrade(_ws_request(protocol="HTTP/1.0"))
+    assert_true(Bool(resp_opt))
+    var resp = resp_opt.take()
+    assert_equal(resp.status_code, 400)
+    assert_false(is_ws_upgrade_response(resp))
 
 
 # --- Frame encoding -----------------------------------------------------------
@@ -491,6 +521,135 @@ def test_fragmented_control_frame_is_protocol_error() raises:
 def test_unknown_opcode_is_protocol_error() raises:
     var state = WSState(1 << 20)
     var frame = encode_ws_frame_masked(0x3, "x".as_bytes(), _mask())
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), WS_CLOSE_PROTOCOL_ERROR)
+
+
+def _frame_with_length_bytes(
+    opcode: Int, marker: Int, length: List[UInt8], payload_len: Int
+) raises -> List[UInt8]:
+    """`FIN|opcode`, masked, a hand-written length field, then `payload_len`
+    masked zero bytes: the encoder only writes minimal lengths."""
+    var f = List[UInt8]()
+    f.append(UInt8(0x80 | opcode))
+    f.append(UInt8(0x80 | marker))
+    for b in length:
+        f.append(b)
+    var m = _mask()
+    for i in range(4):
+        f.append(m[i])
+    for i in range(payload_len):
+        f.append(UInt8(0) ^ m[i % 4])
+    return f^
+
+
+def test_64bit_length_with_the_high_bit_set_is_protocol_error() raises:
+    """Declared coverage.
+
+    covers: I35
+    """
+    var state = WSState(1 << 20)
+    var len8 = List[UInt8]()
+    len8.append(0x80)
+    for _ in range(7):
+        len8.append(0)
+    var frame = _frame_with_length_bytes(WS_OP_BINARY, 127, len8, 0)
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), WS_CLOSE_PROTOCOL_ERROR)
+
+
+def test_non_minimal_16bit_length_is_protocol_error() raises:
+    """Declared coverage.
+
+    covers: I36
+    """
+    var state = WSState(1 << 20)
+    var len2 = List[UInt8]()
+    len2.append(0)
+    len2.append(5)  # 5 fits the 7-bit field
+    var frame = _frame_with_length_bytes(WS_OP_BINARY, 126, len2, 5)
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), WS_CLOSE_PROTOCOL_ERROR)
+    assert_equal(len(res.msg_opcodes), 0)
+
+
+def test_non_minimal_64bit_length_is_protocol_error() raises:
+    """Declared coverage.
+
+    covers: I36
+    """
+    var state = WSState(1 << 20)
+    var len8 = List[UInt8]()
+    for _ in range(6):
+        len8.append(0)
+    len8.append(0xFF)
+    len8.append(0xFF)  # 65535 fits the 16-bit field
+    var frame = _frame_with_length_bytes(WS_OP_BINARY, 127, len8, 0)
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), WS_CLOSE_PROTOCOL_ERROR)
+
+
+def test_minimal_lengths_at_the_boundaries_are_accepted() raises:
+    var sizes: List[Int] = [125, 126, 65535, 65536]
+    for n in sizes:
+        var state = WSState(1 << 20)
+        var body = List[UInt8]()
+        for _ in range(n):
+            body.append(0x61)
+        var frame = encode_ws_frame_masked(WS_OP_BINARY, Span(body), _mask())
+        var res = state.feed(Span(frame))
+        assert_false(res.close_after_reply)
+        assert_equal(len(res.msg_opcodes), 1)
+
+
+def test_oversized_control_frame_is_refused_at_its_header() raises:
+    """Declared coverage.
+
+    covers: I37
+    """
+    var state = WSState(1 << 20)
+    var len2 = List[UInt8]()
+    len2.append(0)
+    len2.append(200)
+    # The header and mask only: none of the 200 payload bytes has arrived.
+    var frame = _frame_with_length_bytes(WS_OP_PING, 126, len2, 0)
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), WS_CLOSE_PROTOCOL_ERROR)
+
+
+def test_oversized_control_frame_beyond_the_message_cap_is_1002_not_1009() raises:
+    """Declared coverage.
+
+    covers: I37
+    """
+    var state = WSState(1000)
+    var len2 = List[UInt8]()
+    len2.append(0x10)
+    len2.append(0)  # 4096 > max_message_size, and a control frame
+    var frame = _frame_with_length_bytes(WS_OP_CLOSE, 126, len2, 0)
+    var res = state.feed(Span(frame))
+    assert_true(res.close_after_reply)
+    assert_equal(_close_code(res.reply), WS_CLOSE_PROTOCOL_ERROR)
+
+
+def test_oversized_control_frame_with_a_64bit_length_is_1002_not_1009() raises:
+    """Declared coverage.
+
+    covers: I37
+    """
+    var state = WSState(1000)
+    var len8 = List[UInt8]()
+    for _ in range(5):
+        len8.append(0)
+    len8.append(1)
+    len8.append(0)
+    len8.append(0)  # 65536: minimal for the 64-bit field, over the cap
+    var frame = _frame_with_length_bytes(WS_OP_PING, 127, len8, 0)
     var res = state.feed(Span(frame))
     assert_true(res.close_after_reply)
     assert_equal(_close_code(res.reply), WS_CLOSE_PROTOCOL_ERROR)

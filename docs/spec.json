@@ -1226,6 +1226,38 @@
       "evidence": "`test_websocket.mojo:test_a_message_before_a_violation_is_delivered` (every PR) \u2014 with `test_a_pong_before_a_violation_goes_out_ahead_of_the_close` beside it. Before the fix (review record LF9) a refusal answered with a fresh result, dropping both, while a peer's own Close kept them"
     },
     {
+      "id": "I35",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A client frame whose 64-bit payload length has its most significant bit set closes the connection with 1002 (RFC 6455 section 5.2), not 1009",
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_64bit_length_with_the_high_bit_set_is_protocol_error` (every PR)"
+    },
+    {
+      "id": "I36",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A client frame whose payload length is not in its minimal encoding (a 16-bit field holding under 126, a 64-bit field holding 65535 or less) closes with 1002 (section 5.2); the boundaries 125, 126, 65535 and 65536 are accepted",
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_non_minimal_16bit_length_is_protocol_error` (every PR) \u2014 with `test_non_minimal_64bit_length_is_protocol_error` and the accepted boundaries in `test_minimal_lengths_at_the_boundaries_are_accepted`"
+    },
+    {
+      "id": "I37",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A control frame declaring more than 125 payload bytes closes with 1002 as soon as its header is read, before any payload arrives and whatever the message cap (section 5.5), so it is never a 1009",
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_oversized_control_frame_is_refused_at_its_header` (every PR) \u2014 with the 16-bit and 64-bit length forms over the cap beside it"
+    },
+    {
+      "id": "I38",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "The upgrade's `Connection` header is matched as a token list, so `notupgrade` is refused and `keep-alive, Upgrade` accepted, and an HTTP/1.0 upgrade request is answered 400 (section 4.2.1)",
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_connection_token_is_matched_whole_not_as_a_substring` (every PR) \u2014 with `test_http_1_0_upgrade_is_400`"
+    },
+    {
       "id": "I7",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",

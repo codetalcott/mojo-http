@@ -1260,6 +1260,16 @@ lightbug_http
         and a ping's pong sent ahead of the Close. It built a fresh result,
         which dropped both (review record LF9).
 
+      - websocket.mojo (2026-10-08): the frame parser refuses a 64-bit
+        length whose high bit is set and a length not in its minimal
+        encoding (RFC 6455 section 5.2), and a control frame whose length
+        is over 125 as soon as its header is read (section 5.5), each with
+        1002; the oversized ones were 1009 or waited for the payload.
+        `websocket_upgrade` matches `Connection` as a token list through
+        `Headers.has_token_ignore_case` and answers an HTTP/1.0 request 400
+        (section 4.2.1); `notupgrade` passed as a substring (review record
+        LF10).
+
       - c/sendfile.mojo, loop/response.mojo (2026-10-07): `send_file`
         reports end of file, success with no bytes while `count` is above
         0 on both kernels, as `failed()`, so `_pump_body_fd` closes the
