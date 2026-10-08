@@ -14,29 +14,24 @@ The references are not CI dependencies: they are how the table grows.
 
 Adding a case
 -------------
-Add it to CASES, then build the echo server and freeze what it answers:
+Add it to CASES, then re-freeze every column and read what moved:
 
-    uv run mojo build -I packages/m0-core -I packages/m0-http \\
-        apps/request_echo/echo.mojo -o bin/request_echo
-    M0_PORT=8080 bin/request_echo &
-    python3 scripts/differential_probe.py 8080 --print --only NAME
-    python3 scripts/differential_probe.py 8080 --freeze
+    uv run poe freeze-differential
+    git diff scripts/differential_expected.json
 
-`--freeze` writes every case's `ours` and keeps the other columns. Before
-believing a new verdict, ask the two references. Each is an echo server
-answering what its parser handed it, as the same JSON, from the D0 harness
-(`echo_h11.py` and `echo_node.js`, kept with the review's notes, not in this
-tree):
+The task builds `apps/request_echo` and starts it and the two reference
+echoes beside this file, each on a free port: `differential_echo_h11.py`
+(h11 0.16, in the dev venv) and `differential_echo_node.js` (Node's llhttp,
+when `node` is on PATH). It writes the echo's answers as `ours` and theirs as
+`h11` and `llhttp`, and keeps every note. One server can be asked by hand
+too, on a port of your choosing:
 
-    uv run --no-project --with h11 python3 echo_h11.py 8081 &
-    node echo_node.js 8082 &
-    python3 scripts/differential_probe.py 8081 --freeze h11
-    python3 scripts/differential_probe.py 8082 --freeze llhttp
+    python3 scripts/differential_probe.py PORT --print --only NAME
 
-Then read the new row: where `ours` differs from both references, say why in
+Then read the new row. Where `ours` differs from both references, say why in
 its `note`, or, when the answer looks wrong and is frozen anyway until a fix
-lands, in its `known_divergence`. A parser change that moves a verdict on
-purpose re-freezes `ours` the same way, in the change that moves it.
+lands, name the record in its `known_divergence`. A change that moves an
+answer on purpose re-freezes the same way, in the change that moves it.
 """
 
 G = b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"
