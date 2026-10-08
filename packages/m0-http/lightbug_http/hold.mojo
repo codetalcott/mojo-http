@@ -1,13 +1,13 @@
 """Detect a hold instruction in a WSGI response, and shape what follows.
 
 A WSGI application cannot keep a connection open for what happens after its
-response — whatever it returns ends when its iterable does, streamed from a
-pool thread when it is unsized and buffered otherwise — and it cannot switch a
-connection to another protocol: its response is re-encoded by the server. But
-the server it runs inside holds SSE connections and speaks WebSocket
-natively. This module is the seam between the two: the application returns an
-ordinary buffered response carrying two instruction headers, and the handler
-converts that response into a held connection after the fact.
+response — whatever it returns ends when its iterable does, streamed when it is
+unsized and served from a pool thread, buffered otherwise — and it cannot
+switch a connection to another protocol: its response is re-encoded by the
+server. But the server it runs inside holds SSE connections and speaks
+WebSocket natively. This module is the seam between the two: the application
+returns an ordinary buffered response carrying two instruction headers, and the
+handler converts that response into a held connection after the fact.
 
     M0-Hold: stream        the connection becomes an SSE stream
     M0-Hold: websocket     the connection becomes a WebSocket
