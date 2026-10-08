@@ -2946,6 +2946,14 @@
       "evidence": "`Smoke test the m0 scaffold` (every PR) \u2014 written, built, tested and served outside the tree as the others are (N27), the server started with `--blocking-threads 2`: the document holds the form, the board and the pinned Datastar tag; two streams open at once each receive the posted message, escaped, inside five seconds; the POST answers the signal patch as `application/json`; a stream opened afterwards is sent the newest board at once; an empty message is `422 Unprocessable Content` `problem+json` naming `/messages`; the document holds the board as it stands. The scaffold's own `smoke.sh` probes two streams with no pool, and its test drains two subscribed slots after a post. `poe sabotage-scaffold` (pre-release) reverts the send, each of the three views' `on_loop`, the escaping, `send_latest`, the signal patch and the docstring's backticks, each alone"
     },
     {
+      "id": "N53",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "An `Accept` entry's weight is its parameter named `q`, a name matched whole and in any case: `parse_accept` splits an entry's parameters on `;` and takes the first whose name, folded in ASCII, is `q` (RFC 9110 \u00a712.4.2, \u00a75.6.6), so `Q=0` refuses a type as `q=0` does and a parameter such as `xq=0` is not a weight; whitespace around the `=`, which the grammar does not allow, is read past rather than misread, so `q = 0` refuses and `q= 0.5` weighs 0.5",
+      "status": "verified",
+      "evidence": "`test_content_negotiation.mojo:test_the_weight_is_the_parameter_named_q_in_any_case` (every PR) \u2014 beside it, `test_a_parameter_whose_name_ends_in_q_is_not_the_weight` and `test_whitespace_around_a_weights_equals_sign_is_tolerated`. The weight was the first substring `q=` (review record LF69): `Q=0` was no weight, `;xq=0` refused the type, `q =0` was ignored and `q= 0.5` read as 0. Reverting each rule alone (the substring, the case, the whitespace before and after the `=`, the parameters after the first) fails one of the three"
+    },
+    {
       "id": "O1",
       "section": "O",
       "category": "O. Storage packages",

@@ -416,6 +416,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   vendor type matched it. Each is now refused or ignored as other servers
   do, and `WebSocket`, `BYTES=` and `Application/VND.X` still match.
 
+- **An `Accept` weight is read from the parameter named `q`, in any case**
+  (fork review LF69, SPEC N53). Exposed: Mojo applications that negotiate
+  with `parse_accept`. The weight was found by searching an entry's
+  parameters for the text `q=`, so `text/html;Q=0` did not refuse HTML, a
+  parameter such as `xq=0` refused its type, and `q= 0.5`, with a space
+  after the `=`, read as a refusal. The weight is now the first parameter
+  whose name is `q` in any case, and spaces around its `=` are read past.
+
 - **`HTTPRequest.encode()` writes the target it was given** (fork review
   LF62, SPEC A38). Exposed: a Mojo application that writes a request out
   (a proxy view, a test), and `String(req)`. The request line carried the
