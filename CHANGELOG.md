@@ -221,18 +221,25 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `ByteReader`, `read_body` and `read_chunks`;
   `lightbug_http.header.parse_response_headers` and
   `ParsedResponseHeaders`, `lightbug_http.http.parsing`'s
-  `http_parse_response_headers`, `get_token_to_eol` and `try_peek_at`,
-  and the response parse errors; `ResponseCookieJar.from_headers`;
+  `http_parse_response_headers`, `get_token_to_eol` and `try_peek_at`;
+  the response parse errors, `lightbug_http.header`'s
+  `ResponseParseError`, `InvalidHTTPResponseError` and
+  `IncompleteHTTPResponseError`, and `lightbug_http.http.response`'s
+  `ResponseParseError`, `ResponseHeaderParseError` and
+  `ResponseBodyReadError`; `ResponseCookieJar.from_headers`;
   `Cookie.from_set_header`, which dropped `expires`, a capitalised
   `SameSite` and any attribute it did not know; `Cookie.clear_cookie`;
-  with `CookieParseError`, `InvalidCookieError`, `Expiration.invalidate`
-  and the `from_string` of `Expiration`, `Duration` and `SameSite`;
+  with `lightbug_http.cookie`'s `CookieParseError` (the request side's,
+  `lightbug_http.http.request.CookieParseError`, stays),
+  `InvalidCookieError`, `Expiration.invalidate` and the `from_string` of
+  `Expiration`, `Duration` and `SameSite`;
   `ParsedRequestHeaders.expects_body`, which missed a chunked
   body on any method but POST, PUT and PATCH; `write_header_latin1`,
   which wrote a header holding CR or LF where `Headers.write_latin1_to`
   drops it; `HTTPChunkedDecoder.is_in_chunk_data`;
   `lightbug_http.strings`' `find_all`, `is_printable_ascii`,
-  `BytesConstant.CRLF` and `BytesConstant.DOUBLE_CRLF`; and
+  `IS_PRINTABLE_ASCII_MASK`, `BytesConstant.CRLF` and
+  `BytesConstant.DOUBLE_CRLF`; and
   `lightbug_http.io.bytes`' `is_newline`, `is_space` and `bufis`, and
   `ByteReader`'s `read_line`, `read_word`, `skip_whitespace`,
   `skip_carriage_return` and `consume`. `parse_headers` and `scan_to_eol`
