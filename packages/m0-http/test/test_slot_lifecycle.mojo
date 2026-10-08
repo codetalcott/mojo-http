@@ -454,6 +454,18 @@ def test_a_file_that_ends_early_closes_its_connection() raises:
     covers: J15
     """
     var path = String("/tmp/m0_lifecycle_truncated_body_") + String(getpid())
+    try:
+        _send_a_file_that_ends_early(path)
+    finally:
+        # Every path, a failing assertion's included: the file is 4 MB.
+        try:
+            remove(path)
+        except:
+            pass
+
+
+def _send_a_file_that_ends_early(path: String) raises:
+    """The round above, over the file at `path`, which its caller removes."""
     with open(path, "w") as f:
         f.write(String("b") * FILE_BYTES)
     var file = open(path, "r")
@@ -516,7 +528,6 @@ def test_a_file_that_ends_early_closes_its_connection() raises:
     assert_true(_read_available(peer, got), "the peer read no EOF")
     assert_equal(len(got), head.byte_length() + sent_of_file)
     close(FileDescriptor(peer))
-    remove(path)
 
 
 def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
