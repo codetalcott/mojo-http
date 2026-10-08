@@ -58,8 +58,11 @@ def _timer_slot(ident: UInt) -> Int:
     one -- descriptor 65536's heartbeat the app tick's -- and adding or
     deleting its timer re-armed or closed the other's timerfd (review
     record LF18). A descriptor at or above 2^20 cannot be told from a lower
-    one by its ident at all; it needs `fs.nr_open` raised past its default
-    of 1048576.
+    one by its ident at all (loop/state.mojo's `TIMER_* + fd`). A process
+    reaches one only with a descriptor limit (`RLIMIT_NOFILE`) above 2^20:
+    the kernel's `fs.nr_open` defaults to exactly 2^20, but systemd (240
+    and later) raises it to its maximum at boot, so on most hosts the limit
+    is the only ceiling.
     """
     var kind = Int(ident >> _TIMER_KIND_SHIFT) - 1
     if kind < 0 or kind >= _TIMER_KINDS:

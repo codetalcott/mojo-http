@@ -20,8 +20,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   tick and, when it ended, stopped the tick for good; a request body read
   on descriptor 131072 + k re-armed descriptor k's heartbeat; and a stream
   at or above 131072 got no heartbeat, a body at or above 262144 no read
-  timeout. Every timer now has a slot of its own below descriptor 2^20,
-  the ceiling Linux's default `fs.nr_open` sets.
+  timeout. Every timer now has a slot of its own at any descriptor below
+  2^20, which a process reaches only with a descriptor limit
+  (`RLIMIT_NOFILE`) above a million.
 
 - **A server that returns gives back its kqueue or epoll descriptor**
   (fork review LF21, SPEC C13). Exposed: a Mojo application that serves,
