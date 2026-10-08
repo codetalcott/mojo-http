@@ -34,6 +34,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   on every drain. A datagram longer than that, or malformed, is refused
   and counted: `bus_frames_refused_total` on `/__metrics`.
 
+- **A `DatastarStream` reads a `Last-Event-ID` the way the server's held
+  streams do.** Exposed: an m0 application that calls `DatastarStream.open`
+  with a request it built itself, whose `Last-Event-ID` carries whitespace
+  around the id. `open` read `" 12 "` as 0 and replayed the whole journal
+  where the client had seen up to 12; it now resumes after 12. The stream
+  and the server's held streams share one parser
+  (`lightbug_http.hold.request_last_event_id`), so the two cannot read an
+  id differently again. A request from the wire was never affected: the
+  server trims the whitespace before either parser sees the value.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP
