@@ -60,15 +60,6 @@ struct InetNtopError(Movable, Writable):
         elif self.value.isa[Error]():
             writer.write(self.value[Error])
 
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
 
 @fieldwise_init
 struct InetPtonError(Movable, Writable):
@@ -90,15 +81,6 @@ struct InetPtonError(Movable, Writable):
             writer.write(self.value[InetPtonInvalidAddressError])
         elif self.value.isa[Error]():
             writer.write(self.value[Error])
-
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
 
 
 def htons(hostshort: c_ushort) -> c_ushort:

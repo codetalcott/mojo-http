@@ -281,8 +281,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `teardown`, `local_addr` and `remote_addr`; `ConnectionState.closed`;
   `ListenerError`'s `Error` arm and `SocketNameError`'s `InetNtopError`
   arm, neither ever raised; the `__getitem__` and `__str__` of the
-  address, listener and socket error variants, and the `isa` of
-  `ParseError`, `ListenerError` and `SocketNameError`;
+  address, listener, socket and `inet_*` error variants, and the `isa` of
+  `ParseError`, `ListenerError`, `SocketNameError`, `InetNtopError` and
+  `InetPtonError`;
   `SocketAddress.as_sockaddr_in` and `sockaddr`'s constructor;
   `AddressFamily.is_inet`, `AddressLength.INET_ADDRSTRLEN` and
   `ShutdownOption.SHUT_RD`; and the `write_to` and `__str__` of
