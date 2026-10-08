@@ -1609,7 +1609,8 @@ lightbug_http
         (both), `SeeOther` and `BadRequest(message)`; `OutOfBoundsError`,
         `EndOfReaderError.__str__`, `ByteReader.read_bytes(n)`, `as_bytes` and `__contains__`;
         `ByteView`'s `__eq__` (three), `__ne__`, `__contains__` (two),
-        `as_bytes` and `__str__`, with its `Equatable` conformance;
+        `as_bytes`, `__str__` and `__bool__`, with its `Equatable` and
+        `Boolable` conformances;
         `strings.https`, `colonChar` and seventeen `BytesConstant` bytes
         left from the token check `TCHAR_LO`/`TCHAR_HI` replaced (review
         record LF52).

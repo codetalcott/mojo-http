@@ -308,8 +308,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   builds every redirect) and `BadRequest(message)`. From
   `lightbug_http.io.bytes`: `OutOfBoundsError`, `EndOfReaderError.__str__`,
   `ByteReader`'s `read_bytes(n)`, `as_bytes` and `in`, and `ByteView`'s
-  comparisons, `in`, `as_bytes` and `__str__`. From `lightbug_http.strings`: `https`,
-  `colonChar` and the seventeen `BytesConstant` bytes nothing reads.
+  comparisons, `in`, truth test, `as_bytes` and `__str__`. From
+  `lightbug_http.strings`: `https`, `colonChar` and the seventeen
+  `BytesConstant` bytes nothing reads.
 
 ## [1.12.1] — 2026-10-07
 

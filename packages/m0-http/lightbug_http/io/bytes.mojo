@@ -89,7 +89,7 @@ struct ByteWriter(Writer):
         return self._inner^
 
 
-struct ByteView[origin: ImmOrigin](Boolable, Copyable, Sized, Writable):
+struct ByteView[origin: ImmOrigin](Copyable, Sized, Writable):
     """Convenience wrapper around a Span of Bytes."""
 
     var _inner: Span[Byte, Self.origin]
@@ -100,9 +100,6 @@ struct ByteView[origin: ImmOrigin](Boolable, Copyable, Sized, Writable):
 
     def __len__(self) -> Int:
         return len(self._inner)
-
-    def __bool__(self) -> Bool:
-        return Bool(self._inner)
 
     def __getitem__(self, index: Int) -> Byte:
         return self._inner[index]
