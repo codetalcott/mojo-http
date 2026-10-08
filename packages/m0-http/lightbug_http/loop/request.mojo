@@ -118,8 +118,15 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
         #
         # A stream has no request left to answer, so those still
         # close here. Everything else falls through to the read
-        # path, which finishes the buffered request; keep-alive
-        # is off, because the peer cannot send another.
+        # path, which finishes the buffered request, and the answer
+        # to the last one the peer sent closes the connection
+        # (`_answers_the_last_request`). Not `should_close` here:
+        # on a slot whose answer was still going out it closed the
+        # connection as that answer landed, and the requests
+        # pipelined behind it, read already or still in the socket,
+        # went unanswered (review record LF43). The keep-alive
+        # transition answers them, and its drain's read finds the
+        # EOF again.
         var _eof_state = st.provision_pool.provisions[slot].state.kind
         if _eof_state == ConnectionState.STREAMING_SSE:
             _close_slot(handler, backend, st, slot, fd_val)
@@ -134,7 +141,6 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
             # socket holds nothing more.
             ws_peer_eof = True
         else:
-            st.provision_pool.provisions[slot].should_close = True
             st.provision_pool.provisions[slot].peer_eof = True
 
     if st.provision_pool.provisions[slot].state.kind == ConnectionState.STREAMING_WS:

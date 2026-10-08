@@ -1550,6 +1550,13 @@ lightbug_http
         head longer than one read with the rest still in the socket
         (review record LF42).
 
+      - loop/request.mojo (2026-10-08): `_on_read`'s EOF branch sets
+        `peer_eof` alone, no longer `should_close`, so a slot whose answer
+        was still going out takes the keep-alive transition when it lands
+        and answers what was pipelined behind it; the last request's answer
+        closes (`_answers_the_last_request`; SPEC A30). The flag closed the
+        connection as that answer landed (review record LF43).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

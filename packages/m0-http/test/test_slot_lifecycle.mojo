@@ -960,6 +960,66 @@ def test_a_half_closed_head_longer_than_a_read_is_answered() raises:
     close(FileDescriptor(peer))
 
 
+def test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest() raises:
+    """A client that pipelines, half-closes, and reads slowly is answered
+    every request it sent (review record LF43). The first answer waited on
+    a full socket when the EOF arrived, and the read path's `should_close`
+    then closed the connection as soon as that answer landed: the request
+    pipelined behind it, already in the buffer, went unanswered. The
+    keep-alive transition answers it, and the drain's read finds the EOF,
+    so the last one closes (`_answers_the_last_request`).
+
+    covers: A30
+    """
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    var filler = _fill_send_buffer(fd)
+    _send_all(peer, "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+
+    # The requests are read, and the first answer waits on the full socket.
+    _on_read(app, backend, st, fd, False)
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind, ConnectionState.RESPONDING,
+    )
+    # The EOF arrives while it waits.
+    _on_read(app, backend, st, fd, True)
+
+    var got = List[UInt8]()
+    var rounds = 0
+    while st.slot_fds[slot] != UNUSED and rounds < 1000:
+        _ = _read_available(peer, got)
+        if (
+            st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.RESPONDING
+        ):
+            _on_write(app, backend, st, fd)
+        else:
+            # Between requests with its reads armed: the registration
+            # reports the EOF, as both backends do.
+            _on_read(app, backend, st, fd, True)
+        rounds += 1
+    _ = _read_available(peer, got)
+    var reply = String(unsafe_from_utf8=Span(got)[filler:])
+    var answers = len(reply.split("HTTP/1.1 200 OK")) - 1
+    assert_equal(
+        answers, 2,
+        "a request pipelined behind a slow answer went unanswered: " + reply,
+    )
+    assert_true("connection: close" in reply.lower(), reply)
+    assert_equal(st.slot_fds[slot], UNUSED, "the connection was left open")
+    close(FileDescriptor(peer))
+
+
 struct OneChunkStream(HTTPService):
     """A channel stream's producer, as the loop sees it: one payload
     queued, and the stream over once it is drained."""

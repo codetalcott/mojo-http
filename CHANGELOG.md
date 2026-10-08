@@ -24,6 +24,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   connection closed with no answer, the rest of its headers still unread.
   It is now read to its end and answered.
 
+- **A client that pipelines, half-closes and reads slowly gets every
+  answer** (SPEC A30). When the client shut down its write side while an
+  earlier answer was still waiting for it to read, the connection closed
+  as soon as that answer went out, and the requests it had pipelined
+  behind it were never answered. They are now, and the connection closes
+  after the last.
+
 - **A streamed response honours `Connection: close`** (SPEC A28). An ASGI
   application's streamed body, or a WSGI application's streamed iterable
   on a pool thread, goes out chunked over HTTP/1.1, and when the request
