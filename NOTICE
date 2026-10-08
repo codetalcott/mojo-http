@@ -1672,7 +1672,7 @@ lightbug_http
       - http/request.mojo (2026-10-08): `HTTPRequest.encode` and
         `write_to` write `uri.request_uri` (`_target`), where they wrote the
         percent-decoded `uri.path` and its query; `from_parsed` keeps the
-        target as it arrived in `request_uri`, `*` included (SPEC A37,
+        target as it arrived in `request_uri`, `*` included (SPEC A38,
         review record LF62).
 
       - header.mojo, http/parsing.mojo, http/request.mojo,

@@ -269,7 +269,7 @@ def test_a_request_is_written_with_its_target_as_received() raises:
     an encoded CR LF as the real bytes (a split line), and an asterisk-form
     `OPTIONS *` as `OPTIONS /` (review record LF62).
 
-    covers: A37
+    covers: A38
     """
     var head = String(" HTTP/1.1\r\nHost: a\r\n\r\n")
     var targets = ["/a%20b?x=1", "/a%20b", "/x?q=a%26b", "/p", "*", "/"]

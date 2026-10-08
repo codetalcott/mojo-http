@@ -276,7 +276,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   ignored, and so is whitespace between the size and the line's end.
 
 - **`HTTPRequest.encode()` writes the target it was given** (fork review
-  LF62, SPEC A37). Exposed: a Mojo application that writes a request out
+  LF62, SPEC A38). Exposed: a Mojo application that writes a request out
   (a proxy view, a test), and `String(req)`. The request line carried the
   percent-decoded path: `/a%20b` went out as `/a b`, an encoded CR LF in a
   URL as a real line break that split the request, and `OPTIONS *` as
@@ -303,6 +303,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   argument, slicing the span to the count it meant. To receive into a
   list's spare capacity, pass `spare_capacity(list)` and grow the list by
   what `recv` returns.
+
+- **`HTTPRequest.encode()` and `write_to` write `req.uri.request_uri`**
+  (fork review LF62, SPEC A38). An application that edits a parsed
+  request's `uri.path` or `uri.query_string` and then writes the request
+  out (a proxy-style view) sets `uri.request_uri` instead: the writers no
+  longer rebuild the target from the decoded path and the query.
 
 ### Removed
 
