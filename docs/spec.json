@@ -218,6 +218,14 @@
       "evidence": "`test_slot_lifecycle.mojo:test_a_half_closed_request_is_answered_with_a_close` (every PR) \u2014 one read event carrying the EOF with the bytes, as both backends report a FIN that arrived beside them, for one request, two in one read, and a first request exactly one read long with the second still in the socket. The EOF set the close and the request's own `Connection` replaced it, so the answer said `keep-alive`, and on epoll, the FIN's edge spent, the slot waited for the idle sweep, for good with idle timeouts off. `Smoke test a half-closed client` runs it on the wire on both legs: a half-closed burst of 200 pipelined requests whose last answer must close, and single requests whose connections must end within 5 s. Found by the 2026-10-07 fork review"
     },
     {
+      "id": "A28",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A chunked response stream ends as its request asked: after `Connection: close`, on a server with keep-alive off, or for a client that has half-closed, its head says `Connection: close` and the connection closes once the terminator lands; otherwise it says `keep-alive` and the connection waits for the next request",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_chunked_stream_keeps_the_close_its_request_asked_for` (every PR) \u2014 a channel stream from head to terminator, for each of the three and for a request that asked nothing, which keeps its connection. A stream's head clears the close, or the head landing would end the slot, and the stream's end then took the keep-alive path whatever the request had said, under a head that said `keep-alive`: measured on m0serve with the bare ASGI app's `/chunks` and `Connection: close`. Found by the 2026-10-07 fork review"
+    },
+    {
       "id": "A29",
       "section": "A",
       "category": "A. HTTP/1.1 framing and connection lifecycle",
@@ -232,14 +240,6 @@
       "capability": "A client that pipelines, half-closes and reads slowly is answered every request it sent: an EOF that arrives while an answer waits on a full socket closes the connection only after the last request, not after that answer",
       "status": "verified",
       "evidence": "`test_slot_lifecycle.mojo:test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest` (every PR) \u2014 two pipelined requests and a half-close behind a send buffer filled first, so the first answer waits; the EOF's event comes while it does. The read path set `should_close` for the EOF, and the connection closed as that answer landed, the request behind it unanswered. Found by lane L of the 2026-10-07 fork review"
-    },
-    {
-      "id": "A28",
-      "section": "A",
-      "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "A chunked response stream ends as its request asked: after `Connection: close`, on a server with keep-alive off, or for a client that has half-closed, its head says `Connection: close` and the connection closes once the terminator lands; otherwise it says `keep-alive` and the connection waits for the next request",
-      "status": "verified",
-      "evidence": "`test_slot_lifecycle.mojo:test_a_chunked_stream_keeps_the_close_its_request_asked_for` (every PR) \u2014 a channel stream from head to terminator, for each of the three and for a request that asked nothing, which keeps its connection. A stream's head clears the close, or the head landing would end the slot, and the stream's end then took the keep-alive path whatever the request had said, under a head that said `keep-alive`: measured on m0serve with the bare ASGI app's `/chunks` and `Connection: close`. Found by the 2026-10-07 fork review"
     },
     {
       "id": "B1",
