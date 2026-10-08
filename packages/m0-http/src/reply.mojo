@@ -58,10 +58,10 @@ def no_content() -> HTTPResponse:
 def redirect(status: Int, location: String) -> HTTPResponse:
     """A redirect to `location`.
 
-    `common_response.mojo` ships only `SeeOther` (303), and that one requires
-    a content type it then puts on an empty body. The other four codes had no
-    constructor at all, so an app redirecting permanently built the response
-    and its `Location` by hand. `status` is not validated: 3xx is the caller's
+    The fork's `common_response.mojo` shipped only `SeeOther` (303, since
+    removed), which required a content type it then put on an empty body.
+    The other four codes had no constructor at all, so an app redirecting
+    permanently built the response and its `Location` by hand. `status` is not validated: 3xx is the caller's
     to choose, and a deliberate 201-with-Location is legitimate.
 
     A control byte in `location` -- any C0 control, CR, LF and NUL among

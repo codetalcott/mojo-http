@@ -3854,6 +3854,35 @@ refuses 78 'too many mounts, explicit no pool'  $M127 $W --blocking-threads 0
 refuses 1  'missing app dir, then a conflict'   bareapp.wsgi --app-dir /no/such/dir --workers 2 --threads 2
 refuses 2  'compiled mount unserved, then lanes' $M127 --mount /native=mojo $W --blocking-threads 0
 
+# A port of 0 is refused before the bind, 78 both ways, whether M0_PORT
+# or --port names it (review record LF56): the variable's served on a port
+# the kernel chose, and the flag's was a usage error. Not through serve(),
+# whose own --port would outrank both. A server that took the port would
+# block in accept, so each has ten seconds to exit.
+port_refused() {
+  desc="$1"; penv="$2"; shift 2
+  env $penv "$srv" --doctor $SPEC "$@" > "$json" 2>/dev/null; doc=$?
+  spawn port0.log env $penv "$srv" $SPEC "$@"
+  spid=$pid
+  n=0
+  while kill -0 "$spid" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+  if kill -0 "$spid" 2>/dev/null; then
+    kill -TERM "$spid" 2>/dev/null
+    fail "$desc: the server is still running after ten seconds, on a port the kernel chose"
+  fi
+  wait "$spid"; real=$?
+  [ "$doc" = 78 ] || fail "$desc: doctor exits $doc, want 78"
+  [ "$real" = 78 ] || fail "$desc: server exits $real, want 78"
+  grep -q 'M0_PORT must be between 1 and 65535, got 0' "$SMOKE_DIR/port0.log" \
+    || fail "$desc: the server did not say why"
+}
+port_refused 'an environment port of 0' M0_PORT=0
+port_refused 'a flag port of 0' '' --port 0
+# A listen address the listener would refuse (a % in the host, an IPv6
+# zone) is a 78 before the bind, both ways; the server failed at the bind
+# with 1 while the doctor said 0 (review record LF48).
+refuses 78 'a host with an IPv6 zone'           $SPEC --host fe80::1%en0
+
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
 equiv 'threads and workers together' $SPEC --workers 2 --threads 2
@@ -6540,9 +6569,10 @@ help = "PRE-RELEASE: revert each request rule the differential corpus holds and 
 deps = ["build-core", "build-http"]
 cmd = "python3 scripts/differential_sabotage.py"
 
-# SPEC G13. The request decoder is a pure function over bytes, so the harness
-# needs no socket and no server: mutate a seed corpus, assert the invariants,
-# and stay reproducible from `--seed` so a CI failure can be replayed exactly.
+# SPEC G13, B29, B30. The request decoder and the loop's framing decision are
+# pure functions over bytes, so the harness needs no socket and no server:
+# mutate a seed corpus, assert the invariants, and stay reproducible from
+# `--seed` so a CI failure can be replayed exactly.
 # 20k iterations is a couple of seconds, which is why this runs every PR
 # rather than weekly; `fuzz-request-long` is the deeper sweep for a release.
 [tool.poe.tasks.fuzz-request]
@@ -6550,6 +6580,8 @@ help = "Fuzz the request/chunked decoders against their invariants"
 shell = """
 mojo run -I packages/m0-http -I packages/m0-core scripts/fuzz_request.mojo --iterations 20000 || exit 1
 python3 scripts/emit.py --covers G13 --task fuzz-request
+python3 scripts/emit.py --covers B29 --task fuzz-request
+python3 scripts/emit.py --covers B30 --task fuzz-request
 """
 
 [tool.poe.tasks.fuzz-request-long]

@@ -658,6 +658,27 @@ def test_a_bare_lf_in_a_request_head_is_rejected() raises:
     assert_true(_rejected("GET / HTTP/1.1\nHost: x\n\n"))
 
 
+def test_a_bare_cr_before_the_request_line_is_rejected() raises:
+    """A CR no LF follows is no empty line, and opens no request line.
+
+    RFC 9112 §2.2: a recipient MUST treat a bare CR as invalid, or as SP,
+    which leaves a request line opening with SP -- invalid either way. The
+    parser skipped it with the empty lines and read the method from the
+    byte after it, so `\\rGET` was served whole and refused when a read had
+    ended after the CR, the incremental check before the parse refusing it
+    (review record LF67, found by the request fuzzer's split invariant).
+
+    covers: B29
+    """
+    assert_true(_rejected("\rGET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("\r\n\r*GET / HTTP/1.1\r\nHost: x\r\n\r\n"))
+    # Refused at the byte after the CR, before the rest arrives.
+    assert_true(_rejected("\rG"))
+    # A CR that is the buffer's last byte may still be a CRLF.
+    assert_false(_rejected("\r"))
+    assert_false(_rejected("\r\n\r"))
+
+
 def test_a_bare_lf_is_invalid_before_the_rest_arrives() raises:
     """Refused at the LF, not left waiting for more bytes.
 

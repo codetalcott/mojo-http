@@ -176,6 +176,7 @@ from std.time import perf_counter_ns, sleep
 
 from lightbug_http.accept_share import AcceptShare
 from lightbug_http.address import NetworkType
+from lightbug_http.address import join_host_port, parse_address
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.process import getpid, process_exit
@@ -817,6 +818,42 @@ def host_checks(
     (SPEC E32) is where the gathered fact is proven.
     """
     var out = List[HostCheck]()
+    # The port, first: what the listener binds. `--port` and `M0_PORT` are
+    # both read whatever the number, and refused here (review record LF56):
+    # the variable's 0 listened on a port the kernel chose, and the flag's
+    # was a usage error.
+    if config.port < 1 or config.port > 65535:
+        out.append(HostCheck(
+            "port",
+            String("M0_PORT must be 1-65535, got ", config.port),
+            "set --port (M0_PORT) to a port from 1 to 65535",
+        ))
+    else:
+        out.append(HostCheck("port", String("port ", config.port)))
+    # The address, parsed as the listener will parse it: a refusal it makes,
+    # such as a `%` in the host (an IPv6 zone), failed at the bind with 1
+    # while the doctor said 0 (review record LF48).
+    # A port out of range is the `port` check's alone: the host is parsed
+    # with a placeholder port then, so this fails on the host's own cause
+    # and the doctor reports a bad host and a bad port at once, each by its
+    # own check.
+    var address = config.address()
+    var port_ok = config.port >= 1 and config.port <= 65535
+    var parsed = address if port_ok else join_host_port(config.host, "1")
+    var unparsed = String("")
+    try:
+        _ = parse_address[NetworkType.tcp](StringSpan(parsed))
+    except parse_err:
+        unparsed = String(parse_err)
+    if unparsed.byte_length() > 0:
+        out.append(HostCheck(
+            "address",
+            String("cannot listen on ", address, ": ", unparsed),
+            "set --host (M0_HOST) to an IPv4 or IPv6 address, or localhost,"
+            " and --port (M0_PORT) to a port from 1 to 65535",
+        ))
+    else:
+        out.append(HostCheck("address", address))
     if config.workers < 1:
         out.append(HostCheck(
             "workers-count",

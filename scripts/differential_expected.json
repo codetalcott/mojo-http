@@ -59,7 +59,7 @@
   "absolute_https": {"ours": ["GET bl=0 h=55bca9f5"], "h11": ["GET bl=0 h=7502cdf1"], "llhttp": ["GET bl=0 h=7502cdf1"]},
   "authority_form_get": {"ours": ["400"], "h11": ["GET bl=0 h=2eb75953"], "llhttp": ["400"]},
   "connect": {"ours": ["501"], "h11": ["PARTIAL"], "llhttp": ["NONE"], "note": "SPEC B18: CONNECT is refused 501 and the connection closed; neither reference serves it as a request either"},
-  "asterisk_options": {"ours": ["OPTIONS bl=0 h=61811cb1"], "h11": ["OPTIONS bl=0 h=80943ab6"], "llhttp": ["OPTIONS bl=0 h=80943ab6"]},
+  "asterisk_options": {"ours": ["OPTIONS bl=0 h=80943ab6"], "h11": ["OPTIONS bl=0 h=80943ab6"], "llhttp": ["OPTIONS bl=0 h=80943ab6"]},
   "asterisk_get": {"ours": ["400"], "h11": ["GET bl=0 h=80943ab6"], "llhttp": ["GET bl=0 h=80943ab6"], "note": "SPEC B19: `*` is OPTIONS's alone (RFC 9112 §3.2.4)"},
   "target_fragment": {"ours": ["GET bl=0 h=7c8bca07"], "h11": ["GET bl=0 h=7c8bca07"], "llhttp": ["GET bl=0 h=7c8bca07"]},
   "target_high_bytes": {"ours": ["400"], "h11": ["400"], "llhttp": ["400"]},

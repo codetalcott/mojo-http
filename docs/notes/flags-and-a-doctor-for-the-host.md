@@ -51,9 +51,11 @@ code; a flag nobody typed leaves the application's value alone.
 m0serve answers its `--workers 0` with 2. The host already refused
 `M0_THREADS=0` with 78, and a host that answered the flag with 2 and the
 variable with 78 would have two descriptions of one rule. So the parser
-refuses only what it cannot READ (not a number, a port out of range, an
-unknown flag, a positional), and a count that cannot be SERVED goes down
-the one path whichever way it arrived.
+refuses only what it cannot READ (not a number, an unknown flag, a
+positional), and a count that cannot be SERVED goes down the one path
+whichever way it arrived. A port out of range went with the parser at
+first; since review record LF56 it is the one list's `port` check too,
+78 from `--port` and `M0_PORT` alike.
 
 That path is `host_checks`: every rule the host refuses by, in the order it
 applies them, each evaluated. `host_refusal` — what `serve` exits 78 on —

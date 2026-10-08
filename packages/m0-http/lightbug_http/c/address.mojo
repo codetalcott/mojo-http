@@ -9,7 +9,7 @@ from std.sys.info import CompilationTarget
 # (review R15); `test_ipv6.mojo` asks the kernel which family a socket made
 # with it reports.
 @fieldwise_init
-struct AddressFamily(Copyable, Equatable, Writable, TrivialRegisterPassable):
+struct AddressFamily(Copyable, Equatable, TrivialRegisterPassable):
     var value: c_int
     comptime AF_UNSPEC = Self(0)
     comptime AF_INET = Self(2)
@@ -18,41 +18,11 @@ struct AddressFamily(Copyable, Equatable, Writable, TrivialRegisterPassable):
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
 
-    def write_to[W: Writer, //](self, mut writer: W):
-        # TODO: Only writing the important AF for now.
-        if self == Self.AF_UNSPEC:
-            writer.write("AF_UNSPEC")
-        elif self == Self.AF_INET:
-            writer.write("AF_INET")
-        elif self == Self.AF_INET6:
-            writer.write("AF_INET6")
-        else:
-            writer.write("AddressFamily(", self.value, ")")
-
-    def __str__(self) -> String:
-        return String(self)
-
-    @always_inline("nodebug")
-    def is_inet(self) -> Bool:
-        return self == Self.AF_INET or self == Self.AF_INET6
-
 
 @fieldwise_init
-struct AddressLength(Copyable, Equatable, Writable, TrivialRegisterPassable):
+struct AddressLength(Copyable, TrivialRegisterPassable):
+    """The room `inet_ntop` needs for an address's text, its NUL included
+    (<netinet/in.h>, the same on macOS and Linux)."""
+
     var value: Int
-    comptime INET_ADDRSTRLEN = Self(16)
     comptime INET6_ADDRSTRLEN = Self(46)
-
-    def __eq__(self, other: Self) -> Bool:
-        return self.value == other.value
-
-    def write_to[W: Writer, //](self, mut writer: W):
-        var value: StaticString
-        if self == Self.INET_ADDRSTRLEN:
-            value = "INET_ADDRSTRLEN"
-        else:
-            value = "INET6_ADDRSTRLEN"
-        writer.write(value)
-
-    def __str__(self) -> String:
-        return String(self)

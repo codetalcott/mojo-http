@@ -8,7 +8,8 @@ believable result for a decoder with the unit suite this one has -- and is
 worth nothing unless the harness can be shown to fail.
 
 So each entry below reverts one property the fuzzer claims to check, in the
-decoder itself, and the run must fail -- on THAT invariant: each entry names
+decoder, the parser or the loop's framing decision (SPEC B29, B30), and the
+run must fail -- on THAT invariant: each entry names
 the text the fuzzer must report, and a run that fails without it failed
 elsewhere, which is a miss. So is a sabotage that does not compile: a build
 error fails the run too, and proves nothing about the invariants. Same shape
@@ -28,12 +29,27 @@ from pathlib import Path
 from sabotage_lib import MojoRun, Ran, rule, run
 
 HEADER = Path("packages/m0-http/lightbug_http/header.mojo")
+PARSING = Path("packages/m0-http/lightbug_http/http/parsing.mojo")
+FRAMING = Path("packages/m0-http/lightbug_http/framing.mojo")
 CHUNKED = Path("packages/m0-http/lightbug_http/http/chunked.mojo")
 FUZZER = Path("scripts/fuzz_request.mojo")
 
 # Fewer iterations than a real run: a broken invariant shows up in the first
-# few hundred mutations, and this runs six builds.
+# few hundred mutations, and this runs one build per entry.
 ITERATIONS = "4000"
+
+# The request parser's refusal of a bare-LF empty line (SPEC B12), and the
+# revert that puts LF2 back: the empty line ends the head at its LF.
+STRICT_EMPTY_LINE = (
+    "            buf.increment()\n            return\n"
+    "        elif byte.value() == BytesConstant.LF:\n"
+    "            raise ParseError()"
+)
+LENIENT_EMPTY_LINE = (
+    "            buf.increment()\n            return\n"
+    "        elif byte.value() == BytesConstant.LF:\n"
+    "            buf.increment()\n            return"
+)
 
 # (label, path, old, new, invariant the fuzzer should name)
 SABOTAGES = [
@@ -76,6 +92,97 @@ SABOTAGES = [
         "        self.pending_bytes = buffer_len - src",
         "        self.pending_bytes = buffer_len + src + 1",
         "chunked pending_bytes is outside the buffer",
+    ),
+    # The invariants that span the parser and the loop (SPEC B29).
+    (
+        "LF2's revert: the parser ends a head at a bare-LF empty line, the "
+        "framer keeps CRLFCRLF",
+        PARSING,
+        STRICT_EMPTY_LINE,
+        LENIENT_EMPTY_LINE,
+        "the parser ended a head on something other than CRLF CRLF",
+    ),
+    (
+        # The framing decision's backstop refuses the head the lenient
+        # parser ends early, so with the parser alone reverted the decision
+        # stays safe and only the parser's own invariant fails (above). This
+        # is the defect as it shipped, with no backstop: the request is
+        # framed by a head end the parser did not stop at.
+        "LF2 as it shipped: that, and the framers' backstop removed",
+        (PARSING, FRAMING),
+        (STRICT_EMPTY_LINE, "    if parsed.bytes_consumed != head_end:"),
+        (LENIENT_EMPTY_LINE, "    if parsed.bytes_consumed < 0:"),
+        "a framed request's head end is not where the parser stopped",
+    ),
+    (
+        # The first defect this harness found (LF66): with one to three
+        # bytes scanned the search began AT them, and a CRLFCRLF opening the
+        # buffer was missed by a split read (two empty lines, then a
+        # request). The clamp lives in `find_header_end`.
+        "the terminator search starts at what an earlier read scanned",
+        HEADER,
+        "    var actual_start = max(search_start - 3, 0)",
+        "    var actual_start = search_start - 3 if search_start > 3 else search_start",
+        "a head split across reads was framed differently from the same bytes whole",
+    ),
+    (
+        # The second: a bare CR before the request line was skipped with
+        # the empty lines, the method read from the byte after it -- served
+        # whole, refused by the incremental check when a read had ended
+        # after the CR.
+        "a bare CR before the request line is skipped as an empty line",
+        PARSING,
+        "            if byte.value() == BytesConstant.CR:\n"
+        "                buf.increment()\n"
+        "                var next = try_peek(buf)\n"
+        "                if not next:\n"
+        "                    return -2\n"
+        "                if next.value() != BytesConstant.LF:\n"
+        "                    return -1",
+        "            if byte.value() == BytesConstant.CR:\n"
+        "                buf.increment()\n"
+        "                var next = try_peek(buf)\n"
+        "                if not next:\n"
+        "                    return -2\n"
+        "                if next.value() != BytesConstant.LF:\n"
+        "                    break",
+        "a head split across reads was framed differently from the same bytes whole",
+    ),
+    (
+        "a bare LF is asked of a read's new bytes without the byte before them",
+        FRAMING,
+        "        if holds_bare_lf(buffer, scanned):",
+        "        if holds_bare_lf(buffer[scanned:], 0):",
+        "a head split across reads was framed differently from the same bytes whole",
+    ),
+    # A chunked body as the loop reads it (SPEC B30).
+    (
+        "the chunked decoder ends a body at a bare-LF empty trailer line",
+        CHUNKED,
+        "                if buf[src] == BytesConstant.CR:\n"
+        "                    src += 1\n"
+        "                    self._state = DecoderState.IN_TRAILERS_END_EXPECT_LF\n"
+        "                    continue",
+        "                if buf[src] == BytesConstant.LF:\n"
+        "                    src += 1\n"
+        "                    ret = buffer_len - src\n"
+        "                    break\n"
+        "                if buf[src] == BytesConstant.CR:\n"
+        "                    src += 1\n"
+        "                    self._state = DecoderState.IN_TRAILERS_END_EXPECT_LF\n"
+        "                    continue",
+        "a completed chunked body has a framing line that does not end in CRLF",
+    ),
+    (
+        "a read that ends just after a chunk's data is refused, not awaited",
+        CHUNKED,
+        "            elif self._state == DecoderState.IN_CHUNK_DATA_EXPECT_CR:\n"
+        "                if src >= len(buf):\n"
+        "                    break",
+        "            elif self._state == DecoderState.IN_CHUNK_DATA_EXPECT_CR:\n"
+        "                if src >= len(buf):\n"
+        "                    return (-1, dst)",
+        "a chunked body fed in pieces decoded differently from the same bytes whole",
     ),
 ]
 
