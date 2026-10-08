@@ -8,6 +8,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A client that half-closes is answered with `Connection: close`, and
+  its connection ends behind the answer** (SPEC A27). A client that shuts
+  down its write side after its request has sent its last one, but when
+  the request did not itself ask for a close the answer said `keep-alive`,
+  and on Linux the connection was then held until the idle timeout (for
+  good with `--idle-timeout 0`) waiting for a request that could not come.
+  Requests pipelined ahead of the last one are still answered first.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

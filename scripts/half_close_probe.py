@@ -21,10 +21,22 @@ both layers does (verified by sabotage). The flag's own value is parity
 (the EV_EOF path runs on both platforms, so macOS-only code paths stop
 existing) and seeing the half-close in the same event as the final data.
 
+A half-closed client has also sent its LAST request, so the connection ends
+behind its answer, which says `Connection: close` (review record LF11). The
+EOF set the close and the request's own `Connection` replaced it: the answer
+read `keep-alive`, and on epoll, whose edge for the FIN was spent, the slot
+waited for a request no event would announce until the idle sweep (60 s in
+`apps/hello`). That needs the FIN to land in the event that brings the
+request, which a client cannot arrange, so the single request's prompt EOF
+is a race this probe runs many times. The pipelined burst's last answer is
+the deterministic half: the server takes the burst in several reads, and
+the FIN is in before the last of them.
+
 usage: half_close_probe.py PORT
 """
 import socket
 import sys
+import time
 
 from probelib import phase, stamp
 
@@ -124,6 +136,66 @@ except socket.timeout:
                     % TRUNCATED_DEADLINE)
 finally:
     s.close()
+
+# A half-closed request that does NOT ask for a close: answered, and the
+# connection ends promptly behind it (LF11). The deadline is far inside the
+# server's idle timeout, which is what used to end it on Linux.
+KEEPALIVE = b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n"
+EOF_DEADLINE = 5
+
+
+def read_to_eof(payload):
+    """`payload`, a half-close, then everything until the server's EOF:
+    (bytes, True), or (bytes, False) once EOF_DEADLINE has passed."""
+    s = socket.create_connection(("127.0.0.1", PORT), timeout=EOF_DEADLINE)
+    try:
+        s.sendall(payload)
+        s.shutdown(socket.SHUT_WR)
+        got = b""
+        deadline = time.monotonic() + EOF_DEADLINE
+        while True:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return got, False
+            s.settimeout(left)
+            try:
+                c = s.recv(65536)
+            except socket.timeout:
+                return got, False
+            if not c:
+                return got, True
+            got += c
+    finally:
+        s.close()
+
+
+phase("a half-closed keep-alive request")
+held = 0
+for _ in range(ROUNDS):
+    got, eof = read_to_eof(KEEPALIVE)
+    if not got.startswith(b"HTTP/1.1 200"):
+        failures.append("a half-closed keep-alive request was not answered: %r"
+                        % got[:80])
+        break
+    held += not eof
+if held:
+    failures.append("%d/%d half-closed keep-alive requests left their connection "
+                    "open %ds after the answer, held for a request the client "
+                    "can no longer send" % (held, ROUNDS, EOF_DEADLINE))
+
+phase("a half-closed pipelined burst")
+BURST = 200
+got, eof = read_to_eof(KEEPALIVE * BURST)
+answers = got.split(b"HTTP/1.1 200")[1:]
+if len(answers) != BURST:
+    failures.append("a half-closed burst of %d pipelined requests got %d answers"
+                    % (BURST, len(answers)))
+elif b"\r\nconnection: close\r\n" not in answers[-1].lower():
+    failures.append("the last request of a half-closed burst was answered "
+                    "without Connection: close: %r" % answers[-1][:200])
+if not eof:
+    failures.append("a half-closed burst left its connection open %ds after its "
+                    "last answer" % EOF_DEADLINE)
 
 if failures:
     for f in failures:

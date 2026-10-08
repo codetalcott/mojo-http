@@ -63,6 +63,7 @@ from lightbug_http.loop.state import (
     _stop_reads,
     _stream_idle,
 )
+from lightbug_http.c.socket import ShutdownOption, shutdown
 from lightbug_http.loop.timers import _on_timer
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
@@ -616,6 +617,104 @@ def test_a_stale_body_expiry_is_retired() raises:
         st.slot_fds[slot] = UNUSED
         st.fd_to_slot[FD] = UNUSED
         st.provision_pool.release(slot)
+
+
+def _send_all(fd: Int, text: String) raises:
+    """Write `text` on `fd` in one send, which a fresh stream pair takes
+    whole."""
+    var raw = text.as_bytes()
+    var sent = send(FileDescriptor(fd), raw, UInt(len(raw)), 0)
+    assert_equal(Int(sent), len(raw))
+
+
+def _half_closed_exchange(request: String) raises -> Tuple[String, Bool]:
+    """`request` written by a client that then shut down its write side,
+    read by ONE event that carries the EOF with the bytes, which is how
+    both backends report a FIN that arrived beside them: the reply as the
+    client read it, lowercased, and whether the loop closed the slot."""
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    _send_all(peer, request)
+    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+    _on_read(app, backend, st, fd, True)
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var closed = st.slot_fds[slot] == UNUSED
+    if not closed:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    return (String(unsafe_from_utf8=Span(got)).lower(), closed)
+
+
+def test_a_half_closed_request_is_answered_with_a_close() raises:
+    """A client that half-closes after its request has sent its last one,
+    so the answer says `Connection: close` and the connection ends behind
+    it (review record LF11). The EOF set `should_close` and the request's
+    own reading of `Connection` replaced it: the answer said `keep-alive`,
+    and the slot waited for a next request no event would announce -- on
+    epoll the edge that carried the FIN was spent, so it stayed until the
+    idle sweep, and for good with idle timeouts off. kqueue's level trigger
+    reported the EOF again and hid the hold, not the header.
+
+    A request pipelined behind it is still answered: only the LAST request
+    the client sent closes the connection. Behind it in the same read, and
+    behind it in the socket, where a read that filled its buffer ended
+    exactly at the first request's last byte: the EOF says the FIN has
+    arrived, not that everything ahead of it has been read.
+
+    covers: A27
+    """
+    var one = _half_closed_exchange("GET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    assert_true("200 ok" in one[0], one[0])
+    assert_true("connection: close" in one[0], one[0])
+    assert_false("keep-alive" in one[0], one[0])
+    assert_true(one[1], "a half-closed request's connection stayed open")
+
+    var two = _half_closed_exchange(
+        "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+    )
+    var reply = two[0]
+    var answers = List[String]()
+    for part in reply.split("http/1.1 200 ok"):
+        answers.append(String(part))
+    assert_equal(len(answers), 3, reply)
+    assert_true("connection: keep-alive" in answers[1], reply)
+    assert_true("connection: close" in answers[2], reply)
+    assert_true(two[1], "the last pipelined request left its connection open")
+
+    # The first request exactly one read long, the second still in the
+    # socket when the first is answered.
+    var sizing = _loop(_config())
+    var want = sizing.provision_pool.provisions[
+        sizing.provision_pool.borrow()
+    ].recv_staging.capacity()
+    var head = String("GET /a HTTP/1.1\r\nHost: x\r\nX-Pad: ")
+    var first = head + String("p") * (want - head.byte_length() - 4) + "\r\n\r\n"
+    assert_equal(first.byte_length(), want)
+    var full = _half_closed_exchange(
+        first + "GET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+    )
+    var full_reply = full[0]
+    var full_answers = List[String]()
+    for part in full_reply.split("http/1.1 200 ok"):
+        full_answers.append(String(part))
+    assert_equal(
+        len(full_answers), 3,
+        "a request still in the socket behind a half-close went unanswered: "
+        + full_reply,
+    )
+    assert_true("connection: keep-alive" in full_answers[1], full_reply)
+    assert_true("connection: close" in full_answers[2], full_reply)
+    assert_true(full[1])
 
 
 def test_a_send_deadline_leaves_a_websockets_close_linger() raises:

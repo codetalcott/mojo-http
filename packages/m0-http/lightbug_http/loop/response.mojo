@@ -9,7 +9,7 @@ next request. `_send_error_to_fd` is the best-effort answer before a close.
 """
 
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import send, close, set_tcp_keepalive
+from lightbug_http.c.socket import recv, send, close, set_tcp_keepalive
 from lightbug_http.connection import ConnectionState
 from lightbug_http.header import HeaderKey, KH_DATE
 from lightbug_http.http import (
@@ -209,6 +209,50 @@ def _keep_stream_alive(st: LoopState, fd_val: Int):
         pass
 
 
+def _answers_the_last_request(mut st: LoopState, slot: Int, fd_val: Int) -> Bool:
+    """Whether the request being answered is the last one its client will
+    send: the client has half-closed (`peer_eof`), and nothing it sent is
+    left behind this request.
+
+    A request pipelined behind it keeps the connection, so the rest is
+    still answered; the drain's read finds the EOF again for the last one.
+    And `peer_eof` says the FIN has arrived, not that every byte ahead of
+    it has been read: a read that filled its buffer can stop exactly where
+    this request ends, with the next one still in the socket, and closing
+    then drops that one and resets the connection over the answer. Behind
+    a FIN a read does not block, so one more read settles it -- nothing is
+    the end, and anything else is the next request, kept in the buffer for
+    the drain. Only a half-closed connection's request that ends its buffer
+    pays for it.
+    """
+    if not st.provision_pool.provisions[slot].peer_eof:
+        return False
+    var have = len(st.provision_pool.provisions[slot].recv_buffer)
+    if st.provision_pool.provisions[slot].request_end < have:
+        return False
+    var want = st.provision_pool.provisions[slot].recv_staging.capacity()
+    st.provision_pool.provisions[slot].recv_buffer.reserve(have + want)
+    var n: UInt
+    try:
+        n = recv(
+            FileDescriptor(fd_val),
+            Span(
+                unsafe_ptr=st.provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(have),
+                length=want,
+            ),
+            UInt(want),
+            0,
+        )
+    except:
+        # A reset, or a read that would wait, which a FIN rules out: no
+        # further request will be read either way.
+        return True
+    if n == 0:
+        return True
+    st.provision_pool.provisions[slot].recv_buffer._len = have + Int(n)
+    return False
+
+
 def _finish_response[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
     var response: HTTPResponse,
@@ -222,6 +266,22 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     HEAD, Date, encode, eager send). Every response the server has ever sent
     went through this code; the pool path did not get a second copy of it.
     """
+    # A 101 with Upgrade: websocket switches this connection to frame mode
+    # once the handshake response is on the wire (see _after_send).
+    var upgraded_ws = is_ws_upgrade_response(response)
+
+    # A client that has half-closed is answered with a close once its last
+    # request is (review record LF11). The EOF set `should_close` and the
+    # request's own `Connection` replaced it: the answer read `keep-alive`,
+    # and on epoll, whose edge for the FIN was spent, the slot waited for a
+    # request no event would announce until the idle sweep, or for good
+    # with idle timeouts off. Here rather than where the request is read,
+    # because a pool thread's answer comes back through here too, with an
+    # EOF that arrived while it ran. Not for a handshake, whose socket
+    # reads frames from here on, never a next request.
+    if not upgraded_ws and _answers_the_last_request(st, slot, fd_val):
+        st.provision_pool.provisions[slot].should_close = True
+
     # A HEAD's response is its head (RFC 9110 §9.3.2), whatever a handler
     # made of it: a hold approved on a HEAD -- an `M0-Hold` view that answers
     # every method, a native SSE route matched by path alone -- subscribed
@@ -243,9 +303,6 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         st.provision_pool.provisions[slot].should_close = False
         _keep_stream_alive(st, fd_val)
 
-    # A 101 with Upgrade: websocket switches this connection to frame mode
-    # once the handshake response is on the wire (see _after_send).
-    var upgraded_ws = is_ws_upgrade_response(response)
     if upgraded_ws:
         st.slot_ws[slot] = True
         st.offload.streaming_hint += 1

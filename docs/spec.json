@@ -210,6 +210,14 @@
       "evidence": "`test_response_head.mojo:test_a_server_header_the_application_set_is_the_only_one` (every PR) \u2014 on the bytes of both encoders and the printed form. `encode` and `encode_into` wrote `server: lightbug_http` whatever the headers held, so an application that named itself, built in Mojo or served through the gateway, sent two `Server` lines, which RFC 9110 \u00a710.2.4's grammar, a product list rather than a comma-separated one, cannot join into one; the printed form already asked first. Found by the 2026-10-07 fork review"
     },
     {
+      "id": "A27",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A client that half-closes has sent its last request: the answer to the request that ends what it sent says `Connection: close`, and the connection ends behind it; a request pipelined ahead of that one, in the same read or still in the socket, is answered first, with the connection kept",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_half_closed_request_is_answered_with_a_close` (every PR) \u2014 one read event carrying the EOF with the bytes, as both backends report a FIN that arrived beside them, for one request, two in one read, and a first request exactly one read long with the second still in the socket. The EOF set the close and the request's own `Connection` replaced it, so the answer said `keep-alive`, and on epoll, the FIN's edge spent, the slot waited for the idle sweep, for good with idle timeouts off. `Smoke test a half-closed client` runs it on the wire on both legs: a half-closed burst of 200 pipelined requests whose last answer must close, and single requests whose connections must end within 5 s. Found by the 2026-10-07 fork review"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

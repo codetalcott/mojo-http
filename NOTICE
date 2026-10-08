@@ -1328,6 +1328,15 @@ lightbug_http
         kept, `HTTP://` was left unreduced, and a query straight after the
         authority was lost.
 
+      - loop/response.mojo (2026-10-08): `_finish_response` closes the
+        connection behind the answer to a half-closed client's last request
+        (`_answers_the_last_request`: `peer_eof`, nothing buffered past
+        `request_end`, and one more read, which a FIN keeps from blocking,
+        returning nothing), for every response, a pool thread's included
+        (SPEC A27). The EOF's `should_close` was replaced by the request's
+        own `Connection`, so the answer said `keep-alive` and an epoll slot
+        waited for the idle sweep (review record LF11).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
