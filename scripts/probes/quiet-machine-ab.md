@@ -5,29 +5,23 @@ because each is a difference of a few microseconds per request. Run them in
 a release's quiet stage (docs/RELEASING.md): `mediaanalysisd` paused with
 the owner's agreement, nothing else compiling, and never a `pkill` by name.
 
-| record | arm A | arm B | changes the code when |
+| record | arm A | arm B | when B shows (the rule below) |
 |---|---|---|---|
-| LF24 | `main`: the wake page's lane records and the thread block's records 64 bytes apart, each block from `malloc` | each record on a 128-byte line of its own (Apple silicon's line): both strides 128 and both blocks 128-aligned | B is faster, by more than either arm's own spread |
-| LF22 | `main`: a thread that parks looks at its lane socket once, non-blocking, after announcing the park | that look removed | never in the run that measures it: report how much B is faster, if it is, and the owner rules |
+| LF24 | `main`: the wake page's lane records and the thread block's records 64 bytes apart, each block from `malloc` | each record on a 128-byte line of its own (Apple silicon's line): both strides 128 and both blocks 128-aligned | take B |
+| LF22 | `main`: a thread that parks looks at its lane socket once, non-blocking, after announcing the park | that look removed | report it; the owner rules |
 
-## Before each timing
-
-Record these beside the numbers, every time:
-
-```sh
-uptime
-ps -Ao pcpu,comm -r | head -8
-```
-
-A load average above 2, or anything but the arms above a few percent of a
-CPU, is a run to throw away.
+**The rule, for both.** A measure differs when the two arms' ranges over the
+rounds do not overlap. B shows when it differs from A in the same direction
+at slow 1 and slow 2 (the pooled cells where a parked thread is woken), or
+in the fair arm's `ms_per_request`. `scripts/probes/pool_ab.py` applies it
+and prints the verdict; five rounds, and a second session's five when the
+first is close.
 
 ## Build the arms
 
-From a clean worktree of `main`, with the shared venv activated
-(`. .venv/bin/activate`: `m0serve` embeds the first Python on `PATH`) and
-`UV_NO_SYNC=1` exported. Copies of `m0serve` must live in `bin/`, beside the
-runtime libraries it finds through `@loader_path`.
+From a clean worktree of `main`, with `UV_NO_SYNC=1` exported. Copies of
+`m0serve` must live in `bin/`, beside the runtime libraries it finds through
+`@loader_path`.
 
 ```sh
 uv run --no-sync poe build-all
@@ -63,57 +57,39 @@ git checkout -- packages/m0-http/lightbug_http/offload.mojo
 and rebuild `bin/m0serve` from the clean file (`poe build-serve`) when both
 are done.
 
-## Run them, arms alternated
-
-With `B` set to the record being measured. The wake's cost, as `/fast`'s
-latency on a pool of four beside zero, one and two blocked threads: the
-pooled row of `poe probe-pool`, without its loop-only row, which takes most
-of its fifteen minutes and has no pool in it.
+## Run them
 
 ```sh
-B=$B python3 - <<'EOF'
-import os, statistics, sys
-sys.path.insert(0, "scripts")
-from pool_spike_probe import run_config
-cells = {}
-for r in range(5):
-    for arm in ("A", os.environ["B"]):
-        for slow in (0, 1, 2):
-            got = run_config("bin/pool_spike-" + arm, 4, slow, 300)
-            cells.setdefault((slow, arm), []).append(got["p50"])
-for (slow, arm), p50 in sorted(cells.items()):
-    print("slow=%d %s p50 median %.4f ms, range %.4f-%.4f"
-          % (slow, arm, statistics.median(p50), min(p50), max(p50)))
-EOF
+uv run --no-sync python scripts/probes/pool_ab.py LF24
+uv run --no-sync python scripts/probes/pool_ab.py LF22
 ```
 
-The handoff under contention, as `poe probe-pool-fairness`'s fair arm: five
-threads, twenty connections, a CPU-bound view. Its `ms_per_request` is a
-request's share of the pool, and `long_waits` must stay within its bound in
-both arms:
+Each alternates the arms, A first in every round, over the pooled row of
+`poe probe-pool` (`/fast`'s p50 on a pool of four beside 0, 1 and 2 blocked
+threads, without the loop-only row that takes most of that task's fifteen
+minutes) and the fair arm of `poe probe-pool-fairness` (five threads, twenty
+connections, a CPU-bound view). Before every cell it records `uptime` and
+the top of `ps -Ao pcpu,comm -r` beside the cell; a load average above 2,
+or anything but the arm above a few percent of a CPU, is a round to throw
+away and re-run.
 
-```sh
-for r in 1 2 3 4 5; do for arm in A $B; do
-  port=$(python3 -c 'import sys; sys.path.insert(0, "scripts"); from probelib import free_port; print(free_port())')
-  bin/m0serve-$arm bareapp.wsgi:application --app-dir apps/wsgi_bare \
-    --port $port --blocking-threads 5 > /dev/null 2>&1 & pid=$!
-  python3 scripts/pool_fairness_probe.py $port \
-    | grep -E '^(ms_per_request|p99_ms|long_waits) ' | sed "s/^/$arm $r /"
-  kill $pid; wait $pid
-done; done
-```
+## Where the results go
 
-## Reading it
+Each run writes `bench/results/pool-ab-<YYYY-MM>/pool-ab-<B>-<UTC>.json`: a
+subdirectory, as one-off A/Bs are kept (`asgi-per-core-2026-10/` is the
+precedent), which the bench renderer does not read. Commit the artifacts
+with whatever the verdict changes, and record the verdict on the review's
+LF24 and LF22 lines.
 
-A difference shows when the two arms' ranges do not overlap, in the same
-direction at slow 1 and slow 2 (the cells where a parked thread is woken),
-or in `ms_per_request`. Five rounds each, as above, and a second session's
-five if the first is close.
+## What changes the code
 
-- **LF24**: if B shows, take it -- both strides and both alignments, which
-  makes the docstrings' "one cache line" true on Apple silicon -- and record
-  the arms' medians and ranges with the change. If it does not, record that
-  at five rounds a cell, and the strides stay.
+- **LF24, B shows**: take it -- both strides and both alignments, which
+  makes the docstrings' "each lane on its own cache line" and "One cache
+  line per thread" true on Apple silicon -- with the artifact.
+- **LF24, B does not show**: the strides stay, but those two docstrings are
+  false today on any machine: both blocks come from `malloc`, which
+  promises 16-byte alignment, so a 64-byte record can straddle two lines.
+  Correct them to say so, with the artifact.
 - **LF22**: B does strictly less, so it can only tie or win. Report the
   difference in microseconds per request and as a share of the slow 1 and
   slow 2 medians, with the ranges; the look stays unless the owner rules
