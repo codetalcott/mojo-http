@@ -1247,7 +1247,7 @@
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A control frame declaring more than 125 payload bytes closes with 1002 as soon as its header is read, before any payload arrives and whatever the message cap (section 5.5), so it is never a 1009",
       "status": "verified",
-      "evidence": "`test_websocket.mojo:test_oversized_control_frame_is_refused_at_its_header` (every PR) \u2014 with the 16-bit and 64-bit length forms over the cap beside it"
+      "evidence": "`test_websocket.mojo:test_oversized_control_frame_is_refused_at_its_header` (every PR) \u2014 with the 16-bit and 64-bit length forms over the cap beside it, and `test_control_frame_of_exactly_125_bytes_is_accepted` against over-rejection"
     },
     {
       "id": "I38",

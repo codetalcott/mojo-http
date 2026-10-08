@@ -606,6 +606,21 @@ def test_minimal_lengths_at_the_boundaries_are_accepted() raises:
         assert_equal(len(res.msg_opcodes), 1)
 
 
+def test_control_frame_of_exactly_125_bytes_is_accepted() raises:
+    """Declared coverage.
+
+    covers: I37
+    """
+    var state = WSState(1 << 20)
+    var body = List[UInt8]()
+    for _ in range(125):
+        body.append(0x61)
+    var frame = encode_ws_frame_masked(WS_OP_PING, Span(body), _mask())
+    var res = state.feed(Span(frame))
+    assert_false(res.close_after_reply)
+    assert_equal(len(res.reply), 2 + 125)  # the whole pong
+
+
 def test_oversized_control_frame_is_refused_at_its_header() raises:
     """Declared coverage.
 

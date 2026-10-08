@@ -578,6 +578,8 @@ struct WSState(Movable):
                 # minimal number of bytes MUST encode the length.
                 if (plen64 >> 63) != 0 or plen64 <= 0xFFFF:
                     return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
+                # Not redundant: gives an oversized 64-bit control frame 1002
+                # BEFORE the 1009 message-cap check below.
                 if opcode >= 0x8:
                     return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                 if plen64 > UInt64(self.max_message_size):
