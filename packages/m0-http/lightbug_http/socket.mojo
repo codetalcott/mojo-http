@@ -471,7 +471,13 @@ struct Socket[
         return send(self.fd, buffer, 0)
 
     def _receive(self, mut buffer: Bytes) raises SocketRecvError -> UInt:
-        """Receive data from the socket into the buffer.
+        """Receive data from the socket into the buffer, after its length.
+
+        A buffer with no room past its length -- full, or a `Bytes()` never
+        given a capacity -- grows by `default_buffer_size` first. It was
+        lent as it stood, and a `recv` into zero bytes returns 0, the count
+        EOF returns: a full buffer read as a closed connection with the
+        peer's bytes still waiting (review record LF34).
 
         Args:
             buffer: The buffer to read data into.
@@ -484,6 +490,8 @@ struct Socket[
                 EBADF on a closed socket, which reads nothing (see `close`)
                 -- or EOF if 0 bytes are received.
         """
+        if buffer.capacity() == len(buffer):
+            buffer.reserve(len(buffer) + default_buffer_size)
         var bytes_received = recv(self.fd, spare_capacity(buffer), 0)
         buffer._len += Int(bytes_received)
 

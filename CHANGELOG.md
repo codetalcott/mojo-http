@@ -148,6 +148,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   kernel chose, and `[::1]:8:80` on port 80. It is now refused at startup
   as too many colons, as Go's `net.SplitHostPort` refuses it.
 
+- **`Socket.receive` and `TCPConnection.read` into a full buffer read what
+  is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
+  that reads a socket through either, into a `Bytes` with no room past its
+  length (one already full, or a `Bytes()` never given a capacity). The
+  read asked for zero bytes and reported the peer's EOF with its bytes
+  still waiting. The buffer now grows by 4 KB before the read. The server
+  itself reads through its event loop and never called these.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

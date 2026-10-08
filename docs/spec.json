@@ -218,6 +218,14 @@
       "evidence": "`test_ipv6.mojo:test_a_colon_inside_a_bracketed_address_port_is_refused` (every PR) \u2014 `parse_address` read the port after the LAST colon wherever the bracket closed, so `[::1]:8:0` listened on `::1` at a port the kernel chose and `[::1]:8:80` on port 80 (review record LF33). Reached by an address a Mojo application passes `Server.listen_and_serve`; m0serve and the Mojo host bracket the `--host` they are given themselves"
     },
     {
+      "id": "A32",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "`Socket.receive` and `TCPConnection.read` into a buffer with no room past its length read what is waiting, growing the buffer, and report EOF only for the peer's",
+      "status": "verified",
+      "evidence": "`test_socket_spans.mojo:test_a_receive_into_a_full_buffer_reads_what_is_waiting` (every PR) \u2014 the buffer's spare capacity was lent to `recv` as it stood, and a `recv` into zero bytes returns 0, the count EOF returns, so a full buffer, or a `Bytes()` never given a capacity, raised EOF with the peer's bytes still waiting (review record LF34). The server reads through the event loop and never called these; an application, and the tests' client, did"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

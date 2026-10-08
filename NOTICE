@@ -1554,6 +1554,11 @@ lightbug_http
         it read the port after the last colon (review record LF33, SPEC
         A31).
 
+      - socket.mojo (2026-10-08): `Socket._receive` grows a buffer with no
+        room past its length by `default_buffer_size` before lending its
+        spare capacity to `recv`, which read zero bytes into it and
+        reported EOF (review record LF34, SPEC A32).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
