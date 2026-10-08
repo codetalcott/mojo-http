@@ -278,8 +278,14 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # with idle timeouts off. Here rather than where the request is read,
     # because a pool thread's answer comes back through here too, with an
     # EOF that arrived while it ran. Not for a handshake, whose socket
-    # reads frames from here on, never a next request.
-    if not upgraded_ws and _answers_the_last_request(st, slot, fd_val):
+    # reads frames from here on, never a next request; and not for a
+    # request closing anyway, whose read would only pull a pipelined
+    # request into a buffer about to be dropped.
+    if (
+        not upgraded_ws
+        and not st.provision_pool.provisions[slot].should_close
+        and _answers_the_last_request(st, slot, fd_val)
+    ):
         st.provision_pool.provisions[slot].should_close = True
     # What the request asked of the connection, before a stream's head
     # clears it below (so the head landing does not close the slot). A
