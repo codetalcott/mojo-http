@@ -1345,6 +1345,11 @@ lightbug_http
         The access log subtracted a stamp the timeout's absence had never
         taken, so `dur_us` was the time since boot (review record LF14).
 
+      - loop/state.mojo (2026-10-08): `_ws_linger` arms reads only for a
+        socket whose inbound is not suspended, as `_stream_idle` does, so
+        `take_ws_resumes` stays the one thing that re-arms a suspended
+        socket (SPEC I41, review record LF15).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

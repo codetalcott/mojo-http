@@ -523,12 +523,20 @@ def _ws_linger[B: EventLoopBackend](
     mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
 ):
     """This side's Close has LANDED: linger for the peer's (`_arm_ws_linger`)
-    in frame mode, reading -- the peer's reply is a read."""
+    in frame mode, reading -- the peer's reply is a read.
+
+    Unless the handler has suspended the socket's inbound: its reads come
+    back from `take_ws_resumes` alone, as in `_stream_idle`, and the peer's
+    Close waits in the socket with the rest until then, or the linger's
+    deadline ends the wait. Arming them here undid the suspension, and the
+    parked queue grew with what the client sent next (review record LF15).
+    """
     _arm_ws_linger(st, slot)
     st.slot_response[slot] = Bytes()
     st.slot_send_offset[slot] = 0
     st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
-    _ = _arm_reads(backend, st, slot, fd_val)
+    if not st.slot_ws_state[slot].inbound_suspended:
+        _ = _arm_reads(backend, st, slot, fd_val)
 
 
 @always_inline

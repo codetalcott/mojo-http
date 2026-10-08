@@ -62,6 +62,7 @@ from lightbug_http.loop.state import (
     _record_response,
     _stop_reads,
     _stream_idle,
+    _ws_linger,
 )
 from lightbug_http.c.socket import ShutdownOption, shutdown
 from lightbug_http.loop.timers import _on_timer
@@ -350,6 +351,47 @@ def test_the_linger_arms_once() raises:
     st.slot_idle_deadline[1] = 12345
     _arm_ws_linger(st, 1)
     assert_equal(st.slot_idle_deadline[1], 12345)
+
+
+def test_a_close_landing_leaves_a_suspended_sockets_reads_alone() raises:
+    """This side's Close has landed on a WebSocket whose inbound the
+    handler had suspended: the slot lingers for the peer's Close, and its
+    reads stay off until the handler resumes them (review record LF15).
+    `_ws_linger` armed them, which `_stream_idle` had refused to do for
+    the same socket since the inbound backpressure landed: the socket
+    undid its own suspension, and the parked queue grew with whatever the
+    client sent next. `take_ws_resumes` is the only thing that may re-arm
+    a suspended slot.
+
+    covers: I41
+    """
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    st.slot_ws[slot] = True
+    st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+    assert_true(_arm_reads(backend, st, slot, FD))
+    _stop_reads(backend, st, slot, FD)
+    st.slot_ws_state[slot].inbound_suspended = True
+    # The Close goes out through the write-ready path, and lands.
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    assert_true(_await_write(backend, st, slot, FD))
+    var adds = backend.read_adds
+    _ws_linger(backend, st, slot, FD)
+    assert_equal(st.provision_pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
+    assert_true(st.slot_ws_state[slot].closing)
+    assert_true(st.slot_idle_deadline[slot] > 0)
+    assert_equal(backend.read_adds, adds, "the linger re-armed a suspended socket's reads")
+    assert_false(st.slot_read_armed[slot])
+
+    # A socket that is not suspended lingers reading: the peer's Close is a
+    # read.
+    var other = st.provision_pool.borrow()
+    st.slot_ws[other] = True
+    st.provision_pool.provisions[other].state = ConnectionState.responding()
+    _ws_linger(backend, st, other, FD)
+    assert_true(st.slot_read_armed[other])
+    assert_true(backend.read)
 
 
 def test_a_request_begins_with_no_idle_deadline() raises:

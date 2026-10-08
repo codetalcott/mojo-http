@@ -25,6 +25,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   first bytes, as they always did with the timeout on. m0serve and the
   Mojo host keep the default of 10 s, and were not affected.
 
+- **A WebSocket the application has stopped reading stays stopped while
+  its close completes** (SPEC I41). When an application falls behind the
+  messages a client sends, the server stops reading that socket until the
+  application catches up. Once the server's Close went out it started
+  reading again, so the messages queued for a slow application kept
+  growing for as long as the client went on sending. The socket now waits
+  for the client's Close without reading until the application resumes
+  it, or until the two-second close linger ends it.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

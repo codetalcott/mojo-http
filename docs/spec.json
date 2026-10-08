@@ -1442,6 +1442,14 @@
       "evidence": "`Smoke test the Django realtime example` (every PR) \u2014 phase 3b, once against the default pool and once under `--blocking-threads 0`: two frames missed and replayed in order ahead of a live one with another channel's left out, a client pushed past a 4-frame journal told so and served nothing from history, a stale id told so and not starved. `test_replay.mojo` holds the journal's rules on their own"
     },
     {
+      "id": "I41",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A WebSocket whose inbound the application has suspended stays suspended through this side's close: the socket lingers for the peer's Close without reading until the application resumes it, or the linger's deadline ends the wait",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_close_landing_leaves_a_suspended_sockets_reads_alone` (every PR) \u2014 over a registration kept as epoll keeps it, a suspended socket's Close lands through the write-ready path and the linger adds no read interest; one not suspended lingers reading. `_ws_linger` armed the reads `_stream_idle` refuses a suspended socket, so the socket undid its own backpressure and the parked queue grew with what the client sent next. Found by the 2026-10-07 fork review"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",
