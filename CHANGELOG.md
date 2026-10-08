@@ -304,6 +304,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   list's spare capacity, pass `spare_capacity(list)` and grow the list by
   what `recv` returns.
 
+- **`HTTPRequest.from_parsed` takes the server's host and port** (fork
+  review LF54, SPEC A37). An application built with the `m0` wheel that
+  called `from_parsed(server_addr, parsed, body, max_uri_length)` passes
+  `from_parsed(host, port, parsed, body, max_uri_length)`, splitting its
+  address once with `split_server_address`. And `req.uri.host` no longer
+  carries the port on a request whose target has no query or escape:
+  with the server on `0.0.0.0:8973` it was `0.0.0.0:8973` there and
+  `0.0.0.0` elsewhere, and is `0.0.0.0` now, the port in `req.uri.port`.
+
 - **`HTTPRequest.encode()` and `write_to` write `req.uri.request_uri`**
   (fork review LF62, SPEC A38). An application that edits a parsed
   request's `uri.path` or `uri.query_string` and then writes the request
