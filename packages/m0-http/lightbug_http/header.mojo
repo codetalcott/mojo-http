@@ -1398,7 +1398,9 @@ def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[In
 
     Args:
         buffer: The buffer to search.
-        search_start: Offset to start searching from (optimization for incremental reads).
+        search_start: How much of the buffer an earlier search covered:
+            the search starts three bytes before it, where a CRLFCRLF that
+            search ended inside may begin.
 
     Returns:
         The index of the first byte AFTER the header end sequence (\\r\\n\\r\\n),
@@ -1407,10 +1409,12 @@ def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[In
     if len(buffer) < 4:
         return None
 
-    # Adjust search start to account for partial matches at boundary
-    var actual_start = search_start
-    if actual_start > 3:
-        actual_start -= 3
+    # Three bytes back, so a CRLFCRLF the last search ended inside is
+    # found, and never before the first byte. It started AT `search_start`
+    # when that was 1 to 3, so a terminator opening the buffer was missed
+    # by a split read: two empty lines and then a request, refused 400
+    # whole, were served (review record LF66, SPEC B29).
+    var actual_start = max(search_start - 3, 0)
 
     var buf_len = len(buffer)
     var ptr = buffer.unsafe_ptr()

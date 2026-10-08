@@ -1763,6 +1763,25 @@ lightbug_http
         closes (`_answers_the_last_request`; SPEC A30). The flag closed the
         connection as that answer landed (review record LF43).
 
+      - framing.mojo (new), loop/request.mojo (2026-10-08):
+        `frame_request_head` is the loop's framing decision for a request
+        head -- the CRLFCRLF search, the parse, the refusal of a head the
+        two framers end apart, the size, target and length refusals, the
+        bare-LF scan of a head still arriving, the body's framing and
+        `request_end` -- moved out of `_handle_read_headers`, which acts on
+        its answer (SPEC B29).
+
+      - header.mojo (2026-10-08): `find_header_end` backs off three bytes
+        from `search_start` and never before the buffer's first byte; it
+        started AT 1 to 3, so a CRLFCRLF opening the buffer was missed by a
+        split read (review record LF66, SPEC B29).
+
+      - http/parsing.mojo (2026-10-08): `http_parse_request_headers`
+        refuses a CR that no LF follows before the request line (RFC 9112
+        §2.2) rather than skipping it with the empty lines and reading the
+        method from the byte after it, which `is_complete` refused when a
+        read had ended after the CR (review record LF67, SPEC B29).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
