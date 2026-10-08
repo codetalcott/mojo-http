@@ -160,37 +160,34 @@ def userinfo_separator(uri: StringSpan, authority_start: Int) -> Int:
     encode `@` in what they build, which is what kept it rare; a typed or
     hand-built URL does not.
 
-    RFC 3986 §3.2 ends the authority at the first `/`, `?` or `#`, and a
-    userinfo lives inside the authority, so the `@` only counts before all
-    three. The first one found is the separator: a userinfo cannot contain
-    `@`, so a second one leaves a host that fails to resolve rather than
-    one chosen from what follows it.
+    A userinfo lives inside the authority, so the `@` only counts before
+    `authority_end`, the one rule for where the authority ends. The first
+    one found is the separator: a userinfo cannot contain `@`, so a second
+    one leaves a host that fails to resolve rather than one chosen from
+    what follows it.
     """
     var bytes = uri.as_bytes()
-    for i in range(authority_start, len(bytes)):
-        var c = bytes[i]
-        if c == UInt8(ord("@")):
+    for i in range(authority_start, authority_end(uri, authority_start)):
+        if bytes[i] == UInt8(ord("@")):
             return i
-        if c == UInt8(ord("/")) or c == UInt8(ord("?")) or c == UInt8(ord("#")):
-            return -1
     return -1
 
 
 def authority_end(uri: StringSpan, authority_start: Int) -> Int:
-    """Index of the `/` or `?` that ends an authority, or the end of `uri`.
+    """Index of the `/`, `?` or `#` that ends an authority, or the end of
+    `uri` (RFC 3986 §3.2). `userinfo_separator` and `URI.parse` both ask
+    it, so the two cannot disagree about where the authority ends.
 
     The authority ran to the first `/` alone, so a query right after it
     was read as part of the host: `http://h?q=1` parsed as host `h?q=1`
     with no query, and `http://h:80?q=1` as port 80 with its query thrown
-    away (review record LF50). RFC 3986 §3.2 ends the authority at the
-    first `/`, `?` or `#`; a `#` is left to the host here as before, since
-    a request target carries no fragment and what follows one is the
-    path's or the query's data (see `URI.parse`).
+    away (review record LF50). It ignored a `#` too, which the userinfo
+    scan stopped at, so `http://h#x` was a host `h#x`.
     """
     var bytes = uri.as_bytes()
     for i in range(authority_start, len(bytes)):
         var c = bytes[i]
-        if c == UInt8(ord("/")) or c == UInt8(ord("?")):
+        if c == UInt8(ord("/")) or c == UInt8(ord("?")) or c == UInt8(ord("#")):
             return i
     return len(bytes)
 
@@ -239,8 +236,10 @@ struct URI(Copyable, Writable):
         var host_start = userinfo_at + 1 if userinfo_at >= 0 else (
             scheme_sep + 3 if scheme_sep >= 0 else 0
         )
-        # The byte the authority ends at: whichever of `/` and `?` comes
-        # first, so reading to it reads the authority whole.
+        # The byte the authority ends at: whichever of `/`, `?` and `#`
+        # comes first, so reading to it reads the authority whole. After a
+        # `#` comes a fragment, which no request carries: neither the path
+        # nor the query below reads it, and the path stays `/`.
         var host_end = authority_end(uri, host_start)
         var authority_delimiter = UInt8(ord(URIDelimiters.PATH))
         if host_end < uri.byte_length():

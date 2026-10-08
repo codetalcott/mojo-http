@@ -13,7 +13,7 @@ hold the escapes, the scheme and the userinfo.
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.uri import URI
+from lightbug_http.uri import URI, authority_end, userinfo_separator
 
 
 def _refused(url: String) -> Bool:
@@ -56,6 +56,36 @@ def test_a_query_right_after_the_authority_is_the_query_of_the_root() raises:
     assert_equal(bare.host, "h")
     assert_equal(bare.path, "/")
     assert_equal(bare.request_uri, "/")
+
+
+def test_the_authority_ends_at_a_hash_too() raises:
+    """RFC 3986 §3.2 ends the authority at its first `/`, `?` or `#`, and one
+    rule now says so for both scans that ask: `authority_end` read past a
+    `#` while `userinfo_separator` stopped at it, so `http://h#x` was a host
+    `h#x`. What follows the `#` is a fragment, which a request never
+    carries: it is not the path, and the path of a URL that ends with its
+    authority is `/`. A `#` inside the path or the query stays their data
+    (`test_a_hash_in_a_target_is_data`).
+
+    covers: A35
+    """
+    var uri = URI.parse("http://h#x")
+    assert_equal(uri.host, "h")
+    assert_false(uri.port)
+    assert_equal(uri.path, "/")
+    assert_equal(uri.request_uri, "/")
+    assert_equal(uri.query_string, "")
+    var ported = URI.parse("http://h:8080#x?y")
+    assert_equal(ported.host, "h")
+    assert_equal(Int(ported.port.value()), 8080)
+    assert_equal(ported.path, "/")
+    assert_equal(ported.query_string, "")
+    assert_equal(authority_end("http://h#x", 7), 8)
+    assert_equal(authority_end("http://h/p#x", 7), 8)
+    assert_equal(authority_end("http://h?q#x", 7), 8)
+    assert_equal(authority_end("http://h", 7), 8)
+    assert_equal(userinfo_separator("http://u@h#x@y", 7), 8)
+    assert_equal(userinfo_separator("http://h#x@y", 7), -1)
 
 
 def test_a_port_is_digits_up_to_65535() raises:

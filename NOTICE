@@ -1578,7 +1578,10 @@ lightbug_http
         alone, and a query right after the authority is the query of the
         path `/`, its request URI `/?query`. `http://h?q=1` parsed as host
         `h?q=1` with no query (review record LF50, SPEC A35). The inherited
-        TODO asking for that normalisation is gone.
+        TODO asking for that normalisation is gone. `authority_end` stops
+        at a `#` too, and `userinfo_separator` scans to it, so one rule
+        says where the authority ends (RFC 3986 §3.2): `http://h#x` parsed
+        as host `h#x`.
 
       - uri.mojo (2026-10-08): `URI.parse` reads the port as every byte
         after the authority's colon, refusing a non-digit or a value above

@@ -51,7 +51,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `URI.parse("http://127.0.0.1?x=1")`. The host was `127.0.0.1?x=1` and
   the request carried no query; with a port, `http://127.0.0.1:80?x=1`,
   the query was dropped. The path is `/` and the query `x=1`, as for
-  `http://127.0.0.1/?x=1`. A request from the wire was never affected.
+  `http://127.0.0.1/?x=1`. A `#` right after the host ends it too:
+  `http://127.0.0.1#top` is host `127.0.0.1` and path `/`, where the host
+  was `127.0.0.1#top`. A request from the wire was never affected.
 
 - **`URI.parse` refuses a port that is not one** (SPEC A36). Exposed: an
   m0 application that parses a URL with `URI.parse`, its tests' request
