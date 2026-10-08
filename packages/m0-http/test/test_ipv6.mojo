@@ -297,6 +297,37 @@ def test_an_address_without_a_port_is_refused() raises:
     assert_equal(Int(hp.port), 80)
 
 
+def test_a_port_is_decimal_digits() raises:
+    """A listen address's port is ASCII digits and nothing else (review
+    record LF46).
+
+    It was read by `Int()`, which takes what Python's `int()` takes: a sign,
+    whitespace around the number and underscores between its digits. So
+    `127.0.0.1:-0` listened on a port the kernel chose, and `:+80`, `: 80`,
+    `:8_0` and `:80` with a newline after it on port 80. A port is now one
+    or more ASCII digits (RFC 3986's `port = *DIGIT`, the empty one refused
+    as before) naming a number from 0 to 65535: `080` is port 80.
+
+    covers: A34
+    """
+    var refused: List[String] = [
+        "+80", "-0", "-1", " 80", "80 ", "\t80", "80\n", "8_0", "0x50", "8 0",
+        "٨٠",
+    ]
+    for port in refused:
+        with assert_raises(contains="invalid integer value"):
+            _ = parse_address[NetworkType.tcp](StringSpan("127.0.0.1:" + port))
+        with assert_raises(contains="invalid integer value"):
+            _ = parse_address[NetworkType.tcp](StringSpan("[::1]:" + port))
+    with assert_raises(contains="Port number out of range"):
+        _ = parse_address[NetworkType.tcp](StringSpan("127.0.0.1:65536"))
+    with assert_raises(contains="port string is empty"):
+        _ = parse_address[NetworkType.tcp](StringSpan("127.0.0.1:"))
+    assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("127.0.0.1:0")).port), 0)
+    assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("127.0.0.1:080")).port), 80)
+    assert_equal(Int(parse_address[NetworkType.tcp](StringSpan("[::1]:65535")).port), 65535)
+
+
 def test_a_uri_behind_an_ipv6_server_address_parses() raises:
     """The loop puts the server's own address in front of a target that
     carries a query, so on `::` every such request was `[::]:8080/x?a=1`,

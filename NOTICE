@@ -1593,6 +1593,11 @@ lightbug_http
         port 0 and the listener took a port the kernel chose (review record
         LF45, SPEC A33).
 
+      - address.mojo (2026-10-08): `parse_port` takes ASCII digits only.
+        It read the port with `Int()`, which takes a sign, whitespace and
+        underscores, so `-0` was port 0 and `+80`, ` 80` and `8_0` were 80
+        (review record LF46, SPEC A34).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

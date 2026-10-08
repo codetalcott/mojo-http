@@ -157,6 +157,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   was; `localhost:8080` is unchanged. m0serve and the Mojo host always
   pass a port.
 
+- **A listen address's port must be digits** (fork review LF46, SPEC
+  A34). Exposed: a Mojo application that passes `Server.listen_and_serve`
+  (or `ListenConfig.listen`) an address whose port text is not plain
+  digits. The port was read the way `Int()` reads a number, taking a sign,
+  whitespace and underscores, so `127.0.0.1:-0` listened on a port the
+  kernel chose and `127.0.0.1:+80`, `127.0.0.1: 80` or `127.0.0.1:8_0` on
+  port 80. Such a port is now refused at startup. m0serve and the Mojo
+  host check `--port` themselves and pass it on as digits.
+
 - **`Socket.receive` and `TCPConnection.read` into a full buffer read what
   is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
   that reads a socket through either, into a `Bytes` with no room past its

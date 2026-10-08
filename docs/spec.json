@@ -234,6 +234,14 @@
       "evidence": "`test_ipv6.mojo:test_an_address_without_a_port_is_refused` (every PR) \u2014 `parse_address` read `localhost` with no colon as the loopback at port 0, so `Server.listen_and_serve(\"localhost\")` listened on a port no client was told of (review record LF45). Reached by an address a Mojo application passes the server itself; m0serve and the Mojo host join the port they are given to the host"
     },
     {
+      "id": "A34",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A listen address's port is ASCII digits naming 0 to 65535: a sign, whitespace or an underscore is refused, not read the way `Int()` reads it",
+      "status": "verified",
+      "evidence": "`test_ipv6.mojo:test_a_port_is_decimal_digits` (every PR) \u2014 the port was read by `Int()`, which takes a sign, whitespace around the number and underscores between its digits, so `127.0.0.1:-0` listened on a port the kernel chose and `:+80`, `: 80` and `:8_0` on port 80 (review record LF46). Reached by an address a Mojo application passes the server itself; m0serve and the Mojo host write the port they parsed, as digits"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

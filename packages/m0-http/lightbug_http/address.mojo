@@ -248,9 +248,18 @@ def validate_no_brackets[
 
 
 def parse_port[origin: ImmOrigin](port_str: StringSpan[origin]) raises ParseError -> UInt16:
-    """Parse and validate port number."""
+    """Parse and validate a port: ASCII digits naming 0 to 65535.
+
+    Digits and nothing else, as RFC 3986's `port = *DIGIT`. `Int()` also
+    takes a sign, whitespace around the number and underscores between its
+    digits, so `-0` read as port 0, a port the kernel chose, and `+80`,
+    ` 80` and `8_0` as 80 (review record LF46).
+    """
     if port_str == AddressConstants.EMPTY:
         raise ParseEmptyPortError()
+    for b in port_str.as_bytes():
+        if b < UInt8(ord("0")) or b > UInt8(ord("9")):
+            raise ParseInvalidPortNumberError()
 
     var port: Int
     try:
