@@ -230,6 +230,8 @@ jobs:
       # `test-packages`) passes when nothing is wrong; this puts back LF1's
       # overlong decode, G2's refusals and the redirect's encoding one at a
       # time and requires that test to fail for each.
+      # `test-packages` runs the same sabotage (about 50 s); this named step is
+      # the second run, the one SPEC G24 cites, as for the trailer rules above.
       - name: Sabotage the header-bytes property
         run: uv run poe sabotage-header-bytes
 

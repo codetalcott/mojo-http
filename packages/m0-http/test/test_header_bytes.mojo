@@ -117,7 +117,7 @@ def _eq(a: List[Byte], b: List[Byte]) -> Bool:
     return True
 
 
-def _continuation(mut rng: Rng, allow_raw: Bool) -> Byte:
+def _continuation(mut rng: Rng) -> Byte:
     """A continuation byte; one in four is the low bits of CR, LF or NUL,
     which is what a decoder of an overlong form would turn into one."""
     var r = rng.below(8)
@@ -141,7 +141,7 @@ def _piece(mut rng: Rng, allow_raw: Bool, mut out: List[Byte]):
         var lead = 0xC0 + rng.below(0x40)
         out.append(UInt8(lead))
         for _ in range(rng.below(4)):
-            out.append(_continuation(rng, allow_raw))
+            out.append(_continuation(rng))
     elif kind <= 5:
         # An overlong form of CR, LF or NUL in 2, 3 or 4 bytes.
         var low = 0x80
@@ -170,7 +170,7 @@ def _piece(mut rng: Rng, allow_raw: Bool, mut out: List[Byte]):
             out.append(UInt8(0x80 + rng.below(0x40)))
     elif kind == 8:
         out.append(UInt8(0xF8 + rng.below(8)))
-        out.append(_continuation(rng, allow_raw))
+        out.append(_continuation(rng))
     else:
         var b = UInt8(rng.below(256))
         if not allow_raw and _is_break(b):
@@ -422,7 +422,7 @@ def _expect(
 
 def _check(
     lines: List[List[Byte]], var expected: List[List[Byte]], status: List[Byte],
-    server_default: Bool, seed: Int, it: Int, writer: Int, c: Case,
+    server_default: Bool, body_length: Int, seed: Int, it: Int, writer: Int, c: Case,
 ) raises:
     """`lines` is `status`, then `expected` in any order, then each of the
     defaults the encoders add at most once: `date`, `content-length`,
@@ -443,6 +443,10 @@ def _check(
         var is_default = False
         for d in range(len(defaults)):
             if _starts_with(lines[k], defaults[d]):
+                if defaults[d] == "content-length: " and not _eq(
+                    lines[k], _line("content-length", List[Byte](String(body_length).as_bytes()))
+                ):
+                    _refuse(seed, it, writer, "content-length is not the body's length " + String(body_length) + ": " + _hex(lines[k]), c)
                 _ = defaults.pop(d)
                 is_default = True
                 break
@@ -489,7 +493,7 @@ def _run(seed: Int, iterations: Int) raises -> Tally:
                 status.extend(Span(c.reason))
             var wire = _written(_head_response(c), writer)
             var lines = _head_lines(wire, String(BODY), seed, it, writer, c)
-            _check(lines, expected^, status, not c.app_names_server, seed, it, writer, c)
+            _check(lines, expected^, status, not c.app_names_server, String(BODY).byte_length(), seed, it, writer, c)
             if writer == 1:
                 if kept:
                     t.kept_value += 1
@@ -510,7 +514,7 @@ def _run(seed: Int, iterations: Int) raises -> Tally:
             rexpected.append(_line("location", _on_wire(_controls_encoded(c.target), latin1)))
             var rwire = _written(_redirect_response(c), writer)
             var rlines = _head_lines(rwire, String(""), seed, it, writer, c)
-            _check(rlines, rexpected^, List[Byte](String("HTTP/1.1 303 See Other").as_bytes()), True, seed, it, writer, c)
+            _check(rlines, rexpected^, List[Byte](String("HTTP/1.1 303 See Other").as_bytes()), True, 0, seed, it, writer, c)
             if writer == 1:
                 t.redirects += 1
     return t^
