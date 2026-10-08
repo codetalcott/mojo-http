@@ -63,6 +63,86 @@ in a minor release: `m0serve`'s flags and environment variables, the
   request must list `upgrade` as a whole token of `Connection`
   (`Connection: notupgrade` was accepted) and must be HTTP/1.1; an
   HTTP/1.0 request is answered 400.
+- **On Linux, a connection on a descriptor numbered 65536 or above no
+  longer disturbs another's timer, or the application's tick** (fork
+  review LF18, SPEC C11). Exposed: Linux servers whose descriptor limit
+  (`ulimit -n`) lets a connection reach descriptor 65536, m0serve and Mojo
+  applications alike. The epoll backend kept each timer in one of five
+  regions of 65536 slots, so a higher descriptor's timer took another's
+  slot: an SSE stream on descriptor 65536 re-armed the `M0_APP_TICK_MS`
+  tick and, when it ended, stopped the tick for good; a request body read
+  on descriptor 131072 + k re-armed descriptor k's heartbeat; and a stream
+  at or above 131072 got no heartbeat, a body at or above 262144 no read
+  timeout. Every timer now has a slot of its own at any descriptor below
+  2^20, which a process reaches only with a descriptor limit
+  (`RLIMIT_NOFILE`) above a million.
+
+- **A server that returns gives back its kqueue or epoll descriptor**
+  (fork review LF21, SPEC C13). Exposed: a Mojo application that serves,
+  returns and serves again in one process (`Server.serve_nonblocking`,
+  `listen_and_serve`), and the Mojo host's `M0_THREADS` loops as they
+  end; m0serve and a host process exit when their loops do, so they
+  never reached it. Each return left its multiplexer open, and on Linux
+  every timerfd the loop still held. The backend now closes them when the
+  loop is done with it. On Linux, an epoll registration the kernel
+  refuses is now reported with its own error: a refused ADD was retried as
+  a MOD, whose ENOENT was reported in its place.
+
+- **On Linux, a burst of new connections queues instead of being
+  dropped** (fork review LF19, SPEC C12). Exposed: Linux servers, m0serve
+  and Mojo applications alike. The listener asked the kernel for an accept
+  queue of 128, so while the loop was busy -- a slow pass, a batch of
+  accepts -- connections past the 128th were dropped at the handshake, and
+  each client waited a second or more to retry. The queue is now up to
+  `SOMAXCONN` (4096 on Linux, 128 on macOS), or the system's setting if
+  that is lower. macOS's limit was and stays 128.
+
+### Changed
+
+- **The fork's descriptor helpers live in the module that owns them**
+  (fork review LF28). Nothing served changes. An application built with
+  the `m0` wheel that imported one of these from the old place imports it
+  from the new: `set_nonblocking`, `is_nonblocking`, `F_GETFL` and
+  `F_SETFL` from `lightbug_http.c.fcntl`, no longer `lightbug_http.c.kqueue`
+  (they serve Linux too); `O_NONBLOCK` and `O_CLOEXEC` from
+  `lightbug_http.c.fcntl`, no longer `lightbug_http.c.socket`; and
+  `set_tcp_nodelay` from `lightbug_http.c.socket`.
+
+- **`recv` and `send` take their length from the span they are given**
+  (fork review LF20, SPEC G21). Nothing served changes. The two calls in
+  `lightbug_http.c.socket` took a length beside the span, which the span
+  did not have to back: a count above the span's length was written past
+  its end. They now read or write `len(span)` bytes and no more, so an
+  application built with the `m0` wheel that called one drops the length
+  argument, slicing the span to the count it meant. To receive into a
+  list's spare capacity, pass `spare_capacity(list)` and grow the list by
+  what `recv` returns.
+
+### Removed
+
+- **The fork's client connect path, and the last of its dead C bindings**
+  (fork review LF26). Nothing served changes: m0serve and the Mojo host
+  never open a connection, and reached none of it. The `m0` wheel ships
+  the fork's source, so an application built with `m0` that named one of
+  these needs its own copy: `Socket.connect` and
+  `lightbug_http.connection.create_connection`, with the `connect(2)`
+  binding in `lightbug_http.c.socket`; the `getaddrinfo` machinery under
+  them in `lightbug_http.address` (`getaddrinfo`, `get_ip_address`,
+  `CAddrInfo`, `AnAddrInfo`, `addrinfo_macos`, `addrinfo_unix`,
+  `freeaddrinfo`, `gai_strerror` and their three error types), whose
+  iterator never ended on Linux; `TCPConnection.set_recv_timeout`,
+  `Socket.set_timeout` and `SocketOption.SO_RCVTIMEO`; `NetworkType`'s
+  `SUPPORTED_TYPES`, `TCP_TYPES`, `UDP_TYPES` and `IP_TYPES`;
+  `lightbug_http.c.address.AddressInformation`, whose `AI_*` values were
+  Linux's on macOS too; `lightbug_http.c.network`'s `addrinfo`, laid out
+  as Linux's on every platform, `in6_addr` and `sockaddr_in6`;
+  `try_writev`; and `kevent_register`, `EV_ENABLE` and `EV_DISABLE`.
+
+- **`lightbug_http.c.epoll`'s `EPOLL_CLOEXEC`, `TFD_CLOEXEC` and
+  `TFD_NONBLOCK`** (fork review LF28), copies of the open flags under
+  Linux's other names. Nothing served changes; an application built with
+  the `m0` wheel that named one passes `O_CLOEXEC` or `O_NONBLOCK` from
+  `lightbug_http.c.fcntl`, the same values.
 
 ## [1.12.1] — 2026-10-07
 

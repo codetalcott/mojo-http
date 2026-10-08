@@ -59,7 +59,6 @@ def _on_write[T: HTTPService, B: EventLoopBackend](
             sent = send(
                 fd_desc,
                 Span(st.slot_response[slot])[st.slot_send_offset[slot]:],
-                UInt(remaining),
                 0,
             )
         except send_err:
@@ -435,7 +434,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     if response_len > 0:
         var fd_desc = FileDescriptor(fd_val)
         try:
-            var sent = send(fd_desc, Span(st.slot_response[slot]), UInt(response_len), 0)
+            var sent = send(fd_desc, Span(st.slot_response[slot]), 0)
             st.slot_send_offset[slot] = Int(sent)
         except send_err:
             if not send_err.would_block():
@@ -509,7 +508,6 @@ def _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
         _ = send(
             FileDescriptor(fd_val),
             Span(encoded),
-            UInt(len(encoded)),
             0,
         )
     except:
@@ -522,7 +520,6 @@ def _send_raw_to_fd(fd_val: Int, data: Span[Byte, _]):
         _ = send(
             FileDescriptor(fd_val),
             data,
-            UInt(len(data)),
             0,
         )
     except:

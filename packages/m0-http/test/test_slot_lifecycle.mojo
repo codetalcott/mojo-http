@@ -35,9 +35,9 @@ from std.time import perf_counter_ns
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.kqueue import (
-    EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
+    EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE,
 )
-from lightbug_http.c.fcntl import dup_cloexec
+from lightbug_http.c.fcntl import dup_cloexec, set_nonblocking
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.process import getpid
 from lightbug_http.c.socket import close, recv, send
@@ -209,7 +209,7 @@ def test_a_write_wait_holds_no_read_interest() raises:
     var backend = PlatformBackend()
     backend.add_read(rx)
     var one = String("m")
-    _ = send(FileDescriptor(tx), one.as_bytes(), UInt(1), 0)
+    _ = send(FileDescriptor(tx), one.as_bytes(), 0)
 
     var n = backend.wait(1000)
     assert_equal(n, 1)
@@ -454,6 +454,18 @@ def test_a_file_that_ends_early_closes_its_connection() raises:
     covers: J15
     """
     var path = String("/tmp/m0_lifecycle_truncated_body_") + String(getpid())
+    try:
+        _send_a_file_that_ends_early(path)
+    finally:
+        # Every path, a failing assertion's included: the file is 4 MB.
+        try:
+            remove(path)
+        except:
+            pass
+
+
+def _send_a_file_that_ends_early(path: String) raises:
+    """The round above, over the file at `path`, which its caller removes."""
     with open(path, "w") as f:
         f.write(String("b") * FILE_BYTES)
     var file = open(path, "r")
@@ -516,7 +528,6 @@ def test_a_file_that_ends_early_closes_its_connection() raises:
     assert_true(_read_available(peer, got), "the peer read no EOF")
     assert_equal(len(got), head.byte_length() + sent_of_file)
     close(FileDescriptor(peer))
-    remove(path)
 
 
 def _exchange(
@@ -543,7 +554,7 @@ def _exchange(
         if st.slot_fds[slot] == UNUSED:
             break
         var raw = part.as_bytes()
-        var sent = send(FileDescriptor(peer), raw, UInt(len(raw)), 0)
+        var sent = send(FileDescriptor(peer), raw, 0)
         assert_equal(Int(sent), len(raw))
         _on_read(app, backend, st, fd, False)
     var got = List[UInt8]()
@@ -949,7 +960,7 @@ def _a_websocket_owed_a_close_echo(
     mask.append(0x21)
     mask.append(0x3D)
     var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(code), mask)
-    var sent = send(FileDescriptor(peer), Span(frame), UInt(len(frame)), 0)
+    var sent = send(FileDescriptor(peer), Span(frame), 0)
     assert_equal(Int(sent), len(frame))
     return (fd, peer, slot, filler)
 
@@ -965,7 +976,7 @@ def _fill_send_buffer(fd: Int) raises -> Int:
         while True:
             var sent: UInt
             try:
-                sent = send(FileDescriptor(fd), Span(chunk)[:size], UInt(size), 0)
+                sent = send(FileDescriptor(fd), Span(chunk)[:size], 0)
             except err:
                 if err.would_block():
                     break
@@ -984,7 +995,7 @@ def _read_available(fd: Int, mut got: List[UInt8]) raises -> Bool:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except err:
             if err.would_block():
                 return False
@@ -1062,7 +1073,7 @@ def _discard_all(fd: Int):
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:

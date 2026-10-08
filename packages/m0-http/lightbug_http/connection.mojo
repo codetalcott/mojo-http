@@ -12,6 +12,7 @@ from lightbug_http.address import (
 )
 from lightbug_http.c.address import AddressFamily
 from lightbug_http.c.process import ignore_sigpipe
+from lightbug_http.c.socket import SOMAXCONN
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.socket import (
@@ -322,8 +323,10 @@ struct ListenConfig:
                     pass
                 sleep(1)
 
+        # The platform's SOMAXCONN, which the kernel clamps to its setting:
+        # 128 on macOS, 4096 on Linux by default (review record LF19).
         try:
-            socket.listen(128)
+            socket.listen(UInt(SOMAXCONN))
         except listen_err:
             raise listen_err
 
@@ -447,17 +450,6 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
             total_sent += sent
         return total_sent
 
-    def set_recv_timeout(self, seconds: Int) raises SysError:
-        """Set the receive timeout on this connection's socket.
-
-        Args:
-            seconds: Timeout in seconds. 0 to disable.
-
-        Raises:
-            SysError: If setting the socket option fails.
-        """
-        self.socket.set_timeout(seconds)
-
     def close(mut self) raises SysError:
         """Close the TCP connection.
 
@@ -491,39 +483,3 @@ struct TCPConnection[network: NetworkType = NetworkType.tcp4]:
 
     def remote_addr(self) -> TCPAddr[Self.network]:
         return self.socket.remote_address
-
-
-def create_connection(mut host: String, port: UInt16) raises -> TCPConnection[NetworkType.tcp4]:
-    """Connect to a server using a TCP socket.
-
-    Args:
-        host: The host to connect to.
-        port: The port to connect on.
-
-    Returns:
-        A connected TCPConnection.
-
-    Raises:
-        Error: If socket creation, name resolution, or connection fails.
-        The original error propagates: `Socket.connect` raises a plain
-        `Error`, name resolution's among them.
-    """
-    var socket: Socket[TCPAddr[NetworkType.tcp4]]
-    try:
-        socket = Socket[TCPAddr[NetworkType.tcp4]]()
-    except socket_err:
-        raise socket_err
-
-    try:
-        socket.connect(host, port)
-    except connect_err:
-        # Connection failed - try to shutdown gracefully before propagating error
-        try:
-            socket.shutdown()
-        except shutdown_err:
-            # Shutdown failure is not critical here - connection already failed
-            pass
-        # Propagate the original connection error
-        raise connect_err^
-
-    return TCPConnection(socket^)

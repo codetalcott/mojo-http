@@ -26,7 +26,6 @@ from lightbug_http.c.socket import (
     accept_with_peer,
     bind,
     close,
-    connect,
     getpeername,
     getsockname,
     listen,
@@ -38,7 +37,8 @@ from lightbug_http.c.socket import (
 )
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.connection import ListenConfig, create_connection
+from lightbug_http.connection import ListenConfig
+from test.loopback import create_connection
 from lightbug_http.loop.accept import _accept_retries
 
 
@@ -138,21 +138,14 @@ def test_every_wrapper_raises_on_a_descriptor_that_is_not_open() raises:
 
     err = None
     try:
-        connect(bad, addr)
-    except e:
-        err = e
-    _expect(err, "connect", ErrNo.EBADF)
-
-    err = None
-    try:
-        _ = recv(bad, Span(buf), UInt(len(buf)), c_int(0))
+        _ = recv(bad, Span(buf), c_int(0))
     except e:
         err = e
     _expect(err, "recv", ErrNo.EBADF)
 
     err = None
     try:
-        _ = send(bad, Span(buf), UInt(len(buf)), c_int(0))
+        _ = send(bad, Span(buf), c_int(0))
     except e:
         err = e
     _expect(err, "send", ErrNo.EBADF)
@@ -186,7 +179,7 @@ def test_an_empty_nonblocking_read_would_block() raises:
     var buf = List[UInt8](length=16, fill=0)
     var err: Optional[SysError] = None
     try:
-        _ = recv(FileDescriptor(pair[0]), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+        _ = recv(FileDescriptor(pair[0]), Span(buf), MSG_DONTWAIT)
     except e:
         err = e
     close_fd(pair[0])

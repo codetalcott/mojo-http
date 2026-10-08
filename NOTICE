@@ -1386,6 +1386,90 @@ lightbug_http
         head's field value; it took any byte but LF (review record LF4's
         deferred minor).
 
+      - socket.mojo, address.mojo, connection.mojo, c/socket.mojo,
+        c/network.mojo, c/address.mojo, c/kqueue.mojo (2026-10-08): the
+        client connect path, which no caller outside the tests had used
+        since the HTTP client left, removed with the dead bindings beside
+        it, each name searched for across the repository, the `m0`
+        templates and the one application outside it, then the fork
+        compiled whole: `Socket.connect`, `create_connection`, the
+        `connect` binding, `get_ip_address`, `getaddrinfo` and
+        `_getaddrinfo`, `CAddrInfo` and its iterator (which never ended on
+        Linux, `addrinfo_unix.has_next` reading `ai_addr`),
+        `AnAddrInfo`, `addrinfo_macos`, `addrinfo_unix`, `freeaddrinfo`,
+        `gai_strerror` and the three `getaddrinfo` error types;
+        `TCPConnection.set_recv_timeout`, `Socket.set_timeout` and
+        `SO_RCVTIMEO`; `NetworkType`'s four type lists;
+        `AddressInformation`, whose `AI_ALL`, `AI_ADDRCONFIG` and
+        `AI_V4MAPPED` were Linux's values on macOS; c/network.mojo's
+        `addrinfo` (Linux's field order everywhere), `in6_addr` and
+        `sockaddr_in6`; `_writev` and `try_writev`; `kevent_register`,
+        `EV_ENABLE` and `EV_DISABLE`. The tests' client is
+        test/loopback.mojo, `connect` and `create_connection` over a
+        literal address (review record LF26, owner decision 6).
+
+      - c/fcntl.mojo, c/kqueue.mojo, c/socket.mojo, c/pipe.mojo,
+        c/socketpair.mojo, c/fdpass.mojo, c/epoll.mojo,
+        c/epoll_backend.mojo (2026-10-08): one declaration of each, in the
+        module that owns it. `close` is bound once, `c/socket.mojo`'s
+        `_close`, which `close_fd` and the epoll backend's timerfd closes
+        call, where five sites each declared it. `SOL_SOCKET` is
+        c/socket.mojo's alone (c/fdpass.mojo had a copy). `O_CLOEXEC`
+        and `O_NONBLOCK` are c/fcntl.mojo's, with `F_GETFL`, `F_SETFL`,
+        `set_nonblocking` and `is_nonblocking`, which lived in
+        c/kqueue.mojo and serve Linux too; the copies of `O_CLOEXEC`
+        under four more names (`_O_CLOEXEC_LINUX`, `_SOCK_CLOEXEC_LINUX`,
+        `EPOLL_CLOEXEC`, `TFD_CLOEXEC`) and `TFD_NONBLOCK` are gone.
+        `set_tcp_nodelay` is c/socket.mojo's, naming `IPPROTO_TCP` and
+        `TCP_NODELAY` where it passed 6 and 1. c/kqueue.mojo now imports
+        nothing from the package but c/aliases.mojo (review record LF28).
+
+      - c/pipe.mojo (2026-10-08): two comments the code contradicted.
+        `close_fd`'s said close() fails only with EBADF and that it
+        unwinds half-built pipes; it serves every abandoned descriptor,
+        and EINTR and EIO arrive with the number already released.
+        `ShutdownHandle`'s named kqueue alone; the read end is registered
+        on either backend, and any event on it is the stop (review record
+        LF27).
+
+      - c/socket.mojo, socket.mojo, offload.mojo, broadcast.mojo,
+        loop/request.mojo, loop/response.mojo, loop/streams.mojo,
+        loop/state.mojo, loop/offload.mojo (2026-10-08): `recv` and `send`
+        take the length from the span they are given, where they took it
+        as an argument beside the span; the loop's body, WebSocket and
+        lingering reads passed an empty span and a capacity count, and a
+        count above a span's length was written past its end.
+        `spare_capacity` lends a list's room past its length for a `recv`
+        to fill; every caller's count was the span's own or now slices the
+        span to it (review record LF20).
+
+      - c/epoll_backend.mojo (2026-10-08): `_timer_slot` is `fd * 5 +
+        kind` and `_timer_fds` a list that grows with the descriptors
+        timers are set for, starting at 1024 of them. The map was five
+        fixed regions of 65536, `kind * 65536 + fd`, so a descriptor at or
+        above 65536 took another kind's slot for a lower one (the SSE
+        heartbeat of 65536 the app tick's), and one past the regions was
+        dropped (review record LF18).
+
+      - c/kqueue.mojo, c/kqueue_backend.mojo, c/epoll.mojo,
+        c/epoll_backend.mojo, event_loop_backend.mojo, and m0-wsgi's
+        asgi_executor.mojo (2026-10-08): `KqueueBackend` and
+        `EpollBackend` have destructors that close the multiplexer (and,
+        on epoll, every timerfd still in the map) and free the event
+        buffer; neither closed anything, so every loop that returned left
+        them open. The inverted executor, which hands the backend to
+        asyncio by address, keeps it alive past `run_forever_inverted`
+        with `_ = backend`. `kevent_poll_ns` takes its timespec from the
+        stack, where it was `malloc`ed and freed per wait. The
+        `epoll_ctl` wrappers raise `SysError`, and `EpollBackend` falls
+        back from ADD to MOD on EEXIST alone and from MOD to ADD on ENOENT
+        alone, where it fell back on any errno (review record LF21).
+
+      - connection.mojo, c/socket.mojo (2026-10-08): `ListenConfig.listen`
+        asks for a backlog of `SOMAXCONN`, new in c/socket.mojo (128 on
+        macOS, 4096 on Linux), where it asked for 128, which overflowed
+        Linux's accept queue under a burst (review record LF19).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

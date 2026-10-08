@@ -36,9 +36,10 @@ writing while it compiles `src/`.
 """
 
 from lightbug_http.c.kqueue import (
-    set_nonblocking, EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER, EV_EOF, EV_ERROR,
+    EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER, EV_EOF, EV_ERROR,
 )
 from lightbug_http.accept_share import AcceptShare
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import close
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.offload import POOL_WAKE_WAIT_MS

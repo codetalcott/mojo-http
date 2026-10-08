@@ -58,7 +58,7 @@ def _write_temp(path: String, contents: String) raises:
 
 def _recv_into(fd: Int, mut buf: Bytes, n: Int) raises -> Int:
     return Int(
-        recv(FileDescriptor(fd), Span(buf), c_size_t(n), c_int(0))
+        recv(FileDescriptor(fd), Span(buf)[:n], c_int(0))
     )
 
 

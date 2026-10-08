@@ -39,7 +39,7 @@ from lightbug_http.accept_share import (
     STATE_LEFT, STATE_PARKED, accept_share_slots,
 )
 from lightbug_http.c.fdpass import send_fd
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,

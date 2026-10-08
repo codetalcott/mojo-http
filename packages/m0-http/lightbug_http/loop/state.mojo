@@ -612,7 +612,7 @@ def _farewell_streams[T: HTTPService, B: EventLoopBackend](
             else:
                 farewell = List[UInt8](String(": close\n\n").as_bytes())
             try:
-                _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), UInt(len(farewell)), 0)
+                _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), 0)
             except:
                 pass
             _close_slot(handler, backend, st, s, st.slot_fds[s])

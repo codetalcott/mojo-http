@@ -24,7 +24,7 @@ queues them with `notify_frame` exactly as if it had broadcast them itself.
 """
 
 
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import (
     send, recv, setsockopt, SocketOption, SOL_SOCKET,
 )
@@ -33,7 +33,7 @@ from lightbug_http.c.platform import MSG_DONTWAIT
 
 # Per-call non-blocking I/O. `set_nonblocking` was a silent no-op on ARM64
 # macOS until `_fcntl` learned the Darwin variadic convention (see
-# c/kqueue.mojo) — a blocking recv() inside the drain loop wedged the event
+# c/fcntl.mojo) — a blocking recv() inside the drain loop wedged the event
 # loop until the next datagram arrived. O_NONBLOCK works now, but the
 # per-call flag stays: it makes each recv/send non-blocking by construction
 # rather than by fd state, and it costs nothing.
@@ -197,7 +197,6 @@ def publish_to_channels(
             _ = send(
                 FileDescriptor(write_fds[w]),
                 Span(datagram),
-                UInt(len(datagram)),
                 MSG_DONTWAIT,
             )
             sent += 1
@@ -301,7 +300,7 @@ def drain_bus_channel(read_fd: Int) raises -> List[BusFrame]:
     while True:
         var n: UInt
         try:
-            n = recv(fd, Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(fd, Span(buf), MSG_DONTWAIT)
         except:
             break  # EAGAIN: drained (or the channel died; either way, done)
         if n == 0:

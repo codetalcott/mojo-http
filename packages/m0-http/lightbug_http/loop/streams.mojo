@@ -10,7 +10,7 @@ asks for are applied at the bottom of every pass.
 
 from lightbug_http.broadcast import drain_bus_channel
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import recv, send
+from lightbug_http.c.socket import recv, send, spare_capacity
 from lightbug_http.connection import ConnectionState
 from lightbug_http.http.chunked import chunked_terminator, encode_chunk
 from lightbug_http.io.bytes import Bytes
@@ -98,7 +98,7 @@ def _heartbeat[T: HTTPService, B: EventLoopBackend](
     var fd_desc = FileDescriptor(fd_val)
     var hb_dead = False
     try:
-        var sent = send(fd_desc, Span(st.slot_response[hb_slot]), UInt(len(st.slot_response[hb_slot])), 0)
+        var sent = send(fd_desc, Span(st.slot_response[hb_slot]), 0)
         st.slot_send_offset[hb_slot] = Int(sent)
     except hb_err:
         # EPIPE/ECONNRESET here is the heartbeat doing its
@@ -131,8 +131,7 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
     try:
         ws_read = recv(
             ws_fd,
-            Span(st.provision_pool.provisions[slot].recv_staging),
-            UInt(st.provision_pool.provisions[slot].recv_staging.capacity()),
+            spare_capacity(st.provision_pool.provisions[slot].recv_staging),
             0,
         )
     except ws_recv_err:
@@ -181,7 +180,7 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
         var ws_reply_sent = 0
         try:
             ws_reply_sent = Int(
-                send(ws_fd, Span(ws_res.reply), UInt(len(ws_res.reply)), 0)
+                send(ws_fd, Span(ws_res.reply), 0)
             )
         except ws_send_err:
             # Anything but EAGAIN means the client is gone.
@@ -361,7 +360,7 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                 # Eager send
                 var sse_fd = FileDescriptor(st.slot_fds[s])
                 try:
-                    var sent = send(sse_fd, Span(st.slot_response[s]), UInt(len(st.slot_response[s])), 0)
+                    var sent = send(sse_fd, Span(st.slot_response[s]), 0)
                     st.slot_send_offset[s] = Int(sent)
                 except:
                     pass
