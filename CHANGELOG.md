@@ -8,7 +8,82 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.12.1] — 2026-10-07
+
+A patch release for the security fixes of a review of the server's HTTP
+core, the `lightbug_http` fork. A header value could split a response built
+in Mojo, and a request head ending a line with a bare LF put the parser and
+the event loop's framing out of step in every server, m0serve included; on
+macOS the page workers share could be created readable by other users. The
+review's other fixes are here too: request heads, trailers and targets the
+RFCs call malformed are refused or read as they say. The served contract is
+unchanged. The `m0` wheel ships the framework's source, so an application
+built with `m0` takes every fix by rebuilding against `m0 0.9.1`. This
+section also records what `m0 0.9.0` published on its own: the `board`
+template and `m0 new .`.
+
+### Security
+
+- **A header value can no longer split a response with an overlong UTF-8
+  sequence** (SPEC G19). Exposed: responses built in Mojo only; the
+  gateway's Python applications are not. The latin-1 transcoder that
+  writes every response head decoded three- and four-byte sequences as
+  well as two-byte ones, AFTER the check that drops a header carrying CR,
+  LF or NUL, so the overlong forms `E0 80 8D` and `E0 80 8A` went out as a
+  real CRLF. A Mojo view that redirected to a request's `next` with
+  `reply.redirect` could be
+  made to send a `Set-Cookie`, or a body, of the request's choosing:
+  `?next=/%E0%80%8D%E0%80%8ASet-Cookie:%20sid%3Dx` did it, and a header or
+  `Set-Cookie` value a view built from request data was open the same way.
+  Every response built in Mojo was exposed: a `Views` application's, the
+  Mojo host's, and a Mojo mount's in m0serve. Python applications on
+  m0serve were not: a `str` header reaches the server as CPython's UTF-8,
+  which is never overlong, and a `bytes` value is re-encoded byte by byte.
+  The transcoder now decodes only U+0080 to U+00FF and writes every other
+  byte as it was given, and the writers check the transcoded bytes again
+  before they send them. Upgrade m0serve if it serves a Mojo mount, and
+  rebuild every Mojo application against this release (an `m0`
+  application against `m0 0.9.1`).
+
+- **A request head with a bare LF is refused with 400** (SPEC B12).
+  Exposed: every server, m0serve included, whatever it serves; the
+  parser and the event loop are the same under all of them. Upgrade
+  m0serve, and rebuild every Mojo application. The parser ended a head
+  at a bare-LF empty line (`\r\n\n`), while the event loop frames a head
+  by the first CRLFCRLF, and the bytes between the two were lost: a
+  request pipelined behind such a head got no
+  answer, and a `Content-Length` after the bare LF was never read, so the
+  body it described was answered as a request of its own. Every line of
+  a request head must now end in CRLF, and the loop also refuses any head
+  the parser ends at a different byte than its own frame, then closes the
+  connection. A client that ends request lines with a lone LF is refused;
+  none is known. `smoke-pipelining` sends both shapes.
+
+- **The page workers share is created private on macOS** (SPEC G20).
+  Exposed: macOS only; the mode was measured world-readable once. The
+  server asked `shm_open` for mode `0o600` in a register, where Apple
+  silicon passes that argument on the stack, so the page took whatever
+  mode the stack held: measured as `0o000`, `0o001` and `0o744`, the last
+  readable by any user who opened it by name before the server unlinked
+  it a moment later. It is now created `0o600`. A page that cannot be
+  sized no longer leaks its descriptor. Linux was not affected.
+
 ### Added
+
+- **`m0 0.9.1`, this release's framework, for applications built with
+  `m0`.** The wheel ships the framework's source, the server's HTTP core
+  included, so an application takes every fix under Security and Fixed by
+  rebuilding against it: raise its pin to `m0==0.9.1`, then `uv sync` and
+  `uv run m0 build`. Nothing in an application's own source has to
+  change. What changed since `m0 0.9.0` for someone writing an
+  application:
+  - Fixed, the response splitting under Security. Every response an `m0`
+    application builds is built in Mojo, so every application built with
+    an earlier `m0` is exposed until it is rebuilt.
+  - Fixed, the bare-LF framing desync under Security, and the request,
+    WebSocket and static-file fixes under Fixed.
+  - Changed, `m0 --help` names the templates, and an `m0 new` given no
+    template says it took the default (under Changed).
 
 - **`m0 0.9.0`, published on its own**, for applications built with `m0`.
   What changed since `m0 0.8.0` for someone writing an application:
@@ -38,39 +113,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
-- **A header value can no longer split a response with an overlong UTF-8
-  sequence** (SPEC G19). The latin-1 transcoder that writes every response
-  head decoded three- and four-byte sequences as well as two-byte ones,
-  AFTER the check that drops a header carrying CR, LF or NUL, so the
-  overlong forms `E0 80 8D` and `E0 80 8A` went out as a real CRLF. A Mojo
-  view that redirected to a request's `next` with `reply.redirect` could be
-  made to send a `Set-Cookie`, or a body, of the request's choosing:
-  `?next=/%E0%80%8D%E0%80%8ASet-Cookie:%20sid%3Dx` did it, and a header or
-  `Set-Cookie` value a view built from request data was open the same way.
-  Every response built in Mojo was exposed: a `Views` application's, the
-  Mojo host's, and a Mojo mount's in m0serve. Python applications on
-  m0serve were not: a `str` header reaches the server as CPython's UTF-8,
-  which is never overlong, and a `bytes` value is re-encoded byte by byte.
-  The transcoder now decodes only U+0080 to U+00FF and writes every other
-  byte as it was given, and the writers check the transcoded bytes again
-  before they send them. Rebuild a Mojo application against this release.
-
 - **A response whose application sets `Server` no longer carries two
   `Server` lines** (SPEC A26). The server wrote its default `server: lightbug_http`
   whatever the headers held, so an application that named itself, built
   in Mojo or a Python application on m0serve, sent two. The default is now
   written only when the application set none.
-
-- **A request head with a bare LF is refused with 400** (SPEC B12). The
-  parser ended a head at a bare-LF empty line (`\r\n\n`), while the
-  event loop frames a head by the first CRLFCRLF, and the bytes between
-  the two were lost: a request pipelined behind such a head got no
-  answer, and a `Content-Length` after the bare LF was never read, so the
-  body it described was answered as a request of its own. Every line of
-  a request head must now end in CRLF, and the loop also refuses any head
-  the parser ends at a different byte than its own frame, then closes the
-  connection. A client that ends request lines with a lone LF is refused;
-  none is known. `smoke-pipelining` sends both shapes.
 
 - **A folded field line is refused with 400** (SPEC B13). A request
   field line opening with a space or a tab (obs-fold, RFC 9112 §5.2) was
@@ -117,15 +164,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   (`http://h?q=1` lost it), and a target with no host (`http:///p`) or
   with a userinfo (`http://user@h/`) is refused with 400.
 
-- **The `live` scaffold's stream behind a handler pool.** Its `/events`
-  view was not `on_loop`, and its handler answered only stateless loop
-  routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every
-  stream was refused 409. A project an earlier `m0` wrote takes the same
-  two lines: `on_loop=True` on the `/events` registration in
-  `src/views.mojo`, and `self.views.answer_on_loop(req, self.state)` in
-  `LiveHandler.before_request`. `smoke-scaffold` now serves `live` behind
-  a pool.
-
 - **A WebSocket message is no longer lost when a frame the server refuses
   follows it in the same read** (SPEC I34). A frame the protocol forbids
   (a reserved opcode, an unmasked frame, a text frame that is not UTF-8)
@@ -144,13 +182,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and the client sees a response shorter than its length, an error it
   can detect.
 
-- **The page workers share is created private on macOS** (SPEC G20). The
-  server asked `shm_open` for mode `0o600` in a register, where Apple
-  silicon passes that argument on the stack, so the page took whatever
-  mode the stack held: measured as `0o000`, `0o001` and `0o744`, the last
-  readable by any user who opened it by name before the server unlinked
-  it a moment later. It is now created `0o600`. A page that cannot be
-  sized no longer leaks its descriptor. Linux was not affected.
+- **The `live` scaffold's stream behind a handler pool.** Its `/events`
+  view was not `on_loop`, and its handler answered only stateless loop
+  routes, so under `--blocking-threads` (`M0_BLOCKING_THREADS`) every
+  stream was refused 409. A project an earlier `m0` wrote takes the same
+  two lines: `on_loop=True` on the `/events` registration in
+  `src/views.mojo`, and `self.views.answer_on_loop(req, self.state)` in
+  `LiveHandler.before_request`. `smoke-scaffold` now serves `live` behind
+  a pool.
 
 ### Changed
 
@@ -159,8 +198,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   skill ran `m0 --help`, then a bare `m0 new .` before it knew a
   template's name, took `views`, and wrote its application a second time.
   The top-level help now lists the four, a line each, and an `m0 new`
-  given no template says it took the default and lists the others. For
-  the next `m0`.
+  given no template says it took the default and lists the others. It
+  ships in `m0 0.9.1`.
 
 - **The pages say what the agent runs had to find out.** Both quickstarts
   serve on `127.0.0.1`. The Python quickstart says where libpython comes
@@ -7734,6 +7773,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.12.1]: https://github.com/codetalcott/mojo-http/releases/tag/v1.12.1
 [1.12.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.12.0
 [1.11.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.11.0
 [1.10.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.10.0
