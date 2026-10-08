@@ -45,9 +45,11 @@ from src.cli import (
     pool_thread_count,
     serves_offloaded,
     DEFAULT_PORT,
+    EXIT_CONFIG,
     M0SERVE_VERSION,
     MAX_AUTO_BLOCKING_THREADS,
 )
+from src.checks import CheckFacts, first_refusal, flag_checks
 from m0_http.config import AppConfig
 from lightbug_http.server_config import ServerConfig
 
@@ -709,6 +711,45 @@ def test_from_env_names_a_number_too_large_for_an_int() raises:
         " 9223372036854775807; using 1",
     )
     _clear_env()
+
+
+def test_an_environment_port_of_0_is_refused_as_the_flag_is() raises:
+    """`M0_PORT=0` is read, then refused with 78 by the `port` check, which
+    words it as `--port 0` is refused (review record LF56).
+
+    The environment took 0, and m0serve served on a port the kernel chose
+    while its startup line said `:0`; the flag refuses 0 as a usage error.
+    A port above 65535 is refused the same way, where it failed at the
+    bind. A port the flag names is the flag's to refuse, before this.
+
+    covers: M2
+    """
+    _clear_env()
+    _ = setenv("M0_PORT", "0", True)
+    var seed = ServeOptions.from_env()
+    var zero = first_refusal(flag_checks(parse_args([String("m.wsgi")], seed), CheckFacts(False, False, True)))
+    var flagged = first_refusal(
+        flag_checks(parse_args([String("m.wsgi"), String("--port"), String("8000")], seed), CheckFacts(False, False, True))
+    )
+    _ = setenv("M0_PORT", "70000", True)
+    var high = first_refusal(
+        flag_checks(parse_args([String("m.wsgi")], ServeOptions.from_env()), CheckFacts(False, False, True))
+    )
+    _clear_env()
+    assert_true(Bool(zero), "M0_PORT=0 was served")
+    assert_equal(zero.value().name, "port")
+    assert_equal(zero.value().code, EXIT_CONFIG)
+    assert_equal(zero.value().detail, "M0_PORT must be between 1 and 65535, got 0")
+    assert_true("--port (M0_PORT)" in zero.value().fix, zero.value().fix)
+    var flag_error = String("")
+    try:
+        _ = parse_args([String("m.wsgi"), String("--port"), String("0")], ServeOptions())
+    except e:
+        flag_error = String(e)
+    assert_true("must be between 1 and 65535, got 0" in flag_error, flag_error)
+    assert_false(Bool(flagged), "--port 8000 over M0_PORT=0 was refused")
+    assert_true(Bool(high), "M0_PORT=70000 was served")
+    assert_equal(high.value().detail, "M0_PORT must be between 1 and 65535, got 70000")
 
 
 def test_format_size_is_what_parse_size_reads_back() raises:

@@ -149,6 +149,7 @@ the host applies them:
 
 | check | refused when |
 |---|---|
+| `port` | `M0_PORT` is outside 1-65535, as `--port` is refused while the flags are read |
 | `workers-count` | `M0_WORKERS` is below 1 |
 | `workers-vs-application` | `M0_WORKERS` is above the application's `max_workers()` |
 | `threads-count` | `M0_THREADS` is below 1 |
@@ -158,7 +159,8 @@ the host applies them:
 | `spawned-marker` | `M0_WORKER_SPAWNED` is inherited from an m0serve worker |
 | `workers-vs-parallel-runtime` | `M0_WORKERS` is above 1 and the binary links MAX's parallel runtime |
 
-A count is refused the same way whether it came from a flag or a variable.
+A count is refused the same way whether it came from a flag or a variable;
+a port is refused as it is read from a flag, and by `port` from the variable.
 
 ## The doctor
 

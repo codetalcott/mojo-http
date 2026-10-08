@@ -817,6 +817,17 @@ def host_checks(
     (SPEC E32) is where the gathered fact is proven.
     """
     var out = List[HostCheck]()
+    # The port, first: what the listener binds. `--port` refuses anything
+    # outside 1-65535 as it is read; the environment took 0, and the host
+    # listened on a port the kernel chose (review record LF56).
+    if config.port < 1 or config.port > 65535:
+        out.append(HostCheck(
+            "port",
+            String("M0_PORT must be 1-65535, got ", config.port),
+            "set --port (M0_PORT) to a port from 1 to 65535",
+        ))
+    else:
+        out.append(HostCheck("port", String("port ", config.port)))
     if config.workers < 1:
         out.append(HostCheck(
             "workers-count",

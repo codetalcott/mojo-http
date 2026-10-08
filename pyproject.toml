@@ -3780,6 +3780,27 @@ refuses 78 'too many mounts, explicit no pool'  $M127 $W --blocking-threads 0
 refuses 1  'missing app dir, then a conflict'   bareapp.wsgi --app-dir /no/such/dir --workers 2 --threads 2
 refuses 2  'compiled mount unserved, then lanes' $M127 --mount /native=mojo $W --blocking-threads 0
 
+# An environment port of 0 is refused before the bind, 78 both ways, as
+# --port 0 is refused while the flags are read (review record LF56); it
+# served on a port the kernel chose. Not through serve(), whose --port
+# would outrank the variable. A server that took the port would block in
+# accept, so it has ten seconds to exit.
+desc='an environment port of 0'
+env M0_PORT=0 "$srv" --doctor $SPEC > "$json" 2>/dev/null; doc=$?
+spawn port0.log env M0_PORT=0 "$srv" $SPEC
+spid=$pid
+n=0
+while kill -0 "$spid" 2>/dev/null && [ $n -lt 100 ]; do sleep 0.1; n=$((n + 1)); done
+if kill -0 "$spid" 2>/dev/null; then
+  kill -TERM "$spid" 2>/dev/null
+  fail "$desc: the server is still running after ten seconds, on a port the kernel chose"
+fi
+wait "$spid"; real=$?
+[ "$doc" = 78 ] || fail "$desc: doctor exits $doc, want 78"
+[ "$real" = 78 ] || fail "$desc: server exits $real, want 78"
+grep -q 'M0_PORT must be between 1 and 65535, got 0' "$SMOKE_DIR/port0.log" \
+  || fail "$desc: the server did not say why"
+
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
 equiv 'threads and workers together' $SPEC --workers 2 --threads 2

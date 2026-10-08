@@ -204,6 +204,32 @@ def test_a_count_that_cannot_be_served_is_a_refusal_not_a_usage_error() raises:
     assert_true(Bool(host_refusal(_parse("--spawn-workers").config)))
 
 
+def test_an_environment_port_of_0_is_refused_as_the_flag_is() raises:
+    """`M0_PORT=0` is read, then refused by the `port` check, as `--port 0`
+    is refused while the flags are read (review record LF56).
+
+    The environment took 0 and the host listened on a port the kernel
+    chose, while the flag refuses it: one setting, answered two ways. A
+    port above 65535 is refused the same way, where it failed at the bind.
+    A port the flag names is checked by the flag, before this.
+
+    covers: E31
+    """
+    _ = setenv("M0_PORT", "0", True)
+    var zero = host_refusal(AppConfig())
+    var by_flag = host_refusal(_parse("--port", "8080").config)
+    _ = setenv("M0_PORT", "70000", True)
+    var high = host_refusal(AppConfig())
+    _ = unsetenv("M0_PORT")
+    assert_true(Bool(zero), "M0_PORT=0 was served")
+    assert_true("M0_PORT must be 1-65535, got 0" in zero.value(), zero.value())
+    assert_true("--port (M0_PORT)" in zero.value(), zero.value())
+    assert_true(Bool(high), "M0_PORT=70000 was served")
+    assert_true("got 70000" in high.value(), high.value())
+    assert_false(Bool(by_flag), "--port 8080 over M0_PORT=0 was refused")
+    assert_false(Bool(host_refusal(AppConfig())), "the default port was refused")
+
+
 def test_prefork_is_refused_when_the_parallel_runtime_is_linked() raises:
     """The verdict with the fact supplied, and the gathered fact only
     checked for consistency: under `mojo run` this test runs inside the
@@ -281,19 +307,20 @@ def test_the_checks_are_whole_and_in_the_order_serve_refuses() raises:
     covers: E31
     """
     var clean = host_checks(AppConfig())
-    assert_equal(len(clean), 8)
+    assert_equal(len(clean), 9)
     for i in range(len(clean)):
         assert_true(clean[i].ok, clean[i].name + " failed on a default config")
         assert_equal(clean[i].fix, "")
-    assert_equal(clean[0].name, "workers-count")
-    assert_equal(clean[3].name, "workers-vs-threads")
+    assert_equal(clean[0].name, "port")
+    assert_equal(clean[1].name, "workers-count")
+    assert_equal(clean[4].name, "workers-vs-threads")
     # Two failures: too many workers for the app, and both modes at once.
     var two = host_checks(_parse("--workers", "2", "--threads", "2").config, 1)
-    assert_equal(len(two), 8)
-    assert_false(two[1].ok)
-    assert_false(two[3].ok)
+    assert_equal(len(two), 9)
+    assert_false(two[2].ok)
+    assert_false(two[4].ok)
     var first = host_refusal(_parse("--workers", "2", "--threads", "2").config, 1)
-    assert_true(two[1].detail in first.value())
+    assert_true(two[2].detail in first.value())
     assert_true("M0_WORKERS=2" in first.value())
 
 

@@ -169,6 +169,11 @@ def main() -> int:
     p = P()
     rows.append(("--workers 0", ["--port", str(p), "--workers", "0"], {}, 78,
                  {"check": "workers-count"}))
+    # The environment's port 0: read, then refused by the first check, as
+    # --port 0 is refused while the flags are read (review record LF56). It
+    # served on a port the kernel chose.
+    rows.append(("an environment port of 0", [], {"M0_PORT": "0"}, 78,
+                 {"check": "port"}))
     p = P()
     rows.append(("more workers than the application serves", ["--port", str(p), "--workers", "2"],
                  {"M0_HOSTCHECK_MAX_WORKERS": "1"}, 78,

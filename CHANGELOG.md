@@ -215,6 +215,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Changed
 
+- **An environment port of 0 is refused, as the flag is** (fork review
+  LF56, SPEC E31, M2). Affects m0serve and Mojo host applications started
+  with `M0_PORT=0`, or with a port past 65535. `--port 0` was always a
+  usage error, but `M0_PORT=0` served on a port the kernel chose, which
+  m0serve's startup line named as `:0`. Both now refuse it at startup with
+  exit 78, before anything is bound: `M0_PORT must be between 1 and 65535,
+  got 0` from m0serve and `M0_PORT must be 1-65535, got 0` from the host,
+  as their `--port` refusals read, and `--doctor` reports it as the `port`
+  check, now the first of each list. A port past 65535 is refused the same
+  way, where it failed at the bind.
+
 - **The fork's descriptor helpers live in the module that owns them**
   (fork review LF28). Nothing served changes. An application built with
   the `m0` wheel that imported one of these from the old place imports it

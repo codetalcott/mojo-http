@@ -302,6 +302,15 @@ def flag_checks(opts: ServeOptions, facts: CheckFacts) -> List[ServeCheck]:
     """
     var out = List[ServeCheck]()
 
+    # The port, first: what the server binds. `--port` refuses anything
+    # outside 1-65535 as it is read; the environment took 0, and the server
+    # listened on a port the kernel chose while its startup line said `:0`
+    # (review record LF56). Exit 78, as the Mojo host's `port` check.
+    _rule(out, "port", opts.port >= 1 and opts.port <= 65535,
+        "port " + String(opts.port),
+        "M0_PORT must be between 1 and 65535, got " + String(opts.port),
+        "set --port (M0_PORT) to a port from 1 to 65535", EXIT_CONFIG)
+
     # The directories, exit 1: what the server was pointed at is not there.
     _rule(out, "app-dir", isdir(opts.app_dir), opts.app_dir + " exists",
         "app dir does not exist: " + opts.app_dir,

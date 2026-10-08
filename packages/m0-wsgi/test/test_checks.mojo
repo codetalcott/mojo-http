@@ -111,7 +111,7 @@ def test_a_plain_configuration_passes_every_rule_it_meets() raises:
     """The positional spec with nothing else: the three rules that always
     apply, all passing, and nothing for the server to refuse."""
     var checks = flag_checks(_opts([String("app.wsgi")]), _facts())
-    assert_equal(_names(checks), "app-dir,threads-vs-workers,workers-vs-parallel-runtime")
+    assert_equal(_names(checks), "port,app-dir,threads-vs-workers,workers-vs-parallel-runtime")
     assert_false(Bool(first_refusal(checks)))
     for i in range(len(checks)):
         assert_true(checks[i].ok)
@@ -137,13 +137,13 @@ def test_the_flag_rules_are_in_the_order_the_server_applies_them() raises:
     var checks = flag_checks(opts, facts)
     assert_equal(
         _names(checks),
-        "app-dir,static-dir,reload-dir,threads-vs-workers,protocol-vs-realtime,"
+        "port,app-dir,static-dir,reload-dir,threads-vs-workers,protocol-vs-realtime,"
         + "pg-listen,mounts-without-python,hold-mount-vs-realtime,hold-mount-key,"
         + "compiled-mount-vs-threads,compiled-mount-threads,mount-lanes,"
         + "workers-vs-parallel-runtime",
     )
     assert_false(Bool(first_refusal(checks)), _failed(checks))
-    assert_equal(checks[5].detail, "libpq 16.4 at /usr/lib/libpq.so")
+    assert_equal(checks[6].detail, "libpq 16.4 at /usr/lib/libpq.so")
 
 
 def test_the_directories_refuse_with_1_and_name_what_is_missing() raises:
@@ -360,7 +360,13 @@ def test_a_forked_worker_beside_the_parallel_runtime_is_refused_with_2() raises:
 
 
 def test_the_first_failure_is_the_earliest_rule_not_the_largest_code() raises:
-    """Three pairs where the codes differ, so a reorder changes the exit."""
+    """Four pairs where the codes differ, so a reorder changes the exit."""
+    # A port the environment set to 0 (78) before a missing directory (1).
+    var zero = _opts([String("app.wsgi"), String("--app-dir"), String(MISSING)])
+    zero.port = 0
+    var first = _first(flag_checks(zero, _facts()))
+    assert_equal(first.name, "port")
+    assert_equal(first.code, EXIT_CONFIG)
     # A missing directory (1) before a usage conflict (2).
     var c = _first(flag_checks(
         _opts([
