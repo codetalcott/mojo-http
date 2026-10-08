@@ -960,6 +960,13 @@ jobs:
       # first request of a burst.
       - name: Smoke test pipelined requests
         run: uv run poe smoke-pipelining
+      # SPEC B25: the 137 requests the fork review sent to this server, to
+      # h11 and to llhttp, each on its own connection, its answer frozen in
+      # scripts/differential_expected.json: which requests the application
+      # saw, by method and body length, and each refusal's status. A parser
+      # or loop change that moves one answer fails here naming the case.
+      - name: Smoke test the differential request corpus
+        run: uv run poe smoke-differential
 
       # The keep-alive request cap must close the connection, not destroy
       # the response it fires on. A stream and a WebSocket upgrade each own
