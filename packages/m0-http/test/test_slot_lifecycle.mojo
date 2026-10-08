@@ -607,6 +607,61 @@ def test_a_transfer_coding_it_cannot_decode_is_answered_501_and_closed() raises:
     assert_true(misplaced[1], "the slot stayed open after the 400")
 
 
+def test_a_close_on_either_connection_line_closes() raises:
+    """Two `Connection` field lines are one list (RFC 9110 §5.3), so the
+    loop closes behind the answer whichever line says `close`. The store
+    kept the last line, and `close` then `keep-alive` kept the connection.
+
+    covers: B22
+    """
+    var first = _exchange([
+        "GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n"
+        "Connection: keep-alive\r\n\r\n"
+    ])
+    assert_true("200 ok" in first[0], first[0])
+    assert_true("connection: close" in first[0], first[0])
+    assert_true(first[1], "the slot stayed open after a first-line close")
+    var plain = _exchange([
+        "GET / HTTP/1.1\r\nHost: h\r\nConnection: keep-alive\r\n"
+        "Connection: TE\r\n\r\n"
+    ])
+    assert_false(plain[1], "a request asking no close was closed")
+
+
+def test_a_bare_lf_in_a_head_still_arriving_is_answered_400_at_once() raises:
+    """A bare LF in a request head can only be refused (SPEC B12), but the
+    parser runs once `find_header_end` frames a head by its CRLFCRLF, and a
+    head of bare LFs holds none: it went unanswered until its peer's EOF
+    or the header timeout's 408. It is refused at the read that brings
+    it, in whichever read that is and past the 64-byte scan. A CR that
+    ends one read and the LF that opens the next are a CRLF, and a head
+    of CRLFs still arriving is waited for.
+
+    covers: B23
+    """
+    for shape in [
+        "GET / HTTP/1.1\nHost: x\n\n",
+        "\n\n\n",
+        "GET / HTTP/1.1\n",
+        "GET / HTTP/1.1\r\nX-Pad: " + String("p") * 100 + "\nHost: x",
+    ]:
+        var got = _exchange([shape])
+        assert_true("400 bad request" in got[0], shape + ": " + got[0])
+        assert_true("connection: close" in got[0], got[0])
+        assert_true(got[1], "the slot stayed open after the 400: " + shape)
+    var later = _exchange(["GET / HTTP/1.1\r\n", "Host: x\n"])
+    assert_true("400 bad request" in later[0], later[0])
+    assert_true(later[1], "the slot stayed open after a later read's bare LF")
+    var split = _exchange(["GET / HTTP/1.1\r", "\nHost: x\r\n"])
+    assert_equal(split[0], "", "a CRLF split across two reads was answered")
+    assert_false(split[1], "a CRLF split across two reads was closed")
+    var long = _exchange([
+        "GET / HTTP/1.1\r\nX-Pad: " + String("p") * 150 + "\r\n", "Host: x\r\n"
+    ])
+    assert_equal(long[0], "", "a long head of CRLFs still arriving was answered")
+    assert_false(long[1], "a long head of CRLFs still arriving was closed")
+
+
 def test_the_metrics_path_honours_a_requested_close() raises:
     """`/__metrics` is answered by the loop itself, and its branch reset
     `should_close` to False after the request had set it: a scrape asking

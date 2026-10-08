@@ -168,6 +168,39 @@ def test_connection_is_read_as_a_list_of_tokens() raises:
     assert_true(_closes("keep-alive, close", "1.0"))
 
 
+def test_repeated_connection_lines_are_read_as_one_list() raises:
+    """RFC 9110 §5.3: field lines of one name combine into one list, in
+    order, comma-SP. The header store keeps the LAST line of a repeated
+    field, so `Connection: close` then `Connection: keep-alive` kept the
+    connection, and an HTTP/1.0 `keep-alive` before a `TE` line closed it.
+    The application reads the combined value.
+
+    covers: B22
+    """
+    var head = String("GET / HTTP/1.1\r\nHost: a\r\n")
+    var req = request_from(
+        head + "Connection: close\r\nConnection: keep-alive\r\n\r\n"
+    )
+    assert_true(req.connection_close())
+    assert_equal(req.headers.get(HeaderKey.CONNECTION).value(), "close, keep-alive")
+    assert_true(
+        request_from(head + "Connection: TE\r\nconnection: CLOSE\r\n\r\n").connection_close()
+    )
+    var three = request_from(
+        head + "Connection: a\r\nX-Other: 1\r\nConnection: b\r\nConnection: close\r\n\r\n"
+    )
+    assert_equal(three.headers.get(HeaderKey.CONNECTION).value(), "a, b, close")
+    assert_true(three.connection_close())
+    assert_false(
+        request_from(
+            "GET / HTTP/1.0\r\nConnection: keep-alive\r\nConnection: TE\r\n\r\n"
+        ).connection_close()
+    )
+    assert_false(
+        request_from(head + "Connection: keep-alive\r\nConnection: TE\r\n\r\n").connection_close()
+    )
+
+
 def test_the_outgoing_constructor_still_fills_its_headers() raises:
     """The client's constructor keeps filling what a client must send."""
     var req = HTTPRequest(URI.parse("http://example.com/x"), body=Bytes("hi".as_bytes()))

@@ -39,6 +39,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   and the application reads an empty `HTTP_HOST`; beside an absolute-form
   target (`http://host/path`) it is still refused, as is a missing `Host`.
 
+- **`Connection: close` closes the connection whichever `Connection` line
+  carries it** (SPEC B22). A request with two `Connection` lines was read
+  by its last alone, so `close` on the first was lost and the connection
+  kept open. The lines are now one list, in order, as RFC 9110 §5.3 reads
+  them, and the application sees them combined.
+
+- **A request head with a bare LF is answered 400 as soon as it arrives**
+  (SPEC B23). A head of bare-LF lines (`GET / HTTP/1.1\nHost: x\n\n`) was
+  never served, but got no answer until the client closed or the header
+  timeout sent 408, holding a connection slot meanwhile.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

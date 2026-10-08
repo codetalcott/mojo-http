@@ -21,6 +21,7 @@ from lightbug_http.header import (
     IncompleteHTTPRequestError,
     UnsupportedHTTPRequestError,
     HeaderKey,
+    holds_bare_lf,
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.io.bytes import Bytes
@@ -660,6 +661,30 @@ def test_the_two_bare_lf_wire_shapes_are_rejected() raises:
             "POST /health HTTP/1.1\r\nHost: x\r\n\nContent-Length: 33\r\n\r\n"
         )
     )
+
+
+def test_a_bare_lf_is_found_in_a_head_still_arriving_at_every_offset() raises:
+    """`holds_bare_lf`, which the loop asks of a head with no CRLFCRLF yet
+    (SPEC B23): an LF no CR comes right before is found at every offset
+    across its 64-lane and one-byte widths, a CRLF at every offset is not,
+    and the byte before `start` is read as the LF's predecessor -- a read
+    ending on CR and the next opening with LF are a CRLF.
+
+    covers: B23
+    """
+    for at in range(0, 141):
+        var pad = String("a") * at
+        var bare = pad + "\nb" + String("c") * 70
+        assert_true(holds_bare_lf(bare.as_bytes()), String("bare LF at ", at))
+        var crlf = pad + "\r\nb" + String("c") * 70
+        assert_false(holds_bare_lf(crlf.as_bytes()), String("CRLF at ", at))
+        # Scanned from the LF itself: its CR sits before `start`.
+        assert_false(holds_bare_lf(crlf.as_bytes(), at + 1), String("split at ", at))
+        # A bare LF before `start` was the last scan's to find.
+        assert_false(holds_bare_lf(bare.as_bytes(), at + 1), String("past at ", at))
+    assert_true(holds_bare_lf("\n".as_bytes()))
+    assert_false(holds_bare_lf("".as_bytes()))
+    assert_false(holds_bare_lf("ab\r\n".as_bytes(), 9))
 
 
 def test_an_empty_crlf_line_before_the_request_line_is_still_skipped() raises:

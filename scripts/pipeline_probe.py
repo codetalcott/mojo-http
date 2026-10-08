@@ -21,8 +21,11 @@ was answered once for two requests, and a bare LF with a `Content-Length`
 behind it, whose body was answered as a request. Each must be refused: one
 400, then the connection closed. Two requests that must close the
 connection behind their answer, and did not, do the same with a 200: an
-HTTP/1.0 request with a chunked body (SPEC B15), and `Connection: close`
-listed with another option (SPEC B17). A request for what this server does
+HTTP/1.0 request with a chunked body (SPEC B15), `Connection: close`
+listed with another option (SPEC B17), and `Connection: close` on the first
+of two `Connection` lines (SPEC B22). A head of bare LFs, which no CRLFCRLF
+ever frames, is refused with 400 at once, not at the header timeout (SPEC
+B23). A request for what this server does
 not implement is refused with 501, then the connection closed: CONNECT
 (SPEC B18), and a body in a transfer coding other than `chunked` (SPEC
 B21).
@@ -170,6 +173,22 @@ check_closed_after(
     "Connection: close among other options, a request behind it",
     b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close, TE\r\n"
     b"TE: trailers\r\n\r\n" + GET, [200])
+
+# SPEC B22. Two Connection lines are one list (RFC 9110 §5.3). The
+# store kept the last line, so `close` on the first was lost and the
+# request behind it answered too.
+check_closed_after(
+    "Connection: close on the first of two Connection lines, a request behind",
+    b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n"
+    b"Connection: keep-alive\r\n\r\n" + GET, [200])
+
+# SPEC B23. A head of bare LFs holds no CRLFCRLF to frame it, so it was
+# never parsed: no answer until the header timeout. No half-close here,
+# so the 400 and the close must come from the bytes alone, inside
+# `read_to_close`'s four seconds.
+check_closed_after(
+    "a head of bare LFs, never half-closed",
+    b"GET /health HTTP/1.1\nHost: x\n\n", [400])
 
 # SPEC B18. CONNECT asks for a tunnel, which this server does not
 # implement: 501 and a close. It reached the application, which answered

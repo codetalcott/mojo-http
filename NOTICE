@@ -1359,6 +1359,15 @@ lightbug_http
         `Host` on HTTP/1.1 unless the target is absolute-form (RFC 9110
         §7.2, SPEC B20). Every empty one was refused (review record LF38).
 
+      - header.mojo, loop/request.mojo (2026-10-08): `parse_request_headers`
+        combines repeated `Connection` lines into one value, comma-SP, in
+        order (RFC 9110 §5.3, SPEC B22); `set_bytes` kept the last line, so
+        `close` on an earlier one was lost. The new `holds_bare_lf` finds an
+        LF no CR precedes from a start offset, and `_handle_read_headers`
+        asks it of the bytes a read added to a head `find_header_end` has
+        not framed, answering 400 and closing (SPEC B23): a head of bare
+        LFs waited for its peer's EOF or the 408 (review record LF40).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

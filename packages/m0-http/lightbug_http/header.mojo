@@ -1350,6 +1350,23 @@ def parse_request_headers(
                 if seen_transfer_encoding:
                     raise RequestParseError(InvalidHTTPRequestError())
                 seen_transfer_encoding = True
+            elif kid == KH_CONNECTION:
+                # A second `Connection` line joins the first as one list,
+                # comma-SP, in order (RFC 9110 §5.3), so `close` on either
+                # closes (SPEC B22). `set_bytes` keeps the last of a
+                # repeated field, and `Connection: close` followed by
+                # `Connection: keep-alive` kept the connection alive. Only
+                # this field, the list the loop acts on for every request;
+                # a request carries no `Set-Cookie`, which never combines,
+                # and its `Cookie` lines are joined below, with "; ".
+                var at = headers.known_index(KH_CONNECTION)
+                if at >= 0:
+                    var joined = Bytes(headers.value_span(at))
+                    joined.append(0x2C)  # ','
+                    joined.append(0x20)
+                    joined.extend(value)
+                    headers._set_bytes(name_bytes, Span(joined), kid)
+                    continue
             headers._set_bytes(name_bytes, value, kid)
 
     # Put the cookies back as one `Cookie` field. RFC 6265 §5.4 sends a single
@@ -1611,3 +1628,44 @@ def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[In
         i += 1
 
     return None
+
+
+def holds_bare_lf(buffer: Span[Byte, _], start: Int = 0) -> Bool:
+    """Whether `buffer[start:]` holds an LF that no CR comes right before.
+
+    For a request head still arriving: every line of one ends in CRLF
+    (SPEC B12), so a bare LF means the head can only be refused -- and a
+    head of bare LFs holds no CRLFCRLF for `find_header_end` to frame, so
+    the parser that refuses it never ran (SPEC B23). Each byte from
+    `start` is asked with the one before it, which may sit before `start`:
+    a read that ended on a CR, and the next opening with its LF, is a
+    CRLF. Pass where the last scan stopped and every byte is scanned once.
+
+    Sixty-four lanes a step, the predecessors a second load one byte back;
+    the scalar tail takes the rest.
+    """
+    var n = len(buffer)
+    var p = buffer.unsafe_ptr()
+    var i = start if start > 0 else 0
+    if i >= n:
+        return False
+    if i == 0:
+        if p[unsafe_offset=0] == BytesConstant.LF:
+            return True
+        i = 1
+    var lf_vec = SIMD[DType.uint8, 64](BytesConstant.LF)
+    var cr_vec = SIMD[DType.uint8, 64](BytesConstant.CR)
+    while i + 64 <= n:
+        var cur = p.unsafe_offset(i).unsafe_load[width=64]()
+        var prev = p.unsafe_offset(i - 1).unsafe_load[width=64]()
+        if _first_lane[64](cur.eq(lf_vec) & prev.ne(cr_vec)) >= 0:
+            return True
+        i += 64
+    while i < n:
+        if (
+            p[unsafe_offset=i] == BytesConstant.LF
+            and p[unsafe_offset=i - 1] != BytesConstant.CR
+        ):
+            return True
+        i += 1
+    return False
