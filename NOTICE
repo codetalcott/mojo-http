@@ -1374,6 +1374,12 @@ lightbug_http
         a slot out on a pool thread; `_close_slot` releases
         `slot_response` (review record LF26).
 
+      - loop/response.mojo (2026-10-08): `_pump_body_fd` answers a
+        `send_file` result of no bytes and no reason, which `send_file` no
+        longer gives for a count above 0, as fatal rather than as a full
+        socket, so a regression there closes the connection instead of
+        spinning its slot (review record LF16, a follow-up).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

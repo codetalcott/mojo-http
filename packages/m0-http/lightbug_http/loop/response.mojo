@@ -173,11 +173,13 @@ def _pump_body_fd(mut provision: ConnectionProvision, fd_val: Int) -> Int:
             return BODY_FD_MORE
         if r.sent == 0:
             # Neither progress nor a reason, which `send_file` no longer
-            # answers: end of file is `failed()` (review record LF16).
-            # Waiting for writability on this answer is what spun a slot
-            # whose file had been truncated; it stays only so that no
-            # answer can keep this loop calling `sendfile`.
-            return BODY_FD_MORE
+            # answers for a count above 0: end of file is `failed()`
+            # (review record LF16). Fatal, like that answer: waiting for
+            # writability on it is what spun a slot whose file had been
+            # truncated, and a `send_file` that gave it again would spin
+            # one again. Here so no answer keeps this loop calling it.
+            provision.close_body_fd()
+            return BODY_FD_FATAL
 
     provision.close_body_fd()
     return BODY_FD_DONE
