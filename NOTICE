@@ -1336,6 +1336,17 @@ lightbug_http
         thread that then parked left it there until a later job woke the
         lane.
 
+      - broadcast.mojo, loop/state.mojo, loop/streams.mojo, metrics.mojo,
+        event_loop.mojo, loop/offload.mojo (2026-10-08): bus channels are
+        drained by a `BusReader` the loop keeps in `LoopState` (SPEC I40):
+        one buffer of `BUS_DATAGRAM_MAX + 1` bytes, made at the first drain,
+        where `drain_bus_channel` allocated and zero-filled 69,642 bytes per
+        drain and decoded a longer datagram cut short. A datagram that fills
+        the buffer, or does not decode, is refused and counted in
+        `ServerMetrics.bus_frames_refused` (`bus_frames_refused_total`).
+        `_deliver_bus_frames` takes the `LoopState`; `drain_bus_channel`
+        remains, a reader of its own per call.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

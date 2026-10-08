@@ -10,12 +10,20 @@ surviving into children — is proven by the multi-worker phase of
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.broadcast import (
-    BroadcastBus, BUS_MAX_FRAME, CHANNEL_CONTROL_BYTE,
+    BroadcastBus, BUS_MAX_FRAME, BUS_DATAGRAM_MAX, MAX_CHANNEL, _BUS_HEADER,
+    CHANNEL_CONTROL_BYTE, BusReader,
     channel_is_reserved,
     encode_bus_frame, decode_bus_frame, drain_bus_channel,
     publish_to_channels,
 )
 from lightbug_http.c.kqueue import set_nonblocking, is_nonblocking
+from lightbug_http.c.platform import MSG_DONTWAIT
+from lightbug_http.c.socket import send
+from lightbug_http.http import HTTPRequest, HTTPResponse, OK
+from lightbug_http.loop.state import LoopState
+from lightbug_http.loop.streams import _deliver_bus_frames
+from lightbug_http.server_config import ServerConfig
+from lightbug_http.service import HTTPService
 from lightbug_http.c.socketpair import socketpair_dgram
 
 from src.multiworker import SharedAtomics, shared_fetch_add, shared_load, shared_store
@@ -137,6 +145,131 @@ def test_max_size_frame_crosses_the_bus() raises:
     big.append(UInt8(ord("x")))
     assert_equal(bus.publish(0, "/e", 2, Span(big)), 0)
     assert_equal(len(drain_bus_channel(bus.read_fd(1))), 0)
+
+
+def _filled(n: Int, byte: UInt8) -> List[UInt8]:
+    var out = List[UInt8](capacity=n)
+    for _ in range(n):
+        out.append(byte)
+    return out^
+
+
+def _name(n: Int) -> String:
+    """A channel name `n` bytes long: `/` and then `c`s."""
+    var out = String("/")
+    for _ in range(n - 1):
+        out += "c"
+    return out^
+
+
+def test_a_long_channel_with_a_whole_frame_arrives_whole() raises:
+    """Every datagram a publisher can send is read whole: a 5,000-byte
+    channel with a 64 KB frame, and the largest of all, a channel of
+    `MAX_CHANNEL` bytes with a frame of `BUS_MAX_FRAME`
+    (`BUS_DATAGRAM_MAX`). Each frame's last byte is marked, because a cut
+    frame decodes: the drain read into a 69,642-byte buffer, the kernel
+    discarded what did not fit, and the first of these reached its
+    subscribers 64,632 bytes long (review record LF23).
+
+    covers: I40
+    """
+    var bus = BroadcastBus(2)
+    var frame = _filled(BUS_MAX_FRAME, UInt8(ord("x")))
+    frame[BUS_MAX_FRAME - 1] = UInt8(ord("z"))
+    for name_len in [5000, MAX_CHANNEL]:
+        assert_equal(bus.publish(0, _name(name_len), 1, Span(frame)), 1)
+        var got = drain_bus_channel(bus.read_fd(1))
+        assert_equal(len(got), 1)
+        assert_equal(got[0].url.byte_length(), name_len)
+        assert_equal(len(got[0].frame), BUS_MAX_FRAME)
+        assert_equal(got[0].frame[BUS_MAX_FRAME - 1], UInt8(ord("z")))
+    assert_equal(_BUS_HEADER + MAX_CHANNEL + BUS_MAX_FRAME, BUS_DATAGRAM_MAX)
+
+
+def _send_raw(fd: Int, datagram: List[UInt8]) raises:
+    """One datagram onto a bus channel past every publisher's checks."""
+    var n = send(FileDescriptor(fd), Span(datagram), UInt(len(datagram)), MSG_DONTWAIT)
+    assert_equal(Int(n), len(datagram))
+
+
+def test_a_datagram_longer_than_any_publisher_sends_is_refused_and_counted() raises:
+    """A datagram longer than `BUS_DATAGRAM_MAX` is refused and counted,
+    never delivered in part, and the drain goes on to the next one. One
+    the kernel cut to the buffer, one a single byte too long that it did
+    not, and one too short to carry the header are each a refusal; the
+    frame behind them arrives. Read into a buffer that was too short, the
+    first was delivered with its tail missing.
+
+    covers: I40
+    """
+    var bus = BroadcastBus(2)
+    var reader = BusReader()
+    # One long datagram queued at a time: two do not fit macOS's 256 KB
+    # receive buffer together.
+    var cut = encode_bus_frame(
+        "/x", 9, Span(_filled(BUS_DATAGRAM_MAX + 1000, UInt8(ord("y"))))
+    )
+    _send_raw(bus.write_fds[1], cut)
+    _send_raw(bus.write_fds[1], _bytes("short"))
+    assert_equal(bus.publish(0, "/ok", 10, Span(_bytes("f\n\n"))), 1)
+    var got = reader.drain(bus.read_fd(1))
+    assert_equal(len(got), 1)
+    assert_equal(got[0].url, "/ok")
+    assert_equal(reader.refused, 2)
+    # The count is the reader's for its life, not per drain.
+    var over = encode_bus_frame(
+        "/x", 9, Span(_filled(BUS_DATAGRAM_MAX + 1 - 12, UInt8(ord("y"))))
+    )
+    assert_equal(len(over), BUS_DATAGRAM_MAX + 1)
+    _send_raw(bus.write_fds[1], over)
+    assert_equal(len(reader.drain(bus.read_fd(1))), 0)
+    assert_equal(reader.refused, 3)
+
+
+struct _PeerFrames(HTTPService):
+    """A handler that records the frame lengths `sse_peer_frame` hands it."""
+
+    var lengths: List[Int]
+
+    def __init__(out self):
+        self.lengths = List[Int]()
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
+
+    def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
+        self.lengths.append(len(frame))
+
+
+def test_the_loop_reports_a_refused_bus_datagram_on_its_metrics() raises:
+    """The loop's drain is its own `BusReader`, kept in `LoopState`, and a
+    datagram it refuses is on `/__metrics` as `bus_frames_refused_total`
+    while the frames beside it reach the handler whole.
+
+    covers: I40
+    """
+    var bus = BroadcastBus(2)
+    var config = ServerConfig()
+    config.max_connections = 4
+    var st = LoopState(FileDescriptor(-1), config, String(""), True)
+    var handler = _PeerFrames()
+    assert_true(st.metrics.to_text().find("bus_frames_refused_total 0\n") >= 0)
+    var frame = _filled(BUS_MAX_FRAME, UInt8(ord("x")))
+    assert_equal(bus.publish(0, _name(5000), 1, Span(frame)), 1)
+    _send_raw(
+        bus.write_fds[1],
+        encode_bus_frame("/x", 9, Span(_filled(BUS_DATAGRAM_MAX, UInt8(0)))),
+    )
+    _deliver_bus_frames(handler, st, bus.read_fd(1))
+    assert_equal(len(handler.lengths), 1)
+    assert_equal(handler.lengths[0], BUS_MAX_FRAME)
+    assert_equal(st.metrics.bus_frames_refused, 1)
+    assert_true(st.metrics.to_text().find("bus_frames_refused_total 1\n") >= 0)
+    # A drain that refuses nothing leaves the count where it was.
+    assert_equal(bus.publish(0, "/ok", 2, Span(_bytes("f\n\n"))), 1)
+    _deliver_bus_frames(handler, st, bus.read_fd(1))
+    assert_equal(len(handler.lengths), 2)
+    assert_equal(st.metrics.bus_frames_refused, 1)
 
 
 def test_publish_reports_what_it_delivered() raises:

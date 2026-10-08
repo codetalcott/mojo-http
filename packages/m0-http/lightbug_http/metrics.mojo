@@ -97,6 +97,10 @@ struct ServerMetrics(Movable):
     var latency_count: Int
     """Requests sampled into the histogram (monotonic)."""
 
+    var bus_frames_refused: Int
+    """Bus datagrams this loop drained and did not deliver: longer than
+    any publisher sends, or malformed (monotonic; `BusReader.refused`)."""
+
     def __init__(out self):
         self.requests_total = 0
         self.responses_2xx = 0
@@ -114,6 +118,7 @@ struct ServerMetrics(Movable):
             self.latency_bands.append(0)
         self.latency_sum_us = 0
         self.latency_count = 0
+        self.bus_frames_refused = 0
 
     def record_duration(mut self, elapsed_us: Int):
         """One completed request's latency into the histogram.
@@ -198,5 +203,9 @@ struct ServerMetrics(Movable):
             "# HELP http_pool_capacity Total connection pool capacity\n",
             "# TYPE http_pool_capacity gauge\n",
             "http_pool_capacity ", String(self.pool_capacity), "\n",
+            "# HELP bus_frames_refused_total Cross-worker bus datagrams"
+            " drained and not delivered: over-long or malformed\n",
+            "# TYPE bus_frames_refused_total counter\n",
+            "bus_frames_refused_total ", String(self.bus_frames_refused), "\n",
             self.histogram_text(),
         )

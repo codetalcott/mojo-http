@@ -306,8 +306,8 @@ def send_hold_frame(
     half and does not need it, but carries it anyway rather than having two
     shapes to reason about.
 
-    Bus codec on purpose — the loop drains this descriptor with
-    `drain_bus_channel` and hands every frame to `sse_peer_frame`, which is
+    Bus codec on purpose — the loop drains this descriptor with its
+    `BusReader` and hands every frame to `sse_peer_frame`, which is
     where the `h` kind is turned into a subscription. Bounded retry, never a
     park: a hold frame is ~50 bytes on a 256 KB channel the loop empties
     every pass, so a refusal here means the loop is not draining at all,

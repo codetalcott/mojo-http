@@ -1434,6 +1434,14 @@
       "evidence": "`test_offload.mojo:test_a_websocket_message_sent_while_the_thread_is_on_its_way_to_park_is_taken` (every PR) \u2014 the lane's one thread is inside a 200 ms view when the message is sent, waking nobody, and the lane's poll clock is moved past the end of the test, so the only look at the socket is the one the park takes; the thread must have taken the message by the time it is pilled. Before the fix (review record LF22) a sleep held open the window between a thread's last poll and its announcement, and 24 messages of 24 sent inside it were left on the socket, the last until the pill; with the fix, 0 of 24. The parked case is `test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel`, beside it"
     },
     {
+      "id": "I40",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A bus datagram is delivered whole or not at all: the loop reads every datagram a publisher can send whole, up to `BUS_DATAGRAM_MAX` (a channel name of `MAX_CHANNEL` bytes and a frame of `BUS_MAX_FRAME`, 131,081 bytes), into one buffer it keeps for its life, and a longer one -- cut by the kernel, or longer than any publisher sends -- or a malformed one is refused and counted, `bus_frames_refused_total` on `/__metrics`, while the drain goes on to the next",
+      "status": "verified",
+      "evidence": "`test_broadcast.mojo:test_a_long_channel_with_a_whole_frame_arrives_whole` (every PR) \u2014 a 5,000-byte channel with a 64 KB frame and the largest datagram of all arrive whole, last byte included; `test_a_datagram_longer_than_any_publisher_sends_is_refused_and_counted` (one the kernel cut, one a byte too long that it did not, and one too short for the header, each refused and counted, the frame behind them delivered) and `test_the_loop_reports_a_refused_bus_datagram_on_its_metrics` (the loop's own reader, its count on `/__metrics`) beside it. Before the fix (review record LF23) the drain read into a 69,642-byte buffer allocated and zero-filled for every drain, and the 5,000-byte channel's frame reached its subscribers 64,632 bytes long. The length a cut datagram returns is the buffer's on macOS and on Linux alike (measured in the colima VM, kernel 6.8), so a datagram that fills the one-byte-longer buffer is the refusal on both, where `MSG_TRUNC` passed to `recv` reports the real length on Linux and nothing on macOS. Sabotaged four ways (the old buffer, no length check, no count of a malformed datagram, the count not reaching the metrics), each caught"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",

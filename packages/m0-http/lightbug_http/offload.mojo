@@ -2113,7 +2113,7 @@ struct OffloadPool(Movable):
         With `read_fd`, the channel first: executor batches, stream aborts,
         and wake datagrams (skipped). The channel's registration is
         edge-triggered, so it is read until EAGAIN — the same contract, and
-        the same reason, as `drain_bus_channel`. Then the completion ring:
+        the same reason, as `BusReader.drain`. Then the completion ring:
         every pool thread's completions, in publish order. A caller that
         only wants what is in memory (the loop, at the top and bottom of a
         pass) passes `read_fd=False` and pays no syscall.

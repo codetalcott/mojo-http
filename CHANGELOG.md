@@ -22,6 +22,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   fork review; with a sleep holding that moment open, 24 messages of 24
   waited.
 
+- **A cross-worker bus frame is delivered whole or not at all** (SPEC
+  I40). Exposed: a publish whose channel name and frame together passed
+  about 69.6 KB, through `m0pub.publish()`, `scope["state"]["m0"]`,
+  `BroadcastBus.publish` or `DatastarStream` with the bus: a 5,000-byte
+  channel with a 64 KB frame reached the other workers' subscribers 904
+  bytes short, the end of the frame silently missing, though every
+  publisher had accepted it. Each loop now reads every datagram a
+  publisher can send whole, up to a 65,535-byte channel with a 65,536-byte
+  frame, into one buffer it keeps instead of allocating and zeroing 70 KB
+  on every drain. A datagram longer than that, or malformed, is refused
+  and counted: `bus_frames_refused_total` on `/__metrics`.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

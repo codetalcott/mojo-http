@@ -224,9 +224,11 @@ def _complete_one[T: HTTPService, B: EventLoopBackend](
         # closes it, and the frame subscribes a slot that is already gone
         # (Linux CI, smoke-django-realtime phase 5, 2026-09-05).
         if st.bus_read_fd >= 0:
-            _deliver_bus_frames(handler, st.bus_read_fd)
+            var bus_fd = st.bus_read_fd
+            _deliver_bus_frames(handler, st, bus_fd)
         if st.peer_bus_fd >= 0:
-            _deliver_bus_frames(handler, st.peer_bus_fd)
+            var peer_fd = st.peer_bus_fd
+            _deliver_bus_frames(handler, st, peer_fd)
     _finish_response(handler, backend, st, slot, st.slot_fds[slot], response^)
     # A request pipelined behind the one this pool thread just answered
     # is already in recv_buffer; nothing else will ever announce it.

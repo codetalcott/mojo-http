@@ -8,7 +8,6 @@ bus (`_deliver_bus_frames`); and the closes and resumed reads the handler
 asks for are applied at the bottom of every pass.
 """
 
-from lightbug_http.broadcast import drain_bus_channel
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import recv, send
 from lightbug_http.connection import ConnectionState
@@ -25,11 +24,15 @@ from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
 
 
-def _deliver_bus_frames[T: HTTPService](mut handler: T, fd: Int) raises:
-    """Drain one bus channel to EAGAIN and hand each frame to the handler
-    (`sse_peer_frame`), which queues it for its own subscribers; the pass's
-    outbox drain sends it."""
-    var frames = drain_bus_channel(fd)
+def _deliver_bus_frames[T: HTTPService](
+    mut handler: T, mut st: LoopState, fd: Int
+) raises:
+    """Drain one bus channel to EAGAIN through the loop's reader and hand
+    each frame to the handler (`sse_peer_frame`), which queues it for its
+    own subscribers; the pass's outbox drain sends it. What the reader
+    refused is counted where `/__metrics` reads it."""
+    var frames = st.bus_reader.drain(fd)
+    st.metrics.bus_frames_refused = st.bus_reader.refused
     for f in range(len(frames)):
         handler.sse_peer_frame(frames[f].url, frames[f].event_id, frames[f].frame)
 
