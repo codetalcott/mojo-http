@@ -137,6 +137,9 @@ def code_only(src, keep_strings):
 _CALL = re.compile(r"external_call\s*\[")
 
 
+_ALIAS = re.compile(r"\bexternal_call\s+as\b|=\s*external_call\b(?!\s*\[)")
+
+
 def first_argument(src, pos):
     """The first argument of the bracket opened just before `pos`: ("lit",
     name) for a string literal in any quoting style, else ("expr", text)."""
@@ -145,7 +148,10 @@ def first_argument(src, pos):
         if src.startswith(q, pos):
             end = src.find(q, pos + len(q))
             if end > 0:
-                return "lit", src[pos + len(q):end]
+                rest = src[end + len(q):].lstrip()
+                if rest[:1] in (",", "]"):
+                    return "lit", src[pos + len(q):end]
+                break
     m = re.match(r"[^,\]]*", src[pos:])
     return "expr", " ".join(m.group(0).split())
 
@@ -177,6 +183,15 @@ def check_variadic(rel, src, dynamic_allowed=None):
                 f"Darwin arm64 passes variadic arguments on the stack; declare it "
                 f"in the shape of c/fcntl.mojo's `_fcntl` and sanction it in "
                 f"scripts/fork_lint.py SANCTIONED"
+            )
+    for m in _ALIAS.finditer(mask):
+        line = mask.count("\n", 0, m.start()) + 1
+        text = src.split("\n")[line - 1]
+        if not any(k[0] == rel and k[1] in text for k in dynamic_allowed):
+            found.append(
+                f"{rel}:{line}: `external_call` is aliased or re-bound, which hides its "
+                f"calls from this lint; call it by its name, or allow the line in "
+                f"scripts/fork_lint.py DYNAMIC_ALLOWED with its reason"
             )
     return found
 
@@ -285,6 +300,15 @@ def selftest():
         ("a name on the next line", 'external_call[\n    "shm_open", c_int]()'),
     ]:
         expect("evasion: " + name, check_variadic("apps/x/a.mojo", call), True)
+    for name, call in [
+        ("a concatenated name", 'external_call["sh" + "m_open", c_int]()'),
+        ("adjacent literals", 'external_call["sh" "m_open", c_int]()'),
+        ("an aliased import", "from std.ffi import external_call as ec\nec['open', c_int]()"),
+        ("a comptime re-binding", "comptime ec = external_call\n"),
+    ]:
+        expect("evasion: " + name, check_variadic("apps/x/a.mojo", call), True)
+    expect("a plain import is fine",
+           check_variadic("apps/x/a.mojo", "from std.ffi import c_int, external_call, get_errno\n"), False)
     expect("a literal non-variadic in single quotes",
            check_variadic("apps/x/a.mojo", "external_call['socket', c_int]()"), False)
     expect("a non-literal call allowed with a reason",
