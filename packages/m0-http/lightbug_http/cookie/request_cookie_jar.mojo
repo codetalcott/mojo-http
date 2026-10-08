@@ -98,11 +98,17 @@ struct RequestCookieJar(Copyable, Writable):
         return String(self)
 
     def __eq__(self, other: RequestCookieJar) -> Bool:
+        """Whether both jars hold the same names with the same values.
+
+        Each name is looked up in the other jar. Every cookie of one jar
+        was compared with every cookie of the other, so a jar of two or
+        more was unequal even to its own copy (review record LF30).
+        """
         if len(self._inner) != len(other._inner):
             return False
 
-        for value in self._inner.items():
-            for other_value in other._inner.items():
-                if value.key != other_value.key or value.value != other_value.value:
-                    return False
+        for entry in self._inner.items():
+            var theirs = other._inner.get(entry.key)
+            if not theirs or theirs.value() != entry.value:
+                return False
         return True

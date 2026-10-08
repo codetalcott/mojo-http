@@ -182,5 +182,40 @@ def test_a_cookie_value_that_is_not_utf8_does_not_trap() raises:
     assert_equal(jar[_raw(0x80)], "v")
 
 
+def test_jars_holding_the_same_cookies_are_equal() raises:
+    """Two jars are equal when each holds the other's names with the same
+    values, whatever their number (review record LF30).
+
+    `==` compared every cookie of one jar with every cookie of the other
+    and answered False at the first pair that differed, so a jar of two or
+    more cookies was unequal even to a jar parsed from the same field.
+
+    covers: G22
+    """
+    var a = RequestCookieJar()
+    a.add_pairs("sessionid=s1; csrftoken=t1; theme=dark")
+    var b = RequestCookieJar()
+    b.add_pairs("theme=dark; csrftoken=t1; sessionid=s1")
+    assert_true(a == b, "two jars of the same three cookies are not equal")
+    assert_true(b == a, "equality is not symmetric")
+
+    var one = RequestCookieJar()
+    one.add_pairs("sessionid=s1")
+    var same = RequestCookieJar()
+    same.add_pairs("sessionid=s1")
+    assert_true(one == same, "two jars of the same cookie are not equal")
+
+    var changed = RequestCookieJar()
+    changed.add_pairs("sessionid=s1; csrftoken=t2; theme=dark")
+    assert_false(a == changed, "a jar with one value changed is equal")
+    var renamed = RequestCookieJar()
+    renamed.add_pairs("sessionid=s1; csrf=t1; theme=dark")
+    assert_false(a == renamed, "a jar with one name changed is equal")
+    var fewer = RequestCookieJar()
+    fewer.add_pairs("sessionid=s1; csrftoken=t1")
+    assert_false(a == fewer, "a jar missing a cookie is equal")
+    assert_true(RequestCookieJar() == RequestCookieJar(), "two empty jars are not equal")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

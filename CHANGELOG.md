@@ -133,6 +133,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `SOMAXCONN` (4096 on Linux, 128 on macOS), or the system's setting if
   that is lower. macOS's limit was and stays 128.
 
+- **Two request cookie jars of two or more cookies compare equal** (fork
+  review LF30, SPEC G22). Exposed: an m0 application that compares
+  `RequestCookieJar`s with `==`. A jar of two or more cookies was unequal
+  even to a jar parsed from the same `Cookie` field, since every cookie of
+  one was compared with every cookie of the other. Jars are now equal when
+  they hold the same names with the same values, in any order. The server
+  itself never compares jars.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

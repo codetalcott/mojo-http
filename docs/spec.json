@@ -1098,6 +1098,14 @@
       "evidence": "`test_response_cookies.mojo:test_a_line_above_ascii_goes_out_latin1_like_every_header` (every PR) \u2014 on the bytes of both encoders. The bridge stores every header as UTF-8 and the header writer transcodes it back, but the cookie jar wrote its lines' UTF-8 as it stood: `bin/m0serve` sent a WSGI application's `cafxe9` as `cafxc3xa9`, and an ASGI application's own `cafxc3xa9` as `cafxc3x83xc2xa9`"
     },
     {
+      "id": "G22",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "Two request cookie jars are equal when they hold the same names with the same values, whatever their number and order",
+      "status": "verified",
+      "evidence": "`test_request_cookies.mojo:test_jars_holding_the_same_cookies_are_equal` (every PR) \u2014 `RequestCookieJar.__eq__` compared every cookie of one jar with every cookie of the other, so a jar of two or more was unequal even to a jar parsed from the same field (review record LF30). The test holds a changed value, a changed name and a missing cookie unequal too. The server never compares jars; an application with `==` did"
+    },
+    {
       "id": "G4",
       "section": "G",
       "category": "G. Security hardening",

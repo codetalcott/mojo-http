@@ -1543,6 +1543,12 @@ lightbug_http
         the struct's name) and Mojo 1.1 refuses a refining trait's second
         default. The docstring says so (review record LF29).
 
+      - cookie/request_cookie_jar.mojo (2026-10-08): `RequestCookieJar.__eq__`
+        looks each name up in the other jar. It compared every entry of one
+        jar with every entry of the other and answered False at the first
+        pair that differed, so jars of two or more cookies were never equal
+        (review record LF30, SPEC G22).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
