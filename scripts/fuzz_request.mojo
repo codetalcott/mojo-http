@@ -43,8 +43,8 @@ framing decision (SPEC B29):
   * A HEAD SPLIT ACROSS READS IS FRAMED AS IT IS WHOLE. The bytes are fed in
     pieces the way the loop sees them -- each call told how far the last one
     scanned -- and the decision must be the one the whole buffer gets: the
-    same head end, body and `request_end`, or a refusal. A head refused
-    early for a bare LF may be refused whole by another rule.
+    same head end, body and `request_end`, or a refusal by the same rule. A
+    head refused early for a bare LF may be refused whole by another rule.
   * A REFUSAL STAYS ONE, AND A FRAMED REQUEST IS UNCHANGED, whatever bytes
     arrive behind it.
 
@@ -444,7 +444,7 @@ def _check_framing(
                 cuts.append(p)
     cuts.append(n)
     var scanned = 0
-    var split = HeadFraming(FRAME_INCOMPLETE, 0, 0)
+    var split = HeadFraming.incomplete()
     var split_head = Optional[ParsedRequestHeaders](None)
     var decided_at = n
     for k in range(len(cuts)):
@@ -463,7 +463,7 @@ def _check_framing(
         split_agrees = _same_request(split, whole)
     elif split.outcome == FRAME_REFUSED:
         split_agrees = whole.outcome == FRAME_REFUSED and (
-            split.status == whole.status or split.rule == REFUSED_BARE_LF
+            split.rule == whole.rule or split.rule == REFUSED_BARE_LF
         )
     else:
         split_agrees = whole.outcome == FRAME_INCOMPLETE

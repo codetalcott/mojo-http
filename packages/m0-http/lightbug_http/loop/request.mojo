@@ -13,8 +13,10 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import recv, shutdown, spare_capacity, ShutdownOption
 from lightbug_http.connection import ConnectionState
 from lightbug_http.framing import (
-    BODY_CHUNKED, BODY_NONE, FRAME_REFUSED, FRAME_REQUEST,
-    REFUSED_BODY_TOO_LARGE, frame_request_head,
+    BODY_CHUNKED, BODY_NONE, FRAME_REFUSED, FRAME_REQUEST, REFUSED_BARE_LF,
+    REFUSED_BODY_TOO_LARGE, REFUSED_FRAMERS_DISAGREE, REFUSED_HEAD_TOO_LARGE,
+    REFUSED_MALFORMED, REFUSED_NOT_IMPLEMENTED, REFUSED_URI_TOO_LONG,
+    frame_request_head,
 )
 from lightbug_http.header import HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
@@ -460,7 +462,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         if framing.rule == REFUSED_BODY_TOO_LARGE:
             _refuse_too_large(handler, backend, st, slot, fd_val)
         else:
-            _send_error_to_fd(fd_val, _refusal(framing.status))
+            _send_error_to_fd(fd_val, _refusal(framing.rule))
             _close_slot(handler, backend, st, slot, fd_val)
         return
 
@@ -875,19 +877,29 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     _finish_response(handler, backend, st, slot, fd_val, response^)
 
 
-def _refusal(status: Int) -> HTTPResponse:
-    """The answer to a head `frame_request_head` refused, by its status.
+def _refusal(rule: Int) -> HTTPResponse:
+    """The answer to a head `frame_request_head` refused, by its rule.
 
-    413 is not here: it is answered while the body may still be arriving
-    (`_refuse_too_large`).
+    Every rule it refuses by is named here but the body's, which is
+    answered while the body may still be arriving (`_refuse_too_large`).
+    A rule this does not know is a 500 and a line on stdout, never a
+    silent 400: a refusal added to the framer is answered as it means only
+    once it is added here too.
     """
-    if status == 431:
+    if (
+        rule == REFUSED_BARE_LF
+        or rule == REFUSED_MALFORMED
+        or rule == REFUSED_FRAMERS_DISAGREE
+    ):
+        return BadRequest()
+    if rule == REFUSED_HEAD_TOO_LARGE:
         return HeadersTooLarge()
-    if status == 414:
+    if rule == REFUSED_URI_TOO_LONG:
         return URITooLong()
-    if status == 501:
+    if rule == REFUSED_NOT_IMPLEMENTED:
         return NotImplemented()
-    return BadRequest()
+    print("event loop: a request head refused by a rule with no answer:", rule, flush=True)
+    return InternalError()
 
 
 def _refuse_too_large[T: HTTPService, B: EventLoopBackend](

@@ -2,7 +2,7 @@
 
 `frame_request_head` is the event loop's one framing decision for a
 request still in its head. It reads the bytes buffered so far and answers
-INCOMPLETE (read on), REFUSED (with the status to answer), or REQUEST: the
+INCOMPLETE (read on), REFUSED (by which rule), or REQUEST: the
 head's end, the body's framing -- none, a length, chunked -- and, where the
 head alone fixes it, where the request ends in the buffer (`request_end`;
 for a chunked body the connection's decoder finds it). `loop/request.mojo`'s
@@ -42,22 +42,24 @@ comptime BODY_NONE = 0
 comptime BODY_LENGTH = 1
 comptime BODY_CHUNKED = 2
 
-# Which rule refused (`HeadFraming.rule`), for the fuzzer's coverage; the
-# loop answers by `status`.
+# Which rule refused (`HeadFraming.rule`), and so what the loop answers
+# (`loop/request.mojo`'s `_refusal`, which knows every one of them).
 comptime REFUSED_NONE = 0
-comptime REFUSED_BARE_LF = 1
-comptime REFUSED_HEAD_TOO_LARGE = 2
-comptime REFUSED_MALFORMED = 3
-comptime REFUSED_NOT_IMPLEMENTED = 4
-comptime REFUSED_FRAMERS_DISAGREE = 5
-comptime REFUSED_URI_TOO_LONG = 6
-comptime REFUSED_BODY_TOO_LARGE = 7
+comptime REFUSED_BARE_LF = 1  # 400, a head still arriving (SPEC B23)
+comptime REFUSED_HEAD_TOO_LARGE = 2  # 431
+comptime REFUSED_MALFORMED = 3  # 400
+comptime REFUSED_NOT_IMPLEMENTED = 4  # 501 (SPEC B18, B21)
+comptime REFUSED_FRAMERS_DISAGREE = 5  # 400 (SPEC B12)
+comptime REFUSED_URI_TOO_LONG = 6  # 414
+comptime REFUSED_BODY_TOO_LARGE = 7  # 413, answered while the body arrives
 
 
+@fieldwise_init
 struct HeadFraming(Copyable, Movable):
     """The framing decision for a request head (`frame_request_head`).
 
-    Numbers only. The parsed head of a framed request goes to the caller's
+    Made by name -- `incomplete()`, `refused(rule)`, `request(...)` -- and
+    numbers only. The parsed head of a framed request goes to the caller's
     own slot, never into this: carried here in an `Optional`, it cost the
     head path about 100 ns a request, 850 ns becoming 950 for a GET of
     twelve fields, where the slot costs nothing measurable.
@@ -65,10 +67,9 @@ struct HeadFraming(Copyable, Movable):
 
     var outcome: Int
     """`FRAME_INCOMPLETE`, `FRAME_REFUSED` or `FRAME_REQUEST`."""
-    var status: Int
-    """For a refusal, the status to answer: 400, 413, 414, 431 or 501."""
     var rule: Int
-    """For a refusal, which rule refused (`REFUSED_*`)."""
+    """For a refusal, which rule refused (`REFUSED_*`): the one key the loop
+    answers by."""
     var head_end: Int
     """For a request, the offset of the first byte after the head's CRLFCRLF,
     which is where the parser stopped."""
@@ -80,29 +81,37 @@ struct HeadFraming(Copyable, Movable):
     """For a request, where it ends in the buffer: `head_end` plus its
     length. 0 for a chunked body, whose end the decoder finds."""
 
-    def __init__(out self, outcome: Int, status: Int, rule: Int):
-        """A decision with no request in it: incomplete, or refused."""
-        self.outcome = outcome
-        self.status = status
-        self.rule = rule
-        self.head_end = 0
-        self.body = BODY_NONE
-        self.content_length = 0
-        self.request_end = 0
+    @staticmethod
+    def incomplete() -> Self:
+        """No head yet: read on."""
+        return Self(
+            outcome=FRAME_INCOMPLETE, rule=REFUSED_NONE, head_end=0,
+            body=BODY_NONE, content_length=0, request_end=0,
+        )
 
-    def __init__(out self, head_end: Int, is_chunked: Bool, content_length: Int):
+    @staticmethod
+    def refused(rule: Int) -> Self:
+        """A head refused by `rule` (`REFUSED_*`)."""
+        return Self(
+            outcome=FRAME_REFUSED, rule=rule, head_end=0, body=BODY_NONE,
+            content_length=0, request_end=0,
+        )
+
+    @staticmethod
+    def request(head_end: Int, is_chunked: Bool, content_length: Int) -> Self:
         """A framed request whose head ends at `head_end`."""
-        self.outcome = FRAME_REQUEST
-        self.status = 0
-        self.rule = REFUSED_NONE
-        self.head_end = head_end
-        self.content_length = content_length
         if is_chunked:
-            self.body = BODY_CHUNKED
-            self.request_end = 0
-        else:
-            self.body = BODY_LENGTH if content_length > 0 else BODY_NONE
-            self.request_end = head_end + content_length
+            return Self(
+                outcome=FRAME_REQUEST, rule=REFUSED_NONE, head_end=head_end,
+                body=BODY_CHUNKED, content_length=content_length,
+                request_end=0,
+            )
+        return Self(
+            outcome=FRAME_REQUEST, rule=REFUSED_NONE, head_end=head_end,
+            body=BODY_LENGTH if content_length > 0 else BODY_NONE,
+            content_length=content_length,
+            request_end=head_end + content_length,
+        )
 
 
 def frame_request_head(
@@ -122,12 +131,12 @@ def frame_request_head(
     in pieces is scanned once and a CR ending one read and the LF opening
     the next are a CRLF.
 
-    Refused, in this order: a head still incomplete that holds a bare LF
-    (400, SPEC B23); a head longer than `max_header_size` (431); a head the
-    parser refuses (400), or one asking for what this server does not
-    implement (501, SPEC B18, B21); a head the parser ended anywhere but
-    where `find_header_end` did (400, SPEC B12); a target longer than
-    `max_uri_length` (414); a `Content-Length` over `max_body_size` (413). A
+    Refused, in this order, each by its `REFUSED_*` rule: a head still
+    incomplete that holds a bare LF (SPEC B23); a head longer than
+    `max_header_size`; a head the parser refuses, or one asking for what
+    this server does not implement (SPEC B18, B21); a head the parser ended
+    anywhere but where `find_header_end` did (SPEC B12); a target longer
+    than `max_uri_length`; a `Content-Length` over `max_body_size`. A
     chunked body's size is the decoder's to bound, as it arrives.
 
     A framed request's parsed head is moved into `head`, which is left as it
@@ -144,12 +153,12 @@ def frame_request_head(
         # so it is refused now rather than at its peer's EOF or the header
         # timeout's 408 (SPEC B23).
         if holds_bare_lf(buffer, scanned):
-            return HeadFraming(FRAME_REFUSED, 400, REFUSED_BARE_LF)
-        return HeadFraming(FRAME_INCOMPLETE, 0, REFUSED_NONE)
+            return HeadFraming.refused(REFUSED_BARE_LF)
+        return HeadFraming.incomplete()
 
     var head_end = header_end.value()
     if head_end > max_header_size:
-        return HeadFraming(FRAME_REFUSED, 431, REFUSED_HEAD_TOO_LARGE)
+        return HeadFraming.refused(REFUSED_HEAD_TOO_LARGE)
 
     var parsed: ParsedRequestHeaders
     try:
@@ -158,26 +167,25 @@ def frame_request_head(
         # A well-formed request for what this server does not implement is
         # 501 (SPEC B18), anything malformed 400.
         if parse_err.isa[UnsupportedHTTPRequestError]():
-            return HeadFraming(FRAME_REFUSED, 501, REFUSED_NOT_IMPLEMENTED)
-        return HeadFraming(FRAME_REFUSED, 400, REFUSED_MALFORMED)
+            return HeadFraming.refused(REFUSED_NOT_IMPLEMENTED)
+        return HeadFraming.refused(REFUSED_MALFORMED)
 
     # The two framers must name the same byte. The parser refuses a bare LF,
     # so with it they agree; this refuses any head they would read
     # differently, so a future parser change cannot reopen the gap
-    # silently. Unreachable with the strict parser, and so no gate fails
-    # with it removed alone; `poe sabotage-fuzz` removes it with the
-    # parser's rule reverted, LF2 as it shipped, and the fuzzer's framing
-    # invariant fails (SPEC B12, B29).
+    # silently. The strict parser never reaches it, and `poe sabotage-fuzz`
+    # gates it: removed, its LF2-revert arm is caught by the framing
+    # invariant instead of the parser's own, a miss (SPEC B12, B29).
     if parsed.bytes_consumed != head_end:
-        return HeadFraming(FRAME_REFUSED, 400, REFUSED_FRAMERS_DISAGREE)
+        return HeadFraming.refused(REFUSED_FRAMERS_DISAGREE)
 
     if parsed.path.byte_length() > max_uri_length:
-        return HeadFraming(FRAME_REFUSED, 414, REFUSED_URI_TOO_LONG)
+        return HeadFraming.refused(REFUSED_URI_TOO_LONG)
 
     var content_length = parsed.content_length()
     var is_chunked = parsed.is_chunked_body()
     if not is_chunked and content_length > max_body_size:
-        return HeadFraming(FRAME_REFUSED, 413, REFUSED_BODY_TOO_LARGE)
+        return HeadFraming.refused(REFUSED_BODY_TOO_LARGE)
 
     head = parsed^
-    return HeadFraming(head_end, is_chunked, content_length)
+    return HeadFraming.request(head_end, is_chunked, content_length)
