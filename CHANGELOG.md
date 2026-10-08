@@ -46,6 +46,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   (`lightbug_http.hold.request_last_event_id`), so the two cannot read an
   id differently again. A request from the wire was never affected: the
   server trims the whitespace before either parser sees the value.
+- **WebSocket frames and upgrades the RFC calls malformed are refused with
+  1002 or 400** (SPEC I35-I38). A client frame whose 64-bit length has its
+  high bit set, or whose length is not in the shortest encoding that holds
+  it, now closes the connection with 1002 (it was 1009, or accepted). A
+  control frame (ping, pong, close) declaring more than 125 bytes is
+  refused when its header arrives, not after its payload. The upgrade
+  request must list `upgrade` as a whole token of `Connection`
+  (`Connection: notupgrade` was accepted) and must be HTTP/1.1; an
+  HTTP/1.0 request is answered 400.
 
 ## [1.12.1] — 2026-10-07
 
