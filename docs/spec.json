@@ -586,6 +586,14 @@
       "evidence": "`test_backend_fds.mojo:test_a_destroyed_backend_closes_what_it_opened` (every PR) \u2014 a backend that armed two timers is let go, and the process must hold exactly the descriptors it held before; with the kqueue backend's close removed it fails naming the multiplexer still open. Neither backend closed anything (review record LF21): every `Server.serve_nonblocking` that returned, and every loop thread of the host's that ended, left its multiplexer open for the life of the process. `test_epoll_reports_the_registration_that_failed` holds the other half on the Linux leg: `add_read` fell back from ADD to MOD on any errno, so an ADD refused with ELOOP was reported as MOD's ENOENT; it falls back on EEXIST alone, and `add_write_oneshot` from MOD to ADD on ENOENT alone. Run in the m0lin Linux container (aarch64) both pass; with the any-errno fallback restored the second fails on MOD's `No such file or directory (errno 2)`, and with the epoll destructor's timerfd closes removed the first fails, 9 descriptors open against 7"
     },
     {
+      "id": "C16",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A loop's backend reports what it was asked to watch, on each platform: a readable descriptor is one read event naming it; bytes left unread are reported again on kqueue (level triggered) and not on epoll (edge triggered), and a re-add reports them on both; a deleted read interest reports nothing; a one-shot write fires once; a timer fires once with its ident, and one deleted first never fires; a writer that has gone is EV_EOF on the reader; and a wait in nanoseconds waits",
+      "status": "verified",
+      "evidence": "`test_platform.mojo:test_the_backend_reports_what_it_was_asked_to_watch` (every PR) \u2014 the kqueue and epoll wrappers under the loop are inherited code the loop's own tests reached only through whole requests (review audit A3). Over a pipe, which both multiplexers watch; on macOS on the Unit tests job's macOS leg, epoll on its Linux one"
+    },
+    {
       "id": "D1",
       "section": "D",
       "category": "D. Graceful shutdown and restart",

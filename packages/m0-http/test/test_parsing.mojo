@@ -18,6 +18,7 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from lightbug_http.header import (
     Headers,
     ParsedRequestHeaders,
+    EmptyBufferError,
     find_header_end,
     parse_request_headers,
     InvalidHTTPRequestError,
@@ -220,6 +221,37 @@ def test_an_empty_host_is_accepted_when_the_target_names_no_authority() raises:
     assert_true(_rejected("GET http://h/p HTTP/1.1\r\nHost:\r\n\r\n"))
     assert_true(_rejected("GET HTTPS://h HTTP/1.1\r\nHost: \r\n\r\n"))
     assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
+
+
+def test_the_version_is_http_slash_1_dot_one_digit() raises:
+    """`parse_http_version` reads `HTTP/1.` and one digit, then the line's
+    CRLF: any other name, major, case or trailing byte is invalid, and the
+    protocol a request reaches the application with is the one it sent
+    (review audit A3)."""
+    for v in [
+        "HTTP/2.0", "HTTP/1.x", "HTTP/1.10", "HTTP/1.1 ", "http/1.1",
+        "HTTP/01.1", "HTTP1.1", "HTTP/1.", "HTTP/1.1x", "HTTPS/1.1", "HTTP/1",
+    ]:
+        var raw = String("GET / ", v, "\r\nHost: x\r\n\r\n")
+        assert_true(_rejected(raw), String("accepted version ", repr(String(v))))
+    assert_false(_accepted("GET / H\r\n\r\n"))
+    for minor in range(10):
+        var raw = String("GET / HTTP/1.", minor, "\r\nHost: x\r\n\r\n")
+        var parsed = parse_request_headers(raw.as_bytes())
+        assert_equal(parsed.protocol, String("HTTP/1.", minor))
+
+
+def test_an_empty_buffer_is_its_own_error() raises:
+    """Nothing to parse is `EmptyBufferError`, not an incomplete request: the
+    loop never asks (it parses only a head `find_header_end` has framed),
+    and a caller of its own learns it handed over nothing."""
+    var empty = List[UInt8]()
+    var kind = String("parsed")
+    try:
+        _ = parse_request_headers(Span(empty))
+    except e:
+        kind = String("empty") if e.isa[EmptyBufferError]() else String("other")
+    assert_equal(kind, "empty")
 
 
 def test_http11_accepts_a_real_host() raises:

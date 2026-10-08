@@ -27,7 +27,8 @@ from lightbug_http.header import (
     KH_TRANSFER_ENCODING,
     parse_request_headers,
 )
-from lightbug_http.http import HTTPRequest, split_server_address
+from lightbug_http.header import Headers
+from lightbug_http.http import HTTPRequest, URITooLongError, split_server_address
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI
 
@@ -290,11 +291,40 @@ def test_a_request_is_written_with_its_target_as_received() raises:
 
 
 def test_the_outgoing_constructor_still_fills_its_headers() raises:
-    """The client's constructor keeps filling what a client must send."""
+    """The client's constructor keeps filling what a client must send:
+    a length, `Connection` from the protocol, and `Host` from the URL, its
+    port included; a header the caller set is kept."""
     var req = HTTPRequest(URI.parse("http://example.com/x"), body=Bytes("hi".as_bytes()))
     assert_equal(req.headers.get(HeaderKey.CONTENT_LENGTH).value(), "2")
     assert_equal(req.headers.get(HeaderKey.CONNECTION).value(), "keep-alive")
-    assert_true(req.headers.known_index(KH_HOST) >= 0)
+    assert_equal(req.headers.get(HeaderKey.HOST).value(), "example.com")
+    var old = HTTPRequest(URI.parse("http://example.com:8080/x"), protocol="HTTP/1.0")
+    assert_equal(old.headers.get(HeaderKey.CONNECTION).value(), "close")
+    assert_equal(old.headers.get(HeaderKey.HOST).value(), "example.com:8080")
+    assert_equal(old.headers.get(HeaderKey.CONTENT_LENGTH).value(), "0")
+    var given = Headers()
+    given[HeaderKey.HOST] = "other"
+    given[HeaderKey.CONNECTION] = "close"
+    var kept = HTTPRequest(URI.parse("http://example.com/"), headers=given^)
+    assert_equal(kept.headers.get(HeaderKey.HOST).value(), "other")
+    assert_equal(kept.headers.get(HeaderKey.CONNECTION).value(), "close")
+
+
+def test_a_target_longer_than_the_limit_is_refused() raises:
+    """`from_parsed` refuses a target longer than `max_uri_length`; the loop
+    answers 414 before it asks, a caller of its own is held here."""
+    var parsed = parse_request_headers("GET /abcdef HTTP/1.1\r\nHost: a\r\n\r\n".as_bytes())
+    var refused = False
+    try:
+        _ = HTTPRequest.from_parsed("localhost", None, parsed^, Bytes(), 6)
+    except e:
+        refused = e.isa[URITooLongError]()
+    assert_true(refused, "a seven-byte target passed a limit of six")
+    var fits = parse_request_headers("GET /abcde HTTP/1.1\r\nHost: a\r\n\r\n".as_bytes())
+    try:
+        _ = HTTPRequest.from_parsed("localhost", None, fits^, Bytes(), 6)
+    except:
+        raise Error("a six-byte target was refused at a limit of six")
 
 
 def main() raises:
