@@ -1970,6 +1970,58 @@ python3 scripts/emit.py --covers B22 --task smoke-pipelining
 python3 scripts/emit.py --covers B23 --task smoke-pipelining
 """
 
+# SPEC B25: the differential corpus. The fork review's D0 sent these
+# requests to this server, to h11 and to Node's llhttp and compared what
+# each handed its application; what this server answers now is frozen per
+# case in scripts/differential_expected.json, and any parser or loop change
+# that moves one answer fails here naming the case. apps/request_echo is a
+# test-only server whose application names every request it is handed, so
+# the probe tells a request served from one refused, and which request it
+# was; its entry file is not `server.mojo`, so `build-apps` leaves it to
+# this task. The server must outlive the corpus: the probe ends on a plain
+# GET, and the process must still be running behind it.
+[tool.poe.tasks.smoke-differential]
+help = "Every request of the differential corpus is answered as its frozen table says"
+shell = """
+. scripts/smoke/lib.sh
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/request_echo/echo.mojo -o "$SMOKE_DIR/request_echo" || exit 1
+port=$(free_port)
+spawn echo.log env M0_PORT=$port "$SMOKE_DIR/request_echo"
+wait_ready http://localhost:$port/ $pid
+python3 scripts/differential_probe.py $port || fail
+_smoke_running $pid || fail 'the echo server died during the corpus'
+echo "smoke-differential OK"
+python3 scripts/emit.py --covers B25 --task smoke-differential
+"""
+
+# How the differential table grows (scripts/differential_corpus.py): the
+# echo's answers become the `ours` column, and the two reference echoes'
+# the `h11` and `llhttp` columns, which are for reading a row and which no
+# gate compares. h11 is in the dev venv; the llhttp column is left as it was
+# where `node` is not on PATH. Not run by CI: read the table's diff after it.
+[tool.poe.tasks.freeze-differential]
+help = "Re-freeze scripts/differential_expected.json from the echo server and the h11 and llhttp references"
+shell = """
+. scripts/smoke/lib.sh
+mojo build -I packages/m0-core/ -I packages/m0-http/ apps/request_echo/echo.mojo -o "$SMOKE_DIR/request_echo" || exit 1
+port=$(free_port)
+spawn echo.log env M0_PORT=$port "$SMOKE_DIR/request_echo"
+wait_ready http://localhost:$port/ $pid
+python3 scripts/differential_probe.py $port --freeze ours || fail
+h11_port=$(free_port)
+spawn h11.log python3 scripts/differential_echo_h11.py $h11_port
+wait_ready http://localhost:$h11_port/ $pid
+python3 scripts/differential_probe.py $h11_port --freeze h11 || fail
+if command -v node > /dev/null 2>&1; then
+  node_port=$(free_port)
+  spawn node.log node scripts/differential_echo_node.js $node_port
+  wait_ready http://localhost:$node_port/ $pid
+  python3 scripts/differential_probe.py $node_port --freeze llhttp || fail
+else
+  echo "freeze-differential: no node on PATH, so the llhttp column is left as it was"
+fi
+"""
+
 [tool.poe.tasks.smoke-ws]
 help = "WebSocket echo demo: handshake, echo, fragmentation, ping/pong, heartbeats, close"
 shell = """
@@ -6478,6 +6530,15 @@ cmd = "python3 scripts/trailer_sabotage.py"
 help = "Revert each rule that keeps CR, LF and NUL out of a head and insist the header-bytes property fails for it"
 deps = ["build-core", "build-http"]
 cmd = "python3 scripts/header_bytes_sabotage.py"
+
+# SPEC B26. The differential corpus passes when nothing is wrong, so each arm
+# puts back one rule of the fork's request parser or loop, and
+# `smoke-differential` must fail naming the case that shows it. Pre-release
+# (docs/RELEASING.md): each arm builds the echo server again, cold.
+[tool.poe.tasks.sabotage-differential]
+help = "PRE-RELEASE: revert each request rule the differential corpus holds and insist smoke-differential fails naming the case (SPEC B26)"
+deps = ["build-core", "build-http"]
+cmd = "python3 scripts/differential_sabotage.py"
 
 # SPEC G13. The request decoder is a pure function over bytes, so the harness
 # needs no socket and no server: mutate a seed corpus, assert the invariants,
