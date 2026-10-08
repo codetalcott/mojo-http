@@ -335,7 +335,7 @@
       "category": "B. Request smuggling (CWE-444)",
       "capability": "An absolute-form target's authority replaces `Host` (RFC 9112 \u00a73.2.2), its `http`/`https` scheme matched in any letter case and its authority ending at the first `/`, `?` or `#`; an empty authority or a userinfo refused 400",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_an_absolute_form_authority_replaces_host` (every PR) \u2014 the authority was thrown away and the sent `Host` kept, so an application routing on `Host` read a site the target never named; `HTTP://h/p` was left whole, a path with no leading slash; `http://h?q=1` lost its query; and `http:///p` was served as `/p`. The sent `Host` is still required on HTTP/1.1 (\u00a73.2). Four tests beside it hold the scheme's case, the query, the refusals and a target that is not UTF-8 (G14), refused before the reduction since B19, each failing alone when its rule is reverted"
+      "evidence": "`test_parsing.mojo:test_an_absolute_form_authority_replaces_host` (every PR) \u2014 the authority was thrown away and the sent `Host` kept, so an application routing on `Host` read a site the target never named; `HTTP://h/p` was left whole, a path with no leading slash; `http://h?q=1` lost its query; and `http:///p` was served as `/p`. The sent `Host` is still required on HTTP/1.1 (\u00a73.2). Three tests beside it hold the scheme's case, the query and the refusals, each failing alone when its rule is reverted; a target that is not UTF-8 (G14) no longer reaches the reduction, refused 400 by the target scanner since B19, which `test_an_absolute_form_target_with_bytes_above_ascii_is_refused` holds"
     },
     {
       "id": "B17",
