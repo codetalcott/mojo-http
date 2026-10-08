@@ -584,6 +584,13 @@ def test_a_listener_shares_its_port_only_when_asked() raises:
     _ = shared^
 
 
+comptime _OpaqueMut = Pointer[NoneType, MutUntrackedOrigin]
+"""`read(2)`'s buffer type as every declaration in the m0-http test
+program spells it (`src/threads.mojo`): `test-http` builds all the test
+files as one program, where a second `external_call["read"]` with another
+signature is a conflicting declaration."""
+
+
 def _banner_of(address: String) raises -> Tuple[String, Int]:
     """What `ListenConfig.listen(address)` prints with its banner on, read
     from a pipe standing in for stdout during the call, and the port the
@@ -614,7 +621,13 @@ def _banner_of(address: String) raises -> Tuple[String, Int]:
         close_fd(w)
         w = -1
         var buf = List[UInt8](length=4096, fill=0)
-        var n = Int(external_call["read", Int](c_int(r), buf.unsafe_ptr(), 4096))
+        var n = external_call["read", Int, Int, _OpaqueMut, Int](
+            r,
+            buf.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
+                MutUntrackedOrigin
+            ](),
+            4096,
+        )
         if n < 0:
             raise Error("read() failed, errno ", get_errno())
         text = String(unsafe_from_utf8=Span(buf)[:n])
