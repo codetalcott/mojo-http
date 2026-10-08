@@ -8,6 +8,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `CONNECT` request is answered 501 and its connection closed** (SPEC
+  B18). It reached the application, and one that answers every method
+  answered it 200, which a proxy forwarding `CONNECT` reads as an open
+  tunnel: whatever the client sent next would pass through it unparsed.
+  This server implements no tunnel, so no application, on m0serve or the
+  Mojo host, receives `CONNECT` any more.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP

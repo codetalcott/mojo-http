@@ -346,6 +346,14 @@
       "evidence": "`test_request_as_sent.mojo:test_connection_is_read_as_a_list_of_tokens` (every PR) \u2014 the whole value was compared with `close`, so `Connection: close, TE` kept the connection alive and the request pipelined behind it was answered; a member must be the token itself, `closed` closing nothing. `Smoke test pipelined requests` sends that shape and requires one 200 and a close. Two `Connection` field lines are not combined into one list (RFC 9110 \u00a75.3): the last is kept, so a `close` on the first is lost (review record LF40, after the release)"
     },
     {
+      "id": "B18",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A `CONNECT` request refused with 501 before any application sees it, and its connection closed",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_connect_is_answered_501_and_closed` (every PR) \u2014 CONNECT asks for a tunnel (RFC 9110 \u00a79.3.6), which this server does not implement, yet the request reached the application, and one that answers every method answered it 200: a front end forwarding CONNECT reads a 2xx as an open tunnel, so whatever the client sent next went through unparsed (review record LF36). The refusal needs a well-formed head, a malformed one staying 400, and the method name is case-sensitive. `test_parsing.mojo:test_connect_is_refused_as_not_implemented` holds the parser's half, and `Smoke test pipelined requests` sends CONNECT with a request pipelined behind it and requires one 501 and a close"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",

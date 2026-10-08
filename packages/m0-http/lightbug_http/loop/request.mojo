@@ -13,12 +13,13 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import recv, shutdown, ShutdownOption
 from lightbug_http.connection import ConnectionState
 from lightbug_http.header import (
-    HeaderKey, ParsedRequestHeaders, find_header_end, parse_request_headers,
+    HeaderKey, ParsedRequestHeaders, UnsupportedHTTPRequestError,
+    find_header_end, parse_request_headers,
 )
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.http.common_response import (
     BadRequest, InternalError, URITooLong, RequestTimeout, HeadersTooLarge,
-    PayloadTooLarge,
+    NotImplemented, PayloadTooLarge,
 )
 from lightbug_http.strings import strHttp11, strHttp10
 from lightbug_http.io.bytes import Bytes
@@ -455,7 +456,13 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 st.provision_pool.provisions[slot].last_parse_len,
             )
         except parse_err:
-            _send_error_to_fd(fd_val, BadRequest())
+            # A well-formed request for what this server does not
+            # implement is 501 (SPEC B18), anything malformed 400; both
+            # close (`_send_error_to_fd` says so on the wire).
+            if parse_err.isa[UnsupportedHTTPRequestError]():
+                _send_error_to_fd(fd_val, NotImplemented())
+            else:
+                _send_error_to_fd(fd_val, BadRequest())
             _close_slot(handler, backend, st, slot, fd_val)
             return
 

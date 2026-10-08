@@ -22,7 +22,9 @@ behind it, whose body was answered as a request. Each must be refused: one
 400, then the connection closed. Two requests that must close the
 connection behind their answer, and did not, do the same with a 200: an
 HTTP/1.0 request with a chunked body (SPEC B15), and `Connection: close`
-listed with another option (SPEC B17).
+listed with another option (SPEC B17). A request for what this server does
+not implement is refused with 501, then the connection closed: CONNECT
+(SPEC B18).
 
 usage: pipeline_probe.py PORT
 """
@@ -167,6 +169,14 @@ check_closed_after(
     "Connection: close among other options, a request behind it",
     b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close, TE\r\n"
     b"TE: trailers\r\n\r\n" + GET, [200])
+
+# SPEC B18. CONNECT asks for a tunnel, which this server does not
+# implement: 501 and a close. It reached the application, which answered
+# it 200 -- an open tunnel, to a front end forwarding it -- and kept the
+# connection, answering the request behind it too.
+check_closed_after(
+    "CONNECT, a request behind it",
+    b"CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n" + GET, [501])
 
 # A second request sent only after the first is in flight — no pipelining
 # in the same packet, but the bytes can arrive while the loop is still

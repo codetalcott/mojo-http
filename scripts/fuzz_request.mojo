@@ -18,7 +18,9 @@ exercise but is also the only thing a fuzzer gets for free:
     it must not make it valid. This is the smuggling-relevant one: "invalid,
     not incomplete" is the discipline test_parsing.mojo exists to defend, and
     its failure mode is an attacker's payload left in the buffer to be read as
-    the start of the next request.
+    the start of the next request. A request refused as asking for what the
+    server does not implement (answered 501, not 400) is held to the same
+    rule.
   * SUCCESS IS STABLE UNDER APPEND. A request that parses must parse the same
     way with more bytes after it, consuming the same count -- the parser stops
     at the header terminator or it is reading somebody else's request.
@@ -37,6 +39,7 @@ from lightbug_http.header import (
     parse_request_headers,
     InvalidHTTPRequestError,
     IncompleteHTTPRequestError,
+    UnsupportedHTTPRequestError,
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.io.bytes import Bytes
@@ -94,6 +97,8 @@ def _seed_corpus() -> List[String]:
     c.append("GET / HTTP/1.1\nHost: x\n\n")
     c.append("GET http://e.example/p HTTP/1.1\r\nHost: x\r\n\r\n")
     c.append("GET / HTTP/1.0\r\n\r\n")
+    # Refused as not implemented (501), not as malformed.
+    c.append("CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n")
     # Long-ish header block: the 8 KB-class shapes that stalled reads.
     c.append(
         "GET / HTTP/1.1\r\nHost: x\r\nCookie: " + String("a") * 600 + "\r\n\r\n"
@@ -157,7 +162,8 @@ def _mutate(mut rng: Rng, base: Span[Byte, _], other: Span[Byte, _]) -> Bytes:
 
 
 struct ParseOutcome(Copyable, ImplicitlyCopyable, Movable):
-    """What the parser said: 0 ok, 1 invalid, 2 incomplete, 3 other."""
+    """What the parser said: 0 ok, 1 invalid, 2 incomplete, 3 other,
+    4 not implemented."""
 
     var kind: Int
     var consumed: Int
@@ -182,6 +188,8 @@ def _parse(buf: Span[Byte, _]) -> ParseOutcome:
             return ParseOutcome(1, 0, String(""), String(""))
         if e.isa[IncompleteHTTPRequestError]():
             return ParseOutcome(2, 0, String(""), String(""))
+        if e.isa[UnsupportedHTTPRequestError]():
+            return ParseOutcome(4, 0, String(""), String(""))
         return ParseOutcome(3, 0, String(""), String(""))
 
 
@@ -234,6 +242,7 @@ def main() raises:
     var n_ok = 0
     var n_invalid = 0
     var n_incomplete = 0
+    var n_unsupported = 0
     var n_chunk_ok = 0
     var n_chunk_err = 0
 
@@ -251,6 +260,8 @@ def main() raises:
             n_invalid += 1
         elif first.kind == 2:
             n_incomplete += 1
+        elif first.kind == 4:
+            n_unsupported += 1
         if first.kind != again.kind or first.consumed != again.consumed:
             _report(seed, it, String("parsing is deterministic"), Span(buf))
             failures += 1
@@ -278,6 +289,14 @@ def main() raises:
             _report(
                 seed, it,
                 String("an INVALID request became valid when bytes were appended"),
+                Span(extended),
+            )
+            failures += 1
+            break
+        if first.kind == 4 and after.kind != 4:
+            _report(
+                seed, it,
+                String("a NOT IMPLEMENTED refusal changed when bytes were appended"),
                 Span(extended),
             )
             failures += 1
@@ -347,6 +366,8 @@ def main() raises:
         thin += " nothing-ever-rejected-as-invalid"
     if n_incomplete == 0:
         thin += " nothing-ever-reported-incomplete"
+    if n_unsupported == 0:
+        thin += " nothing-ever-refused-as-not-implemented"
     if n_chunk_ok == 0:
         thin += " no-chunked-body-ever-decoded"
     if n_chunk_err == 0:
@@ -361,6 +382,7 @@ def main() raises:
 
     print(
         "  outcomes: ok", n_ok, "invalid", n_invalid, "incomplete", n_incomplete,
+        "not implemented", n_unsupported,
         "| chunked: decoded", n_chunk_ok, "rejected", n_chunk_err,
     )
     print(

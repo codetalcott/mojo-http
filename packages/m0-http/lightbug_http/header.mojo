@@ -143,6 +143,20 @@ struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
 
 
 @fieldwise_init
+struct UnsupportedHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
+    """Error raised when a well-formed request asks for what this server
+    does not implement: the `CONNECT` method. The event loop answers it 501
+    (Not Implemented, RFC 9110 §15.6.2) and closes, where a malformed
+    request is answered 400."""
+
+    def write_to[W: Writer, //](self, mut writer: W):
+        writer.write("UnsupportedHTTPRequestError: Not implemented by this server")
+
+    def __str__(self) -> String:
+        return String(self)
+
+
+@fieldwise_init
 struct InvalidHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when the HTTP response is malformed."""
 
@@ -179,10 +193,16 @@ struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
 struct RequestParseError(Movable, Writable):
     """Error variant for HTTP request parsing.
 
-    Can be InvalidHTTPRequestError, IncompleteHTTPRequestError, or EmptyBufferError.
+    Can be InvalidHTTPRequestError, IncompleteHTTPRequestError,
+    EmptyBufferError, or UnsupportedHTTPRequestError.
     """
 
-    comptime type = Variant[InvalidHTTPRequestError, IncompleteHTTPRequestError, EmptyBufferError]
+    comptime type = Variant[
+        InvalidHTTPRequestError,
+        IncompleteHTTPRequestError,
+        EmptyBufferError,
+        UnsupportedHTTPRequestError,
+    ]
     var value: Self.type
 
     @implicit
@@ -197,6 +217,10 @@ struct RequestParseError(Movable, Writable):
     def __init__(out self, value: EmptyBufferError):
         self.value = value
 
+    @implicit
+    def __init__(out self, value: UnsupportedHTTPRequestError):
+        self.value = value
+
     def is_incomplete(self) -> Bool:
         """Returns True if this error indicates we need more data."""
         return self.value.isa[IncompleteHTTPRequestError]()
@@ -208,6 +232,8 @@ struct RequestParseError(Movable, Writable):
             writer.write(self.value[IncompleteHTTPRequestError])
         elif self.value.isa[EmptyBufferError]():
             writer.write(self.value[EmptyBufferError])
+        elif self.value.isa[UnsupportedHTTPRequestError]():
+            writer.write(self.value[UnsupportedHTTPRequestError])
 
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
@@ -1183,6 +1209,16 @@ def parse_request_headers(
             raise RequestParseError(InvalidHTTPRequestError())
         else:  # ret == -2
             raise RequestParseError(IncompleteHTTPRequestError())
+
+    # CONNECT asks the recipient to become a tunnel (RFC 9110 §9.3.6), and
+    # this server implements none: 501, answered by the loop, which closes
+    # (SPEC B18). It reached the application, which answers every method,
+    # and a 2xx answer to CONNECT tells a front end that forwards it that
+    # the tunnel is open -- whatever the client sends next goes through
+    # unparsed, past every rule in this function. The method is
+    # case-sensitive (RFC 9110 §9.1), so `connect` is some other method.
+    if method == "CONNECT":
+        raise RequestParseError(UnsupportedHTTPRequestError())
 
     # Phase 1a: Normalize absolute-form request targets (RFC 9112 §3.2.2).
     # Proxies and some HTTP clients send "GET http://host/path HTTP/1.1".

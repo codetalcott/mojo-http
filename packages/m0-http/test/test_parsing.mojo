@@ -19,6 +19,7 @@ from lightbug_http.header import (
     parse_request_headers,
     InvalidHTTPRequestError,
     IncompleteHTTPRequestError,
+    UnsupportedHTTPRequestError,
     HeaderKey,
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
@@ -38,6 +39,18 @@ def _rejected(raw: String) -> Bool:
         return False
     except e:
         return e.isa[InvalidHTTPRequestError]()
+
+
+def _unsupported(raw: String) -> Bool:
+    """True only if the request is refused as asking for what this server
+    does not implement, which the loop answers 501 rather than 400."""
+    var bytes = raw.as_bytes()
+    try:
+        var parsed = parse_request_headers(bytes)
+        _ = parsed^
+        return False
+    except e:
+        return e.isa[UnsupportedHTTPRequestError]()
 
 
 def _accepted(raw: String) -> Bool:
@@ -409,6 +422,28 @@ def test_chunked_as_the_last_coding_is_still_accepted() raises:
     assert_true(
         _accepted("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: CHUNKED\r\n\r\n")
     )
+
+
+# --- What this server does not implement: 501, not 400 ----------------------
+
+
+def test_connect_is_refused_as_not_implemented() raises:
+    """CONNECT asks for a tunnel (RFC 9110 §9.3.6), which this server does
+    not implement, so it is refused before any application sees it --
+    whatever its target or version. An application answering it 2xx (as
+    one answering every method does) told a front end forwarding it that
+    the tunnel was open, and the client's next bytes went through
+    unparsed. The refusal still needs a well-formed head: a malformed one
+    is 400 first, and the method name is case-sensitive.
+
+    covers: B18
+    """
+    assert_true(_unsupported("CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n"))
+    assert_true(_unsupported("CONNECT h:443 HTTP/1.0\r\n\r\n"))
+    assert_true(_unsupported("CONNECT / HTTP/1.1\r\nHost: h\r\n\r\n"))
+    assert_true(_rejected("CONNECT h:443 HTTP/1.1\nHost: h:443\r\n\r\n"))
+    assert_false(_unsupported("connect / HTTP/1.1\r\nHost: h\r\n\r\n"))
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost: h\r\n\r\n"))
 
 
 # --- Content-Length must be a plain digit run (RFC 9112 6.3) ----------------

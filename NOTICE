@@ -1328,6 +1328,15 @@ lightbug_http
         kept, `HTTP://` was left unreduced, and a query straight after the
         authority was lost.
 
+      - header.mojo, http/common_response.mojo, loop/request.mojo
+        (2026-10-08): `parse_request_headers` raises the new
+        `UnsupportedHTTPRequestError`, a fourth `RequestParseError`
+        variant, for a well-formed `CONNECT` request, and
+        `_handle_read_headers` answers it with the new `NotImplemented()`
+        (501) and closes (SPEC B18). CONNECT reached the application, and
+        a 2xx answer to it opens a tunnel in a front end that forwards it
+        (review record LF36).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

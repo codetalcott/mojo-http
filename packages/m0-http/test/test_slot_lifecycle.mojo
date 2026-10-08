@@ -519,12 +519,15 @@ def test_a_file_that_ends_early_closes_its_connection() raises:
     remove(path)
 
 
-def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
-    """One request to `/__metrics`, metrics on, read through `_on_read` over
-    a real stream pair: the reply as the client read it, lowercased, and
-    whether the loop closed the slot behind it."""
+def _exchange(
+    parts: List[String], metrics: Bool = False
+) raises -> Tuple[String, Bool]:
+    """Send `parts` to a slot reading headers, one write and one `_on_read`
+    apiece, over a real stream pair: the reply as the client read it,
+    lowercased, and whether the loop closed the slot behind it. `NoApp`
+    answers whatever reaches it with a 200 saying `unused`."""
     var config = _config()
-    config.enable_metrics = True
+    config.enable_metrics = metrics
     var app = NoApp()
     var backend = FakeBackend()
     var st = _loop(config)
@@ -536,10 +539,13 @@ def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
     st.fd_to_slot[fd] = slot
     st.active_count = 1
     st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
-    var raw = request.as_bytes()
-    var sent = send(FileDescriptor(peer), raw, UInt(len(raw)), 0)
-    assert_equal(Int(sent), len(raw))
-    _on_read(app, backend, st, fd, False)
+    for part in parts:
+        if st.slot_fds[slot] == UNUSED:
+            break
+        var raw = part.as_bytes()
+        var sent = send(FileDescriptor(peer), raw, UInt(len(raw)), 0)
+        assert_equal(Int(sent), len(raw))
+        _on_read(app, backend, st, fd, False)
     var got = List[UInt8]()
     _ = _read_available(peer, got)
     var closed = st.slot_fds[slot] == UNUSED
@@ -547,6 +553,29 @@ def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
         close(FileDescriptor(fd))
     close(FileDescriptor(peer))
     return (String(unsafe_from_utf8=Span(got)).lower(), closed)
+
+
+def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
+    """One request to `/__metrics`, metrics on (`_exchange`)."""
+    return _exchange([request], metrics=True)
+
+
+def test_connect_is_answered_501_and_closed() raises:
+    """CONNECT is refused before the application: 501, `Connection: close`
+    and the slot closed, where `NoApp` -- like any application answering
+    every method -- answered it 200, which a front end forwarding it reads
+    as an open tunnel. A malformed request stays 400.
+
+    covers: B18
+    """
+    var got = _exchange(["CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n"])
+    assert_true("501 not implemented" in got[0], got[0])
+    assert_true("connection: close" in got[0], got[0])
+    assert_false("unused" in got[0], got[0])
+    assert_true(got[1], "the slot stayed open after the 501")
+    var bad = _exchange(["GET / HTTP/1.1\r\nHost: h\r\nHost: i\r\n\r\n"])
+    assert_true("400 bad request" in bad[0], bad[0])
+    assert_true(bad[1], "the slot stayed open after the 400")
 
 
 def test_the_metrics_path_honours_a_requested_close() raises:
