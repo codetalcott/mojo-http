@@ -111,7 +111,7 @@ def test_a_plain_configuration_passes_every_rule_it_meets() raises:
     """The positional spec with nothing else: the three rules that always
     apply, all passing, and nothing for the server to refuse."""
     var checks = flag_checks(_opts([String("app.wsgi")]), _facts())
-    assert_equal(_names(checks), "port,app-dir,threads-vs-workers,workers-vs-parallel-runtime")
+    assert_equal(_names(checks), "port,address,app-dir,threads-vs-workers,workers-vs-parallel-runtime")
     assert_false(Bool(first_refusal(checks)))
     for i in range(len(checks)):
         assert_true(checks[i].ok)
@@ -137,13 +137,13 @@ def test_the_flag_rules_are_in_the_order_the_server_applies_them() raises:
     var checks = flag_checks(opts, facts)
     assert_equal(
         _names(checks),
-        "port,app-dir,static-dir,reload-dir,threads-vs-workers,protocol-vs-realtime,"
+        "port,address,app-dir,static-dir,reload-dir,threads-vs-workers,protocol-vs-realtime,"
         + "pg-listen,mounts-without-python,hold-mount-vs-realtime,hold-mount-key,"
         + "compiled-mount-vs-threads,compiled-mount-threads,mount-lanes,"
         + "workers-vs-parallel-runtime",
     )
     assert_false(Bool(first_refusal(checks)), _failed(checks))
-    assert_equal(checks[6].detail, "libpq 16.4 at /usr/lib/libpq.so")
+    assert_equal(checks[7].detail, "libpq 16.4 at /usr/lib/libpq.so")
 
 
 def test_the_directories_refuse_with_1_and_name_what_is_missing() raises:

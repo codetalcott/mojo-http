@@ -237,6 +237,29 @@ def test_a_port_out_of_range_is_refused_whichever_way_it_came() raises:
     assert_false(Bool(host_refusal(AppConfig())), "the default port was refused")
 
 
+def test_a_listen_address_that_does_not_parse_is_refused() raises:
+    """A listen address `parse_address` refuses, such as a host holding a
+    `%` (an IPv6 zone), is the `address` check's 78 whether `--host` or
+    `M0_HOST` named it, so `--doctor` says what the server does; the
+    server used to fail at the bind with 1 while the doctor said 0
+    (review record LF48).
+
+    covers: E31
+    """
+    var by_flag = host_refusal(_parse("--host", "fe80::1%en0").config)
+    _ = setenv("M0_HOST", "fe80::1%en0", True)
+    var by_env = host_refusal(AppConfig())
+    _ = unsetenv("M0_HOST")
+    assert_true(Bool(by_flag), "--host fe80::1%en0 was served")
+    assert_true(Bool(by_env), "M0_HOST=fe80::1%en0 was served")
+    assert_equal(by_flag.value(), by_env.value())
+    assert_true("cannot listen on [fe80::1%en0]:8080: " in by_flag.value(), by_flag.value())
+    assert_true("'%'" in by_flag.value(), by_flag.value())
+    assert_true("--host (M0_HOST)" in by_flag.value(), by_flag.value())
+    assert_false(Bool(host_refusal(_parse("--host", "::1").config)), "::1 was refused")
+    assert_false(Bool(host_refusal(_parse("--host", "localhost").config)), "localhost was refused")
+
+
 def test_prefork_is_refused_when_the_parallel_runtime_is_linked() raises:
     """The verdict with the fact supplied, and the gathered fact only
     checked for consistency: under `mojo run` this test runs inside the
@@ -314,20 +337,22 @@ def test_the_checks_are_whole_and_in_the_order_serve_refuses() raises:
     covers: E31
     """
     var clean = host_checks(AppConfig())
-    assert_equal(len(clean), 9)
+    assert_equal(len(clean), 10)
     for i in range(len(clean)):
         assert_true(clean[i].ok, clean[i].name + " failed on a default config")
         assert_equal(clean[i].fix, "")
     assert_equal(clean[0].name, "port")
-    assert_equal(clean[1].name, "workers-count")
-    assert_equal(clean[4].name, "workers-vs-threads")
+    assert_equal(clean[1].name, "address")
+    assert_equal(clean[2].name, "workers-count")
+    assert_equal(clean[5].name, "workers-vs-threads")
+    assert_equal(clean[len(clean) - 1].name, "workers-vs-parallel-runtime")
     # Two failures: too many workers for the app, and both modes at once.
     var two = host_checks(_parse("--workers", "2", "--threads", "2").config, 1)
-    assert_equal(len(two), 9)
-    assert_false(two[2].ok)
-    assert_false(two[4].ok)
+    assert_equal(len(two), 10)
+    assert_false(two[3].ok)
+    assert_false(two[5].ok)
     var first = host_refusal(_parse("--workers", "2", "--threads", "2").config, 1)
-    assert_true(two[2].detail in first.value())
+    assert_true(two[3].detail in first.value())
     assert_true("M0_WORKERS=2" in first.value())
 
 

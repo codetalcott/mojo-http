@@ -3804,6 +3804,10 @@ port_refused() {
 }
 port_refused 'an environment port of 0' M0_PORT=0
 port_refused 'a flag port of 0' '' --port 0
+# A listen address the listener would refuse (a % in the host, an IPv6
+# zone) is a 78 before the bind, both ways; the server failed at the bind
+# with 1 while the doctor said 0 (review record LF48).
+refuses 78 'a host with an IPv6 zone'           $SPEC --host fe80::1%en0
 
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).

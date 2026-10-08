@@ -175,16 +175,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   own startup line and was not affected.
 
 - **A listen address with an IPv6 zone is refused on every platform, and
-  a refused listen address says why** (fork review LF48). Exposed: m0serve
-  or a Mojo host given `--host fe80::1%en0`, and a Mojo application passing
-  such an address to `Server.listen_and_serve`. On macOS, whose libc reads
-  the zone into the address, it listened on that interface's link-local
-  address and was reported without its zone; on Linux it was refused as
-  not an address. It is now refused at startup on both, as a listen
-  address takes no zone. Every refused listen address now names the rule
-  it broke: the error read "Failed to parse listen address" and stopped
-  there, and now goes on with the reason ("... takes no IPv6 zone",
-  "missing port separator", "too many colons").
+  a refused listen address says why** (fork review LF48, SPEC E31, M5).
+  Exposed: m0serve or a Mojo host given `--host fe80::1%en0`, and a Mojo
+  application passing such an address to `Server.listen_and_serve`. On
+  macOS, whose libc reads the zone into the address, it listened on that
+  interface's link-local address and was reported without its zone; on
+  Linux it was refused as not an address. A listen host may not contain
+  `%` now, on either. m0serve and the host refuse such an address at
+  startup with exit 78, before anything is bound, as the new `address`
+  check that `--doctor` reports too: the server used to fail at the bind
+  with exit 1 while the doctor said 0. Every refused listen address now
+  names the rule it broke: the error read "Failed to parse listen address"
+  and stopped there, and now goes on with the reason ("a listen host may
+  not contain '%'", "missing port separator", "too many colons").
+  `AddressParseError` carries that reason (`AddressParseError(reason)`)
+  and is no longer a `CustomError` or `ImplicitlyCopyable`.
 
 - **An `M0_*` number too large to hold is ignored, not wrapped** (fork
   review LF49, SPEC F19). Exposed: m0serve and Mojo host applications

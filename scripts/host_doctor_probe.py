@@ -176,6 +176,12 @@ def main() -> int:
                  {"check": "port"}))
     rows.append(("--port 0", ["--port", "0"], {}, 78, {"check": "port"}))
     rows.append(("--port 70000", ["--port", "70000"], {}, 78, {"check": "port"}))
+    # A listen address the listener would refuse: a 78 before the bind,
+    # where the server failed at the bind with 1 and the doctor said 0
+    # (review record LF48).
+    p = P()
+    rows.append(("a host with an IPv6 zone", ["--port", str(p), "--host", "fe80::1%en0"], {}, 78,
+                 {"check": "address"}))
     p = P()
     rows.append(("more workers than the application serves", ["--port", str(p), "--workers", "2"],
                  {"M0_HOSTCHECK_MAX_WORKERS": "1"}, 78,

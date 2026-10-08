@@ -753,6 +753,31 @@ def test_a_port_out_of_range_is_refused_whichever_way_it_came() raises:
     assert_equal(high.value().detail, "M0_PORT must be between 1 and 65535, got 70000")
 
 
+def test_a_listen_address_that_does_not_parse_is_refused() raises:
+    """A listen address `parse_address` refuses, such as a host holding a
+    `%` (an IPv6 zone), is the `address` check's 78, before the bind, so
+    `--doctor` says what the server does: the server failed at the bind
+    with 1 while the doctor said 0 (review record LF48).
+
+    covers: M5
+    """
+    var facts = CheckFacts(False, False, True)
+    var zoned = first_refusal(
+        flag_checks(parse_args([String("m.wsgi"), String("--host"), String("fe80::1%en0")], ServeOptions()), facts)
+    )
+    assert_true(Bool(zoned), "--host fe80::1%en0 was served")
+    assert_equal(zoned.value().name, "address")
+    assert_equal(zoned.value().code, EXIT_CONFIG)
+    assert_true("cannot listen on [fe80::1%en0]:8000: " in zoned.value().detail, zoned.value().detail)
+    assert_true("'%'" in zoned.value().detail, zoned.value().detail)
+    assert_true("--host (M0_HOST)" in zoned.value().fix, zoned.value().fix)
+    for host in [String("::1"), String("::"), String("0.0.0.0"), String("localhost")]:
+        assert_false(
+            Bool(first_refusal(flag_checks(parse_args([String("m.wsgi"), String("--host"), host], ServeOptions()), facts))),
+            host + " was refused",
+        )
+
+
 def test_format_size_is_what_parse_size_reads_back() raises:
     assert_equal(format_size(4 * 1024 * 1024), "4m")
     assert_equal(format_size(1024), "1k")

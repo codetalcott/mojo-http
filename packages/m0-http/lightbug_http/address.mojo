@@ -135,7 +135,7 @@ struct ParseTooManyColonsError(CustomError, TrivialRegisterPassable):
 
 @fieldwise_init
 struct ParseZoneError(CustomError, TrivialRegisterPassable):
-    comptime message = "ParseError: Failed to parse address: a listen address takes no IPv6 zone ('%')"
+    comptime message = "ParseError: Failed to parse address: a listen host may not contain '%' (a listener takes no IPv6 zone)"
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(Self.message)

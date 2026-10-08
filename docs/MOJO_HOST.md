@@ -150,6 +150,7 @@ the host applies them:
 | check | refused when |
 |---|---|
 | `port` | `M0_PORT` is outside 1-65535 |
+| `address` | the listen address does not parse, such as a `%` (an IPv6 zone) in `M0_HOST` |
 | `workers-count` | `M0_WORKERS` is below 1 |
 | `workers-vs-application` | `M0_WORKERS` is above the application's `max_workers()` |
 | `threads-count` | `M0_THREADS` is below 1 |
