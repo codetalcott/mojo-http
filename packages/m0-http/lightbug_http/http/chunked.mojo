@@ -21,6 +21,7 @@ struct DecoderState(Equatable, ImplicitlyCopyable):
     comptime IN_TRAILERS_LINE_NAME = Self(8)
     comptime IN_TRAILERS_LINE_EXPECT_LF = Self(9)
     comptime IN_TRAILERS_END_EXPECT_LF = Self(10)
+    comptime IN_CHUNK_SIZE_END = Self(11)
 
     def __eq__(self, other: Self) -> Bool:
         return self.value == other.value
@@ -131,13 +132,47 @@ struct HTTPChunkedDecoder(Defaultable):
 
                 self._hex_count = 0
                 self._sig_hex_count = 0
-                self._state = DecoderState.IN_CHUNK_EXT
+                self._state = DecoderState.IN_CHUNK_SIZE_END
+
+            # After the size: `chunk-size [ chunk-ext ] CRLF`, an extension
+            # opening with `;` behind optional whitespace (RFC 9112 §7.1.1's
+            # BWS). Whitespace before a bare CR is a leniency, kept as h11
+            # keeps it (llhttp refuses it).
+            # The bytes here went to the extension state, which skipped to
+            # the CR whatever they were, so `5 5` was a chunk of 5 where
+            # h11 and llhttp refuse it and a parser that strips whitespace
+            # reads 0x55 (review record LF60, SPEC B28).
+            elif self._state == DecoderState.IN_CHUNK_SIZE_END:
+                while src < buffer_len and (
+                    buf[src] == BytesConstant.whitespace
+                    or buf[src] == BytesConstant.TAB
+                ):
+                    src += 1
+
+                if src >= buffer_len:
+                    break
+
+                if buf[src] == BytesConstant.SEMICOLON:
+                    src += 1
+                    self._state = DecoderState.IN_CHUNK_EXT
+                elif buf[src] == BytesConstant.CR:
+                    src += 1
+                    self._state = DecoderState.IN_CHUNK_HEADER_EXPECT_LF
+                else:
+                    return (-1, dst)
 
             elif self._state == DecoderState.IN_CHUNK_EXT:
+                # An extension runs to the CR. A control byte other than
+                # HTAB, or DEL, is no part of one (its name is a token, its
+                # value a token or a quoted-string), refused as in a head's
+                # field value and a trailer's (SPEC B24, B28); a bare LF is
+                # B5's. Its content is discarded either way.
                 while src < buffer_len:
                     if buf[src] == BytesConstant.CR:
                         break
-                    elif buf[src] == BytesConstant.LF:
+                    if (
+                        buf[src] < 0x20 and buf[src] != BytesConstant.TAB
+                    ) or buf[src] == 0x7F:
                         return (-1, dst)
                     src += 1
 

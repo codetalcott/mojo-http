@@ -16,6 +16,10 @@ prevent.
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.header import (
+    Headers,
+    ParsedRequestHeaders,
+    EmptyBufferError,
+    find_header_end,
     parse_request_headers,
     InvalidHTTPRequestError,
     IncompleteHTTPRequestError,
@@ -219,8 +223,103 @@ def test_an_empty_host_is_accepted_when_the_target_names_no_authority() raises:
     assert_true(_rejected("GET / HTTP/1.1\r\n\r\n"))
 
 
+def test_the_version_is_http_slash_1_dot_one_digit() raises:
+    """`parse_http_version` reads `HTTP/1.` and one digit, then the line's
+    CRLF: any other name, major, case or trailing byte is invalid, and the
+    protocol a request reaches the application with is the one it sent; and
+    a request line with no method is invalid too (review audit A3)."""
+    for v in [
+        "HTTP/2.0", "HTTP/1.x", "HTTP/1.10", "HTTP/1.1 ", "http/1.1",
+        "HTTP/01.1", "HTTP1.1", "HTTP/1.", "HTTP/1.1x", "HTTPS/1.1", "HTTP/1",
+    ]:
+        var raw = String("GET / ", v, "\r\nHost: x\r\n\r\n")
+        assert_true(_rejected(raw), String("accepted version ", repr(String(v))))
+    assert_false(_accepted("GET / H\r\n\r\n"))
+    # And the line opens with its method: an empty one (the line opening
+    # with SP) is invalid, `parse_token` reporting a token of no bytes.
+    assert_true(_rejected(" / HTTP/1.1\r\nHost: x\r\n\r\n"), "served an empty method")
+    for minor in range(10):
+        var raw = String("GET / HTTP/1.", minor, "\r\nHost: x\r\n\r\n")
+        var parsed = parse_request_headers(raw.as_bytes())
+        assert_equal(parsed.protocol, String("HTTP/1.", minor))
+
+
+def test_an_empty_buffer_is_its_own_error() raises:
+    """Nothing to parse is `EmptyBufferError`, not an incomplete request: the
+    loop never asks (it parses only a head `find_header_end` has framed),
+    and a caller of its own learns it handed over nothing."""
+    var empty = List[UInt8]()
+    var kind = String("parsed")
+    try:
+        _ = parse_request_headers(Span(empty))
+    except e:
+        kind = String("empty") if e.isa[EmptyBufferError]() else String("other")
+    assert_equal(kind, "empty")
+
+
 def test_http11_accepts_a_real_host() raises:
     assert_true(_accepted("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+
+
+def _with_host(value: String) -> String:
+    return String("GET / HTTP/1.1\r\nHost: ", value, "\r\n\r\n")
+
+
+def test_an_invalid_host_value_is_rejected() raises:
+    """RFC 9112 §3.2: a server MUST answer 400 to a `Host` field with an
+    invalid value, and the one valid shape is `uri-host [ ":" port ]` (RFC
+    9110 §7.2). `Host: a b` and `Host: u@a` were served, as h11 and llhttp
+    serve them (review record LF64). An absolute-form target's authority,
+    which replaces Host (B16), is held to the same shape.
+
+    covers: B27
+    """
+    var bad = [
+        "a b", "u@a", "a/b", "a?b", "a#b", "a\tb", "a\"b", "a<b>", "a\\b",
+        "a%", "a%4", "a%zz", ":80", "a:8x", "a:80:90", "a::80",
+        "[::1", "[::1]x", "[]", "[1.2.3.4]", "[v1]", "[v.x]",
+        "[vg.x]", "[v1.]", "[::1%25lo0]", "[fe80::1%eth0]", "::1", "a]", "[a b]",
+    ]
+    for v in bad:
+        assert_true(_rejected(_with_host(v)), String("served Host: ", v))
+    # A byte above ASCII is no part of a uri-host: a raw UTF-8 name, and a
+    # byte that is not UTF-8 at all.
+    var raw = List[UInt8]()
+    raw.extend("GET / HTTP/1.1\r\nHost: caf".as_bytes())
+    raw.append(0xC3)
+    raw.append(0xA9)
+    raw.extend("\r\n\r\n".as_bytes())
+    assert_true(_invalid_bytes(raw), "served a Host holding UTF-8")
+    raw = List[UInt8]()
+    raw.extend("GET / HTTP/1.1\r\nHost: a".as_bytes())
+    raw.append(0xFF)
+    raw.extend("\r\n\r\n".as_bytes())
+    assert_true(_invalid_bytes(raw), "served a Host holding 0xFF")
+
+    var good = [
+        "example.com", "example.com:8080", "EXAMPLE.COM", "a:", "127.0.0.1",
+        "127.0.0.1:8973", "[::1]", "[::1]:8080", "[2001:db8::1]:443",
+        "[::ffff:10.0.0.1]", "[v1.x]", "[vF.a:b]", "my_host.local",
+        "a%2Db", "xn--caf-dma.example", "a.b-c~d!e$f&g'h(i)j*k+l,m;n=o",
+        "a:99999", "[::1]:",
+    ]
+    for v in good:
+        assert_true(_accepted(_with_host(v)), String("refused Host: ", v))
+        assert_equal(_header(_with_host(v), "host"), v)
+    # OWS around the value is the field's, not the host's.
+    assert_true(_accepted("GET / HTTP/1.1\r\nHost: \t example.com \t\r\n\r\n"))
+
+    # The authority of an absolute-form target, which replaces Host.
+    assert_true(_rejected("GET http://a\"b/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http://h:8x/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_true(_rejected("GET http://[::1/p HTTP/1.1\r\nHost: x\r\n\r\n"))
+    assert_equal(
+        _header("GET http://[::1]:80/p HTTP/1.1\r\nHost: x\r\n\r\n", "host"),
+        "[::1]:80",
+    )
+    # The Host sent beside an absolute-form target is still checked: §3.2
+    # asks it of every request.
+    assert_true(_rejected("GET http://h/p HTTP/1.1\r\nHost: a b\r\n\r\n"))
 
 
 def test_http10_without_host_is_accepted() raises:
@@ -370,6 +469,40 @@ def test_mixed_case_chunked_is_recognised() raises:
     assert_true(parsed.is_chunked_body())
 
 
+def _te_headers(value: List[UInt8]) -> ParsedRequestHeaders:
+    """A parsed head whose `Transfer-Encoding` holds `value`, built directly:
+    the parser refuses most of these before `is_chunked_body` is asked."""
+    var h = Headers()
+    h.set_bytes(HeaderKey.TRANSFER_ENCODING.as_bytes(), Span(value))
+    return ParsedRequestHeaders(
+        method="POST", path="/", protocol="HTTP/1.1", headers=h^,
+        cookies=List[String](), bytes_consumed=0,
+    )
+
+
+def test_is_chunked_body_asks_the_final_coding_in_ascii() raises:
+    """`is_chunked_body` reads the final coding's bytes with ASCII case
+    folding, as the parser does: `chunked` anywhere in a Unicode-lowered
+    value answered True for `chun<U+212A>ed` and for `chunked, gzip`
+    (review record LF58)."""
+    var kelvin = List[UInt8]()
+    kelvin.extend("chun".as_bytes())
+    kelvin.append(0xE2)
+    kelvin.append(0x84)
+    kelvin.append(0xAA)
+    kelvin.extend("ed".as_bytes())
+    assert_false(_te_headers(kelvin).is_chunked_body(), "KELVIN SIGN read as k")
+    var out_of_place = List[UInt8]()
+    out_of_place.extend("chunked, gzip".as_bytes())
+    assert_false(_te_headers(out_of_place).is_chunked_body())
+    var ok = List[UInt8]()
+    ok.extend("gzip , \tCHUNKED ".as_bytes())
+    assert_true(_te_headers(ok).is_chunked_body())
+    var plain = List[UInt8]()
+    plain.extend("chunked".as_bytes())
+    assert_true(_te_headers(plain).is_chunked_body())
+
+
 def test_uppercase_chunked_not_last_is_still_rejected() raises:
     """The must-be-last rule was skipped entirely for uppercase, because its
     own guard tested the raw value."""
@@ -408,6 +541,42 @@ def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises
     assert_true(
         _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked-foo\r\n\r\n")
     )
+    # A coding name is case-folded as ASCII and nothing else (RFC 9112
+    # §7.1). Unicode lowercasing reads KELVIN SIGN (U+212A, E2 84 AA) as
+    # `k`, and `chun<U+212A>ed` was framed as chunked where every other hop
+    # reads an unknown coding (review record LF58).
+    var kelvin = List[UInt8]()
+    kelvin.extend("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chun".as_bytes())
+    kelvin.append(0xE2)
+    kelvin.append(0x84)
+    kelvin.append(0xAA)
+    kelvin.extend("ed\r\n\r\n".as_bytes())
+    assert_true(_invalid_bytes(kelvin), "framed chun<KELVIN SIGN>ed as chunked")
+    # And the list is split on its bytes: a member that is not UTF-8 ends
+    # at its comma like any other. Read as UTF-8, the lead byte 0xF0 took
+    # the comma behind it, and `x<F0>, chunked` was one coding named
+    # `x?hunked`, refused 400 where its final coding is `chunked` and the
+    # one before it is 501's (B21).
+    var lead = List[UInt8]()
+    lead.extend("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: x".as_bytes())
+    lead.append(0xF0)
+    lead.extend(", chunked\r\n\r\n".as_bytes())
+    assert_true(_unsupported_bytes(lead), "a non-UTF-8 member took its comma")
+    var tail = List[UInt8]()
+    tail.extend("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked".as_bytes())
+    tail.append(0xC3)
+    tail.extend("\r\n\r\n".as_bytes())
+    assert_true(_invalid_bytes(tail), "chunked<C3> read as chunked")
+
+
+def _unsupported_bytes(raw: List[UInt8]) -> Bool:
+    """`_unsupported` for a head that is not a String's bytes."""
+    try:
+        var parsed = parse_request_headers(Span(raw))
+        _ = parsed^
+        return False
+    except e:
+        return e.isa[UnsupportedHTTPRequestError]()
 
 
 def test_chunked_applied_twice_is_rejected() raises:
@@ -731,6 +900,40 @@ def test_a_bare_lf_is_found_in_a_head_still_arriving_at_every_offset() raises:
     assert_true(holds_bare_lf("\n".as_bytes()))
     assert_false(holds_bare_lf("".as_bytes()))
     assert_false(holds_bare_lf("ab\r\n".as_bytes(), 9))
+
+
+def test_a_head_is_framed_at_its_first_crlfcrlf_whatever_the_resume_point() raises:
+    """`find_header_end` finds the first CRLFCRLF at every offset across its
+    64-lane loads and its scalar tail, and from every point a previous read
+    can have ended before the terminator was whole: it backs up three bytes
+    so a terminator split across two reads is found.
+
+    It backed up only from a resume point above 3. A read that ended one to
+    three bytes in, inside a head that opens with two empty lines, resumed
+    past the terminator at 0: `\\r\\n` then `\\r\\nGET / ...` was framed at
+    the request's own end and served, where the same bytes in one read are
+    framed at 0 and refused (review record LF66, which LF59 duplicates)
+    -- one request, two framings, by where a TCP segment ended. The unit
+    half of the guarantee; the fuzzer's split reads are the other.
+    """
+    for p in range(150):
+        var buf = List[UInt8]()
+        for _ in range(p):
+            buf.append(0x61)
+        buf.extend("\r\n\r\n".as_bytes())
+        for _ in range(70):
+            buf.append(0x62)
+        buf.extend("\r\n\r\n".as_bytes())
+        for s in range(p + 4):
+            var end = find_header_end(Span(buf), s)
+            assert_true(Bool(end), String("missed the terminator at ", p, " from ", s))
+            assert_equal(end.value(), p + 4, String("terminator at ", p, " from ", s))
+    assert_false(Bool(find_header_end("\r\n\r".as_bytes())))
+    assert_false(Bool(find_header_end("".as_bytes())))
+    var none = String("GET / HTTP/1.1\r\nHost: x\r\n") * 8
+    assert_false(Bool(find_header_end(none.as_bytes())))
+    assert_false(Bool(find_header_end(none.as_bytes(), 100)))
+    assert_false(Bool(find_header_end("\r\n\r\n".as_bytes(), 9)))
 
 
 def test_an_empty_crlf_line_before_the_request_line_is_still_skipped() raises:
@@ -1179,6 +1382,60 @@ def test_bare_lf_in_a_chunk_extension_is_rejected() raises:
     """
     var got = _decode("5;ext\nhello\r\n")
     assert_equal(got[0], -1)
+
+
+def test_a_chunk_size_line_is_the_size_then_extensions() raises:
+    """A chunk header is `chunk-size [ chunk-ext ] CRLF`, and an extension
+    opens with `;` (RFC 9112 §7.1.1): whitespace may stand between the size
+    and the `;` or the CRLF, and nothing else. The bytes after the size
+    were skipped to the CR whatever they were, so `5 5` was read as a chunk
+    of 5 where a parser that strips whitespace reads 0x55 and h11 and
+    llhttp refuse it -- and an extension's control bytes were taken where a
+    head's field value refuses them (B24) (review record LF60).
+
+    covers: B28
+    """
+    var bad = [
+        "5 x\r\nhello\r\n0\r\n\r\n",
+        "5 5\r\nhello\r\n0\r\n\r\n",
+        "5\tx\r\nhello\r\n0\r\n\r\n",
+        "5 \t =\r\nhello\r\n0\r\n\r\n",
+        "5;a\x00b\r\nhello\r\n0\r\n\r\n",
+        "5;a\x0bb\r\nhello\r\n0\r\n\r\n",
+        "5;a=\x7f\r\nhello\r\n0\r\n\r\n",
+        "5 \nhello\r\n0\r\n\r\n",
+        "5\r\nhello\r\n0 x\r\n\r\n",
+    ]
+    for raw in bad:
+        assert_equal(_decode(raw)[0], -1, String("decoded ", repr(String(raw))))
+        for piece in range(1, 6):
+            assert_equal(
+                _feed_incrementally(String(raw), piece, consume_trailer=True)[0],
+                -1, String("decoded in pieces of ", piece, ": ", repr(String(raw))),
+            )
+    var good = [
+        "5 \r\nhello\r\n0\r\n\r\n",
+        "5\t;a=b\r\nhello\r\n0\r\n\r\n",
+        "5 ; a = b\r\nhello\r\n0\r\n\r\n",
+        "5;a=\"b\tc\"\r\nhello\r\n0\r\n\r\n",
+        "5;a;b=1\r\nhello\r\n0 ;z\r\n\r\n",
+    ]
+    for raw in good:
+        var got = _decode(raw)
+        assert_true(got[0] >= 0, String("refused ", repr(String(raw))))
+        assert_equal(got[1], 5)
+        for piece in range(1, 6):
+            var split = _feed_incrementally(String(raw), piece, consume_trailer=True)
+            assert_equal(split[0], 0, String("pieces of ", piece, ": ", repr(String(raw))))
+            assert_equal(split[1], "hello")
+    # An extension's value may carry obs-text, as a quoted-string may.
+    var high = List[UInt8]()
+    high.extend("5;a=\"".as_bytes())
+    high.append(0xC3)
+    high.append(0xA9)
+    high.extend("\"\r\nhello\r\n0\r\n\r\n".as_bytes())
+    var dec = HTTPChunkedDecoder()
+    assert_true(dec.decode(high)[0] >= 0, "refused obs-text in an extension")
 
 
 def test_empty_chunk_size_is_rejected() raises:

@@ -68,14 +68,6 @@ struct URITooLongError(ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct RequestBodyTooLargeError(ImplicitlyCopyable):
-    """Request body exceeded maximum size."""
-
-    def message(self) -> String:
-        return "Request body exceeds maximum allowed size"
-
-
-@fieldwise_init
 struct URIParseError(ImplicitlyCopyable):
     """Failed to parse request URI."""
 
@@ -83,40 +75,28 @@ struct URIParseError(ImplicitlyCopyable):
         return "Malformed request URI"
 
 
-@fieldwise_init
-struct CookieParseError(ImplicitlyCopyable):
-    """Failed to parse cookies."""
-
-    var detail: String
-
-    def message(self) -> String:
-        return String("Invalid cookies: ", self.detail)
-
-
-comptime RequestBuildError = Variant[
-    URITooLongError,
-    RequestBodyTooLargeError,
-    URIParseError,
-    CookieParseError,
-]
-
-
-@fieldwise_init
-struct RequestMethod:
-    """HTTP request method constants."""
-
-    var value: String
-
-    comptime get = RequestMethod("GET")
-    comptime post = RequestMethod("POST")
-    comptime put = RequestMethod("PUT")
-    comptime delete = RequestMethod("DELETE")
-    comptime head = RequestMethod("HEAD")
-    comptime patch = RequestMethod("PATCH")
-    comptime options = RequestMethod("OPTIONS")
+comptime RequestBuildError = Variant[URITooLongError, URIParseError]
 
 
 comptime strSlash = "/"
+
+
+def split_server_address(address: String) -> Tuple[String, Optional[UInt16]]:
+    """The host and port of the address a server listens on, as a parsed
+    request's `uri.host` and `uri.port` carry them: `127.0.0.1:8973` is
+    (`127.0.0.1`, 8973), `[::1]:8080` (`[::1]`, 8080), and a scheme or a
+    missing port is allowed (`http://localhost` is (`localhost`, None)).
+
+    Split ONCE, where a loop is built (`LoopState`), and handed to every
+    `HTTPRequest.from_parsed` it makes: a request's URI names the server the
+    same way whatever its target's shape (SPEC A37). An address `URI.parse`
+    refuses -- an unclosed `[` -- is the host whole, with no port.
+    """
+    try:
+        var u = URI.parse(address)
+        return (u.host, u.port)
+    except:
+        return (address, None)
 
 
 @fieldwise_init
@@ -151,7 +131,8 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     @staticmethod
     def from_parsed(
-        server_addr: String,
+        server_host: String,
+        server_port: Optional[UInt16],
         var parsed: ParsedRequestHeaders,
         var body: Bytes,
         max_uri_length: Int,
@@ -162,8 +143,20 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         should use header.mojo's parse_request_headers() to parse the headers,
         then read the body separately, and finally call this method.
 
+        The URI names the server the same way whatever the target's shape
+        (SPEC A37): `uri.host` and `uri.port` are the address the server
+        listens on, split once by `split_server_address`, and
+        `uri.request_uri` is the request target as it arrived (SPEC A38) --
+        origin-form, an absolute-form target already reduced to its path
+        (B16) whose authority is the request's `Host` header, or `*`. They
+        used to depend on the target: a path with no query or escape got
+        the whole address in `host` and no port, one with either got them
+        split by a parse of the address and the target together (review
+        record LF54).
+
         Args:
-            server_addr: The server address (used for URI construction).
+            server_host: The host of the address the server listens on.
+            server_port: Its port, if the address names one.
             parsed: The parsed request headers from parse_request_headers().
             body: The request body bytes.
             max_uri_length: Maximum allowed URI length.
@@ -172,7 +165,8 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             A fully constructed HTTPRequest.
 
         Raises:
-            RequestBuildError: If URI is too long, URI parsing fails, or cookie parsing fails.
+            RequestBuildError: If the target is longer than `max_uri_length`,
+                or `URI.parse` refuses it.
         """
         if parsed.path.byte_length() > max_uri_length:
             raise RequestBuildError(URITooLongError())
@@ -205,16 +199,22 @@ struct HTTPRequest(Copyable, Encodable, Writable):
                 path=parsed.path,
                 query_string="",
                 queries=QueryMap(),
-                host=server_addr,
-                port=None,
+                host=server_host,
+                port=server_port,
                 request_uri=parsed.path,
             )
         else:
-            var full_uri_string = String(server_addr, parsed.path)
+            # The target alone: a path has no authority for the parse to
+            # find, and the server's comes from the caller (LF54).
             try:
-                parsed_uri = URI.parse(full_uri_string)
+                parsed_uri = URI.parse(parsed.path)
             except uri_err:
                 raise RequestBuildError(URIParseError())
+            parsed_uri.host = server_host
+            parsed_uri.port = server_port
+            # The target as it arrived, escapes and all, which the writers
+            # send back (review record LF62).
+            parsed_uri.request_uri = parsed.path
 
         # Asked before the headers move into the request below.
         var dechunked = parsed.is_chunked_body()
@@ -306,10 +306,6 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         """Get the request body as a string slice."""
         return StringSpan(unsafe_from_utf8=Span(self.body_raw))
 
-    def set_connection_close(mut self):
-        """Set the Connection header to 'close'."""
-        self.headers[HeaderKey.CONNECTION] = "close"
-
     def set_content_length(mut self, length: Int):
         """Set the Content-Length header."""
         self.headers.set_int_known(
@@ -342,16 +338,25 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             HeaderKey.CONNECTION, "keep-alive"
         )
 
+    def _target(self) -> String:
+        """The request target the writers send: the URI's `request_uri`,
+        as it arrived or as the URL spelled it, escapes and all.
+
+        They wrote `uri.path`, which is percent-DECODED, and its query: so
+        `/a%20b` went out as `/a b`, no longer one request line's target,
+        an encoded CR LF as the real bytes, a request line split in two,
+        and an asterisk-form `*` as `/` (review record LF62).
+        """
+        if self.uri.request_uri.byte_length() == 0:
+            return strSlash
+        return self.uri.request_uri
+
     def write_to[T: Writer, //](self, mut writer: T):
         """Write the request in HTTP format to a writer."""
-        var path = self.uri.path if self.uri.path.byte_length() > 1 else strSlash
-        if self.uri.query_string.byte_length() > 0:
-            path.write("?", self.uri.query_string)
-
         writer.write(
             self.method,
             whitespace,
-            path,
+            self._target(),
             whitespace,
             self.protocol,
             lineBreak,
@@ -370,15 +375,11 @@ struct HTTPRequest(Copyable, Encodable, Writable):
 
     def encode(deinit self) -> Bytes:
         """Encode request as bytes, consuming the request."""
-        var path = self.uri.path if self.uri.path.byte_length() > 1 else strSlash
-        if self.uri.query_string.byte_length() > 0:
-            path.write("?", self.uri.query_string)
-
         var writer = ByteWriter()
         writer.write(
             self.method,
             whitespace,
-            path,
+            self._target(),
             whitespace,
             self.protocol,
             lineBreak,
@@ -391,19 +392,3 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         writer.write(lineBreak)
         writer.consuming_write(self.body_raw^)
         return writer^.consume()
-
-    def __str__(self) -> String:
-        return String(self)
-
-    def __eq__(self, other: HTTPRequest) -> Bool:
-        return (
-            self.method == other.method
-            and self.protocol == other.protocol
-            and self.uri == other.uri
-            and self.headers == other.headers
-            and self.cookies == other.cookies
-            and len(self.body_raw) == len(other.body_raw)
-        )
-
-    def __isnot__(self, other: HTTPRequest) -> Bool:
-        return not self.__eq__(other)

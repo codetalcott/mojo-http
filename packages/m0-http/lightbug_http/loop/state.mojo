@@ -18,6 +18,7 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import send, close
 from lightbug_http.connection import ConnectionState
 from lightbug_http.http.date import http_date_from_unix, unix_now
+from lightbug_http.http.request import split_server_address
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.metrics import ServerMetrics
 from lightbug_http.offload import OffloadLoopState
@@ -152,7 +153,10 @@ struct LoopState(Movable):
     a loop's own, because `--threads` puts loops in one process."""
     var listen_fd: FileDescriptor
     var config: ServerConfig
-    var server_address: String
+    var server_host: String
+    var server_port: Optional[UInt16]
+    """The address the loop serves, split once (`split_server_address`)
+    into what every request's `uri.host` and `uri.port` carry (SPEC A37)."""
     var tcp_keep_alive: Bool
     var shutdown_read_fd: Int
     var bus_read_fd: Int
@@ -272,7 +276,9 @@ struct LoopState(Movable):
         self.log_clock = LogClock()
         self.listen_fd = listen_fd
         self.config = config.copy()
-        self.server_address = server_address
+        var host_port = split_server_address(server_address)
+        self.server_host = host_port[0]
+        self.server_port = host_port[1]
         self.tcp_keep_alive = tcp_keep_alive
         self.shutdown_read_fd = shutdown_read_fd
         self.bus_read_fd = bus_read_fd

@@ -90,7 +90,7 @@ answer, SVGs included, in place of this one.
 from std.os import stat
 
 from lightbug_http import HTTPRequest, HTTPResponse
-from lightbug_http.header import Headers, Header, HeaderKey
+from lightbug_http.header import Headers, Header, HeaderKey, name_is
 
 from .threads import dup_fd
 
@@ -451,10 +451,15 @@ def parse_range(header: String, total: Int) -> ByteRange:
     to satisfy (multiple ranges, non-bytes units, backwards bounds) — the
     caller serves the full 200, which is always a correct answer to Range.
     """
-    var h = header.lower()
-    if not h.startswith("bytes="):
+    # The unit in ASCII case only (RFC 9110 §14.1: case-insensitive). The
+    # header was lowered by Unicode `String.lower()`, which decodes an
+    # overlong `C1 A2` as `b`, so `<C1 A2>ytes=0-1` was a range here and an
+    # unknown unit to every other hop (review record LF63). What follows
+    # the unit is digits and a dash, which no folding changes.
+    var hb = header.as_bytes()
+    if len(hb) < 6 or not name_is(hb[:6], "bytes="):
         return ByteRange(RANGE_NONE, 0, 0)
-    var spec = String(unsafe_from_utf8=h.as_bytes()[6:])
+    var spec = String(unsafe_from_utf8=hb[6:])
     # One dash, no commas — found by byte scan ("-" at index 0 is a valid
     # suffix range, which index-as-truthiness would silently drop).
     var dash_idx = -1

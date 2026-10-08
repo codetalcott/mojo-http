@@ -1763,6 +1763,68 @@ lightbug_http
         closes (`_answers_the_last_request`; SPEC A30). The flag closed the
         connection as that answer landed (review record LF43).
 
+      - header.mojo (2026-10-08): `host_value_is_valid` holds a `Host`
+        field value, and an absolute-form target's authority, to
+        `uri-host [ ":" port ]` (RFC 9110 §7.2, RFC 3986 §3.2.2-3.2.3),
+        and `parse_request_headers` refuses one that is not, 400 (SPEC
+        B27). It served `Host: a b` and `Host: u@a` (review record LF64).
+
+      - header.mojo (2026-10-08): `parse_request_headers` reads the
+        `Transfer-Encoding` list as bytes, split on its commas, each member
+        compared with `chunked` under ASCII case folding, and
+        `ParsedRequestHeaders.is_chunked_body` asks the final member the
+        same way. Both used `String.lower()`, which folds by Unicode's
+        rules (KELVIN SIGN to `k`) and reads the value as UTF-8 (review
+        record LF58).
+
+      - http/request.mojo, loop/state.mojo, loop/request.mojo
+        (2026-10-08): `HTTPRequest.from_parsed` takes the server's host and
+        port, which `LoopState` splits from its address once
+        (`split_server_address`), and parses the target alone, so
+        `uri.host` and `uri.port` are the same for every target shape (SPEC
+        A37). The fast path put the whole address in
+        `host`, and the full parse read the address prefixed to the target
+        (review record LF54).
+
+      - http/chunked.mojo (2026-10-08): `HTTPChunkedDecoder.decode` has an
+        `IN_CHUNK_SIZE_END` state between the size and its extension: it
+        takes whitespace, then `;` or the CR, and refuses anything else;
+        `IN_CHUNK_EXT` refuses a control byte other than HTAB, or DEL
+        (SPEC B28). The extension state took every byte to the CR, so `5 5`
+        was a chunk of 5 (review record LF60).
+
+      - http/request.mojo (2026-10-08): `HTTPRequest.encode` and
+        `write_to` write `uri.request_uri` (`_target`), where they wrote the
+        percent-decoded `uri.path` and its query; `from_parsed` keeps the
+        target as it arrived in `request_uri`, `*` included (SPEC A38,
+        review record LF62).
+
+      - header.mojo, http/parsing.mojo, http/request.mojo,
+        http/response.mojo, server.mojo, strings.mojo, __init__.mojo,
+        loop/request.mojo (2026-10-08): dead inherited code removed, each name searched for
+        across the repository, the `m0` templates and the one application
+        outside it, then the fork compiled whole: `StatusCode` and
+        `HTTPResponse.is_redirect`, `content_length`, `connection_close`
+        and `__len__` (and `Sized`); `RequestMethod`,
+        `RequestBodyTooLargeError` and the request side's
+        `CookieParseError`; `HTTPRequest.set_connection_close`, `__eq__`
+        and `__isnot__`; `Server`'s four body-size and URI-length
+        accessors; `ProvisionPool.size`; `RequestParseError.is_incomplete`;
+        the `__getitem__` of four error variants and the `isa` of two;
+        fifteen `__str__`s that were `String(self)` on a type that is not
+        `Stringable`; and `is_complete` with the `last_len` argument of
+        `parse_request_headers` and `http_parse_request_headers`, a rescan
+        for the CRLFCRLF `find_header_end` had already framed; and
+        strings.mojo's `http`, once `uri.mojo` stopped reading it (review
+        record LF61).
+
+      - websocket.mojo, header.mojo (2026-10-08): `websocket_upgrade` and
+        `is_ws_upgrade_response` compare `Upgrade` with `websocket` by
+        `Headers.value_equals_ignore_case` (ASCII folding), where they
+        compared after `String.lower()`, which reads KELVIN SIGN as `k`
+        and an overlong `C1 B7` as `w`; `ascii_lowercase` folds a whole
+        value byte by byte for a caller that needs the string (review
+        record LF63).
       - framing.mojo (new), loop/request.mojo (2026-10-08):
         `frame_request_head` is the loop's framing decision for a request
         head -- the CRLFCRLF search, the parse, the refusal of a head the
@@ -1774,7 +1836,8 @@ lightbug_http
       - header.mojo (2026-10-08): `find_header_end` backs off three bytes
         from `search_start` and never before the buffer's first byte; it
         started AT 1 to 3, so a CRLFCRLF opening the buffer was missed by a
-        split read (review record LF66, SPEC B29).
+        split read (review record LF66, SPEC B29; A3's LF59, the same
+        defect and fix, is its duplicate).
 
       - http/parsing.mojo (2026-10-08): `http_parse_request_headers`
         refuses a CR that no LF follows before the request line (RFC 9112

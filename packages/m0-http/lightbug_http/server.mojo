@@ -49,16 +49,6 @@ struct ServerError(Movable, Writable):
         elif self.value.isa[Error]():
             writer.write(self.value[Error])
 
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
-
 
 # ServerConfig imported from lightbug_http.server_config to break circular
 # dependency between server.mojo and event_loop.mojo.
@@ -345,15 +335,6 @@ struct ProvisionError(Movable, Writable):
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write(self.value[ProvisionPoolExhaustedError])
 
-    def isa[T: AnyType](self) -> Bool:
-        return self.value.isa[T]()
-
-    def __getitem__[T: AnyType](self) -> ref [origin_of(self.value)._get_owned_interior["value"]] T:
-        return self.value[T]
-
-    def __str__(self) -> String:
-        return String(self)
-
 
 struct ProvisionPool(Movable):
     """Pool of ConnectionProvision objects with bitmask slab allocator.
@@ -451,10 +432,6 @@ struct ProvisionPool(Movable):
             count += Self._popcount64(self.bitmask[w])
         return count
 
-    def size(self) -> Int:
-        """Number of currently borrowed (in-use) slots."""
-        return self.capacity - self.available_count()
-
 
 struct Server(Movable):
     """HTTP/1.1 Server implementation."""
@@ -499,18 +476,6 @@ struct Server(Movable):
 
     def set_address(mut self, var own_address: String):
         self._address = own_address^
-
-    def max_request_body_size(self) -> Int:
-        return self.config.max_request_body_size
-
-    def set_max_request_body_size(mut self, size: Int):
-        self.config.max_request_body_size = size
-
-    def max_request_uri_length(self) -> Int:
-        return self.config.max_request_uri_length
-
-    def set_max_request_uri_length(mut self, length: Int):
-        self.config.max_request_uri_length = length
 
     def listen_and_serve[T: HTTPService](mut self, address: StringSpan, mut handler: T) raises ServerError:
         """Listen on `address` and serve it on the event loop.

@@ -159,6 +159,34 @@ def test_vendor_type_case_insensitive() raises:
     assert_true(r.accepts(VENDOR_BIN))
 
 
+def test_a_media_range_is_folded_in_ascii_only() raises:
+    """A media range is case-folded as ASCII (RFC 9110 §8.3.1) and nothing
+    more. It was lowered by Unicode `String.lower()`, which reads KELVIN
+    SIGN (U+212A) as `k`: `application/vnd.<U+212A>` named a registered
+    `application/vnd.k`, a type the client never asked for, and `C1 A2`,
+    an overlong `b`, made `application/vnd.b` of `application/vnd.<C1 A2>`
+    (review record LF63).
+
+    covers: G14
+    """
+    var kelvin = List[UInt8]()
+    kelvin.extend("application/vnd.".as_bytes())
+    kelvin.append(0xE2)
+    kelvin.append(0x84)
+    kelvin.append(0xAA)
+    var r = parse_accept(String(unsafe_from_utf8=Span(kelvin)), [String("application/vnd.k")])
+    assert_false(r.accepts("application/vnd.k"), "KELVIN SIGN read as k")
+    var overlong = List[UInt8]()
+    overlong.extend("application/vnd.".as_bytes())
+    overlong.append(0xC1)
+    overlong.append(0xA2)
+    r = parse_accept(String(unsafe_from_utf8=Span(overlong)), [String("application/vnd.b")])
+    assert_false(r.accepts("application/vnd.b"), "an overlong C1 A2 read as b")
+    r = parse_accept("Application/VND.K", [String("application/vnd.k")])
+    assert_true(r.accepts("application/vnd.k"))
+    assert_true(r.accepts("APPLICATION/VND.K"))
+
+
 def test_empty_accept() raises:
     """Empty Accept header should leave everything false."""
     var r = parse_accept("")

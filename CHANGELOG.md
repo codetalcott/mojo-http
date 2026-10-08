@@ -11,7 +11,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
 ### Fixed
 
 - **A request head is answered the same however its bytes arrive** (SPEC
-  B29). A request sent after two empty lines was refused with 400 when it
+  B29, fork review LF66; A3's LF59 is its duplicate). A request sent after
+  two empty lines was refused with 400 when it
   arrived in one read and served when a read ended between the empty
   lines: where the server looked for the end of the head depended on how
   much the read before had brought. It is refused either way now. Where a
@@ -350,6 +351,69 @@ in a minor release: `m0serve`'s flags and environment variables, the
   text says what it has always counted: requests answered, as each
   response's head lands, not requests received.
 
+- **A `Host` that names no host is refused with 400** (fork review LF64,
+  SPEC B27). Exposed: m0serve and every Mojo application. A request whose
+  `Host` was not a host name, an IP address or a bracketed IPv6 address,
+  with an optional port of digits -- `Host: a b`, `Host: u@a`, a name in
+  raw UTF-8 -- was served, and an application that reads the site from
+  `Host` read it. RFC 9112 asks for 400, which is now the answer, and so
+  is it for an absolute-form target (`GET http://.../`) whose authority
+  has the same fault. An empty `Host` is still accepted where the target
+  names no authority. A client sends an internationalized name as
+  punycode, as browsers do. An IPv6 zone ID in `Host` (`[fe80::1%25eth0]`,
+  or the raw `%eth0` older Python `http.client` builds send) is refused
+  too, deliberately: browsers, curl and Go never send one.
+
+- **A `Transfer-Encoding` that only Unicode reads as `chunked` is
+  refused** (fork review LF58, SPEC B3). Exposed: m0serve and every Mojo
+  application behind a front end that forwards a transfer coding it does
+  not know. Coding names were lowercased by Unicode's rules, which turn
+  the KELVIN SIGN (U+212A) into `k`, so `Transfer-Encoding: chun<U+212A>ed`
+  was read as `chunked` and its body framed by chunks, where every other
+  server and proxy reads an unknown coding: two framings of one request,
+  the ingredient of request smuggling. Coding names are now compared in
+  ASCII, and that request is refused with 400 like any other whose last
+  coding is not `chunked`.
+
+- **`req.uri.host` and `req.uri.port` no longer depend on the request's
+  target** (fork review LF54, SPEC A37). Exposed: a Mojo application that
+  reads them. With the server on `0.0.0.0:8973`, `GET /x` read host
+  `0.0.0.0:8973` and no port while `GET /x?q=1` read host `0.0.0.0` and
+  port 8973. Every request now reads the server's host and port. The host
+  a client asked for is the `Host` header, which for `GET http://h/p` is
+  `h`. `HTTPRequest.from_parsed` takes the server's host and port, split
+  once by `split_server_address`, where it took the whole address.
+
+- **A chunked request body whose chunk header holds something other than
+  the size and an extension is refused** (fork review LF60, SPEC B28).
+  Exposed: m0serve and every Mojo application. Whatever followed a chunk's
+  size up to the line's end was skipped, so `5 5` was read as a chunk of
+  five bytes where other servers refuse it or read 0x55, and a control
+  byte inside a chunk extension was accepted. Such a body is now refused
+  with 400. A chunk extension (`5;name=value`) is still accepted and
+  ignored, and so, as a leniency (the grammar has none), is whitespace
+  between the size and the line's end.
+
+- **`Upgrade`, `Range` and `Accept` are case-folded in ASCII only** (fork
+  review LF63, SPEC I38, J2, G14). Exposed: m0serve with WebSockets or
+  `--static`, and Mojo applications that negotiate a vendor media type.
+  Each was compared after Unicode lowercasing, which turns the KELVIN SIGN
+  (U+212A) into `k` and an overlong two-byte encoding into an ASCII letter:
+  `Upgrade: websoc<U+212A>et` was answered 101 and the connection switched
+  to WebSocket where every other server and proxy reads an unknown
+  protocol, a `Range` whose unit was such a spelling of `bytes` was served
+  as a range, and an `Accept` naming such a spelling of a registered
+  vendor type matched it. Each is now refused or ignored as other servers
+  do, and `WebSocket`, `BYTES=` and `Application/VND.X` still match.
+
+- **`HTTPRequest.encode()` writes the target it was given** (fork review
+  LF62, SPEC A38). Exposed: a Mojo application that writes a request out
+  (a proxy view, a test), and `String(req)`. The request line carried the
+  percent-decoded path: `/a%20b` went out as `/a b`, an encoded CR LF in a
+  URL as a real line break that split the request, and `OPTIONS *` as
+  `OPTIONS /`. It now carries `req.uri.request_uri`, the target as it
+  arrived or as the URL spelled it.
+
 ### Changed
 
 - **A port outside 1-65535 is refused with exit 78, from a flag or the
@@ -383,6 +447,21 @@ in a minor release: `m0serve`'s flags and environment variables, the
   list's spare capacity, pass `spare_capacity(list)` and grow the list by
   what `recv` returns.
 
+- **`HTTPRequest.from_parsed` takes the server's host and port** (fork
+  review LF54, SPEC A37). An application built with the `m0` wheel that
+  called `from_parsed(server_addr, parsed, body, max_uri_length)` passes
+  `from_parsed(host, port, parsed, body, max_uri_length)`, splitting its
+  address once with `split_server_address`. And `req.uri.host` no longer
+  carries the port on a request whose target has no query or escape:
+  with the server on `0.0.0.0:8973` it was `0.0.0.0:8973` there and
+  `0.0.0.0` elsewhere, and is `0.0.0.0` now, the port in `req.uri.port`.
+
+- **`HTTPRequest.encode()` and `write_to` write `req.uri.request_uri`**
+  (fork review LF62, SPEC A38). An application that edits a parsed
+  request's `uri.path` or `uri.query_string` and then writes the request
+  out (a proxy-style view) sets `uri.request_uri` instead: the writers no
+  longer rebuild the target from the decoded path and the query.
+
 ### Removed
 
 - **The fork's client connect path, and the last of its dead C bindings**
@@ -402,6 +481,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
   Linux's on macOS too; `lightbug_http.c.network`'s `addrinfo`, laid out
   as Linux's on every platform, `in6_addr` and `sockaddr_in6`;
   `try_writev`; and `kevent_register`, `EV_ENABLE` and `EV_DISABLE`.
+
+- **Dead parts of the fork's request, response and server types** (fork
+  review LF61). Nothing served changes. The `m0` wheel ships the fork's
+  source, so an application built with `m0` that named one of these needs
+  its own copy: `lightbug_http.StatusCode` (`lightbug_http.http.response.
+  StatusCode`), whose one reader was `HTTPResponse.is_redirect`, which left
+  303 out; `HTTPResponse.content_length()`, `connection_close()` and
+  `len(response)`; `lightbug_http.http.request.RequestMethod`,
+  `RequestBodyTooLargeError` and `CookieParseError`, which nothing raised
+  (`RequestBuildError` is `URITooLongError` or `URIParseError`);
+  `HTTPRequest.set_connection_close()` and its `==` and `is not`;
+  `Server.max_request_body_size()`, `max_request_uri_length()` and their
+  setters (set `ServerConfig`'s fields); `ProvisionPool.size()`;
+  `RequestParseError.is_incomplete()` (ask `isa[IncompleteHTTPRequestError]()`);
+  `parse_request_headers`' `last_len` argument, whose rescan for the end
+  of a head the server had already framed changed no answer; and
+  `lightbug_http.strings.http`, whose last reader went with `URI.is_http`.
 
 - **`lightbug_http.c.epoll`'s `EPOLL_CLOEXEC`, `TFD_CLOEXEC` and
   `TFD_NONBLOCK`** (fork review LF28), copies of the open flags under
@@ -426,8 +522,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `ResponseBodyReadError`; `ResponseCookieJar.from_headers`;
   `Cookie.from_set_header`, which dropped `expires`, a capitalised
   `SameSite` and any attribute it did not know; `Cookie.clear_cookie`;
-  with `lightbug_http.cookie`'s `CookieParseError` (the request side's,
-  `lightbug_http.http.request.CookieParseError`, stays),
+  with `lightbug_http.cookie`'s `CookieParseError` (the request side's
+  went too, below),
   `InvalidCookieError`, `Expiration.invalidate` and the `from_string` of
   `Expiration`, `Duration` and `SameSite`;
   `ParsedRequestHeaders.expects_body`, which missed a chunked

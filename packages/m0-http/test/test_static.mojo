@@ -436,6 +436,27 @@ def test_parse_range_shapes() raises:
     assert_equal(parse_range("bytes=abc-def", 100).kind, RANGE_NONE)
 
 
+def test_the_range_unit_is_bytes_in_ascii_case_only() raises:
+    """`bytes=` is matched with ASCII case folding and nothing else. The
+    header was lowered by Unicode `String.lower()`, which decodes an
+    overlong `C1 A2` as `b`: `<C1 A2>ytes=0-1` was served as a range where
+    any other hop reads an unknown unit and serves the whole (review record
+    LF63).
+
+    covers: J2
+    """
+    var l = List[UInt8]()
+    l.append(0xC1)
+    l.append(0xA2)
+    l.extend("ytes=0-1".as_bytes())
+    assert_equal(parse_range(String(unsafe_from_utf8=Span(l)), 100).kind, RANGE_NONE)
+    var r = parse_range("BYTES=2-5", 100)
+    assert_equal(r.kind, RANGE_VALID)
+    assert_equal(r.start, 2)
+    assert_equal(r.end, 5)
+    assert_equal(parse_range("Bytes=-10", 100).start, 90)
+
+
 def test_range_serves_206_with_content_range() raises:
     """Declared coverage.
 

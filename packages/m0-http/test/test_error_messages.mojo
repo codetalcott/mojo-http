@@ -9,7 +9,7 @@ would still compile and write `ParseEmptyAddressError()` where its message
 belongs. These tests read both forms of every conformer back.
 """
 
-from std.testing import TestSuite, assert_equal
+from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http.address import (
     ParseEmptyAddressError,
@@ -28,7 +28,17 @@ from lightbug_http.c.network import (
     InetNtopENOSPCError,
     InetPtonInvalidAddressError,
 )
-from lightbug_http.server import ProvisionPoolExhaustedError
+from lightbug_http.connection import AddressParseError, ListenerError
+from lightbug_http.header import (
+    EmptyBufferError,
+    HeaderKeyNotFoundError,
+    IncompleteHTTPRequestError,
+    InvalidHTTPRequestError,
+    RequestParseError,
+    UnsupportedHTTPRequestError,
+)
+from lightbug_http.http.parsing import HTTPParseError, IncompleteError, ParseError
+from lightbug_http.server import ProvisionError, ProvisionPoolExhaustedError, ServerError
 from lightbug_http.utils.error import CustomError
 
 
@@ -73,6 +83,48 @@ def test_every_other_error_reads_as_its_message() raises:
     _reads_as_its_message(InetNtopEAFNOSUPPORTError())
     _reads_as_its_message(InetNtopENOSPCError())
     _reads_as_its_message(InetPtonInvalidAddressError())
+
+
+def test_every_variant_error_writes_the_error_it_holds() raises:
+    """The variant errors write the one they hold: a request parse's four
+    kinds and its scanner's two, `Headers`' missing key, and the server's
+    three arms, a listener's, the provision pool's and a plain `Error`
+    (review audit A3)."""
+    assert_equal(
+        String(RequestParseError(InvalidHTTPRequestError())),
+        "InvalidHTTPRequestError: Not a valid HTTP request",
+    )
+    assert_equal(
+        String(RequestParseError(IncompleteHTTPRequestError())),
+        "IncompleteHTTPRequestError: Incomplete HTTP request",
+    )
+    assert_equal(
+        String(RequestParseError(EmptyBufferError())),
+        "EmptyBufferError: No data available in buffer",
+    )
+    assert_equal(
+        String(RequestParseError(UnsupportedHTTPRequestError())),
+        "UnsupportedHTTPRequestError: Not implemented by this server",
+    )
+    assert_true(RequestParseError(EmptyBufferError()).isa[EmptyBufferError]())
+    assert_false(RequestParseError(EmptyBufferError()).isa[InvalidHTTPRequestError]())
+    assert_equal(String(HTTPParseError(ParseError())), "ParseError: Invalid HTTP syntax")
+    assert_equal(String(HTTPParseError(IncompleteError())), "IncompleteError: Need more data")
+    assert_true(HTTPParseError(IncompleteError()).isa[IncompleteError]())
+    assert_false(HTTPParseError(IncompleteError()).isa[ParseError]())
+    assert_equal(
+        String(HeaderKeyNotFoundError()),
+        "HeaderKeyNotFoundError: Key not found in headers",
+    )
+    assert_equal(
+        String(ServerError(ListenerError(AddressParseError("no port")))),
+        String(AddressParseError.message, ": no port"),
+    )
+    assert_equal(
+        String(ServerError(ProvisionError(ProvisionPoolExhaustedError()))),
+        ProvisionPoolExhaustedError.message,
+    )
+    assert_equal(String(ServerError(Error("the loop stopped"))), "the loop stopped")
 
 
 def main() raises:

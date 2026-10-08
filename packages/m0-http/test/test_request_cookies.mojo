@@ -25,9 +25,7 @@ def request_from(raw: String) raises -> HTTPRequest:
     """
     var parsed = parse_request_headers(raw.as_bytes())
     try:
-        return HTTPRequest.from_parsed(
-            "http://localhost", parsed^, Bytes(), 8192
-        )
+        return HTTPRequest.from_parsed("localhost", None, parsed^, Bytes(), 8192)
     except:
         raise Error("fixture request failed to build")
 

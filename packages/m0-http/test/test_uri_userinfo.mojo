@@ -17,7 +17,7 @@ same bug's `://` half.
 from std.testing import assert_equal, assert_true, TestSuite
 
 from lightbug_http.header import parse_request_headers
-from lightbug_http.http import HTTPRequest
+from lightbug_http.http import HTTPRequest, split_server_address
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI, userinfo_separator
 
@@ -25,8 +25,11 @@ from lightbug_http.uri import URI, userinfo_separator
 def request_from(raw: String, server_addr: String) raises -> HTTPRequest:
     """Build a request the way the server's read path does."""
     var parsed = parse_request_headers(raw.as_bytes())
+    var host_port = split_server_address(server_addr)
     try:
-        return HTTPRequest.from_parsed(server_addr, parsed^, Bytes(), 8192)
+        return HTTPRequest.from_parsed(
+            host_port[0], host_port[1], parsed^, Bytes(), 8192
+        )
     except:
         raise Error("fixture request failed to build")
 
@@ -34,8 +37,9 @@ def request_from(raw: String, server_addr: String) raises -> HTTPRequest:
 def test_an_at_in_a_request_query_keeps_the_path_and_query() raises:
     """The finding: the path and the query reach the application whole.
 
-    `from_parsed` prefixes the server's address and parses the result, so
-    both spellings of that address are held -- with a scheme and without.
+    Both spellings of the server's address are held, with a scheme and
+    without: `from_parsed` used to prefix it to the target and parse the
+    two together (it parses the target alone since review record LF54).
 
     covers: A22
     """
