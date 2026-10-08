@@ -26,9 +26,9 @@ target as the application routes on it (`request_uri`), the protocol, and
 every header line it was handed, in the order handed, each name lowercased
 (ASCII only: `bytes.lower`). Every field is its raw bytes behind its length,
 so the digest depends on nothing but those bytes: not on a locale, an
-encoding or the platform. The echo's `target` and `host` are left out: they
-carry the server's own listening address and port, which a free port moves
-on every run. The `Host` the application reads is a header line.
+encoding or the platform. The echo's `host` is left out: it carries the
+server's own listening address and port, which a free port moves on every
+run. The `Host` the application reads is a header line.
 
 The gate compares each outcome with the case's `ours` in
 `differential_expected.json`, prints every case that differs with both
