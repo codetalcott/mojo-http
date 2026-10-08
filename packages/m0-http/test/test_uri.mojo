@@ -16,6 +16,14 @@ from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from lightbug_http.uri import URI
 
 
+def _refused(url: String) -> Bool:
+    try:
+        _ = URI.parse(url)
+    except:
+        return True
+    return False
+
+
 def test_a_query_right_after_the_authority_is_the_query_of_the_root() raises:
     """RFC 3986 §3.2 ends the authority at its first `/`, `?` or `#`, and an
     empty path is `/` (RFC 9110 §4.2.3). The authority ran to the first `/`
@@ -48,6 +56,31 @@ def test_a_query_right_after_the_authority_is_the_query_of_the_root() raises:
     assert_equal(bare.host, "h")
     assert_equal(bare.path, "/")
     assert_equal(bare.request_uri, "/")
+
+
+def test_a_port_is_digits_up_to_65535() raises:
+    """RFC 3986 §3.2.3: a port is `*DIGIT`, and a TCP port is at most 65535.
+    The parser read the digits up to the first other byte and narrowed the
+    number to 16 bits, so `:99999` was port 34463, `:65536` port 0 and
+    `:8x` port 8, and it refused the empty port the RFC allows, which means
+    the scheme's default (review record LF51).
+
+    covers: A36
+    """
+    assert_true(_refused("http://h:99999/x"))
+    assert_true(_refused("http://h:65536/x"))
+    assert_true(_refused("http://h:8x/x"))
+    assert_true(_refused("http://h:-1/x"))
+    assert_true(_refused("http://h:+80/x"))
+    assert_true(_refused("http://[::1]:8x/x"))
+    assert_equal(Int(URI.parse("http://h:65535/x").port.value()), 65535)
+    assert_equal(Int(URI.parse("http://h:0/x").port.value()), 0)
+    assert_equal(Int(URI.parse("http://h:00080/x").port.value()), 80)
+    assert_equal(Int(URI.parse("http://[::1]:8080/x").port.value()), 8080)
+    var empty = URI.parse("http://h:/x")
+    assert_equal(empty.host, "h")
+    assert_false(empty.port)
+    assert_equal(empty.path, "/x")
 
 
 def main() raises:

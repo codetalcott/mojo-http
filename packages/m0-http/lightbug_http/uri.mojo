@@ -320,22 +320,26 @@ struct URI(Copyable, Writable):
         var port: Optional[UInt16] = None
         if colon != -1:
             host = String(host_and_port[:colon])
-            var port_end = colon + 1
-            # loop through the post colon chunk until we find a non-digit character
+            # RFC 3986 §3.2.3: the port is every byte after the colon, all
+            # digits, and an empty one is the scheme's default. It was the
+            # digits up to the first other byte, narrowed to 16 bits, so
+            # `:8x` was port 8, `:99999` port 34463 and `:65536` port 0,
+            # and the empty port was refused (review record LF51).
+            var value = 0
+            var digits = 0
             for b in host_and_port[colon + 1 :]:
                 if b < PortBounds.ZERO or b > PortBounds.NINE:
-                    break
-                port_end += 1
-
-            try:
-                port = UInt16(atol(String(host_and_port[colon + 1 : port_end])))
-            except conversion_err:
-                raise URIParseError(
-                    String(
-                        "URI.parse: Failed to convert port number from a String to Integer, received: ",
-                        uri,
+                    raise URIParseError(
+                        String("URI.parse: a port is digits only: ", uri)
                     )
-                )
+                value = value * 10 + Int(b - PortBounds.ZERO)
+                if value > 65535:
+                    raise URIParseError(
+                        String("URI.parse: a port above 65535: ", uri)
+                    )
+                digits += 1
+            if digits > 0:
+                port = UInt16(value)
         else:
             host = String(host_and_port)
 

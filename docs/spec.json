@@ -234,6 +234,14 @@
       "evidence": "`test_uri.mojo:test_a_query_right_after_the_authority_is_the_query_of_the_root` (every PR) \u2014 the authority ran to the first `/` alone, so `http://h?q=1` was a host `h?q=1` with no query, and `http://h:80?q=1` lost its query to the port (review record LF50). An application reaches the parser with its own URLs, its tests building requests with `URI.parse`; the wire does not, its absolute-form target reduced to a path by the header parse first (B16)"
     },
     {
+      "id": "A36",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "`URI.parse` reads a port as every byte after the authority's colon, all digits, at most 65535, and an empty one as the scheme's default: `:8x`, `:99999` and `:65536` are refused",
+      "status": "verified",
+      "evidence": "`test_uri.mojo:test_a_port_is_digits_up_to_65535` (every PR) \u2014 the parser read the digits up to the first other byte and narrowed the number to 16 bits, so `:8x` was port 8, `:99999` port 34463 and `:65536` port 0, and it refused the empty port RFC 3986 \u00a73.2.3 allows (review record LF51). As for A35, an application's own URLs reach the rule, never the wire: the server's address is the only authority a request from a socket puts in front of its target"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

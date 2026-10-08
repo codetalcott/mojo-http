@@ -1580,6 +1580,13 @@ lightbug_http
         `h?q=1` with no query (review record LF50, SPEC A35). The inherited
         TODO asking for that normalisation is gone.
 
+      - uri.mojo (2026-10-08): `URI.parse` reads the port as every byte
+        after the authority's colon, refusing a non-digit or a value above
+        65535, and an empty port as none (RFC 3986 §3.2.3). It read the
+        digits up to the first other byte through `atol` and narrowed them
+        to 16 bits: `:8x` was 8, `:99999` 34463, `:65536` 0, and `:` raised
+        (review record LF51, SPEC A36).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

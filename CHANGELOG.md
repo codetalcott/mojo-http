@@ -48,6 +48,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the query was dropped. The path is `/` and the query `x=1`, as for
   `http://127.0.0.1/?x=1`. A request from the wire was never affected.
 
+- **`URI.parse` refuses a port that is not one** (SPEC A36). Exposed: an
+  m0 application that parses a URL with `URI.parse`, its tests' request
+  builders among them. `:99999` was read as port 34463, `:65536` as port
+  0 and `:8x` as port 8; each now raises. An empty port
+  (`http://127.0.0.1:/x`), which raised, is read as no port, the scheme's
+  default, as RFC 3986 §3.2.3 allows.
+
 - **An empty `Host` is accepted when the target names no host** (SPEC
   B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
   when the URI it requests has no authority, and every empty `Host` was
