@@ -969,6 +969,11 @@ def test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest() raises:
     keep-alive transition answers it, and the drain's read finds the EOF,
     so the last one closes (`_answers_the_last_request`).
 
+    Only a stale event reaches a slot waiting to write, which holds no read
+    registration on either backend: an EOF in the same batch as a pool
+    thread's or the executor's completion whose answer went out in part.
+    This dispatches that event to the waiting slot directly.
+
     covers: A30
     """
     var app = NoApp()
