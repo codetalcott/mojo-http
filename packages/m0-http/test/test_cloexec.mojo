@@ -145,7 +145,7 @@ def test_the_shared_page_is_its_owners_alone() raises:
     Darwin arm64 passes a variadic argument on the stack. Called with the
     mode as a third fixed argument, it put 0o600 in a register the callee
     never reads, and the page took its mode from whatever the stack held:
-    measured as 0o0 and 0o1 (review record LF17). The call now takes
+    measured as 0o0, 0o1 and 0o744 (review record LF17). The call now takes
     `_fcntl`'s shape there (`c/fcntl.mojo`). Linux passes variadic
     arguments in registers, so this bites on the macOS leg only. Several
     pages, because the stack's leftovers vary from call to call.
