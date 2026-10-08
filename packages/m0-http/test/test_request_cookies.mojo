@@ -152,6 +152,11 @@ def test_hand_built_request_still_writes_its_jar() raises:
     var wire = String(unsafe_from_utf8=req^.encode())
 
     assert_true("token=xyz" in wire)
+    # An empty jar writes no field at all: `to_header` has none to give.
+    assert_false(RequestCookieJar().to_header())
+    var bare = HTTPRequest(uri=URI.parse("http://example.com/"))
+    var bare_wire = String(unsafe_from_utf8=bare^.encode()).lower()
+    assert_false("cookie:" in bare_wire, bare_wire)
 
 
 def _raw(*bytes: Int) -> String:
