@@ -60,14 +60,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   request data and sets it with `ResponseCookieJar.set_cookie`. Each field
   was written as given, so `Cookie("theme", "dark; Domain=evil.test")`
   went out as `theme=dark; Domain=evil.test`, a cookie for another site.
-  A built cookie whose name is not a token, whose value holds a byte
-  outside RFC 6265's cookie-octets (a `;`, a space, a comma, a backslash,
-  a quote inside, a byte above 0x7E; one pair of quotes around the value
-  is allowed), or whose `Domain` or `Path` holds a `;` or a control byte,
-  is now dropped from the response, as a header holding a line break is.
-  Encode such a value before building the cookie. A `Set-Cookie` line an
-  application hands `add_raw`, which is how every WSGI and ASGI
-  application's cookies arrive, is still sent as given.
+  A built cookie whose name is not a token (`a b`, `c=d`, an empty name),
+  or whose value, `Domain` or `Path` holds a `;` or a control byte, is now
+  dropped from the response, silently, as a header holding a line break
+  is: nothing is logged. Every other value is written as before, a space,
+  a comma, quotes, a backslash or a byte above 0x7F included, so a base64
+  or JSON value goes out unchanged. A `Set-Cookie` line an application
+  hands `add_raw`, which is how every WSGI and ASGI application's cookies
+  arrive, is still sent as given.
 
 - **`NotFound(path)` no longer writes the path into its body.** Exposed:
   an m0 application that answers with `lightbug_http`'s `NotFound`, as the

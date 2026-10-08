@@ -124,41 +124,34 @@ struct ResponseCookieJar(Copyable, Sized, Writable):
 
 
 @always_inline
-def _is_cookie_octet(c: UInt8) -> Bool:
-    """RFC 6265 §4.1.1's cookie-octet: visible ASCII but DQUOTE, comma,
-    semicolon and backslash."""
-    return (
-        c == 0x21
-        or (c >= 0x23 and c <= 0x2B)
-        or (c >= 0x2D and c <= 0x3A)
-        or (c >= 0x3C and c <= 0x5B)
-        or (c >= 0x5D and c <= 0x7E)
-    )
-
-
-@always_inline
-def _is_attribute_value(text: String) -> Bool:
-    """RFC 6265 §4.1.1's `Domain` and `Path` values: any CHAR but the
-    controls (DEL among them) and `;`."""
+def _adds_no_attribute(text: String) -> Bool:
+    """Whether a cookie field holds no `;` and no control byte (C0 or DEL):
+    the two kinds of byte that end a cookie-pair or an attribute, or the
+    line itself. Every other byte, one above 0x7F among them, passes."""
     for c in text.as_bytes():
-        if c < 0x20 or c >= 0x7F or c == 0x3B:
+        if c < 0x20 or c == 0x7F or c == 0x3B:
             return False
     return True
 
 
 def built_cookie_is_well_formed(cookie: Cookie) -> Bool:
     """Whether a `Cookie` a view built can be written as one `Set-Cookie`
-    line meaning what its fields say (RFC 6265 §4.1.1).
+    line whose attributes are the ones its fields name.
 
-    The name is a token; the value is cookie-octets, optionally wrapped in
-    one pair of DQUOTEs; a `Domain` or `Path` holds no control byte and no
-    `;`. Each field was written as given, so a value from request data
-    added attributes of its own: `Cookie("theme", "dark; Domain=evil.test")`
-    went out as `theme=dark; Domain=evil.test`, a cookie for another site,
-    and a name with a space or an `=` was a different cookie in every
-    browser (review record LF55). The jar's writers drop one that is not,
-    as a header holding CR or LF is dropped (SPEC G2), never raising: the
-    view has run and its response is real.
+    The name is a token (RFC 6265 §4.1.1), and the value, the `Domain` and
+    the `Path` hold no `;` and no control byte. Each field was written as
+    given, so a value from request data added attributes of its own:
+    `Cookie("theme", "dark; Domain=evil.test")` went out as
+    `theme=dark; Domain=evil.test`, a cookie for another site, and a name
+    with a space or an `=` was a different cookie in every browser (review
+    record LF55). The jar's writers drop one that is not, silently, as a
+    header holding CR or LF is dropped (SPEC G2), never raising: the view
+    has run and its response is real.
+
+    Nothing else is refused. RFC 6265's cookie-octet leaves out the space,
+    the comma, DQUOTE, the backslash and every byte above 0x7E, but it is a
+    SHOULD for a server, and browsers store such values: a base64 or JSON
+    value, or `Note saved`, goes out as given.
     """
     var name = cookie.name.as_bytes()
     if len(name) == 0:
@@ -166,18 +159,11 @@ def built_cookie_is_well_formed(cookie: Cookie) -> Bool:
     for c in name:
         if not is_token_char(c):
             return False
-    var value = cookie.value.as_bytes()
-    var start = 0
-    var end = len(value)
-    if end >= 2 and value[0] == 0x22 and value[end - 1] == 0x22:
-        start = 1
-        end -= 1
-    for i in range(start, end):
-        if not _is_cookie_octet(value[i]):
-            return False
-    if cookie.domain and not _is_attribute_value(cookie.domain.value()):
+    if not _adds_no_attribute(cookie.value):
         return False
-    if cookie.path and not _is_attribute_value(cookie.path.value()):
+    if cookie.domain and not _adds_no_attribute(cookie.domain.value()):
+        return False
+    if cookie.path and not _adds_no_attribute(cookie.path.value()):
         return False
     return True
 
