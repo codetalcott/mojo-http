@@ -171,6 +171,11 @@ def _seed_corpus() -> List[String]:
     c.append("1e\r\n" + String("z") * 30 + "\r\n0\r\nX: y\r\n\r\n")
     c.append("ffffffffffffffff\r\nx\r\n0\r\n\r\n")
     c.append("0\r\n\r\n")
+    # B14's shapes, refused: a last chunk then a bare-LF empty line. A
+    # decoder that ends a body there is caught by the corpus pass, not by
+    # a mutation's luck (SPEC B30).
+    c.append("0\r\n\n")
+    c.append("5\r\nhello\r\n0\r\n\n")
     # LF2's two shapes (SPEC B12): a bare-LF empty line inside what the loop
     # frames as one head -- a request pipelined behind it, and a
     # `Content-Length` behind it.
