@@ -264,6 +264,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   server's host and port, split once by `split_server_address`, where it
   took the whole address.
 
+- **A chunked request body whose chunk header holds something other than
+  the size and an extension is refused** (fork review LF60, SPEC B28).
+  Exposed: m0serve and every Mojo application. Whatever followed a chunk's
+  size up to the line's end was skipped, so `5 5` was read as a chunk of
+  five bytes where other servers refuse it or read 0x55, and a control
+  byte inside a chunk extension was accepted. Such a body is now refused
+  with 400. A chunk extension (`5;name=value`) is still accepted and
+  ignored, and so is whitespace between the size and the line's end.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

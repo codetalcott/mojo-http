@@ -1662,6 +1662,13 @@ lightbug_http
         `host`, and the full parse read the address prefixed to the target
         (review record LF54).
 
+      - http/chunked.mojo (2026-10-08): `HTTPChunkedDecoder.decode` has an
+        `IN_CHUNK_SIZE_END` state between the size and its extension: it
+        takes whitespace, then `;` or the CR, and refuses anything else;
+        `IN_CHUNK_EXT` refuses a control byte other than HTAB, or DEL
+        (SPEC B28). The extension state took every byte to the CR, so `5 5`
+        was a chunk of 5 (review record LF60).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

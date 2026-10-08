@@ -474,6 +474,14 @@
       "evidence": "`test_parsing.mojo:test_an_invalid_host_value_is_rejected` (every PR) \u2014 `Host: a b` and `Host: u@a` were served, where RFC 9112 \u00a73.2 asks for 400 to a `Host` with an invalid field value; h11 and llhttp serve both, so an application routing on the name read one no client can have meant (review record LF64). A byte above ASCII is refused, raw UTF-8 included: a reg-name carries a non-ASCII name `%`-escaped or as punycode"
     },
     {
+      "id": "B28",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A chunk header is the size, then optional whitespace, then a `;`-opened extension or the CRLF (RFC 9112 \u00a77.1.1): any other byte after the size, and a control byte other than HTAB, or DEL, in an extension, makes the body invalid",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_chunk_size_line_is_the_size_then_extensions` (every PR) \u2014 the bytes after the size were skipped to the CR whatever they were, so `5 5` was a chunk of 5 where h11 and llhttp refuse it and a parser that strips whitespace reads 0x55, and an extension's NUL or VT was taken where a head's field value and a trailer's refuse them (B24) (review record LF60). Whitespace before the CRLF is still taken, as h11 takes it; each shape is held fed whole and in pieces of one to five bytes"
+    },
+    {
       "id": "C1",
       "section": "C",
       "category": "C. Connection management and denial of service",

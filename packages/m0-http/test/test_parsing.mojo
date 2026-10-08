@@ -1329,6 +1329,60 @@ def test_bare_lf_in_a_chunk_extension_is_rejected() raises:
     assert_equal(got[0], -1)
 
 
+def test_a_chunk_size_line_is_the_size_then_extensions() raises:
+    """A chunk header is `chunk-size [ chunk-ext ] CRLF`, and an extension
+    opens with `;` (RFC 9112 §7.1.1): whitespace may stand between the size
+    and the `;` or the CRLF, and nothing else. The bytes after the size
+    were skipped to the CR whatever they were, so `5 5` was read as a chunk
+    of 5 where a parser that strips whitespace reads 0x55 and h11 and
+    llhttp refuse it -- and an extension's control bytes were taken where a
+    head's field value refuses them (B24) (review record LF60).
+
+    covers: B28
+    """
+    var bad = [
+        "5 x\r\nhello\r\n0\r\n\r\n",
+        "5 5\r\nhello\r\n0\r\n\r\n",
+        "5\tx\r\nhello\r\n0\r\n\r\n",
+        "5 \t =\r\nhello\r\n0\r\n\r\n",
+        "5;a\x00b\r\nhello\r\n0\r\n\r\n",
+        "5;a\x0bb\r\nhello\r\n0\r\n\r\n",
+        "5;a=\x7f\r\nhello\r\n0\r\n\r\n",
+        "5 \nhello\r\n0\r\n\r\n",
+        "5\r\nhello\r\n0 x\r\n\r\n",
+    ]
+    for raw in bad:
+        assert_equal(_decode(raw)[0], -1, String("decoded ", repr(String(raw))))
+        for piece in range(1, 6):
+            assert_equal(
+                _feed_incrementally(String(raw), piece, consume_trailer=True)[0],
+                -1, String("decoded in pieces of ", piece, ": ", repr(String(raw))),
+            )
+    var good = [
+        "5 \r\nhello\r\n0\r\n\r\n",
+        "5\t;a=b\r\nhello\r\n0\r\n\r\n",
+        "5 ; a = b\r\nhello\r\n0\r\n\r\n",
+        "5;a=\"b\tc\"\r\nhello\r\n0\r\n\r\n",
+        "5;a;b=1\r\nhello\r\n0 ;z\r\n\r\n",
+    ]
+    for raw in good:
+        var got = _decode(raw)
+        assert_true(got[0] >= 0, String("refused ", repr(String(raw))))
+        assert_equal(got[1], 5)
+        for piece in range(1, 6):
+            var split = _feed_incrementally(String(raw), piece, consume_trailer=True)
+            assert_equal(split[0], 0, String("pieces of ", piece, ": ", repr(String(raw))))
+            assert_equal(split[1], "hello")
+    # An extension's value may carry obs-text, as a quoted-string may.
+    var high = List[UInt8]()
+    high.extend("5;a=\"".as_bytes())
+    high.append(0xC3)
+    high.append(0xA9)
+    high.extend("\"\r\nhello\r\n0\r\n\r\n".as_bytes())
+    var dec = HTTPChunkedDecoder()
+    assert_true(dec.decode(high)[0] >= 0, "refused obs-text in an extension")
+
+
 def test_empty_chunk_size_is_rejected() raises:
     var got = _decode("\r\nhello\r\n")
     assert_equal(got[0], -1)
