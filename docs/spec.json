@@ -997,7 +997,7 @@
       "id": "F23",
       "section": "F",
       "category": "F. Observability",
-      "capability": "`http_requests_total` counts requests answered, as each response's head lands, and every one is in exactly one class of `http_responses_total`, a 101 in `1xx`, so the classes sum to the total",
+      "capability": "`http_requests_total` counts requests answered, as each response's head lands, and every one with a status from 100 to 599 is in exactly one class of `http_responses_total`, a 101 in `1xx`, so for those statuses the classes sum to the total",
       "status": "verified",
       "evidence": "`test_metrics.mojo:test_every_answered_request_is_in_one_status_class` (every PR) \u2014 a 101 Switching Protocols, the answer to every WebSocket upgrade, was in the total and in no class, and the total's help text said \"received\" of a count the loop takes per response (review record LF32). The count stays per response: counting at receipt would move it into the event loop, and a count labelled by status is taken at completion, as Prometheus's Go `promhttp` counter takes it once the handler returns. A request whose connection closes before its response lands is in neither"
     },

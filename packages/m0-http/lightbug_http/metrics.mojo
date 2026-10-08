@@ -57,8 +57,10 @@ struct ServerMetrics(Movable):
 
     var requests_total: Int
     """HTTP requests answered: one per response, counted as its head lands
-    (monotonic). Each is in exactly one status class below. A request whose
-    connection closes before its response lands is not counted."""
+    (monotonic). Each with a status from 100 to 599 is in exactly one class
+    below; nothing range-checks an application's status, and one outside
+    those is in the total alone. A request whose connection closes before
+    its response lands is not counted."""
 
     var responses_1xx: Int
     """Responses with 1xx status: a 101 Switching Protocols, the answer to
