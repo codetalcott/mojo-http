@@ -1218,6 +1218,14 @@
       "evidence": "`test_cloexec.mojo:test_the_shared_page_is_its_owners_alone` (every PR) \u2014 it bites on the macOS leg only, Linux passing variadic arguments in registers; `test_a_page_that_cannot_be_sized_is_closed` holds the close. Before the fix (review record LF17) the mode went as a third fixed argument, in a register the callee never reads, and the page took its mode from the stack: measured as 0o0, 0o1 and 0o744"
     },
     {
+      "id": "G24",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "No byte string, whatever its UTF-8 shape, puts CR, LF or NUL inside a head line: every header name and value, reason phrase, `Server` value, `Set-Cookie` line and `reply.redirect` target is written by `encode`, `encode_into` and the printed form as exactly the lines G2 and G19 give, or dropped as G2 says",
+      "status": "verified",
+      "evidence": "`test_header_bytes.mojo:test_random_bytes_never_put_a_line_break_in_a_head` (every PR) \u2014 G2 and G19 as a property: 4000 seeded cases a run (the seed is printed, and `M0_HEADER_BYTES_SEED` replays one), made of bytes biased toward every UTF-8 lead, lone continuations and the continuation bytes that decode to CR, LF and NUL in an overlong form. The oracle is a model of the rules, not an absence of CR: the head must hold, line for line, the lines the rules keep (a header or cookie with a raw break in what was given is dropped, any other is written as given with only `C2`/`C3` plus a continuation turned into one latin-1 byte), the body after it must be the body given, and no line may hold CR, LF or NUL, so an extra line, an altered one and a line lost that the rules keep all fail, as does dropping everything. `poe sabotage-header-bytes` puts back LF1's decode with and without the backstops, each writer's refusal, the redirect's percent-encoding and the emptied reason phrase, and requires this test to fail for every one"
+    },
+    {
       "id": "G21",
       "section": "G",
       "category": "G. Security hardening",

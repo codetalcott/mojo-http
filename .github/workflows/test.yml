@@ -226,6 +226,15 @@ jobs:
       - name: Sabotage the chunked trailer rules
         run: uv run poe sabotage-trailers
 
+      # SPEC G24. The header-bytes property (`test_header_bytes.mojo`, run by
+      # `test-packages`) passes when nothing is wrong; this puts back LF1's
+      # overlong decode, G2's refusals and the redirect's encoding one at a
+      # time and requires that test to fail for each.
+      # `test-packages` runs the same sabotage (about 50 s); this named step is
+      # the second run, the one SPEC G24 cites, as for the trailer rules above.
+      - name: Sabotage the header-bytes property
+        run: uv run poe sabotage-header-bytes
+
       # SPEC G13. The request decoder is a pure function over bytes, so the
       # fuzz harness needs no socket: mutate a seed corpus, assert the
       # invariants, and stay replayable from --seed. `sabotage-fuzz` is the
