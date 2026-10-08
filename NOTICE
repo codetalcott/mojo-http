@@ -1651,7 +1651,7 @@ lightbug_http
         refuses a CR that no LF follows before the request line (RFC 9112
         §2.2) rather than skipping it with the empty lines and reading the
         method from the byte after it, which `is_complete` refused when a
-        read had ended after the CR (SPEC B29).
+        read had ended after the CR (review record LF67, SPEC B29).
 
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http

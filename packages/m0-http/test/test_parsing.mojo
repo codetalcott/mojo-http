@@ -666,7 +666,7 @@ def test_a_bare_cr_before_the_request_line_is_rejected() raises:
     parser skipped it with the empty lines and read the method from the
     byte after it, so `\\rGET` was served whole and refused when a read had
     ended after the CR, the incremental check before the parse refusing it
-    (found by the request fuzzer's split invariant).
+    (review record LF67, found by the request fuzzer's split invariant).
 
     covers: B29
     """
