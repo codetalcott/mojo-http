@@ -302,5 +302,30 @@ def test_recv_buffer_limit_covers_headers_plus_body() raises:
     assert_equal(sc.recv_buffer_limit(), 256 * 1024 * 1024)
 
 
+
+def test_server_config_defaults_are_the_documented_ones() raises:
+    """`ServerConfig()` is every server's starting point, and docs/RUNNING.md,
+    docs/MOJO_HOST.md and the README state its defaults: a change to one is
+    a change to what every deployment gets, so it is made here on purpose
+    or not at all."""
+    var sc = ServerConfig()
+    assert_equal(sc.max_connections, 1024)
+    assert_equal(sc.max_keepalive_requests, 1000)
+    assert_equal(sc.recv_buffer_max, 2 * 1024 * 1024)
+    assert_equal(sc.max_request_body_size, 4 * 1024 * 1024)
+    assert_equal(sc.max_request_uri_length, 8192)
+    assert_equal(sc.max_total_header_size, 32 * 1024)
+    assert_equal(sc.header_read_timeout, 10)
+    assert_equal(sc.body_read_timeout, 30)
+    assert_equal(sc.idle_timeout, 60)
+    assert_false(sc.access_log)
+    assert_false(sc.enable_metrics)
+    assert_equal(sc.sse_heartbeat_ms, 15000)
+    assert_equal(sc.app_tick_ms, 0)
+    assert_equal(sc.body_size_notice, "")
+    assert_equal(sc.body_timeout_notice, "")
+    assert_true(sc.socket_buffer_size > 0)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

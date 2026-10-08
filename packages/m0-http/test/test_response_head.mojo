@@ -27,7 +27,11 @@ from lightbug_http.c.fcntl import is_cloexec
 from lightbug_http.header import (
     Header, Headers, HeaderKey, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_TRANSFER_ENCODING,
 )
-from lightbug_http.http import HTTPResponse, enforce_bodiless_framing, is_bodiless_status
+from lightbug_http.http import (
+    HTTPResponse, enforce_bodiless_framing, is_bodiless_status, OK, BadRequest,
+    NotFound, RequestTimeout, PayloadTooLarge, URITooLong, HeadersTooLarge,
+    InternalError, NotImplemented,
+)
 from lightbug_http.io.bytes import Bytes
 
 
@@ -274,6 +278,46 @@ def test_a_server_header_the_application_set_is_the_only_one() raises:
         lines = _server_lines(wire)
         assert_equal(len(lines), 1, wire)
         assert_equal(lines[0], "server: lightbug_http", wire)
+
+
+
+def _says(r: HTTPResponse, code: Int, reason: String, body: String) raises:
+    assert_equal(r.status_code, code, reason)
+    assert_equal(r.status_text, reason)
+    assert_equal(r.headers.get(HeaderKey.CONTENT_TYPE).value(), "text/plain")
+    assert_equal(String(unsafe_from_utf8=Span(r.body_raw)), body)
+    assert_equal(
+        r.headers.get(HeaderKey.CONTENT_LENGTH).value(), String(body.byte_length())
+    )
+
+
+def test_the_server_s_own_answers_say_what_they_are() raises:
+    """The responses the loop sends itself (`common_response.mojo`): each
+    status with its RFC 9110 §15 reason phrase, a `text/plain` body that
+    says it, and a length that matches. `NotFound` and `OK` are the two an
+    application builds too."""
+    _says(BadRequest(), 400, "Bad Request", "Bad Request")
+    _says(NotFound("/x"), 404, "Not Found", "path /x not found")
+    _says(RequestTimeout(), 408, "Request Timeout", "Request Timeout")
+    _says(PayloadTooLarge(), 413, "Payload Too Large", "Payload Too Large")
+    _says(URITooLong(), 414, "URI Too Long", "URI Too Long")
+    _says(
+        HeadersTooLarge(),
+        431,
+        "Request Header Fields Too Large",
+        "Request Header Fields Too Large",
+    )
+    _says(InternalError(), 500, "Internal Server Error", "Failed to process request")
+    _says(NotImplemented(), 501, "Not Implemented", "Not Implemented")
+    var ok = OK("hi", "application/json")
+    assert_equal(ok.status_code, 200)
+    assert_equal(ok.headers.get(HeaderKey.CONTENT_TYPE).value(), "application/json")
+    assert_equal(String(unsafe_from_utf8=Span(ok.body_raw)), "hi")
+    assert_equal(
+        OK("x").headers.get(HeaderKey.CONTENT_TYPE).value(), "text/plain"
+    )
+    var wire = String(unsafe_from_utf8=Span(URITooLong().encode()))
+    assert_true(wire.startswith("HTTP/1.1 414 URI Too Long\r\n"), wire)
 
 
 def main() raises:

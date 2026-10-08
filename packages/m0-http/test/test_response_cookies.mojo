@@ -12,7 +12,7 @@ takes now, and these tests are what hold it verbatim.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.cookie import Cookie, ResponseCookieJar
+from lightbug_http.cookie import Cookie, Duration, ResponseCookieJar, SameSite
 from lightbug_http.header import Header, Headers
 from lightbug_http.http import HTTPResponse
 from lightbug_http.io.bytes import Bytes
@@ -185,6 +185,63 @@ def test_a_line_above_ascii_goes_out_latin1_like_every_header() raises:
         cookies=_latin1_jar(),
     )
     _assert_latin1_on_the_wire(r2^.encode_into(Bytes(capacity=256)))
+
+
+
+def test_a_built_cookie_writes_every_attribute() raises:
+    """`Cookie.build_header_value`: `name=value`, then each attribute that is
+    set, in one order -- `Max-Age` from a `Duration` in any units, `Domain`,
+    `Path`, `Secure`, `HttpOnly`, `SameSite` in each of its three values,
+    `Partitioned` -- and nothing for one that is not."""
+    assert_equal(Cookie("a", "1").build_header_value(), "a=1")
+    var full = Cookie(
+        "sid",
+        "v=1",
+        max_age=Duration(seconds=5, minutes=1, hours=1, days=1),
+        domain=String("example.test"),
+        path=String("/app"),
+        same_site=SameSite.strict,
+        secure=True,
+        http_only=True,
+        partitioned=True,
+    )
+    assert_equal(
+        full.build_header_value(),
+        "sid=v=1; Max-Age=90065; Domain=example.test; Path=/app; Secure;"
+        " HttpOnly; SameSite=strict; Partitioned",
+    )
+    assert_equal(
+        Cookie("a", "1", same_site=SameSite.lax).build_header_value(),
+        "a=1; SameSite=lax",
+    )
+    assert_equal(
+        Cookie("a", "1", same_site=SameSite.none, secure=True).build_header_value(),
+        "a=1; Secure; SameSite=none",
+    )
+    assert_equal(
+        Cookie("a", "", max_age=Duration(seconds=0)).build_header_value(),
+        "a=; Max-Age=0",
+    )
+
+
+def test_one_cookie_per_name_domain_and_path() raises:
+    """The jar keys a built cookie by name, domain and path (RFC 6265 §5.3
+    step 11): setting the same three again replaces the first, and a second
+    path or domain is a second cookie. No domain is the host's, no path
+    `/`."""
+    var jar = ResponseCookieJar()
+    jar.set_cookie(Cookie("a", "1"))
+    jar.set_cookie(Cookie("a", "2", path=String("/")))
+    assert_equal(len(jar), 1)
+    jar.set_cookie(Cookie("a", "3", path=String("/x")))
+    jar.set_cookie(Cookie("a", "4", domain=String("example.test")))
+    assert_equal(len(jar), 3)
+    var wire = _wire(jar^)
+    assert_equal(_count(wire, "set-cookie: "), 3)
+    assert_true("set-cookie: a=2; Path=/\r\n" in wire, wire)
+    assert_true("set-cookie: a=3; Path=/x\r\n" in wire, wire)
+    assert_true("set-cookie: a=4; Domain=example.test\r\n" in wire, wire)
+    assert_false("a=1" in wire, wire)
 
 
 def main() raises:

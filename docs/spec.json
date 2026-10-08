@@ -949,9 +949,9 @@
       "id": "F4",
       "section": "F",
       "category": "F. Observability",
-      "capability": "Prometheus exposition 0.0.4: 8 counter and gauge families, each with HELP, TYPE and a sample",
+      "capability": "Prometheus exposition 0.0.4: 9 counter and gauge families, each with HELP, TYPE and a sample",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`, which checks eight of them on the wire; `test_metrics.mojo:test_every_family_has_help_type_and_its_sample` holds all nine, `http_bus_frames_refused_total` (I40) among them, and that each sample is the field it names"
     },
     {
       "id": "F5",

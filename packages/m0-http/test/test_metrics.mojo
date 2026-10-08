@@ -136,5 +136,108 @@ def test_empty_histogram_is_well_formed() raises:
     assert_true(text.find("http_request_duration_us_count 0\n") >= 0)
 
 
+
+def test_a_status_outside_100_to_599_is_in_the_total_alone() raises:
+    """Every response is counted, and its bytes summed; a status from 100
+    to 599 lands in one class, and one outside that range -- nothing
+    range-checks an application's status -- in none, as the field's
+    docstring says. `-200 // 100` is -2, a class of none."""
+    var m = ServerMetrics()
+    m.record_response(0, 3)
+    m.record_response(99, 4)
+    m.record_response(600, 5)
+    m.record_response(999, 6)
+    m.record_response(-200, 7)
+    m.record_response(100, 8)
+    m.record_response(599, 9)
+    assert_equal(m.requests_total, 7)
+    assert_equal(m.bytes_sent_total, 42)
+    assert_equal(m.responses_1xx, 1)
+    assert_equal(m.responses_2xx, 0)
+    assert_equal(m.responses_3xx, 0)
+    assert_equal(m.responses_4xx, 0)
+    assert_equal(m.responses_5xx, 1)
+
+
+def test_every_family_has_help_type_and_its_sample() raises:
+    """A scraper drops a family whose HELP or TYPE line is missing
+    (exposition 0.0.4), and each sample must be the field it names. Every
+    counter and gauge family `to_text` renders, the bus's refusals among
+    them; `Smoke test the serve CLI` checks eight of the nine on the wire.
+
+    covers: F4
+    """
+    var m = ServerMetrics()
+    m.requests_total = 11
+    m.responses_1xx = 1
+    m.responses_2xx = 6
+    m.responses_3xx = 2
+    m.responses_4xx = 1
+    m.responses_5xx = 1
+    m.active_connections = 3
+    m.bytes_sent_total = 1234
+    m.accepts_total = 5
+    m.closes_total = 4
+    m.pool_available = 1021
+    m.pool_capacity = 1024
+    m.bus_frames_refused = 2
+    var text = m.to_text()
+    var families = [
+        ("http_requests_total", "counter", "11"),
+        ("http_active_connections", "gauge", "3"),
+        ("http_bytes_sent_total", "counter", "1234"),
+        ("http_accepts_total", "counter", "5"),
+        ("http_closes_total", "counter", "4"),
+        ("http_pool_available", "gauge", "1021"),
+        ("http_pool_capacity", "gauge", "1024"),
+        ("http_bus_frames_refused_total", "counter", "2"),
+    ]
+    for f in families:
+        var name = String(f[0])
+        assert_true(text.find("# HELP " + name + " ") >= 0, name)
+        assert_true(
+            text.find("# TYPE " + name + " " + String(f[1]) + "\n") >= 0, name
+        )
+        assert_true(text.find("\n" + name + " " + String(f[2]) + "\n") >= 0, name)
+    assert_true(text.find("# HELP http_responses_total ") >= 0)
+    assert_true(text.find("# TYPE http_responses_total counter\n") >= 0)
+    var classes = [("1xx", "1"), ("2xx", "6"), ("3xx", "2"), ("4xx", "1"), ("5xx", "1")]
+    for c in classes:
+        var line = String(
+            'http_responses_total{status="', String(c[0]), '"} ', String(c[1]), "\n"
+        )
+        assert_true(text.find(line) >= 0, line)
+    # Every line is a comment or a sample of a family above, and the text
+    # ends a line.
+    assert_true(text.endswith("\n"))
+    for line in text.split("\n"):
+        var l = String(line)
+        if l.byte_length() == 0:
+            continue
+        assert_true(l.startswith("# ") or l.startswith("http_"), l)
+
+
+def test_a_new_server_counts_nothing() raises:
+    """Every counter and gauge starts at zero, and the histogram has its six
+    bands."""
+    var m = ServerMetrics()
+    assert_equal(m.requests_total, 0)
+    assert_equal(
+        m.responses_1xx + m.responses_2xx + m.responses_3xx
+        + m.responses_4xx + m.responses_5xx,
+        0,
+    )
+    assert_equal(m.active_connections, 0)
+    assert_equal(m.bytes_sent_total, 0)
+    assert_equal(m.accepts_total, 0)
+    assert_equal(m.closes_total, 0)
+    assert_equal(m.pool_available, 0)
+    assert_equal(m.pool_capacity, 0)
+    assert_equal(m.bus_frames_refused, 0)
+    assert_equal(len(m.latency_bands), LATENCY_BUCKET_COUNT)
+    assert_equal(m.latency_sum_us, 0)
+    assert_equal(m.latency_count, 0)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
