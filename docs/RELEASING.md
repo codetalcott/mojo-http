@@ -359,6 +359,16 @@ LABEL` runs one.
 and insists the I17 probe fails; pre-release because its harness rebuilds
 `bin/m0serve` per sabotage, which is minutes of compile CI does not spend.
 
+**And `uv run poe sabotage-differential`** (SPEC B26) — undoes one
+request rule of the fork's parser or loop at a time (a bare LF ending the
+head or a field line, obs-fold, `Content-Length` beside `Transfer-Encoding`,
+a second `Host`, a coding before `chunked`, CONNECT, a 100 Continue sent
+to an HTTP/1.0 client) and requires `smoke-differential` to fail with the
+MISMATCH line of the case that shows it. Pre-release because each arm
+builds the echo server again, cold: the first whole run, its baseline and
+eight arms, took 73 s on the reference Mac (2026-10-08). An anchor that no
+longer matches is NOT APPLICABLE: re-point it with the line it names.
+
 **And `uv run poe probe-mojo-image`** — builds `deploy/mojo/Dockerfile`
 for `apps/hello` and probes it from outside, recording the floor under
 every Mojo image: the size and RSS of an app that only answers. The
