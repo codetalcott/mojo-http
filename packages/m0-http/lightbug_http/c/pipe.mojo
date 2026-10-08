@@ -24,8 +24,11 @@ def _pipe(fds: ExternalMutPointer[c_int]) -> c_int:
 def close_fd(fd: Int):
     """Close a descriptor, ignoring the result.
 
-    For unwinding a half-built pipe: the only failure close() reports is EBADF,
-    and a caller that is already abandoning the fd has nothing to do about it.
+    For a caller that is abandoning the descriptor: a half-built pipe or
+    channel, a timerfd, a hand-off that failed. Whatever close() reports
+    leaves nothing to do: EBADF means it was not open, and an EINTR or EIO
+    arrives with the number already released on Linux and macOS (see
+    `Socket.close`), so it must not be closed again.
 
     Args:
         fd: The descriptor to close.
@@ -55,9 +58,10 @@ def _write(fd: Int, buf: _OpaqueConst, count: Int) -> Int:
 struct ShutdownHandle(Movable):
     """Write end of a graceful-shutdown pipe.
 
-    The event loop watches the corresponding read end via kqueue EVFILT_READ.
-    Closing the write end sends EV_EOF to the read end, which the loop detects
-    and uses to break out cleanly after draining in-flight work.
+    The event loop registers the read end for reads (`shutdown_read_fd`,
+    on kqueue or epoll alike). `notify` makes it readable and `signal`
+    closes the write end, which reports EOF on it; the loop reads any event
+    on it as the stop, and drains in-flight work before it returns.
     """
 
     var fd: Int

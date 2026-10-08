@@ -1366,6 +1366,14 @@ lightbug_http
         `TCP_NODELAY` where it passed 6 and 1. c/kqueue.mojo now imports
         nothing from the package (review record LF28).
 
+      - c/pipe.mojo (2026-10-08): two comments the code contradicted.
+        `close_fd`'s said close() fails only with EBADF and that it
+        unwinds half-built pipes; it serves every abandoned descriptor,
+        and EINTR and EIO arrive with the number already released.
+        `ShutdownHandle`'s named kqueue alone; the read end is registered
+        on either backend, and any event on it is the stop (review record
+        LF27).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
