@@ -389,23 +389,24 @@ def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises
     server that does not check this dispatches the request as bodyless and
     leaves the body in the buffer for the next reader to find.
 
-    Each is a coding this server does not implement, so the refusal is
-    501 (SPEC B21), where it was 400; refused either way, never served.
+    The answer is RFC 9112 §6.3's MUST, 400 and a close, even for a coding
+    this server does not implement: only one before a FINAL `chunked` is
+    the 501 (SPEC B21), its body's end being known.
 
     covers: B3
     """
     assert_true(
-        _unsupported("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n")
     )
     assert_true(
-        _unsupported("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: identity\r\n\r\n")
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: identity\r\n\r\n")
     )
     # A loose substring match would let these through as "chunked".
     assert_true(
-        _unsupported("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: xchunked\r\n\r\n")
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: xchunked\r\n\r\n")
     )
     assert_true(
-        _unsupported("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked-foo\r\n\r\n")
+        _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked-foo\r\n\r\n")
     )
 
 
@@ -447,10 +448,11 @@ def test_a_transfer_coding_other_than_chunked_is_not_implemented() raises:
     """RFC 9112 §6.1: a server that receives a transfer coding it does not
     understand SHOULD answer 501. This one decodes `chunked` and nothing
     else, and `gzip, chunked` was de-chunked and handed to the application
-    still gzipped. A coding before the final `chunked`, or one alone, is
-    refused as not implemented; the malformed lists stay 400 -- `chunked`
-    out of place or twice, a list naming nothing or ending in an empty
-    member -- and the malformed answer wins where a list is both.
+    still gzipped. A coding before a final `chunked` is refused as not
+    implemented. Where `chunked` is NOT final the body's end cannot be
+    known, and §6.3's MUST is 400 whatever the codings: a lone `gzip`,
+    `chunked;x=1`, `chunked` out of place or twice, a list naming nothing
+    or ending in an empty member -- and 400 wins where a list is both.
 
     covers: B21
     """
@@ -459,9 +461,9 @@ def test_a_transfer_coding_other_than_chunked_is_not_implemented() raises:
     assert_true(_unsupported(head + "GZIP,chunked\r\n\r\n"))
     assert_true(_unsupported(head + "deflate, gzip, chunked\r\n\r\n"))
     assert_true(_unsupported(head + "gzip,,chunked\r\n\r\n"))
-    assert_true(_unsupported(head + "gzip\r\n\r\n"))
-    assert_true(_unsupported(head + "gzip, deflate\r\n\r\n"))
-    assert_true(_unsupported(head + "chunked;x=1\r\n\r\n"))
+    assert_true(_rejected(head + "gzip\r\n\r\n"))
+    assert_true(_rejected(head + "gzip, deflate\r\n\r\n"))
+    assert_true(_rejected(head + "chunked;x=1\r\n\r\n"))
     assert_true(_rejected(head + "chunked, gzip\r\n\r\n"))
     assert_true(_rejected(head + "gzip, chunked, chunked\r\n\r\n"))
     assert_true(_rejected(head + "\r\n\r\n"))

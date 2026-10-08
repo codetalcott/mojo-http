@@ -12,7 +12,7 @@ that an application proxying the request would forward.
 Now a parsed request keeps its headers as sent, with one rewrite: a body the
 loop de-chunked is a sized body, so it is described by its length and the
 final `chunked` coding is removed (no other coding reaches it: the parser
-refuses one with 501, SPEC B21). And since `Connection: close` is no longer written into
+refuses one, SPEC B21). And since `Connection: close` is no longer written into
 every HTTP/1.0 request, `connection_close()` reads the protocol itself
 (RFC 9112 §9.3): 1.0 closes unless it asked to keep alive.
 """

@@ -17,12 +17,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   This server implements no tunnel, so no application, on m0serve or the
   Mojo host, receives `CONNECT` any more.
 
-- **A request body in a transfer coding other than `chunked` is answered
+- **A chunked request body in another transfer coding as well is answered
   501 and its connection closed** (SPEC B21). `Transfer-Encoding: gzip,
   chunked` was de-chunked and the body handed to the application still
-  gzipped; a lone `gzip` (or `identity`, or any other coding) was answered
-  400. The server decodes `chunked` only, and now says so with 501, as RFC
-  9112 §6.1 asks. A list with `chunked` out of place or twice is still 400.
+  gzipped. The server decodes `chunked` only, and now says so with 501, as
+  RFC 9112 §6.1 asks. A `Transfer-Encoding` whose last coding is not
+  `chunked` (a lone `gzip`, `chunked, gzip`) is still 400, as RFC 9112
+  §6.3 requires.
 
 - **A request target that is not a URI the server serves is answered 400**
   (SPEC B19). `GET p` and `GET host:80` reached the application as a path

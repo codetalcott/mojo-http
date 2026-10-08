@@ -373,9 +373,9 @@
       "id": "B21",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "A transfer coding other than `chunked`, alone or before the final `chunked`, refused with 501 and the connection closed (RFC 9112 \u00a76.1); a list naming `chunked` out of place or twice, or ending in an empty member, stays 400",
+      "capability": "A transfer coding before the final `chunked` refused with 501 and the connection closed (RFC 9112 \u00a76.1); where `chunked` is not the final coding \u2014 a lone `gzip`, `chunked` out of place or twice, an empty last member \u2014 the answer stays 400 and a close, RFC 9112 \u00a76.3's MUST, and 400 wins where a list is both",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_a_transfer_coding_other_than_chunked_is_not_implemented` (every PR) \u2014 this server decodes `chunked` and nothing else, yet `gzip, chunked` was de-chunked and its body handed to the application still gzipped, where h11 refuses it, and a lone `gzip` was answered 400 as if malformed (review record LF39). B3's shapes are refused 501 now, not 400. `test_slot_lifecycle.mojo:test_a_transfer_coding_it_cannot_decode_is_answered_501_and_closed` holds the loop's answer, and `Smoke test pipelined requests` sends a `gzip, chunked` body with a request pipelined behind it and requires one 501 and a close"
+      "evidence": "`test_parsing.mojo:test_a_transfer_coding_other_than_chunked_is_not_implemented` (every PR) \u2014 this server decodes `chunked` and nothing else, yet `gzip, chunked` was de-chunked and its body handed to the application still gzipped, where h11 refuses it (review record LF39). B3's shapes stay 400: with `chunked` not final the body's end cannot be known. `test_slot_lifecycle.mojo:test_a_transfer_coding_it_cannot_decode_is_answered_501_and_closed` holds the loop's answer, and `Smoke test pipelined requests` sends a `gzip, chunked` body with a request pipelined behind it and requires one 501 and a close"
     },
     {
       "id": "B22",

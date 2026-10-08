@@ -579,11 +579,12 @@ def test_connect_is_answered_501_and_closed() raises:
 
 
 def test_a_transfer_coding_it_cannot_decode_is_answered_501_and_closed() raises:
-    """A body in a coding the loop does not decode is refused 501 and the
-    connection closed, the body unread (RFC 9112 §6.1). `gzip, chunked` was
-    de-chunked and served, the application reading a body still gzipped,
-    and a lone `gzip` was answered 400. `chunked, gzip` -- `chunked` out of
-    place, the framing undeterminable -- stays 400 (RFC 9112 §6.3).
+    """A body in a coding the loop does not decode, before a final
+    `chunked`, is refused 501 and the connection closed, the body unread
+    (RFC 9112 §6.1). `gzip, chunked` was de-chunked and served, the
+    application reading a body still gzipped. Where `chunked` is not final
+    -- a lone `gzip`, `chunked, gzip` -- the framing is undeterminable and
+    the answer is 400 and a close (RFC 9112 §6.3).
 
     covers: B21
     """
@@ -598,8 +599,8 @@ def test_a_transfer_coding_it_cannot_decode_is_answered_501_and_closed() raises:
     var lone = _exchange([
         "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: gzip\r\n\r\nhello"
     ])
-    assert_true("501 not implemented" in lone[0], lone[0])
-    assert_true(lone[1], "the slot stayed open after the 501")
+    assert_true("400 bad request" in lone[0], lone[0])
+    assert_true(lone[1], "the slot stayed open after the 400")
     var misplaced = _exchange([
         "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked, gzip\r\n\r\n"
     ])

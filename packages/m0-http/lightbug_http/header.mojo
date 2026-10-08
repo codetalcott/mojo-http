@@ -145,9 +145,10 @@ struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
 @fieldwise_init
 struct UnsupportedHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when a well-formed request asks for what this server
-    does not implement: the `CONNECT` method, or a transfer coding other
-    than `chunked`. The event loop answers it 501 (Not Implemented, RFC
-    9110 §15.6.2) and closes, where a malformed request is answered 400."""
+    does not implement: the `CONNECT` method, or a transfer coding before
+    the final `chunked`. The event loop answers it 501 (Not Implemented,
+    RFC 9110 §15.6.2) and closes, where a malformed request is answered
+    400."""
 
     def write_to[W: Writer, //](self, mut writer: W):
         writer.write("UnsupportedHTTPRequestError: Not implemented by this server")
@@ -1457,17 +1458,18 @@ def parse_request_headers(
         # `is_chunked_body`, so with no Content-Length either the request
         # was dispatched as bodyless while its body stayed in the buffer:
         # the same two-hops-two-framings disagreement as the rest of this
-        # block, and the one member of the family left open. A list that
-        # names no coding at all, or ends in an empty member, is 400.
-        if last_te.byte_length() == 0:
+        # block, and the one member of the family left open. The answer is
+        # a MUST: 400, then close -- a lone `gzip`, a list naming no coding
+        # or ending in an empty member, `chunked;x=1`.
+        if last_te != "chunked":
             raise RequestParseError(InvalidHTTPRequestError())
-        # Any coding but `chunked` -- alone, or before the final `chunked`
-        # -- is one this server does not implement, and a server that
-        # receives a transfer coding it does not understand SHOULD answer
-        # 501 (RFC 9112 §6.1; SPEC B21). `gzip, chunked` was de-chunked and
-        # its body handed to the application still gzipped (review record
-        # LF39), and a lone `gzip` was refused as if malformed.
-        if last_te != "chunked" or other_coding:
+        # With `chunked` final, any coding before it is one this server
+        # does not implement, and a server that receives a transfer coding
+        # it does not understand SHOULD answer 501 (RFC 9112 §6.1; SPEC
+        # B21): the body's end is known, its content is not decodable here.
+        # `gzip, chunked` was de-chunked and its body handed to the
+        # application still gzipped (review record LF39).
+        if other_coding:
             raise RequestParseError(UnsupportedHTTPRequestError())
 
     # The two versions this server speaks are literals; formatting an Int
