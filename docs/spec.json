@@ -223,7 +223,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "`Socket.receive` and `TCPConnection.read` into a buffer with no room past its length read what is waiting, growing the buffer, and report EOF only for the peer's",
       "status": "verified",
-      "evidence": "`test_socket_spans.mojo:test_a_receive_into_a_full_buffer_reads_what_is_waiting` (every PR) \u2014 the buffer's spare capacity was lent to `recv` as it stood, and a `recv` into zero bytes returns 0, the count EOF returns, so a full buffer, or a `Bytes()` never given a capacity, raised EOF with the peer's bytes still waiting (review record LF34). The test reads through both, each on a real socket pair, and requires a read after the peer has closed to raise EOF still. The server reads through the event loop and never called these; an application, and the tests' client, did. `test_socket_spans.mojo:test_a_receive_at_the_peers_eof_raises_eof` holds the other side: the peer's EOF, after its bytes, is `EOF` and leaves the buffer alone"
+      "evidence": "`test_socket_spans.mojo:test_a_receive_into_a_full_buffer_reads_what_is_waiting` (every PR) \u2014 the buffer's spare capacity was lent to `recv` as it stood, and a `recv` into zero bytes returns 0, the count EOF returns, so a full buffer, or a `Bytes()` never given a capacity, raised EOF with the peer's bytes still waiting (review record LF34). The test reads through both, each on a real socket pair, and requires a read after the peer has closed to raise EOF still. The server reads through the event loop and never called these; an application, and the tests' client, did"
     },
     {
       "id": "A27",
@@ -258,54 +258,6 @@
       "evidence": "`test_slot_lifecycle.mojo:test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest` (every PR) \u2014 two pipelined requests and a half-close behind a send buffer filled first, so the first answer waits, and the EOF's read event dispatched to the waiting slot. The read path set `should_close` for the EOF, and the connection closed as that answer landed, the request behind it unanswered. Only a stale event reached such a slot: a slot waiting to write holds no read registration on either backend, so the EOF had to be in the same batch as a pool thread's or the executor's completion that left its answer part sent (`--blocking-threads`, ASGI); answers the loop ran itself were not affected. Found by lane L of the 2026-10-07 fork review"
     },
     {
-      "id": "A33",
-      "section": "A",
-      "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "A listen address names its port: `localhost` alone is refused as missing its port separator, as `127.0.0.1` alone is, not served on a port the kernel chose; `localhost:PORT` is the loopback's port, IPv6's under `tcp6`",
-      "status": "verified",
-      "evidence": "`test_ipv6.mojo:test_an_address_without_a_port_is_refused` (every PR) \u2014 `parse_address` read `localhost` with no colon as the loopback at port 0, so `Server.listen_and_serve(\"localhost\")` listened on a port no client was told of (review record LF45). Reached by an address a Mojo application passes the server itself; m0serve and the Mojo host join the port they are given to the host. `test_ipv6.mojo:test_each_malformed_address_is_refused_by_its_own_rule` holds every other refusal in its own rule's words"
-    },
-    {
-      "id": "A34",
-      "section": "A",
-      "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "A listen address's port is ASCII digits naming 0 to 65535: a sign, whitespace or an underscore is refused, not read the way `Int()` reads it",
-      "status": "verified",
-      "evidence": "`test_ipv6.mojo:test_a_port_is_decimal_digits` (every PR) \u2014 the port was read by `Int()`, which takes a sign, whitespace around the number and underscores between its digits, so `127.0.0.1:-0` listened on a port the kernel chose and `:+80`, `: 80` and `:8_0` on port 80 (review record LF46). Reached by an address a Mojo application passes the server itself; m0serve and the Mojo host write the port they parsed, as digits"
-    },
-    {
-      "id": "A35",
-      "section": "A",
-      "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "`URI.parse` ends a URL's authority at its first `/`, `?` or `#` (RFC 3986 \u00a73.2), one rule for the host and the userinfo scan: a query right after the host is the query of `/`, a fragment there is dropped, and the host and port are read without either",
-      "status": "verified",
-      "evidence": "`test_uri.mojo:test_a_query_right_after_the_authority_is_the_query_of_the_root` (every PR) \u2014 the authority ran to the first `/` alone, so `http://h?q=1` was a host `h?q=1` with no query, and `http://h:80?q=1` lost its query to the port (review record LF50); `test_the_authority_ends_at_a_hash_too` holds the `#`, which the host read ignored while the userinfo scan stopped at it, so `http://h#x` was a host `h#x`. An application reaches the parser with its own URLs, its tests building requests with `URI.parse`; the wire does not, its absolute-form target reduced to a path by the header parse first (B16)"
-    },
-    {
-      "id": "A36",
-      "section": "A",
-      "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "`URI.parse` reads a port as every byte after the authority's colon, all digits, at most 65535, and an empty one as the scheme's default: `:8x`, `:99999` and `:65536` are refused",
-      "status": "verified",
-      "evidence": "`test_uri.mojo:test_a_port_is_digits_up_to_65535` (every PR) \u2014 the parser read the digits up to the first other byte and narrowed the number to 16 bits, so `:8x` was port 8, `:99999` port 34463 and `:65536` port 0, and it refused the empty port RFC 3986 \u00a73.2.3 allows (review record LF51). As for A35, an application's own URLs reach the rule, never the wire: the server's address is the only authority a request from a socket puts in front of its target"
-    },
-    {
-      "id": "A37",
-      "section": "A",
-      "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "A parsed request's URI names the server the same way whatever its target's shape: `uri.host` and `uri.port` are the address the server listens on, split once per loop, and `uri.request_uri` the request target as it arrived (an absolute-form one reduced to its path, B16, and `*` included, A38); the authority a client names is the `Host` header's",
-      "status": "verified",
-      "evidence": "`test_request_as_sent.mojo:test_the_uri_names_the_server_the_same_way_whatever_the_target` (every PR) \u2014 they depended on the target: with the loop on `0.0.0.0:8973`, `GET /x` read host `0.0.0.0:8973` and no port and `GET /x?q=1` host `0.0.0.0` and port 8973, so a target's query or escape, or an absolute-form target's scheme case, changed what an application read (review record LF54). No server code reads the two on a parsed request: the gateway's `SERVER_NAME` and `SERVER_PORT` are its configuration's, and `HTTP_HOST` is the `Host` line. The one application that does, `apps/request_echo`, echoes `uri.host` for B25's corpus, whose fingerprint leaves it out (it carries the free port of the run). The target is parsed alone, no longer behind the address"
-    },
-    {
-      "id": "A38",
-      "section": "A",
-      "category": "A. HTTP/1.1 framing and connection lifecycle",
-      "capability": "A request's writers (`encode`, `write_to`) send its target as it arrived or as its URL spelled it, `uri.request_uri`, escapes and all and `*` included, never the percent-decoded path",
-      "status": "verified",
-      "evidence": "`test_request_as_sent.mojo:test_a_request_is_written_with_its_target_as_received` (every PR) \u2014 they rebuilt the target from the decoded `uri.path` and the query: `/a%20b` went out as `/a b`, an encoded CR LF in a URL as the bytes themselves, splitting the request line, and `OPTIONS *` as `OPTIONS /` (review record LF62). An application that edits a parsed request's `uri.path` or `uri.query_string` before writing it out sets `uri.request_uri` instead; nothing in the tree writes a request to a wire"
-    },
-    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
@@ -325,9 +277,9 @@
       "id": "B3",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "`Transfer-Encoding` whose last coding is not `chunked` rejected, coding names compared in ASCII",
+      "capability": "`Transfer-Encoding` whose last coding is not `chunked` rejected",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected` (every PR) \u2014 the names were lowercased by Unicode's rules, and `chun<U+212A>ed`, the KELVIN SIGN in the place of `k`, was framed as chunked where every other hop reads an unknown coding; the list is split on its bytes, so a member that is not UTF-8 ends at its comma (review record LF58). `test_is_chunked_body_asks_the_final_coding_in_ascii` holds the loop's own question the same way"
+      "evidence": "`test_parsing.mojo:test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected` (every PR)"
     },
     {
       "id": "B4",
@@ -399,7 +351,7 @@
       "category": "B. Request smuggling (CWE-444)",
       "capability": "A bare LF anywhere in a request head (the request line, a field line, the empty line that ends the head, an empty line before the request line) rejected with 400",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_a_bare_lf_in_a_request_head_is_rejected` (every PR) \u2014 the parser ended a head at an empty line that was a bare LF while the loop framed it by the first CRLFCRLF, so on `apps/hello` a request pipelined behind a field line's CRLF and then a bare LF got no answer, and a `Content-Length` after the bare LF was never read, its body answered as a request. `Smoke test pipelined requests` sends both shapes and requires one 400 and a close. Beside the rule sits a backstop, in the loop's framing decision since B29: a head the parser ends anywhere but its CRLFCRLF frame is answered 400 and closed. The strict parser never reaches it, and `Sabotage the decoder invariants the fuzzer checks` gates it by reverting the parser's rule with it and without it. With it, the decision stays a refusal and only the parser's own invariant fails (the wire probe passes on it alone too); without it, LF2 as it shipped, the fuzzer's framing invariant fails. Removed alone, it fails that step twice: the first arm is caught by the framing invariant instead of its own, a miss, and the second finds no backstop to remove"
+      "evidence": "`test_parsing.mojo:test_a_bare_lf_in_a_request_head_is_rejected` (every PR) \u2014 the parser ended a head at an empty line that was a bare LF while the loop framed it by the first CRLFCRLF, so on `apps/hello` a request pipelined behind a field line's CRLF and then a bare LF got no answer, and a `Content-Length` after the bare LF was never read, its body answered as a request. `Smoke test pipelined requests` sends both shapes and requires one 400 and a close. Beside the rule sits an UNGATED backstop: the loop answers 400 and closes when the parser's `bytes_consumed` is not its own CRLFCRLF frame. With the strict parser it is unreachable, and no gate fails with it removed alone; sabotage showed it working, the probe passing on it alone with the parser's rule reverted"
     },
     {
       "id": "B13",
@@ -453,9 +405,9 @@
       "id": "B19",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "A request target outside RFC 9112 \u00a73.2's forms, or holding a byte above ASCII, refused with 400: origin-form opens with `/`, absolute-form is `http` or `https`, `*` is OPTIONS's alone, and reaches the application as `*`, and authority-form CONNECT's (B18); a `%` escape is left to the application",
+      "capability": "A request target outside RFC 9112 \u00a73.2's forms, or holding a byte above ASCII, refused with 400: origin-form opens with `/`, absolute-form is `http` or `https`, `*` is OPTIONS's alone and authority-form CONNECT's (B18); a `%` escape is left to the application",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_a_request_target_must_take_one_of_the_four_forms` (every PR) \u2014 `GET p` and `GET h:80` were served, the application reading a path with no leading slash, and `/caf<0xE9>` was served where h11 and llhttp both refuse it, the application reading a path that is not UTF-8 (review record LF37). `Smoke test the hello server` sends four targets holding such a byte and requires a 400 for each. `GET *` was served too, as h11 and llhttp serve it; RFC 9112 \u00a73.2.4 gives `*` to OPTIONS alone. An accepted `OPTIONS *` reaches the application as `*`, its path and its request target, where both were `/` and an application could not tell a server-wide OPTIONS from one on the root (review record LF41), and m0serve's root mount takes it, where no mount matched a target without a leading `/`. WSGI's `PATH_INFO` and ASGI's `path` and `raw_path` are then `*`, as gunicorn and uvicorn's h11 server hand it on, which no CI step sends: the claim rests on the bridge building all three from `req.uri.path` (`bridge.mojo`'s environ and scope builders) and on a by-hand probe through `bin/m0serve` (2026-10-08), where the access log recorded `*` and each bare application answered it with its own 404, and `/` with its root; `test_request_as_sent.mojo:test_a_server_wide_options_reaches_the_application_as_an_asterisk` and `test_offload.mojo:test_the_root_mount_takes_a_server_wide_options` hold the two halves, and `test_views.mojo:test_a_server_wide_options_routes_as_a_path_of_one_segment` how the view table routes it: as a path of one segment, so a `/:slug` route answers its preflight (204 with the route's `Allow`) and one registered for OPTIONS runs with `*` as its parameter. A `#` is accepted as any other visible byte, as h11 accepts it, and reaches the application where it was sent, in the path or the query, never cut away as a fragment (review record LF53, `test_uri.mojo:test_a_hash_in_a_target_is_data`). The bytes are the target scanner's rule and the forms `parse_request_headers`'; `test_a_byte_above_ascii_in_the_request_target_is_rejected` holds the bytes at every offset across the scanner's widths, and that such a target is invalid before its line ends. Every other VCHAR is still accepted, as h11 accepts it: browsers send braces, a vertical bar and a caret unescaped in a query"
+      "evidence": "`test_parsing.mojo:test_a_request_target_must_take_one_of_the_four_forms` (every PR) \u2014 `GET p` and `GET h:80` were served, the application reading a path with no leading slash, and `/caf<0xE9>` was served where h11 and llhttp both refuse it, the application reading a path that is not UTF-8 (review record LF37). `Smoke test the hello server` sends four targets holding such a byte and requires a 400 for each. `GET *` was served too, as h11 and llhttp serve it; RFC 9112 \u00a73.2.4 gives `*` to OPTIONS alone. An accepted `OPTIONS *` reaches the application as `/` today, so it cannot tell a server-wide OPTIONS from one on the root (review record LF41). The bytes are the target scanner's rule and the forms `parse_request_headers`'; `test_a_byte_above_ascii_in_the_request_target_is_rejected` holds the bytes at every offset across the scanner's widths, and that such a target is invalid before its line ends. Every other VCHAR is still accepted, as h11 accepts it: browsers send braces, a vertical bar and a caret unescaped in a query"
     },
     {
       "id": "B20",
@@ -503,47 +455,15 @@
       "category": "B. Request smuggling (CWE-444)",
       "capability": "The differential corpus: requests that probe framing and field parsing (line endings, folding, field names, the request line, `Host`, `Content-Length`, `Transfer-Encoding`, chunked bodies and trailers, `Expect`, `Connection`, pipelining), each sent on a connection of its own and half-closed, are answered as `scripts/differential_expected.json` freezes them: the requests the application saw, each by its method, its body length and a fingerprint of its target, protocol and header lines, every other response by its status, and the close; and the server serves a plain GET after them",
       "status": "verified",
-      "evidence": "`Smoke test the differential request corpus` (every PR) \u2014 the fork review's D0 run sent these cases to this server, to h11 0.16 and to Node 24's llhttp (2026-10-07), and where this server was wrong it was fixed (B12-B24). The table freezes its answers since, both references' beside them for reading a row, and a note on each case where this server differs from both on purpose (B11, B16, B18, B19, B27, an incomplete head at EOF). A change to the parser or the loop that moves an answer, or changes which request the application is handed, fails naming the case; one that moves it on purpose re-freezes the row with `poe freeze-differential`, which asks the references too (their echoes are in `scripts/`, never a CI dependency). A server that stops closing a half-closed connection fails at the third such case in a row, at 1 s each. No answer is frozen as a known divergence: `Host: a b` and `Host: u@a`, served until review record LF64 as both references serve them, are refused 400 (B27) and re-frozen so. The server is `apps/request_echo`, a test-only echo whose application names every request it is handed"
+      "evidence": "`Smoke test the differential request corpus` (every PR) \u2014 the fork review's D0 run sent these cases to this server, to h11 0.16 and to Node 24's llhttp (2026-10-07), and where this server was wrong it was fixed (B12-B24). The table freezes its answers since, both references' beside them for reading a row, and a note on each case where this server differs from both on purpose (B11, B16, B18, B19, an incomplete head at EOF). A change to the parser or the loop that moves an answer, or changes which request the application is handed, fails naming the case; one that moves it on purpose re-freezes the row with `poe freeze-differential`, which asks the references too (their echoes are in `scripts/`, never a CI dependency). A server that stops closing a half-closed connection fails at the third such case in a row, at 1 s each. Two answers are frozen although they look wrong, each marked a known divergence: `Host: a b` and `Host: u@a` are served, as both references serve them, where RFC 9112 \u00a73.2 asks for 400 on a `Host` whose value is invalid (review record LF64, whose fix re-freezes both rows). The server is `apps/request_echo`, a test-only echo whose application names every request it is handed"
     },
     {
       "id": "B26",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "The differential corpus notices a request rule undone: the bare-LF head end (B12, with the check that the two framers agree), the bare-LF field-line end (B12), the obs-fold refusal (B13), the refusal of `Content-Length` beside `Transfer-Encoding` (B1), of a second `Host` (B10) and of a `Host` value that is no uri-host (B27), the 501 for a coding before `chunked` (B21), the CONNECT refusal (B18) and the HTTP/1.0 client spared a 100 Continue (RFC 9110 \u00a710.1.1), each reverted alone, fail B25's smoke naming the case that shows it",
+      "capability": "The differential corpus notices a request rule undone: the bare-LF head end (B12, with the check that the two framers agree), the bare-LF field-line end (B12), the obs-fold refusal (B13), the refusal of `Content-Length` beside `Transfer-Encoding` (B1), of a second `Host` (B10), the 501 for a coding before `chunked` (B21), the CONNECT refusal (B18) and the HTTP/1.0 client spared a 100 Continue (RFC 9110 \u00a710.1.1), each reverted alone, fail B25's smoke naming the case that shows it",
       "status": "verified",
-      "evidence": "`sabotage-differential` (pre-release) \u2014 each rule is held on every pull request by a gate of its own, its row's (A11 for the 100 Continue); this shows the corpus holds it too, so a re-frozen table cannot quietly accept what a rule refuses. The parser's bare-LF head end alone is not caught, and is not meant to be: the loop refuses a head its two framers end at different bytes, so that arm reverts both. Pre-release because each arm builds the echo server again, cold: the first whole run, its baseline and eight arms, took 73 s on the reference Mac (2026-10-08) and caught all eight; B27's arm, added with review record LF64, caught `host_with_space` run alone"
-    },
-    {
-      "id": "B27",
-      "section": "B",
-      "category": "B. Request smuggling (CWE-444)",
-      "capability": "A `Host` field value that is not `uri-host [ \":\" port ]` (RFC 9110 \u00a77.2) refused with 400: the host a bracketed IP literal, or a reg-name of RFC 3986's unreserved bytes, sub-delims and `%` escapes (an IPv4 address is one), and the port digits; an empty host before a port refused, and the empty value left to B20. An absolute-form target's authority, which replaces `Host` (B16), is held to the same shape",
-      "status": "verified",
-      "evidence": "`test_parsing.mojo:test_an_invalid_host_value_is_rejected` (every PR) \u2014 `Host: a b` and `Host: u@a` were served, where RFC 9112 \u00a73.2 asks for 400 to a `Host` with an invalid field value; h11 and llhttp serve both, so an application routing on the name read one no client can have meant (review record LF64). A byte above ASCII is refused, raw UTF-8 included: a reg-name carries a non-ASCII name `%`-escaped or as punycode. An IPv6 zone ID is refused, deliberately, percent-encoded (`[fe80::1%25eth0]`) and raw (`%eth0`, which older CPython `http.client` builds put in `Host`): browsers, curl and Go never send one, and RFC 3986's IP literal has none"
-    },
-    {
-      "id": "B28",
-      "section": "B",
-      "category": "B. Request smuggling (CWE-444)",
-      "capability": "A chunk header is the size, then a `;`-opened extension, whitespace allowed before the `;` (RFC 9112 \u00a77.1.1's BWS), or the CRLF: any other byte after the size, and a control byte other than HTAB, or DEL, in an extension, makes the body invalid; whitespace before a bare CRLF is a leniency kept",
-      "status": "verified",
-      "evidence": "`test_parsing.mojo:test_a_chunk_size_line_is_the_size_then_extensions` (every PR) \u2014 the bytes after the size were skipped to the CR whatever they were, so `5 5` was a chunk of 5 where h11 and llhttp refuse it and a parser that strips whitespace reads 0x55, and an extension's NUL or VT was taken where a head's field value and a trailer's refuse them (B24) (review record LF60). Whitespace before a bare CRLF (`5 rn`) is no part of the grammar, whose BWS stands only before a `;`: it is still taken, as h11 takes it and llhttp refuses it (B25's `chunk_size_trailing_space`). Each shape is held fed whole and in pieces of one to five bytes"
-    },
-    {
-      "id": "B29",
-      "section": "B",
-      "category": "B. Request smuggling (CWE-444)",
-      "capability": "The event loop frames a request head by one pure decision (`frame_request_head`): the head end it frames by is where the parser stops over those bytes, or the request is refused; a head split across reads is framed as it is whole; a refusal stays one, and a framed request is unchanged, whatever arrives behind it",
-      "status": "verified",
-      "evidence": "`Fuzz the request decoder` (every PR) \u2014 the loop asked its two framers, `find_header_end` and the parser, inline, and when they disagreed (B12) the bytes between were lost. The decision is now one function, run over the unmutated corpus fed a byte at a time and over 20k mutations split at random reads, each call told how far the last scanned, as the loop calls it. It found two heads the loop answered differently split and whole. With one to three bytes scanned the terminator search began at them, so two empty lines and then a request, refused 400 whole, were served when a read ended inside the first CRLFCRLF (review record LF66; A3's LF59, the same defect and fix, is its duplicate); `find_header_end` now backs off three bytes and never before the first, `test_slot_lifecycle.mojo:test_empty_lines_before_a_request_are_answered_alike_split_or_whole` holds it on the loop, split after one, two and three bytes, and `test_parsing.mojo:test_a_head_is_framed_at_its_first_crlfcrlf_whatever_the_resume_point` holds the search at every terminator offset from every resume point. And the parser skipped a bare CR before the request line as if it were an empty line, reading the method from the byte after it, so a lone CR before GET was served whole and refused split (review record LF67); RFC 9112 \u00a72.2 makes a bare CR invalid, and it is refused at the byte after it (`test_parsing.mojo:test_a_bare_cr_before_the_request_line_is_rejected`). `Sabotage the decoder invariants the fuzzer checks` reverts LF66's fix and drops the byte before a read's new bytes from the bare-LF scan, each failing the split invariant, and reverts LF2 twice, as B12 says. LF67's fix is its unit test's alone: the split invariant caught its revert only through `is_complete`, a rescan of a head already framed, and with that gone (review record LF61) a split read and a whole one take the same path, so its revert serves both alike and the fuzzer has no difference to see"
-    },
-    {
-      "id": "B30",
-      "section": "B",
-      "category": "B. Request smuggling (CWE-444)",
-      "capability": "A chunked request body fed to its connection's one decoder a read at a time decodes as it does whole (the same answer, the same body, the bytes behind it kept for the next request), and a body the decoder completes ends every framing line in CRLF, never a bare LF",
-      "status": "verified",
-      "evidence": "`Fuzz the request decoder` (every PR) \u2014 a walker of the fuzzer's own reads each completed body line by line against its decoded bytes, and the decoder is fed in the loop's layout, `[decoded][pending][new]`, at random reads and a byte at a time, over the mutations and over the body of each request the framing decision frames as chunked (B29). `Sabotage the decoder invariants the fuzzer checks` ends a body at a bare-LF empty trailer line (B14's defect, which `poe sabotage-trailers` puts back against the unit tests) and refuses a read that ends just after a chunk's data, and each fails its invariant"
+      "evidence": "`sabotage-differential` (pre-release) \u2014 each rule is held on every pull request by a gate of its own, its row's (A11 for the 100 Continue); this shows the corpus holds it too, so a re-frozen table cannot quietly accept what a rule refuses. The parser's bare-LF head end alone is not caught, and is not meant to be: the loop refuses a head its two framers end at different bytes, so that arm reverts both. Pre-release because each arm builds the echo server again, cold: the first whole run, its baseline and eight arms, took 73 s on the reference Mac (2026-10-08) and caught all eight"
     },
     {
       "id": "C1",
@@ -650,12 +570,12 @@
       "evidence": "`test_backend_fds.mojo:test_a_destroyed_backend_closes_what_it_opened` (every PR) \u2014 a backend that armed two timers is let go, and the process must hold exactly the descriptors it held before; with the kqueue backend's close removed it fails naming the multiplexer still open. Neither backend closed anything (review record LF21): every `Server.serve_nonblocking` that returned, and every loop thread of the host's that ended, left its multiplexer open for the life of the process. `test_epoll_reports_the_registration_that_failed` holds the other half on the Linux leg: `add_read` fell back from ADD to MOD on any errno, so an ADD refused with ELOOP was reported as MOD's ENOENT; it falls back on EEXIST alone, and `add_write_oneshot` from MOD to ADD on ENOENT alone. Run in the m0lin Linux container (aarch64) both pass; with the any-errno fallback restored the second fails on MOD's `No such file or directory (errno 2)`, and with the epoll destructor's timerfd closes removed the first fails, 9 descriptors open against 7"
     },
     {
-      "id": "C16",
+      "id": "C17",
       "section": "C",
       "category": "C. Connection management and denial of service",
-      "capability": "A loop's backend reports what it was asked to watch, on each platform: a readable descriptor is one read event naming it; bytes left unread are reported again on kqueue (level triggered) and not on epoll (edge triggered), and a re-add reports them on both; a deleted read interest reports nothing; a one-shot write fires once; a timer fires once with its ident, and one deleted first never fires; a writer that has gone is EV_EOF on the reader; and a wait in nanoseconds waits",
+      "capability": "A buffer a large request or response grew past 64 KiB (or past the configured read size, if that is larger) is not pinned to its slot: when the connection closes it goes back to the allocator, and connections on any slot reuse it, so repeated bursts of uploads on fresh slots level off rather than adding a burst's worth each time: the footprint settles at 1.12-1.40 times one burst's cost; the slot's next connection starts from one read, as a slot's first does, and buffers no larger than that stay with their slot. The process keeps what its allocator keeps: the memory is reused, not handed back to the system",
       "status": "verified",
-      "evidence": "`test_platform.mojo:test_the_backend_reports_what_it_was_asked_to_watch` (every PR) \u2014 the kqueue and epoll wrappers under the loop are inherited code the loop's own tests reached only through whole requests (review audit A3). Over a pipe, which both multiplexers watch; on macOS on the Unit tests job's macOS leg, epoll on its Linux one"
+      "evidence": "`Smoke test that a closed connection's buffers serve other slots` (every PR) \u2014 `scripts/slot_buffer_probe.py` holds 64 keep-alive 4 MiB uploads open on apps/hello, whose footprint (macOS's physical footprint, read through `proc_pid_rusage`; VmRSS plus VmSwap on Linux) must rise at least 128 MiB, the control that the buffers grew; it closes them, then three times fills every slot used so far with connections that complete one small request and idle, and lands 64 more uploads on slots never used. The footprint above its start may never pass 2.5 times what the first round cost. Before the fix (review record LF25) a closing slot cleared its buffer, which kept the capacity, and a slot is never rebuilt: 64 uploads left apps/hello at 431-448 MB resident against 14 MB after 64 small requests, and each round on other slots added about 400 MB, 3.62-3.88 times one round after three; with it, 1.12-1.40. One burst's resident size is not the measure: the allocator (TCMalloc, in Mojo's runtime on macOS) keeps what is freed, and 283-309 MB stayed resident after one burst with the fix, reused by the next. `test_slot_lifecycle.mojo:test_a_closed_slot_gives_back_a_grown_buffer` holds each buffer's capacity at the close, with `test_a_closed_slot_keeps_an_ordinary_buffer` and `test_a_closed_slot_keeps_buffers_within_its_configured_size` beside it. Sabotaged four ways (no shed, which fails the smoke and the test; the encode buffer's shed alone removed; the threshold dropped to zero; the threshold blind to the configured size), each caught"
     },
     {
       "id": "D1",
@@ -743,7 +663,7 @@
       "category": "D. Graceful shutdown and restart",
       "capability": "`SO_REUSEPORT` off by default: a second bind fails loudly instead of silently sharing the port",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 five attempts a second apart, so a restart racing the previous process's drain still succeeds; the second server must exit 1 naming the address, print no ready banner, and leave the first answering. The opt-in `ListenConfig.reuse_port` remains for a deliberate handoff between two processes that both mean to listen; no shipped path enables it, because workers and threads all accept from ONE listener bound before the fork. `test_ipv6.mojo:test_a_listener_shares_its_port_only_when_asked` reads the options off the socket: `SO_REUSEADDR` set, `SO_REUSEPORT` only under `reuse_port`"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 five attempts a second apart, so a restart racing the previous process's drain still succeeds; the second server must exit 1 naming the address, print no ready banner, and leave the first answering. The opt-in `ListenConfig.reuse_port` remains for a deliberate handoff between two processes that both mean to listen; no shipped path enables it, because workers and threads all accept from ONE listener bound before the fork"
     },
     {
       "id": "D7",
@@ -1029,9 +949,9 @@
       "id": "E30",
       "section": "E",
       "category": "E. Process and worker model",
-      "capability": "A Mojo host application has a command line, and its precedence is m0serve's: flag over `M0_` variable over default. `serve` lays the flags over the `AppConfig` it is handed \u2014 `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`, `--access-log`, `--sse-heartbeat-ms`, `--app-tick-ms`, `--max-keepalive-requests`, `--qos`, `--spawn-workers` (read, and refused as its variable is), `--doctor` and `--help` \u2014 so `serve(AppConfig())` is still an application's whole `main`; a flag marks its count as chosen exactly as its variable does; a flag that names one of the four fields a `ServerConfig` shares outranks tuning the application set in code, and one that was not given leaves it alone; the overlay is idempotent, which is what lets an application that prints its own address take `host_config()` and be served the same. Strict where the environment is lenient: an unknown flag, a missing or unreadable value, a value on a boolean or any positional is the usage and exit 2 (a port outside 1\u201365535 is read, and refused with 78 by E31's first check, as its variable is), before anything is bound \u2014 an application's own settings stay in its own variables",
+      "capability": "A Mojo host application has a command line, and its precedence is m0serve's: flag over `M0_` variable over default. `serve` lays the flags over the `AppConfig` it is handed \u2014 `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`, `--access-log`, `--sse-heartbeat-ms`, `--app-tick-ms`, `--max-keepalive-requests`, `--qos`, `--spawn-workers` (read, and refused as its variable is), `--doctor` and `--help` \u2014 so `serve(AppConfig())` is still an application's whole `main`; a flag marks its count as chosen exactly as its variable does; a flag that names one of the four fields a `ServerConfig` shares outranks tuning the application set in code, and one that was not given leaves it alone; the overlay is idempotent, which is what lets an application that prints its own address take `host_config()` and be served the same. Strict where the environment is lenient: an unknown flag, a missing or unreadable value, a value on a boolean, a port outside 1\u201365535 or any positional is the usage and exit 2, before anything is bound \u2014 an application's own settings stay in its own variables",
       "status": "verified",
-      "evidence": "`Smoke test the Mojo host's flags and doctor` (every PR) \u2014 `apps/host_check` answers `/health` on the port a flag names while `M0_PORT` names another, which nothing then answers on; an access-log flag logs the request; two workers and two pooled loops asked for by flag are what the banner and the log show; and the first two hold in BOTH application shapes, `serve(host_config())` and `serve(AppConfig())`, because the first applies the command line before `serve` sees it and hid whether `serve` does (two sabotages MISSED until the second shape was run). Five unreadable command lines each exit 2 with the usage and the reason, served and doctored alike, and `--help` exits 0 having started nothing. The unit halves are `test_host_flags.mojo:test_a_flag_outranks_its_variable_which_outranks_the_default` and `test_what_cannot_be_read_is_a_usage_error`, beside the idempotence, `*_set` and given-flag tests. `sabotage-host` (pre-release) serves the environment under a command line it read, withholds a given flag from the `ServerConfig`, prints the gate app's banner from the environment alone, ignores an unknown flag, leaves a count unmarked, leaves the base URL on the old port, and overwrites the application's tuning with a flag nobody gave. The design: [flags-and-a-doctor-for-the-host](notes/flags-and-a-doctor-for-the-host.md)"
+      "evidence": "`Smoke test the Mojo host's flags and doctor` (every PR) \u2014 `apps/host_check` answers `/health` on the port a flag names while `M0_PORT` names another, which nothing then answers on; an access-log flag logs the request; two workers and two pooled loops asked for by flag are what the banner and the log show; and the first two hold in BOTH application shapes, `serve(host_config())` and `serve(AppConfig())`, because the first applies the command line before `serve` sees it and hid whether `serve` does (two sabotages MISSED until the second shape was run). Six unreadable command lines each exit 2 with the usage and the reason, served and doctored alike, and `--help` exits 0 having started nothing. The unit halves are `test_host_flags.mojo:test_a_flag_outranks_its_variable_which_outranks_the_default` and `test_what_cannot_be_read_is_a_usage_error`, beside the idempotence, `*_set` and given-flag tests. `sabotage-host` (pre-release) serves the environment under a command line it read, withholds a given flag from the `ServerConfig`, prints the gate app's banner from the environment alone, ignores an unknown flag, leaves a count unmarked, leaves the base URL on the old port, and overwrites the application's tuning with a flag nobody gave. The design: [flags-and-a-doctor-for-the-host](notes/flags-and-a-doctor-for-the-host.md)"
     },
     {
       "id": "E31",
@@ -1039,7 +959,7 @@
       "category": "E. Process and worker model",
       "capability": "A Mojo host application's doctor: the binary prints the configuration it WOULD serve as one JSON object \u2014 the last line of its stdout, in m0serve's report shape (`m0_http.doctor.Report`: `ok`, `exit`, grouped facts, `checks` each carrying its `fix`) \u2014 and exits with the code serving would exit with for the same arguments, having bound nothing. The report gives the resolved configuration, where each value came from (`flag`, `env` or `default`), the topology it adds up to and what the application declares (`max_workers`, `max_threads`, `page_slots`). The code agrees by construction and is gated anyway: `host_checks` is the ONE description of what the host refuses, in the order it refuses, the server exiting 78 on its first failure and the doctor listing them all and exiting on the same one \u2014 so a count that cannot be served is one refusal whether a flag or a variable brought it, never a usage error for one and a 78 for the other. An application's own checks run in its `main` before `serve` and so fire identically under the doctor. NOT covered, because finding out means doing it: the bind, and the application's `make`",
       "status": "verified",
-      "evidence": "`Smoke test the Mojo host's flags and doctor` (every PR) \u2014 twenty-three configurations of `apps/host_check` are each run both ways and the two exit codes must agree with each other and the table: five served (0, really served and drained), eleven refused (78: both modes by flag and by one flag and one variable, zero loops, zero workers, a port of 0 by variable and by flag and one of 70000 by flag, a host with an IPv6 zone, more workers and more loops than the application declares, exec'd workers), one tripping two refusals at once where both must name the first, five usage errors (2, no report), and the application's own refusal (78 both ways, the doctor never reached); every report's `exit` and `ok` match its process, a refusal's first failed check is the named one and its `detail` and `fix` are the line the server printed, no doctor run logs a listener, and doctoring a port a live server holds exits 0. The unit halves are `test_host_flags.mojo:test_the_doctor_leaves_with_the_servers_code`, `test_the_checks_are_whole_and_in_the_order_serve_refuses` and `test_a_count_that_cannot_be_served_is_a_refusal_not_a_usage_error`. The port is the list's first check: a port outside 1-65535 is refused with 78 whichever of `--port` and `M0_PORT` named it, where the variable's 0 served on a port the kernel chose and the flag's was a usage error (review record LF56, `test_a_port_out_of_range_is_refused_whichever_way_it_came`). The second is the address: one the listener would refuse, such as a `%` in the host, is refused with 78 there, where the server failed at the bind with 1 and the doctor said 0 (review record LF48, `test_a_listen_address_that_does_not_parse_is_refused`). `sabotage-host` (pre-release) has the doctor ignore what the application declares, always exit 0, and start the server anyway; has the server refuse by its last failed check; and makes zero loops a usage error for the flag alone"
+      "evidence": "`Smoke test the Mojo host's flags and doctor` (every PR) \u2014 twenty configurations of `apps/host_check` are each run both ways and the two exit codes must agree with each other and the table: five served (0, really served and drained), seven refused (78: both modes by flag and by one flag and one variable, zero loops, zero workers, more workers and more loops than the application declares, exec'd workers), one tripping two refusals at once where both must name the first, six usage errors (2, no report), and the application's own refusal (78 both ways, the doctor never reached); every report's `exit` and `ok` match its process, a refusal's first failed check is the named one and its `detail` and `fix` are the line the server printed, no doctor run logs a listener, and doctoring a port a live server holds exits 0. The unit halves are `test_host_flags.mojo:test_the_doctor_leaves_with_the_servers_code`, `test_the_checks_are_whole_and_in_the_order_serve_refuses` and `test_a_count_that_cannot_be_served_is_a_refusal_not_a_usage_error`. `sabotage-host` (pre-release) has the doctor ignore what the application declares, always exit 0, and start the server anyway; has the server refuse by its last failed check; and makes zero loops a usage error for the flag alone"
     },
     {
       "id": "E32",
@@ -1085,9 +1005,9 @@
       "id": "F4",
       "section": "F",
       "category": "F. Observability",
-      "capability": "Prometheus exposition 0.0.4: 9 counter and gauge families, each with HELP, TYPE and a sample",
+      "capability": "Prometheus exposition 0.0.4: 8 counter and gauge families, each with HELP, TYPE and a sample",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`, which checks eight of them on the wire; `test_metrics.mojo:test_every_family_has_help_type_and_its_sample` holds all nine, `http_bus_frames_refused_total` (I40) among them, and that each sample is the field it names"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`"
     },
     {
       "id": "F5",
@@ -1127,7 +1047,7 @@
       "category": "F. Observability",
       "capability": "An `M0_*` value m0serve cannot read is ignored out loud: the environment stays lenient, and one line at startup names the variable, its value and what was used instead, printed by the process that read it and not again by a worker that re-executes",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `M0_MAX_BODY=64mb` and `M0_PORT=80eighty` under `--doctor` each named with the value used, the doctor's cap at its default; a readable value named by nothing; and `M0_QOS=yes` reported once under two spawned workers. It was silent, so `M0_MAX_BODY=64mb` would have kept 4 MB unnoticed. `test_cli.mojo:test_from_env_names_a_number_too_large_for_an_int` holds a number too large for an `Int`, which wrapped (`M0_PORT=18446744073709551696` served on port 80) and is now one more value read as unreadable and named (review record LF49)"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `M0_MAX_BODY=64mb` and `M0_PORT=80eighty` under `--doctor` each named with the value used, the doctor's cap at its default; a readable value named by nothing; and `M0_QOS=yes` reported once under two spawned workers. It was silent, so `M0_MAX_BODY=64mb` would have kept 4 MB unnoticed"
     },
     {
       "id": "F20",
@@ -1152,14 +1072,6 @@
       "capability": "`http_requests_total` counts requests answered, as each response's head lands, and every one with a status from 100 to 599 is in exactly one class of `http_responses_total`, a 101 in `1xx`, so for those statuses the classes sum to the total",
       "status": "verified",
       "evidence": "`test_metrics.mojo:test_every_answered_request_is_in_one_status_class` (every PR) \u2014 a 101 Switching Protocols, the answer to every WebSocket upgrade, was in the total and in no class, and the total's help text said \"received\" of a count the loop takes per response (review record LF32). The count stays per response: counting at receipt would move it into the event loop, and a count labelled by status is taken at completion, as Prometheus's Go `promhttp` counter takes it once the handler returns. A request whose connection closes before its response lands is in neither"
-    },
-    {
-      "id": "F25",
-      "section": "F",
-      "category": "F. Observability",
-      "capability": "The listening line `ListenConfig.listen` prints, a Mojo host application's startup line, names the address the listener is bound to: asked for port 0, it names the port the kernel chose",
-      "status": "verified",
-      "evidence": "`test_ipv6.mojo:test_the_banner_names_the_port_bound` (every PR) \u2014 read from a pipe standing in for stdout, for `127.0.0.1:0` and `[::1]:0`. It named the port it was asked for, `http://127.0.0.1:0`, a port nothing can connect to; reached by a port of 0 an application passes `Server.listen_and_serve` or `ListenConfig.listen` itself, such as one not on the Mojo host (review record LF47); m0serve and the Mojo host refuse a port of 0 (LF56)"
     },
     {
       "id": "F8",
@@ -1261,9 +1173,9 @@
       "id": "G2",
       "section": "G",
       "category": "G. Security hardening",
-      "capability": "A response header or `Set-Cookie` line whose name or value carries CR, LF or NUL is dropped, and a clean one beside it is not, on every response the server writes; a cookie a Mojo view builds (`Cookie`) is dropped too, as silently, when its name is not a token (RFC 6265 \u00a74.1.1) or its value, `Domain` or `Path` holds a `;` or a control byte, so no field of it adds an attribute or ends the line, and every other value (base64, JSON, a space, a byte above 0x7F) is written as given, while an application's own line still goes out as given (G3)",
+      "capability": "A response header or `Set-Cookie` line whose name or value carries CR, LF or NUL is dropped, and a clean one beside it is not, on every response the server writes",
       "status": "verified",
-      "evidence": "`test_response_splitting.mojo:test_an_injected_header_is_dropped_and_its_neighbours_kept` (every PR) \u2014 `Headers.write_latin1_to` and the cookie jar's writer, judged on the bytes each encoder writes, with `test_an_injected_cookie_line_is_dropped_and_the_others_sent` beside it and a position sweep of the scanner. The refusal lived only in m0-wsgi until 2026-09-28, so a head built in Mojo -- a view's, the Mojo host's, a `--mount X=mojo` pool thread's -- went out uninspected. `Conformance test the WSGI bridge` still sends an injecting WSGI route over a socket and requires the clean header and none of the injected ones. `test_reply.mojo:test_redirect_percent_encodes_a_control_byte_in_its_target` holds the constructor's side: `reply.redirect` percent-encodes every C0 control byte and DEL in its target, as `url_for` encodes one, so a `Location` a view built from request data is kept rather than dropped, and an ordinary target is byte-identical. `test_response_cookies.mojo:test_a_built_cookie_that_would_break_its_line_is_dropped` holds the built cookie's rule on both writers, dropping a `;` or a control byte in each field and a name that is not a token, and keeping a base64, a JSON-ish and a spaced value: `Cookie(\"theme\", \"dark; Domain=evil.test\")` went out as `theme=dark; Domain=evil.test`, a cookie for another site, and a name with a space or an `=` as some other cookie (review record LF55)"
+      "evidence": "`test_response_splitting.mojo:test_an_injected_header_is_dropped_and_its_neighbours_kept` (every PR) \u2014 `Headers.write_latin1_to` and the cookie jar's writer, judged on the bytes each encoder writes, with `test_an_injected_cookie_line_is_dropped_and_the_others_sent` beside it and a position sweep of the scanner. The refusal lived only in m0-wsgi until 2026-09-28, so a head built in Mojo -- a view's, the Mojo host's, a `--mount X=mojo` pool thread's -- went out uninspected. `Conformance test the WSGI bridge` still sends an injecting WSGI route over a socket and requires the clean header and none of the injected ones. `test_reply.mojo:test_redirect_percent_encodes_a_control_byte_in_its_target` holds the constructor's side: `reply.redirect` percent-encodes every C0 control byte and DEL in its target, as `url_for` encodes one, so a `Location` a view built from request data is kept rather than dropped, and an ordinary target is byte-identical."
     },
     {
       "id": "G19",
@@ -1296,14 +1208,6 @@
       "capability": "Two request cookie jars are equal when they hold the same names with the same values, whatever their number and order",
       "status": "verified",
       "evidence": "`test_request_cookies.mojo:test_jars_holding_the_same_cookies_are_equal` (every PR) \u2014 `RequestCookieJar.__eq__` compared every cookie of one jar with every cookie of the other, so a jar of two or more was unequal even to a jar parsed from the same field (review record LF30). The test holds a changed value, a changed name and a missing cookie unequal too. The server never compares jars; an application with `==` did"
-    },
-    {
-      "id": "G28",
-      "section": "G",
-      "category": "G. Security hardening",
-      "capability": "A request cookie reaches a Mojo application as its client sent it: each pair split at its first `=`, its name trimmed and case-sensitive, its value kept whole, double quotes included (RFC 6265 \u00a74.1.1, as draft-ietf-httpbis-rfc6265bis-22 reads it), a pair with no `=` or no name skipped, and a repeated name's last value kept",
-      "status": "verified",
-      "evidence": "`test_request_cookies.mojo:test_a_quoted_value_keeps_its_quotes` (every PR) \u2014 an inherited TODO asked for the quotes to be stripped; the bis draft says they are part of the value, so an application reads back what it set (review record LF53). `test_the_pairs_edges` holds the empty field, the empty pairs, the nameless pair, the whitespace beside `=` and the repeated name. A WSGI or ASGI application reads the raw `Cookie` header instead (`HTTP_COOKIE`)"
     },
     {
       "id": "G4",
@@ -1391,7 +1295,7 @@
       "category": "G. Security hardening",
       "capability": "Parser fuzzing in CI",
       "status": "verified",
-      "evidence": "`Fuzz the request decoder` (every PR) \u2014 20k mutations of a seed corpus against `parse_request_headers`, the loop's framing decision (B29) and the chunked decoder (B30), replayable from the seed it prints; asserts determinism, that an INVALID request cannot become valid by appending, that a parsed one is unchanged by bytes after it, and that the decoder's counts index its buffer. `poe fuzz-request-long` is the release sweep (8 seeds x 250k). The run refuses to pass on thin coverage, and `Sabotage the decoder invariants the fuzzer checks` breaks each invariant so \"no findings\" cannot mean \"checks nothing\""
+      "evidence": "`Fuzz the request decoder` (every PR) \u2014 20k mutations of a seed corpus against `parse_request_headers` and the chunked decoder, replayable from the seed it prints; asserts determinism, that an INVALID request cannot become valid by appending, that a parsed one is unchanged by bytes after it, and that the decoder's counts index its buffer. `poe fuzz-request-long` is the release sweep (8 seeds x 250k). The run refuses to pass on thin coverage, and `Sabotage the decoder invariants the fuzzer checks` breaks each invariant so \"no findings\" cannot mean \"checks nothing\""
     },
     {
       "id": "G14",
@@ -1399,7 +1303,7 @@
       "category": "G. Security hardening",
       "capability": "A request carrying bytes that are not UTF-8 \u2014 in the target, a static-mount path, a cookie, `Accept`, `If-None-Match`, `Range` or a JSON body a number is read from \u2014 is answered, never trapped, and so is one whose bytes come back out in a RENDERED FRAGMENT an application broadcasts: every slice of such a string on the serving path is a byte-span slice, which has no codepoint-boundary assert",
       "status": "verified",
-      "evidence": "`test_unquote.mojo:test_invalid_utf8_beside_an_escape_does_not_trap` (every PR) \u2014 `unquote` sliced its input as a `String` and one `GET /?x=<0x80>%41` killed the process on the loop thread, every app alike; the cookie jar (parsed for every request), the static mount, the negotiator and the ETag matcher had the same shape (and the negotiator, the static mount's `Range` and the WebSocket `Upgrade` folded such bytes into ASCII with Unicode `String.lower()`, an overlong `C1 A2` read as `b`, so a request matched a vendor type it never named; they fold in ASCII now, `test_content_negotiation.mojo:test_a_media_range_is_folded_in_ascii_only`, review record LF63), and so did the SSE line splitter and frame decoder, which bytes from outside the request reach too \u2014 a `--pg-listen` payload from a database that converts nothing, trapping worker 0's listener thread \u2014 each pinned by a test in its own file that declares this row, and a trap ends the test process, so the gate is those files passing at all. `m0-datastar`'s `split_data_lines` is a deliberate copy of that splitter, kept dependency-free rather than imported, and needed the same fix one release later \u2014 reached not by a request directly but by a RENDERED FRAGMENT, which is where an application puts request data: a todo whose text carries a newline then a lone 0x80 byte, HTML escaping having left both alone, trapped the LOOP thread and killed the whole server on one unauthenticated POST. Since B19 a request TARGET holding a byte above ASCII is refused 400 by the target scanner before any slice, so the target's sites \u2014 `unquote` reached from the target, and the absolute-form reduction \u2014 are unreachable from the wire rather than gated there: `Smoke test the hello server` sends four such targets and requires the 400 for each, and the cookie jar's raw byte beside them and requires an answer. The decoder's wire case is a form body, `title=<0x80>%41`, which `Smoke test the fragment notes app` posts and requires answered with the server still up; `Smoke test the notes API` reaches the static mount with `%80`, which decodes to the byte, and the header sites with the raw byte, and requires the same; and `Smoke test the Datastar todo demo` posts such a todo and requires the server to answer it, stay up and keep rendering. `m0-core`'s `parse_json_number` cut the number out of a body with a `String` slice, so `{\"x\":1<0x80>}` trapped; no app called it until `apps/blobs`' drop view, and `Smoke test the blobs demo` posts that body and requires an answer and a healthy server"
+      "evidence": "`test_unquote.mojo:test_invalid_utf8_beside_an_escape_does_not_trap` (every PR) \u2014 `unquote` sliced its input as a `String` and one `GET /?x=<0x80>%41` killed the process on the loop thread, every app alike; the cookie jar (parsed for every request), the static mount, the negotiator and the ETag matcher had the same shape, and so did the SSE line splitter and frame decoder, which bytes from outside the request reach too \u2014 a `--pg-listen` payload from a database that converts nothing, trapping worker 0's listener thread \u2014 each pinned by a test in its own file that declares this row, and a trap ends the test process, so the gate is those files passing at all. `m0-datastar`'s `split_data_lines` is a deliberate copy of that splitter, kept dependency-free rather than imported, and needed the same fix one release later \u2014 reached not by a request directly but by a RENDERED FRAGMENT, which is where an application puts request data: a todo whose text carries a newline then a lone 0x80 byte, HTML escaping having left both alone, trapped the LOOP thread and killed the whole server on one unauthenticated POST. Since B19 a request TARGET holding a byte above ASCII is refused 400 by the target scanner before any slice, so the target's sites \u2014 `unquote` reached from the target, and the absolute-form reduction \u2014 are unreachable from the wire rather than gated there: `Smoke test the hello server` sends four such targets and requires the 400 for each, and the cookie jar's raw byte beside them and requires an answer. The decoder's wire case is a form body, `title=<0x80>%41`, which `Smoke test the fragment notes app` posts and requires answered with the server still up; `Smoke test the notes API` reaches the static mount with `%80`, which decodes to the byte, and the header sites with the raw byte, and requires the same; and `Smoke test the Datastar todo demo` posts such a todo and requires the server to answer it, stay up and keep rendering. `m0-core`'s `parse_json_number` cut the number out of a body with a `String` slice, so `{\"x\":1<0x80>}` trapped; no app called it until `apps/blobs`' drop view, and `Smoke test the blobs demo` posts that body and requires an answer and a healthy server"
     },
     {
       "id": "G15",
@@ -1431,7 +1335,7 @@
       "category": "G. Security hardening",
       "capability": "No byte string, whatever its UTF-8 shape, puts CR, LF or NUL inside a head line: every header name and value, reason phrase, `Server` value, `Set-Cookie` line and `reply.redirect` target is written by `encode`, `encode_into` and the printed form as exactly the lines G2 and G19 give, or dropped as G2 says",
       "status": "verified",
-      "evidence": "`test_header_bytes.mojo:test_random_bytes_never_put_a_line_break_in_a_head` (every PR) \u2014 G2 and G19 as a property: 4000 seeded cases a run (the seed is printed, and `M0_HEADER_BYTES_SEED` replays one), made of bytes biased toward every UTF-8 lead, lone continuations and the continuation bytes that decode to CR, LF and NUL in an overlong form. The oracle is a model of the rules, not an absence of CR: the head must hold, line for line, the lines the rules keep (a header or cookie with a raw break in what was given is dropped, and so is a built cookie whose value holds a `;` or another control byte, G2's rule for built cookies since review record LF55; any other is written as given with only `C2`/`C3` plus a continuation turned into one latin-1 byte), the body after it must be the body given, and no line may hold CR, LF or NUL, so an extra line, an altered one and a line lost that the rules keep all fail, as does dropping everything. `poe sabotage-header-bytes` puts back LF1's decode with and without the backstops, each writer's refusal, LF55's built-cookie drop, the redirect's percent-encoding and the emptied reason phrase, and requires this test to fail for every one"
+      "evidence": "`test_header_bytes.mojo:test_random_bytes_never_put_a_line_break_in_a_head` (every PR) \u2014 G2 and G19 as a property: 4000 seeded cases a run (the seed is printed, and `M0_HEADER_BYTES_SEED` replays one), made of bytes biased toward every UTF-8 lead, lone continuations and the continuation bytes that decode to CR, LF and NUL in an overlong form. The oracle is a model of the rules, not an absence of CR: the head must hold, line for line, the lines the rules keep (a header or cookie with a raw break in what was given is dropped, any other is written as given with only `C2`/`C3` plus a continuation turned into one latin-1 byte), the body after it must be the body given, and no line may hold CR, LF or NUL, so an extra line, an altered one and a line lost that the rules keep all fail, as does dropping everything. `poe sabotage-header-bytes` puts back LF1's decode with and without the backstops, each writer's refusal, the redirect's percent-encoding and the emptied reason phrase, and requires this test to fail for every one"
     },
     {
       "id": "G21",
@@ -1565,9 +1469,9 @@
       "id": "I38",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
-      "capability": "The upgrade's `Connection` header is matched as a token list, so `notupgrade` is refused and `keep-alive, Upgrade` accepted, its `Upgrade` is `websocket` in ASCII case folding and nothing else, and an HTTP/1.0 upgrade request is answered 400 (section 4.2.1)",
+      "capability": "The upgrade's `Connection` header is matched as a token list, so `notupgrade` is refused and `keep-alive, Upgrade` accepted, and an HTTP/1.0 upgrade request is answered 400 (section 4.2.1)",
       "status": "verified",
-      "evidence": "`test_websocket.mojo:test_connection_token_is_matched_whole_not_as_a_substring` (every PR) \u2014 with `test_http_1_0_upgrade_is_400`, and `test_the_upgrade_token_is_websocket_in_ascii_case_only`: `Upgrade` was compared after Unicode `String.lower()`, which reads KELVIN SIGN (U+212A) as `k` and an overlong `C1 B7` as `w`, so `websoc<U+212A>et` was upgraded, 101, where every other hop reads an unknown protocol, and a 101 naming it switched the connection (review record LF63)"
+      "evidence": "`test_websocket.mojo:test_connection_token_is_matched_whole_not_as_a_substring` (every PR) \u2014 with `test_http_1_0_upgrade_is_400`"
     },
     {
       "id": "I7",
@@ -1794,6 +1698,14 @@
       "evidence": "`test_slot_lifecycle.mojo:test_a_close_landing_leaves_a_suspended_sockets_reads_alone` (every PR) \u2014 over a registration kept as epoll keeps it, a suspended socket's Close lands through the write-ready path and the linger adds no read interest; one not suspended lingers reading. `_ws_linger` armed the reads `_stream_idle` refuses a suspended socket, so the socket undid its own backpressure and the parked queue grew with what the client sent next. Found by the 2026-10-07 fork review"
     },
     {
+      "id": "I42",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A fragmented WebSocket message reaches the application in the buffer it was assembled in, every byte in place, rather than copied out of it, and a socket's parser keeps none of its buffers once the socket closes",
+      "status": "verified",
+      "evidence": "`test_websocket.mojo:test_an_assembled_message_is_moved_out_whole` (every PR) \u2014 three fragments, the last split across two reads, arrive whole, and the message must sit at the address the parser assembled it at, the parser keeping no capacity after; `test_a_closed_sockets_parser_lets_go_of_its_buffers` beside it resets a parser holding a message mid-assembly and a frame mid-arrival. Before the fix (review record LF25) the message was copied out and the original cleared, which kept that message's capacity, up to the message cap, until the next fragmented message on the slot; and closing the socket cleared both buffers the same way, carrying them into the slot's next socket until its first fragmented message or first whole frame replaced them. Each half reverted fails its test at an assertion"
+    },
+    {
       "id": "J1",
       "section": "J",
       "category": "J. Static file serving",
@@ -1821,9 +1733,9 @@
       "id": "J2",
       "section": "J",
       "category": "J. Static file serving",
-      "capability": "Byte range served as 206 with `Content-Range`, its `bytes=` unit matched in ASCII case only",
+      "capability": "Byte range served as 206 with `Content-Range`",
       "status": "verified",
-      "evidence": "`test_static.mojo:test_range_serves_206_with_content_range` (every PR) \u2014 with `test_the_range_unit_is_bytes_in_ascii_case_only`: the header was lowered by Unicode `String.lower()`, which decodes an overlong `C1 A2` as `b`, so `<C1 A2>ytes=0-1` was served as a range where any other hop serves the whole (review record LF63)"
+      "evidence": "`test_static.mojo:test_range_serves_206_with_content_range` (every PR)"
     },
     {
       "id": "J3",
@@ -2295,7 +2207,7 @@
       "category": "M. Deployment and operations",
       "capability": "Flags over environment over defaults",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`. A port outside 1-65535, from `--port` or the environment, is refused by m0serve's first check (`m0_wsgi.checks`, `port`) with 78 before the bind, where `M0_PORT=0` served on a port the kernel chose and printed `:0` and `--port 0` was a usage error (review record LF56): `test_cli.mojo:test_a_port_out_of_range_is_refused_whichever_way_it_came`, and `Smoke test --doctor against the server's own exit codes` runs both, each both ways"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--host`, `--port`, `--workers`, `--threads`, `--blocking-threads`"
     },
     {
       "id": "M3",
@@ -2319,7 +2231,7 @@
       "category": "M. Deployment and operations",
       "capability": "Usage errors exit 2, startup errors exit 1, refusals exit 78",
       "status": "verified",
-      "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR) \u2014 a listen address the listener would refuse, such as a `%` (an IPv6 zone) in `--host`, is a 78 before the bind, both ways, where the server failed at the bind with 1 and the doctor said 0 (review record LF48; `test_cli.mojo:test_a_listen_address_that_does_not_parse_is_refused`)"
+      "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR)"
     },
     {
       "id": "M6",

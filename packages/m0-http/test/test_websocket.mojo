@@ -321,6 +321,90 @@ def test_fragmented_message_assembles() raises:
     assert_equal(String(StringSpan(unsafe_from_utf8=Span(res2.msg_payloads[0]))), "fragment")
 
 
+def _fragment(opcode: Int, size: Int, salt: Int, fin: Bool) raises -> List[UInt8]:
+    """A masked frame of `size` bytes, each a function of its offset and
+    `salt`, so a byte out of place in the assembled message shows."""
+    var payload = List[UInt8](capacity=size)
+    for j in range(size):
+        payload.append(UInt8((j * 31 + salt) % 251))
+    var frame = encode_ws_frame_masked(opcode, Span(payload), _mask())
+    if not fin:
+        frame[0] = frame[0] & 0x7F
+    return frame^
+
+
+def test_an_assembled_message_is_moved_out_whole() raises:
+    """A fragmented message reaches the application in the buffer it was
+    assembled in, every byte in place, and the parser keeps nothing of it
+    (review record LF25): it was copied out, and the cleared original kept
+    the message's capacity until the next fragmented message on the slot.
+
+    The test reserves the whole message in the parser's buffer before the
+    last fragment, so the last append cannot move it; the message the
+    parser hands back must then sit at that same address.
+
+    covers: I42
+    """
+    var state = WSState(1 << 20)
+    var sizes = List[Int]()
+    sizes.append(3000)
+    sizes.append(5000)
+    sizes.append(7000)
+    var res1 = state.feed(Span(_fragment(WS_OP_BINARY, sizes[0], 1, False)))
+    assert_equal(len(res1.msg_opcodes), 0)
+    var res2 = state.feed(Span(_fragment(WS_OP_CONT, sizes[1], 2, False)))
+    assert_equal(len(res2.msg_opcodes), 0)
+    state.frag_payload.reserve(sizes[0] + sizes[1] + sizes[2])
+    var assembled_at = Int(state.frag_payload.unsafe_ptr())
+    var last = _fragment(WS_OP_CONT, sizes[2], 3, True)
+    # Split mid-payload, as two reads would deliver it.
+    var res3 = state.feed(Span(last)[:2500])
+    assert_equal(len(res3.msg_opcodes), 0)
+    var res4 = state.feed(Span(last)[2500:])
+    assert_equal(len(res4.msg_opcodes), 1)
+    assert_equal(res4.msg_opcodes[0], WS_OP_BINARY)
+    assert_equal(len(res4.msg_payloads[0]), sizes[0] + sizes[1] + sizes[2])
+    var at = 0
+    var out_of_place = -1
+    for f in range(3):
+        for j in range(sizes[f]):
+            if out_of_place < 0 and Int(res4.msg_payloads[0][at]) != (j * 31 + f + 1) % 251:
+                out_of_place = at
+            at += 1
+    assert_equal(out_of_place, -1, "a byte of the assembled message is out of place")
+    assert_equal(
+        Int(res4.msg_payloads[0].unsafe_ptr()), assembled_at,
+        "the assembled message was copied out, not moved",
+    )
+    assert_equal(state.frag_payload.capacity(), 0, "the parser kept the message's buffer")
+    assert_equal(state.frag_opcode, -1)
+
+
+def test_a_closed_sockets_parser_lets_go_of_its_buffers() raises:
+    """`reset`, which `_close_slot` calls when a WebSocket's slot closes,
+    gives back a fragmented message still being assembled and a frame
+    still arriving (review record LF25): cleared, both kept their capacity
+    into the slot's next socket, up to the message cap each, until that
+    socket's first fragmented message or first whole frame replaced it.
+
+    covers: I42
+    """
+    var state = WSState(1 << 20)
+    _ = state.feed(Span(_fragment(WS_OP_BINARY, 60000, 4, False)))
+    var partial = _fragment(WS_OP_CONT, 50000, 5, True)
+    _ = state.feed(Span(partial)[:40000])
+    assert_true(state.frag_payload.capacity() >= 60000)
+    assert_true(state.buffer.capacity() >= 40000)
+    state.reset()
+    assert_equal(state.frag_payload.capacity(), 0, "a closed socket's message buffer stayed")
+    assert_equal(state.buffer.capacity(), 0, "a closed socket's frame buffer stayed")
+    assert_equal(state.frag_opcode, -1)
+    # The slot's next socket starts clean.
+    var res = state.feed(Span(_fragment(WS_OP_BINARY, 10, 6, True)))
+    assert_equal(len(res.msg_opcodes), 1)
+    assert_false(res.close_after_reply)
+
+
 def test_ping_earns_pong_with_same_payload() raises:
     var state = WSState(1 << 20)
     var ping = encode_ws_frame_masked(WS_OP_PING, "marco".as_bytes(), _mask())

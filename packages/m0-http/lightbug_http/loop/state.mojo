@@ -68,6 +68,14 @@ comptime ACCEPT_BATCH = 16
 # seconds; 0 sets nothing, as the server did before.
 comptime STREAM_KEEPALIVE_S = 15
 comptime STREAM_KEEPALIVE_PROBES = 3
+# The most of a grown buffer a slot keeps once its connection closes. A
+# slot's receive and encode buffers start at one read (4 KiB) and grow to
+# the largest request or response they have held; `_close_slot` hands one
+# past this (or past the configured read size, if that is larger) back to
+# the allocator, so a burst of uploads is not pinned to the slots it used
+# (review record LF25). Ordinary requests and pages stay under it and keep
+# their buffers warm from one connection to the next.
+comptime SLOT_BUFFER_KEEP = 64 * 1024
 comptime UNUSED: Int = -1
 
 
@@ -819,6 +827,27 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
         st.fd_to_slot[fd_val] = UNUSED
     st.provision_pool.provisions[slot].prepare_for_new_request()
     st.provision_pool.provisions[slot].keepalive_count = 0
+    # A buffer a large request or response grew goes back to the allocator
+    # with the connection (review record LF25). Cleared, it kept its
+    # capacity, and a slot is never rebuilt: 64 concurrent 4 MiB uploads
+    # pinned some 400 MB to the slots they used, and each 64 more on other
+    # slots pinned as much again. Replaced, the memory serves whichever
+    # connection asks next -- the process keeps it, as its allocator keeps
+    # what is freed, but a second burst reuses it rather than adding to it --
+    # and the slot's next connection starts from one read, as its first did.
+    # A buffer no larger than the configured read size is the slot's
+    # ordinary one, and stays. Nothing outside the loop holds either buffer:
+    # a request's body is copied out of the receive buffer before it is
+    # handed on.
+    var keep = max(SLOT_BUFFER_KEEP, st.provision_pool.buffer_size)
+    if st.provision_pool.provisions[slot].recv_buffer.capacity() > keep:
+        st.provision_pool.provisions[slot].recv_buffer = Bytes(
+            capacity=st.provision_pool.buffer_size
+        )
+    if st.provision_pool.provisions[slot].encoding_buffer.capacity() > keep:
+        st.provision_pool.provisions[slot].encoding_buffer = Bytes(
+            capacity=st.provision_pool.buffer_size
+        )
     if release_provision:
         st.provision_pool.release(slot)
     st.active_count -= 1

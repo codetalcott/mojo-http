@@ -67,6 +67,17 @@ how glibc's condition variable queues its waiters; how macOS's queues them
 was not traced. Record it, and run the other two arms with
 `M0_FAIRNESS_EXPECT_STARVATION=0`.
 
+**And, owed once rather than every release, the two pool A/Bs in
+`scripts/probes/quiet-machine-ab.md`** (fork review LF24 and LF22): whether
+the pool's wake and thread records on 128-byte lines beat 64, and what the
+park's look at its lane socket costs. Each is a few microseconds a request,
+which only this stage's quiet machine resolves. The page names arm B's
+edit for each, the builds, and the result that changes the code;
+`uv run --no-sync python scripts/probes/pool_ab.py LF24` (then `LF22`)
+alternates the arms, records `uptime` and the busiest processes beside
+every cell, and writes its artifact under a `pool-ab-` subdirectory of
+`bench/results/`.
+
 **And `uv run poe test-postgres-server` on a Mac with a local PostgreSQL**
 (SPEC O9-O15). CI runs these on Linux every pull request, in a job with a
 service container, because GitHub's service containers require a Linux
