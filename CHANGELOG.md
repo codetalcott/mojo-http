@@ -167,7 +167,7 @@ in a minor release: `m0serve`'s flags and environment variables, the
   host check `--port` themselves and pass it on as digits.
 
 - **The "listening on" line names the port the server is bound to**
-  (fork review LF47). Exposed: a Mojo host application started with
+  (fork review LF47, SPEC F25). Exposed: a Mojo host application started with
   `M0_PORT=0`, and a Mojo application that passes `Server.listen_and_serve`
   a port of 0, both of which take a port the kernel chooses. The line read
   `Lightbug is listening on http://127.0.0.1:0`, a port nothing can

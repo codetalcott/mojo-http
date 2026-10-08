@@ -621,6 +621,8 @@ def test_the_banner_names_the_port_bound() raises:
     http://127.0.0.1:0`, a port no client can connect to. The Mojo host
     prints no address of its own, so this line is the one a host
     application started with `M0_PORT=0` had.
+
+    covers: F25
     """
     for address in [String("127.0.0.1:0"), String("[::1]:0")]:
         var got = _banner_of(address)

@@ -1601,7 +1601,7 @@ lightbug_http
       - connection.mojo (2026-10-08): `ListenConfig.listen`'s banner names
         the address the socket is bound to, as `bind` read it back, where
         it named the address it was given: a listener asked for port 0
-        printed port 0 (review record LF47).
+        printed port 0 (review record LF47, SPEC F25).
 
       - address.mojo, connection.mojo (2026-10-08): `parse_address` refuses
         a host carrying an IPv6 zone (`%`) with `ParseZoneError`; macOS's

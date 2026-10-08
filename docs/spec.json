@@ -1018,6 +1018,14 @@
       "evidence": "`test_metrics.mojo:test_every_answered_request_is_in_one_status_class` (every PR) \u2014 a 101 Switching Protocols, the answer to every WebSocket upgrade, was in the total and in no class, and the total's help text said \"received\" of a count the loop takes per response (review record LF32). The count stays per response: counting at receipt would move it into the event loop, and a count labelled by status is taken at completion, as Prometheus's Go `promhttp` counter takes it once the handler returns. A request whose connection closes before its response lands is in neither"
     },
     {
+      "id": "F25",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "The listening line `ListenConfig.listen` prints, a Mojo host application's startup line, names the address the listener is bound to: asked for port 0, it names the port the kernel chose",
+      "status": "verified",
+      "evidence": "`test_ipv6.mojo:test_the_banner_names_the_port_bound` (every PR) \u2014 read from a pipe standing in for stdout, for `127.0.0.1:0` and `[::1]:0`. It named the port it was asked for, `http://127.0.0.1:0`, a port nothing can connect to; reached by `M0_PORT=0` on the Mojo host, which prints no address of its own, and by a port of 0 passed to `Server.listen_and_serve` (review record LF47). m0serve prints its own line from `--host` and `--port`"
+    },
+    {
       "id": "F8",
       "section": "F",
       "category": "F. Observability",
