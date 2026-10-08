@@ -1573,6 +1573,13 @@ lightbug_http
         empty (root) prefix match a path that does not start with `/`, so
         m0serve's root mount takes it (review record LF41, SPEC B19).
 
+      - uri.mojo (2026-10-08): `URI.parse` ends the authority at the first
+        `/` or `?` (the new `authority_end`), where it read to the first `/`
+        alone, and a query right after the authority is the query of the
+        path `/`, its request URI `/?query`. `http://h?q=1` parsed as host
+        `h?q=1` with no query (review record LF50, SPEC A35). The inherited
+        TODO asking for that normalisation is gone.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -41,6 +41,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   uvicorn hand it on. Under m0serve the root mount answers it; with no
   root mount it is answered 404, as any path no mount claims.
 
+- **`URI.parse` reads a query that follows the host directly** (SPEC A35).
+  Exposed: an m0 application whose tests build a request with
+  `URI.parse("http://127.0.0.1?x=1")`. The host was `127.0.0.1?x=1` and
+  the request carried no query; with a port, `http://127.0.0.1:80?x=1`,
+  the query was dropped. The path is `/` and the query `x=1`, as for
+  `http://127.0.0.1/?x=1`. A request from the wire was never affected.
+
 - **An empty `Host` is accepted when the target names no host** (SPEC
   B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
   when the URI it requests has no authority, and every empty `Host` was

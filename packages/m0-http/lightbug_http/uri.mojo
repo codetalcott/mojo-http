@@ -179,6 +179,25 @@ def userinfo_separator(uri: StringSpan, authority_start: Int) -> Int:
     return -1
 
 
+def authority_end(uri: StringSpan, authority_start: Int) -> Int:
+    """Index of the `/` or `?` that ends an authority, or the end of `uri`.
+
+    The authority ran to the first `/` alone, so a query right after it
+    was read as part of the host: `http://h?q=1` parsed as host `h?q=1`
+    with no query, and `http://h:80?q=1` as port 80 with its query thrown
+    away (review record LF50). RFC 3986 §3.2 ends the authority at the
+    first `/`, `?` or `#`; a `#` is left to the host here as before, since
+    a request target carries no fragment and what follows one is the
+    path's or the query's data (see `URI.parse`).
+    """
+    var bytes = uri.as_bytes()
+    for i in range(authority_start, len(bytes)):
+        var c = bytes[i]
+        if c == UInt8(ord("/")) or c == UInt8(ord("?")):
+            return i
+    return len(bytes)
+
+
 struct URIDelimiters:
     comptime SCHEMA = "://"
     comptime PATH = "/"
@@ -234,6 +253,15 @@ struct URI(Copyable, Writable):
         # reference while the reader holds one invalidates it.
         var scheme_sep = scheme_separator(uri)
         var userinfo_at = userinfo_separator(uri, scheme_sep + 3 if scheme_sep >= 0 else 0)
+        var host_start = userinfo_at + 1 if userinfo_at >= 0 else (
+            scheme_sep + 3 if scheme_sep >= 0 else 0
+        )
+        # The byte the authority ends at: whichever of `/` and `?` comes
+        # first, so reading to it reads the authority whole.
+        var host_end = authority_end(uri, host_start)
+        var authority_delimiter = UInt8(ord(URIDelimiters.PATH))
+        if host_end < uri.byte_length():
+            authority_delimiter = uri.as_bytes()[host_end]
         var reader = ByteReader(uri.as_bytes())
 
         # Parse the scheme, if exists.
@@ -268,11 +296,8 @@ struct URI(Copyable, Writable):
         if userinfo_at >= 0:
             reader.increment(userinfo_at + 1 - reader.read_pos)
 
-        # TODOs (@thatstoasty)
-        # Handle string host
-        # A query right after the domain is a valid uri, but it's equivalent to example.com/?query
-        # so we should add the normalization of paths
-        var host_and_port = reader.read_until(UInt8(ord(URIDelimiters.PATH)))
+        # The host and port run to the authority's end (`authority_end`).
+        var host_and_port = reader.read_until(authority_delimiter)
         # An IPv6 literal is bracketed (RFC 3986 section 3.2.2), and its
         # colons are not the port's: `[::1]:8080`. The port's colon is the
         # first after the `]`, and the brackets stay in `host`, as a `Host`
@@ -357,6 +382,11 @@ struct URI(Copyable, Writable):
                 String(reader.read_until(UInt8(ord(URIDelimiters.QUERY)))),
                 disallowed_escapes=["/"],
             )
+        elif path_delimiter == UInt8(ord(URIDelimiters.QUERY)):
+            # A query right after the authority: the path is empty, which
+            # is `/` (RFC 9110 §4.2.3), and the query is read below.
+            var request_uri_reader = reader.copy()
+            request_uri = String("/", String(request_uri_reader.read_bytes()))
 
         result.request_uri = request_uri
         result.path = path
