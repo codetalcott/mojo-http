@@ -1368,6 +1368,12 @@ lightbug_http
         not framed, answering 400 and closing (SPEC B23): a head of bare
         LFs waited for its peer's EOF or the 408 (review record LF40).
 
+      - http/chunked.mojo (2026-10-08): `IN_TRAILERS_LINE_MIDDLE` returns
+        -1 for a control byte other than HTAB, or DEL, in a trailer value
+        (RFC 9110 §5.5, SPEC B24), as `parse_headers` refuses one in a
+        head's field value; it took any byte but LF (review record LF4's
+        deferred minor).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

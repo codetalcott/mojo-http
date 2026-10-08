@@ -1432,6 +1432,22 @@ def test_a_trailer_line_must_be_a_field_line() raises:
     assert_equal(got[1], "hello")
 
 
+def test_a_control_byte_in_a_trailer_value_is_refused() raises:
+    """A trailer line is a field line, and its value holds field content
+    (RFC 9110 §5.5): a control byte other than HTAB, or DEL, makes the
+    body invalid, as it makes a head's field value. The trailer is
+    discarded, so this is the head's rule kept, not an exposure closed.
+
+    covers: B24
+    """
+    for bad in ["\x00", "\x01", "\x0b", "\x1f", "\x7f"]:
+        var raw = String("5\r\nhello\r\n0\r\nX-A: a") + bad + "b\r\n\r\n"
+        assert_equal(_decode_trailing(raw)[0], -1, String("byte ", Int(bad.as_bytes()[0])))
+    var tab = _decode_trailing("5\r\nhello\r\n0\r\nX-A: a\tb c\r\n\r\n")
+    assert_equal(tab[0], 0)
+    assert_equal(tab[1], "hello")
+
+
 def test_a_trailer_split_at_every_byte_still_decodes() raises:
     """A segment boundary anywhere in the trailer is a partial read.
 

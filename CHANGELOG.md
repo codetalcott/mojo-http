@@ -50,6 +50,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   never served, but got no answer until the client closed or the header
   timeout sent 408, holding a connection slot meanwhile.
 
+- **A chunked body whose trailer value holds a control byte is refused
+  with 400** (SPEC B24), as a request header's value is. Trailers are
+  discarded, so no application ever read one; the two rules now agree.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP
