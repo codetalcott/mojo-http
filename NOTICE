@@ -1870,6 +1870,21 @@ lightbug_http
         body over the cap behind a long head 400 and closed rather than
         413 and lingered (review record LF70, SPEC C18).
 
+      - __init__.mojo, io/__init__.mojo, io/sync.mojo (deleted),
+        http/request.mojo, event_loop.mojo (2026-10-08): dead inherited
+        code removed, each name searched for across the repository, the
+        `m0` templates and the one application outside it, then the fork
+        compiled whole: the package's re-exports of `URI`, `Cookie`,
+        `RequestCookieJar` and `ResponseCookieJar`, and `lightbug_http.io`'s
+        of `Bytes` and `Duration`; `io/sync.mojo`'s `Duration`, whose one
+        use was `HTTPRequest.timeout`, a field the constructor wrote and
+        nothing read, removed with its argument; and `prepare_loop`'s
+        `debug_assert` that the listener's number is below `TIMER_HEADER`,
+        which no shipped build compiles (a plain `debug_assert` runs only
+        under `-D ASSERT=all`) and whose collision cannot happen: the
+        listener has no timer, and a timer's event is dispatched by its
+        filter (review record LF71).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

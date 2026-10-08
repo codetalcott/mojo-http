@@ -628,6 +628,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `lightbug_http.strings`: `https`, `colonChar` and the seventeen
   `BytesConstant` bytes nothing reads.
 
+- **Unused names at the top of the fork, and `HTTPRequest.timeout`**
+  (fork review LF71). Nothing served changes. The `m0` wheel ships the
+  fork's source, so an application built with `m0` that named one of
+  these imports it from its own module instead: `URI`, `Cookie`,
+  `RequestCookieJar` and `ResponseCookieJar` are no longer re-exported
+  from `lightbug_http` (import them from `lightbug_http.uri` and
+  `lightbug_http.cookie`), nor `Bytes` from `lightbug_http.io` (import it
+  from `lightbug_http.io.bytes`). `HTTPRequest`'s `timeout` field and
+  constructor argument are gone, with `lightbug_http.io.sync.Duration`,
+  the alias for `Int` it was declared with: nothing read it.
+
 ## [1.12.1] — 2026-10-07
 
 A patch release for the security fixes of a review of the server's HTTP
