@@ -368,7 +368,8 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         # (Reading the clock twice here was a fifth of the loop's clock
         # calls.) Whatever the header timeout: the access log and the
         # metrics time the request from here, and with the timeout off the
-        # log subtracted a stamp never taken, so every line's `dur_us` was
+        # log subtracted a stamp never taken, so every keep-alive request
+        # after a connection's first (the accept stamps that one) logged
         # the time since boot (review record LF14).
         st.slot_header_start[slot] = perf_counter_ns()
     elif st.config.header_read_timeout > 0:

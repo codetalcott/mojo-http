@@ -1215,12 +1215,15 @@ def test_the_farewell_writes_only_into_a_stream_that_takes_one() raises:
 
 
 def test_the_access_log_times_a_request_without_a_header_timeout() raises:
-    """A request's duration runs from its first bytes whatever the header
-    timeout (review record LF14). The header clock was stamped only while
-    `header_read_timeout` was above 0, and the access log subtracted it
-    anyway: with the timeout off every line's `dur_us` was the time since
-    the machine booted, and the metrics' latency, which asked for a stamp
-    first, recorded nothing.
+    """A keep-alive request's duration runs from its first bytes whatever
+    the header timeout (review record LF14). The keep-alive reset zeroes
+    the header clock, and it was stamped again only while
+    `header_read_timeout` was above 0; the access log subtracted it anyway:
+    with the timeout off every request after a connection's first logged
+    the time since the machine booted, and the metrics' latency, which
+    asked for a stamp first, recorded nothing for it. (The accept stamps a
+    connection's first request.) The slot here starts with the clock at 0,
+    as that reset leaves it.
 
     covers: F22
     """

@@ -49,12 +49,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   stand, and the client reads the end of the connection; an SSE stream or
   WebSocket the server writes itself still gets its goodbye.
 
-- **The access log times a request when the header timeout is off** (SPEC
-  F22). A server whose `ServerConfig` set `header_read_timeout = 0` logged
-  every request's `dur_us` as the time since the machine booted, and
-  recorded no latency on `/__metrics`. Both now run from the request's
-  first bytes, as they always did with the timeout on. m0serve and the
-  Mojo host keep the default of 10 s, and were not affected.
+- **The access log times a keep-alive request when the header timeout is
+  off** (SPEC F22). A server whose `ServerConfig` set
+  `header_read_timeout = 0` logged the `dur_us` of every request after a
+  connection's first as the time since the machine booted, and recorded
+  no latency for them on `/__metrics`. They now run from the request's
+  first bytes, as they always did with the timeout on; a connection's
+  first request is timed from its accept, as before. m0serve and the Mojo
+  host keep the default of 10 s, and were not affected.
 
 - **A WebSocket the application has stopped reading stays stopped while
   its close completes** (SPEC I41). When an application falls behind the

@@ -1525,7 +1525,9 @@ lightbug_http
         check asks for it to be on; `_record_response` computes one duration
         for the metrics and the access log, 0 without a stamp (SPEC F22).
         The access log subtracted a stamp the timeout's absence had never
-        taken, so `dur_us` was the time since boot (review record LF14).
+        taken, so every request after a connection's first, which the
+        accept stamps, logged the time since boot as its `dur_us` (review
+        record LF14).
 
       - loop/state.mojo (2026-10-08): `_ws_linger` arms reads only for a
         socket whose inbound is not suspended, as `_stream_idle` does, so
