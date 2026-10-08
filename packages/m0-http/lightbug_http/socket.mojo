@@ -501,26 +501,36 @@ struct Socket[
         return bytes_received
 
     def receive(self, size: Int = default_buffer_size) raises SocketRecvError -> List[Byte]:
-        """Receive data from the socket into the buffer with capacity of `size` bytes.
+        """Receive up to `size` bytes from the socket into a new buffer.
+
+        A `size` of 0 makes a buffer with no room, which `_receive` grows
+        by `default_buffer_size` before the read, so it takes up to that
+        many bytes rather than none (review record LF34).
 
         Args:
-            size: The size of the buffer to receive data into.
+            size: The most bytes to read; 0 reads up to `default_buffer_size`.
 
         Returns:
-            The buffer with the received data, and an error if one occurred.
+            The bytes received.
+
+        Raises:
+            SocketRecvError: A SysError if reading from the socket fails, or
+                EOF if the peer has closed.
         """
         var buffer = Bytes(capacity=size)
         _ = self._receive(buffer)
         return buffer^
 
     def receive(self, mut buffer: Bytes) raises SocketRecvError -> UInt:
-        """Receive data from the socket into the buffer.
+        """Receive data from the socket into the buffer, after its length.
+
+        A buffer with no room past its length grows first (see `_receive`).
 
         Args:
             buffer: The buffer to read data into.
 
         Returns:
-            The buffer with the received data, and an error if one occurred.
+            The number of bytes received, now at the buffer's end.
 
         Raises:
             SocketRecvError: A SysError if reading from the socket fails, or
