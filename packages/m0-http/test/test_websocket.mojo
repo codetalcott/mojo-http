@@ -9,7 +9,7 @@ the pong that answers its ping, the close code a violation earns.
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.http import HTTPRequest
+from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.uri import URI
 from lightbug_http.websocket import (
     sha1,
@@ -179,6 +179,47 @@ def test_connection_token_is_matched_whole_not_as_a_substring() raises:
     var ok = websocket_upgrade(_ws_request(connection="keep-alive,  UPGRADE "))
     assert_true(Bool(ok))
     assert_equal(ok.take().status_code, 101)
+
+
+def _bytes(*b: Int) -> String:
+    """A String holding exactly these bytes, valid UTF-8 or not."""
+    var l = List[UInt8]()
+    for x in b:
+        l.append(UInt8(x))
+    return String(unsafe_from_utf8=Span(l))
+
+
+def test_the_upgrade_token_is_websocket_in_ascii_case_only() raises:
+    """`Upgrade: websocket` is matched as an ASCII case-insensitive value
+    (RFC 6455 §4.2.1), and nothing else folds into it. It was compared after
+    Unicode `String.lower()`, which reads KELVIN SIGN (U+212A) as `k` and an
+    overlong `C1 B7` as `w`: `websoc<U+212A>et` was upgraded, 101, where
+    every other hop reads an unknown protocol (review record LF63).
+
+    covers: I38
+    """
+    var kelvin = _bytes(0x77, 0x65, 0x62, 0x73, 0x6F, 0x63, 0xE2, 0x84, 0xAA, 0x65, 0x74)
+    assert_false(Bool(websocket_upgrade(_ws_request(upgrade=kelvin))), "upgraded websoc<KELVIN SIGN>et")
+    var overlong = _bytes(0xC1, 0xB7, 0x65, 0x62, 0x73, 0x6F, 0x63, 0x6B, 0x65, 0x74)
+    assert_false(Bool(websocket_upgrade(_ws_request(upgrade=overlong))), "upgraded an overlong w")
+    var ok = websocket_upgrade(_ws_request(upgrade="WebSocket"))
+    assert_true(Bool(ok))
+    assert_equal(ok.take().status_code, 101)
+    # The loop's own question of a response: 101 and `Upgrade: websocket`.
+    var resp = HTTPResponse(
+        body_bytes=String("").as_bytes(),
+        headers=Headers(Header(HeaderKey.UPGRADE, kelvin)),
+        status_code=101,
+        status_text="Switching Protocols",
+    )
+    assert_false(is_ws_upgrade_response(resp), "a 101 naming websoc<KELVIN SIGN>et switched")
+    var upper = HTTPResponse(
+        body_bytes=String("").as_bytes(),
+        headers=Headers(Header(HeaderKey.UPGRADE, "WEBSOCKET")),
+        status_code=101,
+        status_text="Switching Protocols",
+    )
+    assert_true(is_ws_upgrade_response(upper))
 
 
 def test_http_1_0_upgrade_is_400() raises:

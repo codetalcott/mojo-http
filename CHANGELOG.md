@@ -276,6 +276,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
   ignored, and so, as a leniency (the grammar has none), is whitespace
   between the size and the line's end.
 
+- **`Upgrade`, `Range` and `Accept` are case-folded in ASCII only** (fork
+  review LF63, SPEC I38, J2, G14). Exposed: m0serve with WebSockets or
+  `--static`, and Mojo applications that negotiate a vendor media type.
+  Each was compared after Unicode lowercasing, which turns the KELVIN SIGN
+  (U+212A) into `k` and an overlong two-byte encoding into an ASCII letter:
+  `Upgrade: websoc<U+212A>et` was answered 101 and the connection switched
+  to WebSocket where every other server and proxy reads an unknown
+  protocol, a `Range` whose unit was such a spelling of `bytes` was served
+  as a range, and an `Accept` naming such a spelling of a registered
+  vendor type matched it. Each is now refused or ignored as other servers
+  do, and `WebSocket`, `BYTES=` and `Application/VND.X` still match.
+
 - **`HTTPRequest.encode()` writes the target it was given** (fork review
   LF62, SPEC A38). Exposed: a Mojo application that writes a request out
   (a proxy view, a test), and `String(req)`. The request line carried the

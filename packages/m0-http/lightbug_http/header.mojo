@@ -337,6 +337,23 @@ def ascii_lower_byte(b: Byte) -> Byte:
     return (b | 0x20) if (b >= 0x41 and b <= 0x5A) else b
 
 
+def ascii_lowercase(s: Span[Byte, _]) -> String:
+    """`s` with its ASCII letters lowercased and every other byte as it was.
+
+    The folding a protocol token or a media type asks for (RFC 9110 §5.6.2,
+    §8.3.1: case-insensitive in ASCII). `String.lower()` is not it: it reads
+    its input as UTF-8 and folds by Unicode's rules, so KELVIN SIGN
+    (U+212A) becomes `k` and an overlong `C1 A2` becomes `b` -- ASCII made
+    of bytes a request sent, which no other hop reads that way (review
+    records LF58, LF63). Bytes in, bytes out: a value need not be UTF-8
+    (SPEC G14).
+    """
+    var out = List[Byte](capacity=len(s))
+    for i in range(len(s)):
+        out.append(ascii_lower_byte(s[i]))
+    return String(unsafe_from_utf8=Span(out))
+
+
 @always_inline
 def name_is(name: Span[Byte, _], lowercase: StaticString) -> Bool:
     """Whether a raw header name equals a known-lowercase constant.

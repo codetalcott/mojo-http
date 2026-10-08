@@ -1693,6 +1693,14 @@ lightbug_http
         for the CRLFCRLF `find_header_end` had already framed (review
         record LF61).
 
+      - websocket.mojo, header.mojo (2026-10-08): `websocket_upgrade` and
+        `is_ws_upgrade_response` compare `Upgrade` with `websocket` by
+        `Headers.value_equals_ignore_case` (ASCII folding), where they
+        compared after `String.lower()`, which reads KELVIN SIGN as `k`
+        and an overlong `C1 B7` as `w`; `ascii_lowercase` folds a whole
+        value byte by byte for a caller that needs the string (review
+        record LF63).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
