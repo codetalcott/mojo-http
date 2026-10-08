@@ -1543,6 +1543,13 @@ lightbug_http
         socket, so a regression there closes the connection instead of
         spinning its slot (review record LF16, a follow-up).
 
+      - loop/request.mojo (2026-10-08): `_handle_read_headers` closes an
+        incomplete head on `peer_eof` only after a read of nothing, or a
+        shorter one, behind the FIN; a read that filled its buffer is
+        re-armed and the head read on (SPEC A29). It closed a half-closed
+        head longer than one read with the rest still in the socket
+        (review record LF42).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

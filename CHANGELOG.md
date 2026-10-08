@@ -18,6 +18,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   good with `--idle-timeout 0`) waiting for a request that could not come.
   Requests pipelined ahead of the last one are still answered first.
 
+- **A half-closed request with a long head is answered** (SPEC A29). A
+  client that sent a request whose headers were longer than 4 KB (a large
+  cookie, a long token) and then shut down its write side could have its
+  connection closed with no answer, the rest of its headers still unread.
+  It is now read to its end and answered.
+
 - **A streamed response honours `Connection: close`** (SPEC A28). An ASGI
   application's streamed body, or a WSGI application's streamed iterable
   on a pool thread, goes out chunked over HTTP/1.1, and when the request

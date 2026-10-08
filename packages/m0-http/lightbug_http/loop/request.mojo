@@ -650,9 +650,17 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     #
     # Before the re-arm below, and returning: a connection whose peer has
     # gone will never produce the readiness that re-arming asks for.
+    #
+    # Only once this read has taken everything before the FIN: a read of
+    # nothing, or a shorter one. `peer_eof` from the event says the FIN has
+    # arrived, not that one read took what was ahead of it, and a read that
+    # filled its buffer closed a head longer than one read with the rest of
+    # it still in the socket, the request unanswered (review record LF42).
+    # Such a read is re-armed below, and the next one goes on.
     if (
         st.slot_fds[slot] != UNUSED
         and st.provision_pool.provisions[slot].peer_eof
+        and (recv_eof or bytes_read < UInt(want))
         and st.provision_pool.provisions[slot].state.kind
         == ConnectionState.READING_HEADERS
     ):

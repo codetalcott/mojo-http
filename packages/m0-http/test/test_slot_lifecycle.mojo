@@ -912,6 +912,54 @@ def test_a_half_closed_request_is_answered_with_a_close() raises:
     assert_true(full[1])
 
 
+def test_a_half_closed_head_longer_than_a_read_is_answered() raises:
+    """A head larger than one read, its FIN arriving with its first bytes,
+    is read to its end and answered (review record LF42). The read path
+    took one buffer, found the head incomplete, and closed the slot
+    because the event said the peer had half-closed, with the rest of the
+    head still in the socket: the client's request went unanswered. The
+    EOF says the FIN has arrived; only a read of nothing, or a shorter one
+    behind it, says nothing more is coming. The next read takes the rest:
+    the drain's, in the same event, or the re-armed one, which both
+    backends report again.
+
+    covers: A29
+    """
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    var want = st.provision_pool.provisions[slot].recv_staging.capacity()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    var head = String("GET /long HTTP/1.1\r\nHost: x\r\nX-Pad: ")
+    head += String("p") * (want + want // 2) + "\r\n\r\n"
+    _send_all(peer, head)
+    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+
+    # The event that brings the first bytes carries the EOF; while the slot
+    # stays open, its re-armed registration reports it again.
+    var events = 0
+    while st.slot_fds[slot] != UNUSED and events < 3:
+        _on_read(app, backend, st, fd, True)
+        events += 1
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var reply = String(unsafe_from_utf8=Span(got)).lower()
+    assert_true(
+        reply.startswith("http/1.1 200 ok"),
+        "a half-closed head longer than one read went unanswered: " + reply,
+    )
+    assert_true("connection: close" in reply, reply)
+    assert_equal(st.slot_fds[slot], UNUSED)
+    close(FileDescriptor(peer))
+
+
 struct OneChunkStream(HTTPService):
     """A channel stream's producer, as the loop sees it: one payload
     queued, and the stream over once it is drained."""

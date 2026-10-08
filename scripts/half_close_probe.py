@@ -49,6 +49,12 @@ CL = (b"POST /health HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n"
       b"Connection: close\r\n\r\n" % len(BODY)) + BODY
 CHUNKED = (b"POST /health HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n"
            b"Connection: close\r\n\r\n%x\r\n%s\r\n0\r\n\r\n" % (len(BODY), BODY))
+# A head longer than the server's 4 KB read (LF42): with the FIN in the
+# event that brings its first bytes, the read path closed it after one read,
+# unanswered, the rest of the head still in the socket. A race the rounds
+# run many times; never a failure once fixed.
+LONG = (b"GET /health HTTP/1.1\r\nHost: x\r\nX-Pad: " + b"p" * 6144
+        + b"\r\nConnection: close\r\n\r\n")
 
 
 # Which phase is running, for the crash handler. A traceback names the CALL
@@ -88,7 +94,8 @@ def attempt(payload, half):
 
 failures = []
 
-for label, payload in (("GET", GET), ("Content-Length", CL), ("chunked", CHUNKED)):
+for label, payload in (("GET", GET), ("Content-Length", CL), ("chunked", CHUNKED),
+                       ("long-head", LONG)):
     phase("a half-closed %s request" % label)
     bad = [attempt(payload, True) for _ in range(ROUNDS)]
     bad = [r for r in bad if r != "ok"]
