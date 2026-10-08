@@ -125,6 +125,29 @@ SABOTAGES = [
         "a head split across reads was framed differently from the same bytes whole",
     ),
     (
+        # The second: a bare CR before the request line was skipped with
+        # the empty lines, the method read from the byte after it -- served
+        # whole, refused by the incremental check when a read had ended
+        # after the CR.
+        "a bare CR before the request line is skipped as an empty line",
+        PARSING,
+        "            if byte.value() == BytesConstant.CR:\n"
+        "                buf.increment()\n"
+        "                var next = try_peek(buf)\n"
+        "                if not next:\n"
+        "                    return -2\n"
+        "                if next.value() != BytesConstant.LF:\n"
+        "                    return -1",
+        "            if byte.value() == BytesConstant.CR:\n"
+        "                buf.increment()\n"
+        "                var next = try_peek(buf)\n"
+        "                if not next:\n"
+        "                    return -2\n"
+        "                if next.value() != BytesConstant.LF:\n"
+        "                    break",
+        "a head split across reads was framed differently from the same bytes whole",
+    ),
+    (
         "a bare LF is asked of a read's new bytes without the byte before them",
         FRAMING,
         "        if holds_bare_lf(buffer, scanned):",

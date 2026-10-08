@@ -1644,6 +1644,12 @@ lightbug_http
         when fewer than four bytes were scanned; it started at them, so a
         CRLFCRLF opening the buffer was missed by a split read.
 
+      - http/parsing.mojo (2026-10-08): `http_parse_request_headers`
+        refuses a CR that no LF follows before the request line (RFC 9112
+        §2.2) rather than skipping it with the empty lines and reading the
+        method from the byte after it, which `is_complete` refused when a
+        read had ended after the CR (SPEC B29).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

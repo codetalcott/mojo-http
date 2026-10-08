@@ -19,6 +19,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   request fuzzer that runs on every change holds to this, and to a chunked
   body read a piece at a time (SPEC B30).
 
+- **A carriage return before a request's first line is refused** (SPEC
+  B29). A request whose first line came after a lone carriage return (a CR
+  with no line feed behind it) was served when it arrived in one piece,
+  its method read from the byte after the CR, and refused when it arrived
+  in two. RFC 9112 makes a lone CR invalid; it is answered 400 either way
+  now. Empty lines before a request, each a CR and a line feed, are still
+  skipped.
+
 - **A client that half-closes is answered with `Connection: close`, and
   its connection ends behind the answer** (SPEC A27). A client that shuts
   down its write side after its request has sent its last one, but when

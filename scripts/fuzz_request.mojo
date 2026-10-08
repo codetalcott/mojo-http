@@ -190,6 +190,9 @@ def _seed_corpus() -> List[String]:
     # buffer, which the terminator search missed when a read had ended
     # inside it -- refused whole, served split (found here, SPEC B29).
     c.append("\r\n\r\nGET / HTTP/1.1\r\nHost: x\r\n\r\n")
+    # A bare CR before the request line, which the parser skipped with the
+    # empty lines -- served whole, refused split (found here, SPEC B29).
+    c.append("\rGET / HTTP/1.1\r\nHost: x\r\n\r\n")
     return c^
 
 
