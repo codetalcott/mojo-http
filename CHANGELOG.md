@@ -32,7 +32,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   publisher can send whole, up to a 65,535-byte channel with a 65,536-byte
   frame, into one buffer it keeps instead of allocating and zeroing 70 KB
   on every drain. A datagram longer than that, or malformed, is refused
-  and counted: `bus_frames_refused_total` on `/__metrics`.
+  and counted: `http_bus_frames_refused_total` on `/__metrics`, which
+  counts the stream chunk channel's datagrams too (an ASGI executor and a
+  streaming `--blocking-threads` pool write that channel in the same
+  codec, and the same reader drains it).
 
 - **A `DatastarStream` reads a `Last-Event-ID` the way the server's held
   streams do.** Exposed: an m0 application that calls `DatastarStream.open`

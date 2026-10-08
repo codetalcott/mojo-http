@@ -243,7 +243,7 @@ struct _PeerFrames(HTTPService):
 
 def test_the_loop_reports_a_refused_bus_datagram_on_its_metrics() raises:
     """The loop's drain is its own `BusReader`, kept in `LoopState`, and a
-    datagram it refuses is on `/__metrics` as `bus_frames_refused_total`
+    datagram it refuses is on `/__metrics` as `http_bus_frames_refused_total`
     while the frames beside it reach the handler whole.
 
     covers: I40
@@ -253,7 +253,9 @@ def test_the_loop_reports_a_refused_bus_datagram_on_its_metrics() raises:
     config.max_connections = 4
     var st = LoopState(FileDescriptor(-1), config, String(""), True)
     var handler = _PeerFrames()
-    assert_true(st.metrics.to_text().find("bus_frames_refused_total 0\n") >= 0)
+    assert_true(
+        st.metrics.to_text().find("\nhttp_bus_frames_refused_total 0\n") >= 0
+    )
     var frame = _filled(BUS_MAX_FRAME, UInt8(ord("x")))
     assert_equal(bus.publish(0, _name(5000), 1, Span(frame)), 1)
     _send_raw(
@@ -264,7 +266,9 @@ def test_the_loop_reports_a_refused_bus_datagram_on_its_metrics() raises:
     assert_equal(len(handler.lengths), 1)
     assert_equal(handler.lengths[0], BUS_MAX_FRAME)
     assert_equal(st.metrics.bus_frames_refused, 1)
-    assert_true(st.metrics.to_text().find("bus_frames_refused_total 1\n") >= 0)
+    assert_true(
+        st.metrics.to_text().find("\nhttp_bus_frames_refused_total 1\n") >= 0
+    )
     # A drain that refuses nothing leaves the count where it was.
     assert_equal(bus.publish(0, "/ok", 2, Span(_bytes("f\n\n"))), 1)
     _deliver_bus_frames(handler, st, bus.read_fd(1))

@@ -297,7 +297,8 @@ struct BusReader(Movable):
     drain and kept, and a count of the datagrams it refused.
 
     The event loop keeps one (`LoopState.bus_reader`) for every channel it
-    drains. The buffer used to be 70 KB, allocated and zero-filled on every
+    drains in this codec: its `BroadcastBus` channel and, where an executor
+    or a streaming pool runs, the chunk channel. The buffer used to be 70 KB, allocated and zero-filled on every
     drain, and shorter than the datagrams the publishers send: a channel
     name and a frame both near their bounds made one up to
     `BUS_DATAGRAM_MAX`, and the kernel cut it to the buffer. Cut, it still
@@ -318,7 +319,7 @@ struct BusReader(Movable):
     """Datagrams drained and not delivered, since the reader was made:
     longer than `BUS_DATAGRAM_MAX` (cut by the kernel, or longer than any
     publisher sends), or malformed. The event loop reports it on
-    `/__metrics` as `bus_frames_refused_total`."""
+    `/__metrics` as `http_bus_frames_refused_total`."""
 
     def __init__(out self):
         self.buf = List[UInt8]()
@@ -331,7 +332,10 @@ struct BusReader(Movable):
         calls this on read-readiness — edge-triggered registration means
         every pending datagram must be consumed before returning. A datagram
         that is not delivered is counted in `refused`, never delivered in
-        part.
+        part, and the drain goes on to the next. An EMPTY datagram ends the
+        drain uncounted: 0 is also what macOS's `recv` returns at the end of
+        a datagram pair, and no publisher sends one (every encoder writes
+        the 10-byte header).
         """
         if len(self.buf) == 0:
             self.buf.resize(BUS_DATAGRAM_MAX + 1, 0)

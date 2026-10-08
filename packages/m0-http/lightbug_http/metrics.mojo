@@ -98,8 +98,10 @@ struct ServerMetrics(Movable):
     """Requests sampled into the histogram (monotonic)."""
 
     var bus_frames_refused: Int
-    """Bus datagrams this loop drained and did not deliver: longer than
-    any publisher sends, or malformed (monotonic; `BusReader.refused`)."""
+    """Datagrams this loop drained from a bus-shaped channel -- its
+    `BroadcastBus` channel, or the chunk channel an executor or a streaming
+    pool writes -- and did not deliver: longer than any publisher sends, or
+    malformed (monotonic; `BusReader.refused`)."""
 
     def __init__(out self):
         self.requests_total = 0
@@ -203,9 +205,11 @@ struct ServerMetrics(Movable):
             "# HELP http_pool_capacity Total connection pool capacity\n",
             "# TYPE http_pool_capacity gauge\n",
             "http_pool_capacity ", String(self.pool_capacity), "\n",
-            "# HELP bus_frames_refused_total Cross-worker bus datagrams"
-            " drained and not delivered: over-long or malformed\n",
-            "# TYPE bus_frames_refused_total counter\n",
-            "bus_frames_refused_total ", String(self.bus_frames_refused), "\n",
+            "# HELP http_bus_frames_refused_total Datagrams drained from the"
+            " cross-worker bus or the stream chunk channel and not delivered:"
+            " over-long or malformed\n",
+            "# TYPE http_bus_frames_refused_total counter\n",
+            "http_bus_frames_refused_total ", String(self.bus_frames_refused),
+            "\n",
             self.histogram_text(),
         )

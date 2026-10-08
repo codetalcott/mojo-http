@@ -1343,7 +1343,9 @@ lightbug_http
         where `drain_bus_channel` allocated and zero-filled 69,642 bytes per
         drain and decoded a longer datagram cut short. A datagram that fills
         the buffer, or does not decode, is refused and counted in
-        `ServerMetrics.bus_frames_refused` (`bus_frames_refused_total`).
+        `ServerMetrics.bus_frames_refused` (`http_bus_frames_refused_total`,
+        the stream chunk channel's included). An empty datagram still ends
+        the drain.
         `_deliver_bus_frames` takes the `LoopState`; `drain_bus_channel`
         remains, a reader of its own per call.
 
