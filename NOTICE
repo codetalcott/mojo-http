@@ -1407,6 +1407,11 @@ lightbug_http
         back from ADD to MOD on EEXIST alone and from MOD to ADD on ENOENT
         alone, where it fell back on any errno (review record LF21).
 
+      - connection.mojo, c/socket.mojo (2026-10-08): `ListenConfig.listen`
+        asks for a backlog of `SOMAXCONN`, new in c/socket.mojo (128 on
+        macOS, 4096 on Linux), where it asked for 128, which overflowed
+        Linux's accept queue under a burst (review record LF19).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

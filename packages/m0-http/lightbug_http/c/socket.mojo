@@ -93,6 +93,16 @@ comptime TCP_KEEPINTVL = 0x101 if _IS_MACOS else 5
 comptime TCP_KEEPCNT = 0x102 if _IS_MACOS else 6
 comptime IPV6_V6ONLY = 27 if _IS_MACOS else 26
 
+comptime SOMAXCONN = 128 if _IS_MACOS else 4096
+"""The listen backlog a server asks for: each platform's own `SOMAXCONN`
+(the macOS SDK's <sys/socket.h>; Linux's since 5.4). The kernel clamps a
+backlog to its setting, `kern.ipc.somaxconn` (128 by default) or
+`net.core.somaxconn` (4096 by default since 5.4, 128 before), so this asks
+for as many as a default system grants. The listener asked for 128, which
+on Linux overflowed under a burst of new connections while the loop was
+busy: the kernel drops the handshakes past a full queue, and their clients
+retry a second later (review record LF19)."""
+
 
 # Socket Type constants. SOCK_STREAM is the only one a `Socket` is made
 # with; the AF_UNIX datagram channels spell theirs in c/socketpair.mojo.

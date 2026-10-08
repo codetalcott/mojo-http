@@ -107,7 +107,7 @@ import time
 
 from probelib import fail, phase, server, stamp
 
-K = 120          # under the listen backlog of 128, so all of it queues at once
+K = 120          # under macOS's listen backlog of 128, so all of it queues at once
 EACH_MS = 10     # what each queued request asks for; its COST is measured
 BLOCK_MS = 600
 # The widest gap two burst answers may have between them: half the loop's

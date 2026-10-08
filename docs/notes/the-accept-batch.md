@@ -30,9 +30,9 @@ all of them.
 
 `scripts/accept_batch_probe.py`, the gate's probe. One `/slow?ms=600`
 request parks the loop in `usleep`; while it sleeps, 120 connections queue
-in the backlog (the listen backlog is 128, so all of them fit), each
-carrying `/slow?ms=5`; then a keep-alive connection that is already
-established sends `/fast`. When the loop wakes, the backlog and the
+in the backlog (the listen backlog is `SOMAXCONN`, 128 on macOS and 4096 on
+Linux, so all of them fit), each carrying `/slow?ms=5`; then a keep-alive
+connection that is already established sends `/fast`. When the loop wakes, the backlog and the
 keep-alive's request are both waiting. What `/fast` waits beyond what was
 left of the blocker:
 

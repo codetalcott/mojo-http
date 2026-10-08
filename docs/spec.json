@@ -434,6 +434,14 @@
       "evidence": "`test_epoll_timers.mojo:test_every_timer_has_a_slot_of_its_own_at_any_descriptor` (every PR) \u2014 the slot arithmetic, on both legs; `test_a_high_descriptors_heartbeat_leaves_the_app_tick_alone` and `test_a_high_descriptors_body_timer_is_its_own` drive the platform's backend and bite on the Linux leg only, kqueue keying a timer by its ident. The map was five regions of 65536 slots, one per kind (review record LF18): descriptor 65536's SSE heartbeat took the app tick's slot, re-arming its timerfd and, when the stream ended, closing it, so the tick stopped for good; descriptor 131072 + k's body timer took descriptor k's heartbeat; and a heartbeat at or above 131072, or a body timer at or above 262144, fell off the map and was never set. The slot test fails with the old arithmetic over the new map (header 65536 and body 0 share slot 65536). The backend tests had not run on Linux when this row landed: CI's Linux leg is their first run. A descriptor at or above 2^20 cannot be told from a lower one by its ident (loop/state.mojo's encoding), which needs `fs.nr_open` raised past its default"
     },
     {
+      "id": "C12",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A listener's accept queue is as long as the system allows: `ListenConfig.listen` asks for the platform's `SOMAXCONN` (128 on macOS, 4096 on Linux), which the kernel clamps to `kern.ipc.somaxconn` or `net.core.somaxconn`, so a burst of new connections arriving while the loop is busy queues rather than overflowing",
+      "status": "verified",
+      "evidence": "`test_listen_backlog.mojo:test_the_listener_asks_for_the_systems_backlog` (every PR) \u2014 on the Linux leg the listener's limit as `TCP_INFO` reports it (`tcpi_sacked`, what `ss -lt` shows) must be `min(SOMAXCONN, net.core.somaxconn)`; macOS reports a listener's limit nowhere and its default is 128 either way, so there the test holds the constant. The listener asked for 128 (review record LF19), and Linux, whose default `somaxconn` has been 4096 since 5.4, drops each handshake past a full queue (`TcpExtListenOverflows`), its client retrying a second later. No knob, by the owner's decision. Neither the overflow nor the test had been run on Linux when this row landed (no Linux box with disk to spare): CI's Linux leg is the test's first run"
+    },
+    {
       "id": "C13",
       "section": "C",
       "category": "C. Connection management and denial of service",

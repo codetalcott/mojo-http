@@ -34,6 +34,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   refuses is now reported with its own error: a refused ADD was retried as
   a MOD, whose ENOENT was reported in its place.
 
+- **On Linux, a burst of new connections queues instead of being
+  dropped** (fork review LF19, SPEC C12). Exposed: Linux servers, m0serve
+  and Mojo applications alike. The listener asked the kernel for an accept
+  queue of 128, so while the loop was busy -- a slow pass, a batch of
+  accepts -- connections past the 128th were dropped at the handshake, and
+  each client waited a second or more to retry. The listener now asks for
+  `SOMAXCONN`, which Linux clamps to `net.core.somaxconn` (4096 by default
+  since 5.4); raise that sysctl, not a server setting, for a longer queue.
+  macOS's limit was and stays 128 (`kern.ipc.somaxconn`).
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**
