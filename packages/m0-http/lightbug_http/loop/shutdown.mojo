@@ -36,24 +36,24 @@ def _close_between_requests[T: HTTPService, B: EventLoopBackend](
 
     A slot in READING_HEADERS with an empty receive buffer is between
     requests: `prepare_for_new_request` clears the buffer after each
-    response, and the first byte of the next request both refills it and
-    moves the state on. Such a connection cannot be served by the drain
-    loop under any circumstance — that loop dispatches EVFILT_WRITE only,
-    so a request arriving during the drain is not read there. Closing it
-    drops nothing that waiting would have delivered, and leaves the whole
-    budget to connections genuinely mid-request or mid-response. A
-    LINGERING slot is closed for the same reason: its refusal went out
-    when it began, and what it is still reading is discarded.
+    response, keeping only a request pipelined behind it, and the first
+    byte of the next request refills it. Such a connection has no request
+    in progress, and the drain does not wait for one: its passes are
+    ordinary ones and would read a request that arrived, but this runs
+    after each of them, so only bytes a client had already sent are
+    served. Closing it drops nothing a client had asked for, and leaves
+    the whole budget to connections genuinely mid-request or
+    mid-response. A LINGERING slot is closed for the same reason: its
+    refusal went out when it began, and what it is still reading is
+    discarded.
 
-    Called once before the drain clock starts AND after every completion
-    pass inside it. The second call is the fix for the drain's other
-    hold: a response that completes DURING the drain and goes out in one
-    `send` never registers a write interest, so the drain's EVFILT_WRITE
-    dispatch never sees it — it takes `_finish_response`'s keep-alive
-    branch and re-arms for a next request the drain will never read.
-    Measured with a 1.5 s request in flight at SIGTERM: the process
-    exited at 1.55 s with `Connection: close` and 5.35 s with keep-alive,
-    the response itself delivered at 1.5 s in both.
+    Called once before the drain clock starts AND after every pass inside
+    it. The second call is the fix for the drain's other hold: a response
+    that completes DURING the drain takes the keep-alive transition, and
+    the slot, back between requests, held `active_count` at one until
+    the deadline. Measured with a 1.5 s request in flight at SIGTERM: the
+    process exited at 1.55 s with `Connection: close` and 5.35 s with
+    keep-alive, the response itself delivered at 1.5 s in both.
 
     Skipped, for the reasons the idle and header sweeps skip them: a slot
     with a job in a pool thread is working, not idle, and its provision
@@ -143,42 +143,11 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
     # anything (see `_close_between_requests` for why this is safe).
     _close_between_requests(handler, backend, st)
 
-    # Drain in-flight: keep serving what is already in flight, for at most
-    # DRAIN_TIMEOUT_NS, with ordinary event-loop passes.
-    #
-    # This loop used to dispatch EVFILT_WRITE only and read nothing new,
-    # which was two defects with one cause. A request whose BODY was still
-    # arriving when SIGTERM landed was neither read on nor closed: the
-    # client's remaining bytes sat unread, it was reset at the deadline,
-    # and the process exited at 5.09 s (SPEC D9 -- found by the soak's
-    # uploads population, 9.7 MB POSTs in flight at every drain; the bare
-    # reproducer is `scripts/drain_upload_probe.py`). And a response too
-    # large for one send was cut at its first write readiness, because
-    # the write branch here closed the slot instead of sending the rest.
-    # An ordinary pass does both correctly, services pool completions and
-    # bus frames on the way, and flushes buffered submits at its bottom --
-    # everything the old loop re-implemented in part. The listener is
-    # already closed, so a pass accepts nothing; what a pass CAN still do
-    # is answer a request that arrives on an open keep-alive connection,
-    # and `_close_between_requests` after every pass is what bounds that:
-    # a connection with no request in progress is closed, so only bytes
-    # already sent by the client are ever served. gunicorn's graceful
-    # timeout has the same shape.
-    #
-    # The shutdown pipe is deregistered first: its byte is never read, so
-    # on kqueue a registered pipe stays readable, and every drain pass
-    # would read the stop again and admit nothing a sibling handed over
-    # during the drain. A second SIGTERM during the drain is ignored, as
-    # it always was.
-    #
-    # `offload.inflight` is in the condition as well as `active_count`,
-    # and not redundantly: a client that vanished while its request was
-    # in a pool thread has already been subtracted from `active_count`,
-    # but its slot stays borrowed until the completion arrives. Without
-    # the second term a shutdown could leave that job unclaimed.
-    #
-    # And under accept sharing, a hand-off a sibling has counted to this
-    # worker and not yet delivered (`awaiting_handoffs`) is in flight too.
+    # The shutdown pipe is deregistered before the drain's first pass: its
+    # byte is never read, so on kqueue a registered pipe stays readable,
+    # and every drain pass would read the stop again and admit nothing a
+    # sibling handed over during the drain. A second SIGTERM during the
+    # drain is ignored, as it always was.
     if st.shutdown_read_fd >= 0:
         backend.try_delete_read(st.shutdown_read_fd)
     return perf_counter_ns()
@@ -206,6 +175,36 @@ def _shutdown_drain_step[T: HTTPService, B: EventLoopBackend](
     woken by the channel, so the datagram ends it as it arrives; a count
     the sender took back instead is seen when the wait times out.
     """
+    # Drain in-flight: keep serving what is already in flight, for at most
+    # DRAIN_TIMEOUT_NS, with ordinary event-loop passes.
+    #
+    # The drain used to dispatch EVFILT_WRITE only and read nothing new,
+    # which was two defects with one cause. A request whose BODY was still
+    # arriving when SIGTERM landed was neither read on nor closed: the
+    # client's remaining bytes sat unread, it was reset at the deadline,
+    # and the process exited at 5.09 s (SPEC D9 -- found by the soak's
+    # uploads population, 9.7 MB POSTs in flight at every drain; the bare
+    # reproducer is `scripts/drain_upload_probe.py`). And a response too
+    # large for one send was cut at its first write readiness, because
+    # the write branch closed the slot instead of sending the rest. An
+    # ordinary pass does both correctly, services pool completions and bus
+    # frames on the way, and flushes buffered submits at its bottom --
+    # everything the old loop re-implemented in part. The listener is
+    # already closed, so a pass accepts nothing; what a pass CAN still do
+    # is answer a request that arrives on an open keep-alive connection,
+    # and `_close_between_requests` after every pass is what bounds that:
+    # a connection with no request in progress is closed, so only bytes
+    # already sent by the client are ever served. gunicorn's graceful
+    # timeout has the same shape.
+    #
+    # `offload.inflight` is in the condition as well as `active_count`,
+    # and not redundantly: a client that vanished while its request was
+    # in a pool thread has already been subtracted from `active_count`,
+    # but its slot stays borrowed until the completion arrives. Without
+    # the second term a shutdown could leave that job unclaimed. And
+    # under accept sharing, a hand-off a sibling has counted to this
+    # worker and not yet delivered (`awaiting_handoffs`) is in flight too.
+    #
     # The `while` condition this replaces, then the deadline it broke on:
     # same order, so a drain with nothing left never waits, and one that
     # ran out of budget stops before another pass.
@@ -233,9 +232,10 @@ def _shutdown_finish[T: HTTPService, B: EventLoopBackend](
     flush the buffered submits, and record what accept sharing did."""
     # A stream whose head completed DURING the drain — a pool
     # thread answering a streamed WSGI response in its last job —
-    # became a streaming slot after the farewell pass above, and
-    # the drain loop dispatches EVFILT_WRITE only, so nothing in it
-    # would close that connection. Say goodbye to it now, so the
+    # became a streaming slot after `_shutdown_begin`'s farewell, and
+    # nothing in the drain closes a stream: its passes serve one like
+    # any other connection, and `_close_between_requests` closes only
+    # those between requests. Say goodbye to it now, so the
     # producer thread gets its disconnect and comes back before the
     # bounded join, instead of being abandoned as a straggler.
     _farewell_streams(handler, backend, st)

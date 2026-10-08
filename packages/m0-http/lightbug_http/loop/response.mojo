@@ -451,7 +451,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         )
 
     # Encode into the slot's spare buffer rather than allocating a fresh one.
-    # `_after_send` parks the just-sent buffer back here, so one allocation
+    # `_end_request` parks the just-sent buffer back here, so one allocation
     # per slot serves the whole connection instead of one per response.
     #
     # The buffer has to leave the provision to be encoded into, and a struct

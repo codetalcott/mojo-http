@@ -422,7 +422,7 @@ def _end_request[B: EventLoopBackend](
     st.provision_pool.provisions[slot].prepare_for_new_request(keep_pipelined=True)
     # Park the buffer just sent as the slot's encode scratch instead of
     # dropping its allocation. The swap hands back whatever was parked
-    # there — the empty stand-in `_process_request` left behind — so the
+    # there — the empty stand-in `_finish_response` left behind — so the
     # two rotate for the life of the connection.
     swap(st.slot_response[slot], st.provision_pool.provisions[slot].encoding_buffer)
     st.slot_response[slot].clear()
