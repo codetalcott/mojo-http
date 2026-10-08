@@ -2,7 +2,7 @@
  "about": [
   "The differential corpus's frozen outcomes (SPEC B25): one row per case of differential_corpus.py, in its order. differential_probe.py says what an outcome's tokens mean, the h= fingerprint among them.",
   "ours is the gate: what this server answers, frozen against apps/request_echo by `poe freeze-differential`. `poe smoke-differential` fails on any case that answers otherwise.",
-  "h11 and llhttp are the references' outcomes, read the same way from differential_echo_h11.py (h11 0.16) and differential_echo_node.js (Node 24's llhttp) by the same task, for reading a row; nothing compares them. Read a row against them by verdict, the fingerprint aside: this server hands its application a chunked body de-chunked, with a Content-Length in place of its Transfer-Encoding, an absolute-form target as origin-form with its authority as Host (B16), and OPTIONS * as / (LF41), so those fingerprints differ from the references' by design.",
+  "h11 and llhttp are the references' outcomes, read the same way from differential_echo_h11.py (h11 0.16) and differential_echo_node.js (Node 24's llhttp) by the same task, for reading a row; nothing compares them. Read a row against them by verdict, the fingerprint aside: this server hands its application a chunked body de-chunked, with a Content-Length in place of its Transfer-Encoding, and an absolute-form target as origin-form with its authority as Host (B16), so those fingerprints differ from the references' by design. OPTIONS *'s `request_uri` is `*`, as both references read it (review record LF62).",
   "note: why ours differs from both references on purpose. known_divergence: an outcome frozen as it is although it looks wrong, with the record that would change it."
  ],
  "cases": {
@@ -59,7 +59,7 @@
   "absolute_https": {"ours": ["GET bl=0 h=55bca9f5"], "h11": ["GET bl=0 h=7502cdf1"], "llhttp": ["GET bl=0 h=7502cdf1"]},
   "authority_form_get": {"ours": ["400"], "h11": ["GET bl=0 h=2eb75953"], "llhttp": ["400"]},
   "connect": {"ours": ["501"], "h11": ["PARTIAL"], "llhttp": ["NONE"], "note": "SPEC B18: CONNECT is refused 501 and the connection closed; neither reference serves it as a request either"},
-  "asterisk_options": {"ours": ["OPTIONS bl=0 h=61811cb1"], "h11": ["OPTIONS bl=0 h=80943ab6"], "llhttp": ["OPTIONS bl=0 h=80943ab6"]},
+  "asterisk_options": {"ours": ["OPTIONS bl=0 h=80943ab6"], "h11": ["OPTIONS bl=0 h=80943ab6"], "llhttp": ["OPTIONS bl=0 h=80943ab6"]},
   "asterisk_get": {"ours": ["400"], "h11": ["GET bl=0 h=80943ab6"], "llhttp": ["GET bl=0 h=80943ab6"], "note": "SPEC B19: `*` is OPTIONS's alone (RFC 9112 §3.2.4)"},
   "target_fragment": {"ours": ["GET bl=0 h=7c8bca07"], "h11": ["GET bl=0 h=7c8bca07"], "llhttp": ["GET bl=0 h=7c8bca07"]},
   "target_high_bytes": {"ours": ["400"], "h11": ["400"], "llhttp": ["400"]},
