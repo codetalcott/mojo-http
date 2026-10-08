@@ -186,6 +186,16 @@ in a minor release: `m0serve`'s flags and environment variables, the
   there, and now goes on with the reason ("... takes no IPv6 zone",
   "missing port separator", "too many colons").
 
+- **An `M0_*` number too large to hold is ignored, not wrapped** (fork
+  review LF49, SPEC F19). Exposed: m0serve and Mojo host applications
+  started with a numeric `M0_*` variable whose digits pass 2^63, such as
+  `M0_PORT=18446744073709551696`. The digits were added up with no
+  overflow check, so that value served on port 80, and
+  `M0_WORKERS=18446744073709551618` forked two workers. Such a value is
+  now read as unreadable, as `M0_PORT=80eighty` always was: the default
+  is used, and m0serve's startup says so, naming the largest number it
+  reads.
+
 - **`Socket.receive` and `TCPConnection.read` into a full buffer read what
   is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
   that reads a socket through either, into a `Bytes` with no room past its

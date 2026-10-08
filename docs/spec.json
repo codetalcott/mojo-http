@@ -991,7 +991,7 @@
       "category": "F. Observability",
       "capability": "An `M0_*` value m0serve cannot read is ignored out loud: the environment stays lenient, and one line at startup names the variable, its value and what was used instead, printed by the process that read it and not again by a worker that re-executes",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `M0_MAX_BODY=64mb` and `M0_PORT=80eighty` under `--doctor` each named with the value used, the doctor's cap at its default; a readable value named by nothing; and `M0_QOS=yes` reported once under two spawned workers. It was silent, so `M0_MAX_BODY=64mb` would have kept 4 MB unnoticed"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `M0_MAX_BODY=64mb` and `M0_PORT=80eighty` under `--doctor` each named with the value used, the doctor's cap at its default; a readable value named by nothing; and `M0_QOS=yes` reported once under two spawned workers. It was silent, so `M0_MAX_BODY=64mb` would have kept 4 MB unnoticed. `test_cli.mojo:test_from_env_names_a_number_too_large_for_an_int` holds a number too large for an `Int`, which wrapped (`M0_PORT=18446744073709551696` served on port 80) and is now one more value read as unreadable and named (review record LF49)"
     },
     {
       "id": "F20",

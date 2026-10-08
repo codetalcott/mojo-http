@@ -32,7 +32,7 @@ from lightbug_http.address import join_host_port
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.header import Headers
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
-from m0_http.config import AppConfig, listen_host
+from m0_http.config import AppConfig, listen_host, parse_env_int
 
 
 comptime M0SERVE_VERSION = "1.12.1"
@@ -399,8 +399,8 @@ struct ServeOptions(Copyable, Movable):
                         String(DEFAULT_REPLAY_FRAMES),
                     )
                 )
-        # What `AppConfig` read leniently, said when it fell back. The test
-        # mirrors its parser: digits only for a number, and anything but
+        # What `AppConfig` read leniently, said when it fell back. A number
+        # is read by its own parser (`parse_env_int`), and anything but
         # "true" or "1" is off for a switch.
         _check_int_env(opts.env_ignored, "M0_PORT", config.port)
         _check_int_env(opts.env_ignored, "M0_WORKERS", config.workers)
@@ -681,13 +681,18 @@ def _ignored(name: String, raw: String, wanted: String, used: String) -> String:
 
 
 def _check_int_env(mut ignored: List[String], name: String, used: Int):
-    """Note `name` when `AppConfig` fell back from it: set, and not digits."""
+    """Note `name` when `AppConfig` fell back from it: set, and not a number
+    `parse_env_int` reads -- not digits, or too large for an `Int` (review
+    record LF49), which the note says by naming the largest."""
     var raw = getenv(name, "")
-    var bytes = raw.as_bytes()
-    for i in range(len(bytes)):
-        if bytes[i] < UInt8(ord("0")) or bytes[i] > UInt8(ord("9")):
-            ignored.append(_ignored(name, raw, "a whole number", String(used)))
-            return
+    if raw.byte_length() == 0 or parse_env_int(raw):
+        return
+    var wanted = String("a whole number up to ", Int.MAX)
+    for b in raw.as_bytes():
+        if b < UInt8(ord("0")) or b > UInt8(ord("9")):
+            wanted = String("a whole number")
+            break
+    ignored.append(_ignored(name, raw, wanted, String(used)))
 
 
 def _check_bool_env(mut ignored: List[String], name: String):

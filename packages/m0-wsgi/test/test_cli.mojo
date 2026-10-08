@@ -683,6 +683,34 @@ def test_from_env_says_which_lenient_values_it_ignored() raises:
     assert_equal(len(ServeOptions.from_env().env_ignored), 0)
 
 
+def test_from_env_names_a_number_too_large_for_an_int() raises:
+    """A number whose digits overflow an `Int` is unreadable (review record
+    LF49): `AppConfig` falls back from it, and `from_env` says so, naming
+    the largest it reads. It used to wrap, so `M0_PORT=18446744073709551696`
+    served on port 80 with nothing said.
+
+    covers: F19
+    """
+    _clear_env()
+    _ = setenv("M0_PORT", "18446744073709551696", True)
+    _ = setenv("M0_WORKERS", "9223372036854775808", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.port, DEFAULT_PORT)
+    assert_equal(seed.workers, 1)
+    assert_equal(len(seed.env_ignored), 2)
+    assert_equal(
+        seed.env_ignored[0],
+        "ignoring M0_PORT='18446744073709551696', not a whole number up to"
+        " 9223372036854775807; using 8000",
+    )
+    assert_equal(
+        seed.env_ignored[1],
+        "ignoring M0_WORKERS='9223372036854775808', not a whole number up to"
+        " 9223372036854775807; using 1",
+    )
+    _clear_env()
+
+
 def test_format_size_is_what_parse_size_reads_back() raises:
     assert_equal(format_size(4 * 1024 * 1024), "4m")
     assert_equal(format_size(1024), "1k")

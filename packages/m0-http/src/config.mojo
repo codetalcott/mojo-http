@@ -175,16 +175,34 @@ def _env_present(name: String) -> Bool:
     return getenv(name, "").byte_length() > 0
 
 
-def _parse_int_env(name: String, default: Int) -> Int:
-    """Parse integer from env var, returning default on empty/invalid."""
-    var val = getenv(name, "")
-    if val.byte_length() == 0:
-        return default
+def parse_env_int(raw: StringSpan) -> Optional[Int]:
+    """An `M0_*` number as the environment is read: ASCII digits naming a
+    value an `Int` holds, or None for anything else.
+
+    One reading for the loader and for m0serve's note of what it ignored
+    (`from_env`), so the two cannot disagree on what was readable. A value
+    too large for an `Int` is None: the digits were accumulated with no
+    overflow check, and `M0_PORT=18446744073709551696` wrapped to port 80
+    (review record LF49).
+    """
+    var bytes = raw.as_bytes()
+    if len(bytes) == 0:
+        return None
     var result = 0
-    var bytes = val.as_bytes()
-    for i in range(val.byte_length()):
+    for i in range(len(bytes)):
         var c = Int(bytes[i])
         if c < ord("0") or c > ord("9"):
-            return default
-        result = result * 10 + (c - ord("0"))
+            return None
+        var digit = c - ord("0")
+        if result > (Int.MAX - digit) // 10:
+            return None
+        result = result * 10 + digit
     return result
+
+
+def _parse_int_env(name: String, default: Int) -> Int:
+    """Parse integer from env var, returning default on empty/invalid."""
+    var value = parse_env_int(getenv(name, ""))
+    if value:
+        return value.value()
+    return default
