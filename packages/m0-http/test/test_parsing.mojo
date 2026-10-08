@@ -888,10 +888,9 @@ def test_a_head_is_framed_at_its_first_crlfcrlf_whatever_the_resume_point() rais
     three bytes in, inside a head that opens with two empty lines, resumed
     past the terminator at 0: `\\r\\n` then `\\r\\nGET / ...` was framed at
     the request's own end and served, where the same bytes in one read are
-    framed at 0 and refused (review record LF59) -- one request, two
-    framings, by where a TCP segment ended.
-
-    covers: A38
+    framed at 0 and refused (review record LF66, which LF59 duplicates)
+    -- one request, two framings, by where a TCP segment ended. The unit
+    half of the guarantee; the fuzzer's split reads are the other.
     """
     for p in range(150):
         var buf = List[UInt8]()

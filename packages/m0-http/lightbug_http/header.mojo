@@ -1515,7 +1515,7 @@ def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[In
     # whole: from ANY resume point, down to 0. It backed up only from one
     # above 3, so a read that ended one to three bytes into a head opening
     # with two empty lines resumed past the terminator at 0, and the head
-    # was framed at a later one (review record LF59, SPEC A38).
+    # was framed at a later one (review record LF66; LF59 its duplicate).
     var actual_start = search_start - 3 if search_start > 3 else 0
 
     var buf_len = len(buffer)

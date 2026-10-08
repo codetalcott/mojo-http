@@ -247,12 +247,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   coding is not `chunked`.
 
 - **A request opening with two empty lines gets one answer however it
-  arrives** (fork review LF59, SPEC A38). Exposed: m0serve and every Mojo
-  application. Such a request is refused with 400 when it arrives in one
-  piece, and was served when the first piece the server read held only
-  the first empty line: the scan for the end of the headers resumed past
-  the second. It is refused either way now. One empty line before a
-  request is still skipped, as RFC 9112 asks.
+  arrives** (fork review LF66; LF59 is its duplicate). Exposed: m0serve and
+  every Mojo application. Such a request is refused with 400 when it
+  arrives in one piece, and was served when the first piece the server
+  read held only the first empty line: the scan for the end of the headers
+  resumed past the second. It is refused either way now. One empty line
+  before a request is still skipped, as RFC 9112 asks.
 
 - **`req.uri.host`, `req.uri.port` and `req.uri.full_uri` no longer depend
   on the request's target** (fork review LF54, SPEC A37). Exposed: a Mojo

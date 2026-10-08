@@ -1650,8 +1650,8 @@ lightbug_http
 
       - header.mojo (2026-10-08): `find_header_end` backs up three bytes
         from any `search_start`, down to 0, where it backed up only from one
-        above 3 and so missed a terminator at the buffer's start (SPEC A38,
-        review record LF59).
+        above 3 and so missed a terminator at the buffer's start (review
+        record LF66; LF59 is its duplicate).
 
       - http/request.mojo, loop/state.mojo, loop/request.mojo
         (2026-10-08): `HTTPRequest.from_parsed` takes the server's host and
