@@ -6,7 +6,8 @@ header-bytes property fails for it (SPEC G24).
 the half that matters when it passes, which is the normal result. Each arm
 puts back one defect the property exists to find -- LF1's decoding of
 three- and four-byte sequences with and without the second look that turns
-its split into a dropped header, G2's refusals in each writer, the
+its split into a dropped header, G2's refusals in each writer, LF55's drop
+of a built cookie whose value holds a `;` or a control byte, the
 redirect's percent-encoding, the emptied reason phrase -- and the gate must
 fail in the property's own test, not elsewhere and not by failing to build
 (`sabotage_lib.py`, which owns everything around the table).
@@ -128,6 +129,12 @@ SABOTAGES = [
             "            if not span_breaks_header_line(line.as_bytes()):\n",
         ),
         ("            if True:\n", "            if True:\n"),
+    ),
+    (
+        "LF55 reverted: a built cookie whose value holds a `;` or a control byte is written",
+        JAR,
+        "    if not _adds_no_attribute(cookie.value):\n        return False\n",
+        "",
     ),
     (
         "reply.redirect leaves a control byte in the target",
