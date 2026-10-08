@@ -362,8 +362,9 @@ and insists the I17 probe fails; pre-release because its harness rebuilds
 **And `uv run poe sabotage-differential`** (SPEC B26) — undoes one
 request rule of the fork's parser or loop at a time (a bare LF ending the
 head or a field line, obs-fold, `Content-Length` beside `Transfer-Encoding`,
-a second `Host`, a coding before `chunked`, CONNECT, a 100 Continue sent
-to an HTTP/1.0 client) and requires `smoke-differential` to fail with the
+a second `Host`, a `Host` value that is no uri-host, a coding before
+`chunked`, CONNECT, a 100 Continue sent to an HTTP/1.0 client) and
+requires `smoke-differential` to fail with the
 MISMATCH line of the case that shows it. Pre-release because each arm
 builds the echo server again, cold: the first whole run, its baseline and
 eight arms, took 73 s on the reference Mac (2026-10-08). An anchor that no
