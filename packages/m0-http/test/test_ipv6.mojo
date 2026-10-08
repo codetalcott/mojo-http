@@ -267,6 +267,36 @@ def test_a_colon_inside_a_bracketed_address_port_is_refused() raises:
     assert_equal(Int(hp.port), 80)
 
 
+def test_an_address_without_a_port_is_refused() raises:
+    """`localhost` alone is refused as missing its port, as `127.0.0.1`
+    alone always was, in every network (review record LF45).
+
+    It was read as the loopback at port 0, so `listen_and_serve("localhost")`
+    listened on a port the kernel chose, which no client was told of. A
+    port named after it is kept: `localhost:80` is the loopback's port 80,
+    IPv6's under `tcp6`.
+
+    covers: A33
+    """
+    with assert_raises(contains="missing port separator"):
+        _ = parse_address[NetworkType.tcp](StringSpan("localhost"))
+    with assert_raises(contains="missing port separator"):
+        _ = parse_address[NetworkType.tcp4](StringSpan("localhost"))
+    with assert_raises(contains="missing port separator"):
+        _ = parse_address[NetworkType.tcp6](StringSpan("localhost"))
+    with assert_raises(contains="missing port separator"):
+        _ = parse_address[NetworkType.tcp](StringSpan("127.0.0.1"))
+    with assert_raises(contains="Failed to parse listen address"):
+        var ln = ListenConfig(max_bind_retries=1, quiet=True).listen("localhost")
+        _ = ln^
+    var hp = parse_address[NetworkType.tcp](StringSpan("localhost:80"))
+    assert_equal(hp.host, "127.0.0.1")
+    assert_equal(Int(hp.port), 80)
+    hp = parse_address[NetworkType.tcp6](StringSpan("localhost:80"))
+    assert_equal(hp.host, "::1")
+    assert_equal(Int(hp.port), 80)
+
+
 def test_a_uri_behind_an_ipv6_server_address_parses() raises:
     """The loop puts the server's own address in front of a target that
     carries a query, so on `::` every such request was `[::]:8080/x?a=1`,

@@ -4,7 +4,6 @@ from std.utils import Variant
 
 comptime MAX_PORT = 65535
 comptime MIN_PORT = 0
-comptime DEFAULT_IP_PORT = UInt16(0)
 
 
 struct AddressConstants:
@@ -291,14 +290,9 @@ def parse_address[
     if address == AddressConstants.EMPTY:
         raise ParseEmptyAddressError()
 
-    if address == AddressConstants.LOCALHOST:
-
-        comptime if network.is_ipv6():
-            return HostPort(AddressConstants.IPV6_LOCALHOST, DEFAULT_IP_PORT)
-        else:
-            # `tcp` too: `localhost` is the IPv4 loopback, as it always was.
-            return HostPort(AddressConstants.IPV4_LOCALHOST, DEFAULT_IP_PORT)
-
+    # An address names its port, `localhost` as much as `127.0.0.1`: read
+    # as the loopback at port 0, `localhost` alone listened on a port the
+    # kernel chose (review record LF45).
     var colon_index = address.rfind(":")
     if colon_index == -1:
         raise ParseMissingSeparatorError()
@@ -331,6 +325,7 @@ def parse_address[
         comptime if network.is_ipv6():
             return HostPort(AddressConstants.IPV6_LOCALHOST, port)
         else:
+            # `tcp` too: `localhost` is the IPv4 loopback, as it always was.
             return HostPort(AddressConstants.IPV4_LOCALHOST, port)
 
     return HostPort(String(host), port)

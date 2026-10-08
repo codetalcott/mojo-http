@@ -226,6 +226,14 @@
       "evidence": "`test_socket_spans.mojo:test_a_receive_into_a_full_buffer_reads_what_is_waiting` (every PR) \u2014 the buffer's spare capacity was lent to `recv` as it stood, and a `recv` into zero bytes returns 0, the count EOF returns, so a full buffer, or a `Bytes()` never given a capacity, raised EOF with the peer's bytes still waiting (review record LF34). The server reads through the event loop and never called these; an application, and the tests' client, did"
     },
     {
+      "id": "A33",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A listen address names its port: `localhost` alone is refused as missing its port separator, as `127.0.0.1` alone is, not served on a port the kernel chose; `localhost:PORT` is the loopback's port, IPv6's under `tcp6`",
+      "status": "verified",
+      "evidence": "`test_ipv6.mojo:test_an_address_without_a_port_is_refused` (every PR) \u2014 `parse_address` read `localhost` with no colon as the loopback at port 0, so `Server.listen_and_serve(\"localhost\")` listened on a port no client was told of (review record LF45). Reached by an address a Mojo application passes the server itself; m0serve and the Mojo host join the port they are given to the host"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

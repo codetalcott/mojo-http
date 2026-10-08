@@ -148,6 +148,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   kernel chose, and `[::1]:8:80` on port 80. It is now refused at startup
   as too many colons, as Go's `net.SplitHostPort` refuses it.
 
+- **A listen address of `localhost` with no port is refused** (fork review
+  LF45, SPEC A33). Exposed: a Mojo application that passes
+  `Server.listen_and_serve` (or `ListenConfig.listen`) the bare word
+  `localhost`. It was read as the loopback at port 0, so the server
+  listened on a port the kernel chose and named it to no one. It is now
+  refused at startup as missing its port, as `127.0.0.1` alone always
+  was; `localhost:8080` is unchanged. m0serve and the Mojo host always
+  pass a port.
+
 - **`Socket.receive` and `TCPConnection.read` into a full buffer read what
   is waiting** (fork review LF34, SPEC A32). Exposed: an m0 application
   that reads a socket through either, into a `Bytes` with no room past its

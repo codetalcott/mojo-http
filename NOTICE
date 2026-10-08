@@ -1588,6 +1588,11 @@ lightbug_http
         text forms and comparisons of the C constants' types. Review audit
         A1 (record LF44) lists each with its evidence.
 
+      - address.mojo (2026-10-08): `parse_address` refuses `localhost` with
+        no port as missing its separator, where it returned the loopback at
+        port 0 and the listener took a port the kernel chose (review record
+        LF45, SPEC A33).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
