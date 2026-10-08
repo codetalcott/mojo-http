@@ -223,7 +223,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "`Socket.receive` and `TCPConnection.read` into a buffer with no room past its length read what is waiting, growing the buffer, and report EOF only for the peer's",
       "status": "verified",
-      "evidence": "`test_socket_spans.mojo:test_a_receive_into_a_full_buffer_reads_what_is_waiting` (every PR) \u2014 the buffer's spare capacity was lent to `recv` as it stood, and a `recv` into zero bytes returns 0, the count EOF returns, so a full buffer, or a `Bytes()` never given a capacity, raised EOF with the peer's bytes still waiting (review record LF34). The server reads through the event loop and never called these; an application, and the tests' client, did"
+      "evidence": "`test_socket_spans.mojo:test_a_receive_into_a_full_buffer_reads_what_is_waiting` (every PR) \u2014 the buffer's spare capacity was lent to `recv` as it stood, and a `recv` into zero bytes returns 0, the count EOF returns, so a full buffer, or a `Bytes()` never given a capacity, raised EOF with the peer's bytes still waiting (review record LF34). The test reads through both, each on a real socket pair, and requires a read after the peer has closed to raise EOF still. The server reads through the event loop and never called these; an application, and the tests' client, did"
     },
     {
       "id": "B1",
