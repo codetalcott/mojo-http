@@ -111,7 +111,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "`Host` required on HTTP/1.1",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_http11_requires_a_non_empty_host` (every PR)"
+      "evidence": "`test_parsing.mojo:test_http11_requires_host_to_be_present_at_all` (every PR) \u2014 an empty one is accepted where the target names no authority (B20)"
     },
     {
       "id": "A15",
@@ -335,7 +335,7 @@
       "category": "B. Request smuggling (CWE-444)",
       "capability": "An absolute-form target's authority replaces `Host` (RFC 9112 \u00a73.2.2), its `http`/`https` scheme matched in any letter case and its authority ending at the first `/`, `?` or `#`; an empty authority or a userinfo refused 400",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_an_absolute_form_authority_replaces_host` (every PR) \u2014 the authority was thrown away and the sent `Host` kept, so an application routing on `Host` read a site the target never named; `HTTP://h/p` was left whole, a path with no leading slash; `http://h?q=1` lost its query; and `http:///p` was served as `/p`. The sent `Host` is still required on HTTP/1.1 (\u00a73.2). Four tests beside it hold the scheme's case, the query, the refusals and a target that is not UTF-8 (G14), each failing alone when its rule is reverted"
+      "evidence": "`test_parsing.mojo:test_an_absolute_form_authority_replaces_host` (every PR) \u2014 the authority was thrown away and the sent `Host` kept, so an application routing on `Host` read a site the target never named; `HTTP://h/p` was left whole, a path with no leading slash; `http://h?q=1` lost its query; and `http:///p` was served as `/p`. The sent `Host` is still required on HTTP/1.1 (\u00a73.2). Three tests beside it hold the scheme's case, the query and the refusals, each failing alone when its rule is reverted; a target that is not UTF-8 (G14) no longer reaches the reduction, refused 400 by the target scanner since B19, which `test_an_absolute_form_target_with_bytes_above_ascii_is_refused` holds"
     },
     {
       "id": "B17",
@@ -343,7 +343,63 @@
       "category": "B. Request smuggling (CWE-444)",
       "capability": "One `Connection` field line read as a list of case-insensitive option tokens (RFC 9110 \u00a77.6.1): `close` anywhere in it closes the connection behind the answer, and an HTTP/1.0 `keep-alive` anywhere in it keeps one",
       "status": "verified",
-      "evidence": "`test_request_as_sent.mojo:test_connection_is_read_as_a_list_of_tokens` (every PR) \u2014 the whole value was compared with `close`, so `Connection: close, TE` kept the connection alive and the request pipelined behind it was answered; a member must be the token itself, `closed` closing nothing. `Smoke test pipelined requests` sends that shape and requires one 200 and a close. Two `Connection` field lines are not combined into one list (RFC 9110 \u00a75.3): the last is kept, so a `close` on the first is lost (review record LF40, after the release)"
+      "evidence": "`test_request_as_sent.mojo:test_connection_is_read_as_a_list_of_tokens` (every PR) \u2014 the whole value was compared with `close`, so `Connection: close, TE` kept the connection alive and the request pipelined behind it was answered; a member must be the token itself, `closed` closing nothing. `Smoke test pipelined requests` sends that shape and requires one 200 and a close. Two `Connection` field lines are one list since B22"
+    },
+    {
+      "id": "B18",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A `CONNECT` request refused with 501 before any application sees it, and its connection closed",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_connect_is_answered_501_and_closed` (every PR) \u2014 CONNECT asks for a tunnel (RFC 9110 \u00a79.3.6), which this server does not implement, yet the request reached the application, and one that answers every method answered it 200: a front end forwarding CONNECT reads a 2xx as an open tunnel, so whatever the client sent next went through unparsed (review record LF36). The 501 is asked after every rule that answers 400, so a CONNECT that is also malformed \u2014 a bare LF, two `Host` lines, `Content-Length` beside `Transfer-Encoding`, a `Content-Length` that is not a digit run, no `Host` \u2014 is 400 as any request is (`test_parsing.mojo:test_a_malformed_connect_is_still_400`), as B21's lists are; the method name is case-sensitive. `test_parsing.mojo:test_connect_is_refused_as_not_implemented` holds the parser's half, and `Smoke test pipelined requests` sends CONNECT with a request pipelined behind it and requires one 501 and a close"
+    },
+    {
+      "id": "B19",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A request target outside RFC 9112 \u00a73.2's forms, or holding a byte above ASCII, refused with 400: origin-form opens with `/`, absolute-form is `http` or `https`, `*` is OPTIONS's alone and authority-form CONNECT's (B18); a `%` escape is left to the application",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_request_target_must_take_one_of_the_four_forms` (every PR) \u2014 `GET p` and `GET h:80` were served, the application reading a path with no leading slash, and `/caf<0xE9>` was served where h11 and llhttp both refuse it, the application reading a path that is not UTF-8 (review record LF37). `Smoke test the hello server` sends four targets holding such a byte and requires a 400 for each. `GET *` was served too, as h11 and llhttp serve it; RFC 9112 \u00a73.2.4 gives `*` to OPTIONS alone. An accepted `OPTIONS *` reaches the application as `/` today, so it cannot tell a server-wide OPTIONS from one on the root (review record LF41). The bytes are the target scanner's rule and the forms `parse_request_headers`'; `test_a_byte_above_ascii_in_the_request_target_is_rejected` holds the bytes at every offset across the scanner's widths, and that such a target is invalid before its line ends. Every other VCHAR is still accepted, as h11 accepts it: browsers send braces, a vertical bar and a caret unescaped in a query"
+    },
+    {
+      "id": "B20",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "An empty `Host` accepted on HTTP/1.1 when the request target names no authority (origin-form, or `*`), as RFC 9110 \u00a77.2 asks a client to send it; refused beside an absolute-form target, whose authority `Host` must be, and a missing `Host` still refused",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_an_empty_host_is_accepted_when_the_target_names_no_authority` (every PR) \u2014 every empty `Host` was refused with 400, where h11 and llhttp accept it (review record LF38). The application reads an empty `Host` (WSGI's `HTTP_HOST`); one routing on it decides what an empty one means"
+    },
+    {
+      "id": "B21",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A transfer coding before the final `chunked` refused with 501 and the connection closed (RFC 9112 \u00a76.1); where `chunked` is not the final coding \u2014 a lone `gzip`, `chunked` out of place or twice, an empty last member \u2014 the answer stays 400 and a close, RFC 9112 \u00a76.3's MUST, and 400 wins where a list is both",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_transfer_coding_other_than_chunked_is_not_implemented` (every PR) \u2014 this server decodes `chunked` and nothing else, yet `gzip, chunked` was de-chunked and its body handed to the application still gzipped, where h11 refuses it (review record LF39). B3's shapes stay 400: with `chunked` not final the body's end cannot be known. `test_slot_lifecycle.mojo:test_a_transfer_coding_it_cannot_decode_is_answered_501_and_closed` holds the loop's answer, and `Smoke test pipelined requests` sends a `gzip, chunked` body with a request pipelined behind it and requires one 501 and a close"
+    },
+    {
+      "id": "B22",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "Repeated `Connection` field lines combined into one list, in order, comma-SP (RFC 9110 \u00a75.3), so `close` on any of them closes the connection behind the answer",
+      "status": "verified",
+      "evidence": "`test_request_as_sent.mojo:test_repeated_connection_lines_are_read_as_one_list` (every PR) \u2014 the header store keeps the last line of a repeated field, so `Connection: close` then `Connection: keep-alive` kept the connection and the request pipelined behind it was answered, and an HTTP/1.0 `keep-alive` before a `TE` line closed it (review record LF40). Only `Connection` is combined: it is the list the loop acts on for every request, and a request carries no `Set-Cookie`, the field that never combines. `test_slot_lifecycle.mojo:test_a_close_on_either_connection_line_closes` holds the loop's close, and `Smoke test pipelined requests` sends the shape and requires one 200 and a close. The lines are joined outside the header store and set once, as `Cookie`'s are: set at every line, the list so far was copied into the store's blob each time, which never overwrites, and 98 lines of a 32 KB head left a 1.5 MB blob on the loop thread; `test_parsing.mojo:test_repeated_connection_lines_are_joined_in_linear_space` holds the blob within the head's size"
+    },
+    {
+      "id": "B23",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A request head still arriving that holds a bare LF answered 400 and closed at the read that brings it, before any CRLFCRLF frames it",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_bare_lf_in_a_head_still_arriving_is_answered_400_at_once` (every PR) \u2014 the parser that refuses a bare LF (B12) runs only once `find_header_end` frames a head by its CRLFCRLF, and a head of bare LFs holds none, so it went unanswered until its peer's EOF or the header timeout's 408 (review record LF40); never served, so no desync. Only the bytes each read adds are scanned, each with the byte before it, so a CR ending one read and the LF opening the next are a CRLF; the scan is one more SIMD pass over the bytes a read adds to a head still incomplete, of the order of `find_header_end`'s own pass over them, and a head that arrives whole is not scanned. `test_parsing.mojo:test_a_bare_lf_is_found_in_a_head_still_arriving_at_every_offset` holds the scan across its widths, and `Smoke test pipelined requests` sends a head of bare LFs without half-closing and requires a 400 and a close"
+    },
+    {
+      "id": "B24",
+      "section": "B",
+      "category": "B. Request smuggling (CWE-444)",
+      "capability": "A control byte other than HTAB, or DEL, in a chunked body's trailer field value makes the body invalid, as it makes a head's field value (RFC 9110 \u00a75.5)",
+      "status": "verified",
+      "evidence": "`test_parsing.mojo:test_a_control_byte_in_a_trailer_value_is_refused` (every PR) \u2014 B14 held the trailer to field lines ending in CRLF but took any byte but LF in a value, NUL and VT included, where a head's value refuses them. The trailer is discarded, so this keeps one rule for field content rather than closing an exposure (review record LF4's deferred minor). `poe sabotage-trailers` reverts it with B14's rules"
     },
     {
       "id": "C1",
@@ -1111,7 +1167,7 @@
       "category": "G. Security hardening",
       "capability": "A request carrying bytes that are not UTF-8 \u2014 in the target, a static-mount path, a cookie, `Accept`, `If-None-Match`, `Range` or a JSON body a number is read from \u2014 is answered, never trapped, and so is one whose bytes come back out in a RENDERED FRAGMENT an application broadcasts: every slice of such a string on the serving path is a byte-span slice, which has no codepoint-boundary assert",
       "status": "verified",
-      "evidence": "`test_unquote.mojo:test_invalid_utf8_beside_an_escape_does_not_trap` (every PR) \u2014 `unquote` sliced its input as a `String` and one `GET /?x=<0x80>%41` killed the process on the loop thread, every app alike; the cookie jar (parsed for every request), the static mount, the negotiator and the ETag matcher had the same shape, and so did the SSE line splitter and frame decoder, which bytes from outside the request reach too \u2014 a `--pg-listen` payload from a database that converts nothing, trapping worker 0's listener thread \u2014 each pinned by a test in its own file that declares this row, and a trap ends the test process, so the gate is those files passing at all. `m0-datastar`'s `split_data_lines` is a deliberate copy of that splitter, kept dependency-free rather than imported, and needed the same fix one release later \u2014 reached not by a request directly but by a RENDERED FRAGMENT, which is where an application puts request data: a todo whose text carries a newline then a lone 0x80 byte, HTML escaping having left both alone, trapped the LOOP thread and killed the whole server on one unauthenticated POST. `Smoke test the hello server` and `Smoke test the notes API` send the same bytes over a socket and require an answer with the server still up, and `Smoke test the Datastar todo demo` posts such a todo and requires the server to answer it, stay up and keep rendering. `m0-core`'s `parse_json_number` cut the number out of a body with a `String` slice, so `{\"x\":1<0x80>}` trapped; no app called it until `apps/blobs`' drop view, and `Smoke test the blobs demo` posts that body and requires an answer and a healthy server"
+      "evidence": "`test_unquote.mojo:test_invalid_utf8_beside_an_escape_does_not_trap` (every PR) \u2014 `unquote` sliced its input as a `String` and one `GET /?x=<0x80>%41` killed the process on the loop thread, every app alike; the cookie jar (parsed for every request), the static mount, the negotiator and the ETag matcher had the same shape, and so did the SSE line splitter and frame decoder, which bytes from outside the request reach too \u2014 a `--pg-listen` payload from a database that converts nothing, trapping worker 0's listener thread \u2014 each pinned by a test in its own file that declares this row, and a trap ends the test process, so the gate is those files passing at all. `m0-datastar`'s `split_data_lines` is a deliberate copy of that splitter, kept dependency-free rather than imported, and needed the same fix one release later \u2014 reached not by a request directly but by a RENDERED FRAGMENT, which is where an application puts request data: a todo whose text carries a newline then a lone 0x80 byte, HTML escaping having left both alone, trapped the LOOP thread and killed the whole server on one unauthenticated POST. Since B19 a request TARGET holding a byte above ASCII is refused 400 by the target scanner before any slice, so the target's sites \u2014 `unquote` reached from the target, and the absolute-form reduction \u2014 are unreachable from the wire rather than gated there: `Smoke test the hello server` sends four such targets and requires the 400 for each, and the cookie jar's raw byte beside them and requires an answer. The decoder's wire case is a form body, `title=<0x80>%41`, which `Smoke test the fragment notes app` posts and requires answered with the server still up; `Smoke test the notes API` reaches the static mount with `%80`, which decodes to the byte, and the header sites with the raw byte, and requires the same; and `Smoke test the Datastar todo demo` posts such a todo and requires the server to answer it, stay up and keep rendering. `m0-core`'s `parse_json_number` cut the number out of a body with a `String` slice, so `{\"x\":1<0x80>}` trapped; no app called it until `apps/blobs`' drop view, and `Smoke test the blobs demo` posts that body and requires an answer and a healthy server"
     },
     {
       "id": "G15",
@@ -1879,7 +1935,7 @@
       "category": "L. ASGI 3.0",
       "capability": "A de-chunked request's scope carries `content-length` and not the `chunked` coding the loop removed, and no header the client did not send",
       "status": "verified",
-      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a chunked POST and a GET, read back from the scope on the executor and on the buffered hatch: the de-chunked one must carry its length and no `transfer-encoding`, and the GET neither a `content-length` nor a `connection` curl never sent. Before the fix every parsed request went through the outgoing constructor, which filled in a length, a `Connection` and a `Host`, so a GET carried `content-length: 0` and `connection: keep-alive` and a chunked request both halves of a contradictory pair an application proxying it would forward. A `gzip, chunked` body keeps its `gzip`, and HTTP/1.0 still closes by default, now read from the protocol (`test_request_as_sent.mojo`). The WSGI environ follows, since it maps the same headers: `Conformance test the WSGI bridge` sends the same two requests to `/environ`"
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 a chunked POST and a GET, read back from the scope on the executor and on the buffered hatch: the de-chunked one must carry its length and no `transfer-encoding`, and the GET neither a `content-length` nor a `connection` curl never sent. Before the fix every parsed request went through the outgoing constructor, which filled in a length, a `Connection` and a `Host`, so a GET carried `content-length: 0` and `connection: keep-alive` and a chunked request both halves of a contradictory pair an application proxying it would forward. A `gzip, chunked` body never gets this far, refused 501 by the parser (B21), and HTTP/1.0 still closes by default, now read from the protocol (`test_request_as_sent.mojo`). The WSGI environ follows, since it maps the same headers: `Conformance test the WSGI bridge` sends the same two requests to `/environ`"
     },
     {
       "id": "L26",

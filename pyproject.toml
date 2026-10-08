@@ -1417,27 +1417,35 @@ port=$(free_port)
 spawn hello.log env M0_PORT=$port mojo run -I packages/m0-core/ -I packages/m0-http/ apps/hello/server.mojo
 wait_ready http://localhost:$port/health $pid
 
-# G14: a request target holding a byte that is not UTF-8 beside a
-# percent-escape used to trap the loop thread inside `unquote`, so one GET
-# killed the process -- every app, before any handler ran. Raw sockets,
-# because curl will not send the byte. Each must be ANSWERED (any status),
-# and the server must still be up afterwards.
-python3 - "$port" <<'PY' || fail 'a malformed target got no answer'
+# B19: a request target holding a byte above ASCII is refused 400 by the
+# target scanner, before any slice. Such a target, beside a percent-escape,
+# used to reach `unquote` and trap the loop thread there, so one GET killed
+# the process -- every app, before any handler ran (G14); the decoder's
+# wire case is now `smoke-fragment-notes`' form body. G14: the cookie jar,
+# parsed for every request, still takes the raw byte and must ANSWER (any
+# status). Raw sockets, because curl will not send the byte, and the server
+# must still be up afterwards.
+python3 - "$port" <<'PY' || fail 'a malformed target got no answer, or not its 400'
 import socket, sys
 port = int(sys.argv[1])
 tail = b" HTTP/1.1\\r\\nHost: x\\r\\nConnection: close\\r\\n\\r\\n"
-for req in (
-    b"GET /?x=\\x80%41" + tail,                       # the decoder, in the query
-    b"GET /a\\x80%41b" + tail,                        # the decoder, in the path
-    b"GET /?\\xff=%2B" + tail,
-    b"GET /\\x80" + tail,
-    b"GET / HTTP/1.1\\r\\nHost: x\\r\\nCookie: a=\\x80; b=1\\r\\nConnection: close\\r\\n\\r\\n",  # the cookie jar, parsed for every request
-):
+def answer(req):
     s = socket.create_connection(("127.0.0.1", port), timeout=5)
     s.sendall(req)
     head = s.recv(4096).split(b"\\r\\n")[0]
     s.close()
-    assert head.startswith(b"HTTP/1.1 "), (req, head)
+    return head
+for req in (
+    b"GET /?x=\\x80%41" + tail,                       # in the query, by an escape
+    b"GET /a\\x80%41b" + tail,                        # in the path, by an escape
+    b"GET /?\\xff=%2B" + tail,
+    b"GET /\\x80" + tail,
+):
+    head = answer(req)
+    assert head.startswith(b"HTTP/1.1 400 "), (req, head)
+cookie = b"GET / HTTP/1.1\\r\\nHost: x\\r\\nCookie: a=\\x80; b=1\\r\\nConnection: close\\r\\n\\r\\n"
+head = answer(cookie)
+assert head.startswith(b"HTTP/1.1 "), (cookie, head)
 PY
 curl --silent --fail http://localhost:$port/health > /dev/null \
   || fail 'the server was gone after a malformed target'
@@ -1445,6 +1453,7 @@ curl --silent --fail http://localhost:$port/health > /dev/null \
 echo "smoke-hello OK"
 python3 scripts/emit.py --covers A2 --task smoke-hello
 python3 scripts/emit.py --covers G14 --task smoke-hello
+python3 scripts/emit.py --covers B19 --task smoke-hello
 """
 
 # Two ways a server gets asked to stop, and both used to end the same way —
@@ -1933,6 +1942,10 @@ python3 scripts/emit.py --covers A6 --task smoke-pipelining
 python3 scripts/emit.py --covers B12 --task smoke-pipelining
 python3 scripts/emit.py --covers B15 --task smoke-pipelining
 python3 scripts/emit.py --covers B17 --task smoke-pipelining
+python3 scripts/emit.py --covers B18 --task smoke-pipelining
+python3 scripts/emit.py --covers B21 --task smoke-pipelining
+python3 scripts/emit.py --covers B22 --task smoke-pipelining
+python3 scripts/emit.py --covers B23 --task smoke-pipelining
 """
 
 [tool.poe.tasks.smoke-ws]
@@ -9583,6 +9596,9 @@ code=$(curl -s --path-as-is -o /dev/null -w '%{http_code}' http://localhost:$por
 # in Accept, in If-None-Match and in Range used to trap a String slice on
 # the loop thread and kill the process. Each must be answered and the
 # server must still be up. Raw sockets, because curl will not send the byte.
+# A raw byte above ASCII in a target is refused 400 by the parser (SPEC
+# B19), so the static path carries it as `%80`, which the URI decodes to
+# the byte itself before the mount slices the path.
 python3 - "$port" <<'PY' || fail 'a request carrying a byte that is not UTF-8 got no answer'
 import socket, sys
 port = int(sys.argv[1])
@@ -9592,9 +9608,9 @@ def req(line, headers=b""):
     head = s.recv(4096).split(b"\\r\\n")[0]
     s.close()
     assert head.startswith(b"HTTP/1.1 "), (line, headers, head)
-req(b"GET /static/\\x80%41.css")
-req(b"GET /static/\\x80/x.css")
-req(b"GET /static/x.\\x80")
+req(b"GET /static/%80%41.css")
+req(b"GET /static/%80/x.css")
+req(b"GET /static/x.%80")
 req(b"GET /notes", b"Accept: text/html;q=\\x80, \\x80/x\\r\\n")
 req(b"GET /notes/1", b"If-None-Match: \\"\\x80\\", W/\\"\\x80\\r\\n")
 req(b"GET /static/styles.css", b"Range: bytes=\\x80-\\r\\n")

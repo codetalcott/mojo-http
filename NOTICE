@@ -1338,6 +1338,54 @@ lightbug_http
         kept, `HTTP://` was left unreduced, and a query straight after the
         authority was lost.
 
+      - header.mojo, http/common_response.mojo, loop/request.mojo
+        (2026-10-08): `parse_request_headers` raises the new
+        `UnsupportedHTTPRequestError`, a fourth `RequestParseError`
+        variant, for a `CONNECT` request that every 400 rule has passed, and
+        `_handle_read_headers` answers it with the new `NotImplemented()`
+        (501) and closes (SPEC B18). CONNECT reached the application, and
+        a 2xx answer to it opens a tunnel in a front end that forwards it
+        (review record LF36).
+
+      - header.mojo, http/request.mojo (2026-10-08): `parse_request_headers`
+        raises `UnsupportedHTTPRequestError` (501) for a transfer coding
+        before the final `chunked` (RFC 9112 §6.1, SPEC B21); a final coding
+        that is not `chunked` (a lone `gzip`), `chunked` out of place or
+        twice, an empty value and an empty last member stay
+        `InvalidHTTPRequestError` (400, RFC 9112 §6.3). `gzip, chunked` was
+        de-chunked and served still gzipped (review record LF39).
+        `from_parsed`'s and
+        `_drop_final_chunked`'s comments say no other coding reaches them.
+
+      - http/parsing.mojo, header.mojo (2026-10-08): the request-target
+        scan stops at a byte above ASCII as at a control byte, a ParseError
+        (`_stop_lanes` and `_find_stop`, which the token scanner shares,
+        whose tchar check refused such a byte already), and
+        `parse_request_headers` refuses a target that is not origin-form,
+        an `http`/`https` absolute-form, or `*` on OPTIONS (RFC 9112 §3.2,
+        SPEC B19). `GET p`, `GET h:80` and `/caf\xe9` were served (review
+        record LF37).
+
+      - header.mojo (2026-10-08): `parse_request_headers` accepts an empty
+        `Host` on HTTP/1.1 unless the target is absolute-form (RFC 9110
+        §7.2, SPEC B20). Every empty one was refused (review record LF38).
+
+      - header.mojo, loop/request.mojo (2026-10-08): `parse_request_headers`
+        combines repeated `Connection` lines into one value, comma-SP, in
+        order (RFC 9110 §5.3, SPEC B22), joined outside the store and set
+        once after the field loop; `set_bytes` kept the last line, so
+        `close` on an earlier one was lost. The new `holds_bare_lf` finds an
+        LF no CR precedes from a start offset, and `_handle_read_headers`
+        asks it of the bytes a read added to a head `find_header_end` has
+        not framed, answering 400 and closing (SPEC B23): a head of bare
+        LFs waited for its peer's EOF or the 408 (review record LF40).
+
+      - http/chunked.mojo (2026-10-08): `IN_TRAILERS_LINE_MIDDLE` returns
+        -1 for a control byte other than HTAB, or DEL, in a trailer value
+        (RFC 9110 §5.5, SPEC B24), as `parse_headers` refuses one in a
+        head's field value; it took any byte but LF (review record LF4's
+        deferred minor).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

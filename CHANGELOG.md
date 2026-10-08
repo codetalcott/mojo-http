@@ -10,6 +10,50 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A `CONNECT` request is answered 501 and its connection closed** (SPEC
+  B18). It reached the application, and one that answers every method
+  answered it 200, which a proxy forwarding `CONNECT` reads as an open
+  tunnel: whatever the client sent next would pass through it unparsed.
+  This server implements no tunnel, so no application, on m0serve or the
+  Mojo host, receives `CONNECT` any more.
+
+- **A chunked request body in another transfer coding as well is answered
+  501 and its connection closed** (SPEC B21). `Transfer-Encoding: gzip,
+  chunked` was de-chunked and the body handed to the application still
+  gzipped. The server decodes `chunked` only, and now says so with 501, as
+  RFC 9112 §6.1 asks. A `Transfer-Encoding` whose last coding is not
+  `chunked` (a lone `gzip`, `chunked, gzip`) is still 400, as RFC 9112
+  §6.3 requires.
+
+- **A request target that is not a URI the server serves is answered 400**
+  (SPEC B19). `GET p` and `GET host:80` reached the application as a path
+  with no leading slash, and a target holding a raw byte above ASCII
+  (`/caf\xe9`) as a path that is not UTF-8. A target now opens with `/`,
+  is an `http` or `https` URI, or is `*` on an `OPTIONS` request; a
+  non-ASCII character must be percent-encoded, as every browser does, and
+  the escape still reaches the application undecoded.
+
+- **An empty `Host` is accepted when the target names no host** (SPEC
+  B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
+  when the URI it requests has no authority, and every empty `Host` was
+  answered 400. It is accepted on an origin-form (`/path`) or `*` target,
+  and the application reads an empty `HTTP_HOST`; beside an absolute-form
+  target (`http://host/path`) it is still refused, as is a missing `Host`.
+
+- **`Connection: close` closes the connection whichever `Connection` line
+  carries it** (SPEC B22). A request with two `Connection` lines was read
+  by its last alone, so `close` on the first was lost and the connection
+  kept open. The lines are now one list, in order, as RFC 9110 §5.3 reads
+  them, and the application sees them combined.
+
+- **A request head with a bare LF is answered 400 as soon as it arrives**
+  (SPEC B23). A head of bare-LF lines (`GET / HTTP/1.1\nHost: x\n\n`) was
+  never served, but got no answer until the client closed or the header
+  timeout sent 408, holding a connection slot meanwhile.
+
+- **A chunked body whose trailer value holds a control byte is refused
+  with 400** (SPEC B24), as a request header's value is. Trailers are
+  discarded, so no application ever read one; the two rules now agree.
 - **WebSocket frames and upgrades the RFC calls malformed are refused with
   1002 or 400** (SPEC I35-I38). A client frame whose 64-bit length has its
   high bit set, or whose length is not in the shortest encoding that holds

@@ -11,8 +11,8 @@ that an application proxying the request would forward.
 
 Now a parsed request keeps its headers as sent, with one rewrite: a body the
 loop de-chunked is a sized body, so it is described by its length and the
-final `chunked` coding is removed (any other coding stays, because the body
-is still in it). And since `Connection: close` is no longer written into
+final `chunked` coding is removed (no other coding reaches it: the parser
+refuses one, SPEC B21). And since `Connection: close` is no longer written into
 every HTTP/1.0 request, `connection_close()` reads the protocol itself
 (RFC 9112 §9.3): 1.0 closes unless it asked to keep alive.
 """
@@ -81,23 +81,9 @@ def test_a_dechunked_request_carries_its_length_and_no_transfer_encoding() raise
     assert_true(req.headers.known_index(KH_TRANSFER_ENCODING) < 0)
 
 
-def test_a_dechunked_request_keeps_its_other_transfer_codings() raises:
-    """Only the final `chunked` goes: a gzip coding still describes the body.
-
-    covers: L25
-    """
-    var req = request_from(
-        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip, chunked\r\n\r\n",
-        "zipped",
-    )
-    assert_equal(req.headers.get(HeaderKey.TRANSFER_ENCODING).value(), "gzip")
-    assert_equal(req.headers.get(HeaderKey.CONTENT_LENGTH).value(), "6")
-
-
 def test_empty_list_elements_leave_no_empty_transfer_encoding() raises:
     """RFC 9110 §5.6.1: empty list elements are accepted and mean nothing, so
-    `, chunked` is a lone `chunked` -- no empty field beside the length --
-    and `gzip,,chunked` keeps `gzip`.
+    `, chunked` is a lone `chunked` -- no empty field beside the length.
 
     covers: L25
     """
@@ -106,10 +92,6 @@ def test_empty_list_elements_leave_no_empty_transfer_encoding() raises:
     )
     assert_true(bare.headers.known_index(KH_TRANSFER_ENCODING) < 0)
     assert_equal(bare.headers.get(HeaderKey.CONTENT_LENGTH).value(), "3")
-    var gz = request_from(
-        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip,,chunked\r\n\r\n", "abc"
-    )
-    assert_equal(gz.headers.get(HeaderKey.TRANSFER_ENCODING).value(), "gzip")
 
 
 def test_transfer_encoding_case_does_not_matter() raises:
@@ -184,6 +166,39 @@ def test_connection_is_read_as_a_list_of_tokens() raises:
     assert_false(_closes("Upgrade,Keep-Alive", "1.0"))
     assert_true(_closes("keep-alive-ish", "1.0"))
     assert_true(_closes("keep-alive, close", "1.0"))
+
+
+def test_repeated_connection_lines_are_read_as_one_list() raises:
+    """RFC 9110 §5.3: field lines of one name combine into one list, in
+    order, comma-SP. The header store keeps the LAST line of a repeated
+    field, so `Connection: close` then `Connection: keep-alive` kept the
+    connection, and an HTTP/1.0 `keep-alive` before a `TE` line closed it.
+    The application reads the combined value.
+
+    covers: B22
+    """
+    var head = String("GET / HTTP/1.1\r\nHost: a\r\n")
+    var req = request_from(
+        head + "Connection: close\r\nConnection: keep-alive\r\n\r\n"
+    )
+    assert_true(req.connection_close())
+    assert_equal(req.headers.get(HeaderKey.CONNECTION).value(), "close, keep-alive")
+    assert_true(
+        request_from(head + "Connection: TE\r\nconnection: CLOSE\r\n\r\n").connection_close()
+    )
+    var three = request_from(
+        head + "Connection: a\r\nX-Other: 1\r\nConnection: b\r\nConnection: close\r\n\r\n"
+    )
+    assert_equal(three.headers.get(HeaderKey.CONNECTION).value(), "a, b, close")
+    assert_true(three.connection_close())
+    assert_false(
+        request_from(
+            "GET / HTTP/1.0\r\nConnection: keep-alive\r\nConnection: TE\r\n\r\n"
+        ).connection_close()
+    )
+    assert_false(
+        request_from(head + "Connection: keep-alive\r\nConnection: TE\r\n\r\n").connection_close()
+    )
 
 
 def test_the_outgoing_constructor_still_fills_its_headers() raises:

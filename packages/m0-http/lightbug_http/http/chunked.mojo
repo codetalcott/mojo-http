@@ -248,10 +248,19 @@ struct HTTPChunkedDecoder(Defaultable):
                 self._state = DecoderState.IN_TRAILERS_LINE_MIDDLE
 
             elif self._state == DecoderState.IN_TRAILERS_LINE_MIDDLE:
-                # The value, to its CR.
+                # The value, to its CR. A control byte other than HTAB, or
+                # DEL, is no field content (RFC 9110 §5.5): refused as in a
+                # head's field value (SPEC B24), though a trailer is
+                # discarded. LF is the line rule's, below (SPEC B14).
                 while src < buffer_len:
                     if buf[src] == BytesConstant.CR:
                         break
+                    if (
+                        buf[src] < 0x20
+                        and buf[src] != BytesConstant.TAB
+                        and buf[src] != BytesConstant.LF
+                    ) or buf[src] == 0x7F:
+                        return (-1, dst)
                     if buf[src] == BytesConstant.LF:
                         return (-1, dst)
                     src += 1

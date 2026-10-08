@@ -53,13 +53,16 @@ def _field_end_lanes[W: Int](chunk: SIMD[DType.uint8, W]) -> SIMD[DType.bool, W]
 
 @always_inline
 def _stop_lanes[W: Int](chunk: SIMD[DType.uint8, W], stop: UInt8) -> SIMD[DType.bool, W]:
-    """Lanes holding `stop`, any control byte (HTAB included), or DEL.
+    """Lanes holding `stop`, any control byte (HTAB included), DEL, or a
+    byte above ASCII.
 
     The token scanner and the request-target scanner each stop at one
-    delimiter, and a control byte before it is an error for both — so one
-    class serves both and the caller tells the two apart by the byte.
+    delimiter, and any of the others before it is an error for both — no
+    tchar is above ASCII, and no URI byte is (RFC 3986 §2) — so one class
+    serves both and the caller tells the two apart by the byte. DEL and
+    the bytes above it are one compare.
     """
-    var ctl = chunk.lt(SIMD[DType.uint8, W](0x20)) | chunk.eq(SIMD[DType.uint8, W](0x7F))
+    var ctl = chunk.lt(SIMD[DType.uint8, W](0x20)) | chunk.ge(SIMD[DType.uint8, W](0x7F))
     return ctl | chunk.eq(SIMD[DType.uint8, W](stop))
 
 
@@ -129,7 +132,8 @@ def _find_field_end(ptr: Pointer[UInt8, _], length: Int) -> Int:
 
 
 def _find_stop(ptr: Pointer[UInt8, _], length: Int, stop: UInt8) -> Int:
-    """Offset of the first `stop`, control byte or DEL in `length` bytes, or -1."""
+    """Offset of the first `stop`, control byte, DEL or byte above ASCII in
+    `length` bytes, or -1."""
     var i = 0
     while i + 64 <= length:
         var lane = _first_lane[64](_stop_lanes[64](ptr.unsafe_offset(i).unsafe_load[width=64](), stop))
@@ -143,7 +147,7 @@ def _find_stop(ptr: Pointer[UInt8, _], length: Int, stop: UInt8) -> Int:
         i += 16
     while i < length:
         var b = ptr[unsafe_offset=i]
-        if b < 0x20 or b == 0x7F or b == stop:
+        if b < 0x20 or b >= 0x7F or b == stop:
             return i
         i += 1
     return -1
@@ -589,9 +593,13 @@ def http_parse_request_headers[
         var path_start = buf.read_pos
 
         # The request target runs to the SP before the version. A control
-        # byte or DEL inside it is a ParseError; obs-text (>= 0x80) is let
-        # through, as the byte-at-a-time loop this replaces let it through.
-        # `len` is this function's byte-count parameter, hence `__len__`.
+        # byte, DEL or a byte above ASCII inside it is a ParseError: no URI
+        # byte is above ASCII (RFC 3986 §2; a client percent-encodes one),
+        # and h11 and llhttp refuse it. It was let through, and `/caf\xe9`
+        # reached the application as a path that is not UTF-8 (SPEC B19).
+        # What a target may say, rather than hold, is
+        # `parse_request_headers`' question. `len` is this function's
+        # byte-count parameter, hence `__len__`.
         var path_remaining = buf._inner.__len__() - buf.read_pos
         var path_found = _find_stop(
             buf._inner.unsafe_ptr().unsafe_offset(buf.read_pos),
