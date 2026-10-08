@@ -115,13 +115,14 @@ SABOTAGES = [
         "a framed request's head end is not where the parser stopped",
     ),
     (
-        # The defect this harness found: with one to three bytes scanned
-        # the search began AT them, and a CRLFCRLF opening the buffer was
-        # missed by a split read (two empty lines, then a request).
+        # The first defect this harness found (LF66): with one to three
+        # bytes scanned the search began AT them, and a CRLFCRLF opening the
+        # buffer was missed by a split read (two empty lines, then a
+        # request). The clamp lives in `find_header_end`.
         "the terminator search starts at what an earlier read scanned",
-        FRAMING,
-        "    var search_start = scanned - 3 if scanned > 3 else 0",
-        "    var search_start = scanned - 3 if scanned > 3 else scanned",
+        HEADER,
+        "    var actual_start = max(search_start - 3, 0)",
+        "    var actual_start = search_start - 3 if search_start > 3 else search_start",
         "a head split across reads was framed differently from the same bytes whole",
     ),
     (

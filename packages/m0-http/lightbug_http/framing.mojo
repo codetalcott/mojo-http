@@ -133,14 +133,11 @@ def frame_request_head(
     A framed request's parsed head is moved into `head`, which is left as it
     was for any other answer.
     """
-    # Three bytes back, so a CRLFCRLF the last read ended inside is found,
-    # and from the start when fewer than three were scanned. It started AT
-    # `scanned` for 1 to 3, so a terminator opening the buffer was missed
-    # by a split read: two empty lines then a request, refused 400 whole,
-    # were served when the first read held one CRLF (SPEC B29).
-    var search_start = scanned - 3 if scanned > 3 else 0
-
-    var header_end = find_header_end(buffer, search_start)
+    # `find_header_end` backs off three bytes from `scanned`, never before
+    # the first byte, so a CRLFCRLF the last read ended inside is found:
+    # every call before this one searched all it was given, so a terminator
+    # not yet found starts at `scanned - 3` or later (LF66).
+    var header_end = find_header_end(buffer, scanned)
     if not header_end:
         # No CRLFCRLF frames a head yet. One holding a bare LF can only be
         # refused, and one of bare LFs only would never be framed at all,

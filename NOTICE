@@ -1640,9 +1640,12 @@ lightbug_http
         two framers end apart, the size, target and length refusals, the
         bare-LF scan of a head still arriving, the body's framing and
         `request_end` -- moved out of `_handle_read_headers`, which acts on
-        its answer (SPEC B29). The search starts at the buffer's first byte
-        when fewer than four bytes were scanned; it started at them, so a
-        CRLFCRLF opening the buffer was missed by a split read.
+        its answer (SPEC B29).
+
+      - header.mojo (2026-10-08): `find_header_end` backs off three bytes
+        from `search_start` and never before the buffer's first byte; it
+        started AT 1 to 3, so a CRLFCRLF opening the buffer was missed by a
+        split read (review record LF66, SPEC B29).
 
       - http/parsing.mojo (2026-10-08): `http_parse_request_headers`
         refuses a CR that no LF follows before the request line (RFC 9112
