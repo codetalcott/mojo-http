@@ -4,7 +4,7 @@ from lightbug_http.strings import http, https, strHttp10, strHttp11
 
 def _hex_upper(v: Int) -> String:
     """One uppercase hex digit."""
-    return String("0123456789ABCDEF"[byte=v : v + 1])
+    return String(unsafe_from_utf8="0123456789ABCDEF".as_bytes()[v : v + 1])
 
 
 @always_inline

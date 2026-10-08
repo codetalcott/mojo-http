@@ -1521,6 +1521,11 @@ lightbug_http
         `strict` parameter, whose lenient default (a bare LF ending a line,
         an obs-fold line kept) only the response parser had asked for.
 
+      - address.mojo, uri.mojo (2026-10-08): the last six `[byte=a:b]`
+        slices, each cut beside an ASCII delimiter and so never mid-
+        codepoint, are byte slices, so the fork holds none of the form
+        that traps on a request's text (review record LF26).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
