@@ -5,10 +5,11 @@
 than 128 new connections arriving while the loop is busy overflowed the
 accept queue: the kernel drops each handshake past a full queue
 (`TcpExtListenOverflows`), and its client retries a second later. The
-listener now asks for `SOMAXCONN`, which each kernel clamps to its
-setting. Linux reports a listener's backlog in `TCP_INFO` (`tcpi_sacked`,
-the queue's limit, as `ss -lt` shows it); macOS reports it nowhere, and
-its default limit is 128 either way, so there the test holds the constant.
+queue is now up to `SOMAXCONN` (4096 on Linux, 128 on macOS), or the
+system's setting if that is lower. Linux reports a listener's limit in
+`TCP_INFO` (`tcpi_sacked`, as `ss -lt` shows it); macOS's is 128 either
+way (`netstat -Lan` shows it as `maxqlen`), so there the test holds the
+constant.
 """
 
 from std.ffi import c_int, external_call, get_errno
@@ -36,9 +37,9 @@ def _somaxconn() raises -> Int:
 
 
 def test_the_listener_asks_for_the_systems_backlog() raises:
-    """The listener's accept queue holds as many connections as the system
-    allows: on Linux `min(SOMAXCONN, net.core.somaxconn)`, as `TCP_INFO`
-    reports it, where it was 128.
+    """The listener's accept queue holds up to `SOMAXCONN` connections, or
+    the system's setting if that is lower: on Linux `min(SOMAXCONN,
+    net.core.somaxconn)`, as `TCP_INFO` reports it, where it was 128.
 
     covers: C12
     """
