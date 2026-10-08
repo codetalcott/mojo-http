@@ -222,12 +222,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `lightbug_http.header.parse_response_headers` and
   `ParsedResponseHeaders`, `lightbug_http.http.parsing`'s
   `http_parse_response_headers`, `get_token_to_eol` and `try_peek_at`,
-  and the response parse errors; `ResponseCookieJar.from_headers`,
-  `Cookie.from_set_header` and `Cookie.clear_cookie`, with
-  `CookieParseError`, `InvalidCookieError`, `Expiration.invalidate` and
-  the `from_string` of `Expiration`, `Duration` and `SameSite`, which
-  dropped `expires`, a capitalised `SameSite` and any attribute they did
-  not know; `ParsedRequestHeaders.expects_body`, which missed a chunked
+  and the response parse errors; `ResponseCookieJar.from_headers`;
+  `Cookie.from_set_header`, which dropped `expires`, a capitalised
+  `SameSite` and any attribute it did not know; `Cookie.clear_cookie`;
+  with `CookieParseError`, `InvalidCookieError`, `Expiration.invalidate`
+  and the `from_string` of `Expiration`, `Duration` and `SameSite`;
+  `ParsedRequestHeaders.expects_body`, which missed a chunked
   body on any method but POST, PUT and PATCH; `write_header_latin1`,
   which wrote a header holding CR or LF where `Headers.write_latin1_to`
   drops it; `HTTPChunkedDecoder.is_in_chunk_data`;
