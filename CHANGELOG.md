@@ -33,6 +33,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   non-ASCII character must be percent-encoded, as every browser does, and
   the escape still reaches the application undecoded.
 
+- **A server-wide `OPTIONS *` reaches the application as `*`** (SPEC
+  B19). It arrived as `OPTIONS /`, so an application could not tell a
+  question about the whole server from one about its root page. A Mojo
+  application reads `*` as `req.uri.path`; a WSGI application reads it as
+  `PATH_INFO` and an ASGI one as `path` and `raw_path`, as gunicorn and
+  uvicorn hand it on. Under m0serve the root mount answers it; with no
+  root mount it is answered 404, as any path no mount claims.
+
 - **An empty `Host` is accepted when the target names no host** (SPEC
   B20). RFC 9110 §7.2 asks a client to send `Host` with an empty value
   when the URI it requests has no authority, and every empty `Host` was

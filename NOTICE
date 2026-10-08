@@ -1565,6 +1565,14 @@ lightbug_http
         they said "received": the count is taken per response, as its head
         lands (review record LF32, SPEC F23).
 
+      - http/request.mojo, offload.mojo (2026-10-08): `from_parsed` builds
+        an asterisk-form target's URI as it builds an origin-form one, so a
+        server-wide `OPTIONS *` reaches the application with `*` as its path
+        and request target, where the URI parser, handed the server's
+        address and `*`, answered `/`; and `match_path_prefix` lets the
+        empty (root) prefix match a path that does not start with `/`, so
+        m0serve's root mount takes it (review record LF41, SPEC B19).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

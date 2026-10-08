@@ -185,7 +185,13 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         # string needs no URI parsing at all — every derived field is the
         # path itself. This is the overwhelmingly common case for API
         # traffic; anything else falls back to the full parser.
-        var needs_full_parse = (
+        #
+        # The asterisk-form target of a server-wide OPTIONS (RFC 9112
+        # §3.2.4; the header parse admits `*` for OPTIONS alone) takes the
+        # same path, so the application reads `*`: the parser below, handed
+        # the address and `*`, answered `/`, and `OPTIONS *` reached the
+        # application as `OPTIONS /` (review record LF41).
+        var needs_full_parse = parsed.path != "*" and (
             parsed.path.byte_length() == 0
             or parsed.path.as_bytes()[0] != 0x2F  # '/'
             or ("%" in parsed.path)

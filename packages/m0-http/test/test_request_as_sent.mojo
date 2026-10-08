@@ -32,13 +32,15 @@ from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI
 
 
-def request_from(raw: String, body: String = "") raises -> HTTPRequest:
+def request_from(
+    raw: String, body: String = "", server_addr: String = "http://localhost"
+) raises -> HTTPRequest:
     """Parse a request the way the server's read path does: the header parse,
     then `from_parsed` with the body the loop read (decoded, if chunked)."""
     var parsed = parse_request_headers(raw.as_bytes())
     try:
         return HTTPRequest.from_parsed(
-            "http://localhost", parsed^, Bytes(body.as_bytes()), 8192
+            server_addr, parsed^, Bytes(body.as_bytes()), 8192
         )
     except:
         raise Error("fixture request failed to build")
@@ -199,6 +201,30 @@ def test_repeated_connection_lines_are_read_as_one_list() raises:
     assert_false(
         request_from(head + "Connection: keep-alive\r\nConnection: TE\r\n\r\n").connection_close()
     )
+
+
+def test_a_server_wide_options_reaches_the_application_as_an_asterisk() raises:
+    """`OPTIONS *` names the server, not its root (RFC 9112 §3.2.4), and
+    the application reads `*` as its path and its request target: both were
+    `/`, so an application could not tell it from `OPTIONS /` (review record
+    LF41). Both spellings of the server's address the loop prefixes are
+    held, and `OPTIONS /` stays the root.
+
+    covers: B19
+    """
+    for addr in [String("http://localhost"), String("127.0.0.1:8973")]:
+        var req = request_from(
+            "OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n", server_addr=addr
+        )
+        assert_equal(req.method, "OPTIONS")
+        assert_equal(req.uri.path, "*", addr)
+        assert_equal(req.uri.request_uri, "*", addr)
+        assert_equal(req.uri.query_string, "", addr)
+        var root = request_from(
+            "OPTIONS / HTTP/1.1\r\nHost: a\r\n\r\n", server_addr=addr
+        )
+        assert_equal(root.uri.path, "/", addr)
+        assert_equal(root.uri.request_uri, "/", addr)
 
 
 def test_the_outgoing_constructor_still_fills_its_headers() raises:
