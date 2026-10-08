@@ -722,9 +722,12 @@ struct ExecutorPort(Movable, Writable):
         ref handler = Pointer[WSGIHandler, MutUntrackedOrigin](
             unsafe_from_address=self.handler_addr
         )[]
+        ref st = Pointer[LoopState, MutUntrackedOrigin](
+            unsafe_from_address=self.loop_addr
+        )[]
         for _ in range(_HAND_OVER_TRIES):
             try:
-                _deliver_bus_frames(handler, pool.stream_chunk_read)
+                _deliver_bus_frames(handler, st, pool.stream_chunk_read)
             except e:
                 print(
                     "inverted executor: handing the chunk channel to the loop raised: "

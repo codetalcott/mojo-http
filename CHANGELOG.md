@@ -54,6 +54,42 @@ in a minor release: `m0serve`'s flags and environment variables, the
 - **A chunked body whose trailer value holds a control byte is refused
   with 400** (SPEC B24), as a request header's value is. Trailers are
   discarded, so no application ever read one; the two rules now agree.
+- **An inbound WebSocket message no longer waits on a quiet pool lane for
+  the next request** (SPEC I39). Exposed: m0serve under `--realtime` with
+  a handler pool, its default, where a Python view holds a WebSocket with
+  `M0-Hold: websocket`. Each message is handed to the pool with a wake for
+  a thread that is parked, and one that arrived while none was (every
+  thread busy, spinning, or a moment from parking) woke nobody: the thread
+  that parked next did not look for it, and the view was handed it only
+  when a later request woke the pool, on a quiet server never. A thread now
+  looks for a message once more after it announces its park. Found by the
+  fork review; with a sleep holding that moment open, 24 messages of 24
+  waited.
+
+- **A cross-worker bus frame is delivered whole or not at all** (SPEC
+  I40). Exposed: a publish whose channel name and frame together passed
+  about 69.6 KB, through `m0pub.publish()`, `scope["state"]["m0"]`,
+  `BroadcastBus.publish` or `DatastarStream` with the bus: a 5,000-byte
+  channel with a 64 KB frame reached the other workers' subscribers 904
+  bytes short, the end of the frame silently missing, though every
+  publisher had accepted it. Each loop now reads every datagram a
+  publisher can send whole, up to a 65,535-byte channel with a 65,536-byte
+  frame, into one buffer it keeps instead of allocating and zeroing 70 KB
+  on every drain. A datagram longer than that, or malformed, is refused
+  and counted: `http_bus_frames_refused_total` on `/__metrics`, which
+  counts the stream chunk channel's datagrams too (an ASGI executor and a
+  streaming `--blocking-threads` pool write that channel in the same
+  codec, and the same reader drains it).
+
+- **A `DatastarStream` reads a `Last-Event-ID` the way the server's held
+  streams do.** Exposed: an m0 application that calls `DatastarStream.open`
+  with a request it built itself, whose `Last-Event-ID` carries whitespace
+  around the id. `open` read `" 12 "` as 0 and replayed the whole journal
+  where the client had seen up to 12; it now resumes after 12. The stream
+  and the server's held streams share one parser
+  (`lightbug_http.hold.request_last_event_id`), so the two cannot read an
+  id differently again. A request from the wire was never affected: the
+  server trims the whitespace before either parser sees the value.
 - **WebSocket frames and upgrades the RFC calls malformed are refused with
   1002 or 400** (SPEC I35-I38). A client frame whose 64-bit length has its
   high bit set, or whose length is not in the shortest encoding that holds

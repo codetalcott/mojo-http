@@ -17,6 +17,7 @@ uses `notify_frame`, which queues bytes verbatim.
 # signals.mojo. Everything needed is re-exported here anyway.
 from lightbug_http import Headers, Header, HeaderKey, HTTPRequest, HTTPResponse
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
+from lightbug_http.hold import request_last_event_id
 
 from m0_http import NO_EVENT_ID, SSERegistry, sse_response
 from m0_http.multiworker import shared_fetch_add, shared_load, shared_store
@@ -233,10 +234,13 @@ struct DatastarStream:
         var last_id = 0
         var reconnecting = False
         var ahead = False
-        var header = req.headers.get("last-event-id")
-        if header:
+        if req.headers.get("last-event-id"):
             reconnecting = True
-            last_id = _parse_event_id(header.value())
+            # The fork's one parser, which every held stream reads its id
+            # with: a value that is not a plain decimal is 0, "replay
+            # whatever the journal holds", the safe reading of an id this
+            # server cannot place.
+            last_id = request_last_event_id(req)
             if last_id > self._current_id():
                 last_id = self._current_id()
                 ahead = True
@@ -580,30 +584,3 @@ struct DatastarStream:
     def has_subscribers(self, url: String) -> Bool:
         """Whether anyone is listening — skip an expensive render if not."""
         return self.registry.has_subscribers(url)
-
-
-def _parse_event_id(s: String) -> Int:
-    """Parse a decimal `Last-Event-ID`; anything malformed is 0.
-
-    Ids here are always decimal (`next_event_id` stringified), so a value that
-    is not one came from somewhere else and carries no position — 0 means
-    "replay whatever the journal holds", the safe reading of an id we cannot
-    place.
-
-    Bounded at 18 digits, the widest decimal that cannot overflow Int64.
-    The accumulator wraps silently past that, so a long enough client-sent
-    id would produce a negative or arbitrary position instead of the
-    rejection it deserves. `request_last_event_id` in m0-wsgi's `hold.mojo`
-    has always had this cap; this is the same rule in the other parser.
-    """
-    var n = s.byte_length()
-    if n == 0 or n > 18:
-        return 0
-    var result = 0
-    var bytes = s.as_bytes()
-    for i in range(n):
-        var c = Int(bytes[i])
-        if c < ord("0") or c > ord("9"):
-            return 0
-        result = result * 10 + (c - ord("0"))
-    return result

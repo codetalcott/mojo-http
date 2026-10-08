@@ -1470,6 +1470,27 @@ lightbug_http
         macOS, 4096 on Linux), where it asked for 128, which overflowed
         Linux's accept queue under a burst (review record LF19).
 
+      - offload.mojo (2026-10-08): a pool thread parking on its own wake
+        channel looks at its lane socket once more after announcing the
+        park, beside the ring (SPEC I39), through `_leave_park`, which both
+        re-checks share. An inbound WebSocket message that reached the lane
+        socket while no thread of the lane was parked woke nobody, and a
+        thread that then parked left it there until a later job woke the
+        lane.
+
+      - broadcast.mojo, loop/state.mojo, loop/streams.mojo, metrics.mojo,
+        event_loop.mojo, loop/offload.mojo (2026-10-08): bus channels are
+        drained by a `BusReader` the loop keeps in `LoopState` (SPEC I40):
+        one buffer of `BUS_DATAGRAM_MAX + 1` bytes, made at the first drain,
+        where `drain_bus_channel` allocated and zero-filled 69,642 bytes per
+        drain and decoded a longer datagram cut short. A datagram that fills
+        the buffer, or does not decode, is refused and counted in
+        `ServerMetrics.bus_frames_refused` (`http_bus_frames_refused_total`,
+        the stream chunk channel's included). An empty datagram still ends
+        the drain.
+        `_deliver_bus_frames` takes the `LoopState`; `drain_bus_channel`
+        remains, a reader of its own per call.
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

@@ -48,6 +48,15 @@ comptime _BUS_HEADER = 10  # 8-byte event id + 2-byte url length
 comptime MAX_CHANNEL = 65535
 """Longest channel name the bus wire format can carry (a `uint16` field)."""
 
+comptime BUS_DATAGRAM_MAX = _BUS_HEADER + MAX_CHANNEL + BUS_MAX_FRAME
+"""The largest datagram a publisher puts on the bus, 131,081 bytes: the
+header, a channel name of `MAX_CHANNEL` bytes and a frame of
+`BUS_MAX_FRAME`. Every publisher refuses past either bound
+(`publish_to_channels` here, `m0pub.publish` and the shim's `publish` in
+Python), and `BusReader` reads whole every datagram up to it. The socket
+buffers take one on both platforms (`SO_SNDBUF`/`SO_RCVBUF` of 256 KB,
+which Linux doubles)."""
+
 comptime CHANNEL_CONTROL_BYTE = UInt8(1)
 """The byte that opens a RESERVED channel name (`\\x01<kind>/<slot>[/<lane>]`).
 
@@ -79,9 +88,6 @@ def channel_is_reserved(url: String) -> Bool:
     var ub = url.as_bytes()
     return len(ub) > 0 and ub[0] == CHANNEL_CONTROL_BYTE
 comptime _BUS_SOCKET_BUF = 262144
-
-comptime _AF_UNIX = 1
-comptime _SOCK_DGRAM = 2
 
 
 struct BroadcastBus(Copyable, Movable):
@@ -285,27 +291,77 @@ def decode_bus_frame(datagram: Span[Byte, _]) -> Optional[BusFrame]:
     return BusFrame(url^, Int(Int64(id_bits)), frame^)
 
 
-def drain_bus_channel(read_fd: Int) raises -> List[BusFrame]:
-    """Read every waiting datagram off a bus channel; decode what parses.
+struct BusReader(Movable):
+    """The receiving end of bus channels: one buffer, made at the first
+    drain and kept, and a count of the datagrams it refused.
 
-    The channel is non-blocking; EAGAIN ends the drain. The event loop calls
-    this on read-readiness — edge-triggered registration means every pending
-    datagram must be consumed before returning.
-    """
-    var frames = List[BusFrame]()
-    var buf = List[UInt8](capacity=BUS_MAX_FRAME + _BUS_HEADER + 4096)
-    for _ in range(BUS_MAX_FRAME + _BUS_HEADER + 4096):
-        buf.append(0)
-    var fd = FileDescriptor(read_fd)
-    while True:
-        var n: UInt
-        try:
-            n = recv(fd, Span(buf), MSG_DONTWAIT)
-        except:
-            break  # EAGAIN: drained (or the channel died; either way, done)
-        if n == 0:
-            break
-        var decoded = decode_bus_frame(Span(buf)[: Int(n)])
-        if decoded:
-            frames.append(decoded.take())
-    return frames^
+    The event loop keeps one (`LoopState.bus_reader`) for every channel it
+    drains in this codec: its `BroadcastBus` channel and, where an executor
+    or a streaming pool runs, the chunk channel. The buffer used to be 70 KB, allocated and zero-filled on every
+    drain, and shorter than the datagrams the publishers send: a channel
+    name and a frame both near their bounds made one up to
+    `BUS_DATAGRAM_MAX`, and the kernel cut it to the buffer. Cut, it still
+    decoded -- the frame's tail was simply missing -- and went to the
+    subscribers short.
+
+    The buffer is now one byte longer than `BUS_DATAGRAM_MAX`. A SOCK_DGRAM
+    `recv` into a buffer shorter than the datagram copies what fits,
+    discards the rest and returns the buffer's length, on Linux and on
+    macOS alike, so a datagram that FILLS the buffer is longer than any
+    publisher sends, cut or not, and is refused rather than decoded.
+    `MSG_TRUNC` says less, and differently per platform: Linux's `recv`
+    returns a cut datagram's real length when it is passed, macOS's ignores
+    it, and only `recvmsg`'s flags carry it on both."""
+
+    var buf: List[UInt8]
+    var refused: Int
+    """Datagrams drained and not delivered, since the reader was made:
+    longer than `BUS_DATAGRAM_MAX` (cut by the kernel, or longer than any
+    publisher sends), or malformed. The event loop reports it on
+    `/__metrics` as `http_bus_frames_refused_total`."""
+
+    def __init__(out self):
+        self.buf = List[UInt8]()
+        self.refused = 0
+
+    def drain(mut self, read_fd: Int) raises -> List[BusFrame]:
+        """Read every waiting datagram off a bus channel; decode what parses.
+
+        The channel is non-blocking; EAGAIN ends the drain. The event loop
+        calls this on read-readiness — edge-triggered registration means
+        every pending datagram must be consumed before returning. A datagram
+        that is not delivered is counted in `refused`, never delivered in
+        part, and the drain goes on to the next. An EMPTY datagram ends the
+        drain uncounted: 0 is also what macOS's `recv` returns at the end of
+        a datagram pair, and no publisher sends one (every encoder writes
+        the 10-byte header).
+        """
+        if len(self.buf) == 0:
+            self.buf.resize(BUS_DATAGRAM_MAX + 1, 0)
+        var frames = List[BusFrame]()
+        var fd = FileDescriptor(read_fd)
+        while True:
+            var n: UInt
+            try:
+                n = recv(fd, Span(self.buf), MSG_DONTWAIT)
+            except:
+                break  # EAGAIN: drained (or the channel died; either way, done)
+            if n == 0:
+                break
+            if Int(n) > BUS_DATAGRAM_MAX:
+                self.refused += 1
+                continue
+            var decoded = decode_bus_frame(Span(self.buf)[: Int(n)])
+            if decoded:
+                frames.append(decoded.take())
+            else:
+                self.refused += 1
+        return frames^
+
+
+def drain_bus_channel(read_fd: Int) raises -> List[BusFrame]:
+    """`BusReader.drain` with a reader of its own, for a caller that keeps
+    none: its buffer is made for this one drain, and what it refused is
+    not reported. The event loop keeps a reader instead."""
+    var reader = BusReader()
+    return reader.drain(read_fd)
