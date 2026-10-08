@@ -944,11 +944,12 @@ struct OffloadPool(Movable):
     def __init__(out self, capacity: Int) raises:
         """`capacity == 0` builds a disabled pool: no descriptors, no storage.
 
-        The threaded path constructs one per loop unconditionally, because
-        Mojo 1.0's `Optional` wants `ImplicitlyCopyable` and this type is
-        deliberately not. A disabled pool costs a struct rather than four
-        descriptors per loop; nothing consults it, since the loop is handed
-        `offload_addr = 0`.
+        The threaded mode's loop and the Mojo host's worker build one where
+        they run no pool, so the pool is a local that always exists: the
+        threaded mode reads its channels afterwards without a branch
+        (`chunk_active()` is false on it). A disabled pool costs a struct
+        rather than four descriptors per loop; nothing else consults it,
+        since the loop is handed `offload_addr = 0`.
         """
         # One slot minimum, even for a disabled pool, so every per-slot
         # table has an entry to index; `self.capacity` is what says whether

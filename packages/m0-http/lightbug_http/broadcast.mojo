@@ -89,9 +89,6 @@ def channel_is_reserved(url: String) -> Bool:
     return len(ub) > 0 and ub[0] == CHANNEL_CONTROL_BYTE
 comptime _BUS_SOCKET_BUF = 262144
 
-comptime _AF_UNIX = 1
-comptime _SOCK_DGRAM = 2
-
 
 struct BroadcastBus(Copyable, Movable):
     """One receive channel per worker, every worker holding every send end.

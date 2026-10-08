@@ -1,8 +1,9 @@
 """Detect a hold instruction in a WSGI response, and shape what follows.
 
-A WSGI application cannot stream — the bridge drains its iterable before a
-byte leaves the process — and it certainly cannot switch a connection to
-another protocol: its response is buffered and re-encoded by the server. But
+A WSGI application cannot keep a connection open for what happens after its
+response — whatever it returns ends when its iterable does, streamed from a
+pool thread when it is unsized and buffered otherwise — and it cannot switch a
+connection to another protocol: its response is re-encoded by the server. But
 the server it runs inside holds SSE connections and speaks WebSocket
 natively. This module is the seam between the two: the application returns an
 ordinary buffered response carrying two instruction headers, and the handler
@@ -91,8 +92,9 @@ comptime STREAM_OPEN_COMMENT = ": open\n\n"
 
 An SSE comment: it flushes intermediary buffers so the client sees the stream
 open promptly, without producing an event the application has to handle.
-Mirrors `m0_http`'s `sse_response` default — restated here so this package's
-import set stays `lightbug_http` + `std.python` only.
+Mirrors `m0_http`'s `sse_response` default — restated here because the fork
+does not import `m0_http`: `m0_http.mojo_pool` imports this module, and the
+fork's one import the other way is the access log's (DECISIONS D33).
 """
 
 
