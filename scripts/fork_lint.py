@@ -11,13 +11,19 @@
    VARIADIC below, one place; SANCTIONED names the one file that may call
    each (SANCTIONED_LINUX_ONLY: the `syscall` of `epoll_pwait2_ns`, never
    compiled on Darwin). A new variadic call means a new SANCTIONED entry, which is a review
-   of the call's shape, and a mention in `c/fcntl.mojo`'s docstring, which
-   names every variadic libc symbol the program calls (checked here).
+   of the call's shape. `c/fcntl.mojo`'s docstring names the Darwin pair
+   (SANCTIONED), and this checks that it does; `syscall` is Linux-only and
+   documented at its own call, which is not checked.
    Scope: every `.mojo` under packages/, apps/, scripts/ and packaging/, since
    the ABI hazard is not the fork's alone. m0-sqlite and m0-postgres call C
    through `dlopen`, not `external_call`, and are outside what this reads.
 
-2. A `[byte=` slice in the fork (`packages/m0-http/lightbug_http/`). It
+   An `external_call` whose first argument is not a string literal (any
+   quoting style) is refused too, since a `comptime` name would hide the
+   symbol; DYNAMIC_ALLOWED lists exceptions (none).
+
+2. A `[byte=` slice, however spaced or split across lines, in the fork
+   (`packages/m0-http/lightbug_http/`) and in `packages/m0-http/src/`. It
    asserts a codepoint boundary at both ends, a trap rather than an error
    on a request's non-UTF-8 bytes (SPEC G14). ALLOWED_BYTE_SLICES lists the
    sites that are safe, each keyed by file and a snippet of the line (never
@@ -65,11 +71,30 @@ SANCTIONED_LINUX_ONLY = {
 # The file whose docstring names every sanctioned symbol.
 DOC_FILE = "packages/m0-http/lightbug_http/c/fcntl.mojo"
 
-FORK = "packages/m0-http/lightbug_http/"
+FORK = ("packages/m0-http/lightbug_http/", "packages/m0-http/src/")
 
 # (file, snippet of the code line) -> why that string cannot hold request
-# bytes. Empty: lane C converted the last request-string slice.
-ALLOWED_BYTE_SLICES = {}
+# bytes. The fork holds none; src/ keeps the sites below.
+ALLOWED_BYTE_SLICES = {
+    ("packages/m0-http/src/reply.mojo", "HEX[byte=ch >> 4"):
+        "HEX is a constant ASCII table, the index a nibble",
+    ("packages/m0-http/src/reply.mojo", "HEX[byte=ch & 15"):
+        "HEX is a constant ASCII table, the index a nibble",
+    ("packages/m0-http/src/router.mojo", "HEX[byte=ch >> 4"):
+        "HEX is a constant ASCII table, the index a nibble",
+    ("packages/m0-http/src/router.mojo", "HEX[byte=ch & 15"):
+        "HEX is a constant ASCII table, the index a nibble",
+    ("packages/m0-http/src/static.mojo", "root[byte = : root.byte_length() - 1]"):
+        "the mount's root is configuration, not request data, and the cut drops "
+        "a trailing '/', so it lands on a codepoint boundary",
+    ("packages/m0-http/src/static.mojo", "self.prefix[byte = : self.prefix.byte_length() - 1]"):
+        "the mount's prefix is configuration, always ending in '/', which the "
+        "cut drops: a codepoint boundary (both sites)",
+}
+
+# (file, snippet) of an `external_call` whose first argument is not a string
+# literal -> why it is not a variadic symbol. Empty.
+DYNAMIC_ALLOWED = {}
 
 SCAN_DIRS = ["packages", "apps", "scripts", "packaging"]
 
@@ -109,19 +134,46 @@ def code_only(src, keep_strings):
     return "".join(out)
 
 
-_CALL = re.compile(r'external_call\s*\[\s*"(\w+)"')
+_CALL = re.compile(r"external_call\s*\[")
 
 
-def check_variadic(rel, src):
-    """Findings for one file: variadic `external_call`s outside SANCTIONED."""
-    code = code_only(src, keep_strings=True)
+def first_argument(src, pos):
+    """The first argument of the bracket opened just before `pos`: ("lit",
+    name) for a string literal in any quoting style, else ("expr", text)."""
+    pos += len(src[pos:]) - len(src[pos:].lstrip())
+    for q in ('"""', "'''", '"', "'"):
+        if src.startswith(q, pos):
+            end = src.find(q, pos + len(q))
+            if end > 0:
+                return "lit", src[pos + len(q):end]
+    m = re.match(r"[^,\]]*", src[pos:])
+    return "expr", " ".join(m.group(0).split())
+
+
+def check_variadic(rel, src, dynamic_allowed=None):
+    """Findings for one file: variadic `external_call`s outside SANCTIONED,
+    and calls whose first argument is not a string literal (a name held in
+    a `comptime` constant would hide the symbol), unless allowed."""
+    dynamic_allowed = DYNAMIC_ALLOWED if dynamic_allowed is None else dynamic_allowed
+    # Comments, docstrings and strings blanked to find real call sites; the
+    # same offsets in `src` give the argument.
+    mask = code_only(src, keep_strings=False)
     found = []
-    for m in _CALL.finditer(code):
-        sym = m.group(1)
-        if sym in VARIADIC and rel not in SANCTIONED.get(sym, []) + SANCTIONED_LINUX_ONLY.get(sym, []):
-            line = code.count("\n", 0, m.start()) + 1
+    for m in _CALL.finditer(mask):
+        line = mask.count("\n", 0, m.start()) + 1
+        kind, val = first_argument(src, m.end())
+        if kind == "expr":
+            text = src.split("\n")[line - 1]
+            if not any(k[0] == rel and k[1] in text for k in dynamic_allowed):
+                found.append(
+                    f"{rel}:{line}: external_call[{val}...] -- the symbol is not a string "
+                    f"literal, so this lint cannot tell whether it is variadic; spell it "
+                    f"as a literal, or allow it in scripts/fork_lint.py DYNAMIC_ALLOWED "
+                    f"with its reason"
+                )
+        elif val in VARIADIC and rel not in SANCTIONED.get(val, []) + SANCTIONED_LINUX_ONLY.get(val, []):
             found.append(
-                f"{rel}:{line}: external_call[\"{sym}\"] -- `{sym}` is variadic and "
+                f"{rel}:{line}: external_call[\"{val}\"] -- `{val}` is variadic and "
                 f"Darwin arm64 passes variadic arguments on the stack; declare it "
                 f"in the shape of c/fcntl.mojo's `_fcntl` and sanction it in "
                 f"scripts/fork_lint.py SANCTIONED"
@@ -129,14 +181,19 @@ def check_variadic(rel, src):
     return found
 
 
+_BYTE = re.compile(r"\[\s*byte\s*=")
+
+
 def check_byte_slices(rel, src, allowed):
-    """Findings for one fork file: `[byte=` in code outside `allowed`;
-    also the keys of `allowed` this file matched, to retire the stale."""
+    """Findings for one file: `[byte=` in code (whatever the spacing, even
+    split across lines) outside `allowed`; also the keys of `allowed` this
+    file matched, to retire the stale."""
     code = code_only(src, keep_strings=False)
+    lines = code.split("\n")
     found, used = [], set()
-    for ln, text in enumerate(code.split("\n"), 1):
-        if "[byte=" not in text:
-            continue
+    for m in _BYTE.finditer(code):
+        ln = code.count("\n", 0, m.start()) + 1
+        text = lines[ln - 1]
         key = next((k for k in allowed if k[0] == rel and k[1] in text), None)
         if key:
             used.add(key)
@@ -220,6 +277,19 @@ def selftest():
            check_variadic("packages/m0-http/lightbug_http/c/epoll.mojo", 'external_call["syscall", Int]()'), False)
     expect("syscall elsewhere",
            check_variadic("packages/m0-http/lightbug_http/c/socket.mojo", 'external_call["syscall", Int]()'), True)
+    for name, call in [
+        ("single-quoted", "external_call['shm_open', c_int]()"),
+        ("triple-quoted", 'external_call["""shm_open""", c_int]()'),
+        ("triple-single-quoted", "external_call[\'\'\'open\'\'\', c_int]()"),
+        ("a comptime constant", "comptime S = 'x'\nvar r = external_call[S, c_int]()"),
+        ("a name on the next line", 'external_call[\n    "shm_open", c_int]()'),
+    ]:
+        expect("evasion: " + name, check_variadic("apps/x/a.mojo", call), True)
+    expect("a literal non-variadic in single quotes",
+           check_variadic("apps/x/a.mojo", "external_call['socket', c_int]()"), False)
+    expect("a non-literal call allowed with a reason",
+           check_variadic("apps/x/a.mojo", "external_call[S, c_int]()",
+                          {("apps/x/a.mojo", "S, c_int"): "r"}), False)
     expect("a fixed-arity symbol",
            check_variadic("apps/x/a.mojo", 'external_call["socketpair", c_int, c_int]()'), False)
     expect("a variadic name in a comment",
@@ -241,6 +311,14 @@ def selftest():
            check_byte_slices("f.mojo", 'var s = "[byte=" + x\n', {})[0], False)
     expect("a clean byte slice",
            check_byte_slices("f.mojo", "var s = String(unsafe_from_utf8=b[1:3])\n", {})[0], False)
+    for name, sl in [
+        ("a space after the bracket", "x = s[ byte=1:3]"),
+        ("a space before the equals", "x = s[byte =1:3]"),
+        ("both", "x = s[ byte = 1:3]"),
+        ("split across lines", "x = s[\n    byte=1:3]"),
+    ]:
+        f, _ = check_byte_slices("f.mojo", sl + "\n", {})
+        expect("evasion: " + name, f, True)
     allowed = {("f.mojo", "HEX[byte="): "a constant table"}
     f, used = check_byte_slices("f.mojo", "out += HEX[byte=1:2]\n", allowed)
     expect("an allowlisted constant-table slice", f, False)
