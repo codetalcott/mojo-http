@@ -30,6 +30,7 @@ things actually keep calling.
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.io.bytes import Bytes
+from lightbug_http.strings import strHttp10
 from std.memory import bitcast
 
 
@@ -193,9 +194,13 @@ def websocket_upgrade(req: HTTPRequest) -> Optional[HTTPResponse]:
         return _handshake_reject(400, "Bad Request", "WebSocket upgrade requires GET")
 
     # Connection must include the "upgrade" token (it can carry several).
-    var conn_hdr = req.headers.get(HeaderKey.CONNECTION)
-    if not conn_hdr or conn_hdr.value().lower().find("upgrade") < 0:
+    # A token list, matched whole: `notupgrade` is not `upgrade`.
+    if not req.headers.has_token_ignore_case(HeaderKey.CONNECTION, "upgrade"):
         return _handshake_reject(400, "Bad Request", "Connection header must include upgrade")
+
+    # RFC 6455 §4.2.1: HTTP/1.1 or higher. The parser admits 1.0 and 1.1.
+    if req.protocol == strHttp10:
+        return _handshake_reject(400, "Bad Request", "WebSocket upgrade requires HTTP/1.1")
 
     var version = req.headers.get("sec-websocket-version")
     if not version or version.value() != "13":
@@ -560,6 +565,8 @@ struct WSState(Movable):
                 if n - i < 4:
                     break
                 plen = (Int(self.buffer[i + 2]) << 8) | Int(self.buffer[i + 3])
+                if plen < 126:
+                    return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)  # §5.2
                 header = 4
             elif plen == 127:
                 if n - i < 10:
@@ -567,10 +574,22 @@ struct WSState(Movable):
                 var plen64: UInt64 = 0
                 for j in range(8):
                     plen64 = (plen64 << 8) | UInt64(self.buffer[i + 2 + j])
+                # §5.2: the most significant bit MUST be 0, and the
+                # minimal number of bytes MUST encode the length.
+                if (plen64 >> 63) != 0 or plen64 <= 0xFFFF:
+                    return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
+                # Not redundant: gives an oversized 64-bit control frame 1002
+                # BEFORE the 1009 message-cap check below.
+                if opcode >= 0x8:
+                    return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                 if plen64 > UInt64(self.max_message_size):
                     return self._fail(res^, WS_CLOSE_TOO_BIG)
                 plen = Int(plen64)
                 header = 10
+            if opcode >= 0x8 and plen > 125:
+                # §5.5: a control frame carries at most 125 bytes. Refused
+                # here, at its header, not after the payload has arrived.
+                return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
             if plen > self.max_message_size:
                 return self._fail(res^, WS_CLOSE_TOO_BIG)
 
