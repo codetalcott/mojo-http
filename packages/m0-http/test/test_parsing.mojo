@@ -480,17 +480,40 @@ def test_connect_is_refused_as_not_implemented() raises:
     whatever its target or version. An application answering it 2xx (as
     one answering every method does) told a front end forwarding it that
     the tunnel was open, and the client's next bytes went through
-    unparsed. The refusal still needs a well-formed head: a malformed one
-    is 400 first, and the method name is case-sensitive.
+    unparsed. The refusal needs an otherwise well-formed request (a
+    malformed one is 400, `test_a_malformed_connect_is_still_400`), and
+    the method name is case-sensitive.
 
     covers: B18
     """
     assert_true(_unsupported("CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n"))
     assert_true(_unsupported("CONNECT h:443 HTTP/1.0\r\n\r\n"))
     assert_true(_unsupported("CONNECT / HTTP/1.1\r\nHost: h\r\n\r\n"))
-    assert_true(_rejected("CONNECT h:443 HTTP/1.1\nHost: h:443\r\n\r\n"))
     assert_false(_unsupported("connect / HTTP/1.1\r\nHost: h\r\n\r\n"))
     assert_true(_accepted("GET / HTTP/1.1\r\nHost: h\r\n\r\n"))
+
+
+def test_a_malformed_connect_is_still_400() raises:
+    """CONNECT is refused 501 only once every rule that answers 400 has
+    passed, as a list of transfer codings that is both malformed and
+    unimplemented is 400 (SPEC B21): a bare LF in the head, two `Host`
+    lines, `Content-Length` beside `Transfer-Encoding`, a `Content-Length`
+    that is not a digit run, no `Host` at all. The CONNECT check ran ahead
+    of the field rules, and each of these was answered 501.
+
+    covers: B18
+    """
+    var line = String("CONNECT h:443 HTTP/1.1\r\n")
+    assert_true(_rejected("CONNECT h:443 HTTP/1.1\nHost: h:443\r\n\r\n"))
+    assert_true(_rejected(line + "Host: h:443\r\nHost: i:443\r\n\r\n"))
+    assert_true(
+        _rejected(
+            line + "Host: h:443\r\nContent-Length: 5\r\n"
+            "Transfer-Encoding: chunked\r\n\r\n"
+        )
+    )
+    assert_true(_rejected(line + "Host: h:443\r\nContent-Length: 5x\r\n\r\n"))
+    assert_true(_rejected(line + "\r\n"))
 
 
 # --- Content-Length must be a plain digit run (RFC 9112 6.3) ----------------

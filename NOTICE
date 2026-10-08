@@ -1331,7 +1331,7 @@ lightbug_http
       - header.mojo, http/common_response.mojo, loop/request.mojo
         (2026-10-08): `parse_request_headers` raises the new
         `UnsupportedHTTPRequestError`, a fourth `RequestParseError`
-        variant, for a well-formed `CONNECT` request, and
+        variant, for a `CONNECT` request that every 400 rule has passed, and
         `_handle_read_headers` answers it with the new `NotImplemented()`
         (501) and closes (SPEC B18). CONNECT reached the application, and
         a 2xx answer to it opens a tunnel in a front end that forwards it

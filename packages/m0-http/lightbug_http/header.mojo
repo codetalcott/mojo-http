@@ -1211,16 +1211,6 @@ def parse_request_headers(
         else:  # ret == -2
             raise RequestParseError(IncompleteHTTPRequestError())
 
-    # CONNECT asks the recipient to become a tunnel (RFC 9110 §9.3.6), and
-    # this server implements none: 501, answered by the loop, which closes
-    # (SPEC B18). It reached the application, which answers every method,
-    # and a 2xx answer to CONNECT tells a front end that forwards it that
-    # the tunnel is open -- whatever the client sends next goes through
-    # unparsed, past every rule in this function. The method is
-    # case-sensitive (RFC 9110 §9.1), so `connect` is some other method.
-    if method == "CONNECT":
-        raise RequestParseError(UnsupportedHTTPRequestError())
-
     # Phase 1a: Normalize absolute-form request targets (RFC 9112 §3.2.2).
     # Proxies and some HTTP clients send "GET http://host/path HTTP/1.1".
     # The handler sees the path and query; the authority becomes the Host
@@ -1231,12 +1221,12 @@ def parse_request_headers(
     # opens with `/`; absolute-form is an `http` or `https` URI (the scheme
     # matched above); asterisk-form is `*` and only for a server-wide
     # OPTIONS (§3.2.4); authority-form is CONNECT's alone, which is refused
-    # above. Anything else is 400 (SPEC B19): `GET p` and `GET h:80` were
+    # below. Anything else is 400 (SPEC B19): `GET p` and `GET h:80` were
     # served, the application reading a path with no leading slash. The
     # bytes a target may hold are the scanner's rule (`http/parsing.mojo`);
     # this is the shape. A `%` escape is the application's to decode.
     if scheme_len == 0 and path.as_bytes()[0] != 0x2F:  # '/'
-        if not (path == "*" and method == "OPTIONS"):
+        if not (path == "*" and method == "OPTIONS") and method != "CONNECT":
             raise RequestParseError(InvalidHTTPRequestError())
     if scheme_len > 0:
         var target = path.as_bytes()
@@ -1471,6 +1461,18 @@ def parse_request_headers(
         # application still gzipped (review record LF39).
         if other_coding:
             raise RequestParseError(UnsupportedHTTPRequestError())
+
+    # CONNECT asks the recipient to become a tunnel (RFC 9110 §9.3.6), and
+    # this server implements none: 501, answered by the loop, which closes
+    # (SPEC B18). It reached the application, which answers every method,
+    # and a 2xx answer to CONNECT tells a front end that forwards it that
+    # the tunnel is open -- whatever the client sends next goes through
+    # unparsed, past every rule in this function. Asked LAST, so a CONNECT
+    # that is also malformed -- two `Host` lines, a `Content-Length` beside
+    # `Transfer-Encoding` -- is the 400 every other request gets. The method
+    # is case-sensitive (RFC 9110 §9.1), so `connect` is some other method.
+    if method == "CONNECT":
+        raise RequestParseError(UnsupportedHTTPRequestError())
 
     # The two versions this server speaks are literals; formatting an Int
     # into a String on every request was the only other way to spell them.
