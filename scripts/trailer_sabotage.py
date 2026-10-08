@@ -59,23 +59,39 @@ SABOTAGES = [
     ),
     (
         "a trailer line is copied into the body instead of discarded",
-        """                # The value, to its CR.
-                while src < buffer_len:
-                    if buf[src] == BytesConstant.CR:
-                        break
-                    if buf[src] == BytesConstant.LF:
+        """                    if buf[src] == BytesConstant.LF:
                         return (-1, dst)
-                    src += 1""",
-        """                # The value, to its CR.
-                while src < buffer_len:
-                    if buf[src] == BytesConstant.CR:
-                        break
-                    if buf[src] == BytesConstant.LF:
+                    src += 1
+
+                if src >= buffer_len:
+                    break
+
+                src += 1
+                self._state = DecoderState.IN_TRAILERS_LINE_EXPECT_LF""",
+        """                    if buf[src] == BytesConstant.LF:
                         return (-1, dst)
                     var _bp = buf.unsafe_ptr()
                     _bp[unsafe_offset = dst] = _bp[unsafe_offset = src]
                     dst += 1
-                    src += 1""",
+                    src += 1
+
+                if src >= buffer_len:
+                    break
+
+                src += 1
+                self._state = DecoderState.IN_TRAILERS_LINE_EXPECT_LF""",
+    ),
+    # SPEC B24: a trailer value holds field content, as a head's does.
+    (
+        "a control byte in a trailer value is taken as content",
+        """                    if (
+                        buf[src] < 0x20
+                        and buf[src] != BytesConstant.TAB
+                        and buf[src] != BytesConstant.LF
+                    ) or buf[src] == 0x7F:
+                        return (-1, dst)
+""",
+        "",
     ),
     # The CRLF and field-line rules (SPEC B14). Each puts back one thing
     # the trailer states used to accept.

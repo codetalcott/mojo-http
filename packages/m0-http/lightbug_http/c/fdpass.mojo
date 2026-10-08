@@ -36,10 +36,9 @@ from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
 from lightbug_http.c.pipe import close_fd
 
 comptime _MSG_CMSG_CLOEXEC_LINUX = 0x40000000
-from lightbug_http.c.socket import iovec_t
+from lightbug_http.c.socket import SOL_SOCKET, iovec_t
 
 
-comptime _SOL_SOCKET = 0xFFFF if CompilationTarget.is_macos() else 1
 comptime _SCM_RIGHTS = 1
 comptime _CMSG_HDR = 12 if CompilationTarget.is_macos() else 16
 """`sizeof(struct cmsghdr)`: where the passed fd's four bytes begin."""
@@ -125,11 +124,11 @@ def send_fd(channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
     # cmsg_len, cmsg_level, cmsg_type, then the fd — little-endian stores.
     _store_u32(control, 0, UInt32(_CMSG_LEN_INT))
     comptime if CompilationTarget.is_macos():
-        _store_u32(control, 4, UInt32(_SOL_SOCKET))
+        _store_u32(control, 4, UInt32(SOL_SOCKET))
         _store_u32(control, 8, UInt32(_SCM_RIGHTS))
     else:
         _store_u32(control, 4, 0)  # the high half of a size_t cmsg_len
-        _store_u32(control, 8, UInt32(_SOL_SOCKET))
+        _store_u32(control, 8, UInt32(SOL_SOCKET))
         _store_u32(control, 12, UInt32(_SCM_RIGHTS))
     _store_u32(control, _CMSG_HDR, UInt32(fd))
     var iov = iovec_t(UInt(Int(data.unsafe_ptr())), UInt(n))
@@ -260,7 +259,7 @@ def _passed_fds(control: List[UInt8], clen: Int) -> List[Int]:
     else:
         level = Int(_load_u32(control, 8))
         kind = Int(_load_u32(control, 12))
-    if level != _SOL_SOCKET or kind != _SCM_RIGHTS:
+    if level != SOL_SOCKET or kind != _SCM_RIGHTS:
         return fds^
     # `cmsg_len` is a `size_t` on Linux; its low half is the whole value.
     var end = min(Int(_load_u32(control, 0)), min(clen, len(control)))

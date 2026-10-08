@@ -148,7 +148,7 @@ from std.time import perf_counter_ns, sleep
 from lightbug_http.c.fdpass import (
     send_fd, recv_fd, RECV_FD_EMPTY, RECV_FD_REFUSED,
 )
-from lightbug_http.c.kqueue import set_nonblocking
+from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.socket import setsockopt, SocketOption, SOL_SOCKET
 from lightbug_http.c.socketpair import socketpair_dgram

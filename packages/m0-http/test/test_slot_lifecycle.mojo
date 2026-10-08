@@ -35,9 +35,9 @@ from std.time import perf_counter_ns
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.kqueue import (
-    EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE, set_nonblocking,
+    EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE,
 )
-from lightbug_http.c.fcntl import dup_cloexec
+from lightbug_http.c.fcntl import dup_cloexec, set_nonblocking
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.process import getpid
 from lightbug_http.c.socket import close, recv, send
@@ -216,7 +216,7 @@ def test_a_write_wait_holds_no_read_interest() raises:
     var backend = PlatformBackend()
     backend.add_read(rx)
     var one = String("m")
-    _ = send(FileDescriptor(tx), one.as_bytes(), UInt(1), 0)
+    _ = send(FileDescriptor(tx), one.as_bytes(), 0)
 
     var n = backend.wait(1000)
     assert_equal(n, 1)
@@ -525,6 +525,18 @@ def test_a_file_that_ends_early_closes_its_connection() raises:
     covers: J15
     """
     var path = String("/tmp/m0_lifecycle_truncated_body_") + String(getpid())
+    try:
+        _send_a_file_that_ends_early(path)
+    finally:
+        # Every path, a failing assertion's included: the file is 4 MB.
+        try:
+            remove(path)
+        except:
+            pass
+
+
+def _send_a_file_that_ends_early(path: String) raises:
+    """The round above, over the file at `path`, which its caller removes."""
     with open(path, "w") as f:
         f.write(String("b") * FILE_BYTES)
     var file = open(path, "r")
@@ -587,15 +599,17 @@ def test_a_file_that_ends_early_closes_its_connection() raises:
     assert_true(_read_available(peer, got), "the peer read no EOF")
     assert_equal(len(got), head.byte_length() + sent_of_file)
     close(FileDescriptor(peer))
-    remove(path)
 
 
-def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
-    """One request to `/__metrics`, metrics on, read through `_on_read` over
-    a real stream pair: the reply as the client read it, lowercased, and
-    whether the loop closed the slot behind it."""
+def _exchange(
+    parts: List[String], metrics: Bool = False
+) raises -> Tuple[String, Bool]:
+    """Send `parts` to a slot reading headers, one write and one `_on_read`
+    apiece, over a real stream pair: the reply as the client read it,
+    lowercased, and whether the loop closed the slot behind it. `NoApp`
+    answers whatever reaches it with a 200 saying `unused`."""
     var config = _config()
-    config.enable_metrics = True
+    config.enable_metrics = metrics
     var app = NoApp()
     var backend = FakeBackend()
     var st = _loop(config)
@@ -607,10 +621,13 @@ def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
     st.fd_to_slot[fd] = slot
     st.active_count = 1
     st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
-    var raw = request.as_bytes()
-    var sent = send(FileDescriptor(peer), raw, UInt(len(raw)), 0)
-    assert_equal(Int(sent), len(raw))
-    _on_read(app, backend, st, fd, False)
+    for part in parts:
+        if st.slot_fds[slot] == UNUSED:
+            break
+        var raw = part.as_bytes()
+        var sent = send(FileDescriptor(peer), raw, 0)
+        assert_equal(Int(sent), len(raw))
+        _on_read(app, backend, st, fd, False)
     var got = List[UInt8]()
     _ = _read_available(peer, got)
     var closed = st.slot_fds[slot] == UNUSED
@@ -618,6 +635,114 @@ def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
         close(FileDescriptor(fd))
     close(FileDescriptor(peer))
     return (String(unsafe_from_utf8=Span(got)).lower(), closed)
+
+
+def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
+    """One request to `/__metrics`, metrics on (`_exchange`)."""
+    return _exchange([request], metrics=True)
+
+
+def test_connect_is_answered_501_and_closed() raises:
+    """CONNECT is refused before the application: 501, `Connection: close`
+    and the slot closed, where `NoApp` -- like any application answering
+    every method -- answered it 200, which a front end forwarding it reads
+    as an open tunnel. A malformed request stays 400.
+
+    covers: B18
+    """
+    var got = _exchange(["CONNECT h:443 HTTP/1.1\r\nHost: h:443\r\n\r\n"])
+    assert_true("501 not implemented" in got[0], got[0])
+    assert_true("connection: close" in got[0], got[0])
+    assert_false("unused" in got[0], got[0])
+    assert_true(got[1], "the slot stayed open after the 501")
+    var bad = _exchange(["GET / HTTP/1.1\r\nHost: h\r\nHost: i\r\n\r\n"])
+    assert_true("400 bad request" in bad[0], bad[0])
+    assert_true(bad[1], "the slot stayed open after the 400")
+
+
+def test_a_transfer_coding_it_cannot_decode_is_answered_501_and_closed() raises:
+    """A body in a coding the loop does not decode, before a final
+    `chunked`, is refused 501 and the connection closed, the body unread
+    (RFC 9112 §6.1). `gzip, chunked` was de-chunked and served, the
+    application reading a body still gzipped. Where `chunked` is not final
+    -- a lone `gzip`, `chunked, gzip` -- the framing is undeterminable and
+    the answer is 400 and a close (RFC 9112 §6.3).
+
+    covers: B21
+    """
+    var gz = _exchange([
+        "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: gzip, chunked\r\n\r\n"
+        "5\r\nhello\r\n0\r\n\r\n"
+    ])
+    assert_true("501 not implemented" in gz[0], gz[0])
+    assert_true("connection: close" in gz[0], gz[0])
+    assert_false("unused" in gz[0], gz[0])
+    assert_true(gz[1], "the slot stayed open after the 501")
+    var lone = _exchange([
+        "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: gzip\r\n\r\nhello"
+    ])
+    assert_true("400 bad request" in lone[0], lone[0])
+    assert_true(lone[1], "the slot stayed open after the 400")
+    var misplaced = _exchange([
+        "POST / HTTP/1.1\r\nHost: h\r\nTransfer-Encoding: chunked, gzip\r\n\r\n"
+    ])
+    assert_true("400 bad request" in misplaced[0], misplaced[0])
+    assert_true(misplaced[1], "the slot stayed open after the 400")
+
+
+def test_a_close_on_either_connection_line_closes() raises:
+    """Two `Connection` field lines are one list (RFC 9110 §5.3), so the
+    loop closes behind the answer whichever line says `close`. The store
+    kept the last line, and `close` then `keep-alive` kept the connection.
+
+    covers: B22
+    """
+    var first = _exchange([
+        "GET / HTTP/1.1\r\nHost: h\r\nConnection: close\r\n"
+        "Connection: keep-alive\r\n\r\n"
+    ])
+    assert_true("200 ok" in first[0], first[0])
+    assert_true("connection: close" in first[0], first[0])
+    assert_true(first[1], "the slot stayed open after a first-line close")
+    var plain = _exchange([
+        "GET / HTTP/1.1\r\nHost: h\r\nConnection: keep-alive\r\n"
+        "Connection: TE\r\n\r\n"
+    ])
+    assert_false(plain[1], "a request asking no close was closed")
+
+
+def test_a_bare_lf_in_a_head_still_arriving_is_answered_400_at_once() raises:
+    """A bare LF in a request head can only be refused (SPEC B12), but the
+    parser runs once `find_header_end` frames a head by its CRLFCRLF, and a
+    head of bare LFs holds none: it went unanswered until its peer's EOF
+    or the header timeout's 408. It is refused at the read that brings
+    it, in whichever read that is and past the 64-byte scan. A CR that
+    ends one read and the LF that opens the next are a CRLF, and a head
+    of CRLFs still arriving is waited for.
+
+    covers: B23
+    """
+    for shape in [
+        "GET / HTTP/1.1\nHost: x\n\n",
+        "\n\n\n",
+        "GET / HTTP/1.1\n",
+        "GET / HTTP/1.1\r\nX-Pad: " + String("p") * 100 + "\nHost: x",
+    ]:
+        var got = _exchange([shape])
+        assert_true("400 bad request" in got[0], shape + ": " + got[0])
+        assert_true("connection: close" in got[0], got[0])
+        assert_true(got[1], "the slot stayed open after the 400: " + shape)
+    var later = _exchange(["GET / HTTP/1.1\r\n", "Host: x\n"])
+    assert_true("400 bad request" in later[0], later[0])
+    assert_true(later[1], "the slot stayed open after a later read's bare LF")
+    var split = _exchange(["GET / HTTP/1.1\r", "\nHost: x\r\n"])
+    assert_equal(split[0], "", "a CRLF split across two reads was answered")
+    assert_false(split[1], "a CRLF split across two reads was closed")
+    var long = _exchange([
+        "GET / HTTP/1.1\r\nX-Pad: " + String("p") * 150 + "\r\n", "Host: x\r\n"
+    ])
+    assert_equal(long[0], "", "a long head of CRLFs still arriving was answered")
+    assert_false(long[1], "a long head of CRLFs still arriving was closed")
 
 
 def test_the_metrics_path_honours_a_requested_close() raises:
@@ -693,7 +818,7 @@ def _send_all(fd: Int, text: String) raises:
     """Write `text` on `fd` in one send, which a fresh stream pair takes
     whole."""
     var raw = text.as_bytes()
-    var sent = send(FileDescriptor(fd), raw, UInt(len(raw)), 0)
+    var sent = send(FileDescriptor(fd), raw, 0)
     assert_equal(Int(sent), len(raw))
 
 
@@ -1240,7 +1365,7 @@ def _a_websocket_owed_a_close_echo(
     mask.append(0x21)
     mask.append(0x3D)
     var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(code), mask)
-    var sent = send(FileDescriptor(peer), Span(frame), UInt(len(frame)), 0)
+    var sent = send(FileDescriptor(peer), Span(frame), 0)
     assert_equal(Int(sent), len(frame))
     return (fd, peer, slot, filler)
 
@@ -1256,7 +1381,7 @@ def _fill_send_buffer(fd: Int) raises -> Int:
         while True:
             var sent: UInt
             try:
-                sent = send(FileDescriptor(fd), Span(chunk)[:size], UInt(size), 0)
+                sent = send(FileDescriptor(fd), Span(chunk)[:size], 0)
             except err:
                 if err.would_block():
                     break
@@ -1275,7 +1400,7 @@ def _read_available(fd: Int, mut got: List[UInt8]) raises -> Bool:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except err:
             if err.would_block():
                 return False
@@ -1353,7 +1478,7 @@ def _discard_all(fd: Int):
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), UInt(len(buf)), MSG_DONTWAIT)
+            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:

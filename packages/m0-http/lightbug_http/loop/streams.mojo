@@ -8,9 +8,8 @@ bus (`_deliver_bus_frames`); and the closes and resumed reads the handler
 asks for are applied at the bottom of every pass.
 """
 
-from lightbug_http.broadcast import drain_bus_channel
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import recv, send
+from lightbug_http.c.socket import recv, send, spare_capacity
 from lightbug_http.connection import ConnectionState
 from lightbug_http.http.chunked import chunked_terminator, encode_chunk
 from lightbug_http.io.bytes import Bytes
@@ -26,11 +25,15 @@ from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
 
 
-def _deliver_bus_frames[T: HTTPService](mut handler: T, fd: Int) raises:
-    """Drain one bus channel to EAGAIN and hand each frame to the handler
-    (`sse_peer_frame`), which queues it for its own subscribers; the pass's
-    outbox drain sends it."""
-    var frames = drain_bus_channel(fd)
+def _deliver_bus_frames[T: HTTPService](
+    mut handler: T, mut st: LoopState, fd: Int
+) raises:
+    """Drain one bus channel to EAGAIN through the loop's reader and hand
+    each frame to the handler (`sse_peer_frame`), which queues it for its
+    own subscribers; the pass's outbox drain sends it. What the reader
+    refused is counted where `/__metrics` reads it."""
+    var frames = st.bus_reader.drain(fd)
+    st.metrics.bus_frames_refused = st.bus_reader.refused
     for f in range(len(frames)):
         handler.sse_peer_frame(frames[f].url, frames[f].event_id, frames[f].frame)
 
@@ -78,7 +81,7 @@ def _heartbeat[T: HTTPService, B: EventLoopBackend](
     var fd_desc = FileDescriptor(fd_val)
     var hb_dead = False
     try:
-        var sent = send(fd_desc, Span(st.slot_response[hb_slot]), UInt(len(st.slot_response[hb_slot])), 0)
+        var sent = send(fd_desc, Span(st.slot_response[hb_slot]), 0)
         st.slot_send_offset[hb_slot] = Int(sent)
     except hb_err:
         # EPIPE/ECONNRESET here is the heartbeat doing its
@@ -111,8 +114,7 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
     try:
         ws_read = recv(
             ws_fd,
-            Span(st.provision_pool.provisions[slot].recv_staging),
-            UInt(st.provision_pool.provisions[slot].recv_staging.capacity()),
+            spare_capacity(st.provision_pool.provisions[slot].recv_staging),
             0,
         )
     except ws_recv_err:
@@ -161,7 +163,7 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
         var ws_reply_sent = 0
         try:
             ws_reply_sent = Int(
-                send(ws_fd, Span(ws_res.reply), UInt(len(ws_res.reply)), 0)
+                send(ws_fd, Span(ws_res.reply), 0)
             )
         except ws_send_err:
             # Anything but EAGAIN means the client is gone.
@@ -341,7 +343,7 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                 # Eager send
                 var sse_fd = FileDescriptor(st.slot_fds[s])
                 try:
-                    var sent = send(sse_fd, Span(st.slot_response[s]), UInt(len(st.slot_response[s])), 0)
+                    var sent = send(sse_fd, Span(st.slot_response[s]), 0)
                     st.slot_send_offset[s] = Int(sent)
                 except:
                     pass

@@ -143,6 +143,21 @@ struct IncompleteHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
 
 
 @fieldwise_init
+struct UnsupportedHTTPRequestError(Movable, Writable, TrivialRegisterPassable):
+    """Error raised when a well-formed request asks for what this server
+    does not implement: the `CONNECT` method, or a transfer coding before
+    the final `chunked`. The event loop answers it 501 (Not Implemented,
+    RFC 9110 §15.6.2) and closes, where a malformed request is answered
+    400."""
+
+    def write_to[W: Writer, //](self, mut writer: W):
+        writer.write("UnsupportedHTTPRequestError: Not implemented by this server")
+
+    def __str__(self) -> String:
+        return String(self)
+
+
+@fieldwise_init
 struct InvalidHTTPResponseError(Movable, Writable, TrivialRegisterPassable):
     """Error raised when the HTTP response is malformed."""
 
@@ -179,10 +194,16 @@ struct EmptyBufferError(Movable, Writable, TrivialRegisterPassable):
 struct RequestParseError(Movable, Writable):
     """Error variant for HTTP request parsing.
 
-    Can be InvalidHTTPRequestError, IncompleteHTTPRequestError, or EmptyBufferError.
+    Can be InvalidHTTPRequestError, IncompleteHTTPRequestError,
+    EmptyBufferError, or UnsupportedHTTPRequestError.
     """
 
-    comptime type = Variant[InvalidHTTPRequestError, IncompleteHTTPRequestError, EmptyBufferError]
+    comptime type = Variant[
+        InvalidHTTPRequestError,
+        IncompleteHTTPRequestError,
+        EmptyBufferError,
+        UnsupportedHTTPRequestError,
+    ]
     var value: Self.type
 
     @implicit
@@ -197,6 +218,10 @@ struct RequestParseError(Movable, Writable):
     def __init__(out self, value: EmptyBufferError):
         self.value = value
 
+    @implicit
+    def __init__(out self, value: UnsupportedHTTPRequestError):
+        self.value = value
+
     def is_incomplete(self) -> Bool:
         """Returns True if this error indicates we need more data."""
         return self.value.isa[IncompleteHTTPRequestError]()
@@ -208,6 +233,8 @@ struct RequestParseError(Movable, Writable):
             writer.write(self.value[IncompleteHTTPRequestError])
         elif self.value.isa[EmptyBufferError]():
             writer.write(self.value[EmptyBufferError])
+        elif self.value.isa[UnsupportedHTTPRequestError]():
+            writer.write(self.value[UnsupportedHTTPRequestError])
 
     def isa[T: AnyType](self) -> Bool:
         return self.value.isa[T]()
@@ -1190,6 +1217,17 @@ def parse_request_headers(
     # below, after the Host field's own checks (SPEC B16).
     var authority = Bytes()
     var scheme_len = _http_scheme_len(path.as_bytes())
+    # RFC 9112 §3.2: a request target takes one of four forms. Origin-form
+    # opens with `/`; absolute-form is an `http` or `https` URI (the scheme
+    # matched above); asterisk-form is `*` and only for a server-wide
+    # OPTIONS (§3.2.4); authority-form is CONNECT's alone, which is refused
+    # below. Anything else is 400 (SPEC B19): `GET p` and `GET h:80` were
+    # served, the application reading a path with no leading slash. The
+    # bytes a target may hold are the scanner's rule (`http/parsing.mojo`);
+    # this is the shape. A `%` escape is the application's to decode.
+    if scheme_len == 0 and path.as_bytes()[0] != 0x2F:  # '/'
+        if not (path == "*" and method == "OPTIONS") and method != "CONNECT":
+            raise RequestParseError(InvalidHTTPRequestError())
     if scheme_len > 0:
         var target = path.as_bytes()
         # The authority runs to the first `/`, `?` or `#` (RFC 3986 §3.2).
@@ -1227,6 +1265,9 @@ def parse_request_headers(
     # -1 while no Host field has been seen; its length after. A second Host
     # line is refused where it is met, so there is only ever the one.
     var host_len = -1
+    # The `Connection` lines after the first, joined onto it (SPEC B22);
+    # empty, and never allocated, for a request with one line or none.
+    var connection = Bytes()
 
     # The header array holds OFFSETS into `buffer`; every name and value is a
     # slice of it. Sliced from an immutable view, or two slices of one
@@ -1303,7 +1344,34 @@ def parse_request_headers(
                 if seen_transfer_encoding:
                     raise RequestParseError(InvalidHTTPRequestError())
                 seen_transfer_encoding = True
+            elif kid == KH_CONNECTION:
+                # A second `Connection` line joins the first as one list,
+                # comma-SP, in order (RFC 9110 §5.3), so `close` on either
+                # closes (SPEC B22). `set_bytes` keeps the last of a
+                # repeated field, and `Connection: close` followed by
+                # `Connection: keep-alive` kept the connection alive. Only
+                # this field, the list the loop acts on for every request;
+                # a request carries no `Set-Cookie`, which never combines,
+                # and its `Cookie` lines are joined below, with "; ".
+                #
+                # Joined OUTSIDE the store and set once after the loop, as
+                # `Cookie` is: the store's blob never overwrites, so setting
+                # the list so far at every line left a copy of it each
+                # time -- 98 lines of a 32 KB head made a 1.5 MB blob.
+                var at = headers.known_index(KH_CONNECTION)
+                if at >= 0:
+                    if len(connection) == 0:
+                        connection.extend(headers.value_span(at))
+                    connection.append(0x2C)  # ','
+                    connection.append(0x20)
+                    connection.extend(value)
+                    continue
             headers._set_bytes(name_bytes, value, kid)
+
+    if len(connection) > 0:
+        headers._set_bytes(
+            HeaderKey.CONNECTION.as_bytes(), Span(connection), KH_CONNECTION
+        )
 
     # Put the cookies back as one `Cookie` field. RFC 6265 §5.4 sends a single
     # header, but HTTP/2 downgrades and some proxies split it across several,
@@ -1325,13 +1393,17 @@ def parse_request_headers(
     # which leaves the request's target host unstated in any deployment
     # that routes or caches on it.
     #
-    # Whitespace-only values ("Host: " / "Host: \t") are stripped to "" by
-    # the parser's OWS skip and are rejected by the same check.
+    # An EMPTY value is what RFC 9110 §7.2 asks a client to send when the
+    # target URI has no authority, so it is accepted unless the request
+    # target names one -- absolute-form, whose Host must be that authority
+    # (SPEC B20). Every empty Host was refused, where h11 and llhttp accept
+    # it. Whitespace-only values ("Host: " / "Host: \t") are stripped to ""
+    # by the parser's OWS skip and read the same way.
     #
     # Every minor version from 1 up: HTTP/1.2 to HTTP/1.9 are processed as
     # HTTP/1.1, the highest this server implements (RFC 9110 §2.5), and the
     # check that asked for 1 exactly served them with no Host (SPEC B15).
-    if minor_version >= 1 and host_len <= 0:
+    if minor_version >= 1 and (host_len < 0 or (host_len == 0 and scheme_len > 0)):
         raise RequestParseError(InvalidHTTPRequestError())
 
     # RFC 9112 §3.2.2: with an absolute-form target the server MUST ignore
@@ -1356,6 +1428,19 @@ def parse_request_headers(
         # `is_chunked_body`.
         var te_parts = te_str.split(",")
         var last_te = String(String(te_parts[len(te_parts) - 1]).strip())
+        # `chunked` ONLY last: a sender MUST NOT apply it more than once
+        # (RFC 9112 §6.1). The loop decodes one layer, so `chunked, chunked`
+        # reached the application as a still-chunked body described by a
+        # length -- the contradictory pair SPEC L25 removes. Empty list
+        # members mean nothing (RFC 9110 §5.6.1); any other member is a
+        # coding, noted for the 501 below.
+        var other_coding = False
+        for i in range(len(te_parts) - 1):
+            var member = String(String(te_parts[i]).strip())
+            if member == "chunked":
+                raise RequestParseError(InvalidHTTPRequestError())
+            if member.byte_length() > 0:
+                other_coding = True
         # RFC 9112 §6.3: if a request carries Transfer-Encoding, the FINAL
         # coding must be `chunked` — that is the only one that says where
         # the body ends. Testing `"chunked" in te_str` first let
@@ -1363,16 +1448,31 @@ def parse_request_headers(
         # `is_chunked_body`, so with no Content-Length either the request
         # was dispatched as bodyless while its body stayed in the buffer:
         # the same two-hops-two-framings disagreement as the rest of this
-        # block, and the one member of the family left open.
+        # block, and the one member of the family left open. The answer is
+        # a MUST: 400, then close -- a lone `gzip`, a list naming no coding
+        # or ending in an empty member, `chunked;x=1`.
         if last_te != "chunked":
             raise RequestParseError(InvalidHTTPRequestError())
-        # And ONLY last: a sender MUST NOT apply `chunked` more than once
-        # (RFC 9112 §6.1). The loop decodes one layer, so `chunked, chunked`
-        # reached the application as a still-chunked body described by a
-        # length -- the contradictory pair SPEC L25 removes.
-        for i in range(len(te_parts) - 1):
-            if String(String(te_parts[i]).strip()) == "chunked":
-                raise RequestParseError(InvalidHTTPRequestError())
+        # With `chunked` final, any coding before it is one this server
+        # does not implement, and a server that receives a transfer coding
+        # it does not understand SHOULD answer 501 (RFC 9112 §6.1; SPEC
+        # B21): the body's end is known, its content is not decodable here.
+        # `gzip, chunked` was de-chunked and its body handed to the
+        # application still gzipped (review record LF39).
+        if other_coding:
+            raise RequestParseError(UnsupportedHTTPRequestError())
+
+    # CONNECT asks the recipient to become a tunnel (RFC 9110 §9.3.6), and
+    # this server implements none: 501, answered by the loop, which closes
+    # (SPEC B18). It reached the application, which answers every method,
+    # and a 2xx answer to CONNECT tells a front end that forwards it that
+    # the tunnel is open -- whatever the client sends next goes through
+    # unparsed, past every rule in this function. Asked LAST, so a CONNECT
+    # that is also malformed -- two `Host` lines, a `Content-Length` beside
+    # `Transfer-Encoding` -- is the 400 every other request gets. The method
+    # is case-sensitive (RFC 9110 §9.1), so `connect` is some other method.
+    if method == "CONNECT":
+        raise RequestParseError(UnsupportedHTTPRequestError())
 
     # The two versions this server speaks are literals; formatting an Int
     # into a String on every request was the only other way to spell them.
@@ -1545,3 +1645,44 @@ def find_header_end(buffer: Span[Byte, _], search_start: Int = 0) -> Optional[In
         i += 1
 
     return None
+
+
+def holds_bare_lf(buffer: Span[Byte, _], start: Int = 0) -> Bool:
+    """Whether `buffer[start:]` holds an LF that no CR comes right before.
+
+    For a request head still arriving: every line of one ends in CRLF
+    (SPEC B12), so a bare LF means the head can only be refused -- and a
+    head of bare LFs holds no CRLFCRLF for `find_header_end` to frame, so
+    the parser that refuses it never ran (SPEC B23). Each byte from
+    `start` is asked with the one before it, which may sit before `start`:
+    a read that ended on a CR, and the next opening with its LF, is a
+    CRLF. Pass where the last scan stopped and every byte is scanned once.
+
+    Sixty-four lanes a step, the predecessors a second load one byte back;
+    the scalar tail takes the rest.
+    """
+    var n = len(buffer)
+    var p = buffer.unsafe_ptr()
+    var i = start if start > 0 else 0
+    if i >= n:
+        return False
+    if i == 0:
+        if p[unsafe_offset=0] == BytesConstant.LF:
+            return True
+        i = 1
+    var lf_vec = SIMD[DType.uint8, 64](BytesConstant.LF)
+    var cr_vec = SIMD[DType.uint8, 64](BytesConstant.CR)
+    while i + 64 <= n:
+        var cur = p.unsafe_offset(i).unsafe_load[width=64]()
+        var prev = p.unsafe_offset(i - 1).unsafe_load[width=64]()
+        if _first_lane[64](cur.eq(lf_vec) & prev.ne(cr_vec)) >= 0:
+            return True
+        i += 64
+    while i < n:
+        if (
+            p[unsafe_offset=i] == BytesConstant.LF
+            and p[unsafe_offset=i - 1] != BytesConstant.CR
+        ):
+            return True
+        i += 1
+    return False

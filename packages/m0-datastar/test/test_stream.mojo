@@ -225,6 +225,33 @@ def test_reconnect_replays_missed_frames() raises:
     assert_true(out.find('{"c":3}') >= 0)
 
 
+def test_a_reconnect_reads_its_id_as_the_held_streams_do() raises:
+    """`open` reads `Last-Event-ID` with the fork's one parser,
+    `request_last_event_id` (lightbug_http.hold), which every held stream
+    uses: an id with whitespace around it resumes where it says, a value
+    that is not a plain decimal of at most 18 digits replays the whole
+    journal, and the two parsers cannot drift. The package had a copy of
+    its own without the `.strip()`, and read " 1 " as 0 (review record
+    LF35)."""
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    _ = s.patch_signals("/e", '{"a":1}')
+    _ = s.patch_signals("/e", '{"b":2}')
+    _ = s.drain(0)
+    s.closed(0)
+    _ = s.open(_reconnect("/e", " 1 "), "/e")
+    var out = _text(s.drain(0))
+    assert_false(out.find('{"a":1}') >= 0, "the id was read as 0")
+    assert_true(out.find('{"b":2}') >= 0)
+    s.closed(0)
+    for bad in ["x1", "1234567890123456789", "-1"]:
+        _ = s.open(_reconnect("/e", bad), "/e")
+        var all = _text(s.drain(0))
+        assert_true(all.find('{"a":1}') >= 0, bad)
+        assert_true(all.find('{"b":2}') >= 0, bad)
+        s.closed(0)
+
+
 def test_no_header_means_no_replay() raises:
     """A first-time consumer starts from the live feed, not from history."""
     var s = DatastarStream(4)

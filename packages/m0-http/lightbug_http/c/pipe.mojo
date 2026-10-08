@@ -12,9 +12,8 @@ from std.memory.alloc import unsafe_alloc
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import ExternalMutPointer
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
-
-comptime _O_CLOEXEC_LINUX = 0x80000
+from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
+from lightbug_http.c.socket import _close
 
 
 def _pipe(fds: ExternalMutPointer[c_int]) -> c_int:
@@ -22,16 +21,14 @@ def _pipe(fds: ExternalMutPointer[c_int]) -> c_int:
     return external_call["pipe", c_int](fds)
 
 
-def _close(fd: c_int) -> c_int:
-    """Raw close() syscall."""
-    return external_call["close", c_int, c_int](fd)
-
-
 def close_fd(fd: Int):
     """Close a descriptor, ignoring the result.
 
-    For unwinding a half-built pipe: the only failure close() reports is EBADF,
-    and a caller that is already abandoning the fd has nothing to do about it.
+    For a caller that is abandoning the descriptor: a half-built pipe or
+    channel, a timerfd, a hand-off that failed. Whatever close() reports
+    leaves nothing to do: EBADF means it was not open, and an EINTR or EIO
+    arrives with the number already released on Linux and macOS (see
+    `Socket.close`), so it must not be closed again.
 
     Args:
         fd: The descriptor to close.
@@ -61,9 +58,10 @@ def _write(fd: Int, buf: _OpaqueConst, count: Int) -> Int:
 struct ShutdownHandle(Movable):
     """Write end of a graceful-shutdown pipe.
 
-    The event loop watches the corresponding read end via kqueue EVFILT_READ.
-    Closing the write end sends EV_EOF to the read end, which the loop detects
-    and uses to break out cleanly after draining in-flight work.
+    The event loop registers the read end for reads (`shutdown_read_fd`,
+    on kqueue or epoll alike). `notify` makes it readable and `signal`
+    closes the write end, which reports EOF on it; the loop reads any event
+    on it as the stop, and drains in-flight work before it returns.
     """
 
     var fd: Int
@@ -132,7 +130,7 @@ def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
         ret = _pipe(fds)
     else:
         # pipe2(O_CLOEXEC): born close-on-exec, with no window.
-        ret = external_call["pipe2", c_int](fds, c_int(_O_CLOEXEC_LINUX))
+        ret = external_call["pipe2", c_int](fds, c_int(O_CLOEXEC))
     if ret == -1:
         var errno = get_errno()
         fds.unsafe_free()

@@ -18,7 +18,9 @@ def _drop_final_chunked(mut headers: Headers):
     nothing else is left.
 
     The parser has already refused a request whose last coding is anything
-    else, or that applies `chunked` twice. Empty list elements mean nothing
+    else (400), that applies `chunked` twice (400), or that names another
+    coding before it (501, SPEC B21), so what reaches here from the loop is
+    `chunked` behind empty members at most. Empty list elements mean nothing
     (RFC 9110 §5.6.1) and are dropped with it, so `, chunked` leaves no
     empty field beside the length. A byte walk, never `[byte=a:b]`: a
     header value may hold obs-text, which is not UTF-8.
@@ -236,9 +238,10 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         # de-chunked is now a sized body: it is described by its length, and
         # the `chunked` coding it arrived in is gone, so an application --
         # or a proxy forwarding the headers on -- never sees the
-        # contradictory pair. Any other coding stays, the body being still
-        # in it. A request that carried no length gets none invented: a
-        # GET's `content-length: 0` was ours, not the client's.
+        # contradictory pair. No other coding gets this far: the parser
+        # refuses one (SPEC B21). A request that carried no length gets
+        # none invented: a GET's `content-length: 0` was ours, not the
+        # client's.
         if dechunked:
             _drop_final_chunked(request.headers)
             request.set_content_length(len(request.body_raw))
