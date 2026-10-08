@@ -277,9 +277,9 @@
       "id": "B3",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
-      "capability": "`Transfer-Encoding` whose last coding is not `chunked` rejected",
+      "capability": "`Transfer-Encoding` whose last coding is not `chunked` rejected, coding names compared in ASCII",
       "status": "verified",
-      "evidence": "`test_parsing.mojo:test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected` (every PR)"
+      "evidence": "`test_parsing.mojo:test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected` (every PR) \u2014 the names were lowercased by Unicode's rules, and `chun<U+212A>ed`, the KELVIN SIGN in the place of `k`, was framed as chunked where every other hop reads an unknown coding; the list is split on its bytes, so a member that is not UTF-8 ends at its comma (review record LF58). `test_is_chunked_body_asks_the_final_coding_in_ascii` holds the loop's own question the same way"
     },
     {
       "id": "B4",

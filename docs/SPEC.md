@@ -86,7 +86,7 @@ that found, is in [the traceability note](notes/traceability.md).
 |---|---|---|---|
 | B1 | `Content-Length` with `Transfer-Encoding` rejected | verified | `test_parsing.mojo:test_content_length_with_transfer_encoding_is_rejected` (every PR) |
 | B2 | Duplicate `Content-Length` rejected, including across letter case | verified | `test_parsing.mojo:test_duplicate_content_length_is_rejected_across_letter_case` (every PR) |
-| B3 | `Transfer-Encoding` whose last coding is not `chunked` rejected | verified | `test_parsing.mojo:test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected` (every PR) |
+| B3 | `Transfer-Encoding` whose last coding is not `chunked` rejected, coding names compared in ASCII | verified | `test_parsing.mojo:test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected` (every PR) — the names were lowercased by Unicode's rules, and `chun<U+212A>ed`, the KELVIN SIGN in the place of `k`, was framed as chunked where every other hop reads an unknown coding; the list is split on its bytes, so a member that is not UTF-8 ends at its comma (review record LF58). `test_is_chunked_body_asks_the_final_coding_in_ascii` holds the loop's own question the same way |
 | B4 | Header padding does not bypass the smuggling check | verified | `test_parsing.mojo:test_padded_headers_do_not_bypass_the_smuggling_check` (every PR) |
 | B5 | Bare LF in a chunk extension rejected | verified | `test_parsing.mojo:test_bare_lf_in_a_chunk_extension_is_rejected` (every PR) |
 | B6 | `Content-Length` integer overflow rejected | verified | `test_parsing.mojo:test_overflowing_content_length_is_rejected` (every PR) |

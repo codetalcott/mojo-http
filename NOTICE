@@ -1640,6 +1640,14 @@ lightbug_http
         and `parse_request_headers` refuses one that is not, 400 (SPEC
         B27). It served `Host: a b` and `Host: u@a` (review record LF64).
 
+      - header.mojo (2026-10-08): `parse_request_headers` reads the
+        `Transfer-Encoding` list as bytes, split on its commas, each member
+        compared with `chunked` under ASCII case folding, and
+        `ParsedRequestHeaders.is_chunked_body` asks the final member the
+        same way. Both used `String.lower()`, which folds by Unicode's
+        rules (KELVIN SIGN to `k`) and reads the value as UTF-8 (review
+        record LF58).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

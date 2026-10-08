@@ -233,6 +233,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   names no authority. A client sends an internationalized name as
   punycode, as browsers do.
 
+- **A `Transfer-Encoding` that only Unicode reads as `chunked` is
+  refused** (fork review LF58, SPEC B3). Exposed: m0serve and every Mojo
+  application behind a front end that forwards a transfer coding it does
+  not know. Coding names were lowercased by Unicode's rules, which turn
+  the KELVIN SIGN (U+212A) into `k`, so `Transfer-Encoding: chun<U+212A>ed`
+  was read as `chunked` and its body framed by chunks, where every other
+  server and proxy reads an unknown coding: two framings of one request,
+  the ingredient of request smuggling. Coding names are now compared in
+  ASCII, and that request is refused with 400 like any other whose last
+  coding is not `chunked`.
+
 ### Changed
 
 - **The fork's descriptor helpers live in the module that owns them**

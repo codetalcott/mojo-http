@@ -259,16 +259,25 @@ struct ParsedRequestHeaders(Movable):
         is made of. The `chunked`-must-be-last check in `parse_request_line`
         had the same gap and is fixed with it.
 
-        The lowercase copy costs an allocation, but only for requests that
-        carry the header at all: the `get` returns None for everything else
-        and this returns on the line above.
+        The FINAL coding is asked, in the value's bytes with ASCII case
+        folding and nothing else, as `parse_request_headers` asks it: a
+        Unicode `lower()` read KELVIN SIGN as `k` (review record LF58). A
+        parsed request carrying the header has `chunked` last, or the parse
+        refused it, so this is True exactly when the header is there.
         """
-        if self.headers.known_index(KH_TRANSFER_ENCODING) < 0:
+        var i = self.headers.known_index(KH_TRANSFER_ENCODING)
+        if i < 0:
             return False
-        var te = self.headers.get(HeaderKey.TRANSFER_ENCODING)
-        if te:
-            return "chunked" in te.value().lower()
-        return False
+        var te = self.headers.value_span(i)
+        var b = len(te)
+        var a = b
+        while a > 0 and te[a - 1] != 0x2C:  # the last member, after its comma
+            a -= 1
+        while a < b and (te[a] == 0x20 or te[a] == 0x09):
+            a += 1
+        while b > a and (te[b - 1] == 0x20 or te[b - 1] == 0x09):
+            b -= 1
+        return name_is(te[a:b], "chunked")
 
     def faulty_framing(self) -> Bool:
         """Whether RFC 9112 §6.1 calls this request's framing faulty.
@@ -1420,17 +1429,22 @@ def parse_request_headers(
     # RFC 9112 §6.1: 'chunked' MUST be the last (outermost) Transfer-Encoding.
     # Reject e.g. "Transfer-Encoding: chunked, zorg".
     if seen_transfer_encoding:
-        # `get` for the value rather than the loop's span: a second line
-        # was refused in the loop, so the one stored is the only one, and
-        # this path runs only for requests that carry the header at all.
-        var te_str = headers.get(HeaderKey.TRANSFER_ENCODING).value().lower()
-        # Lowercased before the test, not only for `last_te`: transfer-coding
-        # names are case-insensitive (RFC 9112 §7.1), so testing the raw
-        # value let `Transfer-Encoding: CHUNKED` skip this check entirely —
-        # and skip being recognised as a chunked body at all. See
-        # `is_chunked_body`.
-        var te_parts = te_str.split(",")
-        var last_te = String(String(te_parts[len(te_parts) - 1]).strip())
+        # The stored value as bytes: a second line was refused in the loop,
+        # so the one stored is the only one, and this path runs only for
+        # requests that carry the header at all.
+        #
+        # Each member is compared with ASCII case folding and nothing else:
+        # transfer-coding names are case-insensitive (RFC 9112 §7.1), so
+        # testing the raw value let `Transfer-Encoding: CHUNKED` skip this
+        # check entirely -- and skip being recognised as a chunked body at
+        # all (see `is_chunked_body`). It was `String.lower()`, which folds
+        # by Unicode's rules and reads the value as UTF-8: KELVIN SIGN
+        # (U+212A) lowered to `k`, so `chun<U+212A>ed` was framed as
+        # chunked where every other hop reads an unknown coding, and a lead
+        # byte that is no UTF-8 swallowed the comma behind it (review record
+        # LF58). A field value is bytes, obs-text included (SPEC G14).
+        var te = headers.value_span(headers.known_index(KH_TRANSFER_ENCODING))
+        var te_len = len(te)
         # `chunked` ONLY last: a sender MUST NOT apply it more than once
         # (RFC 9112 §6.1). The loop decodes one layer, so `chunked, chunked`
         # reached the application as a still-chunked body described by a
@@ -1438,15 +1452,29 @@ def parse_request_headers(
         # members mean nothing (RFC 9110 §5.6.1); any other member is a
         # coding, noted for the 501 below.
         var other_coding = False
-        for i in range(len(te_parts) - 1):
-            var member = String(String(te_parts[i]).strip())
-            if member == "chunked":
+        var last_is_chunked = False
+        var start = 0
+        while start <= te_len:
+            var stop = start
+            while stop < te_len and te[stop] != 0x2C:  # ','
+                stop += 1
+            var a = start
+            var b = stop
+            while a < b and (te[a] == 0x20 or te[a] == 0x09):
+                a += 1
+            while b > a and (te[b - 1] == 0x20 or te[b - 1] == 0x09):
+                b -= 1
+            var is_chunked = name_is(te[a:b], "chunked")
+            if stop == te_len:
+                last_is_chunked = is_chunked
+            elif is_chunked:
                 raise RequestParseError(InvalidHTTPRequestError())
-            if member.byte_length() > 0:
+            elif b > a:
                 other_coding = True
+            start = stop + 1
         # RFC 9112 §6.3: if a request carries Transfer-Encoding, the FINAL
         # coding must be `chunked` — that is the only one that says where
-        # the body ends. Testing `"chunked" in te_str` first let
+        # the body ends. Testing for `chunked` anywhere in the value let
         # `Transfer-Encoding: gzip` past both this check and
         # `is_chunked_body`, so with no Content-Length either the request
         # was dispatched as bodyless while its body stayed in the buffer:
@@ -1454,7 +1482,7 @@ def parse_request_headers(
         # block, and the one member of the family left open. The answer is
         # a MUST: 400, then close -- a lone `gzip`, a list naming no coding
         # or ending in an empty member, `chunked;x=1`.
-        if last_te != "chunked":
+        if not last_is_chunked:
             raise RequestParseError(InvalidHTTPRequestError())
         # With `chunked` final, any coding before it is one this server
         # does not implement, and a server that receives a transfer coding

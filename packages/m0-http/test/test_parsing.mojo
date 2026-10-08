@@ -16,6 +16,8 @@ prevent.
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.header import (
+    Headers,
+    ParsedRequestHeaders,
     parse_request_headers,
     InvalidHTTPRequestError,
     IncompleteHTTPRequestError,
@@ -431,6 +433,40 @@ def test_mixed_case_chunked_is_recognised() raises:
     assert_true(parsed.is_chunked_body())
 
 
+def _te_headers(value: List[UInt8]) -> ParsedRequestHeaders:
+    """A parsed head whose `Transfer-Encoding` holds `value`, built directly:
+    the parser refuses most of these before `is_chunked_body` is asked."""
+    var h = Headers()
+    h.set_bytes(HeaderKey.TRANSFER_ENCODING.as_bytes(), Span(value))
+    return ParsedRequestHeaders(
+        method="POST", path="/", protocol="HTTP/1.1", headers=h^,
+        cookies=List[String](), bytes_consumed=0,
+    )
+
+
+def test_is_chunked_body_asks_the_final_coding_in_ascii() raises:
+    """`is_chunked_body` reads the final coding's bytes with ASCII case
+    folding, as the parser does: `chunked` anywhere in a Unicode-lowered
+    value answered True for `chun<U+212A>ed` and for `chunked, gzip`
+    (review record LF58)."""
+    var kelvin = List[UInt8]()
+    kelvin.extend("chun".as_bytes())
+    kelvin.append(0xE2)
+    kelvin.append(0x84)
+    kelvin.append(0xAA)
+    kelvin.extend("ed".as_bytes())
+    assert_false(_te_headers(kelvin).is_chunked_body(), "KELVIN SIGN read as k")
+    var out_of_place = List[UInt8]()
+    out_of_place.extend("chunked, gzip".as_bytes())
+    assert_false(_te_headers(out_of_place).is_chunked_body())
+    var ok = List[UInt8]()
+    ok.extend("gzip , \tCHUNKED ".as_bytes())
+    assert_true(_te_headers(ok).is_chunked_body())
+    var plain = List[UInt8]()
+    plain.extend("chunked".as_bytes())
+    assert_true(_te_headers(plain).is_chunked_body())
+
+
 def test_uppercase_chunked_not_last_is_still_rejected() raises:
     """The must-be-last rule was skipped entirely for uppercase, because its
     own guard tested the raw value."""
@@ -469,6 +505,42 @@ def test_transfer_encoding_whose_last_coding_is_not_chunked_is_rejected() raises
     assert_true(
         _rejected("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked-foo\r\n\r\n")
     )
+    # A coding name is case-folded as ASCII and nothing else (RFC 9112
+    # §7.1). Unicode lowercasing reads KELVIN SIGN (U+212A, E2 84 AA) as
+    # `k`, and `chun<U+212A>ed` was framed as chunked where every other hop
+    # reads an unknown coding (review record LF58).
+    var kelvin = List[UInt8]()
+    kelvin.extend("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chun".as_bytes())
+    kelvin.append(0xE2)
+    kelvin.append(0x84)
+    kelvin.append(0xAA)
+    kelvin.extend("ed\r\n\r\n".as_bytes())
+    assert_true(_invalid_bytes(kelvin), "framed chun<KELVIN SIGN>ed as chunked")
+    # And the list is split on its bytes: a member that is not UTF-8 ends
+    # at its comma like any other. Read as UTF-8, the lead byte 0xF0 took
+    # the comma behind it, and `x<F0>, chunked` was one coding named
+    # `x?hunked`, refused 400 where its final coding is `chunked` and the
+    # one before it is 501's (B21).
+    var lead = List[UInt8]()
+    lead.extend("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: x".as_bytes())
+    lead.append(0xF0)
+    lead.extend(", chunked\r\n\r\n".as_bytes())
+    assert_true(_unsupported_bytes(lead), "a non-UTF-8 member took its comma")
+    var tail = List[UInt8]()
+    tail.extend("POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked".as_bytes())
+    tail.append(0xC3)
+    tail.extend("\r\n\r\n".as_bytes())
+    assert_true(_invalid_bytes(tail), "chunked<C3> read as chunked")
+
+
+def _unsupported_bytes(raw: List[UInt8]) -> Bool:
+    """`_unsupported` for a head that is not a String's bytes."""
+    try:
+        var parsed = parse_request_headers(Span(raw))
+        _ = parsed^
+        return False
+    except e:
+        return e.isa[UnsupportedHTTPRequestError]()
 
 
 def test_chunked_applied_twice_is_rejected() raises:
