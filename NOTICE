@@ -1800,8 +1800,8 @@ lightbug_http
         review record LF62).
 
       - header.mojo, http/parsing.mojo, http/request.mojo,
-        http/response.mojo, server.mojo, __init__.mojo, loop/request.mojo
-        (2026-10-08): dead inherited code removed, each name searched for
+        http/response.mojo, server.mojo, strings.mojo, __init__.mojo,
+        loop/request.mojo (2026-10-08): dead inherited code removed, each name searched for
         across the repository, the `m0` templates and the one application
         outside it, then the fork compiled whole: `StatusCode` and
         `HTTPResponse.is_redirect`, `content_length`, `connection_close`
@@ -1814,7 +1814,8 @@ lightbug_http
         fifteen `__str__`s that were `String(self)` on a type that is not
         `Stringable`; and `is_complete` with the `last_len` argument of
         `parse_request_headers` and `http_parse_request_headers`, a rescan
-        for the CRLFCRLF `find_header_end` had already framed (review
+        for the CRLFCRLF `find_header_end` had already framed; and
+        strings.mojo's `http`, once `uri.mojo` stopped reading it (review
         record LF61).
 
       - websocket.mojo, header.mojo (2026-10-08): `websocket_upgrade` and

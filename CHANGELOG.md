@@ -495,8 +495,9 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `Server.max_request_body_size()`, `max_request_uri_length()` and their
   setters (set `ServerConfig`'s fields); `ProvisionPool.size()`;
   `RequestParseError.is_incomplete()` (ask `isa[IncompleteHTTPRequestError]()`);
-  and `parse_request_headers`' `last_len` argument, whose rescan for the
-  end of a head the server had already framed changed no answer.
+  `parse_request_headers`' `last_len` argument, whose rescan for the end
+  of a head the server had already framed changed no answer; and
+  `lightbug_http.strings.http`, whose last reader went with `URI.is_http`.
 
 - **`lightbug_http.c.epoll`'s `EPOLL_CLOEXEC`, `TFD_CLOEXEC` and
   `TFD_NONBLOCK`** (fork review LF28), copies of the open flags under
