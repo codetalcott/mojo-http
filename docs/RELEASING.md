@@ -365,9 +365,9 @@ head or a field line, obs-fold, `Content-Length` beside `Transfer-Encoding`,
 a second `Host`, a coding before `chunked`, CONNECT, a 100 Continue sent
 to an HTTP/1.0 client) and requires `smoke-differential` to fail with the
 MISMATCH line of the case that shows it. Pre-release because each arm
-builds the echo server again, cold: about ten seconds an arm on the
-reference Mac, under two minutes in all. An anchor that no longer matches is
-NOT APPLICABLE: re-point it with the line it names.
+builds the echo server again, cold: the first whole run, its baseline and
+eight arms, took 73 s on the reference Mac (2026-10-08). An anchor that no
+longer matches is NOT APPLICABLE: re-point it with the line it names.
 
 **And `uv run poe probe-mojo-image`** — builds `deploy/mojo/Dockerfile`
 for `apps/hello` and probes it from outside, recording the floor under
