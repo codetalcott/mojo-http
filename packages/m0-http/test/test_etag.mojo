@@ -88,6 +88,16 @@ def _raw(*bytes: Int) -> String:
     return String(unsafe_from_utf8=Span(l))
 
 
+def test_etag_matches_weakly_whichever_side_carries_the_mark() raises:
+    """RFC 9110 §13.1.2: `If-None-Match` compares weakly, so `W/"x"` and
+    `"x"` name the same tag in either direction, alone or in a list."""
+    assert_true(etag_matches('W/"x"', '"x"'))
+    assert_true(etag_matches('"x"', 'W/"x"'))
+    assert_true(etag_matches('W/"x"', '"y", "x"'))
+    assert_false(etag_matches('W/"x"', '"xy"'))
+    assert_false(etag_matches('"x"', 'W/"y"'))
+
+
 def test_an_if_none_match_that_is_not_utf8_does_not_trap() raises:
     """`etag_matches` trims each candidate with a String slice; a byte that
     is not UTF-8 at the slice end trapped. It must compare bytes.

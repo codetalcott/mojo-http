@@ -194,6 +194,19 @@ def test_if_none_match_round_trips_to_304() raises:
     assert_equal(len(r.body_raw), 0)
 
 
+def test_if_none_match_without_the_weak_mark_gets_304() raises:
+    """The static tag is weak; `If-None-Match` compares weakly, so a client
+    that sends it back without `W/` is answered 304."""
+    var s = StaticFiles(_fixture_root())
+    var first = s.serve(_get("/static/style.css"))
+    var etag = first.take().headers["etag"]
+    assert_true(etag.startswith("W/"))
+    var req = _get("/static/style.css")
+    req.headers["if-none-match"] = String(unsafe_from_utf8=etag.as_bytes()[2:])
+    var resp = s.serve(req)
+    assert_equal(resp.take().status_code, 304)
+
+
 def test_stale_etag_gets_fresh_content() raises:
     var s = StaticFiles(_fixture_root())
     var req = _get("/static/style.css")

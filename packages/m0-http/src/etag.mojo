@@ -16,32 +16,50 @@ def compute_etag(buf: List[UInt8]) -> String:
     return String('W/"') + format_hash64(hash) + String('"')
 
 
-def _trim(s: String) -> String:
-    """Strip leading and trailing ASCII whitespace."""
-    var bytes = s.as_bytes()
-    var start = 0
-    var end = s.byte_length()
-    while start < end and (bytes[start] == 0x20 or bytes[start] == 0x09):
-        start += 1
-    while end > start and (bytes[end - 1] == 0x20 or bytes[end - 1] == 0x09):
-        end -= 1
-    if start == 0 and end == s.byte_length():
-        return s
-    return String(unsafe_from_utf8=s.as_bytes()[start:end])
+def _opaque_bounds(value: String, start: Int, end: Int) -> Tuple[Int, Int]:
+    """The `[start, end)` of `bytes[start:end]` without its blanks and without
+    a leading `W/`. Bytes only: a client's value may hold any byte (SPEC G14)."""
+    var bytes = value.as_bytes()
+    var a = start
+    var b = end
+    while a < b and (bytes[a] == 0x20 or bytes[a] == 0x09):
+        a += 1
+    while b > a and (bytes[b - 1] == 0x20 or bytes[b - 1] == 0x09):
+        b -= 1
+    if b - a >= 2 and bytes[a] == 0x57 and bytes[a + 1] == 0x2F:
+        a += 2
+    return (a, b)
 
 
 def etag_matches(etag: String, if_none_match: String) -> Bool:
     """Check if an ETag matches an If-None-Match header value.
 
-    Handles comma-separated lists and * wildcard.
-    Performs exact token matching (not substring search).
+    Compares WEAKLY, as RFC 9110 §13.1.2 requires for `If-None-Match`: the
+    opaque tags must be equal, whichever side carries the `W/` mark. Handles
+    comma-separated lists and the `*` wildcard, and matches whole tokens
+    (not substrings).
     """
-    if if_none_match.byte_length() == 0:
-        return False
-    if if_none_match == "*":
-        return True
-    var parts = if_none_match.split(",")
-    for i in range(len(parts)):
-        if _trim(String(parts[i])) == etag:
+    var inm = if_none_match.as_bytes()
+    var want_bytes = etag.as_bytes()
+    var want = _opaque_bounds(etag, 0, etag.byte_length())
+    var want_len = want[1] - want[0]
+    var n = len(inm)
+    var seg = 0
+    while seg <= n:
+        var stop = seg
+        while stop < n and inm[stop] != 0x2C:
+            stop += 1
+        var part = _opaque_bounds(if_none_match, seg, stop)
+        var part_len = part[1] - part[0]
+        if part_len == 1 and inm[part[0]] == 0x2A and seg == 0 and stop == n:
             return True
+        if part_len > 0 and part_len == want_len:
+            var same = True
+            for k in range(part_len):
+                if inm[part[0] + k] != want_bytes[want[0] + k]:
+                    same = False
+                    break
+            if same:
+                return True
+        seg = stop + 1
     return False
