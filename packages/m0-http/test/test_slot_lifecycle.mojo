@@ -51,7 +51,7 @@ from lightbug_http.loop.request import _on_read
 from lightbug_http.loop.response import _on_write
 from lightbug_http.loop.streams import _read_websocket
 from lightbug_http.websocket import (
-    WS_OP_CLOSE, close_frame, encode_ws_frame_masked,
+    WS_OP_CLOSE, WS_OP_PING, WS_OP_TEXT, close_frame, encode_ws_frame_masked,
 )
 from lightbug_http.loop.state import (
     LoopState,
@@ -2281,6 +2281,62 @@ def test_a_chunked_stream_keeps_the_close_its_request_asked_for() raises:
     assert_false(kept[1], "a stream its request did not ask to close was closed")
 
 
+struct QueuedFrame(HTTPService):
+    """A stream's handler with a frame queued for every slot the drain asks
+    about, which records the slots its streams left from."""
+
+    var left: List[Int]
+
+    def __init__(out self):
+        self.left = List[Int]()
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        return List[UInt8](String("data: queued\n\n").as_bytes())
+
+    def sse_slot_disconnected(mut self, slot: Int):
+        self.left.append(slot)
+
+
+def test_a_frame_queued_for_a_peer_that_has_gone_closes_its_slot_in_that_pass() raises:
+    """The outbox drain sends a frame its handler queued to a client that
+    has gone, and the send fails: the slot closes in that pass, its handler
+    told and its registrations dropped, an SSE stream and a WebSocket
+    alike -- the rule the heartbeat and the WebSocket reader keep
+    (`_send_frame`). The drain alone swallowed the error and waited for
+    writability, the slot RESPONDING on a write registration until the
+    write-ready path tried the dead peer again a pass later. The client's
+    end of a real stream pair is closed, so the send fails as a reset
+    peer's does: with anything but EAGAIN."""
+    ignore_sigpipe()
+    var app = QueuedFrame()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    for ws in [False, True]:
+        var pair = _stream_pair()
+        var fd = pair[0]
+        var slot = _stream_slot(st, fd, ws)
+        assert_true(_arm_reads(backend, st, slot, fd))
+        # What a stream's head raises (`_finish_response`); at 0 the drain
+        # sweeps no slot.
+        st.offload.streaming_hint = 1
+        close(FileDescriptor(pair[1]))
+        var left = len(app.left)
+        _drain_outboxes(app, backend, st)
+        assert_equal(
+            st.slot_fds[slot], UNUSED,
+            "a frame for a client that has gone left its slot open",
+        )
+        assert_equal(st.fd_to_slot[fd], UNUSED)
+        assert_equal(len(app.left), left + 1, "the handler was not told its stream left")
+        assert_equal(app.left[left], slot)
+        assert_false(backend.write, "the slot waits to write to a client that has gone")
+        assert_false(backend.read)
+        assert_equal(st.active_count, 0)
+
+
 def test_the_farewell_writes_only_into_a_stream_that_takes_one() raises:
     """The drain's farewell asks what the heartbeat asks
     (`_takes_an_out_of_band_frame`; review record LF12). An idle SSE
@@ -2599,6 +2655,67 @@ def test_a_close_echo_waits_for_the_multiplexer() raises:
         _read_available(peer, got), "the peer read no EOF after the echo",
     )
     _assert_the_peer_read_the_echo_last(got, filler)
+    close(FileDescriptor(peer))
+
+
+struct Parks(HTTPService):
+    """Parks every WebSocket message it is handed: the inbound
+    backpressure's False, which stops the socket's reads until a resume."""
+
+    def __init__(out self):
+        pass
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
+
+    def ws_message_take(
+        mut self, slot: Int, opcode: Int, payload: List[UInt8]
+    ) -> Bool:
+        return False
+
+
+def test_a_suspended_websocket_owed_a_pong_keeps_its_write() raises:
+    """One read brings a ping and a message the handler parks, to a socket
+    whose send buffer is full: the pong is owed, and the reads stop for the
+    backpressure. The pong's write registration must stand. It is
+    registered as the pong is sent (`_send_frame`), before the handler
+    hears the batch, so the suspension finds a slot waiting to write and
+    deletes nothing: over a registration kept as epoll keeps it, a delete
+    takes the write one-shot with it, and the pong never goes out."""
+    var app = Parks()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = _stream_slot(st, fd, True)
+    assert_true(_arm_reads(backend, st, slot, fd))
+    assert_true(_fill_send_buffer(fd) > 0)
+    var mask = List[UInt8](length=4, fill=0x5A)
+    var frames = encode_ws_frame_masked(WS_OP_PING, "hb".as_bytes(), mask)
+    var message = encode_ws_frame_masked(WS_OP_TEXT, "parked".as_bytes(), mask)
+    frames.extend(Span(message))
+    var sent = send(FileDescriptor(peer), Span(frames), 0)
+    assert_equal(Int(sent), len(frames))
+
+    _read_websocket(app, backend, st, slot, fd, False)
+    assert_equal(st.slot_fds[slot], fd, "the slot closed with its pong owed")
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind,
+        ConnectionState.RESPONDING,
+    )
+    assert_true(
+        st.slot_send_offset[slot] < len(st.slot_response[slot]),
+        "the pong was not owed",
+    )
+    assert_true(
+        st.slot_ws_state[slot].inbound_suspended,
+        "the parked message did not stop the reads",
+    )
+    assert_true(backend.write, "the owed pong lost its write registration")
+    assert_false(backend.read)
+    assert_false(st.slot_read_armed[slot])
+    _close_slot(app, backend, st, slot, fd)
     close(FileDescriptor(peer))
 
 
