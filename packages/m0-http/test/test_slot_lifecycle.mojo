@@ -838,6 +838,81 @@ def test_a_body_read_after_its_head_is_measured_by_its_own_sizes() raises:
     assert_false(over[1], "the 413 closed its connection where it should linger")
 
 
+def test_a_chunk_line_that_never_ends_is_refused_at_twice_the_cap() raises:
+    """A chunked body's receive buffer is bounded by its decoder consuming
+    every byte it is handed: answering "incomplete", it leaves nothing
+    undecoded (`pending_bytes` 0), so the buffer holds the head and the
+    decoded body and no more, and what a line that never ends costs is
+    counted in `_total_read` and refused 413, with the lingering close, at
+    twice the body cap (C3). Since review record LF70 the body path
+    compares no buffer size with any limit, so this is the bound: a decoder
+    that kept an unfinished extension or size line back in the buffer
+    would let it grow with no check firing, its decoded size and consumed
+    bytes both flat. An extension that never reaches its CR, and a size
+    line of leading zeros that never ends, each sent a read at a time
+    after the head.
+
+    covers: C18
+    """
+    var config = _tight_caps()
+    var cap = config.max_request_body_size
+    var head = String(
+        "POST /e HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    for extension in [True, False]:
+        var opening = String("5;ext=") if extension else String("")
+        var fill = String("e") if extension else String("0")
+        var app = NoApp()
+        var backend = FakeBackend()
+        var st = _loop(config)
+        var pair = _stream_pair()
+        var slot = st.provision_pool.borrow()
+        st.slot_fds[slot] = pair[0]
+        st.fd_to_slot[pair[0]] = slot
+        st.active_count = 1
+        st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+        _send_all(pair[1], head)
+        _on_read(app, backend, st, pair[0], False)
+        assert_equal(
+            st.provision_pool.provisions[slot].state.kind,
+            ConnectionState.READING_BODY,
+        )
+        var head_len = len(st.provision_pool.provisions[slot].recv_buffer)
+        var sent = 0
+        var refused = False
+        for i in range(20):
+            var piece = (opening if i == 0 else String("")) + fill * 40
+            _send_all(pair[1], piece)
+            sent += piece.byte_length()
+            _on_read(app, backend, st, pair[0], False)
+            if (
+                st.provision_pool.provisions[slot].state.kind
+                != ConnectionState.READING_BODY
+            ):
+                refused = True
+                break
+            assert_equal(
+                st.provision_pool.provisions[slot].chunk_decoder.pending_bytes, 0,
+                "the decoder left an unfinished line undecoded",
+            )
+            assert_equal(
+                len(st.provision_pool.provisions[slot].recv_buffer), head_len,
+                "an unfinished line stayed in the receive buffer",
+            )
+        assert_true(refused, "a line that never ends was never refused")
+        assert_true(
+            sent <= 2 * cap + opening.byte_length() + 40,
+            String("refused only after ", sent, " bytes"),
+        )
+        var got = List[UInt8]()
+        _ = _read_available(pair[1], got)
+        var reply = String(unsafe_from_utf8=Span(got)).lower()
+        assert_true(reply.startswith("http/1.1 413 payload too large"), reply)
+        assert_true(st.slot_fds[slot] != UNUSED, "the 413 closed its connection where it should linger")
+        _close_slot(app, backend, st, slot, pair[0])
+        close(FileDescriptor(pair[1]))
+
+
 struct Raises(HTTPService):
     """A handler with a bug: every request it is handed raises."""
 

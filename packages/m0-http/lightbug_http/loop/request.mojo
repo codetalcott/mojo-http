@@ -250,7 +250,8 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     # at most the cap the framing checked, plus one read past it; a chunked
     # one is held to both of its bounds after each decode, below, and the
     # decoder consumes every byte it is handed until the body ends, so what
-    # waits undecoded is at most one read.
+    # waits undecoded is at most one read (`HTTPChunkedDecoder.pending_bytes`;
+    # `test_a_chunk_line_that_never_ends_is_refused_at_twice_the_cap`).
 
     # Phase 1b: chunked body decode, resumed not restarted.
     #
@@ -259,10 +260,13 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     # connection's own decoder — which carries its chunk
     # state across reads, so it continues where it stopped.
     # Decoded output lands at the front of that tail, i.e.
-    # contiguous with what was already decoded, and the
-    # partial header it could not finish is left just after
-    # it (`pending_bytes`). Total work is linear in the body
-    # rather than quadratic in the number of reads; see
+    # contiguous with what was already decoded. The decoder
+    # consumes every byte it is handed, a half-read size line
+    # or extension included, so while the body is incomplete
+    # nothing is left after it (`pending_bytes` is 0), and
+    # once it completes what follows is the next request.
+    # Total work is linear in the body rather than quadratic
+    # in the number of reads; see
     # `ConnectionProvision.chunk_decoder`.
     if body_st.is_chunked:
         var raw_body_start = body_st.header_end_offset
