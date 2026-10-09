@@ -178,9 +178,9 @@ struct ConnectionProvision(Movable):
     var interim_owed: Bytes
     """What the send of this request's interim `100 Continue` did not take,
     owed ahead of anything else the connection sends: the final response
-    (`_finish_response`), or the refusal that ends the request
-    (`_send_owed_interim`). Empty when it went out whole, as it nearly
-    always does (review record LF73)."""
+    (`_finish_response`), or the refusal that ends the request, in that
+    refusal's one buffer (`_take_owed_interim`). Empty when it went out
+    whole, as it nearly always does (review record LF73)."""
 
     var keepalive_count: Int
     """Number of requests handled on this connection."""

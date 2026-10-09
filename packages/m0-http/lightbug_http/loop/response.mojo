@@ -570,16 +570,30 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     _end_request(backend, st, slot, fd_val)
 
 
-def _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
+def _send_error_to_fd(
+    fd_val: Int, var response: HTTPResponse, var owed: Bytes = Bytes()
+):
     """Best-effort send an error response on a raw fd.
 
     Every caller ends the connection after it, so the response says so:
     `Connection: close` (RFC 9112 §9.6, the server's final response on a
     connection). Left to the encoder's default it said `keep-alive`, an
     invitation to send the next request down a socket that is closing.
+
+    `owed` is what an interim `100 Continue` still owes the client
+    (`_take_owed_interim`), sent IN THE SAME BUFFER ahead of the error, by
+    one send: whatever the socket takes of it, the client reads a prefix
+    of the whole interim response and then the error, and the close. Sent
+    apart, with the first count thrown away, a send of the owed bytes that
+    took none or part of them and an error send that found room a moment
+    later put the error behind a fragment -- the corruption the interim's
+    carrying exists to prevent (review record LF73).
     """
     response.set_connection_close()
     var encoded = encode(response^)
+    if len(owed) > 0:
+        owed.extend(Span(encoded))
+        encoded = owed^
     try:
         _ = send(
             FileDescriptor(fd_val),
@@ -605,8 +619,9 @@ def _send_interim(
     the count, so a cut one put a fragment on the wire with the final
     response behind it, which no client can parse (review record LF73).
     What the send did not take -- all of it, when it took none -- goes out
-    ahead of the final response (`_finish_response`), or of the refusal
-    that ends the request (`_send_owed_interim`): late, but whole, and a
+    ahead of the final response (`_finish_response`), or in the one buffer
+    of the refusal that ends the request (`_send_error_to_fd`'s `owed`,
+    from `_take_owed_interim`): late, but whole, and a
     client must be able to read a 1xx before any final response (RFC 9110
     §15.2).
     """
@@ -625,18 +640,11 @@ def _owe_interim(mut st: LoopState, slot: Int, data: Span[Byte, _], sent: Int):
         st.provision_pool.provisions[slot].interim_owed = Bytes(data[sent:])
 
 
-def _send_owed_interim(mut st: LoopState, slot: Int, fd_val: Int):
-    """Before a refusal ends a request whose interim response did not go
-    out whole: what it still owes, best effort, so the refusal follows a
-    whole `100 Continue` rather than a fragment of one (`_send_interim`)."""
-    if len(st.provision_pool.provisions[slot].interim_owed) == 0:
-        return
-    try:
-        _ = send(
-            FileDescriptor(fd_val),
-            Span(st.provision_pool.provisions[slot].interim_owed),
-            0,
-        )
-    except:
-        pass
-    st.provision_pool.provisions[slot].interim_owed.clear()
+def _take_owed_interim(mut st: LoopState, slot: Int) -> Bytes:
+    """What the slot's interim response still owes (`_send_interim`), taken
+    out of the slot: for a refusal to carry ahead of itself in one buffer
+    (`_send_error_to_fd`'s `owed`). Empty, as it nearly always is, when the
+    interim went out whole."""
+    var owed = Bytes()
+    swap(owed, st.provision_pool.provisions[slot].interim_owed)
+    return owed^

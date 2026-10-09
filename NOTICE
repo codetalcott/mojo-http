@@ -1912,8 +1912,10 @@ lightbug_http
         server.mojo (2026-10-08): the interim `100 Continue` is sent by
         `_send_interim`, which keeps what a non-blocking send did not take
         in `ConnectionProvision.interim_owed`; `_finish_response` puts it
-        ahead of the final response, and `_send_owed_interim` sends it
-        ahead of the 400, 408 and 413 that can end the request. It was a
+        ahead of the final response, and `_send_error_to_fd` sends it in
+        one buffer with the 400, 408 or 413 that can end the request
+        (`_take_owed_interim`), so a cut send leaves a truncated stream,
+        never an error behind a fragment. It was a
         best-effort `_send_raw_to_fd` (removed) that ignored the count, and
         on Linux a 25-byte send to a full socket can come back short
         (review record LF73, SPEC A42).

@@ -2025,17 +2025,26 @@ def _interim_exchange(
     rest: List[String],
     taken: Int = 0,
     expire: Bool = False,
+    drain: Bool = True,
+    pooled: Bool = False,
 ) raises -> String:
     """`head`, a request that expects `100 Continue`, read while the
     server's send side is full, so the interim response's send takes none
     of it -- or, with `taken`, as though it had taken that many bytes, which
     are written where the kernel would have put them (`_owe_interim`). The
-    client then reads what was waiting and sends `rest`, a read event a
-    part, the server's answers taken as they come; with `expire`, the body
-    timer runs out instead. Returns what the client read after the filler."""
+    client then reads what was waiting -- unless `drain` is False, when it
+    reads nothing until the end -- and sends `rest`, a read event a part,
+    the server's answers taken as they come; with `expire`, the body timer
+    runs out instead. With `pooled` a pool thread answers: the request is
+    run inline from the pool's queue (`_run_inline`), as its completion is.
+    Returns what the client read after the filler."""
     var app = BodyLength()
     var backend = FakeBackend()
-    var st = _loop(config)
+    var pool = OffloadPool(SLOTS)
+    var st = LoopState(
+        FileDescriptor(-1), config, String(""), True,
+        offload_addr=pool.addr() if pooled else 0,
+    )
     var pair = _stream_pair()
     var fd = pair[0]
     var peer = pair[1]
@@ -2052,7 +2061,9 @@ def _interim_exchange(
         st.provision_pool.provisions[slot].state.kind, ConnectionState.READING_BODY
     )
     var got = List[UInt8]()
-    _ = _read_available(peer, got)
+    var went_to_pool = False
+    if drain:
+        _ = _read_available(peer, got)
     if taken > 0:
         var interim = String(INTERIM)
         var sent = send(FileDescriptor(fd), interim.as_bytes()[:taken], 0)
@@ -2063,9 +2074,15 @@ def _interim_exchange(
             break
         _send_all(peer, part)
         _on_read(app, backend, st, fd, False)
+        if st.offload.offloaded[slot]:
+            went_to_pool = True
+            var slots = List[Int]()
+            slots.append(slot)
+            assert_equal(_run_inline(app, backend, st, slots), 1)
         var rounds = 0
         while (
-            st.slot_fds[slot] != UNUSED
+            drain
+            and st.slot_fds[slot] != UNUSED
             and st.provision_pool.provisions[slot].state.kind
             == ConnectionState.RESPONDING
             and rounds < 100
@@ -2081,8 +2098,19 @@ def _interim_exchange(
     if st.slot_fds[slot] != UNUSED:
         close(FileDescriptor(fd))
     close(FileDescriptor(peer))
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+    assert_equal(went_to_pool, pooled, "where the request was answered")
     assert_true(len(got) >= filler, "the client did not read the filler")
     return String(unsafe_from_utf8=Span(got)[filler:])
+
+
+def _no_fragment_ahead(reply: String, whole: String) -> Bool:
+    """Whether `reply` is `whole` cut short, or `whole` and more: never an
+    error behind a fragment of the interim response."""
+    if reply.byte_length() <= whole.byte_length():
+        return whole.startswith(reply)
+    return reply.startswith(whole)
 
 
 def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
@@ -2100,7 +2128,16 @@ def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
     a fragment, `HTTP/1.1 100 Co` and the rest of the stream unparseable.
     A test cannot make a kernel cut a send, so it fills the socket, which
     makes the send take nothing, and plays the kernel for a take of 7
-    bytes: what was not taken is owed, and goes out first.
+    bytes: what was not taken is owed, and goes out first. A pool thread's
+    answer carries it the same way.
+
+    A refusal carries what is owed in its own buffer, one send for both:
+    sent apart, the first count thrown away, an owed send the socket took
+    none or part of and a refusal send that found room a moment later put
+    the refusal behind a fragment. With the client reading nothing before
+    the refusal, the socket takes none of either, and what it reads after
+    the filler is a prefix of the whole -- here, nothing -- and never the
+    refusal alone.
 
     covers: A42
     """
@@ -2116,6 +2153,9 @@ def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
             String("an interim response ", taken, " bytes of which were taken: ", reply),
         )
         assert_true("body=5" in reply, reply)
+    var pooled = _interim_exchange(_config(), head, ["hello"], pooled=True)
+    assert_true(pooled.startswith(answered), "a pool thread's answer: " + pooled)
+    assert_true("body=5" in pooled, pooled)
 
     var chunked = String(
         "POST /c HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
@@ -2137,6 +2177,26 @@ def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
     assert_true(
         late.startswith(String(INTERIM) + "HTTP/1.1 408 Request Timeout"),
         "a body that never came: " + late,
+    )
+
+    # The refusals with the socket still full when they are sent.
+    var still_full = _interim_exchange(
+        _tight_caps(), chunked, [String("50\r\n") + String("b") * 80 + "\r\n"],
+        drain=False,
+    )
+    assert_true(
+        _no_fragment_ahead(still_full, String(INTERIM) + "HTTP/1.1 413 Payload Too Large"),
+        "a 413 sent to a full socket: " + still_full,
+    )
+    still_full = _interim_exchange(_config(), chunked, ["zz\r\n"], drain=False)
+    assert_true(
+        _no_fragment_ahead(still_full, String(INTERIM) + "HTTP/1.1 400 Bad Request"),
+        "a 400 sent to a full socket: " + still_full,
+    )
+    still_full = _interim_exchange(_config(), head, [], expire=True, drain=False)
+    assert_true(
+        _no_fragment_ahead(still_full, String(INTERIM) + "HTTP/1.1 408 Request Timeout"),
+        "a 408 sent to a full socket: " + still_full,
     )
 
 
