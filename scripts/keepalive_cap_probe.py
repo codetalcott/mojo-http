@@ -21,6 +21,16 @@ Measured on the broken build, both on the 100th request of a connection:
 Both are silent: the status line is correct, the server logs nothing, and the
 client sees a clean empty response or a WebSocket that never speaks.
 
+The fix for those left the cap one request soft for a stream, and a second
+stream cut after its head: a chunked stream served as the cap request skipped
+the cap, ended kept-alive with the count AT the cap, and the next stream on
+the connection skipped it too and was closed by a count check in
+`_after_send` once its head landed -- a chunked head and nothing after it
+(ROADMAP's Known issue of 2026-10-09). The cap now lands on a stream before
+its head and is carried to the stream's end, as a request's own close is:
+phase 4 reads the stream whole under a head that says `close`, then insists
+the connection is gone, where the old build served one more request.
+
 Run against `apps/asgi_bare` under `m0serve` (the asyncio executor is where
 the chunk channel lives). Phase 3 is the boundary self-test: without it a
 build whose cap never fires would pass phases 1 and 2 having tested nothing.
@@ -255,11 +265,61 @@ def phase3_boundary(port):
           % CAP)
 
 
+def phase4_stream_closes(port):
+    """A stream on the cap request is the connection's last: its head says
+    `close`, its body arrives whole, and nothing is served after it.
+
+    Phase 1 reads the stream whole and stops. A build that skipped the cap
+    for a stream passed it, served the next request on that connection, and
+    cut a second stream after its head. The head's `Connection: close` is
+    what the old build answered `keep-alive`; the EOF behind the stream is
+    what the old build answered with a chunked head and no body.
+    """
+    path = "/stream?size=%d&piece=4096" % STREAM_BYTES
+    phase("stream-on-the-cap-request-closes-after")
+    c = Conn(port)
+    reuse(c, CAP - 1)
+    c.request(path)
+    status, headers = c.read_head()
+    if status is None or "200" not in (status or ""):
+        fail("stream on the cap request (%d): %r" % (CAP, status))
+    if headers.get("connection", "").lower() != "close":
+        fail(
+            "stream on the cap request (%d) did not carry `Connection: "
+            "close`: the cap skipped the stream, and the connection it kept "
+            "would cut the next stream after its head." % CAP
+        )
+    body = c.body(headers)
+    if len(body) != STREAM_BYTES:
+        fail(
+            "stream on the cap request (%d) under a closing head: %d of %d "
+            "bytes" % (CAP, len(body), STREAM_BYTES)
+        )
+    # The old build served this: a chunked head, then nothing. The server
+    # has closed, so the request may draw a reset instead of an EOF, and
+    # macOS reports the reset ahead of the EOF: both are the close.
+    try:
+        c.request(path)
+        status, headers = c.read_head()
+    except (ConnectionResetError, BrokenPipeError):
+        status = None
+    c.close()
+    if status is not None:
+        fail(
+            "request %d on a connection the cap closed was answered %r: the "
+            "stream before it ended kept-alive, one request past the cap"
+            % (CAP + 1, status)
+        )
+    print("  stream on request %d: Connection: close, %d bytes, then EOF"
+          % (CAP, len(body)))
+
+
 def main():
     port = int(sys.argv[1])
     phase1_stream(port)
     phase2_upgrade(port)
     phase3_boundary(port)
+    phase4_stream_closes(port)
     print("keepalive-cap OK")
 
 

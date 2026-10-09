@@ -239,3 +239,39 @@ the code. What that state was is not known; the first recording attempt
 that evening, refused by the guard at its second round, had read 81k
 for the same row twenty minutes earlier.
 
+
+## The cap and a stream — 2026-10-09
+
+The cap had two sites. `_finish_response` applied it to an ordinary
+response, after the branches that open a stream or an upgrade and excluding
+a stream by name (`not response.sse_streaming`), as it had to there: the
+branches had just cleared `should_close`, and a cap that fired on a stream's
+head closed the slot once the head drained, before any body frame (0.16.0;
+the cap probe's first two phases hold it). So the cap never reached a
+stream: a stream is not reuse, and the cap smoke (SPEC A3) read a stream on
+the cap request whole and stopped. `_after_send` kept a second
+check, `keepalive_count >= max`, with a comment saying a live stream never
+reached it. It did. A chunked stream served as request `max` ended
+kept-alive through `_end_request`, which put the count AT `max`; the next
+stream on the connection skipped the first site again, its head said
+`keep-alive`, and the second site closed the slot once that head landed:
+`bin/m0serve` serving `apps/asgi_bare` at `--max-keepalive-requests 2`, one
+connection, `/` whole, `/stream` whole, `/stream` a chunked head and nothing
+after it. An ordinary request in that third place was served and closed, so
+the cap was one request soft as well. The quality review of 2026-10-09 had
+called the second site unreachable; the implementer that went to delete it
+reproduced this instead, and it became a Known issue until here.
+
+The cap is applied once now, before a stream's head clears `should_close`,
+for every response but an upgrade, and carried to a stream's end the way a
+request's own `Connection: close` is: `_keep_stream_close` keeps it in
+`slot_close_after_stream`, `_chunked_stream_ends` takes it back, and
+`_after_send`'s `should_close` branch closes. The head says `close`, which
+is what a client should read before the last response on a connection. An
+upgrade's head cannot say it and its connection ends with the socket, so
+the cap leaves an upgrade alone. With the cap applied before every head
+that could reach `_end_request`, the count never reaches `max` on a live
+slot, and the second site is deleted rather than kept as a net: it was the
+cut. The probe's fourth phase reads the stream on the cap request whole
+under a closing head and then insists the connection is gone;
+`test_slot_lifecycle.mojo` holds the unit form at a cap of 3.

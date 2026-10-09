@@ -202,33 +202,6 @@ somebody else's Django projects inside the pull request that trips it.
   round trips before then, an in-tree correctly rounded parser and printer
   would retire it for the readers here.
 
-- **Under the keep-alive cap, a stream that follows a chunked stream served
-  as the cap request is closed after its head.** Under
-  `--max-keepalive-requests N`, a chunked stream served as request N skips
-  `_finish_response`'s cap, as a stream must, and ends kept-alive with the
-  connection's count at N. If the next request on that connection is a
-  stream too (a chunked stream, an SSE hold or a WebSocket upgrade), the
-  first cap skips it as well, its head says `keep-alive`, and
-  `_after_send`'s second check (`keepalive_count >= max`) closes the
-  connection once the head lands: zero body bytes and no terminator.
-  Reproduced on 2026-10-09 with `bin/m0serve` serving `apps/asgi_bare` at
-  N=2, one connection: `/` whole, `/stream` whole, then `/stream` with a
-  chunked head and nothing after it. The same path leaves the cap one
-  request soft: an ordinary request after that stream is served, and the
-  first cap closes it. `smoke-keepalive-cap` sends its stream as the cap
-  request after ordinary ones and reads it whole, which holds; it never
-  sends a request after that stream.
-
-  **Closed by:** none — A3, the cap's row, is `verified` for a stream on
-  the cap request, so no row's status can retire this. A fix and its gate
-  retire it together: the cap applied to a stream before its head and
-  carried to the stream's end, as a request's own close is
-  (`slot_close_after_stream`), so the head says `close` and the stream is
-  delivered whole before the connection ends; and `smoke-keepalive-cap`
-  serving a stream as request N, reading it whole, and finding the
-  connection closed after it. The fix changes the wire, so it goes in with
-  that gate.
-
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker

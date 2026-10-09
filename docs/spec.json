@@ -23,7 +23,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Keep-alive request cap (`--max-keepalive-requests` / `M0_MAX_KEEPALIVE_REQUESTS`; 0 = never)",
       "status": "verified",
-      "evidence": "`Smoke test the keep-alive request cap` (every PR) \u2014 closes on the cap request, and a stream or WebSocket upgrade landing there survives it; the probe's third phase refuses to pass on a build whose cap never fires. The smoke pins the cap at 100 explicitly, so the gate is independent of the default. No flag or env var exposes the limit"
+      "evidence": "`Smoke test the keep-alive request cap` (every PR) \u2014 closes on the cap request, and a stream or WebSocket upgrade landing there survives it: a stream is delivered whole under a head that says `close`, and the connection ends after it, the stream's end carrying the cap as it carries a request's own close (`slot_close_after_stream`); the probe's third phase refuses to pass on a build whose cap never fires, and its fourth on one that keeps the connection after the stream, where the cap was one request soft and a second stream was cut after its head (2026-10-09). The unit form is `test_slot_lifecycle.mojo:test_a_chunked_stream_as_the_cap_request_says_close_and_closes_when_it_ends`. The smoke pins the cap at 100 explicitly, so the gate is independent of the default. No flag or env var exposes the limit"
     },
     {
       "id": "A4",

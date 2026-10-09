@@ -2192,19 +2192,25 @@ struct OneChunkStream(HTTPService):
 
 def _chunked_stream_exchange(
     asked_close: Bool, keep_alive: Bool = True, half_closed: Bool = False,
+    cap: Int = -1, count: Int = 0,
 ) raises -> Tuple[String, Bool]:
     """A chunked stream from a channel producer, from its head to its
     terminator, for a request that asked for a close or did not, on a
     server with keep-alive on or off, from a client that has half-closed or
-    not: what the client read, lowercased, and whether the loop closed the
-    slot once the terminator landed."""
+    not, under a keep-alive cap of `cap` (-1: the config's default; 0:
+    none) on a connection that has answered `count` requests: what the
+    client read, lowercased, and
+    whether the loop closed the slot once the terminator landed."""
     var pool = OffloadPool(8)
     pool.enable_stream_channel()
     var acks = make_stream_ack_pair()
     var app = OneChunkStream()
     var backend = FakeBackend()
+    var config = _config()
+    if cap >= 0:
+        config.max_keepalive_requests = cap
     var st = LoopState(
-        FileDescriptor(-1), _config(), String(""), keep_alive,
+        FileDescriptor(-1), config, String(""), keep_alive,
         offload_addr=pool.addr(),
     )
     var pair = _stream_pair()
@@ -2219,6 +2225,7 @@ def _chunked_stream_exchange(
     st.offload.is_head[slot] = False
     # What `_process_request` decides before the handler runs.
     st.provision_pool.provisions[slot].should_close = asked_close or not keep_alive
+    st.provision_pool.provisions[slot].keepalive_count = count
     st.provision_pool.provisions[slot].state = ConnectionState.processing()
     if half_closed:
         # The request was the last bytes the client sent: its EOF reached
@@ -2279,6 +2286,31 @@ def test_a_chunked_stream_keeps_the_close_its_request_asked_for() raises:
     assert_true("connection: keep-alive" in kept[0], kept[0])
     assert_true(kept[0].endswith("0\r\n\r\n"), kept[0])
     assert_false(kept[1], "a stream its request did not ask to close was closed")
+
+
+def test_a_chunked_stream_as_the_cap_request_says_close_and_closes_when_it_ends() raises:
+    """The keep-alive cap lands on a chunked stream as it lands on any
+    response: the head says `Connection: close`, the stream is delivered
+    whole, and the connection closes once its terminator lands. The cap
+    was applied after a stream's head and excluded a stream by name, so it
+    missed every stream: a stream served as request `max` ended
+    kept-alive with the count at `max`, and
+    the next stream on the connection was closed by `_after_send`'s count
+    check once its head landed, before any of its body. One request under
+    the cap, the stream is answered `keep-alive` and the connection stays.
+
+    covers: A3
+    """
+    var capped = _chunked_stream_exchange(False, cap=3, count=2)
+    assert_true("transfer-encoding: chunked" in capped[0], capped[0])
+    assert_true("connection: close" in capped[0], capped[0])
+    assert_true(capped[0].endswith("9\r\none-chunk\r\n0\r\n\r\n"), capped[0])
+    assert_true(capped[1], "the cap request's stream ended and the connection stayed")
+
+    var under = _chunked_stream_exchange(False, cap=3, count=1)
+    assert_true("connection: keep-alive" in under[0], under[0])
+    assert_true(under[0].endswith("9\r\none-chunk\r\n0\r\n\r\n"), under[0])
+    assert_false(under[1], "a stream one request under the cap closed the connection")
 
 
 struct QueuedFrame(HTTPService):

@@ -279,12 +279,36 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         and _answers_the_last_request(st, slot, fd_val)
     ):
         st.provision_pool.provisions[slot].should_close = True
-    # What the request asked of the connection, before a stream's head
-    # clears it below (so the head landing does not close the slot). A
-    # chunked stream that ends takes it back (`_chunked_stream_ends`), and
-    # the head says it now: a request asking for `Connection: close` had
-    # its chunked stream answered `keep-alive` and its connection kept, and
-    # so did every request on a server with keep-alive off (LF13).
+    # The keep-alive cap, before a stream's head clears `should_close`
+    # below: a connection that has answered `max - 1` requests answers this
+    # one and closes. A stream or an upgrade is not reuse, it owns the
+    # connection until it ends, so for a stream the cap is carried to the
+    # stream's end as a request's own close is (`slot_close_after_stream`,
+    # written just below) and the head says `close` now. The cap used to sit
+    # after the stream branches and exclude a stream by name
+    # (`not response.sse_streaming`), as it had to there: the branches had
+    # just cleared `should_close`, and a cap that fired on a stream's head
+    # closed the slot once the head drained, before any body frame (0.16.0,
+    # the cap probe's first two phases). Excluded, a chunked stream served
+    # as request `max` ended kept-alive with the count at `max`, and the
+    # next stream on the connection was closed by a count check in
+    # `_after_send` once its head landed, before any of its body (ROADMAP's
+    # Known issue of 2026-10-09, retired with this; docs/notes/pool-tail.md).
+    # An upgrade's head cannot say `close` and its connection ends with the
+    # socket, so the cap leaves it alone.
+    if (
+        not upgraded_ws
+        and st.config.max_keepalive_requests > 0
+        and (st.provision_pool.provisions[slot].keepalive_count + 1) >= st.config.max_keepalive_requests
+    ):
+        st.provision_pool.provisions[slot].should_close = True
+    # What the request asked of the connection, or the cap did, before a
+    # stream's head clears it below (so the head landing does not close the
+    # slot). A chunked stream that ends takes it back
+    # (`_chunked_stream_ends`), and the head says it now: a request asking
+    # for `Connection: close` had its chunked stream answered `keep-alive`
+    # and its connection kept, and so did every request on a server with
+    # keep-alive off (LF13).
     var close_after = _keep_stream_close(st, slot)
 
     # A HEAD's response is its head (RFC 9110 §9.3.2), whatever a handler
@@ -317,32 +341,6 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # A 1xx response carries no body: drop the defaulted entity headers.
         response.headers.pop("content-length")
         response.headers.pop("content-type")
-
-    # The cap counts keep-alive REUSE, and a stream or an upgrade is not
-    # reuse: it owns the connection until it ends. Both branches above say
-    # so by clearing `should_close` -- and `not should_close` is exactly
-    # what this guard used to read as "safe to apply the cap", so the two
-    # shapes that had just opted out were the two it caught. `_after_send`
-    # then closed the slot as soon as the HEAD drained, before the body
-    # frames arrived over the chunk channel: measured on the 100th request
-    # of a keep-alive connection as a 200 carrying `Content-Length: 124926`
-    # and zero bytes, and as a 101 that never sent a frame. The second
-    # enforcement site (`_after_send`, `keepalive_count >= max`) has no such
-    # guard, and a live stream does reach it, a known defect: a chunked
-    # stream served as request `max` skips this cap and ends kept-alive with
-    # the count at `max`, so a stream or an upgrade as the next request
-    # skips it too, says `keep-alive`, and is closed there once its head
-    # lands, before any of its body. docs/ROADMAP.md holds it under Known
-    # issues as "Under the keep-alive cap, a stream that follows a chunked
-    # stream served as the cap request is closed after its head."
-    if (
-        (not response.sse_streaming)
-        and (not upgraded_ws)
-        and (not st.provision_pool.provisions[slot].should_close)
-        and (st.config.max_keepalive_requests > 0)
-    ):
-        if (st.provision_pool.provisions[slot].keepalive_count + 1) >= st.config.max_keepalive_requests:
-            st.provision_pool.provisions[slot].should_close = True
 
     # RFC 9110 §8.6 and §6.4.1, whoever set it: a 1xx or 204 carries no
     # Content-Length, a 304 only one its handler set, and none of the three
@@ -563,10 +561,11 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
         _close_slot(handler, backend, st, slot, fd_val)
         return
 
-    if (st.config.max_keepalive_requests > 0) and (st.provision_pool.provisions[slot].keepalive_count >= st.config.max_keepalive_requests):
-        _close_slot(handler, backend, st, slot, fd_val)
-        return
-
+    # No count check here: the keep-alive cap is applied once, before the
+    # head goes out (`_finish_response`), and a stream carries it to its
+    # end, so a slot that reaches this with `should_close` clear is under
+    # the cap. The check that stood here closed a stream after its head
+    # when the stream before it had been the cap request.
     if st.slot_ws[slot] or st.slot_sse[slot]:
         _stream_idle(backend, st, slot, fd_val)
         return

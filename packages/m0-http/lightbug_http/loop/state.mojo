@@ -146,11 +146,12 @@ struct LoopState(Movable):
     var slot_close_after_stream: List[Bool]
     """The stream's request asked for the connection to close behind it:
     `Connection: close`, an HTTP/1.0 request without keep-alive, a server
-    with keep-alive off, a client that has half-closed. A stream's head
-    clears `should_close`, or the head landing would close the slot, so a
-    chunked stream that ends takes it back from here
-    (`_chunked_stream_ends`). `_keep_stream_close` writes it for every
-    response, so no slot inherits a previous connection's."""
+    with keep-alive off, a client that has half-closed -- or the keep-alive
+    cap landed on the stream (`_finish_response`). A stream's head clears
+    `should_close`, or the head landing would close the slot, so a chunked
+    stream that ends takes it back from here (`_chunked_stream_ends`).
+    `_keep_stream_close` writes it for every response, so no slot inherits
+    a previous connection's."""
     var fd_to_slot: List[Int]
     var active_count: Int
     var metrics: ServerMetrics
@@ -616,7 +617,8 @@ def _ws_linger[B: EventLoopBackend](
 @always_inline
 def _keep_stream_close(mut st: LoopState, slot: Int) -> Bool:
     """A response is about to go out: keep what its request asked of the
-    connection, `should_close`, for a stream's end, and return it.
+    connection, or the keep-alive cap did, `should_close`, for a stream's
+    end, and return it.
 
     A stream's head clears `should_close`, or the head landing would close
     the slot; a chunked stream that ends takes the close back from here
