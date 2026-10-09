@@ -8,6 +8,105 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A static mount compares `If-None-Match` weakly** (RFC 9110 §13.1.2).
+  `StaticFiles` tags each file with a weak `ETag` (`W/"…"`) and compared a
+  client's `If-None-Match` with it as written, so a client or cache that
+  sent the tag back without its `W/` read the whole file with `200` where
+  the RFC's weak comparison answers `304`. `StaticFiles`, `etag_matches`
+  and `conditional` now share one rule: the opaque tags are equal,
+  whichever side is marked weak. An application that calls `etag_matches`
+  gets the weak comparison too.
+
+- **The `409` a pool thread answers for a streaming response reads
+  `thread's`**. A Mojo handler that begins a stream on a pool thread (the
+  Mojo host under `M0_BLOCKING_THREADS`, or a `--mount PREFIX=mojo`
+  mount) is refused with a JSON body that ended `not this thread s`; it
+  ends `not this thread's`.
+
+### Changed
+
+- **A stream whose client has gone is closed by the send that fails.**
+  When a frame an application queued (an SSE event, a WebSocket message, a
+  piece of a streamed body) failed to send for any reason but a full
+  socket buffer, the connection waited to be reported writable and closed
+  a pass of the event loop later. It now closes in that pass, and the
+  handler is told then (`sse_slot_disconnected`), as it already was when
+  a heartbeat or a WebSocket pong found the client gone.
+
+- **A `Range` bound is digits alone, as RFC 9110 writes it.** `StaticFiles`
+  read a bound with Mojo's `Int()`, which takes a sign and blanks around
+  the number: `bytes=+0-1` and `bytes= 0-1` were served as ranges, and
+  `bytes=--5` answered `416`. A bound that is not plain digits now makes
+  the header no range at all, and the whole file is served with `200`.
+
+- **The fork's kqueue, epoll, pipe, socketpair and process wrappers raise
+  `SysError`**, the error the socket wrappers raise, so the message the
+  server prints when one fails reads as the socket calls' do:
+  `pipe() failed, errno: 24` is now `pipe: Too many open files (errno 24)`.
+
+- **`m0_http` exports what the hosts import.** `from m0_http import`
+  names `EX_CONFIG`, `SharedAtomics`, `shared_store`, `parse_int`,
+  `read_long_flag`, `is_long_flag`, `DOCTOR_OK`, `Report` and
+  `parse_env_int`, which m0serve and the Mojo host reached into modules
+  for. Ten names that nothing outside their module read are no longer
+  re-exported from the package; import each from its module:
+  `STANDARD_VERBS` (`m0_http.html`), `LOGIN_KEY_MIN` (`m0_http.login`),
+  `find_key` and `GRANT_COOKIE_ENV` (`m0_http.grant`),
+  `CSRF_MESSAGE_PREFIX`, `SESSION_SIG_CHARS`, `SESSION_SUBJECT_MAX` and
+  `SESSION_VERSION` (`m0_http.session`), and `int_list_env` and
+  `spawned_worker_index` (`m0_http.prefork`). Nothing served changes.
+
+- **Sessions and grants share one key ring.** `KeyRing` (`m0_http.grant`,
+  exported from `m0_http`) holds the keys a signed token may carry;
+  `SessionKeys` is its alias and is used as before, and `GrantKeys` holds
+  one as `ring`, so code that read `GrantKeys.keys` reads
+  `GrantKeys.ring.keys`. Nothing served changes.
+
+- **Two fork names say what they are.** Nothing served changes; an
+  application built with the `m0` wheel that named one renames it: the
+  request side's `URIParseError` (`lightbug_http.http.request`, an arm of
+  `RequestBuildError`) is `RequestURIError`, no longer sharing a name with
+  `lightbug_http.uri.URIParseError`, and `OffloadPool.stream_active()` is
+  `executor_active()`, which is what it answers.
+
+- **Code `m0-http` carried twice is written once.** Nothing served changes
+  beyond the entries above. In the fork: the response's span constructor and
+  `encode()` go through the owning constructor and `encode_into`; the
+  chunked decoder's byte moves are one `_shift_down`; the two WebSocket
+  frame encoders share `_frame_header`; the backends' `try_add_read` and
+  `try_add_write_oneshot` are `EventLoopBackend` defaults, so a backend an
+  application writes may drop its copies; the macOS close-on-exec mark of a
+  fresh descriptor is `mark_fresh_cloexec` at its seven sites; the RFC 9110
+  list walk under `Transfer-Encoding`, `Connection`, `If-None-Match`,
+  `Accept`, `Vary`, `Allow` and the form check is `lightbug_http.strings`'
+  `trim_ows` and `next_list_member`; the event loop's descriptor-to-slot
+  lookup, its chunked-body decode and its "body is complete" tail are one
+  function each, the heartbeat, the WebSocket reader's replies and the
+  outbox drain send a stream frame through one, and its pass raises nothing;
+  the offload channels' tags, little-endian codec and bounded send are
+  `lightbug_http.offload_wire`, which `offload.mojo` imports back name for
+  name; and `ProvisionPool` counts with `std.bit`. In the framework: the
+  supervisor's exit accounting and the post-fork prologue, the integers the
+  environment readers and the `Range` parser read (`parse_env_int`), the
+  HTTP token check (`is_token_char`), the outbox bound `WSHub` shares with
+  SSE, and the Mojo host's two serve paths, which build the same pre-fork
+  pieces and refuse in the same words.
+
+### Removed
+
+- **Fork and framework names nothing read.** Nothing served changes. The
+  `m0` wheel ships the source, so an application built with `m0` that
+  named one of these needs its own copy: `HTTPRequest.server_is_tls` and
+  its constructor argument; `lightbug_http.websocket`'s `WS_CLOSE_NORMAL`
+  and `base64_encode` (the handshake encodes with the standard library's
+  `std.base64.b64encode`); `lightbug_http.loop.state.TIMER_HEADER`, whose
+  timer nothing armed; `OffloadLoopState.slot_is_executor` (ask
+  `OffloadPool.slot_is_executor`); the `ProvisionError` arm of
+  `lightbug_http.server.ServerError`, never raised; `m0_http.sse`'s
+  `format_sse_heartbeat_bytes`; and `StaticFiles.matches`.
+
 ## [1.13.0] — 2026-10-09
 
 The rest of the fixes from the review of the server's HTTP core, the

@@ -1367,12 +1367,12 @@ def _run_loop[H: AppHandler](
     The loop closes it once, as its drain begins (review B26). `serve`
     gives its listener up with `listener^.into_fd()`, which ends it
     without the destructor that would close the number again; a loop
-    thread passes its own dup of the listener (`BLK_LISTEN_FD`). The
-    listener used to be borrowed here, which kept it alive for the call --
-    reading `listener.socket.fd` inline in `serve` had been its last use,
-    and Mojo destroyed it there, closing the socket before the loop's
-    first `fcntl` (EBADF, measured on 2026-09-17) -- and then destroyed in
-    `serve` once this returned: a second close of the number, before
+    thread passes its own dup of the listener (`BLK_LISTEN_FD`). Before
+    B26 this function borrowed the listener itself, which kept it alive
+    for the call -- reading `listener.socket.fd` inline in `serve` had been
+    its last use, and Mojo destroyed it there, closing the socket before
+    the loop's first `fcntl` (EBADF, measured on 2026-09-17) -- and `serve`
+    destroyed it once this returned: a second close of the number, before
     `_join_pool` and the producer's join, when a straggler thread may hold
     it.
     """

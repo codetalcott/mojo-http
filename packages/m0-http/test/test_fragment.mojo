@@ -12,7 +12,7 @@ not lose a `Vary` the response already carried.
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http.header import Header, Headers, HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from lightbug_http.http import HTTPRequest
 from lightbug_http.uri import URI
 
 from src.fragment import PageShell, page_or_fragment, wants_fragment

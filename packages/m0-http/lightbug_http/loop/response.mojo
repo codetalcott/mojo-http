@@ -327,8 +327,12 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # frames arrived over the chunk channel: measured on the 100th request
     # of a keep-alive connection as a 200 carrying `Content-Length: 124926`
     # and zero bytes, and as a 101 that never sent a frame. The second
-    # enforcement site below (`keepalive_count >= max`) needs no such guard:
-    # this one closes at `max - 1`, so a live stream never reaches it.
+    # enforcement site (`_after_send`, `keepalive_count >= max`) has no such
+    # guard, and a live stream does reach it, a known defect: a chunked
+    # stream served as request `max` skips this cap and ends kept-alive with
+    # the count at `max`, so a stream or an upgrade as the next request
+    # skips it too, says `keep-alive`, and is closed there once its head
+    # lands, before any of its body.
     if (
         (not response.sse_streaming)
         and (not upgraded_ws)

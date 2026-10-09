@@ -29,12 +29,13 @@ of anchors: the producer's stop has two writers since the pool lane (the
 loop's stamp in `loop/shutdown.mojo` and the join's fallback in `host.mojo`),
 and removing one alone is not "never told to stop".
 
-Not here, and why: the handler built BEFORE the fork, and the pages and the
-bus created AFTER it, are not one-line edits in `serve` -- each needs the
-order of several statements changed, and a harness that moves blocks
-around would be testing itself. The smoke's two-worker phases are what
-would fail (a single shared handler cannot hold a stream in two
-processes; a post-fork bus reaches no sibling).
+Not here, and why: the handler built BEFORE the fork, and the bus created
+AFTER it, are not one-line edits in `serve` -- each needs the order of
+several statements changed, and a harness that moves blocks around would
+be testing itself. The smoke's two-worker phases are what would fail (a
+single shared handler cannot hold a stream in two processes; a post-fork
+bus reaches no sibling). A page made after the fork is one statement, and
+is here: the id-word rule in round 4 gives each worker a page of its own.
 
 Nor the keep-alive of the pool after the joins (`_ = pool.capacity` at
 the end of `serve`): removed, a straggler thread the join gave up on

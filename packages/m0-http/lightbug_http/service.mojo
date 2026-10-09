@@ -40,11 +40,11 @@ trait HTTPService:
 
         Read at one site, `loop/streams.mojo`'s outbox sweep, and only for a
         channel stream: one an executor, or a pool thread streaming a WSGI
-        iterable, feeds through the chunk channel. There `not
-        sse_is_streaming(slot)`, read once per pass after the drain, is the
-        END of the stream: the loop sends the terminator and closes. A held
-        or native stream is never asked, so the answer for one changes
-        nothing.
+        iterable, feeds through the chunk channel. The sweep asks once per
+        pass, after the drain, and False ENDS the stream: a chunked one gets
+        its terminator and the connection goes on as its request asked, and
+        any other closes, a WebSocket after the close linger. A held or
+        native stream is never asked, so the answer for one changes nothing.
         """
         return False
 
@@ -66,7 +66,7 @@ trait HTTPService:
         on `bus_read_fd` (another worker's broadcast, under a multi-worker
         SSE setup), on `peer_bus_fd`, and on the executor's chunk-stream
         channel. A pool thread's `h`/`H` hold frames arrive the same way,
-        with a reserved `\x01` url naming the slot instead of a channel
+        with a reserved `\\x01` url naming the slot instead of a channel
         (`send_hold_frame`, `hold.mojo`). Queue the frame for local
         subscribers of `url` — `DatastarStream.deliver_peer` is the standard
         wiring. Non-streaming handlers leave it empty.

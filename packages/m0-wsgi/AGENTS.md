@@ -5,8 +5,9 @@ The WSGI/ASGI gateway and the `m0serve` binary. The repository's
 embedding CPython, mounts and their lanes, and the execution modes with the
 rules each depends on. The handler-pool rules also govern files outside
 this directory — the fork's offload seam (`lightbug_http/offload.mojo`,
-`lightbug_http/ring.mojo`, the event loop's pool and executor paths) and
-`m0_http.mojo_pool` — so read this page before editing those too.
+`lightbug_http/offload_wire.mojo`, `lightbug_http/ring.mojo`, the event
+loop's pool and executor paths) and `m0_http.mojo_pool` — so read this
+page before editing those too.
 
 `m0-wsgi` is the **only** package that embeds CPython. Keep it that way: a
 Python import in `m0-http` or `m0-core` would put libpython on the link line of
