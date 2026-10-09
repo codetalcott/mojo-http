@@ -265,7 +265,7 @@ def _raw(*bytes: Int) -> String:
 
 def test_a_header_that_is_not_utf8_does_not_trap() raises:
     """The range splitter, the media-range splitter, the quality slice, the
-    subtype wildcard and `_trim` all sliced request header values as
+    subtype wildcard and the trim all sliced request header values as
     Strings; a byte that is not UTF-8 at a slice end trapped the process.
     An `Accept` carrying one must parse to some answer.
 

@@ -56,3 +56,45 @@ def is_token_char(c: UInt8) -> Bool:
         return False
     var word = TCHAR_HI if c >= 0x40 else TCHAR_LO
     return ((word >> UInt64(c & 0x3F)) & 1) == 1
+
+
+# RFC 9110 §5.6.1-§5.6.3: a field whose value is a list is split on `,`, each
+# member trimmed of OWS (`*( SP / HTAB )`), and an empty member is not a
+# member. These two are that walk, written once, for `Connection`,
+# `Transfer-Encoding`, `If-None-Match`, `Vary` and `Allow`, and the trims
+# beside them in `Accept` and `Content-Type`: indices in, indices out, so
+# nothing is allocated and no `String` is made. A request's value may hold
+# bytes that are not UTF-8, and a bound is never a codepoint boundary
+# (SPEC G14).
+
+
+@always_inline
+def trim_ows(x: Span[UInt8, _], a: Int, b: Int) -> Tuple[Int, Int]:
+    """The bounds of `x[a:b]` without the SP and HTAB at either end."""
+    var lo = a
+    var hi = b
+    while lo < hi and (x[lo] == 0x20 or x[lo] == 0x09):
+        lo += 1
+    while hi > lo and (x[hi - 1] == 0x20 or x[hi - 1] == 0x09):
+        hi -= 1
+    return (lo, hi)
+
+
+@always_inline
+def next_list_member(x: Span[UInt8, _], start: Int) -> Tuple[Int, Int, Int]:
+    """The list member of `x` that begins at `start`: its bounds trimmed of
+    OWS, and where the member after it begins, one past its comma.
+
+    A walk runs `while start <= len(x)`, so an empty value, and a comma at
+    either end, yield an empty member (`a == b`) for the caller to skip.
+    The member is the last exactly when the third index is `len(x) + 1`.
+    Asked as that equality, the parser's `Transfer-Encoding` walk compiles
+    to the same instructions as the loop it replaced; asked as `> len(x)`,
+    it did not.
+    """
+    var n = len(x)
+    var stop = start
+    while stop < n and x[stop] != 0x2C:  # ','
+        stop += 1
+    var member = trim_ows(x, start, stop)
+    return (member[0], member[1], stop + 1)

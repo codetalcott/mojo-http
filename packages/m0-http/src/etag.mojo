@@ -4,6 +4,7 @@ Thin wrapper over m0-core's wyhash64 hashing. Produces weak ETags
 (W/"hex") suitable for conditional responses (304 Not Modified).
 """
 
+from lightbug_http.strings import next_list_member, trim_ows
 from m0_core.hashing import wyhash64, format_hash64
 
 
@@ -16,18 +17,11 @@ def compute_etag(buf: List[UInt8]) -> String:
     return String('W/"') + format_hash64(hash) + String('"')
 
 
-def _opaque_bounds(value: String, start: Int, end: Int) -> Tuple[Int, Int]:
-    """The `[start, end)` of `bytes[start:end]` without its blanks and without
-    a leading `W/`. Bytes only: a client's value may hold any byte (SPEC G14)."""
-    var bytes = value.as_bytes()
-    var a = start
-    var b = end
-    while a < b and (bytes[a] == 0x20 or bytes[a] == 0x09):
-        a += 1
-    while b > a and (bytes[b - 1] == 0x20 or bytes[b - 1] == 0x09):
-        b -= 1
+def _opaque_bounds(bytes: Span[UInt8, _], a: Int, b: Int) -> Tuple[Int, Int]:
+    """The `[a, b)` of a tag already trimmed of its blanks, without a leading
+    `W/`. Bytes only: a client's value may hold any byte (SPEC G14)."""
     if b - a >= 2 and bytes[a] == 0x57 and bytes[a + 1] == 0x2F:
-        a += 2
+        return (a + 2, b)
     return (a, b)
 
 
@@ -41,17 +35,17 @@ def etag_matches(etag: String, if_none_match: String) -> Bool:
     """
     var inm = if_none_match.as_bytes()
     var want_bytes = etag.as_bytes()
-    var want = _opaque_bounds(etag, 0, etag.byte_length())
+    var trimmed = trim_ows(want_bytes, 0, len(want_bytes))
+    var want = _opaque_bounds(want_bytes, trimmed[0], trimmed[1])
     var want_len = want[1] - want[0]
     var n = len(inm)
     var seg = 0
     while seg <= n:
-        var stop = seg
-        while stop < n and inm[stop] != 0x2C:
-            stop += 1
-        var part = _opaque_bounds(if_none_match, seg, stop)
+        var member = next_list_member(inm, seg)
+        var part = _opaque_bounds(inm, member[0], member[1])
         var part_len = part[1] - part[0]
-        if part_len == 1 and inm[part[0]] == 0x2A and seg == 0 and stop == n:
+        # `*` alone, the whole value: the first member and the last.
+        if part_len == 1 and inm[part[0]] == 0x2A and seg == 0 and member[2] == n + 1:
             return True
         if part_len > 0 and part_len == want_len:
             var same = True
@@ -61,5 +55,5 @@ def etag_matches(etag: String, if_none_match: String) -> Bool:
                     break
             if same:
                 return True
-        seg = stop + 1
+        seg = member[2]
     return False

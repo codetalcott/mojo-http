@@ -4,7 +4,13 @@ from lightbug_http.header import (
 )
 from lightbug_http.http.encodable import Encodable
 from lightbug_http.io.bytes import Bytes, ByteWriter
-from lightbug_http.strings import lineBreak, strHttp10, strHttp11, whitespace
+from lightbug_http.strings import (
+    lineBreak,
+    next_list_member,
+    strHttp10,
+    strHttp11,
+    whitespace,
+)
 from lightbug_http.uri import URI, QueryMap
 from std.utils import Variant
 
@@ -29,29 +35,19 @@ def _drop_final_chunked(mut headers: Headers):
         return
     var value = te.value()
     var raw = value.as_bytes()
-    var last_comma = -1
-    for i in range(len(raw)):
-        if raw[i] == 0x2C:  # ','
-            last_comma = i
     var kept = List[UInt8]()
     var start = 0
-    while start < last_comma:
-        var stop = start
-        while stop < last_comma and raw[stop] != 0x2C:
-            stop += 1
-        var a = start
-        var b = stop
-        while a < b and (raw[a] == 0x20 or raw[a] == 0x09):
-            a += 1
-        while b > a and (raw[b - 1] == 0x20 or raw[b - 1] == 0x09):
-            b -= 1
-        if b > a:
+    while start <= len(raw):
+        var member = next_list_member(raw, start)
+        start = member[2]
+        if start == len(raw) + 1:  # the last member, `chunked`: dropped
+            break
+        if member[1] > member[0]:
             if len(kept) > 0:
                 kept.append(0x2C)
                 kept.append(0x20)
-            for k in range(a, b):
+            for k in range(member[0], member[1]):
                 kept.append(raw[k])
-        start = stop + 1
     if len(kept) == 0:
         headers.pop(HeaderKey.TRANSFER_ENCODING)
         return

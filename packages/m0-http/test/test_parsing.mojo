@@ -29,7 +29,7 @@ from lightbug_http.header import (
 )
 from lightbug_http.http.chunked import HTTPChunkedDecoder
 from lightbug_http.io.bytes import Bytes
-from lightbug_http.strings import is_token_char
+from lightbug_http.strings import is_token_char, next_list_member, trim_ows
 
 
 # --- Helpers -----------------------------------------------------------------
@@ -1811,6 +1811,53 @@ def test_tchar_table_matches_the_rfc_list() raises:
         if want[c]:
             count += 1
     assert_equal(count, 77)
+
+
+def test_trim_ows_strips_sp_and_htab_and_no_other_byte() raises:
+    """OWS is SP and HTAB (RFC 9110 §5.6.3), the one set every site on
+    `trim_ows` and `next_list_member` trims: each of the 256 bytes, alone,
+    is trimmed away exactly when it is one of those two. CR, LF, VT, FF,
+    NUL and obs-text's 0xA0 stay. Only the bounds given are walked."""
+    for c in range(256):
+        var one = List[UInt8]()
+        one.append(UInt8(c))
+        var t = trim_ows(Span(one), 0, 1)
+        assert_equal(t[0] == t[1], c == 0x20 or c == 0x09, String("byte ", c))
+    var value = String(" \t x y\t ")
+    var x = value.as_bytes()
+    var whole = trim_ows(x, 0, len(x))
+    assert_equal(whole[0], 3)
+    assert_equal(whole[1], 6)
+    var inner = trim_ows(x, 1, 4)  # `\t x`: the space before index 1 is outside
+    assert_equal(inner[0], 3)
+    assert_equal(inner[1], 4)
+
+
+def test_next_list_member_walks_every_member_and_marks_the_last() raises:
+    """The RFC 9110 §5.6.1 walk: split on `,`, each member trimmed of OWS,
+    empty members yielded for the caller to skip, and the last one the
+    member whose next start is one past the value's end."""
+    var value = String(" a, ,b\t,, c d ,")
+    var x = value.as_bytes()
+    var seen = String()
+    var last = -1
+    var count = 0
+    var start = 0
+    while start <= len(x):
+        var m = next_list_member(x, start)
+        seen += String(unsafe_from_utf8=x[m[0]:m[1]]) + "|"
+        if m[2] == len(x) + 1:
+            last = count
+        count += 1
+        start = m[2]
+    assert_equal(seen, "a||b||c d||")
+    assert_equal(last, 5)
+    # An empty value is one empty member, and it is the last.
+    var empty = String("")
+    var m = next_list_member(empty.as_bytes(), 0)
+    assert_equal(m[0], 0)
+    assert_equal(m[1], 0)
+    assert_equal(m[2], 1)
 
 
 def test_a_separator_in_a_field_name_is_invalid_at_every_position() raises:
