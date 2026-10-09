@@ -300,8 +300,12 @@ counter at +8 and the park sequence at +16; then per lane at
 the LANE socket (+0), the last datagram-poll time (+8), the wakes in
 flight to that socket (+16), the idle spinners (+24), the threads serving
 the lane (+32), the wakes `wake_aged` sent (+40), the wakes `submit` sent
-(+48) and the threads parked on their OWN channel (+56), each lane on its
-own cache line."""
+(+48) and the threads parked on their OWN channel (+56): 64 bytes a lane.
+That is not a cache line of its own. Apple silicon's lines are 128-byte,
+so two neighbouring lanes share one, and the block comes from `malloc`,
+which aligns to 16, so a lane's words can straddle two. A 128-byte
+stride with a 128-aligned block measured no faster on an M4 (fork
+review LF24, bench/results/pool-ab-2026-10/)."""
 comptime _WAKE_THREADS = 8
 comptime _WAKE_SEQ = 16
 comptime _WAKE_LANE_BASE = 128
@@ -313,7 +317,8 @@ comptime _THREAD_STRIDE = 64
 its state (+0: running, parked, woken), the sequence it parked with (+8),
 its lane (+16; -1 before registration, -2 after leaving), the two ends of
 its own wake channel (+24 read, +32 write) and a pill it read while
-holding a job (+40). One cache line per thread.
+holding a job (+40): 64 bytes a thread, in a block from `malloc`, so not
+a cache line of its own (see `_WAKE_BYTES`, and LF24's measurement).
 
 Why a channel per thread: the kernel decides which of N threads blocked
 in `recv` on one socket a datagram wakes, and both platforms decide
@@ -1992,8 +1997,8 @@ struct OffloadPool(Movable):
         worker's read end blocking so a parked worker sleeps.
 
         Raises past `_WAKE_MAX_LANES` (126), before making anything: each
-        lane's wake words are one cache line of the `_WAKE_BYTES` block,
-        and `note_thread` writes a lane's line whatever its index, so a
+        lane's wake words are 64 bytes of the `_WAKE_BYTES` block,
+        and `note_thread` writes a lane's words whatever its index, so a
         127th lane wrote past the end of the block (B14).
         """
         if len(self.lane_prefixes) >= _WAKE_MAX_LANES:

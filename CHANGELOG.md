@@ -8,6 +8,26 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.13.0] — 2026-10-09
+
+The rest of the fixes from the review of the server's HTTP core, the
+`lightbug_http` fork, whose security fixes shipped in 1.12.1. A client
+pipelining a burst of requests could hold the event loop for more than a
+second, stalling every other connection on it. On Linux a `100 Continue`
+could be cut short ahead of its response when the send buffer was full,
+and a client still sending its headers at the header timeout read a reset
+instead of its `408`. Half-closed and pipelined connections are answered
+in full, a stream open when the server stops ends cleanly, the memory a
+large upload grew is reused by later connections, and requests the RFCs
+call malformed are refused, a `CONNECT` with `501` among them. One change
+touches the served contract: a port outside 1-65535, from `--port` or
+`M0_PORT`, is refused at startup with exit 78, where `M0_PORT=0` served on
+a port the kernel chose and `--port 0` exited 2 (see Changed). The fork's
+unused code is gone, which changes nothing served but removes names a Mojo
+application could import. The `m0` wheel ships the framework's source, so
+an application built with `m0` takes these fixes by rebuilding against
+`m0 0.10.0`.
+
 ### Fixed
 
 - **A request head is answered the same however its bytes arrive** (SPEC
@@ -197,27 +217,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   looks for a message once more after it announces its park. Found by the
   fork review; with a sleep holding that moment open, 24 messages of 24
   waited.
-
-- **A pool test no longer times out on a busy machine** (fork review
-  LF68, SPEC I39). The test that a WebSocket message wakes a pool thread
-  parked on its own channel waited for the count of parked threads to
-  dip, which lasts only until the woken thread parks again, tens of
-  microseconds later; a test thread descheduled across that moment failed
-  at its two-second bound with the message served. It now waits for the
-  message to be taken. The server was not at fault: a sleep at each of
-  four points of the pool's park path never lost the message, and a sleep
-  after the test's send failed the old test every time.
-
-- **A pool shutdown test no longer depends on how fast it runs** (fork
-  review LF76). The test that `stop` waits for room to pill a thread on a
-  full lane filled the lane while the thread sat in a 200 ms view. A test
-  thread slower than that, descheduled or slowed by a loaded machine, met
-  a thread already reading: the lane never refused a message, or it
-  filled with thousands that the thread drained past the test's 3 s join,
-  which then reported a lost pill although the pill was taken. The view
-  now lasts until the test has filled the lane. The server was not at
-  fault: sleeps in `stop`'s pill path and in the thread's park never lost
-  a pill, and a sleep in the test's fill failed it in 8 runs of 9.
 
 - **A cross-worker bus frame is delivered whole or not at all** (SPEC
   I40). Exposed: a publish whose channel name and frame together passed
@@ -8474,6 +8473,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.13.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.13.0
 [1.12.1]: https://github.com/codetalcott/mojo-http/releases/tag/v1.12.1
 [1.12.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.12.0
 [1.11.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.11.0

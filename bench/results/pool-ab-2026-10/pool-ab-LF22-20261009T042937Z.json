@@ -1,0 +1,933 @@
+{
+ "b": "LF22",
+ "rounds": 5,
+ "fast_requests": 300,
+ "environment": {
+  "git_sha": "6bd05ca95f060c96c64b0b4703a646089b15e85f",
+  "git_dirty": false,
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "recorded_utc": "2026-10-09T04:29:37.224492+00:00"
+ },
+ "cells": [
+  {
+   "round": 1,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.42 2.32 5.74",
+    "ps": [
+     " %CPU COMM",
+     "  9.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.4 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  7.0 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.6 uv",
+     "  2.9 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.6 sh",
+     "  1.3 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude"
+    ]
+   },
+   "p50_ms": 0.0743335021979874,
+   "p99_ms": 0.10116699922946282,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.42 2.32 5.74",
+    "ps": [
+     " %CPU COMM",
+     " 10.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  9.4 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.9 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.3 uv",
+     "  1.0 sh",
+     "  0.8 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude"
+    ]
+   },
+   "p50_ms": 0.12616650019481312,
+   "p99_ms": 0.20995799786760472,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.38 2.30 5.71",
+    "ps": [
+     " %CPU COMM",
+     "  9.4 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.2 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.1 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  0.6 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.4 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+    ]
+   },
+   "p50_ms": 0.12714600052277092,
+   "p99_ms": 0.20320800103945658,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.38 2.30 5.71",
+    "ps": [
+     " %CPU COMM",
+     " 10.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  5.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  4.0 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  2.8 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  2.5 /Applications/Tailscale.app/Contents/MacOS/Tailscale",
+     "  2.5 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.0 /usr/libexec/airportd"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 1,
+   "arm": "LF22",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.55 2.31 5.67",
+    "ps": [
+     " %CPU COMM",
+     "  7.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.2 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.0 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.2 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.1 /Users/williamtalcott/.vscode/extensions/tailscale.vscode-tailscale-1.1.0/bin/vscode-tailscale_darwin_arm64_v8.0/vscode-tailscale",
+     "  0.1 /usr/sbin/bluetoothd"
+    ]
+   },
+   "p50_ms": 0.074333500378998,
+   "p99_ms": 0.10762500096461736,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "LF22",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.55 2.31 5.67",
+    "ps": [
+     " %CPU COMM",
+     "  8.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.3 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  1.0 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.1 /usr/libexec/symptomsd",
+     "  0.1 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+    ]
+   },
+   "p50_ms": 0.13077100084046833,
+   "p99_ms": 0.19025000074179843,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "LF22",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.55 2.31 5.67",
+    "ps": [
+     " %CPU COMM",
+     "  9.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.3 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.1 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.0 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  0.9 /Applications/Tailscale.app/Contents/MacOS/Tailscale",
+     "  0.4 /usr/libexec/networkserviceproxy",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper.app/Contents/MacOS/Code Helper"
+    ]
+   },
+   "p50_ms": 0.12856299872510135,
+   "p99_ms": 0.19016700025531463,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "LF22",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.55 2.31 5.67",
+    "ps": [
+     " %CPU COMM",
+     "  9.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.0 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  2.6 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.5 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.8 /usr/libexec/airportd",
+     "  0.4 /Library/SystemExtensions/C28CF9D4-7E27-4A8A-A2A5-262180B5DF81/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 2,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.62 2.29 5.63",
+    "ps": [
+     " %CPU COMM",
+     "  7.7 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.1 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.1 /usr/sbin/bluetoothd",
+     "  0.7 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.6 /usr/libexec/locationd",
+     "  0.2 /usr/libexec/rapportd"
+    ]
+   },
+   "p50_ms": 0.0757710004108958,
+   "p99_ms": 0.12295900160097517,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:29  up  8:20, 2 users, load averages: 1.62 2.29 5.63",
+    "ps": [
+     " %CPU COMM",
+     "  8.4 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.9 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.6 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.5 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  1.4 /usr/sbin/bluetoothd",
+     "  0.6 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.6 /usr/libexec/locationd"
+    ]
+   },
+   "p50_ms": 0.12635399798455182,
+   "p99_ms": 0.2366659973631613,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:30  up  8:20, 2 users, load averages: 1.62 2.29 5.63",
+    "ps": [
+     " %CPU COMM",
+     " 16.1 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow",
+     " 15.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.3 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  2.8 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.6 /opt/homebrew/opt/syncthing/bin/syncthing",
+     "  1.1 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"
+    ]
+   },
+   "p50_ms": 0.12218750089232344,
+   "p99_ms": 0.20924999989802018,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:30  up  8:20, 2 users, load averages: 1.62 2.29 5.63",
+    "ps": [
+     " %CPU COMM",
+     " 16.0 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     " 13.1 /System/Library/CoreServices/loginwindow.app/Contents/MacOS/loginwindow",
+     "  8.0 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  4.2 /Applications/Tailscale.app/Contents/MacOS/Tailscale",
+     "  3.6 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  3.2 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.9 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 2,
+   "arm": "LF22",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:30  up  8:20, 2 users, load averages: 1.60 2.27 5.58",
+    "ps": [
+     " %CPU COMM",
+     "  7.9 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  7.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.2 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.2 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.2 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.2 /usr/libexec/syspolicyd"
+    ]
+   },
+   "p50_ms": 0.07339600051636808,
+   "p99_ms": 0.12025000251014717,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "LF22",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:30  up  8:20, 2 users, load averages: 1.60 2.27 5.58",
+    "ps": [
+     " %CPU COMM",
+     "  8.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.3 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  1.1 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.3 /Library/PostgreSQL/17/bin/postgres",
+     "  0.2 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+    ]
+   },
+   "p50_ms": 0.12183350008854177,
+   "p99_ms": 0.19737500042538159,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "LF22",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:30  up  8:20, 2 users, load averages: 1.60 2.27 5.58",
+    "ps": [
+     " %CPU COMM",
+     " 22.5 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/corespotlightd",
+     " 10.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.6 /usr/libexec/spotlightknowledged.updater",
+     "  7.0 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.7 /usr/libexec/dasd",
+     "  2.7 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.1 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3"
+    ]
+   },
+   "p50_ms": 0.12649999916902743,
+   "p99_ms": 0.2042499982053414,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "LF22",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:30  up  8:20, 2 users, load averages: 1.60 2.27 5.58",
+    "ps": [
+     " %CPU COMM",
+     "  9.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.3 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.7 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  1.6 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  1.0 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.9 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 3,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.58 2.24 5.53",
+    "ps": [
+     " %CPU COMM",
+     "  7.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.0 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.2 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.5 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.4 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)",
+     "  0.3 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.3 /usr/sbin/cfprefsd"
+    ]
+   },
+   "p50_ms": 0.0774790005380055,
+   "p99_ms": 0.10429199755890295,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.58 2.24 5.53",
+    "ps": [
+     " %CPU COMM",
+     "  9.5 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  8.4 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  3.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)",
+     "  2.8 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  2.2 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.0 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.7 /System/Library/PrivateFrameworks/ApplePushService.framework/apsd"
+    ]
+   },
+   "p50_ms": 0.1250829991477076,
+   "p99_ms": 0.20912500258418731,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.54 2.22 5.50",
+    "ps": [
+     " %CPU COMM",
+     " 13.8 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)",
+     "  9.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.1 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.1 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.4 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  1.8 /usr/libexec/locationd",
+     "  0.6 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+    ]
+   },
+   "p50_ms": 0.12539599993033335,
+   "p99_ms": 0.191833998542279,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.54 2.22 5.50",
+    "ps": [
+     " %CPU COMM",
+     "  9.7 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.5 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.0 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  0.4 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)",
+     "  0.3 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.3 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 3,
+   "arm": "LF22",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.61 2.21 5.46",
+    "ps": [
+     " %CPU COMM",
+     "  7.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.4 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.5 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.6 /usr/libexec/PerfPowerServices",
+     "  1.1 /Library/SystemExtensions/C28CF9D4-7E27-4A8A-A2A5-262180B5DF81/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension",
+     "  0.4 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+    ]
+   },
+   "p50_ms": 0.0731250001990702,
+   "p99_ms": 0.11720799739123322,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "LF22",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.61 2.21 5.46",
+    "ps": [
+     " %CPU COMM",
+     "  9.9 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  8.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.5 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.0 /usr/libexec/PerfPowerServices",
+     "  0.6 /Library/SystemExtensions/C28CF9D4-7E27-4A8A-A2A5-262180B5DF81/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+    ]
+   },
+   "p50_ms": 0.12397899990901351,
+   "p99_ms": 0.20724999922094867,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "LF22",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.61 2.21 5.46",
+    "ps": [
+     " %CPU COMM",
+     "  9.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.5 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.0 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.3 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  0.8 /opt/homebrew/opt/syncthing/bin/syncthing",
+     "  0.5 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.4 /usr/libexec/locationd"
+    ]
+   },
+   "p50_ms": 0.12202099969726987,
+   "p99_ms": 0.24470800053677522,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "LF22",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.61 2.21 5.46",
+    "ps": [
+     " %CPU COMM",
+     "  9.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.0 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.0 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  0.7 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.7 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.6 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 4,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.75 2.22 5.43",
+    "ps": [
+     " %CPU COMM",
+     "110.0 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/corespotlightd",
+     "  6.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  5.7 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.3 /usr/libexec/spotlightknowledged.updater",
+     "  3.2 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  1.6 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.4 /usr/libexec/dasd"
+    ]
+   },
+   "p50_ms": 0.0715415008016862,
+   "p99_ms": 0.11191600060556084,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.75 2.22 5.43",
+    "ps": [
+     " %CPU COMM",
+     "151.1 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/corespotlightd",
+     "  7.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  5.8 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.8 /usr/libexec/spotlightknowledged.updater",
+     "  2.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  2.1 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  1.8 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService"
+    ]
+   },
+   "p50_ms": 0.12612499995157123,
+   "p99_ms": 0.2312500000698492,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.75 2.22 5.43",
+    "ps": [
+     " %CPU COMM",
+     " 23.1 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/corespotlightd",
+     "  9.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.0 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.4 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  1.3 /sbin/launchd",
+     "  0.6 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude"
+    ]
+   },
+   "p50_ms": 0.12439599777280819,
+   "p99_ms": 0.17899999875226058,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.75 2.22 5.43",
+    "ps": [
+     " %CPU COMM",
+     " 68.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)",
+     " 11.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  3.6 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.5 /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd",
+     "  1.6 /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Support/mds"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 4,
+   "arm": "LF22",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.95 2.25 5.40",
+    "ps": [
+     " %CPU COMM",
+     "  8.2 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  7.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.3 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  0.4 /sbin/launchd",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)",
+     "  0.1 /usr/libexec/opendirectoryd",
+     "  0.1 /opt/homebrew/bin/stripe"
+    ]
+   },
+   "p50_ms": 0.07391600047412794,
+   "p99_ms": 0.1138339976023417,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "LF22",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.95 2.25 5.40",
+    "ps": [
+     " %CPU COMM",
+     " 10.9 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  8.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.5 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  0.4 /sbin/launchd",
+     "  0.3 /usr/libexec/opendirectoryd",
+     "  0.2 /usr/sbin/notifyd"
+    ]
+   },
+   "p50_ms": 0.1245420007762732,
+   "p99_ms": 0.18404199727228843,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "LF22",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.95 2.25 5.40",
+    "ps": [
+     " %CPU COMM",
+     " 10.3 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     " 10.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.9 /sbin/launchd",
+     "  4.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  3.1 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.3 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.9 ps"
+    ]
+   },
+   "p50_ms": 0.13166650023777038,
+   "p99_ms": 0.19070800044573843,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "LF22",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:30  up  8:21, 2 users, load averages: 1.95 2.25 5.40",
+    "ps": [
+     " %CPU COMM",
+     "  9.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.3 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  5.7 /usr/libexec/sysmond",
+     "  3.1 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  2.3 /usr/libexec/locationd",
+     "  1.4 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 5,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:31  up  8:21, 2 users, load averages: 1.95 2.24 5.36",
+    "ps": [
+     " %CPU COMM",
+     "  9.9 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  7.7 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.2 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  0.5 /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd",
+     "  0.5 /usr/libexec/symptomsd",
+     "  0.4 /usr/libexec/logd",
+     "  0.4 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Plugin).app/Contents/MacOS/Code Helper (Plugin)"
+    ]
+   },
+   "p50_ms": 0.08350000098289456,
+   "p99_ms": 0.14054200073587708,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:31  up  8:21, 2 users, load averages: 1.95 2.24 5.36",
+    "ps": [
+     " %CPU COMM",
+     "  8.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  8.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.6 /Applications/Tailscale.app/Contents/MacOS/Tailscale",
+     "  2.8 /usr/libexec/airportd",
+     "  2.2 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.1 /usr/libexec/networkserviceproxy",
+     "  1.3 /usr/sbin/mDNSResponder"
+    ]
+   },
+   "p50_ms": 0.13327049964573234,
+   "p99_ms": 0.2299170009791851,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:31  up  8:21, 2 users, load averages: 2.04 2.25 5.34",
+    "ps": [
+     " %CPU COMM",
+     "  9.0 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.9 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.2 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  1.4 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.7 /usr/libexec/locationd",
+     "  0.4 /System/Library/PrivateFrameworks/ApplePushService.framework/apsd"
+    ]
+   },
+   "p50_ms": 0.12064600014127791,
+   "p99_ms": 0.21304099936969578,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:31  up  8:21, 2 users, load averages: 2.04 2.25 5.34",
+    "ps": [
+     " %CPU COMM",
+     " 11.0 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.6 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  6.7 /Applications/Tailscale.app/Contents/MacOS/Tailscale",
+     "  3.9 /usr/libexec/networkserviceproxy",
+     "  3.8 /usr/libexec/airportd",
+     "  3.1 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.85,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 5,
+   "arm": "LF22",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "0:31  up  8:21, 2 users, load averages: 2.11 2.26 5.31",
+    "ps": [
+     " %CPU COMM",
+     "  8.2 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  6.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.2 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  0.8 /usr/libexec/locationd",
+     "  0.2 /Library/SystemExtensions/C28CF9D4-7E27-4A8A-A2A5-262180B5DF81/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension",
+     "  0.2 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude",
+     "  0.1 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter"
+    ]
+   },
+   "p50_ms": 0.08041649925871752,
+   "p99_ms": 0.11762500071199611,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "LF22",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "0:31  up  8:21, 2 users, load averages: 2.11 2.26 5.31",
+    "ps": [
+     " %CPU COMM",
+     "  8.7 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  8.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  3.5 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  2.3 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  1.1 /usr/libexec/locationd",
+     "  0.9 /usr/libexec/searchpartyd",
+     "  0.3 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)"
+    ]
+   },
+   "p50_ms": 0.1146869999502087,
+   "p99_ms": 0.7313749993045349,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "LF22",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "0:31  up  8:21, 2 users, load averages: 2.11 2.26 5.31",
+    "ps": [
+     " %CPU COMM",
+     " 10.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.2 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  3.0 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  2.4 /Applications/Tailscale.app/Contents/MacOS/Tailscale",
+     "  1.2 /usr/libexec/networkserviceproxy",
+     "  1.0 /usr/libexec/airportd"
+    ]
+   },
+   "p50_ms": 0.12260400035302155,
+   "p99_ms": 0.1872079992608633,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "LF22",
+   "measure": "fair",
+   "machine": {
+    "uptime": "0:31  up  8:21, 2 users, load averages: 2.11 2.26 5.31",
+    "ps": [
+     " %CPU COMM",
+     " 46.0 /Applications/Visual Studio Code.app/Contents/Frameworks/Code Helper (Renderer).app/Contents/MacOS/Code Helper (Renderer)",
+     " 10.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.4 /System/Library/ExtensionKit/Extensions/WallpaperAerialsExtension.appex/Contents/MacOS/WallpaperAerialsExtension",
+     "  2.9 /System/Library/Frameworks/VideoToolbox.framework/Versions/A/XPCServices/VTDecoderXPCService.xpc/Contents/MacOS/VTDecoderXPCService",
+     "  2.1 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/release-1.13.0/.venv/bin/python3",
+     "  0.9 /Library/SystemExtensions/C28CF9D4-7E27-4A8A-A2A5-262180B5DF81/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension",
+     "  0.6 /Users/williamtalcott/.vscode/extensions/anthropic.claude-code-2.1.294-darwin-arm64/resources/native-binary/claude"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.86,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  }
+ ],
+ "summary": {
+  "pooled_slow0": {
+   "key": "p50_ms",
+   "A": {
+    "median": 0.0757710004108958,
+    "min": 0.0715415008016862,
+    "max": 0.08350000098289456
+   },
+   "LF22": {
+    "median": 0.07391600047412794,
+    "min": 0.0731250001990702,
+    "max": 0.08041649925871752
+   },
+   "b_vs_a": 0
+  },
+  "pooled_slow1": {
+   "key": "p50_ms",
+   "A": {
+    "median": 0.12616650019481312,
+    "min": 0.1250829991477076,
+    "max": 0.13327049964573234
+   },
+   "LF22": {
+    "median": 0.12397899990901351,
+    "min": 0.1146869999502087,
+    "max": 0.13077100084046833
+   },
+   "b_vs_a": 0
+  },
+  "pooled_slow2": {
+   "key": "p50_ms",
+   "A": {
+    "median": 0.12439599777280819,
+    "min": 0.12064600014127791,
+    "max": 0.12714600052277092
+   },
+   "LF22": {
+    "median": 0.12649999916902743,
+    "min": 0.12202099969726987,
+    "max": 0.13166650023777038
+   },
+   "b_vs_a": 0
+  },
+  "fair": {
+   "key": "ms_per_request",
+   "A": {
+    "median": 0.658,
+    "min": 0.658,
+    "max": 0.658
+   },
+   "LF22": {
+    "median": 0.658,
+    "min": 0.658,
+    "max": 0.658
+   },
+   "b_vs_a": 0
+  }
+ },
+ "verdict": "no difference"
+}

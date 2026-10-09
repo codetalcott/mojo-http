@@ -202,37 +202,6 @@ somebody else's Django projects inside the pull request that trips it.
   round trips before then, an in-tree correctly rounded parser and printer
   would retire it for the readers here.
 
-- **The handler pool's wake and thread records may share a cache line on
-  Apple silicon.** Each lane's wake words and each thread's record sit on
-  a 64-byte stride (`_WAKE_LANE_STRIDE`, `_THREAD_STRIDE` in
-  `offload.mojo`), in blocks from `malloc`, which promises 16-byte
-  alignment. Apple silicon's cache lines are 128-byte, so neighbouring
-  lanes or threads can write the same line, and on any machine a record
-  can straddle two. Whether a 128-byte stride with aligned blocks is faster
-  is a difference of a few microseconds a request, which only a quiet
-  machine resolves (fork review LF24,
-  [the record](notes/the-fork-audited.md)).
-
-  **Closed by:** none — a measurement: `scripts/probes/pool_ab.py LF24`,
-  run in a release's quiet stage by `scripts/probes/quiet-machine-ab.md`.
-  If the 128-byte arm shows faster, the strides and alignment change; if
-  not, the three docstrings that call each record a cache line of its own
-  are corrected. Either way the artifact is committed and this entry
-  retires.
-
-- **A pool thread's park costs one more system call, unmeasured.** Since
-  LF22's fix (SPEC I39), a thread that parks on its own channel makes one
-  non-blocking `recv` on its lane socket after announcing the park, so a
-  WebSocket message that landed between its last poll and the
-  announcement is taken rather than stranded. What that adds to a request
-  under moderate pool load was not measured: timing on a shared machine
-  measures the machine.
-
-  **Closed by:** none — a measurement: `scripts/probes/pool_ab.py LF22`,
-  run in a release's quiet stage by `scripts/probes/quiet-machine-ab.md`,
-  against an arm without the look. The look stays unless the owner rules
-  otherwise on the result, and the entry retires with the artifact.
-
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
@@ -288,6 +257,8 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
+- <!-- observed: scripts/probes/pool_ab.py LF24 on an M4, 2026-10-09 (bench/results/pool-ab-2026-10/) -->**The handler pool's wake and thread records may share a cache line on Apple silicon** (each lane's wake words and each thread's record on a 64-byte stride, in blocks `malloc` aligns to 16, where an M4's lines are 128-byte) — resolved 2026-10-09 by measurement (fork review LF24): a 128-byte stride with 128-aligned blocks, alternated with the 64-byte stride over five rounds on a quiet M4, was faster in no cell — pooled p50 0.116 ms against 0.125 at slow 1 and 0.124 against 0.123 at slow 2, the ranges overlapping, and 0.658 ms a request in the fair arm for both. The strides stay; the three docstrings that called each record a cache line of its own now say what it is. The artifact is `bench/results/pool-ab-2026-10/pool-ab-LF24-20261009T042627Z.json`; the runbook is `scripts/probes/quiet-machine-ab.md`.
+- <!-- observed: scripts/probes/pool_ab.py LF22 on an M4, 2026-10-09 (bench/results/pool-ab-2026-10/) -->**A pool thread's park cost one more system call, unmeasured** (since LF22's fix, SPEC I39, a thread parking on its own channel makes one non-blocking `recv` on its lane socket after announcing the park) — resolved 2026-10-09 by measurement: an arm without that look, alternated with it over five rounds on a quiet M4, differed by about 2 µs a request in opposite directions — pooled p50 0.126 ms with the look against 0.124 without at slow 1, 0.124 against 0.127 at slow 2, under 2 % of either median and the ranges overlapping — and not at all in the fair arm (0.658 ms). The look costs nothing measurable and stays. The artifact is `bench/results/pool-ab-2026-10/pool-ab-LF22-20261009T042937Z.json`.
 - **A WSGI hold replayed nothing on reconnect** (`M0-Hold: stream` subscribed to a registry whose `Last-Event-ID` handling was the redelivery filter alone, so every application kept a poll beside the stream) — resolved 2026-10-06 (I33, D65): each loop journals the last `--replay-frames` published frames and a reconnecting hold is caught up from it, all or nothing, with one unnumbered `m0-gap` event where the journal cannot supply what was missed, and an id from a previous incarnation clamped rather than left to starve the client. The write-up is [A hold that replays — 2026-10-06](notes/a-hold-that-replays.md).
 - <!-- observed: asgi_bare and wsgi_bare under m0serve, curl, 2026-09-23; FastHTML's examples under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**Two ASGI loading and scope differences from uvicorn** (a request whose chunked body the loop decoded reached the application with both `transfer-encoding: chunked` and a `content-length`, and a GET with a `content-length: 0` and a `connection: keep-alive` its client never sent; a module calling `asyncio.create_task` at import, FastHTML's first official example, failed to load with a bare `RuntimeError: no running event loop`) — resolved 2026-09-23 by L25 and L26. A parsed request carries the headers its client sent: the outgoing constructor it used to be built through no longer fills in a length, a `Connection` and a `Host`, and a de-chunked body is described by its length with its `chunked` coding removed. The WSGI environ follows, mapping the same headers. The import is refused by name, with the fix, a lifespan startup handler, from the server, `--doctor` and discovery alike; uvicorn refuses the same module without `--reload`. Both conformance steps read the scope and the environ back, and the ASGI step loads the module.
 - <!-- observed: asgi_bare and wsgi_bare under m0serve at da6de53, raw sockets, 2026-09-23; FastHTML's examples under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**The gateway rewrote parts of an application's response head** (a redirect, a 204 and FastHTML's default 404 page went out as `application/octet-stream`, a `FileResponse` HEAD as `content-length: 0`, and every 204 and 304 with `content-length: 0`, a native one included) — resolved 2026-09-23 by A21 and K12: the gateway relays the head as sent, adding only the framing that is the server's — a buffered body's measured length, and on a HEAD the application's own — and the event loop drops a length and a body from every 1xx and 204, whoever set them, keeping only a 304's own length. Found beside them and fixed with them (L27): a HEAD to a streaming ASGI route was streamed like a GET, and the loop wrote the whole body after the head, 10,000 of 10,000 bytes, where a keep-alive client reads its next response; a HEAD to a hold or a native SSE route was held as the stream a GET opens, the same way. `scripts/head_probe.py` reads each head in both conformance steps, and a request after it on the same connection.

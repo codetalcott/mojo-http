@@ -90,8 +90,8 @@ docstring count to the struct.
 
 Twenty lanes landed as pull requests: three alone (#580, #585, #590) and
 seventeen in six merge trains (#577, #584, #589, #594, #597, #601).
-LF1–LF9, LF16 and LF17 shipped in m0serve 1.12.1 and m0 0.9.1; the rest
-are unreleased on `main`.
+LF1–LF9, LF16 and LF17 shipped in m0serve 1.12.1 and m0 0.9.1, the rest
+of the fixes in m0serve 1.13.0 and m0 0.10.0.
 
 ## Before and after
 
@@ -258,11 +258,13 @@ S3 and S4 found nothing. They hold the classes of LF1 and LF17.
 
 ## Still open
 
-LF24 and the cost of LF22's fix are ROADMAP Known issues, each retired by
-a measurement in a release's quiet stage.
+LF24 and the cost of LF22's fix were ROADMAP Known issues, each retired by
+a measurement in a release's quiet stage. Both ran in 1.13.0's, on
+2026-10-09, and found no difference, so both entries are retired (ROADMAP,
+Recently resolved, has the figures).
 
 | item | retiring condition |
 |---|---|
-| LF24: the pool's wake and thread records sit on a 64-byte stride in blocks `malloc` aligns to 16, where Apple silicon's lines are 128-byte | `scripts/probes/pool_ab.py LF24`, run by `scripts/probes/quiet-machine-ab.md`: the strides and alignment change if 128 is faster, and the docstrings that call each record a cache line of its own are corrected if not |
-| LF22's cost: a thread that parks makes one non-blocking `recv` on its lane socket after announcing the park | `pool_ab.py LF22`, by the same runbook, against an arm without the look; the owner rules on the result |
+| LF24: the pool's wake and thread records sit on a 64-byte stride in blocks `malloc` aligns to 16, where Apple silicon's lines are 128-byte | `scripts/probes/pool_ab.py LF24`, run by `scripts/probes/quiet-machine-ab.md`: the strides and alignment change if 128 is faster, and the docstrings that call each record a cache line of its own are corrected if not. **Retired 2026-10-09:** no faster in any cell; the docstrings are corrected |
+| LF22's cost: a thread that parks makes one non-blocking `recv` on its lane socket after announcing the park | `pool_ab.py LF22`, by the same runbook, against an arm without the look; the owner rules on the result. **Retired 2026-10-09:** about 2 µs a request either way, the ranges overlapping; the look stays |
 | the pre-release gates the lanes could not run | `stress-pool`, after LF22 and LF23 changed the pool and the bus; `sabotage-host`, whose files lanes A1, A4, B, F and L touched (all 73 of its anchors still match exactly once at f5f15a53). Both are on RELEASING's list, so the next release runs them |
