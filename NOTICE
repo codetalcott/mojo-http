@@ -2009,6 +2009,16 @@ lightbug_http
         body that stayed changed: a pool thread's `next_job` gives up its
         lane's idle spin at one site where it had four.
 
+      - loop/response.mojo, loop/state.mojo (2026-10-09): the keep-alive
+        cap (`max_keepalive_requests`) is applied once, before a response's
+        head goes out, for a stream as for any response but an upgrade,
+        and a stream carries it to its end through `slot_close_after_stream`
+        as it carries a request's own close; the head says `Connection:
+        close`. The second check in `_after_send` (`keepalive_count >=
+        max`) is removed: it closed a stream after its head when the stream
+        before it had been the cap request (docs/notes/pool-tail.md, "The
+        cap and a stream").
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 

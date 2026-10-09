@@ -10,6 +10,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **The keep-alive cap lands on a stream as it lands on any response.**
+  Under `--max-keepalive-requests N`, a chunked stream served as request N
+  skipped the cap and ended kept-alive with the connection's count at N;
+  the next stream on that connection skipped it too, and a second check in
+  the loop closed the connection once that stream's head had landed: a
+  chunked head and nothing after it, and an ordinary request there was
+  served, one past the cap. Now the cap is applied before the
+  head goes out, for a stream as for anything else, and a stream carries
+  it to its end: the head says `Connection: close`, the stream arrives
+  whole, and the connection ends after it. The count check that cut the
+  second stream is gone. A WebSocket upgrade on the cap request is as it
+  was: its handshake cannot say `close`, and its connection ends with the
+  socket.
+
 - **A static mount compares `If-None-Match` weakly** (RFC 9110 §13.1.2).
   `StaticFiles` tags each file with a weak `ETag` (`W/"…"`) and compared a
   client's `If-None-Match` with it as written, so a client or cache that
