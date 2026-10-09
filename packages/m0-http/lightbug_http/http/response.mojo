@@ -247,7 +247,7 @@ struct HTTPResponse(Encodable, Movable, Writable):
         """
         buf.clear()
         var writer = ByteWriter(buf^)
-        # The head's rules are `encode`'s: an injected reason phrase is
+        # The head's rules, here for `encode` too: an injected reason phrase is
         # emptied, an injected header or `Set-Cookie` line dropped.
         writer.write(self.protocol, whitespace, self.status_code, whitespace)
         if not span_breaks_header_line(self.status_text.as_bytes()):

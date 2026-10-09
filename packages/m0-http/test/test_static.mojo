@@ -457,6 +457,17 @@ def test_the_range_unit_is_bytes_in_ascii_case_only() raises:
     assert_equal(parse_range("Bytes=-10", 100).start, 90)
 
 
+def test_a_range_bound_is_digits_alone() raises:
+    """RFC 9110 §14.1.1 writes a bound as digits. A bound was read with
+    `Int()`, which takes a sign and blanks around the number, so
+    `bytes=+0-1` and `bytes= 0-1` were served as ranges and `bytes=--5`
+    answered 416. A bound that is not plain digits makes the header no
+    range at all, and the whole representation is served."""
+    assert_equal(parse_range("bytes=+0-1", 100).kind, RANGE_NONE)
+    assert_equal(parse_range("bytes= 0-1", 100).kind, RANGE_NONE)
+    assert_equal(parse_range("bytes=--5", 100).kind, RANGE_NONE)
+
+
 def test_range_serves_206_with_content_range() raises:
     """Declared coverage.
 

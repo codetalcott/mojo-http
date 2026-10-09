@@ -345,7 +345,8 @@ comptime _RESPAWN_FAILED = 0
 comptime _RESPAWN_PARENT = 1
 comptime _RESPAWN_CHILD = 2
 comptime _EXIT_SHUTDOWN = 3
-"""A reaped exit that ended supervision: a propagated SIGTERM or SIGINT."""
+"""A reaped exit that ended supervision: a propagated SIGTERM or SIGINT, or
+a worker's refusal (`EX_CONFIG`, exit 78) that has ended its siblings."""
 
 comptime EX_CONFIG = 78
 """The sysexits "configuration error" code: a worker exiting with it REFUSED its

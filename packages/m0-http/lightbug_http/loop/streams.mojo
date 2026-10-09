@@ -5,10 +5,13 @@ A WebSocket's frames are read and handed to the handler
 pass (`_drain_outboxes`); a heartbeat keeps an idle stream alive and finds
 a dead one (`_heartbeat`); frames other workers publish arrive over the
 bus (`_deliver_bus_frames`); and the closes and resumed reads the handler
-asks for are applied at the bottom of every pass. Every frame the loop puts
-on a stream -- a heartbeat, a pong or close echo, what the handler queued --
-goes through `_send_frame`: one send, and one rule for a client that has
-gone.
+asks for are applied at the bottom of every pass. Every frame this module
+puts on a stream -- a heartbeat, a pong or close echo, what the handler
+queued -- goes through `_send_frame`: one send, and one rule for a client
+that has gone. Two sends elsewhere do not, each a best-effort send just
+before its slot closes: the shutdown farewell (`_farewell_streams`,
+`loop/state.mojo`) and an aborted stream's last bytes
+(`_service_completions`, `loop/offload.mojo`).
 """
 
 from lightbug_http.event_loop_backend import EventLoopBackend

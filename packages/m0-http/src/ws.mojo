@@ -33,8 +33,9 @@ from .sse import MAX_PENDING_BYTES
 
 # Backpressure: stop queueing for a slot whose outbox is already this deep.
 # The limit is `.sse`'s `MAX_PENDING_BYTES`, the same number and the same
-# posture as `SSERegistry`'s, and for the same reason — a client that stops reading must lose frames
-# rather than grow the server's memory without bound.
+# posture as `SSERegistry`'s, and for the same reason — a client that stops
+# reading must lose frames rather than grow the server's memory without
+# bound.
 #
 # It is reachable here specifically because the loop only drains a slot's
 # outbox while that slot is idle in `STREAMING_WS`. A client whose receive

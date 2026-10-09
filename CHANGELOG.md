@@ -105,7 +105,11 @@ in a minor release: `m0serve`'s flags and environment variables, the
   timer nothing armed; `OffloadLoopState.slot_is_executor` (ask
   `OffloadPool.slot_is_executor`); the `ProvisionError` arm of
   `lightbug_http.server.ServerError`, never raised; `m0_http.sse`'s
-  `format_sse_heartbeat_bytes`; and `StaticFiles.matches`.
+  `format_sse_heartbeat_bytes`; and `StaticFiles.matches`. The
+  `server_is_tls` argument sat just before `invent_headers` in
+  `HTTPRequest.__init__`, so a caller that passed it by position now sets
+  `invent_headers` with that value. No caller in the tree passes
+  `invent_headers` by position.
 
 ## [1.13.0] — 2026-10-09
 

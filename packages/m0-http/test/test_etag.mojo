@@ -92,8 +92,9 @@ def test_etag_matches_weakly_whichever_side_carries_the_mark() raises:
 
 
 def test_an_if_none_match_that_is_not_utf8_does_not_trap() raises:
-    """`etag_matches` trims each candidate with a String slice; a byte that
-    is not UTF-8 at the slice end trapped. It must compare bytes.
+    """`etag_matches` once trimmed each candidate with a String slice, and
+    a byte that is not UTF-8 at the slice end trapped. It walks the
+    header's bytes now (`next_list_member`) and must compare them.
 
     covers: G14
     """

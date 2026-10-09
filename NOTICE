@@ -1979,9 +1979,11 @@ lightbug_http
       - event_loop.mojo, broadcast.mojo, offload.mojo, server.mojo, loop/
         (2026-10-09): `_run_pass` and every function under it that the
         compiler accepts without `raises` lose it, and the two catches that
-        made unreachable are deleted; `OffloadLoopState.slot_is_executor`,
-        `TIMER_HEADER` and `ServerError`'s `ProvisionError` arm, which
-        nothing used, are removed.
+        made unreachable are deleted, one in `loop/request.mojo` and the
+        other outside the fork, in m0-wsgi's `asgi_executor.mojo`;
+        `OffloadLoopState.slot_is_executor`, `TIMER_HEADER` and
+        `ServerError`'s `ProvisionError` arm, which nothing used, are
+        removed.
 
       - offload.mojo, server.mojo (2026-10-09): `OffloadPool.stream_active`
         is renamed `executor_active`, which is what it answers; `Server`'s
@@ -2007,7 +2009,7 @@ lightbug_http
         body that stayed changed: a pool thread's `next_job` gives up its
         lane's idle spin at one site where it had four.
 
-    For the modification history carried into this repository (36 commits):
+    For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 
     The 28 earlier commits predating 2026-03-18 were made in the private

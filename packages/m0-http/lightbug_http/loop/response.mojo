@@ -332,7 +332,9 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # stream served as request `max` skips this cap and ends kept-alive with
     # the count at `max`, so a stream or an upgrade as the next request
     # skips it too, says `keep-alive`, and is closed there once its head
-    # lands, before any of its body.
+    # lands, before any of its body. docs/ROADMAP.md holds it under Known
+    # issues as "Under the keep-alive cap, a stream that follows a chunked
+    # stream served as the cap request is closed after its head."
     if (
         (not response.sse_streaming)
         and (not upgraded_ws)

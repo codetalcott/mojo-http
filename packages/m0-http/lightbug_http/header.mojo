@@ -226,7 +226,7 @@ struct ParsedRequestHeaders(Movable):
     def is_chunked_body(self) -> Bool:
         """Return True if Transfer-Encoding: chunked is present.
 
-        Phase 1b: used by the server loops to distinguish chunked bodies
+        Used by the server loops to distinguish chunked bodies
         (no Content-Length) from fixed-length bodies.
 
         Case-INSENSITIVELY, as RFC 9112 §7.1 requires of transfer-coding
@@ -1193,7 +1193,7 @@ def parse_request_headers(
         else:  # ret == -2
             raise RequestParseError(IncompleteHTTPRequestError())
 
-    # Phase 1a: Normalize absolute-form request targets (RFC 9112 §3.2.2).
+    # Normalize absolute-form request targets (RFC 9112 §3.2.2).
     # Proxies and some HTTP clients send "GET http://host/path HTTP/1.1".
     # The handler sees the path and query; the authority becomes the Host
     # below, after the Host field's own checks (SPEC B16).
@@ -1264,7 +1264,7 @@ def parse_request_headers(
         # interior reference taken by the first.
         ref h = headers_array[i]
         var name_bytes = view[h.name_start : h.name_start + h.name_len]
-        # Phase 1c: RFC 9110 §5.5 — trim OWS (SP / HTAB) from field values.
+        # RFC 9110 §5.5 — trim OWS (SP / HTAB) from field values.
         # picohttpparser preserves surrounding whitespace; we normalise here.
         # Trimming the span rather than calling `.strip()` keeps this
         # allocation-free: only a cookie (rare) materializes a String.

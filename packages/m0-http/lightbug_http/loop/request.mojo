@@ -212,7 +212,7 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     slot closed, or the body refused."""
     var body_st = st.provision_pool.provisions[slot].body_state.value()
 
-    # Phase 2a: recv into per-slot staging buffer (avoids per-recv heap alloc)
+    # recv into per-slot staging buffer (avoids per-recv heap alloc)
     st.provision_pool.provisions[slot].recv_staging.clear()
     var fd_desc = FileDescriptor(fd_val)
     var want = st.provision_pool.provisions[slot].recv_staging.capacity()
@@ -261,7 +261,7 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     # read (`HTTPChunkedDecoder.pending_bytes`;
     # `test_a_chunk_line_that_never_ends_is_refused_at_twice_the_cap`).
 
-    # Phase 1b: chunked body decode, resumed not restarted, from the raw
+    # Chunked body decode, resumed not restarted, from the raw
     # tail past what earlier reads decoded (`_decode_chunked_tail`).
     if body_st.is_chunked:
         var tail_start = body_st.header_end_offset + body_st.bytes_read
@@ -436,7 +436,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     # after every answer (`ConnectionProvision.compact_buffer`, LF72).
     st.provision_pool.provisions[slot].compact_buffer()
 
-    # Phase 2a: recv straight into the connection's buffer, past whatever
+    # recv straight into the connection's buffer, past whatever
     # it already holds. Still exactly ONE read of `recv_staging.capacity()`
     # bytes per call -- the 8 KB header rule in `_drain_pipelined` depends
     # on that size -- but the staging copy that used to follow it is gone:
@@ -628,7 +628,7 @@ def _frame_buffered[T: HTTPService, B: EventLoopBackend](
             )
             st.provision_pool.provisions[slot].state = ConnectionState.reading_body()
 
-            # Phase 1b: decode whatever of the body arrived with the headers,
+            # Decode whatever of the body arrived with the headers,
             # through the CONNECTION's decoder — the same one
             # `_read_body` resumes. A throwaway decoder here would
             # consume these bytes and then throw away the chunk state it
