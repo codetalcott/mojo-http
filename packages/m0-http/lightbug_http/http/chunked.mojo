@@ -43,20 +43,30 @@ struct HTTPChunkedDecoder(Defaultable):
     body limit in framing before it fires."""
     var _total_overhead: Int
     var pending_bytes: Int
-    """Undecoded bytes the last `decode` left at the front of its buffer.
+    """Undecoded bytes the last `decode` left at the front of its buffer,
+    after its decoded output: where the next batch of raw bytes belongs.
 
-    `decode` already compacts them there — decoded output first, then the
-    partial chunk header (or half-read size line) it could not finish — but
-    it only *returns* the decoded length, so a caller resuming across
-    several reads had no way to know where the next batch should be
-    appended. That is why this decoder was reconstructed per read event,
-    which made a chunked body cost O(N²): every event re-copied and
-    re-scanned the whole body accumulated so far, and it also reset
-    `_total_overhead`, disabling the abuse ratio below.
+    Zero whenever `decode` answers -2 (incomplete). Every state consumes
+    the bytes it is handed, a half-read size line, extension or trailer
+    included, and carries what it has learned in the decoder's own fields
+    (`_state`, `_hex_count`, `bytes_left_in_chunk`), never by leaving bytes
+    in the buffer. The event loop's bound on a chunked body rests on that
+    (review record LF70): with nothing left undecoded, its buffer holds the
+    head and the decoded body, and what a line that never ends costs is
+    counted in `_total_read`, which the loop refuses past twice the body
+    cap. `test_slot_lifecycle.mojo`'s
+    `test_a_chunk_line_that_never_ends_is_refused_at_twice_the_cap` holds
+    it. Equal to `ret` on a completed body (both are "bytes after the
+    chunked data", the next pipelined request); meaningless after an error
+    return.
 
+    `decode` only *returns* the decoded length, so before this was recorded
+    a caller resuming across several reads had no way to know where the
+    next batch should be appended. That is why this decoder was
+    reconstructed per read event, which made a chunked body cost O(N²):
+    every event re-copied and re-scanned the whole body accumulated so far,
+    and it also reset `_total_overhead`, disabling the abuse ratio below.
     Feeding one decoder only the NEW bytes is what this makes possible.
-    Meaningless after an error return, and equal to `ret` on a completed
-    body (both are "bytes after the chunked data").
     """
 
     def __init__(out self):

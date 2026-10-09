@@ -2,7 +2,7 @@
 
 from std.testing import assert_true, assert_false, assert_equal, TestSuite
 
-from src.content_negotiation import parse_accept
+from src.content_negotiation import _split_media_range, parse_accept
 
 
 comptime VENDOR_BIN = "application/vnd.siren+bin"
@@ -91,6 +91,60 @@ def test_quality_nonzero_enables() raises:
     """`q=0.5` should enable a type."""
     var r = parse_accept("application/json;q=0.5")
     assert_true(r.wants_json)
+
+
+def _weight_of(entry: String) -> Float64:
+    """The weight the splitter reads off one `Accept` entry."""
+    var ranges = List[String]()
+    var qualities = List[Float64]()
+    _split_media_range(entry, ranges, qualities)
+    return qualities[0]
+
+
+def test_the_weight_is_the_parameter_named_q_in_any_case() raises:
+    """RFC 9110 §12.4.2: the weight is the parameter NAMED `q`, and a
+    parameter's name is case-insensitive (§5.6.6), so `Q=0` refuses a type
+    as `q=0` does and `Q=0.5` weighs 0.5. The parameter was found by the
+    substring `q=`, and an upper-case `Q` was no weight at all (review
+    LF69). The first parameter named `q` is the weight.
+
+    covers: N53
+    """
+    assert_false(parse_accept("text/html;Q=0").wants_html, "Q=0 ignored")
+    assert_false(parse_accept("application/json;Q=0, */*").wants_json)
+    assert_equal(_weight_of("text/html;Q=0.5"), 0.5)
+    assert_equal(_weight_of("text/html;q=0.5;Q=0"), 0.5)
+
+
+def test_a_parameter_whose_name_ends_in_q_is_not_the_weight() raises:
+    """`xq=0` is a parameter named `xq`, so the type keeps its weight of 1;
+    found by the substring `q=`, it read as `q=0` and refused a type the
+    client asked for (review LF69). A weight after another parameter is
+    still found.
+
+    covers: N53
+    """
+    assert_true(parse_accept("text/html;xq=0").wants_html, "xq=0 read as q=0")
+    assert_equal(_weight_of("text/html;xq=0"), 1.0)
+    assert_equal(_weight_of("text/html;xq=0;q=0.5"), 0.5)
+    assert_false(parse_accept("text/html;level=1;q=0").wants_html)
+
+
+def test_whitespace_around_a_weights_equals_sign_is_tolerated() raises:
+    """`q = 0` refuses a type and `q= 0.5` weighs 0.5. RFC 9110 §5.6.6
+    allows no whitespace around a parameter's `=`, but a client that sent
+    some meant the weight: before review LF69 `q =0` was no weight at all
+    (the type accepted at 1) and `q= 0.5` read as 0, refusing a type the
+    client asked for. Whitespace around the `;` is the grammar's own.
+
+    covers: N53
+    """
+    assert_false(parse_accept("text/html;q =0").wants_html, "q =0 ignored")
+    assert_false(parse_accept("text/html;q = 0").wants_html)
+    assert_true(parse_accept("text/html;q= 0.5").wants_html, "q= 0.5 read as 0")
+    assert_equal(_weight_of("text/html ; q= 0.5"), 0.5)
+    assert_equal(_weight_of("text/html;\tq\t=\t0.5"), 0.5)
+    assert_false(parse_accept("text/html ;  q=0").wants_html)
 
 
 def test_wildcard() raises:

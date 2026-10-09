@@ -1858,6 +1858,75 @@ lightbug_http
         (review record LF25). The threshold is `buffer_size` instead when
         that is larger, so a configured read size past 64 KiB is kept.
 
+      - loop/request.mojo, server_config.mojo (2026-10-08): `_read_body`
+        no longer compares the whole receive buffer with
+        `recv_buffer_limit()`, and holds a chunked body to its decoded size
+        and its raw cost after each decode, as the head path does, where it
+        measured the decoded body plus the raw tail before decoding. The
+        buffer holds the head and the next pipelined request beside the
+        body: a `Content-Length` body with the next request in its last
+        read was refused 400, a chunked body at the cap 413 when its
+        framing or a request behind it came after the head, and a chunked
+        body over the cap behind a long head 400 and closed rather than
+        413 and lingered (review record LF70, SPEC C18). The head path's
+        comparison of its whole buffer with `recv_buffer_limit()` stays,
+        and is LF72's to change: it is what bounds a pipelined backlog.
+
+      - __init__.mojo, io/__init__.mojo, io/sync.mojo (deleted),
+        http/request.mojo, event_loop.mojo (2026-10-08): dead inherited
+        code removed, each name searched for across the repository, the
+        `m0` templates and the one application outside it, then the fork
+        compiled whole: the package's re-exports of `URI`, `Cookie`,
+        `RequestCookieJar` and `ResponseCookieJar`, and `lightbug_http.io`'s
+        of `Bytes` and `Duration`; `io/sync.mojo`'s `Duration`, whose one
+        use was `HTTPRequest.timeout`, a field the constructor wrote and
+        nothing read, removed with its argument; and `prepare_loop`'s
+        `debug_assert` that the listener's number is below `TIMER_HEADER`,
+        which no shipped build compiles (a plain `debug_assert` runs only
+        under `-D ASSERT=all`) and whose collision cannot happen: the
+        listener has no timer, and a timer's event is dispatched by its
+        filter (review record LF71).
+
+      - loop/request.mojo, loop/state.mojo, loop/response.mojo,
+        loop/timers.mojo, server.mojo, c/socket.mojo (2026-10-08): the
+        pipelining drain reads nothing. `_drain_pipelined` framed each
+        request behind an answer through `_handle_read_headers`, whose read
+        came first, so a burst waiting in the socket was read whole in one
+        pass, and the keep-alive reset copied the rest of the buffer after
+        every answer: 20,000 pipelined GETs held the loop 1.56 s, the cost
+        quadratic in the burst. A head is framed by `_frame_buffered`,
+        which reads nothing; the read path takes one read and the drain
+        answers what it brought. The reset advances
+        `ConnectionProvision.head_start` past the answered request instead
+        of copying, and the read path moves a partial head to the front
+        once before its read (`compact_buffer`). A read that fills its
+        buffer marks the slot's read interest spent (`_spend_read_edge`)
+        and the drain's last step registers again, which on epoll is the
+        only thing that announces the rest. The keep-alive reset keeps
+        `peer_eof`, `_answers_the_last_request` peeks (`MSG_PEEK`) where it
+        read, and an incomplete head alone is held to
+        `recv_buffer_limit()`, where the whole buffer was compared (review
+        record LF72, SPEC A41, C19).
+
+      - loop/response.mojo, loop/request.mojo, loop/timers.mojo,
+        server.mojo (2026-10-08): the interim `100 Continue` is sent by
+        `_send_interim`, which keeps what a non-blocking send did not take
+        in `ConnectionProvision.interim_owed`; `_finish_response` puts it
+        ahead of the final response, and `_send_error_to_fd` sends it in
+        one buffer with the 400, 408 or 413 that can end the request
+        (`_take_owed_interim`), so a cut send leaves a truncated stream,
+        never an error behind a fragment. It was a
+        best-effort `_send_raw_to_fd` (removed) that ignored the count, and
+        on Linux a 25-byte send to a full socket can come back short
+        (review record LF73, SPEC A42).
+
+      - loop/request.mojo (2026-10-08): the header timeout met at a read
+        answers 408 through `_reject_and_linger`, the 413's lingering
+        close, where it sent the 408 and closed at once. The check comes
+        before the read, so the rest of the head was unread, and closing
+        over it reset the connection: on Linux the client's read failed
+        ECONNRESET and the 408 was lost (review record LF75, SPEC A5).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

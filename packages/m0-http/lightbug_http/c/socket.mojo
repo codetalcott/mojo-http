@@ -71,6 +71,12 @@ on Linux overflowed under a burst of new connections while the loop was
 busy: the kernel drops the handshakes past a full queue, and their clients
 retry a second later (review record LF19)."""
 
+comptime MSG_PEEK = c_int(0x2)
+"""`recv` flag: report what is queued without taking it -- 0x2 in both the
+macOS SDK's and glibc's <sys/socket.h>. The loop asks it whether a
+half-closed client sent anything behind the request it is answering, and
+leaves what it finds for the next read (`_answers_the_last_request`)."""
+
 
 # Socket Type constants. SOCK_STREAM is the only one a `Socket` is made
 # with; the AF_UNIX datagram channels spell theirs in c/socketpair.mojo.
