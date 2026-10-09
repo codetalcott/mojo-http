@@ -21,16 +21,18 @@ The split of responsibilities is deliberate:
   close with 1007 once the complete message is assembled (RFC 6455 §8.1).
   Binary payloads are the handler's to interpret.
 
-SHA-1 and base64 are implemented here rather than imported: the handshake
-needs exactly one hash of one short string per connection open, nothing
-else in the repo needs either, and `m0-core` stays the place for hashes
-things actually keep calling.
+SHA-1 is implemented here rather than imported: the handshake needs
+exactly one hash of one short string per connection open, nothing else in
+the repo needs it, and `m0-core` stays the place for hashes things actually
+keep calling. Its base64 is the standard library's `b64encode`, which the
+grant signer (`m0_http.grant`) uses too.
 """
 
 from lightbug_http.header import Headers, Header, HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.strings import strHttp10
+from std.base64 import b64encode
 from std.memory import bitcast
 
 
@@ -43,7 +45,6 @@ comptime WS_OP_PING = 0x9
 comptime WS_OP_PONG = 0xA
 
 # Close codes (RFC 6455 §7.4.1) — the ones this server sends.
-comptime WS_CLOSE_NORMAL = 1000
 comptime WS_CLOSE_GOING_AWAY = 1001
 comptime WS_CLOSE_PROTOCOL_ERROR = 1002
 comptime WS_CLOSE_INVALID_DATA = 1007
@@ -132,38 +133,6 @@ def sha1(data: Span[Byte, _]) -> List[UInt8]:
     return out^
 
 
-# --- base64 (RFC 4648, standard alphabet) ------------------------------------
-
-comptime _B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
-
-
-def base64_encode(data: Span[Byte, _]) -> String:
-    var alphabet = _B64_ALPHABET.as_bytes()
-    var out = List[UInt8](capacity=((len(data) + 2) // 3) * 4)
-    var i = 0
-    while i + 3 <= len(data):
-        var n = (UInt32(data[i]) << 16) | (UInt32(data[i + 1]) << 8) | UInt32(data[i + 2])
-        out.append(alphabet[Int((n >> 18) & 0x3F)])
-        out.append(alphabet[Int((n >> 12) & 0x3F)])
-        out.append(alphabet[Int((n >> 6) & 0x3F)])
-        out.append(alphabet[Int(n & 0x3F)])
-        i += 3
-    var rem = len(data) - i
-    if rem == 1:
-        var n = UInt32(data[i]) << 16
-        out.append(alphabet[Int((n >> 18) & 0x3F)])
-        out.append(alphabet[Int((n >> 12) & 0x3F)])
-        out.append(UInt8(ord("=")))
-        out.append(UInt8(ord("=")))
-    elif rem == 2:
-        var n = (UInt32(data[i]) << 16) | (UInt32(data[i + 1]) << 8)
-        out.append(alphabet[Int((n >> 18) & 0x3F)])
-        out.append(alphabet[Int((n >> 12) & 0x3F)])
-        out.append(alphabet[Int((n >> 6) & 0x3F)])
-        out.append(UInt8(ord("=")))
-    return String(StringSpan(unsafe_from_utf8=Span(out)))
-
-
 # --- Opening handshake (RFC 6455 §4) ------------------------------------------
 
 
@@ -171,7 +140,7 @@ def compute_accept_key(client_key: String) -> String:
     """Sec-WebSocket-Accept for a client's Sec-WebSocket-Key."""
     var material = client_key + _WS_GUID
     var digest = sha1(material.as_bytes())
-    return base64_encode(Span(digest))
+    return b64encode(Span(digest))
 
 
 def websocket_upgrade(req: HTTPRequest) -> Optional[HTTPResponse]:
@@ -252,21 +221,33 @@ def is_ws_upgrade_response(resp: HTTPResponse) -> Bool:
 # --- Frames (RFC 6455 §5) -----------------------------------------------------
 
 
-def encode_ws_frame(opcode: Int, payload: Span[Byte, _]) -> List[UInt8]:
-    """A complete server frame: FIN set, unmasked (servers MUST NOT mask)."""
-    var n = len(payload)
-    var out = List[UInt8](capacity=n + 10)
+@always_inline
+def _frame_header(opcode: Int, n: Int, masked: Bool) -> List[UInt8]:
+    """A FIN frame's header for an `n`-byte payload (§5.2), in a list with
+    room for the payload behind it, and for the mask key when `masked`.
+
+    The two encoders below differ only in the MASK bit and the key, so the
+    header is written once.
+    """
+    var mask_bit = 0x80 if masked else 0
+    var out = List[UInt8](capacity=n + (14 if masked else 10))
     out.append(UInt8(0x80 | (opcode & 0x0F)))
     if n <= 125:
-        out.append(UInt8(n))
+        out.append(UInt8(mask_bit | n))
     elif n <= 0xFFFF:
-        out.append(126)
+        out.append(UInt8(mask_bit | 126))
         out.append(UInt8((n >> 8) & 0xFF))
         out.append(UInt8(n & 0xFF))
     else:
-        out.append(127)
+        out.append(UInt8(mask_bit | 127))
         for shift in range(56, -8, -8):
             out.append(UInt8((UInt64(n) >> UInt64(shift)) & 0xFF))
+    return out^
+
+
+def encode_ws_frame(opcode: Int, payload: Span[Byte, _]) -> List[UInt8]:
+    """A complete server frame: FIN set, unmasked (servers MUST NOT mask)."""
+    var out = _frame_header(opcode, len(payload), masked=False)
     out.extend(payload)
     return out^
 
@@ -276,18 +257,7 @@ def encode_ws_frame_masked(
 ) -> List[UInt8]:
     """A masked client frame — what a browser sends. Tests and clients only."""
     var n = len(payload)
-    var out = List[UInt8](capacity=n + 14)
-    out.append(UInt8(0x80 | (opcode & 0x0F)))
-    if n <= 125:
-        out.append(UInt8(0x80 | n))
-    elif n <= 0xFFFF:
-        out.append(0x80 | 126)
-        out.append(UInt8((n >> 8) & 0xFF))
-        out.append(UInt8(n & 0xFF))
-    else:
-        out.append(0x80 | 127)
-        for shift in range(56, -8, -8):
-            out.append(UInt8((UInt64(n) >> UInt64(shift)) & 0xFF))
+    var out = _frame_header(opcode, n, masked=True)
     for i in range(4):
         out.append(mask[i])
     for i in range(n):
@@ -619,8 +589,9 @@ struct WSState(Movable):
             i += header + plen
 
             if opcode >= 0x8:
-                # Control frames: never fragmented, payload <= 125 (§5.5).
-                if not fin or plen > 125:
+                # Control frames are never fragmented (§5.5); the 125-byte
+                # bound on their payload was refused at the header, above.
+                if not fin:
                     return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                 if opcode == WS_OP_PING:
                     var pong = encode_ws_frame(WS_OP_PONG, Span(payload))
@@ -645,10 +616,10 @@ struct WSState(Movable):
                     # unsigned integer").
                     if len(payload) == 1:
                         return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
+                    # No body is no code: 1005 for the application (§7.1.5).
+                    var close_code = 1005
                     if len(payload) >= 2:
-                        var close_code = (
-                            (Int(payload[0]) << 8) | Int(payload[1])
-                        )
+                        close_code = (Int(payload[0]) << 8) | Int(payload[1])
                         if not close_code_is_valid_from_peer(close_code):
                             return self._fail(res^, WS_CLOSE_PROTOCOL_ERROR)
                         # Anything after the code is a reason, and a reason
@@ -665,9 +636,7 @@ struct WSState(Movable):
                     var echo = encode_ws_frame(WS_OP_CLOSE, Span(echo_body))
                     res.reply.extend(Span(echo))
                     res.close_after_reply = True
-                    res.close_code = 1005
-                    if len(payload) >= 2:
-                        res.close_code = (Int(payload[0]) << 8) | Int(payload[1])
+                    res.close_code = close_code
                     self.buffer.clear()
                     return res^
                 else:

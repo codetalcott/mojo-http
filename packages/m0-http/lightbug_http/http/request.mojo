@@ -67,14 +67,14 @@ struct URITooLongError(ImplicitlyCopyable):
 
 
 @fieldwise_init
-struct URIParseError(ImplicitlyCopyable):
+struct RequestURIError(ImplicitlyCopyable):
     """Failed to parse request URI."""
 
     def message(self) -> String:
         return "Malformed request URI"
 
 
-comptime RequestBuildError = Variant[URITooLongError, URIParseError]
+comptime RequestBuildError = Variant[URITooLongError, RequestURIError]
 
 
 comptime strSlash = "/"
@@ -115,7 +115,6 @@ struct HTTPRequest(Copyable, Encodable, Writable):
     var method: String
     var protocol: String
 
-    var server_is_tls: Bool
     var slot_id: Int
 
     var remote_addr: String
@@ -207,7 +206,7 @@ struct HTTPRequest(Copyable, Encodable, Writable):
             try:
                 parsed_uri = URI.parse(parsed.path)
             except uri_err:
-                raise RequestBuildError(URIParseError())
+                raise RequestBuildError(RequestURIError())
             parsed_uri.host = server_host
             parsed_uri.port = server_port
             # The target as it arrived, escapes and all, which the writers
@@ -255,7 +254,6 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         var method: String = "GET",
         var protocol: String = strHttp11,
         var body: Bytes = Bytes(),
-        server_is_tls: Bool = False,
         invent_headers: Bool = True,
     ):
         """Initialize a new HTTP request.
@@ -274,7 +272,6 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         self.protocol = protocol^
         self.uri = uri^
         self.body_raw = body^
-        self.server_is_tls = server_is_tls
         self.slot_id = -1
         self.remote_addr = String("")
         self.remote_port = 0

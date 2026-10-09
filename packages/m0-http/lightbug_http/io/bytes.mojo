@@ -1,9 +1,12 @@
-from lightbug_http.connection import default_buffer_size
 from std.collections.span import ContiguousSlice, _SpanIter
 from std.memory import unsafe_memcpy
 
 
 comptime Bytes = List[Byte]
+
+
+comptime default_buffer_size = 4096
+"""The default buffer size for reading and writing data."""
 
 
 @always_inline
