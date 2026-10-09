@@ -1777,8 +1777,9 @@ comptime _BLK_SERVED = 11
 """Block slot an echo thread counts its jobs in; read after the join."""
 
 comptime _BLK_WS_SERVED = 12
-"""Block slot an echo thread counts the WebSocket messages it took in;
-read after the join."""
+"""Block slot an echo thread counts the WebSocket messages it took in,
+stored atomically as each is taken, so a test can wait on the delivery
+itself (review LF68); read after the join too."""
 
 
 def _echo_thread[slow: Bool](arg: Int) -> Int:
@@ -1800,6 +1801,7 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
             break
         if job.kind == JOB_WS_MESSAGE:
             ws_served += 1
+            atomic_at(block.slot_addr(_BLK_WS_SERVED))[].store(Int64(ws_served))
             continue
         if job.kind != JOB_REQUEST:
             continue
@@ -1813,7 +1815,6 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
         served += 1
     pool.unregister_thread(tid, 0)
     block.set(_BLK_SERVED, served)
-    block.set(_BLK_WS_SERVED, ws_served)
     block.set(BLK_STATUS, STATUS_OK)
     return 0
 
@@ -1999,7 +2000,20 @@ def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
     thread, which polls the socket first thing. The echo thread counts the
     message as served (it answers nothing for it) and parks again; without
     the wake it would sit parked and the message with it — CI's WebSocket
-    smoke, "only pings arriving"."""
+    smoke, "only pings arriving".
+
+    The test waits for the message's DELIVERY, the count the echo thread
+    stores as it takes it, never for the parked count's dip: the wake
+    retires that count on the sender's side and the woken thread restores
+    it as it parks again, tens of microseconds later, so a test thread
+    descheduled across the window saw the count back at one and timed out
+    with the message served (review LF68: once in a whole-suite run at a
+    load of 12; a 5 ms sleep after the send failed it in 5 runs of 5,
+    while 5 ms sleeps at four points of the pool's park path failed it in
+    none).
+
+    covers: I39
+    """
     var pool = OffloadPool(8)
     if not pool.elastic_active():
         return
@@ -2009,15 +2023,15 @@ def test_a_websocket_message_wakes_a_thread_parked_on_its_own_channel() raises:
     for b in String("hello").as_bytes():
         payload.append(b)
     assert_true(pool.send_ws_message(0, 3, 1, String("chan"), Span(payload)))
-    # The thread wakes for it: parked count drops, then it parks again.
+    var taken = atomic_at(threads.block(0).slot_addr(_BLK_WS_SERVED))
     var deadline = perf_counter_ns() + 2_000_000_000
-    var woke = False
-    while perf_counter_ns() < deadline:
-        if pool.parked_count(0) == 0:
-            woke = True
-            break
+    while taken[].load() == 0:
+        assert_true(
+            perf_counter_ns() < deadline,
+            "the parked thread was never woken for the message",
+        )
         sleep(0.0001)
-    assert_true(woke)
+    # Taken, it answers nothing for it and parks again.
     _await_parked(pool, 1)
     pool.stop(1)
     threads.join_all()
@@ -2140,14 +2154,29 @@ def test_a_burst_into_a_parked_lane_wakes_one_thread() raises:
 comptime _BLK_TOOK = 13
 """Block slot `_unregistered_thread` sets once it holds its slow job."""
 
+comptime _BLK_RELEASE_AT = 14
+"""Block slot holding the `perf_counter_ns` at which `_unregistered_thread`
+may leave its slow view; 0, the view holds. The test sets it once the lane
+is full, so the view outlasts the fill however slowly the test runs
+(review LF76)."""
+
+comptime _HOLD_CAP_NS = 10_000_000_000
+"""The longest the slow view waits for its release, so a test that fails
+before releasing it still ends."""
+
+comptime _RELEASE_AFTER_NS = 100_000_000
+"""How long after its release is set the slow view ends: the time `stop`
+has to offer its pill while the lane is still full."""
+
 
 def _unregistered_thread(arg: Int) -> Int:
     """A pool thread that never registers -- a test's, or every thread
     under the eager rules (`M0_POOL_ELASTIC=0`) and without rings -- so it
     parks on its lane's socket and its pill has to come through that
     socket. Serves the lane in `BLK_LANE` until the pill; `_SLOW_SLOT`
-    holds it for `_SLOW_HOLD_S`, and anything that is not a request (an
-    inbound WebSocket message) is taken and skipped."""
+    holds it until the release in `_BLK_RELEASE_AT` (at most
+    `_HOLD_CAP_NS`), and anything that is not a request (an inbound
+    WebSocket message) is taken and skipped."""
     var block = ThreadBlock(arg)
     ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
         unsafe_from_address=block.get(BLK_USER)
@@ -2163,7 +2192,14 @@ def _unregistered_thread(arg: Int) -> Int:
         _ = pool.take_request(job.slot)
         if job.slot == _SLOW_SLOT:
             block.set(_BLK_TOOK, 1)
-            sleep(_SLOW_HOLD_S)
+            var release = atomic_at(block.slot_addr(_BLK_RELEASE_AT))
+            var cap = perf_counter_ns() + _HOLD_CAP_NS
+            while True:
+                var now = perf_counter_ns()
+                var at = Int(release[].load())
+                if (at != 0 and now >= at) or now >= cap:
+                    break
+                sleep(0.001)
         pool.put_response(job.slot, OK(String("x")))
         pool.complete(job.slot)
     block.set(BLK_STATUS, STATUS_OK)
@@ -2175,16 +2211,28 @@ def test_stop_pills_an_unregistered_thread_through_a_full_lane() raises:
 
     Such a thread parks on its lane's socket, so its pill rides that
     socket, and the socket also carries inbound WebSocket messages. Here
-    the one thread of lane 1 is inside a 200 ms view while messages fill
-    the lane until it refuses one, and then the pool is stopped. `stop`
-    used to offer that pill with ONE non-blocking send and ignore a
-    refusal: the thread came back, took the messages, and parked on an
-    empty socket for good -- `pthread_join` never returned, and a
-    bounded join (`JOIN_TIMEOUT_NS`) abandoned it. On the ring and on the
-    datagram hand-off (`M0_POOL_RING=0`). Lane 1, because stopping lane
-    0 closes its write end, and the rescue below must be able to pill the
-    thread again: a lost pill fails this test inside a few seconds rather
-    than hanging it.
+    the one thread of lane 1 is inside a view while messages fill the lane
+    until it refuses one, and then the pool is stopped. `stop` used to
+    offer that pill with ONE non-blocking send and ignore a refusal: the
+    thread came back, took the messages, and parked on an empty socket for
+    good -- `pthread_join` never returned, and a bounded join
+    (`JOIN_TIMEOUT_NS`) abandoned it. On the ring and on the datagram
+    hand-off (`M0_POOL_RING=0`). Lane 1, because stopping lane 0 closes
+    its write end, and the rescue below must be able to pill the thread
+    again: a lost pill fails this test inside a few seconds rather than
+    hanging it.
+
+    The view lasts until the test releases it, once the lane is full, and
+    ends `_RELEASE_AFTER_NS` later, while `stop` waits for room. It was a
+    fixed 200 ms, which the fill had to finish inside: a test thread
+    slower than that -- descheduled, or a refused send's 64 yields each a
+    scheduler quantum on a loaded machine -- met a thread already reading,
+    and the lane either never refused ("the lane never filled", once in a
+    whole-suite run under load) or filled with thousands of empty messages
+    the thread drained past the 3 s join ("missed its pill", although the
+    pill was taken once they were). Review LF76: a 250 ms sleep before the
+    fill's last pass failed it in 8 runs of 9, while sleeps in `stop`'s
+    pill path and the thread's park failed it in none.
     """
     for ring_off in range(2):
         var pool = _pool(ring_off == 1)
@@ -2205,10 +2253,10 @@ def test_stop_pills_an_unregistered_thread_through_a_full_lane() raises:
         ):
             sleep(0.0005)
         var took = threads.block(0).get(_BLK_TOOK) == 1
-        # The thread is inside its view: nothing reads the lane until it
-        # comes back, so messages fill it -- large ones, then smaller, down
-        # to an empty one, which is a datagram longer than a pill: a lane
-        # full for the last of them has no room for the pill either.
+        # The thread is inside its view until released: nothing reads the
+        # lane, so messages fill it -- large ones, then smaller, down to an
+        # empty one, which is a datagram longer than a pill: a lane full
+        # for the last of them has no room for the pill either.
         var sent = 0
         var refused = False
         for size in [60000, 4096, 256, 0]:
@@ -2223,6 +2271,12 @@ def test_stop_pills_an_unregistered_thread_through_a_full_lane() raises:
                     refused = True
                     break
                 sent += 1
+        # The view ends a moment from now, so `stop` offers its pill to a
+        # lane still full, and the room it waits for is made by the
+        # thread's reads.
+        atomic_at(threads.block(0).slot_addr(_BLK_RELEASE_AT))[].store(
+            Int64(perf_counter_ns() + _RELEASE_AFTER_NS)
+        )
         pool.stop(1, 1)
         var left = threads.join_within(3_000_000_000)
         if left != 0:

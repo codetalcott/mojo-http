@@ -198,6 +198,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   fork review; with a sleep holding that moment open, 24 messages of 24
   waited.
 
+- **A pool test no longer times out on a busy machine** (fork review
+  LF68, SPEC I39). The test that a WebSocket message wakes a pool thread
+  parked on its own channel waited for the count of parked threads to
+  dip, which lasts only until the woken thread parks again, tens of
+  microseconds later; a test thread descheduled across that moment failed
+  at its two-second bound with the message served. It now waits for the
+  message to be taken. The server was not at fault: a sleep at each of
+  four points of the pool's park path never lost the message, and a sleep
+  after the test's send failed the old test every time.
+
+- **A pool shutdown test no longer depends on how fast it runs** (fork
+  review LF76). The test that `stop` waits for room to pill a thread on a
+  full lane filled the lane while the thread sat in a 200 ms view. A test
+  thread slower than that, descheduled or slowed by a loaded machine, met
+  a thread already reading: the lane never refused a message, or it
+  filled with thousands that the thread drained past the test's 3 s join,
+  which then reported a lost pill although the pill was taken. The view
+  now lasts until the test has filled the lane. The server was not at
+  fault: sleeps in `stop`'s pill path and in the thread's park never lost
+  a pill, and a sleep in the test's fill failed it in 8 runs of 9.
+
 - **A cross-worker bus frame is delivered whole or not at all** (SPEC
   I40). Exposed: a publish whose channel name and frame together passed
   about 69.6 KB, through `m0pub.publish()`, `scope["state"]["m0"]`,
@@ -405,6 +426,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   as a range, and an `Accept` naming such a spelling of a registered
   vendor type matched it. Each is now refused or ignored as other servers
   do, and `WebSocket`, `BYTES=` and `Application/VND.X` still match.
+
+- **An `Accept` weight is read from the parameter named `q`, in any case**
+  (fork review LF69, SPEC N53). Exposed: Mojo applications that negotiate
+  with `parse_accept`. The weight was found by searching an entry's
+  parameters for the text `q=`, so `text/html;Q=0` did not refuse HTML, a
+  parameter such as `xq=0` refused its type, and `q= 0.5`, with a space
+  after the `=`, read as a refusal. The weight is now the first parameter
+  whose name is `q` in any case, and spaces around its `=` are read past.
 
 - **`HTTPRequest.encode()` writes the target it was given** (fork review
   LF62, SPEC A38). Exposed: a Mojo application that writes a request out

@@ -10,7 +10,7 @@ Supports quality factors, case-insensitive media ranges, subtype wildcards
 specific ones regardless of the order they appear in the header.
 """
 
-from lightbug_http.header import ascii_lowercase
+from lightbug_http.header import ascii_lowercase, name_is
 
 
 struct AcceptResult(Copyable, Movable):
@@ -137,18 +137,28 @@ def _split_media_range(
 
     The media range is case-folded: RFC 9110 §8.3.1 makes type and subtype
     case-insensitive, so `Text/HTML` and `text/html` are the same range.
+
+    The weight is the first parameter named `q` (§12.4.2), read off the
+    parameters split on `;` (`_weight`). It was the first substring `q=`,
+    so `Q=0` was no weight and `xq=0` was one (review record LF69).
     """
+    var bytes = part.as_bytes()
     var semi_pos = part.find(";")
     var media_type: String
     var quality: Float64 = 1.0
 
     if semi_pos != -1:
-        media_type = _trim(String(unsafe_from_utf8=part.as_bytes()[0:semi_pos]))
-        var params = String(unsafe_from_utf8=part.as_bytes()[semi_pos + 1 :])
-        var q_pos = params.find("q=")
-        if q_pos != -1:
-            var q_str = String(unsafe_from_utf8=params.as_bytes()[q_pos + 2 :])
-            quality = _parse_quality(q_str)
+        media_type = _trim(String(unsafe_from_utf8=bytes[0:semi_pos]))
+        var start = semi_pos + 1
+        while start <= len(bytes):
+            var end = start
+            while end < len(bytes) and bytes[end] != UInt8(ord(";")):
+                end += 1
+            var weight = _weight(String(unsafe_from_utf8=bytes[start:end]))
+            if weight >= 0.0:
+                quality = weight
+                break
+            start = end + 1
     else:
         media_type = _trim(part)
 
@@ -157,6 +167,24 @@ def _split_media_range(
     # matched a registered vendor type (review record LF63).
     ranges.append(ascii_lowercase(media_type.as_bytes()))
     qualities.append(quality)
+
+
+def _weight(param: String) -> Float64:
+    """The weight `param` sets when it is the parameter named `q`, else -1.0.
+
+    A parameter's name is case-insensitive (RFC 9110 §5.6.6), compared in
+    ASCII, so `Q=0.5` is a weight and `xq=0` is not. Whitespace around the
+    `=` is tolerated though §5.6.6 allows none: a client that sent `q = 0`
+    meant a refusal, and `q= 0.5` read as 0 refused what it asked for.
+    """
+    var eq = param.find("=")
+    if eq == -1:
+        return -1.0
+    var bytes = param.as_bytes()
+    var name = _trim(String(unsafe_from_utf8=bytes[0:eq]))
+    if not name_is(name.as_bytes(), "q"):
+        return -1.0
+    return _parse_quality(_trim(String(unsafe_from_utf8=bytes[eq + 1 :])))
 
 
 def _resolve(
