@@ -65,10 +65,12 @@ def _send_frame[T: HTTPService, B: EventLoopBackend](
 
     True when the frame is on its way: landed whole (`slot_send_offset`
     reaches its length, and the slot stays RESPONDING for the caller to say
-    what follows) or waiting to be written. False when it is not: the slot
-    is closed (`slot_fds` holds `UNUSED`), or the write registration failed
-    and the slot is left as it stands, for the caller to close or leave
-    (`_await_write`).
+    what follows) or waiting to be written. False when it is not, and then
+    the slot is closed (`slot_fds` holds `UNUSED`): the client is gone, or
+    the write registration failed (`_await_write`) and nothing would ever
+    send the rest. The heartbeat and the outbox drain used to leave such a
+    slot as it stood, RESPONDING with a frame half sent and no event to
+    finish it, where the WebSocket reader closed it; one rule now.
     """
     st.slot_response[slot] = frame^
     st.slot_send_offset[slot] = 0
@@ -82,7 +84,9 @@ def _send_frame[T: HTTPService, B: EventLoopBackend](
             _close_slot(handler, backend, st, slot, fd_val)
             return False
     if st.slot_send_offset[slot] < len(st.slot_response[slot]):
-        return _await_write(backend, st, slot, fd_val)
+        if not _await_write(backend, st, slot, fd_val):
+            _close_slot(handler, backend, st, slot, fd_val)
+            return False
     return True
 
 
@@ -126,8 +130,7 @@ def _heartbeat[T: HTTPService, B: EventLoopBackend](
     # EPIPE/ECONNRESET here is the heartbeat doing its other job:
     # discovering a dead subscriber that never sent a FIN, whose slot
     # `_send_frame` closes (telling the handler) rather than leaving a
-    # zombie stream. A write registration that failed leaves the slot as
-    # it stands, as the heartbeat always has.
+    # zombie stream, as it does a slot whose write registration failed.
     if not _send_frame(handler, backend, st, hb_slot, fd_val, frame^):
         return
     if st.slot_send_offset[hb_slot] >= len(st.slot_response[hb_slot]):
@@ -194,16 +197,14 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
     # EAGAIN either: RFC 6455 §5.5.2 says MUST, and a dropped
     # close echo left the peer with no Close at all.
     var reply_owed = False
-    # The reply's write registration failed: nothing will send the rest.
-    var reply_stranded = False
     if len(ws_res.reply) > 0:
         if not _send_frame(
             handler, backend, st, slot, fd_val, Bytes(Span(ws_res.reply))
         ):
-            if st.slot_fds[slot] == UNUSED:
-                # The client is gone, and its slot closed.
-                return
-            reply_stranded = True
+            # The client is gone, or nothing would send the rest of the
+            # reply: its slot is closed (`_send_frame`), and the batch's
+            # messages go with it as for a client that is gone.
+            return
         reply_owed = st.slot_send_offset[slot] < len(st.slot_response[slot])
         if not reply_owed:
             # Landed whole: the socket is back in frame mode.
@@ -295,10 +296,6 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
             st.provision_pool.provisions[slot].should_close = True
         else:
             _close_slot(handler, backend, st, slot, fd_val)
-    if reply_stranded and st.slot_fds[slot] != UNUSED:
-        # Nothing will send the rest of the reply: the socket
-        # closes, the batch's messages handed over first.
-        _close_slot(handler, backend, st, slot, fd_val)
 
 
 def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
@@ -373,12 +370,9 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                 # this buffer does not land in one send below.
                 st.offload.ack_payload[s] = payload_len if channel_stream else 0
                 if not _send_frame(handler, backend, st, s, st.slot_fds[s], out^):
-                    if st.slot_fds[s] == UNUSED:
-                        # The client is gone, and its slot closed in this
-                        # pass (`_send_frame`).
-                        continue
-                    # A write registration that failed leaves the slot as
-                    # it stands, as the drain always has.
+                    # The client is gone, or its write registration
+                    # failed: the slot closed in this pass (`_send_frame`).
+                    continue
                 if st.slot_send_offset[s] >= len(st.slot_response[s]):
                     # Landed in one send: ack here and cancel what the
                     # write-ready path would otherwise have owed.

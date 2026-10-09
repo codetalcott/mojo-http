@@ -722,6 +722,12 @@ struct WorkerSupervisor:
                 )
                 if self._reload():
                     return True
+                # The reload refilled every index, the ones this loop had
+                # stopped counting too: a worker given up on is forked again
+                # with the rest. Counted from the live pids, or `remaining`
+                # reached 0 with that replacement still serving and the
+                # supervisor left it an orphan (review record 605).
+                remaining = self._alive_count()
         return False
 
     def _account_for_exit(mut self, child_pid: Int, status: Int) raises -> Int:
@@ -842,7 +848,10 @@ struct WorkerSupervisor:
 
         These exits are a reload, not a retirement: they are reaped here
         rather than through `_account_for_exit`, so they neither decrement
-        `remaining` nor spend respawn budget.
+        `remaining` nor spend respawn budget. Every index is forked again,
+        one the supervisor had given up on included -- the edit may be the
+        fix for its crash -- so the give-up is over (`_gave_up`), and the
+        polling loop recounts what it supervises from the live pids.
         """
         self._kill_all(SIGTERM)
         var deadline_ns = perf_counter_ns() + _RELOAD_DRAIN_NS
@@ -882,6 +891,8 @@ struct WorkerSupervisor:
                 return True
             self.child_pids[i] = pid
         self._publish_children()
+        # Nothing is vacant now: an index given up on is serving again.
+        self._gave_up = False
         # Rebaseline AFTER the fork: a worker's own startup can write files
         # (`__pycache__` is skipped, but a project may write others), and
         # counting those as a change would reload forever.

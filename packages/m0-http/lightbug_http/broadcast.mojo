@@ -356,7 +356,7 @@ struct BusReader(Movable):
         return frames^
 
 
-def drain_bus_channel(read_fd: Int) raises -> List[BusFrame]:
+def drain_bus_channel(read_fd: Int) -> List[BusFrame]:
     """`BusReader.drain` with a reader of its own, for a caller that keeps
     none: its buffer is made for this one drain, and what it refused is
     not reported. The event loop keeps a reader instead."""

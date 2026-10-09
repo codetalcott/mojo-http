@@ -129,3 +129,29 @@ outcome prints what it means for the tree. The `_ = x^` transfer form is a
 different thing and is NOT this idiom: the compiler warns it has no effect
 on a trivially register-passable type, and the sites that use it are
 genuine destroy-now uses on owning values.
+
+## A reload refills what the poller stopped counting
+
+`--reload`'s supervisor (`_supervise_polling`) counts the indices it
+supervises in a local, one fewer for each worker it gave up on
+(`_RESPAWN_FAILED`: the respawn budget spent, or a clean exit). A reload
+(`_reload`) stops every worker and forks a replacement into every vacant
+index — a given-up one included, on purpose: the edit that triggered the
+reload may be the fix for the crash. Until 2026-10-09 the count did not
+follow, so with two workers, one given up on, and an edit, the supervisor
+counted one worker and served two; worker 0's clean exit brought the count
+to zero, the supervisor left `fork_all` and exited 1, and the replacement
+served on with nothing supervising it, an orphan that no SIGTERM to the
+supervisor would reach. Found by the 2026-10-09 quality review reading the
+two loops side by side (review record 605); `_supervise`, the blocking
+loop, never reloads and was never affected.
+
+The poller now recounts from the live pids after every reload, and the
+reload clears the give-up (`_gave_up`), since nothing is vacant: a
+development server whose crash a developer then fixed exits 0 at Ctrl-C.
+`test_respawn.mojo:test_a_reload_refills_an_index_the_poller_gave_up_on_and_counts_it`
+drives it with real forks and a real edit (SPEC D5), and fails on the old
+code at "the supervisor left with the reload's replacement still serving".
+The respawn budget is not reset by a reload: the old crashes are still
+inside the window, so a replacement that crashes again is given up on at
+once, and the next edit refills its index again.

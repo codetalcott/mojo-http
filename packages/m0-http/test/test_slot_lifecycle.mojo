@@ -1307,6 +1307,63 @@ def test_a_response_whose_write_wait_is_refused_closes_its_connection() raises:
     close(FileDescriptor(pair[1]))
 
 
+def test_a_frame_whose_write_wait_is_refused_closes_its_stream() raises:
+    """A stream's frame the kernel takes only in part waits for writability
+    (`_send_frame`, `_await_write`); when the backend refuses that
+    registration nothing will ever send the rest, and the slot closes, its
+    handler told, from every path that sends a frame: the heartbeat, the
+    outbox drain and the WebSocket reader's reply. The heartbeat and the
+    drain used to leave such a slot RESPONDING with its frame half sent, a
+    stream nothing would end before its idle deadline, where the reader
+    closed it (review record 605).
+
+    covers: I9
+    """
+    ignore_sigpipe()
+    var backend = FakeBackend()
+    backend.refuse_write = True
+    var st = _loop(_config())
+
+    # The heartbeat, to a stream whose send buffer is full.
+    var app = Departures()
+    var sse = _stream_pair()
+    var sse_slot = _stream_slot(st, sse[0], False)
+    _ = _fill_send_buffer(sse[0])
+    var beat = TIMER_SSE_HEARTBEAT + UInt(sse[0])
+    _on_timer(app, backend, st, beat)
+    assert_equal(st.slot_fds[sse_slot], UNUSED, "a heartbeat whose write wait was refused kept its stream")
+    assert_equal(len(app.left), 1, "the handler was not told the stream left")
+    assert_equal(app.left[0], sse_slot)
+    assert_false(beat in backend.timers, "the closed stream's heartbeat outlived it")
+    _discard_all(sse[1])
+    close(FileDescriptor(sse[1]))
+
+    # The outbox drain, a frame the producer queued.
+    var producer = OneChunkStream()
+    var out = _stream_pair()
+    var out_slot = _stream_slot(st, out[0], False)
+    st.offload.streaming_hint = 1
+    _ = _fill_send_buffer(out[0])
+    _drain_outboxes(producer, backend, st)
+    assert_equal(st.slot_fds[out_slot], UNUSED, "a drained frame whose write wait was refused kept its stream")
+    assert_equal(len(producer.left), 1, "the producer was not told its stream left")
+    assert_equal(producer.left[0], out_slot)
+    _discard_all(out[1])
+    close(FileDescriptor(out[1]))
+
+    # The WebSocket reader's reply: a Close's echo, owed whole.
+    var ws_app = NoApp()
+    var setup = _a_websocket_owed_a_close_echo(st)
+    var fd = setup[0]
+    var peer = setup[1]
+    var slot = setup[2]
+    assert_true(_arm_reads(backend, st, slot, fd))
+    _read_websocket(ws_app, backend, st, slot, fd, False)
+    assert_equal(st.slot_fds[slot], UNUSED, "a reply whose write wait was refused kept its socket")
+    _discard_all(peer)
+    close(FileDescriptor(peer))
+
+
 def test_connect_is_answered_501_and_closed() raises:
     """CONNECT is refused before the application: 501, `Connection: close`
     and the slot closed, where `NoApp` -- like any application answering
@@ -2170,12 +2227,18 @@ def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
 
 struct OneChunkStream(HTTPService):
     """A channel stream's producer, as the loop sees it: one payload
-    queued, and the stream over once it is drained."""
+    queued, and the stream over once it is drained; records the slots its
+    streams left from."""
 
     var drained: Bool
+    var left: List[Int]
 
     def __init__(out self):
         self.drained = False
+        self.left = List[Int]()
+
+    def sse_slot_disconnected(mut self, slot: Int):
+        self.left.append(slot)
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         return OK("unused", "text/plain")

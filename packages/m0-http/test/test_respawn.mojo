@@ -612,6 +612,160 @@ def test_the_polling_supervisor_judges_the_rest_after_an_unarmed_death() raises:
     assert_equal(_stop_beside_an_unarmed_worker(-1, polling=True), 1)
 
 
+# --- a reload refills an index the poller gave up on (review record 605) ----
+#
+# `_supervise_polling` counts the indices it supervises in a local, one less
+# for each worker it gave up on; `_reload` forks a replacement into EVERY
+# vacant index, that one too. The count stood, so once the rest were gone the
+# supervisor left `fork_all` with the replacement still serving, an orphan.
+
+
+def _wait_for_marker(marker: String):
+    """Up to ten seconds for `marker` to exist."""
+    var waited = 0
+    while not path.exists(marker) and waited < 1000:
+        sleep(0.01)
+        waited += 1
+
+
+def _pid_in(marker: String) raises -> Int:
+    """The pid written to `marker`, waiting out a writer that has created
+    the file and not yet written it."""
+    var text = String("")
+    var waited = 0
+    while waited < 500:
+        with open(marker, "r") as f:
+            text = String(f.read().strip())
+        if text.byte_length() > 0:
+            break
+        sleep(0.01)
+        waited += 1
+    return Int(text)
+
+
+def _gone(pid: Int) -> Bool:
+    """Whether `pid` names no process: reaped, not merely dead (a zombie
+    still answers a signal 0)."""
+    return not kill_process(pid, 0)
+
+
+def _reload_after_give_up_scenario(
+    reload_dir: String, ready: String, again: String, zero: String,
+    go: String, done: String,
+):
+    """Two workers supervised by polling, no respawns allowed. Worker 1
+    leaves its pid in `ready` and exits 9 at once; the replacement a reload
+    forks leaves its pid in `again`, waits for `done` and exits 0. Each
+    worker 0 leaves its pid in `zero` suffixed with the reload that forked
+    it, waits for `go` and exits 0; the first, unarmed, dies of the
+    reload's SIGTERM instead."""
+    try:
+        var supervisor = WorkerSupervisor(2)
+        supervisor.max_respawns = 0
+        supervisor.enable_reload([reload_dir], String(".m0-edit"))
+        supervisor.fork_all()
+        if supervisor.worker_index == 1:
+            if supervisor.reloads > 0:
+                with open(again, "w") as f:
+                    f.write(String(getpid()))
+                _wait_for_marker(done)
+                process_exit(0)
+            with open(ready, "w") as f:
+                f.write(String(getpid()))
+            process_exit(9)
+        with open(zero + String(supervisor.reloads), "w") as f:
+            f.write(String(getpid()))
+        _wait_for_marker(go)
+        process_exit(0)
+    except:
+        process_exit(7)
+
+
+def test_a_reload_refills_an_index_the_poller_gave_up_on_and_counts_it() raises:
+    """`--reload`'s supervisor, having given up on a crashed worker, forks
+    a replacement into its index on the next reload -- the edit may be the
+    fix -- and then supervises both: it leaves once the replacement has
+    gone, not once the rest have, and exits 0, the give-up being over.
+
+    Before, the polling loop's count of what it supervised stood at one
+    through the reload, so worker 0's clean exit ended supervision with
+    the replacement serving on, an orphan, and the exit was 1.
+
+    covers: D5
+    """
+    var tag = String(getpid())
+    var dir = "/tmp/m0_regive_reload_" + tag
+    var ready = "/tmp/m0_regive_ready_" + tag
+    var again = "/tmp/m0_regive_again_" + tag
+    var zero = "/tmp/m0_regive_zero_" + tag + "_"
+    var go = "/tmp/m0_regive_go_" + tag
+    var done = "/tmp/m0_regive_done_" + tag
+    var edit = dir + "/change.m0-edit"
+    makedirs(dir, exist_ok=True)
+    var markers = [ready, again, zero + "0", zero + "1", go, done, edit]
+    for m in markers:
+        if path.exists(m):
+            remove(m)
+    var pid = fork()
+    if pid == 0:
+        _reload_after_give_up_scenario(dir, ready, again, zero, go, done)
+        process_exit(99)  # unreachable
+
+    _wait_for_marker(ready)
+    var came_up = path.exists(ready)
+    var crashed = _pid_in(ready) if came_up else 0
+    # Given up on: reaped by the poller, its index vacant.
+    var waited = 0
+    while came_up and not _gone(crashed) and waited < 500:
+        sleep(0.01)
+        waited += 1
+    var given_up = came_up and _gone(crashed)
+    # The edit, seen by the next scan.
+    with open(edit, "w") as f:
+        f.write(String("edited"))
+    _wait_for_marker(again)
+    var refilled = path.exists(again)
+    var replacement = _pid_in(again) if refilled else 0
+    _wait_for_marker(zero + "1")
+    var reforked = path.exists(zero + "1")
+    var zero_pid = _pid_in(zero + "1") if reforked else 0
+    # Worker 0 leaves cleanly; the supervisor has the replacement to
+    # supervise still.
+    with open(go, "w") as f:
+        f.write(String("go"))
+    waited = 0
+    while reforked and not _gone(zero_pid) and waited < 500:
+        sleep(0.01)
+        waited += 1
+    var zero_gone = reforked and _gone(zero_pid)
+    sleep(0.2)
+    var early = waitpid_nonblocking()
+    var left_early = early[0] == pid
+    var status = early[1]
+    with open(done, "w") as f:
+        f.write(String("done"))
+    if not left_early:
+        status = waitpid_blocking(pid)[1]
+    # An orphaned replacement leaves on `done` too: wait for it before the
+    # markers go.
+    waited = 0
+    while refilled and not _gone(replacement) and waited < 500:
+        sleep(0.01)
+        waited += 1
+    for m in markers:
+        if path.exists(m):
+            remove(m)
+    rmdir(dir)
+    assert_true(came_up, "worker 1 never came up")
+    assert_true(given_up, "the poller never reaped the crashed worker")
+    assert_true(refilled, "the reload forked no replacement into the index given up on")
+    assert_true(reforked, "the reload did not re-fork worker 0")
+    assert_true(zero_gone, "worker 0 was never reaped after its clean exit")
+    assert_false(left_early, "the supervisor left with the reload's replacement still serving")
+    assert_false(was_signaled(status), "the supervisor died on a signal")
+    assert_equal(exit_code(status), 0, "a give-up a reload has undone still set the exit")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
 

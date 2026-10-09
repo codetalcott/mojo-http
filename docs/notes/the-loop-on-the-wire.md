@@ -244,3 +244,28 @@ subject only to the CR/LF refusal above. Round-tripping it through
 (the `Expiration` stub, since removed, parsed nothing), `SameSite` (lowercase-only match),
 everything after the first `=` in a value, and any unmodelled attribute — on
 every Django session and CSRF cookie of every app.
+
+## A frame that waits on an event nothing will report
+
+A frame the socket takes only in part waits for writability
+(`_send_frame` → `_await_write`), and on both backends that registration
+replaces the read one. When the kernel refuses it — `kevent` or
+`epoll_ctl` failing, which the loop sees as `add_write_oneshot` raising —
+no write-ready event will ever arrive for the slot (its read registration
+stands on both backends, which is why `_read_websocket` could still see a
+RESPONDING slot). Until 2026-10-09 the
+three senders answered that three ways: the WebSocket reader closed the
+socket (`reply_stranded`), while the heartbeat and the outbox drain left the
+slot as it stood, RESPONDING with half a frame sent, where no pass would
+touch it again before its idle deadline, and a stream has none. The
+write-ready path's own EAGAIN retry left the slot the same way.
+
+One rule now, in `_send_frame` itself: a refused registration closes the
+slot and tells the handler, exactly as a send that fails with anything but
+EAGAIN does, so every caller's "False means closed" check already covers
+it; the WebSocket reader returns at once, the batch's messages dropped with
+the slot as for a client that is gone. The refusal is rare (`kevent` or
+`epoll_ctl` failing, ENOMEM for one), which is why a leaked slot per
+occurrence went unseen; `FakeBackend.refuse_write` is how
+`test_a_frame_whose_write_wait_is_refused_closes_its_stream` provokes it
+for the heartbeat, the drain and a Close's echo (SPEC I9).
