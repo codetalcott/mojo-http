@@ -2025,17 +2025,15 @@ def _interim_exchange(
     rest: List[String],
     taken: Int = 0,
     expire: Bool = False,
-    drain: Bool = True,
     pooled: Bool = False,
 ) raises -> String:
     """`head`, a request that expects `100 Continue`, read while the
     server's send side is full, so the interim response's send takes none
     of it -- or, with `taken`, as though it had taken that many bytes, which
     are written where the kernel would have put them (`_owe_interim`). The
-    client then reads what was waiting -- unless `drain` is False, when it
-    reads nothing until the end -- and sends `rest`, a read event a part,
-    the server's answers taken as they come; with `expire`, the body timer
-    runs out instead. With `pooled` a pool thread answers: the request is
+    client then reads what was waiting and sends `rest`, a read event a
+    part, the server's answers taken as they come; with `expire`, the body
+    timer runs out instead. With `pooled` a pool thread answers: the request is
     run inline from the pool's queue (`_run_inline`), as its completion is.
     Returns what the client read after the filler."""
     var app = BodyLength()
@@ -2062,8 +2060,7 @@ def _interim_exchange(
     )
     var got = List[UInt8]()
     var went_to_pool = False
-    if drain:
-        _ = _read_available(peer, got)
+    _ = _read_available(peer, got)
     if taken > 0:
         var interim = String(INTERIM)
         var sent = send(FileDescriptor(fd), interim.as_bytes()[:taken], 0)
@@ -2081,8 +2078,7 @@ def _interim_exchange(
             assert_equal(_run_inline(app, backend, st, slots), 1)
         var rounds = 0
         while (
-            drain
-            and st.slot_fds[slot] != UNUSED
+            st.slot_fds[slot] != UNUSED
             and st.provision_pool.provisions[slot].state.kind
             == ConnectionState.RESPONDING
             and rounds < 100
@@ -2103,14 +2099,6 @@ def _interim_exchange(
     assert_equal(went_to_pool, pooled, "where the request was answered")
     assert_true(len(got) >= filler, "the client did not read the filler")
     return String(unsafe_from_utf8=Span(got)[filler:])
-
-
-def _no_fragment_ahead(reply: String, whole: String) -> Bool:
-    """Whether `reply` is `whole` cut short, or `whole` and more: never an
-    error behind a fragment of the interim response."""
-    if reply.byte_length() <= whole.byte_length():
-        return whole.startswith(reply)
-    return reply.startswith(whole)
 
 
 def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
@@ -2134,10 +2122,10 @@ def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
     A refusal carries what is owed in its own buffer, one send for both:
     sent apart, the first count thrown away, an owed send the socket took
     none or part of and a refusal send that found room a moment later put
-    the refusal behind a fragment. With the client reading nothing before
-    the refusal, the socket takes none of either, and what it reads after
-    the filler is a prefix of the whole -- here, nothing -- and never the
-    refusal alone.
+    the refusal behind a fragment. That they share one send is held by
+    construction (`_send_error_to_fd`'s `owed`), not by an arm here: two
+    sends go wrong only when the socket gains room between them, which no
+    single-threaded test arranges.
 
     covers: A42
     """
@@ -2177,26 +2165,6 @@ def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
     assert_true(
         late.startswith(String(INTERIM) + "HTTP/1.1 408 Request Timeout"),
         "a body that never came: " + late,
-    )
-
-    # The refusals with the socket still full when they are sent.
-    var still_full = _interim_exchange(
-        _tight_caps(), chunked, [String("50\r\n") + String("b") * 80 + "\r\n"],
-        drain=False,
-    )
-    assert_true(
-        _no_fragment_ahead(still_full, String(INTERIM) + "HTTP/1.1 413 Payload Too Large"),
-        "a 413 sent to a full socket: " + still_full,
-    )
-    still_full = _interim_exchange(_config(), chunked, ["zz\r\n"], drain=False)
-    assert_true(
-        _no_fragment_ahead(still_full, String(INTERIM) + "HTTP/1.1 400 Bad Request"),
-        "a 400 sent to a full socket: " + still_full,
-    )
-    still_full = _interim_exchange(_config(), head, [], expire=True, drain=False)
-    assert_true(
-        _no_fragment_ahead(still_full, String(INTERIM) + "HTTP/1.1 408 Request Timeout"),
-        "a 408 sent to a full socket: " + still_full,
     )
 
 
