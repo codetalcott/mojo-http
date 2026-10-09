@@ -24,7 +24,7 @@ m0serve --version
 ```
 
 ```text
-m0serve 1.12.1
+m0serve 1.13.0
 ```
 
 ## 2. The app

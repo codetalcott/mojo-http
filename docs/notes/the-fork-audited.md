@@ -90,8 +90,8 @@ docstring count to the struct.
 
 Twenty lanes landed as pull requests: three alone (#580, #585, #590) and
 seventeen in six merge trains (#577, #584, #589, #594, #597, #601).
-LF1–LF9, LF16 and LF17 shipped in m0serve 1.12.1 and m0 0.9.1; the rest
-are unreleased on `main`.
+LF1–LF9, LF16 and LF17 shipped in m0serve 1.12.1 and m0 0.9.1, the rest
+of the fixes in m0serve 1.13.0 and m0 0.10.0.
 
 ## Before and after
 
