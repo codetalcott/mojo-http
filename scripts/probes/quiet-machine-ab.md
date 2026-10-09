@@ -97,3 +97,29 @@ LF24 and LF22 lines.
   difference in microseconds per request and as a share of the slow 1 and
   slow 2 medians, with the ranges; the look stays unless the owner rules
   otherwise.
+
+## The results
+
+Both ran on 2026-10-09 in 1.13.0's quiet stage, on an M4 (128-byte
+lines) with `mediaanalysisd` paused, five rounds each, at a load average
+of 1.4 to 2.1. Both verdicts are **no difference**, and both hold with
+the rounds that crossed a load of 2, or had a desktop process above a
+quarter of a CPU, thrown away.
+
+| record | measure | arm A (`main`) | arm B | |
+|---|---|---|---|---|
+| LF24 | pooled p50, slow 1 | 0.1160 ms (0.1114–0.1292) | 0.1249 (0.1147–0.1281) | overlap |
+| LF24 | pooled p50, slow 2 | 0.1235 (0.1148–0.1364) | 0.1231 (0.1046–0.1277) | overlap |
+| LF24 | fair, ms a request | 0.658 (0.657–0.658) | 0.658 (0.658–0.658) | overlap |
+| LF22 | pooled p50, slow 1 | 0.1262 (0.1251–0.1333) | 0.1240 (0.1147–0.1308) | overlap |
+| LF22 | pooled p50, slow 2 | 0.1244 (0.1206–0.1271) | 0.1265 (0.1220–0.1317) | overlap |
+| LF22 | fair, ms a request | 0.658 (0.658–0.658) | 0.658 (0.658–0.658) | overlap |
+
+LF24 took the no-change branch: the strides stay, and the three claims are
+corrected. LF22's look costs about 2 µs a request either way, under 2 % of
+either median, in opposite directions at slow 1 and slow 2: nothing
+measurable, so it stays. The artifacts are `bench/results/pool-ab-2026-10/pool-ab-LF24-20261009T042627Z.json` and `bench/results/pool-ab-2026-10/pool-ab-LF22-20261009T042937Z.json`.
+
+A first pass, run straight after `stress-asgi`, was discarded whole: its
+twenty hogs had stopped, but the load average they left was 20 to 4
+through every round.

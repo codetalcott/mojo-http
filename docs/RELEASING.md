@@ -67,8 +67,8 @@ how glibc's condition variable queues its waiters; how macOS's queues them
 was not traced. Record it, and run the other two arms with
 `M0_FAIRNESS_EXPECT_STARVATION=0`.
 
-**And, owed once rather than every release, the two pool A/Bs in
-`scripts/probes/quiet-machine-ab.md`** (fork review LF24 and LF22): whether
+**And, when the pool's records or its park path change, the two pool A/Bs
+in `scripts/probes/quiet-machine-ab.md`** (fork review LF24 and LF22): whether
 the pool's wake and thread records on 128-byte lines beat 64, and what the
 park's look at its lane socket costs. Each is a few microseconds a request,
 which only this stage's quiet machine resolves. The page names arm B's
@@ -76,7 +76,11 @@ edit for each, the builds, and the result that changes the code;
 `uv run --no-sync python scripts/probes/pool_ab.py LF24` (then `LF22`)
 alternates the arms, records `uptime` and the busiest processes beside
 every cell, and writes its artifact under a `pool-ab-` subdirectory of
-`bench/results/`.
+`bench/results/`. Both ran in the 1.13.0 quiet stage and found no
+difference (the page has the figures), so neither is owed again until
+that code changes. Run them before `stress-asgi` or long after it: the
+first 1.13.0 pass ran straight after, while its twenty hogs held the
+load average between 4 and 20, and every round of it was discarded.
 
 **And `uv run poe test-postgres-server` on a Mac with a local PostgreSQL**
 (SPEC O9-O15). CI runs these on Linux every pull request, in a job with a
