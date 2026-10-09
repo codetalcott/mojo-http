@@ -202,6 +202,37 @@ somebody else's Django projects inside the pull request that trips it.
   round trips before then, an in-tree correctly rounded parser and printer
   would retire it for the readers here.
 
+- **The handler pool's wake and thread records may share a cache line on
+  Apple silicon.** Each lane's wake words and each thread's record sit on
+  a 64-byte stride (`_WAKE_LANE_STRIDE`, `_THREAD_STRIDE` in
+  `offload.mojo`), in blocks from `malloc`, which promises 16-byte
+  alignment. Apple silicon's cache lines are 128-byte, so neighbouring
+  lanes or threads can write the same line, and on any machine a record
+  can straddle two. Whether a 128-byte stride with aligned blocks is faster
+  is a difference of a few microseconds a request, which only a quiet
+  machine resolves (fork review LF24,
+  [the record](notes/the-fork-audited.md)).
+
+  **Closed by:** none — a measurement: `scripts/probes/pool_ab.py LF24`,
+  run in a release's quiet stage by `scripts/probes/quiet-machine-ab.md`.
+  If the 128-byte arm shows faster, the strides and alignment change; if
+  not, the three docstrings that call each record a cache line of its own
+  are corrected. Either way the artifact is committed and this entry
+  retires.
+
+- **A pool thread's park costs one more system call, unmeasured.** Since
+  LF22's fix (SPEC I39), a thread that parks on its own channel makes one
+  non-blocking `recv` on its lane socket after announcing the park, so a
+  WebSocket message that landed between its last poll and the
+  announcement is taken rather than stranded. What that adds to a request
+  under moderate pool load was not measured: timing on a shared machine
+  measures the machine.
+
+  **Closed by:** none — a measurement: `scripts/probes/pool_ab.py LF22`,
+  run in a release's quiet stage by `scripts/probes/quiet-machine-ab.md`,
+  against an arm without the look. The look stays unless the owner rules
+  otherwise on the result, and the entry retires with the artifact.
+
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker

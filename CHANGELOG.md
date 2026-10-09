@@ -453,10 +453,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the allocator when its connection closes, as does the buffer a large
   response left on a keep-alive connection, and a WebSocket's buffers when
   the socket closes, so later bursts reuse that memory instead of adding
-  to it. The process's resident size after a burst can still stay near its
-  peak: the allocator keeps what is freed for reuse rather than returning
-  it to the system. A fragmented WebSocket message now reaches the
-  application without being copied once more.
+  to it. On macOS the process's resident size after a burst can still
+  stay near its peak, the allocator keeping what is freed for reuse; on
+  Linux the freed buffers go back to the system. A fragmented WebSocket
+  message now reaches the application without being copied once more.
 
 - **A request body read after its headers is measured by its own size**
   (SPEC C18, fork review LF70). Three uploads within the limits were
