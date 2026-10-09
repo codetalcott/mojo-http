@@ -911,6 +911,59 @@ source, so this is how an `m0` application gets them.
   `autobahn`'s totals matched 2026-08-31's, so the parser fix (I34)
   moved no case. `check-docs` asked for no bench re-record.
 
+`m0 0.10.0`: tag `m0-v0.10.0` at `1258b28`, 2026-10-09, cut beside m0serve
+1.13.0 and pushed first; `v1.13.0` was pushed once the index had it and
+the scaffold and quickstart had run against it. A minor release for the
+rest of the 2026-10 review of the lightbug fork: a pipelined burst that
+held the event loop (A41), a `100 Continue` cut short on Linux (A42), a
+lost `408` (A5), and the fork's unused code removed, which takes names a
+Mojo application could import.
+
+- Step 1: `sabotage-m0-wheel` 26 of 26 (613 s). `sabotage-scaffold` 81 of
+  81: the 69 rules outside `image:` in one run (1385 s), then each of the
+  twelve `image:` rules with `--only` (70–130 s each), a `docker builder
+  prune` and an `fstrim` between them. The first pass over the image rules
+  ran one rule and stopped: the label list fed a `while read` loop, and
+  the trim's `colima ssh` read the rest of it from standard input. Read
+  each label by its line number, or give every command in such a loop
+  `< /dev/null`, `colima` and `docker` as well as `uv`.
+- Step 3: the local wheel, built on the merge commit, was
+  `m0-0.10.0-py3-none-any.whl`, 710,717 bytes, its `_build_info.json`
+  naming framework 1.13.0, `1258b28` and a clean tree; a scaffold from it
+  pinned `m0==0.10.0`.
+- Step 4: the release pull request (#603) was merged by the `automerge`
+  label, applied after its `Tests` run had completed, so one job of that
+  run was re-run to fire the merge; no `Tests` run started on the merge
+  commit. `build` was green at the first attempt, and `publish-pypi`
+  green after approval. Its wheel artifact had the local wheel's SHA-256
+  (`47152663…`), and so does the file on the index.
+- Step 5 on macOS arm64: `uvx --refresh-package m0 m0 new probe` pinned
+  `m0==0.10.0` at the first try, and `uv.lock` named it from pypi.org.
+  The first build took 12 s and printed no warning, `smoke.sh` and `m0
+  test` passed, and every `m0 doctor` check passed. `m0 image` built in
+  30 s with the base layers present: 103.6 MB, 2.92 MB of it the app,
+  `libsqlite3-0` installed and no interpreter.
+- Step 6: 8 blocks passed against the published package.
+- m0serve 1.13.0: `v1.13.0` at `1258b28`. The Release run built the three
+  wheels (`macosx_13_0_arm64`, `manylinux_2_35_aarch64`,
+  `manylinux_2_35_x86_64`), inspected them, consumed each on a machine
+  that did not build it, published the GitHub release, and uploaded after
+  approval; `uvx --from m0serve==1.13.0 m0serve --version` answers
+  `m0serve 1.13.0`.
+- The pre-release run, for the record: every gate in this page, from a
+  release worktree with its own venv, the quiet stage first with
+  `mediaanalysisd` stopped: `probe-pool-fairness` (32 s), `probe-pool`
+  (884 s; pooled p99 0.1, 0.2 and 0.2 ms at slow 0, 1 and 2),
+  `stress-asgi` 30 of 30 in both modes (190 s), `bench-linux-conclusions`
+  (654 s; the four conclusions held, and ASGI against uvicorn+uvloop per
+  core read INVERTS again, macOS 1.01 against Linux 0.92). The two pool
+  A/Bs the fork review owed (LF24, LF22) ran in the same stage and found
+  no difference; their first pass, straight after `stress-asgi`, was
+  discarded for the load its hogs left. `stress-pool` held 20 of 20
+  rounds and 40 of 40 holds in all three wake modes, and `sabotage-host`
+  70 of 70, the two gates the review's lanes could not run.
+  `check-docs` asked for no bench re-record.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
