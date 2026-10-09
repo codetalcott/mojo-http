@@ -77,7 +77,7 @@ measure against the same 5 s."""
 
 def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
-) raises -> Int:
+) -> Int:
     """Everything before the drain: leave accept sharing, close the
     listener, say goodbye to streams, close what has nothing to drain, and
     stop watching the shutdown pipe. Returns the stamp the drain measures
@@ -227,7 +227,7 @@ def _shutdown_drain_step[T: HTTPService, B: EventLoopBackend](
 
 def _shutdown_finish[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
-) raises:
+):
     """After the drain: say goodbye to a stream that appeared during it,
     flush the buffered submits, and record what accept sharing did."""
     # A stream whose head completed DURING the drain — a pool

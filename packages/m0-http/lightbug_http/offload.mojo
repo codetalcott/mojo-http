@@ -2125,7 +2125,7 @@ struct OffloadPool(Movable):
         self.drain_completions_into(done, read_fd)
         return done^
 
-    def drain_completions_into(mut self, mut done: List[Int], read_fd: Bool) raises:
+    def drain_completions_into(mut self, mut done: List[Int], read_fd: Bool):
         """Every finished slot waiting for the loop, appended to `done`.
 
         With `read_fd`, the channel first: executor batches, stream aborts,
@@ -2158,7 +2158,7 @@ struct OffloadPool(Movable):
                 done.append(slot)
                 budget -= 1
 
-    def _drain_channel_into(mut self, mut done: List[Int]) raises:
+    def _drain_channel_into(mut self, mut done: List[Int]):
         """`drain_completions_into`'s channel half, read until EAGAIN."""
         # `_drain_buf` is sized for the largest datagram the channel
         # carries — a full completion batch — and not for one completion:
@@ -2789,12 +2789,6 @@ struct OffloadLoopState(Movable):
             for i in range(len(failed)):
                 unsent.append(failed[i])
         return unsent^
-
-    def slot_is_executor(self, slot: Int) -> Bool:
-        """`OffloadPool.slot_is_executor`, inert when the pool is disabled."""
-        if not self.enabled():
-            return False
-        return self.pool()[].slot_is_executor(slot)
 
     def slot_channel_stream(self, slot: Int) -> Bool:
         """`OffloadPool.slot_channel_stream`, inert when the pool is disabled."""

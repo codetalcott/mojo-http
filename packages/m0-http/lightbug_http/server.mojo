@@ -25,7 +25,6 @@ struct ServerError(Movable, Writable):
 
     comptime type = Variant[
         ListenerError,
-        ProvisionError,
         Error,
     ]
     var value: Self.type
@@ -35,18 +34,12 @@ struct ServerError(Movable, Writable):
         self.value = value^
 
     @implicit
-    def __init__(out self, var value: ProvisionError):
-        self.value = value^
-
-    @implicit
     def __init__(out self, var value: Error):
         self.value = value^
 
     def write_to[W: Writer, //](self, mut writer: W):
         if self.value.isa[ListenerError]():
             writer.write(self.value[ListenerError])
-        elif self.value.isa[ProvisionError]():
-            writer.write(self.value[ProvisionError])
         elif self.value.isa[Error]():
             writer.write(self.value[Error])
 

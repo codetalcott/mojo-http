@@ -121,7 +121,7 @@ def test_every_variant_error_writes_the_error_it_holds() raises:
         String(AddressParseError.message, ": no port"),
     )
     assert_equal(
-        String(ServerError(ProvisionError(ProvisionPoolExhaustedError()))),
+        String(ProvisionError(ProvisionPoolExhaustedError())),
         ProvisionPoolExhaustedError.message,
     )
     assert_equal(String(ServerError(Error("the loop stopped"))), "the loop stopped")

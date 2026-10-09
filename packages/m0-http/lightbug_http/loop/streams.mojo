@@ -30,7 +30,7 @@ from lightbug_http.loop.response import _after_send
 
 def _deliver_bus_frames[T: HTTPService](
     mut handler: T, mut st: LoopState, fd: Int
-) raises:
+):
     """Drain one bus channel to EAGAIN through the loop's reader and hand
     each frame to the handler (`sse_peer_frame`), which queues it for its
     own subscribers; the pass's outbox drain sends it. What the reader

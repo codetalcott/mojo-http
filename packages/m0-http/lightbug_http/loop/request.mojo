@@ -892,17 +892,12 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                     if st.offload.queue_submit(slot, lane):
                         # The lane's batch is full: send it now, and run
                         # inline whatever it could not carry — the same
-                        # answer a refused `submit` always had. This path
-                        # is non-raising like the rest of the read side; a
-                        # raise inside the inline run is a handler that
-                        # already answered 500 and closed, so it is logged
-                        # rather than propagated.
-                        try:
-                            _ = _run_inline(
-                                handler, backend, st, st.offload.flush_lane(lane)
-                            )
-                        except e:
-                            print("event loop: inline run raised: " + String(e), flush=True)
+                        # answer a refused `submit` always had. What the
+                        # handler raises there is its 500, answered inside
+                        # `_run_inline`, so nothing comes back up here.
+                        _ = _run_inline(
+                            handler, backend, st, st.offload.flush_lane(lane)
+                        )
                     return
                 if pool.submit(slot, target):
                     # The slot is working, not idle: the sweeps skip it

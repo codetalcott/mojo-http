@@ -37,8 +37,9 @@ from std.memory.alloc import unsafe_alloc
 comptime _TIMER_FLAG: UInt64 = 1 << 63
 
 # A timer's ident is `TIMER_<kind> + fd` (loop/state.mojo): the kinds are
-# 0x100000 apart from 0x100000 (header, body, idle, SSE heartbeat, app
-# tick), so the kind is the ident's bits from 20 up and the fd the 20 below.
+# 0x100000 apart from 0x100000 (the header timer's, which nothing arms
+# now; body, idle, SSE heartbeat, app tick), so the kind is the ident's
+# bits from 20 up and the fd the 20 below.
 comptime _TIMER_KIND_SHIFT = 20
 comptime _TIMER_KINDS = 5
 comptime _TIMER_FD_MASK: UInt = (1 << 20) - 1

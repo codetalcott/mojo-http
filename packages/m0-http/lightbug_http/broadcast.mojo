@@ -324,7 +324,7 @@ struct BusReader(Movable):
         self.buf = List[UInt8]()
         self.refused = 0
 
-    def drain(mut self, read_fd: Int) raises -> List[BusFrame]:
+    def drain(mut self, read_fd: Int) -> List[BusFrame]:
         """Read every waiting datagram off a bus channel; decode what parses.
 
         The channel is non-blocking; EAGAIN ends the drain. The event loop

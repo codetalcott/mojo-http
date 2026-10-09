@@ -25,7 +25,7 @@ from lightbug_http.c.epoll_backend import _timer_slot
 from lightbug_http.c.kqueue import EVFILT_TIMER
 from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.loop.state import (
-    TIMER_APP_TICK, TIMER_BODY, TIMER_HEADER, TIMER_IDLE, TIMER_SSE_HEARTBEAT,
+    TIMER_APP_TICK, TIMER_BODY, TIMER_IDLE, TIMER_SSE_HEARTBEAT,
 )
 
 
@@ -36,7 +36,7 @@ def test_every_timer_has_a_slot_of_its_own_at_any_descriptor() raises:
     covers: C11
     """
     var kinds: List[UInt] = [
-        TIMER_HEADER, TIMER_BODY, TIMER_IDLE, TIMER_SSE_HEARTBEAT,
+        TIMER_BODY, TIMER_IDLE, TIMER_SSE_HEARTBEAT, TIMER_APP_TICK,
     ]
     var fds: List[Int] = [0, 1, 5, 65535, 65536, 65537, 65541, 131072, 131077, 200000]
     var seen = List[Int]()
@@ -45,8 +45,6 @@ def test_every_timer_has_a_slot_of_its_own_at_any_descriptor() raises:
         for fd in fds:
             seen.append(_timer_slot(k + UInt(fd)))
             names.append(String(k + UInt(fd)))
-    seen.append(_timer_slot(TIMER_APP_TICK))
-    names.append(String("the app tick"))
     for i in range(len(seen)):
         assert_true(seen[i] >= 0, String("no slot for ident ", names[i]))
         for j in range(i + 1, len(seen)):

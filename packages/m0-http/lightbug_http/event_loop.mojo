@@ -235,8 +235,10 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     print(st.offload.wait_report(), flush=True)
                 break
     except e:
-        # Closed already if the drain had begun: `_shutdown_begin` forgets
-        # the number (-1) before it closes it.
+        # Reached from the backend's wait alone: `_wait_for_events`, before
+        # a pass or in one of `_run_shutdown`'s drain steps. A pass does not
+        # raise. Closed already if the drain had begun: `_shutdown_begin`
+        # forgets the number (-1) before it closes it.
         if st.listen_fd.value >= 0:
             backend.try_delete_read(st.listen_fd.value)
             _close_listener(st.listen_fd)
@@ -321,7 +323,7 @@ def _wait_for_events[B: EventLoopBackend](
 
 def _run_pass[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, n_events: Int,
-) raises -> Bool:
+) -> Bool:
     """One pass of the event loop over `n_events` ready events.
 
     Everything between one `backend.wait` and the next, in an order that

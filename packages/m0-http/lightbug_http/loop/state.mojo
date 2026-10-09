@@ -33,7 +33,8 @@ from m0_http.log import LogClock, log_access
 
 # Timer ident offsets to distinguish timeout types from fd-based events.
 # fd values are small (typically < 65536), so these offsets avoid collision.
-comptime TIMER_HEADER: UInt = 0x100000
+# 0x100000 was the header timer's: header deadlines are swept
+# (`_sweep_deadlines`), and nothing arms one.
 comptime TIMER_BODY: UInt = 0x200000
 comptime TIMER_IDLE: UInt = 0x300000
 comptime TIMER_SSE_HEARTBEAT: UInt = 0x400000
