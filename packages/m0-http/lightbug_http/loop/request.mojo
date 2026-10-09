@@ -774,7 +774,23 @@ def _drain_pipelined[T: HTTPService, B: EventLoopBackend](
 def _process_request[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
 ):
-    """Build request, call handler, encode response, register for write."""
+    """Answer one complete request on `slot`, or hand it to the pool.
+
+    Builds the `HTTPRequest` from the parsed head and the body in the
+    receive buffer (a 400 and a close if it will not build), records what
+    the finish needs once the request may belong to another thread (HEAD,
+    HTTP/1.1), then picks the answer in order. `/__metrics`, when enabled,
+    is answered here. Otherwise `before_request` runs ON THE LOOP in every
+    mode, and a response from it is final. Under `--blocking-threads` the
+    request is parked and routed to a lane by its path: an executor lane's
+    submit is batched to the bottom of the pass (or taken at once by the
+    handler's `direct_job`), another lane's is sent now, and the slot is
+    left `offloaded` for `_finish_response` to resume when the completion
+    comes back. A full queue falls back to running `func` here, as a server
+    without the flag would. A `func` that raises is a 500 and a close.
+    `after_response` runs on every answer made here, and `_finish_response`
+    encodes and sends it.
+    """
     var parsed = st.provision_pool.provisions[slot].parsed_headers.take()
     # Asked of the head before `from_parsed` consumes it: the request it
     # builds no longer carries the `chunked` it de-chunked.
@@ -828,7 +844,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
 
     var response: HTTPResponse
 
-    # Phase 4e: intercept /__metrics before user handler
+    # Intercept /__metrics before user handler
     if st.config.enable_metrics and request_path == "/__metrics":
         st.metrics.active_connections = st.active_count
         st.metrics.pool_available = st.provision_pool.available_count()

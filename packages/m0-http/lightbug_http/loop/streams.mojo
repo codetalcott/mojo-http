@@ -343,12 +343,12 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
             # once the final chunk has been handed out, and the loop
             # closes after those bytes land. Close is how a
             # content-length-free streamed body ends.
-            var asgi_stream = st.offload.slot_channel_stream(s)
+            var channel_stream = st.offload.slot_channel_stream(s)
             var pending = handler.sse_drain_slot(s)
             # Read ONCE per pass: `sse_drain_slot` above is what makes it
             # go false, so asking twice can straddle the transition and
             # send a terminator on a stream that just queued more.
-            var ended = asgi_stream and not handler.sse_is_streaming(s)
+            var ended = channel_stream and not handler.sse_is_streaming(s)
             var framed = st.offload.chunked[s]
 
             # Payload bytes are what the producer's credit window counts.
@@ -368,7 +368,7 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
             if len(out) > 0:
                 # What the write-ready completion owes the producer if
                 # this buffer does not land in one send below.
-                st.offload.ack_payload[s] = payload_len if asgi_stream else 0
+                st.offload.ack_payload[s] = payload_len if channel_stream else 0
                 if not _send_frame(handler, backend, st, s, st.slot_fds[s], out^):
                     if st.slot_fds[s] == UNUSED:
                         # The client is gone, and its slot closed in this
@@ -380,7 +380,7 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                     # Landed in one send: ack here and cancel what the
                     # write-ready path would otherwise have owed.
                     st.offload.ack_payload[s] = 0
-                    if asgi_stream and payload_len > 0:
+                    if channel_stream and payload_len > 0:
                         if not st.offload.pool()[].ack_stream(s, payload_len):
                             if st.offload.ack_owed[s] == 0:
                                 st.offload.ack_owed_count += 1

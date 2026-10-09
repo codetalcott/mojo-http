@@ -179,8 +179,10 @@ struct LoopState(Movable):
     """A caller's word to stamp when the drain begins, or 0. See
     `run_event_loop`."""
     var accept_batch: Int
-    var stream_keepalive_s: Int
     """Connections admitted per pass (`ACCEPT_BATCH`); 0 is unbounded."""
+    var stream_keepalive_s: Int
+    """TCP keepalive idle seconds and probe interval on a stream's socket
+    (`M0_STREAM_KEEPALIVE_S`); 0 is off."""
     var accept_owed: Bool
     """The last pass stopped accepting at its batch, so the backlog may
     still hold connections no edge will announce again."""
@@ -257,7 +259,7 @@ struct LoopState(Movable):
         for _ in range(fd_map_size):
             fd_to_slot.append(UNUSED)
 
-        # Phase 4e: per-server metrics (opt-in via config.enable_metrics)
+        # Per-server metrics (opt-in via config.enable_metrics)
         var metrics = ServerMetrics()
         metrics.pool_capacity = max_conns
 
@@ -671,7 +673,7 @@ def _record_response(mut st: LoopState, slot: Int):
     var elapsed_us = 0
     if timed and (st.config.enable_metrics or st.config.access_log):
         elapsed_us = Int((perf_counter_ns() - st.slot_header_start[slot]) / 1000)
-    # Phase 4e: record completed response metrics
+    # Record completed response metrics
     if st.config.enable_metrics:
         # Head and body as sent: the encoded buffer, then any file body,
         # which goes out by sendfile and was once left out of the count.
@@ -683,7 +685,7 @@ def _record_response(mut st: LoopState, slot: Int):
         if timed:
             st.metrics.record_duration(elapsed_us)
         st.metrics.active_connections = st.active_count
-    # Phase 4d: the structured access log, before any reset of the provision.
+    # The structured access log, before any reset of the provision.
     if st.config.access_log and st.provision_pool.provisions[slot].log_method.byte_length() > 0:
         log_access(
             st.log_clock,

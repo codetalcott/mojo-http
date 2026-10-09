@@ -441,8 +441,9 @@ comptime JOB_STOP = 2
 """`PoolJob.kind`: the poison pill; this thread is done."""
 comptime JOB_NONE = 3
 """`PoolJob.kind`: nothing to serve — a wake datagram, an empty
-non-blocking read, or a shape this version does not serve. Internal to
-`next_job`, which never returns it."""
+non-blocking read, or a shape this version does not serve. `next_job`
+waits instead of returning it; `try_next_job` returns it for "nothing
+yet", and `m0_wsgi.blocking_pool` tests for it."""
 
 
 @fieldwise_init
@@ -786,7 +787,7 @@ struct OffloadPool(Movable):
     makes a producer's wait for credit mean something: the executor's base
     pair is `enable_base_stream_ack` (a lane's is `enable_stream_ack`), and
     a pool thread's is its own, registered per slot in `slot_ack_fd`.
-    `stream_active` marks an executor; `chunk_active` marks the channel."""
+    `executor_active` marks an executor; `chunk_active` marks the channel."""
 
     var hold_notify_fd: Int
     """This loop's own BroadcastBus write end, or -1: where a pool thread
@@ -963,8 +964,8 @@ struct OffloadPool(Movable):
         since the loop is handed `offload_addr = 0`.
         """
         # One slot minimum, even for a disabled pool, so every per-slot
-        # table has an entry to index; `self.capacity` is what says whether
-        # this pool is real, and it is 0 either way.
+        # table has an entry to index; `self.capacity` (set below, 0 for a
+        # disabled pool) is what says whether this pool is real.
         self.lane_prefixes = List[String]()
         self.lane_submit_read = List[Int]()
         self.lane_submit_write = List[Int]()
@@ -1096,7 +1097,7 @@ struct OffloadPool(Movable):
         corrupt body, so it may not use the bus's drop-on-EAGAIN policy.
 
         The executor's base drain-ack pair is `enable_base_stream_ack`,
-        deliberately separate: `stream_active()` means "an executor
+        deliberately separate: `executor_active()` means "an executor
         exists", and a pool server that streams must not look like one —
         `slot_is_executor`'s unmounted shortcut would otherwise turn every
         `M0-Hold` on the default topology into a chunk-framed stream.
@@ -1110,7 +1111,7 @@ struct OffloadPool(Movable):
 
     def enable_base_stream_ack(mut self) raises:
         """The unmounted executor's drain-ack pair. Executor wiring only,
-        after `enable_stream_channel`; this is what flips `stream_active`."""
+        after `enable_stream_channel`; this is what flips `executor_active`."""
         var acks = socketpair_dgram()
         self.stream_ack_read = acks[0]
         self.stream_ack_write = acks[1]
@@ -1118,7 +1119,7 @@ struct OffloadPool(Movable):
             _size_socket(fd)
             _set_nonblocking_fd(fd)
 
-    def stream_active(self) -> Bool:
+    def executor_active(self) -> Bool:
         """Whether an asyncio executor serves this loop (its base ack pair
         exists). NOT whether the chunk channel does — see `chunk_active`."""
         return self.stream_ack_write >= 0
@@ -1221,7 +1222,7 @@ struct OffloadPool(Movable):
         The loop treats an executor's stream differently from a held one —
         chunk framing, drain acks, and the suppressed comment heartbeat all
         belong to the executor and none of them to an `M0-Hold`. Asking
-        globally (`stream_active()`) was the same question only while the
+        globally (`executor_active()`) was the same question only while the
         two could not share a process; under `--realtime --mount` they do,
         and a held stream that got chunk-framed, acked to an executor that
         never issued the credit, and denied its heartbeat would be three
@@ -1242,7 +1243,7 @@ struct OffloadPool(Movable):
         — the lane-only body of `slot_is_executor`, for a caller that has
         the lane and not yet a slot (the loop, deciding whether to batch a
         submit). Unmounted, the executor is the only producer there is."""
-        if not self.stream_active():
+        if not self.executor_active():
             return False
         if len(self.lane_prefixes) == 0:
             return True
@@ -2570,12 +2571,21 @@ def _note_over(mut counters: List[Int], ns: Int):
 
 
 struct OffloadLoopState(Movable):
-    """The loop's side of the pool: the pool's address and two slot arrays.
+    """The loop's response-framing and streaming state, which also carries
+    the pool's address.
 
-    One parameter instead of four threaded through `_handle_read_headers`,
-    `_process_request` and `_finish_response`. `addr == 0` means the server was
-    started without `--blocking-threads`, and every method below is then inert —
-    the loop runs handlers itself exactly as it always has.
+    One parameter instead of many threaded through `_handle_read_headers`,
+    `_process_request` and `_finish_response`. Three groups of fields:
+
+    - Per-slot framing and streaming state: `is_head`, `http11`, `chunked`,
+      `stream_gen` and `streaming_hint` are written for EVERY response, with
+      or without a pool (`_process_request`, `_finish_response`), and
+      `ack_payload`, `ack_owed` and `ack_owed_count` carry a channel
+      stream's credit.
+    - The pool's side: `addr`, `offloaded`, `inflight`, `pending_submit`.
+      `addr == 0` means the server was started without `--blocking-threads`;
+      the loop then runs handlers itself, and these are inert.
+    - Wait counters and two histograms, which `M0_POOL_DEBUG` prints.
     """
 
     var addr: Int

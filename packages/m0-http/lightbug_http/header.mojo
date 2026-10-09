@@ -677,8 +677,8 @@ struct Headers(Copyable, Writable):
     def value_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
         """Header `i`'s value, as bytes in place. Allocates nothing.
 
-        Public for the same reason `keys()` is: something has to project
-        these headers into another representation. `keys()` + `get()` costs
+        Public so a caller can project these headers into another
+        representation (the WSGI bridge does). `keys()` + `get()` costs
         two String allocations per header and a linear scan per lookup —
         measured at 48us per request projecting twelve headers into a WSGI
         blob, which was 77% of that bridge's entire per-request cost. Walking
@@ -764,9 +764,10 @@ struct Headers(Copyable, Writable):
     def keys(self) -> List[String]:
         """Snapshot of every header name present, lowercased.
 
-        Pair each key with `__getitem__` to walk the whole collection —
-        needed by anything projecting these headers into another
-        representation, such as a WSGI `environ`.
+        Pair each key with `__getitem__` to walk the whole collection. It
+        allocates a String per header; a caller projecting every header into
+        another representation walks `count()` with `name_span` and
+        `value_span` instead, which allocate nothing.
         """
         var out = List[String](capacity=self.count())
         for i in range(self.count()):

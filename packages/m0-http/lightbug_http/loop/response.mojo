@@ -394,7 +394,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         st.offload.ack_owed_count -= 1
     if response.sse_streaming:
         response.headers.pop("content-length")
-        var asgi_stream = st.offload.slot_channel_stream(slot)
+        var channel_stream = st.offload.slot_channel_stream(slot)
         # The head names its stream's generation; an abort datagram is
         # checked against this, so one for an earlier stream on a recycled
         # slot cannot close this connection.
@@ -408,7 +408,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # status says is already complete.
         var bodiless = is_bodiless_status(response.status_code)
         var can_chunk = (
-            asgi_stream
+            channel_stream
             and st.offload.http11[slot]
             and not st.offload.is_head[slot]
             and not upgraded_ws

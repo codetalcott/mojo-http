@@ -10,6 +10,7 @@ from lightbug_http.io.bytes import Bytes
 from lightbug_http.service import HTTPService
 from lightbug_http.c.socket import close as close_fd
 from lightbug_http.utils.error import CustomError
+from std.bit import count_leading_zeros, pop_count
 from std.memory import unsafe_memmove
 from std.utils import Variant
 
@@ -433,47 +434,12 @@ struct ProvisionPool(Movable):
         for _ in range(capacity):
             self.provisions.append(ConnectionProvision(config))
 
-    @staticmethod
-    def _clz64(val: UInt64) -> Int:
-        """Count leading zeros without importing bit module (avoids codegen bug)."""
-        if val == 0:
-            return 64
-        var n = 0
-        var v = val
-        if v & UInt64(0xFFFFFFFF00000000) == 0:
-            n += 32
-            v <<= 32
-        if v & UInt64(0xFFFF000000000000) == 0:
-            n += 16
-            v <<= 16
-        if v & UInt64(0xFF00000000000000) == 0:
-            n += 8
-            v <<= 8
-        if v & UInt64(0xF000000000000000) == 0:
-            n += 4
-            v <<= 4
-        if v & UInt64(0xC000000000000000) == 0:
-            n += 2
-            v <<= 2
-        if v & UInt64(0x8000000000000000) == 0:
-            n += 1
-        return n
-
-    @staticmethod
-    def _popcount64(val: UInt64) -> Int:
-        """Hamming weight without importing bit module (avoids codegen bug)."""
-        var v = val
-        v = v - ((v >> 1) & UInt64(0x5555555555555555))
-        v = (v & UInt64(0x3333333333333333)) + ((v >> 2) & UInt64(0x3333333333333333))
-        v = (v + (v >> 4)) & UInt64(0x0F0F0F0F0F0F0F0F)
-        return Int((v * UInt64(0x0101010101010101)) >> 56)
-
     def borrow(mut self) raises ProvisionError -> Int:
         """Allocate a slot. O(1) via leading-zero count on bitmask words."""
         for w in range(self.num_words):
             var word = self.bitmask[w]
             if word != 0:
-                var bit_pos = Self._clz64(word)
+                var bit_pos = Int(count_leading_zeros(word))
                 # Clear bit (mark in-use)
                 self.bitmask[w] = word & ~(UInt64(1) << UInt64(63 - bit_pos))
                 var index = w * 64 + bit_pos
@@ -492,7 +458,7 @@ struct ProvisionPool(Movable):
         """Count free slots via popcount across all bitmask words."""
         var count = 0
         for w in range(self.num_words):
-            count += Self._popcount64(self.bitmask[w])
+            count += Int(pop_count(self.bitmask[w]))
         return count
 
 
@@ -614,23 +580,16 @@ struct Server(Movable):
         Raises:
             ServerError: If listener setup fails or an unrecoverable error occurs.
         """
-        var listener: NoTLSListener[NetworkType.tcp]
-        try:
-            listener = ListenConfig().listen(address)
-        except listener_err:
-            raise listener_err^
+        var listener = ListenConfig().listen(address)
 
         self.set_address(String(address))
 
         # Allow caller-supplied fd to override the one stored on self
         var effective_shutdown_fd = shutdown_read_fd if shutdown_read_fd >= 0 else self.shutdown_read_fd
 
-        try:
-            self.serve_nonblocking(
-                listener^, handler, effective_shutdown_fd, bus_read_fd, offload_addr
-            )
-        except server_err:
-            raise server_err^
+        self.serve_nonblocking(
+            listener^, handler, effective_shutdown_fd, bus_read_fd, offload_addr
+        )
 
     def serve_nonblocking[network: NetworkType, //, T: HTTPService](
         self, var ln: NoTLSListener[network], mut handler: T,
@@ -666,19 +625,16 @@ struct Server(Movable):
         """
         from lightbug_http.event_loop import run_event_loop
 
-        try:
-            var backend = PlatformBackend()
-            run_event_loop(
-                ln^.into_fd(),
-                handler,
-                backend,
-                self.config,
-                self.address(),
-                self.tcp_keep_alive,
-                shutdown_read_fd,
-                bus_read_fd,
-                offload_addr,
-                accept_share=accept_share,
-            )
-        except e:
-            raise e^
+        var backend = PlatformBackend()
+        run_event_loop(
+            ln^.into_fd(),
+            handler,
+            backend,
+            self.config,
+            self.address(),
+            self.tcp_keep_alive,
+            shutdown_read_fd,
+            bus_read_fd,
+            offload_addr,
+            accept_share=accept_share,
+        )

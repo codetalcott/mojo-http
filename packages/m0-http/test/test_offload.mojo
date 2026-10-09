@@ -390,18 +390,18 @@ def test_a_moved_loop_state_carries_every_field() raises:
 
 def test_chunk_channel_and_executor_ack_pair_are_separate_switches() raises:
     """A pure-WSGI pool server enables the chunk channel and NOT the
-    executor's ack pair: `stream_active` must stay false there, or every
+    executor's ack pair: `executor_active` must stay false there, or every
     M0-Hold on the default topology would be read as an executor stream."""
     var pool = OffloadPool(8)
     assert_false(pool.chunk_active())
-    assert_false(pool.stream_active())
+    assert_false(pool.executor_active())
     pool.enable_stream_channel()
     assert_true(pool.chunk_active())
-    assert_false(pool.stream_active())
+    assert_false(pool.executor_active())
     assert_false(pool.slot_is_executor(3))
     assert_false(pool.slot_channel_stream(3))
     pool.enable_base_stream_ack()
-    assert_true(pool.stream_active())
+    assert_true(pool.executor_active())
     # Unmounted with an executor: every slot is the executor's, as before.
     assert_true(pool.slot_is_executor(3))
     assert_true(pool.slot_channel_stream(3))

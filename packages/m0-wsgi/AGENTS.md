@@ -816,7 +816,7 @@ M20). Three rules the pinned interop imposes and that the code depends on:
         check against `HTTPResponse.stream_gen`), flushes what the producer
         managed to send, and closes without a terminator.
       - `enable_stream_channel` creates the chunk pair alone;
-        `stream_active()` still means "an executor exists"
+        `executor_active()` still means "an executor exists"
         (`enable_base_stream_ack`) and `slot_is_executor` stays lane-only.
         `slot_channel_stream` is the per-slot question the loop's four
         stream decisions ask; the drain-ack gate asks `chunk_active()`.

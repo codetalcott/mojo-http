@@ -12,6 +12,7 @@ and the read path moves it to the front once (`compact_buffer`), so an
 answer copies nothing (review record LF72).
 """
 
+from std.bit import count_leading_zeros, pop_count
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
 from lightbug_http.connection import ConnectionState
@@ -161,17 +162,17 @@ def _borrow(mut pool: ProvisionPool) raises -> Int:
 def test_the_provision_pool_hands_out_every_slot_once() raises:
     """The pool's bitmask allocator, at capacities either side of its 64-bit
     words: every slot once, lowest first, then a refusal; a released slot
-    comes back first; `available_count` follows. And its two bit helpers,
-    written by hand rather than imported, at every bit (review audit A3)."""
-    assert_equal(ProvisionPool._clz64(0), 64)
-    assert_equal(ProvisionPool._popcount64(0), 0)
-    assert_equal(ProvisionPool._popcount64(~UInt64(0)), 64)
+    comes back first; `available_count` follows. And the two `std.bit`
+    calls it allocates and counts with, at every bit (review audit A3)."""
+    assert_equal(Int(count_leading_zeros(UInt64(0))), 64)
+    assert_equal(Int(pop_count(UInt64(0))), 0)
+    assert_equal(Int(pop_count(~UInt64(0))), 64)
     for s in range(64):
         var bit = UInt64(1) << UInt64(s)
-        assert_equal(ProvisionPool._clz64(bit), 63 - s)
-        assert_equal(ProvisionPool._clz64(bit | 1), 63 - s)
-        assert_equal(ProvisionPool._popcount64(bit), 1)
-        assert_equal(ProvisionPool._popcount64((bit - 1) | bit), s + 1)
+        assert_equal(Int(count_leading_zeros(bit)), 63 - s)
+        assert_equal(Int(count_leading_zeros(bit | 1)), 63 - s)
+        assert_equal(Int(pop_count(bit)), 1)
+        assert_equal(Int(pop_count((bit - 1) | bit)), s + 1)
 
     var config = ServerConfig()
     config.socket_buffer_size = 16

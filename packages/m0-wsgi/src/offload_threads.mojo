@@ -188,7 +188,7 @@ def wire_offload[T: ThreadHandler](
         # Pool threads stream WSGI iterables through the chunk channel the
         # executor uses -- a second producer on one FIFO -- so a pure-WSGI
         # pool server creates it too. NOT the executor's ack pair:
-        # `stream_active()` keeps meaning "an executor exists", which is what
+        # `executor_active()` keeps meaning "an executor exists", which is what
         # keeps an M0-Hold on this loop from being mistaken for a channel
         # stream.
         if not pool.chunk_active():

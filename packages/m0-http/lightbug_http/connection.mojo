@@ -130,7 +130,7 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp](Movable):
 struct ListenConfig:
     var max_bind_retries: Int
     """Maximum number of bind() attempts on an address IN USE before its
-    EADDRINUSE is raised (Phase 4c).
+    EADDRINUSE is raised.
 
     Each retry sleeps 1 second.  Default 30 gives ~30 s total wait, covering
     the typical TIME_WAIT drain after a server restart.  Set to 0 for
@@ -247,7 +247,7 @@ struct ListenConfig:
         var bind_success = False
         var bind_fail_logged = False
         var bind_attempts = 0
-        # Phase 4c: bounded retry — max_bind_retries=0 means unlimited.
+        # Bounded retry — max_bind_retries=0 means unlimited.
         while not bind_success:
             try:
                 socket.bind(addr.ip, addr.port)
