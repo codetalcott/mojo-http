@@ -899,9 +899,37 @@ def _first_status_row(text, status):
 
 
 def _first_unit_row(text):
-    """The first row whose evidence is a `test_x.mojo:test_fn` citation."""
-    m = re.search(r"`(test_[a-z0-9_]+\.mojo):(test_[a-z0-9_]+)`", text)
-    return m.group(0) if m else None
+    """(id, gate) of the first row whose evidence's GATE -- what its
+    evidence cell opens with -- is a `test_x.mojo:test_fn` citation, or
+    None. Read through `parse`, so a citation in a row's prose is never
+    taken for a gate: a search of the whole text took A5's prose mention of
+    a test, and the two unit-evidence sabotages then rewrote prose no rule
+    reads and missed (review record LF74)."""
+    rows, _ = parse(text)
+    for r in rows:
+        m = _EVIDENCE.match(r["evidence"])
+        if m and _UNIT.match(m.group("gate")):
+            return r["id"], m.group("gate")
+    return None
+
+
+def _repoint_first_unit_row(text, repoint):
+    """`text` with the first unit-citing row's gate rewritten to
+    `repoint(file, fn)`, or None when no row cites one. That row's line is
+    found by its id (`_row_by_id`) and edited where its evidence opens, so
+    an earlier prose mention of the same citation is left alone, which a
+    text-wide replace would have taken first (review record LF74)."""
+    found = _first_unit_row(text)
+    if found is None:
+        return None
+    rid, gate = found
+    line = _row_by_id(text, rid)
+    opening = "| `" + gate + "` ("
+    if line is None or line.count(opening) != 1:
+        return None
+    file, fn = gate.split(":")
+    edited = line.replace(opening, "| `" + repoint(file, fn) + "` (")
+    return text.replace(line, edited, 1)
 
 
 def _first_section(text):
@@ -978,13 +1006,11 @@ SABOTAGES = [
     # not a particular one -- so they locate it by shape. Quoting a row broke
     # both the first time an audit legitimately re-pointed the test they named.
     ("unit-test file does not exist", "sheet",
-     lambda t: (t.replace(_first_unit_row(t),
-                          "`test_nosuchfile.mojo:" + _first_unit_row(t).split(":")[1], 1)
-                if _first_unit_row(t) else None), "no packages/*/test/"),
+     lambda t: _repoint_first_unit_row(t, lambda f, fn: "test_nosuchfile.mojo:" + fn),
+     "no packages/*/test/"),
     ("cited test function is deleted", "sheet",
-     lambda t: (t.replace(_first_unit_row(t),
-                          _first_unit_row(t).split(":")[0] + ":test_deleted_by_sabotage`", 1)
-                if _first_unit_row(t) else None), "has no `def"),
+     lambda t: _repoint_first_unit_row(t, lambda f, fn: f + ":test_deleted_by_sabotage"),
+     "has no `def"),
     ("test package leaves the test-all sequence", "pyproject",
      ('"test-core", "test-http"', '"test-core"'), "not reachable from `poe test-all`"),
     # The comment-blind twins of rules above (review H4): each lapse leaves

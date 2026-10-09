@@ -48,12 +48,12 @@ def attempt_split(port, chunks, first_frames):
     """Head, then the body in TWO writes with a pause between them.
 
     A third arrival shape, split so the first write stays just under the raw
-    ceiling and the second crosses it. It is NOT what pins either bound: the
-    pre-decode check's buffer-size half already refuses this, which was
-    established by reverting each bound in turn and watching this phase pass
-    both ways. It is here because it is a shape a real client produces and
-    the two decode sites treat differently, so a future change to either can
-    be seen to keep it working -- not because it discriminates a rule today.
+    ceiling and the second crosses it. Its decoded size stays under the cap,
+    so the raw bound alone refuses it, measured after the decode that
+    crosses it: since review record LF70 the body path checks no buffer
+    size before decoding (the pre-decode check that used to refuse this
+    first is gone). It is here because it is a shape a real client produces,
+    so a future change to either decode site can be seen to keep it working.
     """
     head = (
         b"POST /input/read HTTP/1.1\r\nHost: x\r\n"

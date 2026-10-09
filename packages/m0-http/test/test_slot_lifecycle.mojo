@@ -39,10 +39,12 @@ from lightbug_http.c.kqueue import (
 )
 from lightbug_http.c.fcntl import dup_cloexec, set_nonblocking
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.c.process import getpid
+from lightbug_http.c.process import getpid, ignore_sigpipe
 from lightbug_http.c.socket import close, recv, send
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
+from lightbug_http.loop.accept import _admit_connection
+from lightbug_http.loop.offload import _run_inline
 from lightbug_http.loop.request import _on_read
 from lightbug_http.loop.response import _on_write
 from lightbug_http.loop.streams import _read_websocket
@@ -53,6 +55,7 @@ from lightbug_http.loop.state import (
     LoopState,
     SLOT_BUFFER_KEEP,
     TIMER_BODY,
+    TIMER_SSE_HEARTBEAT,
     UNUSED,
     WS_CLOSE_LINGER_NS,
     _arm_reads,
@@ -75,6 +78,7 @@ from lightbug_http.loop.timers import _on_timer
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.server_config import ServerConfig
+from lightbug_http.uri import URI
 
 
 struct FakeBackend(EventLoopBackend):
@@ -86,10 +90,12 @@ struct FakeBackend(EventLoopBackend):
     Timers are kept as epoll keeps a timerfd, too: registered with EPOLLIN
     and never read by the loop, one that has expired is readable -- level
     triggered -- so every `wait` reports it until it is deleted or re-armed.
-    `expire` is the clock running out."""
+    `expire` is the clock running out, and `refuse_write` a write
+    registration the kernel refuses."""
 
     var read: Bool
     var write: Bool
+    var refuse_write: Bool
     var read_adds: Int
     var timers: List[UInt]
     var expired: List[UInt]
@@ -98,6 +104,7 @@ struct FakeBackend(EventLoopBackend):
     def __init__(out self):
         self.read = False
         self.write = False
+        self.refuse_write = False
         self.read_adds = 0
         self.timers = List[UInt]()
         self.expired = List[UInt]()
@@ -139,6 +146,8 @@ struct FakeBackend(EventLoopBackend):
             pass
 
     def add_write_oneshot(mut self, fd: Int) raises:
+        if self.refuse_write:
+            raise Error("add_write_oneshot: refused")
         self.write = True
         self.read = False
 
@@ -689,6 +698,13 @@ def _exchange(
     var config = _config()
     config.enable_metrics = metrics
     var app = NoApp()
+    return _exchange_with(app, config, parts)
+
+
+def _exchange_with[H: HTTPService](
+    mut app: H, config: ServerConfig, parts: List[String]
+) raises -> Tuple[String, Bool]:
+    """`_exchange` over a handler and a configuration of the caller's."""
     var backend = FakeBackend()
     var st = _loop(config)
     var pair = _stream_pair()
@@ -718,6 +734,556 @@ def _exchange(
 def _metrics_exchange(request: String) raises -> Tuple[String, Bool]:
     """One request to `/__metrics`, metrics on (`_exchange`)."""
     return _exchange([request], metrics=True)
+
+
+struct BodyLength(HTTPService):
+    """Answers every request with the length of the body it was handed."""
+
+    def __init__(out self):
+        pass
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK(String("body=", len(req.body_raw)), "text/plain")
+
+
+def _answers(reply: String) -> Int:
+    """How many `200 OK` answers a lowercased reply holds."""
+    return len(reply.split("http/1.1 200 ok")) - 1
+
+
+def _tight_caps() -> ServerConfig:
+    """Caps a test can reach: a head of at most 128 bytes, a body of at
+    most 64, and no floor under the receive buffer, whose limit is then
+    their sum."""
+    var config = _config()
+    config.max_total_header_size = 128
+    config.max_request_body_size = 64
+    config.recv_buffer_max = 0
+    return config^
+
+
+def _padded_head(start: String, length: Int) -> String:
+    """`start`'s field lines, then an `X-Pad` field making the head
+    `length` bytes long."""
+    var head = start + "X-Pad: "
+    return head + String("p") * (length - head.byte_length() - 4) + "\r\n\r\n"
+
+
+def test_a_body_read_after_its_head_is_measured_by_its_own_sizes() raises:
+    """A body read after its head is measured by its own sizes, never by
+    the receive buffer that holds it (review record LF70): within both caps
+    it is answered whatever shares the reads that bring it, and over the
+    body cap it is refused 413 and lingered (SPEC A20) whatever its head's
+    size. The body path compared the whole buffer, which holds the head and
+    the next pipelined request beside the body, with `recv_buffer_limit()`,
+    and measured a chunked body before decoding it, as its decoded part
+    plus the raw tail still buffered: a `Content-Length` body whose last
+    read also brought the next request was refused 400 once head, body and
+    that request passed the buffer's limit; a chunked body at the cap was
+    refused 413 when its framing, or a request behind it, came after its
+    head, and answered when it came with it; and a chunked body over the
+    cap behind a head near its own cap was refused 400 and closed. Each is
+    measured now as the head path measures a body that arrives with it:
+    the decoded body, and the raw bytes it cost. The head path still holds
+    its whole buffer to the limit, so the same shapes sent in ONE read past
+    it are refused 400 (review record LF72's residual).
+
+    covers: C18
+    """
+    var config = _tight_caps()
+    assert_equal(config.recv_buffer_limit(), 192)
+    var app = BodyLength()
+    var next = String("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+
+    var cl_head = _padded_head(
+        "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 64\r\n", 120
+    )
+    var cl = _exchange_with(app, config, [cl_head, String("b") * 64 + next])
+    assert_equal(_answers(cl[0]), 2, "a Content-Length body at the cap: " + cl[0])
+    assert_true("body=64" in cl[0], cl[0])
+    assert_false(cl[1], "the connection closed behind a body within the caps")
+
+    var chunked = String(
+        "POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    var at_cap = String("40\r\n") + String("b") * 64 + "\r\n0\r\n\r\n"
+    var with_head = _exchange_with(app, config, [chunked + at_cap])
+    assert_equal(_answers(with_head[0]), 1, "with its head: " + with_head[0])
+    assert_true("body=64" in with_head[0], with_head[0])
+    var after_head = _exchange_with(app, config, [chunked, at_cap])
+    assert_equal(
+        _answers(after_head[0]), 1,
+        "a chunked body at the cap after its head: " + after_head[0],
+    )
+    assert_true("body=64" in after_head[0], after_head[0])
+
+    var under = String("32\r\n") + String("b") * 50 + "\r\n0\r\n\r\n"
+    var behind = _exchange_with(app, config, [chunked, under + next])
+    assert_equal(
+        _answers(behind[0]), 2,
+        "a chunked body under the cap with a request behind it: " + behind[0],
+    )
+    assert_true("body=50" in behind[0], behind[0])
+
+    var big_head = _padded_head(
+        "POST /d HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n", 120
+    )
+    var over = _exchange_with(
+        app, config, [big_head, String("50\r\n") + String("b") * 80 + "\r\n"]
+    )
+    assert_true(
+        "413 payload too large" in over[0],
+        "a chunked body over the cap behind a long head: " + over[0],
+    )
+    assert_false(over[1], "the 413 closed its connection where it should linger")
+
+
+def test_a_chunk_line_that_never_ends_is_refused_at_twice_the_cap() raises:
+    """A chunked body's receive buffer is bounded by its decoder consuming
+    every byte it is handed: answering "incomplete", it leaves nothing
+    undecoded (`pending_bytes` 0), so the buffer holds the head and the
+    decoded body and no more, and what a line that never ends costs is
+    counted in `_total_read` and refused 413, with the lingering close, at
+    twice the body cap (C3). Since review record LF70 the body path
+    compares no buffer size with any limit, so this is the bound: a decoder
+    that kept an unfinished extension or size line back in the buffer
+    would let it grow with no check firing, its decoded size and consumed
+    bytes both flat. An extension that never reaches its CR, and a size
+    line of leading zeros that never ends, each sent a read at a time
+    after the head.
+
+    covers: C18
+    """
+    var config = _tight_caps()
+    var cap = config.max_request_body_size
+    var head = String(
+        "POST /e HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    for extension in [True, False]:
+        var opening = String("5;ext=") if extension else String("")
+        var fill = String("e") if extension else String("0")
+        var app = NoApp()
+        var backend = FakeBackend()
+        var st = _loop(config)
+        var pair = _stream_pair()
+        var slot = st.provision_pool.borrow()
+        st.slot_fds[slot] = pair[0]
+        st.fd_to_slot[pair[0]] = slot
+        st.active_count = 1
+        st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+        _send_all(pair[1], head)
+        _on_read(app, backend, st, pair[0], False)
+        assert_equal(
+            st.provision_pool.provisions[slot].state.kind,
+            ConnectionState.READING_BODY,
+        )
+        var head_len = len(st.provision_pool.provisions[slot].recv_buffer)
+        var sent = 0
+        var refused = False
+        for i in range(20):
+            var piece = (opening if i == 0 else String("")) + fill * 40
+            _send_all(pair[1], piece)
+            sent += piece.byte_length()
+            _on_read(app, backend, st, pair[0], False)
+            if (
+                st.provision_pool.provisions[slot].state.kind
+                != ConnectionState.READING_BODY
+            ):
+                refused = True
+                break
+            assert_equal(
+                st.provision_pool.provisions[slot].chunk_decoder.pending_bytes, 0,
+                "the decoder left an unfinished line undecoded",
+            )
+            assert_equal(
+                len(st.provision_pool.provisions[slot].recv_buffer), head_len,
+                "an unfinished line stayed in the receive buffer",
+            )
+        assert_true(refused, "a line that never ends was never refused")
+        assert_true(
+            sent <= 2 * cap + opening.byte_length() + 40,
+            String("refused only after ", sent, " bytes"),
+        )
+        var got = List[UInt8]()
+        _ = _read_available(pair[1], got)
+        var reply = String(unsafe_from_utf8=Span(got)).lower()
+        assert_true(reply.startswith("http/1.1 413 payload too large"), reply)
+        assert_true(st.slot_fds[slot] != UNUSED, "the 413 closed its connection where it should linger")
+        _close_slot(app, backend, st, slot, pair[0])
+        close(FileDescriptor(pair[1]))
+
+
+struct Raises(HTTPService):
+    """A handler with a bug: every request it is handed raises."""
+
+    var calls: Int
+
+    def __init__(out self):
+        self.calls = 0
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        self.calls += 1
+        raise Error("the handler's own bug")
+
+
+def test_a_handler_that_raises_is_answered_500_and_closed() raises:
+    """A handler that raises is answered 500 with `Connection: close`, and
+    the connection closes behind it, whether the loop ran it as its request
+    arrived (`_process_request`) or inline, for a submit batch that could
+    not carry it (`_run_inline`): what it raised is the application's, and
+    the connection's state after it is not to be trusted. A request
+    pipelined behind it is not run.
+
+    covers: A39
+    """
+    var app = Raises()
+    var got = _exchange_with(app, _config(), [
+        "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n"
+    ])
+    assert_true(got[0].startswith("http/1.1 500 internal server error"), got[0])
+    assert_true("connection: close" in got[0], got[0])
+    assert_equal(len(got[0].split("http/1.1 ")) - 1, 1, got[0])
+    assert_true(got[1], "the connection stayed open after the 500")
+    assert_equal(app.calls, 1, "the request behind the 500 was run")
+
+    var pool = OffloadPool(SLOTS)
+    var st = LoopState(
+        FileDescriptor(-1), _config(), String(""), True, offload_addr=pool.addr()
+    )
+    var backend = FakeBackend()
+    var inline = Raises()
+    var pair = _stream_pair()
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = pair[0]
+    st.fd_to_slot[pair[0]] = slot
+    st.active_count = 1
+    pool.park_request(slot, HTTPRequest(URI.parse("http://127.0.0.1/x")))
+    st.offload.offloaded[slot] = True
+    st.offload.inflight += 1
+    var slots = List[Int]()
+    slots.append(slot)
+    assert_equal(_run_inline(inline, backend, st, slots), 1)
+    var reply = List[UInt8]()
+    _ = _read_available(pair[1], reply)
+    var text = String(unsafe_from_utf8=Span(reply)).lower()
+    assert_true(text.startswith("http/1.1 500 internal server error"), text)
+    assert_true("connection: close" in text, text)
+    assert_equal(st.slot_fds[slot], UNUSED, "the inline run's connection stayed open")
+    close(FileDescriptor(pair[1]))
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+
+
+def test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read() raises:
+    """The header timeout is met at a read as well as by the once-a-second
+    sweep: a head whose first bytes came longer ago than
+    `header_read_timeout` is answered 408 with `Connection: close`, and
+    closed, at the read that brings more of it, rather than served late;
+    the same head completed in time is answered. The sweep's half is
+    `Smoke test the header read timeout` (A5).
+
+    covers: A5
+    """
+    var config = _config()
+    config.header_read_timeout = 1
+    for late in [False, True]:
+        var app = NoApp()
+        var backend = FakeBackend()
+        var st = _loop(config)
+        var pair = _stream_pair()
+        var slot = st.provision_pool.borrow()
+        st.slot_fds[slot] = pair[0]
+        st.fd_to_slot[pair[0]] = slot
+        st.active_count = 1
+        st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+        _send_all(pair[1], "GET / HTTP/1.1\r\n")
+        _on_read(app, backend, st, pair[0], False)
+        assert_true(st.slot_header_start[slot] > 0, "the head's first bytes were not stamped")
+        if late:
+            st.slot_header_start[slot] -= 2_000_000_000
+        _send_all(pair[1], "Host: x\r\n\r\n")
+        _on_read(app, backend, st, pair[0], False)
+        var got = List[UInt8]()
+        _ = _read_available(pair[1], got)
+        var reply = String(unsafe_from_utf8=Span(got)).lower()
+        if late:
+            assert_true(reply.startswith("http/1.1 408 request timeout"), reply)
+            assert_true("connection: close" in reply, reply)
+            assert_equal(st.slot_fds[slot], UNUSED, "a head past its timeout kept its connection")
+        else:
+            assert_true(reply.startswith("http/1.1 200 ok"), reply)
+            close(FileDescriptor(pair[0]))
+        close(FileDescriptor(pair[1]))
+
+
+def test_a_new_loop_has_every_slot_free_and_ignores_descriptors_it_does_not_hold() raises:
+    """`LoopState`'s constructor: `max_connections` slots, each free -- no
+    descriptor, response, stream, read interest or deadline -- every one in
+    the pool, a descriptor map of 65536 numbers none of which is mapped,
+    and the server's address split once. A read or write event for a
+    descriptor no slot holds, whether mapped or past the map, is dropped
+    without touching a slot or the backend."""
+    var st = LoopState(
+        FileDescriptor(-1), _config(), String("127.0.0.1:8080"), True,
+        shutdown_read_fd=5,
+    )
+    assert_equal(st.max_conns, SLOTS)
+    assert_equal(st.provision_pool.available_count(), SLOTS)
+    assert_equal(st.metrics.pool_capacity, SLOTS)
+    assert_equal(st.active_count, 0)
+    assert_equal(st.shutdown_read_fd, 5)
+    assert_equal(st.server_host, "127.0.0.1")
+    assert_equal(Int(st.server_port.value()), 8080)
+    for slot in range(SLOTS):
+        assert_equal(st.slot_fds[slot], UNUSED)
+        assert_equal(len(st.slot_response[slot]), 0)
+        assert_equal(st.slot_send_offset[slot], 0)
+        assert_equal(st.slot_header_start[slot], 0)
+        assert_false(st.slot_sse[slot])
+        assert_false(st.slot_ws[slot])
+        assert_false(st.slot_read_armed[slot])
+        assert_equal(st.slot_idle_deadline[slot], 0)
+    assert_equal(len(st.fd_to_slot), 65536)
+    var mapped = 0
+    for fd in range(len(st.fd_to_slot)):
+        if st.fd_to_slot[fd] != UNUSED:
+            mapped += 1
+    assert_equal(mapped, 0)
+
+    var app = NoApp()
+    var backend = FakeBackend()
+    var past = len(st.fd_to_slot) + 1
+    _on_read(app, backend, st, FD, True)
+    _on_read(app, backend, st, past, True)
+    _on_write(app, backend, st, FD)
+    _on_write(app, backend, st, past)
+    assert_equal(st.active_count, 0)
+    assert_equal(st.provision_pool.available_count(), SLOTS)
+    assert_false(backend.read)
+    assert_false(backend.write)
+    assert_equal(backend.read_adds, 0)
+
+
+struct Departures(HTTPService):
+    """Records the slots its streams left from."""
+
+    var left: List[Int]
+
+    def __init__(out self):
+        self.left = List[Int]()
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
+
+    def sse_slot_disconnected(mut self, slot: Int):
+        self.left.append(slot)
+
+
+def _stream_slot(mut st: LoopState, fd: Int, ws: Bool) raises -> Int:
+    """A slot holding `fd` as an idle stream: a WebSocket, or SSE."""
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count += 1
+    if ws:
+        st.slot_ws[slot] = True
+        st.provision_pool.provisions[slot].state = ConnectionState.streaming_ws()
+    else:
+        st.slot_sse[slot] = True
+        st.provision_pool.provisions[slot].state = ConnectionState.streaming_sse()
+    return slot
+
+
+def test_a_closed_stream_tells_its_handler_once_and_retires_its_timers() raises:
+    """`_close_slot`, the door every close goes through, tells the handler
+    which slot left when it held a stream, SSE or WebSocket, once, so a
+    subscriber registry drops it; and for every connection deletes its
+    read and write registrations and both timers a connection can hold,
+    its body timer and its heartbeat, closes the descriptor (the peer
+    reads EOF), unmaps it and gives the slot back. An ordinary
+    connection's close tells the handler nothing.
+
+    covers: I9
+    """
+    var app = Departures()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    for ws in [False, True]:
+        var pair = _stream_pair()
+        var fd = pair[0]
+        var slot = _stream_slot(st, fd, ws)
+        assert_true(_arm_reads(backend, st, slot, fd))
+        backend.try_add_timer(UInt(fd) + TIMER_BODY, 1000)
+        backend.try_add_timer(UInt(fd) + TIMER_SSE_HEARTBEAT, 1000)
+        var free = st.provision_pool.available_count()
+        var left = len(app.left)
+        _close_slot(app, backend, st, slot, fd)
+        assert_equal(len(app.left), left + 1, "the handler was not told its stream left")
+        assert_equal(app.left[left], slot)
+        assert_false(st.slot_sse[slot] or st.slot_ws[slot])
+        assert_equal(len(backend.timers), 0, "a timer outlived its connection")
+        assert_false(backend.read)
+        assert_false(backend.write)
+        assert_equal(st.slot_fds[slot], UNUSED)
+        assert_equal(st.fd_to_slot[fd], UNUSED)
+        assert_equal(st.active_count, 0)
+        assert_equal(st.provision_pool.available_count(), free + 1)
+        var got = List[UInt8]()
+        assert_true(_read_available(pair[1], got), "the peer read no EOF")
+        close(FileDescriptor(pair[1]))
+
+    var plain = _stream_pair()
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = plain[0]
+    st.fd_to_slot[plain[0]] = slot
+    st.active_count = 1
+    _close_slot(app, backend, st, slot, plain[0])
+    assert_equal(len(app.left), 2, "an ordinary connection's close told the handler a stream left")
+    close(FileDescriptor(plain[1]))
+
+
+def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() raises:
+    """A stream's heartbeat (`_heartbeat`, which `_on_timer` hands every
+    ident from `TIMER_SSE_HEARTBEAT` up to the app tick's): re-armed before
+    anything else, both backends' timers being one-shots, so a beat
+    skipped for a stream that may not take a frame now (a WebSocket
+    lingering after its Close) still leaves the next armed; an SSE stream
+    sent the comment `: heartbeat` and a WebSocket a ping, the slot idle
+    again once it has gone out; a stream whose client has gone closed by
+    the send that fails, its handler told; and a heartbeat whose
+    descriptor holds no stream any more retired, not re-armed.
+
+    covers: I3, I9
+    """
+    ignore_sigpipe()
+    var app = Departures()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+
+    var sse = _stream_pair()
+    var sse_slot = _stream_slot(st, sse[0], False)
+    var sse_beat = TIMER_SSE_HEARTBEAT + UInt(sse[0])
+    _on_timer(app, backend, st, sse_beat)
+    assert_true(sse_beat in backend.timers, "the heartbeat was not re-armed")
+    var comment = List[UInt8]()
+    _ = _read_available(sse[1], comment)
+    assert_equal(String(unsafe_from_utf8=Span(comment)), ": heartbeat\n\n")
+    assert_equal(
+        st.provision_pool.provisions[sse_slot].state.kind,
+        ConnectionState.STREAMING_SSE,
+    )
+
+    var ws = _stream_pair()
+    var ws_slot = _stream_slot(st, ws[0], True)
+    _on_timer(app, backend, st, TIMER_SSE_HEARTBEAT + UInt(ws[0]))
+    var ping = List[UInt8]()
+    _ = _read_available(ws[1], ping)
+    assert_equal(len(ping), 4, "not a two-byte ping")
+    assert_equal(Int(ping[0]), 0x89, "not a final ping frame")
+    assert_equal(Int(ping[1]), 2)
+    assert_equal(
+        st.provision_pool.provisions[ws_slot].state.kind,
+        ConnectionState.STREAMING_WS,
+    )
+
+    # A WebSocket lingering after its own Close takes no frame it did not
+    # write (L29): the beat is skipped, and its timer re-armed all the same,
+    # so the stream's heartbeats go on once it may take one.
+    st.slot_ws_state[ws_slot].closing = True
+    var ws_beat = TIMER_SSE_HEARTBEAT + UInt(ws[0])
+    backend.try_delete_timer(ws_beat)
+    _on_timer(app, backend, st, ws_beat)
+    assert_true(ws_beat in backend.timers, "a skipped beat was not re-armed")
+    var nothing = List[UInt8]()
+    _ = _read_available(ws[1], nothing)
+    assert_equal(len(nothing), 0, "a frame went to a socket lingering after its Close")
+
+    # The SSE stream's client leaves without a word.
+    close(FileDescriptor(sse[1]))
+    _on_timer(app, backend, st, sse_beat)
+    assert_equal(st.slot_fds[sse_slot], UNUSED, "a heartbeat to a client that left kept its stream")
+    assert_equal(len(app.left), 1)
+    assert_equal(app.left[0], sse_slot)
+    assert_false(sse_beat in backend.timers, "the closed stream's heartbeat outlived it")
+
+    # Its descriptor holds no stream now: a beat still pending is retired.
+    backend.try_add_timer(sse_beat, 1000)
+    _on_timer(app, backend, st, sse_beat)
+    assert_false(sse_beat in backend.timers, "a heartbeat for no stream was re-armed")
+    _close_slot(app, backend, st, ws_slot, ws[0])
+    close(FileDescriptor(ws[1]))
+
+
+def test_admission_takes_what_the_pool_has_room_for_and_maps_any_descriptor() raises:
+    """`_admit_connection` takes a connection into a free slot and nothing
+    else: one past the last slot is closed unanswered, holding nothing; a
+    descriptor that is not open is refused at the non-blocking flag, its
+    slot given back; and a descriptor past the end of the descriptor map
+    grows the map to hold it, as one at or above 65536 needs.
+
+    covers: A40
+    """
+    var config = _config()
+    config.max_connections = 1
+    var app = NoApp()
+    var backend = FakeBackend()
+    var st = _loop(config)
+    st.fd_to_slot.resize(4, UNUSED)
+
+    var first = _stream_pair()
+    assert_true(first[0] >= 4)
+    _admit_connection(app, backend, st, first[0], String("127.0.0.1"), 1)
+    assert_equal(st.active_count, 1)
+    assert_true(len(st.fd_to_slot) > first[0], "the map did not grow to the descriptor")
+    var slot = st.fd_to_slot[first[0]]
+    assert_true(slot != UNUSED, "a descriptor past the map was not mapped")
+    assert_equal(st.slot_fds[slot], first[0])
+
+    var second = _stream_pair()
+    _admit_connection(app, backend, st, second[0], String("127.0.0.1"), 2)
+    assert_equal(st.active_count, 1, "a connection past the last slot was admitted")
+    var got = List[UInt8]()
+    assert_true(_read_available(second[1], got), "a connection past the last slot was left open")
+    assert_equal(len(got), 0)
+    close(FileDescriptor(second[1]))
+
+    _close_slot(app, backend, st, slot, first[0])
+    close(FileDescriptor(first[1]))
+    var gone = _stream_pair()
+    close(FileDescriptor(gone[0]))
+    _admit_connection(app, backend, st, gone[0], String("127.0.0.1"), 3)
+    assert_equal(st.active_count, 0, "a descriptor that is not open was admitted")
+    assert_equal(st.provision_pool.available_count(), 1, "the refused descriptor kept its slot")
+    close(FileDescriptor(gone[1]))
+
+
+def test_a_response_whose_write_wait_is_refused_closes_its_connection() raises:
+    """`_await_write` answers False when the backend refuses the write
+    one-shot, the slot's read interest counted gone as on success; and a
+    response that could not go out whole then closes its connection
+    (`_finish_response`) rather than wait on an event nothing will
+    report."""
+    var backend = FakeBackend()
+    backend.refuse_write = True
+    var st = _loop(_config())
+    var slot = st.provision_pool.borrow()
+    assert_true(_arm_reads(backend, st, slot, FD))
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    assert_false(_await_write(backend, st, slot, FD))
+    assert_false(st.slot_read_armed[slot])
+    st.provision_pool.release(slot)
+
+    var app = NoApp()
+    var pair = _stream_pair()
+    var other = st.provision_pool.borrow()
+    st.slot_fds[other] = pair[0]
+    st.fd_to_slot[pair[0]] = other
+    st.active_count = 1
+    _ = _fill_send_buffer(pair[0])
+    _finish_response(app, backend, st, other, pair[0], OK("unsent", "text/plain"))
+    assert_equal(st.slot_fds[other], UNUSED, "a response that could not wait kept its connection")
+    _discard_all(pair[1])
+    close(FileDescriptor(pair[1]))
 
 
 def test_connect_is_answered_501_and_closed() raises:

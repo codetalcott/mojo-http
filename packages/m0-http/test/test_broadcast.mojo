@@ -16,7 +16,13 @@ from lightbug_http.broadcast import (
     encode_bus_frame, decode_bus_frame, drain_bus_channel,
     publish_to_channels,
 )
-from lightbug_http.c.fcntl import set_nonblocking, is_nonblocking
+from std.ffi import c_int
+from std.sys.info import CompilationTarget
+
+from lightbug_http.c.fcntl import (
+    F_GETFL, F_SETFL, _fcntl, is_nonblocking, set_nonblocking,
+)
+from lightbug_http.c.pipe import close_fd
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.c.socket import send
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
@@ -415,6 +421,37 @@ def test_set_nonblocking_takes_effect() raises:
     # The other end is untouched: the flag is per-fd, not per-pair.
     assert_false(is_nonblocking(FileDescriptor(pair[1])))
 
+
+def test_set_nonblocking_keeps_the_other_flags_and_refuses_a_closed_descriptor() raises:
+    """`set_nonblocking` adds O_NONBLOCK to the flags the descriptor has,
+    never replaces them -- O_APPEND set beforehand survives it, and a
+    second call changes nothing -- and both it and `is_nonblocking` raise
+    for a descriptor that is not open, where a flag read as -1 would have
+    looked set."""
+    comptime O_APPEND = 0x8 if CompilationTarget.is_macos() else 0x400
+    var pair = socketpair_dgram()
+    var a = FileDescriptor(pair[0])
+    assert_true(_fcntl(c_int(a.value), c_int(F_SETFL), c_int(O_APPEND)) == 0)
+    set_nonblocking(a)
+    set_nonblocking(a)
+    var flags = Int(_fcntl(c_int(a.value), c_int(F_GETFL)))
+    assert_true((flags & O_APPEND) != 0, "set_nonblocking dropped O_APPEND")
+    assert_true(is_nonblocking(a))
+    close_fd(pair[0])
+    close_fd(pair[1])
+
+    var set_refused = False
+    try:
+        set_nonblocking(a)
+    except e:
+        set_refused = String(e).find("F_GETFL failed") >= 0
+    assert_true(set_refused, "set_nonblocking on a closed descriptor did not raise")
+    var probe_refused = False
+    try:
+        _ = is_nonblocking(a)
+    except e:
+        probe_refused = String(e).find("F_GETFL failed") >= 0
+    assert_true(probe_refused, "is_nonblocking on a closed descriptor did not raise")
 
 def test_bus_channels_are_nonblocking() raises:
     """Every bus fd carries O_NONBLOCK from construction.

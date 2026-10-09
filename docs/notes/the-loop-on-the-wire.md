@@ -172,7 +172,11 @@ own abuse-ratio guard could never trip.
 The per-connection cap is `ServerConfig.recv_buffer_limit()` — headers plus
 body allowance, floored by `recv_buffer_max` — never the bare field, which
 was a second, lower ceiling that `--max-body` did not raise and that refused
-oversized bodies as `400` where the body cap sends `413`.
+oversized bodies as `400` where the body cap sends `413`. The head path
+compares its buffer with it. The body path no longer does (review record
+LF70): that buffer also holds the head and the next pipelined request, and
+comparing it refused bodies within both caps, so a body read after its head
+is held to its own sizes, a chunked one after each decode.
 
 ## Request bytes are not UTF-8
 
