@@ -126,8 +126,8 @@ SABOTAGES = [
         "the bus is drained only above one worker",
         SMOKE,
         HOST,
-        "        bus_read_fd=bus.read_fd(worker),\n",
-        "        bus_read_fd=bus.read_fd(worker) if forked else -1,\n",
+        "        bus_read_fd=pieces.bus.read_fd(worker),\n",
+        "        bus_read_fd=pieces.bus.read_fd(worker) if forked else -1,\n",
     ),
     (
         "a producer in every worker (the tick-owner rule)",
@@ -140,14 +140,14 @@ SABOTAGES = [
         "accept sharing is never bound",
         SMOKE,
         HOST,
-        "    bind_accept_share(share, worker, host_page.addr(0))\n",
+        "    bind_accept_share(pieces.share, worker, pieces.host_page.addr(0))\n",
         "",
     ),
     (
         "a worker the supervisor reaps is never marked gone",
         SMOKE,
         HOST,
-        "        supervisor.share_accepts(share, shared_id_addr())\n",
+        "        supervisor.share_accepts(pieces.share, shared_id_addr())\n",
         "",
     ),
     (
@@ -156,13 +156,13 @@ SABOTAGES = [
         HOST,
         (
             "    var worker = 0\n    var forked = workers > 1\n    if forked:\n",
-            "    bind_accept_share(share, worker, host_page.addr(0))\n"
+            "    bind_accept_share(pieces.share, worker, pieces.host_page.addr(0))\n"
             "    var shutdown_fd = install_shutdown_signals()\n",
         ),
         (
             "    var shutdown_fd = install_shutdown_signals()\n"
             "    var worker = 0\n    var forked = workers > 1\n    if forked:\n",
-            "    bind_accept_share(share, worker, host_page.addr(0))\n",
+            "    bind_accept_share(pieces.share, worker, pieces.host_page.addr(0))\n",
         ),
     ),
     (
@@ -290,19 +290,16 @@ SABOTAGES = [
         "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
     ),
     # --- round 4: the id space and a raising make (SPEC E25) -------------------
+    # `_prefork_pieces` makes the page for both paths, so a worker REPLACES
+    # it after the fork: its accept share and the id word its handler and
+    # producer number from are then a page of its own.
     (
         "the shared id word is created after the fork, one per worker",
         SMOKE,
         HOST,
-        (
-            "    var host_page = prefork_page(workers)\n",
-            "    bind_accept_share(share, worker, host_page.addr(0))\n",
-        ),
-        (
-            "",
-            "    var host_page = prefork_page(workers)\n"
-            "    bind_accept_share(share, worker, host_page.addr(0))\n",
-        ),
+        "    bind_accept_share(pieces.share, worker, pieces.host_page.addr(0))\n",
+        "    pieces.host_page = prefork_page(workers)\n"
+        "    bind_accept_share(pieces.share, worker, pieces.host_page.addr(0))\n",
     ),
     (
         "next_id never advances the shared word",
@@ -322,8 +319,12 @@ SABOTAGES = [
         "a raising producer make exits 1, a crash the supervisor respawns",
         SMOKE,
         HOST,
-        "            process_exit(EX_CONFIG)\n\n    # The pool lane (docstring, 9a).",
-        "            process_exit(1)\n\n    # The pool lane (docstring, 9a).",
+        "producer's make raised, so this configuration is refused: \"\n"
+        "            + String(e),\n            flush=True,\n        )\n"
+        "        process_exit(EX_CONFIG)\n",
+        "producer's make raised, so this configuration is refused: \"\n"
+        "            + String(e),\n            flush=True,\n        )\n"
+        "        process_exit(1)\n",
     ),
     (
         "start swallows the producer make's error and spawns nothing",
