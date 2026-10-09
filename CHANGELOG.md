@@ -208,6 +208,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   four points of the pool's park path never lost the message, and a sleep
   after the test's send failed the old test every time.
 
+- **A pool shutdown test no longer depends on how fast it runs** (fork
+  review LF76). The test that `stop` waits for room to pill a thread on a
+  full lane filled the lane while the thread sat in a 200 ms view. A test
+  thread slower than that, descheduled or slowed by a loaded machine, met
+  a thread already reading: the lane never refused a message, or it
+  filled with thousands that the thread drained past the test's 3 s join,
+  which then reported a lost pill although the pill was taken. The view
+  now lasts until the test has filled the lane. The server was not at
+  fault: sleeps in `stop`'s pill path and in the thread's park never lost
+  a pill, and a sleep in the test's fill failed it in 8 runs of 9.
+
 - **A cross-worker bus frame is delivered whole or not at all** (SPEC
   I40). Exposed: a publish whose channel name and frame together passed
   about 69.6 KB, through `m0pub.publish()`, `scope["state"]["m0"]`,
