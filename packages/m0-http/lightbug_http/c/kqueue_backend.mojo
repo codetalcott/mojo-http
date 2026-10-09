@@ -11,11 +11,10 @@ from lightbug_http.c.kqueue import (
     EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT,
 )
 from lightbug_http.c.pipe import close_fd
-from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
+from lightbug_http.event_loop_backend import (
+    ConstructibleBackend, EventLoopBackend, _MAX_EVENTS,
+)
 from std.memory.alloc import unsafe_alloc
-
-
-comptime _MAX_EVENTS = 64
 
 
 struct KqueueBackend(ConstructibleBackend):
@@ -72,12 +71,6 @@ struct KqueueBackend(ConstructibleBackend):
     def add_read(mut self, fd: Int) raises:
         kevent_register_one(self.kq, ev_set(UInt(fd), EVFILT_READ, EV_ADD))
 
-    def try_add_read(mut self, fd: Int):
-        try:
-            self.add_read(fd)
-        except:
-            pass
-
     def add_write_oneshot(mut self, fd: Int) raises:
         """A one-shot write filter IN PLACE OF the fd's read filter.
 
@@ -97,12 +90,6 @@ struct KqueueBackend(ConstructibleBackend):
             ev_set(UInt(fd), EVFILT_WRITE, EV_ADD | EV_ONESHOT),
             ev_set(UInt(fd), EVFILT_READ, EV_DELETE),
         )
-
-    def try_add_write_oneshot(mut self, fd: Int):
-        try:
-            self.add_write_oneshot(fd)
-        except:
-            pass
 
     def try_delete_read(mut self, fd: Int):
         try:

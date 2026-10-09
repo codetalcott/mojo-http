@@ -1,4 +1,4 @@
-from std.ffi import c_char, c_int, c_uint, c_ushort, external_call, get_errno
+from std.ffi import ErrNo, c_char, c_int, c_uint, c_ushort, external_call, get_errno
 from std.sys.info import CompilationTarget, size_of
 
 from lightbug_http.c.address import AddressFamily, AddressLength
@@ -417,9 +417,9 @@ def inet_ntop[address_family: AddressFamily](address: InetAddress) raises InetNt
     _ = src
     if Int(result) == 0:
         var errno = get_errno()
-        if errno == errno.EAFNOSUPPORT:
+        if errno == ErrNo.EAFNOSUPPORT:
             raise InetNtopEAFNOSUPPORTError()
-        elif errno == errno.ENOSPC:
+        elif errno == ErrNo.ENOSPC:
             raise InetNtopENOSPCError()
         else:
             raise Error(

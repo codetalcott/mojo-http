@@ -24,12 +24,13 @@ from lightbug_http.c.epoll import (
 )
 from lightbug_http.c.fcntl import O_CLOEXEC, O_NONBLOCK
 from lightbug_http.c.pipe import close_fd
-from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
-from std.ffi import ErrNo, c_int
+from lightbug_http.c.socket_error import SysError
+from lightbug_http.event_loop_backend import (
+    ConstructibleBackend, EventLoopBackend, _MAX_EVENTS,
+)
+from std.ffi import ErrNo, c_int, get_errno
 from std.memory.alloc import unsafe_alloc
 
-
-comptime _MAX_EVENTS = 64
 
 # Bit 63 of epoll data.u64 marks events that came from a timerfd.
 # The remaining 63 bits carry the original ident value.
@@ -88,7 +89,7 @@ struct EpollBackend(ConstructibleBackend):
     def __init__(out self) raises:
         var epfd_raw = epoll_create1(c_int(O_CLOEXEC))
         if epfd_raw == -1:
-            raise Error("epoll_create1 failed")
+            raise SysError("epoll_create1", get_errno())
         self.epfd = FileDescriptor(Int(epfd_raw))
         self._events = unsafe_alloc[UInt32](count=_MAX_EVENTS * EPOLL_EVENT_WORDS)
         for i in range(_MAX_EVENTS * EPOLL_EVENT_WORDS):
@@ -209,12 +210,6 @@ struct EpollBackend(ConstructibleBackend):
                 raise add_err
             epoll_ctl_mod(self.epfd, fd, _R, UInt64(fd))
 
-    def try_add_read(mut self, fd: Int):
-        try:
-            self.add_read(fd)
-        except:
-            pass
-
     def add_write_oneshot(mut self, fd: Int) raises:
         """One-shot write-ready event, in place of the fd's read interest.
 
@@ -233,12 +228,6 @@ struct EpollBackend(ConstructibleBackend):
             if mod_err.errno != ErrNo.ENOENT:
                 raise mod_err
             epoll_ctl_add(self.epfd, fd, _W, UInt64(fd))
-
-    def try_add_write_oneshot(mut self, fd: Int):
-        try:
-            self.add_write_oneshot(fd)
-        except:
-            pass
 
     def try_delete_read(mut self, fd: Int):
         try:

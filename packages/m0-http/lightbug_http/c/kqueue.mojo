@@ -7,9 +7,10 @@ implement a single-threaded, non-blocking HTTP server.
 """
 
 from std.memory import stack_allocation
-from std.ffi import c_int, external_call, get_errno
+from std.ffi import ErrNo, c_int, external_call, get_errno
 
 from lightbug_http.c.aliases import ExternalMutPointer
+from lightbug_http.c.socket_error import SysError
 
 
 # --- kqueue filter constants ---
@@ -75,12 +76,11 @@ def _kqueue() -> c_int:
     return external_call["kqueue", c_int]()
 
 
-def kqueue() raises -> FileDescriptor:
+def kqueue() raises SysError -> FileDescriptor:
     """Create a new kqueue file descriptor."""
     var result = _kqueue()
     if result == -1:
-        var errno = get_errno()
-        raise Error("kqueue() failed, errno: ", errno)
+        raise SysError("kqueue", get_errno())
     return FileDescriptor(Int(result))
 
 
@@ -104,17 +104,18 @@ def _kevent(
     )
 
 
-def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises:
+def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises SysError:
     """Submit a single kevent change using stack allocation (zero heap)."""
     var cl = stack_allocation[1, kevent_t]()
     cl[] = ev
     var result = _kevent(Int32(kq.value), cl, c_int(1), None, c_int(0), None)
     if result == -1:
-        var errno = get_errno()
-        raise Error("kevent_register_one failed, errno: " + String(errno))
+        raise SysError("kevent register", get_errno())
 
 
-def kevent_register_pair(kq: FileDescriptor, first: kevent_t, second: kevent_t) raises:
+def kevent_register_pair(
+    kq: FileDescriptor, first: kevent_t, second: kevent_t
+) raises SysError:
     """Submit two kevent changes in ONE syscall, forgiving the second a
     delete of nothing.
 
@@ -132,9 +133,9 @@ def kevent_register_pair(kq: FileDescriptor, first: kevent_t, second: kevent_t) 
     var result = _kevent(Int32(kq.value), cl, c_int(2), None, c_int(0), None)
     if result == -1:
         var errno = get_errno()
-        if errno == errno.ENOENT:
+        if errno == ErrNo.ENOENT:
             return
-        raise Error("kevent_register_pair failed, errno: " + String(errno))
+        raise SysError("kevent register", errno)
 
 
 def kevent_poll(
@@ -142,7 +143,7 @@ def kevent_poll(
     eventlist: ExternalMutPointer[kevent_t],
     max_events: Int,
     timeout_ms: Int,
-) raises -> Int:
+) raises SysError -> Int:
     """Poll kqueue for events with a timeout."""
     return kevent_poll_ns(kq, eventlist, max_events, timeout_ms * 1_000_000)
 
@@ -152,7 +153,7 @@ def kevent_poll_ns(
     eventlist: ExternalMutPointer[kevent_t],
     max_events: Int,
     timeout_ns: Int,
-) raises -> Int:
+) raises SysError -> Int:
     """Poll kqueue for events with a timeout in nanoseconds: `kevent`'s
     timespec carries them whole (measured on an Apple M4 at about 13 µs
     for a 10 µs timeout and 1.14 ms for 1 ms, the kernel's leeway).
@@ -170,7 +171,7 @@ def kevent_poll_ns(
 
     if result == -1:
         var errno = get_errno()
-        if errno == errno.EINTR:
+        if errno == ErrNo.EINTR:
             return 0
-        raise Error("kevent_poll failed, errno: ", errno)
+        raise SysError("kevent poll", errno)
     return Int(result)

@@ -32,7 +32,7 @@ from std.ffi import c_int, c_ssize_t, external_call
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.platform import MSG_DONTWAIT
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC
+from lightbug_http.c.fcntl import mark_fresh_cloexec
 from lightbug_http.c.pipe import close_fd
 
 comptime _MSG_CMSG_CLOEXEC_LINUX = 0x40000000
@@ -236,8 +236,7 @@ def recv_fd(channel: Int, mut payload: List[UInt8]) -> Int:
                 close_fd(passed[i])
     comptime if CompilationTarget.is_macos():
         if got >= 0:
-            # F_SETFD fails only on EBADF, which a received descriptor is not.
-            _ = _fcntl(c_int(got), c_int(F_SETFD), c_int(FD_CLOEXEC))
+            mark_fresh_cloexec(got)
     _ = iov
     _ = data
     _ = control

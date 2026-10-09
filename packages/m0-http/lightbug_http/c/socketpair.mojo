@@ -20,14 +20,15 @@ from std.ffi import c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
 from std.sys.info import CompilationTarget
 
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
+from lightbug_http.c.fcntl import mark_fresh_cloexec, O_CLOEXEC
+from lightbug_http.c.socket_error import SysError
 
 
 comptime AF_UNIX = 1
 comptime SOCK_DGRAM = 2
 
 
-def socketpair_dgram() raises -> Tuple[Int, Int]:
+def socketpair_dgram() raises SysError -> Tuple[Int, Int]:
     """One SOCK_DGRAM AF_UNIX pair. Returns (receive end, send end).
 
     The pair is symmetric — either end can send — so the naming is a
@@ -49,14 +50,12 @@ def socketpair_dgram() raises -> Tuple[Int, Int]:
     if rc != 0:
         var errno = get_errno()
         fds.unsafe_free()
-        raise Error("socketpair() failed, errno: ", errno)
+        raise SysError("socketpair", errno)
     var read_end = Int(fds[unsafe_offset=0])
     var write_end = Int(fds[unsafe_offset=1])
     fds.unsafe_free()
     comptime if CompilationTarget.is_macos():
-        # Marked right after: a fresh fd's only fd flag is this one, and
-        # F_SETFD fails only on EBADF, which a descriptor socketpair() just
-        # returned is not.
-        _ = _fcntl(c_int(read_end), c_int(F_SETFD), c_int(FD_CLOEXEC))
-        _ = _fcntl(c_int(write_end), c_int(F_SETFD), c_int(FD_CLOEXEC))
+        # Marked right after.
+        mark_fresh_cloexec(read_end)
+        mark_fresh_cloexec(write_end)
     return (read_end, write_end)

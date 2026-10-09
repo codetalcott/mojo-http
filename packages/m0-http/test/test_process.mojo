@@ -105,7 +105,7 @@ def _process_failures_scenario():
         try:
             _ = waitpid_blocking(-1)
         except e:
-            raised = String(e).find("waitpid() failed") >= 0
+            raised = String(e).find("waitpid: ") >= 0
         if not raised:
             wrong |= 2
         # A child that has not exited: the poller answers (0, 0).
@@ -134,7 +134,7 @@ def _process_failures_scenario():
                         process_exit(0)
                     _ = waitpid_blocking(grandchild)
                 except e:
-                    refused = String(e).find("fork() failed") >= 0
+                    refused = String(e).find("fork: ") >= 0
                 if not refused:
                     wrong |= 32
         process_exit(wrong)
@@ -169,14 +169,14 @@ def test_each_process_call_answers_what_it_cannot_do() raises:
 
 def _pipe_at_the_descriptor_limit_scenario():
     """In a child: `create_shutdown_pipe` once no descriptor is free.
-    Exits 0 when it raised naming `pipe()`. Never returns."""
+    Exits 0 when it raised naming `pipe`. Never returns."""
     if not _set_soft_limit(_RLIMIT_NOFILE, 3):
         process_exit(2)
     try:
         _ = create_shutdown_pipe()
         process_exit(1)
     except e:
-        process_exit(0 if String(e).find("pipe() failed") >= 0 else 3)
+        process_exit(0 if String(e).find("pipe: ") >= 0 else 3)
 
 
 def test_a_shutdown_pipe_past_the_descriptor_limit_is_refused() raises:

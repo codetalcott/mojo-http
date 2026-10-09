@@ -30,7 +30,7 @@ vector on one platform only would mean two different orderings to reason
 about for no gain.
 """
 
-from std.ffi import c_int, external_call, get_errno
+from std.ffi import ErrNo, c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 
 from lightbug_http.io.bytes import Bytes
@@ -117,7 +117,7 @@ def send_file(out_fd: Int, in_fd: Int, offset: Int, count: Int) -> SendFileResul
                 return SendFileResult(0, False, True)
             return SendFileResult(wrote, False, False)
         var err = get_errno()
-        if err in [err.EAGAIN, err.EWOULDBLOCK, err.EINTR]:
+        if err in [ErrNo.EAGAIN, ErrNo.EWOULDBLOCK, ErrNo.EINTR]:
             # `wrote` is real even here — that is the whole trap.
             return SendFileResult(wrote, True, False)
         return SendFileResult(wrote, False, True)
@@ -133,6 +133,6 @@ def send_file(out_fd: Int, in_fd: Int, offset: Int, count: Int) -> SendFileResul
         if rc > 0:
             return SendFileResult(Int(rc), False, False)
         var err = get_errno()
-        if err in [err.EAGAIN, err.EWOULDBLOCK, err.EINTR]:
+        if err in [ErrNo.EAGAIN, ErrNo.EWOULDBLOCK, ErrNo.EINTR]:
             return SendFileResult(0, True, False)
         return SendFileResult(0, False, True)
