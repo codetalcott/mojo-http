@@ -308,6 +308,16 @@ struct LoopState(Movable):
         return self.accept_owed or self.handoffs_owed
 
 
+@always_inline
+def _slot_of(st: LoopState, fd_val: Int) -> Int:
+    """The slot an event's descriptor belongs to, or `UNUSED`: a descriptor
+    past the end of the map, or one no slot holds (`_close_slot` unmaps
+    it). The read, write, body-timer and heartbeat paths each begin here."""
+    if fd_val >= len(st.fd_to_slot):
+        return UNUSED
+    return st.fd_to_slot[fd_val]
+
+
 # --- Per-slot lifecycle ------------------------------------------------------
 #
 # A slot's state outside its provision lives in the loop's parallel lists,

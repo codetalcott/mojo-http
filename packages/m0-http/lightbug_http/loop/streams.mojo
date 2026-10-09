@@ -19,7 +19,7 @@ from lightbug_http.websocket import encode_ws_frame, WS_OP_PING
 from lightbug_http.loop.state import (
     LoopState, TIMER_SSE_HEARTBEAT, UNUSED, _arm_reads, _arm_ws_linger,
     _await_write, _chunked_stream_ends, _close_slot, _rearm_reads,
-    _stop_reads, _takes_an_out_of_band_frame, _ws_linger,
+    _slot_of, _stop_reads, _takes_an_out_of_band_frame, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
@@ -44,9 +44,7 @@ def _heartbeat[T: HTTPService, B: EventLoopBackend](
     """A stream's heartbeat: an SSE comment or a WebSocket ping, re-armed
     first; a send that fails closes the stream."""
     var fd_val = Int(timer_ident - TIMER_SSE_HEARTBEAT)
-    if fd_val >= len(st.fd_to_slot):
-        return
-    var hb_slot = st.fd_to_slot[fd_val]
+    var hb_slot = _slot_of(st, fd_val)
     if hb_slot == UNUSED or not (st.slot_sse[hb_slot] or st.slot_ws[hb_slot]):
         # The stream this timer belonged to is gone (or the fd
         # now serves a non-streaming connection); retire the timer.

@@ -25,7 +25,7 @@ from lightbug_http.websocket import is_ws_upgrade_response
 from lightbug_http.loop.state import (
     LoopState, STREAM_KEEPALIVE_PROBES, UNUSED, _arm_send_deadline,
     _await_write, _close_slot, _end_request, _keep_stream_close,
-    _record_response, _stream_idle, _ws_linger,
+    _record_response, _slot_of, _stream_idle, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 
@@ -36,9 +36,7 @@ def _on_write[T: HTTPService, B: EventLoopBackend](
     """A connection socket is writable: send more of the response it owes
     -- the head, then a file body -- and once it has landed, finish it and
     answer what is pipelined behind."""
-    if fd_val >= len(st.fd_to_slot):
-        return
-    var slot = st.fd_to_slot[fd_val]
+    var slot = _slot_of(st, fd_val)
     if slot == UNUSED:
         return
 
