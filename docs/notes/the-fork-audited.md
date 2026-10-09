@@ -115,11 +115,8 @@ By audit:
 
 The audits judged 699 functions (a struct's own lines and a module's
 imports count as one each): 161 deleted, 449 pinned by a named test, 89
-recorded as needing none. At f5f15a53 every function that
-holds inherited lines has a row but one, which covers 3,725 of the 3,737
-lines. The exception is `_frame_buffered` in `loop/request.mojo`, 12
-lines that lane Q's fix for LF72 split out of `_handle_read_headers`
-after A4 had audited it.
+recorded as needing none. At f5f15a53 every function that holds
+inherited lines has a row, so the ledgers cover all 3,737 of those lines.
 
 The suite went from 1,609 unit tests to 1,772. `docs/SPEC.md` gained 67
 rows (A26–A42, B12–B30, C11–C13, C16–C19, D12, D13, E40, F22, F23, F25,
@@ -266,5 +263,4 @@ a measurement in a release's quiet stage.
 |---|---|
 | LF24: the pool's wake and thread records sit on a 64-byte stride in blocks `malloc` aligns to 16, where Apple silicon's lines are 128-byte | `scripts/probes/pool_ab.py LF24`, run by `scripts/probes/quiet-machine-ab.md`: the strides and alignment change if 128 is faster, and the docstrings that call each record a cache line of its own are corrected if not |
 | LF22's cost: a thread that parks makes one non-blocking `recv` on its lane socket after announcing the park | `pool_ab.py LF22`, by the same runbook, against an arm without the look; the owner rules on the result |
-| `_frame_buffered`'s ledger row | a row in A4's ledger for the 12 lines LF72's fix moved there from `_handle_read_headers` |
 | the pre-release gates the lanes could not run | `stress-pool`, after LF22 and LF23 changed the pool and the bus; `sabotage-host`, whose files lanes A1, A4, B, F and L touched (all 73 of its anchors still match exactly once at f5f15a53). Both are on RELEASING's list, so the next release runs them |
