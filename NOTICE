@@ -1918,6 +1918,13 @@ lightbug_http
         on Linux a 25-byte send to a full socket can come back short
         (review record LF73, SPEC A42).
 
+      - loop/request.mojo (2026-10-08): the header timeout met at a read
+        answers 408 through `_reject_and_linger`, the 413's lingering
+        close, where it sent the 408 and closed at once. The check comes
+        before the read, so the rest of the head was unread, and closing
+        over it reset the connection: on Linux the client's read failed
+        ECONNRESET and the 408 was lost (review record LF75, SPEC A5).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

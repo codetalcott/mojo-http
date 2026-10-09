@@ -979,10 +979,18 @@ def test_a_handler_that_raises_is_answered_500_and_closed() raises:
 def test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read() raises:
     """The header timeout is met at a read as well as by the once-a-second
     sweep: a head whose first bytes came longer ago than
-    `header_read_timeout` is answered 408 with `Connection: close`, and
-    closed, at the read that brings more of it, rather than served late;
-    the same head completed in time is answered. The sweep's half is
+    `header_read_timeout` is answered 408 with `Connection: close` at the
+    read that brings more of it, rather than served late; the same head
+    completed in time is answered. The sweep's half is
     `Smoke test the header read timeout` (A5).
+
+    The 408 goes out with the lingering close a 413 gets (A20): the write
+    side shut behind it, what the client still sends read and discarded,
+    and the connection closed once the client closes. The check comes
+    before the read, so the rest of the head is in the socket, and closing
+    over it reset the connection: on Linux the client's read failed
+    ECONNRESET, the 408 lost (review record LF75; macOS's AF_UNIX sockets
+    do not reset, a TCP connection does on both).
 
     covers: A5
     """
@@ -1006,16 +1014,27 @@ def test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read
         _send_all(pair[1], "Host: x\r\n\r\n")
         _on_read(app, backend, st, pair[0], False)
         var got = List[UInt8]()
-        _ = _read_available(pair[1], got)
+        var eof = _read_available(pair[1], got)
         var reply = String(unsafe_from_utf8=Span(got)).lower()
         if late:
             assert_true(reply.startswith("http/1.1 408 request timeout"), reply)
             assert_true("connection: close" in reply, reply)
-            assert_equal(st.slot_fds[slot], UNUSED, "a head past its timeout kept its connection")
+            assert_true(eof, "the 408 was not followed by the server's FIN")
+            assert_equal(
+                st.provision_pool.provisions[slot].state.kind,
+                ConnectionState.LINGERING,
+                "a head past its timeout was closed, not lingered",
+            )
+            # The client closes; the linger's read sees it and closes too.
+            close(FileDescriptor(pair[1]))
+            _on_read(app, backend, st, pair[0], True)
+            assert_equal(
+                st.slot_fds[slot], UNUSED, "the linger outlived its client"
+            )
         else:
             assert_true(reply.startswith("http/1.1 200 ok"), reply)
             close(FileDescriptor(pair[0]))
-        close(FileDescriptor(pair[1]))
+            close(FileDescriptor(pair[1]))
 
 
 def test_a_new_loop_has_every_slot_free_and_ignores_descriptors_it_does_not_hold() raises:

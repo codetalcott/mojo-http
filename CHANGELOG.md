@@ -472,6 +472,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   the answer or the error that ends the request, so the client reads a
   whole `100 Continue`, late if the buffer was full, then its response.
 
+- **A client still sending its headers when the header timeout passes
+  reads the `408`** (SPEC A5, fork review LF75). The server answered
+  `408 Request Timeout` and closed the connection with the rest of the
+  client's headers unread, which resets the connection: on Linux the
+  client saw "connection reset by peer" instead of the 408. The 408 now
+  goes out with the same lingering close a `413` gets -- the server stops
+  writing, reads and discards what the client is still sending for up to
+  five seconds, then closes -- so the client reads the answer.
+
 ### Changed
 
 - **A port outside 1-65535 is refused with exit 78, from a flag or the

@@ -39,7 +39,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Header read timeout (slowloris defence)",
       "status": "verified",
-      "evidence": "`Smoke test the header read timeout` (every PR) \u2014 a silent connection, answered 408 and closed by the once-a-second sweep. Met at a read too: a head whose first bytes came longer ago than the timeout is answered 408 and closed by the read that brings more of it, and the same head completed in time is answered, `test_slot_lifecycle.mojo:test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read`"
+      "evidence": "`Smoke test the header read timeout` (every PR) \u2014 a silent connection, answered 408 and closed by the once-a-second sweep. Met at a read too: a head whose first bytes came longer ago than the timeout is answered 408 by the read that brings more of it, with the lingering close of A20 (the write side shut behind it, what the client still sends discarded, the connection closed once the client closes), and the same head completed in time is answered, `test_slot_lifecycle.mojo:test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read`. That read's check comes before it reads, so it closed with the rest of the head unread, which resets a connection: on Linux the client's read failed ECONNRESET and the 408 was lost (review record LF75); sabotaged back to the close, the test fails so on Linux and at its linger assertion on macOS"
     },
     {
       "id": "A6",

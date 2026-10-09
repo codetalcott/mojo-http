@@ -383,8 +383,14 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     elif st.config.header_read_timeout > 0:
         var elapsed_s = (perf_counter_ns() - st.slot_header_start[slot]) / 1_000_000_000
         if elapsed_s >= Int(st.config.header_read_timeout):
-            _send_error_to_fd(fd_val, RequestTimeout())
-            _close_slot(handler, backend, st, slot, fd_val)
+            # With the lingering close a 413 gets (`_reject_and_linger`):
+            # this is met BEFORE the read, so the rest of the head the
+            # client is still sending is in the socket, and closing over
+            # unread bytes resets the connection -- on Linux the client's
+            # read failed ECONNRESET and the 408 was lost (review record
+            # LF75). Half-closed behind the answer and drained until the
+            # client stops, it reads the 408 and then our FIN.
+            _reject_and_linger(handler, backend, st, slot, fd_val, RequestTimeout())
             return
 
     # The answered requests' bytes go first. The drain has answered every
@@ -986,6 +992,9 @@ def _reject_and_linger[T: HTTPService, B: EventLoopBackend](
     var response: HTTPResponse,
 ):
     """Refuse a request whose body is still arriving, then linger.
+
+    The header timeout met at a read is answered here too, its 408 for a
+    head still arriving (review record LF75), for the same reason.
 
     A 413 goes out as soon as the size is known -- at the headers for a
     `Content-Length`, partway through for a chunked body -- so the client
