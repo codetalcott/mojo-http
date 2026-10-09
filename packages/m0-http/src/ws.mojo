@@ -22,17 +22,18 @@ where every message is an independent frame, wants exactly this; state
 replication with replay wants `DatastarStream` instead.
 
 Parallel `List` fields rather than a `List[Struct]` — the SoA pattern this
-repo uses to sidestep `ImplicitlyCopyable` constraints.
+repo uses for cheap per-field scans.
 """
 
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 
 from .multiworker import shared_fetch_add
+from .sse import MAX_PENDING_BYTES
 
 
 # Backpressure: stop queueing for a slot whose outbox is already this deep.
-# The same number and the same posture as `SSERegistry.MAX_PENDING_BYTES`,
-# and for the same reason — a client that stops reading must lose frames
+# The limit is `.sse`'s `MAX_PENDING_BYTES`, the same number and the same
+# posture as `SSERegistry`'s, and for the same reason — a client that stops reading must lose frames
 # rather than grow the server's memory without bound.
 #
 # It is reachable here specifically because the loop only drains a slot's
@@ -43,7 +44,6 @@ from .multiworker import shared_fetch_add
 # transport: a chat message missed by a stalled client is a missed message,
 # whereas the alternative is one non-reading socket costing the process all
 # of its memory.
-comptime MAX_PENDING_BYTES = 65536
 
 
 struct WSHub(Movable):

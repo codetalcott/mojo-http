@@ -214,8 +214,7 @@ def reason_phrase(status: Int) -> String:
     """The standard reason phrase for `status`, or the empty string --
     legal on the wire -- for a code with none.
 
-    CPython 3.13's `http.client.responses`, entry for entry (62 codes; the
-    generator is in the commit that added the table to `m0_wsgi.response`).
+    CPython 3.13's `http.client.responses`, entry for entry (62 codes).
     The one table: `redirect`, `page_or_fragment` and the login's refusals
     name their statuses with it, and `m0serve` answers an ASGI
     application's integer status with it, so that phrase never becomes a

@@ -97,8 +97,6 @@ from .threads import dup_fd
 from .etag import compute_etag, etag_matches
 
 
-# The file-type bits of `st_mode`, and the one value this module serves.
-# POSIX constants, spelled out because Mojo's `std.os` does not export them.
 comptime SVG_SANDBOX_POLICY = (
     "default-src 'none'; style-src 'unsafe-inline'; img-src 'self' data:;"
     " font-src 'self' data:; sandbox"
@@ -108,6 +106,8 @@ no script, no plugin, no request beyond its own inline styles, images and
 fonts, and `sandbox`, which gives the document an opaque origin, so even a
 script that ran would reach none of this origin's cookies or storage."""
 
+# The file-type bits of `st_mode`, and the one value this module serves.
+# POSIX constants, spelled out because Mojo's `std.os` does not export them.
 comptime _S_IFMT = 0o170000
 comptime _S_IFREG = 0o100000
 
@@ -196,11 +196,6 @@ struct StaticFiles(Copyable, Movable):
         ):
             resp.headers[HeaderKey.CONTENT_SECURITY_POLICY] = self.svg_policy
         return resp^
-
-    def matches(self, path: String) -> Bool:
-        """Whether `path` is under this mount's prefix. `serve` may still
-        answer None for it: a miss under the prefix is the handler's."""
-        return path.startswith(self.prefix) or path == String(self.prefix[byte = : self.prefix.byte_length() - 1])
 
     def serve(self, req: HTTPRequest) raises -> Optional[HTTPResponse]:
         """Serve `req` if it targets this mount; `None` if it does not.

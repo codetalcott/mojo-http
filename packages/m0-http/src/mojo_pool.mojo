@@ -465,7 +465,9 @@ def _streaming_refused() -> HTTPResponse:
         body_bytes=String(
             '{"error":"a streaming response cannot be served from a pool'
             ' thread: the loop drains its own handler registries, not this'
-            ' thread s"}'
+            ' thread',
+            "'",
+            's"}',
         ).as_bytes(),
         headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
         status_code=409,
