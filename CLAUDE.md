@@ -917,7 +917,10 @@ Properties of the design, not defects to fix in passing. Each names its note.
   reset `_total_overhead`, disarming the abuse-ratio guard.
 - **A body the server accepts must fit its receive buffer**: the
   per-connection cap is `ServerConfig.recv_buffer_limit()` — headers plus
-  body allowance, floored by `recv_buffer_max` — never the bare field.
+  body allowance, floored by `recv_buffer_max` — never the bare field. An
+  incomplete head is compared against it, alone (LF72); the body path does
+  not compare (review record LF70: that buffer also holds the next
+  request), and holds a body to its own sizes.
 
 ## Configuration
 

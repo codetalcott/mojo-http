@@ -771,20 +771,24 @@ def _padded_head(start: String, length: Int) -> String:
     return head + String("p") * (length - head.byte_length() - 4) + "\r\n\r\n"
 
 
-def test_a_body_within_the_caps_is_answered_however_its_reads_fall() raises:
-    """A body within both caps is answered whatever shares the reads that
-    bring it, and one over the body cap is refused 413 whatever its head's
-    size (review record LF70). The body path measured the receive buffer,
-    which holds the head and the next pipelined request as well as the
-    body, and a chunked body's framing before it was decoded: a
-    `Content-Length` body with the next request behind it in the read that
-    completed it was refused 400 once head, body and that request passed
-    the buffer's limit; a chunked body at the cap was refused 413 when its
-    framing, or a request behind it, came after its head, and answered
-    when they came with it; and a chunked body over the cap behind a head
-    near its own cap was refused 400 and closed rather than 413 and
-    lingered (SPEC A20). Each is measured as the head path measures it:
-    the decoded body, and the raw bytes it cost.
+def test_a_body_read_after_its_head_is_measured_by_its_own_sizes() raises:
+    """A body read after its head is measured by its own sizes, never by
+    the receive buffer that holds it (review record LF70): within both caps
+    it is answered whatever shares the reads that bring it, and over the
+    body cap it is refused 413 and lingered (SPEC A20) whatever its head's
+    size. The body path compared the whole buffer, which holds the head and
+    the next pipelined request beside the body, with `recv_buffer_limit()`,
+    and measured a chunked body before decoding it, as its decoded part
+    plus the raw tail still buffered: a `Content-Length` body whose last
+    read also brought the next request was refused 400 once head, body and
+    that request passed the buffer's limit; a chunked body at the cap was
+    refused 413 when its framing, or a request behind it, came after its
+    head, and answered when it came with it; and a chunked body over the
+    cap behind a head near its own cap was refused 400 and closed. Each is
+    measured now as the head path measures a body that arrives with it:
+    the decoded body, and the raw bytes it cost. The head path still holds
+    its whole buffer to the limit, so the same shapes sent in ONE read past
+    it are refused 400 (review record LF72's residual).
 
     covers: C18
     """
@@ -833,6 +837,82 @@ def test_a_body_within_the_caps_is_answered_however_its_reads_fall() raises:
         "413 payload too large" in over[0],
         "a chunked body over the cap behind a long head: " + over[0],
     )
+    assert_false(over[1], "the 413 closed its connection where it should linger")
+
+
+def test_a_chunk_line_that_never_ends_is_refused_at_twice_the_cap() raises:
+    """A chunked body's receive buffer is bounded by its decoder consuming
+    every byte it is handed: answering "incomplete", it leaves nothing
+    undecoded (`pending_bytes` 0), so the buffer holds the head and the
+    decoded body and no more, and what a line that never ends costs is
+    counted in `_total_read` and refused 413, with the lingering close, at
+    twice the body cap (C3). Since review record LF70 the body path
+    compares no buffer size with any limit, so this is the bound: a decoder
+    that kept an unfinished extension or size line back in the buffer
+    would let it grow with no check firing, its decoded size and consumed
+    bytes both flat. An extension that never reaches its CR, and a size
+    line of leading zeros that never ends, each sent a read at a time
+    after the head.
+
+    covers: C18
+    """
+    var config = _tight_caps()
+    var cap = config.max_request_body_size
+    var head = String(
+        "POST /e HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+    )
+    for extension in [True, False]:
+        var opening = String("5;ext=") if extension else String("")
+        var fill = String("e") if extension else String("0")
+        var app = NoApp()
+        var backend = FakeBackend()
+        var st = _loop(config)
+        var pair = _stream_pair()
+        var slot = st.provision_pool.borrow()
+        st.slot_fds[slot] = pair[0]
+        st.fd_to_slot[pair[0]] = slot
+        st.active_count = 1
+        st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+        _send_all(pair[1], head)
+        _on_read(app, backend, st, pair[0], False)
+        assert_equal(
+            st.provision_pool.provisions[slot].state.kind,
+            ConnectionState.READING_BODY,
+        )
+        var head_len = len(st.provision_pool.provisions[slot].recv_buffer)
+        var sent = 0
+        var refused = False
+        for i in range(20):
+            var piece = (opening if i == 0 else String("")) + fill * 40
+            _send_all(pair[1], piece)
+            sent += piece.byte_length()
+            _on_read(app, backend, st, pair[0], False)
+            if (
+                st.provision_pool.provisions[slot].state.kind
+                != ConnectionState.READING_BODY
+            ):
+                refused = True
+                break
+            assert_equal(
+                st.provision_pool.provisions[slot].chunk_decoder.pending_bytes, 0,
+                "the decoder left an unfinished line undecoded",
+            )
+            assert_equal(
+                len(st.provision_pool.provisions[slot].recv_buffer), head_len,
+                "an unfinished line stayed in the receive buffer",
+            )
+        assert_true(refused, "a line that never ends was never refused")
+        assert_true(
+            sent <= 2 * cap + opening.byte_length() + 40,
+            String("refused only after ", sent, " bytes"),
+        )
+        var got = List[UInt8]()
+        _ = _read_available(pair[1], got)
+        var reply = String(unsafe_from_utf8=Span(got)).lower()
+        assert_true(reply.startswith("http/1.1 413 payload too large"), reply)
+        assert_true(st.slot_fds[slot] != UNUSED, "the 413 closed its connection where it should linger")
+        _close_slot(app, backend, st, slot, pair[0])
+        close(FileDescriptor(pair[1]))
 
 
 struct Raises(HTTPService):
@@ -1067,7 +1147,9 @@ def test_a_closed_stream_tells_its_handler_once_and_retires_its_timers() raises:
 def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() raises:
     """A stream's heartbeat (`_heartbeat`, which `_on_timer` hands every
     ident from `TIMER_SSE_HEARTBEAT` up to the app tick's): re-armed before
-    anything else, both backends' timers being one-shots; an SSE stream
+    anything else, both backends' timers being one-shots, so a beat
+    skipped for a stream that may not take a frame now (a WebSocket
+    lingering after its Close) still leaves the next armed; an SSE stream
     sent the comment `: heartbeat` and a WebSocket a ping, the slot idle
     again once it has gone out; a stream whose client has gone closed by
     the send that fails, its handler told; and a heartbeat whose
@@ -1105,6 +1187,18 @@ def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() rais
         st.provision_pool.provisions[ws_slot].state.kind,
         ConnectionState.STREAMING_WS,
     )
+
+    # A WebSocket lingering after its own Close takes no frame it did not
+    # write (L29): the beat is skipped, and its timer re-armed all the same,
+    # so the stream's heartbeats go on once it may take one.
+    st.slot_ws_state[ws_slot].closing = True
+    var ws_beat = TIMER_SSE_HEARTBEAT + UInt(ws[0])
+    backend.try_delete_timer(ws_beat)
+    _on_timer(app, backend, st, ws_beat)
+    assert_true(ws_beat in backend.timers, "a skipped beat was not re-armed")
+    var nothing = List[UInt8]()
+    _ = _read_available(ws[1], nothing)
+    assert_equal(len(nothing), 0, "a frame went to a socket lingering after its Close")
 
     # The SSE stream's client leaves without a word.
     close(FileDescriptor(sse[1]))
