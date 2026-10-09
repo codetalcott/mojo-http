@@ -337,24 +337,16 @@ SABOTAGES = [
         "one worker's refusal leaves its siblings serving",
         RESPAWN,
         MULTIWORKER_SRC,
-        "                        self._kill_all(SIGTERM)\n                        self._reap_the_rest()\n",
-        "                        self._reap_the_rest()\n",
+        "                self._kill_all(SIGTERM)\n                self._reap_the_rest()\n",
+        "                self._reap_the_rest()\n",
     ),
     # --- a stop that reaches a worker before it arms (S1) ----------------------
     # The first worker reaped died of the forwarded SIGTERM before it armed;
     # the rest used to be reaped blind, so a sibling failing its drain was
-    # unseen and the supervisor exited 0 against D10.
+    # unseen and the supervisor exited 0 against D10. Both supervision loops
+    # account for an exit in `_account_for_exit`, so one edit breaks both.
     (
         "after an unarmed worker's death the rest are reaped blind",
-        RESPAWN,
-        MULTIWORKER_SRC,
-        "                    self._kill_all(sig)\n                    self._reap_the_rest()\n",
-        "                    self._kill_all(sig)\n"
-        "                    while self._alive_count() > 0:\n"
-        "                        self._remove_pid(waitpid_blocking(-1)[0])\n",
-    ),
-    (
-        "the polling supervisor reaps the rest blind after an unarmed death",
         RESPAWN,
         MULTIWORKER_SRC,
         "                self._kill_all(sig)\n                self._reap_the_rest()\n",
