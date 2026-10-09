@@ -15,10 +15,12 @@ pull requests, [NOTICE](../../NOTICE) and the CHANGELOG.
 
 `packages/m0-http/lightbug_http/` is a hard fork of lightbug_http
 v26.1.2 (NOTICE). At fbb88b9, blame showed 5,670 of its 16,518 code lines
-unchanged since the import, and every parser-level defect the first
-day's reading confirmed (LF1–LF4) sat on those lines. Every other defect
-confirmed that day was in this repository's own later code: the WebSocket
-parser, the pool, the bus, the shared page, `sendfile`. So the review had
+unchanged since the import. Blamed the same way, the lines the plan cites
+for the four parser-level defects the first day confirmed (LF1–LF4) were
+all inherited, but for LF2's half in the loop. The lines it cites for the
+six other defects confirmed that day, dead code aside (LF9, LF11, LF12,
+LF16, LF17, LF23), were all written here later: the WebSocket parser, the
+event loop, `sendfile`, the shared page and the bus. So the review had
 two parts. Part 1 fixed what the reading found. Part 2 measured whether
 anything else was there, with instruments that see what reading does
 not.
@@ -81,8 +83,7 @@ docstring count to the struct.
   A failure that sleeps in the test reproduce and sleeps in the pool never
   do is the test's.
 - **Review.** Every lane's diff was read by an independent session before
-  its pull request, with up to three fix rounds, and every ruling was
-  written down with its cost if wrong.
+  its pull request, with up to three fix rounds.
 - **Sabotage.** Every new gate was proven against its fix: the fix
   reverted, the gate seen to fail for the right reason, the fix restored.
   A compile failure is not a catch.
@@ -118,10 +119,11 @@ imports count as one each): 161 deleted, 449 pinned by a named test, 89
 recorded as needing none. At f5f15a53 every function that holds
 inherited lines has a row, so the ledgers cover all 3,737 of those lines.
 
-The suite went from 1,609 unit tests to 1,772. `docs/SPEC.md` gained 67
-rows (A26–A42, B12–B30, C11–C13, C16–C19, D12, D13, E40, F22, F23, F25,
-G19–G22, G24, G25, G28, I34–I42, J15, N53), and `poe milestones` reports
-404 capabilities, 378 verified, 26 out of scope, none `implemented`.
+The suite went from 1,609 unit tests to 1,772. `docs/SPEC.md` went from
+336 rows to 404, and 67 of the 68 new rows are the review's (A26–A42,
+B12–B30, C11–C13, C16–C19, D12, D13, E40, F22, F23, F25, G19–G22, G24,
+G25, G28, I34–I42, J15, N53). `poe milestones` reports 378 of the 404
+verified, 26 out of scope, none `implemented`.
 
 ## Which instrument found what
 
@@ -129,9 +131,9 @@ G19–G22, G24, G25, G28, I34–I42, J15, N53), and `poe milestones` reports
 |---|---|---|---|---|---|
 | reading, 2026-10-07 | LF1–LF35 | 2 | 11 | 10 | 12 |
 | the differential run | LF36–LF39, and LF4's trailer line with no colon | 0 | 0 | 1 | 3 |
-| a reviewer of a lane's diff | LF40 (P2's review), LF41 (R's), LF65 (A2's), LF69 (A3's) | 0 | 1 | 0 | 3 |
+| a reviewer of a lane's diff | LF40 (P2's review), LF41 (R's), LF65 (A2's), LF69 (A3's), LF74 (A4's) | 0 | 1 | 0 | 4 |
 | a lane implementer, beside its own record | LF42, LF43 (L), LF49, LF56 (A1), LF57 (A2), LF63 (A3) | 0 | 3 | 1 | 2 |
-| the audits | LF44–LF48 (A1), LF50–LF55 (A2), LF58–LF62 (A3), LF70–LF74 (A4) | 0 | 4 | 4 | 13 |
+| the audits | LF44–LF48 (A1), LF50–LF55 (A2), LF58–LF62 (A3), LF70–LF73 (A4) | 0 | 4 | 4 | 12 |
 | freezing the corpus (S1) | LF64 | 0 | 1 | 0 | 0 |
 | the fuzzer's split invariant (S2) | LF66, LF67 | 0 | 2 | 0 | 0 |
 | a lane implementer's Linux run | LF75 (Q) | 0 | 1 | 0 | 0 |
@@ -143,8 +145,8 @@ same function.
 **Reading** found both security records: an overlong UTF-8 sequence
 transcoded to CRLF after the header check (LF1, response splitting), and a
 parser that ended a head at a bare LF where the loop framed at CRLFCRLF
-(LF2). It found 11 of the 23 bugs and 10 of the 18 risks in one day, the
-cheapest records of the review. What it missed falls into five kinds:
+(LF2). It found 11 of the 23 bugs and 10 of the 18 risks, in one day.
+What it missed falls into five kinds:
 behaviour that depends on where a read ends, a rule all three parsers
 share, Unicode case folding, code that reads like configuration, and cost
 that grows with the input.
@@ -209,7 +211,7 @@ in the pool 0 of 9. LF68's test now waits on a delivery count that only
 rises, LF76's holds its view until the lane is full, and the pool is
 unchanged.
 
-**Reviews** raised four records, and more often found a problem in a fix
+**Reviews** raised five records, and more often found a problem in a fix
 or in the claim its SPEC row made: a repeated-`Connection` join that was
 quadratic, a lone `gzip` answered 501 where RFC 9112 §6.3 says 400, LF55's
 first rule dropping cookies browsers accept, Linux-only gates never run, a
