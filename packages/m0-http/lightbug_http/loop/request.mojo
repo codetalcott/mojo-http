@@ -39,7 +39,7 @@ from lightbug_http.loop.state import (
     _close_slot, _notice_once, _rearm_reads, _spend_read_edge, _stop_reads,
 )
 from lightbug_http.loop.response import (
-    _finish_response, _send_error_to_fd, _send_raw_to_fd,
+    _finish_response, _send_error_to_fd, _send_interim, _send_owed_interim,
 )
 from lightbug_http.loop.streams import _read_websocket
 from lightbug_http.loop.offload import _run_inline
@@ -288,6 +288,7 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
                 ]
             )
             if ret == -1:
+                _send_owed_interim(st, slot, fd_val)
                 _send_error_to_fd(fd_val, BadRequest())
                 _close_slot(handler, backend, st, slot, fd_val)
                 return False
@@ -553,7 +554,9 @@ def _frame_buffered[T: HTTPService, B: EventLoopBackend](
                 HeaderKey.EXPECT, "100-continue"
             ):
                 if st.provision_pool.provisions[slot].parsed_headers.value().protocol != strHttp10:
-                    _send_raw_to_fd(fd_val, "HTTP/1.1 100 Continue\r\n\r\n".as_bytes())
+                    _send_interim(
+                        st, slot, fd_val, "HTTP/1.1 100 Continue\r\n\r\n".as_bytes()
+                    )
 
             var effective_length = st.config.max_request_body_size if is_chunked else content_length
             # For a chunked body `bytes_read` counts DECODED bytes, and
@@ -594,6 +597,7 @@ def _frame_buffered[T: HTTPService, B: EventLoopBackend](
                     ]
                 )
                 if ret == -1:
+                    _send_owed_interim(st, slot, fd_val)
                     _send_error_to_fd(fd_val, BadRequest())
                     _close_slot(handler, backend, st, slot, fd_val)
                     return FRAME_REQUEST
@@ -805,6 +809,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             st.config.max_request_uri_length,
         )
     except from_parsed_err:
+        _send_owed_interim(st, slot, fd_val)
         _send_error_to_fd(fd_val, BadRequest())
         _close_slot(handler, backend, st, slot, fd_val)
         return
@@ -1000,6 +1005,7 @@ def _reject_and_linger[T: HTTPService, B: EventLoopBackend](
     close linger is: that sweep is what bounds the wait, and with idle
     timeouts off the old immediate close is better than a held slot.
     """
+    _send_owed_interim(st, slot, fd_val)
     _send_error_to_fd(fd_val, response^)
     var linger = st.config.idle_timeout > 0
     if linger:

@@ -73,7 +73,7 @@ from lightbug_http.loop.state import (
 from lightbug_http.loop.state import _close_slot, _farewell_streams
 from lightbug_http.websocket import WS_CLOSE_GOING_AWAY
 from lightbug_http.c.socket import ShutdownOption, shutdown
-from lightbug_http.loop.response import _finish_response
+from lightbug_http.loop.response import _finish_response, _owe_interim
 from lightbug_http.loop.streams import _drain_outboxes
 from lightbug_http.offload import OffloadPool, make_stream_ack_pair
 from lightbug_http.loop.timers import _on_timer
@@ -1901,6 +1901,130 @@ def test_a_request_is_answered_alike_in_one_read_or_two() raises:
     )
     assert_true(endless[0].startswith("http/1.1 400 bad request"), endless[0])
     assert_true(endless[1], "a head past the limit kept its connection")
+
+
+comptime INTERIM = "HTTP/1.1 100 Continue\r\n\r\n"
+
+
+def _interim_exchange(
+    config: ServerConfig,
+    head: String,
+    rest: List[String],
+    taken: Int = 0,
+    expire: Bool = False,
+) raises -> String:
+    """`head`, a request that expects `100 Continue`, read while the
+    server's send side is full, so the interim response's send takes none
+    of it -- or, with `taken`, as though it had taken that many bytes, which
+    are written where the kernel would have put them (`_owe_interim`). The
+    client then reads what was waiting and sends `rest`, a read event a
+    part, the server's answers taken as they come; with `expire`, the body
+    timer runs out instead. Returns what the client read after the filler."""
+    var app = BodyLength()
+    var backend = FakeBackend()
+    var st = _loop(config)
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    st.slot_read_armed[slot] = True
+    var filler = _fill_send_buffer(fd)
+    _send_all(peer, head)
+    _on_read(app, backend, st, fd, False)
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind, ConnectionState.READING_BODY
+    )
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    if taken > 0:
+        var interim = String(INTERIM)
+        var sent = send(FileDescriptor(fd), interim.as_bytes()[:taken], 0)
+        assert_equal(Int(sent), taken)
+        _owe_interim(st, slot, interim.as_bytes(), taken)
+    for part in rest:
+        if st.slot_fds[slot] == UNUSED:
+            break
+        _send_all(peer, part)
+        _on_read(app, backend, st, fd, False)
+        var rounds = 0
+        while (
+            st.slot_fds[slot] != UNUSED
+            and st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.RESPONDING
+            and rounds < 100
+        ):
+            _ = _read_available(peer, got)
+            _on_write(app, backend, st, fd)
+            rounds += 1
+    if expire:
+        var ident = UInt(fd) + TIMER_BODY
+        backend.expire(ident)
+        _on_timer(app, backend, st, ident)
+    _ = _read_available(peer, got)
+    if st.slot_fds[slot] != UNUSED:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    assert_true(len(got) >= filler, "the client did not read the filler")
+    return String(unsafe_from_utf8=Span(got)[filler:])
+
+
+def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
+    """A `100 Continue` the socket did not take whole reaches the client
+    whole, ahead of whatever the connection sends next: the answer, a 413
+    for a body over the cap, a 400 for a malformed chunk, or the body
+    timer's 408 (review record LF73).
+
+    The loop sent it and ignored the count. A non-blocking send takes what
+    the socket has room for, and on Linux that can be part of even these
+    25 bytes: a send queue that is full, with less than 25 bytes left in
+    its last segment, takes the part that fits (153 of 200 trials of a
+    socket filled 25 bytes at a time, over loopback TCP; macOS sends a
+    write this small whole or not at all). The final response then followed
+    a fragment, `HTTP/1.1 100 Co` and the rest of the stream unparseable.
+    A test cannot make a kernel cut a send, so it fills the socket, which
+    makes the send take nothing, and plays the kernel for a take of 7
+    bytes: what was not taken is owed, and goes out first.
+
+    covers: A42
+    """
+    var head = String(
+        "POST /p HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
+        "Content-Length: 5\r\n\r\n"
+    )
+    var answered = String(INTERIM) + "HTTP/1.1 200 OK"
+    for taken in [0, 7]:
+        var reply = _interim_exchange(_config(), head, ["hello"], taken)
+        assert_true(
+            reply.startswith(answered),
+            String("an interim response ", taken, " bytes of which were taken: ", reply),
+        )
+        assert_true("body=5" in reply, reply)
+
+    var chunked = String(
+        "POST /c HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+    )
+    var over = _interim_exchange(
+        _tight_caps(), chunked, [String("50\r\n") + String("b") * 80 + "\r\n"]
+    )
+    assert_true(
+        over.startswith(String(INTERIM) + "HTTP/1.1 413 Payload Too Large"),
+        "a body over the cap: " + over,
+    )
+    var malformed = _interim_exchange(_config(), chunked, ["zz\r\n"])
+    assert_true(
+        malformed.startswith(String(INTERIM) + "HTTP/1.1 400 Bad Request"),
+        "a malformed chunk: " + malformed,
+    )
+    var late = _interim_exchange(_config(), head, [], expire=True)
+    assert_true(
+        late.startswith(String(INTERIM) + "HTTP/1.1 408 Request Timeout"),
+        "a body that never came: " + late,
+    )
 
 
 struct OneChunkStream(HTTPService):

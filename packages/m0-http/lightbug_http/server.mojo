@@ -175,6 +175,13 @@ struct ConnectionProvision(Movable):
     previous request's read).
     """
 
+    var interim_owed: Bytes
+    """What the send of this request's interim `100 Continue` did not take,
+    owed ahead of anything else the connection sends: the final response
+    (`_finish_response`), or the refusal that ends the request
+    (`_send_owed_interim`). Empty when it went out whole, as it nearly
+    always does (review record LF73)."""
+
     var keepalive_count: Int
     """Number of requests handled on this connection."""
 
@@ -242,6 +249,7 @@ struct ConnectionProvision(Movable):
         self.last_parse_len = 0
         self.head_start = 0
         self.request_end = 0
+        self.interim_owed = Bytes()
         self.keepalive_count = 0
         self.should_close = False
         self.log_method = String()
@@ -365,6 +373,7 @@ struct ConnectionProvision(Movable):
         self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0
         self.request_end = 0
+        self.interim_owed.clear()
         self.should_close = False
         self.log_method = String()
         self.log_path = String()

@@ -18,7 +18,7 @@ from lightbug_http.loop.state import (
     LoopState, TIMER_APP_TICK, TIMER_BODY, TIMER_IDLE, TIMER_SSE_HEARTBEAT,
     UNUSED, _close_slot, _notice_once,
 )
-from lightbug_http.loop.response import _send_error_to_fd
+from lightbug_http.loop.response import _send_error_to_fd, _send_owed_interim
 from lightbug_http.loop.streams import _heartbeat
 
 
@@ -86,6 +86,7 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
     # 408 goes only to a connection's first request.
     _notice_once(st.config.body_timeout_notice)
     if st.provision_pool.provisions[slot].keepalive_count == 0:
+        _send_owed_interim(st, slot, fd_val)
         _send_error_to_fd(fd_val, RequestTimeout())
 
     _close_slot(handler, backend, st, slot, fd_val)

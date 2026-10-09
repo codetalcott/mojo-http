@@ -485,6 +485,17 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     var scratch = Bytes()
     swap(st.provision_pool.provisions[slot].encoding_buffer, scratch)
     st.slot_response[slot] = response^.encode_into(scratch^)
+    # What the interim `100 Continue` still owes goes first, so the client
+    # reads it whole before this (`_send_interim`, review record LF73).
+    if len(st.provision_pool.provisions[slot].interim_owed) > 0:
+        var whole = Bytes(
+            capacity=len(st.provision_pool.provisions[slot].interim_owed)
+            + len(st.slot_response[slot])
+        )
+        whole.extend(Span(st.provision_pool.provisions[slot].interim_owed))
+        whole.extend(Span(st.slot_response[slot]))
+        st.slot_response[slot] = whole^
+        st.provision_pool.provisions[slot].interim_owed.clear()
     st.slot_send_offset[slot] = 0
     st.provision_pool.provisions[slot].close_body_fd()
     if file_fd >= 0:
@@ -584,13 +595,53 @@ def _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
         pass
 
 
-def _send_raw_to_fd(fd_val: Int, data: Span[Byte, _]):
-    """Best-effort send raw bytes on a fd."""
+def _send_interim(
+    mut st: LoopState, slot: Int, fd_val: Int, data: Span[Byte, _]
+):
+    """Send an interim response -- the `100 Continue` -- now, and keep what
+    the send did not take as the connection's next bytes.
+
+    A non-blocking send takes what the socket has room for, and on Linux
+    that can be part of even these 25 bytes: when the send queue is full
+    and its last segment has less than that left, `send` returns the part
+    that fit (measured: a 25-byte send on a socket filled 25 bytes at a
+    time came back short in 153 of 200 trials; macOS sends a write this
+    small whole or not at all). This was a best-effort send that ignored
+    the count, so a cut one put a fragment on the wire with the final
+    response behind it, which no client can parse (review record LF73).
+    What the send did not take -- all of it, when it took none -- goes out
+    ahead of the final response (`_finish_response`), or of the refusal
+    that ends the request (`_send_owed_interim`): late, but whole, and a
+    client must be able to read a 1xx before any final response (RFC 9110
+    §15.2).
+    """
+    var sent = 0
+    try:
+        sent = Int(send(FileDescriptor(fd_val), data, 0))
+    except:
+        pass
+    _owe_interim(st, slot, data, sent)
+
+
+def _owe_interim(mut st: LoopState, slot: Int, data: Span[Byte, _], sent: Int):
+    """Keep what a send of the interim response `data` did not take -- its
+    bytes past `sent` -- for the connection to send before anything else."""
+    if sent < len(data):
+        st.provision_pool.provisions[slot].interim_owed = Bytes(data[sent:])
+
+
+def _send_owed_interim(mut st: LoopState, slot: Int, fd_val: Int):
+    """Before a refusal ends a request whose interim response did not go
+    out whole: what it still owes, best effort, so the refusal follows a
+    whole `100 Continue` rather than a fragment of one (`_send_interim`)."""
+    if len(st.provision_pool.provisions[slot].interim_owed) == 0:
+        return
     try:
         _ = send(
             FileDescriptor(fd_val),
-            data,
+            Span(st.provision_pool.provisions[slot].interim_owed),
             0,
         )
     except:
         pass
+    st.provision_pool.provisions[slot].interim_owed.clear()

@@ -330,6 +330,14 @@
       "evidence": "`test_slot_lifecycle.mojo:test_a_pipelined_burst_is_answered_one_read_at_a_time` (every PR) \u2014 600 pipelined 27-byte GETs at a receive limit of 8,256 bytes, and 20,000 at the defaults, served only by the events epoll would report (a write one-shot's once the client has read, a read once it has written more or something registered the socket again): every one answered, and no event answering more than one 4 KiB read holds (152). The drain framed each request behind an answer through the read path, whose read came first, so the whole burst came into the buffer during one event and the keep-alive reset copied what was left of it after every answer: 20,000 GETs held the loop 1.56 s in one pass, the cost of a request doubling with the burst, and the 600 were answered twice, then refused 400 and closed (review record LF72). test_slot_lifecycle.mojo's `test_a_filled_read_behind_a_pool_thread_is_registered_again` holds the registration for a request a pool thread answers, and test_pipelining.mojo's `test_keep_pipelined_preserves_tail` the reset that copies nothing. Sabotaged five ways, each caught: the read before the parse restored (600 answered in one event), the copy restored, the filled read's spent edge removed, the half-close forgotten at the reset (A27, A30), and the head path's whole-buffer limit restored (C19)"
     },
     {
+      "id": "A42",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "An interim `100 Continue` reaches the client whole, ahead of whatever the connection sends next -- the answer, or the refusal that ends the request: what its non-blocking send did not take, part of its 25 bytes or all of them, is sent first",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_an_interim_response_the_socket_did_not_take_goes_out_first` (every PR) \u2014 over a stream pair whose send side the test fills, so the send takes nothing: the answer, a 413 for a chunked body over the cap, a 400 for a malformed chunk and the body timer's 408 each follow the whole `HTTP/1.1 100 Continue`; and a take of 7 of its 25 bytes, the kernel played by the test, leaves the other 18 ahead of the answer. The loop sent it best effort and ignored the count: on Linux a non-blocking send of those 25 bytes came back short in 153 of 200 trials of a loopback TCP socket filled 25 bytes at a time (none in 300 on macOS, which sends a write that small whole or not at all), and the final response then followed a fragment no client can parse; a send that took none of it dropped it (review record LF73). Sabotaged five ways, each caught: the bytes owed not kept, not put ahead of the answer, and not sent ahead of the 413, the 400 and the 408"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",

@@ -459,6 +459,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   where it was answered when they came apart. A request's headers are now
   held to the receive limit on their own, whatever arrives behind them.
 
+- **`100 Continue` always reaches the client whole** (SPEC A42, fork
+  review LF73). A client that sends `Expect: 100-continue` (curl does for
+  a large upload) is told to go ahead with an interim response before the
+  final one. On Linux, when the connection's send buffer was nearly full
+  -- a client pipelining a request behind answers it had not read yet --
+  the kernel could take only part of it, and the rest was dropped: the
+  client then read a fragment followed by the real response, which it
+  cannot parse. What the send does not take now goes out first, ahead of
+  the answer or the error that ends the request, so the client reads a
+  whole `100 Continue`, late if the buffer was full, then its response.
+
 ### Changed
 
 - **A port outside 1-65535 is refused with exit 78, from a flag or the

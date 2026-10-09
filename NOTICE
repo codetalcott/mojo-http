@@ -1906,6 +1906,16 @@ lightbug_http
         `recv_buffer_limit()`, where the whole buffer was compared (review
         record LF72, SPEC A41, C19).
 
+      - loop/response.mojo, loop/request.mojo, loop/timers.mojo,
+        server.mojo (2026-10-08): the interim `100 Continue` is sent by
+        `_send_interim`, which keeps what a non-blocking send did not take
+        in `ConnectionProvision.interim_owed`; `_finish_response` puts it
+        ahead of the final response, and `_send_owed_interim` sends it
+        ahead of the 400, 408 and 413 that can end the request. It was a
+        best-effort `_send_raw_to_fd` (removed) that ignored the count, and
+        on Linux a 25-byte send to a full socket can come back short
+        (review record LF73, SPEC A42).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 
