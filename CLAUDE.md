@@ -891,9 +891,11 @@ Properties of the design, not defects to fix in passing. Each names its note.
   9112 §9.3): `request_end` stamps where the answered request ends,
   `prepare_for_new_request(keep_pipelined=True)` is passed ONLY by the
   keep-alive reset (so one client's tail never reaches another connection),
-  and `_drain_pipelined` re-parses the rest after every response,
-  iteratively and unbounded on purpose (the send buffer is the bound).
-  `poe smoke-pipelining` pins it.
+  and `_drain_pipelined` answers what the buffer holds after every
+  response, iteratively, and READS NOTHING: a pass answers one read's
+  worth, a read that fills its buffer marks its edge spent
+  (`_spend_read_edge`), and the drain's last step registers for the rest
+  (LF72). `poe smoke-pipelining` pins it.
 - **A WebSocket this side closes LINGERS for the peer's Close reply** (RFC
   6455 §5.5.1): `WSState.closing` marks the wait and a `WS_CLOSE_LINGER_NS`
   deadline in `slot_idle_deadline` bounds it; with idle timeouts off the

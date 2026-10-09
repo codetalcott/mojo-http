@@ -7,7 +7,9 @@ contract underneath it. Bytes past `request_end` survive exactly one
 path — a keep-alive reset passing `keep_pipelined=True` — and every other
 reset clears the buffer whole, because a tail preserved on accept or
 close would be one client's bytes leaking into another connection's
-first request.
+first request. The tail survives where it is, `head_start` moved to it,
+and the read path moves it to the front once (`compact_buffer`), so an
+answer copies nothing (review record LF72).
 """
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
@@ -25,20 +27,63 @@ def _provision_with(buf: String, request_end: Int) raises -> ConnectionProvision
 
 
 def _assert_buffer(p: ConnectionProvision, expected: String) raises:
-    assert_equal(len(p.recv_buffer), expected.byte_length())
+    """The bytes pending from `head_start` are `expected`."""
+    assert_equal(p.pending_len(), expected.byte_length())
     var want = expected.as_bytes()
     for i in range(len(want)):
-        assert_equal(p.recv_buffer[i], want[i])
+        assert_equal(p.recv_buffer[p.head_start + i], want[i])
 
 
 def test_keep_pipelined_preserves_tail() raises:
+    """The tail stays where it is: the same buffer, the same bytes, nothing
+    copied, `head_start` past the request answered. The reset copied it to
+    a new buffer, after every answer, and a pipelined burst cost the loop
+    time quadratic in its length (review record LF72).
+
+    covers: A41
+    """
     var p = _provision_with("REQ1TAIL", 4)
+    var before = Int(p.recv_buffer.unsafe_ptr())
     p.prepare_for_new_request(keep_pipelined=True)
     _assert_buffer(p, "TAIL")
+    assert_equal(Int(p.recv_buffer.unsafe_ptr()), before, "the tail was copied")
+    assert_equal(len(p.recv_buffer), 8, "the tail was moved")
+    assert_equal(p.head_start, 4)
     # The stamp is spent: the tail is a NEW request whose end is unknown.
     assert_equal(p.request_end, 0)
     # And the tail has never been scanned for a terminator.
     assert_equal(p.last_parse_len, 0)
+
+
+def test_compaction_moves_the_pending_bytes_to_the_front() raises:
+    """`compact_buffer` drops the answered requests' bytes and moves what is
+    pending to the front, in place; with nothing answered it does
+    nothing."""
+    var p = _provision_with("REQ1REQ2TA", 4)
+    p.prepare_for_new_request(keep_pipelined=True)
+    p.request_end = 8
+    p.prepare_for_new_request(keep_pipelined=True)
+    assert_equal(p.head_start, 8)
+    var before = Int(p.recv_buffer.unsafe_ptr())
+    p.compact_buffer()
+    assert_equal(p.head_start, 0)
+    _assert_buffer(p, "TA")
+    assert_equal(len(p.recv_buffer), 2)
+    assert_equal(Int(p.recv_buffer.unsafe_ptr()), before)
+    p.compact_buffer()
+    _assert_buffer(p, "TA")
+
+
+def test_a_keepalive_reset_keeps_the_half_close() raises:
+    """`peer_eof` is the connection's: the keep-alive reset keeps it, so the
+    requests a half-closed client left in the buffer are answered knowing
+    nothing follows them. Every other reset clears it."""
+    var p = _provision_with("REQ1TAIL", 4)
+    p.peer_eof = True
+    p.prepare_for_new_request(keep_pipelined=True)
+    assert_true(p.peer_eof)
+    p.prepare_for_new_request()
+    assert_false(p.peer_eof)
 
 
 def test_keep_pipelined_without_request_end_clears() raises:
@@ -70,6 +115,8 @@ def test_preserved_tail_then_default_reset_clears() raises:
     _assert_buffer(p, "TAIL")
     p.prepare_for_new_request()
     _assert_buffer(p, "")
+    assert_equal(len(p.recv_buffer), 0)
+    assert_equal(p.head_start, 0)
 
 
 def test_a_reset_clears_what_the_last_request_left() raises:

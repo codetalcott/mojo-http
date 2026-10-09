@@ -442,6 +442,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
   now measured by its own size and, for a chunked one, what its framing
   cost, as a body arriving with its headers always was.
 
+- **A client that pipelines a burst of requests no longer stalls the
+  server** (SPEC A41, C19, fork review LF72). A client that sent many
+  requests at once without waiting for the answers -- 20,000 small GETs,
+  about 540 KB -- held the event loop for more than a second and a half
+  while they were answered, every other connection on that loop waiting,
+  and the cost grew with the square of the burst. A connection now gets
+  one read's worth of the loop at a time and the rest on later turns, and
+  a burst costs the same per request whatever its size (1.2 µs a request
+  measured for both 2,500 and 20,000, where 20,000 cost 78 µs each).
+  Pipelining in moderation is cheaper too: 16 requests at a time cost
+  about a quarter less per request. With the limits an application can
+  lower in `ServerConfig`, such a burst was also refused
+  `400 Bad Request` partway through, and a request whose body, or a
+  request behind it, came in the same read as its headers was refused 400
+  where it was answered when they came apart. A request's headers are now
+  held to the receive limit on their own, whatever arrives behind them.
+
 ### Changed
 
 - **A port outside 1-65535 is refused with exit 78, from a flag or the

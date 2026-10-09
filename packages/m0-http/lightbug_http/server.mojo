@@ -10,6 +10,7 @@ from lightbug_http.io.bytes import Bytes
 from lightbug_http.service import HTTPService
 from lightbug_http.c.socket import close as close_fd
 from lightbug_http.utils.error import CustomError
+from std.memory import unsafe_memmove
 from std.utils import Variant
 
 from lightbug_http.http.chunked import HTTPChunkedDecoder
@@ -102,6 +103,13 @@ struct ConnectionProvision(Movable):
     other half: once it is set, a request that is still INCOMPLETE can
     never be completed, so the slot is released at once instead of being
     held until the header timeout.
+
+    The connection's, not the request's: the keep-alive reset keeps it, so
+    the requests a half-closed client left in the buffer are answered
+    knowing no more will follow, and the last of them closes the connection
+    (`_answers_the_last_request`). The reset cleared it, and the drain's
+    read found the EOF again; the drain reads nothing now (review record
+    LF72).
     """
 
     var chunk_decoder: HTTPChunkedDecoder
@@ -133,7 +141,25 @@ struct ConnectionProvision(Movable):
     """
 
     var last_parse_len: Int
-    """Length of buffer at last parse attempt (for incremental parsing)."""
+    """How much of the request's bytes (from `head_start`) the framer has
+    scanned without finding a head: its `scanned`, so a head arriving in
+    pieces is scanned once. 0 for bytes never framed."""
+
+    var head_start: Int
+    """Where the request being read begins in `recv_buffer`: the bytes
+    before it belong to requests already answered.
+
+    The keep-alive reset advances it past the request it answered, where it
+    used to copy everything behind that request to the front of a new
+    buffer: after every answer, a copy of all that was still buffered,
+    which made a pipelined burst quadratic (review record LF72). The read
+    path moves the request's bytes to the front once, before its read
+    (`compact_buffer`), when the drain has answered every whole request
+    and they are at most the head that read continues. Every offset the
+    request path keeps -- a head's end, `request_end`, a body's start -- is
+    an index into the whole buffer; `last_parse_len` alone counts from
+    here, as the framer's `scanned` does. 0 whenever the buffer is empty,
+    so an empty buffer is one with nothing pending."""
 
     var request_end: Int
     """Where the CURRENT request ends in `recv_buffer`, once known; 0 before.
@@ -214,6 +240,7 @@ struct ConnectionProvision(Movable):
         self.chunk_decoder = HTTPChunkedDecoder()
         self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0
+        self.head_start = 0
         self.request_end = 0
         self.keepalive_count = 0
         self.should_close = False
@@ -275,16 +302,49 @@ struct ConnectionProvision(Movable):
         self.recv_staging.reserve(size)
         self.encoding_buffer.reserve(size)
 
+    def pending_len(self) -> Int:
+        """The bytes of `recv_buffer` from the request being read on: what no
+        answer has consumed yet."""
+        return len(self.recv_buffer) - self.head_start
+
+    def compact_buffer(mut self):
+        """Move the request's bytes, from `head_start`, to the front of
+        `recv_buffer`, and drop the answered requests' bytes before them.
+
+        In place, so the buffer keeps its allocation. The read path calls it
+        before its read, when what is pending is at most the head that read
+        continues: one move per read, of a partial head, where the
+        keep-alive reset copied the whole tail after every answer (review
+        record LF72).
+        """
+        if self.head_start == 0:
+            return
+        var n = self.pending_len()
+        if n > 0:
+            # Through addresses: the source and the destination are one
+            # list, which the origin checker refuses to pass as both.
+            var addr = Int(self.recv_buffer.unsafe_ptr())
+            unsafe_memmove(
+                dest=Pointer[UInt8, MutAnyOrigin](unsafe_from_address=addr),
+                src=Pointer[UInt8, MutAnyOrigin](
+                    unsafe_from_address=addr + self.head_start
+                ),
+                count=n,
+            )
+        self.recv_buffer.resize(n, 0)
+        self.head_start = 0
+
     def prepare_for_new_request(mut self, keep_pipelined: Bool = False):
         """Reset provision for next request in keepalive connection.
 
         `keep_pipelined=True` — passed ONLY by the keep-alive resets, after
         a response has gone out — keeps any bytes past `request_end`: they
         are the next pipelined request, and the recv that took them off the
-        socket consumed the only readiness event they will ever get.
-        Everywhere else (accept, close) the buffer clears whole, so a tail
-        left behind by one client can never leak into another connection's
-        first request.
+        socket consumed the only readiness event they will ever get. They
+        stay where they are, `head_start` moved to them (review record
+        LF72). `peer_eof` stays too: it is the connection's. Everywhere else
+        (accept, close) the buffer clears whole, so a tail left behind by
+        one client can never leak into another connection's first request.
         """
         self.parsed_headers = None
         if (
@@ -292,14 +352,15 @@ struct ConnectionProvision(Movable):
             and self.request_end > 0
             and self.request_end < len(self.recv_buffer)
         ):
-            var tail = Bytes(Span(self.recv_buffer)[self.request_end :])
-            self.recv_buffer = tail^
+            self.head_start = self.request_end
         else:
             self.recv_buffer.clear()
+            self.head_start = 0
         self.recv_staging.clear()
         self.state = ConnectionState.reading_headers()
         self.body_state = None
-        self.peer_eof = False
+        if not keep_pipelined:
+            self.peer_eof = False
         self.chunk_decoder = HTTPChunkedDecoder()
         self.chunk_decoder.consume_trailer = True
         self.last_parse_len = 0

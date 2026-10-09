@@ -76,11 +76,17 @@ PRESERVE the bytes past the terminator instead of resizing them away); the
 keep-alive reset keeps the tail (`prepare_for_new_request(keep_pipelined=True)`
 — passed ONLY by the keep-alive resets, so accept and close still clear
 whole and one client's tail can never leak into another connection's first
-request); and `_drain_pipelined` re-parses the preserved buffer after every
+request); and `_drain_pipelined` answers the preserved buffer after every
 completed response, one request per iteration. It is iterative on purpose
-(recursing through the handler chain nests a call stack per request) and
-unbounded on purpose (the send buffer is the real bound: an iteration whose
-response cannot go out whole leaves the slot RESPONDING and exits). The
+(recursing through the handler chain nests a call stack per request), and
+it reads nothing (review record LF72): it framed each request through the
+read path, whose read came first, so a burst waiting in the socket was
+taken whole in one pass and the reset copied what was left of it after
+every answer, 1.56 s for 20,000 GETs. Now a pass answers what its one read
+brought; the reset advances `head_start` past the answered request rather
+than copying; and a read that fills its buffer leaves the rest to the next
+event, which the drain registers for, since on epoll nothing else
+announces it. The
 blocking server path had the same fix in its own shape until it was retired
 on 2026-09-28 (C5). `poe smoke-pipelining` pins all of it.
 

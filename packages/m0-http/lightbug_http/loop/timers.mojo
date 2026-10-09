@@ -67,7 +67,7 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
     # thread, whose provision `_close_slot` then RELEASED: the next
     # connection took the slot and was sent the pool thread's
     # response (B1). The arm below the decode in
-    # `_handle_read_headers` leaves no timer behind a body that is
+    # `_frame_buffered` leaves no timer behind a body that is
     # complete, but an expiry already in this batch outlives any
     # delete: the body's last bytes and the timer can land in one
     # `wait`, the read first, and the pass that completes the body

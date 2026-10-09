@@ -1885,6 +1885,27 @@ lightbug_http
         listener has no timer, and a timer's event is dispatched by its
         filter (review record LF71).
 
+      - loop/request.mojo, loop/state.mojo, loop/response.mojo,
+        loop/timers.mojo, server.mojo, c/socket.mojo (2026-10-08): the
+        pipelining drain reads nothing. `_drain_pipelined` framed each
+        request behind an answer through `_handle_read_headers`, whose read
+        came first, so a burst waiting in the socket was read whole in one
+        pass, and the keep-alive reset copied the rest of the buffer after
+        every answer: 20,000 pipelined GETs held the loop 1.56 s, the cost
+        quadratic in the burst. A head is framed by `_frame_buffered`,
+        which reads nothing; the read path takes one read and the drain
+        answers what it brought. The reset advances
+        `ConnectionProvision.head_start` past the answered request instead
+        of copying, and the read path moves a partial head to the front
+        once before its read (`compact_buffer`). A read that fills its
+        buffer marks the slot's read interest spent (`_spend_read_edge`)
+        and the drain's last step registers again, which on epoll is the
+        only thing that announces the rest. The keep-alive reset keeps
+        `peer_eof`, `_answers_the_last_request` peeks (`MSG_PEEK`) where it
+        read, and an incomplete head alone is held to
+        `recv_buffer_limit()`, where the whole buffer was compared (review
+        record LF72, SPEC A41, C19).
+
     For the modification history carried into this repository (36 commits):
         git log --no-merges -- packages/m0-http/lightbug_http
 

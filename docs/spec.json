@@ -322,6 +322,14 @@
       "evidence": "`test_slot_lifecycle.mojo:test_admission_takes_what_the_pool_has_room_for_and_maps_any_descriptor` (every PR) \u2014 `_admit_connection` at a one-slot pool, a map cut short, and a descriptor closed before it is admitted. Pinned by the 2026-10-08 audit of the fork's inherited code (A4); the close past the last slot and the slot's return each sabotaged and caught"
     },
     {
+      "id": "A41",
+      "section": "A",
+      "category": "A. HTTP/1.1 framing and connection lifecycle",
+      "capability": "A burst of pipelined requests is answered as the loop reads it: one read per read event, the requests that read brought answered from the buffer with nothing more read and nothing copied behind each answer, and the rest of the socket left to the next event, which a read that filled its buffer registers again for; every request within the caps is answered however large the burst",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_pipelined_burst_is_answered_one_read_at_a_time` (every PR) \u2014 600 pipelined 27-byte GETs at a receive limit of 8,256 bytes, and 20,000 at the defaults, served only by the events epoll would report (a write one-shot's once the client has read, a read once it has written more or something registered the socket again): every one answered, and no event answering more than one 4 KiB read holds (152). The drain framed each request behind an answer through the read path, whose read came first, so the whole burst came into the buffer during one event and the keep-alive reset copied what was left of it after every answer: 20,000 GETs held the loop 1.56 s in one pass, the cost of a request doubling with the burst, and the 600 were answered twice, then refused 400 and closed (review record LF72). test_slot_lifecycle.mojo's `test_a_filled_read_behind_a_pool_thread_is_registered_again` holds the registration for a request a pool thread answers, and test_pipelining.mojo's `test_keep_pipelined_preserves_tail` the reset that copies nothing. Sabotaged five ways, each caught: the read before the parse restored (600 answered in one event), the copy restored, the filled read's spent edge removed, the half-close forgotten at the reset (A27, A30), and the head path's whole-buffer limit restored (C19)"
+    },
+    {
       "id": "B1",
       "section": "B",
       "category": "B. Request smuggling (CWE-444)",
@@ -688,6 +696,14 @@
       "capability": "A request body within both caps is answered whatever shares the reads that bring it, and one over the body cap is refused 413, with the lingering close (A20), whatever its head's size: a `Content-Length` body is held to the cap the framing checked, never to the receive buffer, which holds the head and the next pipelined request beside it; a chunked body is held to its decoded size and its raw cost (C3) after each decode, whether it arrives with its head or after it",
       "status": "verified",
       "evidence": "`test_slot_lifecycle.mojo:test_a_body_within_the_caps_is_answered_however_its_reads_fall` (every PR) \u2014 at a 128-byte head cap and a 64-byte body cap with no floor under the buffer: a `Content-Length` body at the cap whose last read brings the next request (both answered, where it was 400 and a close), a chunked body at the cap with its head and after it (answered both ways, where the second was 413), a chunked body under the cap with the next request behind it (both answered, where it was 413), and a chunked body over the cap behind a 120-byte head (413, where it was 400 and a close). The body path compared the whole receive buffer with `recv_buffer_limit()`, and measured a chunked body before decoding it as its decoded part plus the raw tail still buffered (review record LF70). Sabotaged three ways, each caught by its own assertion: the buffer comparison restored, the pre-decode measure restored, the post-decode bound removed"
+    },
+    {
+      "id": "C19",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A request head is held to `recv_buffer_limit()` alone, from its first byte, and only while it is incomplete: what arrives with it -- its body, that body's chunk framing, a request pipelined behind it -- never counts against it, so a request within every cap gets the same answer however its reads fall",
+      "status": "verified",
+      "evidence": "`test_slot_lifecycle.mojo:test_a_request_is_answered_alike_in_one_read_or_two` (every PR) \u2014 at a 128-byte head cap and a 64-byte body cap with no floor under the buffer (a 192-byte limit): a `Content-Length` body at the cap with a request behind it (200 and 200), a chunked body at the cap behind a 120-byte head (200), and a chunked body over the cap (413, with the lingering close of A20), each sent in one read and in two; twenty GETs in one 540-byte read (all answered); and a head of 223 bytes with no end (400 and a close). The head path compared the whole receive buffer with the limit, so each one-read shape was refused 400 and closed, and the twenty GETs with it (review record LF72, the head-path half of what LF70 found in the body path). Sabotaged: the whole-buffer comparison restored, caught at the first one-read shape"
     },
     {
       "id": "D1",

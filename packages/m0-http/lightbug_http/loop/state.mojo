@@ -323,7 +323,8 @@ struct LoopState(Movable):
 #
 #   reads     `_arm_reads` (a slot at rest that reads), `_rearm_reads` (a
 #             re-add on purpose, to regenerate an edge), `_stop_reads`,
-#             `_await_write` (a write one-shot, in place of the reads)
+#             `_await_write` (a write one-shot, in place of the reads),
+#             `_spend_read_edge` (a read that filled its buffer)
 #   deadline  `_begin_request` (0), `_end_request` (idle),
 #             `_arm_send_deadline` (send), `_arm_ws_linger` (linger, ONCE);
 #             a slot taken (`_admit_connection`) starts at 0 and a refused
@@ -385,6 +386,25 @@ def _rearm_reads[B: EventLoopBackend](
     """
     backend.try_add_read(fd_val)
     st.slot_read_armed[slot] = True
+
+
+@always_inline
+def _spend_read_edge(mut st: LoopState, slot: Int):
+    """A request's read filled its buffer: the socket may hold more, and on
+    epoll no edge will announce it -- the one that brought these bytes is
+    spent. The registration stands, but no longer counts as armed, so the
+    next `_arm_reads` registers it again, which regenerates the edge: the
+    drain's last step (`_drain_pipelined`), or the keep-alive transition
+    if an answer comes first. kqueue's level trigger needs none of it and
+    pays one idempotent EV_ADD.
+
+    The read path re-registered a filled read itself, before its answers.
+    A request it handed to a pool thread then left the slot armed with the
+    edge spent, and the completion's `_arm_reads` saw nothing to do; the
+    drain's own read was what took the rest (review record LF72), and the
+    drain reads nothing now.
+    """
+    st.slot_read_armed[slot] = False
 
 
 @always_inline

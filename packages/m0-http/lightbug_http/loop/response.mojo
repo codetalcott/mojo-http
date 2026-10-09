@@ -9,7 +9,7 @@ next request. `_send_error_to_fd` is the best-effort answer before a close.
 """
 
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import recv, send, close, set_tcp_keepalive
+from lightbug_http.c.socket import MSG_PEEK, recv, send, close, set_tcp_keepalive
 from lightbug_http.connection import ConnectionState
 from lightbug_http.header import HeaderKey, KH_DATE
 from lightbug_http.http import (
@@ -216,41 +216,40 @@ def _answers_the_last_request(mut st: LoopState, slot: Int, fd_val: Int) -> Bool
     left behind this request.
 
     A request pipelined behind it keeps the connection, so the rest is
-    still answered; the drain's read finds the EOF again for the last one.
-    And `peer_eof` says the FIN has arrived, not that every byte ahead of
-    it has been read: a read that filled its buffer can stop exactly where
-    this request ends, with the next one still in the socket, and closing
-    then drops that one and resets the connection over the answer. Behind
-    a FIN a read does not block, so one more read settles it -- nothing is
-    the end, and anything else is the next request, kept in the buffer for
-    the drain. Only a half-closed connection's request that ends its buffer
-    pays for it.
+    still answered; the keep-alive reset keeps `peer_eof`, and this says
+    so for the last one. And `peer_eof` says the FIN has arrived, not that
+    every byte ahead of it has been read: a read that filled its buffer can
+    stop exactly where this request ends, with the next one still in the
+    socket, and closing then drops that one and resets the connection over
+    the answer. Behind a FIN a read does not block, so a look settles it --
+    nothing is the end, and anything else is the next request. A look, not
+    a read (`MSG_PEEK`): what it finds stays in the socket for the next
+    read event, which the drain registers for, so an answer takes nothing
+    off the socket and a pass answers no more than its one read brought
+    (review record LF72). Only a half-closed connection's request that ends
+    its buffer pays for it.
     """
     if not st.provision_pool.provisions[slot].peer_eof:
         return False
     var have = len(st.provision_pool.provisions[slot].recv_buffer)
     if st.provision_pool.provisions[slot].request_end < have:
         return False
-    var want = st.provision_pool.provisions[slot].recv_staging.capacity()
-    st.provision_pool.provisions[slot].recv_buffer.reserve(have + want)
+    st.provision_pool.provisions[slot].recv_buffer.reserve(have + 1)
     var n: UInt
     try:
         n = recv(
             FileDescriptor(fd_val),
             Span(
                 unsafe_ptr=st.provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(have),
-                length=want,
+                length=1,
             ),
-            0,
+            MSG_PEEK,
         )
     except:
         # A reset, or a read that would wait, which a FIN rules out: no
         # further request will be read either way.
         return True
-    if n == 0:
-        return True
-    st.provision_pool.provisions[slot].recv_buffer._len = have + Int(n)
-    return False
+    return n == 0
 
 
 def _finish_response[T: HTTPService, B: EventLoopBackend](
