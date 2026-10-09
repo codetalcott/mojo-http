@@ -1927,7 +1927,89 @@ lightbug_http
         over it reset the connection: on Linux the client's read failed
         ECONNRESET and the 408 was lost (review record LF75, SPEC A5).
 
-    For the modification history carried into this repository (36 commits):
+      - http/response.mojo, http/request.mojo, http/chunked.mojo,
+        websocket.mojo, io/bytes.mojo, connection.mojo (2026-10-09): what
+        the protocol layer carried twice is written once. `HTTPResponse`'s
+        span constructor builds through the owning one and `encode`
+        through `encode_into`; the chunked decoder's three byte moves are
+        `_shift_down`; the two WebSocket frame encoders share
+        `_frame_header`, and the handshake's base64 is the standard
+        library's `b64encode`, the fork's own `base64_encode` removed; and
+        `default_buffer_size` is defined in `io/bytes.mojo`, which
+        `connection.mojo` re-exports. The request side's `URIParseError` is
+        renamed `RequestURIError` (`uri.mojo` keeps its own), and
+        `HTTPRequest.server_is_tls` and `WS_CLOSE_NORMAL`, which nothing
+        read, are removed. The wire bytes are unchanged.
+
+      - event_loop_backend.mojo, c/kqueue.mojo, c/kqueue_backend.mojo,
+        c/epoll.mojo, c/epoll_backend.mojo, c/fcntl.mojo, c/socket.mojo,
+        c/pipe.mojo, c/socketpair.mojo, c/fdpass.mojo, c/process.mojo,
+        c/network.mojo, c/sendfile.mojo (2026-10-09): `try_add_read` and
+        `try_add_write_oneshot` are `EventLoopBackend` defaults, and
+        `_MAX_EVENTS` is defined once; the macOS close-on-exec mark of a
+        fresh descriptor is `fcntl.mojo`'s `mark_fresh_cloexec` at its
+        seven sites; and the kqueue, epoll, pipe, socketpair and process
+        wrappers raise `SysError`, as the socket wrappers do, with errno
+        constants spelled `ErrNo.X`. Their message changes with the type:
+        `pipe() failed, errno: N` is `pipe: <strerror> (errno N)`.
+
+      - strings.mojo, header.mojo, http/request.mojo (2026-10-09): one
+        allocation-free walk of an RFC 9110 list, `trim_ows` and
+        `next_list_member`, under the `Transfer-Encoding` and `Connection`
+        checks and the de-chunked header, and under the framework's
+        `If-None-Match`, `Accept`, `Vary`, `Allow` and form readers. Every
+        site trimmed SP and HTAB before it; behaviour-preserving.
+
+      - loop/request.mojo, loop/state.mojo, loop/response.mojo,
+        loop/streams.mojo, loop/timers.mojo (2026-10-09): the
+        descriptor-to-slot prologue is `state.mojo`'s `_slot_of` at its
+        four sites, and a chunked body's decode, its two bounds (review
+        record LF70) and its completion are `_decode_chunked_tail`, for the
+        head's bytes and for every later read, with the five "body is
+        complete" tails written once as `_body_complete`.
+        Behaviour-preserving.
+
+      - loop/streams.mojo (2026-10-09): the heartbeat, the WebSocket
+        reader's pongs and close echo and the outbox drain put bytes on a
+        stream slot through one function, `_send_frame`. The drain's send
+        to a client that has gone now closes the slot in that pass, as the
+        other two always did, where it waited for the socket to be
+        reported writable and closed it a pass later.
+
+      - event_loop.mojo, broadcast.mojo, offload.mojo, server.mojo, loop/
+        (2026-10-09): `_run_pass` and every function under it that the
+        compiler accepts without `raises` lose it, and the two catches that
+        made unreachable are deleted, one in `loop/request.mojo` and the
+        other outside the fork, in m0-wsgi's `asgi_executor.mojo`;
+        `OffloadLoopState.slot_is_executor`, `TIMER_HEADER` and
+        `ServerError`'s `ProvisionError` arm, which nothing used, are
+        removed.
+
+      - offload.mojo, server.mojo (2026-10-09): `OffloadPool.stream_active`
+        is renamed `executor_active`, which is what it answers; `Server`'s
+        three wrappers that caught an error only to raise it again are
+        removed; and `ProvisionPool` counts with `std.bit`'s
+        `count_leading_zeros` and `pop_count` in place of hand-written
+        copies. Behaviour-preserving.
+
+      - offload_wire.mojo (new), offload.mojo, broadcast.mojo (2026-10-09):
+        the offload channels' wire is a module of its own,
+        `lightbug_http.offload_wire`: the datagram tags, values and sizes
+        (`TAG_STREAM_ABORT`, `TAG_JOB_BATCH`, `TAG_WS_MESSAGE`, `_POISON`,
+        `_POKE`, the batch bounds), the little-endian codec (`append_i64_le`,
+        `read_i64_le`, `append_i32_le`, `read_i32_le`, `encode_ack`,
+        `decode_ack` and the job and completion encoders) and the one bounded
+        send with its deadlines (`send_bounded`, `stop_deadline`, `ns_left`).
+        A move: its 31 names went verbatim from `offload.mojo`, checked by
+        script, and `offload.mojo` imports every one back, so no caller
+        changed. It imports nothing of the fork but `c/socket`, so
+        `broadcast.mojo`'s bus frame writes and reads its event id through the
+        same codec, the bytes as they were. `WS_DATAGRAM_MAX`, which
+        `scripts/render_shim.py` reads by path, stays in `offload.mojo`. One
+        body that stayed changed: a pool thread's `next_job` gives up its
+        lane's idle spin at one site where it had four.
+
+    For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 
     The 28 earlier commits predating 2026-03-18 were made in the private

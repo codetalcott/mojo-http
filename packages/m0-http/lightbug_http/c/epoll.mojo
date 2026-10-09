@@ -9,7 +9,7 @@ so that event_loop.mojo comparisons work on both platforms without changes.
 """
 
 from std.memory import stack_allocation
-from std.ffi import c_int, external_call, get_errno
+from std.ffi import ErrNo, c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import ExternalMutPointer
@@ -20,7 +20,7 @@ from lightbug_http.c.socket_error import SysError
 # import everything they need from this module on Linux.
 from lightbug_http.c.kqueue import (
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
-    EV_EOF, EV_ERROR, timespec_t,
+    EV_EOF, timespec_t,
 )
 
 # --- epoll event flags ---
@@ -181,7 +181,7 @@ def epoll_wait(
     events: ExternalMutPointer[UInt32],
     max_events: Int,
     timeout_ms: Int,
-) raises -> Int:
+) raises SysError -> Int:
     """Wait for events on epfd, returning the number of ready events.
 
     `events` must have room for max_events * EPOLL_EVENT_WORDS UInt32 words.
@@ -192,9 +192,9 @@ def epoll_wait(
     ](c_int(epfd.value), events, c_int(max_events), c_int(timeout_ms))
     if result == -1:
         var errno = get_errno()
-        if errno == errno.EINTR:
+        if errno == ErrNo.EINTR:
             return 0
-        raise Error("epoll_wait failed, errno: ", errno)
+        raise SysError("epoll_wait", errno)
     return Int(result)
 
 
@@ -236,7 +236,7 @@ def epoll_pwait2_ns(
     )
     if result == -1:
         var errno = get_errno()
-        if errno == errno.EINTR:
+        if errno == ErrNo.EINTR:
             return 0
         return -1
     return result
@@ -266,7 +266,7 @@ def timerfd_settime(
     ](fd, flags, new_value, old_value)
 
 
-def set_timerfd_ms(fd: Int, timeout_ms: Int) raises:
+def set_timerfd_ms(fd: Int, timeout_ms: Int) raises SysError:
     """Arm (or re-arm) a timerfd for a one-shot timeout in milliseconds."""
     var spec_stack = stack_allocation[1, itimerspec_t]()
     spec_stack[] = itimerspec_t(
@@ -277,5 +277,4 @@ def set_timerfd_ms(fd: Int, timeout_ms: Int) raises:
     )
     var result = timerfd_settime(c_int(fd), 0, spec_stack, None)
     if result == -1:
-        var errno = get_errno()
-        raise Error("timerfd_settime failed, errno: ", errno)
+        raise SysError("timerfd_settime", get_errno())

@@ -78,12 +78,6 @@ def format_sse_event_bytes(event_id: Int, event_type: String, data: String) -> L
     return List[UInt8](s.as_bytes())
 
 
-def format_sse_heartbeat_bytes() -> List[UInt8]:
-    """Format an SSE heartbeat comment as bytes."""
-    var s = format_sse_heartbeat()
-    return List[UInt8](s.as_bytes())
-
-
 def sse_data_payload(frame: Span[Byte, _]) -> List[UInt8]:
     """The `data` payload of one SSE frame — the inverse of `format_sse_event`.
 

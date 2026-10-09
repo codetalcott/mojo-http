@@ -161,10 +161,10 @@ SABOTAGES = [
         "a read that ends just after a chunk's data is refused, not awaited",
         CHUNKED,
         "            elif self._state == DecoderState.IN_CHUNK_DATA_EXPECT_CR:\n"
-        "                if src >= len(buf):\n"
+        "                if src >= buffer_len:\n"
         "                    break",
         "            elif self._state == DecoderState.IN_CHUNK_DATA_EXPECT_CR:\n"
-        "                if src >= len(buf):\n"
+        "                if src >= buffer_len:\n"
         "                    return (-1, dst)",
         "a chunked body fed in pieces decoded differently from the same bytes whole",
     ),

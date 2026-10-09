@@ -11,7 +11,7 @@ from lightbug_http.c.network import (
     socklen_t,
 )
 from lightbug_http.c.socket_error import SysError
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
+from lightbug_http.c.fcntl import mark_fresh_cloexec, O_CLOEXEC
 
 
 @fieldwise_init
@@ -141,8 +141,7 @@ def socket(domain: c_int, type: c_int, protocol: c_int) raises SysError -> c_int
     if fd == -1:
         raise SysError("socket", get_errno())
     comptime if CompilationTarget.is_macos():
-        # F_SETFD fails only on EBADF, which a fresh descriptor is not.
-        _ = _fcntl(fd, c_int(F_SETFD), c_int(FD_CLOEXEC))
+        mark_fresh_cloexec(Int(fd))
     return fd
 
 
@@ -438,8 +437,7 @@ def _accept[
             # macOS has no accept4, so the fd is marked right after, and a
             # fork and exec on another thread in the instant between the two
             # calls would inherit it -- the window CPython has there too.
-            # F_SETFD fails only on EBADF, which a fresh descriptor is not.
-            _ = _fcntl(fd, c_int(F_SETFD), c_int(FD_CLOEXEC))
+            mark_fresh_cloexec(Int(fd))
         return fd
     else:
         # accept4(SOCK_CLOEXEC): born close-on-exec, with no window.

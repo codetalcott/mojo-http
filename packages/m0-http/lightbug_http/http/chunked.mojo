@@ -1,9 +1,7 @@
 import std.sys as sys
-from std.sys import size_of
 
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.strings import BytesConstant, is_token_char
-from std.memory import unsafe_memcpy
 
 
 # Chunked decoder states
@@ -215,18 +213,14 @@ struct HTTPChunkedDecoder(Defaultable):
                 var avail = buffer_len - src
                 if avail < self.bytes_left_in_chunk:
                     if dst != src:
-                        var _bp = buf.unsafe_ptr()
-                        for _k in range(avail):
-                            _bp[unsafe_offset = dst + _k] = _bp[unsafe_offset = src + _k]
+                        _shift_down(buf, dst, src, avail)
                     src += avail
                     dst += avail
                     self.bytes_left_in_chunk -= avail
                     break
 
                 if dst != src:
-                    var _bp = buf.unsafe_ptr()
-                    for _k in range(self.bytes_left_in_chunk):
-                        _bp[unsafe_offset = dst + _k] = _bp[unsafe_offset = src + _k]
+                    _shift_down(buf, dst, src, self.bytes_left_in_chunk)
 
                 src += self.bytes_left_in_chunk
                 dst += self.bytes_left_in_chunk
@@ -234,7 +228,7 @@ struct HTTPChunkedDecoder(Defaultable):
                 self._state = DecoderState.IN_CHUNK_DATA_EXPECT_CR
 
             elif self._state == DecoderState.IN_CHUNK_DATA_EXPECT_CR:
-                if src >= len(buf):
+                if src >= buffer_len:
                     break
 
                 if buf[src] != BytesConstant.CR:
@@ -339,10 +333,7 @@ struct HTTPChunkedDecoder(Defaultable):
 
         # Move remaining data to beginning of buffer
         if dst != src and src < buffer_len:
-            var _bp = buf.unsafe_ptr()
-            var _rem = buffer_len - src
-            for _k in range(_rem):
-                _bp[unsafe_offset = dst + _k] = _bp[unsafe_offset = src + _k]
+            _shift_down(buf, dst, src, buffer_len - src)
 
         var new_bufsz = dst
         # Where the next batch of raw bytes belongs: right after the
@@ -369,16 +360,29 @@ struct HTTPChunkedDecoder(Defaultable):
         # should mean what they say; `test_a_body_that_is_mostly_framing_
         # still_trips_the_abuse_guard` pins that the guard still fires on
         # what it was written for.
+        self._total_read += src
+        self._total_overhead += src - dst
         if ret == -2:
-            self._total_read += src
-            self._total_overhead += src - dst
             if self._total_overhead >= 100 * 1024 and self._total_read - self._total_overhead < self._total_read // 4:
                 ret = -1
-        else:
-            self._total_read += src
-            self._total_overhead += src - dst
 
         return (ret, new_bufsz)
+
+
+@always_inline
+def _shift_down[
+    origin: MutOrigin
+](buf: Span[Byte, origin], dst: Int, src: Int, n: Int):
+    """Move `n` bytes of `buf` from `src` down to `dst` (`dst < src`).
+
+    A forward byte loop on purpose: the two regions overlap, and copying
+    forward with `dst < src` reads each byte before anything overwrites it,
+    which is the memmove the decoder needs; `memcpy` promises nothing for
+    overlapping regions.
+    """
+    var bp = buf.unsafe_ptr()
+    for k in range(n):
+        bp[unsafe_offset = dst + k] = bp[unsafe_offset = src + k]
 
 
 def decode_hex(ch: Byte) -> Int:

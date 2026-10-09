@@ -98,7 +98,7 @@ def prepare_loop[B: EventLoopBackend](
     set_nonblocking(listen_fd)
     backend.add_read_listen(listen_fd.value)
 
-    # Phase 4a: register shutdown pipe read end if provided
+    # Register shutdown pipe read end if provided
     if shutdown_read_fd >= 0:
         backend.try_add_read(shutdown_read_fd)
 
@@ -178,10 +178,13 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
     parks requests for a pool of handler threads instead of calling
     `HTTPService.func` itself, and is woken by the pool's completion channel
     the same way it is woken by a bus channel. The streaming hooks are NOT
-    offloaded and cannot be — `sse_drain_slot`, `sse_slot_disconnected` and
-    `ws_message` are called on THIS thread's handler, while `func` would run
-    against a pool thread's own handler and its own registries. The caller
-    refuses the combination rather than letting the two drift.
+    offloaded: `sse_drain_slot`, `sse_slot_disconnected` and `ws_message`
+    run against THIS thread's handler, while `func` runs against a pool
+    thread's own handler and its own registries. A pool thread still
+    streams: over the chunk channel (`bus_read_fd`), or as a hold through an
+    `h`/`H` frame on `peer_bus_fd`, and either way the frame reaches this
+    thread's handler through `sse_peer_frame`, which is what subscribes the
+    slot.
 
     `stop_addr`, when non-zero, is the address of an Int64 word the loop
     stores `perf_counter_ns()` into the moment its drain BEGINS -- the Mojo
@@ -235,8 +238,10 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
                     print(st.offload.wait_report(), flush=True)
                 break
     except e:
-        # Closed already if the drain had begun: `_shutdown_begin` forgets
-        # the number (-1) before it closes it.
+        # Reached from the backend's wait alone: `_wait_for_events`, before
+        # a pass or in one of `_run_shutdown`'s drain steps. A pass does not
+        # raise. Closed already if the drain had begun: `_shutdown_begin`
+        # forgets the number (-1) before it closes it.
         if st.listen_fd.value >= 0:
             backend.try_delete_read(st.listen_fd.value)
             _close_listener(st.listen_fd)
@@ -321,7 +326,7 @@ def _wait_for_events[B: EventLoopBackend](
 
 def _run_pass[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, n_events: Int,
-) raises -> Bool:
+) -> Bool:
     """One pass of the event loop over `n_events` ready events.
 
     Everything between one `backend.wait` and the next, in an order that

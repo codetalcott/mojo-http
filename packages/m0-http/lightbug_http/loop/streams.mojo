@@ -5,7 +5,13 @@ A WebSocket's frames are read and handed to the handler
 pass (`_drain_outboxes`); a heartbeat keeps an idle stream alive and finds
 a dead one (`_heartbeat`); frames other workers publish arrive over the
 bus (`_deliver_bus_frames`); and the closes and resumed reads the handler
-asks for are applied at the bottom of every pass.
+asks for are applied at the bottom of every pass. Every frame this module
+puts on a stream -- a heartbeat, a pong or close echo, what the handler
+queued -- goes through `_send_frame`: one send, and one rule for a client
+that has gone. Two sends elsewhere do not, each a best-effort send just
+before its slot closes: the shutdown farewell (`_farewell_streams`,
+`loop/state.mojo`) and an aborted stream's last bytes
+(`_service_completions`, `loop/offload.mojo`).
 """
 
 from lightbug_http.event_loop_backend import EventLoopBackend
@@ -19,7 +25,7 @@ from lightbug_http.websocket import encode_ws_frame, WS_OP_PING
 from lightbug_http.loop.state import (
     LoopState, TIMER_SSE_HEARTBEAT, UNUSED, _arm_reads, _arm_ws_linger,
     _await_write, _chunked_stream_ends, _close_slot, _rearm_reads,
-    _stop_reads, _takes_an_out_of_band_frame, _ws_linger,
+    _slot_of, _stop_reads, _takes_an_out_of_band_frame, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
@@ -27,7 +33,7 @@ from lightbug_http.loop.response import _after_send
 
 def _deliver_bus_frames[T: HTTPService](
     mut handler: T, mut st: LoopState, fd: Int
-) raises:
+):
     """Drain one bus channel to EAGAIN through the loop's reader and hand
     each frame to the handler (`sse_peer_frame`), which queues it for its
     own subscribers; the pass's outbox drain sends it. What the reader
@@ -38,15 +44,55 @@ def _deliver_bus_frames[T: HTTPService](
         handler.sse_peer_frame(frames[f].url, frames[f].event_id, frames[f].frame)
 
 
+def _send_frame[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
+    var frame: Bytes,
+) -> Bool:
+    """Put a frame on a stream slot: the slot's response, sent now as far as
+    the socket takes it.
+
+    The slot is RESPONDING while the frame goes out. What the send leaves
+    -- all of it, when the send fails EAGAIN or takes no bytes -- waits for
+    writability (`_await_write`, whose registration replaces the read
+    interest on both backends), and the write-ready path sends the rest and
+    runs `_after_send`. A send that fails with anything else means the
+    client is gone, and the slot closes in the pass that found it
+    (`_close_slot`, which tells the handler). That was the heartbeat's rule
+    and the WebSocket reader's; the outbox drain swallowed the error and
+    waited for writability, leaving the dead peer to the write-ready path a
+    pass later. No deadline and no read interest are set here: those belong
+    to the transitions (`loop/state.mojo`, review record C4).
+
+    True when the frame is on its way: landed whole (`slot_send_offset`
+    reaches its length, and the slot stays RESPONDING for the caller to say
+    what follows) or waiting to be written. False when it is not: the slot
+    is closed (`slot_fds` holds `UNUSED`), or the write registration failed
+    and the slot is left as it stands, for the caller to close or leave
+    (`_await_write`).
+    """
+    st.slot_response[slot] = frame^
+    st.slot_send_offset[slot] = 0
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    try:
+        st.slot_send_offset[slot] = Int(
+            send(FileDescriptor(fd_val), Span(st.slot_response[slot]), 0)
+        )
+    except send_err:
+        if not send_err.would_block():
+            _close_slot(handler, backend, st, slot, fd_val)
+            return False
+    if st.slot_send_offset[slot] < len(st.slot_response[slot]):
+        return _await_write(backend, st, slot, fd_val)
+    return True
+
+
 def _heartbeat[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, timer_ident: UInt,
 ):
     """A stream's heartbeat: an SSE comment or a WebSocket ping, re-armed
     first; a send that fails closes the stream."""
     var fd_val = Int(timer_ident - TIMER_SSE_HEARTBEAT)
-    if fd_val >= len(st.fd_to_slot):
-        return
-    var hb_slot = st.fd_to_slot[fd_val]
+    var hb_slot = _slot_of(st, fd_val)
     if hb_slot == UNUSED or not (st.slot_sse[hb_slot] or st.slot_ws[hb_slot]):
         # The stream this timer belonged to is gone (or the fd
         # now serves a non-streaming connection); retire the timer.
@@ -71,32 +117,21 @@ def _heartbeat[T: HTTPService, B: EventLoopBackend](
     # is what keeps it alive through an idle proxy.
     if not _takes_an_out_of_band_frame(st, hb_slot):
         return
+    var frame: Bytes
     if hb_is_ws:
-        st.slot_response[hb_slot] = Bytes(Span(encode_ws_frame(WS_OP_PING, "hb".as_bytes())))
+        frame = encode_ws_frame(WS_OP_PING, "hb".as_bytes())
     else:
         var hb = String(": heartbeat\n\n")
-        st.slot_response[hb_slot] = Bytes(hb.as_bytes())
-    st.slot_send_offset[hb_slot] = 0
-    st.provision_pool.provisions[hb_slot].state = ConnectionState.responding()
-    var fd_desc = FileDescriptor(fd_val)
-    var hb_dead = False
-    try:
-        var sent = send(fd_desc, Span(st.slot_response[hb_slot]), 0)
-        st.slot_send_offset[hb_slot] = Int(sent)
-    except hb_err:
-        # EPIPE/ECONNRESET here is the heartbeat doing its
-        # other job: discovering a dead subscriber that never
-        # sent a FIN. Close it (which notifies the handler)
-        # rather than leaving a zombie stream.
-        if not hb_err.would_block():
-            hb_dead = True
-    if hb_dead:
-        _close_slot(handler, backend, st, hb_slot, fd_val)
+        frame = Bytes(hb.as_bytes())
+    # EPIPE/ECONNRESET here is the heartbeat doing its other job:
+    # discovering a dead subscriber that never sent a FIN, whose slot
+    # `_send_frame` closes (telling the handler) rather than leaving a
+    # zombie stream. A write registration that failed leaves the slot as
+    # it stands, as the heartbeat always has.
+    if not _send_frame(handler, backend, st, hb_slot, fd_val, frame^):
         return
     if st.slot_send_offset[hb_slot] >= len(st.slot_response[hb_slot]):
         st.provision_pool.provisions[hb_slot].state = ConnectionState.streaming_ws() if hb_is_ws else ConnectionState.streaming_sse()
-    else:
-        _ = _await_write(backend, st, hb_slot, fd_val)
 
 
 def _read_websocket[T: HTTPService, B: EventLoopBackend](
@@ -152,33 +187,29 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
     # overflows a send buffer with 2 KB or more left, cut at
     # byte 115 of a 125-byte pong). What the kernel refused is
     # queued as the slot's response and the socket waits for
-    # writability like any frame the outbox sends; reads stop
-    # until it lands, so the reply is bounded by this one recv.
-    # A pong is no longer dropped on EAGAIN either: RFC 6455
-    # §5.5.2 says MUST, and a dropped close echo left the peer
-    # with no Close at all.
+    # writability like any frame the outbox sends (`_send_frame`);
+    # the write registration takes the read interest with it on
+    # both backends, so reads stop until it lands, and the reply
+    # is bounded by this one recv. A pong is no longer dropped on
+    # EAGAIN either: RFC 6455 §5.5.2 says MUST, and a dropped
+    # close echo left the peer with no Close at all.
     var reply_owed = False
+    # The reply's write registration failed: nothing will send the rest.
+    var reply_stranded = False
     if len(ws_res.reply) > 0:
-        var ws_reply_dead = False
-        var ws_reply_sent = 0
-        try:
-            ws_reply_sent = Int(
-                send(ws_fd, Span(ws_res.reply), 0)
-            )
-        except ws_send_err:
-            # Anything but EAGAIN means the client is gone.
-            if not ws_send_err.would_block():
-                ws_reply_dead = True
-        if ws_reply_dead:
-            _close_slot(handler, backend, st, slot, fd_val)
-            return
-        if ws_reply_sent < len(ws_res.reply):
-            st.slot_response[slot] = Bytes(Span(ws_res.reply))
-            st.slot_send_offset[slot] = ws_reply_sent
+        if not _send_frame(
+            handler, backend, st, slot, fd_val, Bytes(Span(ws_res.reply))
+        ):
+            if st.slot_fds[slot] == UNUSED:
+                # The client is gone, and its slot closed.
+                return
+            reply_stranded = True
+        reply_owed = st.slot_send_offset[slot] < len(st.slot_response[slot])
+        if not reply_owed:
+            # Landed whole: the socket is back in frame mode.
             st.provision_pool.provisions[slot].state = (
-                ConnectionState.responding()
+                ConnectionState.streaming_ws()
             )
-            reply_owed = True
     # Every message of this batch is handed over — a False
     # does not stop the delivery, because these messages were
     # already read off the socket and the handler PARKS what
@@ -217,7 +248,13 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
         # what Linux CI measured (3 of 3000 echoed, no drops)
         # while macOS passed, kqueue's filters being
         # independent.
-        _stop_reads(backend, st, slot, fd_val)
+        #
+        # A reply still owed has taken the read interest already
+        # (`_send_frame`), and its slot waits to write: on epoll
+        # the delete would take the write one-shot with it, and
+        # the reply would never go out (`_stop_reads`).
+        if not reply_owed:
+            _stop_reads(backend, st, slot, fd_val)
         st.slot_ws_state[slot].inbound_suspended = True
     elif (
         ws_read == UInt(st.provision_pool.provisions[slot].recv_staging.capacity())
@@ -258,12 +295,10 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
             st.provision_pool.provisions[slot].should_close = True
         else:
             _close_slot(handler, backend, st, slot, fd_val)
-    if reply_owed and st.slot_fds[slot] != UNUSED:
-        # The reply takes the socket's registration until it
-        # lands, and its read interest with it, on both
-        # backends (`_await_write`).
-        if not _await_write(backend, st, slot, fd_val):
-            _close_slot(handler, backend, st, slot, fd_val)
+    if reply_stranded and st.slot_fds[slot] != UNUSED:
+        # Nothing will send the rest of the reply: the socket
+        # closes, the batch's messages handed over first.
+        _close_slot(handler, backend, st, slot, fd_val)
 
 
 def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
@@ -311,12 +346,12 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
             # once the final chunk has been handed out, and the loop
             # closes after those bytes land. Close is how a
             # content-length-free streamed body ends.
-            var asgi_stream = st.offload.slot_channel_stream(s)
+            var channel_stream = st.offload.slot_channel_stream(s)
             var pending = handler.sse_drain_slot(s)
             # Read ONCE per pass: `sse_drain_slot` above is what makes it
             # go false, so asking twice can straddle the transition and
             # send a terminator on a stream that just queued more.
-            var ended = asgi_stream and not handler.sse_is_streaming(s)
+            var ended = channel_stream and not handler.sse_is_streaming(s)
             var framed = st.offload.chunked[s]
 
             # Payload bytes are what the producer's credit window counts.
@@ -334,24 +369,21 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                 out = Bytes(Span(pending))
 
             if len(out) > 0:
-                st.slot_response[s] = out^
-                st.slot_send_offset[s] = 0
                 # What the write-ready completion owes the producer if
                 # this buffer does not land in one send below.
-                st.offload.ack_payload[s] = payload_len if asgi_stream else 0
-                st.provision_pool.provisions[s].state = ConnectionState.responding()
-                # Eager send
-                var sse_fd = FileDescriptor(st.slot_fds[s])
-                try:
-                    var sent = send(sse_fd, Span(st.slot_response[s]), 0)
-                    st.slot_send_offset[s] = Int(sent)
-                except:
-                    pass
+                st.offload.ack_payload[s] = payload_len if channel_stream else 0
+                if not _send_frame(handler, backend, st, s, st.slot_fds[s], out^):
+                    if st.slot_fds[s] == UNUSED:
+                        # The client is gone, and its slot closed in this
+                        # pass (`_send_frame`).
+                        continue
+                    # A write registration that failed leaves the slot as
+                    # it stands, as the drain always has.
                 if st.slot_send_offset[s] >= len(st.slot_response[s]):
                     # Landed in one send: ack here and cancel what the
                     # write-ready path would otherwise have owed.
                     st.offload.ack_payload[s] = 0
-                    if asgi_stream and payload_len > 0:
+                    if channel_stream and payload_len > 0:
                         if not st.offload.pool()[].ack_stream(s, payload_len):
                             if st.offload.ack_owed[s] == 0:
                                 st.offload.ack_owed_count += 1
@@ -411,7 +443,6 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                         # keep-alive response, or the close its request
                         # asked for.
                         _chunked_stream_ends(st, s)
-                    _ = _await_write(backend, st, s, st.slot_fds[s])
             elif ended:
                 # End marked with nothing left to send. Only reachable
                 # unframed: a framed stream always has a terminator to

@@ -726,15 +726,7 @@ struct ExecutorPort(Movable, Writable):
             unsafe_from_address=self.loop_addr
         )[]
         for _ in range(_HAND_OVER_TRIES):
-            try:
-                _deliver_bus_frames(handler, st, pool.stream_chunk_read)
-            except e:
-                print(
-                    "inverted executor: handing the chunk channel to the loop raised: "
-                    + String(e),
-                    flush=True,
-                )
-                return False
+            _deliver_bus_frames(handler, st, pool.stream_chunk_read)
             if pool.send_stream_chunk(frame):
                 return True
         return False

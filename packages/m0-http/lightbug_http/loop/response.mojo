@@ -25,7 +25,7 @@ from lightbug_http.websocket import is_ws_upgrade_response
 from lightbug_http.loop.state import (
     LoopState, STREAM_KEEPALIVE_PROBES, UNUSED, _arm_send_deadline,
     _await_write, _close_slot, _end_request, _keep_stream_close,
-    _record_response, _stream_idle, _ws_linger,
+    _record_response, _slot_of, _stream_idle, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 
@@ -36,9 +36,7 @@ def _on_write[T: HTTPService, B: EventLoopBackend](
     """A connection socket is writable: send more of the response it owes
     -- the head, then a file body -- and once it has landed, finish it and
     answer what is pipelined behind."""
-    if fd_val >= len(st.fd_to_slot):
-        return
-    var slot = st.fd_to_slot[fd_val]
+    var slot = _slot_of(st, fd_val)
     if slot == UNUSED:
         return
 
@@ -329,8 +327,14 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # frames arrived over the chunk channel: measured on the 100th request
     # of a keep-alive connection as a 200 carrying `Content-Length: 124926`
     # and zero bytes, and as a 101 that never sent a frame. The second
-    # enforcement site below (`keepalive_count >= max`) needs no such guard:
-    # this one closes at `max - 1`, so a live stream never reaches it.
+    # enforcement site (`_after_send`, `keepalive_count >= max`) has no such
+    # guard, and a live stream does reach it, a known defect: a chunked
+    # stream served as request `max` skips this cap and ends kept-alive with
+    # the count at `max`, so a stream or an upgrade as the next request
+    # skips it too, says `keep-alive`, and is closed there once its head
+    # lands, before any of its body. docs/ROADMAP.md holds it under Known
+    # issues as "Under the keep-alive cap, a stream that follows a chunked
+    # stream served as the cap request is closed after its head."
     if (
         (not response.sse_streaming)
         and (not upgraded_ws)
@@ -396,7 +400,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         st.offload.ack_owed_count -= 1
     if response.sse_streaming:
         response.headers.pop("content-length")
-        var asgi_stream = st.offload.slot_channel_stream(slot)
+        var channel_stream = st.offload.slot_channel_stream(slot)
         # The head names its stream's generation; an abort datagram is
         # checked against this, so one for an earlier stream on a recycled
         # slot cannot close this connection.
@@ -410,7 +414,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         # status says is already complete.
         var bodiless = is_bodiless_status(response.status_code)
         var can_chunk = (
-            asgi_stream
+            channel_stream
             and st.offload.http11[slot]
             and not st.offload.is_head[slot]
             and not upgraded_ws

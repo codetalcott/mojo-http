@@ -29,7 +29,6 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.fcntl import F_GETFD, _fcntl
-from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.kqueue import EVFILT_READ
 from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
@@ -44,7 +43,7 @@ from lightbug_http.loop.state import LoopState, UNUSED, _close_slot
 from lightbug_http.server_config import ServerConfig
 
 from std.ffi import c_int, external_call, get_errno
-from std.memory.alloc import unsafe_alloc
+from test.support import _stream_pair
 
 
 def _is_open(fd: Int) -> Bool:
@@ -145,24 +144,6 @@ def _config() -> ServerConfig:
     config.max_connections = SLOTS
     config.sse_heartbeat_ms = 0
     return config^
-
-
-def _stream_pair() raises -> Tuple[Int, Int]:
-    """An `AF_UNIX` `SOCK_STREAM` pair, non-blocking at both ends: the first
-    end is the server's side of a connection, the second the client's."""
-    var fds = unsafe_alloc[c_int](count=2)
-    var rc = external_call[
-        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
-    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
-    if rc != 0:
-        var errno = get_errno()
-        fds.unsafe_free()
-        raise Error("socketpair() failed, errno: ", errno)
-    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
-    fds.unsafe_free()
-    set_nonblocking(FileDescriptor(pair[0]))
-    set_nonblocking(FileDescriptor(pair[1]))
-    return pair
 
 
 def _move_to(fd: Int, number: Int) raises:

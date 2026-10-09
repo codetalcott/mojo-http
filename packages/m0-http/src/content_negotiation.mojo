@@ -11,6 +11,7 @@ specific ones regardless of the order they appear in the header.
 """
 
 from lightbug_http.header import ascii_lowercase, name_is
+from lightbug_http.strings import trim_ows
 
 
 struct AcceptResult(Copyable, Movable):
@@ -144,11 +145,11 @@ def _split_media_range(
     """
     var bytes = part.as_bytes()
     var semi_pos = part.find(";")
-    var media_type: String
+    var media_end = len(bytes)
     var quality: Float64 = 1.0
 
     if semi_pos != -1:
-        media_type = _trim(String(unsafe_from_utf8=bytes[0:semi_pos]))
+        media_end = semi_pos
         var start = semi_pos + 1
         while start <= len(bytes):
             var end = start
@@ -159,13 +160,12 @@ def _split_media_range(
                 quality = weight
                 break
             start = end + 1
-    else:
-        media_type = _trim(part)
 
+    var media_type = trim_ows(bytes, 0, media_end)
     # ASCII folding only: Unicode `String.lower()` read KELVIN SIGN as `k`
     # and an overlong `C1 A2` as `b`, so a range the client never sent
     # matched a registered vendor type (review record LF63).
-    ranges.append(ascii_lowercase(media_type.as_bytes()))
+    ranges.append(ascii_lowercase(bytes[media_type[0]:media_type[1]]))
     qualities.append(quality)
 
 
@@ -181,10 +181,11 @@ def _weight(param: String) -> Float64:
     if eq == -1:
         return -1.0
     var bytes = param.as_bytes()
-    var name = _trim(String(unsafe_from_utf8=bytes[0:eq]))
-    if not name_is(name.as_bytes(), "q"):
+    var name = trim_ows(bytes, 0, eq)
+    if not name_is(bytes[name[0]:name[1]], "q"):
         return -1.0
-    return _parse_quality(_trim(String(unsafe_from_utf8=bytes[eq + 1 :])))
+    var value = trim_ows(bytes, eq + 1, len(bytes))
+    return _parse_quality(String(unsafe_from_utf8=bytes[value[0]:value[1]]))
 
 
 def _resolve(
@@ -227,20 +228,6 @@ def _last_quality(
         if ranges[i] == target:
             found = qualities[i]
     return found
-
-
-def _trim(s: String) -> String:
-    """Trim leading and trailing whitespace."""
-    var bytes = s.as_bytes()
-    var start = 0
-    var end = s.byte_length()
-    while start < end and (bytes[start] == UInt8(ord(" ")) or bytes[start] == UInt8(ord("\t"))):
-        start += 1
-    while end > start and (bytes[end - 1] == UInt8(ord(" ")) or bytes[end - 1] == UInt8(ord("\t"))):
-        end -= 1
-    if start == 0 and end == s.byte_length():
-        return s
-    return String(unsafe_from_utf8=s.as_bytes()[start:end])
 
 
 def _contains(types: List[String], media_type: String) -> Bool:

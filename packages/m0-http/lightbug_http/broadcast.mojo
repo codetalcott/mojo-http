@@ -30,6 +30,7 @@ from lightbug_http.c.socket import (
 )
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.c.platform import MSG_DONTWAIT
+from lightbug_http.offload_wire import append_i64_le, read_i64_le
 
 # Per-call non-blocking I/O. `set_nonblocking` was a silent no-op on ARM64
 # macOS until `_fcntl` learned the Darwin variadic convention (see
@@ -242,9 +243,7 @@ def reserved_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
 def encode_bus_frame(url: String, event_id: Int, frame: Span[Byte, _]) -> List[UInt8]:
     """[event_id: 8 LE][url_len: 2 LE][url][frame]."""
     var out = List[UInt8](capacity=_BUS_HEADER + url.byte_length() + len(frame))
-    var id_bits = UInt64(event_id)
-    for shift in range(0, 64, 8):
-        out.append(UInt8((id_bits >> UInt64(shift)) & 0xFF))
+    append_i64_le(out, event_id)
     var url_len = url.byte_length()
     out.append(UInt8(url_len & 0xFF))
     out.append(UInt8((url_len >> 8) & 0xFF))
@@ -275,9 +274,7 @@ def decode_bus_frame(datagram: Span[Byte, _]) -> Optional[BusFrame]:
     """
     if len(datagram) < _BUS_HEADER:
         return None
-    var id_bits = UInt64(0)
-    for i in range(8):
-        id_bits |= UInt64(datagram[i]) << UInt64(i * 8)
+    var event_id = read_i64_le(datagram, 0)
     var url_len = Int(datagram[8]) | (Int(datagram[9]) << 8)
     if _BUS_HEADER + url_len > len(datagram):
         return None
@@ -288,7 +285,7 @@ def decode_bus_frame(datagram: Span[Byte, _]) -> Optional[BusFrame]:
     var frame = List[UInt8](capacity=len(datagram) - _BUS_HEADER - url_len)
     for i in range(_BUS_HEADER + url_len, len(datagram)):
         frame.append(datagram[i])
-    return BusFrame(url^, Int(Int64(id_bits)), frame^)
+    return BusFrame(url^, event_id, frame^)
 
 
 struct BusReader(Movable):
@@ -324,7 +321,7 @@ struct BusReader(Movable):
         self.buf = List[UInt8]()
         self.refused = 0
 
-    def drain(mut self, read_fd: Int) raises -> List[BusFrame]:
+    def drain(mut self, read_fd: Int) -> List[BusFrame]:
         """Read every waiting datagram off a bus channel; decode what parses.
 
         The channel is non-blocking; EAGAIN ends the drain. The event loop

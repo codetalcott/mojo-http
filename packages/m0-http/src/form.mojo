@@ -35,6 +35,7 @@ is what would justify it).
 
 from lightbug_http.header import HeaderKey, ascii_lower_byte
 from lightbug_http.http import HTTPRequest
+from lightbug_http.strings import trim_ows
 from lightbug_http.uri import QueryDelimiters, unquote
 
 from .reply import body_string
@@ -103,9 +104,7 @@ def is_form(req: HTTPRequest) -> Bool:
     var v = req.headers.value_span(i)
     var want = FORM_CONTENT_TYPE.as_bytes()
     # Skip leading whitespace, then the media type runs to `;` or a space.
-    var s = 0
-    while s < len(v) and (v[s] == UInt8(32) or v[s] == UInt8(9)):
-        s += 1
+    var s = trim_ows(v, 0, len(v))[0]
     var e = s
     while e < len(v) and v[e] != UInt8(59) and v[e] != UInt8(32) and v[e] != UInt8(9):
         e += 1

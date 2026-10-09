@@ -36,20 +36,40 @@ trait HTTPService:
         return List[UInt8]()
 
     def sse_is_streaming(self, slot: Int) -> Bool:
-        """Check if a slot is in SSE streaming mode."""
+        """Whether a channel stream's producer is still subscribed on `slot`.
+
+        Read at one site, `loop/streams.mojo`'s outbox sweep, and only for a
+        channel stream: one an executor, or a pool thread streaming a WSGI
+        iterable, feeds through the chunk channel. The sweep asks once per
+        pass, after the drain, and False ENDS the stream: a chunked one gets
+        its terminator and the connection goes on as its request asked, and
+        any other closes, a WebSocket after the close linger. A held or
+        native stream is never asked, so the answer for one changes nothing.
+        """
         return False
 
     def sse_slot_disconnected(mut self, slot: Int):
-        """Notify the service that an SSE client disconnected."""
+        """`slot`'s stream is over: drop its subscription and forget the slot.
+
+        Called from `_close_slot` (`loop/state.mojo`) for any SSE or
+        WebSocket slot, by whatever path closed it, and from
+        `_finish_response` (`loop/response.mojo`) for a HEAD that drew a
+        streaming response: the handler had already subscribed the slot, and
+        the response goes out as an ordinary head with no stream.
+        """
         pass
 
     def sse_peer_frame(mut self, url: String, event_id: Int, frame: List[UInt8]):
-        """Deliver an SSE frame broadcast by ANOTHER worker (BroadcastBus).
+        """Deliver one frame the loop drained from a bus channel.
 
-        Only fires when the server was started with a bus channel
-        (`bus_read_fd`), i.e. under a multi-worker SSE setup. Queue the frame
-        for local subscribers of `url` — `DatastarStream.deliver_peer` is the
-        standard wiring. Non-streaming handlers leave it empty.
+        Called by `_deliver_bus_frames` (`loop/streams.mojo`) for each frame
+        on `bus_read_fd` (another worker's broadcast, under a multi-worker
+        SSE setup), on `peer_bus_fd`, and on the executor's chunk-stream
+        channel. A pool thread's `h`/`H` hold frames arrive the same way,
+        with a reserved `\\x01` url naming the slot instead of a channel
+        (`send_hold_frame`, `hold.mojo`). Queue the frame for local
+        subscribers of `url` — `DatastarStream.deliver_peer` is the standard
+        wiring. Non-streaming handlers leave it empty.
         """
         pass
 
@@ -135,10 +155,13 @@ trait HTTPService:
     def take_ws_resumes(mut self) -> List[Int]:
         """Slots whose inbound flow may resume — parked messages all sent.
 
-        Called once per loop pass, at the bottom. The loop re-arms each
-        named slot's read (`try_add_read`: level-triggered on kqueue, and
-        epoll delivers an edge at ADD time for bytes already buffered, so
-        nothing is stranded). A handler that never returns False from
+        Called once per loop pass, at the bottom (`loop/streams.mojo`). The
+        loop re-arms each named slot's read through `_arm_reads`, which
+        leaves a slot still RESPONDING alone: the completion of its send
+        arms reads, and arming them here would replace the pending write
+        one-shot. A resumed read is level-triggered on kqueue, and epoll
+        delivers an edge at ADD time for bytes already buffered, so nothing
+        is stranded. A handler that never returns False from
         `ws_message_take` never names a slot; the default is that handler.
         """
         return List[Int]()

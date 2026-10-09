@@ -7,7 +7,7 @@ from lightbug_http.header import (
 )
 from lightbug_http.http.date import http_date_now
 from lightbug_http.http.encodable import Encodable
-from lightbug_http.io.bytes import Bytes, ByteWriter
+from lightbug_http.io.bytes import Bytes, ByteWriter, default_buffer_size
 from lightbug_http.strings import lineBreak, strHttp11, whitespace
 
 
@@ -115,38 +115,17 @@ struct HTTPResponse(Encodable, Movable, Writable):
         protocol: String = strHttp11,
         invent_entity_headers: Bool = True,
     ):
-        # Move, not copy: the arguments are almost always temporaries built
-        # inline at the call site (`Headers(Header(...))`), and copying the
-        # whole header blob per response was 2 of the hot path's ~6
-        # allocations. A caller that reuses a named Headers still can — a
-        # `var` parameter takes an implicit copy of a value that is used
-        # again afterwards.
-        self.headers = headers^
-        self.cookies = cookies^
-        # The two entity defaults are for a native handler's body: never
-        # for a status that has none (a 1xx, 204 or 304 went out as
-        # `content-length: 0` and octet-stream), and never for a head a
-        # caller relays as sent -- the gateway passes False (SPEC A21, K12).
-        var invent = invent_entity_headers and not is_bodiless_status(status_code)
-        if invent and self.headers.known_index(KH_CONTENT_TYPE) < 0:
-            self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
-        self.status_code = status_code
-        self.status_text = status_text
-        self.protocol = protocol
-        self.body_raw = Bytes(body_bytes)
-        self.sse_streaming = False
-        self.body_fd = -1
-        self.body_fd_offset = 0
-        self.body_fd_len = 0
-        self.stream_gen = 0
-        if self.headers.known_index(KH_CONNECTION) < 0:
-            self.set_connection_keep_alive()
-        if invent and self.headers.known_index(KH_CONTENT_LENGTH) < 0:
-            self.set_content_length(len(body_bytes))
-        # No Date header here: encode() adds one at wire-write time if the
-        # response still lacks it (and the event loop injects a per-second
-        # cached value first). Formatting a date per construction was pure
-        # per-request overhead — measured ~9% of hello-world throughput.
+        """Initialize with a copy of `body_bytes`; the rest is the owning
+        constructor's, below."""
+        self = Self(
+            owned_body=Bytes(body_bytes),
+            headers=headers^,
+            cookies=cookies^,
+            status_code=status_code,
+            status_text=status_text,
+            protocol=protocol,
+            invent_entity_headers=invent_entity_headers,
+        )
 
     def __init__(
         out self,
@@ -159,9 +138,18 @@ struct HTTPResponse(Encodable, Movable, Writable):
         invent_entity_headers: Bool = True,
     ):
         """Initialize with an owned body buffer (zero-copy move)."""
+        # Move, not copy: the arguments are almost always temporaries built
+        # inline at the call site (`Headers(Header(...))`), and copying the
+        # whole header blob per response was 2 of the hot path's ~6
+        # allocations. A caller that reuses a named Headers still can — a
+        # `var` parameter takes an implicit copy of a value that is used
+        # again afterwards.
         self.headers = headers^
         self.cookies = cookies^
-        # The defaults' rule is the `body_bytes` constructor's, above.
+        # The two entity defaults are for a native handler's body: never
+        # for a status that has none (a 1xx, 204 or 304 went out as
+        # `content-length: 0` and octet-stream), and never for a head a
+        # caller relays as sent -- the gateway passes False (SPEC A21, K12).
         var invent = invent_entity_headers and not is_bodiless_status(status_code)
         if invent and self.headers.known_index(KH_CONTENT_TYPE) < 0:
             self.headers[HeaderKey.CONTENT_TYPE] = "application/octet-stream"
@@ -234,20 +222,7 @@ struct HTTPResponse(Encodable, Movable, Writable):
         application never listed. Headers and `Set-Cookie` lines carrying
         one are dropped by their own writers (SPEC G2).
         """
-        var writer = ByteWriter()
-        writer.write(self.protocol, whitespace, self.status_code, whitespace)
-        if not span_breaks_header_line(self.status_text.as_bytes()):
-            writer.write(self.status_text)
-        writer.write(lineBreak)
-        if self.headers.known_index(KH_SERVER) < 0:
-            writer.write("server: lightbug_http", lineBreak)
-        if self.headers.known_index(KH_DATE) < 0:
-            write_header(writer, HeaderKey.DATE, http_date_now())
-        self.headers.write_latin1_to(writer)
-        self.cookies.write_latin1_to(writer)
-        writer.write(lineBreak)
-        writer.consuming_write(self.body_raw^)
-        return writer^.consume()
+        return self^.encode_into(Bytes(capacity=default_buffer_size))
 
     def set_file_body(mut self, fd: Int, offset: Int, length: Int):
         """Send `length` bytes of `fd` from `offset` as the body.
@@ -272,7 +247,7 @@ struct HTTPResponse(Encodable, Movable, Writable):
         """
         buf.clear()
         var writer = ByteWriter(buf^)
-        # The head's rules are `encode`'s: an injected reason phrase is
+        # The head's rules, here for `encode` too: an injected reason phrase is
         # emptied, an injected header or `Set-Cookie` line dropped.
         writer.write(self.protocol, whitespace, self.status_code, whitespace)
         if not span_breaks_header_line(self.status_text.as_bytes()):

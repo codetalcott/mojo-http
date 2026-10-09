@@ -5,8 +5,9 @@ The WSGI/ASGI gateway and the `m0serve` binary. The repository's
 embedding CPython, mounts and their lanes, and the execution modes with the
 rules each depends on. The handler-pool rules also govern files outside
 this directory — the fork's offload seam (`lightbug_http/offload.mojo`,
-`lightbug_http/ring.mojo`, the event loop's pool and executor paths) and
-`m0_http.mojo_pool` — so read this page before editing those too.
+`lightbug_http/offload_wire.mojo`, `lightbug_http/ring.mojo`, the event
+loop's pool and executor paths) and `m0_http.mojo_pool` — so read this
+page before editing those too.
 
 `m0-wsgi` is the **only** package that embeds CPython. Keep it that way: a
 Python import in `m0-http` or `m0-core` would put libpython on the link line of
@@ -816,7 +817,7 @@ M20). Three rules the pinned interop imposes and that the code depends on:
         check against `HTTPResponse.stream_gen`), flushes what the producer
         managed to send, and closes without a terminator.
       - `enable_stream_channel` creates the chunk pair alone;
-        `stream_active()` still means "an executor exists"
+        `executor_active()` still means "an executor exists"
         (`enable_base_stream_ack`) and `slot_is_executor` stays lane-only.
         `slot_channel_stream` is the per-slot question the loop's four
         stream decisions ask; the drain-ack gate asks `chunk_active()`.

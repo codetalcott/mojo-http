@@ -12,8 +12,9 @@ from std.memory.alloc import unsafe_alloc
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.aliases import ExternalMutPointer
-from lightbug_http.c.fcntl import _fcntl, F_SETFD, FD_CLOEXEC, O_CLOEXEC
+from lightbug_http.c.fcntl import mark_fresh_cloexec, O_CLOEXEC
 from lightbug_http.c.socket import _close
+from lightbug_http.c.socket_error import SysError
 
 
 def _pipe(fds: ExternalMutPointer[c_int]) -> c_int:
@@ -110,7 +111,7 @@ struct ShutdownHandle(Movable):
         )
 
 
-def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
+def create_shutdown_pipe() raises SysError -> Tuple[Int, ShutdownHandle]:
     """Create a pipe pair for graceful event-loop shutdown.
 
     Returns:
@@ -119,7 +120,8 @@ def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
         handle.signal() whenever you want the server to stop.
 
     Raises:
-        Error: If the pipe() syscall fails (e.g. file-descriptor limit reached).
+        SysError: `pipe` and its errno, if the call fails (EMFILE at the
+            descriptor limit).
     """
     # Freed below; `unsafe_alloc` is the non-Layout allocator (std.memory.alloc).
     # Close-on-exec, both ends (SPEC G16): a child the application starts
@@ -134,12 +136,12 @@ def create_shutdown_pipe() raises -> Tuple[Int, ShutdownHandle]:
     if ret == -1:
         var errno = get_errno()
         fds.unsafe_free()
-        raise Error("pipe() failed, errno: ", errno)
+        raise SysError("pipe", errno)
     var read_fd = Int(fds[unsafe_offset=0])
     var write_fd = Int(fds[unsafe_offset=1])
     fds.unsafe_free()
     comptime if CompilationTarget.is_macos():
-        # Marked right after; F_SETFD fails only on EBADF, which these are not.
-        _ = _fcntl(c_int(read_fd), c_int(F_SETFD), c_int(FD_CLOEXEC))
-        _ = _fcntl(c_int(write_fd), c_int(F_SETFD), c_int(FD_CLOEXEC))
+        # Marked right after.
+        mark_fresh_cloexec(read_fd)
+        mark_fresh_cloexec(write_fd)
     return (read_fd, ShutdownHandle(write_fd))

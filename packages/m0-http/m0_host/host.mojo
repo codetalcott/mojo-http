@@ -180,7 +180,7 @@ from lightbug_http.address import join_host_port, parse_address
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.process import getpid, process_exit
-from lightbug_http.connection import ListenConfig, NoTLSListener
+from lightbug_http.connection import ListenConfig
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
 from lightbug_http.server_config import ServerConfig
@@ -1086,6 +1086,57 @@ def serve[H: AppHandler, P: Producer = NoProducer](config: AppConfig) raises:
     serve[H, P](config, config.server_config())
 
 
+struct PreforkPieces(Movable):
+    """Steps 3 to 5 of the module docstring, made once by either path
+    before any fork or thread (`_prefork_pieces`).
+
+    Not the listener, which both paths make first and keep as a local: a
+    field cannot be moved out of a value whose other fields live on, and
+    `serve` hands its listener to the loop by `listener^.into_fd()`.
+    """
+
+    var host_page: SharedAtomics
+    """The host's own page (`prefork_page`): slot 0 the SSE event id every
+    worker numbers from, then each worker's accept-share line."""
+    var app_page: Int
+    """The application's page (`AppHandler.page_slots`), or 0 when it
+    asked for none."""
+    var bus: BroadcastBus
+    """One channel per worker or loop, at one too."""
+    var share: AcceptShare
+    """The accept-share channels, unbound: `serve` binds these in place
+    after any fork, and each loop thread binds a copy of its own
+    (`LoopShared`)."""
+
+    def __init__(
+        out self,
+        var host_page: SharedAtomics,
+        app_page: Int,
+        var bus: BroadcastBus,
+        var share: AcceptShare,
+    ):
+        self.host_page = host_page^
+        self.app_page = app_page
+        self.bus = bus^
+        self.share = share^
+
+
+def _prefork_pieces[H: AppHandler](loops: Int) raises -> PreforkPieces:
+    """The pages, the bus and the accept-share channels, in that order,
+    sized by `loops`: `M0_WORKERS` under prefork, `M0_THREADS` under
+    threads, one loop per worker either way."""
+    # The page, the bus and the accept-share channels are m0serve's too:
+    # `m0_http.prefork` makes (and exports) all three for both hosts.
+    var host_page = prefork_page(loops)
+    var app_page = 0
+    var app_slots = H.page_slots(loops)
+    if app_slots > 0:
+        app_page = SharedAtomics(app_slots).addr(0)
+    var bus = prefork_bus(loops)
+    var share = prefork_accept_share(loops)
+    return PreforkPieces(host_page^, app_page, bus^, share^)
+
+
 def _make_handler[H: AppHandler](ctx: HostContext) raises -> H:
     """`H.make`, or the refusal a raise means.
 
@@ -1105,6 +1156,26 @@ def _make_handler[H: AppHandler](ctx: HostContext) raises -> H:
         )
         process_exit(EX_CONFIG)
         raise e  # never reached: the process has left
+
+
+def _start_producer_or_refuse[P: Producer](
+    mut producer: ProducerThread, ctx: HostContext
+):
+    """`producer.start[P](ctx)`, or the refusal a raise means.
+
+    `P.make` runs on this thread, before anything is served, so a producer
+    that cannot be built leaves with `EX_CONFIG` as a handler does
+    (`_make_handler`), named under `host:` with its own error.
+    """
+    try:
+        producer.start[P](ctx)
+    except e:
+        print(
+            "host: the producer's make raised, so this configuration is refused: "
+            + String(e),
+            flush=True,
+        )
+        process_exit(EX_CONFIG)
 
 
 def serve[H: AppHandler, P: Producer = NoProducer](
@@ -1136,15 +1207,7 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     var workers = config.workers
 
     var listener = ListenConfig().listen(config.address())
-    # The page, the bus and the accept-share channels are m0serve's too:
-    # `m0_http.prefork` makes (and exports) all three for both hosts.
-    var host_page = prefork_page(workers)
-    var app_page = 0
-    var app_slots = H.page_slots(workers)
-    if app_slots > 0:
-        app_page = SharedAtomics(app_slots).addr(0)
-    var bus = prefork_bus(workers)
-    var share = prefork_accept_share(workers)
+    var pieces = _prefork_pieces[H](workers)
 
     var worker = 0
     var forked = workers > 1
@@ -1153,11 +1216,11 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         # A worker it reaps is marked gone on the page, so no sibling hands
         # it a connection nothing would read (review RP). The address by
         # its export, as m0serve's: `prefork_page` set it.
-        supervisor.share_accepts(share, shared_id_addr())
+        supervisor.share_accepts(pieces.share, shared_id_addr())
         supervisor.fork_all()
         worker = supervisor.worker_index
     # Inactive with one worker or under the knob; binding is harmless there.
-    bind_accept_share(share, worker, host_page.addr(0))
+    bind_accept_share(pieces.share, worker, pieces.host_page.addr(0))
     var shutdown_fd = install_shutdown_signals()
     if forked and shutdown_fd >= 0:
         # Until here a SIGTERM took the default action, and a worker it
@@ -1167,8 +1230,8 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         print("[worker {}] pid={} armed for a graceful stop".format(worker, getpid()), flush=True)
 
     var ctx = HostContext(
-        worker, workers, server_config.max_connections, app_page,
-        host_page.addr(0), bus.copy(), config.copy(),
+        worker, workers, server_config.max_connections, pieces.app_page,
+        pieces.host_page.addr(0), pieces.bus.copy(), config.copy(),
     )
     var handler = _make_handler[H](ctx)
     var producer = ProducerThread()
@@ -1177,15 +1240,7 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         # refusal as the handler's, and the supervisor ends the siblings
         # for it, since a server with no worker 0 and no producer is not
         # the configuration that was written down.
-        try:
-            producer.start[P](ctx)
-        except e:
-            print(
-                "host: the producer's make raised, so this configuration is refused: "
-                + String(e),
-                flush=True,
-            )
-            process_exit(EX_CONFIG)
+        _start_producer_or_refuse[P](producer, ctx)
 
     # The pool lane (docstring, 9a). One pool per loop, and this worker has
     # one loop; one lane, which the host marks GIL-free because nothing
@@ -1200,16 +1255,16 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     # `run_event_loop` directly rather than through `Server`, for the two
     # things `Server.serve_nonblocking` cannot pass: the pool, and the stop
     # word the loop stamps as its drain begins (docstring, 12). The listener
-    # goes with it, to be closed once, by the drain.
+    # goes with it, given up by `into_fd`, to be closed once, by the drain.
     _run_loop(
-        listener^,
+        listener^.into_fd(),
         handler,
         server_config,
         config.address(),
         shutdown_fd,
-        bus_read_fd=bus.read_fd(worker),
+        bus_read_fd=pieces.bus.read_fd(worker),
         offload_addr=pool.addr() if pooled else 0,
-        accept_share=share^,
+        accept_share=pieces.share,
         stop_addr=producer.stop_addr(),
     )
 
@@ -1226,14 +1281,7 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     if pooled:
         stuck = _join_pool(pool, threads, producer.drain_began())
     if producer.stop_and_join(JOIN_TIMEOUT_NS) > 0:
-        print(
-            String(
-                "host: abandoned a producer step still running ",
-                JOIN_TIMEOUT_NS // 1_000_000_000,
-                " s after the drain; exiting without it",
-            ),
-            flush=True,
-        )
+        _abandoned_step_note()
         stuck += 1
     if stuck > 0:
         process_exit(0)
@@ -1303,31 +1351,34 @@ def _start_pool[H: AppHandler](
 
 
 def _run_loop[H: AppHandler](
-    var listener: NoTLSListener[NetworkType.tcp],
+    listen_fd: FileDescriptor,
     mut handler: H,
     config: ServerConfig,
     address: String,
     shutdown_fd: Int,
     bus_read_fd: Int,
     offload_addr: Int,
-    var accept_share: AcceptShare,
+    accept_share: AcceptShare,
     stop_addr: Int,
 ) raises:
-    """The serve, the listener handed to the loop that closes it.
+    """The serve, for both paths: this loop's backend and `run_event_loop`,
+    handed a listening descriptor that the loop closes.
 
-    The loop closes the listener as its drain begins, and owns it for that
-    reason (review B26): `listener^.into_fd()` gives the number up without
-    the destructor that would close it again. The listener used to be
-    borrowed here, which kept it alive for the call -- reading
-    `listener.socket.fd` inline in `serve` had been its last use, and Mojo
-    destroyed it there, closing the socket before the loop's first `fcntl`
-    (EBADF, measured on 2026-09-17) -- and then destroyed in `serve` once
-    this returned: a second close of the number, before `_join_pool` and
-    the producer's join, when a straggler thread may hold it.
+    The loop closes it once, as its drain begins (review B26). `serve`
+    gives its listener up with `listener^.into_fd()`, which ends it
+    without the destructor that would close the number again; a loop
+    thread passes its own dup of the listener (`BLK_LISTEN_FD`). Before
+    B26 this function borrowed the listener itself, which kept it alive
+    for the call -- reading `listener.socket.fd` inline in `serve` had been
+    its last use, and Mojo destroyed it there, closing the socket before
+    the loop's first `fcntl` (EBADF, measured on 2026-09-17) -- and `serve`
+    destroyed it once this returned: a second close of the number, before
+    `_join_pool` and the producer's join, when a straggler thread may hold
+    it.
     """
     var backend = PlatformBackend()
     run_event_loop(
-        listener^.into_fd(),
+        listen_fd,
         handler,
         backend,
         config,
@@ -1336,7 +1387,7 @@ def _run_loop[H: AppHandler](
         shutdown_read_fd=shutdown_fd,
         bus_read_fd=bus_read_fd,
         offload_addr=offload_addr,
-        accept_share=accept_share^,
+        accept_share=accept_share,
         stop_addr=stop_addr,
     )
 
@@ -1407,18 +1458,15 @@ def _loop_run[H: AppHandler](block: ThreadBlock) raises:
     while block.get(BLK_LOOP_GO) == 0:
         sleep(0.001)
 
-    var backend = PlatformBackend()
-    run_event_loop(
+    _run_loop(
         FileDescriptor(block.get(BLK_LISTEN_FD)),
         handler,
-        backend,
         shared.server_config,
         shared.address,
-        True,
-        shutdown_read_fd=block.get(BLK_SHUTDOWN_FD),
+        block.get(BLK_SHUTDOWN_FD),
         bus_read_fd=block.get(BLK_BUS_FD),
         offload_addr=pool.addr() if pooled else 0,
-        accept_share=share^,
+        accept_share=share,
         stop_addr=shared.stop_addr,
     )
 
@@ -1480,27 +1528,21 @@ def _serve_threaded[H: AppHandler, P: Producer](
     """
     var loops = config.threads
     var listener = ListenConfig().listen(config.address())
-    var host_page = prefork_page(loops)
-    var app_page = 0
-    var app_slots = H.page_slots(loops)
-    if app_slots > 0:
-        app_page = SharedAtomics(app_slots).addr(0)
-    var bus = prefork_bus(loops)
-    var share = prefork_accept_share(loops)
+    var pieces = _prefork_pieces[H](loops)
     var shutdown_fd = install_shutdown_signals()
     if shutdown_fd < 0:
         raise Error("host: the shutdown signals could not be installed, and nothing else stops the loops")
 
     var ctx = HostContext(
-        0, loops, server_config.max_connections, app_page,
-        host_page.addr(0), bus.copy(), config.copy(), threaded=True,
+        0, loops, server_config.max_connections, pieces.app_page,
+        pieces.host_page.addr(0), pieces.bus.copy(), config.copy(), threaded=True,
     )
     var producer = ProducerThread()
     var shared = unsafe_alloc[LoopShared](count=1)
     shared.unsafe_write(
         LoopShared(
-            ctx.copy(), server_config.copy(), config.address(), share^,
-            host_page.addr(0), producer.stop_addr(),
+            ctx.copy(), server_config.copy(), config.address(),
+            pieces.share.copy(), pieces.host_page.addr(0), producer.stop_addr(),
         )
     )
 
@@ -1514,7 +1556,7 @@ def _serve_threaded[H: AppHandler, P: Producer](
         # down, and a dup makes that a per-thread close.
         block.set(BLK_LISTEN_FD, dup_fd(Int(listener.socket.fd.value)))
         block.set(BLK_SHUTDOWN_FD, fanout.read_fd(i))
-        block.set(BLK_BUS_FD, bus.read_fd(i))
+        block.set(BLK_BUS_FD, pieces.bus.read_fd(i))
         block.set(BLK_USER, Int(shared))
         set.spawn(i, body_addr)
 
@@ -1529,15 +1571,7 @@ def _serve_threaded[H: AppHandler, P: Producer](
         if ready < loops:
             sleep(0.001)
     if P.wanted(ctx):
-        try:
-            producer.start[P](ctx)
-        except e:
-            print(
-                "host: the producer's make raised, so this configuration is refused: "
-                + String(e),
-                flush=True,
-            )
-            process_exit(EX_CONFIG)
+        _start_producer_or_refuse[P](producer, ctx)
     for i in range(loops):
         set.block(i).set(BLK_LOOP_GO, 1)
     print(String("host: ", loops, " loops on ", loops, " threads (M0_THREADS)"), flush=True)
@@ -1557,19 +1591,12 @@ def _serve_threaded[H: AppHandler, P: Producer](
             flush=True,
         )
     if producer.stop_and_join(JOIN_TIMEOUT_NS) > 0:
-        print(
-            String(
-                "host: abandoned a producer step still running ",
-                JOIN_TIMEOUT_NS // 1_000_000_000,
-                " s after the drain; exiting without it",
-            ),
-            flush=True,
-        )
+        _abandoned_step_note()
         process_exit(1 if lost > 0 else 0)
     if lost > 0:
         process_exit(1)
     _ = listener.socket.fd.value
-    _ = host_page.addr(0)
+    _ = pieces.host_page.addr(0)
 
 
 def _join_pool(mut pool: OffloadPool, mut threads: MojoPool, began: Int) raises -> Int:
@@ -1587,6 +1614,19 @@ def _join_pool(mut pool: OffloadPool, mut threads: MojoPool, began: Int) raises 
             flush=True,
         )
     return stuck
+
+
+def _abandoned_step_note():
+    """Name a producer the join left inside a step (module docstring, 12).
+    Both paths print it; each decides its own exit."""
+    print(
+        String(
+            "host: abandoned a producer step still running ",
+            JOIN_TIMEOUT_NS // 1_000_000_000,
+            " s after the drain; exiting without it",
+        ),
+        flush=True,
+    )
 
 
 def _left_of_bound(began: Int) -> Int:

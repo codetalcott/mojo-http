@@ -36,7 +36,7 @@ from lightbug_http.http import HTTPRequest, HTTPResponse
 
 from m0_core.hashing import wyhash64
 
-from .etag import compute_etag
+from .etag import compute_etag, etag_matches
 from .reply import empty
 
 
@@ -80,35 +80,6 @@ struct Cached(Movable):
         return changed
 
 
-def _opaque(tag: String) -> String:
-    """A tag without the blanks around it and without its weakness mark.
-    The value may be a client's and hold any bytes, so it is cut as bytes
-    and never at a codepoint boundary (SPEC G14)."""
-    var bytes = tag.as_bytes()
-    var start = 0
-    var end = tag.byte_length()
-    while start < end and (bytes[start] == 0x20 or bytes[start] == 0x09):
-        start += 1
-    while end > start and (bytes[end - 1] == 0x20 or bytes[end - 1] == 0x09):
-        end -= 1
-    if end - start >= 2 and bytes[start] == 0x57 and bytes[start + 1] == 0x2F:
-        start += 2
-    return String(unsafe_from_utf8=tag.as_bytes()[start:end])
-
-
-def _names(if_none_match: String, tag: String) -> Bool:
-    """Whether an `If-None-Match` value names `tag`, compared WEAKLY (RFC
-    9110 §8.8.3.2): the opaque parts are equal, whichever side is marked
-    `W/`. `*` names any."""
-    var want = _opaque(tag)
-    if _opaque(if_none_match) == "*":
-        return True
-    for part in if_none_match.split(","):
-        if _opaque(String(part)) == want:
-            return True
-    return False
-
-
 def conditional(req: HTTPRequest, var resp: HTTPResponse) -> HTTPResponse:
     """`resp` with an `ETag` over its body, or a 304 in its place when the
     request's `If-None-Match` names that tag.
@@ -137,7 +108,7 @@ def conditional(req: HTTPRequest, var resp: HTTPResponse) -> HTTPResponse:
     if HeaderKey.CACHE_CONTROL not in resp.headers:
         resp.headers[HeaderKey.CACHE_CONTROL] = "no-cache"
     var asked = req.headers.get(HeaderKey.IF_NONE_MATCH)
-    if asked and _names(asked.value(), tag):
+    if asked and etag_matches(tag, asked.value()):
         var not_modified = empty(304, String("Not Modified"))
         not_modified.headers[HeaderKey.ETAG] = tag
         for name in [HeaderKey.CACHE_CONTROL, HeaderKey.VARY, HeaderKey.CONTENT_LOCATION]:

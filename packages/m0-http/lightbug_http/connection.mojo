@@ -12,7 +12,7 @@ from lightbug_http.c.address import AddressFamily
 from lightbug_http.c.process import ignore_sigpipe
 from lightbug_http.c.socket import SOMAXCONN
 from lightbug_http.c.socket_error import SysError
-from lightbug_http.io.bytes import Bytes
+from lightbug_http.io.bytes import Bytes, default_buffer_size
 from lightbug_http.socket import (
     Socket,
     SocketBindError,
@@ -21,10 +21,6 @@ from lightbug_http.socket import (
     TCPSocket,
 )
 from std.utils import Variant
-
-
-comptime default_buffer_size = 4096
-"""The default buffer size for reading and writing data."""
 
 
 @fieldwise_init
@@ -134,7 +130,7 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp](Movable):
 struct ListenConfig:
     var max_bind_retries: Int
     """Maximum number of bind() attempts on an address IN USE before its
-    EADDRINUSE is raised (Phase 4c).
+    EADDRINUSE is raised.
 
     Each retry sleeps 1 second.  Default 30 gives ~30 s total wait, covering
     the typical TIME_WAIT drain after a server restart.  Set to 0 for
@@ -251,7 +247,7 @@ struct ListenConfig:
         var bind_success = False
         var bind_fail_logged = False
         var bind_attempts = 0
-        # Phase 4c: bounded retry — max_bind_retries=0 means unlimited.
+        # Bounded retry — max_bind_retries=0 means unlimited.
         while not bind_success:
             try:
                 socket.bind(addr.ip, addr.port)

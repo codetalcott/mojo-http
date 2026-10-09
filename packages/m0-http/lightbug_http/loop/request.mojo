@@ -36,7 +36,8 @@ from std.time import perf_counter_ns
 
 from lightbug_http.loop.state import (
     LoopState, TIMER_BODY, UNUSED, _arm_reads, _await_write, _begin_request,
-    _close_slot, _notice_once, _rearm_reads, _spend_read_edge, _stop_reads,
+    _close_slot, _notice_once, _rearm_reads, _slot_of, _spend_read_edge,
+    _stop_reads,
 )
 from lightbug_http.loop.response import (
     _finish_response, _send_error_to_fd, _send_interim, _take_owed_interim,
@@ -63,9 +64,7 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
     write side (`eof`): dispatch on what the slot is doing -- a request's
     headers or body, a WebSocket's frames, a refused upload's linger, an
     SSE client leaving -- then answer what is pipelined behind."""
-    if fd_val >= len(st.fd_to_slot):
-        return
-    var slot = st.fd_to_slot[fd_val]
+    var slot = _slot_of(st, fd_val)
     if slot == UNUSED:
         return
 
@@ -213,7 +212,7 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     slot closed, or the body refused."""
     var body_st = st.provision_pool.provisions[slot].body_state.value()
 
-    # Phase 2a: recv into per-slot staging buffer (avoids per-recv heap alloc)
+    # recv into per-slot staging buffer (avoids per-recv heap alloc)
     st.provision_pool.provisions[slot].recv_staging.clear()
     var fd_desc = FileDescriptor(fd_val)
     var want = st.provision_pool.provisions[slot].recv_staging.capacity()
@@ -256,105 +255,142 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     # for a chunked body over the cap behind a long head (review record
     # LF70). The buffer is bounded without it: a `Content-Length` body is
     # at most the cap the framing checked, plus one read past it; a chunked
-    # one is held to both of its bounds after each decode, below, and the
-    # decoder consumes every byte it is handed until the body ends, so what
-    # waits undecoded is at most one read (`HTTPChunkedDecoder.pending_bytes`;
+    # one is held to both of its bounds after each decode
+    # (`_decode_chunked_tail`), and the decoder consumes every byte it is
+    # handed until the body ends, so what waits undecoded is at most one
+    # read (`HTTPChunkedDecoder.pending_bytes`;
     # `test_a_chunk_line_that_never_ends_is_refused_at_twice_the_cap`).
 
-    # Phase 1b: chunked body decode, resumed not restarted.
-    #
-    # The buffer is laid out [headers][decoded so far][raw
-    # tail], and only the raw tail is handed to the
-    # connection's own decoder — which carries its chunk
-    # state across reads, so it continues where it stopped.
-    # Decoded output lands at the front of that tail, i.e.
-    # contiguous with what was already decoded. The decoder
-    # consumes every byte it is handed, a half-read size line
-    # or extension included, so while the body is incomplete
-    # nothing is left after it (`pending_bytes` is 0), and
-    # once it completes what follows is the next request.
-    # Total work is linear in the body rather than quadratic
-    # in the number of reads; see
-    # `ConnectionProvision.chunk_decoder`.
+    # Chunked body decode, resumed not restarted, from the raw
+    # tail past what earlier reads decoded (`_decode_chunked_tail`).
     if body_st.is_chunked:
-        var raw_body_start = body_st.header_end_offset
-        var decoded_so_far = body_st.bytes_read
-        var tail_start = raw_body_start + decoded_so_far
-        var buf_len = len(st.provision_pool.provisions[slot].recv_buffer)
-        if buf_len > tail_start:
-            var ret: Int
-            var produced: Int
-            ret, produced = st.provision_pool.provisions[
-                slot
-            ].chunk_decoder.decode(
-                Span(st.provision_pool.provisions[slot].recv_buffer)[
-                    tail_start:
-                ]
-            )
-            if ret == -1:
-                _send_error_to_fd(
-                    fd_val, BadRequest(), _take_owed_interim(st, slot)
-                )
-                _close_slot(handler, backend, st, slot, fd_val)
+        var tail_start = body_st.header_end_offset + body_st.bytes_read
+        if len(st.provision_pool.provisions[slot].recv_buffer) > tail_start:
+            if _decode_chunked_tail(
+                handler, backend, st, slot, fd_val, retire_body_timer=True
+            ) == -1:
                 return False
-            var leftover = st.provision_pool.provisions[
-                slot
-            ].chunk_decoder.pending_bytes
-            # Drop the framing bytes this pass consumed, so
-            # the next read appends straight onto the tail.
-            st.provision_pool.provisions[slot].recv_buffer.resize(
-                tail_start + produced + leftover, 0
-            )
-            decoded_so_far += produced
-            body_st.bytes_read = decoded_so_far
-            st.provision_pool.provisions[slot].body_state = body_st
-            # Two bounds, because a chunked body has two sizes, each
-            # measured after the decode as the head path measures them.
-            # The decoded body is what the application sees; the raw
-            # stream is what the connection cost. Framing is consumed and
-            # dropped as it is decoded, so without the second an attacker
-            # could send the body limit in real data and then keep going
-            # in chunk-extension bytes, bounded only by the decoder's ratio
-            # guard. Measured before the decode, as the decoded body plus
-            # the raw tail still buffered, the first counted that tail's
-            # framing and the next pipelined request as body: a body at
-            # the cap was refused 413 when its framing came after its head
-            # and answered when it came with it (review record LF70).
-            if (
-                decoded_so_far > st.config.max_request_body_size
-                or st.provision_pool.provisions[slot].chunk_decoder._total_read
-                > 2 * st.config.max_request_body_size
-            ):
-                _refuse_too_large(handler, backend, st, slot, fd_val)
-                return False
-            if ret >= 0:
-                # Complete. `pending_bytes` bytes past the
-                # chunked data stay in the buffer: they are
-                # the next pipelined request, and the
-                # keep-alive reset preserves them.
-                st.provision_pool.provisions[slot].request_end = (
-                    raw_body_start + decoded_so_far
-                )
-                body_st.content_length = decoded_so_far
-                body_st.bytes_read = decoded_so_far
-                body_st.is_chunked = False
-                st.provision_pool.provisions[slot].body_state = body_st
-                if st.config.body_read_timeout > 0:
-                    backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
-                st.provision_pool.provisions[slot].state = ConnectionState.processing()
-                _process_request(handler, backend, st, slot, fd_val)
-        # ret == -2 or empty: wait for more data via EVFILT_READ
+        # -2, or nothing past what is decoded: wait for more data via
+        # EVFILT_READ
     elif body_st.bytes_read >= body_st.content_length:
-        if st.config.body_read_timeout > 0:
-            backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
-
-        st.provision_pool.provisions[slot].state = ConnectionState.processing()
-        _process_request(handler, backend, st, slot, fd_val)
+        _body_complete(handler, backend, st, slot, fd_val, retire_body_timer=True)
 
     # What the socket may still hold of the body is the next read event's:
     # the drain registers for it (`_drain_pipelined`'s last step), by the
     # rule this used to apply itself.
     return True
+
+
+def _decode_chunked_tail[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
+    retire_body_timer: Bool,
+) -> Int:
+    """Decode what the buffer holds of a chunked body past what is already
+    decoded, hold it to both bounds, and answer the request once the body
+    is whole (`_body_complete`, which `retire_body_timer` is passed to).
+    For the bytes read with the head (`_frame_buffered`) and for each read
+    after (`_read_body`).
+
+    The buffer is laid out [headers][decoded so far][raw tail], and only
+    the raw tail is handed to the connection's own decoder — which carries
+    its chunk state across reads, so it continues where it stopped.
+    Decoded output lands at the front of that tail, i.e. contiguous with
+    what was already decoded. The decoder consumes every byte it is
+    handed, a half-read size line or extension included, so while the body
+    is incomplete nothing is left after it (`pending_bytes` is 0), and once
+    it completes what follows is the next request. Total work is linear in
+    the body rather than quadratic in the number of reads; see
+    `ConnectionProvision.chunk_decoder`.
+
+    Returns the decoder's answer, with this function's own refusal folded
+    into its -1: -1 when the request was refused -- a 400 and a close for
+    framing the decoder rejected, or the 413 and linger of either bound --
+    -2 while more of the body is owed, and once the body was whole and the
+    request answered, the bytes left past the chunked data.
+    """
+    var body_st = st.provision_pool.provisions[slot].body_state.value()
+    var raw_body_start = body_st.header_end_offset
+    var decoded_so_far = body_st.bytes_read
+    var tail_start = raw_body_start + decoded_so_far
+    var ret: Int
+    var produced: Int
+    ret, produced = st.provision_pool.provisions[slot].chunk_decoder.decode(
+        Span(st.provision_pool.provisions[slot].recv_buffer)[tail_start:]
+    )
+    if ret == -1:
+        _send_error_to_fd(fd_val, BadRequest(), _take_owed_interim(st, slot))
+        _close_slot(handler, backend, st, slot, fd_val)
+        return -1
+    var leftover = st.provision_pool.provisions[slot].chunk_decoder.pending_bytes
+    # Drop the framing bytes this pass consumed, so the next read appends
+    # straight onto the tail.
+    st.provision_pool.provisions[slot].recv_buffer.resize(
+        tail_start + produced + leftover, 0
+    )
+    decoded_so_far += produced
+    body_st.bytes_read = decoded_so_far
+    st.provision_pool.provisions[slot].body_state = body_st
+    # Two bounds, because a chunked body has two sizes, each
+    # measured after the decode as the head path measures them.
+    # The decoded body is what the application sees; the raw
+    # stream is what the connection cost. Framing is consumed and
+    # dropped as it is decoded, so without the second an attacker
+    # could send the body limit in real data and then keep going
+    # in chunk-extension bytes, bounded only by the decoder's ratio
+    # guard. Measured before the decode, as the decoded body plus
+    # the raw tail still buffered, the first counted that tail's
+    # framing and the next pipelined request as body: a body at
+    # the cap was refused 413 when its framing came after its head
+    # and answered when it came with it (review record LF70).
+    #
+    # Both bounds for the body that came with its head too, which once
+    # had NEITHER: it is decoded and dispatched by `_frame_buffered`, so
+    # `_read_body` -- which is where both limits lived -- never runs for
+    # it. Sending head and body in one write was therefore enough to
+    # escape the decoded cap and the raw ceiling together, and whether a
+    # request was bounded came down to how the client's writes happened to
+    # be coalesced.
+    if (
+        decoded_so_far > st.config.max_request_body_size
+        or st.provision_pool.provisions[slot].chunk_decoder._total_read
+        > 2 * st.config.max_request_body_size
+    ):
+        _refuse_too_large(handler, backend, st, slot, fd_val)
+        return -1
+    if ret >= 0:
+        # Complete. `pending_bytes` bytes past the chunked data stay in
+        # the buffer: they are the next pipelined request, and the
+        # keep-alive reset preserves them. The resize above kept exactly
+        # them; one that discarded them here, on the head's path, is why a
+        # request behind a chunked body was lost.
+        st.provision_pool.provisions[slot].request_end = (
+            raw_body_start + decoded_so_far
+        )
+        body_st.content_length = decoded_so_far
+        body_st.bytes_read = decoded_so_far
+        body_st.is_chunked = False
+        st.provision_pool.provisions[slot].body_state = body_st
+        _body_complete(handler, backend, st, slot, fd_val, retire_body_timer)
+    return ret
+
+
+@always_inline
+def _body_complete[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
+    retire_body_timer: Bool,
+):
+    """The request's body is whole, or it has none: answer it
+    (`_process_request`).
+
+    `retire_body_timer` first deletes the timer `_frame_buffered` arms
+    for a body still owed, which is `_read_body`'s case. A body taken with
+    its head has none yet: `_frame_buffered` arms it only after, and only
+    for a body still owed.
+    """
+    if retire_body_timer and st.config.body_read_timeout > 0:
+        backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
+    st.provision_pool.provisions[slot].state = ConnectionState.processing()
+    _process_request(handler, backend, st, slot, fd_val)
 
 
 def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
@@ -400,7 +436,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     # after every answer (`ConnectionProvision.compact_buffer`, LF72).
     st.provision_pool.provisions[slot].compact_buffer()
 
-    # Phase 2a: recv straight into the connection's buffer, past whatever
+    # recv straight into the connection's buffer, past whatever
     # it already holds. Still exactly ONE read of `recv_staging.capacity()`
     # bytes per call -- the 8 KB header rule in `_drain_pipelined` depends
     # on that size -- but the staging copy that used to follow it is gone:
@@ -592,72 +628,20 @@ def _frame_buffered[T: HTTPService, B: EventLoopBackend](
             )
             st.provision_pool.provisions[slot].state = ConnectionState.reading_body()
 
-            # Phase 1b: decode whatever of the body arrived with the headers,
+            # Decode whatever of the body arrived with the headers,
             # through the CONNECTION's decoder — the same one
             # `_read_body` resumes. A throwaway decoder here would
             # consume these bytes and then throw away the chunk state it
             # built, leaving the resumed decode to start mid-chunk.
             if is_chunked and body_bytes_in_buffer > 0:
-                var ret: Int
-                var decoded_size: Int
-                ret, decoded_size = st.provision_pool.provisions[
-                    slot
-                ].chunk_decoder.decode(
-                    Span(st.provision_pool.provisions[slot].recv_buffer)[
-                        header_end_offset:
-                    ]
-                )
-                if ret == -1:
-                    _send_error_to_fd(
-                        fd_val, BadRequest(), _take_owed_interim(st, slot)
-                    )
-                    _close_slot(handler, backend, st, slot, fd_val)
+                # Refused, or whole and answered: the request is done here.
+                if _decode_chunked_tail(
+                    handler, backend, st, slot, fd_val, retire_body_timer=False
+                ) != -2:
                     return FRAME_REQUEST
-                var leftover = st.provision_pool.provisions[
-                    slot
-                ].chunk_decoder.pending_bytes
-                st.provision_pool.provisions[slot].recv_buffer.resize(
-                    header_end_offset + decoded_size + leftover, 0
-                )
-                var body_st0 = st.provision_pool.provisions[slot].body_state.value()
-                body_st0.bytes_read = decoded_size
-                st.provision_pool.provisions[slot].body_state = body_st0
-                # Both body bounds. This path had NEITHER: a chunked body
-                # that arrives with its headers is decoded and dispatched
-                # right here, so `_read_body` -- which is where both
-                # limits lived -- never runs for it. Sending head and
-                # body in one write was therefore enough to escape the
-                # decoded cap and the raw ceiling together, and whether a
-                # request was bounded came down to how the client's writes
-                # happened to be coalesced.
-                if (
-                    decoded_size > st.config.max_request_body_size
-                    or st.provision_pool.provisions[slot].chunk_decoder._total_read
-                    > 2 * st.config.max_request_body_size
-                ):
-                    _refuse_too_large(handler, backend, st, slot, fd_val)
-                    return FRAME_REQUEST
-                if ret >= 0:
-                    # `pending_bytes` bytes remain past the chunked data —
-                    # the next pipelined request. The resize above already
-                    # kept exactly them; the resize that used to discard
-                    # them here is why a request behind a chunked body was
-                    # lost.
-                    st.provision_pool.provisions[slot].request_end = (
-                        header_end_offset + decoded_size
-                    )
-                    var body_st = st.provision_pool.provisions[slot].body_state.value()
-                    body_st.content_length = decoded_size
-                    body_st.bytes_read = decoded_size
-                    body_st.is_chunked = False
-                    st.provision_pool.provisions[slot].body_state = body_st
-                    st.provision_pool.provisions[slot].state = ConnectionState.processing()
-                    _process_request(handler, backend, st, slot, fd_val)
-                    return FRAME_REQUEST
-                # ret == -2: incomplete, wait for EVFILT_READ to fire again
+                # -2: incomplete, wait for EVFILT_READ to fire again
             elif not is_chunked and body_bytes_in_buffer >= content_length:
-                st.provision_pool.provisions[slot].state = ConnectionState.processing()
-                _process_request(handler, backend, st, slot, fd_val)
+                _body_complete(handler, backend, st, slot, fd_val, retire_body_timer=False)
 
             # The body timer, for a body still OWED. It was armed above the
             # decode, so a body that arrived whole with its headers --
@@ -681,8 +665,7 @@ def _frame_buffered[T: HTTPService, B: EventLoopBackend](
                 )
         else:
             st.provision_pool.provisions[slot].request_end = start + framing.request_end
-            st.provision_pool.provisions[slot].state = ConnectionState.processing()
-            _process_request(handler, backend, st, slot, fd_val)
+            _body_complete(handler, backend, st, slot, fd_val, retire_body_timer=False)
     return framing.outcome
 
 
@@ -791,7 +774,23 @@ def _drain_pipelined[T: HTTPService, B: EventLoopBackend](
 def _process_request[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
 ):
-    """Build request, call handler, encode response, register for write."""
+    """Answer one complete request on `slot`, or hand it to the pool.
+
+    Builds the `HTTPRequest` from the parsed head and the body in the
+    receive buffer (a 400 and a close if it will not build), records what
+    the finish needs once the request may belong to another thread (HEAD,
+    HTTP/1.1), then picks the answer in order. `/__metrics`, when enabled,
+    is answered here. Otherwise `before_request` runs ON THE LOOP in every
+    mode, and a response from it is final. Under `--blocking-threads` the
+    request is parked and routed to a lane by its path: an executor lane's
+    submit is batched to the bottom of the pass (or taken at once by the
+    handler's `direct_job`), another lane's is sent now, and the slot is
+    left `offloaded` for `_finish_response` to resume when the completion
+    comes back. A full queue falls back to running `func` here, as a server
+    without the flag would. A `func` that raises is a 500 and a close.
+    `after_response` runs on every answer made here, and `_finish_response`
+    encodes and sends it.
+    """
     var parsed = st.provision_pool.provisions[slot].parsed_headers.take()
     # Asked of the head before `from_parsed` consumes it: the request it
     # builds no longer carries the `chunked` it de-chunked.
@@ -845,7 +844,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
 
     var response: HTTPResponse
 
-    # Phase 4e: intercept /__metrics before user handler
+    # Intercept /__metrics before user handler
     if st.config.enable_metrics and request_path == "/__metrics":
         st.metrics.active_connections = st.active_count
         st.metrics.pool_available = st.provision_pool.available_count()
@@ -909,17 +908,12 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                     if st.offload.queue_submit(slot, lane):
                         # The lane's batch is full: send it now, and run
                         # inline whatever it could not carry — the same
-                        # answer a refused `submit` always had. This path
-                        # is non-raising like the rest of the read side; a
-                        # raise inside the inline run is a handler that
-                        # already answered 500 and closed, so it is logged
-                        # rather than propagated.
-                        try:
-                            _ = _run_inline(
-                                handler, backend, st, st.offload.flush_lane(lane)
-                            )
-                        except e:
-                            print("event loop: inline run raised: " + String(e), flush=True)
+                        # answer a refused `submit` always had. What the
+                        # handler raises there is its 500, answered inside
+                        # `_run_inline`, so nothing comes back up here.
+                        _ = _run_inline(
+                            handler, backend, st, st.offload.flush_lane(lane)
+                        )
                     return
                 if pool.submit(slot, target):
                     # The slot is working, not idle: the sweeps skip it

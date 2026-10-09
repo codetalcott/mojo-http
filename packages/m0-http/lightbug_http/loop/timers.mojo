@@ -16,7 +16,7 @@ from std.time import perf_counter_ns
 
 from lightbug_http.loop.state import (
     LoopState, TIMER_APP_TICK, TIMER_BODY, TIMER_IDLE, TIMER_SSE_HEARTBEAT,
-    UNUSED, _close_slot, _notice_once,
+    UNUSED, _close_slot, _notice_once, _slot_of,
 )
 from lightbug_http.loop.response import _send_error_to_fd, _take_owed_interim
 from lightbug_http.loop.streams import _heartbeat
@@ -55,9 +55,7 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
         return
     var fd_val = Int(timer_ident - TIMER_BODY)
 
-    if fd_val >= len(st.fd_to_slot):
-        return
-    var slot = st.fd_to_slot[fd_val]
+    var slot = _slot_of(st, fd_val)
     if slot == UNUSED:
         return
 

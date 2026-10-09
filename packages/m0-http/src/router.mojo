@@ -42,6 +42,8 @@ out of the blob, so a test can reverse every route in a table and insist
 the result matches — the property that keeps the two directions honest.
 """
 
+from lightbug_http.strings import next_list_member
+
 comptime _SLASH = UInt8(47)  # '/'
 comptime _COLON = UInt8(58)  # ':'
 comptime _DOT = UInt8(46)  # '.'
@@ -62,21 +64,13 @@ def _list_contains[fold_case: Bool = False](list: String, item: String) -> Bool:
     list of field names (`Vary`), which HTTP compares case-insensitively;
     method tokens (`Allow`) are compared as written.
     """
-    var n = list.byte_length()
     var b = list.as_bytes()
     var want = item.as_bytes()
     var start = 0
-    while start <= n:
-        var end = start
-        while end < n and b[end] != UInt8(44):  # ','
-            end += 1
-        var s = start
-        while s < end and (b[s] == UInt8(32) or b[s] == UInt8(9)):
-            s += 1
-        var e = end
-        while e > s and (b[e - 1] == UInt8(32) or b[e - 1] == UInt8(9)):
-            e -= 1
-        if e - s == len(want):
+    while start <= len(b):
+        var member = next_list_member(b, start)
+        var s = member[0]
+        if member[1] - s == len(want):
             var same = True
             for j in range(len(want)):
                 var x = b[s + j]
@@ -89,7 +83,7 @@ def _list_contains[fold_case: Bool = False](list: String, item: String) -> Bool:
                     break
             if same:
                 return True
-        start = end + 1
+        start = member[2]
     return False
 
 

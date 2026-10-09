@@ -11,7 +11,7 @@ copies did not have, and the overflow test is the reason it exists.
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http.header import Header, Headers, HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from lightbug_http.http import HTTPRequest
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI, unquote
 
@@ -29,10 +29,7 @@ from src.reply import (
     vary,
     vary_accept,
 )
-
-
-def _body(resp: HTTPResponse) -> String:
-    return String(StringSpan(unsafe_from_utf8=Span(resp.body_raw)))
+from test.support import _body
 
 
 def test_json_sets_content_type_status_and_body() raises:

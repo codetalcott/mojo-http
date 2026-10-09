@@ -11,9 +11,10 @@ Usage:
 """
 
 from std.memory.alloc import unsafe_alloc
-from std.ffi import c_int, c_ssize_t, external_call, get_errno
+from std.ffi import ErrNo, c_int, c_ssize_t, external_call, get_errno
 
 from lightbug_http.c.aliases import ExternalMutPointer
+from lightbug_http.c.socket_error import SysError
 
 
 def _fork() -> c_int:
@@ -40,23 +41,22 @@ def _getpid() -> c_int:
     return external_call["getpid", c_int]()
 
 
-def fork() raises -> Int:
+def fork() raises SysError -> Int:
     """Fork the current process.
 
     Returns:
         0 in the child process, child PID (> 0) in the parent.
 
     Raises:
-        Error: If fork() fails (e.g. process limit reached).
+        SysError: `fork` and its errno (EAGAIN at the process limit).
     """
     var pid = _fork()
     if pid == -1:
-        var errno = get_errno()
-        raise Error("fork() failed, errno: ", errno)
+        raise SysError("fork", get_errno())
     return Int(pid)
 
 
-def waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
+def waitpid_blocking(pid: Int) raises SysError -> Tuple[Int, Int]:
     """Wait for a specific child process to exit (blocking).
 
     Args:
@@ -66,7 +66,7 @@ def waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
         (child_pid, exit_status) tuple.
 
     Raises:
-        Error: If waitpid() fails.
+        SysError: `waitpid` and its errno, for any failure but EINTR.
     """
     # Freed below; `unsafe_alloc` is the non-Layout allocator (std.memory.alloc).
     var status = unsafe_alloc[c_int](count=1)
@@ -74,16 +74,16 @@ def waitpid_blocking(pid: Int) raises -> Tuple[Int, Int]:
     # EINTR is not a failure: a caught signal interrupted the wait and there is
     # still a child to reap. Only reachable since the supervisor started
     # catching SIGTERM, and only on a platform whose signal(2) does not set
-    # SA_RESTART — but a supervisor that died with "errno: 4" on shutdown
+    # SA_RESTART — but a supervisor that died with "(errno 4)" on shutdown
     # would be a maddening thing to debug.
     var err = get_errno()
-    while result == -1 and err == err.EINTR:
+    while result == -1 and err == ErrNo.EINTR:
         result = _waitpid(c_int(pid), status, c_int(0))
         err = get_errno()
     if result == -1:
         var errno = get_errno()
         status.unsafe_free()
-        raise Error("waitpid() failed, errno: ", errno)
+        raise SysError("waitpid", errno)
     var status_val = Int(status[unsafe_offset=0])
     status.unsafe_free()
     return (Int(result), status_val)
@@ -98,7 +98,7 @@ to the implementation.
 """
 
 
-def waitpid_nonblocking() raises -> Tuple[Int, Int]:
+def waitpid_nonblocking() raises SysError -> Tuple[Int, Int]:
     """Reap one exited child if there is one; otherwise return immediately.
 
     Returns:
@@ -107,7 +107,8 @@ def waitpid_nonblocking() raises -> Tuple[Int, Int]:
         children left to wait for (`ECHILD`).
 
     Raises:
-        Error: If `waitpid()` fails for any other reason.
+        SysError: `waitpid WNOHANG` and its errno, if `waitpid()` fails
+            for any other reason.
 
     The blocking twin is the right call for a supervisor whose only job is
     to outlive its workers. A supervisor that must also do something on a
@@ -128,13 +129,13 @@ def waitpid_nonblocking() raises -> Tuple[Int, Int]:
     )
     var result = _waitpid(c_int(-1), status_ptr, c_int(WNOHANG))
     var err = get_errno()
-    while result == -1 and err == err.EINTR:
+    while result == -1 and err == ErrNo.EINTR:
         result = _waitpid(c_int(-1), status_ptr, c_int(WNOHANG))
         err = get_errno()
     if result == -1:
-        if err == err.ECHILD:
+        if err == ErrNo.ECHILD:
             return (-1, 0)
-        raise Error("waitpid(WNOHANG) failed, errno: ", err)
+        raise SysError("waitpid WNOHANG", err)
     return (Int(result), Int(status))
 
 
@@ -320,7 +321,7 @@ def executable_path() raises -> String:
         ](link.unsafe_ptr(), buf.unsafe_ptr(), cap - 1)
         _ = link
         if got < 0:
-            raise Error("readlink(/proc/self/exe) failed, errno: ", get_errno())
+            raise SysError("readlink /proc/self/exe", get_errno())
         n = Int(got)
     return path_from_bytes(Span(buf)[:n])
 
@@ -373,7 +374,7 @@ comptime _PROT_READ_WRITE = 0x1 | 0x2
 comptime _MAP_SHARED = 0x01
 
 
-def fd_identity(fd: Int) raises -> Tuple[Int, Int]:
+def fd_identity(fd: Int) raises SysError -> Tuple[Int, Int]:
     """`(st_dev, st_ino)` of an open descriptor: WHICH open file it is.
 
     A descriptor number means nothing across an `exec` -- in a child it may
@@ -392,7 +393,7 @@ def fd_identity(fd: Int) raises -> Tuple[Int, Int]:
         c_int(fd), buf.unsafe_ptr()
     )
     if rc != 0:
-        raise Error("fstat failed, errno: ", get_errno())
+        raise SysError("fstat", get_errno())
     var dev: Int
     comptime if CompilationTarget.is_macos():
         dev = Int(buf.unsafe_ptr().unsafe_bitcast[Int32]()[])
@@ -454,7 +455,7 @@ def shared_file_fd(length: Int) raises -> Int:
             if rc != 0:
                 var errno = get_errno()
                 close_fd(Int(fd))
-                raise Error("ftruncate on the shared page failed, errno: ", errno)
+                raise SysError("ftruncate", errno)
             # Close-on-exec like every descriptor the server creates (SPEC
             # G16): `shm_open` sets it on both platforms, and this says so
             # rather than relying on it. The spawn hand-off
@@ -469,14 +470,14 @@ def shared_file_fd(length: Int) raises -> Int:
         _ = name
         attempt += 1
         if attempt > 16:
-            raise Error("shm_open failed, errno: ", errno)
+            raise SysError("shm_open", errno)
 
 
-def map_shared_fd(fd: Int, length: Int) raises -> Int:
+def map_shared_fd(fd: Int, length: Int) raises SysError -> Int:
     """`mmap(MAP_SHARED)` the file `fd` describes; returns the address."""
     var raw = external_call[
         "mmap", Int, Int, Int, c_int, c_int, c_int, Int
     ](0, length, c_int(_PROT_READ_WRITE), c_int(_MAP_SHARED), c_int(fd), 0)
     if raw == -1 or raw == 0:
-        raise Error("mmap of the shared page failed, errno: ", get_errno())
+        raise SysError("mmap", get_errno())
     return raw

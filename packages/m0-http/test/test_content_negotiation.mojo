@@ -3,6 +3,7 @@
 from std.testing import assert_true, assert_false, assert_equal, TestSuite
 
 from src.content_negotiation import _split_media_range, parse_accept
+from test.support import _raw
 
 
 comptime VENDOR_BIN = "application/vnd.siren+bin"
@@ -255,17 +256,9 @@ def test_problem_json() raises:
     assert_false(r.wants_json)
 
 
-def _raw(*bytes: Int) -> String:
-    """A String holding exactly these bytes, valid UTF-8 or not."""
-    var l = List[UInt8]()
-    for b in bytes:
-        l.append(UInt8(b))
-    return String(unsafe_from_utf8=Span(l))
-
-
 def test_a_header_that_is_not_utf8_does_not_trap() raises:
     """The range splitter, the media-range splitter, the quality slice, the
-    subtype wildcard and `_trim` all sliced request header values as
+    subtype wildcard and the trim all sliced request header values as
     Strings; a byte that is not UTF-8 at a slice end trapped the process.
     An `Accept` carrying one must parse to some answer.
 

@@ -83,15 +83,16 @@ app in the tree appends yet; when one does, the mode belongs beside
 `page_or_fragment`, not here.
 
 Lives in m0-http, beside `fragment.mojo`, which is its consumer; it is the
-first caller of m0-core's `escape_html_into` and the fifth m0-core
-function m0-http imports. It was first placed in m0-core to keep that
-count at four, which mistook an inventory for the constraint: the rule is
+first caller of m0-core's `escape_html_into`. It was first placed in
+m0-core to keep m0-http's m0-core imports few, which mistook an inventory
+for the constraint: the rule is
 zero upward imports and no libpython on the link line, and m0-http
 importing m0-core is downward. A specific frontend library's attribute
 names do not belong in the zero-dependency package `build-ffi` compiles
 into `libm0core`.
 """
 
+from lightbug_http.strings import is_token_char
 from m0_core.html_escape import escape_html_into
 from m0_core.json_escape import escape_json_string
 
@@ -199,18 +200,6 @@ struct RequestHeader(Copyable, Movable):
         self.value = value^
 
 
-def _is_tchar(b: UInt8) -> Bool:
-    """RFC 9110 §5.6.2's `tchar`: what a header name is made of."""
-    if (b >= UInt8(ord("a")) and b <= UInt8(ord("z"))) or (
-        b >= UInt8(ord("A")) and b <= UInt8(ord("Z"))
-    ) or (b >= UInt8(ord("0")) and b <= UInt8(ord("9"))):
-        return True
-    for c in "!#$%&'*+-.^_`|~".as_bytes():
-        if b == c:
-            return True
-    return False
-
-
 def _check_request_header(header: RequestHeader) raises:
     """Refuse a header no client would send as written: a name that is not
     a token, a value holding a control byte (a line break would end it),
@@ -220,7 +209,7 @@ def _check_request_header(header: RequestHeader) raises:
     if len(name) == 0:
         raise Error("swap(..., header=...): the header has no name")
     for b in name:
-        if not _is_tchar(b):
+        if not is_token_char(b):
             raise Error(
                 'swap(..., header=RequestHeader("', header.name, '", ...)): a '
                 "header name is letters, digits and !#$%&'*+-.^_`|~ alone"

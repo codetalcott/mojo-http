@@ -32,6 +32,7 @@ from lightbug_http.c.process import (
     exec_process, shared_file_fd, map_shared_fd,
 )
 
+from .config import parse_env_int
 from .global_slot import (
     publish_child_pids, child_pid_count, child_pid_at, child_pids_owner,
     record_supervisor_stop, clear_supervisor_stop, supervisor_stopping,
@@ -317,11 +318,7 @@ def _test_max_respawns() -> Int:
     var raw = getenv(_MAX_RESPAWNS_ENV, "")
     if raw.byte_length() == 0:
         return -1
-    try:
-        var n = Int(raw)
-        return n if n >= 0 else -1
-    except:
-        return -1
+    return parse_env_int(raw).or_else(-1)
 
 
 def _test_gap_ns(name: String) -> Int:
@@ -329,11 +326,8 @@ def _test_gap_ns(name: String) -> Int:
     var raw = getenv(name, "")
     if raw.byte_length() == 0:
         return 0
-    try:
-        var ms = Int(raw)
-        return ms * 1_000_000 if ms > 0 else 0
-    except:
-        return 0
+    var ms = parse_env_int(raw).or_else(0)
+    return ms * 1_000_000 if ms > 0 else 0
 
 
 def _pause_unless_stopped(ns: Int):
@@ -351,7 +345,8 @@ comptime _RESPAWN_FAILED = 0
 comptime _RESPAWN_PARENT = 1
 comptime _RESPAWN_CHILD = 2
 comptime _EXIT_SHUTDOWN = 3
-"""A reaped exit that ended supervision: a propagated SIGTERM or SIGINT."""
+"""A reaped exit that ended supervision: a propagated SIGTERM or SIGINT, or
+a worker's refusal (`EX_CONFIG`, exit 78) that has ended its siblings."""
 
 comptime EX_CONFIG = 78
 """The sysexits "configuration error" code: a worker exiting with it REFUSED its
@@ -556,6 +551,23 @@ struct WorkerSupervisor:
         )
         process_exit(EX_CONFIG)
 
+    def _become_worker(mut self, index: Int, note: String):
+        """In a freshly forked child: hold worker index `index`, shed the supervisor's signals, announce it.
+
+        The prologue of every fork -- `fork_all`, `_reload`, `_try_respawn`
+        -- in its one order: the index first, since it names the pre-fork
+        resources (bus channel, shared slots) this process owns; then
+        `_forget_supervisor_signals`, which ends the child here, with 0, if
+        a stop was recorded; then `note`, the site's own "starting" line,
+        which gates parse (`accept_spread.py` reads the index and pid from
+        it, `smoke-reload` counts `starting (reload 1)`). The caller then
+        calls `_exec_if_spawning`; `fork_all` holds a worker unarmed between
+        the two.
+        """
+        self.worker_index = index
+        _forget_supervisor_signals()
+        print(note, flush=True)
+
     def enable_reload(mut self, var dirs: List[String], var suffix: String):
         """Watch `dirs` for changed `suffix` files and restart workers on one.
 
@@ -600,9 +612,9 @@ struct WorkerSupervisor:
             var pid = fork()
             if pid == 0:
                 # Child: record which index this process holds and return
-                self.worker_index = i
-                _forget_supervisor_signals()
-                print("[worker {}] pid={} starting".format(i, getpid()), flush=True)
+                self._become_worker(
+                    i, "[worker {}] pid={} starting".format(i, getpid())
+                )
                 if i > 0 and arm_gap_ns > 0:
                     # Unarmed, at SIGTERM's default action, on purpose.
                     sleep(Float64(arm_gap_ns) / 1_000_000_000.0)
@@ -653,7 +665,8 @@ struct WorkerSupervisor:
 
         Returns True only in a respawned child, which must return to
         `fork_all`'s caller rather than keep supervising. Returns False in the
-        parent once supervision is over.
+        parent once supervision is over. Each reaped child is accounted for
+        by `_account_for_exit`, as in `_supervise_polling`.
         """
         # The workers forked, which is fewer than asked when a stop ended
         # the forking (`fork_all`).
@@ -662,56 +675,14 @@ struct WorkerSupervisor:
             var result = waitpid_blocking(-1)
             var child_pid = result[0]
             var status = result[1]
-
-            # Remove from tracked list
-            self._remove_pid(child_pid)
-
-            if was_signaled(status):
-                var sig = term_signal(status)
-                if sig == SIGTERM or sig == SIGINT:
-                    # A stop, reaching a worker before it armed: propagate
-                    # to the rest, and judge each as it goes.
-                    self._judge_stopped(child_pid, status)
-                    print("[parent] propagating signal {} to remaining workers".format(sig))
-                    self._kill_all(sig)
-                    self._reap_the_rest()
-                    return False
-                print("[parent] worker pid={} killed by signal {}".format(child_pid, sig))
-                # Other signal (e.g., SIGKILL) — treat as crash, try respawn
-                var outcome = self._try_respawn()
-                if outcome == _RESPAWN_CHILD:
-                    return True
-                if outcome == _RESPAWN_PARENT:
-                    continue
-                remaining -= 1
-            else:
-                var code = exit_code(status)
-                if code == EX_CONFIG:
-                    # A refusal, not a crash: the same configuration would be
-                    # refused by every respawn, so the siblings are ended
-                    # too and the exit is 78 (fork_all). Left serving, they
-                    # were a server missing the worker that refused -- the
-                    # Mojo host's producer runs on worker 0 alone, and a
-                    # producer whose `make` raised left worker 1 answering
-                    # requests with no producer anywhere, indefinitely.
-                    print("[parent] worker pid={} refused its configuration (exit_code=78); not respawning".format(child_pid))
-                    self._config_refused = True
-                    remaining -= 1
-                    if remaining > 0:
-                        print("[parent] stopping the remaining workers: a refused configuration is not served by the rest")
-                        self._kill_all(SIGTERM)
-                        self._reap_the_rest()
-                    return False
-                elif code != 0:
-                    print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
-                    var outcome = self._try_respawn()
-                    if outcome == _RESPAWN_CHILD:
-                        return True
-                    if outcome == _RESPAWN_PARENT:
-                        continue
-                else:
-                    print("[parent] worker pid={} exited cleanly".format(child_pid))
-                remaining -= 1
+            var outcome = self._account_for_exit(child_pid, status)
+            if outcome == _RESPAWN_CHILD:
+                return True
+            if outcome == _RESPAWN_PARENT:
+                continue
+            if outcome == _EXIT_SHUTDOWN:
+                return False
+            remaining -= 1
         return False
 
     def _supervise_polling(mut self) raises -> Bool:
@@ -754,32 +725,42 @@ struct WorkerSupervisor:
         return False
 
     def _account_for_exit(mut self, child_pid: Int, status: Int) raises -> Int:
-        """What `_supervise` does with one reaped child, as a value.
+        """What both supervision loops do with one reaped child, as a value.
 
         `_RESPAWN_CHILD` in a freshly forked replacement, `_RESPAWN_PARENT`
-        when the parent respawned one, `_EXIT_SHUTDOWN` when the exit was a
-        SIGTERM/SIGINT that has now been propagated and supervision is over,
-        and `_RESPAWN_FAILED` when the index is simply gone.
+        when the parent respawned one, `_EXIT_SHUTDOWN` when supervision is
+        over -- a SIGTERM/SIGINT now propagated, or a refusal that has ended
+        the siblings -- and `_RESPAWN_FAILED` when the index is simply gone.
         """
         self._remove_pid(child_pid)
         if was_signaled(status):
             var sig = term_signal(status)
             if sig == SIGTERM or sig == SIGINT:
+                # A stop, reaching a worker before it armed: propagate
+                # to the rest, and judge each as it goes.
                 self._judge_stopped(child_pid, status)
                 print("[parent] propagating signal {} to remaining workers".format(sig))
                 self._kill_all(sig)
                 self._reap_the_rest()
                 return _EXIT_SHUTDOWN
             print("[parent] worker pid={} killed by signal {}".format(child_pid, sig))
+            # Other signal (e.g., SIGKILL) — treat as crash, try respawn
             return self._try_respawn()
         var code = exit_code(status)
         if code == EX_CONFIG:
+            # A refusal, not a crash: the same configuration would be
+            # refused by every respawn, so the siblings are ended too and
+            # the exit is 78 (fork_all). Left serving, they were a server
+            # missing the worker that refused -- the Mojo host's producer
+            # runs on worker 0 alone, and a producer whose `make` raised
+            # left worker 1 answering requests with no producer anywhere,
+            # indefinitely.
             print("[parent] worker pid={} refused its configuration (exit_code=78); not respawning".format(child_pid))
             self._config_refused = True
-            # As in `_supervise`: the siblings are ended with the refusal.
-            print("[parent] stopping the remaining workers: a refused configuration is not served by the rest")
-            self._kill_all(SIGTERM)
-            self._reap_the_rest()
+            if self._alive_count() > 0:
+                print("[parent] stopping the remaining workers: a refused configuration is not served by the rest")
+                self._kill_all(SIGTERM)
+                self._reap_the_rest()
             return _EXIT_SHUTDOWN
         if code != 0:
             print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
@@ -891,10 +872,12 @@ struct WorkerSupervisor:
             if pid == 0:
                 # The replacement takes over the index its predecessor held,
                 # and with it that index's bus channel and shared slots.
-                self.worker_index = i
-                _forget_supervisor_signals()
-                print("[worker {}] pid={} starting (reload {})".format(
-                    i, getpid(), self.reloads), flush=True)
+                self._become_worker(
+                    i,
+                    "[worker {}] pid={} starting (reload {})".format(
+                        i, getpid(), self.reloads
+                    ),
+                )
                 self._exec_if_spawning(i)
                 return True
             self.child_pids[i] = pid
@@ -960,9 +943,10 @@ struct WorkerSupervisor:
         if new_pid == 0:
             # The replacement takes over the dead worker's index — and with
             # it the dead worker's bus channel and shared slots.
-            self.worker_index = respawn_index
-            _forget_supervisor_signals()
-            print("[worker respawn {}] pid={} starting".format(respawn_index, getpid()), flush=True)
+            self._become_worker(
+                respawn_index,
+                "[worker respawn {}] pid={} starting".format(respawn_index, getpid()),
+            )
             self._exec_if_spawning(respawn_index)
             return _RESPAWN_CHILD
         if respawn_index >= 0 and respawn_index < len(self.child_pids):
@@ -1007,7 +991,7 @@ struct WorkerSupervisor:
         The slot is set to -1 rather than removed: position is the worker
         index (see `child_pids`), so the list must never compact.
 
-        Every reap passes here -- `_supervise`, `_supervise_polling`
+        Every reap passes here -- both supervision loops
         (`_account_for_exit`), `_reap_the_rest` and `_reload` -- so this is
         where the index is marked gone on the accept-share page
         (`share_accepts`), before anything decides whether to replace it.
@@ -1078,10 +1062,9 @@ def int_list_env(name: String) -> List[Int]:
     if raw.byte_length() == 0:
         return out^
     for part in raw.split(","):
-        try:
-            out.append(Int(String(part)))
-        except:
-            pass
+        var n = parse_env_int(part)
+        if n:
+            out.append(n.value())
     return out^
 
 

@@ -40,6 +40,11 @@ Env vars:
                     The cap's cost is a reconnect per N requests, and at
                     100 that was the fast route's whole p99 on a loopback
                     benchmark (docs/notes/pool-tail.md)
+
+Integers are read three ways, each for its own input: `parse_env_int`
+(Optional, digits only, overflow refused) for anything the environment or a
+header supplies; `cmdline.parse_int` (raises) for a flag the programmer
+wrote; `reply.param_int` (-1 when absent) for a request parameter.
 """
 
 from std.os import getenv

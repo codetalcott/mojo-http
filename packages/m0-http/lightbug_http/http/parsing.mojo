@@ -1,4 +1,4 @@
-from lightbug_http.io.bytes import ByteReader, Bytes, create_string_from_ptr
+from lightbug_http.io.bytes import ByteReader, create_string_from_ptr
 from lightbug_http.strings import BytesConstant, is_token_char
 from std.math import iota
 from std.utils import Variant

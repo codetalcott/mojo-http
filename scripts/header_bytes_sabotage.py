@@ -143,19 +143,8 @@ SABOTAGES = [
         "        if True:\n            continue\n",
     ),
     (
-        "encode writes a reason phrase holding CR, LF or NUL",
-        RESPONSE,
-        """        \"\"\"
-        var writer = ByteWriter()
-        writer.write(self.protocol, whitespace, self.status_code, whitespace)
-        if not span_breaks_header_line(self.status_text.as_bytes()):""",
-        """        \"\"\"
-        var writer = ByteWriter()
-        writer.write(self.protocol, whitespace, self.status_code, whitespace)
-        if True:""",
-    ),
-    (
-        "encode_into writes a reason phrase holding CR, LF or NUL",
+        # `encode` is `encode_into` over a fresh buffer: one writer, one arm.
+        "encode_into, and encode through it, writes a reason phrase holding CR, LF or NUL",
         RESPONSE,
         """        # emptied, an injected header or `Set-Cookie` line dropped.
         writer.write(self.protocol, whitespace, self.status_code, whitespace)

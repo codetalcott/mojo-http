@@ -12,11 +12,12 @@ not lose a `Vary` the response already carried.
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http.header import Header, Headers, HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from lightbug_http.http import HTTPRequest
 from lightbug_http.uri import URI
 
 from src.fragment import PageShell, page_or_fragment, wants_fragment
 from src.reply import vary_accept
+from test.support import _body
 
 
 struct Shell(PageShell):
@@ -55,10 +56,6 @@ def _req_with(name: String, value: String, hx: String = "") raises -> HTTPReques
 
 comptime ALL_VARY = "HX-Request, HX-History-Restore-Request, HX-Boosted, Datastar-Request, HX-Request-Type"
 """Every header the decision reads, in the order `Vary` names them."""
-
-
-def _body(resp: HTTPResponse) -> String:
-    return String(StringSpan(unsafe_from_utf8=Span(resp.body_raw)))
 
 
 def test_wants_fragment_reads_the_header_exactly() raises:

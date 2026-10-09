@@ -3,6 +3,7 @@
 from std.testing import assert_equal, assert_true, assert_false, assert_not_equal, TestSuite
 
 from src.etag import compute_etag, etag_matches
+from test.support import _raw
 
 
 def _bytes4() -> List[UInt8]:
@@ -80,17 +81,20 @@ def test_etag_matches_with_spaces() raises:
     """ETag matching should handle extra whitespace around commas."""
     assert_true(etag_matches('W/"abc"', 'W/"xyz" , W/"abc" , W/"def"'))
 
-def _raw(*bytes: Int) -> String:
-    """A String holding exactly these bytes, valid UTF-8 or not."""
-    var l = List[UInt8]()
-    for b in bytes:
-        l.append(UInt8(b))
-    return String(unsafe_from_utf8=Span(l))
+def test_etag_matches_weakly_whichever_side_carries_the_mark() raises:
+    """RFC 9110 §13.1.2: `If-None-Match` compares weakly, so `W/"x"` and
+    `"x"` name the same tag in either direction, alone or in a list."""
+    assert_true(etag_matches('W/"x"', '"x"'))
+    assert_true(etag_matches('"x"', 'W/"x"'))
+    assert_true(etag_matches('W/"x"', '"y", "x"'))
+    assert_false(etag_matches('W/"x"', '"xy"'))
+    assert_false(etag_matches('"x"', 'W/"y"'))
 
 
 def test_an_if_none_match_that_is_not_utf8_does_not_trap() raises:
-    """`etag_matches` trims each candidate with a String slice; a byte that
-    is not UTF-8 at the slice end trapped. It must compare bytes.
+    """`etag_matches` once trimmed each candidate with a String slice, and
+    a byte that is not UTF-8 at the slice end trapped. It walks the
+    header's bytes now (`next_list_member`) and must compare them.
 
     covers: G14
     """

@@ -22,6 +22,7 @@ from lightbug_http.uri import URI
 
 from src.mojo_pool import MojoPool, PoolContext, PoolHandler
 from src.reply import json
+from test.support import _body
 
 
 @fieldwise_init
@@ -233,7 +234,9 @@ def test_an_unheld_streaming_response_is_refused() raises:
     """A stream begun on a pool thread has no producer the loop drains, so
     the thread answers 409 and marks the job raised (the connection closes
     rather than hanging on a head that promises a body nothing writes).
-    A hold is the one exception, and the next test is that exception."""
+    A hold is the one exception, and the next test is that exception. The
+    body's last words are `not this thread's`, which once lost its
+    apostrophe."""
     var pool = OffloadPool(8)
     var threads = MojoPool(1)
     threads.start[StreamingHandler](pool.addr())
@@ -241,6 +244,10 @@ def test_an_unheld_streaming_response_is_refused() raises:
     assert_true(pool.submit(0))
     var resp = _complete(pool, 0)
     assert_equal(resp.status_code, 409)
+    assert_true(
+        "not this thread's" in _body(resp),
+        String("the refusal's body does not read `not this thread's`: ", _body(resp)),
+    )
     assert_true(not resp.sse_streaming, "the refusal must not itself be a stream")
     assert_true(pool.raised(0), "a refused stream must close the connection")
     _ = threads.stop_and_join(pool, 5_000_000_000)

@@ -10,6 +10,10 @@ epoll backends map EPOLLIN/EPOLLOUT to these internally.
 from lightbug_http.c.kqueue import EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER
 
 
+comptime _MAX_EVENTS = 64
+"""Events one `wait` can report: the size of each backend's event buffer."""
+
+
 trait EventLoopBackend:
     """Abstraction over OS IO multiplexing (kqueue / epoll)."""
 
@@ -83,8 +87,11 @@ trait EventLoopBackend:
         ...
 
     def try_add_read(mut self, fd: Int):
-        """Non-raising version of add_read."""
-        ...
+        """Non-raising version of add_read: a failure is dropped."""
+        try:
+            self.add_read(fd)
+        except:
+            pass
 
     def add_write_oneshot(mut self, fd: Int) raises:
         """Register fd for a one-shot write-ready event IN PLACE OF its read
@@ -98,8 +105,11 @@ trait EventLoopBackend:
         ...
 
     def try_add_write_oneshot(mut self, fd: Int):
-        """Non-raising version of add_write_oneshot."""
-        ...
+        """Non-raising version of add_write_oneshot: a failure is dropped."""
+        try:
+            self.add_write_oneshot(fd)
+        except:
+            pass
 
     def try_delete_read(mut self, fd: Int):
         """Remove read filter for fd (best-effort, non-raising).

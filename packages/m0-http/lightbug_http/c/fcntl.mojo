@@ -82,6 +82,18 @@ def set_cloexec(fd: Int) raises:
         raise Error("fcntl F_SETFD failed, errno: ", get_errno())
 
 
+def mark_fresh_cloexec(fd: Int):
+    """Mark a descriptor the kernel just handed this process close-on-exec,
+    where it could not be born that way: macOS has no `SOCK_CLOEXEC` in a
+    socket type, no `accept4`, no `pipe2` and no `MSG_CMSG_CLOEXEC`.
+
+    One `F_SETFD` with the flag alone, not `set_cloexec`'s read and write: a
+    fresh descriptor's only descriptor flag is this one. Nothing to report:
+    `F_SETFD` fails only on EBADF, which a descriptor just returned is not.
+    """
+    _ = _fcntl(c_int(fd), c_int(F_SETFD), c_int(FD_CLOEXEC))
+
+
 def is_cloexec(fd: Int) raises -> Bool:
     """Whether `fd` is close-on-exec: `F_GETFD` truth, not what a caller hoped."""
     var flags = _fcntl(c_int(fd), c_int(F_GETFD))

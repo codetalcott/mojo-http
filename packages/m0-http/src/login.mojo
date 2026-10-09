@@ -42,12 +42,13 @@ from std.os import getenv
 from lightbug_http.header import HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.http.date import unix_now
+from lightbug_http.strings import is_token_char
 
 from m0_core import constant_time_equal, sha256
 
 from .form import Form
 from .fragment import vary_on_fragment_headers, wants_fragment
-from .html import RequestHeader, _is_tchar, attr, void
+from .html import RequestHeader, attr, void
 from .reply import html, param_int, problem, reason_phrase, redirect
 from .session import (
     SessionKeys,
@@ -145,7 +146,7 @@ struct Login(Movable):
         if cookie.byte_length() == 0:
             raise Error("Login.from_env: the cookie has no name")
         for b in cookie.as_bytes():
-            if not _is_tchar(b):
+            if not is_token_char(b):
                 raise Error(String(
                     "Login.from_env: '", cookie, "' is not a cookie name ",
                     "(letters, digits and !#$%&'*+-.^_`|~ alone)",

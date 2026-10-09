@@ -56,6 +56,7 @@ from lightbug_http.broadcast import BroadcastBus
 from lightbug_http.c.fcntl import set_cloexec
 from lightbug_http.c.process import fd_identity
 
+from .config import parse_env_int
 from .multiworker import SharedAtomics, int_list_env
 
 
@@ -75,10 +76,7 @@ def spawned_worker_index() -> Int:
     var raw = getenv("M0_WORKER_INDEX", "")
     if raw.byte_length() == 0:
         return -1
-    try:
-        return Int(raw)
-    except:
-        return -1
+    return parse_env_int(raw).or_else(-1)
 
 
 def _adopted(var fds: List[Int]) raises -> List[Int]:
@@ -117,10 +115,7 @@ def shared_id_addr() -> Int:
     how it reaches a spawned worker, and a single reader keeps the two paths
     from disagreeing. 0 when there is no page.
     """
-    try:
-        return Int(getenv("M0_SHARED_ID_ADDR", "0"))
-    except:
-        return 0
+    return parse_env_int(getenv("M0_SHARED_ID_ADDR", "0")).or_else(0)
 
 
 def prefork_page(workers: Int, required: Bool = False) raises -> SharedAtomics:

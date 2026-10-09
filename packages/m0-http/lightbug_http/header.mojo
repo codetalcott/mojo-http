@@ -5,7 +5,12 @@ from lightbug_http.http.parsing import (
     http_parse_request_headers,
 )
 from lightbug_http.io.bytes import Bytes, ByteWriter
-from lightbug_http.strings import BytesConstant, lineBreak
+from lightbug_http.strings import (
+    BytesConstant,
+    lineBreak,
+    next_list_member,
+    trim_ows,
+)
 from std.collections.span import Span
 from std.utils import Variant
 
@@ -221,7 +226,7 @@ struct ParsedRequestHeaders(Movable):
     def is_chunked_body(self) -> Bool:
         """Return True if Transfer-Encoding: chunked is present.
 
-        Phase 1b: used by the server loops to distinguish chunked bodies
+        Used by the server loops to distinguish chunked bodies
         (no Content-Length) from fixed-length bodies.
 
         Case-INSENSITIVELY, as RFC 9112 §7.1 requires of transfer-coding
@@ -244,15 +249,11 @@ struct ParsedRequestHeaders(Movable):
         if i < 0:
             return False
         var te = self.headers.value_span(i)
-        var b = len(te)
-        var a = b
+        var a = len(te)
         while a > 0 and te[a - 1] != 0x2C:  # the last member, after its comma
             a -= 1
-        while a < b and (te[a] == 0x20 or te[a] == 0x09):
-            a += 1
-        while b > a and (te[b - 1] == 0x20 or te[b - 1] == 0x09):
-            b -= 1
-        return name_is(te[a:b], "chunked")
+        var last = trim_ows(te, a, len(te))
+        return name_is(te[last[0]:last[1]], "chunked")
 
     def faulty_framing(self) -> Bool:
         """Whether RFC 9112 §6.1 calls this request's framing faulty.
@@ -676,8 +677,8 @@ struct Headers(Copyable, Writable):
     def value_span(self, i: Int) -> Span[Byte, origin_of(self._buf)]:
         """Header `i`'s value, as bytes in place. Allocates nothing.
 
-        Public for the same reason `keys()` is: something has to project
-        these headers into another representation. `keys()` + `get()` costs
+        Public so a caller can project these headers into another
+        representation (the WSGI bridge does). `keys()` + `get()` costs
         two String allocations per header and a linear scan per lookup —
         measured at 48us per request projecting twelve headers into a WSGI
         blob, which was 77% of that bridge's entire per-request cost. Walking
@@ -745,19 +746,11 @@ struct Headers(Copyable, Writable):
             return False
         var value = self.value_span(i)
         var want = token.as_bytes()
-        var n = len(value)
         var start = 0
-        while start <= n:
-            var end = start
-            while end < n and value[end] != 0x2C:  # the list's comma
-                end += 1
-            var a = start
-            var b = end
-            while a < b and (value[a] == 0x20 or value[a] == 0x09):
-                a += 1
-            while b > a and (value[b - 1] == 0x20 or value[b - 1] == 0x09):
-                b -= 1
-            if b - a == len(want):
+        while start <= len(value):
+            var member = next_list_member(value, start)
+            var a = member[0]
+            if member[1] - a == len(want):
                 var same = True
                 for j in range(len(want)):
                     if ascii_lower_byte(value[a + j]) != ascii_lower_byte(want[j]):
@@ -765,15 +758,16 @@ struct Headers(Copyable, Writable):
                         break
                 if same:
                     return True
-            start = end + 1
+            start = member[2]
         return False
 
     def keys(self) -> List[String]:
         """Snapshot of every header name present, lowercased.
 
-        Pair each key with `__getitem__` to walk the whole collection —
-        needed by anything projecting these headers into another
-        representation, such as a WSGI `environ`.
+        Pair each key with `__getitem__` to walk the whole collection. It
+        allocates a String per header; a caller projecting every header into
+        another representation walks `count()` with `name_span` and
+        `value_span` instead, which allocate nothing.
         """
         var out = List[String](capacity=self.count())
         for i in range(self.count()):
@@ -1199,7 +1193,7 @@ def parse_request_headers(
         else:  # ret == -2
             raise RequestParseError(IncompleteHTTPRequestError())
 
-    # Phase 1a: Normalize absolute-form request targets (RFC 9112 §3.2.2).
+    # Normalize absolute-form request targets (RFC 9112 §3.2.2).
     # Proxies and some HTTP clients send "GET http://host/path HTTP/1.1".
     # The handler sees the path and query; the authority becomes the Host
     # below, after the Host field's own checks (SPEC B16).
@@ -1270,7 +1264,7 @@ def parse_request_headers(
         # interior reference taken by the first.
         ref h = headers_array[i]
         var name_bytes = view[h.name_start : h.name_start + h.name_len]
-        # Phase 1c: RFC 9110 §5.5 — trim OWS (SP / HTAB) from field values.
+        # RFC 9110 §5.5 — trim OWS (SP / HTAB) from field values.
         # picohttpparser preserves surrounding whitespace; we normalise here.
         # Trimming the span rather than calling `.strip()` keeps this
         # allocation-free: only a cookie (rare) materializes a String.
@@ -1439,23 +1433,15 @@ def parse_request_headers(
         var last_is_chunked = False
         var start = 0
         while start <= te_len:
-            var stop = start
-            while stop < te_len and te[stop] != 0x2C:  # ','
-                stop += 1
-            var a = start
-            var b = stop
-            while a < b and (te[a] == 0x20 or te[a] == 0x09):
-                a += 1
-            while b > a and (te[b - 1] == 0x20 or te[b - 1] == 0x09):
-                b -= 1
-            var is_chunked = name_is(te[a:b], "chunked")
-            if stop == te_len:
+            var member = next_list_member(te, start)
+            var is_chunked = name_is(te[member[0]:member[1]], "chunked")
+            if member[2] == te_len + 1:  # the last member
                 last_is_chunked = is_chunked
             elif is_chunked:
                 raise RequestParseError(InvalidHTTPRequestError())
-            elif b > a:
+            elif member[1] > member[0]:
                 other_coding = True
-            start = stop + 1
+            start = member[2]
         # RFC 9112 §6.3: if a request carries Transfer-Encoding, the FINAL
         # coding must be `chunked` — that is the only one that says where
         # the body ends. Testing for `chunked` anywhere in the value let

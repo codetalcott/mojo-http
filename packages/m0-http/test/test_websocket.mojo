@@ -6,6 +6,7 @@ are on what a real client would experience — the accept key it validates,
 the pong that answers its ping, the close code a violation earns.
 """
 
+from std.base64 import b64encode
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.header import Headers, Header, HeaderKey
@@ -14,7 +15,6 @@ from lightbug_http.uri import URI
 from lightbug_http.websocket import (
     sha1,
     unmask_payload,
-    base64_encode,
     compute_accept_key,
     websocket_upgrade,
     is_ws_upgrade_response,
@@ -100,13 +100,15 @@ def test_sha1_known_vectors() raises:
 
 
 def test_base64_rfc4648_vectors() raises:
-    assert_equal(base64_encode("".as_bytes()), "")
-    assert_equal(base64_encode("f".as_bytes()), "Zg==")
-    assert_equal(base64_encode("fo".as_bytes()), "Zm8=")
-    assert_equal(base64_encode("foo".as_bytes()), "Zm9v")
-    assert_equal(base64_encode("foob".as_bytes()), "Zm9vYg==")
-    assert_equal(base64_encode("fooba".as_bytes()), "Zm9vYmE=")
-    assert_equal(base64_encode("foobar".as_bytes()), "Zm9vYmFy")
+    # The handshake's base64 is the standard library's; these are the
+    # padded, standard-alphabet vectors `compute_accept_key` relies on.
+    assert_equal(b64encode("".as_bytes()), "")
+    assert_equal(b64encode("f".as_bytes()), "Zg==")
+    assert_equal(b64encode("fo".as_bytes()), "Zm8=")
+    assert_equal(b64encode("foo".as_bytes()), "Zm9v")
+    assert_equal(b64encode("foob".as_bytes()), "Zm9vYg==")
+    assert_equal(b64encode("fooba".as_bytes()), "Zm9vYmE=")
+    assert_equal(b64encode("foobar".as_bytes()), "Zm9vYmFy")
 
 
 def test_accept_key_rfc6455_example() raises:

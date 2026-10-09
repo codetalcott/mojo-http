@@ -57,8 +57,8 @@ application.
 from m0_core import HmacSha256
 
 from .grant import (
-    GRANT_KID_CHARS, GRANT_SIG_CHARS, TOKEN_EXP_DIGITS, GrantKey, SignedToken,
-    base64url, find_key,
+    GRANT_KID_CHARS, GRANT_SIG_CHARS, TOKEN_EXP_DIGITS, KeyRing, SignedToken,
+    base64url,
 )
 
 
@@ -78,31 +78,8 @@ comptime CSRF_MESSAGE_PREFIX = "m0csrf1."
 cookie's signed part can be, so neither can be replayed as the other."""
 
 
-struct SessionKeys(Movable, Sized):
-    """The keys a session cookie may be signed by: the current one first,
-    then any the application still accepts while a rotation completes.
-
-    Issuing always uses the first. A cookie names its key by `kid`, so a
-    rotation is "put the new key first, keep the old one in the list until
-    the longest TTL has passed, then drop it" — and dropping it is what
-    invalidates every session under it.
-    """
-
-    var keys: List[GrantKey]
-
-    def __init__(out self):
-        self.keys = List[GrantKey]()
-
-    def __len__(self) -> Int:
-        return len(self.keys)
-
-    def add(mut self, key: Span[UInt8, _]):
-        """Append a key, preparing its HMAC state once."""
-        self.keys.append(GrantKey(key))
-
-    def find(self, kid: Span[UInt8, _]) -> Int:
-        """The index of the key whose id is `kid`, or -1."""
-        return find_key(self.keys, kid)
+comptime SessionKeys = KeyRing
+"""The keys a session cookie may be signed by (see `KeyRing`)."""
 
 
 struct SessionVerdict(Movable):

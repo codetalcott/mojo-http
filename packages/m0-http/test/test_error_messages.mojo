@@ -87,9 +87,9 @@ def test_every_other_error_reads_as_its_message() raises:
 
 def test_every_variant_error_writes_the_error_it_holds() raises:
     """The variant errors write the one they hold: a request parse's four
-    kinds and its scanner's two, `Headers`' missing key, and the server's
-    three arms, a listener's, the provision pool's and a plain `Error`
-    (review audit A3)."""
+    kinds and its scanner's two, `Headers`' missing key, the server's two
+    arms, a listener's and a plain `Error`, and the provision pool's own
+    error (review audit A3)."""
     assert_equal(
         String(RequestParseError(InvalidHTTPRequestError())),
         "InvalidHTTPRequestError: Not a valid HTTP request",
@@ -121,7 +121,7 @@ def test_every_variant_error_writes_the_error_it_holds() raises:
         String(AddressParseError.message, ": no port"),
     )
     assert_equal(
-        String(ServerError(ProvisionError(ProvisionPoolExhaustedError()))),
+        String(ProvisionError(ProvisionPoolExhaustedError())),
         ProvisionPoolExhaustedError.message,
     )
     assert_equal(String(ServerError(Error("the loop stopped"))), "the loop stopped")

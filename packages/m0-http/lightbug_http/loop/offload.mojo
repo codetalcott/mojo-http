@@ -48,7 +48,7 @@ def _retry_owed_acks(mut st: LoopState):
 
 def _flush_submits[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
-) raises:
+):
     """Send every executor lane's buffered submits; run inline what would
     not go.
 
@@ -69,7 +69,7 @@ def _flush_submits[T: HTTPService, B: EventLoopBackend](
 
 def _run_inline[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slots: List[Int],
-) raises -> Int:
+) -> Int:
     """Run parked requests on the loop: `_process_request`'s queue-full tail,
     applied to the slots a batch could not carry. Returns how many the
     handler ran: a slot no longer offloaded is skipped, and one whose
@@ -109,7 +109,7 @@ def _run_inline[T: HTTPService, B: EventLoopBackend](
 
 def _service_completions[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, read_fd: Bool = True,
-) raises:
+):
     """Take every finished job off the completion ring — and, with
     `read_fd`, the completion channel — and answer it.
 
@@ -177,7 +177,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
 
 def _complete_one[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slot: Int,
-) raises:
+):
     """Answer ONE finished job: the per-slot body of `_service_completions`.
 
     Shared by the datagram path (a completion arrived on the channel) and the

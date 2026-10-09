@@ -27,7 +27,7 @@ from lightbug_http.loop.request import _drain_pipelined, _handle_read_headers
 def _admit_batches[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
     listen_ready: Bool, listen_pending: Int, handoffs_ready: Bool,
-) raises:
+):
     """At most one batch of new connections per door -- the listener, and
     the accept-share channel -- whether this pass saw the door's edge or a
     previous batch left some owed (`ACCEPT_BATCH`), and what either leaves
@@ -54,7 +54,7 @@ def _admit_batches[T: HTTPService, B: EventLoopBackend](
 def _admit_connection[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, fd_val: Int,
     var peer_host: String, peer_port: Int,
-) raises:
+):
     """Take a connection into a slot and run its eager read.
 
     The tail of the accept path, factored out so a connection a SIBLING
@@ -147,7 +147,7 @@ def _admit_connection[T: HTTPService, B: EventLoopBackend](
 
 def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, budget: Int = 0,
-) raises -> Bool:
+) -> Bool:
     """Admit the connections waiting on this worker's accept-share channel:
     up to `budget` of them, or every one when `budget` is 0.
 
@@ -230,7 +230,7 @@ def _accept_retries(err: SysError) -> Bool:
 
 def _accept_batch[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, budget: Int,
-) raises -> Bool:
+) -> Bool:
     """Accept up to `budget` connections off the listener and admit each,
     or pass it to a lighter sibling. True when the budget ran out before
     the backlog did -- the caller decides whether that leaves any owed.

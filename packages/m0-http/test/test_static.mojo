@@ -14,11 +14,12 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from lightbug_http.io.bytes import Bytes
 
 from lightbug_http.c.process import getpid
-from lightbug_http.http import HTTPRequest
+from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.uri import URI
 
 from src.static import StaticFiles, content_type_for, parse_range, ByteRange, RANGE_NONE, RANGE_VALID, RANGE_UNSATISFIABLE, static_headers, svg_policy_for, SVG_SANDBOX_POLICY
 from lightbug_http.header import Header, Headers
+from test.support import _raw
 
 
 def _fixture_root() raises -> String:
@@ -91,8 +92,6 @@ def _body(resp: HTTPResponse) -> String:
     var b = _body_bytes(resp)
     return String(StringSpan(unsafe_from_utf8=Span(b)))
 
-
-from lightbug_http.http import HTTPResponse
 
 
 # --- Serving -----------------------------------------------------------------
@@ -192,6 +191,19 @@ def test_if_none_match_round_trips_to_304() raises:
     assert_equal(r.status_code, 304)
     assert_equal(r.headers["etag"], etag)
     assert_equal(len(r.body_raw), 0)
+
+
+def test_if_none_match_without_the_weak_mark_gets_304() raises:
+    """The static tag is weak; `If-None-Match` compares weakly, so a client
+    that sends it back without `W/` is answered 304."""
+    var s = StaticFiles(_fixture_root())
+    var first = s.serve(_get("/static/style.css"))
+    var etag = first.take().headers["etag"]
+    assert_true(etag.startswith("W/"))
+    var req = _get("/static/style.css")
+    req.headers["if-none-match"] = String(unsafe_from_utf8=etag.as_bytes()[2:])
+    var resp = s.serve(req)
+    assert_equal(resp.take().status_code, 304)
 
 
 def test_stale_etag_gets_fresh_content() raises:
@@ -354,14 +366,6 @@ def test_prefix_and_root_are_normalized() raises:
     assert_equal(resp.take().status_code, 200)
 
 
-def _raw(*bytes: Int) -> String:
-    """A String holding exactly these bytes, valid UTF-8 or not."""
-    var l = List[UInt8]()
-    for b in bytes:
-        l.append(UInt8(b))
-    return String(unsafe_from_utf8=Span(l))
-
-
 def test_a_path_that_is_not_utf8_does_not_trap() raises:
     """`serve` sliced the path past the prefix, `_safe_join` sliced each
     segment and `content_type_for` sliced the extension, all as Strings —
@@ -386,10 +390,6 @@ def test_a_path_that_is_not_utf8_does_not_trap() raises:
     assert_equal(r.kind, RANGE_NONE)
     r = parse_range(String("bytes=0-") + _raw(0x80), 100)
     assert_equal(r.kind, RANGE_NONE)
-
-
-def main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
 
 
 # --- Byte ranges (RFC 9110 §14) ----------------------------------------------
@@ -455,6 +455,17 @@ def test_the_range_unit_is_bytes_in_ascii_case_only() raises:
     assert_equal(r.start, 2)
     assert_equal(r.end, 5)
     assert_equal(parse_range("Bytes=-10", 100).start, 90)
+
+
+def test_a_range_bound_is_digits_alone() raises:
+    """RFC 9110 §14.1.1 writes a bound as digits. A bound was read with
+    `Int()`, which takes a sign and blanks around the number, so
+    `bytes=+0-1` and `bytes= 0-1` were served as ranges and `bytes=--5`
+    answered 416. A bound that is not plain digits makes the header no
+    range at all, and the whole representation is served."""
+    assert_equal(parse_range("bytes=+0-1", 100).kind, RANGE_NONE)
+    assert_equal(parse_range("bytes= 0-1", 100).kind, RANGE_NONE)
+    assert_equal(parse_range("bytes=--5", 100).kind, RANGE_NONE)
 
 
 def test_range_serves_206_with_content_range() raises:
@@ -794,3 +805,7 @@ def test_ordinary_percent_escapes_still_decode() raises:
     var hit = static.serve(_get("/static/style%2Ecss"))
     var resp = hit.take()
     assert_equal(resp.status_code, 200)
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

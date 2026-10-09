@@ -13,7 +13,6 @@ EVFILT_TIMER; bits 0–62 carry the original ident for event_ident().
 """
 
 from lightbug_http.c.epoll import (
-    itimerspec_t,
     EPOLLIN, EPOLLOUT, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP, EPOLLRDHUP,
     CLOCK_MONOTONIC,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
@@ -25,20 +24,22 @@ from lightbug_http.c.epoll import (
 )
 from lightbug_http.c.fcntl import O_CLOEXEC, O_NONBLOCK
 from lightbug_http.c.pipe import close_fd
-from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend
-from std.ffi import ErrNo, c_int
+from lightbug_http.c.socket_error import SysError
+from lightbug_http.event_loop_backend import (
+    ConstructibleBackend, EventLoopBackend, _MAX_EVENTS,
+)
+from std.ffi import ErrNo, c_int, get_errno
 from std.memory.alloc import unsafe_alloc
 
-
-comptime _MAX_EVENTS = 64
 
 # Bit 63 of epoll data.u64 marks events that came from a timerfd.
 # The remaining 63 bits carry the original ident value.
 comptime _TIMER_FLAG: UInt64 = 1 << 63
 
 # A timer's ident is `TIMER_<kind> + fd` (loop/state.mojo): the kinds are
-# 0x100000 apart from 0x100000 (header, body, idle, SSE heartbeat, app
-# tick), so the kind is the ident's bits from 20 up and the fd the 20 below.
+# 0x100000 apart from 0x100000 (the header timer's, which nothing arms
+# now; body, idle, SSE heartbeat, app tick), so the kind is the ident's
+# bits from 20 up and the fd the 20 below.
 comptime _TIMER_KIND_SHIFT = 20
 comptime _TIMER_KINDS = 5
 comptime _TIMER_FD_MASK: UInt = (1 << 20) - 1
@@ -89,7 +90,7 @@ struct EpollBackend(ConstructibleBackend):
     def __init__(out self) raises:
         var epfd_raw = epoll_create1(c_int(O_CLOEXEC))
         if epfd_raw == -1:
-            raise Error("epoll_create1 failed")
+            raise SysError("epoll_create1", get_errno())
         self.epfd = FileDescriptor(Int(epfd_raw))
         self._events = unsafe_alloc[UInt32](count=_MAX_EVENTS * EPOLL_EVENT_WORDS)
         for i in range(_MAX_EVENTS * EPOLL_EVENT_WORDS):
@@ -210,12 +211,6 @@ struct EpollBackend(ConstructibleBackend):
                 raise add_err
             epoll_ctl_mod(self.epfd, fd, _R, UInt64(fd))
 
-    def try_add_read(mut self, fd: Int):
-        try:
-            self.add_read(fd)
-        except:
-            pass
-
     def add_write_oneshot(mut self, fd: Int) raises:
         """One-shot write-ready event, in place of the fd's read interest.
 
@@ -234,12 +229,6 @@ struct EpollBackend(ConstructibleBackend):
             if mod_err.errno != ErrNo.ENOENT:
                 raise mod_err
             epoll_ctl_add(self.epfd, fd, _W, UInt64(fd))
-
-    def try_add_write_oneshot(mut self, fd: Int):
-        try:
-            self.add_write_oneshot(fd)
-        except:
-            pass
 
     def try_delete_read(mut self, fd: Int):
         try:

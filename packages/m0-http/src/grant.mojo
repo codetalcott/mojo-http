@@ -108,19 +108,46 @@ def find_key(keys: List[GrantKey], kid: Span[UInt8, _]) -> Int:
     return -1
 
 
+struct KeyRing(Movable, Sized):
+    """The keys a signed token may carry: the current one first, then any
+    the application still accepts while a rotation completes.
+
+    Issuing uses the first. A token names its key by `kid`, so a rotation
+    is "put the new key first, keep the old one until the longest TTL has
+    passed, then drop it" -- and dropping it invalidates every token under
+    it. Sessions (`SessionKeys`) and grants (`GrantKeys`) share this ring.
+    """
+
+    var keys: List[GrantKey]
+
+    def __init__(out self):
+        self.keys = List[GrantKey]()
+
+    def __len__(self) -> Int:
+        return len(self.keys)
+
+    def add(mut self, key: Span[UInt8, _]):
+        """Append a key, preparing its HMAC state once."""
+        self.keys.append(GrantKey(key))
+
+    def find(self, kid: Span[UInt8, _]) -> Int:
+        """The index of the key whose id is `kid`, or -1."""
+        return find_key(self.keys, kid)
+
+
 struct GrantKeys(Movable):
     """What a hold mount verifies against: its keys, and the cookie it binds to."""
 
-    var keys: List[GrantKey]
+    var ring: KeyRing
     var cookie: String
     """The session cookie's name (`M0_GRANT_COOKIE`, default `sessionid`)."""
 
     def __init__(out self, cookie: String = String(GRANT_COOKIE_DEFAULT)):
-        self.keys = List[GrantKey]()
+        self.ring = KeyRing()
         self.cookie = cookie
 
     def add(mut self, key: Span[UInt8, _]):
-        self.keys.append(GrantKey(key))
+        self.ring.add(key)
 
     @staticmethod
     def from_env() -> Self:
@@ -140,7 +167,7 @@ struct GrantKeys(Movable):
         return out^
 
     def find(self, kid: Span[UInt8, _]) -> Int:
-        return find_key(self.keys, kid)
+        return self.ring.find(kid)
 
 
 struct GrantVerdict(Movable):
@@ -311,7 +338,7 @@ def verify_grant(
             if not _is_b64url_byte(b):
                 return _refuse(String("malformed"))
 
-    var refused = token.check(grant, keys.keys, now)
+    var refused = token.check(grant, keys.ring.keys, now)
     if refused:
         return _refuse(refused)
     if bound:

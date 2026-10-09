@@ -23,7 +23,7 @@ Allocations are process-lifetime, like the event-loop backends': a thread
 set is created once at startup and its blocks must outlive every thread.
 """
 
-from std.ffi import c_int, external_call, get_errno
+from std.ffi import ErrNo, c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
 
@@ -226,7 +226,7 @@ def read_one_byte_blocking(fd: Int) -> Int:
         if n >= 0:
             break
         var err = get_errno()
-        if err != err.EINTR:
+        if err != ErrNo.EINTR:
             n = 0
             break
     external_call["free", NoneType, Int](buf)
