@@ -64,7 +64,7 @@ direction, and that no libpython reaches the link line.
   Python import in `m0-http` or `m0-core` puts libpython on every build's
   link line. **Read [packages/m0-wsgi/AGENTS.md](packages/m0-wsgi/AGENTS.md)
   before editing m0-wsgi, the shim or `m0serve.mojo`, and before editing the
-  pool and executor seams outside it** — `lightbug_http/offload.mojo`,
+  pool and executor seams outside it** — `lightbug_http/offload.mojo`, `lightbug_http/offload_wire.mojo`,
   `lightbug_http/ring.mojo`, `lightbug_http/loop/offload.mojo` and
   `m0_http.mojo_pool` — whose directories do not load it. Its costliest rules:
   - The bridge's per-request path is the raw C API: `PyDict_SetItem` does
