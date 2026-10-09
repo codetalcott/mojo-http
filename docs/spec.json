@@ -39,7 +39,7 @@
       "category": "A. HTTP/1.1 framing and connection lifecycle",
       "capability": "Header read timeout (slowloris defence)",
       "status": "verified",
-      "evidence": "`Smoke test the header read timeout` (every PR) \u2014 a silent connection, answered 408 and closed by the once-a-second sweep. Met at a read too: a head whose first bytes came longer ago than the timeout is answered 408 and closed by the read that brings more of it, and the same head completed in time is answered (test_slot_lifecycle.mojo's `test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read`)"
+      "evidence": "`Smoke test the header read timeout` (every PR) \u2014 a silent connection, answered 408 and closed by the once-a-second sweep. Met at a read too: a head whose first bytes came longer ago than the timeout is answered 408 and closed by the read that brings more of it, and the same head completed in time is answered, `test_slot_lifecycle.mojo:test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read`"
     },
     {
       "id": "A6",
