@@ -1861,7 +1861,7 @@ struct OffloadPool(Movable):
         """Take a request back after a failed `submit`, to run it inline."""
         return self.requests[slot].take()
 
-    def drain_completions(mut self, read_fd: Bool = True) raises -> List[Int]:
+    def drain_completions(mut self, read_fd: Bool = True) -> List[Int]:
         """`drain_completions_into`, into a fresh list."""
         var done = List[Int]()
         self.drain_completions_into(done, read_fd)

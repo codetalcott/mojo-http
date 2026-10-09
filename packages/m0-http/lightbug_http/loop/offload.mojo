@@ -241,7 +241,7 @@ def _complete_one[T: HTTPService, B: EventLoopBackend](
 
 def service_direct_completions[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slots: List[Int],
-) raises:
+):
     """The inversion's completion seam: answer `slots` without a datagram.
 
     The executor, running on this same thread, parked a response for each

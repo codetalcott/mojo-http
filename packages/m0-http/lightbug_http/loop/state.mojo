@@ -449,7 +449,8 @@ def _await_write[B: EventLoopBackend](
 ) -> Bool:
     """Wait for the slot's fd to be writable; `_after_send` re-arms reads
     once the bytes land. False when the registration failed: the caller
-    closes the slot, or -- where it always has -- leaves it."""
+    closes the slot, every one of them, since nothing would report the
+    event it waits for."""
     try:
         backend.add_write_oneshot(fd_val)
     except:

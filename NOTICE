@@ -2019,6 +2019,18 @@ lightbug_http
         before it had been the cap request (docs/notes/pool-tail.md, "The
         cap and a stream").
 
+      - loop/streams.mojo, loop/state.mojo, loop/response.mojo
+        (2026-10-09): a frame's write registration that the backend
+        refuses closes the slot in `_send_frame` itself, so the heartbeat,
+        the outbox drain and the WebSocket reader share one rule (the
+        reader's `reply_stranded` is gone), and the write-ready path's
+        EAGAIN retry closes on the same refusal rather than leaving the
+        slot (docs/notes/the-loop-on-the-wire.md, "A frame that waits on an
+        event nothing will report"). `drain_bus_channel`
+        (broadcast.mojo), `OffloadPool.drain_completions` (offload.mojo)
+        and `service_direct_completions` (loop/offload.mojo) no longer say
+        `raises`: nothing in them can.
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 

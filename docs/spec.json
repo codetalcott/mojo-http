@@ -751,7 +751,7 @@
       "category": "D. Graceful shutdown and restart",
       "capability": "Development hot reload on file change",
       "status": "verified",
-      "evidence": "`Smoke test hot reload` (every PR) \u2014 `--reload`, `--reload-dir`"
+      "evidence": "`Smoke test hot reload` (every PR) \u2014 `--reload`, `--reload-dir`. A reload forks a replacement into every index, one the supervisor had given up on included, and the polling loop then counts what it supervises from the live pids and the give-up is over: `test_respawn.mojo:test_a_reload_refills_an_index_the_poller_gave_up_on_and_counts_it` \u2014 two workers, no respawns, worker 1 crashed and given up on, an edit, worker 0's clean exit, and the supervisor must still be supervising the replacement and exit 0 once it has gone; before (review record 605) its count stood at one through the reload, so it left with the replacement serving on, an orphan, and exited 1"
     },
     {
       "id": "D9",
@@ -1655,7 +1655,7 @@
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Server-Sent Events, with heartbeats and disconnect cleanup",
       "status": "verified",
-      "evidence": "`Smoke test the Datastar counter` (every PR) \u2014 and, on the loop, `test_slot_lifecycle.mojo:test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream` (the `: heartbeat` comment, re-armed first; a client gone without a word closed by the send that fails, its handler told; a beat for a descriptor that holds no stream retired) and `test_a_closed_stream_tells_its_handler_once_and_retires_its_timers` (every close of a stream tells the handler once, and takes its body timer and heartbeat with it)"
+      "evidence": "`Smoke test the Datastar counter` (every PR) \u2014 and, on the loop, `test_slot_lifecycle.mojo:test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream` (the `: heartbeat` comment, re-armed first; a client gone without a word closed by the send that fails, its handler told; a beat for a descriptor that holds no stream retired), `test_a_closed_stream_tells_its_handler_once_and_retires_its_timers` (every close of a stream tells the handler once, and takes its body timer and heartbeat with it) and `test_a_frame_whose_write_wait_is_refused_closes_its_stream` (a frame the kernel takes in part waits for writability, and when the backend refuses that registration the slot closes and its handler is told, from the heartbeat, the outbox drain and the WebSocket reader's reply alike; the first two used to leave the slot with its frame half sent, where the reader closed it \u2014 review record 605)"
     },
     {
       "id": "I10",

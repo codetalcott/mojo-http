@@ -61,7 +61,8 @@ def _on_write[T: HTTPService, B: EventLoopBackend](
             )
         except send_err:
             if send_err.would_block():
-                _ = _await_write(backend, st, slot, fd_val)
+                if not _await_write(backend, st, slot, fd_val):
+                    _close_slot(handler, backend, st, slot, fd_val)
                 return
             _close_slot(handler, backend, st, slot, fd_val)
             return

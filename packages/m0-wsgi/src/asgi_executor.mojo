@@ -776,11 +776,7 @@ struct ExecutorPort(Movable, Writable):
         var slots = st.pending_done.copy()
         st.pending_done.clear()
         st.in_pass = True
-        try:
-            service_direct_completions(handler, backend, loop, slots)
-        except e:
-            st.in_pass = False
-            raise e
+        service_direct_completions(handler, backend, loop, slots)
         st.in_pass = False
 
     @staticmethod

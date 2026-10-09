@@ -10,6 +10,24 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A reload no longer orphans a worker it forked into an index the
+  supervisor had given up on.** Under `--reload`, a worker that crashed
+  past its respawn budget left its index vacant and the polling supervisor
+  counting one worker fewer; the next reload forked a replacement into that
+  index with the rest, as it should (the edit may be the fix), but the count
+  stood, so once the rest had gone the supervisor exited, with 1, and the
+  replacement served on with nothing supervising it. The supervisor now
+  counts what it supervises from the live pids after every reload, and a
+  give-up a reload has undone no longer sets the exit.
+- **A stream frame whose write registration the kernel refuses closes its
+  connection from every path.** A frame the socket took only in part waits
+  for writability; when that registration failed, the heartbeat and the
+  outbox drain left the slot as it stood, half a frame sent and no event to
+  finish it, until the idle deadline, if any, where the WebSocket reader
+  closed it. One rule now: the slot closes and its handler is told, as for
+  a client that is gone. The write-ready path's own retry closes on the same
+  refusal.
+
 - **The keep-alive cap lands on a stream as it lands on any response.**
   Under `--max-keepalive-requests N`, a chunked stream served as request N
   skipped the cap and ended kept-alive with the connection's count at N;
