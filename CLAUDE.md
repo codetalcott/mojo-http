@@ -215,7 +215,8 @@ changes to this repo, with nothing to rebase onto.
   rest is `loop/`, a module per job (`state`, `timers`, `accept`, `request`,
   `response`, `streams`, `offload`, `shutdown`). **Each per-slot reset has
   one owner** in `loop/state.mojo` (review C4): read interest belongs to
-  `_arm_reads`, `_rearm_reads`, `_stop_reads` and `_await_write`; the idle
+  `_arm_reads`, `_rearm_reads`, `_stop_reads`, `_await_write` and
+  `_spend_read_edge` (a read that filled its buffer); the idle
   deadline to `_begin_request`, `_end_request`, `_arm_send_deadline` and
   `_arm_ws_linger`; a phase to `_stream_idle`, `_ws_linger`,
   `_record_response` and `_farewell_streams`. Change a reset there, never
@@ -891,9 +892,11 @@ Properties of the design, not defects to fix in passing. Each names its note.
   9112 §9.3): `request_end` stamps where the answered request ends,
   `prepare_for_new_request(keep_pipelined=True)` is passed ONLY by the
   keep-alive reset (so one client's tail never reaches another connection),
-  and `_drain_pipelined` re-parses the rest after every response,
-  iteratively and unbounded on purpose (the send buffer is the bound).
-  `poe smoke-pipelining` pins it.
+  and `_drain_pipelined` answers what the buffer holds after every
+  response, iteratively, and READS NOTHING: a pass answers one read's
+  worth, a read that fills its buffer marks its edge spent
+  (`_spend_read_edge`), and the drain's last step registers for the rest
+  (LF72). `poe smoke-pipelining` pins it.
 - **A WebSocket this side closes LINGERS for the peer's Close reply** (RFC
   6455 §5.5.1): `WSState.closing` marks the wait and a `WS_CLOSE_LINGER_NS`
   deadline in `slot_idle_deadline` bounds it; with idle timeouts off the
@@ -915,10 +918,10 @@ Properties of the design, not defects to fix in passing. Each names its note.
   reset `_total_overhead`, disarming the abuse-ratio guard.
 - **A body the server accepts must fit its receive buffer**: the
   per-connection cap is `ServerConfig.recv_buffer_limit()` — headers plus
-  body allowance, floored by `recv_buffer_max` — never the bare field. The
-  head path compares against it; the body path does not (review record
-  LF70: that buffer also holds the next request), and holds a body to its
-  own sizes.
+  body allowance, floored by `recv_buffer_max` — never the bare field. An
+  incomplete head is compared against it, alone (LF72); the body path does
+  not compare (review record LF70: that buffer also holds the next
+  request), and holds a body to its own sizes.
 
 ## Configuration
 

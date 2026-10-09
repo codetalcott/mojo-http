@@ -1,10 +1,12 @@
 """A request read, parsed and handed over -- or refused.
 
 `_on_read` dispatches a readable socket on what its slot is doing. A
-request's headers are read and parsed (`_handle_read_headers`), its body
-read and decoded (`_read_body`), and the request built and answered on
-this thread or handed to a pool thread (`_process_request`); what is
-pipelined behind it is answered from the buffer (`_drain_pipelined`). A
+request's headers are read (`_handle_read_headers`) and framed
+(`_frame_buffered`), its body read and decoded (`_read_body`), and the
+request built and answered on this thread or handed to a pool thread
+(`_process_request`); what is pipelined behind it is answered from the
+buffer (`_drain_pipelined`), which reads nothing: a read event takes one
+read off a connection, and what it brought is what that pass answers. A
 request refused while its body is still arriving is answered, then read
 and discarded until the client stops (`_reject_and_linger`).
 """
@@ -13,7 +15,8 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import recv, shutdown, spare_capacity, ShutdownOption
 from lightbug_http.connection import ConnectionState
 from lightbug_http.framing import (
-    BODY_CHUNKED, BODY_NONE, FRAME_REFUSED, FRAME_REQUEST, REFUSED_BARE_LF,
+    BODY_CHUNKED, BODY_NONE, FRAME_INCOMPLETE, FRAME_REFUSED, FRAME_REQUEST,
+    REFUSED_BARE_LF,
     REFUSED_BODY_TOO_LARGE, REFUSED_FRAMERS_DISAGREE, REFUSED_HEAD_TOO_LARGE,
     REFUSED_MALFORMED, REFUSED_NOT_IMPLEMENTED, REFUSED_URI_TOO_LONG,
     frame_request_head,
@@ -33,10 +36,10 @@ from std.time import perf_counter_ns
 
 from lightbug_http.loop.state import (
     LoopState, TIMER_BODY, UNUSED, _arm_reads, _await_write, _begin_request,
-    _close_slot, _notice_once, _rearm_reads, _stop_reads,
+    _close_slot, _notice_once, _rearm_reads, _spend_read_edge, _stop_reads,
 )
 from lightbug_http.loop.response import (
-    _finish_response, _send_error_to_fd, _send_raw_to_fd,
+    _finish_response, _send_error_to_fd, _send_interim, _take_owed_interim,
 )
 from lightbug_http.loop.streams import _read_websocket
 from lightbug_http.loop.offload import _run_inline
@@ -83,7 +86,8 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
             # REALLY gone surfaces as a failed send there.
             # `should_close` is NOT set: the tail may hold a
             # pipelined request the drain still owes an answer,
-            # and the recv->0 after the last one closes cleanly.
+            # and the answer to the last one closes the
+            # connection (`_answers_the_last_request`).
             st.provision_pool.provisions[slot].peer_eof = True
         # Nothing reads this slot until its completion: the EOF
         # above, or a pipelined request that arrived mid-flight,
@@ -128,8 +132,8 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
         # connection as that answer landed, and the requests
         # pipelined behind it, read already or still in the socket,
         # went unanswered (review record LF43). The keep-alive
-        # transition answers them, and its drain's read finds the
-        # EOF again.
+        # transition answers them, keeping `peer_eof`, so the answer
+        # to the last of them closes.
         var _eof_state = st.provision_pool.provisions[slot].state.kind
         if _eof_state == ConnectionState.STREAMING_SSE:
             _close_slot(handler, backend, st, slot, fd_val)
@@ -234,6 +238,10 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
     st.provision_pool.provisions[slot].recv_buffer.extend(
         Span(st.provision_pool.provisions[slot].recv_staging)
     )
+    if bytes_read == UInt(want):
+        # More of the body may wait in the socket, which no edge will
+        # announce: the drain re-registers (`_spend_read_edge`).
+        _spend_read_edge(st, slot)
 
     if not body_st.is_chunked:
         body_st.bytes_read += Int(bytes_read)
@@ -284,7 +292,9 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
                 ]
             )
             if ret == -1:
-                _send_error_to_fd(fd_val, BadRequest())
+                _send_error_to_fd(
+                    fd_val, BadRequest(), _take_owed_interim(st, slot)
+                )
                 _close_slot(handler, backend, st, slot, fd_val)
                 return False
             var leftover = st.provision_pool.provisions[
@@ -341,41 +351,24 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
         st.provision_pool.provisions[slot].state = ConnectionState.processing()
         _process_request(handler, backend, st, slot, fd_val)
 
-    # One recv per event does not drain an edge-triggered socket: a body
-    # larger than the staging buffer leaves bytes pending that will never
-    # raise another edge on their own. `_handle_read_headers`' rule, for
-    # its reason: re-registered only when this read may have left
-    # something no edge will announce -- a read that FILLED the buffer, or
-    # a peer that has shut down its side, whose one edge this event spent
-    # (re-registering reports the EOF again, and the read of 0 behind it
-    # closes an upload that can never finish, where the body timer would
-    # otherwise hold it). A shorter read took everything the socket held,
-    # and the next byte raises an edge of its own. This re-registered
-    # after every read: an `epoll_ctl` ADD, refused EEXIST, and the MOD
-    # behind it on each read of an upload still arriving -- R2's pair,
-    # per read where the headers' was per request (`poe
-    # smoke-large-request` counts both on Linux).
-    if (
-        st.slot_fds[slot] != UNUSED
-        and st.provision_pool.provisions[slot].state.kind
-        == ConnectionState.READING_BODY
-    ):
-        if bytes_read == UInt(want) or st.provision_pool.provisions[slot].peer_eof:
-            _rearm_reads(backend, st, slot, fd_val)
-        else:
-            _ = _arm_reads(backend, st, slot, fd_val)
+    # What the socket may still hold of the body is the next read event's:
+    # the drain registers for it (`_drain_pipelined`'s last step), by the
+    # rule this used to apply itself.
     return True
 
 
 def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
 ):
-    """Read and parse HTTP request headers for a connection slot.
+    """Read the next bytes of a request's head, then frame what the buffer
+    holds (`_frame_buffered`).
 
     Called both eagerly from the accept path (to handle data already buffered
-    before kqueue registration) and from the EVFILT_READ handler.
+    before kqueue registration) and from the EVFILT_READ handler, and each
+    goes on to `_drain_pipelined`, which answers what is pipelined behind
+    and registers reads for what comes next. Exactly ONE `recv` per call:
+    what one pass takes from a connection is one read (review record LF72).
     """
-    var entry_keepalive = st.provision_pool.provisions[slot].keepalive_count
     # 0 means "no request in progress" — the first bytes of a keep-alive
     # request start the clock here rather than inheriting a deadline from
     # whenever the previous response happened to finish.
@@ -391,16 +384,28 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     elif st.config.header_read_timeout > 0:
         var elapsed_s = (perf_counter_ns() - st.slot_header_start[slot]) / 1_000_000_000
         if elapsed_s >= Int(st.config.header_read_timeout):
-            _send_error_to_fd(fd_val, RequestTimeout())
-            _close_slot(handler, backend, st, slot, fd_val)
+            # With the lingering close a 413 gets (`_reject_and_linger`):
+            # this is met BEFORE the read, so the rest of the head the
+            # client is still sending is in the socket, and closing over
+            # unread bytes resets the connection -- on Linux the client's
+            # read failed ECONNRESET and the 408 was lost (review record
+            # LF75). Half-closed behind the answer and drained until the
+            # client stops, it reads the 408 and then our FIN.
+            _reject_and_linger(handler, backend, st, slot, fd_val, RequestTimeout())
             return
+
+    # The answered requests' bytes go first. The drain has answered every
+    # whole request behind them, so what is left is at most the head this
+    # read continues, moved once here rather than the whole tail copied
+    # after every answer (`ConnectionProvision.compact_buffer`, LF72).
+    st.provision_pool.provisions[slot].compact_buffer()
 
     # Phase 2a: recv straight into the connection's buffer, past whatever
     # it already holds. Still exactly ONE read of `recv_staging.capacity()`
-    # bytes per call -- the 8 KB header rule at the bottom of this function
-    # depends on that size -- but the staging copy that used to follow it
-    # is gone: `List.extend` was 2.7 % of the loop thread and this was its
-    # largest caller. The body and WebSocket paths keep the staging buffer.
+    # bytes per call -- the 8 KB header rule in `_drain_pipelined` depends
+    # on that size -- but the staging copy that used to follow it is gone:
+    # `List.extend` was 2.7 % of the loop thread and this was its largest
+    # caller. The body and WebSocket paths keep the staging buffer.
     var fd_desc = FileDescriptor(fd_val)
     var bytes_read: UInt
     # True only when recv itself RETURNED 0 — the peer's EOF. `bytes_read`
@@ -436,9 +441,6 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         _close_slot(handler, backend, st, slot, fd_val)
         return
 
-    # A request has begun, read now or pipelined behind the last answer.
-    _begin_request(st, slot)
-
     if recv_eof:
         # recv returning 0 IS the peer's EOF, however the event was
         # flagged. Without this, a preserved pipelined tail holding only a
@@ -449,24 +451,86 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
 
     if bytes_read > 0:
         st.provision_pool.provisions[slot].recv_buffer._len = have + Int(bytes_read)
+    if bytes_read == UInt(want):
+        # More may wait in the socket, which no edge will announce: the
+        # drain's last step registers again (`_spend_read_edge`).
+        _spend_read_edge(st, slot)
 
-    if len(st.provision_pool.provisions[slot].recv_buffer) > st.config.recv_buffer_limit():
-        _send_error_to_fd(fd_val, BadRequest())
+    var outcome = _frame_buffered(handler, backend, st, slot, fd_val)
+
+    # Headers that can never arrive: the peer half-closed while the request
+    # was still incomplete, so waiting for the rest only holds the slot
+    # until the header timeout answers 408. Release it now instead. (A
+    # partial BODY already closes promptly, on the `bytes_read == 0` path.)
+    #
+    # Only once this read has taken everything before the FIN: a read of
+    # nothing, or a shorter one. `peer_eof` from the event says the FIN has
+    # arrived, not that one read took what was ahead of it, and a read that
+    # filled its buffer closed a head longer than one read with the rest of
+    # it still in the socket, the request unanswered (review record LF42).
+    # Such a read is re-registered by the drain, and the next one goes on.
+    #
+    # And only for the head THIS read continued, framed incomplete: a head
+    # left behind an answer is the drain's, which reads nothing and so
+    # cannot know what the socket still holds; it registers again, and the
+    # next read settles it.
+    if (
+        outcome == FRAME_INCOMPLETE
+        and st.provision_pool.provisions[slot].peer_eof
+        and (recv_eof or bytes_read < UInt(want))
+    ):
         _close_slot(handler, backend, st, slot, fd_val)
-        return
+
+
+def _frame_buffered[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
+) -> Int:
+    """Frame the request whose bytes open the buffer's pending part (from
+    `head_start`), and act on the decision. Reads nothing; returns the
+    framing's outcome (`FRAME_*`).
+
+    The read path calls it after its read, and the drain once for each
+    request pipelined behind an answer. Either way a request has begun --
+    read now, or left in the buffer behind the last answer -- so its header
+    clock starts if it has not, and the keep-alive deadline ends here
+    (`_begin_request`).
+    """
+    if st.slot_header_start[slot] == 0:
+        st.slot_header_start[slot] = perf_counter_ns()
+    _begin_request(st, slot)
+
+    var start = st.provision_pool.provisions[slot].head_start
 
     # The framing decision is `frame_request_head`'s alone: where the head
     # ends, whether the parser agrees, how the body is framed, and where the
     # request ends when the head says. This acts on it, and frames nothing
     # itself (SPEC B29). A framed request's parsed head lands in the slot.
     var framing = frame_request_head(
-        Span(st.provision_pool.provisions[slot].recv_buffer),
+        Span(st.provision_pool.provisions[slot].recv_buffer)[start:],
         st.provision_pool.provisions[slot].last_parse_len,
         st.config.max_total_header_size,
         st.config.max_request_uri_length,
         st.config.max_request_body_size,
         st.provision_pool.provisions[slot].parsed_headers,
     )
+
+    if framing.outcome == FRAME_INCOMPLETE:
+        # A head still arriving may grow to the buffer's limit, and no
+        # further: past it, it can never be framed within the caps. Judged
+        # on the head alone, from its first byte. The whole buffer was
+        # compared, so what came with the head -- a body, its chunk
+        # framing, the next pipelined request -- counted against it, and a
+        # request within every cap was refused 400 or answered depending
+        # on how its reads fell (review record LF72's head-path half).
+        var pending = st.provision_pool.provisions[slot].pending_len()
+        if pending > st.config.recv_buffer_limit():
+            _send_error_to_fd(fd_val, BadRequest())
+            _close_slot(handler, backend, st, slot, fd_val)
+            return FRAME_REFUSED
+        # Scanned this far: the next call starts its terminator search, and
+        # its bare-LF scan, here (SPEC B23, LF66).
+        st.provision_pool.provisions[slot].last_parse_len = pending
+        return FRAME_INCOMPLETE
 
     if framing.outcome == FRAME_REFUSED:
         # A body over the cap is answered while it may still be arriving
@@ -477,10 +541,12 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         else:
             _send_error_to_fd(fd_val, _refusal(framing.rule))
             _close_slot(handler, backend, st, slot, fd_val)
-        return
+        return FRAME_REFUSED
 
     if framing.outcome == FRAME_REQUEST:
-        var header_end_offset = framing.head_end
+        # The framing's offsets count from the head's first byte; the slot
+        # keeps indexes into the whole buffer.
+        var header_end_offset = start + framing.head_end
         var content_length = framing.content_length
         var is_chunked = framing.body == BODY_CHUNKED
 
@@ -499,7 +565,9 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                 HeaderKey.EXPECT, "100-continue"
             ):
                 if st.provision_pool.provisions[slot].parsed_headers.value().protocol != strHttp10:
-                    _send_raw_to_fd(fd_val, "HTTP/1.1 100 Continue\r\n\r\n".as_bytes())
+                    _send_interim(
+                        st, slot, fd_val, "HTTP/1.1 100 Continue\r\n\r\n".as_bytes()
+                    )
 
             var effective_length = st.config.max_request_body_size if is_chunked else content_length
             # For a chunked body `bytes_read` counts DECODED bytes, and
@@ -519,7 +587,9 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
             # Content-Length, only at completion for chunked (0 until then).
             # Bytes past it are the next pipelined request; see
             # `ConnectionProvision.request_end`.
-            st.provision_pool.provisions[slot].request_end = framing.request_end
+            st.provision_pool.provisions[slot].request_end = (
+                0 if is_chunked else start + framing.request_end
+            )
             st.provision_pool.provisions[slot].state = ConnectionState.reading_body()
 
             # Phase 1b: decode whatever of the body arrived with the headers,
@@ -538,9 +608,11 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     ]
                 )
                 if ret == -1:
-                    _send_error_to_fd(fd_val, BadRequest())
+                    _send_error_to_fd(
+                        fd_val, BadRequest(), _take_owed_interim(st, slot)
+                    )
                     _close_slot(handler, backend, st, slot, fd_val)
-                    return
+                    return FRAME_REQUEST
                 var leftover = st.provision_pool.provisions[
                     slot
                 ].chunk_decoder.pending_bytes
@@ -564,7 +636,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     > 2 * st.config.max_request_body_size
                 ):
                     _refuse_too_large(handler, backend, st, slot, fd_val)
-                    return
+                    return FRAME_REQUEST
                 if ret >= 0:
                     # `pending_bytes` bytes remain past the chunked data —
                     # the next pipelined request. The resize above already
@@ -581,7 +653,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     st.provision_pool.provisions[slot].body_state = body_st
                     st.provision_pool.provisions[slot].state = ConnectionState.processing()
                     _process_request(handler, backend, st, slot, fd_val)
-                    return
+                    return FRAME_REQUEST
                 # ret == -2: incomplete, wait for EVFILT_READ to fire again
             elif not is_chunked and body_bytes_in_buffer >= content_length:
                 st.provision_pool.provisions[slot].state = ConnectionState.processing()
@@ -608,124 +680,112 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
                     UInt(fd_val) + TIMER_BODY, st.config.body_read_timeout * 1000
                 )
         else:
-            st.provision_pool.provisions[slot].request_end = framing.request_end
+            st.provision_pool.provisions[slot].request_end = start + framing.request_end
             st.provision_pool.provisions[slot].state = ConnectionState.processing()
             _process_request(handler, backend, st, slot, fd_val)
-
-    # Headers that can never arrive: the peer half-closed while the request
-    # was still incomplete, so waiting for the rest only holds the slot
-    # until the header timeout answers 408. Release it now instead. (A
-    # partial BODY already closes promptly, on the `bytes_read == 0` path.)
-    #
-    # Before the re-arm below, and returning: a connection whose peer has
-    # gone will never produce the readiness that re-arming asks for.
-    #
-    # Only once this read has taken everything before the FIN: a read of
-    # nothing, or a shorter one. `peer_eof` from the event says the FIN has
-    # arrived, not that one read took what was ahead of it, and a read that
-    # filled its buffer closed a head longer than one read with the rest of
-    # it still in the socket, the request unanswered (review record LF42).
-    # Such a read is re-armed below, and the next one goes on.
-    if (
-        st.slot_fds[slot] != UNUSED
-        and st.provision_pool.provisions[slot].peer_eof
-        and (recv_eof or bytes_read < UInt(want))
-        and st.provision_pool.provisions[slot].state.kind
-        == ConnectionState.READING_HEADERS
-    ):
-        _close_slot(handler, backend, st, slot, fd_val)
-        return
-
-    # Still short of a complete request: register read interest for the rest.
-    #
-    # Nothing else does. The accept path arms EVFILT_READ only while the
-    # state is still READING_HEADERS, so a request whose headers completed
-    # in the eager read but whose body did not would sit unarmed until the
-    # body timer answered 408. After a full read the re-registration is
-    # unconditional rather than guarded on `slot_read_armed`, because epoll
-    # is edge-triggered: the tail of the body is frequently already in the
-    # socket buffer, the edge that carried it is spent, and only a fresh
-    # EPOLL_CTL_MOD regenerates readiness for bytes that are pending but
-    # unread.
-    #
-    # HEADERS need it for the identical reason, and used not to have it.
-    # This function performs exactly ONE `recv` of `recv_staging.capacity()`
-    # (4096) per call, so a request whose headers exceed what the eager read
-    # plus one edge could take -- 8192 bytes, measured exactly -- left the
-    # remainder sitting unread in the socket buffer with no edge left to
-    # announce it. On epoll that request stalled until the header timeout
-    # answered 408, ten seconds after the client had finished sending it;
-    # on kqueue nothing happened at all, because `add_read` there is
-    # `EV_ADD` without `EV_CLEAR` and so LEVEL triggered, and the next
-    # `kevent` reported the socket readable again. 8 KB of request headers
-    # is a large cookie jar or a JWT, not an attack.
-    #
-    # Re-registered only when this read may have left something that no
-    # edge will announce: a read that FILLED the buffer (more may wait
-    # behind it), or the peer's EOF (whose one edge this event spent). A
-    # shorter read took everything the socket held, so the next byte raises
-    # an edge of its own, and a slot whose interest stands needs no syscall
-    # at all -- `_arm_reads` adds it only if a write wait took it. Doing it
-    # after every read put an `epoll_ctl` ADD, refused EEXIST, and the MOD
-    # behind it on every keep-alive request: 4004 calls for 2000 requests,
-    # the pair 9a6651f had measured out of the hot path (review record R2;
-    # `poe smoke-large-request` counts them on Linux).
-    if st.slot_fds[slot] != UNUSED and (
-        st.provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY
-        or st.provision_pool.provisions[slot].state.kind
-        == ConnectionState.READING_HEADERS
-    ):
-        if bytes_read == UInt(want) or recv_eof:
-            _rearm_reads(backend, st, slot, fd_val)
-        else:
-            _ = _arm_reads(backend, st, slot, fd_val)
-
-    # After an inline-completed request the keep-alive reset zeroed
-    # `last_parse_len` for the PRESERVED pipelined tail; stamping the buffer
-    # length over it would start the next terminator search past headers it
-    # has never scanned.
-    if st.provision_pool.provisions[slot].keepalive_count == entry_keepalive:
-        st.provision_pool.provisions[slot].last_parse_len = len(st.provision_pool.provisions[slot].recv_buffer)
+    return framing.outcome
 
 
 @always_inline
 def _drain_pipelined[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
 ):
-    """Answer requests already sitting whole in `recv_buffer`.
+    """Answer the requests already whole in `recv_buffer`, then make sure a
+    read event will come for whatever the socket still holds. Reads
+    nothing.
 
-    Bytes past an answered request were read off the socket with it, so no
-    readiness event will ever announce them again — the edge that carried
-    them is spent on epoll, and the socket buffer kqueue's level trigger
-    watches no longer holds them. After a response completes, whatever the
-    keep-alive reset preserved is parsed here, one request per iteration,
-    until the buffer holds no complete request or the slot has closed,
-    started streaming, gone to a pool thread, or still owes response bytes.
+    Called last by every path that answers a request: the read path, the
+    write-ready path once a response has landed, a pool thread's or the
+    executor's completion, a chunked stream's end, and the accept path's
+    eager read. Bytes past an answered request were read off the socket
+    with it, so no readiness event will ever announce them again — the edge
+    that carried them is spent on epoll, and the socket buffer kqueue's
+    level trigger watches no longer holds them. They are framed here
+    (`_frame_buffered`), one request per iteration, until the buffer holds
+    no complete request or the slot has closed, started streaming, gone to
+    a pool thread, or still owes response bytes.
+
+    It used to frame each one through the read path, whose read came
+    FIRST: every answer took up to one more read off the socket, so a burst
+    waiting there was taken into the buffer while it was answered, and the
+    keep-alive reset copied all of it that was left after every answer.
+    20,000 pipelined GETs held the loop 1.56 s in one pass, the cost per
+    request doubling with the burst, and at a tight receive limit a burst
+    of requests within every cap was refused 400 (review record LF72). Now
+    a pass answers at most what its one read brought, a connection's share
+    of the loop is bounded however it pipelines, and the next read is the
+    next event's.
 
     Iterative on purpose: recursing through the handler chain would nest
     one whole call stack per pipelined request, and a single 4 KB read of
     tiny requests is hundreds of them.
-
-    Not otherwise bounded, also on purpose — the send buffer is the real
-    bound. An iteration whose response cannot go out whole leaves the slot
-    RESPONDING and the loop exits, so a client that pipelines more than the
-    kernel will buffer back stops costing this loop anything until it
-    drains its side.
     """
     while (
         st.slot_fds[slot] != UNUSED
         and st.provision_pool.provisions[slot].state.kind
         == ConnectionState.READING_HEADERS
-        and len(st.provision_pool.provisions[slot].recv_buffer) > 0
+        and st.provision_pool.provisions[slot].pending_len()
+        > st.provision_pool.provisions[slot].last_parse_len
         and not st.offload.offloaded[slot]
     ):
         var before = st.provision_pool.provisions[slot].keepalive_count
-        _handle_read_headers(handler, backend, st, slot, fd_val)
+        _ = _frame_buffered(handler, backend, st, slot, fd_val)
         if (
             st.slot_fds[slot] == UNUSED
             or st.provision_pool.provisions[slot].keepalive_count == before
         ):
             break
+
+    # Still short of a complete request: make sure a read event will come
+    # for the rest.
+    #
+    # The accept path arms EVFILT_READ only while the state is still
+    # READING_HEADERS, so a request whose headers completed in the eager
+    # read but whose body did not would sit unarmed until the body timer
+    # answered 408; this arms it. And re-registration, rather than
+    # `slot_read_armed`'s say-so, wherever a read may have left something
+    # no edge will announce, because epoll is edge-triggered: the tail of
+    # a body or a head is frequently already in the socket buffer, the edge
+    # that carried it is spent, and only a fresh EPOLL_CTL_MOD regenerates
+    # readiness for bytes that are pending but unread.
+    #
+    # HEADERS need it for the identical reason, and used not to have it.
+    # The read path performs exactly ONE `recv` of
+    # `recv_staging.capacity()` (4096) per call, so a request whose headers
+    # exceed what the eager read plus one edge could take -- 8192 bytes,
+    # measured exactly -- left the remainder sitting unread in the socket
+    # buffer with no edge left to announce it. On epoll that request
+    # stalled until the header timeout answered 408, ten seconds after the
+    # client had finished sending it; on kqueue nothing happened at all,
+    # because `add_read` there is `EV_ADD` without `EV_CLEAR` and so LEVEL
+    # triggered, and the next `kevent` reported the socket readable again.
+    # 8 KB of request headers is a large cookie jar or a JWT, not an
+    # attack. A pipelined burst is the same shape: each read fills its
+    # buffer and leaves the rest for the next event.
+    #
+    # Re-registered only when a read may have left something that no edge
+    # will announce: a read that FILLED its buffer (more may wait behind
+    # it), which `_spend_read_edge` marks unarmed so `_arm_reads` registers
+    # again; or the peer's EOF, whose one edge an event spent, and which
+    # the drain cannot settle without a read: re-registering reports it
+    # again, and the read behind it answers, closes a request that can
+    # never complete, or finds the next one. A shorter read took
+    # everything the socket held, so the next byte raises an edge of its
+    # own, and a slot whose interest stands needs no syscall at all --
+    # `_arm_reads` adds it only if a write wait or a filled read took it.
+    # Doing it after every read put an `epoll_ctl` ADD, refused EEXIST, and
+    # the MOD behind it on every keep-alive request: 4004 calls for 2000
+    # requests, the pair 9a6651f had measured out of the hot path (review
+    # record R2; `poe smoke-large-request` counts them on Linux).
+    if st.slot_fds[slot] != UNUSED and (
+        st.provision_pool.provisions[slot].state.kind == ConnectionState.READING_BODY
+        or st.provision_pool.provisions[slot].state.kind
+        == ConnectionState.READING_HEADERS
+    ):
+        if st.provision_pool.provisions[slot].peer_eof:
+            _rearm_reads(backend, st, slot, fd_val)
+        else:
+            _ = _arm_reads(backend, st, slot, fd_val)
 
 
 def _process_request[T: HTTPService, B: EventLoopBackend](
@@ -761,7 +821,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             st.config.max_request_uri_length,
         )
     except from_parsed_err:
-        _send_error_to_fd(fd_val, BadRequest())
+        _send_error_to_fd(fd_val, BadRequest(), _take_owed_interim(st, slot))
         _close_slot(handler, backend, st, slot, fd_val)
         return
 
@@ -934,6 +994,9 @@ def _reject_and_linger[T: HTTPService, B: EventLoopBackend](
 ):
     """Refuse a request whose body is still arriving, then linger.
 
+    The header timeout met at a read is answered here too, its 408 for a
+    head still arriving (review record LF75), for the same reason.
+
     A 413 goes out as soon as the size is known -- at the headers for a
     `Content-Length`, partway through for a chunked body -- so the client
     is still uploading, and most clients read nothing until they have
@@ -956,7 +1019,7 @@ def _reject_and_linger[T: HTTPService, B: EventLoopBackend](
     close linger is: that sweep is what bounds the wait, and with idle
     timeouts off the old immediate close is better than a held slot.
     """
-    _send_error_to_fd(fd_val, response^)
+    _send_error_to_fd(fd_val, response^, _take_owed_interim(st, slot))
     var linger = st.config.idle_timeout > 0
     if linger:
         try:

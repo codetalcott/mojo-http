@@ -18,7 +18,7 @@ from lightbug_http.loop.state import (
     LoopState, TIMER_APP_TICK, TIMER_BODY, TIMER_IDLE, TIMER_SSE_HEARTBEAT,
     UNUSED, _close_slot, _notice_once,
 )
-from lightbug_http.loop.response import _send_error_to_fd
+from lightbug_http.loop.response import _send_error_to_fd, _take_owed_interim
 from lightbug_http.loop.streams import _heartbeat
 
 
@@ -67,7 +67,7 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
     # thread, whose provision `_close_slot` then RELEASED: the next
     # connection took the slot and was sent the pool thread's
     # response (B1). The arm below the decode in
-    # `_handle_read_headers` leaves no timer behind a body that is
+    # `_frame_buffered` leaves no timer behind a body that is
     # complete, but an expiry already in this batch outlives any
     # delete: the body's last bytes and the timer can land in one
     # `wait`, the read first, and the pass that completes the body
@@ -86,7 +86,9 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
     # 408 goes only to a connection's first request.
     _notice_once(st.config.body_timeout_notice)
     if st.provision_pool.provisions[slot].keepalive_count == 0:
-        _send_error_to_fd(fd_val, RequestTimeout())
+        _send_error_to_fd(
+            fd_val, RequestTimeout(), _take_owed_interim(st, slot)
+        )
 
     _close_slot(handler, backend, st, slot, fd_val)
 

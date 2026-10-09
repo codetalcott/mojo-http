@@ -40,7 +40,9 @@ from lightbug_http.c.kqueue import (
 from lightbug_http.c.fcntl import dup_cloexec, set_nonblocking
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.process import getpid, ignore_sigpipe
-from lightbug_http.c.socket import close, recv, send
+from lightbug_http.c.socket import (
+    SOL_SOCKET, SocketOption, close, recv, send, setsockopt,
+)
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
 from lightbug_http.loop.accept import _admit_connection
@@ -71,7 +73,7 @@ from lightbug_http.loop.state import (
 from lightbug_http.loop.state import _close_slot, _farewell_streams
 from lightbug_http.websocket import WS_CLOSE_GOING_AWAY
 from lightbug_http.c.socket import ShutdownOption, shutdown
-from lightbug_http.loop.response import _finish_response
+from lightbug_http.loop.response import _finish_response, _owe_interim
 from lightbug_http.loop.streams import _drain_outboxes
 from lightbug_http.offload import OffloadPool, make_stream_ack_pair
 from lightbug_http.loop.timers import _on_timer
@@ -977,10 +979,18 @@ def test_a_handler_that_raises_is_answered_500_and_closed() raises:
 def test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read() raises:
     """The header timeout is met at a read as well as by the once-a-second
     sweep: a head whose first bytes came longer ago than
-    `header_read_timeout` is answered 408 with `Connection: close`, and
-    closed, at the read that brings more of it, rather than served late;
-    the same head completed in time is answered. The sweep's half is
+    `header_read_timeout` is answered 408 with `Connection: close` at the
+    read that brings more of it, rather than served late; the same head
+    completed in time is answered. The sweep's half is
     `Smoke test the header read timeout` (A5).
+
+    The 408 goes out with the lingering close a 413 gets (A20): the write
+    side shut behind it, what the client still sends read and discarded,
+    and the connection closed once the client closes. The check comes
+    before the read, so the rest of the head is in the socket, and closing
+    over it reset the connection: on Linux the client's read failed
+    ECONNRESET, the 408 lost (review record LF75; macOS's AF_UNIX sockets
+    do not reset, a TCP connection does on both).
 
     covers: A5
     """
@@ -1004,16 +1014,27 @@ def test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read
         _send_all(pair[1], "Host: x\r\n\r\n")
         _on_read(app, backend, st, pair[0], False)
         var got = List[UInt8]()
-        _ = _read_available(pair[1], got)
+        var eof = _read_available(pair[1], got)
         var reply = String(unsafe_from_utf8=Span(got)).lower()
         if late:
             assert_true(reply.startswith("http/1.1 408 request timeout"), reply)
             assert_true("connection: close" in reply, reply)
-            assert_equal(st.slot_fds[slot], UNUSED, "a head past its timeout kept its connection")
+            assert_true(eof, "the 408 was not followed by the server's FIN")
+            assert_equal(
+                st.provision_pool.provisions[slot].state.kind,
+                ConnectionState.LINGERING,
+                "a head past its timeout was closed, not lingered",
+            )
+            # The client closes; the linger's read sees it and closes too.
+            close(FileDescriptor(pair[1]))
+            _on_read(app, backend, st, pair[0], True)
+            assert_equal(
+                st.slot_fds[slot], UNUSED, "the linger outlived its client"
+            )
         else:
             assert_true(reply.startswith("http/1.1 200 ok"), reply)
             close(FileDescriptor(pair[0]))
-        close(FileDescriptor(pair[1]))
+            close(FileDescriptor(pair[1]))
 
 
 def test_a_new_loop_has_every_slot_free_and_ignores_descriptors_it_does_not_hold() raises:
@@ -1496,9 +1517,11 @@ def _send_all(fd: Int, text: String) raises:
 
 def _half_closed_exchange(request: String) raises -> Tuple[String, Bool]:
     """`request` written by a client that then shut down its write side,
-    read by ONE event that carries the EOF with the bytes, which is how
-    both backends report a FIN that arrived beside them: the reply as the
-    client read it, lowercased, and whether the loop closed the slot."""
+    read by the event that carries the EOF with the bytes, which is how
+    both backends report a FIN that arrived beside them, and by each event
+    a registration issued in the one before brings back -- on epoll
+    nothing else does: the reply as the client read it, lowercased, and
+    whether the loop closed the slot."""
     var app = NoApp()
     var backend = FakeBackend()
     var st = _loop(_config())
@@ -1510,9 +1533,16 @@ def _half_closed_exchange(request: String) raises -> Tuple[String, Bool]:
     st.fd_to_slot[fd] = slot
     st.active_count = 1
     st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    st.slot_read_armed[slot] = True
     _send_all(peer, request)
     shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
-    _on_read(app, backend, st, fd, True)
+    var events = 0
+    while st.slot_fds[slot] != UNUSED and events < 4:
+        var adds = backend.read_adds
+        _on_read(app, backend, st, fd, True)
+        events += 1
+        if backend.read_adds == adds:
+            break
     var got = List[UInt8]()
     _ = _read_available(peer, got)
     var closed = st.slot_fds[slot] == UNUSED
@@ -1536,7 +1566,8 @@ def test_a_half_closed_request_is_answered_with_a_close() raises:
     the client sent closes the connection. Behind it in the same read, and
     behind it in the socket, where a read that filled its buffer ended
     exactly at the first request's last byte: the EOF says the FIN has
-    arrived, not that everything ahead of it has been read.
+    arrived, not that everything ahead of it has been read. That one is
+    the next read event's, which the drain registers for (LF72).
 
     covers: A27
     """
@@ -1638,8 +1669,8 @@ def test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest() raises:
     a full socket when the EOF arrived, and the read path's `should_close`
     then closed the connection as soon as that answer landed: the request
     pipelined behind it, already in the buffer, went unanswered. The
-    keep-alive transition answers it, and the drain's read finds the EOF,
-    so the last one closes (`_answers_the_last_request`).
+    keep-alive transition answers it, keeping the EOF, so the last one
+    closes (`_answers_the_last_request`).
 
     Only a stale event reaches a slot waiting to write, which holds no read
     registration on either backend: an EOF in the same batch as a pool
@@ -1695,6 +1726,446 @@ def test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest() raises:
     assert_true("connection: close" in reply.lower(), reply)
     assert_equal(st.slot_fds[slot], UNUSED, "the connection was left open")
     close(FileDescriptor(peer))
+
+
+struct Tally(HTTPService):
+    """Answers every request with a 200, and counts them."""
+
+    var n: Int
+
+    def __init__(out self):
+        self.n = 0
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        self.n += 1
+        return OK("ok", "text/plain")
+
+
+def _big_buffers(fd: Int):
+    """Ask for a megabyte of socket buffer each way, as TCP autotuning gives
+    a busy connection: room for a burst to wait unread, and for the answers
+    to it. Best effort; the kernel caps it (Linux at `wmem_max`)."""
+    for option in [SocketOption.SO_SNDBUF, SocketOption.SO_RCVBUF]:
+        try:
+            setsockopt(FileDescriptor(fd), c_int(SOL_SOCKET), option.value, c_int(1 << 20))
+        except:
+            pass
+
+
+def _send_what_fits(fd: Int, raw: Span[UInt8, _], off: Int) raises -> Int:
+    """Send `raw` from `off` until the socket takes no more; the new offset.
+    A server that has closed takes nothing more ever: all of it, then."""
+    var at = off
+    while at < len(raw):
+        var sent: UInt
+        try:
+            sent = send(FileDescriptor(fd), raw[at:], 0)
+        except err:
+            if err.would_block():
+                break
+            return len(raw)
+        if sent == 0:
+            break
+        at += Int(sent)
+    return at
+
+
+def _pipelined_burst(
+    config: ServerConfig, n: Int
+) raises -> Tuple[Int, Int, Bool, Int, Bool]:
+    """`n` pipelined 27-byte GETs, as many written before the loop's first
+    read as the socket takes and the rest as it makes room, served by the
+    events epoll would report: a write one-shot's once the client has read,
+    and a read once the client has written more or something registered
+    the socket again since the last read (nothing else raises an edge).
+    The client reads every answer between events. Returns the requests
+    run, the `200`s the client read, whether a 400 was among them, the most
+    requests one event answered, and whether the slot is still open."""
+    ignore_sigpipe()
+    var app = Tally()
+    var backend = FakeBackend()
+    var st = _loop(config)
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    _big_buffers(fd)
+    _big_buffers(peer)
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    st.slot_read_armed[slot] = True
+    var burst = String("GET /x HTTP/1.1\r\nHost: x\r\n\r\n") * n
+    var raw = burst.as_bytes()
+    var off = _send_what_fits(peer, raw, 0)
+    var got = List[UInt8]()
+    var most = 0
+    var events = 0
+    var adds_at_read = -1
+    var sent_at_read = -1
+    while st.slot_fds[slot] != UNUSED and events < 10 * n:
+        var ran = app.n
+        if (
+            st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.RESPONDING
+        ):
+            _on_write(app, backend, st, fd)
+        elif backend.read_adds != adds_at_read or off != sent_at_read:
+            adds_at_read = backend.read_adds
+            sent_at_read = off
+            _on_read(app, backend, st, fd, False)
+        else:
+            break
+        events += 1
+        most = max(most, app.n - ran)
+        _ = _read_available(peer, got)
+        off = _send_what_fits(peer, raw, off)
+    var reply = String(unsafe_from_utf8=Span(got)).lower()
+    var open = st.slot_fds[slot] != UNUSED
+    if open:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    return (
+        app.n, len(reply.split("http/1.1 200 ok")) - 1,
+        "400 bad request" in reply, most, open,
+    )
+
+
+def test_a_pipelined_burst_is_answered_one_read_at_a_time() raises:
+    """A burst of pipelined requests waiting in the socket is answered as
+    the loop reads it, one read per event, and every request within the
+    caps is answered (review record LF72).
+
+    The drain framed each request behind an answer through the read path,
+    whose read came first: every answer took up to one more read off the
+    socket, so the whole burst came into the buffer during ONE event, and
+    the keep-alive reset copied what was left of it after every answer.
+    20,000 GETs held the loop 1.56 s in that one event, the cost of a
+    request doubling with the burst; and at a receive limit of 8,256 bytes
+    600 GETs of 27 bytes, each within every cap, were answered twice, then
+    refused 400 and closed. Now the drain reads nothing, so an event
+    answers at most what its read brought, and each read that fills its
+    buffer leaves the rest to an event its registration brings: the events
+    here are only the ones epoll would report.
+
+    covers: A41
+    """
+    var want = _loop(_config()).provision_pool.buffer_size
+    var per_read = want // 27 + 1
+
+    var tight = _config()
+    tight.max_total_header_size = 8192
+    tight.max_request_body_size = 64
+    tight.recv_buffer_max = 0
+    assert_equal(tight.recv_buffer_limit(), 8256)
+    var small = _pipelined_burst(tight, 600)
+    assert_equal(small[0], 600, "requests run")
+    assert_equal(small[1], 600, "answers read")
+    assert_false(small[2], "a request within every cap was refused 400")
+    assert_true(small[4], "the connection closed")
+    assert_true(
+        small[3] <= per_read,
+        String("one event answered ", small[3], " requests; one read holds ", per_read),
+    )
+
+    var config = _config()
+    config.max_keepalive_requests = 0
+    var big = _pipelined_burst(config, 20000)
+    assert_equal(big[0], 20000, "requests run")
+    assert_equal(big[1], 20000, "answers read")
+    assert_false(big[2])
+    assert_true(big[4], "the connection closed")
+    assert_true(
+        big[3] <= per_read,
+        String("one event answered ", big[3], " requests; one read holds ", per_read),
+    )
+
+
+def test_a_filled_read_behind_a_pool_thread_is_registered_again() raises:
+    """A read that fills its buffer leaves the rest of the socket to the
+    next event, which on epoll only a registration issued after it brings:
+    here the first request is exactly one read long, goes to a pool
+    thread, and the second waits in the socket. The completion's answer
+    registers the socket again, and the next event answers the second.
+
+    The read path re-registered a filled read only when its request was
+    answered at once, and the completion's `_arm_reads` found the slot
+    armed: the drain's own read took the rest. The drain reads nothing now
+    (LF72), so the filled read marks the slot unarmed instead
+    (`_spend_read_edge`).
+
+    covers: A41
+    """
+    var pool = OffloadPool(SLOTS)
+    var st = LoopState(
+        FileDescriptor(-1), _config(), String(""), True, offload_addr=pool.addr()
+    )
+    var backend = FakeBackend()
+    var app = Tally()
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    var want = st.provision_pool.provisions[slot].recv_staging.capacity()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    st.slot_read_armed[slot] = True
+    var head = String("GET /a HTTP/1.1\r\nHost: x\r\nX-Pad: ")
+    var first = head + String("p") * (want - head.byte_length() - 4) + "\r\n\r\n"
+    assert_equal(first.byte_length(), want)
+    _send_all(peer, first + "GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+
+    var slots = List[Int]()
+    slots.append(slot)
+    _on_read(app, backend, st, fd, False)
+    assert_true(st.offload.offloaded[slot], "the first request did not go to the pool")
+    var adds = backend.read_adds
+    assert_equal(_run_inline(app, backend, st, slots), 1)
+    assert_true(
+        backend.read_adds > adds,
+        "nothing registered the socket after the read that filled its buffer",
+    )
+    _on_read(app, backend, st, fd, False)
+    assert_true(st.offload.offloaded[slot], "the second request was not read")
+    assert_equal(_run_inline(app, backend, st, slots), 1)
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    var reply = String(unsafe_from_utf8=Span(got)).lower()
+    assert_equal(_answers(reply), 2, reply)
+    assert_equal(app.n, 2)
+    close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+
+
+def test_a_request_is_answered_alike_in_one_read_or_two() raises:
+    """A request within every cap gets the same answer whether what follows
+    its head comes in the head's read or the next one, and a head is held
+    to the buffer's limit alone (review record LF72).
+
+    The head path compared the WHOLE buffer with `recv_buffer_limit()`, so
+    what came with a head counted against it: at caps of 128 head bytes,
+    64 body bytes and a 192-byte limit, a body at the cap with a request
+    behind it, a chunked body at the cap behind a 120-byte head, and a
+    chunked body over the cap were each refused 400 and closed in one read,
+    and answered 200 and 200, 200, and 413 with the lingering close in two;
+    twenty GETs pipelined in one read were refused too. The pending head
+    is what is measured now, and only while it is incomplete: a framed one
+    is held to its own caps (SPEC A20, B29).
+
+    covers: C19
+    """
+    var config = _tight_caps()
+    assert_equal(config.recv_buffer_limit(), 192)
+    var app = BodyLength()
+    var next = String("GET /b HTTP/1.1\r\nHost: x\r\n\r\n")
+    var cl_head = _padded_head(
+        "POST /a HTTP/1.1\r\nHost: x\r\nContent-Length: 64\r\n", 120
+    )
+    var chunked_head = _padded_head(
+        "POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n", 120
+    )
+    var at_cap = String("40\r\n") + String("b") * 64 + "\r\n0\r\n\r\n"
+    var over_cap = String("50\r\n") + String("b") * 80 + "\r\n"
+    for split in [False, True]:
+        var shape = String(" in two reads") if split else String(" in one read")
+
+        var parts: List[String]
+        if split:
+            parts = [cl_head, String("b") * 64 + next]
+        else:
+            parts = [cl_head + String("b") * 64 + next]
+        var cl = _exchange_with(app, config, parts)
+        assert_equal(_answers(cl[0]), 2, "a body at the cap, a request behind" + shape + ": " + cl[0])
+        assert_true("body=64" in cl[0], cl[0])
+        assert_false(cl[1], "the connection closed" + shape)
+
+        if split:
+            parts = [chunked_head, at_cap]
+        else:
+            parts = [chunked_head + at_cap]
+        var chunked = _exchange_with(app, config, parts)
+        assert_equal(_answers(chunked[0]), 1, "a chunked body at the cap" + shape + ": " + chunked[0])
+        assert_true("body=64" in chunked[0], chunked[0])
+        assert_false(chunked[1], "the connection closed" + shape)
+
+        if split:
+            parts = [chunked_head, over_cap]
+        else:
+            parts = [chunked_head + over_cap]
+        var over = _exchange_with(app, config, parts)
+        assert_true(
+            over[0].startswith("http/1.1 413 payload too large"),
+            "a chunked body over the cap" + shape + ": " + over[0],
+        )
+        assert_false(over[1], "the 413 was not followed by its lingering close" + shape)
+
+    var burst = _exchange_with(app, config, [next * 20])
+    assert_equal(_answers(burst[0]), 20, "twenty GETs in one read: " + burst[0])
+    assert_false(burst[1])
+
+    # The bound is still there for a head that cannot be framed.
+    var endless = _exchange_with(
+        app, config, [String("GET / HTTP/1.1\r\nX-Pad: ") + String("p") * 200]
+    )
+    assert_true(endless[0].startswith("http/1.1 400 bad request"), endless[0])
+    assert_true(endless[1], "a head past the limit kept its connection")
+
+
+comptime INTERIM = "HTTP/1.1 100 Continue\r\n\r\n"
+
+
+def _interim_exchange(
+    config: ServerConfig,
+    head: String,
+    rest: List[String],
+    taken: Int = 0,
+    expire: Bool = False,
+    pooled: Bool = False,
+) raises -> String:
+    """`head`, a request that expects `100 Continue`, read while the
+    server's send side is full, so the interim response's send takes none
+    of it -- or, with `taken`, as though it had taken that many bytes, which
+    are written where the kernel would have put them (`_owe_interim`). The
+    client then reads what was waiting and sends `rest`, a read event a
+    part, the server's answers taken as they come; with `expire`, the body
+    timer runs out instead. With `pooled` a pool thread answers: the request is
+    run inline from the pool's queue (`_run_inline`), as its completion is.
+    Returns what the client read after the filler."""
+    var app = BodyLength()
+    var backend = FakeBackend()
+    var pool = OffloadPool(SLOTS)
+    var st = LoopState(
+        FileDescriptor(-1), config, String(""), True,
+        offload_addr=pool.addr() if pooled else 0,
+    )
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
+    st.slot_read_armed[slot] = True
+    var filler = _fill_send_buffer(fd)
+    _send_all(peer, head)
+    _on_read(app, backend, st, fd, False)
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind, ConnectionState.READING_BODY
+    )
+    var got = List[UInt8]()
+    var went_to_pool = False
+    _ = _read_available(peer, got)
+    if taken > 0:
+        var interim = String(INTERIM)
+        var sent = send(FileDescriptor(fd), interim.as_bytes()[:taken], 0)
+        assert_equal(Int(sent), taken)
+        _owe_interim(st, slot, interim.as_bytes(), taken)
+    for part in rest:
+        if st.slot_fds[slot] == UNUSED:
+            break
+        _send_all(peer, part)
+        _on_read(app, backend, st, fd, False)
+        if st.offload.offloaded[slot]:
+            went_to_pool = True
+            var slots = List[Int]()
+            slots.append(slot)
+            assert_equal(_run_inline(app, backend, st, slots), 1)
+        var rounds = 0
+        while (
+            st.slot_fds[slot] != UNUSED
+            and st.provision_pool.provisions[slot].state.kind
+            == ConnectionState.RESPONDING
+            and rounds < 100
+        ):
+            _ = _read_available(peer, got)
+            _on_write(app, backend, st, fd)
+            rounds += 1
+    if expire:
+        var ident = UInt(fd) + TIMER_BODY
+        backend.expire(ident)
+        _on_timer(app, backend, st, ident)
+    _ = _read_available(peer, got)
+    if st.slot_fds[slot] != UNUSED:
+        close(FileDescriptor(fd))
+    close(FileDescriptor(peer))
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+    assert_equal(went_to_pool, pooled, "where the request was answered")
+    assert_true(len(got) >= filler, "the client did not read the filler")
+    return String(unsafe_from_utf8=Span(got)[filler:])
+
+
+def test_an_interim_response_the_socket_did_not_take_goes_out_first() raises:
+    """A `100 Continue` the socket did not take whole reaches the client
+    whole, ahead of whatever the connection sends next: the answer, a 413
+    for a body over the cap, a 400 for a malformed chunk, or the body
+    timer's 408 (review record LF73).
+
+    The loop sent it and ignored the count. A non-blocking send takes what
+    the socket has room for, and on Linux that can be part of even these
+    25 bytes: a send queue that is full, with less than 25 bytes left in
+    its last segment, takes the part that fits (153 of 200 trials of a
+    socket filled 25 bytes at a time, over loopback TCP; macOS sends a
+    write this small whole or not at all). The final response then followed
+    a fragment, `HTTP/1.1 100 Co` and the rest of the stream unparseable.
+    A test cannot make a kernel cut a send, so it fills the socket, which
+    makes the send take nothing, and plays the kernel for a take of 7
+    bytes: what was not taken is owed, and goes out first. A pool thread's
+    answer carries it the same way.
+
+    A refusal carries what is owed in its own buffer, one send for both:
+    sent apart, the first count thrown away, an owed send the socket took
+    none or part of and a refusal send that found room a moment later put
+    the refusal behind a fragment. That they share one send is held by
+    construction (`_send_error_to_fd`'s `owed`), not by an arm here: two
+    sends go wrong only when the socket gains room between them, which no
+    single-threaded test arranges.
+
+    covers: A42
+    """
+    var head = String(
+        "POST /p HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
+        "Content-Length: 5\r\n\r\n"
+    )
+    var answered = String(INTERIM) + "HTTP/1.1 200 OK"
+    for taken in [0, 7]:
+        var reply = _interim_exchange(_config(), head, ["hello"], taken)
+        assert_true(
+            reply.startswith(answered),
+            String("an interim response ", taken, " bytes of which were taken: ", reply),
+        )
+        assert_true("body=5" in reply, reply)
+    var pooled = _interim_exchange(_config(), head, ["hello"], pooled=True)
+    assert_true(pooled.startswith(answered), "a pool thread's answer: " + pooled)
+    assert_true("body=5" in pooled, pooled)
+
+    var chunked = String(
+        "POST /c HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
+        "Transfer-Encoding: chunked\r\n\r\n"
+    )
+    var over = _interim_exchange(
+        _tight_caps(), chunked, [String("50\r\n") + String("b") * 80 + "\r\n"]
+    )
+    assert_true(
+        over.startswith(String(INTERIM) + "HTTP/1.1 413 Payload Too Large"),
+        "a body over the cap: " + over,
+    )
+    var malformed = _interim_exchange(_config(), chunked, ["zz\r\n"])
+    assert_true(
+        malformed.startswith(String(INTERIM) + "HTTP/1.1 400 Bad Request"),
+        "a malformed chunk: " + malformed,
+    )
+    var late = _interim_exchange(_config(), head, [], expire=True)
+    assert_true(
+        late.startswith(String(INTERIM) + "HTTP/1.1 408 Request Timeout"),
+        "a body that never came: " + late,
+    )
 
 
 struct OneChunkStream(HTTPService):

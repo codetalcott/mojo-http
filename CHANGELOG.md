@@ -441,9 +441,47 @@ in a minor release: `m0serve`'s flags and environment variables, the
   body gets `413` and the lingering close that lets a client still
   uploading read it. A body read after its headers is now measured by
   its own size and, for a chunked one, by what its framing cost. Headers
-  are still held to the receive buffer's limit together with whatever
-  arrived in the same read; no shipped configuration reaches it in one
-  read, and a deep pipeline (fork review LF72) is the one way there.
+  are held to the receive buffer's limit on their own (fork review LF72,
+  below).
+
+- **A client that pipelines a burst of requests no longer stalls the
+  server** (SPEC A41, C19, fork review LF72). A client that sent many
+  requests at once without waiting for the answers -- 20,000 small GETs,
+  about 540 KB -- held the event loop for more than a second and a half
+  while they were answered, every other connection on that loop waiting,
+  and the cost grew with the square of the burst. A connection now gets
+  one read's worth of the loop at a time and the rest on later turns, and
+  a burst costs the same per request whatever its size (1.2 µs a request
+  measured for both 2,500 and 20,000, where 20,000 cost 78 µs each).
+  Pipelining in moderation is cheaper too: 16 requests at a time cost
+  about a quarter less per request. With the limits an application can
+  lower in `ServerConfig`, such a burst was also refused
+  `400 Bad Request` partway through, and a request whose body, or a
+  request behind it, came in the same read as its headers was refused 400
+  where it was answered when they came apart. A request's headers are now
+  held to the receive limit on their own, whatever arrives behind them.
+
+- **`100 Continue` is never cut short ahead of a response** (SPEC A42,
+  fork review LF73). A client that sends `Expect: 100-continue` (curl does
+  for a large upload) is told to go ahead with an interim response before
+  the final one. On Linux, when the connection's send buffer was nearly
+  full -- a client pipelining a request behind answers it had not read yet
+  -- the kernel could take only part of it, and the rest was dropped: the
+  client then read a fragment followed by the real response, which it
+  cannot parse. What the send does not take now goes out first: ahead of
+  the answer, so the client reads a whole `100 Continue`, late if the
+  buffer was full, then its response; and in one piece with an error that
+  ends the request, so a send cut short leaves the stream truncated before
+  the close, never an error behind a fragment.
+
+- **A client still sending its headers when the header timeout passes
+  reads the `408`** (SPEC A5, fork review LF75). The server answered
+  `408 Request Timeout` and closed the connection with the rest of the
+  client's headers unread, which resets the connection: on Linux the
+  client saw "connection reset by peer" instead of the 408. The 408 now
+  goes out with the same lingering close a `413` gets -- the server stops
+  writing, reads and discards what the client is still sending for up to
+  five seconds, then closes -- so the client reads the answer.
 
 ### Changed
 

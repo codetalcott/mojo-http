@@ -30,12 +30,11 @@ That is the pair 9a6651f measured out of the hot path (docs/SERVER_PERFORMANCE.m
               read silence and nothing else proves nothing, so the meter is
               checked here, in the same process, before its silence in the
               first phase is trusted. And each must be ANSWERED, which is
-              the half of A13 the rule exists for: the loop reads a slot a
-              second time in the same pass (`_drain_pipelined`), so a
-              request two reads long is answered with no edge at all, and
-              only the third read waits on the re-registration after a full
-              one -- without it the rest sits unannounced until the header
-              timeout
+              the half of A13 the rule exists for: the loop takes ONE read
+              per event (the drain reads nothing, LF72), so each read that
+              fills the buffer leaves the rest to an event only its
+              re-registration brings -- without it the rest sits
+              unannounced until the header timeout
 
 The same rule holds a request BODY, read one `recv` per event like the
 headers, and it re-registered after every read of one: R2's pair on each

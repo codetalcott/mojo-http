@@ -76,11 +76,17 @@ PRESERVE the bytes past the terminator instead of resizing them away); the
 keep-alive reset keeps the tail (`prepare_for_new_request(keep_pipelined=True)`
 — passed ONLY by the keep-alive resets, so accept and close still clear
 whole and one client's tail can never leak into another connection's first
-request); and `_drain_pipelined` re-parses the preserved buffer after every
+request); and `_drain_pipelined` answers the preserved buffer after every
 completed response, one request per iteration. It is iterative on purpose
-(recursing through the handler chain nests a call stack per request) and
-unbounded on purpose (the send buffer is the real bound: an iteration whose
-response cannot go out whole leaves the slot RESPONDING and exits). The
+(recursing through the handler chain nests a call stack per request), and
+it reads nothing (review record LF72): it framed each request through the
+read path, whose read came first, so a burst waiting in the socket was
+taken whole in one pass and the reset copied what was left of it after
+every answer, 1.56 s for 20,000 GETs. Now a pass answers what its one read
+brought; the reset advances `head_start` past the answered request rather
+than copying; and a read that fills its buffer leaves the rest to the next
+event, which the drain registers for, since on epoll nothing else
+announces it. The
 blocking server path had the same fix in its own shape until it was retired
 on 2026-09-28 (C5). `poe smoke-pipelining` pins all of it.
 
@@ -173,8 +179,9 @@ The per-connection cap is `ServerConfig.recv_buffer_limit()` — headers plus
 body allowance, floored by `recv_buffer_max` — never the bare field, which
 was a second, lower ceiling that `--max-body` did not raise and that refused
 oversized bodies as `400` where the body cap sends `413`. The head path
-compares its buffer with it. The body path no longer does (review record
-LF70): that buffer also holds the head and the next pipelined request, and
+compares an incomplete head with it, from the head's first byte and never
+what arrived behind it (review record LF72). The body path no longer
+compares (review record LF70): that buffer also holds the head and the next pipelined request, and
 comparing it refused bodies within both caps, so a body read after its head
 is held to its own sizes, a chunked one after each decode.
 
