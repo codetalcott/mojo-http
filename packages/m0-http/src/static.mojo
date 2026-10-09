@@ -94,6 +94,7 @@ from lightbug_http.header import Headers, Header, HeaderKey, name_is
 
 from .threads import dup_fd
 
+from .config import parse_env_int
 from .etag import compute_etag, etag_matches
 
 
@@ -471,34 +472,29 @@ def parse_range(header: String, total: Int) -> ByteRange:
 
     if lo.byte_length() == 0:
         # Suffix: the LAST `hi` bytes.
-        var suffix: Int
-        try:
-            suffix = Int(hi)
-        except:
+        var parsed_suffix = parse_env_int(hi)
+        if not parsed_suffix:
             return ByteRange(RANGE_NONE, 0, 0)
+        var suffix = parsed_suffix.value()
         if suffix <= 0 or total == 0:
             return ByteRange(RANGE_UNSATISFIABLE, 0, 0)
         if suffix >= total:
             return ByteRange(RANGE_VALID, 0, total - 1)
         return ByteRange(RANGE_VALID, total - suffix, total - 1)
 
-    var start: Int
-    try:
-        start = Int(lo)
-    except:
+    var parsed_start = parse_env_int(lo)
+    if not parsed_start:
         return ByteRange(RANGE_NONE, 0, 0)
-    if start < 0:
-        return ByteRange(RANGE_NONE, 0, 0)
+    var start = parsed_start.value()
     if start >= total:
         return ByteRange(RANGE_UNSATISFIABLE, 0, 0)
 
     if hi.byte_length() == 0:
         return ByteRange(RANGE_VALID, start, total - 1)
-    var end: Int
-    try:
-        end = Int(hi)
-    except:
+    var parsed_end = parse_env_int(hi)
+    if not parsed_end:
         return ByteRange(RANGE_NONE, 0, 0)
+    var end = parsed_end.value()
     if end < start:
         return ByteRange(RANGE_NONE, 0, 0)
     if end >= total:

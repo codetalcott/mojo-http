@@ -23,7 +23,7 @@ from .login import (
     LOGIN_TTL_MAX,
 )
 from .grant import (
-    GrantKey, GrantKeys, GrantVerdict, verify_grant, grant_key_id, session_binding,
+    GrantKey, GrantKeys, KeyRing, GrantVerdict, verify_grant, grant_key_id, session_binding,
     base64url, find_key, GRANT_KEY_ENV, GRANT_PREV_KEY_ENV, GRANT_COOKIE_ENV,
 )
 from .session import (

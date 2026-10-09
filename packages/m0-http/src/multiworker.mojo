@@ -32,6 +32,7 @@ from lightbug_http.c.process import (
     exec_process, shared_file_fd, map_shared_fd,
 )
 
+from .config import parse_env_int
 from .global_slot import (
     publish_child_pids, child_pid_count, child_pid_at, child_pids_owner,
     record_supervisor_stop, clear_supervisor_stop, supervisor_stopping,
@@ -317,11 +318,7 @@ def _test_max_respawns() -> Int:
     var raw = getenv(_MAX_RESPAWNS_ENV, "")
     if raw.byte_length() == 0:
         return -1
-    try:
-        var n = Int(raw)
-        return n if n >= 0 else -1
-    except:
-        return -1
+    return parse_env_int(raw).or_else(-1)
 
 
 def _test_gap_ns(name: String) -> Int:
@@ -329,11 +326,8 @@ def _test_gap_ns(name: String) -> Int:
     var raw = getenv(name, "")
     if raw.byte_length() == 0:
         return 0
-    try:
-        var ms = Int(raw)
-        return ms * 1_000_000 if ms > 0 else 0
-    except:
-        return 0
+    var ms = parse_env_int(raw).or_else(0)
+    return ms * 1_000_000 if ms > 0 else 0
 
 
 def _pause_unless_stopped(ns: Int):
@@ -1078,10 +1072,9 @@ def int_list_env(name: String) -> List[Int]:
     if raw.byte_length() == 0:
         return out^
     for part in raw.split(","):
-        try:
-            out.append(Int(String(part)))
-        except:
-            pass
+        var n = parse_env_int(part)
+        if n:
+            out.append(n.value())
     return out^
 
 
