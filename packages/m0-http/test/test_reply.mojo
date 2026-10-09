@@ -29,10 +29,7 @@ from src.reply import (
     vary,
     vary_accept,
 )
-
-
-def _body(resp: HTTPResponse) -> String:
-    return String(StringSpan(unsafe_from_utf8=Span(resp.body_raw)))
+from test.support import _body
 
 
 def test_json_sets_content_type_status_and_body() raises:

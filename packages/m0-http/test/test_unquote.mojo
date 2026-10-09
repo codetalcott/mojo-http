@@ -17,14 +17,7 @@ body makes `poe test-http` die on this file.
 from std.testing import TestSuite, assert_equal, assert_true
 
 from lightbug_http.uri import URI, unquote
-
-
-def _raw(*bytes: Int) -> String:
-    """A String holding exactly these bytes, valid UTF-8 or not."""
-    var l = List[UInt8]()
-    for b in bytes:
-        l.append(UInt8(b))
-    return String(unsafe_from_utf8=Span(l))
+from test.support import _raw
 
 
 def _assert_bytes(got: String, *want: Int) raises:

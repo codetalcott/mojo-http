@@ -3,6 +3,7 @@
 from std.testing import assert_equal, assert_true, assert_false, assert_not_equal, TestSuite
 
 from src.etag import compute_etag, etag_matches
+from test.support import _raw
 
 
 def _bytes4() -> List[UInt8]:
@@ -79,14 +80,6 @@ def test_etag_no_partial_match() raises:
 def test_etag_matches_with_spaces() raises:
     """ETag matching should handle extra whitespace around commas."""
     assert_true(etag_matches('W/"abc"', 'W/"xyz" , W/"abc" , W/"def"'))
-
-def _raw(*bytes: Int) -> String:
-    """A String holding exactly these bytes, valid UTF-8 or not."""
-    var l = List[UInt8]()
-    for b in bytes:
-        l.append(UInt8(b))
-    return String(unsafe_from_utf8=Span(l))
-
 
 def test_etag_matches_weakly_whichever_side_carries_the_mark() raises:
     """RFC 9110 §13.1.2: `If-None-Match` compares weakly, so `W/"x"` and

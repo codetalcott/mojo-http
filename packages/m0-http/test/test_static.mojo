@@ -14,11 +14,12 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from lightbug_http.io.bytes import Bytes
 
 from lightbug_http.c.process import getpid
-from lightbug_http.http import HTTPRequest
+from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.uri import URI
 
 from src.static import StaticFiles, content_type_for, parse_range, ByteRange, RANGE_NONE, RANGE_VALID, RANGE_UNSATISFIABLE, static_headers, svg_policy_for, SVG_SANDBOX_POLICY
 from lightbug_http.header import Header, Headers
+from test.support import _raw
 
 
 def _fixture_root() raises -> String:
@@ -91,8 +92,6 @@ def _body(resp: HTTPResponse) -> String:
     var b = _body_bytes(resp)
     return String(StringSpan(unsafe_from_utf8=Span(b)))
 
-
-from lightbug_http.http import HTTPResponse
 
 
 # --- Serving -----------------------------------------------------------------
@@ -367,14 +366,6 @@ def test_prefix_and_root_are_normalized() raises:
     assert_equal(resp.take().status_code, 200)
 
 
-def _raw(*bytes: Int) -> String:
-    """A String holding exactly these bytes, valid UTF-8 or not."""
-    var l = List[UInt8]()
-    for b in bytes:
-        l.append(UInt8(b))
-    return String(unsafe_from_utf8=Span(l))
-
-
 def test_a_path_that_is_not_utf8_does_not_trap() raises:
     """`serve` sliced the path past the prefix, `_safe_join` sliced each
     segment and `content_type_for` sliced the extension, all as Strings —
@@ -399,10 +390,6 @@ def test_a_path_that_is_not_utf8_does_not_trap() raises:
     assert_equal(r.kind, RANGE_NONE)
     r = parse_range(String("bytes=0-") + _raw(0x80), 100)
     assert_equal(r.kind, RANGE_NONE)
-
-
-def main() raises:
-    TestSuite.discover_tests[__functions_in_module()]().run()
 
 
 # --- Byte ranges (RFC 9110 §14) ----------------------------------------------
@@ -807,3 +794,7 @@ def test_ordinary_percent_escapes_still_decode() raises:
     var hit = static.serve(_get("/static/style%2Ecss"))
     var resp = hit.take()
     assert_equal(resp.status_code, 200)
+
+
+def main() raises:
+    TestSuite.discover_tests[__functions_in_module()]().run()

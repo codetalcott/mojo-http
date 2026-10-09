@@ -8,8 +8,7 @@ What is NOT covered here is the concurrency itself; that is what
 `poe smoke-blocking-threads` measures against a live server.
 """
 
-from std.ffi import c_int, external_call, get_errno
-from std.memory.alloc import unsafe_alloc
+from std.ffi import c_int, external_call
 from std.os import setenv
 from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
@@ -18,7 +17,6 @@ from std.time import perf_counter_ns, sleep
 from lightbug_http.http import HTTPResponse, OK
 from lightbug_http.http.request import HTTPRequest
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.c.socket import close, recv
 from lightbug_http.event_loop import _wait_for_events
 from lightbug_http.event_loop_backend import EventLoopBackend
@@ -42,6 +40,7 @@ from lightbug_http.uri import URI
 from src.threads import (
     ThreadSet, ThreadBlock, BLK_USER, BLK_STATUS, BLK_LANE, STATUS_OK,
 )
+from test.support import _stream_pair
 
 
 def _read_ack(fd: Int) raises -> Tuple[Int, Int]:
@@ -1558,24 +1557,6 @@ def test_a_wake_datagram_is_not_a_job() raises:
     assert_equal(pool.wakes_in_flight(0), 0)
     pool.stop(1)
     assert_equal(_next_slot(pool), -1)
-
-
-def _stream_pair() raises -> Tuple[Int, Int]:
-    """An `AF_UNIX` `SOCK_STREAM` pair, non-blocking at both ends: the first
-    end is the server's side of a connection, the second the client's."""
-    var fds = unsafe_alloc[c_int](count=2)
-    var rc = external_call[
-        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
-    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
-    if rc != 0:
-        var errno = get_errno()
-        fds.unsafe_free()
-        raise Error("socketpair() failed, errno: ", errno)
-    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
-    fds.unsafe_free()
-    set_nonblocking(FileDescriptor(pair[0]))
-    set_nonblocking(FileDescriptor(pair[1]))
-    return pair
 
 
 struct _InlineApp(HTTPService):

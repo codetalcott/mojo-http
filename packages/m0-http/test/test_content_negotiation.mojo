@@ -3,6 +3,7 @@
 from std.testing import assert_true, assert_false, assert_equal, TestSuite
 
 from src.content_negotiation import _split_media_range, parse_accept
+from test.support import _raw
 
 
 comptime VENDOR_BIN = "application/vnd.siren+bin"
@@ -253,14 +254,6 @@ def test_problem_json() raises:
     var r = parse_accept("application/problem+json")
     assert_true(r.wants_problem_json)
     assert_false(r.wants_json)
-
-
-def _raw(*bytes: Int) -> String:
-    """A String holding exactly these bytes, valid UTF-8 or not."""
-    var l = List[UInt8]()
-    for b in bytes:
-        l.append(UInt8(b))
-    return String(unsafe_from_utf8=Span(l))
 
 
 def test_a_header_that_is_not_utf8_does_not_trap() raises:

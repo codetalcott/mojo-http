@@ -27,9 +27,8 @@ for the registration it takes, and the real multiplexer for the events
 that send it.
 """
 
-from std.ffi import c_int, external_call, get_errno
+from std.ffi import c_int, external_call
 from std.os import remove
-from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
@@ -37,7 +36,7 @@ from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
 from lightbug_http.c.kqueue import (
     EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE,
 )
-from lightbug_http.c.fcntl import dup_cloexec, set_nonblocking
+from lightbug_http.c.fcntl import dup_cloexec
 from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.process import getpid, ignore_sigpipe
 from lightbug_http.c.socket import (
@@ -81,6 +80,7 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.uri import URI
+from test.support import _stream_pair
 
 
 struct FakeBackend(EventLoopBackend):
@@ -2841,24 +2841,6 @@ def _assert_the_peer_read_the_echo_last(got: List[UInt8], filler: Int) raises:
         (Int(got[filler + 2]) << 8) | Int(got[filler + 3]), CLOSE_CODE,
         "the Close does not echo the peer's code",
     )
-
-
-def _stream_pair() raises -> Tuple[Int, Int]:
-    """An `AF_UNIX` `SOCK_STREAM` pair, non-blocking at both ends: the first
-    end is the server's side of a connection, the second the client's."""
-    var fds = unsafe_alloc[c_int](count=2)
-    var rc = external_call[
-        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
-    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
-    if rc != 0:
-        var errno = get_errno()
-        fds.unsafe_free()
-        raise Error("socketpair() failed, errno: ", errno)
-    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
-    fds.unsafe_free()
-    set_nonblocking(FileDescriptor(pair[0]))
-    set_nonblocking(FileDescriptor(pair[1]))
-    return pair
 
 
 def _discard_all(fd: Int):

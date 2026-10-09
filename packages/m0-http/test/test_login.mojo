@@ -34,6 +34,7 @@ from src.login import (
 )
 from src.reply import html
 from src.session import session_refused
+from test.support import _body
 
 comptime KEY = "app-key-0123456789abcdef0123456789abcdef"
 comptime OTHER_KEY = "app-other-fedcba9876543210fedcba9876543210"
@@ -112,10 +113,6 @@ def _with_header(name: String, value: String, url: String = "http://127.0.0.1/it
             Header(name, value), Header("Content-Type", "application/x-www-form-urlencoded")
         )
     return HTTPRequest(URI.parse(url), headers=headers^, method="POST", body=Bytes(body.as_bytes()))
-
-
-def _body(resp: HTTPResponse) -> String:
-    return String(StringSpan(unsafe_from_utf8=Span(resp.body_raw)))
 
 
 def _header(resp: HTTPResponse, name: String) -> String:

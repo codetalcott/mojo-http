@@ -14,6 +14,7 @@ from lightbug_http.header import HeaderKey, parse_request_headers
 from lightbug_http.http import HTTPRequest
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.uri import URI
+from test.support import _raw
 
 
 def request_from(raw: String) raises -> HTTPRequest:
@@ -155,14 +156,6 @@ def test_hand_built_request_still_writes_its_jar() raises:
     var bare = HTTPRequest(uri=URI.parse("http://example.com/"))
     var bare_wire = String(unsafe_from_utf8=bare^.encode()).lower()
     assert_false("cookie:" in bare_wire, bare_wire)
-
-
-def _raw(*bytes: Int) -> String:
-    """A String holding exactly these bytes, valid UTF-8 or not."""
-    var l = List[UInt8]()
-    for b in bytes:
-        l.append(UInt8(b))
-    return String(unsafe_from_utf8=Span(l))
 
 
 def test_a_cookie_value_that_is_not_utf8_does_not_trap() raises:

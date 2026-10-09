@@ -42,8 +42,8 @@ from lightbug_http.loop.state import LoopState, TIMER_APP_TICK, UNUSED, _close_s
 from lightbug_http.offload import OffloadPool
 from lightbug_http.server_config import ServerConfig
 
-from std.ffi import c_int, external_call, get_errno
-from std.memory.alloc import unsafe_alloc
+from std.ffi import c_int, external_call
+from test.support import _stream_pair
 
 
 struct BatchBackend(EventLoopBackend):
@@ -161,24 +161,6 @@ def _config() -> ServerConfig:
     config.sse_heartbeat_ms = 0
     config.app_tick_ms = 50
     return config^
-
-
-def _stream_pair() raises -> Tuple[Int, Int]:
-    """An `AF_UNIX` `SOCK_STREAM` pair, non-blocking at both ends: the first
-    end is the server's side of a connection, the second the client's."""
-    var fds = unsafe_alloc[c_int](count=2)
-    var rc = external_call[
-        "socketpair", c_int, c_int, c_int, c_int, type_of(fds)
-    ](c_int(1), c_int(1), c_int(0), fds)  # AF_UNIX, SOCK_STREAM
-    if rc != 0:
-        var errno = get_errno()
-        fds.unsafe_free()
-        raise Error("socketpair() failed, errno: ", errno)
-    var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
-    fds.unsafe_free()
-    set_nonblocking(FileDescriptor(pair[0]))
-    set_nonblocking(FileDescriptor(pair[1]))
-    return pair
 
 
 def _send_text(fd: Int, text: String) raises:
