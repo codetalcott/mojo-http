@@ -234,17 +234,12 @@ def _answers_the_last_request(mut st: LoopState, slot: Int, fd_val: Int) -> Bool
     var have = len(st.provision_pool.provisions[slot].recv_buffer)
     if st.provision_pool.provisions[slot].request_end < have:
         return False
-    st.provision_pool.provisions[slot].recv_buffer.reserve(have + 1)
+    # Into a byte of its own: the look keeps nothing, so it has no reason
+    # to touch, or grow, the receive buffer.
+    var one = Array[UInt8, 1](fill=0)
     var n: UInt
     try:
-        n = recv(
-            FileDescriptor(fd_val),
-            Span(
-                unsafe_ptr=st.provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(have),
-                length=1,
-            ),
-            MSG_PEEK,
-        )
+        n = recv(FileDescriptor(fd_val), Span(one), MSG_PEEK)
     except:
         # A reset, or a read that would wait, which a FIN rules out: no
         # further request will be read either way.

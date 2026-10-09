@@ -215,7 +215,8 @@ changes to this repo, with nothing to rebase onto.
   rest is `loop/`, a module per job (`state`, `timers`, `accept`, `request`,
   `response`, `streams`, `offload`, `shutdown`). **Each per-slot reset has
   one owner** in `loop/state.mojo` (review C4): read interest belongs to
-  `_arm_reads`, `_rearm_reads`, `_stop_reads` and `_await_write`; the idle
+  `_arm_reads`, `_rearm_reads`, `_stop_reads`, `_await_write` and
+  `_spend_read_edge` (a read that filled its buffer); the idle
   deadline to `_begin_request`, `_end_request`, `_arm_send_deadline` and
   `_arm_ws_linger`; a phase to `_stream_idle`, `_ws_linger`,
   `_record_response` and `_farewell_streams`. Change a reset there, never

@@ -217,14 +217,18 @@ struct LoopState(Movable):
         var slot_header_start = List[Int](capacity=max_conns)
         var slot_sse = List[Bool](capacity=max_conns)
         var slot_ws = List[Bool](capacity=max_conns)
-        # Whether the slot's fd currently has a read filter registered with the
-        # backend. Registrations are persistent on both backends (epoll: EPOLLIN
-        # edge-triggered without ONESHOT; kqueue: EV_ADD without EV_ONESHOT), so
-        # re-registering per keep-alive request is two wasted epoll_ctl calls per
-        # request — the ADD that fails EEXIST plus the MOD. The one operation
-        # that CAN disarm reads is add_write_oneshot: on epoll it replaces the
-        # fd's event mask. Tracking that transition here lets the steady-state
-        # keep-alive path skip re-arming entirely.
+        # Whether the backend will report the slot's next readable state: a
+        # read registration stands AND has been issued since the last read
+        # that could have left bytes no edge announces. Registrations are
+        # persistent on both backends (epoll: EPOLLIN edge-triggered without
+        # ONESHOT; kqueue: EV_ADD without EV_ONESHOT), so re-registering per
+        # keep-alive request is two wasted epoll_ctl calls per request — the
+        # ADD that fails EEXIST plus the MOD. Two things clear it: the write
+        # one-shot (`_await_write`), which on epoll replaces the fd's event
+        # mask, and a read that filled its buffer (`_spend_read_edge`), whose
+        # edge is spent with bytes perhaps still behind it (review record
+        # LF72). Tracking both lets the steady-state keep-alive path skip
+        # re-arming entirely.
         var slot_read_armed = List[Bool](capacity=max_conns)
         # Idle-timeout deadline (perf_counter_ns value; 0 = none). Replaces a
         # per-request timerfd_settime with a once-a-second sweep — idle timeouts
@@ -308,7 +312,9 @@ struct LoopState(Movable):
 #
 # A slot's state outside its provision lives in the loop's parallel lists,
 # and two of them change meaning with the phase the slot is in:
-# `slot_read_armed` (whether the backend holds read interest for the fd) and
+# `slot_read_armed` (whether the backend will announce the fd's next
+# readable state: read interest registered, and registered again since a
+# read that filled its buffer, `_spend_read_edge`) and
 # `slot_idle_deadline` (the keep-alive idle deadline between requests, the
 # send deadline while a response waits on its client, the close linger of a
 # WebSocket that sent its Close, the linger of a refused upload). Both used
@@ -345,7 +351,12 @@ def _arm_reads[B: EventLoopBackend](
     `slot_read_armed` is the invariant, not bookkeeping: on epoll read and
     write share ONE registration, so the write one-shot (`_await_write`)
     replaces the read interest, and a flag left saying "armed" then means
-    nothing re-arms the socket and it stalls for good. False only when the
+    nothing re-arms the socket and it stalls for good. The flag says a
+    registration has been issued since the last read that could have left
+    bytes unannounced: `_await_write` clears it, and so does a read that
+    filled its buffer (`_spend_read_edge`), whose registration still stands
+    but whose edge is spent, so this registers again and epoll reports what
+    the read left (review record LF72). Returns False only when the
     registration failed; the flag then stays False, so the next transition
     that wants reads tries again.
 
