@@ -9,7 +9,7 @@ next request. `_send_error_to_fd` is the best-effort answer before a close.
 """
 
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.c.socket import recv, send, close, set_tcp_keepalive
+from lightbug_http.c.socket import MSG_PEEK, recv, send, close, set_tcp_keepalive
 from lightbug_http.connection import ConnectionState
 from lightbug_http.header import HeaderKey, KH_DATE
 from lightbug_http.http import (
@@ -216,41 +216,35 @@ def _answers_the_last_request(mut st: LoopState, slot: Int, fd_val: Int) -> Bool
     left behind this request.
 
     A request pipelined behind it keeps the connection, so the rest is
-    still answered; the drain's read finds the EOF again for the last one.
-    And `peer_eof` says the FIN has arrived, not that every byte ahead of
-    it has been read: a read that filled its buffer can stop exactly where
-    this request ends, with the next one still in the socket, and closing
-    then drops that one and resets the connection over the answer. Behind
-    a FIN a read does not block, so one more read settles it -- nothing is
-    the end, and anything else is the next request, kept in the buffer for
-    the drain. Only a half-closed connection's request that ends its buffer
-    pays for it.
+    still answered; the keep-alive reset keeps `peer_eof`, and this says
+    so for the last one. And `peer_eof` says the FIN has arrived, not that
+    every byte ahead of it has been read: a read that filled its buffer can
+    stop exactly where this request ends, with the next one still in the
+    socket, and closing then drops that one and resets the connection over
+    the answer. Behind a FIN a read does not block, so a look settles it --
+    nothing is the end, and anything else is the next request. A look, not
+    a read (`MSG_PEEK`): what it finds stays in the socket for the next
+    read event, which the drain registers for, so an answer takes nothing
+    off the socket and a pass answers no more than its one read brought
+    (review record LF72). Only a half-closed connection's request that ends
+    its buffer pays for it.
     """
     if not st.provision_pool.provisions[slot].peer_eof:
         return False
     var have = len(st.provision_pool.provisions[slot].recv_buffer)
     if st.provision_pool.provisions[slot].request_end < have:
         return False
-    var want = st.provision_pool.provisions[slot].recv_staging.capacity()
-    st.provision_pool.provisions[slot].recv_buffer.reserve(have + want)
+    # Into a byte of its own: the look keeps nothing, so it has no reason
+    # to touch, or grow, the receive buffer.
+    var one = Array[UInt8, 1](fill=0)
     var n: UInt
     try:
-        n = recv(
-            FileDescriptor(fd_val),
-            Span(
-                unsafe_ptr=st.provision_pool.provisions[slot].recv_buffer.unsafe_ptr().unsafe_offset(have),
-                length=want,
-            ),
-            0,
-        )
+        n = recv(FileDescriptor(fd_val), Span(one), MSG_PEEK)
     except:
         # A reset, or a read that would wait, which a FIN rules out: no
         # further request will be read either way.
         return True
-    if n == 0:
-        return True
-    st.provision_pool.provisions[slot].recv_buffer._len = have + Int(n)
-    return False
+    return n == 0
 
 
 def _finish_response[T: HTTPService, B: EventLoopBackend](
@@ -486,6 +480,17 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     var scratch = Bytes()
     swap(st.provision_pool.provisions[slot].encoding_buffer, scratch)
     st.slot_response[slot] = response^.encode_into(scratch^)
+    # What the interim `100 Continue` still owes goes first, so the client
+    # reads it whole before this (`_send_interim`, review record LF73).
+    if len(st.provision_pool.provisions[slot].interim_owed) > 0:
+        var whole = Bytes(
+            capacity=len(st.provision_pool.provisions[slot].interim_owed)
+            + len(st.slot_response[slot])
+        )
+        whole.extend(Span(st.provision_pool.provisions[slot].interim_owed))
+        whole.extend(Span(st.slot_response[slot]))
+        st.slot_response[slot] = whole^
+        st.provision_pool.provisions[slot].interim_owed.clear()
     st.slot_send_offset[slot] = 0
     st.provision_pool.provisions[slot].close_body_fd()
     if file_fd >= 0:
@@ -565,16 +570,30 @@ def _after_send[T: HTTPService, B: EventLoopBackend](
     _end_request(backend, st, slot, fd_val)
 
 
-def _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
+def _send_error_to_fd(
+    fd_val: Int, var response: HTTPResponse, var owed: Bytes = Bytes()
+):
     """Best-effort send an error response on a raw fd.
 
     Every caller ends the connection after it, so the response says so:
     `Connection: close` (RFC 9112 §9.6, the server's final response on a
     connection). Left to the encoder's default it said `keep-alive`, an
     invitation to send the next request down a socket that is closing.
+
+    `owed` is what an interim `100 Continue` still owes the client
+    (`_take_owed_interim`), sent IN THE SAME BUFFER ahead of the error, by
+    one send: whatever the socket takes of it, the client reads a prefix
+    of the whole interim response and then the error, and the close. Sent
+    apart, with the first count thrown away, a send of the owed bytes that
+    took none or part of them and an error send that found room a moment
+    later put the error behind a fragment -- the corruption the interim's
+    carrying exists to prevent (review record LF73).
     """
     response.set_connection_close()
     var encoded = encode(response^)
+    if len(owed) > 0:
+        owed.extend(Span(encoded))
+        encoded = owed^
     try:
         _ = send(
             FileDescriptor(fd_val),
@@ -585,13 +604,47 @@ def _send_error_to_fd(fd_val: Int, var response: HTTPResponse):
         pass
 
 
-def _send_raw_to_fd(fd_val: Int, data: Span[Byte, _]):
-    """Best-effort send raw bytes on a fd."""
+def _send_interim(
+    mut st: LoopState, slot: Int, fd_val: Int, data: Span[Byte, _]
+):
+    """Send an interim response -- the `100 Continue` -- now, and keep what
+    the send did not take as the connection's next bytes.
+
+    A non-blocking send takes what the socket has room for, and on Linux
+    that can be part of even these 25 bytes: when the send queue is full
+    and its last segment has less than that left, `send` returns the part
+    that fit (measured: a 25-byte send on a socket filled 25 bytes at a
+    time came back short in 153 of 200 trials; macOS sends a write this
+    small whole or not at all). This was a best-effort send that ignored
+    the count, so a cut one put a fragment on the wire with the final
+    response behind it, which no client can parse (review record LF73).
+    What the send did not take -- all of it, when it took none -- goes out
+    ahead of the final response (`_finish_response`), or in the one buffer
+    of the refusal that ends the request (`_send_error_to_fd`'s `owed`,
+    from `_take_owed_interim`): late, but whole, and a
+    client must be able to read a 1xx before any final response (RFC 9110
+    §15.2).
+    """
+    var sent = 0
     try:
-        _ = send(
-            FileDescriptor(fd_val),
-            data,
-            0,
-        )
+        sent = Int(send(FileDescriptor(fd_val), data, 0))
     except:
         pass
+    _owe_interim(st, slot, data, sent)
+
+
+def _owe_interim(mut st: LoopState, slot: Int, data: Span[Byte, _], sent: Int):
+    """Keep what a send of the interim response `data` did not take -- its
+    bytes past `sent` -- for the connection to send before anything else."""
+    if sent < len(data):
+        st.provision_pool.provisions[slot].interim_owed = Bytes(data[sent:])
+
+
+def _take_owed_interim(mut st: LoopState, slot: Int) -> Bytes:
+    """What the slot's interim response still owes (`_send_interim`), taken
+    out of the slot: for a refusal to carry ahead of itself in one buffer
+    (`_send_error_to_fd`'s `owed`). Empty, as it nearly always is, when the
+    interim went out whole."""
+    var owed = Bytes()
+    swap(owed, st.provision_pool.provisions[slot].interim_owed)
+    return owed^

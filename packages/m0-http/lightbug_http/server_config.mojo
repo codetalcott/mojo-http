@@ -106,8 +106,11 @@ struct ServerConfig(Copyable, Movable):
         `recv_buffer_max` or the headers-plus-body allowance, whichever is
         larger — so raising `max_request_body_size` (m0serve's `--max-body`)
         raises this with it, whichever field a caller set and in whichever
-        order. The check sites, in `loop/request.mojo`, compare against
-        this, never against the field.
+        order. The check site, `_handle_read_headers` in
+        `loop/request.mojo`, compares against this, never against the
+        field. The body path checks the body's own sizes instead (review
+        record LF70): the buffer also holds the head and the next
+        pipelined request.
         """
         var allowance = self.max_total_header_size + self.max_request_body_size
         return self.recv_buffer_max if self.recv_buffer_max > allowance else allowance

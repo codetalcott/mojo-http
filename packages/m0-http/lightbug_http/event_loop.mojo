@@ -52,7 +52,7 @@ from std.os import getenv
 # The loop's modules. `LoopState`, `service_direct_completions` and the
 # shutdown's steps are imported for callers too: the ASGI executor takes
 # them from this module, as it did before the split.
-from lightbug_http.loop.state import LoopState, TIMER_APP_TICK, TIMER_HEADER
+from lightbug_http.loop.state import LoopState, TIMER_APP_TICK
 from lightbug_http.loop.timers import _on_timer, _sweep_deadlines
 from lightbug_http.loop.accept import _admit_batches
 from lightbug_http.loop.request import _on_read
@@ -96,13 +96,6 @@ def prepare_loop[B: EventLoopBackend](
     inversion's m0serve does.
     """
     set_nonblocking(listen_fd)
-
-    # Phase 2e: fd values must fit in 20 bits so timer idents (0x100000+) never collide.
-    debug_assert(
-        UInt(listen_fd.value) < TIMER_HEADER,
-        "listen fd >= 0x100000: timer ident collision possible",
-    )
-
     backend.add_read_listen(listen_fd.value)
 
     # Phase 4a: register shutdown pipe read end if provided

@@ -1,2 +1,1 @@
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.io.sync import Duration
+"""The package of `bytes`: `Bytes`, its writer, view and reader."""

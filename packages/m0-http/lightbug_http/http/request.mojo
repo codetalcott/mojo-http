@@ -4,7 +4,6 @@ from lightbug_http.header import (
 )
 from lightbug_http.http.encodable import Encodable
 from lightbug_http.io.bytes import Bytes, ByteWriter
-from lightbug_http.io.sync import Duration
 from lightbug_http.strings import lineBreak, strHttp10, strHttp11, whitespace
 from lightbug_http.uri import URI, QueryMap
 from std.utils import Variant
@@ -117,7 +116,6 @@ struct HTTPRequest(Copyable, Encodable, Writable):
     var protocol: String
 
     var server_is_tls: Bool
-    var timeout: Duration
     var slot_id: Int
 
     var remote_addr: String
@@ -258,7 +256,6 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         var protocol: String = strHttp11,
         var body: Bytes = Bytes(),
         server_is_tls: Bool = False,
-        timeout: Duration = Duration(),
         invent_headers: Bool = True,
     ):
         """Initialize a new HTTP request.
@@ -278,7 +275,6 @@ struct HTTPRequest(Copyable, Encodable, Writable):
         self.uri = uri^
         self.body_raw = body^
         self.server_is_tls = server_is_tls
-        self.timeout = timeout
         self.slot_id = -1
         self.remote_addr = String("")
         self.remote_port = 0

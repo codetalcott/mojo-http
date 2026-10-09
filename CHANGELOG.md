@@ -198,6 +198,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
   fork review; with a sleep holding that moment open, 24 messages of 24
   waited.
 
+- **A pool test no longer times out on a busy machine** (fork review
+  LF68, SPEC I39). The test that a WebSocket message wakes a pool thread
+  parked on its own channel waited for the count of parked threads to
+  dip, which lasts only until the woken thread parks again, tens of
+  microseconds later; a test thread descheduled across that moment failed
+  at its two-second bound with the message served. It now waits for the
+  message to be taken. The server was not at fault: a sleep at each of
+  four points of the pool's park path never lost the message, and a sleep
+  after the test's send failed the old test every time.
+
+- **A pool shutdown test no longer depends on how fast it runs** (fork
+  review LF76). The test that `stop` waits for room to pill a thread on a
+  full lane filled the lane while the thread sat in a 200 ms view. A test
+  thread slower than that, descheduled or slowed by a loaded machine, met
+  a thread already reading: the lane never refused a message, or it
+  filled with thousands that the thread drained past the test's 3 s join,
+  which then reported a lost pill although the pill was taken. The view
+  now lasts until the test has filled the lane. The server was not at
+  fault: sleeps in `stop`'s pill path and in the thread's park never lost
+  a pill, and a sleep in the test's fill failed it in 8 runs of 9.
+
 - **A cross-worker bus frame is delivered whole or not at all** (SPEC
   I40). Exposed: a publish whose channel name and frame together passed
   about 69.6 KB, through `m0pub.publish()`, `scope["state"]["m0"]`,
@@ -406,6 +427,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   vendor type matched it. Each is now refused or ignored as other servers
   do, and `WebSocket`, `BYTES=` and `Application/VND.X` still match.
 
+- **An `Accept` weight is read from the parameter named `q`, in any case**
+  (fork review LF69, SPEC N53). Exposed: Mojo applications that negotiate
+  with `parse_accept`. The weight was found by searching an entry's
+  parameters for the text `q=`, so `text/html;Q=0` did not refuse HTML, a
+  parameter such as `xq=0` refused its type, and `q= 0.5`, with a space
+  after the `=`, read as a refusal. The weight is now the first parameter
+  whose name is `q` in any case, and spaces around its `=` are read past.
+
 - **`HTTPRequest.encode()` writes the target it was given** (fork review
   LF62, SPEC A38). Exposed: a Mojo application that writes a request out
   (a proxy view, a test), and `String(req)`. The request line carried the
@@ -428,6 +457,60 @@ in a minor release: `m0serve`'s flags and environment variables, the
   peak: the allocator keeps what is freed for reuse rather than returning
   it to the system. A fragmented WebSocket message now reaches the
   application without being copied once more.
+
+- **A request body read after its headers is measured by its own size**
+  (SPEC C18, fork review LF70). Three uploads within the limits were
+  refused depending on how the client's writes fell after its headers. A
+  body whose last bytes came in the same read as the next pipelined
+  request was answered `400 Bad Request` when the headers and body were
+  both near their limits; a chunked body at `--max-body` was refused
+  `413` when its chunks came after its headers, though accepted when
+  they came with them; and a chunked body over the limit behind long
+  headers got `400` and an immediate close, where every other oversized
+  body gets `413` and the lingering close that lets a client still
+  uploading read it. A body read after its headers is now measured by
+  its own size and, for a chunked one, by what its framing cost. Headers
+  are held to the receive buffer's limit on their own (fork review LF72,
+  below).
+
+- **A client that pipelines a burst of requests no longer stalls the
+  server** (SPEC A41, C19, fork review LF72). A client that sent many
+  requests at once without waiting for the answers -- 20,000 small GETs,
+  about 540 KB -- held the event loop for more than a second and a half
+  while they were answered, every other connection on that loop waiting,
+  and the cost grew with the square of the burst. A connection now gets
+  one read's worth of the loop at a time and the rest on later turns, and
+  a burst costs the same per request whatever its size (1.2 µs a request
+  measured for both 2,500 and 20,000, where 20,000 cost 78 µs each).
+  Pipelining in moderation is cheaper too: 16 requests at a time cost
+  about a quarter less per request. With the limits an application can
+  lower in `ServerConfig`, such a burst was also refused
+  `400 Bad Request` partway through, and a request whose body, or a
+  request behind it, came in the same read as its headers was refused 400
+  where it was answered when they came apart. A request's headers are now
+  held to the receive limit on their own, whatever arrives behind them.
+
+- **`100 Continue` is never cut short ahead of a response** (SPEC A42,
+  fork review LF73). A client that sends `Expect: 100-continue` (curl does
+  for a large upload) is told to go ahead with an interim response before
+  the final one. On Linux, when the connection's send buffer was nearly
+  full -- a client pipelining a request behind answers it had not read yet
+  -- the kernel could take only part of it, and the rest was dropped: the
+  client then read a fragment followed by the real response, which it
+  cannot parse. What the send does not take now goes out first: ahead of
+  the answer, so the client reads a whole `100 Continue`, late if the
+  buffer was full, then its response; and in one piece with an error that
+  ends the request, so a send cut short leaves the stream truncated before
+  the close, never an error behind a fragment.
+
+- **A client still sending its headers when the header timeout passes
+  reads the `408`** (SPEC A5, fork review LF75). The server answered
+  `408 Request Timeout` and closed the connection with the rest of the
+  client's headers unread, which resets the connection: on Linux the
+  client saw "connection reset by peer" instead of the 408. The 408 now
+  goes out with the same lingering close a `413` gets -- the server stops
+  writing, reads and discards what the client is still sending for up to
+  five seconds, then closes -- so the client reads the answer.
 
 ### Changed
 
@@ -614,6 +697,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   comparisons, `in`, truth test, `as_bytes` and `__str__`. From
   `lightbug_http.strings`: `https`, `colonChar` and the seventeen
   `BytesConstant` bytes nothing reads.
+
+- **Unused names at the top of the fork, and `HTTPRequest.timeout`**
+  (fork review LF71). Nothing served changes. The `m0` wheel ships the
+  fork's source, so an application built with `m0` that named one of
+  these imports it from its own module instead: `URI`, `Cookie`,
+  `RequestCookieJar` and `ResponseCookieJar` are no longer re-exported
+  from `lightbug_http` (import them from `lightbug_http.uri` and
+  `lightbug_http.cookie`), nor `Bytes` from `lightbug_http.io` (import it
+  from `lightbug_http.io.bytes`). `HTTPRequest`'s `timeout` field and
+  constructor argument are gone, with `lightbug_http.io.sync.Duration`,
+  the alias for `Int` it was declared with: nothing read it.
 
 ## [1.12.1] — 2026-10-07
 
