@@ -2099,6 +2099,46 @@ def test_sequential_jobs_with_idle_gaps_stay_on_one_thread() raises:
     assert_true(a == 60 or b == 60)
 
 
+def test_a_thread_that_takes_a_job_while_spinning_gives_up_the_spin() raises:
+    """The lane's one idle spin is given up whatever ends it: a job taken
+    off the ring mid-spin as much as the park that ends a spin with
+    nothing to take (`next_job`). With the spin held at 500 ms, the one
+    thread is spinning when its job is pushed, so the push wakes nobody
+    and the spinner takes it; once the thread has parked again no
+    spinner may be counted, or `_all_idle` never holds for the lane and
+    the next push wakes nobody either, leaving that job on the ring."""
+    _ = setenv("M0_POOL_SPIN_US", "500000", True)
+    var pool = OffloadPool(8)
+    _ = setenv("M0_POOL_SPIN_US", "", True)
+    if not pool.elastic_active():
+        return
+    var threads = ThreadSet(1)
+    pool.reserve_threads(1)
+    var body = _echo_thread[False]
+    var body_addr = Pointer(to=body).unsafe_bitcast[Int]()[]
+    threads.block(0).set(BLK_USER, pool.addr())
+    threads.spawn(0, body_addr)
+    var deadline = perf_counter_ns() + 2_000_000_000
+    while pool.spinner_count(0) != 1 and perf_counter_ns() < deadline:
+        sleep(0.0001)
+    pool.park_request(1, _request("/s"))
+    assert_true(pool.submit(1))
+    var first = _await_completion(pool, 1, 2_000_000_000)
+    var woken_for_first = pool.wake_counts(0)[1]
+    _await_parked(pool, 1)
+    var spinners_once_parked = pool.spinner_count(0)
+    pool.park_request(2, _request("/s"))
+    assert_true(pool.submit(2))
+    var second = _await_completion(pool, 2, 1_000_000_000)
+    pool.stop(1)
+    threads.join_all()
+    assert_true(threads.all_ok())
+    assert_true(first >= 0)
+    assert_equal(woken_for_first, 0)
+    assert_equal(spinners_once_parked, 0)
+    assert_true(second >= 0)
+
+
 def test_a_burst_into_a_parked_lane_wakes_one_thread() raises:
     """Four jobs pushed back to back into two parked threads send ONE
     wake: the first push wakes the last-parked thread, and from then on
