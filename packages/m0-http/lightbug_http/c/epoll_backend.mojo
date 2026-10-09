@@ -13,7 +13,6 @@ EVFILT_TIMER; bits 0–62 carry the original ident for event_ident().
 """
 
 from lightbug_http.c.epoll import (
-    itimerspec_t,
     EPOLLIN, EPOLLOUT, EPOLLET, EPOLLONESHOT, EPOLLERR, EPOLLHUP, EPOLLRDHUP,
     CLOCK_MONOTONIC,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,

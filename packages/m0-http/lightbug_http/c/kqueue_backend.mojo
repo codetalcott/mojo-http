@@ -8,7 +8,7 @@ from lightbug_http.c.kqueue import (
     kevent_t, ev_set, kqueue, kevent_register_one, kevent_register_pair,
     kevent_poll, kevent_poll_ns,
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
-    EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT, EV_EOF, EV_ERROR,
+    EV_ADD, EV_DELETE, EV_CLEAR, EV_ONESHOT,
 )
 from lightbug_http.c.pipe import close_fd
 from lightbug_http.event_loop_backend import ConstructibleBackend, EventLoopBackend

@@ -28,7 +28,7 @@ spelled out here rather than derived:
   after the header on both, at `_CMSG_HDR`.
 """
 
-from std.ffi import c_int, c_ssize_t, external_call, get_errno
+from std.ffi import c_int, c_ssize_t, external_call
 from std.sys.info import CompilationTarget
 
 from lightbug_http.c.platform import MSG_DONTWAIT

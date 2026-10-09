@@ -1,5 +1,5 @@
 from lightbug_http.header import (
-    Header, HeaderKey, Headers, ParsedRequestHeaders, write_header,
+    HeaderKey, Headers, ParsedRequestHeaders,
     KH_CONNECTION, KH_CONTENT_LENGTH, KH_HOST,
 )
 from lightbug_http.http.encodable import Encodable

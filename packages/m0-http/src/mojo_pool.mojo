@@ -64,7 +64,7 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
 from std.time import perf_counter_ns, sleep
 
 from lightbug_http.offload import (
-    OffloadPool, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP, ns_left, stop_deadline,
+    OffloadPool, JOB_WS_MESSAGE, JOB_STOP, ns_left, stop_deadline,
 )
 from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
 from lightbug_http.http.common_response import InternalError

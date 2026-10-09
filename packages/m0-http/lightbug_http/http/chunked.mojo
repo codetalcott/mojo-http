@@ -1,9 +1,7 @@
 import std.sys as sys
-from std.sys import size_of
 
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.strings import BytesConstant, is_token_char
-from std.memory import unsafe_memcpy
 
 
 # Chunked decoder states

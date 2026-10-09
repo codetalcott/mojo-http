@@ -20,7 +20,7 @@ from lightbug_http.c.socket_error import SysError
 # import everything they need from this module on Linux.
 from lightbug_http.c.kqueue import (
     EVFILT_READ, EVFILT_WRITE, EVFILT_TIMER,
-    EV_EOF, EV_ERROR, timespec_t,
+    EV_EOF, timespec_t,
 )
 
 # --- epoll event flags ---
