@@ -1145,7 +1145,9 @@ def test_a_closed_stream_tells_its_handler_once_and_retires_its_timers() raises:
 def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() raises:
     """A stream's heartbeat (`_heartbeat`, which `_on_timer` hands every
     ident from `TIMER_SSE_HEARTBEAT` up to the app tick's): re-armed before
-    anything else, both backends' timers being one-shots; an SSE stream
+    anything else, both backends' timers being one-shots, so a beat
+    skipped for a stream that may not take a frame now (a WebSocket
+    lingering after its Close) still leaves the next armed; an SSE stream
     sent the comment `: heartbeat` and a WebSocket a ping, the slot idle
     again once it has gone out; a stream whose client has gone closed by
     the send that fails, its handler told; and a heartbeat whose
@@ -1183,6 +1185,18 @@ def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() rais
         st.provision_pool.provisions[ws_slot].state.kind,
         ConnectionState.STREAMING_WS,
     )
+
+    # A WebSocket lingering after its own Close takes no frame it did not
+    # write (L29): the beat is skipped, and its timer re-armed all the same,
+    # so the stream's heartbeats go on once it may take one.
+    st.slot_ws_state[ws_slot].closing = True
+    var ws_beat = TIMER_SSE_HEARTBEAT + UInt(ws[0])
+    backend.try_delete_timer(ws_beat)
+    _on_timer(app, backend, st, ws_beat)
+    assert_true(ws_beat in backend.timers, "a skipped beat was not re-armed")
+    var nothing = List[UInt8]()
+    _ = _read_available(ws[1], nothing)
+    assert_equal(len(nothing), 0, "a frame went to a socket lingering after its Close")
 
     # The SSE stream's client leaves without a word.
     close(FileDescriptor(sse[1]))

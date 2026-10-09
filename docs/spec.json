@@ -1527,7 +1527,7 @@
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "Ping/pong, and a server heartbeat on a cadence",
       "status": "verified",
-      "evidence": "`Smoke test the WebSocket echo demo` (every PR) \u2014 and `test_slot_lifecycle.mojo:test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream`: a WebSocket's heartbeat is a final two-byte ping, its timer re-armed before it is sent"
+      "evidence": "`Smoke test the WebSocket echo demo` (every PR) \u2014 and `test_slot_lifecycle.mojo:test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream`: a WebSocket's heartbeat is a final two-byte ping, its timer re-armed before anything else, so a beat skipped for a socket lingering after its Close still leaves the next armed, and nothing is sent to that socket"
     },
     {
       "id": "I31",
