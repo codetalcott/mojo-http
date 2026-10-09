@@ -769,20 +769,24 @@ def _padded_head(start: String, length: Int) -> String:
     return head + String("p") * (length - head.byte_length() - 4) + "\r\n\r\n"
 
 
-def test_a_body_within_the_caps_is_answered_however_its_reads_fall() raises:
-    """A body within both caps is answered whatever shares the reads that
-    bring it, and one over the body cap is refused 413 whatever its head's
-    size (review record LF70). The body path measured the receive buffer,
-    which holds the head and the next pipelined request as well as the
-    body, and a chunked body's framing before it was decoded: a
-    `Content-Length` body with the next request behind it in the read that
-    completed it was refused 400 once head, body and that request passed
-    the buffer's limit; a chunked body at the cap was refused 413 when its
-    framing, or a request behind it, came after its head, and answered
-    when they came with it; and a chunked body over the cap behind a head
-    near its own cap was refused 400 and closed rather than 413 and
-    lingered (SPEC A20). Each is measured as the head path measures it:
-    the decoded body, and the raw bytes it cost.
+def test_a_body_read_after_its_head_is_measured_by_its_own_sizes() raises:
+    """A body read after its head is measured by its own sizes, never by
+    the receive buffer that holds it (review record LF70): within both caps
+    it is answered whatever shares the reads that bring it, and over the
+    body cap it is refused 413 and lingered (SPEC A20) whatever its head's
+    size. The body path compared the whole buffer, which holds the head and
+    the next pipelined request beside the body, with `recv_buffer_limit()`,
+    and measured a chunked body before decoding it, as its decoded part
+    plus the raw tail still buffered: a `Content-Length` body whose last
+    read also brought the next request was refused 400 once head, body and
+    that request passed the buffer's limit; a chunked body at the cap was
+    refused 413 when its framing, or a request behind it, came after its
+    head, and answered when it came with it; and a chunked body over the
+    cap behind a head near its own cap was refused 400 and closed. Each is
+    measured now as the head path measures a body that arrives with it:
+    the decoded body, and the raw bytes it cost. The head path still holds
+    its whole buffer to the limit, so the same shapes sent in ONE read past
+    it are refused 400 (review record LF72's residual).
 
     covers: C18
     """
@@ -831,6 +835,7 @@ def test_a_body_within_the_caps_is_answered_however_its_reads_fall() raises:
         "413 payload too large" in over[0],
         "a chunked body over the cap behind a long head: " + over[0],
     )
+    assert_false(over[1], "the 413 closed its connection where it should linger")
 
 
 struct Raises(HTTPService):

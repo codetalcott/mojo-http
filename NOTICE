@@ -1868,7 +1868,9 @@ lightbug_http
         read was refused 400, a chunked body at the cap 413 when its
         framing or a request behind it came after the head, and a chunked
         body over the cap behind a long head 400 and closed rather than
-        413 and lingered (review record LF70, SPEC C18).
+        413 and lingered (review record LF70, SPEC C18). The head path's
+        comparison of its whole buffer with `recv_buffer_limit()` stays,
+        and is LF72's to change: it is what bounds a pipelined backlog.
 
       - __init__.mojo, io/__init__.mojo, io/sync.mojo (deleted),
         http/request.mojo, event_loop.mojo (2026-10-08): dead inherited
