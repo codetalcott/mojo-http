@@ -52,7 +52,7 @@ an ordinary rule before any view runs; [After the quickstart](docs/QUICKSTART_NE
 multi-tab sync**, and CI executes every command in it on every pull request
 — so it works, or the build is red.
 
-### Two more things it does
+### What else it does
 
 - **Several applications in one process, each in its native mode.**
   `m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on
@@ -192,7 +192,7 @@ def main() raises:
     server.listen_and_serve_nonblocking("0.0.0.0:8080", handler)
 ```
 
-The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket slots), `tick` is the opt-in timer hook, and `ws_message` receives WebSocket messages; a handler that uses none of them returns the empty defaults shown here.
+`func` is the one method a handler must write. The streaming hooks (`sse_*`, shared by SSE and WebSocket slots), the `tick` timer and `ws_message` all have default bodies, so a handler declares only the hooks it uses.
 
 ## What's in the box
 
@@ -210,7 +210,7 @@ Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import p
 
 `m0-core` also builds a C-ABI shared library: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS), whose one export, `m0_shared_fetch_add`, is how `m0pub` numbers the events it publishes, through Python's `ctypes` — `poe smoke-ffi` proves that path in CI. It is internal to the m0serve wheel, which carries it in `_lib/` beside the binary, and is not a published artifact with an ABI of its own ([DECISIONS](docs/DECISIONS.md) D56). Releases up to and including v1.8.0 also attached it as a standalone download; those assets stay where they are, and [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md) has their history.
 
-Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
+Strict layering, no upward imports: `m0-core` has zero dependencies, and `m0-http` imports from it, never the reverse. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
 **HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · weak ETags (wyhash) with `304 Not Modified` · static file serving with lexical traversal defense, extension content types, ETag/304, and single byte ranges (206/416) · SSE with backpressure and `Last-Event-ID` reconnect replay · WebSockets (RFC 6455): handshake, fragmented messages, UTF-8 validation of text (1007), protocol-error refusals, ping/pong heartbeats, clean close.
 
@@ -478,9 +478,10 @@ given at all, the protocol picks the default: WSGI gets a pool of
 takes the same default); and `--reload [--reload-dir DIR]` re-forks the
 workers onto changed Python in ~300 ms without re-exec'ing the binary.
 `--help` has the rest; exit codes are
-2 for a bad command line and 1 for an application that would not load —
-including under `--workers N`, where a supervisor that gives up on respawning
-says so instead of exiting 0.
+2 for a bad command line, 78 for a configuration the server will not run,
+and 1 for an application that would not load — including under
+`--workers N`, where a supervisor that gives up on respawning says so
+instead of exiting 0.
 
 **`--doctor` answers "will this run?" without running it.** It prints one
 JSON object — platform and wheel architecture, the interpreter it resolved
@@ -666,9 +667,9 @@ values returns unchanged.
   hostage problem again. A generator that raises after its head truncates
   the body honestly — the connection closes without the chunked
   terminator. Still buffered: an iterator that carries its own
-  `Content-Length` (`FileResponse`), the recorded follow-up.
-- **Request bodies are fully buffered too**, capped by
-  `ServerConfig.max_request_body_size` (4 MB default). Raise it for uploads.
+  `Content-Length` (`FileResponse`).
+- **Request bodies are fully buffered too**, capped by `--max-body`
+  (`M0_MAX_BODY`, default `4m`). Raise it for uploads.
 - **No TLS.** `wsgi.url_scheme` is always `http`; terminate at a proxy and set
   Django's `SECURE_PROXY_SSL_HEADER`.
 - Django is a **dev dependency** here, for the example and its smoke test. The
@@ -917,14 +918,14 @@ is silently a different number.
 
 - HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
 - Linux `x86_64` and `aarch64` (`epoll`), macOS `arm64` (`kqueue`). Architectures matter here: Modular ships no Intel Mac toolchain, so macOS `x86_64` is not buildable at all. See the install table above.
-- Mojo 1.0, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
+- Mojo 1.1, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
 - Building on Linux needs two system packages: a C compiler (`mojo build` shells out for linking) and `patchelf` (the binaries record a `$ORIGIN` `DT_RUNPATH` so they find the Mojo runtime beside themselves). `build-essential patchelf` covers it; `m0-sqlite` opens the runtime `libsqlite3` at run time, and `verify-vtab-layout` alone wants `libsqlite3-dev` for its header. None are needed on macOS.
 - `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
 - The served contract is stable from 1.0: `m0serve`'s flags and environment variables, the `M0-Hold`/`M0-Channel` headers, and `m0pub.publish()`. A minor release does not break them; everything else — the Mojo APIs, the package layout, the fork's internals — is still free to move.
 - **SSE fan-out is single-process by default.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry. The `BroadcastBus` lifts this when wired in: created before the fork (one datagram channel per worker, alongside a `SharedAtomics` slot that keeps event ids unique across workers), it carries every broadcast to every worker's subscribers — `apps/datastar_counter` is the reference wiring, asserted by `poe smoke-counter`. Cross-worker ordering is best-effort: two workers broadcasting concurrently can reach a subscriber in either order, and the redelivery filter keeps the newer id.
 - **Server-initiated pushes go through `tick`.** The `tick(now_ms)` hook fires every `M0_APP_TICK_MS` milliseconds (0, the default, disables it) on the event loop's own timer — broadcast from it and the same loop pass delivers, no inbound request involved; the counter demo's live uptime clock is the reference. It runs on the event loop thread, so keep it quick; handlers with slower cadences sub-schedule off `now_ms`. (Idle-stream `: heartbeat` comments are separate and automatic, every `M0_SSE_HEARTBEAT_MS`.)
 - `m0-sqlite` has no statement cache and no connection pool; see above.
-- SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that resumes live instead of being caught up. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines). A WSGI hold (`M0-Hold: stream`) has no journal at all: its ids suppress a duplicate on reconnect and replay nothing, so an application whose clients must not miss an event keeps its own catch-up.
+- SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that is sent none of the history, `caught_up(slot)` answers false, and the view queues its current state for that connection alone with `send_to`. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines). A WSGI hold (`M0-Hold: stream`) is caught up from a per-loop journal of the last `--replay-frames` published frames (`M0_REPLAY_FRAMES`, default 64): every frame of its channel it missed, in order, before the live feed. That journal is not persisted, so a client further behind than it reaches, or reconnecting across a restart, is sent none of them and one unnumbered `event: m0-gap` frame, on which it fetches the current state ([RUNNING.md](docs/RUNNING.md)).
 
 ## Development
 

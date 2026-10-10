@@ -50,10 +50,9 @@ m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
 m0-postgres (zero deps)   PostgreSQL bindings over libpq — a SIBLING too
 ```
 
-**Imports point down.** `m0-core` depends on nothing; `m0-http` imports it
-from nine files (`etag`, `health`, `reply`, `doctor`, `html`, `log`,
-`grant`, `session`, `login`) — an inventory, not the constraint, which is the
-direction, and that no libpython reaches the link line.
+**Imports point down.** `m0-core` depends on nothing and `m0-http` imports
+it (`git grep m0_core packages/m0-http/src` is the inventory); the
+constraint is the direction, and that no libpython reaches the link line.
 
 - **`m0-datastar`'s wire format imports nothing outside itself**: never add
   an `m0_http` import to `consts.mojo` or `sse.mojo`; the server glue

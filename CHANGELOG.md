@@ -8,6 +8,29 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **README's "SSE replay is journal-deep" limit still said a WSGI hold
+  replays nothing**, and that an application keeps its own catch-up. 1.12.0
+  made that false (SPEC I33): the bullet now says a hold is caught up from
+  the per-loop `--replay-frames` journal and sent one `m0-gap` frame when it
+  cannot be, as RUNNING.md and the `m0pub` docstring do. Its
+  `DatastarStream` half said a client further behind than the journal
+  resumes live; since SPEC I30 it is sent no history and `caught_up(slot)`
+  answers false, so the view resyncs it with `send_to`. The same section
+  gave the Mojo pin as 1.0; it is 1.1.
+
+- **Six more README claims the tree had moved past.** A handler's
+  optional hooks were "the empty defaults shown here" beside an example
+  that shows none; `m0-http` "uses three functions" of `m0-core`, where it
+  imports from ten files; m0serve's exit codes omitted 78, which the
+  `--doctor` example below them exits with; uploads were raised through
+  `ServerConfig.max_request_body_size`, a field an m0serve user cannot
+  reach, rather than `--max-body`; a buffered `FileResponse` was "the
+  recorded follow-up", with no record anywhere; and "Two more things it
+  does" listed three. RUNNING.md offered `--threads` from 3.13t, which is
+  a dead end; it is 3.14t.
+
 ## [1.14.0] — 2026-10-10
 
 The fixes and the smaller code of a review of the framework and the fork
