@@ -133,7 +133,16 @@ struct Statement(Movable):
         _ = self._lib.reset(self._handle)
 
     def clear_bindings(mut self) raises:
-        """Reset every bound parameter to NULL."""
+        """Reset every bound parameter to NULL.
+
+        Raises on a finalized statement, before SQLite sees its NULL handle:
+        `sqlite3_clear_bindings` checks for one only in a library built with
+        SQLITE_ENABLE_API_ARMOR, and reads through it in one without, as
+        Debian's is (SPEC O29). `step` and the binders need no such guard:
+        SQLite refuses a NULL statement there whatever the build.
+        """
+        if self._handle == 0:
+            raise Error("clear_bindings() on a finalized statement")
         self._check(self._lib.clear_bindings(self._handle), "clear_bindings")
 
     # --- Reading the current row (0-based, as SQLite defines it) -----------
@@ -293,7 +302,19 @@ struct Statement(Movable):
         return n
 
     def column_name(self, index: Int) raises -> String:
-        """Declared name of a result column."""
+        """Declared name of a result column.
+
+        Raises on a finalized statement, before SQLite sees its NULL handle:
+        `sqlite3_column_name` checks for one only in a library built with
+        SQLITE_ENABLE_API_ARMOR (SPEC O29). The column count SQLite answers
+        for NULL, 0, would refuse the index in `_check_column` too, but this
+        does not lean on it. The other column readers need neither: SQLite
+        reads a NULL statement's columns as NULL whatever the build.
+        """
+        if self._handle == 0:
+            raise Error(
+                "column_name(" + String(index) + ") on a finalized statement"
+            )
         self._check_column(index)
         var p = self._lib.column_name(self._handle, index)
         return cstr_to_string(p, cstr_len(p))

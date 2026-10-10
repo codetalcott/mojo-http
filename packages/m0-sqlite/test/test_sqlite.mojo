@@ -265,6 +265,63 @@ def test_a_closed_connection_is_never_passed_to_sqlite() raises:
     )
 
 
+def test_a_finalized_statement_is_never_passed_to_sqlite() raises:
+    """`finalize()` leaves the statement handle NULL, and `clear_bindings`
+    handed it to SQLite.
+
+    `sqlite3_clear_bindings` and `sqlite3_column_name` check for NULL only
+    in a library built with `SQLITE_ENABLE_API_ARMOR` (3.53.4's source), and
+    read through it in one without, as Debian 12's is. With the armor,
+    `clear_bindings()` after `finalize()` raised a bare SQLITE_MISUSE on
+    Homebrew's 3.53.4 and did nothing at all on Apple's 3.54.0, which
+    answers SQLITE_OK. Both now raise naming the finalized statement.
+    Every other entry point a finalized statement reaches refuses NULL
+    whatever the build, which is held here too: `step` and the binders
+    raise SQLITE_MISUSE, `reset` and `finalize` do nothing, and the column
+    count is 0, so a column read is refused as out of range. So without
+    the guards this fails at their messages on macOS, and dies at
+    `clear_bindings` on a library without the armor.
+
+    covers: O29
+    """
+    var db = open_memory()
+    var q = db.prepare("SELECT ?1 AS v")
+    q.bind_int(1, 7)
+    assert_true(q.step())
+    assert_equal(q.column_name(0), "v")
+    q.finalize()
+    var refused = String("")
+    try:
+        q.clear_bindings()
+    except e:
+        refused = String(e)
+    assert_true("clear_bindings() on a finalized statement" in refused, refused)
+    refused = String("")
+    try:
+        _ = q.column_name(0)
+    except e:
+        refused = String(e)
+    assert_true("column_name(0) on a finalized statement" in refused, refused)
+
+    assert_equal(q.column_count(), 0)
+    refused = String("")
+    try:
+        _ = q.step()
+    except e:
+        refused = String(e)
+    assert_equal(error_code(refused), SQLITE_MISUSE, refused)
+    refused = String("")
+    try:
+        q.bind_int(1, 8)
+    except e:
+        refused = String(e)
+    assert_equal(error_code(refused), SQLITE_MISUSE, refused)
+    q.reset()
+    q.finalize()
+    with assert_raises(contains="out of range"):
+        _ = q.column_int(0)
+
+
 # --- Binding and typed reads -------------------------------------------------
 
 def test_roundtrip_every_type() raises:

@@ -124,18 +124,23 @@ in a minor release: `m0serve`'s flags and environment variables, the
   where the server keeps no journal whatever `--replay-frames` says. It
   reported the flag's value, 64 by default.
 
-- **m0-sqlite: a `Connection` used after `close()` no longer crashes the
-  process on Debian's libsqlite3.** `in_transaction`, `last_insert_rowid`,
-  `changes`, `total_changes`, `busy_timeout` and `register_array_module`
-  handed SQLite the closed connection's NULL handle, which a library built
-  without `SQLITE_ENABLE_API_ARMOR` dereferences, so the process died of
-  SIGSEGV on Debian 12's, the base of `deploy/mojo/Dockerfile`. Apple's
-  and Homebrew's builds carry the armor and answered wrongly instead:
+- **m0-sqlite: a `Connection` used after `close()`, or a `Statement` after
+  `finalize()`, no longer crashes the process on Debian's libsqlite3.**
+  `in_transaction`, `last_insert_rowid`, `changes`, `total_changes`,
+  `busy_timeout` and `register_array_module` handed SQLite the closed
+  connection's NULL handle, which a library built without
+  `SQLITE_ENABLE_API_ARMOR` dereferences, so the process died of SIGSEGV
+  on Debian 12's, the base of `deploy/mojo/Dockerfile`. Apple's and
+  Homebrew's builds carry the armor and answered wrongly instead:
   `in_transaction()` was True after the close, and
-  `register_array_module()` leaked its module buffer. The four accessors now answer False or 0 on a closed
-  connection without calling SQLite, and `busy_timeout` and
-  `register_array_module` raise "… on a closed connection", as
-  `create_function` already did (SPEC O29).
+  `register_array_module()` leaked its module buffer. The four accessors
+  now answer False or 0 on a closed connection without calling SQLite,
+  and `busy_timeout` and `register_array_module` raise "… on a closed
+  connection", as `create_function` already did. A finalized statement's
+  handle is NULL too, and `clear_bindings()` handed it to SQLite the same
+  way, where Apple's library answered success and did nothing: it now
+  raises "… on a finalized statement", and so does `column_name()`,
+  whose entry point checks for NULL only under the armor too (SPEC O29).
 
 - **m0-sqlite: `execute` and the `Connection` constructors refuse a NUL
   byte instead of running what comes before it.** `sqlite3_exec` and
