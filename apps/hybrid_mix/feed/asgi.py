@@ -159,6 +159,38 @@ async def application(scope, receive, send):
         )
         await send({"type": "http.response.body", "body": body})
         return
+    if path == root + "/publish-m0pub" or path == "/publish-m0pub":
+        # The other Python publisher on the same counter: m0pub, which a
+        # WSGI view on the same server calls (the source tree's copy, as
+        # bareapp.childpub imports it). `state["m0"]` and m0pub must number
+        # alike, or a frame from each takes one id and a subscriber drops
+        # the second; fanout_probe.py publishes here, then through
+        # `/publish`, and requires two ids.
+        import os
+        import sys
+
+        src = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..", "..", "..", "packaging", "m0serve", "src",
+        )
+        if src not in sys.path:
+            sys.path.insert(0, src)
+        from m0serve import m0pub
+
+        _, event_id = m0pub.publish_with_id("feed-ids", "m0pub")
+        body = ("published id=%d from pid-%d" % (event_id, os.getpid())).encode()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [
+                    (b"content-type", b"text/plain"),
+                    (b"content-length", str(len(body)).encode()),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
+        return
     body = b"hello from feed on mojo-http"
     await send(
         {

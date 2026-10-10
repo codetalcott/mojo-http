@@ -85,6 +85,30 @@ in a minor release: `m0serve`'s flags and environment variables, the
   does" listed three. RUNNING.md offered `--threads` from 3.13t, which is
   a dead end; it is 3.14t.
 
+- **An ASGI application's `state["m0"].publish` numbers its frames as
+  `m0pub` does, from 1.** It took the shared counter's previous value
+  where every other publisher (`m0pub`, `--pg-listen`, the Mojo side)
+  takes that value plus one, so on a server where an ASGI application
+  publishes beside one of them, two frames could carry one id: a hold
+  that received the first dropped the second with nothing logged, and a
+  reconnect the replay journal could have served whole was sent
+  `m0-gap` instead. A fresh server's first ASGI publish was id 0, which
+  no first-visit subscriber receives (SPEC L12).
+
+- **A WebSocket hold that presents a `Last-Event-ID` ahead of the
+  counter is no longer silent.** Since 1.12.0 an SSE hold clamps an id
+  this server never allocated, a previous incarnation's, to the head; a
+  socket hold still subscribed at the id it presented, so every
+  numbered frame was suppressed until the counter passed it, under a
+  clean log. A socket hold is now clamped the same way, inline and from
+  a pool thread alike, and is still not caught up. A browser cannot put
+  the header on an upgrade, so this reached other clients only (SPEC
+  I12).
+
+- **`--doctor` reports `replay_frames` as 0 without `--realtime`**,
+  where the server keeps no journal whatever `--replay-frames` says. It
+  reported the flag's value, 64 by default.
+
 ## [1.14.0] — 2026-10-10
 
 The fixes and the smaller code of a review of the framework and the fork

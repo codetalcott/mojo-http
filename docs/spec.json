@@ -1701,9 +1701,9 @@
       "id": "I12",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
-      "capability": "A synchronous view gating a held WebSocket it never speaks",
+      "capability": "A synchronous view gating a held WebSocket it never speaks; the socket is subscribed at the upgrade's `Last-Event-ID` clamped to the head, whether the hold is taken inline or forwarded from a pool thread as an `H` frame, so an id from a previous incarnation suppresses nothing (a socket is not caught up, so nothing is replayed)",
       "status": "verified",
-      "evidence": "`Smoke test the Django realtime example over WebSockets` (every PR)"
+      "evidence": "`Smoke test the Django realtime example over WebSockets` (every PR) \u2014 the clamp, both ways a socket hold lands, is `test_hold_resume.mojo:test_a_socket_held_inline_is_clamped_to_the_head` and `test_hold_resume.mojo:test_a_socket_held_on_a_pool_thread_is_clamped_to_the_head`: an id of 999999999 against a counter at 5, and the next frame required"
     },
     {
       "id": "I18",
@@ -1855,7 +1855,7 @@
       "category": "I. WebSocket and Server-Sent Events",
       "capability": "A held stream that reconnects with `Last-Event-ID` is caught up: each loop journals the last `--replay-frames` numbered frames it delivered (`M0_REPLAY_FRAMES`; 64; 0 keeps none), and a WSGI hold \u2014 subscribed inline or forwarded from a pool thread as an `h` frame, which is also how a Mojo mount's and a hold mount's arrive \u2014 is sent every frame of its channel after the id it presented, in order and ahead of the live feed. All or nothing, as I30: an id below the journal's floor (a frame evicted, or published before a respawned worker joined, the floor being one number for every channel so a server with a channel per visitor keeps nothing that grows), frames that would not fit the outbox, or an id ahead of the counter (a previous incarnation's, clamped to the head so it suppresses nothing) get no history and one unnumbered `event: m0-gap` frame naming the id presented and the head, then the live feed. A first visit gets the live feed alone",
       "status": "verified",
-      "evidence": "`Smoke test the Django realtime example` (every PR) \u2014 phase 3b, once against the default pool and once under `--blocking-threads 0`: two frames missed and replayed in order ahead of a live one with another channel's left out, a client pushed past a 4-frame journal told so and served nothing from history, a stale id told so and not starved. `test_replay.mojo` holds the journal's rules on their own"
+      "evidence": "`Smoke test the Django realtime example` (every PR) \u2014 phase 3b, once against the default pool and once under `--blocking-threads 0`: two frames missed and replayed in order ahead of a live one with another channel's left out, a client pushed past a 4-frame journal told so and served nothing from history, a stale id told so and not starved. `test_replay.mojo` holds the journal's rules on their own, and `test_hold_resume.mojo:test_a_resume_from_before_a_late_worker_joined_is_a_gap`, with `test_hold_resume.mojo:test_a_resume_at_the_counter_is_caught_up_with_nothing` and `test_hold_resume.mojo:test_an_id_the_bus_has_not_delivered_yet_is_not_clamped`, the handler's two reads of the shared counter, which one worker cannot tell from the journal's own head: the floor a late worker starts at, and the head a resume is judged against"
     },
     {
       "id": "I39",
@@ -2213,9 +2213,9 @@
       "id": "L12",
       "section": "L",
       "category": "L. ASGI 3.0",
-      "capability": "Cross-worker pub/sub as `scope[\"state\"][\"m0\"]`",
+      "capability": "Cross-worker pub/sub as `scope[\"state\"][\"m0\"]`, whose publish numbers frames from the shared counter as `m0pub` does, the first id 1, so the two Python publishers on one server never take one id",
       "status": "verified",
-      "evidence": "`ASGI cross-worker fan-out over the BroadcastBus` (every PR)"
+      "evidence": "`ASGI cross-worker fan-out over the BroadcastBus` (every PR) \u2014 `fanout_probe.py` requires a fresh server's first publish to be id 1, and an `m0pub` publish followed by a `state[\"m0\"]` one to take two ids"
     },
     {
       "id": "L13",

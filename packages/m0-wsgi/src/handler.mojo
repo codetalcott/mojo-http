@@ -977,10 +977,12 @@ struct WSGIHandler(ThreadHandler):
                 ):
                     return _hold_unavailable()
                 return ws_resp^
-            # Same subscribe as the SSE branch, `Last-Event-ID` included: the
-            # upgrade IS an HTTP GET, so one rule covers both transports.
+            # At the request's `Last-Event-ID` (the upgrade IS an HTTP GET),
+            # clamped to the head as the SSE branch's `_resume` clamps it;
+            # nothing is replayed (`_socket_last_id`).
             self.sockets.subscribe(
-                slot, hold.channel, request_last_event_id(req)
+                slot, hold.channel,
+                self._socket_last_id(request_last_event_id(req)),
             )
             # And which application approved it: this handler serves every
             # WSGI mount inline, and the socket's messages go back to this
@@ -1356,9 +1358,10 @@ struct WSGIHandler(ThreadHandler):
                 # A socket hold taken on a pool thread. Subscribe it here,
                 # where the registries are drained, and remember the lane:
                 # an inbound frame has exactly one mount it may be delivered
-                # to, and this is the record of which.
+                # to, and this is the record of which. The id field is the
+                # request's `Last-Event-ID`, clamped as the inline branch's.
                 var chan = String(StringSpan(unsafe_from_utf8=Span(frame)))
-                self.sockets.subscribe(slot, chan, event_id)
+                self.sockets.subscribe(slot, chan, self._socket_last_id(event_id))
                 if slot < len(self.hold_lane):
                     self.hold_lane[slot] = _parse_stream_lane(ub)
                 self._clear_lost(slot)
@@ -1514,6 +1517,20 @@ struct WSGIHandler(ThreadHandler):
         if self.shared_id != 0:
             return shared_load(self.shared_id)
         return self.replay.head
+
+    def _socket_last_id(self, last_id: Int) -> Int:
+        """The id a WebSocket hold subscribes at: the `Last-Event-ID` it
+        presented, clamped to `_event_head()` as `_resume` clamps a
+        stream's. An id ahead of the counter (a previous incarnation's,
+        which numbered from 1 again) taken literally suppresses every frame
+        until the counter passes it: a silent socket and a clean log.
+        Nothing is replayed and no gap frame is sent, since a browser
+        cannot put `Last-Event-ID` on an upgrade and a socket is not
+        caught up (docs/notes/a-hold-that-replays.md, "Not built")."""
+        var head = self._event_head()
+        if last_id > head:
+            return head
+        return last_id
 
     def _clear_lost(mut self, slot: Int):
         """A slot subscribing is a NEW stream; whatever the last one lost is

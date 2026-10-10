@@ -634,7 +634,12 @@ class _M0Broadcast:
                     ctypes.c_int64,
                 ]
                 base = int(addr)
-                self._next_id = lambda: core.m0_shared_fetch_add(base, 1)
+                # The previous value + 1, as `m0pub.next_event_id` and every
+                # Mojo publisher number: the first id is 1, since a
+                # first-visit subscriber stands at 0 behind a strictly-
+                # greater filter. The previous value alone handed this and
+                # m0pub one id, and a hold dropped the second of the pair.
+                self._next_id = lambda: core.m0_shared_fetch_add(base, 1) + 1
             except Exception:
                 self._next_id = None
 

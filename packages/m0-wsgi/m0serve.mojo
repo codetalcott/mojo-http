@@ -854,8 +854,11 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     report.add_int(
         String("server"), String("body_timeout"), limits.body_read_timeout
     )
+    # Kept only under --realtime: without it the handler builds an empty
+    # journal (`ReplayJournal(0)`) whatever the flag says.
     report.add_int(
-        String("server"), String("replay_frames"), opts.replay_frames
+        String("server"), String("replay_frames"),
+        opts.replay_frames if opts.realtime else 0,
     )
     # Escaped: a directory is a path, and a path may hold a quote. The
     # mounts were concatenated raw, so one did not parse.

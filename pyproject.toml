@@ -3959,6 +3959,21 @@ assert t['mode'] == 'single', t
 assert t['blocking_threads'] > 0 and t['blocking_threads_source'] == 'default', t
 " || fail 'the doctor does not report the resolved spec and zero-config topology'
 
+# The journal depth the server would USE: the flag's under --realtime, and
+# 0 without it, where the handler keeps no journal whatever the flag says.
+replay_frames() {
+  want="$1"; shift
+  "$srv" --doctor $SPEC "$@" > "$json" 2>/dev/null || fail "doctor $* did not exit 0"
+  python3 -c "
+import json, sys
+got = json.load(open('$json'))['server']['replay_frames']
+if got != $want:
+    sys.exit('replay_frames is %r, want $want' % got)
+" || fail "doctor $*: the journal depth reported is not the one served"
+}
+replay_frames 7 --realtime --replay-frames 7
+replay_frames 0 --replay-frames 7
+
 echo 'smoke-doctor: --doctor agrees with the server on every refusal'
 python3 scripts/emit.py --covers E7 --task smoke-doctor
 python3 scripts/emit.py --covers F8 --task smoke-doctor
