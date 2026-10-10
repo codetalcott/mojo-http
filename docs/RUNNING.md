@@ -27,6 +27,11 @@ prepended to `sys.path` and defaults to the current directory.
 The protocol is detected from the object: a coroutine-function callable is
 served as ASGI, anything else as WSGI. `--protocol wsgi|asgi` overrides.
 
+m0serve carries no interpreter. It loads the `libpython` of the `python3`
+on `PATH`, so run it where that is the interpreter your application is
+installed into, an activated virtualenv being the usual way;
+`MOJO_PYTHON_LIBRARY` names the shared library outright.
+
 The ready signal is one line per worker, printed after the application has
 imported and, for ASGI, after its lifespan startup has completed:
 
@@ -75,6 +80,13 @@ The modes compose the way you would hope: `--workers` multiplies whatever
 each worker runs, `--realtime` sits beside a pool or a mount, and a mounted
 server mixes a WSGI pool with an ASGI executor in one process. The design
 behind the split is [Why two execution modes](WSGI_VS_ASGI.md).
+
+A mount's prefix reaches its application the way its protocol expects:
+`SCRIPT_NAME`, with `PATH_INFO` trimmed, for WSGI, and `root_path` beside
+the whole `path` for ASGI, so `reverse()` and `url_for()` build links that
+work under it. A path no mount claims is answered `404` by the server,
+never entering Python. Each ASGI mount gets an executor of its own, and the
+WSGI mounts share the pool.
 
 `--doctor` reports which loop an ASGI deployment resolved to as
 `topology.loop` — `pump` (the default, two threads), `inverted`, or `n/a`
@@ -187,7 +199,12 @@ has the Flask version of the whole thing, and CI drives that exact file.
   histograms.
 - `--doctor` prints the whole resolved configuration as JSON and starts
   nothing. It exits with the code the server itself would use for the same
-  arguments, so it answers "will this run?" in a CI step.
+  arguments, so it answers "will this run?" in a CI step. The JSON names
+  the platform, the interpreter and its virtualenv, the application spec
+  discovery chose and the protocol it classified, the resolved topology,
+  and a `checks` array whose failures each carry a `detail`, a `fix` and
+  the `exit` that check causes. With no application, `m0serve --doctor`
+  checks the environment alone.
 
 ## Limits and lifecycle
 
@@ -203,6 +220,17 @@ has the Flask version of the whole thing, and CI drives that exact file.
   before it reads, as `http.client` and `requests` do, still gets the
   `413`. The first such refusal prints one line naming the cap and both
   knobs; the application's own log never sees the request.
+- **A WSGI body the application did not size streams; a sized one is
+  buffered.** A generator or iterator with no `Content-Length` (Django's
+  `StreamingHttpResponse`, a Flask `Response(generator)`) is sent from a
+  pool thread as it is produced: chunked on HTTP/1.1, close-delimited on
+  HTTP/1.0, `close()` called, and the thread back in the pool when the
+  client leaves. A body with a `Content-Length` (every Flask page, Django
+  behind `CommonMiddleware`, `FileResponse`) and every list body is
+  buffered and sent with its measured length, as is every body on a server
+  with no pool (`--blocking-threads 0`). A generator that raises after its
+  head ends the connection without the chunked terminator, so the client
+  sees a truncated body rather than a complete one.
 - `--idle-timeout SECONDS` closes idle keep-alive connections (default 60,
   0 = never). It also bounds a WebSocket's wait for the peer's close reply
   and a refused upload's linger; at 0 both close at once. And it bounds a

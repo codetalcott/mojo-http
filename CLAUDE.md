@@ -296,6 +296,15 @@ from the newest. In `BENCHMARKS.md` prose a figure is a num span or sits in
 an `observed: WHERE` block; a bare one fails `check-docs` naming its line.
 Cut sentences freely.
 
+**The README states only what no other page owns**
+(docs/notes/the-readme-points.md): what the project is, install, the
+packages, the example applications, and the SQLite and PostgreSQL APIs.
+A fact with an owner — RUNNING.md for m0serve, SPEC for a capability,
+MOJO_HOST and MOJO_VIEWS for the Mojo layer, BENCHMARKS for a figure — is
+a link there, never a copy; a README figure is a num span or `observed`;
+history goes to the changelog. 1.12.0 changed the hold's replay on every
+owner page, and the README's copy said the opposite through 1.14.0.
+
 **A `.mojoc` is locked to the exact compiler that produced it**: after any
 toolchain change run `build-all`, or you get `Mojo precompiled file is
 incompatible with the current version of the Mojo compiler`. The VS Code LSP
