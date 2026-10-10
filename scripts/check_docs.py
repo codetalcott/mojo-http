@@ -432,38 +432,6 @@ def _bench(kind):
     return json.loads(files[-1].read_text()) if files else None
 
 
-def check_hybrid_p99_consistent():
-    """The mounted-isolation p99 is quoted twice in README.md; they must agree.
-
-    Not artifact-backed — `scripts/hybrid_isolation.py` asserts a ceiling
-    (`ISOLATION_BUDGET_MS`, generous on purpose so CI is not flaky) rather
-    than recording the figure, so no file to recompute it from. What CAN be
-    checked is that the two copies say the same thing: the first screen
-    makes the claim and the mounts section explains it, and a number edited
-    in one place and not the other is the ordinary way a README starts
-    contradicting itself.
-
-    If this ever gets an artifact, give the two copies `num:` spans in
-    render_bench_docs.py's QUANTITIES and delete this.
-    """
-    quoted = set(
-        re.findall(r"async mount(?:'s p99)? still answers at p99 ([\d.]+) ms",
-                   re.sub(r"\s+", " ", (REPO / "README.md").read_text()))
-    )
-    if not quoted:
-        fail(
-            "README.md no longer states the mounted-isolation p99 —"
-            " check_hybrid_p99_consistent's pattern does not match. If the"
-            " claim moved, update the pattern rather than dropping it."
-        )
-    elif len(quoted) > 1:
-        fail(
-            "README.md quotes the mounted-isolation p99 as "
-            + " and ".join(sorted(quoted))
-            + " ms in different places — one was edited and the other was not"
-        )
-
-
 def check_wheel_platform_claims():
     """Both READMEs' platform tables vs the platforms release.yml actually builds.
 
@@ -2183,16 +2151,18 @@ BENCH_PAGE = "docs/BENCHMARKS.md"
 # fix; the page's own figures then have to become spans or carry an
 # `<!-- observed: WHERE -->` marker.
 #
-# Still outside, with their bare-figure counts at the time of writing:
-# README.md (29), docs/SPEC.md (11), docs/RUNNING.md (3). Each is a real
-# claim needing a span or a marker one at a time, so they are recorded
-# here rather than half-done; `_page_figure_counts` in the selftest prints
-# them, so the number cannot rot into a claim of its own.
+# Still outside: docs/SPEC.md and docs/RUNNING.md. Each bare figure there
+# is a real claim needing a span or a marker one at a time, so they are
+# recorded here rather than half-done; the selftest prints their counts
+# live, so no count is written here to rot into a claim of its own (this
+# comment once said README.md held 29 while it held 23).
 # The Mojo stack's six pages joined on the day they were written, so their
-# figures never had a bare form to drift from.
+# figures never had a bare form to drift from. README.md joined on
+# 2026-10-10, once its figures moved to the pages that own them
+# (docs/notes/the-readme-points.md) and the one left was marked observed.
 FIGURE_PAGES = (BENCH_PAGE, "docs/ROADMAP.md", "docs/MOJO.md",
                 "docs/MOJO_HOST.md", "docs/MOJO_VIEWS.md", "docs/MOJO_DEPLOY.md",
-                "docs/MOJO_RAMP.md", "packaging/m0/QUICKSTART.md")
+                "docs/MOJO_RAMP.md", "packaging/m0/QUICKSTART.md", "README.md")
 _REGION = re.compile(
     r"<!-- generated: ([a-z0-9-]+) -- .*?-->.*?<!-- /generated: \1 -->", re.S)
 _NUM_SPAN = re.compile(r"<!-- num:[a-z0-9-]+@\d -->.*?<!-- /num -->", re.S)
@@ -2889,7 +2859,7 @@ def selftest():
     expected_pages = {"docs/BENCHMARKS.md", "docs/ROADMAP.md", "docs/MOJO.md",
                       "docs/MOJO_HOST.md", "docs/MOJO_VIEWS.md",
                       "docs/MOJO_DEPLOY.md", "docs/MOJO_RAMP.md",
-                      "packaging/m0/QUICKSTART.md"}
+                      "packaging/m0/QUICKSTART.md", "README.md"}
     good = set(FIGURE_PAGES) == expected_pages
     print(f"  {'caught' if good else 'MISSED'}          "
           "(the pages the figure rule reads are the pages it is meant to)"
@@ -2928,7 +2898,7 @@ def selftest():
     # FIGURE_PAGES' comment cannot rot into a claim of its own. Printed,
     # never asserted: these are a backlog, not a failure.
     outside = {}
-    for rel in ("README.md", "docs/SPEC.md", "docs/RUNNING.md"):
+    for rel in ("docs/SPEC.md", "docs/RUNNING.md"):
         if (REPO / rel).exists():
             outside[rel] = len(unsourced_figures((REPO / rel).read_text(), rel))
     print("  outside the rule: "
@@ -3391,7 +3361,6 @@ def main():
     check_wheel_platform_claims()
     check_m0pub_twins()
     check_vendored_files()
-    check_hybrid_p99_consistent()
     check_target_cpu_pinned()
     check_consumer_jobs_stay_clean()
     check_pyproject_parses_for_consumers()

@@ -2031,6 +2031,16 @@ lightbug_http
         and `service_direct_completions` (loop/offload.mojo) no longer say
         `raises`: nothing in them can.
 
+      - loop/shutdown.mojo (2026-10-10, #611): the drain's
+        between-requests sweep closes a connection reading headers unless
+        the bytes from `head_start` hold a whole head (`_holds_a_request`),
+        where it tested for an empty receive buffer, which keeps an
+        answered request's bytes whenever anything follows them: a stray
+        CRLF or the start of a next request held the drain to its 5 s
+        budget (5.1 s against 0.04 s, measured). A drain its budget ends
+        prints one line counting what it leaves (`_unfinished_at_deadline`).
+        Tested by test_drain_unstarted.mojo (SPEC D14, D15)
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 

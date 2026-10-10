@@ -36,24 +36,63 @@ _EXE = _HERE / "_bin" / ("m0serve.exe" if os.name == "nt" else "m0serve")
 _LIB = _HERE / "_lib"
 
 
-def _libpython():
-    """The shared libpython of the interpreter running this shim, or None.
+def _libpython_candidates(config=None, base_prefix=None, platform=None):
+    """Every path the running interpreter's shared libpython may be at, in order.
 
-    Same recipe the repo's own free-threading probe uses (`poe py-thread-probe`):
-    LIBDIR + INSTSONAME from sysconfig. Guarded twice, because both guards
-    catch real configurations -- a statically built CPython has no shared
-    library at all, and some distributions report a path that is not there.
+    sysconfig reports where the library was INSTALLED, which is not always
+    where it is: a relocatable build (python-build-standalone, so every
+    interpreter uv installs) keeps the build machine's `LIBDIR`, and older
+    ones report `/install/lib` (#612). So the search is the names sysconfig
+    gives crossed with the directories it names, and `sys.base_prefix`'s
+    `lib/` last, which is where a relocated interpreter's library went.
+
+    It must include every path the Mojo runtime's own lookup tries --
+    `libpython{py_version_short}{ABIFLAGS}.{dylib,so}` in `LIBPL` and then
+    `LIBDIR` -- because `main` refuses when it finds nothing, and that
+    refusal is only right if the runtime would have found nothing too.
+    No static archive: `LDLIBRARY` names `libpython3.X.a` in a build without
+    a shared library, and `dlopen` cannot load one. `Py_ENABLE_SHARED` is
+    not asked: a macOS framework build (python.org's installer, Apple's
+    command-line tools) reports 0 and keeps a `libpython3.X.dylib` in
+    `LIBDIR` that the runtime loads, so asking would refuse it.
+
+    The arguments exist for the tests (`scripts/wheel_shim.py`).
     """
-    if not sysconfig.get_config_var("Py_ENABLE_SHARED"):
-        return None
-    libdir = sysconfig.get_config_var("LIBDIR")
-    soname = sysconfig.get_config_var("INSTSONAME") or sysconfig.get_config_var(
-        "LDLIBRARY"
+    config = config or sysconfig.get_config_var
+    base_prefix = sys.base_prefix if base_prefix is None else base_prefix
+    platform = sys.platform if platform is None else platform
+    ext = "dylib" if platform == "darwin" else "so"
+    plain = "libpython%s%s.%s" % (
+        config("py_version_short") or "",
+        config("ABIFLAGS") or "",
+        ext,
     )
-    if not libdir or not soname:
-        return None
-    candidate = Path(libdir) / soname
-    return candidate if candidate.exists() else None
+    names = []
+    for name in (config("INSTSONAME"), config("LDLIBRARY"), plain):
+        if name and not name.endswith(".a") and name not in names:
+            names.append(name)
+    dirs = []
+    for d in (
+        config("LIBDIR"),
+        config("LIBPL"),
+        os.path.join(base_prefix, "lib") if base_prefix else None,
+    ):
+        if d and d not in dirs:
+            dirs.append(d)
+    return [Path(d) / name for d in dirs for name in names]
+
+
+def _libpython(candidates=None):
+    """The first candidate that exists, or None."""
+    for candidate in _libpython_candidates() if candidates is None else candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+# Flags m0serve answers before it starts the interpreter, so a missing
+# libpython is no reason to refuse them.
+_NO_PYTHON = ("--version", "-V", "--help", "-h")
 
 
 def _core_lib():
@@ -112,10 +151,31 @@ def main(argv=None):
             f"fix it please report it."
         )
 
+    # Without a libpython the server cannot start its interpreter, and the
+    # Mojo runtime says so by aborting with a stack dump, `--doctor` included
+    # (#612). The search above holds every path the runtime tries, so here
+    # nothing would have been found: refuse, naming the fix. A user's own
+    # MOJO_PYTHON points the runtime at another interpreter, which this
+    # process cannot search for it, so that one is left to the runtime.
+    env = build_env()
+    if (
+        "MOJO_PYTHON_LIBRARY" not in env
+        and "MOJO_PYTHON" not in env
+        and not any(arg in _NO_PYTHON for arg in argv[1:])
+    ):
+        looked = sorted({str(c.parent) for c in _libpython_candidates()})
+        sys.stderr.write(
+            f"m0serve: found no shared libpython for {sys.executable} "
+            f"(looked in {', '.join(looked) or 'nothing sysconfig names'}).\n"
+            f"Set MOJO_PYTHON_LIBRARY to the interpreter's libpython, or use "
+            f"an interpreter built with --enable-shared.\n"
+        )
+        sys.exit(78)
+
     # argv[0] is the real path rather than "m0serve": it keeps m0serve's own
     # libm0core discovery meaningful and makes `ps` legible.
     try:
-        os.execve(str(_EXE), [str(_EXE), *argv[1:]], build_env())
+        os.execve(str(_EXE), [str(_EXE), *argv[1:]], env)
     except PermissionError:
         sys.exit(
             f"m0serve: {_EXE} is not executable. The wheel should ship it with "

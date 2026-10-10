@@ -794,6 +794,22 @@
       "evidence": "`test_slot_lifecycle.mojo:test_the_farewell_writes_only_into_a_stream_that_takes_one` (every PR) \u2014 the five shapes over stream pairs, each read to EOF. The farewell asked none of the heartbeat's questions: a second Close, bytes inside a frame, and a comment in a chunked or chunk-channel stream. One predicate, `_takes_an_out_of_band_frame`, now answers for both. Found by the 2026-10-07 fork review"
     },
     {
+      "id": "D14",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "The drain waits only for requests whose head has arrived: a connection holding none when the drain begins, or after any of its passes \u2014 between requests, a stray empty line after its last one, or the start of a head that has not wholly arrived \u2014 is closed, its answers delivered first, and a body still arriving is read on (D9). Until #611 a keep-alive connection holding a stray CRLF or the first bytes of its next request held every drain to its 5 s budget",
+      "status": "verified",
+      "evidence": "`test_drain_unstarted.mojo:test_the_first_bytes_of_a_next_request_are_no_request` (every PR) \u2014 beside it, an empty line after an answered request closed with the answer delivered, the rule over a table of tails read from `head_start`, and a body still arriving kept and answered; with the old empty-buffer test restored, the first two fail. Measured with the issue's reproducer against m0serve on macOS: 5.1 s from SIGTERM to exit with a stray CRLF or the start of a request buffered, 0.04 s with the fix"
+    },
+    {
+      "id": "D15",
+      "section": "D",
+      "category": "D. Graceful shutdown and restart",
+      "capability": "A drain its budget ends says what it leaves: one line counting the connections still open by what each was doing \u2014 a body still arriving, a request being answered, a response still sending, a stream \u2014 and a drain its work ends prints nothing",
+      "status": "verified",
+      "evidence": "`test_drain_unstarted.mojo:test_the_deadline_names_what_it_leaves` (every PR)"
+    },
+    {
       "id": "D6",
       "section": "D",
       "category": "D. Graceful shutdown and restart",
@@ -2440,6 +2456,14 @@
       "capability": "Correct signal handling as PID 1 in a container",
       "status": "verified",
       "evidence": "`Smoke test SIGTERM delivered to PID 1 in a container` (every PR) \u2014 the wheel exec'd as PID 1 in `python:3.12-slim` (checked via `/proc/1/cmdline`, not trusted); `docker stop` must be the drain's exit 0 well inside the grace, never SIGKILL at the deadline, alone and as a supervisor reaping two workers whose exits must be clean rather than by the propagated signal; each shape is stopped only once every worker has printed `armed for a graceful stop`, because one worker answering says nothing of a sibling still importing the application (review AR)"
+    },
+    {
+      "id": "M30",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "The `m0serve` command a wheel installs names its own interpreter's shared libpython wherever that is \u2014 sysconfig's `LIBDIR` and `LIBPL`, and `sys.base_prefix`'s `lib/` for a relocated build whose `LIBDIR` is the build machine's \u2014 a search holding every path the Mojo runtime's own lookup tries, and never a static archive; where there is none it exits 78 naming `MOJO_PYTHON_LIBRARY` before the binary runs, where the runtime used to abort at its first Python call with a stack dump, the doctor included (#612). The flags answered without an interpreter, and a user's own `MOJO_PYTHON_LIBRARY` or `MOJO_PYTHON`, are left to the binary",
+      "status": "verified",
+      "evidence": "`Run the shim tests and the compile gates` (every PR) \u2014 `poe test-wheel-shim` drives the shim's search over sysconfig layouts (python-build-standalone's `/install/lib`, a python.org framework build, which reports `Py_ENABLE_SHARED` 0, free-threaded builds, a build with only an archive) and its `main` with a recorded `execve`, checks the interpreter running it resolves, and its sabotage arm reverts each rule in memory, each caught by the test written for it"
     },
     {
       "id": "M12",

@@ -30,7 +30,9 @@ served as ASGI, anything else as WSGI. `--protocol wsgi|asgi` overrides.
 m0serve carries no interpreter. It loads the `libpython` of the `python3`
 on `PATH`, so run it where that is the interpreter your application is
 installed into, an activated virtualenv being the usual way;
-`MOJO_PYTHON_LIBRARY` names the shared library outright.
+`MOJO_PYTHON_LIBRARY` names the shared library outright. The `m0serve`
+a wheel installs names its own interpreter's library itself, and exits 78
+naming `MOJO_PYTHON_LIBRARY` when that interpreter has none.
 
 The ready signal is one line per worker, printed after the application has
 imported and, for ASGI, after its lifespan startup has completed:

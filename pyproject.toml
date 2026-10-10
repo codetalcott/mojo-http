@@ -213,6 +213,13 @@ shell = "python3 scripts/mojo_suite.py packages/m0-wsgi -I packages/m0-wsgi -I p
 help = "Test the ASGI executor shim's slot-ownership rules, and sabotage-prove them"
 shell = "python3 scripts/shim_ownership.py --selftest && python3 scripts/shim_ownership.py --sabotage"
 
+# The OTHER shim: the wheel's `m0serve` console script, which names the
+# interpreter's libpython before it execs the binary (#612). Pure Python,
+# so it needs no build and runs where the interpreter is.
+[tool.poe.tasks.test-wheel-shim]
+help = "Test which libpython the wheel's console shim names, and its refusal when there is none; sabotage-prove them"
+shell = "python3 scripts/wheel_shim.py && python3 scripts/wheel_shim.py --sabotage"
+
 # Every probe names the PHASE it was proving when it crashed. The 2026-08-30
 # CI failure was an unhandled ConnectionResetError whose traceback named
 # `recv_exact` -- a helper four phases share -- so the log said which CALL
@@ -1253,7 +1260,7 @@ default_item_type = "ref"
 # `build-all`.
 [tool.poe.tasks.test-gates]
 help = "test-all's second half: the shim's rules, the phase stamps, m0-sqlite and its sabotage, and the compile gates (CI's unit-gates job)"
-sequence = ["test-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
+sequence = ["test-shim", "test-wheel-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

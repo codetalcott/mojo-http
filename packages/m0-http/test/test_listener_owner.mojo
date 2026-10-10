@@ -20,10 +20,10 @@ process opened would, and holds it past the serve: it must still be the
 instrument's -- a pipe's write end, whose byte arrives at the read end --
 when the owner returns. Before the fix every owner closed it. The owner is
 driven end to end by one client of the handler's own: the first tick finds
-the listener by its port and sends a request, then half of a second one;
-answering the first stops the server; the half keeps the drain waiting,
-the drain's tick places the instrument and closes the client, and the drain
-ends. m0serve's two owners live in its entry file, which no test can call;
+the listener by its port and sends a request, then a second one whose body
+has not all arrived; answering the first stops the server; the body still
+arriving keeps the drain waiting, the drain's tick places the instrument
+and closes the client, and the drain ends. m0serve's two owners live in its entry file, which no test can call;
 `smoke-shutdown` meters them under strace on Linux.
 """
 
@@ -76,9 +76,11 @@ comptime C_ERROR = 6
 comptime CELLS = 7
 
 comptime FIRST = "GET /first HTTP/1.1\r\nHost: t\r\n\r\n"
-comptime HALF = "GET /second HTTP/1.1\r\nHost: t\r\n"
+comptime ARRIVING = "POST /second HTTP/1.1\r\nHost: t\r\nContent-Length: 10\r\n\r\nabc"
 """The second request, never finished: a connection with a request in
-progress is what the drain waits for."""
+progress is what the drain waits for, and a body still arriving is one
+(SPEC D9). Half a request head was the stand-in until #611; that is no
+request yet, and the drain now closes it as it begins."""
 
 
 def _get(cells: Int, i: Int) -> Int:
@@ -191,7 +193,7 @@ struct Reuser(AppHandler):
             try:
                 var host = String("127.0.0.1")
                 var conn = create_connection(host, UInt16(_get(self.cells, C_PORT)))
-                var text = String(FIRST) + String(HALF)
+                var text = String(FIRST) + String(ARRIVING)
                 _ = conn.write(text.as_bytes())
                 self.client = conn^
             except:
@@ -207,7 +209,7 @@ struct Reuser(AppHandler):
                 c_int(number),
             ))
             _set(self.cells, C_TAKEN, taken)
-            # The half request can never finish now, so the drain closes
+            # The second request can never finish now, so the drain closes
             # the connection and ends.
             self.client = None
 
@@ -480,7 +482,7 @@ def test_a_loop_that_raises_during_its_drain_closes_nothing_more() raises:
     _set(cells, C_NUMBER, number)
     var host = String("127.0.0.1")
     var client = create_connection(host, UInt16(port))
-    var text = String(FIRST) + String(HALF)
+    var text = String(FIRST) + String(ARRIVING)
     _ = client.write(text.as_bytes())
     var handler = Reuser(cells)
     var backend = FailingBackend(cells, FAIL_DRAINING)
