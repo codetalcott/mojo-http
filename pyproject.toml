@@ -3911,6 +3911,16 @@ port_refused 'a flag port of 0' '' --port 0
 # with 1 while the doctor said 0 (review record LF48).
 refuses 78 'a host with an IPv6 zone'           $SPEC --host fe80::1%en0
 
+# A journal deeper than 4096 frames (review W4) is a 78 from the list, both
+# ways, with or without --realtime and whether the flag or M0_REPLAY_FRAMES
+# names it; the cap itself serves.
+refuses 78 'a replay depth over the cap'        $SPEC --replay-frames 4097
+refuses 78 'a replay depth over the cap, realtime' $SPEC --realtime --replay-frames 100000
+M0_REPLAY_FRAMES=4097; export M0_REPLAY_FRAMES
+refuses 78 'an environment replay depth over the cap' $SPEC
+unset M0_REPLAY_FRAMES
+refuses 0  'a replay depth at the cap'          $SPEC --replay-frames 4096
+
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
 equiv 'threads and workers together' $SPEC --workers 2 --threads 2
@@ -3980,6 +3990,7 @@ python3 scripts/emit.py --covers F8 --task smoke-doctor
 python3 scripts/emit.py --covers M5 --task smoke-doctor
 python3 scripts/emit.py --covers M20 --task smoke-doctor
 python3 scripts/emit.py --covers M28 --task smoke-doctor
+python3 scripts/emit.py --covers I43 --task smoke-doctor
 """
 
 [tool.poe.tasks.smoke-serve]

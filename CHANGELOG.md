@@ -34,7 +34,22 @@ in a minor release: `m0serve`'s flags and environment variables, the
   buffered ASGI path (`--blocking-threads` on an ASGI application), whose
   scope is built from the environ, drops them with it (SPEC G29).
 
+- **`--replay-frames` (and `M0_REPLAY_FRAMES`) above 4096 is refused with
+  exit 78.** Each loop keeps up to that many frames of up to 64 KB each, and a
+  full journal shifts its entries on the loop thread for every publish, so a
+  depth like 100000 pinned hundreds of megabytes and slowed every publish
+  with nothing said. The refusal is a rule in the list `--doctor` reads, so
+  the doctor exits 78 too, with or without `--realtime`. 0 and every depth up
+  to 4096 are accepted as before (SPEC I43).
+
 ### Fixed
+
+- **A `--max-body` or `M0_MAX_BODY` too large for an integer is refused, not
+  wrapped.** `17179869184g` (2^64 bytes) wrapped to a 0-byte cap, so every
+  request with a body got a 413, and `9999999999g` wrapped negative and left
+  the 4 MB default standing with no message. The flag now exits 2, and
+  `M0_MAX_BODY` is ignored out loud like any unreadable `M0_*` value, the
+  4 MB cap standing (SPEC C1).
 
 - **A keep-alive connection holding a stray CRLF or the start of its next
   request no longer holds the SIGTERM drain to its 5 s budget** (#611).

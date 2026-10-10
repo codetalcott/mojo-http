@@ -110,7 +110,9 @@ reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
 **A hold replays what the journal holds, and says when it cannot.** Event
 ids are numbered from one counter across every worker, and each loop
 journals the last `--replay-frames` published frames (`M0_REPLAY_FRAMES`,
-default 64; 0 keeps none). A client that reconnects with `Last-Event-ID`
+default 64; 0 keeps none; at most 4096, since a loop holds up to that
+many frames of up to 64 KB each and m0serve refuses more with exit 78,
+as does `--doctor`). A client that reconnects with `Last-Event-ID`
 is not re-sent what it already has, and is sent every frame of its channel
 published while it was away — a phone asleep, a proxy that dropped the
 stream — in order, before anything live. When the journal cannot supply

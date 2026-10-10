@@ -57,6 +57,7 @@ from .cli import (
     EXIT_STARTUP,
     EXIT_USAGE,
     MAX_MOUNTS,
+    MAX_REPLAY_FRAMES,
     PROTOCOL_ASGI,
 )
 from .doctor import Report
@@ -362,6 +363,18 @@ def flag_checks(opts: ServeOptions, facts: CheckFacts) -> List[ServeCheck]:
         _rule(out, "protocol-vs-realtime", opts.protocol != PROTOCOL_ASGI,
             "--protocol " + opts.protocol + " leaves a WSGI application possible",
             String(REALTIME_ASGI_CONFLICT), _REALTIME_FIX, EXIT_USAGE, usage=True)
+
+    # The journal's depth, whether or not `--realtime` is given and whatever
+    # named it (flag or `M0_REPLAY_FRAMES`): each loop keeps that many frames
+    # of up to 64 KB, and a full journal shifts its lists on every publish.
+    _rule(out, "replay-frames", opts.replay_frames <= MAX_REPLAY_FRAMES,
+        "journal depth " + String(opts.replay_frames),
+        "--replay-frames (M0_REPLAY_FRAMES) is " + String(opts.replay_frames)
+        + ", above the " + String(MAX_REPLAY_FRAMES) + " m0serve accepts: each loop"
+        + " keeps up to that many frames of up to 64 KB each, and a full journal"
+        + " shifts its entries on the loop thread for every publish",
+        "set --replay-frames (M0_REPLAY_FRAMES) to " + String(MAX_REPLAY_FRAMES)
+        + " or fewer", EXIT_CONFIG)
 
     # `--pg-listen`: one rule, its outcome named by the first thing that
     # stops it. The library is opened only when nothing before it has.

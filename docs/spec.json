@@ -583,7 +583,7 @@
       "category": "C. Connection management and denial of service",
       "capability": "Max request body size, configurable by `--max-body` or `M0_MAX_BODY`, the flag winning; the first 413 a loop sends prints one line naming the flag, the variable and the cap in effect, and `--doctor` reports the cap the server would use",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--max-body 1k`, `8m` and the default, each refusing above and admitting below; `M0_MAX_BODY=1k` with no flag the same, under two spawned workers; the notice once after several refusals, carrying `1k`; and `--doctor`'s `max_body` at the default (4194304, where it printed -1), from the environment and under a flag that beats it"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--max-body 1k`, `8m` and the default, each refusing above and admitting below; `M0_MAX_BODY=1k` with no flag the same, under two spawned workers; the notice once after several refusals, carrying `1k`; and `--doctor`'s `max_body` at the default (4194304, where it printed -1), from the environment and under a flag that beats it. A size too large for an `Int` (`17179869184g`, which wrapped to a 0-byte cap) is refused rather than wrapped: exit 2 as a flag (`test_cli.mojo:test_max_body_too_large_for_an_int_is_refused_not_wrapped`), and from the environment ignored out loud with the 4 MB cap standing (`test_cli.mojo:test_from_env_ignores_a_body_limit_too_large_for_an_int_and_says_so`)"
     },
     {
       "id": "C2",
@@ -1856,6 +1856,14 @@
       "capability": "A held stream that reconnects with `Last-Event-ID` is caught up: each loop journals the last `--replay-frames` numbered frames it delivered (`M0_REPLAY_FRAMES`; 64; 0 keeps none), and a WSGI hold \u2014 subscribed inline or forwarded from a pool thread as an `h` frame, which is also how a Mojo mount's and a hold mount's arrive \u2014 is sent every frame of its channel after the id it presented, in order and ahead of the live feed. All or nothing, as I30: an id below the journal's floor (a frame evicted, or published before a respawned worker joined, the floor being one number for every channel so a server with a channel per visitor keeps nothing that grows), frames that would not fit the outbox, or an id ahead of the counter (a previous incarnation's, clamped to the head so it suppresses nothing) get no history and one unnumbered `event: m0-gap` frame naming the id presented and the head, then the live feed. A first visit gets the live feed alone",
       "status": "verified",
       "evidence": "`Smoke test the Django realtime example` (every PR) \u2014 phase 3b, once against the default pool and once under `--blocking-threads 0`: two frames missed and replayed in order ahead of a live one with another channel's left out, a client pushed past a 4-frame journal told so and served nothing from history, a stale id told so and not starved. `test_replay.mojo` holds the journal's rules on their own, and `test_hold_resume.mojo:test_a_resume_from_before_a_late_worker_joined_is_a_gap`, with `test_hold_resume.mojo:test_a_resume_at_the_counter_is_caught_up_with_nothing` and `test_hold_resume.mojo:test_an_id_the_bus_has_not_delivered_yet_is_not_clamped`, the handler's two reads of the shared counter, which one worker cannot tell from the journal's own head: the floor a late worker starts at, and the head a resume is judged against"
+    },
+    {
+      "id": "I43",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A replay journal deeper than 4096 frames is refused with 78 before the bind and the fork, and `--doctor` refuses it with the same code, whether the depth came from `--replay-frames` or `M0_REPLAY_FRAMES` and whether or not `--realtime` is given: each loop keeps up to that many frames of up to 64 KB each, and a full journal shifts its entries on the loop thread for every publish. 0 and 4096 are accepted",
+      "status": "verified",
+      "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR) \u2014 4097 by flag, 100000 by flag under `--realtime` and 4097 by `M0_REPLAY_FRAMES`, each required to agree with the doctor and to exit 78, and 4096 serving. The unit half is `test_checks.mojo:test_a_journal_deeper_than_the_cap_is_refused_with_78`"
     },
     {
       "id": "I39",

@@ -111,7 +111,7 @@ def test_a_plain_configuration_passes_every_rule_it_meets() raises:
     """The positional spec with nothing else: the three rules that always
     apply, all passing, and nothing for the server to refuse."""
     var checks = flag_checks(_opts([String("app.wsgi")]), _facts())
-    assert_equal(_names(checks), "port,address,app-dir,threads-vs-workers,workers-vs-parallel-runtime")
+    assert_equal(_names(checks), "port,address,app-dir,threads-vs-workers,replay-frames,workers-vs-parallel-runtime")
     assert_false(Bool(first_refusal(checks)))
     for i in range(len(checks)):
         assert_true(checks[i].ok)
@@ -138,12 +138,45 @@ def test_the_flag_rules_are_in_the_order_the_server_applies_them() raises:
     assert_equal(
         _names(checks),
         "port,address,app-dir,static-dir,reload-dir,threads-vs-workers,protocol-vs-realtime,"
-        + "pg-listen,mounts-without-python,hold-mount-vs-realtime,hold-mount-key,"
+        + "replay-frames,pg-listen,mounts-without-python,hold-mount-vs-realtime,hold-mount-key,"
         + "compiled-mount-vs-threads,compiled-mount-threads,mount-lanes,"
         + "workers-vs-parallel-runtime",
     )
     assert_false(Bool(first_refusal(checks)), _failed(checks))
-    assert_equal(checks[7].detail, "libpq 16.4 at /usr/lib/libpq.so")
+    assert_equal(checks[8].detail, "libpq 16.4 at /usr/lib/libpq.so")
+
+
+def test_a_journal_deeper_than_the_cap_is_refused_with_78() raises:
+    """`--replay-frames` (and `M0_REPLAY_FRAMES`, which resolves into the same
+    option) above 4096 is refused through the list, with or without
+    `--realtime`; 0 and the cap itself pass. Each loop keeps that many frames
+    of up to 64 KB, and a full journal shifts its entries per publish.
+
+    covers: I43
+    """
+    var c = _first(flag_checks(
+        _opts([String("app.wsgi"), String("--replay-frames"), String("4097")]),
+        _facts(),
+    ))
+    assert_equal(c.name, "replay-frames")
+    assert_equal(c.code, 78)
+    assert_true(c.detail.find("4097") >= 0, c.detail)
+    assert_true(c.detail.find("4096") >= 0, c.detail)
+    c = _first(flag_checks(
+        _opts([
+            String("app.wsgi"), String("--realtime"),
+            String("--replay-frames"), String("100000"),
+        ]),
+        _facts(),
+    ))
+    assert_equal(c.name, "replay-frames")
+    assert_equal(c.code, 78)
+    for ok in [String("0"), String("64"), String("4096")]:
+        var checks = flag_checks(
+            _opts([String("app.wsgi"), String("--replay-frames"), ok]),
+            _facts(),
+        )
+        assert_false(Bool(first_refusal(checks)), ok + ": " + _failed(checks))
 
 
 def test_the_directories_refuse_with_1_and_name_what_is_missing() raises:
