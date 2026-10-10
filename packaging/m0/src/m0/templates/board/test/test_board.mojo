@@ -85,6 +85,28 @@ def test_the_board_is_newest_first_and_keeps_the_newest_fifty() raises:
     assert_false(">m4</li>" in html)
 
 
+def test_a_full_board_still_reaches_an_open_stream() raises:
+    """Fifty messages of 1500 quotes render at six bytes a quote, far over a
+    slot's 64 KB outbox: the frame that carried them whole was refused for
+    every slot and the poster still got a 200. The render keeps the newest
+    that fit, so the open stream is sent a frame."""
+    var board = Board(16)
+    var table = board_urls()
+    var get = HTTPRequest(URI.parse(String("http://127.0.0.1", EVENTS)))
+    get.slot_id = 3
+    _ = table.dispatch(get, board)
+    for _ in range(MAX_MESSAGES):
+        board.add(String('"') * 1500)
+    var resp = table.dispatch(_post("text=newest"), board)
+    assert_equal(resp.status_code, 200)
+    var raw = board.stream.drain(3)
+    assert_true(len(raw) > 0)
+    assert_true(len(raw) <= 65536)
+    var sent = _bytes(raw)
+    assert_true("<li>newest</li>" in sent)
+    assert_equal(len(board.messages), MAX_MESSAGES)
+
+
 def test_a_message_is_escaped_where_it_is_rendered() raises:
     var html = render_board([String("<b>&")])
     assert_true("&lt;b&gt;&amp;" in html)

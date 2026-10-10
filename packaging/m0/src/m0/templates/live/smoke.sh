@@ -26,7 +26,7 @@ uv run m0 build || fail "m0 build"
 DB="smoke-$$.db"
 rm -f "$DB" "$DB-wal" "$DB-shm"
 
-M0_DB="$DB" bin/server --port "$PORT" >smoke.log 2>&1 &
+M0_DB="$DB" bin/server --host 127.0.0.1 --port "$PORT" >smoke.log 2>&1 &
 PID=$!
 
 ready=""
@@ -62,7 +62,7 @@ grep -q '"refused":0,' smoke.body || fail "the bus refused a frame: $(cat smoke.
 kill "$PID"
 wait "$PID" 2>/dev/null
 PID=""
-M0_DB="$DB" bin/server --port "$PORT" >smoke.log 2>&1 &
+M0_DB="$DB" bin/server --host 127.0.0.1 --port "$PORT" >smoke.log 2>&1 &
 PID=$!
 kept=""
 for _ in $(seq 1 50); do

@@ -27,6 +27,20 @@ comptime COMPOSE_ID = "compose"
 
 comptime Frag = Fragment[Datastar]
 
+# A frame bigger than a slot's outbox is refused for every slot, however
+# empty: `MAX_PENDING_BYTES` in m0-http's `sse/registry.mojo`, not exported
+# from `m0_http`, so it is spelled again here.
+comptime OUTBOX_BYTES = 65536
+# What the framing adds to the rendered board: the event and id lines, the
+# closing blank line, the wrapper elements, and `data: elements ` once on
+# the first line. 512 is more than twice that; every further line of a
+# message is counted by `_framing_bytes`.
+comptime FRAME_MARGIN = 512
+comptime BOARD_BUDGET = OUTBOX_BYTES - FRAME_MARGIN
+# `data: elements `: Datastar's SSE framing writes it before EVERY line of
+# the fragment, and a message may hold line breaks (a textarea, or curl).
+comptime _DATA_PREFIX = 15
+
 comptime _STYLE = """<style>
 body{font-family:system-ui,sans-serif;max-width:36rem;margin:2rem auto;padding:0 1rem}
 form{display:flex;gap:.5rem;margin-bottom:1rem}
@@ -37,15 +51,39 @@ li{padding:.4rem 0;border-bottom:1px solid #eee;white-space:pre-wrap}
 </style>"""
 
 
+def _framing_bytes(row: String) -> Int:
+    """What the frame spends on `row` beyond its own bytes: the `data:` prefix
+    of every line break it holds (CR, LF and CRLF each start a line, and
+    counting both bytes of a CRLF only over-counts)."""
+    var extra = 0
+    for b in row.as_bytes():
+        if b == UInt8(ord("\n")) or b == UInt8(ord("\r")):
+            extra += _DATA_PREFIX
+    return extra
+
+
 def render_board(messages: List[String]) raises -> String:
-    """The `board` fragment: every message, newest first, each escaped."""
+    """The `board` fragment: the newest messages that fit, newest first,
+    each escaped.
+
+    A full-state frame must fit the 64 KB outbox of a slot, or no tab is
+    sent it at all and the poster still gets a 200. Fifty messages of 1500
+    bytes, each byte escaped to six, are far over it, so the oldest are left
+    out of the render (the list keeps them) until `BOARD_BUDGET` holds.
+    """
     var f = Frag(BOARD_ID)
     if len(messages) == 0:
         f.raw(el("p", attr("class", "meta"), text("nothing yet")))
         return f^.finish()
     var rows = String()
+    var used = 0
     for i in range(len(messages) - 1, -1, -1):
-        rows += el("li", "", text(messages[i]))
+        var row = el("li", "", text(messages[i]))
+        var cost = row.byte_length() + _framing_bytes(row)
+        if used + cost > BOARD_BUDGET:
+            break
+        used += cost
+        rows += row
     f.raw(el("ul", "", rows))
     return f^.finish()
 

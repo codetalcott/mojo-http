@@ -44,6 +44,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **The `board` template no longer builds a board frame bigger than a
+  slot's 64 KB outbox** (the `m0` wheel). Fifty messages of 1500
+  bytes, each escaped, rendered to several times that, and a frame over
+  the cap is refused for every slot: the poster got a 200 and no tab was
+  updated, with nothing logged. `render_board` now renders the newest
+  messages that fit a byte budget, so the frame always goes out. A full
+  state frame fitting the outbox is now a line of the scaffold's
+  `AGENTS.md`.
+
+- **The `views` and `auth` templates no longer split their list across
+  pool threads under `--blocking-threads`** (the `m0` wheel). Their
+  views ran on the pool, where each thread builds a state of its own, so
+  an item created on one thread was missing from a list another answered.
+  Every view that touches the list is now `on_loop=True`, as `board`'s
+  are. The scaffold's `.gitignore` also lists the four files its smokes
+  and `m0 build` leave behind (`.dist.next/`, `smoke.one`, `smoke.two`,
+  `smoke.jar`), and the `views`, `auth` and `live` smokes serve on
+  `127.0.0.1` rather than every interface. All of this reaches
+  the applications `m0 new` scaffolds from now on; one already scaffolded
+  applies it by hand, since a template is written once.
+
 - **A `--max-body` or `M0_MAX_BODY` too large for an integer is refused, not
   wrapped.** `17179869184g` (2^64 bytes) wrapped to a 0-byte cap, so every
   request with a body got a 413, and `9999999999g` wrapped negative and left

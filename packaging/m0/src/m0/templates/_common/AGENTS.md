@@ -153,6 +153,9 @@ what a `views`, `board` or `live` application adds the day it needs one.
 - **Every frame is the full state, never a delta.** A slow viewer's 64 KB
   outbox DROPS frames, it does not queue them; a dropped full frame is
   healed by the next one.
+  A full-state frame must also fit that 64 KB outbox: one larger is refused
+  for every slot, and no viewer sees it. Render the newest that fit a byte
+  budget (`board` does, `BOARD_BUDGET` in `pages.mojo`).
 - A view sends through the state's stream: `st.stream.patch_elements(url,
   html)` reaches this process's subscribers. Every view that reads or
   writes what a stream sends is `on_loop=True`: under

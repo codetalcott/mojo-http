@@ -38,7 +38,7 @@ out=$(env -u APP_PASSWORD bin/server --doctor 2>&1)
 [ $? = 78 ] || fail "without APP_PASSWORD the server did not exit 78: $out"
 echo "$out" | grep -q APP_PASSWORD || fail "the refusal does not name APP_PASSWORD: $out"
 
-bin/server --port "$PORT" >smoke.log 2>&1 &
+bin/server --host 127.0.0.1 --port "$PORT" >smoke.log 2>&1 &
 PID=$!
 
 ready=""
