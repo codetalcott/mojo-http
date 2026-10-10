@@ -10,6 +10,7 @@ time from an asyncio callback (`_shutdown_begin`, `_shutdown_drain_step`,
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import close
 from lightbug_http.connection import ConnectionState
+from lightbug_http.io.bytes import Bytes
 from lightbug_http.ring import atomic_at
 from lightbug_http.service import HTTPService
 from std.time import perf_counter_ns
@@ -20,6 +21,32 @@ from lightbug_http.loop.state import (
 from lightbug_http.loop.accept import _admit_handoffs
 from lightbug_http.loop.offload import _flush_submits
 from lightbug_http.event_loop import _run_pass, _wait_for_events
+
+
+def _holds_a_request(buf: Bytes, start: Int) -> Bool:
+    """Whether the bytes from `start` hold a request head that has arrived
+    whole.
+
+    A connection reading headers holds a request only once its head is
+    whole; until then nothing has been asked. Leading empty lines are
+    skipped first, as the request path skips them (RFC 9112 §2.2), so a
+    stray CRLF after the last request is no request. The head ends at its
+    empty line, CRLF CRLF or a bare LF LF; reading the bare form as an end
+    too errs toward keeping a connection, never toward closing one with a
+    request in it.
+    """
+    var n = len(buf)
+    var i = min(start, n)
+    while i < n and (buf[i] == 13 or buf[i] == 10):
+        i += 1
+    while i + 1 < n:
+        if buf[i] == 10 and (
+            buf[i + 1] == 10
+            or (buf[i + 1] == 13 and i + 2 < n and buf[i + 2] == 10)
+        ):
+            return True
+        i += 1
+    return False
 
 
 def _close_between_requests[T: HTTPService, B: EventLoopBackend](
@@ -34,15 +61,21 @@ def _close_between_requests[T: HTTPService, B: EventLoopBackend](
     exit against 0.02 s idle, in every execution mode, which is most of
     `docker stop`'s 10 s.
 
-    A slot in READING_HEADERS with an empty receive buffer is between
-    requests: `prepare_for_new_request` clears the buffer after each
-    response, keeping only a request pipelined behind it, and the first
-    byte of the next request refills it. Such a connection has no request
-    in progress, and the drain does not wait for one: its passes are
-    ordinary ones and would read a request that arrived, but this runs
-    after each of them, so only bytes a client had already sent are
-    served. Closing it drops nothing a client had asked for, and leaves
-    the whole budget to connections genuinely mid-request or
+    A slot in READING_HEADERS is between requests unless the bytes from
+    `head_start` hold a whole head (`_holds_a_request`). The receive buffer
+    is no test on its own: `prepare_for_new_request` keeps the answered
+    request's bytes when anything follows them, moving `head_start` to the
+    tail, so a stray CRLF after a request, or the first bytes of the next
+    one, left it non-empty, and the drain waited out its whole budget for
+    a request nobody had made (#611; 5.1 s to exit against 0.08 s). Such a
+    connection has no request in progress, and the drain does not wait for
+    one: its passes are ordinary ones and would read a request that
+    arrived, but this runs after each of them, so only a request whose
+    head a client had already sent is served. A head still arriving is a
+    request not yet made, closed as uvicorn closes a connection with no
+    parsed head; waiting for it would let one stalled client hold every
+    drain to its deadline. Closing drops nothing a client had asked for,
+    and leaves the whole budget to connections genuinely mid-request or
     mid-response. A LINGERING slot is closed for the same reason: its
     refusal went out when it began, and what it is still reading is
     discarded.
@@ -63,11 +96,70 @@ def _close_between_requests[T: HTTPService, B: EventLoopBackend](
         if st.slot_fds[s] == UNUSED or st.offload.offloaded[s]:
             continue
         var kind = st.provision_pool.provisions[s].state.kind
-        if (
-            kind == ConnectionState.READING_HEADERS
-            and len(st.provision_pool.provisions[s].recv_buffer) == 0
-        ) or kind == ConnectionState.LINGERING:
+        var unstarted = kind == ConnectionState.READING_HEADERS and not (
+            _holds_a_request(
+                st.provision_pool.provisions[s].recv_buffer,
+                st.provision_pool.provisions[s].head_start,
+            )
+        )
+        if unstarted or kind == ConnectionState.LINGERING:
             _close_slot(handler, backend, st, s, st.slot_fds[s])
+
+
+def _unfinished_at_deadline(st: LoopState) -> String:
+    """The line the drain prints when its budget, not its work, ends it.
+
+    What it leaves, counted by what each connection was doing, so a drain
+    that took its whole budget says why: the deadline cuts these off, and
+    the log was otherwise silent about them (#611). Empty when nothing is
+    left, which a drain over by its work never reaches.
+    """
+    var heads = 0
+    var bodies = 0
+    var answering = 0
+    var sending = 0
+    var streams = 0
+    for s in range(st.max_conns):
+        if st.slot_fds[s] == UNUSED:
+            continue
+        var kind = st.provision_pool.provisions[s].state.kind
+        if st.offload.offloaded[s] or kind == ConnectionState.PROCESSING:
+            answering += 1
+        elif kind == ConnectionState.READING_HEADERS:
+            heads += 1
+        elif kind == ConnectionState.READING_BODY:
+            bodies += 1
+        elif kind == ConnectionState.RESPONDING:
+            sending += 1
+        elif (
+            kind == ConnectionState.STREAMING_SSE
+            or kind == ConnectionState.STREAMING_WS
+        ):
+            streams += 1
+    var parts = List[String]()
+    if bodies > 0:
+        parts.append(String(bodies, " with a request body still arriving"))
+    if answering > 0:
+        parts.append(String(answering, " with a request being answered"))
+    if sending > 0:
+        parts.append(String(sending, " with a response still sending"))
+    if streams > 0:
+        parts.append(String(streams, " streaming"))
+    if heads > 0:
+        parts.append(String(heads, " with a whole request head unread"))
+    if st.accept_share.awaiting_handoffs():
+        parts.append(String("a connection a sibling has yet to hand over"))
+    if len(parts) == 0:
+        return String("")
+    var line = String(
+        "event loop: the drain's ", DRAIN_TIMEOUT_NS // 1_000_000_000,
+        " s budget is spent; leaving ",
+    )
+    for i in range(len(parts)):
+        if i > 0:
+            line += ", "
+        line += parts[i]
+    return line
 
 
 comptime DRAIN_TIMEOUT_NS: Int = 5_000_000_000
@@ -215,6 +307,9 @@ def _shutdown_drain_step[T: HTTPService, B: EventLoopBackend](
     ):
         return True
     if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
+        var unfinished = _unfinished_at_deadline(st)
+        if unfinished.byte_length() > 0:
+            print(unfinished, flush=True)
         return True
     var drain_events = _wait_for_events(backend, st, wait_ms)
     _ = _run_pass(handler, backend, st, drain_events)

@@ -373,10 +373,12 @@ def test_a_leaver_passes_a_handoff_on_before_its_first_byte() raises:
         LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w1)
     )
 
-    # The leaver's request in flight: half a request, which the drain waits
-    # for, so the drain runs whatever the hand-off does.
+    # The leaver's request in flight: a body still arriving, which the
+    # drain reads on (SPEC D9), so the drain runs whatever the hand-off
+    # does. Half a request HEAD was the stand-in until #611: that is no
+    # request yet, and the drain now closes it as it begins.
     var busy = _stream_pair()
-    _send_text(busy[1], "GET /slow HTTP/1.1\r\n")
+    _send_text(busy[1], "POST /slow HTTP/1.1\r\nHost: t\r\nContent-Length: 10\r\n\r\nabc")
     _admit_connection(race.handler, race.backend, race.st, busy[0], String("127.0.0.1"), 1)
     assert_equal(race.st.active_count, 1)
 

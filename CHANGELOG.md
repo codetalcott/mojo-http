@@ -22,6 +22,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A keep-alive connection holding a stray CRLF or the start of its next
+  request no longer holds the SIGTERM drain to its 5 s budget** (#611).
+  The drain closed a connection between requests only when its receive
+  buffer was empty, and the buffer keeps an answered request's bytes
+  whenever anything follows them, so one extra CRLF after a request, or a
+  head still arriving, kept the process up 5.1 s where it otherwise exits
+  in under 0.1 s, past a Fly machine's default `kill_timeout`. A head that
+  has not wholly arrived is a request not yet made: the drain now closes
+  its connection as it closes an idle one, as uvicorn does, and waits
+  only for requests whose head has arrived, a body still arriving among
+  them (D9). When the budget does end a drain, it now prints one line
+  saying what it leaves (SPEC D14, D15).
+
 - **`m0serve` from the wheel no longer aborts when sysconfig's `LIBDIR`
   is not on disk** (#612). A relocatable interpreter can report the
   build machine's `LIBDIR` (python-build-standalone's 3.12.7 says
