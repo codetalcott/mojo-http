@@ -88,3 +88,10 @@ page table.
 The test total stays quoted twice, in the package table and in the
 commands block, because `check_test_counts` reads both; a gate holds both
 copies, so neither can drift.
+
+**Later the same day**, both halves rode with the pull request that fixed
+#611 and #612, which ran `Tests` anyway: README.md is in `FIGURE_PAGES`,
+where a bare figure fails `check-docs` naming its line, and
+`check_hybrid_p99_consistent` is gone, the `observed` marker holding the
+one copy of the mounted p99 that is left. The comment above
+`FIGURE_PAGES` no longer writes a count down.
