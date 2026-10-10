@@ -54,7 +54,8 @@ multi-tab sync**, and CI executes every command in it on every pull request
 
 ### What else it does
 
-- **Several applications in one process, each in its native mode.**
+- <!-- observed: docs/notes/wsgi-vs-asgi-history.md §9, pinned by smoke-hybrid -->**Several
+  applications in one process, each in its native mode.**
   `m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on
   handler threads and async FastHTML on an asyncio executor, behind one
   listener with one shutdown. With four blocking 2-second sync views holding
@@ -80,7 +81,9 @@ multi-tab sync**, and CI executes every command in it on every pull request
   the same one applies here.
 - **The served contract is stable from 1.0** — flags and environment
   variables, the `M0-Hold`/`M0-Channel` headers, and `m0pub.publish()`.
-  A minor release does not break them ([CHANGELOG](CHANGELOG.md)).
+  A minor release does not break them; everything else — the Mojo APIs,
+  the package layout, the fork's internals — is still free to move
+  ([CHANGELOG](CHANGELOG.md)).
 - **macOS arm64 and Linux x86_64/aarch64 only.** No Intel Mac (no
   toolchain), no Windows, no musl.
 
@@ -88,10 +91,9 @@ multi-tab sync**, and CI executes every command in it on every pull request
 
 Underneath, `mojo-http` is an HTTP/1.1 server and a small web framework for
 [Mojo](https://docs.modular.com/mojo/): routing, content negotiation, ETags,
-and Server-Sent Events, with a
-[Datastar](https://data-star.dev/) adapter for hypermedia UIs and SQLite
-bindings for storage. The Python server above is one package in it
-(`m0-wsgi`), and the rest of this README is the Mojo side.
+Server-Sent Events and WebSockets, with a [Datastar](https://data-star.dev/)
+adapter for hypermedia UIs and SQLite and PostgreSQL bindings. The Python
+server above is one package in it (`m0-wsgi`).
 
 The server itself is a hard fork of
 [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from
@@ -113,14 +115,12 @@ m0serve myproject.wsgi:application
 
 Install it into the same virtual environment as your application, the way you
 would gunicorn or uvicorn. The protocol is detected from the object, so the
-same command serves WSGI and ASGI.
-
-**Then: [QUICKSTART.md](QUICKSTART.md)** — ten minutes from `pip install` to
-live multi-tab sync from one synchronous Django file. Every command in it is
-executed by CI on every pull request, so it works or the build is red.
+same command serves WSGI and ASGI. **Then: [QUICKSTART.md](QUICKSTART.md)**,
+and [docs/RUNNING.md](docs/RUNNING.md) for every flag, mode, limit and exit
+code.
 
 **One wheel per platform covers every supported CPython**, 3.10 through 3.14
-including free-threaded builds. That is not a shortcut: `m0serve` does not
+including free-threaded 3.14t. That is not a shortcut: `m0serve` does not
 link libpython — Mojo `dlopen`s the interpreter at run time — so there is no
 CPython ABI in the wheel to be compatible with, and no CPython inside it to
 redistribute. It has no Python dependencies and fetches nothing at install
@@ -134,16 +134,11 @@ time.
 | macOS x86_64 (Intel) | **not possible**: Modular ships no Intel Mac toolchain |
 | musl / Alpine, Windows | not supported |
 
-**The exact floors live in the wheel filename**, because they are measured
-from the built binary rather than copied from the toolchain's own tag. macOS
-is pinned at 13.0; Linux measures `manylinux_2_35`, so Ubuntu 22.04,
-Debian 12 and newer. An older distribution is declined by `pip` rather
-than installed and crashed at startup — RHEL 9 and its rebuilds sit at
-glibc 2.34 and miss by one minor version. The floor is the Mojo runtime's,
-not the build host's: the toolchain's `libAsyncRTRuntimeGlobals.so` needs
-`GLIBC_2.35`, and its `libKGENCompilerRTShared.so` a libstdc++ newer than
-RHEL 9's, so a build in a `manylinux_2_34` container would not reach it
-either ([the measurement](docs/notes/the-floor-is-the-runtime.md)).
+**The exact floors live in the wheel filename**, measured from the built
+binary rather than copied from the toolchain's own tag, so `pip` declines
+an older system rather than install something that crashes at startup. The
+Linux floor is the Mojo runtime's, not the build host's
+([the measurement](docs/notes/the-floor-is-the-runtime.md)).
 
 To **write an application in Mojo** (preview), the `m0` package writes the
 project and installs the toolchain into it:
@@ -206,61 +201,30 @@ def main() raises:
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 81 |
 | **Total** | | **1783** |
 
-Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix.
+Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix. Every capability, with the gate that proves it, is a row of [docs/SPEC.md](docs/SPEC.md).
 
-`m0-core` also builds a C-ABI shared library: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS), whose one export, `m0_shared_fetch_add`, is how `m0pub` numbers the events it publishes, through Python's `ctypes` — `poe smoke-ffi` proves that path in CI. It is internal to the m0serve wheel, which carries it in `_lib/` beside the binary, and is not a published artifact with an ABI of its own ([DECISIONS](docs/DECISIONS.md) D56). Releases up to and including v1.8.0 also attached it as a standalone download; those assets stay where they are, and [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md) has their history.
+Strict layering, no upward imports: `m0-core` has zero dependencies, and `m0-http` imports from it, never the reverse. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package. `m0-core` also builds the C-ABI library `m0pub` numbers its events through; it ships inside the m0serve wheel and is not an artifact of its own ([docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md)).
 
-Strict layering, no upward imports: `m0-core` has zero dependencies, and `m0-http` imports from it, never the reverse. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
+[apps/notes_api/](apps/notes_api/server.mojo) composes most of the HTTP
+layer in one small app: CRUD with `:id` routes and a real `405` with
+`Allow`, one note negotiated as JSON or HTML by the `Accept` header,
+`ETag`/`304`, static files, RFC 9457 `problem+json` on every error, and
+CORS from a single `after_response` hook. `uv run poe serve-notes` runs it;
+`poe smoke-notes` asserts each feature end to end.
 
-**HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · weak ETags (wyhash) with `304 Not Modified` · static file serving with lexical traversal defense, extension content types, ETag/304, and single byte ranges (206/416) · SSE with backpressure and `Last-Event-ID` reconnect replay · WebSockets (RFC 6455): handshake, fragmented messages, UTF-8 validation of text (1007), protocol-error refusals, ping/pong heartbeats, clean close.
-
-**Production bits** — CORS config · `M0_`-prefixed env-var configuration · health/readiness registry with a shutting-down flag · JSON-lines access logs to stdout · graceful shutdown on SIGTERM/SIGINT that drains in-flight requests, propagated to workers when only the supervisor is signalled · multi-worker fork supervisor (`M0_WORKERS=4`) — workers accept from one shared pre-fork listener, with a cross-worker SSE broadcast bus when the app wires it in.
-
-Most of that composed, in one small app: [apps/notes_api/](apps/notes_api/server.mojo)
-— CRUD with `:id` routes and a real `405` with `Allow`, the same note negotiated
-as JSON or HTML by the `Accept` header, `ETag`/`304`, static files under
-`/static/` (traversal probes get a `404`, asserted with `curl --path-as-is`),
-RFC 9457 `problem+json` on every error, CORS from a single `after_response`
-hook, and `M0_PORT` config.
-`uv run poe serve-notes` runs it; `poe smoke-notes` asserts each feature end to
-end.
-
-The same resource as a server-rendered htmx app:
-[apps/fragment_notes/](apps/fragment_notes/server.mojo). A view is a function
-the URL table names (`Views`, with the state borrowed for reads and `mut` for
-writes, compile-checked); the fragment names itself (`Fragment("notes")`
-writes the id once and `swap` generates the attribute that targets it); the
-framework decides page-versus-fragment from the request's headers — htmx 4's
-`HX-Request-Type`, or `HX-Request` from a client that does not send it
-(`page_or_fragment`, `Vary` on both) and wraps it in the app's own document (`PageShell`, whose
-`wrap` runs only when a document is wanted); routes are `comptime` patterns
-reversed by `url_for`; and
-`form(req)` keeps every value of a repeated checkbox key. `uv run poe
-serve-fragment-notes` runs it; `poe smoke-fragment-notes` pins its wire
-contract, which did not change while the app was refactored onto each of
-those in turn — the design is
-[a-fragment-that-names-itself](docs/notes/a-fragment-that-names-itself.md).
-
-The notes are private, which is what `m0-http`'s session module is for:
-`issue_session`/`verify_session` sign a stateless cookie
-(`v1.<kid>.<exp>.<subject>.<tag>`, HMAC-SHA256, the tag compared in
-constant time and the expiry against the host clock), `csrf_token` derives
-the token a form carries from that session's own tag so neither needs a
-store, and `session_cookie_line` builds the `Set-Cookie` for
-`ResponseCookieJar.add_raw` with `HttpOnly; SameSite=Lax; Path=/`. There
-is no middleware to hang a guard on, so a private view opens with one —
-an early return. The app takes one user from `M0_NOTES_USER` and
-`M0_NOTES_PASSWORD`, signs with `M0_NOTES_KEY`, and refuses to start
-without a password, a key of at least 32 bytes, or `M0_NOTES_SECURE`
-saying whether it is served over HTTPS; the design is
-[a-login-on-the-notes-app](docs/notes/a-login-on-the-notes-app.md). The
-glue it wrote by hand is `m0_http.login` now, which it runs on and which
-`m0 new --template auth` writes an application on
-([a-login-in-the-layer](docs/notes/a-login-in-the-layer.md)).
+[apps/fragment_notes/](apps/fragment_notes/server.mojo) is the same
+resource as a server-rendered htmx app, and the reference for the
+application layer: views a URL table names, fragments that name themselves,
+page-or-fragment decided from the request's headers, `comptime` routes
+reversed by `url_for`, and a signed-cookie login with CSRF from
+`m0_http.login`. [docs/MOJO_VIEWS.md](docs/MOJO_VIEWS.md) is that layer's
+page; `poe smoke-fragment-notes` pins the app's wire contract, which did
+not change while the app was refactored onto each piece
+([a-fragment-that-names-itself](docs/notes/a-fragment-that-names-itself.md)).
 
 ## Datastar
 
-`m0-datastar` speaks the [Datastar](https://data-star.dev/) v1.0.4 wire format, and
+`m0-datastar` speaks the [Datastar](https://data-star.dev/) wire format, and
 `DatastarStream` connects it to the server. A handler holds one, wires the four SSE hooks
 through it, and broadcasts after a mutation:
 
@@ -293,58 +257,25 @@ struct CounterHandler(HTTPService):
 `read_signals(req)` is the other direction — the browser sends its whole signal store, as a
 `datastar` query parameter on GET and DELETE and as the body otherwise.
 
-Run [apps/datastar_counter/](apps/datastar_counter/) with `uv run poe serve-counter` and open
-it in two tabs; pressing a button in one updates the other. It is also the
-reference for **cross-worker fan-out** on the Mojo host: with `M0_WORKERS=2` the
-host creates the `BroadcastBus` and a shared-memory counter before the fork,
-the stream joins the bus in each worker, and a button press handled by any
-worker updates tabs connected to every worker (`poe smoke-counter` proves its
-streams span workers before asserting exactly that).
-[apps/datastar_todo/](apps/datastar_todo/) is the same idea grown up: mutations
-broadcast rendered *HTML* (`patch_elements` morphs `<section id="todos">` by id
-in every tab), the per-item actions are `Router` routes with `:id`, todo
-text is HTML-escaped before it is broadcast, and the list is rows in SQLite
-(`M0_DB`, default `todos.db`) — kill the server and restart it, the list comes
-back. So does the *stream*: broadcast frames are logged to SQLite and restored
-into the `DatastarStream` journal at boot, so a tab reconnecting with
-`Last-Event-ID` is caught up by the new process instead of waiting for the
-next mutation. `poe smoke-todo` asserts both, and a third thing: with
-`M0_WORKERS=2` two processes share the list, each mutation holding SQLite's
-write lock until its frame is published. `uv run poe serve-todo`.
-[apps/blobs/](apps/blobs/) is a stream of *states* rather than changes: a
-producer thread steps a shared world of up to sixteen metaballs at 10 Hz,
-traces the outlines where they merge, and publishes each step as one
-full-state frame of `polygon()` clip-paths; a click drops a blob in every
-tab, and `DatastarStream(send_latest=True)` sends a new tab the current
-world instead of a replay. `uv run poe serve-blobs`; `poe smoke-blobs`
-gates it. It is also the first application on the **Mojo host**: below its
-own configuration check, its whole `main` is
-`serve[BlobsHandler, BlobsProducer](AppConfig())`. `serve` owns the
-listener, the workers and their shared accepts, the bus, the signals and
-the producer thread, so `M0_WORKERS=2` serves blobs from two processes and a
-click on either reaches the one producer
-([the-mojo-host](docs/notes/the-mojo-host.md)). A host binary takes
-m0serve's flags for the same settings (`--port`, `--workers`, `--threads`,
-…; `--help` lists them) and has its own `--doctor`, which prints the
-configuration it would serve as JSON and exits with the code serving would
-([flags-and-a-doctor-for-the-host](docs/notes/flags-and-a-doctor-for-the-host.md)).
+- [apps/datastar_counter/](apps/datastar_counter/) (`uv run poe
+  serve-counter`): a button pressed in one tab updates every other, on
+  every worker under `M0_WORKERS=2`. It is the reference for cross-worker
+  fan-out.
+- [apps/datastar_todo/](apps/datastar_todo/) (`serve-todo`): mutations
+  broadcast rendered HTML that every tab morphs by id, the list is rows in
+  SQLite, and the stream's frames are restored at boot, so a restart loses
+  neither the list nor a reconnecting tab's place in it.
+- [apps/blobs/](apps/blobs/) (`serve-blobs`): a stream of *states* rather
+  than changes — a shared world stepped by a producer thread and published
+  whole, so a new tab gets the current world instead of a replay. It runs
+  on the Mojo host, whose `serve[H, P](AppConfig())` is an application's
+  whole `main` ([docs/MOJO_HOST.md](docs/MOJO_HOST.md)).
 
-A note on Datastar v1.0.x attribute syntax, learned the hard way in a real
-browser: the stream opens from `data-init` (there is no `on-load` plugin), and
-keyed attributes are colon-separated — `data-on:click`, `data-bind:draft`. The
-hyphenated forms fail silently.
-
-The fragment layer speaks Datastar too. `Fragment[Datastar]("todos")` renders
-the same code as `Fragment[Htmx]` with Datastar's attributes — the todo demo's
-list is one — and `page_or_fragment` answers a `Datastar-Request: true` action
-with the bare fragment as `text/html`, which Datastar morphs into the element
-carrying the fragment's id. One renderer, two transports; what was checked
-against the bundle is [one-renderer-two-transports](docs/notes/one-renderer-two-transports.md).
-
-**SSE and WebSockets work from every `Server` entry point.** `listen_and_serve`
-runs the same event loop as `listen_and_serve_nonblocking`, which assigns
-`req.slot_id`, drains the outbox, and parses WebSocket frames; the blocking accept
-loop that answered every stream open with `409` is gone.
+Datastar 1.0 opens a stream from `data-init` and spells keyed attributes
+with a colon — `data-on:click`, `data-bind:draft`; the hyphenated forms
+fail silently. The fragment layer speaks Datastar too: `Fragment[Datastar]`
+renders the same code as `Fragment[Htmx]` with Datastar's attributes
+([one-renderer-two-transports](docs/notes/one-renderer-two-transports.md)).
 
 ## WebSockets
 
@@ -358,322 +289,50 @@ as `encode_ws_frame(...)` bytes that the shared outbox hook delivers. Idle
 sockets get protocol pings on the `M0_SSE_HEARTBEAT_MS` cadence, and every
 close path — close handshake, vanished client, failed ping — lands in
 `sse_slot_disconnected`. Run it with `uv run poe serve-ws`; `poe smoke-ws`
-proves the wire format against a from-scratch stdlib client, from the
-accept key to the closing TCP FIN.
+proves the wire format against a from-scratch stdlib client.
 
 [apps/ws_chat/](apps/ws_chat/server.mojo) grows that into the multi-worker
-shape: one chat room, every message reaching every socket, across workers.
-`m0_http.WSHub` is the handler-side registry (who is connected, what each
-socket should be sent), and under `M0_WORKERS>1` it rides the same
-`BroadcastBus` the SSE counter uses — the bus never cared what its payload
-bytes were. `uv run poe serve-chat` with `M0_WORKERS=2`, open a few tabs;
-`poe smoke-chat` proves a message sent on one worker's socket arrives on
-the other worker's, over the bus.
+shape: `m0_http.WSHub` is the handler-side registry, and under
+`M0_WORKERS>1` it rides the same `BroadcastBus` the SSE counter uses, so a
+message sent on one worker's socket reaches every socket on every worker
+(`poe smoke-chat`).
 
 ## Django, and anything else that speaks WSGI
 
-`m0-wsgi` embeds CPython and runs a WSGI application, so mojo-http can stand in
-for gunicorn. The whole integration is one field and one call:
-
-```mojo
-from m0_wsgi import WSGIApp
-
-struct DjangoHandler(HTTPService):
-    var app: WSGIApp
-
-    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
-        return self.app.serve(req)
-    ...
-
-def main() raises:
-    var app = WSGIApp(
-        "djangoproj.wsgi", server_name="0.0.0.0", server_port="8080",
-        project_path="apps/django_wsgi",
-    )
-    Server().listen_and_serve("0.0.0.0:8080", DjangoHandler(app^))
-```
-
-That handler is written once, as `WSGIHandler`, and **`m0serve`** is the
-binary that runs it — the uvicorn-shaped entry point:
+`m0-wsgi` embeds CPython, and **`m0serve`** is the binary built on it, the
+uvicorn-shaped entry point the top of this page installs from PyPI. From
+this repository:
 
 ```bash
 uv run poe build-serve                                     # -> bin/m0serve
-bin/m0serve myproject.wsgi:application --app-dir /path/to/project \
-    --host 0.0.0.0 --port 8000 --workers 4 \
-    --static /static/=/path/to/static --static-cache-control 'public, max-age=3600'
+bin/m0serve myproject.wsgi:application --app-dir /path/to/project --workers 4
 ```
 
-It prints one line per worker when it is up:
+[docs/RUNNING.md](docs/RUNNING.md) is its reference: how the callable is
+found and its protocol detected, the ready line, the execution modes and
+when to use each, mounts, `--realtime`, `--doctor`, limits, exit codes and
+what to put in front of it. [docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md) is
+why there are two execution modes, and [docs/BENCHMARKS.md](docs/BENCHMARKS.md)
+how the result compares with gunicorn, uvicorn and Granian.
 
-```text
-🔥 m0serve: myproject.wsgi:application on http://0.0.0.0:8000 (protocol=wsgi workers=4) blocking-threads=8 (auto)
-```
+The example applications are Python-only projects that `bin/m0serve`
+serves, each with a smoke test of its own:
 
-**That line is the ready signal**, and it is printed *after* the application
-has been imported and, for ASGI, after its lifespan startup has completed —
-so a project whose import or startup fails prints the error and exits 1
-rather than announcing itself first. Startup failures and the
-shutdown report use the same `m0serve: ` prefix without the flame. So do
-three kinds of one-off notice: an `M0_*` value that could not be read,
-listed at startup, and the first request body each event loop refuses for
-size or for time, which names the limit and its knobs. Nothing else is
-written to stdout unless `--access-log` is on.
+- [apps/django_wsgi/](apps/django_wsgi/) and [apps/flask_wsgi/](apps/flask_wsgi/)
+  run the same assertions ([scripts/wsgi_framework_contract.sh](scripts/wsgi_framework_contract.sh))
+  — routing, cookies in both directions, body round trips, error
+  handling — because every WSGI framework does those identically.
+- [apps/wsgi_bare/](apps/wsgi_bare/) is a plain PEP 3333 callable with no
+  third-party imports, the conformance target for the parts of the spec a
+  framework never exercises ([docs/WSGI_CONFORMANCE.md](docs/WSGI_CONFORMANCE.md)).
+- [apps/django_realtime/](apps/django_realtime/) is the realtime contract
+  on Django: views hold SSE streams and WebSockets by answering with
+  `M0-Hold`, publish with `m0pub`, and receive inbound WebSocket messages
+  as ordinary `POST`s — Pushpin's GRIP collapsed into one process.
 
-Do not scrape it from an orchestrator, though: readiness there is
-`--health-path /health` (a probe endpoint answered in Mojo, before the
-application) or a plain TCP check on the port, and `m0serve --doctor` for a
-configuration report that exits with the code the server itself would use.
-Before its banner each worker prints `[worker N] pid=P armed for a
-graceful stop`: a SIGTERM drains it from then on (or, during an ASGI lifespan
-startup, ends it with exit 0), and a script that stops the server soon after
-starting it waits for that line from every worker, since one answering says
-nothing of another still importing.
-
-`MODULE[:ATTR]` names the callable (`ATTR` defaults to `application`, and a
-bare `MODULE` also tries `MODULE.asgi`, `MODULE.wsgi`, `MODULE:app` and
-`MODULE.main:app` by convention); **the protocol is detected from the
-object** — a coroutine-function callable is served as ASGI, anything else as
-WSGI, `--protocol` overrides — so `bin/m0serve main:app` runs a FastHTML,
-Starlette, or FastAPI app from the same binary, with real await-concurrency
-on a per-loop asyncio executor — requests overlap wherever the application
-awaits, streaming responses stream for real, and `websocket` scopes work,
-so FastHTML's whole surface runs with no configuration
-([the design record](docs/notes/wsgi-vs-asgi-history.md) §8).
-`--app-dir` is prepended to `sys.path` so the module imports, relative to the
-current directory and defaulting to `.`.
-
-**`--mount PREFIX=SPEC` hosts several applications in one process**, routed
-by longest prefix before either sees the request:
-
-```bash
-bin/m0serve --mount /=shop.wsgi --mount /app=live.asgi \
-    --app-dir apps/hybrid_mix --port 8099
-```
-
-**Each mount runs in its own native execution mode** — the sync Django app
-on handler-pool threads, the async FastHTML app on the asyncio executor —
-sharing one listener, one set of workers and one graceful shutdown. With
-four blocking 2-second Django views holding every pool thread, the async
-mount still answers at p99 2.8 ms. uvicorn, daphne and Granian each host
-exactly one callable, so mixing otherwise means two processes behind a
-proxy.
-
-Each mount detects its own protocol and gets its own bridge, and the prefix
-reaches the application the way its protocol expects it — `SCRIPT_NAME` with
-`PATH_INFO` trimmed for WSGI, `root_path` with the whole `path` for ASGI —
-so `reverse()` and `url_for()` generate links that actually work. A path no
-mount claims is a 404 answered in Mojo, never entering Python. Any mix:
-every ASGI mount gets its own executor, any number of WSGI mounts share
-the pool ([the design record §9](docs/notes/wsgi-vs-asgi-history.md)). Every `M0_*` variable keeps its
-meaning (`M0_HOST`, `M0_PORT`, `M0_WORKERS`, `M0_ACCESS_LOG`, …) with the
-matching flag winning over it, and flags are strict: `--port 80eighty` is a
-usage error, not a silent default (an `M0_*` value that cannot be read is
-ignored, and m0serve says so). `--metrics` and `--idle-timeout` reach
-server tunings the environment cannot; `--blocking-threads N` puts a pool of
-handler threads behind each event loop so a slow view stops holding the
-connections pinned behind it — and when no topology flag or variable is
-given at all, the protocol picks the default: WSGI gets a pool of
-`min(cores, 8)`, ASGI gets the asyncio executor (any explicit value wins,
-`M0_BLOCKING_THREADS=0` restores the WSGI single loop, and `--realtime`
-takes the same default); and `--reload [--reload-dir DIR]` re-forks the
-workers onto changed Python in ~300 ms without re-exec'ing the binary.
-`--help` has the rest; exit codes are
-2 for a bad command line, 78 for a configuration the server will not run,
-and 1 for an application that would not load — including under
-`--workers N`, where a supervisor that gives up on respawning says so
-instead of exiting 0.
-
-**`--doctor` answers "will this run?" without running it.** It prints one
-JSON object — platform and wheel architecture, the interpreter it resolved
-and the virtualenv it came from, the spec discovery actually chose and the
-protocol it classified as, the resolved topology, and a `checks` array whose
-failures each carry a `detail`, a `fix` and the `exit` code that check would
-cause — then starts nothing: no bind, no fork, no second import.
-
-```console
-$ m0serve --doctor myproject.wsgi --threads 4 | jq '{exit, checks: [.checks[] | select(.ok | not)]}'
-{
-  "exit": 78,
-  "checks": [
-    {
-      "name": "free-threading",
-      "ok": false,
-      "detail": "--threads 4 requires free-threaded CPython with the GIL disabled; this is not a free-threaded build",
-      "fix": "use --workers N instead, or run on 3.14t with PYTHON_GIL=0",
-      "exit": 78
-    }
-  ]
-}
-```
-
-The contract worth relying on is the exit code: **`--doctor` exits with the
-code `m0serve` itself would exit with for the same arguments.** That is kept
-true by running both over every refusal and comparing (`poe smoke-doctor`),
-because the doctor mirrors the startup path's check order rather than sharing
-its control flow — a diagnostic that reports "fine" where the server refuses
-would be worse than none. A bare `m0serve --doctor` with no application is
-the environment check: platform, interpreter, cores, and exit 0.
-
-The binary resolves libpython from the `python3` on `PATH`: run it from a
-virtualenv that has your framework installed, or set `MOJO_PYTHON_LIBRARY` to
-the shared library. Build once, serve anywhere the interpreter is.
-
-[apps/django_wsgi/](apps/django_wsgi/) is a real Django project with no Mojo
-in it, served by exactly that command (`uv run poe serve-django`).
-
-[apps/flask_wsgi/](apps/flask_wsgi/) is the same binary running Flask instead.
-Both rows run the same assertions —
-[scripts/wsgi_framework_contract.sh](scripts/wsgi_framework_contract.sh) — because
-routing, cookies in both directions, body round trips and error handling are
-things every WSGI framework does identically. Adding Flask needed no change to
-`m0-wsgi` at all, and the rows are now Python-only: one binary serves all
-three, which is the host-is-framework-agnostic claim made structural.
-
-[apps/wsgi_bare/](apps/wsgi_bare/) is the same binary with no framework at all —
-a plain PEP 3333 callable, zero third-party imports. It is what makes the claim
-above demonstrable rather than merely asserted, and it is the conformance target
-for `uv run poe smoke-wsgi`, which checks the parts of the spec a framework
-never exercises: the `write()` callable, a second `start_response`, multi-chunk
-iterables, `wsgi.input` read patterns, and the CGI environ transform. See
-[docs/WSGI_CONFORMANCE.md](docs/WSGI_CONFORMANCE.md).
-
-[apps/django_realtime/](apps/django_realtime/) is the row that answers the
-question WSGI is usually retired over. A synchronous Django view holds a
-connection by *answering with headers* — `M0-Hold: stream` for SSE,
-`M0-Hold: websocket` for a WebSocket — and the Mojo layer takes it from
-there: the 101 handshake Django cannot emit, the heartbeats, the disconnect
-cleanup, the fan-out. Inbound WebSocket messages come back to Django as
-ordinary `POST`s. Publishing is `os.write` from pure Python onto the
-server's broadcast bus, so one line in a sync view reaches SSE clients *and*
-WebSocket clients on every worker, with numbered event ids that let a
-reconnecting client's `Last-Event-ID` be caught up from a per-loop journal
-(`--replay-frames`), or told with one `m0-gap` event that it cannot be.
-No ASGI, no Channels, no async. The pattern is
-Pushpin's GRIP collapsed into one process; the reasoning, the measurements,
-and the remaining limits are in
-[docs/WSGI_VS_ASGI.md](docs/WSGI_VS_ASGI.md). Like the other WSGI rows it is
-a Python-only project: `m0serve --realtime --health-path /health` is the
-whole server side of it. Run it with `uv run poe serve-django-realtime`.
-
-**Why the boundary looks the way it does.** WSGI hands the application a
-`start_response` callable that the *server* supplies, and building a Python
-callable that closes over Mojo state is the hardest thing at this boundary — so
-a small Python shim does it instead. The shim is a string `exec`'d at startup,
-not a file, so there is nothing to locate at run time. Mojo builds each
-request's WSGI environ itself, through the raw CPython C API — `PyDict_New`,
-`PyDict_SetItem`, `PyUnicode_DecodeUTF8` — and hands the finished dict to the
-shim, which supplies `start_response`, calls the application, and returns
-`(status, headers, body)`.
-
-The C API is not a micro-optimization. Through Mojo 1.0 it was the only door
-available: `PythonObject` interop leaked a reference per call argument and
-per `__setitem__` value, so any per-request Python object passed the obvious
-way was pinned forever. Mojo 1.1.0 fixed that (pinned here 2026-09-18), and
-the C API remains the path because it is several times faster and because
-nothing else can build a `bytes`. It refcounts explicitly, which is what
-lets the
-environ be built at all — and it is why every string is `Py_DecRef`'d after
-`PyDict_SetItem` takes its own reference. `poe smoke-django` asserts the
-result: flat memory across 10k requests. Building the environ here rather
-than in Python is also worth 1.57x end to end
-([docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md)).
-
-Bodies cross through the same door: `std.python` binds no `bytes` API, but
-the stdlib's own symbol loader reaches the functions it left out, so the
-request body becomes a real `bytes` via `PyBytes_FromStringAndSize` (one
-copy, and `io.BytesIO(bytes)` shares it rather than copying again) and the
-response body is read back through `PyBytes_AsString`. A `String` round trip
-would corrupt any byte above 0x7F; a smoke asserts a body of all 256 byte
-values returns unchanged.
-
-**Limits**, all inherited from the server rather than the bridge:
-
-- **Concurrency is loops, and optionally a handler pool behind each.**
-  `--workers N` preforks N processes that all accept from one shared
-  listener, gunicorn-style — the fork happens *before* the first Python
-  call, never after, because forking a live CPython is unsafe — or, on
-  free-threaded CPython (3.14t or newer with the GIL off — 3.13t is a
-  dead end that systematically immortalizes objects, which is why Django
-  dropped it from its own CI), `--threads N` runs N
-  loops on N threads in **one** process: one RSS, the app imported once, and
-  none of the fork-after-init hazards. A GIL-enabled interpreter refuses
-  `--threads` outright (exit 78) rather than run loops the GIL would
-  serialize.
-
-  Either way a keep-alive connection stays pinned to the loop that accepted
-  it, and by default that loop calls `HTTPService.func` itself — so one slow
-  view stops every connection it holds. That is measurable and it is large:
-  one slow view beside fast traffic leaves fast-request p99 ~120x worse in
-  *both* modes while p50 does not move at all. **`--blocking-threads N` is
-  the fix**, and it composes with either mode: the loop becomes an acceptor
-  that hands each request to one of N handler threads and goes straight back
-  to waiting, so no connection is hostage to whichever request some other
-  connection is running. On `apps/wsgi_bare` a fast request is answered in
-  1 ms with two 1.5 s views in flight, against 2.7 s for the same server
-  without the flag. It works on a GIL-enabled interpreter too — a view
-  waiting on a database or a socket releases the GIL, which is the workload
-  it exists for — and it composes with `--realtime`: a hold a pool thread
-  takes is forwarded to the loop's registries, so a held-stream server no
-  longer runs its views on the loop and one slow view no longer stalls
-  every stream on that worker. `--mount` composes with `--realtime` too, so
-  one process can hold the streams a synchronous app publishes to *and* run
-  an ASGI mount for the streams whose view is the producer. Sockets travel
-  the same seam: a pool thread performs the 101, and inbound frames come
-  back to the mount whose view gated the upgrade.
-
-  <!-- observed: docs/WSGI_PERFORMANCE.md -->Benchmarked against gunicorn
-  at 1.4–1.5x its throughput on a GIL-enabled 3.13 container and ~3.5x on
-  free-threaded 3.14.7t, with comparable-or-better p99 in both keep-alive
-  and close-per-request modes.
-  Against **Granian**, whose own `--blocking-threads` is the architecture
-  copied above, m0serve is **level on raw WSGI throughput**: one worker and
-  one handler thread each, <!-- num:m0-w1-rps-k@1 -->196.5<!-- /num -->k
-  against <!-- num:granian-w1-rps-k@1 -->195.9<!-- /num -->k rps on a bare callable, <!-- num:m0-wsgi-rps-k@1 -->111.0<!-- /num -->k
-  against <!-- num:granian-rps-k@1 -->109.5<!-- /num -->k per measured core, <!-- num:m0-per-granian@2 -->1.01<!-- /num -->x,
-  inside the spread between recordings. The
-  split prices each layer. `apps/hello`, the same server with no Python
-  in the path, runs at <!-- num:hello-rps-k@1 -->229.4<!-- /num -->k rps/core; the bare app run
-  inline on that loop, one thread, runs at
-  <!-- num:m0-loop-rps-k@1 -->134.3<!-- /num -->k, so m0serve's own bridge costs <!-- num:bridge-tax@2 -->1.71<!-- /num -->x.
-  <!-- observed: docs/notes/loop-thread-bound.md, docs/notes/loop-user-space.md -->Measured
-  per thread, the event-loop thread bounded the one-handler-thread row, at
-  about 7.2 µs of CPU per request against 5.3 for Granian's tokio thread
-  ([docs/notes/loop-thread-bound.md](docs/notes/loop-thread-bound.md)),
-  and the bridge was cheaper per request than Granian's. The in-memory pool
-  handoff and the rebuilt header path brought the loop to the tokio
-  thread's cost, 5.1 µs per request at 16 connections
-  ([docs/notes/loop-user-space.md](docs/notes/loop-user-space.md)); the two
-  rows are now <!-- num:w1-rps-gap-pct@1 -->0.3<!-- /num --> % apart in throughput.
-
-  Per *core*, because the comparator was not running one: Granian's
-  `--workers 1` was measured at <!-- num:granian-w1-cores@2 -->1.79<!-- /num --> cores across its
-  runtime's I/O threads. Every number here cites a dated artifact:
-  [docs/BENCHMARKS.md](docs/BENCHMARKS.md) is the page, and it states the
-  ASGI comparison against uvicorn beside this one;
-  [docs/WSGI_PERFORMANCE.md](docs/WSGI_PERFORMANCE.md) is the working
-  record.
-- **Unsized WSGI bodies stream; sized ones buffer.** A generator or
-  iterator the application did not size — Django's
-  `StreamingHttpResponse`, a Flask `Response(generator)` — streams from a
-  `--blocking-threads` pool thread (the WSGI zero-config default) through
-  the same chunk channel the ASGI executor uses: chunked on HTTP/1.1 with
-  the connection reusable after, close-delimited on HTTP/1.0, `close()`
-  called, and the thread back in the pool when the client leaves. A body
-  the application sized (`Content-Length` — every Flask page, every Django
-  page behind `CommonMiddleware`, `FileResponse`) and every list body is
-  buffered and sent with its measured length, as before; so is everything
-  on a server with no pool (`--blocking-threads 0`, unmounted
-  `--realtime`), where producing a body on the loop thread would be the
-  hostage problem again. A generator that raises after its head truncates
-  the body honestly — the connection closes without the chunked
-  terminator. Still buffered: an iterator that carries its own
-  `Content-Length` (`FileResponse`).
-- **Request bodies are fully buffered too**, capped by `--max-body`
-  (`M0_MAX_BODY`, default `4m`). Raise it for uploads.
-- **No TLS.** `wsgi.url_scheme` is always `http`; terminate at a proxy and set
-  Django's `SECURE_PROXY_SSL_HEADER`.
-- Django is a **dev dependency** here, for the example and its smoke test. The
-  package itself has no opinion about which WSGI framework you run.
+How the bridge crosses into CPython (each request's environ built in Mojo
+through the C API, bodies moved as real `bytes`) and the rules that keep it
+from leaking are [packages/m0-wsgi/AGENTS.md](packages/m0-wsgi/AGENTS.md).
 
 ## SQLite
 
@@ -701,14 +360,16 @@ Both are `Movable` but **not** `Copyable`, so a handle cannot be duplicated into
 a second owner that would close it twice — move with `^` to transfer ownership.
 `open()` applies the pragmas a server actually wants: `journal_mode=WAL`,
 `synchronous=NORMAL`, `foreign_keys=ON`, plus a 5-second busy timeout so a
-contended write waits instead of failing on contact. Transactions are explicit
-(`begin` / `commit` / `rollback`); there is no scope guard, because Mojo has no
-`defer` and a destructor that rolled back would make correctness depend on drop
-order.
+contended write waits instead of failing on contact. It raises on a target
+that cannot do WAL — `:memory:`, a temp database, some network filesystems
+— rather than quietly falling back to a rollback journal; use
+`open_memory()` for an in-memory database. Transactions are explicit
+(`begin` / `commit` / `rollback`); there is no scope guard, because Mojo has
+no `defer` and a destructor that rolled back would make correctness depend
+on drop order.
 
-**Wrap bulk writes in a transaction.** Ten thousand inserts take 7 ms inside one
-`begin`/`commit` and 325 ms without — autocommit gives each row its own
-transaction. It is a 46x difference, and the largest single effect measured in
+**Wrap bulk writes in a transaction.** Autocommit gives each row its own
+transaction, the largest single effect measured in
 [docs/SQLITE_PERFORMANCE.md](docs/SQLITE_PERFORMANCE.md), which also covers
 `mmap_size`, variable-length `IN` lists, and how `m0_array` relates to the
 `carray()` extension it replaces.
@@ -723,29 +384,40 @@ db.commit()
 ```
 
 **Reading in bulk.** `column_blob` copies with one `memcpy`, and
-`column_blob_into` reuses a caller buffer across a scan instead of allocating
-per row (3.3x on 4KB blobs over 100k rows). `fetch_ints` / `fetch_floats` /
-`fetch_texts` append a whole column into a caller-owned `List`; they are a
-shape convenience rather than a speed-up — SQLite has no bulk column API — but
-a `List` per column is what a SIMD pass over the results wants. They signal
-exhaustion with a **short read**, so stop when you get fewer rows than you
-asked for rather than looping until zero.
+`column_blob_into` reuses a caller buffer across a scan instead of
+allocating per row. `fetch_ints` / `fetch_floats` / `fetch_texts` append a
+whole column into a caller-owned `List`; they are a shape convenience
+rather than a speed-up — SQLite has no bulk column API — but a `List` per
+column is what a SIMD pass over the results wants. They signal exhaustion
+with a **short read**, so stop when you get fewer rows than you asked for
+rather than looping until zero.
 
 `prepare()` compiles exactly one statement; text after the first — or text that
 compiles to nothing, like a lone comment — is an error rather than silently
-ignored. Use `execute()` for a multi-statement script.
+ignored. Use `execute()` for a multi-statement script. Column indices are
+checked: an out-of-range index raises rather than reading back as a stored
+NULL.
 
 **Errors carry a code.** Every failure that had a SQLite result code raises a
 message ending in `(rc=NN)`, and `error_code()` recovers it, so retrying a
 `SQLITE_BUSY` or reporting a `SQLITE_CONSTRAINT` does not mean parsing text.
 The codes worth branching on are exported by name.
 
+```mojo
+from m0_sqlite import error_code, SQLITE_BUSY, SQLITE_CONSTRAINT
+
+try:
+    db.begin_immediate()
+except e:
+    if error_code(String(e)) == SQLITE_BUSY:
+        ...
+```
+
 **Functions written in Mojo.** `create_function` registers a type as a scalar
 SQL function on a connection. It runs inside the query plan and reads each
 argument where SQLite holds it, so a kernel over a large column costs the
-kernel and not a copy out of the database: a dot product over 100,000
-384-float embeddings scanned them in 8.6 ms, twice as fast as sqlite-vec's
-`vec_distance_l2`, which copies both vectors on every call.
+kernel and not a copy out of the database, which sqlite-vec's
+`vec_distance_l2` makes of both vectors on every call.
 
 ```mojo
 struct Dot(ScalarFunction):
@@ -762,48 +434,22 @@ db.create_function("dot", Dot())
 var q = db.prepare("SELECT id FROM notes ORDER BY dot(embedding, ?1) DESC LIMIT 10")
 ```
 
-The schema never computes with a registered function: SQLite refuses it in a
-CHECK constraint, a generated column or an index when they are created, in a
-stored view when it is used, in a trigger when it fires and in a column
-DEFAULT when an INSERT takes it. It does not refuse creating a view, a trigger
-or a DEFAULT that names one, and such a trigger then fails every write to its
-table, from every program, until it is dropped — so do not name a registered
-function in any of them. A function that says it is not deterministic needs
-SQLite 3.50.0; any other, 3.31.0. What a function may and may not do is
-[docs/notes/functions-inside-the-query.md](docs/notes/functions-inside-the-query.md).
-
-```mojo
-from m0_sqlite import error_code, SQLITE_BUSY, SQLITE_CONSTRAINT
-
-try:
-    db.begin_immediate()
-except e:
-    if error_code(String(e)) == SQLITE_BUSY:
-        ...
-```
-
-**Column indices are checked.** SQLite calls an out-of-range index undefined
-behaviour and in practice answers 0, `""` and `SQLITE_NULL` to it — so a typo
-used to read back as a stored NULL, and `column_name` dereferenced the NULL
-pointer it got and crashed. Every reader now raises instead. It costs one
-`sqlite3_column_count` per cell, measured at 1.02 ns/row.
-
-`open()` raises on a target that cannot do WAL — `:memory:`, a temp database,
-some network filesystems — rather than quietly falling back to a rollback
-journal and delivering none of the concurrency it advertises. Use
-`open_memory()` for an in-memory database.
+**Do not name a registered function in the schema.** SQLite refuses one in
+a CHECK constraint, a generated column or an index when they are created,
+but not in a view, a trigger or a column DEFAULT, and such a trigger then
+fails every write to its table, from every program, until it is dropped.
+What a function may and may not do, and the SQLite version each kind needs,
+is [docs/notes/functions-inside-the-query.md](docs/notes/functions-inside-the-query.md).
 
 **Loading.** libsqlite3 is opened at run time, not linked: nothing in this
-repo carries it on a link line, so a binary that never opens a database needs
-no library present, and `mojo run` works for every test on both platforms
-(the JIT resolves symbols only from libraries already in its process, which
-used to fail on Linux with `Symbols not found: [sqlite3_open_v2, ...]`).
-`Connection` opens it from `M0_LIBSQLITE3`, else a search path that tries the
-bare name and then the places a package manager puts one; an absent library is
-one error naming every path tried, and one below 3.20.0, built without
-threads, or missing an entry point is refused naming what it found. Linux
-needs the runtime library (`libsqlite3-0` on Debian and Ubuntu); the `-dev`
-package is only for the C layout guard's `sqlite3.h`.
+repo carries it on a link line, so a binary that never opens a database
+needs no library present, and `mojo run` works for every test on both
+platforms. `Connection` opens it from `M0_LIBSQLITE3`, else a search path
+that tries the bare name and then the places a package manager puts one; an
+absent library is one error naming every path tried, and one too old, built
+without threads, or missing an entry point is refused naming what it found.
+Linux needs the runtime library (`libsqlite3-0` on Debian and Ubuntu); the
+`-dev` package is only for the C layout guard's `sqlite3.h`.
 
 **Stamps.** `install_stamps(db)` and `watch(db, "notes")` put four
 triggers on a table, after which every row written there, by any program,
@@ -814,8 +460,7 @@ costs and the two writes a stamp cannot see).
 
 **Bulk arrays.** `m0_array(?)` is an opt-in virtual table that streams a Mojo
 `List` into SQL without copying it, so N rows insert in one `sqlite3_step`
-instead of N — measured at ~3x against the per-row bind/step/reset loop at both
-10k and 200k rows (`uv run poe bench-sqlite`).
+instead of N (`uv run poe bench-sqlite` measures it).
 
 ```mojo
 db.register_array_module()          # per connection, not per process
@@ -832,11 +477,11 @@ there is no `bind_array` to get wrong. The trade is that these do not compose
 with incremental stepping. See
 [docs/sqlite-vtab-feasibility.md](docs/sqlite-vtab-feasibility.md) for the
 measurements and the reasoning, including why this is worth it for ingest and
-not for `IN` clauses. Needs SQLite 3.26+; `register_array_module` says so if not.
+not for `IN` clauses.
 
-**Not implemented:** statement caching. It was measured in the benchmark that
-chose SQLite and came out within noise at realistic row counts (~10% at N=50),
-so it is not worth the ownership complexity yet.
+**Not implemented:** statement caching, and a connection pool. Caching was
+measured in the benchmark that chose SQLite and came out within noise at
+realistic row counts, so it is not worth the ownership complexity yet.
 
 ## PostgreSQL
 
@@ -862,9 +507,7 @@ for r in range(rows.rows):     # rows and columns are both 0-based
 libpq dependency on its link line — `bin/m0serve` and the wheel included — so a
 server that never names a database needs no library present, and an absent one
 is a single error naming every path that was tried. `M0_LIBPQ` names the file
-outright. Linking instead would mean an `-L` and an rpath into a directory that
-exists on one machine, which is the defect the release tooling already exists to
-repair for libpython.
+outright.
 
 **Parameters are bound with explicit types.** A parameter Postgres resolves as
 `unknown` means whatever the surrounding expression makes it, so `Params` sends
@@ -886,7 +529,7 @@ every default is overridable by naming it in the URL: a connect timeout, a
 statement timeout (the twin of SQLite's busy timeout — a pool thread stuck in a
 slow query is a thread gone), `client_encoding=UTF8`, an application name, and
 TCP keepalive timings plus `tcp_user_timeout` that notice a dropped connection
-in about a minute rather than the OS's two hours.
+far sooner than the operating system would.
 `open_readonly()` adds a read-only transaction default, the belt to a read-only
 role's braces. Every URL is redacted before it reaches an error, a log or
 `--doctor`.
@@ -899,8 +542,7 @@ see is a hidden double write.
 
 **One connection per thread**, never shared, which is libpq's own rule. Count
 them before deploying: workers times blocking threads times Postgres-backed
-mounts is what the server opens, and a default `max_connections` of 100 is
-reached by four workers of eight threads across three mounts.
+mounts is what the server opens, against the server's `max_connections`.
 
 **`LISTEN`/`NOTIFY` is supported**, which is what lets a writer outside the
 server process — a trigger, a cron job, `psql` — reach a held SSE stream that
@@ -914,59 +556,25 @@ is silently a different number.
 
 ## Status and limits
 
-[docs/SPEC.md](docs/SPEC.md) is the full capability matrix — every row carries its evidence, and `poe check-docs` fails if a row claims a CI gate that does not exist or does not run. The bullets below are the short version.
+[docs/SPEC.md](docs/SPEC.md) is the full capability matrix — every row carries its evidence, and `poe check-docs` fails if a row claims a CI gate that does not exist or does not run. [docs/ROADMAP.md](docs/ROADMAP.md#known-issues) holds the known issues, each with what would retire it. The bullets below are what building on this repository needs to know.
 
-- HTTP/1.1 only. No HTTP/2, no TLS — terminate at a proxy.
-- Linux `x86_64` and `aarch64` (`epoll`), macOS `arm64` (`kqueue`). Architectures matter here: Modular ships no Intel Mac toolchain, so macOS `x86_64` is not buildable at all. See the install table above.
-- Mojo 1.1, pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
+- The Mojo toolchain is pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
 - Building on Linux needs two system packages: a C compiler (`mojo build` shells out for linking) and `patchelf` (the binaries record a `$ORIGIN` `DT_RUNPATH` so they find the Mojo runtime beside themselves). `build-essential patchelf` covers it; `m0-sqlite` opens the runtime `libsqlite3` at run time, and `verify-vtab-layout` alone wants `libsqlite3-dev` for its header. None are needed on macOS.
-- `m0-wsgi` needs a discoverable `libpython` (Python 3.10–3.14; this repo pins 3.13). Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
-- The served contract is stable from 1.0: `m0serve`'s flags and environment variables, the `M0-Hold`/`M0-Channel` headers, and `m0pub.publish()`. A minor release does not break them; everything else — the Mojo APIs, the package layout, the fork's internals — is still free to move.
-- **SSE fan-out is single-process by default.** `M0_WORKERS>1` forks, and each worker gets its own subscriber registry. The `BroadcastBus` lifts this when wired in: created before the fork (one datagram channel per worker, alongside a `SharedAtomics` slot that keeps event ids unique across workers), it carries every broadcast to every worker's subscribers — `apps/datastar_counter` is the reference wiring, asserted by `poe smoke-counter`. Cross-worker ordering is best-effort: two workers broadcasting concurrently can reach a subscriber in either order, and the redelivery filter keeps the newer id.
-- **Server-initiated pushes go through `tick`.** The `tick(now_ms)` hook fires every `M0_APP_TICK_MS` milliseconds (0, the default, disables it) on the event loop's own timer — broadcast from it and the same loop pass delivers, no inbound request involved; the counter demo's live uptime clock is the reference. It runs on the event loop thread, so keep it quick; handlers with slower cadences sub-schedule off `now_ms`. (Idle-stream `: heartbeat` comments are separate and automatic, every `M0_SSE_HEARTBEAT_MS`.)
-- `m0-sqlite` has no statement cache and no connection pool; see above.
-- SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal (default 64 frames); a client further behind than that is sent none of the history, `caught_up(slot)` answers false, and the view queues its current state for that connection alone with `send_to`. In-process replay works out of the box — replay across a *restart* additionally needs the app to persist the journal and restore it at boot, which the todo demo does (SQLite `events` table, ~15 lines). A WSGI hold (`M0-Hold: stream`) is caught up from a per-loop journal of the last `--replay-frames` published frames (`M0_REPLAY_FRAMES`, default 64): every frame of its channel it missed, in order, before the live feed. That journal is not persisted, so a client further behind than it reaches, or reconnecting across a restart, is sent none of them and one unnumbered `event: m0-gap` frame, on which it fetches the current state ([RUNNING.md](docs/RUNNING.md)).
+- `m0-wsgi` needs a discoverable `libpython`. Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
+- **SSE fan-out is per process unless the application joins the `BroadcastBus`.** Under `M0_WORKERS>1` each worker has its own subscribers; the bus, created before the fork, carries every broadcast to every worker's. The Mojo host wires it ([docs/MOJO_HOST.md](docs/MOJO_HOST.md)), and `apps/datastar_counter` is the reference. Cross-worker ordering is best-effort, and the redelivery filter keeps the newer id.
+- SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal; a client further behind than that is sent none of the history, `caught_up(slot)` answers false, and the view queues its current state for that connection alone with `send_to`. Replay across a *restart* needs the application to persist the journal and restore it at boot, as the todo demo does. A WSGI hold is caught up from m0serve's own per-loop journal, and told with one `m0-gap` frame when it cannot be ([docs/RUNNING.md](docs/RUNNING.md#the-realtime-contract)).
 
 ## Development
 
 ```bash
-uv run poe                  # list every task
+uv run poe                  # every task, with what it does
 uv run poe build-all        # compile each package to .mojoc
 uv run poe test-all         # 1783 unit tests, then compiles every example
-uv run poe serve-notes      # the framework showcase (notes CRUD) on :8080
-uv run poe serve-counter    # the Datastar counter demo on :8080
-uv run poe serve-todo       # the Datastar todo demo (multi-tab sync) on :8080
-uv run poe serve-blobs      # a shared world stepped in Mojo, pushed over SSE, on :8080
-uv run poe serve-django     # the Django WSGI example on :8080
-uv run poe serve-wsgi-bare  # the framework-free WSGI example on :8086
-uv run poe serve-flask      # the Flask WSGI example on :8087
-uv run poe build-site       # render the docs site from these pages into dist/site
-uv run poe serve-site       # ...and serve it on :8180 with m0serve, llms.txt at the root
-uv run poe smoke-hello      # start the hello server, assert /health, stop
-uv run poe smoke-notes      # assert routing, negotiation, ETag/304, static files, CORS
-uv run poe smoke-ws         # speak RFC 6455 raw: handshake, echo, fragments, ping/pong, close
-uv run poe smoke-chat       # one chat message reaches sockets on BOTH workers, over the bus
-uv run poe smoke-counter    # assert SSE broadcast, heartbeats, disconnect cleanup, app tick, fan-out
-uv run poe smoke-todo       # assert broadcasts, restart survival, and Last-Event-ID replay
-uv run poe smoke-wsgi       # PEP 3333 conformance against a bare WSGI callable
-uv run poe smoke-flask      # the same framework contract, against Flask
-uv run poe smoke-django     # assert a Django request/response cycle end to end
-uv run poe build-ffi        # emit the C-ABI shared library (libm0core.so/.dylib)
-uv run poe smoke-ffi        # load the shared library via ctypes, assert known vectors
-uv run poe bench-sqlite     # benchmark m0-sqlite blob reads and bulk ingest
+uv run poe check-docs       # the docs gate, as the required check runs it
+uv run poe canary           # the whole suite against the Mojo nightly, then restore the pin
 ```
 
 Cross-package imports resolve through the `.mojoc` files, so run `build-all` after changing a package's sources — including for the editor, or the LSP reports phantom unresolved imports. Copy `.vscode/settings.example.json` to `.vscode/settings.json` and fill in your absolute path.
-
-To probe an upcoming Mojo nightly without changing the pin:
-
-```bash
-uv run poe nightly-try           # swap the venv onto the latest nightly
-uv run --no-sync poe test-all    # --no-sync is REQUIRED while on a nightly
-uv run poe nightly-restore       # back to the pinned stable toolchain
-```
-
-A plain `uv run` re-syncs the venv to `uv.lock` and silently reverts the nightly, which would make the check a no-op.
 
 ## License and attribution
 

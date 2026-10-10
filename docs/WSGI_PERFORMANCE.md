@@ -1107,7 +1107,7 @@ the asyncio-loop comparator.
 **Which loop the executor itself runs on is a property of the
 interpreter, and the record did not say.** The shim adopts uvloop where
 the interpreter m0serve embeds can import it — and that interpreter is
-the `python3` on `PATH` (README, "Requirements"), so `bin/m0serve` run
+the `python3` on `PATH` ([RUNNING.md](RUNNING.md#install-and-start)), so `bin/m0serve` run
 outside the venv embeds the system Python, finds no uvloop, and runs on
 stdlib asyncio. Every executor row recorded before 2026-08-27T18Z was
 measured that way, unrecorded; the artifact's `environment.python` names

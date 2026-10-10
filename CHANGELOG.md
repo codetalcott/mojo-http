@@ -8,6 +8,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The README states only what no other page owns, and links the rest.**
+  Its m0serve reference (flags, discovery, the ready line, modes, mounts,
+  `--doctor`, limits, exit codes), its benchmark block, its history and its
+  repeated statements of the contract, the platforms and TLS are links to
+  the pages that own them; it went from 974 lines to 583 and from 23
+  unsourced figures to none. Four facts only the README held moved to
+  RUNNING.md: which `libpython` m0serve loads, how a mount's prefix reaches
+  its application, which WSGI bodies stream, and what `--doctor`'s JSON
+  carries ([the note](docs/notes/the-readme-points.md)).
+
 ### Fixed
 
 - **README's "SSE replay is journal-deep" limit still said a WSGI hold
