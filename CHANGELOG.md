@@ -8,6 +8,18 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **README's "SSE replay is journal-deep" limit still said a WSGI hold
+  replays nothing**, and that an application keeps its own catch-up. 1.12.0
+  made that false (SPEC I33): the bullet now says a hold is caught up from
+  the per-loop `--replay-frames` journal and sent one `m0-gap` frame when it
+  cannot be, as RUNNING.md and the `m0pub` docstring do. Its
+  `DatastarStream` half said a client further behind than the journal
+  resumes live; since SPEC I30 it is sent no history and `caught_up(slot)`
+  answers false, so the view resyncs it with `send_to`. The same section
+  gave the Mojo pin as 1.0; it is 1.1.
+
 ## [1.14.0] — 2026-10-10
 
 The fixes and the smaller code of a review of the framework and the fork
