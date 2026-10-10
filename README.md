@@ -52,7 +52,7 @@ an ordinary rule before any view runs; [After the quickstart](docs/QUICKSTART_NE
 multi-tab sync**, and CI executes every command in it on every pull request
 — so it works, or the build is red.
 
-### Two more things it does
+### What else it does
 
 - **Several applications in one process, each in its native mode.**
   `m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on
@@ -192,7 +192,7 @@ def main() raises:
     server.listen_and_serve_nonblocking("0.0.0.0:8080", handler)
 ```
 
-The four `sse_*` hooks are the streaming interface (shared by SSE and WebSocket slots), `tick` is the opt-in timer hook, and `ws_message` receives WebSocket messages; a handler that uses none of them returns the empty defaults shown here.
+`func` is the one method a handler must write. The streaming hooks (`sse_*`, shared by SSE and WebSocket slots), the `tick` timer and `ws_message` all have default bodies, so a handler declares only the hooks it uses.
 
 ## What's in the box
 
@@ -210,7 +210,7 @@ Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import p
 
 `m0-core` also builds a C-ABI shared library: `uv run poe build-ffi` emits `packages/m0-core/libm0core.so` (`.dylib` on macOS), whose one export, `m0_shared_fetch_add`, is how `m0pub` numbers the events it publishes, through Python's `ctypes` — `poe smoke-ffi` proves that path in CI. It is internal to the m0serve wheel, which carries it in `_lib/` beside the binary, and is not a published artifact with an ABI of its own ([DECISIONS](docs/DECISIONS.md) D56). Releases up to and including v1.8.0 also attached it as a standalone download; those assets stay where they are, and [docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md) has their history.
 
-Strict layering, no upward imports: `m0-core` has zero dependencies and `m0-http` uses three functions from it. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
+Strict layering, no upward imports: `m0-core` has zero dependencies, and `m0-http` imports from it, never the reverse. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package.
 
 **HTTP essentials** — path router with `:param` extraction · content negotiation with quality factors, case-insensitive media ranges, and wildcards · weak ETags (wyhash) with `304 Not Modified` · static file serving with lexical traversal defense, extension content types, ETag/304, and single byte ranges (206/416) · SSE with backpressure and `Last-Event-ID` reconnect replay · WebSockets (RFC 6455): handshake, fragmented messages, UTF-8 validation of text (1007), protocol-error refusals, ping/pong heartbeats, clean close.
 
@@ -478,9 +478,10 @@ given at all, the protocol picks the default: WSGI gets a pool of
 takes the same default); and `--reload [--reload-dir DIR]` re-forks the
 workers onto changed Python in ~300 ms without re-exec'ing the binary.
 `--help` has the rest; exit codes are
-2 for a bad command line and 1 for an application that would not load —
-including under `--workers N`, where a supervisor that gives up on respawning
-says so instead of exiting 0.
+2 for a bad command line, 78 for a configuration the server will not run,
+and 1 for an application that would not load — including under
+`--workers N`, where a supervisor that gives up on respawning says so
+instead of exiting 0.
 
 **`--doctor` answers "will this run?" without running it.** It prints one
 JSON object — platform and wheel architecture, the interpreter it resolved
@@ -666,9 +667,9 @@ values returns unchanged.
   hostage problem again. A generator that raises after its head truncates
   the body honestly — the connection closes without the chunked
   terminator. Still buffered: an iterator that carries its own
-  `Content-Length` (`FileResponse`), the recorded follow-up.
-- **Request bodies are fully buffered too**, capped by
-  `ServerConfig.max_request_body_size` (4 MB default). Raise it for uploads.
+  `Content-Length` (`FileResponse`).
+- **Request bodies are fully buffered too**, capped by `--max-body`
+  (`M0_MAX_BODY`, default `4m`). Raise it for uploads.
 - **No TLS.** `wsgi.url_scheme` is always `http`; terminate at a proxy and set
   Django's `SECURE_PROXY_SSL_HEADER`.
 - Django is a **dev dependency** here, for the example and its smoke test. The

@@ -20,6 +20,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   answers false, so the view resyncs it with `send_to`. The same section
   gave the Mojo pin as 1.0; it is 1.1.
 
+- **Six more README claims the tree had moved past.** A handler's
+  optional hooks were "the empty defaults shown here" beside an example
+  that shows none; `m0-http` "uses three functions" of `m0-core`, where it
+  imports from ten files; m0serve's exit codes omitted 78, which the
+  `--doctor` example below them exits with; uploads were raised through
+  `ServerConfig.max_request_body_size`, a field an m0serve user cannot
+  reach, rather than `--max-body`; a buffered `FileResponse` was "the
+  recorded follow-up", with no record anywhere; and "Two more things it
+  does" listed three. RUNNING.md offered `--threads` from 3.13t, which is
+  a dead end; it is 3.14t.
+
 ## [1.14.0] — 2026-10-10
 
 The fixes and the smaller code of a review of the framework and the fork
