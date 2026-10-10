@@ -448,6 +448,11 @@ def _register(lib: SqliteFns, db_handle: Int) raises:
         # No free here: create_module_v2 invokes the destructor on failure too
         # (documented in sqlite3.h), and pAux is the module buffer itself, so
         # SQLite has already released `m`. Freeing it again would double-free.
+        # The one refusal that returns before the destructor runs is the
+        # handle check of a library built with SQLITE_ENABLE_API_ARMOR, whose
+        # SQLITE_MISUSE for a NULL handle leaks `m` (a build without it
+        # dereferences the NULL instead): `register_array_module` refuses a
+        # closed connection before it gets here (SPEC O29).
         raise Error("sqlite3_create_module_v2 failed (rc=" + String(rc) + ")")
 
 

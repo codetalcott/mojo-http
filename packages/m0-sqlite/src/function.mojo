@@ -209,6 +209,7 @@ from .ffi import (
     check_c_int_length,
     cstr_to_string,
     describe_in,
+    first_nul,
 )
 from .lib import SqliteFns, as_cstr, str_cstr
 
@@ -647,12 +648,12 @@ def _register_function[
     var name_bytes = name.as_bytes()
     if len(name_bytes) == 0:
         raise Error("create_function: the name is empty")
-    for i in range(len(name_bytes)):
-        if name_bytes[i] == 0:
-            raise Error(
-                "create_function: the name has an embedded null character"
-                " (at byte " + String(i) + ")"
-            )
+    var nul = first_nul(name)
+    if nul >= 0:
+        raise Error(
+            "create_function: the name has an embedded null character"
+            " (at byte " + String(nul) + ")"
+        )
     _ = _publish(fns, path)
     var box = unsafe_alloc[_Guarded[F]](count=1)
     box.unsafe_write(_Guarded[F](impl^))

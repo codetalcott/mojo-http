@@ -13,6 +13,8 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from src import (
     Connection,
+    SQLITE_CONSTRAINT,
+    error_code,
     open,
     open_readonly,
     install_stamps,
@@ -325,6 +327,37 @@ def test_pruning_is_a_transaction_of_its_own() raises:
         refused = True
     assert_true(refused)
     assert_false(bare.in_transaction())
+    _cleanup(p)
+
+
+def test_a_cancelled_prune_raises_the_error_that_cancelled_it() raises:
+    """SQLite cancels a whole transaction for some errors (SQLITE_FULL,
+    SQLITE_IOERR, SQLITE_NOMEM), and the prune's ROLLBACK then raised
+    "cannot rollback - no transaction is active" (rc=1) in place of the
+    error that stopped it. A capped `max_page_count` cannot make the DELETE
+    fail, since it frees pages and needs none, so a trigger's
+    RAISE(ROLLBACK), which cancels the transaction on every SQLite, stands
+    in for those.
+
+    covers: O26
+    """
+    var p = _fresh("prune_cancelled")
+    var db = _watched(p)
+    db.execute("INSERT INTO notes (slug) VALUES ('a')")
+    db.execute("DELETE FROM notes")
+    db.execute(
+        "CREATE TRIGGER cancel_prune BEFORE DELETE ON m0_changes"
+        + " BEGIN SELECT RAISE(ROLLBACK, 'the prune was cancelled'); END"
+    )
+    var message = String("")
+    try:
+        _ = prune_stamps(db, 10)
+    except e:
+        message = String(e)
+    assert_equal(error_code(message), SQLITE_CONSTRAINT, message)
+    assert_true("the prune was cancelled" in message, message)
+    assert_false(db.in_transaction())
+    assert_equal(stamp_floor(db), 0, "the cancelled prune raised the floor")
     _cleanup(p)
 
 

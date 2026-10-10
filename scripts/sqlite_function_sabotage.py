@@ -283,8 +283,8 @@ RULES = [
     rule(
         "name: a NUL byte is refused before SQLite sees the name (O21)",
         FUNCTION,
-        "        if name_bytes[i] == 0:\n",
-        "        if False:\n",
+        "    if nul >= 0:\n",
+        "    if False:\n",
         gate="functions",
         expect="test_a_refusal_before_sqlite_and_a_refusal_in_its_own_words",
     ),

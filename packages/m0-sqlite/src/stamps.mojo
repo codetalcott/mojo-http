@@ -305,7 +305,17 @@ def prune_stamps(db: Connection, below: Int) raises -> Int:
         db.commit()
         return n
     except e:
-        db.rollback()
+        # SQLite may have cancelled the transaction itself (SQLITE_FULL,
+        # SQLITE_IOERR, SQLITE_NOMEM, a trigger's RAISE(ROLLBACK)), and a
+        # ROLLBACK then raises "no transaction is active" in place of what
+        # stopped the prune. So only an open one is rolled back, and the
+        # error raised is always the one that stopped it: a ROLLBACK of an
+        # open transaction ends it whatever it reports (OP_AutoCommit).
+        if db.in_transaction():
+            try:
+                db.rollback()
+            except:
+                pass
         raise e^
 
 

@@ -150,6 +150,19 @@ def c_string(s: String) -> List[UInt8]:
     return out^
 
 
+def first_nul(s: String) -> Int:
+    """The byte offset of the first NUL in `s`, or -1 when it holds none.
+
+    `c_string` keeps an interior NUL, and an entry point that reads a C
+    string stops at it: SQLite sees only what comes before, and says
+    nothing. So a string bound for one is refused before the call when this
+    answers 0 or more: a function's name (`function.mojo`, SPEC O21), and the
+    SQL `execute` runs and the path a connection opens (`conn.mojo`, O30).
+    `find`, not a loop over the bytes, which measured 36x slower at 4 MB.
+    """
+    return s.find("\0")
+
+
 def _best_message(detail: String, fallback: String) -> String:
     """SQLite's own message when it has one, else the text for the code.
 

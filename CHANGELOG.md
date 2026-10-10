@@ -124,6 +124,36 @@ in a minor release: `m0serve`'s flags and environment variables, the
   where the server keeps no journal whatever `--replay-frames` says. It
   reported the flag's value, 64 by default.
 
+- **m0-sqlite: a `Connection` used after `close()` no longer crashes the
+  process on Debian's libsqlite3.** `in_transaction`, `last_insert_rowid`,
+  `changes`, `total_changes`, `busy_timeout` and `register_array_module`
+  handed SQLite the closed connection's NULL handle, which a library built
+  without `SQLITE_ENABLE_API_ARMOR` dereferences, so the process died of
+  SIGSEGV on Debian 12's, the base of `deploy/mojo/Dockerfile`. Apple's
+  and Homebrew's builds carry the armor and answered wrongly instead:
+  `in_transaction()` was True after the close, and
+  `register_array_module()` leaked its module buffer. The four accessors now answer False or 0 on a closed
+  connection without calling SQLite, and `busy_timeout` and
+  `register_array_module` raise "… on a closed connection", as
+  `create_function` already did (SPEC O29).
+
+- **m0-sqlite: `execute` and the `Connection` constructors refuse a NUL
+  byte instead of running what comes before it.** `sqlite3_exec` and
+  `sqlite3_open_v2` read C strings, so `execute("DELETE FROM t\0 WHERE
+  id = 5")` emptied the table and reported success, and a path holding a
+  NUL opened the path cut there, losing a suffix the caller had checked
+  for. Both now raise before SQLite sees the text, with the byte's offset
+  and `(rc=21)`, so `error_code` answers `SQLITE_MISUSE`, as a function
+  name holding one already was (SPEC O30). `prepare` was not affected.
+
+- **m0-sqlite: `prune_stamps` raises the error that stopped it.** When
+  SQLite had already cancelled the transaction (`SQLITE_FULL`,
+  `SQLITE_IOERR`, `SQLITE_NOMEM`), the prune's own ROLLBACK raised
+  "cannot rollback - no transaction is active" in its place, so
+  `error_code` read 1 instead of the real code. It now rolls back only a
+  transaction that is still open, and always raises the original error
+  (SPEC O26).
+
 ## [1.14.0] — 2026-10-10
 
 The fixes and the smaller code of a review of the framework and the fork
