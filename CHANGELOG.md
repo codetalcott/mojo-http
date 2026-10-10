@@ -41,12 +41,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   `/install/lib`), so the console shim named no libpython, and the
   binary's runtime, finding none either, aborted at its first Python call
   with a native stack dump and exit 133, `--doctor` included. The shim now
-  also searches `LIBPL`, the multiarch directory and `sys.base_prefix`'s
-  `lib/`, a search that holds every path the runtime's own lookup tries;
-  where it still finds nothing it exits 78, naming `MOJO_PYTHON_LIBRARY`,
-  before the binary runs. It no longer skips an interpreter that reports
-  `Py_ENABLE_SHARED=0`: Debian's `python3` and a python.org framework
-  build both do, and both have a library to name (SPEC M30).
+  also searches `LIBPL` and `sys.base_prefix`'s `lib/`, a search that
+  holds every path the runtime's own lookup tries; where it still finds
+  nothing it exits 78, naming `MOJO_PYTHON_LIBRARY`, before the binary
+  runs. It no longer skips an interpreter that reports
+  `Py_ENABLE_SHARED=0`: a macOS framework build (python.org's installer,
+  Apple's command-line tools) does, and keeps a library to name. A static
+  build with no shared library, which used to abort the same way, now
+  gets the 78 (SPEC M30).
 
 - **README's "SSE replay is journal-deep" limit still said a WSGI hold
   replays nothing**, and that an application keeps its own catch-up. 1.12.0

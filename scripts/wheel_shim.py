@@ -20,8 +20,11 @@ The rules, each with a test:
   `LIBDIR` crossed with `libpython{py_version_short}{ABIFLAGS}.{ext}`,
   `RUNTIME_LOOKUP` below being the runtime's script, copied from
   `libKGENCompilerRTShared` (`strings` shows it whole);
-* no static archive is named, and `Py_ENABLE_SHARED` is not asked: Debian's
-  `python3` reports 0 and keeps its library in the multiarch directory;
+* no static archive is named, and `Py_ENABLE_SHARED` is not asked: a macOS
+  framework build (python.org's installer, Apple's command-line tools)
+  reports 0 and keeps its library in `LIBDIR`. No current Debian or Ubuntu
+  reports 0 -- bookworm, trixie, 22.04 and 24.04 all say 1, checked in
+  containers on 2026-10-10 -- whatever an earlier version of this file said;
 * finding nothing refuses with 78, naming `MOJO_PYTHON_LIBRARY`, before the
   binary runs -- except for the flags answered without an interpreter, and
   where the user set `MOJO_PYTHON_LIBRARY` or `MOJO_PYTHON` themselves;
@@ -142,24 +145,28 @@ def test_a_static_archive_is_never_named(shim):
         check(got is None, f"a build with only an archive named {got}")
 
 
-def test_debian_static_python_finds_the_multiarch_library(shim):
-    # /usr/bin/python3 on Debian: built static, reporting Py_ENABLE_SHARED=0,
-    # with libpython3.X's shared library installed beside it by its package.
+def test_a_framework_build_is_named(shim):
+    # python.org's macOS installer, as its sysconfig describes it (3.13.7,
+    # read 2026-10-10): Py_ENABLE_SHARED 0, INSTSONAME inside the framework,
+    # and libpython3.13.dylib in LIBDIR, which is what the runtime loads.
     with tempfile.TemporaryDirectory() as root:
-        lib = touch(root, "usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0")
-        cfg = config(Py_ENABLE_SHARED=0, LIBDIR=str(Path(root) / "usr/lib"),
-                     LIBPL=str(Path(root) / "usr/lib/python3.12/config-3.12-x86_64-linux-gnu"),
-                     MULTIARCH="x86_64-linux-gnu", INSTSONAME="libpython3.12.so.1.0",
-                     LDLIBRARY="libpython3.12.a", py_version_short="3.12", ABIFLAGS="")
-        got = shim._libpython(shim._libpython_candidates(cfg, str(Path(root) / "usr"), "linux"))
-        check(got == lib, f"Debian's shared libpython was not found (got {got})")
+        fw = Path(root) / "Library/Frameworks/Python.framework/Versions/3.13"
+        lib = touch(fw, "lib/libpython3.13.dylib")
+        cfg = config(Py_ENABLE_SHARED=0, LIBDIR=str(fw / "lib"),
+                     LIBPL=str(fw / "lib/python3.13/config-3.13-darwin"),
+                     PYTHONFRAMEWORK="Python", MULTIARCH="darwin",
+                     INSTSONAME="Python.framework/Versions/3.13/Python",
+                     LDLIBRARY="Python.framework/Versions/3.13/Python",
+                     py_version_short="3.13", ABIFLAGS="")
+        got = shim._libpython(shim._libpython_candidates(cfg, str(fw), "darwin"))
+        check(got == lib, f"a framework build's libpython was not named (got {got})")
 
 
 def test_every_path_the_runtime_tries_is_searched(shim):
     # For each path RUNTIME_LOOKUP tries, a layout holding only that file,
     # and a sysconfig that names something else first: a python.org
     # framework build (INSTSONAME inside the framework, Py_ENABLE_SHARED 0),
-    # a free-threaded build, and Debian's dev symlink in LIBPL.
+    # a free-threaded build, and an unversioned dev symlink in LIBPL.
     cases = [
         ("darwin", "3.12", "", "Python.framework/Versions/3.12/Python", "LIBDIR"),
         ("darwin", "3.12", "", "Python.framework/Versions/3.12/Python", "LIBPL"),
@@ -284,9 +291,6 @@ SABOTAGES = [
     ("LIBPL is not searched",
      'config("LIBPL"),', "None,",
      ["test_every_path_the_runtime_tries_is_searched"]),
-    ("the multiarch directory is not searched",
-     "os.path.join(libdir, multiarch) if libdir and multiarch else None,", "None,",
-     ["test_debian_static_python_finds_the_multiarch_library"]),
     ("the runtime's plain name is not searched",
      'for name in (config("INSTSONAME"), config("LDLIBRARY"), plain):',
      'for name in (config("INSTSONAME"), config("LDLIBRARY")):',
@@ -295,16 +299,16 @@ SABOTAGES = [
      "    platform = sys.platform if platform is None else platform\n",
      "    platform = sys.platform if platform is None else platform\n"
      '    if not config("Py_ENABLE_SHARED"):\n        return []\n',
-     ["test_debian_static_python_finds_the_multiarch_library",
+     ["test_a_framework_build_is_named",
       "test_every_path_the_runtime_tries_is_searched"]),
     ("a static archive may be named",
      'if name and not name.endswith(".a") and name not in names:',
      "if name and name not in names:",
      ["test_a_static_archive_is_never_named"]),
     ("the search's order puts sys.base_prefix first",
-     "        libdir,\n        config(\"LIBPL\"),\n",
+     "        config(\"LIBDIR\"),\n        config(\"LIBPL\"),\n",
      "        os.path.join(base_prefix, \"lib\") if base_prefix else None,\n"
-     "        libdir,\n        config(\"LIBPL\"),\n",
+     "        config(\"LIBDIR\"),\n        config(\"LIBPL\"),\n",
      ["test_a_libdir_that_holds_the_library_is_still_first"]),
     ("finding nothing does not refuse",
      "        sys.exit(78)\n", "        pass\n",

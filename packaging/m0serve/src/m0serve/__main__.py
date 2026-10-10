@@ -43,7 +43,7 @@ def _libpython_candidates(config=None, base_prefix=None, platform=None):
     where it is: a relocatable build (python-build-standalone, so every
     interpreter uv installs) keeps the build machine's `LIBDIR`, and older
     ones report `/install/lib` (#612). So the search is the names sysconfig
-    gives crossed with every directory it might mean, and `sys.base_prefix`'s
+    gives crossed with the directories it names, and `sys.base_prefix`'s
     `lib/` last, which is where a relocated interpreter's library went.
 
     It must include every path the Mojo runtime's own lookup tries --
@@ -52,8 +52,9 @@ def _libpython_candidates(config=None, base_prefix=None, platform=None):
     refusal is only right if the runtime would have found nothing too.
     No static archive: `LDLIBRARY` names `libpython3.X.a` in a build without
     a shared library, and `dlopen` cannot load one. `Py_ENABLE_SHARED` is
-    not asked: Debian's `python3` and a python.org framework build both
-    report 0 and both have a library the runtime loads.
+    not asked: a macOS framework build (python.org's installer, Apple's
+    command-line tools) reports 0 and keeps a `libpython3.X.dylib` in
+    `LIBDIR` that the runtime loads, so asking would refuse it.
 
     The arguments exist for the tests (`scripts/wheel_shim.py`).
     """
@@ -70,12 +71,10 @@ def _libpython_candidates(config=None, base_prefix=None, platform=None):
     for name in (config("INSTSONAME"), config("LDLIBRARY"), plain):
         if name and not name.endswith(".a") and name not in names:
             names.append(name)
-    libdir, multiarch = config("LIBDIR"), config("MULTIARCH")
     dirs = []
     for d in (
-        libdir,
+        config("LIBDIR"),
         config("LIBPL"),
-        os.path.join(libdir, multiarch) if libdir and multiarch else None,
         os.path.join(base_prefix, "lib") if base_prefix else None,
     ):
         if d and d not in dirs:
