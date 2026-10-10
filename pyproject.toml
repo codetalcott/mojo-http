@@ -6091,6 +6091,14 @@ echo "$env" | grep -qF "CONTENT_TYPE='text/x-test'" || fail 'CONTENT_TYPE missin
 echo "$env" | grep -qF "CONTENT_LENGTH='2'" || fail 'CONTENT_LENGTH missing or prefixed'
 echo "$env" | grep -qF "HTTP_X_CUSTOM='v'" || fail 'ordinary header lost its HTTP_ prefix'
 echo "$env" | grep -q '^HTTP_CONTENT_' && fail 'HTTP_CONTENT_* must not appear in the environ'
+# A header name holding `_` never reaches the environ (G29, CVE-2015-0219):
+# CGI's mapping files `X_Forwarded_For` under the same HTTP_X_FORWARDED_FOR as
+# a proxy's `X-Forwarded-For`, and the later store won. The underscore
+# spelling goes LAST, the order in which it used to win.
+env=$(curl -s -H 'X-Forwarded-For: 203.0.113.7' -H 'X_Forwarded_For: 6.6.6.6' $B/environ)
+echo "$env" | grep -qF "HTTP_X_FORWARDED_FOR='203.0.113.7'" \
+  || fail "the dashed X-Forwarded-For did not reach the environ intact (G29): $env"
+echo "$env" | grep -qF '6.6.6.6' && fail "an underscore header reached the environ (G29): $env"
 # The environ as the client sent it (L25): a body the loop de-chunked has its
 # CONTENT_LENGTH and no HTTP_TRANSFER_ENCODING, the chunking being undone,
 # and a GET has no CONTENT_LENGTH at all -- PEP 3333 lets it be absent, and
@@ -6231,6 +6239,7 @@ curl -s --fail $B/ > /dev/null || fail 'server died after a validation failure'
 
 echo "smoke-wsgi OK"
 python3 scripts/emit.py --covers G2 --task smoke-wsgi
+python3 scripts/emit.py --covers G29 --task smoke-wsgi
 python3 scripts/emit.py --covers K1 --task smoke-wsgi
 python3 scripts/emit.py --covers K2 --task smoke-wsgi
 python3 scripts/emit.py --covers K3 --task smoke-wsgi

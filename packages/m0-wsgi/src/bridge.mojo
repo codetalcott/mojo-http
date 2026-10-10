@@ -806,9 +806,12 @@ struct PyBridge(Movable):
         # Walked by index over the header map's own spans: no `keys()`
         # snapshot, no `get()` lookup per key, no String anywhere.
         for i in range(req.headers.count()):
-            # httpoxy: `Proxy:` would become `HTTP_PROXY`, which outbound
-            # HTTP clients read as a proxy setting. See
-            # `header_is_excluded` for why this one name and no others.
+            # Two names CGI's mapping would misfile: `Proxy:` would become
+            # `HTTP_PROXY`, which outbound HTTP clients read as a proxy
+            # setting (httpoxy), and a name holding `_` would share a key
+            # with its dashed twin, so a client's `X_Forwarded_For` could
+            # replace a proxy's `X-Forwarded-For` (CVE-2015-0219). See
+            # `header_is_excluded` for why these and no others.
             if header_is_excluded(req.headers.name_span(i)):
                 continue
             self._scratch_name.clear()

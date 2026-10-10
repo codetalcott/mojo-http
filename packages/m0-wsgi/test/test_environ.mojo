@@ -8,6 +8,8 @@ where the environ dict is actually built.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
+from lightbug_http.header import Headers
+
 from src.environ import (
     all_ascii,
     append_cgi_name_as_utf8,
@@ -239,11 +241,65 @@ def test_proxy_header_is_excluded_from_the_environ() raises:
     assert_true(header_is_excluded("proxy".as_bytes()))
 
 
+def _header_environ(headers: Headers) -> Dict[String, String]:
+    """The header half of `PyBridge.build_environ`, with no interpreter.
+
+    The same walk: every entry by index, in arrival order, skipped when
+    `header_is_excluded`, stored under its CGI name, a later store
+    replacing an earlier one as `PyDict_SetItem` does. The values here are
+    ASCII, so they are their own UTF-8.
+    """
+    var environ = Dict[String, String]()
+    for i in range(headers.count()):
+        if header_is_excluded(headers.name_span(i)):
+            continue
+        environ[_text(cgi_name_utf8(headers.name_span(i)))] = String(
+            StringSpan(unsafe_from_utf8=headers.value_span(i))
+        )
+    return environ^
+
+
+def test_underscore_header_is_excluded_from_the_environ() raises:
+    """A name holding `_` never reaches the environ (CVE-2015-0219).
+
+    CGI's mapping turns `-` into `_`, so `X_Forwarded_For` and
+    `X-Forwarded-For` are two headers on the wire and one key in the
+    environ, `HTTP_X_FORWARDED_FOR`, where the later store wins. Behind a
+    proxy that forwards underscore names, a client's `X_Forwarded_For`
+    replaced the address the proxy set. Dropping the underscore spelling
+    leaves the dashed value in either order.
+
+    covers: G29
+    """
+    assert_true(header_is_excluded("x_forwarded_for".as_bytes()))
+    assert_false(header_is_excluded("x-forwarded-for".as_bytes()))
+
+    # The client's spelling LAST is the order in which it used to win.
+    var client_last = Headers()
+    client_last.set_bytes("x-forwarded-for".as_bytes(), "203.0.113.7".as_bytes())
+    client_last.set_bytes("x_forwarded_for".as_bytes(), "6.6.6.6".as_bytes())
+    assert_equal(client_last.count(), 2)
+    var environ = _header_environ(client_last)
+    assert_equal(environ["HTTP_X_FORWARDED_FOR"], "203.0.113.7")
+    assert_equal(len(environ), 1)
+
+    var client_first = Headers()
+    client_first.set_bytes("x_forwarded_for".as_bytes(), "6.6.6.6".as_bytes())
+    client_first.set_bytes("x-forwarded-for".as_bytes(), "203.0.113.7".as_bytes())
+    assert_equal(_header_environ(client_first)["HTTP_X_FORWARDED_FOR"], "203.0.113.7")
+
+    # Alone, it reaches nothing at all.
+    var alone = Headers()
+    alone.set_bytes("x_forwarded_for".as_bytes(), "6.6.6.6".as_bytes())
+    assert_equal(len(_header_environ(alone)), 0)
+
+
 def test_ordinary_headers_are_not_excluded() raises:
-    """The exclusion is one exact name — not a prefix, not a family.
+    """`Proxy` is one exact name — not a prefix, not a family.
 
     `X-Forwarded-*` in particular stays: it is load-bearing behind a real
-    proxy, and this server never reads it itself.
+    proxy, and this server never reads it itself. Only an underscore
+    spelling is dropped, and none of these has one.
     """
     assert_false(header_is_excluded("accept".as_bytes()))
     assert_false(header_is_excluded("content-type".as_bytes()))

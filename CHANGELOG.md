@@ -20,6 +20,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
   its application, which WSGI bodies stream, and what `--doctor`'s JSON
   carries ([the note](docs/notes/the-readme-points.md)).
 
+- **A request header whose name holds an underscore no longer reaches a
+  WSGI application.** CGI's mapping turns `-` into `_`, so
+  `X_Forwarded_For` and `X-Forwarded-For` both became
+  `HTTP_X_FORWARDED_FOR`, and the environ kept whichever the request
+  carried later: behind a proxy that forwards underscore names (HAProxy,
+  Caddy and Traefik do; nginx drops them by default), a client could
+  replace the address, scheme or identity header the proxy set, the
+  CVE-2015-0219 class. Such a header is now dropped from the environ, as
+  gunicorn has dropped it by default since 22.0 and as Django's runserver
+  does. Dashed names pass as before, `X-Forwarded-*` included. An ASGI
+  application under the executor still receives every name as sent; the
+  buffered ASGI path (`--blocking-threads` on an ASGI application), whose
+  scope is built from the environ, drops them with it (SPEC G29).
+
 ### Fixed
 
 - **A keep-alive connection holding a stray CRLF or the start of its next

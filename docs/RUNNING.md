@@ -292,7 +292,10 @@ the values this server would use, and `m0serve --help` names every flag.
   the application as ordinary headers, for it to trust (Django's
   `SECURE_PROXY_SSL_HEADER`, Werkzeug's `ProxyFix`, or uvicorn's own
   `ProxyHeadersMiddleware` around an ASGI application). uvicorn applies
-  them for the proxies `--forwarded-allow-ips` names.
+  them for the proxies `--forwarded-allow-ips` names. A header whose name
+  holds an underscore never reaches a WSGI application, as under gunicorn:
+  CGI's mapping would file a client's `X_Forwarded_For` under the
+  proxy's `HTTP_X_FORWARDED_FOR`.
 - **A lifespan startup that fails exits 1**, where uvicorn exits 3
   ([Install and start](#install-and-start)).
 - **ASGI needs a GIL-enabled CPython.** A free-threaded build, which uv may

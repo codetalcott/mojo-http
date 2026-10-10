@@ -1394,6 +1394,14 @@
       "evidence": "`test_environ.mojo:test_proxy_header_is_excluded_from_the_environ` (every PR)"
     },
     {
+      "id": "G29",
+      "section": "G",
+      "category": "G. Security hardening",
+      "capability": "A request header whose name holds `_` never reaches the WSGI environ, so a client's `X_Forwarded_For` cannot take the `HTTP_X_FORWARDED_FOR` a proxy's `X-Forwarded-For` maps to (CVE-2015-0219); every dashed name, `X-Forwarded-*` among them, still does",
+      "status": "verified",
+      "evidence": "`test_environ.mojo:test_underscore_header_is_excluded_from_the_environ` (every PR) \u2014 CGI's mapping turns `-` into `_`, so both spellings were stored under one key and the later in the request won: behind a proxy that forwards underscore names (HAProxy, Caddy and Traefik do; nginx drops them by default) a client set the address, scheme or identity header the application read. Dropped as gunicorn's `header_map` drops it by default since 22.0, and as Django's runserver does. The test walks a header map holding both spellings in each order, and the underscore one alone; `Conformance test the WSGI bridge` sends both to `bin/m0serve`, the underscore one last, and requires the dashed value and no trace of the other. The ASGI executor's scope carries every name as sent, as the ASGI spec asks; the buffered ASGI path builds its scope from the environ and drops them with it. Found by the 2026-10-10 review"
+    },
+    {
       "id": "G5",
       "section": "G",
       "category": "G. Security hardening",

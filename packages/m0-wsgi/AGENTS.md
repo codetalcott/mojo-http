@@ -191,12 +191,18 @@ M20). Three rules the pinned interop imposes and that the code depends on:
   double-free; `smoke-django`'s RSS guard is the instrument, and it must
   stay at 0 KB over 10k requests.
 
-  One header never makes the trip: `Proxy`, which CGI's mechanical mapping
-  would turn into `HTTP_PROXY` — the variable outbound HTTP clients read
-  to choose a proxy (httpoxy). `header_is_excluded` in `environ.mojo` drops
-  it, and deliberately drops nothing else: `X-Forwarded-*` is load-bearing
-  behind a real proxy, and this server never consults it itself
-  (`REMOTE_ADDR` is the socket peer, `wsgi.url_scheme` is config).
+  Two kinds of header never make the trip, both for what CGI's mechanical
+  mapping makes of a name, and `header_is_excluded` in `environ.mojo` drops
+  both. `Proxy` would become `HTTP_PROXY`, the variable outbound HTTP
+  clients read to choose a proxy (httpoxy). A name holding `_` would share
+  a key with its dashed twin, since the mapping turns `-` into `_`, and the
+  later store wins, so a client's `X_Forwarded_For` replaced a proxy's
+  `X-Forwarded-For` (CVE-2015-0219; gunicorn's `header_map` drops such
+  names by default). Nothing else is dropped: the dashed `X-Forwarded-*`
+  pass, being load-bearing behind a real proxy, and this server never
+  consults them itself (`REMOTE_ADDR` is the socket peer, `wsgi.url_scheme`
+  is config). The ASGI executor's scope carries every name as sent, as the
+  ASGI spec asks.
 - **Mojo never acquires the GIL on its own** except when destroying a
   `PythonObject`; every other `std.python` call assumes the calling thread is
   *attached* (holds a Python thread state). There are two execution modes,
