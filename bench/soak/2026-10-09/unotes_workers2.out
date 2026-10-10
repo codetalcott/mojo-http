@@ -1,0 +1,57 @@
+  4 sessions logged in concurrently
+soak: unotes at http://127.0.0.1:8602 for 180s
+  baseline: ./bin/soak-out/unotes-capture.json (http://127.0.0.1:8601)
+  populations: burst(6) stream(0) bulk(0) abandon(2) ws(0)
+  churn: sigterm every 40s
+  [  5.1s] rss=17312kB fds=55 threads=2 workers=2 conns=- verified=49637 failures=0
+  [ 10.2s] rss=17312kB fds=53 threads=2 workers=2 conns=- verified=99645 failures=0
+  [ 15.2s] rss=17344kB fds=53 threads=2 workers=2 conns=- verified=149801 failures=0
+  [ 20.3s] rss=17344kB fds=54 threads=2 workers=2 conns=- verified=199760 failures=0
+  [ 25.4s] rss=17344kB fds=55 threads=2 workers=2 conns=- verified=249927 failures=0
+  [ 30.5s] rss=17344kB fds=53 threads=2 workers=2 conns=- verified=300086 failures=0
+  [ 35.6s] rss=17344kB fds=54 threads=2 workers=2 conns=- verified=349822 failures=0
+  churn: SIGTERM -> exit 0 in 0.00s
+  [ 45.6s] rss=17648kB fds=54 threads=2 workers=2 conns=- verified=446206 failures=0
+  [ 50.6s] rss=17648kB fds=53 threads=2 workers=2 conns=- verified=496300 failures=0
+  [ 55.7s] rss=17696kB fds=54 threads=2 workers=2 conns=- verified=546493 failures=0
+  [ 60.8s] rss=17696kB fds=54 threads=2 workers=2 conns=- verified=596758 failures=0
+  [ 65.9s] rss=17696kB fds=53 threads=2 workers=2 conns=- verified=646766 failures=0
+  [ 71.0s] rss=17696kB fds=55 threads=2 workers=2 conns=- verified=696769 failures=0
+  [ 76.1s] rss=17696kB fds=55 threads=2 workers=2 conns=- verified=747016 failures=0
+  churn: SIGTERM -> exit 0 in 0.00s
+  [ 86.1s] rss=17472kB fds=54 threads=2 workers=2 conns=- verified=842846 failures=0
+  [ 91.1s] rss=17472kB fds=54 threads=2 workers=2 conns=- verified=892894 failures=0
+  [ 96.2s] rss=17472kB fds=54 threads=2 workers=2 conns=- verified=942763 failures=0
+  [101.3s] rss=17472kB fds=54 threads=2 workers=2 conns=- verified=992476 failures=0
+  [106.4s] rss=17472kB fds=54 threads=2 workers=2 conns=- verified=1042481 failures=0
+  [111.5s] rss=17472kB fds=54 threads=2 workers=2 conns=- verified=1092416 failures=0
+  [116.6s] rss=17472kB fds=54 threads=2 workers=2 conns=- verified=1142300 failures=0
+  churn: SIGTERM -> exit 0 in 0.00s
+  [126.5s] rss=17344kB fds=54 threads=2 workers=2 conns=- verified=1238375 failures=0
+  [131.6s] rss=17408kB fds=54 threads=2 workers=2 conns=- verified=1288317 failures=0
+  [136.7s] rss=17408kB fds=54 threads=2 workers=2 conns=- verified=1338465 failures=0
+  [141.8s] rss=17408kB fds=54 threads=2 workers=2 conns=- verified=1388626 failures=0
+  [146.9s] rss=17408kB fds=54 threads=2 workers=2 conns=- verified=1438867 failures=0
+  [151.9s] rss=17408kB fds=54 threads=2 workers=2 conns=- verified=1489029 failures=0
+  [157.0s] rss=17408kB fds=55 threads=2 workers=2 conns=- verified=1538922 failures=0
+  churn: SIGTERM -> exit 0 in 0.00s
+  [167.0s] rss=17264kB fds=54 threads=2 workers=2 conns=- verified=1634575 failures=0
+  [172.1s] rss=17264kB fds=55 threads=2 workers=2 conns=- verified=1684440 failures=0
+  [177.2s] rss=17328kB fds=54 threads=2 workers=2 conns=- verified=1734528 failures=0
+  [180.1s] rss=17328kB fds=54 threads=2 workers=2 conns=- verified=1762764 failures=0
+
+--- unotes ---
+  abandon_fin            3107
+  abandon_rst            3104
+  burst_reconnects       24
+  burst_requests         1756559
+  churn_drain_ms_max     4
+  churn_restarts         4
+  churn_tolerated        12862
+  churn_window_ms_max    485
+  recycle_requests       6211
+  verified               1762770
+  rss 17264kB -> 17328kB (grew 64kB, epoch 5)
+  fds 55 -> 54 (max 55)
+  threads 2 -> 2 (max 2)
+soak ok: unotes

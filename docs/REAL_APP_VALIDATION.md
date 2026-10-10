@@ -1,7 +1,7 @@
 # Exercising the server against real applications
 
-**A record. Last run 2026-10-06**, against m0serve 1.11.0 on the release
-branch at `3e64f2a`, all four applications, six rows, in the newest
+**A record. Last run 2026-10-09**, against m0serve 1.14.0 on the release
+branch at `57e9150`, all four applications, six rows, in the newest
 section below. The full pass it re-runs was **2026-09-01 and
 2026-09-02**, against 0.16.0 (`bin/m0serve` from the tree at `c823198`),
 macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
@@ -271,6 +271,61 @@ renews through the view when a grant expires — the browser side of that,
 gate yet. The application layer's own soak was unchanged by it (NOT MET
 then; recorded below on 2026-10-02): this is the server holding for textshelf, not textshelf on `Views`
 and `Fragment`.
+
+## Re-soak — 2026-10-09, against 1.14.0 on the release branch at `57e9150`, all four applications
+
+**The staleness rule, ahead of the release.** The 1.11.0 pass is two
+minors behind 1.13.0, the limit, so 1.14.0 would have read it STALE. What
+moved under these applications since: the review of the fork's HTTP core,
+shipped in 1.12.1 and 1.13.0, changed where a request head ends, how
+pipelined and half-closed connections are answered, and how a stream open
+at a SIGTERM ends, which the rows' keep-alive bursts, abandoners and
+restarts all cross; and 1.14.0 closes a stream whose client has gone in the
+pass whose send failed, the path textshelf's abandoners take on its stream
+route. The access log is off in every row, as before.
+
+`/tmp/soak/` did not survive a reboot, so every checkout was made fresh:
+transcripts at `00dcb7a` and bakerydemo at `c8f8255`, the 2026-10-06
+commits; textshelf at `7479ee7`, one commit on that touches only its editor
+settings, against its scratch database `textshelf_soak`, whose soak user
+had survived; and color-separation at `0f81a9c`, thirteen commits on from
+`65c5445`, with Django 6.1.1 and Pillow 12.3.0, its `output/` package now
+tracked and m0serve now a dependency. The seeded fixtures and the processed
+archive came out at the sizes the manifests pin, and no manifest needed a
+change. transcripts' fresh venv had no gunicorn of its own, and without one
+its reference capture would have run the system Python's; gunicorn 26.2.0
+was installed into the venv first. Every reference capture was re-recorded
+the same evening. `bin/m0serve` was built from the release branch and
+reports `m0serve 1.14.0`, and textshelf's venv, which imports
+`m0serve.m0pub`, carries the 1.14.0 wheel. CPython 3.13.6 (3.12.11 for
+color-separation and bakerydemo), macOS 27 on an M4. Raw driver outputs and
+the scripts that drove it are in `bench/soak/2026-10-09/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 26,041 | 0 | SIGTERM ×2, drains 143 ms max (window 746 ms) | 119.7 → 124.0 MB | 89 → 88 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions, 306 logins | 180 | 20,559 | 0 | SIGTERM ×2, drains 185 ms max (window 1141 ms) | 177.5 → 184.1 MB | 83 → 84 / 13 → 13 |
+| color-separation | WSGI, pool 8, 286 uploads | 120 | 41,955 | 0 | SIGTERM ×1, drains 130 ms max (window 929 ms) | 0.98 → 1.21 GB (finding 6) | 150 → 146 / 17 → 18 |
+| color-separation | ASGI executor vs uvicorn, 214 uploads | 90 | 16,927 | 0 | — | 1.06 → 1.37 GB (finding 6) | 122 → 130 / 24 → 32 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 74,016 | 0 | SIGTERM ×1, drains 74 ms max (window 1196 ms) | 173.4 → 182.8 MB | 90 → 78 / 17 → 16 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 27,435 | 0 | — | 490.7 → 190.6 MB (the startup transient) | 100 → 99 / 13 → 13 |
+
+**206,933 responses verified byte for byte, zero failures.** No row's
+active connections rose above the nine its populations open, free slots
+mirroring them; the last sample is taken with traffic still in flight, as
+on 2026-10-06. Every upload landed: 286 of 286 in the WSGI row, whose
+restart cut none this time, and 214 of 214 under the executor.
+
+The rows ran while a remote session's `node` jobs held a core at times, as
+the 2026-10-06 rows ran beside another session's, and the counts moved
+against that pass's both ways: bakerydemo 20,559 against 15,306 (306
+logins against 199), textshelf's WSGI row 27,435 against 22,221,
+transcripts 26,041 against 30,159. The rows assert bytes rather than rate,
+so the figures are recorded and not explained.
+
+**Nothing was found on the wire.** The one application that moved,
+color-separation, moved through its own dependency upgrades, and the
+server answered it byte for byte as gunicorn and uvicorn did.
 
 ## Re-soak — 2026-10-06, against 1.11.0 on the release branch at `3e64f2a`, all four applications
 
@@ -1092,7 +1147,7 @@ Django.
 
 ## The application layer
 
-**Last run 2026-10-06**, against m0-http 1.11.0 — `unotes` at `97b3c1c`, built by the `m0` 0.7.0 wheel cut from the release branch at `3e64f2a`, ahead of its upload, macOS 27 on an M4.
+**Last run 2026-10-09**, against m0-http 1.14.0 — `unotes` at `45a1cdd`, built by the `m0` 0.11.0 wheel cut from the release branch at `57e9150`, ahead of its upload, macOS 27 on an M4.
 
 The application is [`unotes`](https://github.com/codetalcott/unotes), a
 reader over a private notes corpus, written outside this repository on the
@@ -1109,7 +1164,7 @@ login module and `auth` template (N43–N45).
 
 **The synthetic soak.** `scripts/soak.py` against a local `bin/server` on
 the real corpus, `tools/soak_manifest.json` its manifest, driven by
-`bench/soak/2026-10-06/layer_unotes.sh`. The
+`bench/soak/2026-10-09/layer_unotes.sh`. The
 reference is the same binary's answer to each route alone; every response
 under load is compared with it, status, headers and a digest of the body,
 the scan figure and the CSRF token normalised. Six keep-alive bursts over
@@ -1120,25 +1175,25 @@ every 40 s with everything in flight.
 
 | row | seconds | verified byte for byte | failures | restarts | worst drain | RSS | fds, threads |
 |---|---|---|---|---|---|---|---|
-| two workers, forked | 180 | 1,409,040 | 0 | 4, each exit 0 | 4 ms | 17,296 → 17,296 kB | 54 → 54, 2 → 2 |
-| two loops on threads | 90 | 814,210 | 0 | 2, each exit 0 | 45 ms | 23,024 → 23,152 kB | 37 → 37, 7 → 7 |
+| two workers, forked | 180 | 1,762,770 | 0 | 4, each exit 0 | 4 ms | 17,264 → 17,328 kB | 55 → 54, 2 → 2 |
+| two loops on threads | 90 | 881,953 | 0 | 2, each exit 0 | 44 ms | 23,008 → 23,104 kB | 37 → 37, 7 → 7 |
 
-6,005 and 3,037 abandonments in the two rows. A request that met a restart
-and was refused or cut is counted apart and not as a failure (11,035 and
-6,397), within a window of at most 525 ms a restart. The login population
+6,211 and 3,065 abandonments in the two rows. A request that met a restart
+and was refused or cut is counted apart and not as a failure (12,862 and
+6,855), within a window of at most 524 ms a restart. The login population
 stays off (`--bulk 0`): the manifest sets no interval for it, and on
 2026-10-02 it signed in about 170 times a second until the client ran out
 of local ports, every failure `OSError 49` on a connect and no response
 wrong (unotes' SOAK_LOG, finding 15).
 
-The application's source is the commit it deployed on `m0` 0.5.0; only
-the pin moved, in a scratch clone, to a wheel built from this release's
-tree. `m0 doctor` read framework 1.11.0 and named the same six scaffold
-files the application has always edited, `m0 test` passed 3 of 3 files
-(16 tests), and `smoke.sh` passed. The 2026-10-02 run, on 0.4.0, verified
-1,748,962 and 864,732 in the same times, with the same zero; this one ran
-beside another session's busy `node` process, and the rows assert bytes,
-not rate.
+The application's source is its upgrade to `m0` 0.7.0; only the pin
+moved, in a scratch clone, to a wheel built from this release's tree.
+Nothing in it names a package export this release removes or a name it
+renames, so it built unchanged, in 15 s with no warning. `m0 doctor`
+read framework 1.14.0 and passed its six checks, `m0 test` passed 3 of 3
+files (37 tests), and `smoke.sh` passed. The 2026-10-06 run, on 1.11.0,
+verified 1,409,040 and 814,210 in the same times, with the same zero; the
+rows assert bytes, not rate.
 
 **The deployed instance**, `unotes.fly.dev` on a `shared-cpu-1x`, on
 `m0` 0.4.0 since 2026-09-30. Signed in on 2026-10-02: the list, a note and
