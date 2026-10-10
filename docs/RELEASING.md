@@ -964,6 +964,72 @@ Mojo application could import.
   70 of 70, the two gates the review's lanes could not run.
   `check-docs` asked for no bench re-record.
 
+`m0 0.11.0`: tag `m0-v0.11.0` at `e4d2115`, 2026-10-10, cut beside m0serve
+1.14.0. A minor release for the code-quality review of `m0-http` (#605,
+#606, #607): the keep-alive cap carried to a stream's end, a reload that no
+longer orphans a worker, a static mount's weak `If-None-Match`, a `Range`
+bound read as digits alone, and package re-exports and two fork names an
+application could import, removed or renamed.
+
+- Step 1: `sabotage-m0-wheel` 26 of 26 (657 s). `sabotage-scaffold` 81 of
+  81: the 69 rules outside `image:` in one run (1480 s), then each of the
+  twelve `image:` rules with `--only` (69–302 s each), each label read by
+  its line number, with a `docker builder prune` and an `fstrim` between
+  them. The run began at 12.7 GiB free, and the disk stayed above that.
+- Step 3: the local wheel, built on the merge commit, was
+  `m0-0.11.0-py3-none-any.whl`, 715,558 bytes, its `_build_info.json`
+  naming framework 1.14.0, `e4d2115` and a clean tree; a scaffold from it
+  pinned `m0==0.11.0`.
+- Step 4: the release pull request (#608) was merged by the `automerge`
+  label as its `Tests` run passed, so no run started on the merge commit,
+  and `build` read the pull request head's (`702a27a`). `build` was green
+  at the first attempt, and `publish-pypi` green after approval. The build
+  job's log was read through the jobs API while the run waited (`gh api
+  repos/OWNER/REPO/actions/jobs/ID/logs`), and its wheel artifact had the
+  local wheel's SHA-256 (`86434272…`), as does the file on the index.
+- **The tags went out in a different order.** The owner was away overnight,
+  so `v1.14.0` was pushed a minute after `m0-v0.11.0`, at the same commit,
+  rather than once the index had the `m0` wheel. Both runs then waited at
+  their environments, and the owner approved `pypi-m0` before `pypi`. The
+  site deploys when the Release run completes, which is after the `pypi`
+  approval, so it never described an `m0` the index lacked. What moved is
+  steps 5 and 6, which ran after both uploads instead of between them.
+- Step 5 on macOS arm64: `uvx --refresh-package m0 m0 new probe` pinned
+  `m0==0.11.0`, and `uv.lock` named it from pypi.org. The first build took
+  11 s and printed no warning, `smoke.sh` and `m0 test` passed, and every
+  `m0 doctor` check passed, `scaffold` naming no file. `m0 image` built in
+  31 s: 103.6 MB, 2.92 MB of it the app, `libsqlite3-0` installed and no
+  interpreter, the builder installing `m0==0.11.0` and mojo 1.1.0 from the
+  index.
+- Step 6: 8 blocks passed against the published package. `uvx m0
+  --version` read `m0 0.11.0`, and `uvx --from m0serve==1.14.0 m0serve
+  --version` read `m0serve 1.14.0`.
+- m0serve 1.14.0: `v1.14.0` at `e4d2115`. The Release run built the three
+  wheels (`macosx_13_0_arm64`, `manylinux_2_35_aarch64`,
+  `manylinux_2_35_x86_64`), inspected them, consumed each on a machine
+  that did not build it, published the GitHub release, and uploaded after
+  approval. Each file on the index has the SHA-256 the release's
+  `SHA256SUMS.txt` names, and the site, the demo and the blobs demo
+  deployed after it.
+- The pre-release run, for the record: every gate in this page, from a
+  release worktree with its own venv. Another agent's `node` jobs held one
+  to nine cores in bursts through the evening, so the quiet stage ran
+  last, once they had stopped. It ran `probe-pool-fairness` (32 s),
+  `probe-pool` (894 s; pooled p99 0.1, 0.2 and 0.2 ms at slow 0, 1 and 2),
+  the six macOS bench kinds, two minors behind and re-recorded with every
+  figure within noise, `stress-asgi` 30 of 30 in both modes (192 s), and
+  `bench-linux-conclusions` (637 s). The conclusions held. ASGI against
+  uvicorn+uvloop per core read 0.99 on macOS against 0.91 on Linux, both
+  now below parity. `stress-pool` held 20 of 20 rounds and 40 of 40 holds
+  in all three wake modes. `sabotage-host` caught 69 of 69, one rule fewer
+  than in 1.13.0, since #605 merged the host's two serve paths. Both soaks
+  stood at 1.11.0, three minors behind, and were re-run on the release
+  branch (REAL_APP_VALIDATION.md): the server's on checkouts made fresh
+  after a reboot, 206,933 responses verified, and the application layer's
+  on unotes, built unchanged by this wheel's local twin. The pool A/Bs were
+  not owed: #605 restructured the pool's spin loop, but neither the
+  records' strides nor the park's look.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
