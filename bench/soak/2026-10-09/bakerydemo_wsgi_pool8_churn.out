@@ -1,0 +1,62 @@
+  4 sessions logged in concurrently
+soak: bakerydemo at http://127.0.0.1:8502 for 180s
+  baseline: /tmp/soak/bakerydemo-gunicorn.json (http://127.0.0.1:8313)
+  populations: burst(4) stream(2) bulk(1) abandon(1) ws(1)
+  churn: sigterm every 75s
+  [  5.1s] rss=179264kB fds=83 threads=13 conns=9 verified=617 failures=0
+  [ 10.1s] rss=182208kB fds=85 threads=13 conns=9 verified=1203 failures=0
+  [ 15.2s] rss=183568kB fds=83 threads=13 conns=9 verified=1795 failures=0
+  [ 20.2s] rss=183648kB fds=86 threads=13 conns=8 verified=2373 failures=0
+  [ 25.3s] rss=184688kB fds=82 threads=13 conns=6 verified=2965 failures=0
+  [ 30.4s] rss=185344kB fds=84 threads=13 conns=9 verified=3558 failures=0
+  [ 35.5s] rss=185760kB fds=80 threads=13 conns=7 verified=4148 failures=0
+  [ 40.5s] rss=186672kB fds=84 threads=13 conns=9 verified=4724 failures=0
+  [ 45.6s] rss=187872kB fds=85 threads=13 conns=9 verified=5314 failures=0
+  [ 50.6s] rss=188768kB fds=84 threads=13 conns=8 verified=5896 failures=0
+  [ 55.7s] rss=188864kB fds=83 threads=13 conns=9 verified=6479 failures=0
+  [ 60.8s] rss=188864kB fds=84 threads=13 conns=8 verified=7039 failures=0
+  [ 65.8s] rss=189424kB fds=84 threads=13 conns=9 verified=7608 failures=0
+  [ 70.9s] rss=189456kB fds=84 threads=13 conns=8 verified=8187 failures=0
+  churn: SIGTERM -> exit 0 in 0.19s
+  [ 81.2s] rss=177232kB fds=86 threads=13 conns=9 verified=9255 failures=0
+  [ 86.3s] rss=178960kB fds=85 threads=13 conns=9 verified=9850 failures=0
+  [ 91.3s] rss=181984kB fds=83 threads=13 conns=8 verified=10435 failures=0
+  [ 96.4s] rss=184080kB fds=82 threads=13 conns=9 verified=11006 failures=0
+  [101.4s] rss=184224kB fds=83 threads=13 conns=8 verified=11589 failures=0
+  [106.5s] rss=184368kB fds=86 threads=13 conns=9 verified=12169 failures=0
+  [111.5s] rss=185360kB fds=85 threads=13 conns=9 verified=12745 failures=0
+  [116.6s] rss=186432kB fds=86 threads=13 conns=9 verified=13329 failures=0
+  [121.7s] rss=186432kB fds=84 threads=13 conns=8 verified=13912 failures=0
+  [126.7s] rss=187296kB fds=83 threads=13 conns=9 verified=14493 failures=0
+  [131.8s] rss=187456kB fds=83 threads=13 conns=8 verified=15078 failures=0
+  [136.8s] rss=188400kB fds=84 threads=13 conns=8 verified=15664 failures=0
+  [141.9s] rss=188480kB fds=83 threads=13 conns=8 verified=16235 failures=0
+  [146.9s] rss=188496kB fds=79 threads=13 conns=8 verified=16806 failures=0
+  churn: SIGTERM -> exit 0 in 0.13s
+  [157.2s] rss=177456kB fds=79 threads=13 conns=7 verified=17919 failures=0
+  [162.3s] rss=180016kB fds=84 threads=13 conns=9 verified=18501 failures=0
+  [167.4s] rss=181040kB fds=85 threads=13 conns=8 verified=19082 failures=0
+  [172.4s] rss=181824kB fds=84 threads=13 conns=9 verified=19665 failures=0
+  [177.5s] rss=182896kB fds=86 threads=13 conns=9 verified=20249 failures=0
+  [180.1s] rss=184112kB fds=84 threads=13 conns=8 verified=20551 failures=0
+
+--- bakerydemo ---
+  abandon_fin            460
+  abandon_rst            462
+  burst_reconnects       8
+  burst_requests         7235
+  churn_drain_ms_max     185
+  churn_restarts         2
+  churn_tolerated        8288
+  churn_window_ms_max    1141
+  logins                 306
+  recycle_requests       922
+  slow_requests          307
+  stream_reads           11789
+  verified               20559
+  rss 177456kB -> 184112kB (grew 6656kB, epoch 3)
+  fds 83 -> 84 (max 86)
+  threads 13 -> 13 (max 13)
+  active connections 9 -> 8 (max 9)
+  free slots 1015 -> 1016 (min 1015)
+soak ok: bakerydemo

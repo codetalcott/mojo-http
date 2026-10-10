@@ -8,6 +8,25 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.14.0] — 2026-10-10
+
+The fixes and the smaller code of a review of the framework and the fork
+for quality. Two of its findings were defects no gate had seen. Under
+`--max-keepalive-requests`, a streamed response served as a connection's
+last request left the connection open, and the next stream on it was cut
+off after its head; a stream now carries the cap to its end and says
+`Connection: close`. Under `--reload`, a worker forked into an index the
+supervisor had given up on could outlive its supervisor. A static mount
+answers `304` to an `If-None-Match` that drops the weak `W/`, a `Range`
+bound that is not plain digits is no range at all, and a stream whose
+client has gone is closed by the send that fails rather than a pass of the
+loop later. Nothing in the served contract changes. The rest is the code
+made smaller: what was written twice is written once, names nothing read
+are gone, and two fork names say what they are, so a Mojo application that
+imported one of those changes an import (see Changed and Removed). The
+`m0` wheel ships the framework's source, so an application built with `m0`
+takes these by rebuilding against `m0 0.11.0`.
+
 ### Fixed
 
 - **A reload no longer orphans a worker it forked into an index the
@@ -8608,6 +8627,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.14.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.14.0
 [1.13.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.13.0
 [1.12.1]: https://github.com/codetalcott/mojo-http/releases/tag/v1.12.1
 [1.12.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.12.0
