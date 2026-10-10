@@ -1,8 +1,8 @@
 """`libpq`, reached by `dlopen` — the function table and the rules that keep it alive.
 
-`m0-sqlite` links the system SQLite, because libsqlite3 sits in the dyld
-shared cache on macOS and `external_call` resolves it for free. libpq is not
-like that: Homebrew's is keg-only (`/opt/homebrew/lib/postgresql@17`), on no
+`m0-sqlite` opens libsqlite3 the same way, in this shape and under these
+rules (SPEC O17, O18; DECISIONS D49). libpq came to it first, for a reason of
+its own: Homebrew's is keg-only (`/opt/homebrew/lib/postgresql@17`), on no
 default linker or loader path, and a bare `dlopen("libpq.5.dylib")` fails
 naming nine directories it tried. Linking it would need a `-L` and an rpath
 into a directory that exists on one machine — the defect `scripts/relocate.py`

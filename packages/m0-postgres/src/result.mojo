@@ -225,7 +225,8 @@ struct Result(Movable):
 
         Binary mode decodes; text mode parses, including a leading `-`. A
         value that is not an integer raises rather than answering 0, which
-        is the difference between a missing row and a row holding zero.
+        is the difference between a missing row and a row holding zero, and
+        so does one past 64 bits, rather than wrapping.
         """
         if self.is_null(row, col):
             raise Error(
@@ -314,7 +315,15 @@ struct Result(Movable):
 
 
 def _parse_int(text: String) raises -> Int:
-    """A decimal integer, with an optional sign. Raises on anything else."""
+    """A decimal integer, with an optional sign. Raises on anything else.
+
+    Including a value `Int` cannot hold: a `numeric` read as text — the
+    `sum()` of an `int8` column is one — can exceed 64 bits, and wrapping
+    would answer a plausible number with no error. Each digit is checked
+    against the limit BEFORE it is taken, and the limit of a negative value
+    is one larger, so `-9223372036854775808` (`Int.MIN`) parses and
+    `9223372036854775808` does not.
+    """
     var b = text.as_bytes()
     if len(b) == 0:
         raise Error("an empty value is not an integer")
@@ -327,10 +336,18 @@ def _parse_int(text: String) raises -> Int:
         i = 1
     if i >= len(b):
         raise Error("`" + text + "` is not an integer")
-    var n = 0
+    var limit = UInt64(Int.MAX) + (UInt64(1) if negative else UInt64(0))
+    var n = UInt64(0)
     while i < len(b):
         if b[i] < UInt8(ord("0")) or b[i] > UInt8(ord("9")):
             raise Error("`" + text + "` is not an integer")
-        n = n * 10 + Int(b[i] - UInt8(ord("0")))
+        var digit = UInt64(b[i] - UInt8(ord("0")))
+        if n > (limit - digit) // 10:
+            raise Error("`" + text + "` does not fit in a 64-bit integer")
+        n = n * 10 + digit
         i += 1
-    return -n if negative else n
+    if not negative:
+        return Int(n)
+    if n > UInt64(Int.MAX):
+        return Int.MIN
+    return -Int(n)

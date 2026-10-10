@@ -159,6 +159,30 @@ in a minor release: `m0serve`'s flags and environment variables, the
   transaction that is still open, and always raises the original error
   (SPEC O26).
 
+- **m0-postgres: `notifies()` delivers every notification libpq already
+  holds before it reports a lost connection.** A burst of NOTIFYs followed
+  by the server's close (a restart, a failover, `pg_terminate_backend`) was
+  read off the socket in one go, and the next call raised on the close with
+  the rest still queued; `reset()`, the recovery, then freed them, so all
+  but the first were lost and nothing logged them. `notifies()` now takes
+  from libpq's queue first, reads the socket only when the queue is empty,
+  and raises only when nothing is left. The `--pg-listen` listener drains
+  until None and resets on a raise, so it now publishes the whole burst
+  before it reconnects (SPEC O15).
+
+- **m0-postgres: a `reset()` whose re-`LISTEN` fails no longer forgets
+  channels.** `reset()` emptied its list of channels before listening on
+  them again, so when one re-`LISTEN` raised (a reconnect that landed on a
+  standby, a second drop), every channel not yet restored left the list,
+  and each later `reset()` restored fewer, silently. The list is now kept
+  whole, so the next `reset()` tries every channel again (SPEC O15).
+
+- **m0-postgres: `Result.int` raises for a text-mode value past 64 bits
+  instead of wrapping.** The `sum()` of an `int8` column is `numeric`, and
+  a total beyond 9223372036854775807 read as a plausible number (2^64 as 0)
+  with no error. It now raises "… does not fit in a 64-bit integer";
+  -9223372036854775808 still parses (SPEC O31).
+
 ## [1.14.0] — 2026-10-10
 
 The fixes and the smaller code of a review of the framework and the fork
