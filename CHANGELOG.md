@@ -8,6 +8,27 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.15.0] — 2026-10-11
+
+The fixes from a review of the WSGI and ASGI gateway, the SQLite and
+PostgreSQL bindings, the `m0` wheel and m0-core, and the two issues
+reported against 1.14.0. A client could forge a header that a proxy sets:
+a request header whose name holds an underscore reached a WSGI application
+under the same `HTTP_*` key as its dashed spelling, so `X_Forwarded_For`
+could overwrite the proxy's `X-Forwarded-For`. m0-sqlite handed SQLite a
+closed connection's handle, which crashes the process on Debian's and
+Ubuntu's libsqlite3. A SIGTERM no longer waits out its 5 s budget for a
+keep-alive connection holding a stray CRLF (#611), and `m0serve` installed
+from the wheel no longer aborts when its interpreter's sysconfig names a
+library directory that is not there (#612). Two changes touch the served
+contract (see Changed): a request header whose name holds an underscore is
+dropped before it reaches a WSGI application, or an ASGI application
+served through `--blocking-threads`; and `--replay-frames` or
+`M0_REPLAY_FRAMES` above 4096 is refused at startup with exit 78. The `m0`
+wheel ships the framework's source, so an application built with `m0`
+takes the framework's fixes by rebuilding against `m0 0.12.0`; the template
+fixes reach the projects `m0 new` writes from now on.
+
 ### Changed
 
 - **The README states only what no other page owns, and links the rest.**
@@ -46,67 +67,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
-- **`parse_json_int` no longer wraps an integer past `Int`'s range, and
-  `parse_json_bool` no longer reads `truex` as true.** `{"n":18446744073709551617}`
-  came back as 1; it is now `None`, as is any value outside
-  -9223372036854775808..9223372036854775807. A boolean literal must end at
-  whitespace, `,`, `}`, `]` or the end of the body, so `trueish` and
-  `falsehood` are `None`. The m0 wheel ships `m0-core`, so an m0 application
-  takes the fix by rebuilding.
-
-- **`m0` command-line fixes** (the `m0` wheel, not m0serve):
-  - `m0 doctor` run on a `bin/server` that dies by a signal (an `abort()`,
-    a crash before `serve`) no longer exits 250 or 245, outside the
-    documented 0, 1, 2 and 78; it is exit 1, saying
-    `bin/server --doctor died of signal N`.
-  - `m0 new m0` and `m0 new mojo` (and `max-core`, `mojo-compiler`) are
-    refused with exit 2: the scaffold pins a requirement of that name, so
-    the project would depend on itself and `uv sync` could never meet it.
-  - `m0 dev` asks the toolchain checks again before each rebuild. After
-    `uv add --dev 'm0==X'` moved the watched `pyproject.toml` it compiled
-    the new framework with the old `mojo`; now it prints the refusal and
-    the old server keeps serving.
-  - `m0 build --release` on Linux checks for `patchelf` first (exit 78
-    naming `apt-get install patchelf`; `m0 doctor` does not ask), where
-    it used to fail after the whole compile; `docs/MOJO_DEPLOY.md` names it.
-  - A failed `install_name_tool -add_rpath` or `codesign` in the release
-    build (`relocate.py`, `bundle_artifact.py`) now fails it, and a binary
-    that lacks a search path it was to carry is refused, instead of a
-    `dist/server` that cannot load its runtime.
-  - `m0 new .` accepts a directory holding only `.git`, as after
-    `git init` or `gh repo create --clone`, and leaves it untouched.
-  - `m0 image` tags with the project's name from `pyproject.toml` rather
-    than the directory's, so a checkout under `Shop` no longer fails on
-    docker's lowercase rule.
-
-- **The `board` template no longer builds a board frame bigger than a
-  slot's 64 KB outbox** (the `m0` wheel). Fifty messages of 1500
-  bytes, each escaped, rendered to several times that, and a frame over
-  the cap is refused for every slot: the poster got a 200 and no tab was
-  updated, with nothing logged. `render_board` now renders the newest
-  messages that fit a byte budget, so the frame always goes out. A full
-  state frame fitting the outbox is now a line of the scaffold's
-  `AGENTS.md`.
-
-- **The `views` and `auth` templates no longer split their list across
-  pool threads under `--blocking-threads`** (the `m0` wheel). Their
-  views ran on the pool, where each thread builds a state of its own, so
-  an item created on one thread was missing from a list another answered.
-  Every view that touches the list is now `on_loop=True`, as `board`'s
-  are. The scaffold's `.gitignore` also lists the four files its smokes
-  and `m0 build` leave behind (`.dist.next/`, `smoke.one`, `smoke.two`,
-  `smoke.jar`), and the `views`, `auth` and `live` smokes serve on
-  `127.0.0.1` rather than every interface. All of this reaches
-  the applications `m0 new` scaffolds from now on; one already scaffolded
-  applies it by hand, since a template is written once.
-
-- **A `--max-body` or `M0_MAX_BODY` too large for an integer is refused, not
-  wrapped.** `17179869184g` (2^64 bytes) wrapped to a 0-byte cap, so every
-  request with a body got a 413, and `9999999999g` wrapped negative and left
-  the 4 MB default standing with no message. The flag now exits 2, and
-  `M0_MAX_BODY` is ignored out loud like any unreadable `M0_*` value, the
-  4 MB cap standing (SPEC C1).
-
 - **A keep-alive connection holding a stray CRLF or the start of its next
   request no longer holds the SIGTERM drain to its 5 s budget** (#611).
   The drain closed a connection between requests only when its receive
@@ -135,27 +95,6 @@ in a minor release: `m0serve`'s flags and environment variables, the
   build with no shared library, which used to abort the same way, now
   gets the 78 (SPEC M30).
 
-- **README's "SSE replay is journal-deep" limit still said a WSGI hold
-  replays nothing**, and that an application keeps its own catch-up. 1.12.0
-  made that false (SPEC I33): the bullet now says a hold is caught up from
-  the per-loop `--replay-frames` journal and sent one `m0-gap` frame when it
-  cannot be, as RUNNING.md and the `m0pub` docstring do. Its
-  `DatastarStream` half said a client further behind than the journal
-  resumes live; since SPEC I30 it is sent no history and `caught_up(slot)`
-  answers false, so the view resyncs it with `send_to`. The same section
-  gave the Mojo pin as 1.0; it is 1.1.
-
-- **Six more README claims the tree had moved past.** A handler's
-  optional hooks were "the empty defaults shown here" beside an example
-  that shows none; `m0-http` "uses three functions" of `m0-core`, where it
-  imports from ten files; m0serve's exit codes omitted 78, which the
-  `--doctor` example below them exits with; uploads were raised through
-  `ServerConfig.max_request_body_size`, a field an m0serve user cannot
-  reach, rather than `--max-body`; a buffered `FileResponse` was "the
-  recorded follow-up", with no record anywhere; and "Two more things it
-  does" listed three. RUNNING.md offered `--threads` from 3.13t, which is
-  a dead end; it is 3.14t.
-
 - **An ASGI application's `state["m0"].publish` numbers its frames as
   `m0pub` does, from 1.** It took the shared counter's previous value
   where every other publisher (`m0pub`, `--pg-listen`, the Mojo side)
@@ -175,6 +114,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   a pool thread alike, and is still not caught up. A browser cannot put
   the header on an upgrade, so this reached other clients only (SPEC
   I12).
+
+- **A `--max-body` or `M0_MAX_BODY` too large for an integer is refused, not
+  wrapped.** `17179869184g` (2^64 bytes) wrapped to a 0-byte cap, so every
+  request with a body got a 413, and `9999999999g` wrapped negative and left
+  the 4 MB default standing with no message. The flag now exits 2, and
+  `M0_MAX_BODY` is ignored out loud like any unreadable `M0_*` value, the
+  4 MB cap standing (SPEC C1).
 
 - **`--doctor` reports `replay_frames` as 0 without `--realtime`**,
   where the server keeps no journal whatever `--replay-frames` says. It
@@ -241,6 +187,81 @@ in a minor release: `m0serve`'s flags and environment variables, the
   a total beyond 9223372036854775807 read as a plausible number (2^64 as 0)
   with no error. It now raises "… does not fit in a 64-bit integer";
   -9223372036854775808 still parses (SPEC O31).
+
+- **`parse_json_int` no longer wraps an integer past `Int`'s range, and
+  `parse_json_bool` no longer reads `truex` as true.** `{"n":18446744073709551617}`
+  came back as 1; it is now `None`, as is any value outside
+  -9223372036854775808..9223372036854775807. A boolean literal must end at
+  whitespace, `,`, `}`, `]` or the end of the body, so `trueish` and
+  `falsehood` are `None`. The m0 wheel ships `m0-core`, so an m0 application
+  takes the fix by rebuilding.
+
+- **`m0` command-line fixes** (the `m0` wheel, not m0serve):
+  - `m0 doctor` run on a `bin/server` that dies by a signal (an `abort()`,
+    a crash before `serve`) no longer exits 250 or 245, outside the
+    documented 0, 1, 2 and 78; it is exit 1, saying
+    `bin/server --doctor died of signal N`.
+  - `m0 new m0` and `m0 new mojo` (and `max-core`, `mojo-compiler`) are
+    refused with exit 2: the scaffold pins a requirement of that name, so
+    the project would depend on itself and `uv sync` could never meet it.
+  - `m0 dev` asks the toolchain checks again before each rebuild. After
+    `uv add --dev 'm0==X'` moved the watched `pyproject.toml` it compiled
+    the new framework with the old `mojo`; now it prints the refusal and
+    the old server keeps serving.
+  - `m0 build --release` on Linux checks for `patchelf` first (exit 78
+    naming `apt-get install patchelf`; `m0 doctor` does not ask), where
+    it used to fail after the whole compile; `docs/MOJO_DEPLOY.md` names it.
+  - A failed `install_name_tool -add_rpath` or `codesign` in the release
+    build (`relocate.py`, `bundle_artifact.py`) now fails it, and a binary
+    that lacks a search path it was to carry is refused, instead of a
+    `dist/server` that cannot load its runtime.
+  - `m0 new .` accepts a directory holding only `.git`, as after
+    `git init` or `gh repo create --clone`, and leaves it untouched.
+  - `m0 image` tags with the project's name from `pyproject.toml` rather
+    than the directory's, so a checkout under `Shop` no longer fails on
+    docker's lowercase rule.
+
+- **The `board` template no longer builds a board frame bigger than a
+  slot's 64 KB outbox** (the `m0` wheel). Fifty messages of 1500
+  bytes, each escaped, rendered to several times that, and a frame over
+  the cap is refused for every slot: the poster got a 200 and no tab was
+  updated, with nothing logged. `render_board` now renders the newest
+  messages that fit a byte budget, so the frame always goes out. A full
+  state frame fitting the outbox is now a line of the scaffold's
+  `AGENTS.md`.
+
+- **The `views` and `auth` templates no longer split their list across
+  pool threads under `--blocking-threads`** (the `m0` wheel). Their
+  views ran on the pool, where each thread builds a state of its own, so
+  an item created on one thread was missing from a list another answered.
+  Every view that touches the list is now `on_loop=True`, as `board`'s
+  are. The scaffold's `.gitignore` also lists the four files its smokes
+  and `m0 build` leave behind (`.dist.next/`, `smoke.one`, `smoke.two`,
+  `smoke.jar`), and the `views`, `auth` and `live` smokes serve on
+  `127.0.0.1` rather than every interface. All of this reaches
+  the applications `m0 new` scaffolds from now on; one already scaffolded
+  applies it by hand, since a template is written once.
+
+- **README's "SSE replay is journal-deep" limit still said a WSGI hold
+  replays nothing**, and that an application keeps its own catch-up. 1.12.0
+  made that false (SPEC I33): the bullet now says a hold is caught up from
+  the per-loop `--replay-frames` journal and sent one `m0-gap` frame when it
+  cannot be, as RUNNING.md and the `m0pub` docstring do. Its
+  `DatastarStream` half said a client further behind than the journal
+  resumes live; since SPEC I30 it is sent no history and `caught_up(slot)`
+  answers false, so the view resyncs it with `send_to`. The same section
+  gave the Mojo pin as 1.0; it is 1.1.
+
+- **Six more README claims the tree had moved past.** A handler's
+  optional hooks were "the empty defaults shown here" beside an example
+  that shows none; `m0-http` "uses three functions" of `m0-core`, where it
+  imports from ten files; m0serve's exit codes omitted 78, which the
+  `--doctor` example below them exits with; uploads were raised through
+  `ServerConfig.max_request_body_size`, a field an m0serve user cannot
+  reach, rather than `--max-body`; a buffered `FileResponse` was "the
+  recorded follow-up", with no record anywhere; and "Two more things it
+  does" listed three. RUNNING.md offered `--threads` from 3.13t, which is
+  a dead end; it is 3.14t.
 
 ## [1.14.0] — 2026-10-10
 
@@ -8861,6 +8882,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.15.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.15.0
 [1.14.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.14.0
 [1.13.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.13.0
 [1.12.1]: https://github.com/codetalcott/mojo-http/releases/tag/v1.12.1
