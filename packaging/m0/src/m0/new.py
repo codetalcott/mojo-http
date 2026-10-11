@@ -47,6 +47,17 @@ DEFAULT = "views"
 NAME = re.compile(r"[a-z](?:[a-z0-9-]*[a-z0-9])?\Z")
 NAME_MAX = 40
 
+
+def pinned_names():
+    """The distributions the scaffold's `pyproject.toml` pins (`name==X`),
+    read from it, plus `mojo-compiler`, which `max-core` pins in turn. A
+    project cannot share a name with one: the requirement would resolve to
+    the project itself, a virtual 0.1.0 that can never meet the pin."""
+    text = (paths.PACKAGE / "templates" / "_common" / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
+    return set(re.findall(r"([A-Za-z][A-Za-z0-9_.-]*)==", text)) | {"mojo-compiler"}
+
 # Written for every template, from `templates/_common/`. A leading `dot-`
 # is a leading `.` in the project: a `.gitignore` or a `.github/` inside
 # this package would be read by the tools that build it.
@@ -100,7 +111,7 @@ MANIFEST = {
 EXECUTABLE = ("smoke.sh",)
 
 # The checks `new` can ask before a venv exists. It reads them from the one
-# list (`checks.CHECKS`) by name; the other three describe an environment
+# list (`checks.CHECKS`) by name; the others describe an environment
 # `uv sync` has not made yet.
 EARLY_CHECKS = ("platform", "c-compiler")
 
@@ -149,6 +160,16 @@ def _usage(message):
     return 2
 
 
+def _entries(directory):
+    """What is in `directory` that `m0 new` would be writing among: a `.git`
+    is a repository someone just made (`git init`, `gh repo create --clone`),
+    which no scaffold file is under, so it does not make a directory
+    occupied."""
+    if not directory.is_dir():
+        return [directory]
+    return [p for p in directory.iterdir() if p.name != ".git"]
+
+
 def run(args):
     # None when `--template` was not given: a default taken is said, with
     # the others, and a template chosen is not second-guessed.
@@ -166,12 +187,17 @@ def run(args):
             f"hyphens, starting with a letter and ending with a letter or digit, "
             f"at most {NAME_MAX})"
         )
+    if app in pinned_names():
+        return _usage(
+            f"'{app}' is the name of a package the project requires, and a "
+            "project cannot depend on itself (choose another name)"
+        )
     shown = args.name if os.path.isabs(args.name) else f"./{args.name}"
-    if here and any(target.iterdir()):
+    if here and _entries(target):
         return _usage(
             "the current directory is not empty (empty it, or name a new directory)"
         )
-    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+    if target.exists() and (not target.is_dir() or _entries(target)):
         return _usage(
             f"{shown} exists and is not empty (choose another name, or empty it)"
         )

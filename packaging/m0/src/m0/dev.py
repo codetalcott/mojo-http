@@ -139,6 +139,16 @@ def run(args):
             if now == seen:
                 continue
             seen = now
+            # The toolchain can have moved under us: `pyproject.toml` is
+            # watched because `uv add --dev 'm0==X'` edits it, and that
+            # build would run a new framework on the old mojo.
+            refused = checks.preflight(project)
+            if refused is not None:
+                print(refused.sentence(), file=sys.stderr, flush=True)
+                say("not building" + (
+                    f"; pid {server.pid} is still serving the last good build"
+                    if server is not None else "") + " -- fix it and save")
+                continue
             say("change seen, building" + (
                 f" (pid {server.pid} keeps serving)" if server is not None else ""))
             if build.build(project) != 0:

@@ -11,6 +11,7 @@ error. That failure is indistinguishable from nobody publishing, which is
 why it is asserted here rather than trusted.
 """
 
+from std.collections.span import Span
 from std.ffi import c_int, external_call
 from std.memory.alloc import unsafe_alloc
 from std.os import getenv
@@ -147,6 +148,65 @@ def test_a_reset_restores_every_subscription() raises:
     db.unlisten("m0_test_reset")
 
 
+def test_a_reset_whose_relisten_fails_forgets_no_channel() raises:
+    """A re-`LISTEN` that fails stops no other channel, and forgets none.
+
+    The failure is a real one. A channel named while the session's client
+    encoding was LATIN1 is not valid UTF-8, the encoding a reset reconnects
+    with, so `PQescapeIdentifier` refuses it. The reset re-`LISTEN`s every
+    channel anyway and raises once at the end, naming the one that failed,
+    so the channels on both sides of it are listening as soon as it
+    raises. It used to stop at the first failure, leaving `m0_test_last`
+    deaf until the application withdrew the channel that failed and reset
+    again; and before that it emptied its list before re-listening, so the
+    next reset restored one subscription of two, with no error.
+
+    No re-`LISTEN` can be made to fail ONCE against a real server without
+    a race (a standby refusing it, a drop between two statements), so the
+    test then withdraws the channel that fails, the recovery an
+    application has, and resets again.
+
+    covers: O15
+    """
+    var latin1 = List[UInt8]()
+    for b in "m0_test_caf".as_bytes():
+        latin1.append(b)
+    latin1.append(0xE9)  # é in LATIN1; in UTF-8, a sequence cut short
+    var bad = String(unsafe_from_utf8=Span(latin1))
+    var db = open(_url())
+    db.listen("m0_test_first")
+    db.execute("SET client_encoding TO 'LATIN1'")
+    db.listen(bad)
+    db.listen("m0_test_last")
+    var said = String("")
+    try:
+        db.reset()
+    except e:
+        said = String(e)
+    assert_true(
+        "could not LISTEN again on 1 of 3 channels after reconnecting to " in said,
+        said,
+    )
+    assert_true(": `m0_test_caf" in said, said)
+    assert_true("PQescapeIdentifier refused" in said, said)
+    # Both sides of the failing channel already listen: no unlisten first.
+    db.execute("NOTIFY m0_test_first, 'a'; NOTIFY m0_test_last, 'b'")
+    var restored = _drain(db)
+    assert_equal(len(restored), 2)
+    assert_equal(restored[0], "m0_test_first|a")
+    assert_equal(restored[1], "m0_test_last|b")
+    db.execute("SET client_encoding TO 'LATIN1'")
+    db.unlisten(bad)
+    db.reset()
+    db.execute("NOTIFY m0_test_first, 'a'; NOTIFY m0_test_last, 'b'")
+    var got = _drain(db)
+    assert_equal(len(got), 2)
+    assert_equal(got[0], "m0_test_first|a")
+    assert_equal(got[1], "m0_test_last|b")
+    db.unlisten("m0_test_first")
+    db.unlisten("m0_test_last")
+
+
 def _readable_within(fd: Int, timeout_ms: Int) -> Bool:
     """`poll(2)`: whether the socket has bytes to read within the timeout."""
     var buf = unsafe_alloc[UInt8](count=8)
@@ -195,6 +255,56 @@ def test_a_notification_read_during_a_statement_does_not_wake_poll() raises:
     assert_equal(len(later), 1)
     assert_equal(later[0], "m0_test_buffered|from elsewhere")
     db.unlisten("m0_test_buffered")
+
+
+def test_queued_notifications_are_delivered_before_a_lost_connection() raises:
+    """Every notification libpq already holds, and only then the error.
+
+    A burst and then the server's close: once the close is in the socket,
+    the read that finds it fails, and `notifies` raised on that failure
+    before taking what libpq had queued. The recovery, `reset`, frees the
+    queue, so all but the first notification of the burst were lost and
+    nothing logged them.
+
+    Two steps make the order certain wherever the server is, a container
+    behind a port proxy included. A statement's round trip reads the burst
+    into libpq's queue (the mechanism the test above shows), so after the
+    termination the socket holds only the close; and every call waits for
+    the socket first, so the call that reads the server's last message and
+    the one that finds the connection gone are two. libpq's default notice
+    processor prints that last message to stderr, `FATAL:  terminating
+    connection due to administrator command`: the line is this test's, not
+    a failure.
+
+    covers: O15
+    """
+    var db = open(_url())
+    db.listen("m0_test_burst")
+    var other = open(_url())
+    other.execute("NOTIFY m0_test_burst, 'one'; NOTIFY m0_test_burst, 'two'")
+    assert_true(_readable_within(db.socket_fd(), 5000))
+    db.execute("SELECT 1")
+    # With a timeout, `pg_terminate_backend` answers once the process is gone.
+    var gone = other.query(
+        "SELECT pg_terminate_backend(" + String(db.backend_pid()) + ", 5000)",
+        Params(),
+    )
+    assert_true(gone.bool(0, 0))
+    var got = List[String]()
+    var raised = String("")
+    for _ in range(8):
+        assert_true(_readable_within(db.socket_fd(), 5000))
+        try:
+            var note = db.notifies()
+            if note:
+                got.append(note.value().channel + "|" + note.value().payload)
+        except e:
+            raised = String(e)
+            break
+    assert_true(raised.startswith("PQconsumeInput failed"))
+    assert_equal(len(got), 2)
+    assert_equal(got[0], "m0_test_burst|one")
+    assert_equal(got[1], "m0_test_burst|two")
 
 
 def test_a_channel_name_is_quoted_by_the_server() raises:

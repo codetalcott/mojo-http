@@ -8,6 +8,15 @@ library is absent, in which case both are -1 and the id assertion is
 skipped rather than failed (delivery is the contract; suppression is the
 upgrade -- m0pub's own degradation posture).
 
+**The ids are m0pub's.** Run against a server that has published nothing,
+the first publish is id 1, as `m0pub.next_event_id` numbers: the counter
+starts at 0, and a first-visit subscriber stands at 0 behind a filter that
+is strictly greater-than, so an id of 0 reaches nobody. And an m0pub
+publish followed by a `state["m0"]` publish takes two ids from the one
+counter: numbered one below m0pub's rule, the shim handed out the id m0pub
+had just taken, and a hold that received the first frame dropped the
+second (`/publish-m0pub` is the app's m0pub route).
+
 **Spread is a precondition, not the contract, and it is a race.** Nothing
 makes the kernel hand six near-simultaneous connections to both workers;
 with a shared listener the accept race can legitimately put all six on
@@ -96,11 +105,19 @@ def attempt(count):
     return delivered, pids, first, second
 
 
+def published_ids(text):
+    """The ids in a `published id=N from pid-P` answer."""
+    return [int(part[3:]) for part in text.split() if part.startswith("id=")]
+
+
 def main():
     count = 6 if WANT_WORKERS > 1 else 2
+    fresh_first = None
     for attempt_no in range(1, ATTEMPTS + 1):
         phase("attempt %d: %d streams, one broadcast" % (attempt_no, count))
         delivered, pids, first, second = attempt(count)
+        if fresh_first is None:
+            fresh_first = first
         print(
             "fanout: %d/%d streams delivered across %d worker(s); %s | %s"
             % (delivered, count, len(pids), first, second)
@@ -128,13 +145,30 @@ def main():
         fail("streams never spanned %d workers in %d attempts" % (WANT_WORKERS, ATTEMPTS))
 
     phase("the publish ids, which must be distinct")
-    ids = []
-    for text in (first, second):
-        for part in text.split():
-            if part.startswith("id="):
-                ids.append(int(part[3:]))
+    ids = published_ids(first) + published_ids(second)
     if -1 not in ids and len(set(ids)) != len(ids):
         fail("publish ids were not distinct: %r" % ids)
+
+    phase("the fresh server's first publish, which must be id 1")
+    first_id = published_ids(fresh_first)
+    if first_id != [-1] and first_id != [1]:
+        fail("the first publish was not id 1, m0pub's first: %r" % fresh_first)
+
+    phase("an m0pub publish, then a state['m0'] one: two ids")
+    by_m0pub = urllib.request.urlopen(
+        BASE + "/publish-m0pub", timeout=10
+    ).read().decode()
+    by_shim = urllib.request.urlopen(
+        BASE + "/publish?msg=after-m0pub", timeout=10
+    ).read().decode()
+    print("ids: m0pub %s | state['m0'] %s" % (by_m0pub, by_shim))
+    pair = published_ids(by_m0pub) + published_ids(by_shim)
+    if len(pair) != 2:
+        fail("an answer carried no id: %r | %r" % (by_m0pub, by_shim))
+    if pair.count(-1) == 1:
+        fail("one publisher numbered and the other could not: %r" % pair)
+    if -1 not in pair and (pair[0] == pair[1] or min(pair) < 1):
+        fail("m0pub and state['m0'] took ids %r from one counter; want two, each >= 1" % pair)
 
 
 if __name__ == "__main__":

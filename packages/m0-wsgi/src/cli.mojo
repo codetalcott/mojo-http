@@ -43,6 +43,10 @@ comptime DEFAULT_ATTRIBUTE = "application"
 
 comptime DEFAULT_PORT = 8000
 """The port uvicorn and gunicorn default to; the in-repo rows always pass `--port`."""
+comptime MAX_REPLAY_FRAMES = 4096
+"""The largest `--replay-frames` the server accepts: each loop keeps that many
+frames of up to 64 KB, and the journal evicts by shifting its lists on the
+loop thread (`checks.flag_checks`' `replay-frames` rule refuses more)."""
 comptime DEFAULT_REPLAY_FRAMES = 64
 """`--replay-frames`' default: `DatastarStream`'s journal depth, per loop."""
 
@@ -533,7 +537,13 @@ def parse_size(text: String) raises -> Int:
     if multiplier != 1:
         digits = String(unsafe_from_utf8=trimmed.as_bytes()[: n - 1])
     try:
-        return parse_int(digits, "--max-body") * multiplier
+        var count = parse_int(digits, "--max-body")
+        # Refused before it is multiplied: `17179869184g` is 2^64, which
+        # wrapped to 0 (every body a 413), and `9999999999g` to a negative
+        # that left the default standing with nothing said (review W6).
+        if count > Int.MAX // multiplier:
+            raise Error("too large")
+        return count * multiplier
     except:
         raise Error(
             "--max-body must be a size like 4m or 4194304, got '" + text + "'"
@@ -1743,7 +1753,9 @@ def usage() -> String:
         "  --replay-frames N           journal the last N published frames per\n"
         "                              loop, so a held stream reconnecting with\n"
         "                              Last-Event-ID is caught up (default 64,\n"
-        "                              0 = none; M0_REPLAY_FRAMES)\n"
+        "                              0 = none, at most 4096; M0_REPLAY_FRAMES).\n"
+        "                              A loop holds up to N frames of up to\n"
+        "                              64 KB each\n"
         "  --metrics                   serve Prometheus metrics at /__metrics\n"
         "  --realtime                  hold SSE streams and WebSockets the app\n"
         "                              approves with M0-Hold; publish with m0pub.py\n"

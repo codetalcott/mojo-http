@@ -194,7 +194,7 @@ shell = "for f in apps/*/test/test_*.mojo; do mojo run -I packages/m0-core -I pa
 # Built as one program and run once per file, as `test-http` is (its
 # comment says why).
 [tool.poe.tasks.test-wsgi]
-help = "Test m0-wsgi (mapping logic only; needs no interpreter)"
+help = "Test m0-wsgi (test_blocking_pool, test_read_head and test_hold_resume embed CPython; the rest need no interpreter)"
 shell = "python3 scripts/mojo_suite.py packages/m0-wsgi -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http"
 
 # The executor shim's ownership rules, with no server and no Mojo. The shim
@@ -3881,6 +3881,7 @@ refuses 78 'too many mounts, explicit no pool'  $M127 $W --blocking-threads 0
 # moves both together and only the named code sees it.
 refuses 1  'missing app dir, then a conflict'   bareapp.wsgi --app-dir /no/such/dir --workers 2 --threads 2
 refuses 2  'compiled mount unserved, then lanes' $M127 --mount /native=mojo $W --blocking-threads 0
+refuses 2  'pg-listen unserved, then a deep journal' $SPEC --pg-listen postgres://db/x --replay-frames 5000
 
 # A port of 0 is refused before the bind, 78 both ways, whether M0_PORT
 # or --port names it (review record LF56): the variable's served on a port
@@ -3910,6 +3911,16 @@ port_refused 'a flag port of 0' '' --port 0
 # zone) is a 78 before the bind, both ways; the server failed at the bind
 # with 1 while the doctor said 0 (review record LF48).
 refuses 78 'a host with an IPv6 zone'           $SPEC --host fe80::1%en0
+
+# A journal deeper than 4096 frames (review W4) is a 78 from the list, both
+# ways, with or without --realtime and whether the flag or M0_REPLAY_FRAMES
+# names it; the cap itself serves.
+refuses 78 'a replay depth over the cap'        $SPEC --replay-frames 4097
+refuses 78 'a replay depth over the cap, realtime' $SPEC --realtime --replay-frames 100000
+M0_REPLAY_FRAMES=4097; export M0_REPLAY_FRAMES
+refuses 78 'an environment replay depth over the cap' $SPEC
+unset M0_REPLAY_FRAMES
+refuses 0  'a replay depth at the cap'          $SPEC --replay-frames 4096
 
 # Refusals, one per exit code the server uses. 2 = usage, 1 = startup,
 # 78 = EX_CONFIG (the interpreter cannot run the requested mode).
@@ -3959,12 +3970,28 @@ assert t['mode'] == 'single', t
 assert t['blocking_threads'] > 0 and t['blocking_threads_source'] == 'default', t
 " || fail 'the doctor does not report the resolved spec and zero-config topology'
 
+# The journal depth the server would USE: the flag's under --realtime, and
+# 0 without it, where the handler keeps no journal whatever the flag says.
+replay_frames() {
+  want="$1"; shift
+  "$srv" --doctor $SPEC "$@" > "$json" 2>/dev/null || fail "doctor $* did not exit 0"
+  python3 -c "
+import json, sys
+got = json.load(open('$json'))['server']['replay_frames']
+if got != $want:
+    sys.exit('replay_frames is %r, want $want' % got)
+" || fail "doctor $*: the journal depth reported is not the one served"
+}
+replay_frames 7 --realtime --replay-frames 7
+replay_frames 0 --replay-frames 7
+
 echo 'smoke-doctor: --doctor agrees with the server on every refusal'
 python3 scripts/emit.py --covers E7 --task smoke-doctor
 python3 scripts/emit.py --covers F8 --task smoke-doctor
 python3 scripts/emit.py --covers M5 --task smoke-doctor
 python3 scripts/emit.py --covers M20 --task smoke-doctor
 python3 scripts/emit.py --covers M28 --task smoke-doctor
+python3 scripts/emit.py --covers I43 --task smoke-doctor
 """
 
 [tool.poe.tasks.smoke-serve]
@@ -6091,6 +6118,14 @@ echo "$env" | grep -qF "CONTENT_TYPE='text/x-test'" || fail 'CONTENT_TYPE missin
 echo "$env" | grep -qF "CONTENT_LENGTH='2'" || fail 'CONTENT_LENGTH missing or prefixed'
 echo "$env" | grep -qF "HTTP_X_CUSTOM='v'" || fail 'ordinary header lost its HTTP_ prefix'
 echo "$env" | grep -q '^HTTP_CONTENT_' && fail 'HTTP_CONTENT_* must not appear in the environ'
+# A header name holding `_` never reaches the environ (G29, CVE-2015-0219):
+# CGI's mapping files `X_Forwarded_For` under the same HTTP_X_FORWARDED_FOR as
+# a proxy's `X-Forwarded-For`, and the later store won. The underscore
+# spelling goes LAST, the order in which it used to win.
+env=$(curl -s -H 'X-Forwarded-For: 203.0.113.7' -H 'X_Forwarded_For: 6.6.6.6' $B/environ)
+echo "$env" | grep -qF "HTTP_X_FORWARDED_FOR='203.0.113.7'" \
+  || fail "the dashed X-Forwarded-For did not reach the environ intact (G29): $env"
+echo "$env" | grep -qF '6.6.6.6' && fail "an underscore header reached the environ (G29): $env"
 # The environ as the client sent it (L25): a body the loop de-chunked has its
 # CONTENT_LENGTH and no HTTP_TRANSFER_ENCODING, the chunking being undone,
 # and a GET has no CONTENT_LENGTH at all -- PEP 3333 lets it be absent, and
@@ -6231,6 +6266,7 @@ curl -s --fail $B/ > /dev/null || fail 'server died after a validation failure'
 
 echo "smoke-wsgi OK"
 python3 scripts/emit.py --covers G2 --task smoke-wsgi
+python3 scripts/emit.py --covers G29 --task smoke-wsgi
 python3 scripts/emit.py --covers K1 --task smoke-wsgi
 python3 scripts/emit.py --covers K2 --task smoke-wsgi
 python3 scripts/emit.py --covers K3 --task smoke-wsgi

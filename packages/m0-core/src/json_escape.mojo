@@ -64,6 +64,11 @@ def escape_json_string(s: String) -> String:
     """Escape a string for JSON output, wrapping in double quotes.
 
     Uses SIMD scan for bulk safe-range detection + memcpy.
+
+    Bytes at or above 0x80 pass through unvalidated, so the caller supplies
+    UTF-8; invalid bytes come out inside a document no JSON reader accepts.
+    For request or database text, clean it first, as `apps/table_notes`'
+    `json_text` does (each undecodable byte becomes U+FFFD).
     """
     var out = List[UInt8](capacity=s.byte_length() + 18)
     escape_json_string_into(out, s)
@@ -79,6 +84,11 @@ def escape_json_string_into(mut out: List[UInt8], s: String):
     several escaped values into one document would otherwise allocate a
     String per value and then copy each one into the result; `format_json`
     in m0-http did exactly that, twelve times per access-log line.
+
+    Bytes at or above 0x80 pass through unvalidated, so the caller supplies
+    UTF-8; invalid bytes come out inside a document no JSON reader accepts.
+    For request or database text, clean it first, as `apps/table_notes`'
+    `json_text` does (each undecodable byte becomes U+FFFD).
     """
     var bytes = s.as_bytes()
     var slen = s.byte_length()

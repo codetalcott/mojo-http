@@ -58,21 +58,42 @@ def _is_unprefixed(name: Span[Byte, _]) -> Bool:
 def header_is_excluded(name: Span[Byte, _]) -> Bool:
     """Whether this (lowercased) header must not reach the environ at all.
 
-    One entry: `Proxy`. CGI's mapping turns a request header into
-    `HTTP_<NAME>`, so a client sending `Proxy: http://attacker/` produces
-    `HTTP_PROXY` — the variable `urllib`, `requests`, and most HTTP clients
-    read to decide where to send an outbound request. An application that
-    makes any server-side HTTP call while that is in its environment can be
+    Two rules, both about what CGI's mapping makes of a name.
+
+    `Proxy`. The mapping turns a request header into `HTTP_<NAME>`, so a
+    client sending `Proxy: http://attacker/` produces `HTTP_PROXY` — the
+    variable `urllib`, `requests`, and most HTTP clients read to decide
+    where to send an outbound request. An application that makes any
+    server-side HTTP call while that is in its environment can be
     redirected by whoever sent the header. That is httpoxy (CVE-2016-5385
     and friends), and the fix every affected server settled on is to refuse
     to map this one header, because no legitimate request sends it.
 
-    Deliberately NOT extended to `X-Forwarded-*`: those are load-bearing
-    behind a real proxy, and this server never consults them itself
-    (`REMOTE_ADDR` comes from the socket peer, `wsgi.url_scheme` from
-    config), so passing them through is the application's information to
-    use or ignore.
+    Any name holding `_`. The mapping turns `-` into `_` and leaves `_`
+    alone, so `X_Forwarded_For` and `X-Forwarded-For` both become
+    `HTTP_X_FORWARDED_FOR`, and the environ keeps whichever the request
+    carried later. Behind a proxy that sets the dashed header and forwards
+    underscore names (HAProxy, Caddy and Traefik do; nginx drops them by
+    default), a client's underscore spelling replaced what the proxy said:
+    the client address, the scheme, an identity header. That is
+    CVE-2015-0219, and Django's runserver, nginx, Apache 2.4 and gunicorn
+    (`header_map`, `drop` by default since 22.0) all drop such names.
+
+    The dashed `X-Forwarded-*` still pass: they are load-bearing behind a
+    real proxy, and this server never consults them itself (`REMOTE_ADDR`
+    comes from the socket peer, `wsgi.url_scheme` from config), so passing
+    them through is the application's information to use or ignore. Only
+    the underscore spellings that alias them are dropped. The ASGI
+    executor's scope is not built from here: it carries every name as
+    sent, as the ASGI spec asks, so no two names share a key there. The
+    buffered ASGI path is: an ASGI application under `--blocking-threads N`
+    above 0 gets a scope the shim builds from this environ
+    (`_scope_from_environ`), so what is dropped here never reaches it
+    either, and narrowing the rule changes what those applications see.
     """
+    for i in range(len(name)):
+        if name[i] == UInt8(ord("_")):
+            return True
     return _bytes_equal(name, _PROXY.as_bytes())
 
 

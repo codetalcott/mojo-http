@@ -26,6 +26,13 @@ that name and takes no other. `m0 build` checks for it first, with a link
 test, and refuses with exit 78 naming the package to install
 (`build-essential`, or Xcode's command line tools). `m0 test` needs none.
 
+On Linux, `m0 build --release` also needs `patchelf`, which rewrites the
+binary's library search path after the compile. `m0 build --release` checks
+for it first and refuses with exit 78 naming the install
+(`apt-get install patchelf`); a development build does not need it, and
+`m0 doctor` does not ask. The scaffold's `deploy/Dockerfile` installs it in
+the builder.
+
 ## The image
 
 ```bash
@@ -38,7 +45,7 @@ docker run --rm -p 8080:8080 NAME
 the builder stage runs `uv sync --frozen` and `uv run m0 build --release`.
 The runtime stage copies `dist/` onto `debian:12-slim` and runs the binary
 as PID 1, as an unprivileged user. `--tag T` names the image (the default
-is the project directory's name), `--target-cpu CPU` reaches the release
+is the project's name in `pyproject.toml`, else the directory's), `--target-cpu CPU` reaches the release
 build, and everything after a bare `--` goes to `docker build`, for example
 `-- --platform linux/amd64`.
 

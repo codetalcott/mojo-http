@@ -405,6 +405,21 @@ def test_max_body_accepts_suffixes() raises:
     assert_equal(_parse([String("m.wsgi"), String("--max-body"), String("1k")]).max_body, 1024)
 
 
+def test_max_body_too_large_for_an_int_is_refused_not_wrapped() raises:
+    """`17179869184g` is 2^64, which wrapped to 0 (every body a 413);
+    `9999999999g` wrapped negative and left the default with nothing said.
+    The largest size that fits is still read.
+
+    covers: C1
+    """
+    for big in [String("17179869184g"), String("9999999999g"), String("9223372036854775807k")]:
+        assert_true(
+            _fails([String("m.wsgi"), String("--max-body"), big]),
+            "accepted '" + big + "'",
+        )
+    assert_equal(parse_size(String("8589934591g")), 8589934591 * 1024 * 1024 * 1024)
+
+
 def test_max_body_junk_is_an_error() raises:
     for bad in [String(""), String("k"), String("12x"), String("-1"), String("1.5m")]:
         var rejected = False
@@ -635,6 +650,25 @@ def test_from_env_reads_the_body_limits() raises:
     )
     assert_equal(opts.server_config(AppConfig()).max_request_body_size, 1024)
     assert_equal(opts.server_config(AppConfig()).body_read_timeout, 0)
+    _clear_env()
+
+
+def test_from_env_ignores_a_body_limit_too_large_for_an_int_and_says_so() raises:
+    """`M0_MAX_BODY=17179869184g` is unreadable like `64mb`: the 4 MB cap
+    stands and `env_ignored` names it, where it wrapped to a 0-byte cap.
+
+    covers: C1
+    """
+    _clear_env()
+    _ = setenv("M0_MAX_BODY", "17179869184g", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.max_body, -1)
+    assert_equal(len(seed.env_ignored), 1)
+    assert_equal(
+        seed.env_ignored[0],
+        "ignoring M0_MAX_BODY='17179869184g', not a size like 4m or 4194304;"
+        " using 4m",
+    )
     _clear_env()
 
 

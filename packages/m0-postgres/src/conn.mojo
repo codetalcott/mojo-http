@@ -412,22 +412,38 @@ struct Connection(Movable):
     def notifies(mut self) raises -> Optional[Notification]:
         """The next notification already delivered to us, if any.
 
-        Consumes whatever the socket holds first (`PQconsumeInput`), so this
-        is complete rather than merely non-blocking: a caller polling this
+        Complete rather than merely non-blocking: a caller polling this
         after a readable event gets every notification that arrived, one
-        call at a time, until it answers None.
+        call at a time, until it answers None. libpq's queue is asked
+        first, and only when it is empty is the socket read
+        (`PQconsumeInput`) and the queue asked again, so a None always
+        follows a read of the socket.
+
+        A lost connection raises, but only once libpq's queue is empty. A
+        burst that arrives just before the server closes is read in one go,
+        and the next read fails on the close; every notification of the
+        burst is answered before that failure is, which matters because the
+        recovery, `reset`, frees the queue.
 
         The three public `PGnotify` fields are read by OFFSET — 0, 8, 16 on
         a 64-bit target — because the struct's fourth field is a list link
-        libpq owns and Mojo cannot vary a struct's layout by target. The
-        offsets are asserted against the real header by this package's own
-        layout check, the way `m0-sqlite`'s virtual-table offsets are.
+        libpq owns and Mojo cannot vary a struct's layout by target. No
+        gate compares the offsets with `libpq-fe.h`: they are the LP64
+        layout's, and `test_notify.mojo` reads all three fields on every
+        pull request's server job, where a wrong offset is a wrong channel,
+        pid or payload.
         """
-        if self._lib.fns.consume_input(self._handle) == 0:
-            raise Error(
-                describe("consumeInput", String(""), self.errmsg())
-)
         var note = self._lib.fns.notifies(self._handle)
+        if note == 0:
+            var consumed = self._lib.fns.consume_input(self._handle)
+            # A read that fails drops nothing it had already taken in
+            # (`pqReadData`: "caller still wants it"), so the queue is asked
+            # again before the failure is reported.
+            note = self._lib.fns.notifies(self._handle)
+            if note == 0 and consumed == 0:
+                raise Error(
+                    describe("consumeInput", String(""), self.errmsg())
+)
         if note == 0:
             return None
         var relname = Pointer[Int, MutUntrackedOrigin](
@@ -451,6 +467,14 @@ struct Connection(Movable):
         to notice: `PQreset` opens a NEW backend session, which is listening
         to nothing, so a listener that reset without this would run forever
         delivering no notifications and logging no error.
+
+        A re-`LISTEN` that fails stops no other: every channel is tried,
+        the ones that fail are collected, and the reset raises once at the
+        end, naming each with its error, so a channel that can never be
+        restored leaves the others listening. Nothing is forgotten: every
+        channel stays recorded, the failed ones included, so the next
+        `reset` tries them all again. The list is walked as a copy and
+        never emptied, since `listen` records a channel only once.
         """
         self._lib.fns.reset(self._handle)
         if self._lib.fns.status(self._handle) != CONNECTION_OK:
@@ -459,9 +483,23 @@ struct Connection(Movable):
                 + self.errmsg()
 )
         var channels = self._listening.copy()
-        self._listening = List[String]()
+        var failed = List[String]()
         for channel in channels:
-            self.listen(channel)
+            try:
+                self.listen(channel)
+            except e:
+                failed.append("`" + channel + "`: " + String(e))
+        if len(failed) == 0:
+            return
+        var detail = String(
+            "could not LISTEN again on ", len(failed), " of ", len(channels),
+            " channels after reconnecting to ", self.url_for_logs, ": ",
+        )
+        for i in range(len(failed)):
+            if i > 0:
+                detail += "; "
+            detail += failed[i]
+        raise Error(detail)
 
     def close(mut self):
         """Finish early. Idempotent; `__deinit__` also finishes.

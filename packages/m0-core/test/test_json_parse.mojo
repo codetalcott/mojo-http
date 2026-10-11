@@ -227,6 +227,27 @@ def test_parse_int_refuses_a_leading_zero() raises:
         assert_equal(r.value(), pair[1])
 
 
+def test_parse_int_refuses_a_value_past_int() raises:
+    """An integer outside Int's range is None, never a wrapped number.
+
+    `18446744073709551617` (2^64 + 1) wrapped to 1 and `9223372036854775808`
+    to Int's smallest value. The largest and smallest Int still parse.
+    """
+    var refused = [
+        String('{"n":18446744073709551617}'),
+        String('{"n":9223372036854775808}'),
+        String('{"n":-9223372036854775809}'),
+        String('{"n":99999999999999999999999}'),
+        String('{"n":-18446744073709551617}'),
+    ]
+    for body in refused:
+        var r = parse_json_int(body, "n")
+        assert_false(Bool(r), String("parse_json_int read ", body, " as an integer"))
+    assert_equal(parse_json_int('{"n":9223372036854775807}', "n").value(), 9223372036854775807)
+    assert_equal(parse_json_int('{"n":-9223372036854775808}', "n").value(), -9223372036854775807 - 1)
+    assert_equal(parse_json_int('{"n":-9223372036854775807}', "n").value(), -9223372036854775807)
+
+
 # --- Number extraction ---
 
 def test_parse_number_integer() raises:
@@ -391,6 +412,25 @@ def test_parse_bool_missing() raises:
     """Should return None for missing field."""
     var r = parse_json_bool('{"active":true}', "enabled")
     assert_false(Bool(r))
+
+
+def test_parse_bool_ends_at_a_delimiter() raises:
+    """A boolean literal ends where a JSON value may; `truex` is not true."""
+    var refused = [
+        String('{"a":truex}'),
+        String('{"a":falsehood}'),
+        String('{"a":trueish}'),
+        String('{"a":true1}'),
+        String('{"a":falsey,"b":1}'),
+    ]
+    for body in refused:
+        assert_false(Bool(parse_json_bool(body, "a")), String("parse_json_bool read ", body))
+    assert_true(parse_json_bool('{"a":true}', "a").value())
+    assert_true(parse_json_bool('{"a": true }', "a").value())
+    assert_true(parse_json_bool('{"a":true,"b":1}', "a").value())
+    assert_false(parse_json_bool('{"a":false\n}', "a").value())
+    assert_true(parse_json_bool('{"a":true', "a").value())
+    assert_true(parse_json_bool('{"x":[1],"a":true]', "a").value())
 
 
 def test_parse_string_tells_empty_from_absent_and_wrong_typed() raises:

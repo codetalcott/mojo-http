@@ -20,7 +20,92 @@ in a minor release: `m0serve`'s flags and environment variables, the
   its application, which WSGI bodies stream, and what `--doctor`'s JSON
   carries ([the note](docs/notes/the-readme-points.md)).
 
+- **A request header whose name holds an underscore no longer reaches a
+  WSGI application.** CGI's mapping turns `-` into `_`, so
+  `X_Forwarded_For` and `X-Forwarded-For` both became
+  `HTTP_X_FORWARDED_FOR`, and the environ kept whichever the request
+  carried later: behind a proxy that forwards underscore names (HAProxy,
+  Caddy and Traefik do; nginx drops them by default), a client could
+  replace the address, scheme or identity header the proxy set, the
+  CVE-2015-0219 class. Such a header is now dropped from the environ, as
+  gunicorn has dropped it by default since 22.0 and as Django's runserver
+  does. Dashed names pass as before, `X-Forwarded-*` included. An ASGI
+  application under the executor still receives every name as sent; the
+  buffered ASGI path (`--blocking-threads` on an ASGI application), whose
+  scope is built from the environ, drops them with it (SPEC G29).
+
+- **`--replay-frames` (and `M0_REPLAY_FRAMES`) above 4096 is refused with
+  exit 78.** Under `--realtime` each loop keeps up to that many frames of up
+  to 64 KB each, and a full journal shifts its entries on the loop thread for
+  every publish, so a depth like 100000 pinned hundreds of megabytes and
+  slowed every publish with nothing said. The refusal is a rule in the list
+  `--doctor` reads, so the doctor exits 78 too, with or without `--realtime`.
+  It is asked after the rules a flag combination can fail, so `--pg-listen`
+  without `--realtime` beside a deep journal is still the usage error's
+  exit 2. 0 and every depth up to 4096 are accepted as before (SPEC I43).
+
 ### Fixed
+
+- **`parse_json_int` no longer wraps an integer past `Int`'s range, and
+  `parse_json_bool` no longer reads `truex` as true.** `{"n":18446744073709551617}`
+  came back as 1; it is now `None`, as is any value outside
+  -9223372036854775808..9223372036854775807. A boolean literal must end at
+  whitespace, `,`, `}`, `]` or the end of the body, so `trueish` and
+  `falsehood` are `None`. The m0 wheel ships `m0-core`, so an m0 application
+  takes the fix by rebuilding.
+
+- **`m0` command-line fixes** (the `m0` wheel, not m0serve):
+  - `m0 doctor` run on a `bin/server` that dies by a signal (an `abort()`,
+    a crash before `serve`) no longer exits 250 or 245, outside the
+    documented 0, 1, 2 and 78; it is exit 1, saying
+    `bin/server --doctor died of signal N`.
+  - `m0 new m0` and `m0 new mojo` (and `max-core`, `mojo-compiler`) are
+    refused with exit 2: the scaffold pins a requirement of that name, so
+    the project would depend on itself and `uv sync` could never meet it.
+  - `m0 dev` asks the toolchain checks again before each rebuild. After
+    `uv add --dev 'm0==X'` moved the watched `pyproject.toml` it compiled
+    the new framework with the old `mojo`; now it prints the refusal and
+    the old server keeps serving.
+  - `m0 build --release` on Linux checks for `patchelf` first (exit 78
+    naming `apt-get install patchelf`; `m0 doctor` does not ask), where
+    it used to fail after the whole compile; `docs/MOJO_DEPLOY.md` names it.
+  - A failed `install_name_tool -add_rpath` or `codesign` in the release
+    build (`relocate.py`, `bundle_artifact.py`) now fails it, and a binary
+    that lacks a search path it was to carry is refused, instead of a
+    `dist/server` that cannot load its runtime.
+  - `m0 new .` accepts a directory holding only `.git`, as after
+    `git init` or `gh repo create --clone`, and leaves it untouched.
+  - `m0 image` tags with the project's name from `pyproject.toml` rather
+    than the directory's, so a checkout under `Shop` no longer fails on
+    docker's lowercase rule.
+
+- **The `board` template no longer builds a board frame bigger than a
+  slot's 64 KB outbox** (the `m0` wheel). Fifty messages of 1500
+  bytes, each escaped, rendered to several times that, and a frame over
+  the cap is refused for every slot: the poster got a 200 and no tab was
+  updated, with nothing logged. `render_board` now renders the newest
+  messages that fit a byte budget, so the frame always goes out. A full
+  state frame fitting the outbox is now a line of the scaffold's
+  `AGENTS.md`.
+
+- **The `views` and `auth` templates no longer split their list across
+  pool threads under `--blocking-threads`** (the `m0` wheel). Their
+  views ran on the pool, where each thread builds a state of its own, so
+  an item created on one thread was missing from a list another answered.
+  Every view that touches the list is now `on_loop=True`, as `board`'s
+  are. The scaffold's `.gitignore` also lists the four files its smokes
+  and `m0 build` leave behind (`.dist.next/`, `smoke.one`, `smoke.two`,
+  `smoke.jar`), and the `views`, `auth` and `live` smokes serve on
+  `127.0.0.1` rather than every interface. All of this reaches
+  the applications `m0 new` scaffolds from now on; one already scaffolded
+  applies it by hand, since a template is written once.
+
+- **A `--max-body` or `M0_MAX_BODY` too large for an integer is refused, not
+  wrapped.** `17179869184g` (2^64 bytes) wrapped to a 0-byte cap, so every
+  request with a body got a 413, and `9999999999g` wrapped negative and left
+  the 4 MB default standing with no message. The flag now exits 2, and
+  `M0_MAX_BODY` is ignored out loud like any unreadable `M0_*` value, the
+  4 MB cap standing (SPEC C1).
 
 - **A keep-alive connection holding a stray CRLF or the start of its next
   request no longer holds the SIGTERM drain to its 5 s budget** (#611).
@@ -70,6 +155,92 @@ in a minor release: `m0serve`'s flags and environment variables, the
   recorded follow-up", with no record anywhere; and "Two more things it
   does" listed three. RUNNING.md offered `--threads` from 3.13t, which is
   a dead end; it is 3.14t.
+
+- **An ASGI application's `state["m0"].publish` numbers its frames as
+  `m0pub` does, from 1.** It took the shared counter's previous value
+  where every other publisher (`m0pub`, `--pg-listen`, the Mojo side)
+  takes that value plus one, so on a server where an ASGI application
+  publishes beside one of them, two frames could carry one id: a hold
+  that received the first dropped the second with nothing logged, and a
+  reconnect the replay journal could have served whole was sent
+  `m0-gap` instead. A fresh server's first ASGI publish was id 0, which
+  no first-visit subscriber receives (SPEC L12).
+
+- **A WebSocket hold that presents a `Last-Event-ID` ahead of the
+  counter is no longer silent.** Since 1.12.0 an SSE hold clamps an id
+  this server never allocated, a previous incarnation's, to the head; a
+  socket hold still subscribed at the id it presented, so every
+  numbered frame was suppressed until the counter passed it, under a
+  clean log. A socket hold is now clamped the same way, inline and from
+  a pool thread alike, and is still not caught up. A browser cannot put
+  the header on an upgrade, so this reached other clients only (SPEC
+  I12).
+
+- **`--doctor` reports `replay_frames` as 0 without `--realtime`**,
+  where the server keeps no journal whatever `--replay-frames` says. It
+  reported the flag's value, 64 by default.
+
+- **m0-sqlite: a `Connection` used after `close()`, or a `Statement` after
+  `finalize()`, no longer crashes the process on Debian's libsqlite3.**
+  `in_transaction`, `last_insert_rowid`, `changes`, `total_changes`,
+  `busy_timeout` and `register_array_module` handed SQLite the closed
+  connection's NULL handle, which a library built without
+  `SQLITE_ENABLE_API_ARMOR` dereferences, so the process died of SIGSEGV
+  on Debian 12's, the base of `deploy/mojo/Dockerfile`. Apple's and
+  Homebrew's builds carry the armor and answered wrongly instead:
+  `in_transaction()` was True after the close, and
+  `register_array_module()` leaked its module buffer. The four accessors
+  now answer False or 0 on a closed connection without calling SQLite,
+  and `busy_timeout` and `register_array_module` raise "… on a closed
+  connection", as `create_function` already did. A finalized statement's
+  handle is NULL too, and `clear_bindings()` handed it to SQLite the same
+  way, where Apple's library answered success and did nothing: it now
+  raises "… on a finalized statement", and so does `column_name()`,
+  whose entry point checks for NULL only under the armor too (SPEC O29).
+
+- **m0-sqlite: `execute` and the `Connection` constructors refuse a NUL
+  byte instead of running what comes before it.** `sqlite3_exec` and
+  `sqlite3_open_v2` read C strings, so `execute("DELETE FROM t\0 WHERE
+  id = 5")` emptied the table and reported success, and a path holding a
+  NUL opened the path cut there, losing a suffix the caller had checked
+  for. Both now raise before SQLite sees the text, with the byte's offset
+  and `(rc=21)`, so `error_code` answers `SQLITE_MISUSE`, as a function
+  name holding one already was (SPEC O30). `prepare` was not affected.
+
+- **m0-sqlite: `prune_stamps` raises the error that stopped it.** When
+  SQLite had already cancelled the transaction (`SQLITE_FULL`,
+  `SQLITE_IOERR`, `SQLITE_NOMEM`), the prune's own ROLLBACK raised
+  "cannot rollback - no transaction is active" in its place, so
+  `error_code` read 1 instead of the real code. It now rolls back only a
+  transaction that is still open, and always raises the original error
+  (SPEC O26).
+
+- **m0-postgres: `notifies()` delivers every notification libpq already
+  holds before it reports a lost connection.** A burst of NOTIFYs followed
+  by the server's close (a restart, a failover, `pg_terminate_backend`) was
+  read off the socket in one go, and the next call raised on the close with
+  the rest still queued; `reset()`, the recovery, then freed them, so all
+  but the first were lost and nothing logged them. `notifies()` now takes
+  from libpq's queue first, reads the socket only when the queue is empty,
+  and raises only when nothing is left. The `--pg-listen` listener drains
+  until None and resets on a raise, so it now publishes the whole burst
+  before it reconnects (SPEC O15).
+
+- **m0-postgres: a `reset()` whose re-`LISTEN` fails no longer forgets
+  channels, or stops at the first.** `reset()` emptied its list of
+  channels before listening on them again, so when one re-`LISTEN` raised
+  (a reconnect that landed on a standby, a second drop), every channel not
+  yet restored left the list, and each later `reset()` restored fewer,
+  silently. It now re-`LISTEN`s every channel, collects the ones that fail
+  and raises once at the end naming each, so a channel that cannot be
+  restored leaves the others listening; the list is kept whole, so the
+  next `reset()` tries every channel again (SPEC O15).
+
+- **m0-postgres: `Result.int` raises for a text-mode value past 64 bits
+  instead of wrapping.** The `sum()` of an `int8` column is `numeric`, and
+  a total beyond 9223372036854775807 read as a plausible number (2^64 as 0)
+  with no error. It now raises "… does not fit in a 64-bit integer";
+  -9223372036854775808 still parses (SPEC O31).
 
 ## [1.14.0] — 2026-10-10
 

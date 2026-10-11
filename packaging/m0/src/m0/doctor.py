@@ -1,7 +1,8 @@
 """`m0 doctor [--json] [-- HOST_ARGS]`.
 
-Every check in `checks.CHECKS` -- all of them, where a command stops at the
-first -- and then the application's own doctor: if `bin/server` exists it is
+Every check in `checks.CHECKS` -- all of them but the release-only
+`patchelf`, which only `m0 build --release` asks, where a command stops at
+the first -- and then the application's own doctor: if `bin/server` exists it is
 run as `bin/server HOST_ARGS --doctor` with the environment untouched, so
 `M0_WORKERS=4 uv run m0 doctor` asks the deploy's question of the binary
 that would be deployed. The host prints its report as the LAST line of
@@ -188,6 +189,10 @@ def _run_app(project, host_args):
             f"{paths.BINARY} could not be run: {e.strerror or e}", "m0 build"
         )
     report, error = host_report(stdout)
+    if code < 0 and error is None:
+        error = _failed(
+            f"{paths.BINARY} --doctor died of signal {-code}", "m0 build"
+        )
     lines = stdout.splitlines()
     # What the run said besides the report: a banner, or an app's own
     # refusal, which is all there is when it printed no report.
@@ -210,7 +215,9 @@ def exit_code(results, app, app_error):
     if app_error is not None:
         return app_error.exit
     if app is not None:
-        return app["exit"]
+        # A signal death is `-N`, and `sys.exit(-N)` is 256-N: outside the
+        # closed set. The tool m0 ran failed: 1.
+        return 1 if app["exit"] < 0 else app["exit"]
     return 0
 
 

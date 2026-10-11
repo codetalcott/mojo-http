@@ -8,6 +8,9 @@ The bytes are not invented. Each is what `SELECT ... ` returns with
 `resultFormat = 1`, and the ones that could be got wrong by guessing —
 negative integers of each width, the 2000 epoch, jsonb's version byte — are
 the reason this file is a table rather than a round trip.
+
+One text format is here too, for the same reason: `Result.int`'s parse of a
+text-mode integer is a pure function of the digits the server sent.
 """
 
 from std.collections.span import Span
@@ -20,6 +23,7 @@ from std.testing import (
     assert_true,
 )
 
+from src.result import _parse_int
 from src.wire import (
     OID_INT4,
     OID_JSONB,
@@ -265,6 +269,30 @@ def test_the_binary_decoder_list_and_the_type_names_agree() raises:
     assert_false(has_binary_decoder(1007))  # int4[]
     assert_equal(type_name(OID_INT4), "int4")
     assert_equal(type_name(1700), "oid 1700")
+
+
+# --- Text-mode integers -----------------------------------------------------
+
+
+def test_a_text_integer_past_64_bits_raises_rather_than_wrapping() raises:
+    """Text mode sends digits, however many there are, and `int` parses them.
+
+    The `sum()` of an `int8` column is `numeric`, so a total past 2^63 - 1
+    arrives as digits, however many it has, and the parse wrapped it to a
+    plausible number: 2^64 read as 0, and one below `Int.MIN` as `Int.MAX`.
+    A negative value's limit is one larger, so `Int.MIN` parses although
+    its magnitude is one past `Int.MAX`.
+
+    covers: O31
+    """
+    assert_equal(_parse_int("9223372036854775807"), Int.MAX)
+    assert_equal(_parse_int("-9223372036854775808"), Int.MIN)
+    with assert_raises(contains="does not fit in a 64-bit integer"):
+        _ = _parse_int("9223372036854775808")
+    with assert_raises(contains="does not fit in a 64-bit integer"):
+        _ = _parse_int("-9223372036854775809")
+    with assert_raises(contains="does not fit in a 64-bit integer"):
+        _ = _parse_int("18446744073709551616")
 
 
 def main() raises:

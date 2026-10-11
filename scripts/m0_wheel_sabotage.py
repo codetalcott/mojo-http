@@ -105,7 +105,7 @@ SABOTAGES = [
      "m0 test with no tests", ARM),
     ("the doctor swallows the app's exit",
      M0 + "doctor.py",
-     '        return app["exit"]\n',
+     '        return 1 if app["exit"] < 0 else app["exit"]\n',
      "        return 0\n",
      "m0 doctor -- --workers 0", ARM),
     ("the doctor never says stale",

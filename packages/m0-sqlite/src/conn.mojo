@@ -17,6 +17,7 @@ from std.time import perf_counter_ns, sleep
 
 from .ffi import (
     SQLITE_BUSY,
+    SQLITE_MISUSE,
     SQLITE_OK,
     SQLITE_OPEN_READONLY,
     SQLITE_OPEN_READWRITE,
@@ -28,6 +29,7 @@ from .ffi import (
     describe_in,
     check_c_int_length,
     error_code,
+    first_nul,
 )
 from .lib import SqliteLib, as_cstr, open_library, str_cstr
 from .function import (
@@ -106,9 +108,21 @@ struct Connection(Movable):
         over the flag set. The library is opened first (`open_library`), so a
         missing libsqlite3 is one error naming every path tried, before any
         database is touched.
+
+        A path holding a NUL byte is refused before SQLite sees it, with
+        `SQLITE_MISUSE`: `sqlite3_open_v2` reads a C string, so it would open
+        the path cut at the NUL, and a suffix the caller checked for would be
+        gone (SPEC O30).
         """
         self._handle = 0
         self._lib = open_library()
+        var nul = first_nul(path)
+        if nul >= 0:
+            raise Error(
+                "open: the path has an embedded null character (at byte "
+                + String(nul) + "), and SQLite would open only what comes"
+                " before it (rc=" + String(SQLITE_MISUSE) + ")"
+            )
         var pp = stack_allocation[1, Int]()
         pp[unsafe_offset=0] = 0
         # Must outlive the call — sqlite3_open_v2 takes no length. See c_string.
@@ -146,7 +160,20 @@ struct Connection(Movable):
         parameters or results — this takes no bindings by design, which keeps
         it impossible to build a query by string concatenation through here
         without noticing.
+
+        SQL holding a NUL byte is refused before SQLite sees it, with
+        `SQLITE_MISUSE`: `sqlite3_exec` reads a C string, so it would run what
+        comes before the NUL and report success, and `DELETE FROM t`, a NUL
+        and ` WHERE id = 5` would empty the table (SPEC O30). `prepare` takes
+        a length, and refuses what follows a NUL as text left uncompiled.
         """
+        var nul = first_nul(sql)
+        if nul >= 0:
+            raise Error(
+                "execute: the SQL has an embedded null character (at byte "
+                + String(nul) + "), and SQLite would run only what comes"
+                " before it (rc=" + String(SQLITE_MISUSE) + ")"
+            )
         var csql = c_string(sql)  # sqlite3_exec takes no length argument
         var rc = self._lib.fns.exec(self._handle, as_cstr(csql))
         _ = csql
@@ -232,17 +259,33 @@ struct Connection(Movable):
         self.execute("ROLLBACK")
 
     def in_transaction(self) -> Bool:
-        """Whether a transaction is currently open."""
+        """Whether a transaction is currently open. False on a closed
+        connection, answered without asking SQLite (SPEC O29)."""
+        if self._handle == 0:
+            return False
         return self._lib.fns.get_autocommit(self._handle) == 0
 
     # --- Introspection -----------------------------------------------------
 
+    # A closed connection's handle is NULL. `sqlite3_get_autocommit`
+    # (`in_transaction`, above) and the three entry points below check for
+    # one only in a library built with SQLITE_ENABLE_API_ARMOR: Apple's and
+    # Homebrew's are, and answer 0, so `in_transaction` read True after a
+    # close; Debian's is not, and dereferences it. So a closed connection is
+    # answered here, never passed to SQLite (SPEC O29).
+
     def last_insert_rowid(self) -> Int:
-        """Rowid of the most recent successful INSERT on this connection."""
+        """Rowid of the most recent successful INSERT on this connection.
+        0 on a closed connection, answered without asking SQLite."""
+        if self._handle == 0:
+            return 0
         return self._lib.fns.last_insert_rowid(self._handle)
 
     def changes(self) -> Int:
-        """Rows modified by the most recent INSERT, UPDATE or DELETE."""
+        """Rows modified by the most recent INSERT, UPDATE or DELETE. 0 on a
+        closed connection, answered without asking SQLite."""
+        if self._handle == 0:
+            return 0
         return self._lib.fns.changes(self._handle)
 
     def total_changes(self) -> Int:
@@ -253,7 +296,11 @@ struct Connection(Movable):
         short one. `sqlite3_total_changes64` fixes it and needs SQLite 3.37,
         which would raise the floor for the whole package rather than just for
         `m0_array`; not worth it for a counter. Treat this as advisory.
+
+        0 on a closed connection, answered without asking SQLite.
         """
+        if self._handle == 0:
+            return 0
         return self._lib.fns.total_changes(self._handle)
 
     def errmsg(self) -> String:
@@ -331,7 +378,14 @@ struct Connection(Movable):
         a deferred transaction that has already read and then tries to upgrade
         to a write — SQLite must return SQLITE_BUSY there rather than wait,
         because waiting could not preserve what the transaction already read.
+
+        Raises on a closed connection, before SQLite sees its NULL handle
+        (SPEC O29).
         """
+        if self._handle == 0:
+            raise Error(
+                "busy_timeout(" + String(milliseconds) + ") on a closed connection"
+            )
         var rc = self._lib.fns.busy_timeout(self._handle, milliseconds)
         if rc != SQLITE_OK:
             raise Error(
@@ -358,7 +412,12 @@ struct Connection(Movable):
         meaning "reject this plan", which `m0_array` uses to refuse a scan
         without its array — is only honoured from 3.26.0, and on the versions
         between, that refusal fails legitimate queries.
+
+        Raises on a closed connection, before the module is built or SQLite
+        sees the NULL handle (SPEC O29).
         """
+        if self._handle == 0:
+            raise Error("register_array_module() on a closed connection")
         var have = self._lib.fns.libversion_number()
         if have < SQLITE_MIN_VTAB_VERSION:
             raise Error(

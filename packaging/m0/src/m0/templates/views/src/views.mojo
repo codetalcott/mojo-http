@@ -5,6 +5,12 @@ A view is a free function `(req, params, state) raises -> HTTPResponse`.
 which views may change the list is in the table, where the compiler checks
 it. `add_loop` is a stateless view answered on the event loop itself.
 
+Every view that touches the state runs on the event loop (`on_loop=True`).
+The list lives in this process, and under `--blocking-threads N` the host
+builds a state for every pool thread too: a view left on the pool would
+read and write a list of its own, so an item created on one thread is
+missing from a list answered by another.
+
 There is no middleware and no decorator: a guard is an early return.
 """
 
@@ -148,8 +154,8 @@ def item_urls() raises -> Views[Items]:
     var v = Views[Items]()
     v.add_loop("GET", "/health", health)
     v.add_loop("GET", "/", root)
-    v.add_read("GET", ITEMS, index)
-    v.add_write("POST", ITEMS, create)
-    v.add_read("GET", ITEM, detail)
-    v.add_write("DELETE", ITEM, delete)
+    v.add_read("GET", ITEMS, index, on_loop=True)
+    v.add_write("POST", ITEMS, create, on_loop=True)
+    v.add_read("GET", ITEM, detail, on_loop=True)
+    v.add_write("DELETE", ITEM, delete, on_loop=True)
     return v^

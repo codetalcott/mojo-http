@@ -178,7 +178,8 @@ code serving would exit with for the same arguments, because `serve` and the
 doctor read the same list of checks.
 
 `uv run m0 doctor` runs the toolchain's checks first (`platform`,
-`mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `project`), then this one.
+`mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `patchelf`, `project`; the doctor skips `patchelf`, which only
+`m0 build --release` asks), then this one.
 
 ## Shutdown
 

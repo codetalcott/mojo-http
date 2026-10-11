@@ -111,7 +111,7 @@ def test_a_plain_configuration_passes_every_rule_it_meets() raises:
     """The positional spec with nothing else: the three rules that always
     apply, all passing, and nothing for the server to refuse."""
     var checks = flag_checks(_opts([String("app.wsgi")]), _facts())
-    assert_equal(_names(checks), "port,address,app-dir,threads-vs-workers,workers-vs-parallel-runtime")
+    assert_equal(_names(checks), "port,address,app-dir,threads-vs-workers,replay-frames,workers-vs-parallel-runtime")
     assert_false(Bool(first_refusal(checks)))
     for i in range(len(checks)):
         assert_true(checks[i].ok)
@@ -140,10 +140,69 @@ def test_the_flag_rules_are_in_the_order_the_server_applies_them() raises:
         "port,address,app-dir,static-dir,reload-dir,threads-vs-workers,protocol-vs-realtime,"
         + "pg-listen,mounts-without-python,hold-mount-vs-realtime,hold-mount-key,"
         + "compiled-mount-vs-threads,compiled-mount-threads,mount-lanes,"
-        + "workers-vs-parallel-runtime",
+        + "replay-frames,workers-vs-parallel-runtime",
     )
     assert_false(Bool(first_refusal(checks)), _failed(checks))
     assert_equal(checks[7].detail, "libpq 16.4 at /usr/lib/libpq.so")
+    # The journal's cap (78) follows the usage rules: a configuration that
+    # trips both is refused as one that cannot be read (2), as it was before
+    # the cap existed.
+    var c = _first(flag_checks(
+        _opts([
+            String("app.wsgi"), String("--replay-frames"), String("5000"),
+            String("--pg-listen"), String("postgres://db/x"),
+        ]),
+        _facts(),
+    ))
+    assert_equal(c.name, "pg-listen-vs-realtime")
+    assert_equal(c.code, EXIT_USAGE)
+
+
+def test_a_journal_deeper_than_the_cap_is_refused_with_78() raises:
+    """`--replay-frames` (and `M0_REPLAY_FRAMES`, which resolves into the same
+    option) above 4096 is refused through the list, with or without
+    `--realtime`; 0 and the cap itself pass. Under `--realtime` each loop
+    keeps that many frames of up to 64 KB, and a full journal shifts its
+    entries per publish; without it no loop keeps one, and the doctor's
+    detail says so beside the configured depth.
+
+    covers: I43
+    """
+    var c = _first(flag_checks(
+        _opts([String("app.wsgi"), String("--replay-frames"), String("4097")]),
+        _facts(),
+    ))
+    assert_equal(c.name, "replay-frames")
+    assert_equal(c.code, 78)
+    assert_true(c.detail.find("4097") >= 0, c.detail)
+    assert_true(c.detail.find("4096") >= 0, c.detail)
+    assert_true(c.detail.find("with or without --realtime") >= 0, c.detail)
+    var plain = flag_checks(_opts([String("app.wsgi")]), _facts())
+    var quiet = plain[len(plain) - 2].copy()
+    assert_equal(quiet.name, "replay-frames")
+    assert_equal(
+        quiet.detail,
+        "configured journal depth 64, unused: a journal is kept only under --realtime",
+    )
+    var live = flag_checks(_opts([String("app.wsgi"), String("--realtime")]), _facts())
+    var kept = live[len(live) - 2].copy()
+    assert_equal(kept.name, "replay-frames")
+    assert_equal(kept.detail, "configured journal depth 64, kept by each loop")
+    c = _first(flag_checks(
+        _opts([
+            String("app.wsgi"), String("--realtime"),
+            String("--replay-frames"), String("100000"),
+        ]),
+        _facts(),
+    ))
+    assert_equal(c.name, "replay-frames")
+    assert_equal(c.code, 78)
+    for ok in [String("0"), String("64"), String("4096")]:
+        var checks = flag_checks(
+            _opts([String("app.wsgi"), String("--replay-frames"), ok]),
+            _facts(),
+        )
+        assert_false(Bool(first_refusal(checks)), ok + ": " + _failed(checks))
 
 
 def test_the_directories_refuse_with_1_and_name_what_is_missing() raises:

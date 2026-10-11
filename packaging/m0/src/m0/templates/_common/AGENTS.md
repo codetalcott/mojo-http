@@ -58,7 +58,10 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   encodes both halves, request data included.
 - State that lives in one process answers `max_workers() -> 1`, and
   `M0_WORKERS=2` is then refused rather than served as two different
-  copies. Move the state out (a database, the shared page) before raising it.
+  copies; every view that reads or writes it is `on_loop=True`, since
+  under `--blocking-threads` each pool thread builds a state of its own.
+  Move the state out (a database, the shared page) before raising
+  `M0_WORKERS`.
 - `form(req)` is `None` unless the body is a urlencoded form. Check it.
 - `reply.html(body)`, `reply.json(status, text, body)`, `reply.redirect(status,
   url)`, `reply.no_content()`, and `reply.problem(status, title, detail,
@@ -153,6 +156,9 @@ what a `views`, `board` or `live` application adds the day it needs one.
 - **Every frame is the full state, never a delta.** A slow viewer's 64 KB
   outbox DROPS frames, it does not queue them; a dropped full frame is
   healed by the next one.
+  A full-state frame must also fit that 64 KB outbox: one larger is refused
+  for every slot, and no viewer sees it. Render the newest that fit a byte
+  budget (`board` does, `BOARD_BUDGET` in `pages.mojo`).
 - A view sends through the state's stream: `st.stream.patch_elements(url,
   html)` reaches this process's subscribers. Every view that reads or
   writes what a stream sends is `on_loop=True`: under

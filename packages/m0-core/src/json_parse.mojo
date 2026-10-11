@@ -216,6 +216,11 @@ def parse_json_string(body: String, field: String) -> Optional[String]:
     unknown or malformed escape — every case `parse_json_field` reports as
     `""`, which a caller refusing untrusted input cannot tell from a real
     empty string. Ask `has_json_field` to tell absent from wrong-typed.
+
+    Bytes at or above 0x80 pass through unvalidated, so the returned String
+    holds whatever UTF-8 or non-UTF-8 the body held. The caller supplies
+    UTF-8: for request or database text, clean it first, as `apps/table_notes`'
+    `json_text` does (each undecodable byte becomes U+FFFD).
     """
     var i = _find_value_start(body, field)
     if i == -1:
@@ -304,6 +309,15 @@ def _skip_digits(bytes: Span[UInt8, _], blen: Int, start: Int) -> Int:
     return i
 
 
+def _ends_a_value(bytes: Span[UInt8, _], blen: Int, at: Int) -> Bool:
+    """Whether a JSON value may end at `at`: the end of the body, whitespace,
+    `,`, `}` or `]`."""
+    if at >= blen:
+        return True
+    var c = bytes[at]
+    return _is_ws(c) or c == 0x2C or c == 0x7D or c == 0x5D
+
+
 def _scan_json_number(
     bytes: Span[UInt8, _], blen: Int, start: Int, integer: Bool
 ) -> Int:
@@ -339,10 +353,8 @@ def _scan_json_number(
             if i >= blen or not _is_digit(bytes[i]):
                 return -1
             i = _skip_digits(bytes, blen, i)
-    if i < blen:
-        var c = bytes[i]
-        if not (_is_ws(c) or c == 0x2C or c == 0x7D or c == 0x5D):
-            return -1
+    if not _ends_a_value(bytes, blen, i):
+        return -1
     return i
 
 
@@ -355,7 +367,8 @@ def parse_json_int(body: String, field: String) -> Optional[Int]:
     `}`, `]` or the end of the body -- so a fraction (`1.9`), an exponent
     (`1e3`) or anything else after the digits is refused rather than read
     as its leading digits; `parse_json_number` reads the first two.
-    Overflow is not checked; callers should validate range when relevant.
+    A value outside `Int`'s range (past 9223372036854775807 or below
+    -9223372036854775808) is `None`, never a wrapped number.
     """
     var i = _find_value_start(body, field)
     if i == -1:
@@ -370,14 +383,23 @@ def parse_json_int(body: String, field: String) -> Optional[Int]:
     var negative = bytes[i] == 0x2D  # '-'
     if negative:
         i += 1
+    # Accumulate downwards, so Int's smallest value fits and its largest
+    # negated does not; each step is checked before the multiply-add. The
+    # cutoff is Int.MIN truncated toward zero, whose last digit is 8.
+    comptime CUTOFF = -922337203685477580
     var result = 0
     while i < end:
-        result = result * 10 + Int(bytes[i]) - 0x30
+        var d = Int(bytes[i]) - 0x30
+        if result < CUTOFF or (result == CUTOFF and d > 8):
+            return None
+        result = result * 10 - d
         i += 1
 
     if negative:
-        return Optional[Int](-result)
-    return Optional[Int](result)
+        return Optional[Int](result)
+    if result == -9223372036854775807 - 1:
+        return None
+    return Optional[Int](-result)
 
 
 def parse_json_number(body: String, field: String) -> Optional[Float64]:
@@ -414,7 +436,10 @@ def parse_json_number(body: String, field: String) -> Optional[Float64]:
 def parse_json_bool(body: String, field: String) -> Optional[Bool]:
     """Extract a boolean value for top-level `field`.
 
-    Returns `None` if the field is missing or not a boolean literal.
+    Returns `None` if the field is missing or not a boolean literal. The
+    literal must end where a JSON value may -- at whitespace, `,`, `}`, `]`
+    or the end of the body, as a number does -- so `truex` and `falsehood`
+    are refused rather than read as their first four or five bytes.
     """
     var i = _find_value_start(body, field)
     if i == -1:
@@ -423,7 +448,11 @@ def parse_json_bool(body: String, field: String) -> Optional[Bool]:
     var blen = body.byte_length()
 
     if i + 4 <= blen and bytes[i] == 0x74 and bytes[i + 1] == 0x72 and bytes[i + 2] == 0x75 and bytes[i + 3] == 0x65:
-        return Optional[Bool](True)
+        if _ends_a_value(bytes, blen, i + 4):
+            return Optional[Bool](True)
+        return None
     if i + 5 <= blen and bytes[i] == 0x66 and bytes[i + 1] == 0x61 and bytes[i + 2] == 0x6C and bytes[i + 3] == 0x73 and bytes[i + 4] == 0x65:
-        return Optional[Bool](False)
+        if _ends_a_value(bytes, blen, i + 5):
+            return Optional[Bool](False)
+        return None
     return None

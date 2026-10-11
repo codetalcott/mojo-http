@@ -10,7 +10,7 @@ Three things it deliberately is not:
 - **It checks no toolchain.** The compiler runs inside the builder stage,
   so a machine with docker and nothing else builds the image; of the ONE
   list (`checks.py`) only `project` is asked. There is no `docker` check
-  there, because `m0 doctor` reads that list whole and a machine without
+  there, because `m0 doctor` reads that list (but for the release-only `patchelf`) and a machine without
   docker is not a broken one.
 - **It interprets nothing docker says.** Docker missing, the daemon down,
   no `uv.lock` in the context, a compiler error in the builder: exit 1 with
@@ -27,7 +27,7 @@ as they are (`--platform`, `--no-cache`, `--build-arg BASE=...`).
 import subprocess
 import sys
 
-from m0 import checks
+from m0 import checks, doctor
 
 DOCKERFILE = "deploy/Dockerfile"
 ABOUT = "/app/about.json"
@@ -59,7 +59,7 @@ def run(args):
     if failed is not None:
         return checks.refuse(failed)
 
-    tag = args.tag or project.name
+    tag = args.tag or doctor._app_name(project)
     if _docker(build_argv(tag, args.target_cpu, args.host_args), project) != 0:
         return 1
     sys.stdout.flush()

@@ -108,6 +108,35 @@ def test_bad_sql_raises_with_message() raises:
         db.execute("SELECT * FROM does_not_exist")
 
 
+def test_execute_refuses_sql_holding_a_nul() raises:
+    """`sqlite3_exec` reads a C string, so SQL holding a NUL ran what came
+    before it and reported success: `DELETE FROM t`, a NUL and
+    ` WHERE id = 5` emptied the table. Refused before SQLite sees it, with
+    SQLITE_MISUSE, and none of it runs.
+
+    covers: O30
+    """
+    var db = open_memory()
+    var message = String("")
+    try:
+        db.execute(String("CREATE TABLE a(x);\0CREATE TABLE b(y)"))
+    except e:
+        message = String(e)
+    assert_equal(error_code(message), SQLITE_MISUSE, message)
+    assert_true("null character (at byte 18)" in message, message)
+    assert_equal(db.query_scalar("SELECT count(*) FROM sqlite_master"), "0")
+
+    db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+    db.execute("INSERT INTO t VALUES (5), (6)")
+    message = String("")
+    try:
+        db.execute(String("DELETE FROM t\0 WHERE id = 5"))
+    except e:
+        message = String(e)
+    assert_equal(error_code(message), SQLITE_MISUSE, message)
+    assert_equal(db.query_scalar("SELECT count(*) FROM t"), "2")
+
+
 def test_prepare_rejects_a_trailing_statement() raises:
     """One statement per prepare. The tail used to be compiled away in silence."""
     var db = open_memory()
@@ -189,6 +218,108 @@ def test_close_is_idempotent() raises:
     var db = open_memory()
     db.close()
     db.close()
+
+
+def test_a_closed_connection_is_never_passed_to_sqlite() raises:
+    """`close()` leaves the handle NULL, and six methods handed it to SQLite.
+
+    Their entry points check for NULL only in a library built with
+    `SQLITE_ENABLE_API_ARMOR`. Debian 12's is not, and dereferences it:
+    the process dies of SIGSEGV. Apple's is, and after the close
+    `in_transaction()` answered True, the other accessors 0, and
+    `busy_timeout` and `register_array_module` a bare SQLITE_MISUSE, the
+    second leaking its module buffer. The four accessors now answer False
+    or 0 without asking SQLite, and the two that change the connection
+    raise naming the closed connection, as `create_function` does. So
+    without the guards this fails at `in_transaction` on macOS, and dies
+    on Linux.
+
+    covers: O29
+    """
+    var db = open_memory()
+    db.execute("CREATE TABLE t (v INTEGER)")
+    db.begin()
+    db.execute("INSERT INTO t VALUES (1)")
+    assert_true(db.in_transaction())
+    assert_equal(db.last_insert_rowid(), 1)
+    assert_equal(db.changes(), 1)
+    assert_true(db.total_changes() >= 1)
+    db.close()
+    assert_false(db.in_transaction(), "a closed connection reads as in a transaction")
+    assert_equal(db.last_insert_rowid(), 0)
+    assert_equal(db.changes(), 0)
+    assert_equal(db.total_changes(), 0)
+    var refused = String("")
+    try:
+        db.busy_timeout(100)
+    except e:
+        refused = String(e)
+    assert_true("busy_timeout(100) on a closed connection" in refused, refused)
+    refused = String("")
+    try:
+        db.register_array_module()
+    except e:
+        refused = String(e)
+    assert_true(
+        "register_array_module() on a closed connection" in refused, refused
+    )
+
+
+def test_a_finalized_statement_is_never_passed_to_sqlite() raises:
+    """`finalize()` leaves the statement handle NULL, and `clear_bindings`
+    handed it to SQLite.
+
+    `sqlite3_clear_bindings` and `sqlite3_column_name` check for NULL only
+    in a library built with `SQLITE_ENABLE_API_ARMOR` (3.53.4's source), and
+    read through it in one without, as Debian 12's is. With the armor,
+    `clear_bindings()` after `finalize()` raised a bare SQLITE_MISUSE on
+    Homebrew's 3.53.4 and did nothing at all on Apple's 3.54.0, which
+    answers SQLITE_OK. Both now raise naming the finalized statement.
+    Every other entry point a finalized statement reaches refuses NULL
+    whatever the build, which is held here too: `step` and the binders
+    raise SQLITE_MISUSE, `reset` and `finalize` do nothing, and the column
+    count is 0, so a column read is refused as out of range. So without
+    the guards this fails at their messages on macOS, and dies at
+    `clear_bindings` on a library without the armor.
+
+    covers: O29
+    """
+    var db = open_memory()
+    var q = db.prepare("SELECT ?1 AS v")
+    q.bind_int(1, 7)
+    assert_true(q.step())
+    assert_equal(q.column_name(0), "v")
+    q.finalize()
+    var refused = String("")
+    try:
+        q.clear_bindings()
+    except e:
+        refused = String(e)
+    assert_true("clear_bindings() on a finalized statement" in refused, refused)
+    refused = String("")
+    try:
+        _ = q.column_name(0)
+    except e:
+        refused = String(e)
+    assert_true("column_name(0) on a finalized statement" in refused, refused)
+
+    assert_equal(q.column_count(), 0)
+    refused = String("")
+    try:
+        _ = q.step()
+    except e:
+        refused = String(e)
+    assert_equal(error_code(refused), SQLITE_MISUSE, refused)
+    refused = String("")
+    try:
+        q.bind_int(1, 8)
+    except e:
+        refused = String(e)
+    assert_equal(error_code(refused), SQLITE_MISUSE, refused)
+    q.reset()
+    q.finalize()
+    with assert_raises(contains="out of range"):
+        _ = q.column_int(0)
 
 
 # --- Binding and typed reads -------------------------------------------------

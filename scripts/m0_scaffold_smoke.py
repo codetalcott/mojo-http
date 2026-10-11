@@ -100,7 +100,8 @@ TEST_FILE = {"views": "test/test_views.mojo", "live": "test/test_live.mojo",
 # that does not (`live`'s stream was refused 409 behind one until
 # 2026-10-07). Their own smoke.sh serves them without one, so both shapes
 # are on the wire.
-SERVE_ARGS = {"board": ["--blocking-threads", "2"], "live": ["--blocking-threads", "2"]}
+SERVE_ARGS = {"views": ["--blocking-threads", "2"], "auth": ["--blocking-threads", "2"],
+              "board": ["--blocking-threads", "2"], "live": ["--blocking-threads", "2"]}
 
 # What a template's server needs in its environment to serve at all; `auth`
 # refuses to start without all three (exit 78, naming the variable), and
@@ -333,6 +334,12 @@ def wire_views(port):
     status, _, _, body = request(port, "POST", "/items", FORM, b"title=milk+%3Cb%3E")
     if status != 200 or "milk &lt;b&gt;" not in body or 'hx-delete="/items/1"' not in body:
         fail("create did not answer the list with the item escaped: %s" % body[:400])
+    # Under --blocking-threads each pool thread would hold a list of its own:
+    # the item must be in EVERY answer, whichever thread a connection lands on.
+    for n in range(12):
+        status, _, _, body = request(port, "GET", "/items", PARTIAL)
+        if status != 200 or "milk &lt;b&gt;" not in body:
+            fail("GET /items, read %d after the create, lacks the item: %d %s" % (n + 1, status, body[:300]))
     status, _, _, body = request(port, "GET", "/items/1", PARTIAL)
     if status != 200 or "milk &lt;b&gt;" not in body:
         fail("GET /items/1: %d %s" % (status, body[:200]))
@@ -342,7 +349,7 @@ def wire_views(port):
     status, _, _, body = request(port, "DELETE", "/items/1", PARTIAL)
     if status != 200 or "milk" in body or not body.startswith('<section id="items"'):
         fail("DELETE /items/1: %d %s" % (status, body[:300]))
-    print("wire[views]: document, fragment, Vary, 422 fragment with an alert, create, 404, delete")
+    print("wire[views]: document, fragment, Vary, 422 fragment with an alert, create, the item in 12 reads, 404, delete")
 
 
 def live_frames(stream, enough, seconds=5, root="live"):
@@ -454,6 +461,10 @@ def wire_auth(port):
                                  ("title=milk+%%3Cb%%3E&csrf=%s" % token).encode())
     if status != 200 or "milk &lt;b&gt;" not in body or 'hx-delete="/items/1"' not in body:
         fail("create did not answer the list with the item escaped: %s" % body[:400])
+    for n in range(12):
+        status, _, _, body = request(port, "GET", "/items", dict(PARTIAL, **jar))
+        if status != 200 or "milk &lt;b&gt;" not in body:
+            fail("GET /items, read %d after the create, lacks the item: %d %s" % (n + 1, status, body[:300]))
     carried = 'hx-headers="{&quot;X-CSRF-Token&quot;:&quot;%s&quot;}"' % token
     if carried not in body:
         fail("the delete button does not carry the token as hx-headers: %s" % body[:600])

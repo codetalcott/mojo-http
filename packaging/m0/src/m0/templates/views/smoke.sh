@@ -21,7 +21,7 @@ fail() {
 
 uv run m0 build || fail "m0 build"
 
-bin/server --port "$PORT" >smoke.log 2>&1 &
+bin/server --host 127.0.0.1 --port "$PORT" >smoke.log 2>&1 &
 PID=$!
 
 ready=""

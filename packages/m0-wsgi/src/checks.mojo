@@ -57,6 +57,7 @@ from .cli import (
     EXIT_STARTUP,
     EXIT_USAGE,
     MAX_MOUNTS,
+    MAX_REPLAY_FRAMES,
     PROTOCOL_ASGI,
 )
 from .doctor import Report
@@ -441,6 +442,27 @@ def flag_checks(opts: ServeOptions, facts: CheckFacts) -> List[ServeCheck]:
             "mount at most " + String(MAX_MOUNTS)
             + " applications per server, and serve the rest from another",
             EXIT_CONFIG)
+
+    # The journal's depth, whatever named it (flag or `M0_REPLAY_FRAMES`),
+    # capped whether or not `--realtime` is given, though only `--realtime`
+    # keeps a journal: there each loop keeps that many frames of up to 64 KB,
+    # and a full journal shifts its lists on every publish. After the flag
+    # combinations above, so a configuration that also cannot be read is
+    # refused for that (2) before this policy (78); the parallel runtime's
+    # rule stays last, a fact of the binary rather than of the flags.
+    var journal = (
+        String(", kept by each loop") if opts.realtime
+        else String(", unused: a journal is kept only under --realtime")
+    )
+    _rule(out, "replay-frames", opts.replay_frames <= MAX_REPLAY_FRAMES,
+        "configured journal depth " + String(opts.replay_frames) + journal,
+        "--replay-frames (M0_REPLAY_FRAMES) is " + String(opts.replay_frames)
+        + ", above the " + String(MAX_REPLAY_FRAMES) + " m0serve accepts with or"
+        + " without --realtime: under --realtime each loop keeps up to that many"
+        + " frames of up to 64 KB each, and a full journal shifts its entries on"
+        + " the loop thread for every publish",
+        "set --replay-frames (M0_REPLAY_FRAMES) to " + String(MAX_REPLAY_FRAMES)
+        + " or fewer", EXIT_CONFIG)
 
     # A forked worker cannot carry MAX's parallel runtime (SPEC E33). The
     # fact is the binary's, so the shipped m0serve -- which links no MAX --

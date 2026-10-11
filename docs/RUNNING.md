@@ -110,7 +110,9 @@ reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
 **A hold replays what the journal holds, and says when it cannot.** Event
 ids are numbered from one counter across every worker, and each loop
 journals the last `--replay-frames` published frames (`M0_REPLAY_FRAMES`,
-default 64; 0 keeps none). A client that reconnects with `Last-Event-ID`
+default 64; 0 keeps none; at most 4096, since a loop holds up to that
+many frames of up to 64 KB each and m0serve refuses more with exit 78,
+as does `--doctor`). A client that reconnects with `Last-Event-ID`
 is not re-sent what it already has, and is sent every frame of its channel
 published while it was away — a phone asleep, a proxy that dropped the
 stream — in order, before anything live. When the journal cannot supply
@@ -148,6 +150,11 @@ has the Flask version of the whole thing, and CI drives that exact file.
 - **Terminate TLS at a proxy.** There is no TLS and no HTTP/2 here, by
   design. Fly, nginx, Caddy and a cloud load balancer all speak HTTP/1.1 to
   the app.
+- **A header whose name holds an underscore is dropped** before a WSGI
+  application sees it, so behind HAProxy, Caddy or Traefik, which forward
+  such names, a client's `X_Forwarded_For` cannot replace the proxy's
+  `X-Forwarded-For`; an ASGI application under the executor receives both
+  ([Coming from uvicorn](#coming-from-uvicorn)).
 - **Held connections are kept alive through the proxy by default.** Every
   15 s an idle SSE stream gets a comment and an idle WebSocket a ping
   (`M0_SSE_HEARTBEAT_MS`, default `15000`). Set the variable only to change
@@ -292,7 +299,13 @@ the values this server would use, and `m0serve --help` names every flag.
   the application as ordinary headers, for it to trust (Django's
   `SECURE_PROXY_SSL_HEADER`, Werkzeug's `ProxyFix`, or uvicorn's own
   `ProxyHeadersMiddleware` around an ASGI application). uvicorn applies
-  them for the proxies `--forwarded-allow-ips` names.
+  them for the proxies `--forwarded-allow-ips` names. A header whose name
+  holds an underscore never reaches a WSGI application, as under gunicorn:
+  CGI's mapping would file a client's `X_Forwarded_For` under the
+  proxy's `HTTP_X_FORWARDED_FOR`. An ASGI application under the executor
+  receives both spellings as sent, as the ASGI spec requires; under
+  `--blocking-threads` above 0 its scope is built from the same environ
+  on the buffered path, and underscore names are dropped as for WSGI.
 - **A lifespan startup that fails exits 1**, where uvicorn exits 3
   ([Install and start](#install-and-start)).
 - **ASGI needs a GIL-enabled CPython.** A free-threaded build, which uv may

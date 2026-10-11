@@ -31,6 +31,7 @@ from src import (
     MEMORY,
     DEFAULT_BUSY_TIMEOUT_MS,
     SQLITE_BUSY,
+    SQLITE_MISUSE,
 )
 
 
@@ -152,6 +153,34 @@ def test_paths_of_many_lengths_open_cleanly() raises:
         q.finalize()
         db.close()
         _cleanup(p)
+
+
+def test_a_path_holding_a_nul_is_refused_not_cut_short() raises:
+    """`sqlite3_open_v2` reads its path as a C string, so a path holding a
+    NUL opened the path cut there: `open(tenant + ".db")` with a tenant of
+    `data` and a NUL opened `data`, and the suffix the caller had checked
+    for was gone. Refused before SQLite sees it, with SQLITE_MISUSE, by
+    every constructor, and nothing is created.
+
+    covers: O30
+    """
+    var p = _fresh("nul")
+    var cut = p + String("\0.bak")
+    for i in range(3):
+        var message = String("")
+        try:
+            if i == 0:
+                _ = open(cut)
+            elif i == 1:
+                _ = open_serialized(cut)
+            else:
+                _ = open_readonly(cut)
+        except e:
+            message = String(e)
+        assert_equal(error_code(message), SQLITE_MISUSE, message)
+        assert_true("null character" in message, message)
+    assert_false(path.exists(p), "the path before the NUL was created")
+    _cleanup(p)
 
 
 def test_two_connections_see_each_other() raises:
