@@ -202,7 +202,10 @@ M20). Three rules the pinned interop imposes and that the code depends on:
   pass, being load-bearing behind a real proxy, and this server never
   consults them itself (`REMOTE_ADDR` is the socket peer, `wsgi.url_scheme`
   is config). The ASGI executor's scope carries every name as sent, as the
-  ASGI spec asks.
+  ASGI spec asks. The buffered ASGI path (an ASGI application under
+  `--blocking-threads N` above 0) builds its scope FROM this environ
+  (`_scope_from_environ` in the shim), so the exclusion reaches those
+  applications too: narrowing it is not a WSGI-only change.
 - **Mojo never acquires the GIL on its own** except when destroying a
   `PythonObject`; every other `std.python` call assumes the calling thread is
   *attached* (holds a Python thread state). There are two execution modes,

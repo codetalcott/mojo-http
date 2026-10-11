@@ -194,7 +194,7 @@ shell = "for f in apps/*/test/test_*.mojo; do mojo run -I packages/m0-core -I pa
 # Built as one program and run once per file, as `test-http` is (its
 # comment says why).
 [tool.poe.tasks.test-wsgi]
-help = "Test m0-wsgi (mapping logic only; needs no interpreter)"
+help = "Test m0-wsgi (test_blocking_pool, test_read_head and test_hold_resume embed CPython; the rest need no interpreter)"
 shell = "python3 scripts/mojo_suite.py packages/m0-wsgi -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http"
 
 # The executor shim's ownership rules, with no server and no Mojo. The shim

@@ -22,10 +22,10 @@ The table says which kind each is, and the compiler holds it to that:
 def item_urls() raises -> Views[Items]:
     var v = Views[Items]()
     v.add_loop("GET", "/health", health)
-    v.add_read("GET", ITEMS, index)
-    v.add_write("POST", ITEMS, create)
-    v.add_read("GET", ITEM, detail)
-    v.add_write("DELETE", ITEM, delete)
+    v.add_read("GET", ITEMS, index, on_loop=True)
+    v.add_write("POST", ITEMS, create, on_loop=True)
+    v.add_read("GET", ITEM, detail, on_loop=True)
+    v.add_write("DELETE", ITEM, delete, on_loop=True)
     return v^
 ```
 
@@ -36,7 +36,10 @@ def item_urls() raises -> Views[Items]:
 | `add_loop` | no state | on the event loop, never queued |
 
 `add_read` and `add_write` take `on_loop=True` for a view that needs the
-state and must run on the loop, which is where a stream is opened.
+state and must run on the loop, which is where a stream is opened. A view
+over state that lives in the process is `on_loop=True` too, because under
+`--blocking-threads` each pool thread builds a state of its own; the
+`views` and `auth` scaffolds register every such view this way.
 `params` holds the route's `:name` captures in order. A method the path
 does not take is answered 405 with an `Allow` header, and `OPTIONS` on a
 registered path 204. A GET route answers HEAD too, the body dropped and its

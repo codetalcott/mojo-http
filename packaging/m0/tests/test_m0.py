@@ -120,7 +120,8 @@ class TheList(unittest.TestCase):
 
     def test_patchelf_is_asked_by_a_release_build_alone(self):
         """A development build relocates nothing, so a missing patchelf must
-        not refuse it; `build --release` and the doctor ask."""
+        not refuse it, and neither does the doctor; only `build --release`
+        asks."""
         listed = list(checks.CHECKS)
         none = checks.Result("patchelf", False, "no patchelf", "install it")
         checks.CHECKS[:] = [

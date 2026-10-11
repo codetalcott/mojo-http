@@ -103,10 +103,11 @@ that calls it is what vouches for it.
 uv run m0 doctor
 ```
 
-Every toolchain check, then the binary's own `--doctor`: the configuration
-it would serve and where each value came from, with nothing bound.
-`--json` prints one object for a program to read. A refusal from `m0` or
-from the binary is exit 78 and one line naming the fix.
+Every toolchain check but the release-only `patchelf`, then the binary's
+own `--doctor`: the configuration it would serve and where each value came
+from, with nothing bound. `--json` prints one object for a program to read.
+A refusal from `m0` or from the binary is exit 78 and one line naming the
+fix.
 
 ## 5. Rebuild on save
 

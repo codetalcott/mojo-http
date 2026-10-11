@@ -85,7 +85,11 @@ def header_is_excluded(name: Span[Byte, _]) -> Bool:
     them through is the application's information to use or ignore. Only
     the underscore spellings that alias them are dropped. The ASGI
     executor's scope is not built from here: it carries every name as
-    sent, as the ASGI spec asks, so no two names share a key there.
+    sent, as the ASGI spec asks, so no two names share a key there. The
+    buffered ASGI path is: an ASGI application under `--blocking-threads N`
+    above 0 gets a scope the shim builds from this environ
+    (`_scope_from_environ`), so what is dropped here never reaches it
+    either, and narrowing the rule changes what those applications see.
     """
     for i in range(len(name)):
         if name[i] == UInt8(ord("_")):

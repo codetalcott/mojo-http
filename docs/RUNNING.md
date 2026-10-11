@@ -150,6 +150,11 @@ has the Flask version of the whole thing, and CI drives that exact file.
 - **Terminate TLS at a proxy.** There is no TLS and no HTTP/2 here, by
   design. Fly, nginx, Caddy and a cloud load balancer all speak HTTP/1.1 to
   the app.
+- **A header whose name holds an underscore is dropped** before a WSGI
+  application sees it, so behind HAProxy, Caddy or Traefik, which forward
+  such names, a client's `X_Forwarded_For` cannot replace the proxy's
+  `X-Forwarded-For`; an ASGI application under the executor receives both
+  ([Coming from uvicorn](#coming-from-uvicorn)).
 - **Held connections are kept alive through the proxy by default.** Every
   15 s an idle SSE stream gets a comment and an idle WebSocket a ping
   (`M0_SSE_HEARTBEAT_MS`, default `15000`). Set the variable only to change
@@ -297,7 +302,10 @@ the values this server would use, and `m0serve --help` names every flag.
   them for the proxies `--forwarded-allow-ips` names. A header whose name
   holds an underscore never reaches a WSGI application, as under gunicorn:
   CGI's mapping would file a client's `X_Forwarded_For` under the
-  proxy's `HTTP_X_FORWARDED_FOR`.
+  proxy's `HTTP_X_FORWARDED_FOR`. An ASGI application under the executor
+  receives both spellings as sent, as the ASGI spec requires; under
+  `--blocking-threads` above 0 its scope is built from the same environ
+  on the buffered path, and underscore names are dropped as for WSGI.
 - **A lifespan startup that fails exits 1**, where uvicorn exits 3
   ([Install and start](#install-and-start)).
 - **ASGI needs a GIL-enabled CPython.** A free-threaded build, which uv may
