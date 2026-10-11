@@ -27,7 +27,7 @@ as they are (`--platform`, `--no-cache`, `--build-arg BASE=...`).
 import subprocess
 import sys
 
-from m0 import checks
+from m0 import checks, doctor
 
 DOCKERFILE = "deploy/Dockerfile"
 ABOUT = "/app/about.json"
@@ -59,7 +59,7 @@ def run(args):
     if failed is not None:
         return checks.refuse(failed)
 
-    tag = args.tag or project.name
+    tag = args.tag or doctor._app_name(project)
     if _docker(build_argv(tag, args.target_cpu, args.host_args), project) != 0:
         return 1
     sys.stdout.flush()

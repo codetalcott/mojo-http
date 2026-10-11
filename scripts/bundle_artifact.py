@@ -101,10 +101,17 @@ def ensure_self_relative(path, required):
             sh("install_name_tool", "-delete_rpath", rp, path, check=False)
     for rp in required:
         if rp not in existing:
-            sh("install_name_tool", "-add_rpath", rp, path, check=False)
+            sh("install_name_tool", "-add_rpath", rp, path)
     # arm64 invalidates the signature on any Mach-O edit, and an unsigned
     # binary will not load at all. Executables included.
-    sh("codesign", "-f", "-s", "-", path, check=False)
+    sh("codesign", "-f", "-s", "-", path)
+    after, _, _ = macho_info(path)
+    missing = [rp for rp in required if rp not in after]
+    if missing:
+        raise SystemExit(
+            f"bundle-artifact: {path} lacks the search paths it was to carry "
+            f"after rewriting: {missing}"
+        )
 
 
 def main() -> int:

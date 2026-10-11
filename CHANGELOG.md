@@ -44,6 +44,31 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **`m0` command-line fixes** (the `m0` wheel, not m0serve):
+  - `m0 doctor` run on a `bin/server` that dies by a signal (an `abort()`,
+    a crash before `serve`) no longer exits 250 or 245, outside the
+    documented 0, 1, 2 and 78; it is exit 1, saying
+    `bin/server --doctor died of signal N`.
+  - `m0 new m0` and `m0 new mojo` (and `max-core`, `mojo-compiler`) are
+    refused with exit 2: the scaffold pins a requirement of that name, so
+    the project would depend on itself and `uv sync` could never meet it.
+  - `m0 dev` asks the toolchain checks again before each rebuild. After
+    `uv add --dev 'm0==X'` moved the watched `pyproject.toml` it compiled
+    the new framework with the old `mojo`; now it prints the refusal and
+    the old server keeps serving.
+  - `m0 build --release` on Linux checks for `patchelf` first (a `patchelf`
+    line in `m0 doctor`, exit 78 naming `apt-get install patchelf`), where
+    it used to fail after the whole compile; `docs/MOJO_DEPLOY.md` names it.
+  - A failed `install_name_tool -add_rpath` or `codesign` in the release
+    build (`relocate.py`, `bundle_artifact.py`) now fails it, and a binary
+    that lacks a search path it was to carry is refused, instead of a
+    `dist/server` that cannot load its runtime.
+  - `m0 new .` accepts a directory holding only `.git`, as after
+    `git init` or `gh repo create --clone`, and leaves it untouched.
+  - `m0 image` tags with the project's name from `pyproject.toml` rather
+    than the directory's, so a checkout under `Shop` no longer fails on
+    docker's lowercase rule.
+
 - **The `board` template no longer builds a board frame bigger than a
   slot's 64 KB outbox** (the `m0` wheel). Fifty messages of 1500
   bytes, each escaped, rendered to several times that, and a frame over

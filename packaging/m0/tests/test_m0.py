@@ -114,8 +114,62 @@ class TheList(unittest.TestCase):
     def test_order(self):
         self.assertEqual(
             [name for name, _ in checks.CHECKS],
-            ["platform", "mojo-installed", "mojo-gated", "max-gated", "c-compiler", "project"],
+            ["platform", "mojo-installed", "mojo-gated", "max-gated", "c-compiler",
+             "patchelf", "project"],
         )
+
+    def test_patchelf_is_asked_by_a_release_build_alone(self):
+        """A development build relocates nothing, so a missing patchelf must
+        not refuse it; `build --release` and the doctor ask."""
+        listed = list(checks.CHECKS)
+        none = checks.Result("patchelf", False, "no patchelf", "install it")
+        checks.CHECKS[:] = [
+            (n, (lambda project, r=none: r) if n == "patchelf"
+             else (lambda project: checks.Result(n, True, "")))
+            for n, _ in listed
+        ]
+        try:
+            self.assertIsNone(checks.preflight(Path(".")))
+            self.assertIs(checks.preflight(Path("."), release=True), none)
+            self.assertIn(none, checks.run_all(Path(".")))
+        finally:
+            checks.CHECKS[:] = listed
+
+
+class Patchelf(unittest.TestCase):
+    def test_linux_without_it_is_refused_with_the_fix_and_78(self):
+        got = checks.patchelf_verdict("linux", None, "apt-get install patchelf")
+        self.assertFalse(got.ok)
+        self.assertEqual(got.exit, 78)
+        self.assertEqual(
+            got.sentence(),
+            "m0: m0 build --release rewrites the binary's library search path "
+            "with patchelf and there is none on PATH (apt-get install patchelf)",
+        )
+
+    def test_linux_with_it_and_macos_pass(self):
+        self.assertTrue(checks.patchelf_verdict("linux", "/usr/bin/patchelf", "x").ok)
+        self.assertTrue(checks.patchelf_verdict("darwin", None, "x").ok)
+
+    def test_a_release_build_refuses_before_compiling(self):
+        listed = list(checks.CHECKS)
+        none = checks.Result("patchelf", False, "no patchelf", "install it")
+        checks.CHECKS[:] = [
+            (n, (lambda project, r=none: r) if n == "patchelf"
+             else (lambda project: checks.Result(n, True, "")))
+            for n, _ in listed
+        ]
+        saved = build._mojo_build
+        build._mojo_build = lambda *a, **k: self.fail("compiled past a refusal")
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                code = cli.main(["build", "--release"])
+        finally:
+            build._mojo_build = saved
+            checks.CHECKS[:] = listed
+        self.assertEqual(code, 78)
+        self.assertEqual(err.getvalue(), "m0: no patchelf (install it)\n")
 
 
 class MaxPair(unittest.TestCase):
@@ -165,6 +219,23 @@ class Doctor(unittest.TestCase):
         self.assertEqual(doctor.exit_code([ok], None, None), 0)
         self.assertEqual(json.dumps(bad.as_json()),
                          '{"name": "b", "ok": false, "detail": "d", "fix": "f", "exit": 78}')
+
+    def test_a_signal_death_is_exit_1_never_a_negative_pass_through(self):
+        """`sys.exit(-6)` is 250: outside the closed set (0, 1, 2, 78)."""
+        ok = checks.Result("a", True, "")
+        self.assertEqual(doctor.exit_code([ok], {"exit": -6}, None), 1)
+        self.assertEqual(doctor.exit_code([ok], {"exit": -11}, None), 1)
+
+    def test_a_binary_killed_by_a_signal_is_said_with_its_number(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            project = self._project(tmp, "#!/bin/sh\nkill -ABRT $$\n")
+            (project / paths.BINARY).chmod(0o755)
+            app, error = doctor._run_app(project, [])
+            self.assertEqual(
+                error.sentence(),
+                "m0: bin/server --doctor died of signal 6 (m0 build)",
+            )
+            self.assertEqual(doctor.exit_code([], app, error), 1)
 
     def _project(self, tmp, server):
         project = Path(tmp)
@@ -370,6 +441,34 @@ class CommandLine(unittest.TestCase):
 
 
 class Image(unittest.TestCase):
+    def test_the_default_tag_is_the_project_name_not_the_directory(self):
+        """A clone under `Shop` of a project named `corner-shop` must tag
+        `corner-shop`: docker refuses an uppercase repository name."""
+        calls = []
+        saved = image._docker
+        image._docker = lambda argv, project: calls.append(argv) or 0
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                project = Path(tmp) / "Shop"
+                (project / "src").mkdir(parents=True)
+                (project / "src" / "server.mojo").write_text("")
+                (project / "pyproject.toml").write_text('[project]\nname = "corner-shop"\n')
+                args = type("A", (), {"project": project, "tag": None,
+                                      "target_cpu": None, "host_args": []})()
+                self.assertEqual(image.run(args), 0)
+                self.assertEqual(calls[0][calls[0].index("-t") + 1], "corner-shop")
+                self.assertEqual(calls[1][-2], "corner-shop")
+                (project / "pyproject.toml").unlink()
+                calls.clear()
+                self.assertEqual(image.run(args), 0)
+                self.assertEqual(calls[0][calls[0].index("-t") + 1], "Shop")
+                args.tag = "mine"
+                calls.clear()
+                image.run(args)
+                self.assertEqual(calls[0][calls[0].index("-t") + 1], "mine")
+        finally:
+            image._docker = saved
+
     def test_the_docker_command_line(self):
         self.assertEqual(
             image.build_argv("shop", None, []),
@@ -397,6 +496,54 @@ class Image(unittest.TestCase):
 
 
 class Dev(unittest.TestCase):
+    def test_a_rebuild_is_preflighted_and_a_refusal_keeps_the_old_server(self):
+        """`uv add --dev 'm0==X'` edits the watched `pyproject.toml`; the
+        rebuild must not run the new framework on the old mojo. The check
+        flips to failing after the first build: the second build is not
+        attempted, the old server is neither stopped nor replaced, and the
+        refusal's sentence is printed."""
+        class Server:
+            pid = 4242
+            returncode = None
+
+            def poll(self):
+                return None
+
+            def kill(self):
+                pass
+
+        verdicts = [None, checks.Result("mojo-gated", False, "moved", "uv add x")]
+        snaps = iter([{"a": 1}, {"a": 2}, {"a": 2}])
+        builds, started, stopped, sleeps = [], [], [], []
+
+        def sleep(_):
+            sleeps.append(1)
+            if len(sleeps) > 2:
+                raise KeyboardInterrupt
+
+        saved = (dev.checks.preflight, dev.build.build, dev.snapshot, dev.start,
+                 dev.stop, dev.finish, dev.time.sleep)
+        dev.checks.preflight = lambda project, *a, **k: verdicts.pop(0) if verdicts else None
+        dev.build.build = lambda project, *a: builds.append(1) or 0
+        dev.snapshot = lambda project: next(snaps)
+        dev.start = lambda project, host: started.append(1) or Server()
+        dev.stop = lambda server, *a: stopped.append(1)
+        dev.finish = lambda server, *a: None
+        dev.time.sleep = sleep
+        err = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err):
+                code = dev.run(type("A", (), {"project": Path("."), "host_args": []})())
+        finally:
+            (dev.checks.preflight, dev.build.build, dev.snapshot, dev.start,
+             dev.stop, dev.finish, dev.time.sleep) = saved
+        self.assertEqual(code, 0)
+        # The start-up preflight passed; the rebuild's was refused.
+        self.assertEqual(builds, [1], "the refused rebuild still compiled")
+        self.assertEqual((started, stopped), ([1], []))
+        self.assertIn("m0: moved (uv add x)\n", err.getvalue())
+        self.assertIn("pid 4242 is still serving the last good build", err.getvalue())
+
     def test_a_snapshot_sees_an_edit_a_new_file_and_pyproject_and_nothing_else(self):
         with tempfile.TemporaryDirectory() as tmp:
             project = Path(tmp)
@@ -511,6 +658,49 @@ class New(unittest.TestCase):
                     "letter or digit, at most 40)\n",
                 )
                 self.assertFalse(os.path.exists(os.path.join(tmp, bad)))
+
+    def test_a_name_the_scaffold_requires_is_2(self):
+        """`m0 new mojo` wrote `name = "mojo"` beside `"mojo==X"`: a project
+        requiring itself."""
+        self.assertTrue({"m0", "mojo", "max-core"} <= new.pinned_names())
+        with tempfile.TemporaryDirectory() as tmp:
+            for bad in ("m0", "mojo", "max-core", "mojo-compiler"):
+                code, _, err = self._new([os.path.join(tmp, bad)])
+                self.assertEqual(code, 2, bad)
+                self.assertEqual(
+                    err,
+                    f"m0 new: '{bad}' is the name of a package the project requires, "
+                    "and a project cannot depend on itself (choose another name)\n",
+                )
+                self.assertFalse(os.path.exists(os.path.join(tmp, bad)))
+
+    def test_a_directory_holding_only_git_is_scaffolded_and_git_untouched(self):
+        """`mkdir shop && cd shop && git init && m0 new .` was refused with
+        "empty it", which taken literally deletes the repository."""
+        here = os.getcwd()
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                for dot in (True, False):
+                    target = Path(tmp) / ("corner-dot" if dot else "corner-named")
+                    (target / ".git").mkdir(parents=True)
+                    (target / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+                    if dot:
+                        os.chdir(target)
+                    code, _, err = self._new(["." if dot else str(target)])
+                    self.assertEqual((code, err), (0, ""), dot)
+                    self.assertTrue((target / "src" / "server.mojo").is_file(), dot)
+                    self.assertEqual(
+                        (target / ".git" / "HEAD").read_text(), "ref: refs/heads/main\n")
+                    self.assertEqual(os.listdir(target / ".git"), ["HEAD"])
+                other = Path(tmp) / "corner-other"
+                other.mkdir()
+                (other / ".git").mkdir()
+                (other / "keep").write_text("mine")
+                os.chdir(other)
+                code, _, _ = self._new(["."])
+                self.assertEqual(code, 2)
+        finally:
+            os.chdir(here)
 
     def test_a_directory_with_something_in_it_is_2_and_untouched(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -703,6 +893,73 @@ class New(unittest.TestCase):
                 self.assertEqual(table(fly, "env").get(secure), '"1"', template)
                 image = (target / "deploy" / "Dockerfile").read_text()
                 self.assertFalse("_SECURE" in image, f"{template}: the image states a SECURE")
+
+
+class ShippedScripts(unittest.TestCase):
+    """`relocate.py` and `bundle_artifact.py` run on a user's `m0 build
+    --release`: a failed rpath add or signature must fail the build, not
+    ship a binary that cannot load."""
+
+    SCRIPTS = Path(__file__).resolve().parents[3] / "scripts"
+
+    def setUp(self):
+        if not (self.SCRIPTS / "relocate.py").is_file():
+            self.skipTest("the repository's scripts/ is not beside this test")
+        sys.path.insert(0, str(self.SCRIPTS))
+        self.addCleanup(sys.path.remove, str(self.SCRIPTS))
+
+    def _stub(self, module, fail, rpaths_after):
+        ran = []
+
+        def sh(*cmd, check=True):
+            ran.append(cmd)
+            if check and any(word in cmd for word in fail):
+                raise SystemExit("stub: " + " ".join(cmd))
+            return ""
+
+        saved = (module.sh, module.macho_info)
+        module.sh = sh
+        module.macho_info = lambda path: (list(rpaths_after), [], None)
+        self.addCleanup(lambda: (setattr(module, "sh", saved[0]),
+                                 setattr(module, "macho_info", saved[1])))
+        return ran
+
+    def test_relocate_fails_when_add_rpath_or_codesign_fails(self):
+        import relocate
+
+        for word in ("-add_rpath", "codesign"):
+            self._stub(relocate, (word,), [])
+            with self.assertRaises(SystemExit, msg=word):
+                relocate.relocate_macho("x", None, ["@loader_path"])
+
+    def test_relocate_requires_every_wanted_rpath_after(self):
+        import relocate
+
+        self._stub(relocate, (), [])
+        with self.assertRaises(SystemExit) as caught:
+            relocate.relocate_macho("x", None, ["@loader_path"])
+        self.assertIn("lacks the search paths", str(caught.exception))
+        self._stub(relocate, (), ["@loader_path"])
+        self.assertEqual(relocate.relocate_macho("x", None, ["@loader_path"]),
+                         ["@loader_path"])
+
+    def test_bundle_fails_when_add_rpath_or_codesign_fails(self):
+        import bundle_artifact
+
+        for word in ("-add_rpath", "codesign"):
+            self._stub(bundle_artifact, (word,), [])
+            with self.assertRaises(SystemExit, msg=word):
+                bundle_artifact.ensure_self_relative("x", ["@loader_path"])
+
+    def test_bundle_requires_every_wanted_rpath_after(self):
+        import bundle_artifact
+
+        self._stub(bundle_artifact, (), [])
+        with self.assertRaises(SystemExit) as caught:
+            bundle_artifact.ensure_self_relative("x", ["@loader_path"])
+        self.assertIn("lacks the search paths", str(caught.exception))
+        self._stub(bundle_artifact, (), ["@loader_path"])
+        bundle_artifact.ensure_self_relative("x", ["@loader_path"])
 
 
 if __name__ == "__main__":

@@ -99,7 +99,7 @@ def _parser():
         "arguments after -- go to docker build",
     )
     p.add_argument("--tag", metavar="T",
-                   help="the image's tag (default: the project directory's name)")
+                   help="the image's tag (default: the project's name, else its directory's)")
     p.add_argument("--target-cpu", metavar="CPU",
                    help="the CPU the builder stage compiles for (default: the platform's baseline)")
     p.set_defaults(run=image.run)

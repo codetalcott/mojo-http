@@ -1,8 +1,9 @@
 """The ONE list of checks, read by every command that refuses.
 
 `preflight()` stops at the first failure, before any command that runs the
-toolchain; `m0 doctor` runs all of them. Six checks: `platform`,
-`mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `project`. Both read `CHECKS`, in its order,
+toolchain; `m0 doctor` runs all of them. Seven checks: `platform`,
+`mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `patchelf`,
+`project`. Both read `CHECKS`, in its order,
 which is the host's `host_checks` rule for the host's reason: a doctor that
 keeps a list of its own reports "fine" where the build refuses, and that is
 worse than no doctor. Add a refusal HERE, never beside a command.
@@ -335,6 +336,40 @@ def check_c_compiler(project):
     )
 
 
+# --- patchelf ---------------------------------------------------------------
+#
+# `m0 build --release` on Linux rewrites the binary's runpath with
+# `patchelf` (relocate.py), AFTER the whole compile. Only that command asks
+# (`RELEASE_ONLY`); macOS relocates with the system's own tools, so there it
+# passes. The doctor reads the whole list, so it says whether a release build
+# would get that far.
+
+
+def patchelf_verdict(system, found, linux_fix):
+    if system != "linux":
+        return Result("patchelf", True, "not needed on this platform")
+    if found is None:
+        return Result(
+            "patchelf",
+            False,
+            "m0 build --release rewrites the binary's library search path with "
+            "patchelf and there is none on PATH",
+            linux_fix,
+        )
+    return Result("patchelf", True, found)
+
+
+def check_patchelf(project):
+    system = "darwin" if sys.platform == "darwin" else "linux"
+    if shutil.which("apt-get"):
+        fix = "apt-get install patchelf"
+    elif shutil.which("dnf"):
+        fix = "dnf install patchelf"
+    else:
+        fix = "install patchelf"
+    return patchelf_verdict(system, shutil.which("patchelf"), fix)
+
+
 # --- project ----------------------------------------------------------------
 
 
@@ -357,6 +392,7 @@ CHECKS = [
     ("mojo-gated", check_mojo_gated),
     ("max-gated", check_max_gated),
     ("c-compiler", check_c_compiler),
+    ("patchelf", check_patchelf),
     ("project", check_project),
 ]
 
@@ -365,11 +401,17 @@ def run_all(project):
     return [check(project) for _, check in CHECKS]
 
 
-def preflight(project, skip=()):
+# Asked by `m0 build --release` and by the doctor, not by a development
+# build, which relocates nothing.
+RELEASE_ONLY = ("patchelf",)
+
+
+def preflight(project, skip=(), release=False):
     """The first failing check, or None. `skip` names checks a command does
-    not need -- `m0 test` links nothing, so it skips `c-compiler`."""
+    not need -- `m0 test` links nothing, so it skips `c-compiler`; `release`
+    adds the ones only `m0 build --release` needs."""
     for name, check in CHECKS:
-        if name in skip:
+        if name in skip or (name in RELEASE_ONLY and not release):
             continue
         result = check(project)
         if not result.ok:

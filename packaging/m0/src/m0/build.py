@@ -84,7 +84,7 @@ def _tool(project, name, *args):
 
 def run(args):
     project = args.project
-    failed = checks.preflight(project)
+    failed = checks.preflight(project, release=args.release)
     if failed is not None:
         return checks.refuse(failed)
     if args.release:
