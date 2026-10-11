@@ -341,8 +341,7 @@ def check_c_compiler(project):
 # `m0 build --release` on Linux rewrites the binary's runpath with
 # `patchelf` (relocate.py), AFTER the whole compile. Only that command asks
 # (`RELEASE_ONLY`); macOS relocates with the system's own tools, so there it
-# passes. The doctor reads the whole list, so it says whether a release build
-# would get that far.
+# passes.
 
 
 def patchelf_verdict(system, found, linux_fix):
@@ -398,11 +397,14 @@ CHECKS = [
 
 
 def run_all(project):
-    return [check(project) for _, check in CHECKS]
+    """What `m0 doctor` reads: every check but the release-only ones, which
+    a machine that never runs `m0 build --release` must not be failed for."""
+    return [check(project) for name, check in CHECKS if name not in RELEASE_ONLY]
 
 
-# Asked by `m0 build --release` and by the doctor, not by a development
-# build, which relocates nothing.
+# Asked by `m0 build --release` alone: a development build relocates
+# nothing, and the doctor does not fail a machine for what only a release
+# build needs.
 RELEASE_ONLY = ("patchelf",)
 
 

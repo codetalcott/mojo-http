@@ -56,8 +56,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
     `uv add --dev 'm0==X'` moved the watched `pyproject.toml` it compiled
     the new framework with the old `mojo`; now it prints the refusal and
     the old server keeps serving.
-  - `m0 build --release` on Linux checks for `patchelf` first (a `patchelf`
-    line in `m0 doctor`, exit 78 naming `apt-get install patchelf`), where
+  - `m0 build --release` on Linux checks for `patchelf` first (exit 78
+    naming `apt-get install patchelf`; `m0 doctor` does not ask), where
     it used to fail after the whole compile; `docs/MOJO_DEPLOY.md` names it.
   - A failed `install_name_tool -add_rpath` or `codesign` in the release
     build (`relocate.py`, `bundle_artifact.py`) now fails it, and a binary

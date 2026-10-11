@@ -30,7 +30,7 @@ On Linux, `m0 build --release` also needs `patchelf`, which rewrites the
 binary's library search path after the compile. `m0 build --release` checks
 for it first and refuses with exit 78 naming the install
 (`apt-get install patchelf`); a development build does not need it, and
-`m0 doctor` reports it. The scaffold's `deploy/Dockerfile` installs it in
+`m0 doctor` does not ask. The scaffold's `deploy/Dockerfile` installs it in
 the builder.
 
 ## The image

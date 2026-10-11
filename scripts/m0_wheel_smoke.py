@@ -521,7 +521,7 @@ def run(work, whl, pin, max_pin, m0v, port, servers):
     doc = json.loads(done.stdout.strip().splitlines()[-1])
     if not doc["ok"] or doc["exit"] != 0 or doc["app"]["stale"]:
         fail("a good project is not green: %r" % doc)
-    if [c["name"] for c in doc["checks"]] != ["platform", "mojo-installed", "mojo-gated", "max-gated", "c-compiler", "patchelf", "project"]:
+    if [c["name"] for c in doc["checks"]] != ["platform", "mojo-installed", "mojo-gated", "max-gated", "c-compiler", "project"]:
         fail("the checks are %r" % [c["name"] for c in doc["checks"]])
     maxc = doc["checks"][3]
     if not maxc["ok"] or "not installed" not in maxc["detail"] or max_pin not in maxc["detail"]:

@@ -131,7 +131,7 @@ class TheList(unittest.TestCase):
         try:
             self.assertIsNone(checks.preflight(Path(".")))
             self.assertIs(checks.preflight(Path("."), release=True), none)
-            self.assertIn(none, checks.run_all(Path(".")))
+            self.assertNotIn(none, checks.run_all(Path(".")))
         finally:
             checks.CHECKS[:] = listed
 
@@ -170,6 +170,30 @@ class Patchelf(unittest.TestCase):
             checks.CHECKS[:] = listed
         self.assertEqual(code, 78)
         self.assertEqual(err.getvalue(), "m0: no patchelf (install it)\n")
+
+    def test_the_doctor_is_not_failed_by_a_missing_patchelf_on_linux(self):
+        """A Linux machine that only runs `m0 build` needs no patchelf: the
+        doctor's exit ignores the arm while `build --release` refuses 78."""
+        listed = list(checks.CHECKS)
+        gone = checks.patchelf_verdict("linux", None, "apt-get install patchelf")
+        self.assertFalse(gone.ok)
+        checks.CHECKS[:] = [
+            (n, (lambda project, r=gone: r) if n == "patchelf"
+             else (lambda project, n=n: checks.Result(n, True, "")))
+            for n, _ in listed
+        ]
+        saved = build._mojo_build
+        build._mojo_build = lambda *a, **k: self.fail("compiled past a refusal")
+        try:
+            results = checks.run_all(Path("."))
+            self.assertTrue(all(r.ok for r in results))
+            self.assertNotIn("patchelf", [r.name for r in results])
+            self.assertEqual(doctor.exit_code(results, None, None), 0)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cli.main(["build", "--release"]), 78)
+        finally:
+            build._mojo_build = saved
+            checks.CHECKS[:] = listed
 
 
 class MaxPair(unittest.TestCase):
