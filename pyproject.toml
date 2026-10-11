@@ -3881,6 +3881,7 @@ refuses 78 'too many mounts, explicit no pool'  $M127 $W --blocking-threads 0
 # moves both together and only the named code sees it.
 refuses 1  'missing app dir, then a conflict'   bareapp.wsgi --app-dir /no/such/dir --workers 2 --threads 2
 refuses 2  'compiled mount unserved, then lanes' $M127 --mount /native=mojo $W --blocking-threads 0
+refuses 2  'pg-listen unserved, then a deep journal' $SPEC --pg-listen postgres://db/x --replay-frames 5000
 
 # A port of 0 is refused before the bind, 78 both ways, whether M0_PORT
 # or --port names it (review record LF56): the variable's served on a port

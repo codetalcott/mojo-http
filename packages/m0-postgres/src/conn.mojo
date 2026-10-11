@@ -468,8 +468,11 @@ struct Connection(Movable):
         to nothing, so a listener that reset without this would run forever
         delivering no notifications and logging no error.
 
-        A re-`LISTEN` that fails raises, and forgets nothing: every channel
-        stays recorded, the ones not yet restored included, so the next
+        A re-`LISTEN` that fails stops no other: every channel is tried,
+        the ones that fail are collected, and the reset raises once at the
+        end, naming each with its error, so a channel that can never be
+        restored leaves the others listening. Nothing is forgotten: every
+        channel stays recorded, the failed ones included, so the next
         `reset` tries them all again. The list is walked as a copy and
         never emptied, since `listen` records a channel only once.
         """
@@ -480,8 +483,23 @@ struct Connection(Movable):
                 + self.errmsg()
 )
         var channels = self._listening.copy()
+        var failed = List[String]()
         for channel in channels:
-            self.listen(channel)
+            try:
+                self.listen(channel)
+            except e:
+                failed.append("`" + channel + "`: " + String(e))
+        if len(failed) == 0:
+            return
+        var detail = String(
+            "could not LISTEN again on ", len(failed), " of ", len(channels),
+            " channels after reconnecting to ", self.url_for_logs, ": ",
+        )
+        for i in range(len(failed)):
+            if i > 0:
+                detail += "; "
+            detail += failed[i]
+        raise Error(detail)
 
     def close(mut self):
         """Finish early. Idempotent; `__deinit__` also finishes.

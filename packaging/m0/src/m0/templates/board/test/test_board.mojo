@@ -107,6 +107,28 @@ def test_a_full_board_still_reaches_an_open_stream() raises:
     assert_equal(len(board.messages), MAX_MESSAGES)
 
 
+def test_a_board_of_line_breaks_still_reaches_an_open_stream() raises:
+    """Counted by rendered bytes alone, most of fifty messages of 750 line
+    breaks fit the budget, but the frame writes `data: elements ` before
+    every line, 15 bytes a break, which puts that render near half a
+    megabyte, far over the 64 KB outbox. The render counts that prefix per
+    line break, so the open stream is still sent a frame."""
+    var board = Board(16)
+    var table = board_urls()
+    var get = HTTPRequest(URI.parse(String("http://127.0.0.1", EVENTS)))
+    get.slot_id = 3
+    _ = table.dispatch(get, board)
+    for _ in range(MAX_MESSAGES):
+        board.add(String("a\n") * 750)
+    var resp = table.dispatch(_post("text=newest"), board)
+    assert_equal(resp.status_code, 200)
+    var raw = board.stream.drain(3)
+    assert_true(len(raw) > 0)
+    assert_true(len(raw) <= 65536)
+    var sent = _bytes(raw)
+    assert_true("<li>newest</li>" in sent)
+
+
 def test_a_message_is_escaped_where_it_is_rendered() raises:
     var html = render_board([String("<b>&")])
     assert_true("&lt;b&gt;&amp;" in html)

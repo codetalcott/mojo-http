@@ -19,7 +19,6 @@ from std.testing import (
     TestSuite,
     assert_equal,
     assert_false,
-    assert_raises,
     assert_true,
 )
 
@@ -150,20 +149,22 @@ def test_a_reset_restores_every_subscription() raises:
 
 
 def test_a_reset_whose_relisten_fails_forgets_no_channel() raises:
-    """A re-`LISTEN` that fails part-way keeps every channel for the next reset.
+    """A re-`LISTEN` that fails stops no other channel, and forgets none.
 
     The failure is a real one. A channel named while the session's client
     encoding was LATIN1 is not valid UTF-8, the encoding a reset reconnects
-    with, so `PQescapeIdentifier` refuses it and the reset raises after
-    restoring the channel before it. The reset used to empty its list
-    before re-listening, which left only that one: once the application
-    withdrew the channel that failed, the next reset restored one
-    subscription of two, and `m0_test_last` heard nothing, with no error.
+    with, so `PQescapeIdentifier` refuses it. The reset re-`LISTEN`s every
+    channel anyway and raises once at the end, naming the one that failed,
+    so the channels on both sides of it are listening as soon as it
+    raises. It used to stop at the first failure, leaving `m0_test_last`
+    deaf until the application withdrew the channel that failed and reset
+    again; and before that it emptied its list before re-listening, so the
+    next reset restored one subscription of two, with no error.
 
     No re-`LISTEN` can be made to fail ONCE against a real server without
     a race (a standby refusing it, a drop between two statements), so the
-    test withdraws the channel that fails, which is the recovery an
-    application has.
+    test then withdraws the channel that fails, the recovery an
+    application has, and resets again.
 
     covers: O15
     """
@@ -177,8 +178,23 @@ def test_a_reset_whose_relisten_fails_forgets_no_channel() raises:
     db.execute("SET client_encoding TO 'LATIN1'")
     db.listen(bad)
     db.listen("m0_test_last")
-    with assert_raises(contains="PQescapeIdentifier refused"):
+    var said = String("")
+    try:
         db.reset()
+    except e:
+        said = String(e)
+    assert_true(
+        "could not LISTEN again on 1 of 3 channels after reconnecting to " in said,
+        said,
+    )
+    assert_true(": `m0_test_caf" in said, said)
+    assert_true("PQescapeIdentifier refused" in said, said)
+    # Both sides of the failing channel already listen: no unlisten first.
+    db.execute("NOTIFY m0_test_first, 'a'; NOTIFY m0_test_last, 'b'")
+    var restored = _drain(db)
+    assert_equal(len(restored), 2)
+    assert_equal(restored[0], "m0_test_first|a")
+    assert_equal(restored[1], "m0_test_last|b")
     db.execute("SET client_encoding TO 'LATIN1'")
     db.unlisten(bad)
     db.reset()

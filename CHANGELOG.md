@@ -35,12 +35,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   scope is built from the environ, drops them with it (SPEC G29).
 
 - **`--replay-frames` (and `M0_REPLAY_FRAMES`) above 4096 is refused with
-  exit 78.** Each loop keeps up to that many frames of up to 64 KB each, and a
-  full journal shifts its entries on the loop thread for every publish, so a
-  depth like 100000 pinned hundreds of megabytes and slowed every publish
-  with nothing said. The refusal is a rule in the list `--doctor` reads, so
-  the doctor exits 78 too, with or without `--realtime`. 0 and every depth up
-  to 4096 are accepted as before (SPEC I43).
+  exit 78.** Under `--realtime` each loop keeps up to that many frames of up
+  to 64 KB each, and a full journal shifts its entries on the loop thread for
+  every publish, so a depth like 100000 pinned hundreds of megabytes and
+  slowed every publish with nothing said. The refusal is a rule in the list
+  `--doctor` reads, so the doctor exits 78 too, with or without `--realtime`.
+  It is asked after the rules a flag combination can fail, so `--pg-listen`
+  without `--realtime` beside a deep journal is still the usage error's
+  exit 2. 0 and every depth up to 4096 are accepted as before (SPEC I43).
 
 ### Fixed
 
@@ -225,11 +227,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
   before it reconnects (SPEC O15).
 
 - **m0-postgres: a `reset()` whose re-`LISTEN` fails no longer forgets
-  channels.** `reset()` emptied its list of channels before listening on
-  them again, so when one re-`LISTEN` raised (a reconnect that landed on a
-  standby, a second drop), every channel not yet restored left the list,
-  and each later `reset()` restored fewer, silently. The list is now kept
-  whole, so the next `reset()` tries every channel again (SPEC O15).
+  channels, or stops at the first.** `reset()` emptied its list of
+  channels before listening on them again, so when one re-`LISTEN` raised
+  (a reconnect that landed on a standby, a second drop), every channel not
+  yet restored left the list, and each later `reset()` restored fewer,
+  silently. It now re-`LISTEN`s every channel, collects the ones that fail
+  and raises once at the end naming each, so a channel that cannot be
+  restored leaves the others listening; the list is kept whole, so the
+  next `reset()` tries every channel again (SPEC O15).
 
 - **m0-postgres: `Result.int` raises for a text-mode value past 64 bits
   instead of wrapping.** The `sum()` of an `int8` column is `numeric`, and
