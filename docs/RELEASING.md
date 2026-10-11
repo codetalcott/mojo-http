@@ -1030,6 +1030,64 @@ application could import, removed or renamed.
   not owed: #605 restructured the pool's spin loop, but neither the
   records' strides nor the park's look.
 
+`m0 0.12.0`: tag `m0-v0.12.0` at `8e935fa`, 2026-10-11, cut beside m0serve
+1.15.0. A minor release for the fixes of the 2026-10-10 review of the
+gateway, the database packages, the `m0` wheel and m0-core (#615), and the
+two issues reported against 1.14.0 (#611, #612): a WSGI header forged
+through an underscore name, m0-sqlite's NULL handle after `close()`, a
+drain that waited for a request nobody had made, and the wheel's libpython
+search. The `m0` wheel ships the framework's source and the fixed
+templates.
+
+- Step 1: `sabotage-m0-wheel` 26 of 26 (633 s). `sabotage-scaffold` 84 of
+  84: the 72 rules outside `image:` in one run (2086 s), then each of the
+  twelve `image:` rules with `--only` (73–178 s each), with a `docker
+  builder prune` and an `fstrim -v /var/lib/docker` between them. Two rules
+  read NOT APPLICABLE in the first run, `new: writes over what is there`
+  and `image: --tag is ignored`: #615 had moved the lines they anchor and
+  re-run `sabotage-m0-wheel`, but not this harness, whose image rules need
+  docker. Both were re-pointed in the release pull request and caught when
+  re-run alone. The run began at 8.4 GiB free. Naming the mount
+  (`fstrim -v /var/lib/docker`) returned 4.3 GiB where `fstrim -av`
+  returned 229 MiB.
+- Step 3: the local wheel, built on the merge commit, was
+  `m0-0.12.0-py3-none-any.whl`, 722,663 bytes, its `_build_info.json`
+  naming framework 1.15.0, `8e935fa` and a clean tree; a scaffold from it
+  pinned `m0==0.12.0`.
+- Step 4: the release pull request (#616) was merged by the `automerge`
+  label as its `Tests` run passed, and `build` read the pull request
+  head's run (`ff8c150`). It printed `m0 0.12.0, cut from 8e935fa…` and was
+  green at the first attempt. Its wheel artifact had the local wheel's
+  SHA-256 (`ca9ca02a…`), as does the file on the index.
+- The tags went out in 1.14.0's order: the owner was away overnight, so
+  `v1.15.0` was pushed a few minutes after `m0-v0.12.0`, at the same
+  commit, and the owner approved `pypi-m0` before `pypi`. Steps 5 and 6 ran
+  after both uploads.
+- Step 5 on macOS arm64: `uvx --refresh-package m0 m0 new probe` pinned
+  `m0==0.12.0`, and `uv.lock` named it from pypi.org. The first build took
+  11 s, `smoke.sh` and `m0 test` passed, and every `m0 doctor` check
+  passed. `m0 image` built in 30 s: 103.6 MB, 2.92 MB of it the app,
+  `libsqlite3-0` installed and no interpreter.
+- Step 6: 8 blocks passed against the published package. `uvx m0
+  --version` read `m0 0.12.0`, and `uvx --from m0serve==1.15.0 m0serve
+  --version` read `m0serve 1.15.0`.
+- m0serve 1.15.0: `v1.15.0` at `8e935fa`. The Release run built the three
+  wheels (`macosx_13_0_arm64`, `manylinux_2_35_aarch64`,
+  `manylinux_2_35_x86_64`), inspected them, consumed each on a machine
+  that did not build it, published the GitHub release, and uploaded after
+  approval. Each file on the index has the SHA-256 the release's
+  `SHA256SUMS.txt` names, and the site deployed after it.
+- The pre-release run, for the record: every gate in this page, from a
+  release worktree with its own venv. Neither the benches nor the soaks
+  were due: both stood at 1.14.0, one minor behind. The quiet stage ran
+  before the sabotages, once another agent's `node` jobs had stopped:
+  `probe-pool-fairness` (32 s), `probe-pool` (896 s; pooled p99 0.2, 0.3
+  and 0.2 ms at slow 0, 1 and 2), `stress-asgi` 30 of 30 in both modes
+  (191 s), and `bench-linux-conclusions` (637 s), whose conclusions all
+  held. `stress-pool` held 20 of 20 rounds and 40 of 40 holds in all three
+  wake modes, and `sabotage-host` caught 69 of 69. The pool A/Bs were not
+  owed: neither the pool's records nor its park changed since 1.14.0.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
