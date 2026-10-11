@@ -1,0 +1,146 @@
+{
+  "bench": "asgi_wrk_hello",
+  "recorded_utc": "2026-10-11T03:57:48+00:00",
+  "environment": {
+    "version": "1.15.0",
+    "git_sha": "388f666f",
+    "source_stamp": "e594aa2ccb2d15d7",
+    "git_dirty": null,
+    "os": "Linux 6.8.0-117-generic",
+    "machine": "aarch64",
+    "python": "Python 3.13.11 (main, Feb  3 2026, 05:52:03) [GCC 12.2.0]",
+    "mojo": "Mojo 1.1.0 (8189361e)",
+    "granian": "granian 2.8.4",
+    "wrk": "wrk debian/4.1.0-3+b2 [epoll] Copyright (C) 2012 Will Glozer",
+    "numpy": "2.5.3",
+    "cpu": "aarch64 impl 0x61 part 0x000",
+    "cores_physical": "8",
+    "memory_bytes": "6197747712"
+  },
+  "parameters": {
+    "client": "wrk -t2 -c16 -d8s, browser headers",
+    "app": "apps/asgi_bare bareapp.asgi:application /",
+    "rounds": "3",
+    "note": "Linux arm of the conclusions pass, recorded in the m0lin container. NOT the benchmark page's row and not comparable to it in absolute terms -- a VM on a Mac, and server and client share its cpus. The RATIOS are the signal; every comparator was re-measured in every round and the per-arm spread is in the rows."
+  },
+  "definitions": {
+    "medians.rps_per_core": "median rps across rounds / median cores across rounds; the figure docs/BENCHMARKS.md renders",
+    "medians.rps_per_core_rounds": "median across rounds of each round's own rps per core",
+    "cores": "process CPU seconds over wall seconds during the measured window"
+  },
+  "rows": [
+    {
+      "name": "m0serve asgi-executor",
+      "rps": 108559.88,
+      "p50_us": 149.0,
+      "p99_us": 178.0,
+      "cores": 1.315,
+      "rps_per_core": 82570,
+      "round": 1
+    },
+    {
+      "name": "uvicorn asyncio",
+      "rps": 54357.07,
+      "p50_us": 292.0,
+      "p99_us": 328.0,
+      "cores": 1.0,
+      "rps_per_core": 54370,
+      "round": 1
+    },
+    {
+      "name": "uvicorn uvloop",
+      "rps": 88174.42,
+      "p50_us": 179.0,
+      "p99_us": 215.0,
+      "cores": 1.0,
+      "rps_per_core": 88195,
+      "round": 1
+    },
+    {
+      "name": "m0serve asgi-executor",
+      "rps": 109435.28,
+      "p50_us": 147.0,
+      "p99_us": 177.0,
+      "cores": 1.331,
+      "rps_per_core": 82250,
+      "round": 2
+    },
+    {
+      "name": "uvicorn asyncio",
+      "rps": 54085.8,
+      "p50_us": 295.0,
+      "p99_us": 323.0,
+      "cores": 0.999,
+      "rps_per_core": 54166,
+      "round": 2
+    },
+    {
+      "name": "uvicorn uvloop",
+      "rps": 88488.35,
+      "p50_us": 176.0,
+      "p99_us": 222.0,
+      "cores": 1.001,
+      "rps_per_core": 88403,
+      "round": 2
+    },
+    {
+      "name": "m0serve asgi-executor",
+      "rps": 108536.25,
+      "p50_us": 148.0,
+      "p99_us": 178.0,
+      "cores": 1.334,
+      "rps_per_core": 81348,
+      "round": 3
+    },
+    {
+      "name": "uvicorn asyncio",
+      "rps": 54314.0,
+      "p50_us": 293.0,
+      "p99_us": 323.0,
+      "cores": 0.999,
+      "rps_per_core": 54394,
+      "round": 3
+    },
+    {
+      "name": "uvicorn uvloop",
+      "rps": 88715.55,
+      "p50_us": 176.0,
+      "p99_us": 209.0,
+      "cores": 1.0,
+      "rps_per_core": 88738,
+      "round": 3
+    }
+  ],
+  "medians": {
+    "m0serve asgi-executor": {
+      "rounds": 3,
+      "rps": 108559.88,
+      "cores": 1.331,
+      "rps_per_core": 81563,
+      "rps_per_core_rounds": 82250,
+      "p99_us": 178.0,
+      "p99_us_min": 177.0,
+      "p99_us_max": 178.0
+    },
+    "uvicorn asyncio": {
+      "rounds": 3,
+      "rps": 54314.0,
+      "cores": 0.999,
+      "rps_per_core": 54368,
+      "rps_per_core_rounds": 54370,
+      "p99_us": 323.0,
+      "p99_us_min": 323.0,
+      "p99_us_max": 328.0
+    },
+    "uvicorn uvloop": {
+      "rounds": 3,
+      "rps": 88488.35,
+      "cores": 1.0,
+      "rps_per_core": 88488,
+      "rps_per_core_rounds": 88403,
+      "p99_us": 215.0,
+      "p99_us_min": 209.0,
+      "p99_us_max": 222.0
+    }
+  }
+}
