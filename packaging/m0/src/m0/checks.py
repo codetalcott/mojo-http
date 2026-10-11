@@ -1,7 +1,7 @@
 """The ONE list of checks, read by every command that refuses.
 
 `preflight()` stops at the first failure, before any command that runs the
-toolchain; `m0 doctor` runs all of them. Seven checks: `platform`,
+toolchain; `m0 doctor` runs all but the release-only `patchelf`. Seven checks: `platform`,
 `mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `patchelf`,
 `project`. Both read `CHECKS`, in its order,
 which is the host's `host_checks` rule for the host's reason: a doctor that

@@ -10,7 +10,7 @@ Three things it deliberately is not:
 - **It checks no toolchain.** The compiler runs inside the builder stage,
   so a machine with docker and nothing else builds the image; of the ONE
   list (`checks.py`) only `project` is asked. There is no `docker` check
-  there, because `m0 doctor` reads that list whole and a machine without
+  there, because `m0 doctor` reads that list (but for the release-only `patchelf`) and a machine without
   docker is not a broken one.
 - **It interprets nothing docker says.** Docker missing, the daemon down,
   no `uv.lock` in the context, a compiler error in the builder: exit 1 with

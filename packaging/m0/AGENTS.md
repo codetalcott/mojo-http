@@ -30,7 +30,8 @@ one home; `0.x` until the layer soak). Rules:
   fourth token and `pyproject.toml`-only like the other two versions.
 - **`checks.py` holds the ONE list** (`platform`, `mojo-installed`,
   `mojo-gated`, `max-gated`, `c-compiler`, `patchelf`, `project`) that every command reads to its
-  first failure and `m0 doctor` reads whole — `host_checks`' rule. Add a
+  first failure and `m0 doctor` reads whole but for the release-only
+  `patchelf`, which only `build --release` asks (`RELEASE_ONLY`) — `host_checks`' rule. Add a
   refusal THERE. Every one is 78 and one `m0: detail (fix)` line, and
   `smoke-m0-wheel` asserts the sentences WHOLE, so rewording one means
   rewording its arm.

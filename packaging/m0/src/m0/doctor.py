@@ -1,7 +1,8 @@
 """`m0 doctor [--json] [-- HOST_ARGS]`.
 
-Every check in `checks.CHECKS` -- all of them, where a command stops at the
-first -- and then the application's own doctor: if `bin/server` exists it is
+Every check in `checks.CHECKS` -- all of them but the release-only
+`patchelf`, which only `m0 build --release` asks, where a command stops at
+the first -- and then the application's own doctor: if `bin/server` exists it is
 run as `bin/server HOST_ARGS --doctor` with the environment untouched, so
 `M0_WORKERS=4 uv run m0 doctor` asks the deploy's question of the binary
 that would be deployed. The host prints its report as the LAST line of
