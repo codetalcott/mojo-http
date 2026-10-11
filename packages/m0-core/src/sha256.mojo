@@ -1,9 +1,9 @@
 """SHA-256, FIPS 180-4, in plain Mojo with no dependencies.
 
 The first cryptographic hash in `m0-core`, and it is here for one caller:
-`hmac.mojo`, which signs and verifies the grants a Django application hands
-a browser for a stream the Mojo side holds, and which the login row (SPEC
-N13) will sign a session cookie with. `wyhash64` and the other three hashes
+`hmac.mojo`, which `m0_http.grant` uses to sign and verify the grants a
+Django application hands a browser for a stream the Mojo side holds, and
+`m0_http.session` to sign a session cookie. `wyhash64` and the other three hashes
 in `hashing.mojo` are not suitable for either; this is the one that is.
 
 Streaming and one-shot. `Sha256` absorbs bytes in any split, and `digest`

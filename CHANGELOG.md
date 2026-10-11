@@ -44,6 +44,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **`parse_json_int` no longer wraps an integer past `Int`'s range, and
+  `parse_json_bool` no longer reads `truex` as true.** `{"n":18446744073709551617}`
+  came back as 1; it is now `None`, as is any value outside
+  -9223372036854775808..9223372036854775807. A boolean literal must end at
+  whitespace, `,`, `}`, `]` or the end of the body, so `trueish` and
+  `falsehood` are `None`. The m0 wheel ships `m0-core`, so an m0 application
+  takes the fix by rebuilding.
+
 - **`m0` command-line fixes** (the `m0` wheel, not m0serve):
   - `m0 doctor` run on a `bin/server` that dies by a signal (an `abort()`,
     a crash before `serve`) no longer exits 250 or 245, outside the

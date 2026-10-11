@@ -1,9 +1,10 @@
 """HMAC-SHA256 (RFC 2104 over `sha256.mojo`) and a constant-time compare.
 
-What signs and verifies a grant: Django issues one, the Mojo side holds a
-stream against it, and the two agree on a key by sharing a process tree.
-`wyhash64` is not a MAC and never was (SPEC D15, the reason no session
-cookie is signed yet); this is the primitive that decision waited for.
+What signs and verifies a grant (`m0_http.grant`: Django issues one, the Mojo
+side holds a stream against it, and the two agree on a key by sharing a
+process tree) and a session cookie (`m0_http.session`). `wyhash64` is not a
+MAC and never was (DECISIONS D15, retired 2026-09-12); this is the primitive
+that decision waited for.
 
 The shape is the one a hot verifier wants. `HmacSha256(key)` absorbs the
 padded key into two `Sha256` states once -- `key XOR ipad` and `key XOR
