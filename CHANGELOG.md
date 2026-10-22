@@ -29,7 +29,12 @@ in a minor release: `m0serve`'s flags and environment variables, the
   The `mut` copy-back rule, the `cc` the linker needs, and the output the
   sabotage harnesses parse were re-measured and are unchanged. The wheels
   still declare `LicenseRef-MAX-Platform-Software-License`, which now names
-  the MAX License of 2026-10-21 (docs/FFI_DISTRIBUTION.md). The write-up
+  the MAX License of 2026-10-21 (docs/FFI_DISTRIBUTION.md). 1.2.0 does not
+  fix the free-threaded `PyObject` header (modular/modular#5726): building
+  the executor's Python type under 3.14t still crashes, so an ASGI
+  application on a free-threaded build is still refused with exit 78.
+  `scripts/probes/free_threaded_module_probe.mojo` is the re-test, since
+  the refusal hides the crash from every smoke. The write-up
   is [docs/notes/the-pin-moves-to-1-2-0.md](docs/notes/the-pin-moves-to-1-2-0.md).
 
 ## [1.15.0] — 2026-10-11

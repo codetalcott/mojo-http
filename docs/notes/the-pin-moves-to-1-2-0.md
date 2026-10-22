@@ -70,6 +70,18 @@ still works, and it is the next pin's question: if the notes describe
   alone, and 1.2.0's `mojo_compiler` wheel ships the same three runtime
   libraries as 1.1.0's, `libKGENCompilerRTShared` loading the same set
   (macOS; the Linux closure is CI's `smoke-wheel`).
+- The free-threaded `PyObject` header (modular/modular#5726, still open):
+  `scripts/probes/free_threaded_module_probe.mojo` takes the executor's
+  three steps for `ExecutorPort` and, under 3.14.7t's `libpython`, crashes
+  before the first on both toolchains, in `PyUnicode_FromString` called
+  from `_PyModule_CreateInitialized`, while the same program on the pinned
+  GIL interpreter passes all three. The stdlib on Modular's `main` the
+  same day still declares `PyObject` as `object_ref_count` and
+  `object_type`. `py-canary` could not have answered this: the server's
+  refusal (SPEC L18) comes before the type is built, so a green canary
+  shows the refusal holding, not the layout fixed. It was green on 1.2.0
+  (run 39848765632 on `main`, both runners): the WSGI stack serves on
+  3.14t, and an ASGI mount is still refused with 78.
 - The wheels' licence metadata, `LicenseRef-MAX-Platform-Software-License`,
   with no licence file; what the new licence changes for the bundled
   runtime is [FFI_DISTRIBUTION](../FFI_DISTRIBUTION.md).
@@ -138,9 +150,6 @@ program above is the report.
 
 ## Still unknown
 
-- Whether 1.2.0 fixes the free-threaded `PyObject` header
-  (modular/modular#5726). It needs a 3.14t interpreter, so the weekly
-  `py-canary` run answers it, as at 1.1.0.
 - The Linux leg was not run locally: CI's Linux jobs are its gate. The
   epoll backend's `.value` sites compile on macOS through
   `check-fork-package`, but a body under a Linux-only `comptime if` does not.

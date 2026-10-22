@@ -48,19 +48,23 @@ somebody else's Django projects inside the pull request that trips it.
 ## Known issues
 
 - **The asyncio executor cannot run on free-threaded CPython.** Mojo's
-  stdlib lays `PyObject` out for the GIL build (measured on 1.0.0 and not
-  re-measured since the pin moved to 1.1.0; the weekly `py-canary` run is
-  what answers it), so the executor's
+  stdlib lays `PyObject` out for the GIL build, so the executor's
   in-process Python type (`ExecutorPort`) segfaults on a free-threaded
-  build (modular/modular#5726). The server refuses instead of crashing: an
+  build (modular/modular#5726, open). Measured on 1.0.0, and on 1.1.0 and
+  1.2.0 under 3.14.7t on 2026-10-22: building the module crashes in
+  `_PyModule_CreateInitialized`; Modular's `main` the same day still
+  declares the two-field header. The server refuses instead of crashing: an
   ASGI application on such a build exits 78, `--doctor` reports the same
   check, and under `--workers` the supervisor passes the 78 up. So an ASGI
   application cannot run under `--threads` on this toolchain. WSGI is
   unaffected.
 
   **Closed by:** none — an upstream fix to the `PyObject` layout retires
-  it; the re-test is `smoke-django-realtime` phase 6 on 3.14t, with L18
-  keeping the refusal honest until then. Retiring it also means turning
+  it. The refusal comes before the type is built, so no smoke can see the
+  fix: `scripts/probes/free_threaded_module_probe.mojo` under a 3.14t
+  `libpython` is the re-test after a toolchain bump, and a clean exit is
+  the cue to lift the refusal and run `smoke-django-realtime` phase 6 on
+  3.14t, with L18 keeping the refusal honest until then. Retiring it also means turning
   `smoke-mounts-threads`' pinned ASGI refusal back into a served ASGI mount
   beside the WSGI ones (SPEC M23), the mixed phase `smoke-hybrid` carried
   as phase 3t until 2026-09-14.
