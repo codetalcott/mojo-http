@@ -141,6 +141,7 @@ worker maps the page by fd with the same slot count.
 """
 
 from std.atomic import Atomic
+from std.ffi import c_int
 from std.os import getenv
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
@@ -400,14 +401,14 @@ struct AcceptShare(Copyable, Movable):
         self = Self()
         for _ in range(workers):
             var pair = socketpair_dgram()
-            set_nonblocking(FileDescriptor(pair[0]))
-            set_nonblocking(FileDescriptor(pair[1]))
+            set_nonblocking(RawFileDescriptor(c_int(pair[0])))
+            set_nonblocking(RawFileDescriptor(c_int(pair[1])))
             setsockopt(
-                FileDescriptor(pair[1]), Int32(SOL_SOCKET),
+                RawFileDescriptor(c_int(pair[1])), Int32(SOL_SOCKET),
                 SocketOption.SO_SNDBUF.value, Int32(_CHANNEL_BUF),
             )
             setsockopt(
-                FileDescriptor(pair[0]), Int32(SOL_SOCKET),
+                RawFileDescriptor(c_int(pair[0])), Int32(SOL_SOCKET),
                 SocketOption.SO_RCVBUF.value, Int32(_CHANNEL_BUF),
             )
             self.read_fds.append(pair[0])
@@ -447,11 +448,11 @@ struct AcceptShare(Copyable, Movable):
         """
         var pair = socketpair_dgram()
         setsockopt(
-            FileDescriptor(pair[1]), Int32(SOL_SOCKET),
+            RawFileDescriptor(c_int(pair[1])), Int32(SOL_SOCKET),
             SocketOption.SO_SNDBUF.value, Int32(_CHANNEL_BUF),
         )
         setsockopt(
-            FileDescriptor(pair[0]), Int32(SOL_SOCKET),
+            RawFileDescriptor(c_int(pair[0])), Int32(SOL_SOCKET),
             SocketOption.SO_RCVBUF.value, Int32(_CHANNEL_BUF),
         )
         self.anchor_fds.append(pair[0])

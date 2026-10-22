@@ -32,9 +32,10 @@ Streaming is still refused here (the Phase-1 watchdog rides along in
 `_serve_one_buffered`): Phase 3 is the chunk transport, not this file.
 """
 
+from std.ffi import c_int
 from std.python import Python, PythonObject
 from std.python.bindings import PythonModuleBuilder
-from std.io.write import Writable, Writer
+from std.format import Writable, Writer
 from std.time import sleep
 
 from std.collections import Optional
@@ -61,7 +62,7 @@ from lightbug_http.event_loop import (
 )
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.event_loop_backend import EventLoopBackend
-from std.io import FileDescriptor
+from std.io import RawFileDescriptor
 from lightbug_http.websocket import (
     websocket_upgrade, encode_ws_frame,
     WS_OP_TEXT, WS_OP_BINARY,
@@ -330,9 +331,9 @@ def _executor_serve(block: ThreadBlock) raises:
     # whole loop in a blocking `read`. The ack fd (streaming credit) was
     # made non-blocking by `enable_stream_channel`, in the wiring, before
     # this thread existed.
-    set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
+    set_nonblocking(RawFileDescriptor(c_int(pool.submit_read_fd(lane))))
     if lane >= 0:
-        set_nonblocking(FileDescriptor(pool.ack_read_fd(lane)))
+        set_nonblocking(RawFileDescriptor(c_int(pool.ack_read_fd(lane))))
     handler.apps[0]._bridge.executor_init(
         pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )
@@ -1200,7 +1201,7 @@ def dispatch_job(
 
 def serve_inverted(
     opts: ServeOptions,
-    listen_fd: FileDescriptor,
+    listen_fd: RawFileDescriptor,
     config: ServerConfig,
     address: String,
     shutdown_fd: Int,
@@ -1284,8 +1285,8 @@ def serve_inverted(
         )
     )
     handler.apps[0]._bridge.set_port(port_obj)
-    set_nonblocking(FileDescriptor(pool.submit_read_fd(lane)))
-    set_nonblocking(FileDescriptor(pool.ack_read_fd(lane)))
+    set_nonblocking(RawFileDescriptor(c_int(pool.submit_read_fd(lane))))
+    set_nonblocking(RawFileDescriptor(c_int(pool.ack_read_fd(lane))))
     handler.apps[0]._bridge.executor_init(
         pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )

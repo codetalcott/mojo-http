@@ -23,6 +23,7 @@ from lightbug_http.loop.state import LoopState, UNUSED, _close_slot
 from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _finish_response
 from lightbug_http.loop.streams import _deliver_bus_frames
+from std.ffi import c_int
 
 
 def _retry_owed_acks(mut st: LoopState):
@@ -96,7 +97,7 @@ def _run_inline[T: HTTPService, B: EventLoopBackend](
         var request_path = request.uri.path
         var response: HTTPResponse
         try:
-            response = handler.func(request^)
+            response = handler.func(request)
         except:
             response = InternalError()
             st.provision_pool.provisions[slot].should_close = True
@@ -168,7 +169,7 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
         if len(last) > 0:
             var out = encode_chunk(Span(last)) if st.offload.chunked[abort_slot] else Bytes(Span(last))
             try:
-                _ = send(FileDescriptor(st.slot_fds[abort_slot]), Span(out), 0)
+                _ = send(RawFileDescriptor(c_int(st.slot_fds[abort_slot])), Span(out), 0)
             except:
                 pass
         st.offload.clear_stream(abort_slot)

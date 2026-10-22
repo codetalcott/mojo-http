@@ -1,5 +1,5 @@
 from std.collections import KeyElement
-from std.hashlib.hash import Hasher
+from std.hash import Hasher
 
 from lightbug_http.header import (
     HEADER_VALUE_ASCII,

@@ -48,8 +48,8 @@ def _word_slot(worker: Int, which: Int) -> Int:
 
 def _nonblocking_pair() raises -> Tuple[Int, Int]:
     var pair = socketpair_dgram()
-    set_nonblocking(FileDescriptor(pair[0]))
-    set_nonblocking(FileDescriptor(pair[1]))
+    set_nonblocking(RawFileDescriptor(c_int(pair[0])))
+    set_nonblocking(RawFileDescriptor(c_int(pair[1])))
     return pair
 
 
@@ -68,8 +68,8 @@ def _stream_pair() raises -> Tuple[Int, Int]:
         raise Error("socketpair() failed, errno: ", errno)
     var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
     fds.unsafe_free()
-    set_nonblocking(FileDescriptor(pair[0]))
-    set_nonblocking(FileDescriptor(pair[1]))
+    set_nonblocking(RawFileDescriptor(c_int(pair[0])))
+    set_nonblocking(RawFileDescriptor(c_int(pair[1])))
     return pair
 
 
@@ -80,7 +80,7 @@ def _peer_gone(fd: Int) -> Bool:
     var buf = List[UInt8](capacity=1)
     buf.append(0)
     try:
-        return Int(recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)) == 0
+        return Int(recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)) == 0
     except:
         return False
 
@@ -135,21 +135,21 @@ def test_a_descriptor_crosses_a_socketpair_with_its_payload() raises:
     # The passed fd is the same open file: bytes written into the far end
     # of the original pair arrive on it, even after the sender's own
     # reference is closed.
-    close(FileDescriptor(conn[0]))
+    close(RawFileDescriptor(c_int(conn[0])))
     var msg = _bytes("ping")
-    _ = send(FileDescriptor(conn[1]), Span(msg), 0)
+    _ = send(RawFileDescriptor(c_int(conn[1])), Span(msg), 0)
     var buf = List[UInt8](capacity=16)
     for _ in range(16):
         buf.append(0)
-    var n = recv(FileDescriptor(got), Span(buf), MSG_DONTWAIT)
+    var n = recv(RawFileDescriptor(c_int(got)), Span(buf), MSG_DONTWAIT)
     assert_equal(Int(n), 4)
     assert_equal(String(from_utf8_lossy=Span(buf)[:4]), "ping")
     # An empty channel answers that it is empty, not a stale descriptor.
     assert_equal(recv_fd(channel[0], payload), RECV_FD_EMPTY)
-    close(FileDescriptor(got))
-    close(FileDescriptor(conn[1]))
-    close(FileDescriptor(channel[0]))
-    close(FileDescriptor(channel[1]))
+    close(RawFileDescriptor(c_int(got)))
+    close(RawFileDescriptor(c_int(conn[1])))
+    close(RawFileDescriptor(c_int(channel[0])))
+    close(RawFileDescriptor(c_int(channel[1])))
 
 
 def test_a_payload_is_capped_and_an_empty_one_still_carries_the_fd() raises:
@@ -163,15 +163,15 @@ def test_a_payload_is_capped_and_an_empty_one_still_carries_the_fd() raises:
     var got = recv_fd(channel[0], payload)
     assert_true(got >= 0)
     assert_equal(len(payload), FDPASS_MAX_PAYLOAD)
-    close(FileDescriptor(got))
+    close(RawFileDescriptor(c_int(got)))
     assert_true(send_fd(channel[1], conn[0], List[UInt8]()))
     got = recv_fd(channel[0], payload)
     assert_true(got >= 0, "an fd with no payload must still arrive")
-    close(FileDescriptor(got))
-    close(FileDescriptor(conn[0]))
-    close(FileDescriptor(conn[1]))
-    close(FileDescriptor(channel[0]))
-    close(FileDescriptor(channel[1]))
+    close(RawFileDescriptor(c_int(got)))
+    close(RawFileDescriptor(c_int(conn[0])))
+    close(RawFileDescriptor(c_int(conn[1])))
+    close(RawFileDescriptor(c_int(channel[0])))
+    close(RawFileDescriptor(c_int(channel[1])))
 
 
 def test_a_datagram_without_a_descriptor_is_not_a_connection() raises:
@@ -180,12 +180,12 @@ def test_a_datagram_without_a_descriptor_is_not_a_connection() raises:
     Both used to answer -1."""
     var channel = _nonblocking_pair()
     var msg = _bytes("no fd here")
-    _ = send(FileDescriptor(channel[1]), Span(msg), 0)
+    _ = send(RawFileDescriptor(c_int(channel[1])), Span(msg), 0)
     var payload = List[UInt8]()
     assert_equal(recv_fd(channel[0], payload), RECV_FD_REFUSED)
     assert_equal(recv_fd(channel[0], payload), RECV_FD_EMPTY)
-    close(FileDescriptor(channel[0]))
-    close(FileDescriptor(channel[1]))
+    close(RawFileDescriptor(c_int(channel[0])))
+    close(RawFileDescriptor(c_int(channel[1])))
 
 
 def test_a_zero_length_datagram_still_hands_over_its_descriptor() raises:
@@ -202,19 +202,19 @@ def test_a_zero_length_datagram_still_hands_over_its_descriptor() raises:
     var fds = List[Int]()
     fds.append(conn[0])
     assert_true(_send_raw(channel[1], 0, fds), "sendmsg failed")
-    close(FileDescriptor(conn[0]))  # the kernel's in-flight reference holds it
+    close(RawFileDescriptor(c_int(conn[0])))  # the kernel's in-flight reference holds it
     var payload = List[UInt8]()
     var got = recv_fd(channel[0], payload)
     assert_true(got >= 0, "a zero-length datagram's descriptor was not handed over")
     assert_equal(len(payload), 0)
-    close(FileDescriptor(got))
+    close(RawFileDescriptor(c_int(got)))
     assert_true(_peer_gone(conn[1]), "a reference to the passed descriptor is still open")
     var empty = List[UInt8]()
-    _ = send(FileDescriptor(channel[1]), Span(empty), 0)
+    _ = send(RawFileDescriptor(c_int(channel[1])), Span(empty), 0)
     assert_equal(recv_fd(channel[0], payload), RECV_FD_EMPTY)
-    close(FileDescriptor(conn[1]))
-    close(FileDescriptor(channel[0]))
-    close(FileDescriptor(channel[1]))
+    close(RawFileDescriptor(c_int(conn[1])))
+    close(RawFileDescriptor(c_int(channel[0])))
+    close(RawFileDescriptor(c_int(channel[1])))
 
 
 def test_a_payload_cut_short_still_hands_over_its_descriptor() raises:
@@ -233,16 +233,16 @@ def test_a_payload_cut_short_still_hands_over_its_descriptor() raises:
     var fds = List[Int]()
     fds.append(conn[0])
     assert_true(_send_raw(channel[1], FDPASS_MAX_PAYLOAD + 1, fds), "sendmsg failed")
-    close(FileDescriptor(conn[0]))  # the kernel's in-flight reference holds it
+    close(RawFileDescriptor(c_int(conn[0])))  # the kernel's in-flight reference holds it
     var payload = List[UInt8]()
     var got = recv_fd(channel[0], payload)
     assert_true(got >= 0, "a payload cut short cost its descriptor")
     assert_equal(len(payload), FDPASS_MAX_PAYLOAD)
-    close(FileDescriptor(got))
+    close(RawFileDescriptor(c_int(got)))
     assert_true(_peer_gone(conn[1]), "a reference to the passed descriptor is still open")
-    close(FileDescriptor(conn[1]))
-    close(FileDescriptor(channel[0]))
-    close(FileDescriptor(channel[1]))
+    close(RawFileDescriptor(c_int(conn[1])))
+    close(RawFileDescriptor(c_int(channel[0])))
+    close(RawFileDescriptor(c_int(channel[1])))
 
 
 def test_a_control_message_cut_short_is_refused_and_leaks_nothing() raises:
@@ -274,9 +274,9 @@ def test_a_control_message_cut_short_is_refused_and_leaks_nothing() raises:
     fds.append(b[0])
     fds.append(c[0])
     assert_true(_send_raw(channel[1], 1, fds), "sendmsg failed")
-    close(FileDescriptor(a[0]))
-    close(FileDescriptor(b[0]))
-    close(FileDescriptor(c[0]))
+    close(RawFileDescriptor(c_int(a[0])))
+    close(RawFileDescriptor(c_int(b[0])))
+    close(RawFileDescriptor(c_int(c[0])))
     var payload = List[UInt8]()
     var got = recv_fd(channel[0], payload)
     assert_true(got == RECV_FD_REFUSED, "a message whose control data was cut short was not refused")
@@ -284,11 +284,11 @@ def test_a_control_message_cut_short_is_refused_and_leaks_nothing() raises:
     comptime if not CompilationTarget.is_macos():
         assert_true(_peer_gone(b[1]), "the refused message's second descriptor was left open")
         assert_true(_peer_gone(c[1]), "the descriptor that did not fit was not released")
-    close(FileDescriptor(a[1]))
-    close(FileDescriptor(b[1]))
-    close(FileDescriptor(c[1]))
-    close(FileDescriptor(channel[0]))
-    close(FileDescriptor(channel[1]))
+    close(RawFileDescriptor(c_int(a[1])))
+    close(RawFileDescriptor(c_int(b[1])))
+    close(RawFileDescriptor(c_int(c[1])))
+    close(RawFileDescriptor(c_int(channel[0])))
+    close(RawFileDescriptor(c_int(channel[1])))
 
 
 def test_an_unbound_share_is_inactive_and_costs_nothing() raises:
@@ -320,7 +320,7 @@ def test_a_connection_passes_between_two_workers_with_its_peer() raises:
     assert_true(w0.send(1, conn[0], "10.1.2.3", 4321))
     assert_equal(w0.handoffs_out, 1)
     assert_equal(page.load(_word_slot(1, 2)), 1, "pending[1] after the send")
-    close(FileDescriptor(conn[0]))
+    close(RawFileDescriptor(c_int(conn[0])))
     var host = String("")
     var port = 0
     var fd = w1.receive(host, port)
@@ -334,8 +334,8 @@ def test_a_connection_passes_between_two_workers_with_its_peer() raises:
     assert_equal(page.load(_word_slot(1, 2)), 0)
     assert_equal(page.load(_word_slot(1, 1)), 7)
     assert_equal(w1.receive(host, port), RECV_FD_EMPTY)
-    close(FileDescriptor(fd))
-    close(FileDescriptor(conn[1]))
+    close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(conn[1])))
 
 
 struct _ReceiverWinsTheGap(HandoffPost):
@@ -405,9 +405,9 @@ def test_a_receiver_that_retires_inside_the_handoff_leaves_nothing_pending() rai
     assert_false(w0.send_with(refused, 1, conn[0], "10.1.2.3", 4321))
     assert_equal(page.load(_word_slot(1, 2)), 0, "pending[1] after a refused send")
     assert_equal(w0.handoffs_out, 1)
-    close(FileDescriptor(race.admitted))
-    close(FileDescriptor(conn[0]))
-    close(FileDescriptor(conn[1]))
+    close(RawFileDescriptor(c_int(race.admitted)))
+    close(RawFileDescriptor(c_int(conn[0])))
+    close(RawFileDescriptor(c_int(conn[1])))
 
 
 struct _DescriptorLost(HandoffPost):
@@ -422,7 +422,7 @@ struct _DescriptorLost(HandoffPost):
 
     def post(mut self, channel: Int, fd: Int, payload: List[UInt8]) -> Bool:
         try:
-            return Int(send(FileDescriptor(channel), Span(payload), 0)) > 0
+            return Int(send(RawFileDescriptor(c_int(channel)), Span(payload), 0)) > 0
         except:
             return False
 
@@ -457,7 +457,7 @@ def test_a_refused_handoff_does_not_stop_the_drain() raises:
     w1.bind(1, page.addr(0))
     var config = ServerConfig()
     config.max_connections = 4
-    var st = LoopState(FileDescriptor(-1), config, String(""), True, accept_share=w1)
+    var st = LoopState(RawFileDescriptor(-1), config, String(""), True, accept_share=w1)
     var backend = PlatformBackend()
     var handler = _Quiet()
 
@@ -466,8 +466,8 @@ def test_a_refused_handoff_does_not_stop_the_drain() raises:
     var dropped = _DescriptorLost()
     assert_true(w0.send_with(dropped, 1, lost[0], "10.0.0.1", 1001))
     assert_true(w0.send(1, kept[0], "10.0.0.2", 2002))
-    close(FileDescriptor(lost[0]))
-    close(FileDescriptor(kept[0]))  # the kernel's in-flight reference holds it
+    close(RawFileDescriptor(c_int(lost[0])))
+    close(RawFileDescriptor(c_int(kept[0])))  # the kernel's in-flight reference holds it
     assert_equal(page.load(_word_slot(1, 2)), 2, "pending[1] counts both hand-offs")
 
     # A batch of one takes the refusal, and owes what is behind it.
@@ -491,8 +491,8 @@ def test_a_refused_handoff_does_not_stop_the_drain() raises:
 
     _close_slot(handler, backend, st, slot, st.slot_fds[slot])
     assert_true(_peer_gone(kept[1]), "the admitted connection is not the one sent, or leaked")
-    close(FileDescriptor(lost[1]))
-    close(FileDescriptor(kept[1]))
+    close(RawFileDescriptor(c_int(lost[1])))
+    close(RawFileDescriptor(c_int(kept[1])))
 
 
 def test_pick_names_the_least_loaded_sibling_or_itself() raises:
@@ -616,9 +616,9 @@ def test_a_worker_reaped_after_the_pick_is_not_sent_to() raises:
     var payload = List[UInt8]()
     var queued = recv_fd(share.read_fds[1], payload)
     if queued >= 0:
-        close(FileDescriptor(queued))
-    close(FileDescriptor(conn[0]))
-    close(FileDescriptor(conn[1]))
+        close(RawFileDescriptor(c_int(queued)))
+    close(RawFileDescriptor(c_int(conn[0])))
+    close(RawFileDescriptor(c_int(conn[1])))
     assert_false(sent, "a connection was sent to a worker the supervisor had reaped")
     assert_equal(queued, RECV_FD_EMPTY, "the reaped worker's channel holds a connection")
     assert_equal(page.load(_word_slot(1, 2)), 0, "the refused send left its count in pending")
@@ -661,7 +661,7 @@ def test_a_burst_spreads_across_siblings_through_pending() raises:
             fds.append(conn[0])
         else:
             assert_true(me.send(target, conn[0], "127.0.0.1", 1))
-            close(FileDescriptor(conn[0]))
+            close(RawFileDescriptor(c_int(conn[0])))
         to[target] += 1
         fds.append(conn[1])
     assert_equal(to[0], kept)
@@ -678,14 +678,14 @@ def test_a_burst_spreads_across_siblings_through_pending() raises:
             var fd = w.receive(host, port)
             if fd < 0:
                 break
-            close(FileDescriptor(fd))
+            close(RawFileDescriptor(c_int(fd)))
             n += 1
         assert_equal(n, to[i])
         w.pass_end(n)
         assert_equal(page.load(_word_slot(i, 2)), 0)
         assert_equal(page.load(_word_slot(i, 1)), n)
     for fd in fds:
-        close(FileDescriptor(fd))
+        close(RawFileDescriptor(c_int(fd)))
 
 
 def test_leaving_wins_over_the_pass_bookkeeping() raises:
@@ -729,7 +729,7 @@ def test_a_full_channel_refuses_the_send_and_the_acceptor_keeps_it() raises:
     # Shrink the sibling's receive buffer so it fills within a few
     # datagrams (the kernel clamps to its minimum; a handful still fit).
     setsockopt(
-        FileDescriptor(w0.read_fds[1]), Int32(SOL_SOCKET),
+        RawFileDescriptor(c_int(w0.read_fds[1])), Int32(SOL_SOCKET),
         SocketOption.SO_RCVBUF.value, Int32(1024),
     )
     var conn = _nonblocking_pair()
@@ -744,8 +744,8 @@ def test_a_full_channel_refuses_the_send_and_the_acceptor_keeps_it() raises:
     assert_true(refused, "a channel that never fills is unbounded kernel memory")
     assert_true(sent > 0)
     assert_equal(page.load(_word_slot(1, 2)), sent, "pending counts only what was queued")
-    close(FileDescriptor(conn[0]))
-    close(FileDescriptor(conn[1]))
+    close(RawFileDescriptor(c_int(conn[0])))
+    close(RawFileDescriptor(c_int(conn[1])))
 
 
 comptime _MSG_PEEK = c_int(0x2)
@@ -756,8 +756,8 @@ def _schedule_the_collector() raises:
     """Close an AF_UNIX socket pair: on macOS each such close schedules a run
     of the kernel's collector of descriptors in flight (XNU's `unp_gc`)."""
     var t = _stream_pair()
-    close(FileDescriptor(t[0]))
-    close(FileDescriptor(t[1]))
+    close(RawFileDescriptor(c_int(t[0])))
+    close(RawFileDescriptor(c_int(t[1])))
 
 
 def _request_intact(fd: Int) -> Bool:
@@ -768,7 +768,7 @@ def _request_intact(fd: Int) -> Bool:
     buf.append(0)
     try:
         return Int(
-            recv(FileDescriptor(fd), Span(buf), _MSG_PEEK | MSG_DONTWAIT)
+            recv(RawFileDescriptor(c_int(fd)), Span(buf), _MSG_PEEK | MSG_DONTWAIT)
         ) == 1
     except:
         return False
@@ -810,12 +810,12 @@ def test_a_handoff_in_flight_is_beyond_the_kernels_collector() raises:
         var conn = _stream_pair()
         var ctl = _stream_pair()
         var request = _bytes("GET / HTTP/1.1\r\n")
-        _ = send(FileDescriptor(conn[1]), Span(request), 0)
-        _ = send(FileDescriptor(ctl[1]), Span(request), 0)
+        _ = send(RawFileDescriptor(c_int(conn[1])), Span(request), 0)
+        _ = send(RawFileDescriptor(c_int(ctl[1])), Span(request), 0)
         assert_true(w0.send(1, conn[0], "10.0.0.8", 8008))
         assert_true(send_fd(plain[1], ctl[0], _bytes("c")))
-        close(FileDescriptor(conn[0]))  # only the messages in flight hold them now
-        close(FileDescriptor(ctl[0]))
+        close(RawFileDescriptor(c_int(conn[0])))  # only the messages in flight hold them now
+        close(RawFileDescriptor(c_int(ctl[0])))
         _schedule_the_collector()
         sleep(0.01)
         var payload = List[UInt8]()
@@ -829,7 +829,7 @@ def test_a_handoff_in_flight_is_beyond_the_kernels_collector() raises:
         var intact = _request_intact(got)
         w1.pass_end(0)
         for fd in [ctl_fd, got, conn[1], ctl[1]]:
-            close(FileDescriptor(fd))
+            close(RawFileDescriptor(c_int(fd)))
         if ran:
             runs_seen += 1
             assert_true(
@@ -845,8 +845,8 @@ def test_a_handoff_in_flight_is_beyond_the_kernels_collector() raises:
                 "note: no collector run flushed the control in 20 rounds;"
                 + " this kernel no longer does what the anchor guards against"
             )
-    close(FileDescriptor(plain[0]))
-    close(FileDescriptor(plain[1]))
+    close(RawFileDescriptor(c_int(plain[0])))
+    close(RawFileDescriptor(c_int(plain[1])))
 
 
 def test_a_receive_that_meets_a_collector_scan_still_takes_the_datagram() raises:
@@ -881,7 +881,7 @@ def test_a_receive_that_meets_a_collector_scan_still_takes_the_datagram() raises
     for _ in range(200):
         var conn = _stream_pair()
         var sent = w0.send(1, conn[0], "10.0.0.9", 9009)
-        close(FileDescriptor(conn[0]))
+        close(RawFileDescriptor(c_int(conn[0])))
         clients.append(conn[1])
         if not sent:
             break
@@ -897,7 +897,7 @@ def test_a_receive_that_meets_a_collector_scan_still_takes_the_datagram() raises
             break
         assert_true(fd >= 0)
         taken += 1
-        close(FileDescriptor(fd))
+        close(RawFileDescriptor(c_int(fd)))
     assert_equal(
         taken, queued,
         "a receive read the channel as empty with hand-offs still queued in it",
@@ -905,7 +905,7 @@ def test_a_receive_that_meets_a_collector_scan_still_takes_the_datagram() raises
     w1.pass_end(0)
     assert_equal(page.load(_word_slot(1, 2)), 0)
     for fd in clients:
-        close(FileDescriptor(fd))
+        close(RawFileDescriptor(c_int(fd)))
 
 
 def main() raises:

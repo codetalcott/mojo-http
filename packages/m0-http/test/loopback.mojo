@@ -33,7 +33,7 @@ def _connect[
     ](fd, address, length)
 
 
-def connect(fd: FileDescriptor, mut address: SocketAddress) raises SysError:
+def connect(fd: RawFileDescriptor, mut address: SocketAddress) raises SysError:
     """Libc POSIX `connect`, blocking on a blocking descriptor.
 
     Raises:
@@ -58,9 +58,9 @@ def create_connection(
     var remote = SocketAddress(
         AddressFamily.AF_INET, port, inet_pton[AddressFamily.AF_INET](host)
     )
-    var fd = FileDescriptor(
+    var fd = RawFileDescriptor(c_int(
         Int(socket(AddressFamily.AF_INET.value, SocketType.SOCK_STREAM.value, c_int(0)))
-    )
+    ))
     var near: Tuple[String, Int]
     try:
         connect(fd, remote)
@@ -68,7 +68,7 @@ def create_connection(
         getsockname(fd, local)
         near = local.host_port()
     except e:
-        close_fd(fd.value)
+        close_fd(Int(fd.value))
         raise Error(e)
     var sock = Socket[TCPAddr[NetworkType.tcp4]](
         fd=fd,

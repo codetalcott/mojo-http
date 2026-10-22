@@ -153,8 +153,8 @@ declaration with another signature does not compile beside it."""
 def _read_one(fd: Int) -> Int:
     """One byte from a non-blocking `fd`: how many arrived (0 or 1)."""
     var buf = unsafe_alloc[UInt8](count=1)
-    var n = external_call["read", Int, Int, _OpaqueMut, Int](
-        fd, _OpaqueMut(unsafe_from_address=Int(buf)), 1
+    var n = external_call["read", Int, c_int, _OpaqueMut, Int](
+        c_int(fd), _OpaqueMut(unsafe_from_address=Int(buf)), 1
     )
     buf.unsafe_free()
     return 1 if n == 1 else 0
@@ -274,7 +274,7 @@ def _assert_the_instrument_survived(cells: Int, read_end: Int, owner: String) ra
 def _instrument() raises -> Tuple[Int, Int]:
     """A pipe: (read end, non-blocking; write end, for the instrument)."""
     var p = create_shutdown_pipe()
-    set_nonblocking(FileDescriptor(p[0]))
+    set_nonblocking(RawFileDescriptor(c_int(p[0])))
     return (p[0], p[1].fd)
 
 
@@ -433,7 +433,7 @@ struct FailingBackend(EventLoopBackend):
 def _raise_before_the_drain(mode: Int, where: String) raises:
     var ln = ListenConfig(max_bind_retries=1, quiet=True).listen("127.0.0.1:0")
     var port = Int(ln.socket.local_address.port)
-    var number = ln.socket.fd.value
+    var number = Int(ln.socket.fd.value)
     var stop = create_shutdown_pipe()
     var cells = _cells(port, stop[1].fd, -1)
     var handler = Reuser(cells)
@@ -475,7 +475,7 @@ def test_a_loop_that_raises_during_its_drain_closes_nothing_more() raises:
     """
     var ln = ListenConfig(max_bind_retries=1, quiet=True).listen("127.0.0.1:0")
     var port = Int(ln.socket.local_address.port)
-    var number = ln.socket.fd.value
+    var number = Int(ln.socket.fd.value)
     var stop = create_shutdown_pipe()
     var pipe = _instrument()
     var cells = _cells(port, stop[1].fd, pipe[1])

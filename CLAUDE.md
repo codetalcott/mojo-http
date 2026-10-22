@@ -976,14 +976,19 @@ Both read one ordered list (`m0_wsgi.checks`: the flags before the bind, the
 interpreter's under `--threads`, the application after the import), so add a
 refusal THERE, never beside it.
 
-## Mojo 1.1 patterns
+## Mojo 1.2 patterns
 
-This project targets **Mojo 1.1** (pinned in `uv.lock`; moved from 1.0.0 on
-2026-09-18, [docs/notes/the-pin-moves-to-1-1-0.md](docs/notes/the-pin-moves-to-1-1-0.md)),
-which cost `Atomic[Int64]` for `Atomic[DType.int64]`, `_CTimeSpec.tv_nsec`
-for `tv_subsec`, `Hasher.update` taking a `Span[UInt8]`, `Array` for
-`InlineArray`, and `ptr`/`as_c_string_span` for the deprecated
-`unsafe_ptr`/`as_c_string_slice`.
+This project targets **Mojo 1.2** (pinned in `uv.lock`, with `max-core`
+26.7.0; moved from 1.1.0 on 2026-10-22,
+[docs/notes/the-pin-moves-to-1-2-0.md](docs/notes/the-pin-moves-to-1-2-0.md)).
+That move cost `RawFileDescriptor` for `FileDescriptor`, built from a
+`c_int` (`RawFileDescriptor(c_int(fd))`) and reading back a `c_int`
+(`Int(fd.value)` where an `Int` is wanted); a `c_int` descriptor in this
+tree's own `read` and `write` declarations, to match the stdlib's; `std.hash`
+for `std.hashlib`; and `std.format` for `std.io.write`'s `Writable`. 1.1.0's
+move ([docs/notes/the-pin-moves-to-1-1-0.md](docs/notes/the-pin-moves-to-1-1-0.md))
+cost `Atomic[Int64]`, `tv_nsec`, `Hasher.update` taking a `Span[UInt8]`,
+`Array` for `InlineArray`, and `ptr`/`as_c_string_span`.
 
 1. **`comptime` constants** — replaces deprecated `alias` for compile-time values
 2. **No `@value` decorator** — removed in 26.3; structs auto-derive copy/move
@@ -1002,7 +1007,19 @@ for `tv_subsec`, `Hasher.update` taking a `Span[UInt8]`, `Array` for
    measured parity (NOTICE) — do not reintroduce a private list
 10. **A `mut` argument is not a reference**: from `-O1` one of ≤256 B, `self`
    included, is copied in and stored back — pass a struct that is written by
-   address as its address (docs/notes/mut-arguments-and-raw-addresses.md)
+   address as its address (docs/notes/mut-arguments-and-raw-addresses.md;
+   unchanged on 1.2.0)
+11. **Bytes become a `String` with `String(unsafe_from_utf8=...)`**, never
+   `String(StringSpan(unsafe_from_utf8=...))`: on 1.2.0 building a
+   `StringSpan` from bytes can fail to compile with `attempt to resolve a
+   recursive reference to declaration 'CStringSpan.__init__'`, depending
+   on what the program elaborated first
+   (docs/notes/the-pin-moves-to-1-2-0.md)
+12. **One external declaration per C symbol per program**, and the stdlib's
+   counts: a second `external_call["read"]` (or `write`, `fcntl`) with
+   another signature fails at LLVM lowering with "existing function with
+   conflicting signature". Match the stdlib's types, read from
+   `mojo build --emit llvm`
 
 ## Design principles
 

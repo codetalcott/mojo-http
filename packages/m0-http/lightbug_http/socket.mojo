@@ -127,7 +127,7 @@ trait DescriptorClose:
     returns only under a signal or a failing device, which no test can
     produce on demand."""
 
-    def close(mut self, fd: FileDescriptor) raises SysError:
+    def close(mut self, fd: RawFileDescriptor) raises SysError:
         """Close `fd`, raising the `SysError` the call reports."""
         ...
 
@@ -138,7 +138,7 @@ struct LibcClose(DescriptorClose):
     def __init__(out self):
         pass
 
-    def close(mut self, fd: FileDescriptor) raises SysError:
+    def close(mut self, fd: RawFileDescriptor) raises SysError:
         close(fd)
 
 
@@ -157,7 +157,7 @@ struct Socket[
             when none is given (`family`).
     """
 
-    var fd: FileDescriptor
+    var fd: RawFileDescriptor
     """The file descriptor of the socket."""
     var local_address: Self.address
     """The local address of the socket (local address if bound)."""
@@ -188,7 +188,7 @@ struct Socket[
             SysError: If the socket creation fails.
         """
         # Protocol 0: the family's default for the type, TCP for a stream.
-        self.fd = FileDescriptor(Int(socket(family.value, Self.sock_type.value, 0)))
+        self.fd = RawFileDescriptor(socket(family.value, Self.sock_type.value, 0))
         self.local_address = local_address
         self._closed = False
         self._connected = False
@@ -196,7 +196,7 @@ struct Socket[
 
     def __init__(
         out self,
-        fd: FileDescriptor,
+        fd: RawFileDescriptor,
         local_address: Self.address,
         family: AddressFamily = Self.address_family,
     ):
@@ -225,7 +225,7 @@ struct Socket[
         if not self._closed:
             self.close()
 
-    def into_fd(deinit self) -> FileDescriptor:
+    def into_fd(deinit self) -> RawFileDescriptor:
         """Give up the socket without closing it, and return its descriptor.
 
         A named destructor: neither `teardown` nor `__deinit__` runs, so
@@ -505,7 +505,7 @@ struct Socket[
         var fd = self.fd
         self._closed = True
         self._connected = False
-        self.fd = FileDescriptor(-1)
+        self.fd = RawFileDescriptor(-1)
         try:
             closer.close(fd)
         except close_err:

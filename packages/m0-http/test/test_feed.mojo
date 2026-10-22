@@ -14,7 +14,7 @@ from src.feed import Feed, since_of, FEED_SLOT_BUDGET
 
 
 def _text(buf: List[UInt8]) -> String:
-    return String(StringSpan(unsafe_from_utf8=Span(buf)))
+    return String(unsafe_from_utf8=Span(buf))
 
 
 def _open(path: String, slot: Int, last_id: String = "") raises -> HTTPRequest:

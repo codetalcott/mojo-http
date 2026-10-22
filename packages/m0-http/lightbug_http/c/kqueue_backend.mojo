@@ -20,7 +20,7 @@ from std.memory.alloc import unsafe_alloc
 struct KqueueBackend(ConstructibleBackend):
     """`kqueue`-based IO backend for macOS."""
 
-    var kq: FileDescriptor
+    var kq: RawFileDescriptor
     var _events: Pointer[kevent_t, MutUntrackedOrigin]
     var _n_ready: Int
 
@@ -36,13 +36,13 @@ struct KqueueBackend(ConstructibleBackend):
         destroyed when the loop returns -- `Server.serve_nonblocking`, a
         thread of the host's, a test -- and neither used to be released
         until the process exited (review record LF21)."""
-        close_fd(self.kq.value)
+        close_fd(Int(self.kq.value))
         self._events.unsafe_free()
 
     # --- EventLoopBackend methods ---
 
     def multiplexer_fd(self) -> Int:
-        return self.kq.value
+        return Int(self.kq.value)
 
     def wait(mut self, timeout_ms: Int) raises -> Int:
         self._n_ready = kevent_poll(self.kq, self._events, _MAX_EVENTS, timeout_ms)

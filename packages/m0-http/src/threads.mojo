@@ -222,7 +222,7 @@ def read_one_byte_blocking(fd: Int) -> Int:
     var ptr = _OpaqueMut(unsafe_from_address=buf)
     var n: Int
     while True:
-        n = external_call["read", Int, Int, _OpaqueMut, Int](fd, ptr, 1)
+        n = external_call["read", Int, c_int, _OpaqueMut, Int](c_int(fd), ptr, 1)
         if n >= 0:
             break
         var err = get_errno()

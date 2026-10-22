@@ -96,7 +96,7 @@ def test_listen_raises_on_a_connected_socket() raises:
 def test_every_wrapper_raises_on_a_descriptor_that_is_not_open() raises:
     """EBADF from each call, each naming itself. The old ladders listed EBADF
     for most of them; the table holds the contract for every one."""
-    var bad = FileDescriptor(NOT_OPEN)
+    var bad = RawFileDescriptor(c_int(NOT_OPEN))
     var addr = SocketAddress()
     var buf = List[UInt8](length=16, fill=0)
     var err: Optional[SysError] = None
@@ -171,7 +171,7 @@ def test_an_empty_nonblocking_read_would_block() raises:
     var buf = List[UInt8](length=16, fill=0)
     var err: Optional[SysError] = None
     try:
-        _ = recv(FileDescriptor(pair[0]), Span(buf), MSG_DONTWAIT)
+        _ = recv(RawFileDescriptor(c_int(pair[0])), Span(buf), MSG_DONTWAIT)
     except e:
         err = e
     close_fd(pair[0])

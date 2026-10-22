@@ -53,7 +53,7 @@ def _write(fd: Int, buf: _OpaqueConst, count: Int) -> Int:
     The argument types match the declaration the stdlib already emits for this
     symbol; a differently-shaped one is rejected as a conflicting signature.
     """
-    return external_call["write", Int, Int, _OpaqueConst, Int](fd, buf, count)
+    return external_call["write", Int, c_int, _OpaqueConst, Int](c_int(fd), buf, count)
 
 
 struct ShutdownHandle(Movable):

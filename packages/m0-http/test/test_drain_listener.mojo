@@ -161,7 +161,7 @@ def _move_to(fd: Int, number: Int) raises:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
+    assert_equal(Int(send(RawFileDescriptor(c_int(fd)), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> String:
@@ -171,7 +171,7 @@ def _read_all(fd: Int) -> String:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
+            n = recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:
@@ -201,7 +201,7 @@ def test_the_drain_deregisters_the_listener_before_closing_it() raises:
     covers: D1
     """
     var ln = ListenConfig(max_bind_retries=1, quiet=True).listen("127.0.0.1:0")
-    var listen_number = ln.socket.fd.value
+    var listen_number = Int(ln.socket.fd.value)
     # A sibling's reference: the description outlives this loop's close, as
     # it does under `--workers N`.
     var sibling = Int(external_call["dup", c_int, c_int](c_int(listen_number)))
@@ -223,7 +223,7 @@ def test_the_drain_deregisters_the_listener_before_closing_it() raises:
     assert_true(asked, "the drain closed the listener without deregistering it")
     assert_false(_is_open(listen_number), "the drain did not close its reference")
     assert_true(
-        st.listen_fd.value != listen_number,
+        Int(st.listen_fd.value) != listen_number,
         "the loop still names the listener's number after closing it",
     )
     close_fd(sibling)
@@ -246,7 +246,7 @@ def test_a_connection_given_the_listeners_number_is_read() raises:
     covers: D1
     """
     var ln = ListenConfig(max_bind_retries=1, quiet=True).listen("127.0.0.1:0")
-    var listen_number = ln.socket.fd.value
+    var listen_number = Int(ln.socket.fd.value)
     var sibling = Int(external_call["dup", c_int, c_int](c_int(listen_number)))
     var pipe = create_shutdown_pipe()
     var st = LoopState(ln.socket.fd, _config(), String(""), True, shutdown_read_fd=pipe[0])

@@ -364,7 +364,7 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
             response = early_resp^
         else:
             try:
-                response = handler.func(request^)
+                response = handler.func(request)
             except:
                 # Same policy as the synchronous path: a raising handler is a
                 # 500 AND a closed connection, because what it left behind is

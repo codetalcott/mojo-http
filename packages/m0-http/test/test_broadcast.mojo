@@ -194,7 +194,7 @@ def test_a_long_channel_with_a_whole_frame_arrives_whole() raises:
 
 def _send_raw(fd: Int, datagram: List[UInt8]) raises:
     """One datagram onto a bus channel past every publisher's checks."""
-    var n = send(FileDescriptor(fd), Span(datagram), MSG_DONTWAIT)
+    var n = send(RawFileDescriptor(c_int(fd)), Span(datagram), MSG_DONTWAIT)
     assert_equal(Int(n), len(datagram))
 
 
@@ -257,7 +257,7 @@ def test_the_loop_reports_a_refused_bus_datagram_on_its_metrics() raises:
     var bus = BroadcastBus(2)
     var config = ServerConfig()
     config.max_connections = 4
-    var st = LoopState(FileDescriptor(-1), config, String(""), True)
+    var st = LoopState(RawFileDescriptor(-1), config, String(""), True)
     var handler = _PeerFrames()
     assert_true(
         st.metrics.to_text().find("\nhttp_bus_frames_refused_total 0\n") >= 0
@@ -414,12 +414,12 @@ def test_set_nonblocking_takes_effect() raises:
     recv-blocking, which would hang the suite instead of failing it.
     """
     var pair = socketpair_dgram()
-    var a = FileDescriptor(pair[0])
+    var a = RawFileDescriptor(c_int(pair[0]))
     assert_false(is_nonblocking(a))
     set_nonblocking(a)
     assert_true(is_nonblocking(a))
     # The other end is untouched: the flag is per-fd, not per-pair.
-    assert_false(is_nonblocking(FileDescriptor(pair[1])))
+    assert_false(is_nonblocking(RawFileDescriptor(c_int(pair[1]))))
 
 
 def test_set_nonblocking_keeps_the_other_flags_and_refuses_a_closed_descriptor() raises:
@@ -430,7 +430,7 @@ def test_set_nonblocking_keeps_the_other_flags_and_refuses_a_closed_descriptor()
     looked set."""
     comptime O_APPEND = 0x8 if CompilationTarget.is_macos() else 0x400
     var pair = socketpair_dgram()
-    var a = FileDescriptor(pair[0])
+    var a = RawFileDescriptor(c_int(pair[0]))
     assert_true(_fcntl(c_int(a.value), c_int(F_SETFL), c_int(O_APPEND)) == 0)
     set_nonblocking(a)
     set_nonblocking(a)
@@ -461,8 +461,8 @@ def test_bus_channels_are_nonblocking() raises:
     """
     var bus = BroadcastBus(2)
     for w in range(2):
-        assert_true(is_nonblocking(FileDescriptor(bus.read_fds[w])))
-        assert_true(is_nonblocking(FileDescriptor(bus.write_fds[w])))
+        assert_true(is_nonblocking(RawFileDescriptor(c_int(bus.read_fds[w]))))
+        assert_true(is_nonblocking(RawFileDescriptor(c_int(bus.write_fds[w]))))
 
 
 # --- Shared atomics ----------------------------------------------------------

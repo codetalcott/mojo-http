@@ -25,8 +25,8 @@ def _stream_pair() raises -> Tuple[Int, Int]:
         raise Error("socketpair() failed, errno: ", errno)
     var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
     fds.unsafe_free()
-    set_nonblocking(FileDescriptor(pair[0]))
-    set_nonblocking(FileDescriptor(pair[1]))
+    set_nonblocking(RawFileDescriptor(c_int(pair[0])))
+    set_nonblocking(RawFileDescriptor(c_int(pair[1])))
     return pair
 
 

@@ -29,6 +29,7 @@ from lightbug_http.http.common_response import (
 )
 from lightbug_http.strings import strHttp11, strHttp10
 from lightbug_http.io.bytes import Bytes
+from std.ffi import c_int
 from std.memory import unsafe_memcpy
 from lightbug_http.server import BodyReadState
 from lightbug_http.service import HTTPService
@@ -214,7 +215,7 @@ def _read_body[T: HTTPService, B: EventLoopBackend](
 
     # recv into per-slot staging buffer (avoids per-recv heap alloc)
     st.provision_pool.provisions[slot].recv_staging.clear()
-    var fd_desc = FileDescriptor(fd_val)
+    var fd_desc = RawFileDescriptor(c_int(fd_val))
     var want = st.provision_pool.provisions[slot].recv_staging.capacity()
     var bytes_read: UInt
     try:
@@ -442,7 +443,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
     # on that size -- but the staging copy that used to follow it is gone:
     # `List.extend` was 2.7 % of the loop thread and this was its largest
     # caller. The body and WebSocket paths keep the staging buffer.
-    var fd_desc = FileDescriptor(fd_val)
+    var fd_desc = RawFileDescriptor(c_int(fd_val))
     var bytes_read: UInt
     # True only when recv itself RETURNED 0 — the peer's EOF. `bytes_read`
     # alone cannot carry that: the EAGAIN branch below reuses 0 as its
@@ -934,7 +935,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             response = early_resp^
         else:
             try:
-                response = handler.func(request^)
+                response = handler.func(request)
             except:
                 response = InternalError()
                 st.provision_pool.provisions[slot].should_close = True
@@ -1017,7 +1018,7 @@ def _reject_and_linger[T: HTTPService, B: EventLoopBackend](
     var linger = st.config.idle_timeout > 0
     if linger:
         try:
-            shutdown(FileDescriptor(fd_val), ShutdownOption.SHUT_WR)
+            shutdown(RawFileDescriptor(c_int(fd_val)), ShutdownOption.SHUT_WR)
         except:
             linger = False
     if not linger:
@@ -1060,7 +1061,7 @@ def _linger_discard[T: HTTPService, B: EventLoopBackend](
         var n: UInt
         try:
             n = recv(
-                FileDescriptor(fd_val),
+                RawFileDescriptor(c_int(fd_val)),
                 spare_capacity(st.provision_pool.provisions[slot].recv_staging),
                 0,
             )

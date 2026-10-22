@@ -169,7 +169,7 @@ def _active_slot(worker: Int) -> Int:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
+    assert_equal(Int(send(RawFileDescriptor(c_int(fd)), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> String:
@@ -179,7 +179,7 @@ def _read_all(fd: Int) -> String:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
+            n = recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:
@@ -196,7 +196,7 @@ def _peer_gone(fd: Int) -> Bool:
     var buf = List[UInt8](capacity=1)
     buf.append(0)
     try:
-        return Int(recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)) == 0
+        return Int(recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)) == 0
     except:
         return False
 
@@ -306,11 +306,11 @@ def test_a_leaver_waits_for_a_handoff_counted_before_it_left() raises:
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
     w1.start()
-    var st0 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w0)
+    var st0 = LoopState(RawFileDescriptor(-1), _config(), String(""), True, accept_share=w0)
     var b0 = PushedBackend()
     var h0 = Recorder()
     var race = _LeaveInsideTheHandoff(
-        LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w1)
+        LoopState(RawFileDescriptor(-1), _config(), String(""), True, accept_share=w1)
     )
 
     var conn = _stream_pair()
@@ -366,11 +366,11 @@ def test_a_leaver_passes_a_handoff_on_before_its_first_byte() raises:
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
     w1.start()
-    var st0 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w0)
+    var st0 = LoopState(RawFileDescriptor(-1), _config(), String(""), True, accept_share=w0)
     var b0 = PushedBackend()
     var h0 = Recorder()
     var race = _LeaveInsideTheHandoff(
-        LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w1)
+        LoopState(RawFileDescriptor(-1), _config(), String(""), True, accept_share=w1)
     )
 
     # The leaver's request in flight: a body still arriving, which the
@@ -433,10 +433,10 @@ def test_a_handoff_queued_before_the_leave_is_passed_on() raises:
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
     w1.start()
-    var st0 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w0)
+    var st0 = LoopState(RawFileDescriptor(-1), _config(), String(""), True, accept_share=w0)
     var b0 = PushedBackend()
     var h0 = Recorder()
-    var st1 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w1)
+    var st1 = LoopState(RawFileDescriptor(-1), _config(), String(""), True, accept_share=w1)
     var b1 = PushedBackend()
     var h1 = Recorder()
 
@@ -481,7 +481,7 @@ def test_a_leaver_with_no_sibling_left_admits_and_serves() raises:
     var w1 = share.copy()
     w1.bind(1, page.addr(0))
     w1.start()
-    var st1 = LoopState(FileDescriptor(-1), _config(), String(""), True, accept_share=w1)
+    var st1 = LoopState(RawFileDescriptor(-1), _config(), String(""), True, accept_share=w1)
     var b1 = PushedBackend()
     var h1 = Recorder()
 

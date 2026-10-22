@@ -13,7 +13,7 @@ license = "MIT"
 # apps/serve_parallel, E33 -- one `compute.mojo` between them) are built by
 # the smokes that sync the `max` group below, never by build-apps.
 dependencies = [
-    "mojo==1.1.0",
+    "mojo==1.2.0",
 ]
 
 [dependency-groups]
@@ -25,7 +25,7 @@ dependencies = [
 # `mojo-compiler==` its own release's, so this pin moves WITH the mojo pin
 # above: a bump of one without the other does not resolve.
 max = [
-    "max-core==26.6.0",
+    "max-core==26.7.0",
 ]
 dev = [
     "django>=5.2.17",

@@ -174,7 +174,7 @@ def _offer_until(fd: Int, datagram: List[UInt8], deadline_ns: Int) -> Bool:
     never the loop's."""
     while True:
         try:
-            _ = send(FileDescriptor(fd), Span(datagram), 0)
+            _ = send(RawFileDescriptor(c_int(fd)), Span(datagram), 0)
             return True
         except e:
             if not (

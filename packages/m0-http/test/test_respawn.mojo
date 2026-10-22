@@ -25,7 +25,7 @@ The OK marker exists if and only if the respawned worker made it back to the
 caller.
 """
 
-from std.ffi import external_call
+from std.ffi import c_int, external_call
 from std.os import makedirs, path, remove, rmdir, setenv
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from std.time import perf_counter_ns, sleep
@@ -1143,7 +1143,7 @@ def _reads_eof_within(fd: Int, bound_s: Float64) -> Bool:
     var until = perf_counter_ns() + Int(bound_s * 1_000_000_000.0)
     var eof = False
     while perf_counter_ns() < until:
-        if external_call["read", Int, Int, _OpaqueMut, Int](fd, ptr, 1) == 0:
+        if external_call["read", Int, c_int, _OpaqueMut, Int](c_int(fd), ptr, 1) == 0:
             eof = True
             break
         sleep(0.005)
@@ -1193,7 +1193,7 @@ def _queue_to_a_worker_given_up_on(raced: Bool) raises -> List[Int]:
     # Made after the fork, so no process of the scenario holds either end.
     var ends = create_shutdown_pipe()
     var read_end = ends[0]
-    set_nonblocking(FileDescriptor(read_end))
+    set_nonblocking(RawFileDescriptor(c_int(read_end)))
     var sent: Bool
     if raced:
         # `send_with`'s raise, and its second read of `state`, which finds

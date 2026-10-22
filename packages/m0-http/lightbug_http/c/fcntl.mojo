@@ -120,7 +120,7 @@ def dup_cloexec(fd: Int) raises -> Int:
     return Int(rc)
 
 
-def set_nonblocking(fd: FileDescriptor) raises:
+def set_nonblocking(fd: RawFileDescriptor) raises:
     """Set a file descriptor to non-blocking mode via fcntl().
 
     Works on both platforms — including ARM64 macOS, where this was a
@@ -141,7 +141,7 @@ def set_nonblocking(fd: FileDescriptor) raises:
         raise Error("fcntl F_SETFL failed, errno: ", errno)
 
 
-def is_nonblocking(fd: FileDescriptor) raises -> Bool:
+def is_nonblocking(fd: RawFileDescriptor) raises -> Bool:
     """Whether O_NONBLOCK is set — F_GETFL truth, not what a caller hoped.
 
     F_GETFL takes no variadic argument, so it has always been reliable on

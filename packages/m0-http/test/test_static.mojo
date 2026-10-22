@@ -396,7 +396,7 @@ def test_a_path_that_is_not_utf8_does_not_trap() raises:
 
 
 def _serve(static: StaticFiles, var req: HTTPRequest) raises -> HTTPResponse:
-    var hit = static.serve(req^)
+    var hit = static.serve(req)
     return hit.take()
 
 

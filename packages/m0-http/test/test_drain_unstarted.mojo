@@ -14,6 +14,7 @@ request whose head has, and is read on (SPEC D9). When the budget rather
 than the work ends a drain, the drain says what it is leaving.
 """
 
+from std.ffi import c_int
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
@@ -129,7 +130,7 @@ def _config() -> ServerConfig:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
+    assert_equal(Int(send(RawFileDescriptor(c_int(fd)), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> String:
@@ -139,7 +140,7 @@ def _read_all(fd: Int) -> String:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
+            n = recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:

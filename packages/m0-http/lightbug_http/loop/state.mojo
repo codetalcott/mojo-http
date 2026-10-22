@@ -26,6 +26,7 @@ from lightbug_http.server import ProvisionPool
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.service import HTTPService
 from lightbug_http.websocket import WSState, close_frame, WS_CLOSE_GOING_AWAY
+from std.ffi import c_int
 from std.time import perf_counter_ns
 from std.os import getenv
 from m0_http.log import LogClock, log_access
@@ -161,7 +162,7 @@ struct LoopState(Movable):
     var log_clock: LogClock
     """The access log's wall clock, its second cached as `date_cache` is:
     a loop's own, because `--threads` puts loops in one process."""
-    var listen_fd: FileDescriptor
+    var listen_fd: RawFileDescriptor
     var config: ServerConfig
     var server_host: String
     var server_port: Optional[UInt16]
@@ -192,7 +193,7 @@ struct LoopState(Movable):
 
     def __init__(
         out self,
-        listen_fd: FileDescriptor,
+        listen_fd: RawFileDescriptor,
         config: ServerConfig,
         server_address: String,
         tcp_keep_alive: Bool,
@@ -779,7 +780,7 @@ def _farewell_streams[T: HTTPService, B: EventLoopBackend](
                 else:
                     farewell = List[UInt8](String(": close\n\n").as_bytes())
                 try:
-                    _ = send(FileDescriptor(st.slot_fds[s]), Span(farewell), 0)
+                    _ = send(RawFileDescriptor(c_int(st.slot_fds[s])), Span(farewell), 0)
                 except:
                     pass
             _close_slot(handler, backend, st, s, st.slot_fds[s])
@@ -865,7 +866,7 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     st.provision_pool.provisions[slot].close_body_fd()
 
     try:
-        close(FileDescriptor(fd_val))
+        close(RawFileDescriptor(c_int(fd_val)))
     except:
         pass
 

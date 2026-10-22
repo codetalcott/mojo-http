@@ -29,6 +29,7 @@ from lightbug_http.loop.state import (
 )
 from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
+from std.ffi import c_int
 
 
 def _deliver_bus_frames[T: HTTPService](
@@ -77,7 +78,7 @@ def _send_frame[T: HTTPService, B: EventLoopBackend](
     st.provision_pool.provisions[slot].state = ConnectionState.responding()
     try:
         st.slot_send_offset[slot] = Int(
-            send(FileDescriptor(fd_val), Span(st.slot_response[slot]), 0)
+            send(RawFileDescriptor(c_int(fd_val)), Span(st.slot_response[slot]), 0)
         )
     except send_err:
         if not send_err.would_block():
@@ -147,7 +148,7 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
     replies the pass's outbox drain sends.
     """
     st.provision_pool.provisions[slot].recv_staging.clear()
-    var ws_fd = FileDescriptor(fd_val)
+    var ws_fd = RawFileDescriptor(c_int(fd_val))
     var ws_read: UInt
     try:
         ws_read = recv(

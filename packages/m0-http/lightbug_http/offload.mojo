@@ -403,14 +403,14 @@ def _size_socket(fd: Int):
     macOS) to hold `OFFLOAD_MAX_INFLIGHT` jobs."""
     try:
         setsockopt(
-            FileDescriptor(fd), Int32(SOL_SOCKET),
+            RawFileDescriptor(c_int(fd)), Int32(SOL_SOCKET),
             SocketOption.SO_SNDBUF.value, Int32(_OFFLOAD_SOCKET_BUF),
         )
     except:
         pass
     try:
         setsockopt(
-            FileDescriptor(fd), Int32(SOL_SOCKET),
+            RawFileDescriptor(c_int(fd)), Int32(SOL_SOCKET),
             SocketOption.SO_RCVBUF.value, Int32(_OFFLOAD_SOCKET_BUF),
         )
     except:
@@ -1231,7 +1231,7 @@ struct OffloadPool(Movable):
     def _recv_own(self, thread: Int, mut buf: List[UInt8], flags: c_int) -> Int:
         """One datagram off `thread`'s own channel: `_OWN_POKE`,
         `_OWN_PILL`, `_OWN_NONE` (nothing, non-blocking) or `_OWN_DEAD`."""
-        var fd = FileDescriptor(Int(atomic_at(self._rec(thread) + _TR_READ)[].load()))
+        var fd = RawFileDescriptor(c_int(Int(atomic_at(self._rec(thread) + _TR_READ)[].load())))
         while True:
             var n: UInt
             try:
@@ -1281,7 +1281,7 @@ struct OffloadPool(Movable):
             self._leave_park(lane, thread)
             return PoolJob(JOB_REQUEST, slot, 0, 0, 0, 0, 0)
         var polled = self._recv_datagram(
-            lane, FileDescriptor(self.submit_read_fd(lane)), len(buf), buf,
+            lane, RawFileDescriptor(c_int(self.submit_read_fd(lane))), len(buf), buf,
             MSG_DONTWAIT,
         )
         if polled.kind != JOB_NONE:
@@ -1655,7 +1655,7 @@ struct OffloadPool(Movable):
         _ = self._wake_one(lane)
 
     def _recv_datagram(
-        self, lane: Int, fd: FileDescriptor, cap: Int, mut buf: List[UInt8],
+        self, lane: Int, fd: RawFileDescriptor, cap: Int, mut buf: List[UInt8],
         flags: c_int,
     ) -> PoolJob:
         """One datagram off a submit lane, decoded.
@@ -1849,7 +1849,7 @@ struct OffloadPool(Movable):
         var job = _encode_job(slot)
         try:
             _ = send(
-                FileDescriptor(self.submit_write_fd(lane)),
+                RawFileDescriptor(c_int(self.submit_write_fd(lane))),
                 Span(job),
                 0,
             )
@@ -1908,7 +1908,7 @@ struct OffloadPool(Movable):
         # excess, on both platforms, and a batch decoded short is a slot
         # that never answers.
         comptime cap = OFFLOAD_MAX_INFLIGHT * _JOB_BYTES
-        var fd = FileDescriptor(self.complete_read)
+        var fd = RawFileDescriptor(c_int(self.complete_read))
         while True:
             var n: UInt
             try:
@@ -2019,7 +2019,7 @@ struct OffloadPool(Movable):
         if lane > 0:
             return
         try:
-            close(FileDescriptor(self.submit_write))
+            close(RawFileDescriptor(c_int(self.submit_write)))
         except:
             pass
         self.submit_write = -1
@@ -2040,7 +2040,7 @@ struct OffloadPool(Movable):
         non-blocking `recv`. A job it returns is the caller's exactly as
         `next_job`'s would be, and `JOB_NONE` means "wait in `next_job`".
         """
-        var fd = FileDescriptor(self.submit_read_fd(lane))
+        var fd = RawFileDescriptor(c_int(self.submit_read_fd(lane)))
         var cap = len(buf)
         var ring = self._ring_for(lane)
         if not ring.enabled():
@@ -2097,7 +2097,7 @@ struct OffloadPool(Movable):
         and allocating for it per job would put that cost on every ordinary
         request too. Its length is the most a datagram may be.
         """
-        var fd = FileDescriptor(self.submit_read_fd(lane))
+        var fd = RawFileDescriptor(c_int(self.submit_read_fd(lane)))
         var cap = len(buf)
         var ring = self._ring_for(lane)
         if not ring.enabled():
@@ -2281,7 +2281,7 @@ def drain_ack_fd(fd: Int):
         buf.append(0)
     for _ in range(4096):
         try:
-            var n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
+            var n = recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)
             if n == 0:
                 return
         except:
@@ -2295,7 +2295,7 @@ def _none_job() -> PoolJob:
 def _set_nonblocking_fd(fd: Int):
     """`O_NONBLOCK` on a raw descriptor, best effort."""
     try:
-        set_nonblocking(FileDescriptor(fd))
+        set_nonblocking(RawFileDescriptor(c_int(fd)))
     except:
         pass
 
