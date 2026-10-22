@@ -20,7 +20,7 @@ serving path is covered end to end by `poe smoke-hello`, which starts a real
 server and asserts it answers.
 """
 
-from std.ffi import external_call
+from std.ffi import c_int, external_call
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from lightbug_http.c.process import getpid, kill_process, SIGTERM, SIGINT
@@ -148,8 +148,8 @@ def _read_one(fd: Int) -> Int:
     (the same helper in `src/threads.mojo` found it).
     """
     var buf = List[UInt8](length=8, fill=0)
-    return external_call["read", Int, Int, _OpaqueMut, Int](
-        fd,
+    return external_call["read", Int, c_int, _OpaqueMut, Int](
+        c_int(fd),
         buf.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
             MutUntrackedOrigin
         ](),

@@ -8,6 +8,30 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Changed
+
+- **The pinned toolchain is Mojo 1.2.0** (was 1.1.0), with `max-core`
+  26.7.0 in the `max` group. Nothing served changes. Its parser rounds
+  correctly: the shortest forms of 120,000 doubles each parse to the
+  double they name, where 1.1.0 parsed 3,442 of the same decimals to a
+  neighbour, so m0-postgres's text-mode `float()` and m0-core's
+  `parse_json_number` read what they are given. Printing still misses by
+  one unit in the last place, so the ROADMAP known issue now names the
+  printer alone. What the move cost in source: `RawFileDescriptor` for
+  `FileDescriptor` (43 files), built from a `c_int` (260 sites) and read
+  back as one (28); a `c_int` descriptor in the tree's six `read` and
+  `write` declarations, to match the stdlib's, which changed; `std.hash`
+  for `std.hashlib` and `std.format` for `std.io.write` (one each); seven
+  `^` transfers to a borrowed argument, which 1.2.0 warns are no-ops — the
+  warning ratchet's floor stays 0; and three test helpers that build a
+  `String` from bytes without a `StringSpan`, which 1.2.0 can refuse to
+  compile depending on what it elaborated first (CLAUDE.md pattern 11).
+  The `mut` copy-back rule, the `cc` the linker needs, and the output the
+  sabotage harnesses parse were re-measured and are unchanged. The wheels
+  still declare `LicenseRef-MAX-Platform-Software-License`, which now names
+  the MAX License of 2026-10-21 (docs/FFI_DISTRIBUTION.md). The write-up
+  is [docs/notes/the-pin-moves-to-1-2-0.md](docs/notes/the-pin-moves-to-1-2-0.md).
+
 ## [1.15.0] — 2026-10-11
 
 The fixes from a review of the WSGI and ASGI gateway, the SQLite and

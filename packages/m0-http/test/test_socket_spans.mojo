@@ -48,10 +48,10 @@ def test_recv_writes_only_inside_the_span_it_is_given() raises:
     """
     var pair = _stream_pair()
     var out = List[UInt8](length=64, fill=_SENT)
-    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out), 0)), 64)
+    assert_equal(Int(send(RawFileDescriptor(c_int(pair[1])), Span(out), 0)), 64)
 
     var buf = List[UInt8](length=64, fill=_UNTOUCHED)
-    var n = recv(FileDescriptor(pair[0]), Span(buf)[:10], 0)
+    var n = recv(RawFileDescriptor(c_int(pair[0])), Span(buf)[:10], 0)
     assert_equal(Int(n), 10, "recv took more than its span holds")
     for i in range(10):
         assert_equal(buf[i], _SENT, "recv left its span unfilled")
@@ -69,14 +69,14 @@ def test_send_sends_only_the_span_it_is_given() raises:
     wire, and the peer reads those 5 and no more."""
     var pair = _stream_pair()
     var out = List[UInt8](length=64, fill=_SENT)
-    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out)[:5], 0)), 5)
+    assert_equal(Int(send(RawFileDescriptor(c_int(pair[1])), Span(out)[:5], 0)), 5)
 
     var buf = List[UInt8](length=64, fill=_UNTOUCHED)
-    var n = recv(FileDescriptor(pair[0]), Span(buf), MSG_DONTWAIT)
+    var n = recv(RawFileDescriptor(c_int(pair[0])), Span(buf), MSG_DONTWAIT)
     assert_equal(Int(n), 5, "send put more on the wire than its span holds")
     var more = 0
     try:
-        more = Int(recv(FileDescriptor(pair[0]), Span(buf), MSG_DONTWAIT))
+        more = Int(recv(RawFileDescriptor(c_int(pair[0])), Span(buf), MSG_DONTWAIT))
     except e:
         assert_true(e.would_block(), String(e))
     assert_equal(more, 0, "bytes past the span reached the peer")
@@ -95,9 +95,9 @@ def test_spare_capacity_is_the_room_past_the_length() raises:
     buf.append(3)
     var room = buf.capacity() - 3
     var out = List[UInt8](length=room + 16, fill=_SENT)
-    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out), 0)), room + 16)
+    assert_equal(Int(send(RawFileDescriptor(c_int(pair[1])), Span(out), 0)), room + 16)
 
-    var n = recv(FileDescriptor(pair[0]), spare_capacity(buf), 0)
+    var n = recv(RawFileDescriptor(c_int(pair[0])), spare_capacity(buf), 0)
     assert_equal(Int(n), room, "recv into the spare capacity took more than the room")
     assert_equal(buf[0], 1, "the list's own bytes were overwritten")
     assert_equal(buf[1], 2, "the list's own bytes were overwritten")
@@ -113,7 +113,7 @@ def test_spare_capacity_is_the_room_past_the_length() raises:
 def _adopt(fd: Int) -> Socket[TCPAddr[NetworkType.tcp4]]:
     """A `Socket` over `fd`, which it closes when destroyed."""
     return Socket[TCPAddr[NetworkType.tcp4]](
-        fd=FileDescriptor(fd),
+        fd=RawFileDescriptor(c_int(fd)),
         local_address=TCPAddr[NetworkType.tcp4](ip="127.0.0.1", port=0),
     )
 
@@ -163,7 +163,7 @@ def test_a_receive_into_a_full_buffer_reads_what_is_waiting() raises:
     """
     var pair = _stream_pair()
     var out = List[UInt8](length=5, fill=_SENT)
-    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out), 0)), 5)
+    assert_equal(Int(send(RawFileDescriptor(c_int(pair[1])), Span(out), 0)), 5)
     var sock = _adopt(pair[0])
 
     var buf = _full_list()
@@ -176,7 +176,7 @@ def test_a_receive_into_a_full_buffer_reads_what_is_waiting() raises:
     for i in range(had, had + 5):
         assert_equal(buf[i], _SENT, "the bytes read are not the bytes sent")
 
-    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out)[:2], 0)), 2)
+    assert_equal(Int(send(RawFileDescriptor(c_int(pair[1])), Span(out)[:2], 0)), 2)
     var empty = List[UInt8]()
     n = _receive(sock, empty, "a receive into a Bytes()")
     assert_equal(n, 2, "a receive into a Bytes() did not read what was waiting")
@@ -186,7 +186,7 @@ def test_a_receive_into_a_full_buffer_reads_what_is_waiting() raises:
     # The same through a connection, on a pair of its own, then the close.
     var other = _stream_pair()
     var conn = TCPConnection(_adopt(other[0]))
-    assert_equal(Int(send(FileDescriptor(other[1]), Span(out)[:3], 0)), 3)
+    assert_equal(Int(send(RawFileDescriptor(c_int(other[1])), Span(out)[:3], 0)), 3)
     var full = _full_list()
     had = len(full)
     n = _read(conn, full, "a read into a full buffer")
@@ -209,7 +209,7 @@ def test_a_receive_at_the_peers_eof_raises_eof() raises:
     """
     var pair = _stream_pair()
     var out = List[UInt8](length=3, fill=_SENT)
-    assert_equal(Int(send(FileDescriptor(pair[1]), Span(out), 0)), 3)
+    assert_equal(Int(send(RawFileDescriptor(c_int(pair[1])), Span(out), 0)), 3)
     close_fd(pair[1])
     var sock = _adopt(pair[0])
 

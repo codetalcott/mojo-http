@@ -28,6 +28,7 @@ from lightbug_http.loop.state import (
     _record_response, _slot_of, _stream_idle, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
+from std.ffi import c_int
 
 
 def _on_write[T: HTTPService, B: EventLoopBackend](
@@ -51,7 +52,7 @@ def _on_write[T: HTTPService, B: EventLoopBackend](
     # send deadline restarts on progress (`_arm_send_deadline`).
     var moved = False
     if remaining > 0:
-        var fd_desc = FileDescriptor(fd_val)
+        var fd_desc = RawFileDescriptor(c_int(fd_val))
         var sent: UInt
         try:
             sent = send(
@@ -202,7 +203,7 @@ def _keep_stream_alive(st: LoopState, fd_val: Int):
         return
     try:
         set_tcp_keepalive(
-            FileDescriptor(fd_val), st.stream_keepalive_s,
+            RawFileDescriptor(c_int(fd_val)), st.stream_keepalive_s,
             st.stream_keepalive_s, STREAM_KEEPALIVE_PROBES,
         )
     except e:
@@ -238,7 +239,7 @@ def _answers_the_last_request(mut st: LoopState, slot: Int, fd_val: Int) -> Bool
     var one = Array[UInt8, 1](fill=0)
     var n: UInt
     try:
-        n = recv(FileDescriptor(fd_val), Span(one), MSG_PEEK)
+        n = recv(RawFileDescriptor(c_int(fd_val)), Span(one), MSG_PEEK)
     except:
         # A reset, or a read that would wait, which a FIN rules out: no
         # further request will be read either way.
@@ -359,7 +360,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         response.body_raw = Bytes()
         if response.body_fd >= 0:
             try:
-                close(FileDescriptor(response.body_fd))
+                close(RawFileDescriptor(c_int(response.body_fd)))
             except:
                 pass
             response.body_fd = -1
@@ -511,7 +512,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # and won't fire for a socket that was already writable before the filter was
     # added. Attempt an immediate send; fall back to kqueue only on EAGAIN.
     if response_len > 0:
-        var fd_desc = FileDescriptor(fd_val)
+        var fd_desc = RawFileDescriptor(c_int(fd_val))
         try:
             var sent = send(fd_desc, Span(st.slot_response[slot]), 0)
             st.slot_send_offset[slot] = Int(sent)
@@ -600,7 +601,7 @@ def _send_error_to_fd(
         encoded = owed^
     try:
         _ = send(
-            FileDescriptor(fd_val),
+            RawFileDescriptor(c_int(fd_val)),
             Span(encoded),
             0,
         )
@@ -631,7 +632,7 @@ def _send_interim(
     """
     var sent = 0
     try:
-        sent = Int(send(FileDescriptor(fd_val), data, 0))
+        sent = Int(send(RawFileDescriptor(c_int(fd_val)), data, 0))
     except:
         pass
     _owe_interim(st, slot, data, sent)

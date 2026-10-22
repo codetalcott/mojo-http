@@ -61,6 +61,7 @@ handler with everything it owns, the shutdown pipe, the Python thread
 state.
 """
 
+from std.ffi import c_int
 from std.python import Python, PythonObject
 
 from lightbug_http import HTTPService
@@ -416,7 +417,7 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var ctx = ThreadContext(block.get(BLK_INDEX), block.get(BLK_USER))
     var handler = T.make(ctx)
     print("thread[" + String(ctx.index) + "] serving", flush=True)
-    var listen = FileDescriptor(block.get(BLK_LISTEN_FD))
+    var listen = RawFileDescriptor(c_int(block.get(BLK_LISTEN_FD)))
 
     # `--blocking-threads` or the asyncio executor: this loop's own queue
     # and its own receiver thread(s). Built before the loop because the

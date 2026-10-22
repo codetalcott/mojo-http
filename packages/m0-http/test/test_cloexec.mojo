@@ -78,8 +78,8 @@ def test_an_accepted_connection_is_close_on_exec() raises:
     var host = String("127.0.0.1")
     var client = create_connection(host, UInt16(port))
     var accepted = accept_with_peer(listener.socket.fd)
-    assert_true(is_cloexec(accepted[0].value))
-    close_fd(accepted[0].value)
+    assert_true(is_cloexec(Int(accepted[0].value)))
+    close_fd(Int(accepted[0].value))
     _ = client^
     _ = listener^
 

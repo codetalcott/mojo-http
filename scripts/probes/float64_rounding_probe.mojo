@@ -3,7 +3,9 @@
 Mojo 1.1's do not (docs/ROADMAP.md, Known issues): a shortest-form
 decimal can parse to the double one unit in the last place from the one
 it names, and a double between about 2e16 and 6e19 can print as text that
-names its neighbour. This runs known misses of both kinds and exits 1
+names its neighbour. Mojo 1.2.0 fixed the parser, so its cases here now
+guard against a regression; the printer's still miss. This runs known
+misses of both kinds and exits 1
 while any still misses, 0 when none does, and 2 when a control fails,
 which means the probe itself cannot judge. The misses came from sweeping
 60,000 random doubles' shortest forms and 73,656 doubles across every

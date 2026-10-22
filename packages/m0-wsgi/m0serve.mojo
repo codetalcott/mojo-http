@@ -50,6 +50,7 @@ The Mojo binary is never re-exec'd, so a changed `.mojo` still needs a
 rebuild and a restart.
 """
 
+from std.ffi import c_int
 from std.os import getenv, setenv
 from std.os.path import isdir, isfile
 from std.python import Python, PythonObject
@@ -405,7 +406,7 @@ def _adopt_listener(opts: ServeOptions) raises -> NoTLSListener[NetworkType.tcp]
         AddressFamily.AF_INET6 if is_ipv6_literal(local.host) else AddressFamily.AF_INET
     )
     var sock = Socket[TCPAddr[NetworkType.tcp]](
-        fd=FileDescriptor(fd),
+        fd=RawFileDescriptor(c_int(fd)),
         local_address=TCPAddr[NetworkType.tcp](ip=local.host, port=local.port),
         family=family,
     )
@@ -1430,7 +1431,7 @@ def _serve_threaded(
     var server = ThreadedServer(
         opts.server_config(AppConfig(default_port=DEFAULT_PORT)),
         opts.address(),
-        listener.socket.fd.value,
+        Int(listener.socket.fd.value),
     )
     server.blocking_threads = opts.blocking_threads
     server.asgi_executor = executor_mode

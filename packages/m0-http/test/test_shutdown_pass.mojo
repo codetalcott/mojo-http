@@ -165,7 +165,7 @@ def _config() -> ServerConfig:
 
 def _send_text(fd: Int, text: String) raises:
     var b = List[UInt8](text.as_bytes())
-    assert_equal(Int(send(FileDescriptor(fd), Span(b), 0)), len(b))
+    assert_equal(Int(send(RawFileDescriptor(c_int(fd)), Span(b), 0)), len(b))
 
 
 def _read_all(fd: Int) -> List[UInt8]:
@@ -175,7 +175,7 @@ def _read_all(fd: Int) -> List[UInt8]:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
+            n = recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:
@@ -201,7 +201,7 @@ def test_a_request_behind_the_stop_is_answered() raises:
     """
     var pipe = create_shutdown_pipe()
     var st = LoopState(
-        FileDescriptor(-1), _config(), String(""), True, shutdown_read_fd=pipe[0]
+        RawFileDescriptor(-1), _config(), String(""), True, shutdown_read_fd=pipe[0]
     )
     var backend = BatchBackend()
     var handler = Recorder()
@@ -254,7 +254,7 @@ def test_a_completion_behind_the_stop_is_answered() raises:
     pool.enable_base_stream_ack()
     var pipe = create_shutdown_pipe()
     var st = LoopState(
-        FileDescriptor(-1), _config(), String(""), True,
+        RawFileDescriptor(-1), _config(), String(""), True,
         shutdown_read_fd=pipe[0], offload_addr=pool.addr(),
     )
     var backend = BatchBackend()
@@ -307,7 +307,7 @@ def test_a_response_behind_the_stop_goes_on_out() raises:
     """
     var pipe = create_shutdown_pipe()
     var st = LoopState(
-        FileDescriptor(-1), _config(), String(""), True, shutdown_read_fd=pipe[0]
+        RawFileDescriptor(-1), _config(), String(""), True, shutdown_read_fd=pipe[0]
     )
     var backend = BatchBackend()
     var handler = Recorder(String("x") * (4 * 1024 * 1024))
@@ -344,14 +344,14 @@ def test_a_bus_frame_behind_the_stop_is_delivered() raises:
     var bus = socketpair_dgram()
     var pipe = create_shutdown_pipe()
     var st = LoopState(
-        FileDescriptor(-1), _config(), String(""), True,
+        RawFileDescriptor(-1), _config(), String(""), True,
         shutdown_read_fd=pipe[0], bus_read_fd=bus[0],
     )
     var backend = BatchBackend()
     var handler = Recorder()
     var payload = List[UInt8](String("data: x\n\n").as_bytes())
     var dg = encode_bus_frame("/events", 7, Span(payload))
-    _ = send(FileDescriptor(bus[1]), Span(dg), 0)
+    _ = send(RawFileDescriptor(c_int(bus[1])), Span(dg), 0)
 
     backend.push(pipe[0], EVFILT_READ)
     backend.push(bus[0], EVFILT_READ)
@@ -367,7 +367,7 @@ def test_a_timer_behind_the_stop_fires() raises:
     this way never fired again, through the whole drain."""
     var pipe = create_shutdown_pipe()
     var st = LoopState(
-        FileDescriptor(-1), _config(), String(""), True, shutdown_read_fd=pipe[0]
+        RawFileDescriptor(-1), _config(), String(""), True, shutdown_read_fd=pipe[0]
     )
     var backend = BatchBackend()
     var handler = Recorder()
@@ -397,11 +397,11 @@ def test_the_pass_that_reads_the_stop_admits_no_connection() raises:
     var handler = Recorder()
 
     backend.push(pipe[0], EVFILT_READ)
-    backend.push(ln.socket.fd.value, EVFILT_READ, 1)
+    backend.push(Int(ln.socket.fd.value), EVFILT_READ, 1)
     assert_true(run_pass_once(handler, backend, st), "the pass did not report the stop")
     assert_equal(st.active_count, 0, "the pass that read the stop admitted a connection")
 
-    backend.push(ln.socket.fd.value, EVFILT_READ, 1)
+    backend.push(Int(ln.socket.fd.value), EVFILT_READ, 1)
     assert_false(run_pass_once(handler, backend, st))
     assert_equal(st.active_count, 1, "the control pass admitted nothing: the test proves nothing")
     for s in range(st.max_conns):

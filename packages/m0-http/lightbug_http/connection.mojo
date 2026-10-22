@@ -114,7 +114,7 @@ struct NoTLSListener[network: NetworkType = NetworkType.tcp](Movable):
         """
         return self.socket.close()
 
-    def into_fd(deinit self) -> FileDescriptor:
+    def into_fd(deinit self) -> RawFileDescriptor:
         """Hand the listener's descriptor over without closing it.
 
         `run_event_loop` owns the listener it is given and closes it once,
@@ -243,7 +243,7 @@ struct ListenConfig:
             except sockopt_err:
                 pass  # non-fatal — kernel may not support SO_REUSEPORT
 
-        var addr = TCPAddr[network](ip=local.host^, port=local.port)
+        var addr = TCPAddr[network](ip=local.host, port=local.port)
         var bind_success = False
         var bind_fail_logged = False
         var bind_attempts = 0

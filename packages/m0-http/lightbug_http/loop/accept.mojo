@@ -16,7 +16,7 @@ from lightbug_http.c.socket import accept_with_peer, close, set_tcp_nodelay
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.connection import ConnectionState
 from lightbug_http.service import HTTPService
-from std.ffi import ErrNo
+from std.ffi import ErrNo, c_int
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns
 
@@ -64,7 +64,7 @@ def _admit_connection[T: HTTPService, B: EventLoopBackend](
     the pipelined tail. `fd_val` is already this process's own
     descriptor; a failure to place it closes it here.
     """
-    var new_fd = FileDescriptor(fd_val)
+    var new_fd = RawFileDescriptor(c_int(fd_val))
 
     var slot: Int
     try:
@@ -183,7 +183,7 @@ def _admit_handoffs[T: HTTPService, B: EventLoopBackend](
         ):
             # The sibling's channel holds its own reference now.
             try:
-                close(FileDescriptor(fd))
+                close(RawFileDescriptor(c_int(fd)))
             except:
                 pass
             continue
@@ -240,7 +240,7 @@ def _accept_batch[T: HTTPService, B: EventLoopBackend](
     wait that no longer blocks.
     """
     for _ in range(budget):
-        var new_fd: FileDescriptor
+        var new_fd: RawFileDescriptor
         var peer_host: String
         var peer_port: Int
         try:
@@ -268,7 +268,7 @@ def _accept_batch[T: HTTPService, B: EventLoopBackend](
             var target = st.accept_share.pick(st.active_count, perf_counter_ns())
             if (
                 target != st.accept_share.worker
-                and st.accept_share.send(target, new_fd.value, peer_host, peer_port)
+                and st.accept_share.send(target, Int(new_fd.value), peer_host, peer_port)
             ):
                 # The receiver holds its own reference now.
                 try:
@@ -277,5 +277,5 @@ def _accept_batch[T: HTTPService, B: EventLoopBackend](
                     pass
                 continue
 
-        _admit_connection(handler, backend, st, new_fd.value, peer_host^, peer_port)
+        _admit_connection(handler, backend, st, Int(new_fd.value), peer_host^, peer_port)
     return True

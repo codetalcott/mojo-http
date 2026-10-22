@@ -214,8 +214,8 @@ def _shutdown_begin[T: HTTPService, B: EventLoopBackend](
     # listener; kqueue drops the filter at the close anyway, and the delete
     # costs it nothing.
     var listen_fd = st.listen_fd
-    backend.try_delete_read(listen_fd.value)
-    st.listen_fd = FileDescriptor(-1)
+    backend.try_delete_read(Int(listen_fd.value))
+    st.listen_fd = RawFileDescriptor(-1)
     try:
         close(listen_fd)
     except:

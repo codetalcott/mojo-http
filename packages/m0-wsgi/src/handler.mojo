@@ -1008,7 +1008,7 @@ struct WSGIHandler(ThreadHandler):
             body += ',"subscribers":' + String(self.streams.active_count())
             body += ',"sockets":' + String(self.sockets.active_count())
         body += "}"
-        return OK(body^, "application/json")
+        return OK(body, "application/json")
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
         # The loop's hook, called before a job is submitted: static mounts

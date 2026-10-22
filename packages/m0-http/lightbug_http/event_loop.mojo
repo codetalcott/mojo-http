@@ -71,7 +71,7 @@ from lightbug_http.loop.shutdown import (
 
 
 def prepare_loop[B: EventLoopBackend](
-    listen_fd: FileDescriptor,
+    listen_fd: RawFileDescriptor,
     mut backend: B,
     config: ServerConfig,
     server_address: String,
@@ -96,7 +96,7 @@ def prepare_loop[B: EventLoopBackend](
     inversion's m0serve does.
     """
     set_nonblocking(listen_fd)
-    backend.add_read_listen(listen_fd.value)
+    backend.add_read_listen(Int(listen_fd.value))
 
     # Register shutdown pipe read end if provided
     if shutdown_read_fd >= 0:
@@ -152,7 +152,7 @@ def prepare_loop[B: EventLoopBackend](
 
 
 def run_event_loop[T: HTTPService, B: EventLoopBackend](
-    listen_fd: FileDescriptor,
+    listen_fd: RawFileDescriptor,
     mut handler: T,
     mut backend: B,
     config: ServerConfig,
@@ -243,13 +243,13 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
         # raise. Closed already if the drain had begun: `_shutdown_begin`
         # forgets the number (-1) before it closes it.
         if st.listen_fd.value >= 0:
-            backend.try_delete_read(st.listen_fd.value)
+            backend.try_delete_read(Int(st.listen_fd.value))
             _close_listener(st.listen_fd)
-            st.listen_fd = FileDescriptor(-1)
+            st.listen_fd = RawFileDescriptor(-1)
         raise e^
 
 
-def _close_listener(listen_fd: FileDescriptor):
+def _close_listener(listen_fd: RawFileDescriptor):
     """Close the loop's listener, once, whatever the close says: there is
     no second attempt that would do better, and the number is not the
     loop's afterwards either way."""
@@ -421,7 +421,7 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
             continue
 
         # --- Listen socket: accept new connections ---
-        if Int(backend.event_ident(i)) == st.listen_fd.value and backend.event_filter(i) == EVFILT_READ:
+        if Int(backend.event_ident(i)) == Int(st.listen_fd.value) and backend.event_filter(i) == EVFILT_READ:
             # kqueue reports the pending backlog depth in the event data
             # field; epoll has no equivalent and returns 0 for "unknown".
             #

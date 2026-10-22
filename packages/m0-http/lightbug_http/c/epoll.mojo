@@ -134,7 +134,7 @@ def _fill_event(ev: ExternalMutPointer[UInt32], events: UInt32, data: UInt64):
 
 
 def epoll_ctl_add(
-    epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64
+    epfd: RawFileDescriptor, fd: Int, events: UInt32, data: UInt64
 ) raises SysError:
     """Register fd with epoll (EPOLL_CTL_ADD).
 
@@ -150,7 +150,7 @@ def epoll_ctl_add(
 
 
 def epoll_ctl_mod(
-    epfd: FileDescriptor, fd: Int, events: UInt32, data: UInt64
+    epfd: RawFileDescriptor, fd: Int, events: UInt32, data: UInt64
 ) raises SysError:
     """Modify fd's epoll registration (EPOLL_CTL_MOD).
 
@@ -165,7 +165,7 @@ def epoll_ctl_mod(
         raise SysError("epoll_ctl MOD", get_errno())
 
 
-def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises SysError:
+def epoll_ctl_del(epfd: RawFileDescriptor, fd: Int) raises SysError:
     """Remove fd from epoll (EPOLL_CTL_DEL). event pointer is ignored.
 
     Raises:
@@ -177,7 +177,7 @@ def epoll_ctl_del(epfd: FileDescriptor, fd: Int) raises SysError:
 
 
 def epoll_wait(
-    epfd: FileDescriptor,
+    epfd: RawFileDescriptor,
     events: ExternalMutPointer[UInt32],
     max_events: Int,
     timeout_ms: Int,
@@ -204,7 +204,7 @@ the syscall tables were unified (Linux 5.11)."""
 
 
 def epoll_pwait2_ns(
-    epfd: FileDescriptor,
+    epfd: RawFileDescriptor,
     events: ExternalMutPointer[UInt32],
     max_events: Int,
     timeout_ns: Int,

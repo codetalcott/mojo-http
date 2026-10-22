@@ -76,12 +76,12 @@ def _kqueue() -> c_int:
     return external_call["kqueue", c_int]()
 
 
-def kqueue() raises SysError -> FileDescriptor:
+def kqueue() raises SysError -> RawFileDescriptor:
     """Create a new kqueue file descriptor."""
     var result = _kqueue()
     if result == -1:
         raise SysError("kqueue", get_errno())
-    return FileDescriptor(Int(result))
+    return RawFileDescriptor(result)
 
 
 def _kevent(
@@ -104,7 +104,7 @@ def _kevent(
     )
 
 
-def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises SysError:
+def kevent_register_one(kq: RawFileDescriptor, ev: kevent_t) raises SysError:
     """Submit a single kevent change using stack allocation (zero heap)."""
     var cl = stack_allocation[1, kevent_t]()
     cl[] = ev
@@ -114,7 +114,7 @@ def kevent_register_one(kq: FileDescriptor, ev: kevent_t) raises SysError:
 
 
 def kevent_register_pair(
-    kq: FileDescriptor, first: kevent_t, second: kevent_t
+    kq: RawFileDescriptor, first: kevent_t, second: kevent_t
 ) raises SysError:
     """Submit two kevent changes in ONE syscall, forgiving the second a
     delete of nothing.
@@ -139,7 +139,7 @@ def kevent_register_pair(
 
 
 def kevent_poll(
-    kq: FileDescriptor,
+    kq: RawFileDescriptor,
     eventlist: ExternalMutPointer[kevent_t],
     max_events: Int,
     timeout_ms: Int,
@@ -149,7 +149,7 @@ def kevent_poll(
 
 
 def kevent_poll_ns(
-    kq: FileDescriptor,
+    kq: RawFileDescriptor,
     eventlist: ExternalMutPointer[kevent_t],
     max_events: Int,
     timeout_ns: Int,

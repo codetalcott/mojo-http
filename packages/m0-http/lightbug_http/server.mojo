@@ -11,6 +11,7 @@ from lightbug_http.service import HTTPService
 from lightbug_http.c.socket import close as close_fd
 from lightbug_http.utils.error import CustomError
 from std.bit import count_leading_zeros, pop_count
+from std.ffi import c_int
 from std.memory import unsafe_memmove
 from std.utils import Variant
 
@@ -267,7 +268,7 @@ struct ConnectionProvision(Movable):
         """
         if self.body_fd >= 0:
             try:
-                close_fd(FileDescriptor(self.body_fd))
+                close_fd(RawFileDescriptor(c_int(self.body_fd)))
             except:
                 pass
             self.body_fd = -1

@@ -84,7 +84,7 @@ def _set_v6only_raw(fd: Int, on: Bool) raises:
 
 def _port(fd: Int) raises -> Int:
     var address = SocketAddress()
-    getsockname(FileDescriptor(fd), address)
+    getsockname(RawFileDescriptor(c_int(fd)), address)
     return address.host_port()[1]
 
 
@@ -94,7 +94,7 @@ def _connect_v4(port: Int) raises -> Int:
     var address = SocketAddress(
         AddressFamily.AF_INET, UInt16(port), inet_pton[AddressFamily.AF_INET](String("127.0.0.1"))
     )
-    connect(FileDescriptor(fd), address)
+    connect(RawFileDescriptor(c_int(fd)), address)
     return fd
 
 
@@ -105,7 +105,7 @@ def _v4_refused(port: Int) raises -> Bool:
         AddressFamily.AF_INET, UInt16(port), inet_pton[AddressFamily.AF_INET](String("127.0.0.1"))
     )
     try:
-        connect(FileDescriptor(fd), address)
+        connect(RawFileDescriptor(c_int(fd)), address)
     except e:
         close_fd(fd)
         return e.errno == ErrNo.ECONNREFUSED
@@ -119,7 +119,7 @@ def _connect_v6(port: Int) raises -> Int:
     var address = SocketAddress(
         AddressFamily.AF_INET6, UInt16(port), inet_pton[AddressFamily.AF_INET6](String("::1"))
     )
-    connect(FileDescriptor(fd), address)
+    connect(RawFileDescriptor(c_int(fd)), address)
     return fd
 
 
@@ -150,11 +150,11 @@ def test_af_inet6_is_the_platforms() raises:
     var local = _sockaddr_in6(String("::1"), 0)
     var bound = True
     try:
-        bind(FileDescriptor(fd), local)
+        bind(RawFileDescriptor(c_int(fd)), local)
     except e:
         bound = False
     var name = SocketAddress()
-    getsockname(FileDescriptor(fd), name)
+    getsockname(RawFileDescriptor(c_int(fd)), name)
     close_fd(fd)
     assert_true(bound, "an AF_INET6 socket did not bind ::1")
     assert_equal(name.family(), Int(AddressFamily.AF_INET6.value), "the kernel's family for the socket")
@@ -473,19 +473,19 @@ def test_a_dual_stack_listener_answers_both_families() raises:
     assert_true(port > 0)
 
     var c4 = _connect_v4(port)
-    var a4 = accept_with_peer(FileDescriptor(lfd))
+    var a4 = accept_with_peer(RawFileDescriptor(c_int(lfd)))
     assert_equal(a4[1], "127.0.0.1", "an IPv4 client of :: is reported as IPv4")
     assert_equal(a4[2], _port(c4), "the client's own port")
 
     var c6 = _connect_v6(port)
-    var a6 = accept_with_peer(FileDescriptor(lfd))
+    var a6 = accept_with_peer(RawFileDescriptor(c_int(lfd)))
     assert_equal(a6[1], "::1")
     assert_equal(a6[2], _port(c6))
 
     close_fd(c4)
     close_fd(c6)
-    close_fd(a4[0].value)
-    close_fd(a6[0].value)
+    close_fd(Int(a4[0].value))
+    close_fd(Int(a6[0].value))
     # A use: without one the listener is destroyed, and its socket closed,
     # after its last method call above, before the clients connect.
     _ = listener^
@@ -498,10 +498,10 @@ def test_an_ipv6_loopback_listener_refuses_ipv4() raises:
     var port = Int(listener.socket.get_sock_name()[1])
     assert_true(_v4_refused(port), "127.0.0.1 reached a [::1] listener")
     var c6 = _connect_v6(port)
-    var a6 = accept_with_peer(FileDescriptor(lfd))
+    var a6 = accept_with_peer(RawFileDescriptor(c_int(lfd)))
     assert_equal(a6[1], "::1")
     close_fd(c6)
-    close_fd(a6[0].value)
+    close_fd(Int(a6[0].value))
     _ = listener^
 
 
@@ -515,7 +515,7 @@ def test_an_ipv4_listener_is_unchanged() raises:
     var a4 = accept_with_peer(listener.socket.fd)
     assert_equal(a4[1], "127.0.0.1")
     close_fd(c4)
-    close_fd(a4[0].value)
+    close_fd(Int(a4[0].value))
     _ = listener^
     var any4 = ListenConfig(max_bind_retries=1, quiet=True).listen("0.0.0.0:0")
     assert_equal(Int(any4.socket.family.value), Int(AddressFamily.AF_INET.value))
@@ -533,7 +533,7 @@ def test_dual_stack_is_set_not_inherited() raises:
     _set_v6only_raw(fd, True)
     assert_equal(_v6only(fd), 1)
     var sock = Socket[TCPAddr[NetworkType.tcp]](
-        fd=FileDescriptor(fd),
+        fd=RawFileDescriptor(c_int(fd)),
         local_address=TCPAddr[NetworkType.tcp](ip="::", port=0),
         family=AddressFamily.AF_INET6,
     )
@@ -623,8 +623,8 @@ def _banner_of(address: String) raises -> Tuple[String, Int]:
         close_fd(w)
         w = -1
         var buf = List[UInt8](length=4096, fill=0)
-        var n = external_call["read", Int, Int, _OpaqueMut, Int](
-            r,
+        var n = external_call["read", Int, c_int, _OpaqueMut, Int](
+            c_int(r),
             buf.unsafe_ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
                 MutUntrackedOrigin
             ](),

@@ -122,6 +122,20 @@ LicenseRef-MAX-Platform-Software-License`, byte for byte what 1.0.0
 declared. So the determination stands where it was, and the next release is
 worth the same one-line check.
 
+Mojo 1.2.0, pinned on 2026-10-22, did not settle it either:
+`mojo_compiler-1.2.0`'s METADATA declares the same string, and the wheel
+still carries no licence file (read from its zip directory by range
+requests). What changed is the licence that string names. Modular replaced
+the Community License of 2026-08-18 with the "MAX License" of 2026-10-21,
+whose section 1.2 lets an application with material functionality of its
+own redistribute MAX "in object code form, and under terms of Your
+choosing", provided a human-readable copy of the Terms goes with it; the
+earlier text allowed only "Redistributable Components" it never named. Each
+release is governed by the terms current at its date, so the new grant
+covers the 1.2.0 runtime and not 1.1.0's. If the metadata is right, then,
+shipping the runtime beside `libm0core` needs that copy of the Terms in the
+bundle; NOTICE's Apache §4 compliance covers the reading in which it is not.
+
 ## Update, 2026-08-24: the two owned defects are fixed
 
 `build-ffi` now rewrites both paths after the link (they cannot be

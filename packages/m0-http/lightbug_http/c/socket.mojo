@@ -186,7 +186,7 @@ def _setsockopt[
 
 
 def setsockopt(
-    socket: FileDescriptor,
+    socket: RawFileDescriptor,
     level: c_int,
     option_name: c_int,
     option_value: c_int,
@@ -222,7 +222,7 @@ def setsockopt(
 
 
 def set_tcp_keepalive(
-    socket: FileDescriptor, idle_s: Int, interval_s: Int, count: Int,
+    socket: RawFileDescriptor, idle_s: Int, interval_s: Int, count: Int,
 ) raises SysError:
     """Turn TCP keepalive on for a connected socket: after `idle_s` seconds
     with nothing received, the kernel probes the peer every `interval_s`
@@ -242,7 +242,7 @@ def set_tcp_keepalive(
     setsockopt(socket, c_int(SOL_SOCKET), SocketOption.SO_KEEPALIVE.value, c_int(1))
 
 
-def set_tcp_nodelay(fd: FileDescriptor):
+def set_tcp_nodelay(fd: RawFileDescriptor):
     """Disable Nagle's algorithm on a TCP socket (best-effort).
 
     The event loop writes each response with a single send(), so there is
@@ -287,7 +287,7 @@ def _getsockname[
     ](socket, address, address_len)
 
 
-def getsockname(socket: FileDescriptor, mut address: SocketAddress) raises SysError:
+def getsockname(socket: RawFileDescriptor, mut address: SocketAddress) raises SysError:
     """Libc POSIX `getsockname` function.
 
     Args:
@@ -337,7 +337,7 @@ def _bind[origin: ImmOrigin](socket: c_int, address: Pointer[sockaddr, origin], 
     )
 
 
-def bind(socket: FileDescriptor, mut address: SocketAddress) raises SysError:
+def bind(socket: RawFileDescriptor, mut address: SocketAddress) raises SysError:
     """Libc POSIX `bind` function.
 
     Args:
@@ -382,7 +382,7 @@ def _listen(socket: c_int, backlog: c_int) -> c_int:
     return external_call["listen", c_int, type_of(socket), type_of(backlog)](socket, backlog)
 
 
-def listen(socket: FileDescriptor, backlog: c_int) raises SysError:
+def listen(socket: RawFileDescriptor, backlog: c_int) raises SysError:
     """Libc POSIX `listen` function.
 
     Args:
@@ -447,8 +447,8 @@ def _accept[
 
 
 def accept_with_peer(
-    socket: FileDescriptor,
-) raises SysError -> Tuple[FileDescriptor, String, Int]:
+    socket: RawFileDescriptor,
+) raises SysError -> Tuple[RawFileDescriptor, String, Int]:
     """Libc POSIX `accept`, keeping the peer address the kernel handed over.
 
     Returns `(fd, host, port)`, read by `sockaddr_host_port`: an IPv4 peer
@@ -474,7 +474,7 @@ def accept_with_peer(
     if result == -1:
         raise SysError("accept", get_errno())
     var peer = sockaddr_host_port(storage, Int(buffer_size))
-    return (FileDescriptor(Int(result)), peer[0], peer[1])
+    return (RawFileDescriptor(result), peer[0], peer[1])
 
 
 def _recv(
@@ -514,7 +514,7 @@ def _recv(
 
 def recv[
     origin: MutOrigin
-](socket: FileDescriptor, buffer: Span[c_uchar, origin], flags: c_int) raises SysError -> c_size_t:
+](socket: RawFileDescriptor, buffer: Span[c_uchar, origin], flags: c_int) raises SysError -> c_size_t:
     """Libc POSIX `recv` function, into the bytes of `buffer` and no others.
 
     The length is the span's own (review record LF20). It was a separate
@@ -613,7 +613,7 @@ def _send(
 
 def send[
     origin: ImmOrigin
-](socket: FileDescriptor, buffer: Span[c_uchar, origin], flags: c_int) raises SysError -> c_size_t:
+](socket: RawFileDescriptor, buffer: Span[c_uchar, origin], flags: c_int) raises SysError -> c_size_t:
     """Libc POSIX `send` function, of the bytes of `buffer` and no others.
 
     The length is the span's own (review record LF20), as `recv`'s is.
@@ -683,7 +683,7 @@ def _shutdown(socket: c_int, how: c_int) -> c_int:
     return external_call["shutdown", c_int, type_of(socket), type_of(how)](socket, how)
 
 
-def shutdown(socket: FileDescriptor, how: ShutdownOption) raises SysError:
+def shutdown(socket: RawFileDescriptor, how: ShutdownOption) raises SysError:
     """Libc POSIX `shutdown` function.
 
     Args:
@@ -727,7 +727,7 @@ def _close(fildes: c_int) -> c_int:
     return external_call["close", c_int, type_of(fildes)](fildes)
 
 
-def close(file_descriptor: FileDescriptor) raises SysError:
+def close(file_descriptor: RawFileDescriptor) raises SysError:
     """Libc POSIX `close` function.
 
     Args:

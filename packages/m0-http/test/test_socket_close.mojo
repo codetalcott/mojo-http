@@ -74,8 +74,8 @@ def _stream_pair() raises -> Tuple[Int, Int]:
         raise Error("socketpair() failed, errno: ", errno)
     var pair = (Int(fds[unsafe_offset=0]), Int(fds[unsafe_offset=1]))
     fds.unsafe_free()
-    set_nonblocking(FileDescriptor(pair[0]))
-    set_nonblocking(FileDescriptor(pair[1]))
+    set_nonblocking(RawFileDescriptor(c_int(pair[0])))
+    set_nonblocking(RawFileDescriptor(c_int(pair[1])))
     return pair
 
 
@@ -89,7 +89,7 @@ def _adopt(fd: Int) -> Adopted:
     """A socket made from a descriptor it was given, as a spawned m0serve
     worker adopts its listener: born connected."""
     return Adopted(
-        fd=FileDescriptor(fd),
+        fd=RawFileDescriptor(c_int(fd)),
         local_address=TCPAddr[NetworkType.tcp4](ip="127.0.0.1", port=0),
     )
 
@@ -118,7 +118,7 @@ def _reads_eof(fd: Int) raises -> Bool:
     its peer has shut down; False when the read would wait."""
     var buf = List[UInt8](length=16, fill=0)
     try:
-        return recv(FileDescriptor(fd), Span(buf), 0) == 0
+        return recv(RawFileDescriptor(c_int(fd)), Span(buf), 0) == 0
     except e:
         if e.would_block():
             return False
@@ -130,7 +130,7 @@ def _queued(fd: Int) raises -> Int:
     a read would wait, 0 at end-of-file."""
     var buf = List[UInt8](length=64, fill=0)
     try:
-        return Int(recv(FileDescriptor(fd), Span(buf), _MSG_PEEK))
+        return Int(recv(RawFileDescriptor(c_int(fd)), Span(buf), _MSG_PEEK))
     except e:
         if e.would_block():
             return -1
@@ -158,10 +158,10 @@ def _is_listening(fd: Int) raises -> Bool:
     """Whether `fd` listens: a non-blocking `accept` on it finds no
     connection waiting (EAGAIN) rather than a socket that does not listen
     (EINVAL). macOS does not answer `SO_ACCEPTCONN`."""
-    set_nonblocking(FileDescriptor(fd))
+    set_nonblocking(RawFileDescriptor(c_int(fd)))
     try:
-        var accepted = accept_with_peer(FileDescriptor(fd))
-        close_fd(accepted[0].value)
+        var accepted = accept_with_peer(RawFileDescriptor(c_int(fd)))
+        close_fd(Int(accepted[0].value))
         return True
     except e:
         if e.would_block():
@@ -174,7 +174,7 @@ def _is_listening(fd: Int) raises -> Bool:
 def _local_port(fd: Int) raises -> Int:
     """The port `fd` is bound to; 0 when it is not bound."""
     var address = SocketAddress()
-    getsockname(FileDescriptor(fd), address)
+    getsockname(RawFileDescriptor(c_int(fd)), address)
     return address.host_port()[1]
 
 
@@ -203,7 +203,7 @@ def test_a_destroyed_socket_leaves_what_took_its_number_connected() raises:
         "the destroyed socket shut down the socket that took its number",
     )
     # The same reading sees a shutdown when there is one.
-    shutdown(FileDescriptor(number), ShutdownOption.SHUT_RDWR)
+    shutdown(RawFileDescriptor(c_int(number)), ShutdownOption.SHUT_RDWR)
     assert_true(_reads_eof(newcomer[1]), "a shutdown made on purpose read as none")
 
     close_fd(number)
@@ -247,8 +247,8 @@ struct _ReleasedThenFailed(DescriptorClose):
     def __init__(out self, errno: ErrNo):
         self.errno = errno
 
-    def close(mut self, fd: FileDescriptor) raises SysError:
-        close_fd(fd.value)
+    def close(mut self, fd: RawFileDescriptor) raises SysError:
+        close_fd(Int(fd.value))
         raise SysError("close", self.errno)
 
 
@@ -295,7 +295,7 @@ def test_a_close_that_fails_leaves_what_took_its_number_open() raises:
             "the destructor shut down the socket that took the number",
         )
         # The same reading sees a shutdown when there is one.
-        shutdown(FileDescriptor(number), ShutdownOption.SHUT_RDWR)
+        shutdown(RawFileDescriptor(c_int(number)), ShutdownOption.SHUT_RDWR)
         assert_true(_reads_eof(newcomer[1]), "a shutdown made on purpose read as none")
 
         close_fd(number)
@@ -345,7 +345,7 @@ def test_a_closed_socket_takes_nothing_from_what_took_its_number() raises:
     var newcomer = _stream_pair()
     sock.close()
     _move_to(newcomer[0], number)
-    _ = send(FileDescriptor(newcomer[1]), "x".as_bytes(), 0)
+    _ = send(RawFileDescriptor(c_int(newcomer[1])), "x".as_bytes(), 0)
     assert_equal(_queued(number), 1, "the newcomer's byte did not arrive")
 
     var errno = 0
@@ -396,7 +396,7 @@ def test_a_closed_connection_neither_writes_nor_reads_what_took_its_number() rai
     var newcomer = _stream_pair()
     conn.close()
     _move_to(newcomer[0], number)
-    _ = send(FileDescriptor(newcomer[1]), "x".as_bytes(), 0)
+    _ = send(RawFileDescriptor(c_int(newcomer[1])), "x".as_bytes(), 0)
 
     var wrote = True
     try:
@@ -447,7 +447,7 @@ def test_a_closed_socket_does_not_shut_down_what_took_its_number() raises:
         "a closed socket's shutdown shut down the socket that took its number",
     )
     # The same reading sees a shutdown when there is one.
-    shutdown(FileDescriptor(number), ShutdownOption.SHUT_RDWR)
+    shutdown(RawFileDescriptor(c_int(number)), ShutdownOption.SHUT_RDWR)
     assert_true(_reads_eof(newcomer[1]), "a shutdown made on purpose read as none")
 
     close_fd(number)
@@ -598,12 +598,12 @@ def test_a_closed_listener_hands_over_no_number() raises:
     covers: D1
     """
     var ln = ListenConfig(max_bind_retries=1, quiet=True).listen("127.0.0.1:0")
-    var number = ln.socket.fd.value
+    var number = Int(ln.socket.fd.value)
     var newcomer = _stream_pair()
     ln.close()
     _move_to(newcomer[0], number)
 
-    var given = ln^.into_fd().value
+    var given = Int(ln^.into_fd().value)
     assert_true(
         given != number, "a closed listener handed over the number another socket took"
     )

@@ -49,7 +49,7 @@ def _read_ack(fd: Int) raises -> Tuple[Int, Int]:
     var buf = List[UInt8](capacity=ACK_BYTES)
     for _ in range(ACK_BYTES):
         buf.append(0)
-    var n = recv(FileDescriptor(fd), Span(buf), 0)
+    var n = recv(RawFileDescriptor(c_int(fd)), Span(buf), 0)
     assert_equal(Int(n), ACK_BYTES)
     return decode_ack(Span(buf))
 
@@ -518,7 +518,7 @@ def _read_datagram(fd: Int) raises -> List[UInt8]:
     var buf = List[UInt8](capacity=4096)
     for _ in range(4096):
         buf.append(0)
-    var n = recv(FileDescriptor(fd), Span(buf), 0)
+    var n = recv(RawFileDescriptor(c_int(fd)), Span(buf), 0)
     var out = List[UInt8](capacity=Int(n))
     for i in range(Int(n)):
         out.append(buf[i])
@@ -681,7 +681,7 @@ def test_a_websocket_message_fills_its_datagram_and_not_a_byte_more() raises:
     var big = List[UInt8](capacity=WS_DATAGRAM_MAX + 64)
     for _ in range(WS_DATAGRAM_MAX + 64):
         big.append(0)
-    var n = recv(FileDescriptor(pool.submit_read), Span(big), 0)
+    var n = recv(RawFileDescriptor(c_int(pool.submit_read)), Span(big), 0)
     assert_equal(Int(n), WS_DATAGRAM_MAX)
     assert_equal(Int(big[WS_DATAGRAM_MAX - 1]), (room - 1) & 0xFF)
 
@@ -820,7 +820,7 @@ def _try_read(fd: Int) -> Int:
     for _ in range(64):
         buf.append(0)
     try:
-        var n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
+        var n = recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)
         return Int(n)
     except:
         return -1
@@ -1410,7 +1410,7 @@ def test_an_idle_loop_waits_for_a_pending_heads_deadline() raises:
     var config = ServerConfig()
     config.max_connections = 8
     var st = LoopState(
-        FileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
     )
     var backend = WaitRecordingBackend()
     _ = _wait_for_events(backend, st, 1000)
@@ -1583,7 +1583,7 @@ def test_run_inline_counts_only_the_requests_it_ran() raises:
     var config = ServerConfig()
     config.max_connections = 8
     var st = LoopState(
-        FileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
     )
     var backend = PlatformBackend()
     var app = _InlineApp()
@@ -1608,11 +1608,11 @@ def test_run_inline_counts_only_the_requests_it_ran() raises:
     assert_equal(app.calls, 1)
     assert_equal(st.offload.inflight, 0)
     var buf = _job_buffer()
-    var n = recv(FileDescriptor(pair[1]), Span(buf), MSG_DONTWAIT)
+    var n = recv(RawFileDescriptor(c_int(pair[1])), Span(buf), MSG_DONTWAIT)
     var reply = String(unsafe_from_utf8=Span(buf)[: Int(n)])
     assert_true(reply.startswith("HTTP/1.1 200"), reply)
-    close(FileDescriptor(pair[0]))
-    close(FileDescriptor(pair[1]))
+    close(RawFileDescriptor(c_int(pair[0])))
+    close(RawFileDescriptor(c_int(pair[1])))
     # `pool` must outlive the loop state that holds its address.
     _ = pool.capacity
 

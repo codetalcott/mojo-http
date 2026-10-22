@@ -2041,6 +2041,20 @@ lightbug_http
         prints one line counting what it leaves (`_unfinished_at_deadline`).
         Tested by test_drain_unstarted.mojo (SPEC D14, D15)
 
+      - Toolchain migration for the Mojo 1.2.0 pin (2026-10-22), behaviour-
+        preserving throughout, in 23 files: the stdlib's `FileDescriptor` is
+        `RawFileDescriptor`, built from a `c_int` (each `Int` descriptor
+        passes through `c_int()`, and the four that came from a C call
+        returning one pass it straight) and read back as one (`Int(fd.value)`
+        where an `Int` is wanted); c/pipe.mojo's `write` declaration takes a
+        `c_int` descriptor, matching the stdlib's own, which changed;
+        cookie/response_cookie_jar.mojo imports `Hasher` from `std.hash`,
+        `std.hashlib` renamed; and a `^` on an argument the callee borrows,
+        which 1.2.0 warns has no effect, is dropped in loop/offload.mojo,
+        loop/request.mojo and connection.mojo. The fork's `-1` for a closed
+        descriptor stands: 1.2.0 constructs it
+        (docs/notes/the-pin-moves-to-1-2-0.md).
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 

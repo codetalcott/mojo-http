@@ -76,7 +76,7 @@ def _timer_slot(ident: UInt) -> Int:
 struct EpollBackend(ConstructibleBackend):
     """`epoll`-based IO backend for Linux."""
 
-    var epfd: FileDescriptor
+    var epfd: RawFileDescriptor
     # Flat word buffer of _MAX_EVENTS structs; stride is EPOLL_EVENT_WORDS,
     # which differs by architecture (see c/epoll.mojo).
     var _events: Pointer[UInt32, MutUntrackedOrigin]
@@ -91,7 +91,7 @@ struct EpollBackend(ConstructibleBackend):
         var epfd_raw = epoll_create1(c_int(O_CLOEXEC))
         if epfd_raw == -1:
             raise SysError("epoll_create1", get_errno())
-        self.epfd = FileDescriptor(Int(epfd_raw))
+        self.epfd = RawFileDescriptor(epfd_raw)
         self._events = unsafe_alloc[UInt32](count=_MAX_EVENTS * EPOLL_EVENT_WORDS)
         for i in range(_MAX_EVENTS * EPOLL_EVENT_WORDS):
             self._events[unsafe_offset=i] = 0
@@ -107,13 +107,13 @@ struct EpollBackend(ConstructibleBackend):
         for tfd in self._timer_fds:
             if tfd >= 0:
                 close_fd(Int(tfd))
-        close_fd(self.epfd.value)
+        close_fd(Int(self.epfd.value))
         self._events.unsafe_free()
 
     # --- EventLoopBackend methods ---
 
     def multiplexer_fd(self) -> Int:
-        return self.epfd.value
+        return Int(self.epfd.value)
 
     def wait(mut self, timeout_ms: Int) raises -> Int:
         self._n_ready = epoll_wait(self.epfd, self._events, _MAX_EVENTS, timeout_ms)

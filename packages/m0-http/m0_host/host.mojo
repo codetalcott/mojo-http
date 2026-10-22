@@ -168,6 +168,7 @@ held stream opens it on the loop.
 """
 
 from m0_http.parallel_runtime import PARALLEL_RUNTIME_IMAGE, parallel_runtime_linked
+from std.ffi import c_int
 from std.memory import Pointer
 from std.os import getenv
 from std.sys.info import CompilationTarget
@@ -1351,7 +1352,7 @@ def _start_pool[H: AppHandler](
 
 
 def _run_loop[H: AppHandler](
-    listen_fd: FileDescriptor,
+    listen_fd: RawFileDescriptor,
     mut handler: H,
     config: ServerConfig,
     address: String,
@@ -1459,7 +1460,7 @@ def _loop_run[H: AppHandler](block: ThreadBlock) raises:
         sleep(0.001)
 
     _run_loop(
-        FileDescriptor(block.get(BLK_LISTEN_FD)),
+        RawFileDescriptor(c_int(block.get(BLK_LISTEN_FD))),
         handler,
         shared.server_config,
         shared.address,

@@ -212,7 +212,7 @@ def _loop(config: ServerConfig) -> LoopState:
     """A loop's state before its first pass, over no socket: the helpers
     under test touch the slot tables and the backend they are handed, never
     the listener."""
-    return LoopState(FileDescriptor(-1), config, String(""), True)
+    return LoopState(RawFileDescriptor(-1), config, String(""), True)
 
 
 def test_a_write_wait_holds_no_read_interest() raises:
@@ -228,7 +228,7 @@ def test_a_write_wait_holds_no_read_interest() raises:
     var backend = PlatformBackend()
     backend.add_read(rx)
     var one = String("m")
-    _ = send(FileDescriptor(tx), one.as_bytes(), 0)
+    _ = send(RawFileDescriptor(c_int(tx)), one.as_bytes(), 0)
 
     var n = backend.wait(1000)
     assert_equal(n, 1)
@@ -255,8 +255,8 @@ def test_a_write_wait_holds_no_read_interest() raises:
     n = backend.wait(1000)
     assert_equal(n, 1)
     assert_equal(backend.event_filter(0), EVFILT_READ)
-    close(FileDescriptor(rx))
-    close(FileDescriptor(tx))
+    close(RawFileDescriptor(c_int(rx)))
+    close(RawFileDescriptor(c_int(tx)))
 
 
 def test_a_resume_mid_send_keeps_the_write() raises:
@@ -292,8 +292,8 @@ def test_a_resume_mid_send_keeps_the_write() raises:
         ):
             writes += 1
     assert_equal(writes, 1)
-    close(FileDescriptor(rx))
-    close(FileDescriptor(tx))
+    close(RawFileDescriptor(c_int(rx)))
+    close(RawFileDescriptor(c_int(tx)))
 
 
 def test_arming_reads_waits_out_a_send() raises:
@@ -431,7 +431,7 @@ def test_a_closed_slot_lets_go_of_its_response() raises:
     assert_equal(st.slot_fds[slot], UNUSED)
     assert_equal(st.slot_response[slot].capacity(), 0, "the closed slot kept its response")
     assert_equal(st.slot_send_offset[slot], 0)
-    close(FileDescriptor(pair[1]))
+    close(RawFileDescriptor(c_int(pair[1])))
 
 
 def _close_with_buffers(
@@ -449,7 +449,7 @@ def _close_with_buffers(
     st.provision_pool.provisions[slot].recv_buffer = Bytes(length=recv_capacity, fill=0x61)
     st.provision_pool.provisions[slot].encoding_buffer = Bytes(capacity=encode_capacity)
     _close_slot(app, backend, st, slot, pair[0])
-    close(FileDescriptor(pair[1]))
+    close(RawFileDescriptor(c_int(pair[1])))
     assert_equal(st.slot_fds[slot], UNUSED)
     return slot
 
@@ -687,7 +687,7 @@ def _send_a_file_that_ends_early(path: String) raises:
     assert_equal(writable, 1)
     assert_true(_read_available(peer, got), "the peer read no EOF")
     assert_equal(len(got), head.byte_length() + sent_of_file)
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 def _exchange(
@@ -721,15 +721,15 @@ def _exchange_with[H: HTTPService](
         if st.slot_fds[slot] == UNUSED:
             break
         var raw = part.as_bytes()
-        var sent = send(FileDescriptor(peer), raw, 0)
+        var sent = send(RawFileDescriptor(c_int(peer)), raw, 0)
         assert_equal(Int(sent), len(raw))
         _on_read(app, backend, st, fd, False)
     var got = List[UInt8]()
     _ = _read_available(peer, got)
     var closed = st.slot_fds[slot] == UNUSED
     if not closed:
-        close(FileDescriptor(fd))
-    close(FileDescriptor(peer))
+        close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(peer)))
     return (String(unsafe_from_utf8=Span(got)).lower(), closed)
 
 
@@ -912,7 +912,7 @@ def test_a_chunk_line_that_never_ends_is_refused_at_twice_the_cap() raises:
         assert_true(reply.startswith("http/1.1 413 payload too large"), reply)
         assert_true(st.slot_fds[slot] != UNUSED, "the 413 closed its connection where it should linger")
         _close_slot(app, backend, st, slot, pair[0])
-        close(FileDescriptor(pair[1]))
+        close(RawFileDescriptor(c_int(pair[1])))
 
 
 struct Raises(HTTPService):
@@ -950,7 +950,7 @@ def test_a_handler_that_raises_is_answered_500_and_closed() raises:
 
     var pool = OffloadPool(SLOTS)
     var st = LoopState(
-        FileDescriptor(-1), _config(), String(""), True, offload_addr=pool.addr()
+        RawFileDescriptor(-1), _config(), String(""), True, offload_addr=pool.addr()
     )
     var backend = FakeBackend()
     var inline = Raises()
@@ -971,7 +971,7 @@ def test_a_handler_that_raises_is_answered_500_and_closed() raises:
     assert_true(text.startswith("http/1.1 500 internal server error"), text)
     assert_true("connection: close" in text, text)
     assert_equal(st.slot_fds[slot], UNUSED, "the inline run's connection stayed open")
-    close(FileDescriptor(pair[1]))
+    close(RawFileDescriptor(c_int(pair[1])))
     # `pool` must outlive the loop state that holds its address.
     _ = pool.capacity
 
@@ -1026,15 +1026,15 @@ def test_a_head_still_arriving_past_its_timeout_is_answered_408_at_its_next_read
                 "a head past its timeout was closed, not lingered",
             )
             # The client closes; the linger's read sees it and closes too.
-            close(FileDescriptor(pair[1]))
+            close(RawFileDescriptor(c_int(pair[1])))
             _on_read(app, backend, st, pair[0], True)
             assert_equal(
                 st.slot_fds[slot], UNUSED, "the linger outlived its client"
             )
         else:
             assert_true(reply.startswith("http/1.1 200 ok"), reply)
-            close(FileDescriptor(pair[0]))
-            close(FileDescriptor(pair[1]))
+            close(RawFileDescriptor(c_int(pair[0])))
+            close(RawFileDescriptor(c_int(pair[1])))
 
 
 def test_a_new_loop_has_every_slot_free_and_ignores_descriptors_it_does_not_hold() raises:
@@ -1045,7 +1045,7 @@ def test_a_new_loop_has_every_slot_free_and_ignores_descriptors_it_does_not_hold
     descriptor no slot holds, whether mapped or past the map, is dropped
     without touching a slot or the backend."""
     var st = LoopState(
-        FileDescriptor(-1), _config(), String("127.0.0.1:8080"), True,
+        RawFileDescriptor(-1), _config(), String("127.0.0.1:8080"), True,
         shutdown_read_fd=5,
     )
     assert_equal(st.max_conns, SLOTS)
@@ -1151,7 +1151,7 @@ def test_a_closed_stream_tells_its_handler_once_and_retires_its_timers() raises:
         assert_equal(st.provision_pool.available_count(), free + 1)
         var got = List[UInt8]()
         assert_true(_read_available(pair[1], got), "the peer read no EOF")
-        close(FileDescriptor(pair[1]))
+        close(RawFileDescriptor(c_int(pair[1])))
 
     var plain = _stream_pair()
     var slot = st.provision_pool.borrow()
@@ -1160,7 +1160,7 @@ def test_a_closed_stream_tells_its_handler_once_and_retires_its_timers() raises:
     st.active_count = 1
     _close_slot(app, backend, st, slot, plain[0])
     assert_equal(len(app.left), 2, "an ordinary connection's close told the handler a stream left")
-    close(FileDescriptor(plain[1]))
+    close(RawFileDescriptor(c_int(plain[1])))
 
 
 def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() raises:
@@ -1220,7 +1220,7 @@ def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() rais
     assert_equal(len(nothing), 0, "a frame went to a socket lingering after its Close")
 
     # The SSE stream's client leaves without a word.
-    close(FileDescriptor(sse[1]))
+    close(RawFileDescriptor(c_int(sse[1])))
     _on_timer(app, backend, st, sse_beat)
     assert_equal(st.slot_fds[sse_slot], UNUSED, "a heartbeat to a client that left kept its stream")
     assert_equal(len(app.left), 1)
@@ -1232,7 +1232,7 @@ def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() rais
     _on_timer(app, backend, st, sse_beat)
     assert_false(sse_beat in backend.timers, "a heartbeat for no stream was re-armed")
     _close_slot(app, backend, st, ws_slot, ws[0])
-    close(FileDescriptor(ws[1]))
+    close(RawFileDescriptor(c_int(ws[1])))
 
 
 def test_admission_takes_what_the_pool_has_room_for_and_maps_any_descriptor() raises:
@@ -1266,16 +1266,16 @@ def test_admission_takes_what_the_pool_has_room_for_and_maps_any_descriptor() ra
     var got = List[UInt8]()
     assert_true(_read_available(second[1], got), "a connection past the last slot was left open")
     assert_equal(len(got), 0)
-    close(FileDescriptor(second[1]))
+    close(RawFileDescriptor(c_int(second[1])))
 
     _close_slot(app, backend, st, slot, first[0])
-    close(FileDescriptor(first[1]))
+    close(RawFileDescriptor(c_int(first[1])))
     var gone = _stream_pair()
-    close(FileDescriptor(gone[0]))
+    close(RawFileDescriptor(c_int(gone[0])))
     _admit_connection(app, backend, st, gone[0], String("127.0.0.1"), 3)
     assert_equal(st.active_count, 0, "a descriptor that is not open was admitted")
     assert_equal(st.provision_pool.available_count(), 1, "the refused descriptor kept its slot")
-    close(FileDescriptor(gone[1]))
+    close(RawFileDescriptor(c_int(gone[1])))
 
 
 def test_a_response_whose_write_wait_is_refused_closes_its_connection() raises:
@@ -1304,7 +1304,7 @@ def test_a_response_whose_write_wait_is_refused_closes_its_connection() raises:
     _finish_response(app, backend, st, other, pair[0], OK("unsent", "text/plain"))
     assert_equal(st.slot_fds[other], UNUSED, "a response that could not wait kept its connection")
     _discard_all(pair[1])
-    close(FileDescriptor(pair[1]))
+    close(RawFileDescriptor(c_int(pair[1])))
 
 
 def test_a_frame_whose_write_wait_is_refused_closes_its_stream() raises:
@@ -1336,7 +1336,7 @@ def test_a_frame_whose_write_wait_is_refused_closes_its_stream() raises:
     assert_equal(app.left[0], sse_slot)
     assert_false(beat in backend.timers, "the closed stream's heartbeat outlived it")
     _discard_all(sse[1])
-    close(FileDescriptor(sse[1]))
+    close(RawFileDescriptor(c_int(sse[1])))
 
     # The outbox drain, a frame the producer queued.
     var producer = OneChunkStream()
@@ -1349,7 +1349,7 @@ def test_a_frame_whose_write_wait_is_refused_closes_its_stream() raises:
     assert_equal(len(producer.left), 1, "the producer was not told its stream left")
     assert_equal(producer.left[0], out_slot)
     _discard_all(out[1])
-    close(FileDescriptor(out[1]))
+    close(RawFileDescriptor(c_int(out[1])))
 
     # The WebSocket reader's reply: a Close's echo, owed whole.
     var ws_app = NoApp()
@@ -1361,7 +1361,7 @@ def test_a_frame_whose_write_wait_is_refused_closes_its_stream() raises:
     _read_websocket(ws_app, backend, st, slot, fd, False)
     assert_equal(st.slot_fds[slot], UNUSED, "a reply whose write wait was refused kept its socket")
     _discard_all(peer)
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 def test_connect_is_answered_501_and_closed() raises:
@@ -1568,7 +1568,7 @@ def _send_all(fd: Int, text: String) raises:
     """Write `text` on `fd` in one send, which a fresh stream pair takes
     whole."""
     var raw = text.as_bytes()
-    var sent = send(FileDescriptor(fd), raw, 0)
+    var sent = send(RawFileDescriptor(c_int(fd)), raw, 0)
     assert_equal(Int(sent), len(raw))
 
 
@@ -1592,7 +1592,7 @@ def _half_closed_exchange(request: String) raises -> Tuple[String, Bool]:
     st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
     st.slot_read_armed[slot] = True
     _send_all(peer, request)
-    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+    shutdown(RawFileDescriptor(c_int(peer)), ShutdownOption.SHUT_WR)
     var events = 0
     while st.slot_fds[slot] != UNUSED and events < 4:
         var adds = backend.read_adds
@@ -1604,8 +1604,8 @@ def _half_closed_exchange(request: String) raises -> Tuple[String, Bool]:
     _ = _read_available(peer, got)
     var closed = st.slot_fds[slot] == UNUSED
     if not closed:
-        close(FileDescriptor(fd))
-    close(FileDescriptor(peer))
+        close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(peer)))
     return (String(unsafe_from_utf8=Span(got)).lower(), closed)
 
 
@@ -1700,7 +1700,7 @@ def test_a_half_closed_head_longer_than_a_read_is_answered() raises:
     var head = String("GET /long HTTP/1.1\r\nHost: x\r\nX-Pad: ")
     head += String("p") * (want + want // 2) + "\r\n\r\n"
     _send_all(peer, head)
-    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+    shutdown(RawFileDescriptor(c_int(peer)), ShutdownOption.SHUT_WR)
 
     # The event that brings the first bytes carries the EOF; while the slot
     # stays open, its re-armed registration reports it again.
@@ -1717,7 +1717,7 @@ def test_a_half_closed_head_longer_than_a_read_is_answered() raises:
     )
     assert_true("connection: close" in reply, reply)
     assert_equal(st.slot_fds[slot], UNUSED)
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 def test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest() raises:
@@ -1749,7 +1749,7 @@ def test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest() raises:
     st.provision_pool.provisions[slot].state = ConnectionState.reading_headers()
     var filler = _fill_send_buffer(fd)
     _send_all(peer, "GET /a HTTP/1.1\r\nHost: x\r\n\r\nGET /b HTTP/1.1\r\nHost: x\r\n\r\n")
-    shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+    shutdown(RawFileDescriptor(c_int(peer)), ShutdownOption.SHUT_WR)
 
     # The requests are read, and the first answer waits on the full socket.
     _on_read(app, backend, st, fd, False)
@@ -1782,7 +1782,7 @@ def test_a_half_close_behind_a_slow_answer_keeps_the_pipelined_rest() raises:
     )
     assert_true("connection: close" in reply.lower(), reply)
     assert_equal(st.slot_fds[slot], UNUSED, "the connection was left open")
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 struct Tally(HTTPService):
@@ -1804,7 +1804,7 @@ def _big_buffers(fd: Int):
     to it. Best effort; the kernel caps it (Linux at `wmem_max`)."""
     for option in [SocketOption.SO_SNDBUF, SocketOption.SO_RCVBUF]:
         try:
-            setsockopt(FileDescriptor(fd), c_int(SOL_SOCKET), option.value, c_int(1 << 20))
+            setsockopt(RawFileDescriptor(c_int(fd)), c_int(SOL_SOCKET), option.value, c_int(1 << 20))
         except:
             pass
 
@@ -1816,7 +1816,7 @@ def _send_what_fits(fd: Int, raw: Span[UInt8, _], off: Int) raises -> Int:
     while at < len(raw):
         var sent: UInt
         try:
-            sent = send(FileDescriptor(fd), raw[at:], 0)
+            sent = send(RawFileDescriptor(c_int(fd)), raw[at:], 0)
         except err:
             if err.would_block():
                 break
@@ -1881,8 +1881,8 @@ def _pipelined_burst(
     var reply = String(unsafe_from_utf8=Span(got)).lower()
     var open = st.slot_fds[slot] != UNUSED
     if open:
-        close(FileDescriptor(fd))
-    close(FileDescriptor(peer))
+        close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(peer)))
     return (
         app.n, len(reply.split("http/1.1 200 ok")) - 1,
         "400 bad request" in reply, most, open,
@@ -1956,7 +1956,7 @@ def test_a_filled_read_behind_a_pool_thread_is_registered_again() raises:
     """
     var pool = OffloadPool(SLOTS)
     var st = LoopState(
-        FileDescriptor(-1), _config(), String(""), True, offload_addr=pool.addr()
+        RawFileDescriptor(-1), _config(), String(""), True, offload_addr=pool.addr()
     )
     var backend = FakeBackend()
     var app = Tally()
@@ -1993,8 +1993,8 @@ def test_a_filled_read_behind_a_pool_thread_is_registered_again() raises:
     var reply = String(unsafe_from_utf8=Span(got)).lower()
     assert_equal(_answers(reply), 2, reply)
     assert_equal(app.n, 2)
-    close(FileDescriptor(fd))
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(peer)))
     # `pool` must outlive the loop state that holds its address.
     _ = pool.capacity
 
@@ -2097,7 +2097,7 @@ def _interim_exchange(
     var backend = FakeBackend()
     var pool = OffloadPool(SLOTS)
     var st = LoopState(
-        FileDescriptor(-1), config, String(""), True,
+        RawFileDescriptor(-1), config, String(""), True,
         offload_addr=pool.addr() if pooled else 0,
     )
     var pair = _stream_pair()
@@ -2120,7 +2120,7 @@ def _interim_exchange(
     _ = _read_available(peer, got)
     if taken > 0:
         var interim = String(INTERIM)
-        var sent = send(FileDescriptor(fd), interim.as_bytes()[:taken], 0)
+        var sent = send(RawFileDescriptor(c_int(fd)), interim.as_bytes()[:taken], 0)
         assert_equal(Int(sent), taken)
         _owe_interim(st, slot, interim.as_bytes(), taken)
     for part in rest:
@@ -2149,8 +2149,8 @@ def _interim_exchange(
         _on_timer(app, backend, st, ident)
     _ = _read_available(peer, got)
     if st.slot_fds[slot] != UNUSED:
-        close(FileDescriptor(fd))
-    close(FileDescriptor(peer))
+        close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(peer)))
     # `pool` must outlive the loop state that holds its address.
     _ = pool.capacity
     assert_equal(went_to_pool, pooled, "where the request was answered")
@@ -2273,7 +2273,7 @@ def _chunked_stream_exchange(
     if cap >= 0:
         config.max_keepalive_requests = cap
     var st = LoopState(
-        FileDescriptor(-1), config, String(""), keep_alive,
+        RawFileDescriptor(-1), config, String(""), keep_alive,
         offload_addr=pool.addr(),
     )
     var pair = _stream_pair()
@@ -2293,7 +2293,7 @@ def _chunked_stream_exchange(
     if half_closed:
         # The request was the last bytes the client sent: its EOF reached
         # the read path (`peer_eof`), and nothing is buffered behind it.
-        shutdown(FileDescriptor(peer), ShutdownOption.SHUT_WR)
+        shutdown(RawFileDescriptor(c_int(peer)), ShutdownOption.SHUT_WR)
         st.provision_pool.provisions[slot].peer_eof = True
     var response = OK("", "text/plain")
     response.sse_streaming = True
@@ -2307,10 +2307,10 @@ def _chunked_stream_exchange(
     _ = _read_available(peer, got)
     var closed = st.slot_fds[slot] == UNUSED
     if not closed:
-        close(FileDescriptor(fd))
-    close(FileDescriptor(peer))
-    close(FileDescriptor(acks[0]))
-    close(FileDescriptor(acks[1]))
+        close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(peer)))
+    close(RawFileDescriptor(c_int(acks[0])))
+    close(RawFileDescriptor(c_int(acks[1])))
     # The loop holds the pool by its address, which keeps nothing alive.
     _ = pool
     return (String(unsafe_from_utf8=Span(got)).lower(), closed)
@@ -2417,7 +2417,7 @@ def test_a_frame_queued_for_a_peer_that_has_gone_closes_its_slot_in_that_pass() 
         # What a stream's head raises (`_finish_response`); at 0 the drain
         # sweeps no slot.
         st.offload.streaming_hint = 1
-        close(FileDescriptor(pair[1]))
+        close(RawFileDescriptor(c_int(pair[1])))
         var left = len(app.left)
         _drain_outboxes(app, backend, st)
         assert_equal(
@@ -2452,7 +2452,7 @@ def test_the_farewell_writes_only_into_a_stream_that_takes_one() raises:
     var app = NoApp()
     var backend = FakeBackend()
     var st = LoopState(
-        FileDescriptor(-1), config, String(""), True, offload_addr=pool.addr(),
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr(),
     )
     var peers = List[Int]()
     var slots = List[Int]()
@@ -2501,9 +2501,9 @@ def test_the_farewell_writes_only_into_a_stream_that_takes_one() raises:
         )
         for i in range(len(got)):
             assert_equal(Int(got[i]), Int(expected[shape][i]), names[shape])
-        close(FileDescriptor(peers[shape]))
-    close(FileDescriptor(acks[0]))
-    close(FileDescriptor(acks[1]))
+        close(RawFileDescriptor(c_int(peers[shape])))
+    close(RawFileDescriptor(c_int(acks[0])))
+    close(RawFileDescriptor(c_int(acks[1])))
     # The loop holds the pool by its address, which keeps nothing alive.
     _ = pool
 
@@ -2544,11 +2544,11 @@ def test_the_access_log_times_a_request_without_a_header_timeout() raises:
     _ = external_call["dup2", c_int, c_int, c_int](c_int(out[1]), c_int(1))
     _on_read(app, backend, st, fd, False)
     _ = external_call["dup2", c_int, c_int, c_int](c_int(saved), c_int(1))
-    close(FileDescriptor(saved))
-    close(FileDescriptor(out[1]))
+    close(RawFileDescriptor(c_int(saved)))
+    close(RawFileDescriptor(c_int(out[1])))
     var logged = List[UInt8]()
     _ = _read_available(out[0], logged)
-    close(FileDescriptor(out[0]))
+    close(RawFileDescriptor(c_int(out[0])))
     var line = String(unsafe_from_utf8=Span(logged))
 
     var at = line.find('"dur_us":')
@@ -2567,8 +2567,8 @@ def test_the_access_log_times_a_request_without_a_header_timeout() raises:
     assert_equal(st.metrics.latency_count, 1, "the latency was not recorded")
     assert_true(st.metrics.latency_sum_us < 1_000_000)
     assert_equal(st.slot_header_start[slot], 0, "the keep-alive reset kept the stamp")
-    close(FileDescriptor(fd))
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 def test_a_send_deadline_leaves_a_websockets_close_linger() raises:
@@ -2624,8 +2624,8 @@ def test_a_send_deadline_leaves_a_websockets_close_linger() raises:
         rounds += 1
     assert_equal(st.provision_pool.provisions[slot].state.kind, ConnectionState.STREAMING_WS)
     assert_equal(st.slot_idle_deadline[slot], linger)
-    close(FileDescriptor(fd))
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(fd)))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 def test_a_close_echo_the_kernel_refused_goes_out_before_the_close() raises:
@@ -2686,7 +2686,7 @@ def test_a_close_echo_the_kernel_refused_goes_out_before_the_close() raises:
         _read_available(peer, got), "the peer read no EOF after the echo",
     )
     _assert_the_peer_read_the_echo_last(got, filler)
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 def test_a_close_echo_waits_for_the_multiplexer() raises:
@@ -2750,7 +2750,7 @@ def test_a_close_echo_waits_for_the_multiplexer() raises:
         _read_available(peer, got), "the peer read no EOF after the echo",
     )
     _assert_the_peer_read_the_echo_last(got, filler)
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 struct Parks(HTTPService):
@@ -2790,7 +2790,7 @@ def test_a_suspended_websocket_owed_a_pong_keeps_its_write() raises:
     var frames = encode_ws_frame_masked(WS_OP_PING, "hb".as_bytes(), mask)
     var message = encode_ws_frame_masked(WS_OP_TEXT, "parked".as_bytes(), mask)
     frames.extend(Span(message))
-    var sent = send(FileDescriptor(peer), Span(frames), 0)
+    var sent = send(RawFileDescriptor(c_int(peer)), Span(frames), 0)
     assert_equal(Int(sent), len(frames))
 
     _read_websocket(app, backend, st, slot, fd, False)
@@ -2811,7 +2811,7 @@ def test_a_suspended_websocket_owed_a_pong_keeps_its_write() raises:
     assert_false(backend.read)
     assert_false(st.slot_read_armed[slot])
     _close_slot(app, backend, st, slot, fd)
-    close(FileDescriptor(peer))
+    close(RawFileDescriptor(c_int(peer)))
 
 
 # An application's close code (4000-4999), so an echo carrying it cannot be
@@ -2849,7 +2849,7 @@ def _a_websocket_owed_a_close_echo(
     mask.append(0x21)
     mask.append(0x3D)
     var frame = encode_ws_frame_masked(WS_OP_CLOSE, Span(code), mask)
-    var sent = send(FileDescriptor(peer), Span(frame), 0)
+    var sent = send(RawFileDescriptor(c_int(peer)), Span(frame), 0)
     assert_equal(Int(sent), len(frame))
     return (fd, peer, slot, filler)
 
@@ -2865,7 +2865,7 @@ def _fill_send_buffer(fd: Int) raises -> Int:
         while True:
             var sent: UInt
             try:
-                sent = send(FileDescriptor(fd), Span(chunk)[:size], 0)
+                sent = send(RawFileDescriptor(c_int(fd)), Span(chunk)[:size], 0)
             except err:
                 if err.would_block():
                     break
@@ -2884,7 +2884,7 @@ def _read_available(fd: Int, mut got: List[UInt8]) raises -> Bool:
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
+            n = recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)
         except err:
             if err.would_block():
                 return False
@@ -2944,7 +2944,7 @@ def _discard_all(fd: Int):
     while True:
         var n: UInt
         try:
-            n = recv(FileDescriptor(fd), Span(buf), MSG_DONTWAIT)
+            n = recv(RawFileDescriptor(c_int(fd)), Span(buf), MSG_DONTWAIT)
         except:
             break
         if n == 0:

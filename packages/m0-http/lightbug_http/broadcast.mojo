@@ -31,6 +31,7 @@ from lightbug_http.c.socket import (
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.offload_wire import append_i64_le, read_i64_le
+from std.ffi import c_int
 
 # Per-call non-blocking I/O. `set_nonblocking` was a silent no-op on ARM64
 # macOS until `_fcntl` learned the Darwin variadic convention (see
@@ -113,16 +114,16 @@ struct BroadcastBus(Copyable, Movable):
             # Belt (O_NONBLOCK on the fds) and braces (MSG_DONTWAIT on
             # every send/recv): either alone suffices now that fcntl works
             # on ARM64 macOS, and both together survive either regressing.
-            set_nonblocking(FileDescriptor(pair[0]))
-            set_nonblocking(FileDescriptor(pair[1]))
+            set_nonblocking(RawFileDescriptor(c_int(pair[0])))
+            set_nonblocking(RawFileDescriptor(c_int(pair[1])))
             # Default UNIX dgram buffers are far too small for a 64KB frame
             # (2KB on macOS). Sized to hold a few max-size frames.
             setsockopt(
-                FileDescriptor(pair[1]), Int32(SOL_SOCKET),
+                RawFileDescriptor(c_int(pair[1])), Int32(SOL_SOCKET),
                 SocketOption.SO_SNDBUF.value, Int32(_BUS_SOCKET_BUF),
             )
             setsockopt(
-                FileDescriptor(pair[0]), Int32(SOL_SOCKET),
+                RawFileDescriptor(c_int(pair[0])), Int32(SOL_SOCKET),
                 SocketOption.SO_RCVBUF.value, Int32(_BUS_SOCKET_BUF),
             )
             self.read_fds.append(pair[0])
@@ -202,7 +203,7 @@ def publish_to_channels(
             continue
         try:
             _ = send(
-                FileDescriptor(write_fds[w]),
+                RawFileDescriptor(c_int(write_fds[w])),
                 Span(datagram),
                 MSG_DONTWAIT,
             )
@@ -336,7 +337,7 @@ struct BusReader(Movable):
         if len(self.buf) == 0:
             self.buf.resize(BUS_DATAGRAM_MAX + 1, 0)
         var frames = List[BusFrame]()
-        var fd = FileDescriptor(read_fd)
+        var fd = RawFileDescriptor(c_int(read_fd))
         while True:
             var n: UInt
             try:
