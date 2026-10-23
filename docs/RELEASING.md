@@ -1088,6 +1088,71 @@ templates.
   wake modes, and `sabotage-host` caught 69 of 69. The pool A/Bs were not
   owed: neither the pool's records nor its park changed since 1.14.0.
 
+`m0 0.13.0`: tag `m0-v0.13.0` at `bc74dfd`, 2026-10-23, cut beside m0serve
+1.16.0. A minor release for the Mojo 1.2.0 pin (#621): `gated_mojo` moved
+to 1.2.0 and `gated_max` to 26.7.0, so `m0 0.12.0` refuses a project on the
+new compiler and 0.13.0 refuses one still on 1.1.0. The framework's source
+changed only by the pin's renames.
+
+- Step 1: `sabotage-m0-wheel` 26 of 26 (620 s). `sabotage-scaffold` 84 of
+  84: the 72 rules outside `image:` in one run (1418 s), then each of the
+  twelve `image:` rules with `--only` (70–118 s each), with a builder prune
+  and an `fstrim` between them. Before the run, every anchor of the eight
+  pre-release harnesses was applied to the tree in memory
+  (`sabotage_lib.apply` over each harness's `RULES`): 248 rules, none
+  stale, after #621 had touched 56 Mojo files. Disk was the constraint:
+  2.2 GiB free an hour before the run, 6 GiB at its start. The image rules
+  waited for 9 GiB, since in 1.15.0 each wrote 4.6–7.5 GiB inside the VM
+  before its trim; deleting two caches the owner approved, and space freed
+  elsewhere on the machine, got there.
+- Step 3: the local wheel, built on the merge commit, was
+  `m0-0.13.0-py3-none-any.whl`, 722,926 bytes, its `_build_info.json`
+  naming `bc74dfd`, a clean tree, mojo 1.2.0 and max-core 26.7.0; a
+  scaffold from it pinned `mojo==1.2.0` and `m0==0.13.0`.
+- Step 4: the release pull request (#624) was merged by hand, so `build`
+  read the merge commit's own `Tests` run. It printed `m0 0.13.0, cut from
+  bc74dfd…` and was green at the first attempt. Its wheel artifact, the
+  local wheel and the file on the index share one SHA-256 (`503d2c04…`).
+- The tags went out in order: `v1.16.0` once `m0 0.13.0` was on the index,
+  the owner approving each upload.
+- Step 5 on macOS arm64: `uvx --refresh-package m0 m0 new probe` pinned
+  `m0==0.13.0`, and `uv.lock` named it from pypi.org. The first build took
+  12 s with no warning, `smoke.sh` and `m0 test` passed, and every `m0
+  doctor` check passed. `m0 image` built in 26 s: 103.5 MB, 2.90 MB of it
+  the app, `libsqlite3-0` installed and no interpreter. The builder's `uv
+  sync --frozen` installed `m0==0.13.0` and `mojo-compiler==1.2.0` from the
+  index.
+- Step 6: 8 blocks passed against the published package. `uvx m0
+  --version` read `m0 0.13.0`, and `uvx --from m0serve==1.16.0 m0serve
+  --version` read `m0serve 1.16.0`.
+- m0serve 1.16.0: `v1.16.0` at `bc74dfd`. The Release run built the three
+  wheels, inspected them, consumed each on a machine that did not build it,
+  published the GitHub release, and uploaded after approval. Each file on
+  the index has the SHA-256 the release's `SHA256SUMS.txt` names, each
+  carries `LICENSE.max.txt` in both of its licence locations (the first
+  release to ship the MAX License beside the runtime;
+  [FFI_DISTRIBUTION](FFI_DISTRIBUTION.md)), and the site deployed after it.
+- The pre-release run, for the record: every gate in this page, from the
+  main checkout. `probe-pool-fairness` (32 s), `probe-pool` (891 s; pooled
+  p99 0.2 ms at slow 0, 1 and 2), and `stress-asgi` 30 of 30 in both modes
+  (191 s). `stress-pool` held 20 of 20 rounds and 40 of 40 holds in all
+  three wake modes, `autobahn` held its baseline, `sabotage-host` caught 69
+  of 69, and `bench-linux-conclusions` held all five conclusions. The four
+  browser gates failed at launch until Playwright 1.64.1's browsers were
+  installed (`playwright install --only-shell chromium firefox webkit`), and
+  then passed: install them before stage A. The six macOS bench kinds were
+  two minors stale and were re-recorded. Three first recordings were
+  discarded, none for the code. `host-modes` read 6–8% low on its
+  multi-loop rows while another session's browser tests ran, and an
+  interleaved A/B of v1.15.0 on Mojo 1.1.0 against this tree on 1.2.0 put
+  1.2.0 at parity or ahead. One `mixed-workload` row was low in two of its
+  three rounds. In `asgi-wrk-hello`, m0serve's arm was "never healthy" and
+  the bench still wrote its artifact, which `bench-linux-conclusions`
+  refused as having no data. m0serve refuses a port another process holds
+  on the wildcard, while uvicorn, binding 127.0.0.1, still serves there; a
+  bench that writes an artifact over a never-healthy arm is a defect owed a
+  fix.
+
 ### One-time, and only the owner can do these
 
 1. PyPI → project `m0` → Settings → **Publishing** → add a trusted
