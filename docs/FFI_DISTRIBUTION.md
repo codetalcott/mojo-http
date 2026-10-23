@@ -136,6 +136,23 @@ covers the 1.2.0 runtime and not 1.1.0's. If the metadata is right, then,
 shipping the runtime beside `libm0core` needs that copy of the Terms in the
 bundle; NOTICE's Apache §4 compliance covers the reading in which it is not.
 
+So from m0serve 1.16.0 the bundle and the wheel ship both texts:
+`LICENSE.max.txt`, the terms of 2026-10-21 verbatim, beside
+`LICENSE.mojo-runtime.txt`, and the bundle's `NOTICE.txt` says why. The
+same terms' section 1.5 points the other way: portions of MAX released
+under Apache 2.0 with LLVM Exceptions, "as identified in the LICENSE file
+or license header accompanying each such component", stay under those
+terms, which control in a conflict. The runtime's sources carry those
+headers and the built files arrive with neither, which is why both texts
+ship rather than one. The wheel's licence expression stays `MIT AND
+Apache-2.0 WITH LLVM-exception`: a `LicenseRef-` for MAX would flag every
+install of m0serve for review on a reading nothing confirms, and the
+notice says what the expression cannot. A user who distributes an `m0
+build --release` artifact or an `m0 image` carries the same runtime and the
+same condition; `m0` does not yet put the copy in either. Modular shipping
+a licence file that identifies the runtime's components in the
+`mojo-compiler` wheel would settle the question under section 1.5.
+
 ## Update, 2026-08-24: the two owned defects are fixed
 
 `build-ffi` now rewrites both paths after the link (they cannot be

@@ -27,6 +27,7 @@ checkout.
 
 Mojo runtime libraries (redistributed in every macOS binary artifact)
     Path        licenses/LICENSE.mojo-runtime.txt
+                licenses/LICENSE.max.txt (from m0serve 1.16.0)
     Upstream    https://github.com/modular/modular
     License     Apache License 2.0 with LLVM Exceptions
     Copyright   Modular Inc
@@ -82,6 +83,19 @@ Mojo runtime libraries (redistributed in every macOS binary artifact)
     statically linked Linux artifact; it does not obviously reach shipping
     runtime libraries as separate files, so nothing here depends on it
     doing so.
+
+    FROM m0serve 1.16.0 (Mojo 1.2.0) THE MAX LICENSE SHIPS TOO, as
+    licenses/LICENSE.max.txt: the terms of 2026-10-21, verbatim, added
+    2026-10-23. The mojo-compiler 1.2.0 wheel still declares the MAX
+    licence and ships no licence file. The MAX License of that date,
+    which governs 1.2.0, grants redistribution as part of an application
+    on condition that a human-readable copy of its terms goes with it
+    (section 1.2), and keeps the Apache terms in control of the
+    components they cover (section 1.5). Shipping both texts satisfies
+    either reading of the binaries' licence; the Apache compliance above
+    is unchanged. Releases through 1.15.0 bundled earlier runtimes,
+    which that licence does not govern, without it.
+    docs/FFI_DISTRIBUTION.md has the reasoning.
 
 --------------------------------------------------------------------------------
 

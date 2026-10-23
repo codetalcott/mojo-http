@@ -1,0 +1,291 @@
+{
+  "bench": "mojo_mount",
+  "recorded_utc": "2026-10-23T02:26:17+00:00",
+  "environment": {
+    "version": "1.16.0",
+    "git_sha": "d207a9ef",
+    "source_stamp": "",
+    "git_dirty": false,
+    "os": "Darwin 27.0.0",
+    "machine": "arm64",
+    "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+    "mojo": "Mojo 1.2.0 (2016d0cd)",
+    "granian": "granian 2.8.4",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "numpy": "2.5.3",
+    "cpu": "Apple M4",
+    "cores_physical": "10",
+    "os_build": "macOS 27.0.1 (26A434)",
+    "memory_bytes": "17179869184",
+    "cores_performance": "4",
+    "cores_efficiency": "6",
+    "power_source": "AC Power",
+    "low_power_mode": "0",
+    "thermal": "No thermal warning level has been recorded; No performance warning level has been recorded; No CPU power status has been recorded"
+  },
+  "parameters": {
+    "duration": "5s",
+    "connections": "8",
+    "rounds": "3",
+    "blocking_threads": "4",
+    "corpus": "4096x256 f32, LCG seed 20260910"
+  },
+  "definitions": {
+    "medians.rps_per_core": "median rps across rounds / median cores across rounds; the figure docs/BENCHMARKS.md renders",
+    "medians.rps_per_core_rounds": "median across rounds of each round's own rps per core",
+    "cores": "process CPU seconds over wall seconds during the measured window",
+    "comparisons": "by_sel[sel].throughput and .per_core: median across rounds of mojo / python within the round (the headline); .throughput_of_medians and .per_core_of_medians: mojo's median rps (over its median cores) against python's, the ratios the medians block gives"
+  },
+  "rows": [
+    {
+      "rps": 35971.5,
+      "cores": 1.43,
+      "rps_per_core": 25234,
+      "p50_us": 222.0,
+      "p99_us": 234.0,
+      "round": 1,
+      "name": "python(sel=100)"
+    },
+    {
+      "rps": 41042.4,
+      "cores": 4.07,
+      "rps_per_core": 10094,
+      "p50_us": 177.0,
+      "p99_us": 490.0,
+      "round": 1,
+      "name": "mojo(sel=100)"
+    },
+    {
+      "rps": 21422.8,
+      "cores": 1.69,
+      "rps_per_core": 12665,
+      "p50_us": 311.0,
+      "p99_us": 515.0,
+      "round": 1,
+      "name": "python(sel=25)"
+    },
+    {
+      "rps": 74058.5,
+      "cores": 3.0,
+      "rps_per_core": 24724,
+      "p50_us": 102.0,
+      "p99_us": 203.0,
+      "round": 1,
+      "name": "mojo(sel=25)"
+    },
+    {
+      "rps": 43839.8,
+      "cores": 1.5,
+      "rps_per_core": 29195,
+      "p50_us": 180.0,
+      "p99_us": 235.0,
+      "round": 1,
+      "name": "python(sel=5)"
+    },
+    {
+      "rps": 111459.6,
+      "cores": 2.32,
+      "rps_per_core": 48005,
+      "p50_us": 67.0,
+      "p99_us": 110.0,
+      "round": 1,
+      "name": "mojo(sel=5)"
+    },
+    {
+      "rps": 35772.8,
+      "cores": 1.43,
+      "rps_per_core": 24960,
+      "p50_us": 222.0,
+      "p99_us": 251.0,
+      "round": 2,
+      "name": "python(sel=100)"
+    },
+    {
+      "rps": 43280.9,
+      "cores": 4.08,
+      "rps_per_core": 10608,
+      "p50_us": 175.0,
+      "p99_us": 315.0,
+      "round": 2,
+      "name": "mojo(sel=100)"
+    },
+    {
+      "rps": 17451.1,
+      "cores": 1.35,
+      "rps_per_core": 12938,
+      "p50_us": 482.0,
+      "p99_us": 850.0,
+      "round": 2,
+      "name": "python(sel=25)"
+    },
+    {
+      "rps": 75091.4,
+      "cores": 3.0,
+      "rps_per_core": 25020,
+      "p50_us": 101.0,
+      "p99_us": 182.0,
+      "round": 2,
+      "name": "mojo(sel=25)"
+    },
+    {
+      "rps": 43903.6,
+      "cores": 1.54,
+      "rps_per_core": 28421,
+      "p50_us": 178.0,
+      "p99_us": 242.0,
+      "round": 2,
+      "name": "python(sel=5)"
+    },
+    {
+      "rps": 108575.9,
+      "cores": 2.3,
+      "rps_per_core": 47160,
+      "p50_us": 69.0,
+      "p99_us": 111.0,
+      "round": 2,
+      "name": "mojo(sel=5)"
+    },
+    {
+      "rps": 35880.0,
+      "cores": 1.43,
+      "rps_per_core": 25104,
+      "p50_us": 222.0,
+      "p99_us": 236.0,
+      "round": 3,
+      "name": "python(sel=100)"
+    },
+    {
+      "rps": 43649.4,
+      "cores": 4.1,
+      "rps_per_core": 10658,
+      "p50_us": 173.0,
+      "p99_us": 315.0,
+      "round": 3,
+      "name": "mojo(sel=100)"
+    },
+    {
+      "rps": 17854.6,
+      "cores": 1.31,
+      "rps_per_core": 13635,
+      "p50_us": 451.0,
+      "p99_us": 552.0,
+      "round": 3,
+      "name": "python(sel=25)"
+    },
+    {
+      "rps": 54131.2,
+      "cores": 2.93,
+      "rps_per_core": 18490,
+      "p50_us": 133.0,
+      "p99_us": 319.0,
+      "round": 3,
+      "name": "mojo(sel=25)"
+    },
+    {
+      "rps": 37215.4,
+      "cores": 1.53,
+      "rps_per_core": 24343,
+      "p50_us": 182.0,
+      "p99_us": 583.0,
+      "round": 3,
+      "name": "python(sel=5)"
+    },
+    {
+      "rps": 105688.6,
+      "cores": 2.28,
+      "rps_per_core": 46418,
+      "p50_us": 70.0,
+      "p99_us": 119.0,
+      "round": 3,
+      "name": "mojo(sel=5)"
+    }
+  ],
+  "medians": {
+    "python(sel=100)": {
+      "rounds": 3,
+      "rps": 35880.0,
+      "cores": 1.43,
+      "rps_per_core": 25091,
+      "rps_per_core_rounds": 25104,
+      "p99_us": 236.0,
+      "p99_us_min": 234.0,
+      "p99_us_max": 251.0
+    },
+    "mojo(sel=100)": {
+      "rounds": 3,
+      "rps": 43280.9,
+      "cores": 4.08,
+      "rps_per_core": 10608,
+      "rps_per_core_rounds": 10608,
+      "p99_us": 315.0,
+      "p99_us_min": 315.0,
+      "p99_us_max": 490.0
+    },
+    "python(sel=25)": {
+      "rounds": 3,
+      "rps": 17854.6,
+      "cores": 1.35,
+      "rps_per_core": 13226,
+      "rps_per_core_rounds": 12938,
+      "p99_us": 552.0,
+      "p99_us_min": 515.0,
+      "p99_us_max": 850.0
+    },
+    "mojo(sel=25)": {
+      "rounds": 3,
+      "rps": 74058.5,
+      "cores": 3.0,
+      "rps_per_core": 24686,
+      "rps_per_core_rounds": 24724,
+      "p99_us": 203.0,
+      "p99_us_min": 182.0,
+      "p99_us_max": 319.0
+    },
+    "python(sel=5)": {
+      "rounds": 3,
+      "rps": 43839.8,
+      "cores": 1.53,
+      "rps_per_core": 28653,
+      "rps_per_core_rounds": 28421,
+      "p99_us": 242.0,
+      "p99_us_min": 235.0,
+      "p99_us_max": 583.0
+    },
+    "mojo(sel=5)": {
+      "rounds": 3,
+      "rps": 108575.9,
+      "cores": 2.3,
+      "rps_per_core": 47207,
+      "rps_per_core_rounds": 47160,
+      "p99_us": 111.0,
+      "p99_us_min": 110.0,
+      "p99_us_max": 119.0
+    }
+  },
+  "comparisons": {
+    "definition": "by_sel[sel].throughput and .per_core: median across rounds of mojo / python within the round (the headline); .throughput_of_medians and .per_core_of_medians: mojo's median rps (over its median cores) against python's, the ratios the medians block gives",
+    "by_sel": {
+      "100": {
+        "throughput": 1.21,
+        "throughput_of_medians": 1.206,
+        "per_core": 0.425,
+        "per_core_of_medians": 0.423,
+        "rounds": 3
+      },
+      "25": {
+        "throughput": 3.457,
+        "throughput_of_medians": 4.148,
+        "per_core": 1.934,
+        "per_core_of_medians": 1.867,
+        "rounds": 3
+      },
+      "5": {
+        "throughput": 2.542,
+        "throughput_of_medians": 2.477,
+        "per_core": 1.659,
+        "per_core_of_medians": 1.648,
+        "rounds": 3
+      }
+    }
+  }
+}

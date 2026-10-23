@@ -1,6 +1,6 @@
 [project]
 name = "mojo-http"
-version = "1.15.0"
+version = "1.16.0"
 description = "HTTP server and web framework for Mojo — routing, content negotiation, SSE, and a maintained lightbug_http fork"
 authors = [{ name = "Wm Talcott", email = "32972881+codetalcott@users.noreply.github.com" }]
 requires-python = ">=3.10"
@@ -8112,6 +8112,7 @@ python3 scripts/bundle_artifact.py \
 cp LICENSE "$out/LICENSE.mojo-http.txt" || exit 1
 cp licenses/LICENSE.lightbug_http.txt "$out/LICENSE.lightbug_http.txt" || exit 1
 cp licenses/LICENSE.mojo-runtime.txt "$out/LICENSE.mojo-runtime.txt" || exit 1
+cp licenses/LICENSE.max.txt "$out/LICENSE.max.txt" || exit 1
 cp licenses/NOTICE.m0serve.txt "$out/NOTICE.txt" || exit 1
 python3 scripts/ffi_portability_check.py --require-self-contained \
   "$out/m0serve" || exit 1
@@ -8183,6 +8184,7 @@ for d in "$pkg/licenses" packaging/m0serve/licenses; do
   cp LICENSE "$d/LICENSE.mojo-http.txt" || exit 1
   cp licenses/LICENSE.lightbug_http.txt "$d/" || exit 1
   cp licenses/LICENSE.mojo-runtime.txt "$d/" || exit 1
+  cp licenses/LICENSE.max.txt "$d/" || exit 1
   cp licenses/NOTICE.m0serve.txt "$d/NOTICE.txt" || exit 1
 done
 
@@ -8268,7 +8270,7 @@ assert any(n.endswith("_lib/libm0core.dylib") or n.endswith("_lib/libm0core.so")
            for n in names), "libm0core is not in the wheel"
 assert any("dist-info/RECORD" in n for n in names), "no RECORD"
 for want in ("NOTICE.txt", "LICENSE.lightbug_http.txt", "LICENSE.mojo-runtime.txt",
-             "LICENSE.mojo-http.txt"):
+             "LICENSE.max.txt", "LICENSE.mojo-http.txt"):
     assert any(n.endswith("m0serve/licenses/" + want) for n in names), f"missing {want}"
     assert any("dist-info/licenses/" in n and n.endswith(want) for n in names), \
         f"missing {want} from dist-info/licenses"

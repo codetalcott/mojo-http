@@ -30,7 +30,8 @@ this file and LICENSE.lightbug_http.txt ship alongside it.
 Mojo runtime libraries
 Copyright Modular Inc
 Licensed under the Apache License 2.0 with LLVM Exceptions; see
-LICENSE.mojo-runtime.txt for the full text.
+LICENSE.mojo-runtime.txt for the full text, and LICENSE.max.txt for the
+licence Modular's own distribution of these files names (below).
 Upstream: https://github.com/modular/modular
 
 These are shipped as separate files beside the binary, which resolves them
@@ -52,6 +53,19 @@ in, and each was re-signed ad-hoc because arm64 macOS invalidates a code
 signature on any Mach-O edit. On Linux their DT_RUNPATH was rewritten to
 $ORIGIN for the same reason. No source was changed and no code was
 recompiled; the executable code is byte-for-byte as Modular built it.
+
+WHY TWO LICENCE TEXTS. The sources of these libraries are licensed under
+Apache 2.0 with LLVM Exceptions in modular/modular, and this bundle
+complies with that licence in full. The wheel Modular distributes the
+built files in (mojo-compiler 1.2.0) carries no licence file, and its
+metadata names Modular's MAX License instead. If that metadata is right,
+the MAX License of 2026-10-21, which governs Mojo 1.2.0, permits
+redistributing these files as part of an application with material
+functionality of its own (its section 1.2), provided a human-readable copy
+of its terms goes with them; LICENSE.max.txt is that copy. Its section 1.5
+keeps the Apache terms in control of any component they cover. Under
+either reading these three files stay under their own licence, not under
+m0serve's MIT License.
 
 --------------------------------------------------------------------------------
 
