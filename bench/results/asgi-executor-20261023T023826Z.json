@@ -1,0 +1,61 @@
+{
+  "bench": "asgi_executor",
+  "recorded_utc": "2026-10-23T02:38:26+00:00",
+  "environment": {
+    "version": "1.16.0",
+    "git_sha": "d207a9ef",
+    "source_stamp": "",
+    "git_dirty": false,
+    "os": "Darwin 27.0.0",
+    "machine": "arm64",
+    "python": "Python 3.13.6 (main, Aug 14 2025, 16:07:26) [Clang 20.1.4 ]",
+    "mojo": "Mojo 1.2.0 (2016d0cd)",
+    "granian": "granian 2.8.4",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "numpy": "2.5.3",
+    "cpu": "Apple M4",
+    "cores_physical": "10",
+    "os_build": "macOS 27.0.1 (26A434)",
+    "memory_bytes": "17179869184",
+    "cores_performance": "4",
+    "cores_efficiency": "6",
+    "power_source": "AC Power",
+    "low_power_mode": "0",
+    "thermal": "No thermal warning level has been recorded; No performance warning level has been recorded; No CPU power status has been recorded"
+  },
+  "parameters": {
+    "seconds": "8",
+    "threads": "8"
+  },
+  "definitions": {
+    "medians.rps_per_core": "median rps across rounds / median cores across rounds; the figure docs/BENCHMARKS.md renders",
+    "medians.rps_per_core_rounds": "median across rounds of each round's own rps per core",
+    "cores": "process CPU seconds over wall seconds during the measured window"
+  },
+  "rows": [
+    {
+      "name": "m0serve",
+      "rps": 29462.375,
+      "errors": 0,
+      "mixed_fast_p50_us": 139.45798855274916,
+      "mixed_fast_p99_us": 343.24999433010817
+    },
+    {
+      "name": "uvicorn",
+      "rps": 23835.25,
+      "errors": 0,
+      "mixed_fast_p50_us": 169.2500663921237,
+      "mixed_fast_p99_us": 375.0829491764307
+    }
+  ],
+  "medians": {
+    "m0serve": {
+      "rounds": 1,
+      "rps": 29462.375
+    },
+    "uvicorn": {
+      "rounds": 1,
+      "rps": 23835.25
+    }
+  }
+}
