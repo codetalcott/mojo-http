@@ -3083,8 +3083,9 @@ echo "phase 5: a hold taken on a pool thread, delivered in ${took}ms behind two 
 #
 # On a FREE-THREADED build this phase proves the refusal instead: the ASGI
 # mount needs the asyncio executor, whose Python type cannot be built there
-# (Mojo lays PyObject out for the GIL build, measured on 1.0.0 and not
-# re-measured since the 1.1.0 pin; modular/modular#5726), so
+# (Mojo lays PyObject out for the GIL build, measured on 1.0.0, 1.1.0 and
+# 1.2.0 by scripts/probes/free_threaded_module_probe.mojo;
+# modular/modular#5726), so
 # the server must exit 78 naming the issue rather than segfault -- alone,
 # through --doctor (same code), and under --workers 2, where the refusal is
 # made in each worker and the supervisor must propagate it rather than

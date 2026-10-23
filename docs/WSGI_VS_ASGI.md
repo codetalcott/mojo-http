@@ -121,8 +121,8 @@ by the server's own 500.
 
 **One limit, from the toolchain.** The executor is a Python type built
 in-process, and Mojo's Python bindings lay that type out for the
-GIL build (measured on 1.0.0 and not re-measured since the pin moved to
-1.1.0; `py-canary` is what answers it). On a free-threaded CPython the server refuses an ASGI app with
+GIL build (modular/modular#5726; measured on 1.0.0, 1.1.0 and 1.2.0). On a
+free-threaded CPython the server refuses an ASGI app with
 exit 78 rather than crash, so ASGI under `--threads` does not exist on this
 toolchain ([the known issue](ROADMAP.md#known-issues)).
 
