@@ -11,7 +11,8 @@ in a minor release: `m0serve`'s flags and environment variables, the
 ## [1.16.0] — 2026-10-23
 
 The toolchain moves to Mojo 1.2.0, and nothing served changes. The m0serve
-wheel bundles the 1.2.0 runtime. `m0 0.13.0` is gated on Mojo 1.2.0, and,
+wheel bundles the 1.2.0 runtime, and now a copy of the MAX License beside
+it. `m0 0.13.0` is gated on Mojo 1.2.0, and,
 where MAX is installed, on `max-core` 26.7.0: `m0 0.12.0` refuses a project
 on 1.2.0 and 0.13.0 refuses one still on 1.1.0, so an application built
 with `m0` moves both pins together, and `m0 new` writes `mojo==1.2.0` from
@@ -47,6 +48,15 @@ Changed).
   `scripts/probes/free_threaded_module_probe.mojo` is the re-test, since
   the refusal hides the crash from every smoke. The write-up
   is [docs/notes/the-pin-moves-to-1-2-0.md](docs/notes/the-pin-moves-to-1-2-0.md).
+- **The m0serve wheel and bundle ship a copy of the MAX License**
+  (`LICENSE.max.txt`, the terms of 2026-10-21) beside the Apache text the
+  bundled Mojo runtime already carried. Modular's `mojo-compiler` 1.2.0
+  wheel names that licence in its metadata, and the licence permits
+  shipping the runtime inside an application on condition that a copy of
+  its terms goes with it; the Apache compliance is unchanged
+  ([docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md)). An application
+  that distributes an `m0 build --release` artifact or an `m0 image`
+  carries the same runtime, and `m0` does not yet add the copy to those.
 
 ## [1.15.0] — 2026-10-11
 

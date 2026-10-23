@@ -102,6 +102,7 @@ Source, documentation and issues: <https://github.com/codetalcott/mojo-http>
 ## Licence
 
 MIT, and the wheel redistributes third-party components under their own
-terms — the Mojo runtime (Apache-2.0 with LLVM Exceptions) and a fork of
-lightbug_http (MIT). Full text and attribution ship inside the wheel; see
-`NOTICE.txt` beside the installed package.
+terms — the Mojo runtime (Apache-2.0 with LLVM Exceptions; the wheel also
+carries the MAX License, which Modular's distribution of the runtime names)
+and a fork of lightbug_http (MIT). Full text and attribution ship inside the
+wheel; see `NOTICE.txt` beside the installed package.
