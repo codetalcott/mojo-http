@@ -8,6 +8,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+## [1.16.0] — 2026-10-23
+
+The toolchain moves to Mojo 1.2.0, and nothing served changes. The m0serve
+wheel bundles the 1.2.0 runtime. `m0 0.13.0` is gated on Mojo 1.2.0, and,
+where MAX is installed, on `max-core` 26.7.0: `m0 0.12.0` refuses a project
+on 1.2.0 and 0.13.0 refuses one still on 1.1.0, so an application built
+with `m0` moves both pins together, and `m0 new` writes `mojo==1.2.0` from
+now on. Application code that names `FileDescriptor`, `std.hashlib` or
+`std.io.write`'s `Writable` meets the same renames the tree did (see
+Changed).
+
 ### Changed
 
 - **The pinned toolchain is Mojo 1.2.0** (was 1.1.0), with `max-core`
@@ -8911,6 +8922,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.16.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.16.0
 [1.15.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.15.0
 [1.14.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.14.0
 [1.13.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.13.0
