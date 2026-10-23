@@ -2399,8 +2399,11 @@ grep -q 'sessionid' "$jar" || fail 'Django never set a session cookie'
 # cookie carries expires, HttpOnly, Max-Age and SameSite=Lax; the bridge
 # used to re-serialise Set-Cookie through its own parser and dropped
 # expires and SameSite from every response of every Django app, which no
-# count of headers could see.
-line=$(curl -s -i -b "$jar" http://localhost:$port/session/bump | grep -i '^set-cookie: sessionid=')
+# count of headers could see. Django 5.2 hands over the value with a leading
+# space (`output(header="")`) and 6.x without, and the line goes to the wire
+# verbatim, so the match takes any whitespace after the colon, as RFC 9110's
+# OWS does.
+line=$(curl -s -i -b "$jar" http://localhost:$port/session/bump | grep -iE '^set-cookie:[[:space:]]*sessionid=')
 [ -n "$line" ] || fail 'the session cookie was not re-sent on the wire'
 for attr in 'expires=' 'HttpOnly' 'Max-Age=' 'SameSite=Lax'; do
   echo "$line" | grep -q "$attr" || fail "the session cookie lost its $attr attribute on the wire: $line"
