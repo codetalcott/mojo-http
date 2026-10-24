@@ -8,6 +8,20 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **A component tier for Mojo views** (SPEC N54, N55; DECISIONS D67;
+  docs/notes/a-component-tier.md): `from m0_http.tags import Div, Form,
+  Input, Li` and an element is `Li(title, cls="x", href=url)` — a bare
+  string is text and escaped by construction, an `El` is markup, `Raw`
+  says so by name, a void element takes no children, and a swap attribute
+  typed as a keyword is refused at render. `Fragment.element(tag, verb,
+  url, ...)` is the swap in this tier and renders the bytes `Fragment.el`
+  does. The expression tier (`el`, `void`) is superseded and kept while
+  the applications on it move, one per round; `apps/fragment_notes` moved
+  first under its unchanged smoke. Measured: a 50-item list in 24 us
+  against the expression tier's 28 and the builder's 7.5.
+
 ## [1.16.0] — 2026-10-23
 
 The toolchain moves to Mojo 1.2.0, and nothing served changes. The m0serve

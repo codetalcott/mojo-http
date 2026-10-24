@@ -110,41 +110,64 @@ A `Fragment` writes its root id once and generates every attribute that
 targets it:
 
 ```mojo
+from m0_http.tags import Button, Form, Input, Li, Ul
+
 comptime Frag = Fragment[Htmx]
 
 var f = Frag("items")
-f.raw(f.el("form", "post", ITEMS, attr("class", "new"),
-    void("input", attr("name", "title")),
-    el("button", "", "Add"),
+f.raw(f.element("form", "post", ITEMS,
+    Input(name="title", required=True),
+    Button("Add"),
+    cls="new",
 ))
+var rows = List[El]()
+for i in range(len(items.titles)):
+    rows.append(Li(items.titles[i], id="item-" + String(items.ids[i])))
+f.raw(Ul(rows))
 return f^.finish()
 ```
 
-`f.el(tag, verb, url, attrs, children...)` is an element that swaps the
-fragment; `f.swap(verb, url)` is the attributes alone, for the builder
-style. Application code never types an `hx-` or `data-on:` swap attribute,
-and never retypes the id as `#items`.
+An element is a function named for its tag (`m0_http.tags`, one per HTML
+element; `element(tag, ...)` for any other), its children positional and
+its attributes keywords: `cls` is `class`, `_for` is `for`, every other
+`_` is `-` (`hx_boost`, `aria_label`), a `Bool` is the attribute's
+presence (`required=True`) and an `Int` its decimal. A bare string child
+is **text, escaped**; an `El` another tag function made is markup; a
+`List[El]` is each in turn; `Raw("&times;")` is markup in a string and
+says so. A void element (`Input`, `Img`, `Br`) takes keywords only, so a
+child handed to one does not compile. `f.element(tag, verb, url,
+children..., **attrs)` is an element that swaps the fragment; `f.swap(verb,
+url)` is the attributes alone, for the builder style. Application code
+never types an `hx-` or `data-on:` swap attribute — a keyword that spells
+one (`hx_post=`, `hx_target=`, `data_on_click=`) is refused at render,
+naming `f.element` — and never retypes the id as `#items`.
 
 `push=True` on either makes the swap move the address bar to its URL, so
 the view it arrives at — a filtered list, a detail — can be reloaded,
-bookmarked and gone back to: `f.el("a", "get", url, attr("href", url),
-text(title), push=True)`. Only a `get` is pushed, a pushed URL being one
+bookmarked and gone back to: `f.element("a", "get", url, title,
+href=url, push=True)`. Only a `get` is pushed, a pushed URL being one
 the browser GETs on reload. htmx asks for it again on back with
 `HX-Request-Type: full`, which `page_or_fragment` answers as a document.
 `Fragment[Datastar]` refuses a push: Datastar has no history handling, so
 a view that needs an address there is a plain link.
 
-Escaping is named at every hole:
+What escapes:
 
 | call | for | escapes |
 |---|---|---|
-| `text(x)` | data inside an element | yes |
-| `attr(name, x)` | data inside an attribute; writes the quotes | yes |
-| `el`, `void`, `flag` | markup this code wrote | children are taken as given |
-| `raw(x)` | markup this code wrote | no |
+| a `String` child of a tag function | data inside an element | yes |
+| a `String`, `Int` or `Bool` keyword | data inside an attribute; writes the quotes | yes |
+| `Raw(x)`, an `El` | markup this code wrote | no |
+| `h.text(x)`, `h.attr(name, x)` in the builder | the same, one call per piece | yes |
+| `h.raw(x)` in the builder | markup this code wrote | no |
 
-Request data passed as a bare string is an injection. `String` stays the
-currency: a fragment finishes to a `String`.
+`String` stays the currency at the boundary: a fragment finishes to a
+`String`, `reply.html` takes one, and `el.html()` reads an element as one.
+The earlier expression tier — `el(tag, attrs, children...)`, `void`,
+`attr`, `flag`, `text`, `f.el` — is superseded (DECISIONS D67) and kept
+while the applications on it move; in it a bare string child is MARKUP,
+the opposite rule, so a file is written in one tier or the other and
+never both.
 
 ### Vocabularies
 

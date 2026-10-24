@@ -55,11 +55,13 @@ of those lifts, and the smoke has not changed:
   application outside this repository, and then lifted into
   `m0_http.login` (D53). The smoke, `sabotage-notes-login` and the
   browser run that held the hand-written copy hold the module now.
-- **an element is an expression.** `render_list` is `el(...)` nested the
-  way its markup nests, `text(...)` at every hole that carries data and
-  `f.el(...)` for an element that swaps the fragment; `render_note` is the
-  same fragment in the builder, one call per attribute. Both are the same
-  bytes, and the smoke did not move when the list changed shape.
+- **an element is a component.** `render_list` is `Ul(...)`, `Li(...)`,
+  `Form(...)` nested the way its markup nests, a bare string TEXT at every
+  hole and `f.element(...)` for an element that swaps the fragment;
+  `render_note` is the same fragment in the builder, one call per
+  attribute. Both are the same bytes, and the smoke did not move when the
+  list changed shape — twice: onto the expression tier (`el`, 2026-09)
+  and off it onto this one (D67, 2026-10-24).
 
 Nothing in it is written the old way any more. The diff from the first
 commit of this file to this one is what the framework layer adds.
@@ -125,28 +127,26 @@ from m0_http import (
     Fragment,
     Html,
     Htmx,
+    El,
     Login,
+    Raw,
     RESOURCE_ITEM,
     SessionKeys,
     SessionVerdict,
     Views,
-    attr,
     csrf_header,
     csrf_input,
     csrf_refusal,
-    el,
-    flag,
     form,
     no_store,
     PageShell,
     page_or_fragment,
     refuse_signed_out,
-    text,
     url_for,
     vary_on_fragment_headers,
-    void,
     wants_fragment,
 )
+from m0_http.tags import Button, Div, Form, Input, Label, Li, P, Span, Textarea, Ul
 
 # Pinned deliberately, as datastar_todo pins its CDN: a floating version
 # would let an upstream release break this example without a commit here.
@@ -346,29 +346,30 @@ def render_login(error: String) raises -> String:
     here that is not: signing in is a NAVIGATION. Swapping it would leave
     the address bar on `/login` with the notes in it, so a reload, a
     bookmark or the back button would each land somewhere the user did
-    not just come from. `f.el` is for the elements that replace this
+    not just come from. `f.element` is for the elements that replace this
     fragment; a login replaces the page.
     """
     var f = Frag(NOTES_ID)
-    f.raw(el("form", attr("method", "post") + attr("action", LOGIN),
-        void("input", attr("name", "user") + attr("placeholder", "user") + flag("required")),
-        void("input", attr("type", "password") + attr("name", "password") + attr("placeholder", "password") + flag("required")),
-        el("button", "", "Sign in"),
+    f.raw(Form(
+        Input(name="user", placeholder="user", required=True),
+        Input(type="password", name="password", placeholder="password", required=True),
+        Button("Sign in"),
+        method="post", action=LOGIN,
     ))
     if error.byte_length() > 0:
-        f.raw(el("p", attr("class", "error"), text(error)))
+        f.raw(P(error, cls="error"))
     return f^.finish()
 
 
 def render_list(store: NoteStore, subject: String, csrf: String) raises -> String:
     """The `notes` fragment: the form, then every note with its actions.
 
-    Written in the expression tier — an element per expression, the
-    escaping named at each hole (`text` for data, `attr` for a value, a
-    bare string for markup this file trusts), `f.el` for an element that
-    swaps the fragment — where `render_note` below is the builder, one
-    call per attribute. Same `Frag`, same bytes; the two shapes are kept
-    side by side on purpose.
+    Written in the component tier — an element per call, a bare string
+    TEXT and escaped, markup in by name (`Raw`, for the entity and the
+    field `csrf_input` renders), attributes as keywords, `f.element` for
+    an element that swaps the fragment — where `render_note` below is the
+    builder, one call per attribute. Same `Frag`, same bytes; the two
+    shapes are kept side by side on purpose.
 
     Every write is a `<form>`, and how each carries the CSRF token
     follows from where htmx 4 puts a form's fields: a POST's go in the
@@ -377,43 +378,47 @@ def render_list(store: NoteStore, subject: String, csrf: String) raises -> Strin
     all and sends the token as a header.
     """
     var f = Frag(NOTES_ID)
-    var boxes = String()
+    var boxes = List[El]()
     for tag in ["work", "home", "later"]:
-        boxes += el("label", "", void("input", attr("type", "checkbox") + attr("name", "tag") + attr("value", tag)), text(String(" ", tag))) + " "
-    f.raw(f.el("form", "post", NOTES, "",
-        csrf_input(csrf),
-        void("input", attr("name", "title") + attr("placeholder", "title") + flag("required")),
-        el("textarea", attr("name", "body") + attr("placeholder", "body")),
-        el("div", "", boxes),
-        el("button", "", "Add"),
+        boxes.append(Label(Input(type="checkbox", name="tag", value=tag), String(" ", tag)))
+        boxes.append(Raw(" "))
+    f.raw(f.element("form", "post", NOTES,
+        Raw(csrf_input(csrf)),
+        Input(name="title", placeholder="title", required=True),
+        Textarea(name="body", placeholder="body"),
+        Div(boxes),
+        Button("Add"),
     ))
-    var items = String()
+    var items = List[El]()
     for i in range(len(store.ids)):
         var url = url_for(NOTE, String(store.ids[i]))
-        var tags = String()
+        var tags = List[El]()
         for t in range(len(store.tags[i])):
-            tags += " " + el("span", attr("class", "tag"), text(store.tags[i][t]))
-        items += el("li", "",
+            tags.append(Raw(" "))
+            tags.append(Span(store.tags[i][t], cls="tag"))
+        items.append(Li(
             # push: the note is a VIEW, so the swap that arrives at it moves
             # the address bar and the note can be reloaded and linked to.
-            f.el("a", "get", url, attr("href", url), text(store.titles[i]), push=True),
-            tags, " ",
-            f.el("form", "delete", url, attr("class", "delete"),
-                el("button", "", "&times;"),
-                header=csrf_header(csrf),
+            f.element("a", "get", url, store.titles[i], href=url, push=True),
+            tags, Raw(" "),
+            f.element("form", "delete", url,
+                Button(Raw("&times;")),
+                cls="delete", header=csrf_header(csrf),
             ),
-        )
-    f.raw(el("ul", "", items))
+        ))
+    f.raw(Ul(items))
     if len(store.ids) == 0:
-        f.raw(el("p", "", text("none yet")))
+        f.raw(P("none yet"))
     # A div, not a p: `p` takes phrasing content only, and a `form` is
     # flow content — a browser would close the paragraph before it.
-    f.raw(el("div", attr("class", "who"),
-        text(String("signed in as ", subject)), " ",
-        el("form", attr("class", "session") + attr("method", "post") + attr("action", LOGOUT),
-            csrf_input(csrf),
-            el("button", "", "Sign out"),
+    f.raw(Div(
+        String("signed in as ", subject), Raw(" "),
+        Form(
+            Raw(csrf_input(csrf)),
+            Button("Sign out"),
+            cls="session", method="post", action=LOGOUT,
         ),
+        cls="who",
     ))
     return f^.finish()
 
