@@ -5,7 +5,9 @@ fragments that name their own swap target, one view answering both a page
 and a fragment, URLs built from the routes, and signed sessions. The
 `views` scaffold uses the table, fragments and the page-or-fragment answer
 in three files, and the examples start from it; the `auth` scaffold is the
-same list behind a login, on `m0_http.login`.
+same list behind a login, on `m0_http.login`. Both use htmx; `board` and
+`live` use Datastar, and what changes with the library is under
+[Vocabularies](#vocabularies).
 
 ## Views
 
@@ -86,8 +88,10 @@ it was served from. A view of the other kind takes its route through
 
 `form(req)` returns `None` unless the body is `application/x-www-form-urlencoded`,
 so a missing form cannot be read as an empty one. The `Form` keeps every
-value of a repeated key; `first("title")` is the usual read. Multipart is
-not parsed.
+value of a repeated key; `first("title")` is the usual read. htmx and
+Datastar both send a DELETE's fields in the query string, which
+`parse_form(req.uri.query_string)` reads into the same `Form`. Multipart
+is not parsed.
 
 A view answers with an `HTTPResponse`, and `reply` builds the usual ones:
 
@@ -100,8 +104,8 @@ A view answers with an `HTTPResponse`, and `reply` builds the usual ones:
 | `reply.empty(status, text)` | the status, no body |
 | `reply.problem(status, title, detail, instance)` | an RFC 9457 `application/problem+json` body; all four arguments are required, and `instance` is the request's path |
 
-`reply.problem` is for a route no browser swaps; an error a person may see
-is a fragment with its status ([below](#a-page-or-a-fragment)).
+`reply.problem` is for a route no browser swaps; how an error reaches a
+person depends on the library ([Vocabularies](#vocabularies)).
 `reply.param_int(s)` reads a `:id` capture, -1 for anything but a number.
 
 ## Fragments
@@ -152,27 +156,27 @@ The type parameter is the client library.
 
 **`Fragment[Htmx]`** emits `hx-get`/`hx-post`/…, `hx-target` and `hx-swap`,
 for htmx 4. Its verbs are `get`, `post`, `put`, `patch`, `delete` and
-`query`. Two htmx 4 behaviours shape an application: every 4xx answer is
-swapped, so an error a person may see is a fragment with the right status
-(`page_or_fragment(..., status=422)`); and a DELETE's fields travel in the
-query string, so a CSRF token on one goes in a header:
-`f.el("button", "delete", url, ..., header=csrf_header(token))` writes
+`query`. `header=csrf_header(token)` on `f.el` or `f.swap` writes
 `hx-headers` beside the swap. The layer refuses a header name that is not a
 token, and a value holding a control byte or a byte outside ASCII.
 
 **`Fragment[Datastar]`** emits `data-on:EVENT="@verb('url')"` with no
 target: Datastar morphs a `text/html` answer into the element whose id it
-carries. The event follows the element, a form submitting, a field
-changing, anything else clicking. The URL sits inside a JavaScript string,
-so one carrying `'`, `\`, CR or LF is refused; `url_for` encodes them.
-A request header is refused too: Datastar spells one inside the action,
-so a Datastar write carries its CSRF token in a field. Datastar 1.0
-applies an action's answer only when its status is 200: a 204 does
-nothing and any other status is dropped, so an error fragment answered
-with a 422 never reaches the page. Keep an invalid submission in the
-browser (`required`) and answer a client that bypasses it with
-`reply.problem`. Otherwise, moving an application between the two is the
-type parameter and the script tag.
+carries. The event follows the element: a form on `submit__prevent`, with
+`{contentType: 'form'}` so its fields travel; a field on `change`; a link
+or button on `click__prevent`; anything else on `click`. The URL sits
+inside a JavaScript string, so one carrying `'`, `\`, CR or LF is refused;
+`url_for` encodes them. `header=` is refused: Datastar spells a request
+header inside the action, which the layer does not write.
+
+What an application does differently under each:
+
+| | `Fragment[Htmx]` | `Fragment[Datastar]` |
+|---|---|---|
+| an error a person may see | a fragment with its status (`page_or_fragment(..., status=422)`), since every 4xx is swapped | kept in the browser (`required`), since only a 200 is applied; `reply.problem` answers a client that bypasses it |
+| a write's CSRF token | the header, `header=csrf_header(token)` | a form field, `csrf_input(token)` |
+| a delete behind a login | `DELETE`, as any write | a POST ([a delete button](#a-delete-button)) |
+| `refuse_signed_out` | its 401 swaps the login form in | its 401 is dropped, and the click does nothing |
 
 **Your own.** `Vocabulary` is a trait an application may conform to:
 `swap` writes the attributes, `h.open_kind()` says which element is open,
@@ -365,7 +369,8 @@ if refused:
   token a page renders) and `set_cookie(resp)`. `sign_out(resp)` expires
   the cookie.
 - `refuse_signed_out` answers a navigation with a 303 to the login page and
-  a swap with a 401 carrying the form.
+  a swap with a 401 carrying the form; what each library does with it is
+  under [Vocabularies](#vocabularies).
 - `csrf_refusal` answers 403 unless a write carries this session's token:
   the `X-CSRF-Token` header, else the form's `csrf` field, never the query
   string. `csrf_input(token)` and `csrf_header(token)` write the two.
@@ -450,6 +455,82 @@ reached through the bus: the handler's `make` calls
 as `apps/datastar_todo` has. The `board` scaffold sends from a view and
 keeps its list in one process (`max_workers() -> 1`); `live` sends from a
 producer.
+
+## A delete button
+
+A button on every row of a `Fragment[Datastar]` list, and the view it
+calls:
+
+```mojo
+comptime Frag = Fragment[Datastar]
+comptime ITEM = "/items/:id"
+
+def render_list(items: Items) raises -> String:
+    var f = Frag("items")
+    var rows = String()
+    for i in range(len(items.ids)):
+        var url = url_for(ITEM, String(items.ids[i]))
+        rows += el("li", "", text(items.titles[i]),
+            f.el("button", "delete", url, attr("aria-label", "delete"), "&times;"),
+        )
+    f.raw(el("ul", "", rows))
+    return f^.finish()
+
+def delete(req: HTTPRequest, params: List[String], mut items: Items) raises -> HTTPResponse:
+    var i = items.find(reply.param_int(params[0]))
+    if i >= 0:
+        items.remove(i)
+    return page_or_fragment(req, render_list(items), Site("items"))
+
+v.add_write("DELETE", ITEM, delete, on_loop=True)
+```
+
+The button is written as
+
+```html
+<button aria-label="delete" data-on:click__prevent="@delete(&#x27;/items/3&#x27;)">&times;</button>
+```
+
+and a click sends `DELETE /items/3?datastar=…` with no body. Datastar
+puts a DELETE's signals in the query string as JSON, including whatever
+has been typed into a `data-bind` field; a signal whose name starts with
+`_` is not sent. The view reads only its `:id`.
+
+The answer is the list, at 200, and Datastar morphs it into the page by
+its id. An id that is already gone gets the list too, so a tab rendered
+before another tab deleted the row catches up. A 404 would be dropped,
+and the deleted row would stay on that tab.
+
+**With a stream**, as in the `board` scaffold, every open tab is sent the
+list, including the one that clicked. So the view publishes, then
+answers 204, which Datastar ignores:
+
+```mojo
+def delete(req: HTTPRequest, params: List[String], mut st: Board) raises -> HTTPResponse:
+    if st.remove(reply.param_int(params[0])):     # the state's own: False if absent
+        _ = st.stream.patch_elements(EVENTS, render_board(st))
+    return reply.no_content()
+```
+
+**Behind a login** a Datastar delete is a POST. `Fragment[Datastar]`
+writes no header and a DELETE's fields go in the query string, so
+`csrf_refusal` finds no token: the DELETE is answered 403, which Datastar
+drops, and the button does nothing. A form posting to a route of its own
+sends the token in the body:
+
+```mojo
+comptime ITEM_DELETE = ITEM + "/delete"
+
+f.el("form", "post", url_for(ITEM_DELETE, String(id)), attr("class", "delete"),
+    csrf_input(session.csrf),
+    el("button", attr("aria-label", "delete"), "&times;"),
+)
+
+v.add_write("POST", ITEM_DELETE, delete, on_loop=True)
+```
+
+The view starts the way every write does: the session, then
+`csrf_refusal(req, form(req), session, req.uri.path)` ([a login](#a-login)).
 
 ## Not built
 
