@@ -776,12 +776,17 @@ def test_a_swap_attribute_typed_as_a_keyword_is_refused() raises:
     """An application never spells a swap: the fragment does. The tier
     refuses the attributes the two vocabularies write — `hx-VERB`,
     `hx-target`, `hx-swap`, `hx-push-url`, `hx-headers` — and anything
-    under `data-on`, at render, so an application outside the tree meets
-    the rule too. An htmx attribute that is not a swap passes.
+    under `data-on-`, at render, so an application outside the tree meets
+    the rule too, in any case, since HTML reads `HX-GET` as `hx-get`. An
+    htmx attribute that is not a swap passes, and so does a `data-` name
+    that only begins with the letters `on`.
 
     covers: N54
     """
-    for key in ["hx_get", "hx_post", "hx_query", "hx_target", "hx_swap", "hx_push_url", "hx_headers", "data_on_click"]:
+    for key in [
+        "hx_get", "hx_post", "hx_query", "hx_target", "hx_swap", "hx_push_url", "hx_headers",
+        "data_on_click", "HX_GET", "Hx_Target", "DATA_ON_CLICK",
+    ]:
         var refused = False
         try:
             if key == "hx_get":
@@ -798,6 +803,12 @@ def test_a_swap_attribute_typed_as_a_keyword_is_refused() raises:
                 _ = Div(hx_push_url="true")
             elif key == "hx_headers":
                 _ = Div(hx_headers="{}")
+            elif key == "HX_GET":
+                _ = Div(HX_GET="/x")
+            elif key == "Hx_Target":
+                _ = Div(Hx_Target="#x")
+            elif key == "DATA_ON_CLICK":
+                _ = Div(DATA_ON_CLICK="@get('/x')")
             else:
                 _ = Div(data_on_click="@get('/x')")
         except e:
@@ -810,6 +821,10 @@ def test_a_swap_attribute_typed_as_a_keyword_is_refused() raises:
     assert_equal(
         Div(hx_boost="true", hx_confirm="sure?", hx_indicator="#spin").html(),
         '<div hx-boost="true" hx-confirm="sure?" hx-indicator="#spin"></div>',
+    )
+    assert_equal(
+        Div(data_one="1", data_onboarding_step="2").html(),
+        '<div data-one="1" data-onboarding-step="2"></div>',
     )
 
 

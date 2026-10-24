@@ -997,15 +997,19 @@ def _check_component_attr(name: String) raises:
     so the rule is held here, at render, where an application outside the
     tree meets it too. Refused: the attributes the two shipped
     vocabularies write (`hx-VERB`, `hx-target`, `hx-swap`,
-    `hx-push-url`, `hx-headers`) and anything under `data-on`, which a
-    keyword cannot spell anyway (Datastar's keys carry a `:`). Other
-    `hx-*` attributes pass: `hx_boost`, `hx_confirm`, `hx_indicator`
-    are not a swap."""
+    `hx-push-url`, `hx-headers`) and `data-on` or anything under
+    `data-on-`, which a keyword cannot spell anyway (Datastar's keys
+    carry a `:`). Compared lowercased, because HTML reads an attribute
+    name that way: `HX_GET=` is htmx's `hx-get`. Other `hx-*` attributes
+    pass (`hx_boost`, `hx_confirm`, `hx_indicator` are not a swap), and
+    so does a `data-` name that only begins with the letters
+    (`data_one`)."""
     var swap = False
-    if name.startswith("data-on"):
+    var low = name.lower()
+    if low == "data-on" or low.startswith("data-on-"):
         swap = True
-    elif name.startswith("hx-"):
-        var tail = String(unsafe_from_utf8=name.as_bytes()[3:])
+    elif low.startswith("hx-"):
+        var tail = String(unsafe_from_utf8=low.as_bytes()[3:])
         swap = (
             tail == "target" or tail == "swap" or tail == "push-url"
             or tail == "headers" or _verb_is_in(tail, HTMX_VERBS)
