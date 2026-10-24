@@ -2701,9 +2701,9 @@
       "id": "N10",
       "section": "N",
       "category": "N. Writing an application in Mojo",
-      "capability": "Elements as expressions: `el(tag, attrs, children...)`, `void`, `attr`, `flag` and `text` compose as strings with the builder's escaping \u2014 the same list from both tiers is byte-identical \u2014 and `Fragment[V].el(tag, verb, url, ...)` spells the swap for the vocabulary from the tag it is given once, so a renderer reads as its markup with each escaping context named at the hole. Superseded by the component tier (N54, D67) and kept while the applications on it move off, one under its own gate at a time: `apps/table_notes`, `apps/blobs` and the four scaffold templates are still written this way; `apps/fragment_notes` left it on 2026-10-24",
+      "capability": "Elements as expressions: `el(tag, attrs, children...)`, `void`, `attr`, `flag` and `text` compose as strings with the builder's escaping \u2014 the same list from both tiers is byte-identical \u2014 and `Fragment[V].el(tag, verb, url, ...)` spells the swap for the vocabulary from the tag it is given once, so a renderer reads as its markup with each escaping context named at the hole; `apps/fragment_notes`'s list is written this way beside its detail view in the builder",
       "status": "verified",
-      "evidence": "`test_html.mojo:test_elements_compose_as_expressions_with_escaping_named` (every PR) \u2014 the swapping form is `test_html.mojo:test_fragment_el_spells_the_swap_from_the_tag_it_is_given`; `smoke-fragment-notes` did not change when the list moved onto the tier, nor when it moved off"
+      "evidence": "`test_html.mojo:test_elements_compose_as_expressions_with_escaping_named` (every PR) \u2014 the swapping form is `test_html.mojo:test_fragment_el_spells_the_swap_from_the_tag_it_is_given`; `smoke-fragment-notes` did not change when the list moved onto the tier"
     },
     {
       "id": "N11",
@@ -3053,17 +3053,17 @@
       "id": "N54",
       "section": "N",
       "category": "N. Writing an application in Mojo",
-      "capability": "The component tier: an element is an `El` a tag function renders (`m0_http.tags`, one per HTML element, `element` for any other and `void_element` for a void one), its children `Child` \u2014 a bare string is TEXT and escaped by construction, an `El` is markup, a `List[El]` is each in turn, and `Raw` is the one named way markup in a string gets in \u2014 and its attributes keywords in call order (`cls` is `class`, `_for` is `for`, every other `_` is `-`, a `Bool` is the attribute's presence, an `Int` its decimal); a void element takes keywords only and closes nothing, so a child handed to `Input` is a compile error rather than `<input></input>`; a swap attribute typed as a keyword \u2014 `hx-VERB`, `hx-target`, `hx-swap`, `hx-push-url`, `hx-headers`, anything under `data-on` \u2014 is refused at render, so the rule that an application never spells a swap reaches an application outside the tree, while an htmx attribute that is not a swap passes; and the same list renders byte-identical from all three tiers",
-      "status": "verified",
-      "evidence": "`test_html.mojo:test_components_escape_a_bare_string_and_take_markup_by_name` (every PR) \u2014 `test_html.mojo:test_a_void_element_closes_nothing_and_a_bool_is_presence` and `test_html.mojo:test_a_swap_attribute_typed_as_a_keyword_is_refused` are the other two arms; `apps/fragment_notes`' list and login form are written in it, and `smoke-fragment-notes` did not change when they moved off the expression tier. Measured 2026-10-24 (docs/notes/a-component-tier.md): a 50-item list in 24 us against the expression tier's 28 and the builder's 7.5, so the builder stays for a renderer that is hot (D19)"
+      "capability": "A component tier: an element as a tag function's `El`, a bare string child escaped as text, attributes as keywords, a swap keyword refused at render",
+      "status": "out of scope",
+      "evidence": "built on 2026-10-24 and withdrawn the same day (DECISIONS D68): an agent writing an application on it took more calls than on the expression tier, and none on the expression tier left data unescaped"
     },
     {
       "id": "N55",
       "section": "N",
       "category": "N. Writing an application in Mojo",
-      "capability": "`Fragment[V].element(tag, verb, url, children..., push=, header=, **attrs)` is the swap in the component tier: the keyword attributes, then the vocabulary's swap for the tag it is given once, then the push and the header as `swap` writes them, then the children \u2014 byte-identical with the element `Fragment.el` renders in both shipped vocabularies, a Datastar form submitting where its button clicks; a swap keyword among the attributes is refused as everywhere in the tier, a push is still a `get`'s alone, and Datastar still refuses a push and a header",
-      "status": "verified",
-      "evidence": "`test_html.mojo:test_fragment_element_renders_what_fragment_el_does_in_both_vocabularies` (every PR) \u2014 the push and header arm is `test_html.mojo:test_a_pushed_swap_and_a_header_in_the_component_tier`"
+      "capability": "`Fragment[V].element(tag, verb, url, children..., **attrs)`, the swap in the component tier",
+      "status": "out of scope",
+      "evidence": "withdrawn with N54 (DECISIONS D68)"
     },
     {
       "id": "O1",

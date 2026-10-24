@@ -178,3 +178,56 @@ change.
 - **A faster tier.** The builder's figure is not reachable by a form that
   evaluates children first; a form that writes into the parent's buffer
   needs a storable closure or a statement, and the statement form exists.
+
+## Measured, and withdrawn — 2026-10-24
+
+The plan was to move the scaffold's templates next and then ask whether an
+application benefits, with the answer decided by a rule written before
+any run: the component tier pays if an agent writing an application on it
+takes at least 20% fewer tool calls or costs 20% less, or leaves data
+unescaped less often; otherwise it is withdrawn while only
+`fragment_notes` and the templates have moved.
+
+The templates moved on a branch (#627, closed): `views`, `auth` and `live`
+rendered byte-identical, `board` changed one attribute
+(`data-bind:text` to the value form `data-bind="text"`, the same signal
+in Datastar 1.0.4's bundle and in a browser), and `sabotage-scaffold`'s
+five re-pointed arms were caught. Two things the tier could not spell
+turned up there: an attribute with a `:`, and an attribute on a start
+tag whose element the renderer does not hold.
+
+The measurement was the agent usability harness's Mojo track, five pairs,
+one session on each tier started together, Opus 5.5, the two wheels built
+locally (`0.13.0+el` from `main`, `0.13.0+tags` from the branch) and
+reached through `UV_FIND_LINKS`, with a probe of its own for escaping. On
+the recorded brief every agent took `--template board` and wrote no
+element in either tier, so it measured nothing about rendering. On a
+brief no template answers — an author on every message, `anonymous` when
+empty, a delete button on each — every agent wrote elements:
+
+| | expression tier | component tier |
+|---|---|---|
+| contract and UI checks | 5/5 | 5/5 |
+| escape failures, text or author, page or stream | 0 | 0 |
+| tool calls, median (range) | 17 (14-22) | 21 (16-24) |
+| cost, median | $0.65 | $0.74 |
+| compile errors from the tier | — | 0 |
+
+Every expression-tier agent wrapped the request-derived author in
+`text(...)`; a copy with that call removed reads raw on the page and the
+stream, so the probe sees the hole when it is there. The fifteen
+applications archived from earlier runs, all on the expression tier,
+escape too. The component tier's extra calls went into the framework's
+source: four of five fetched the live views page, deployed at 1.16.0,
+which shows `f.el` where their scaffold used `f.element`, and said so in
+their reports. That confound runs against the tier, but its removal
+cannot reach the bar: parity is not a gain, and there are no escape
+failures to reduce.
+
+So the tier is withdrawn (D68): `fragment_notes` returns to the
+expression tier, N54 and N55 are out of scope, and D1's helpers stand.
+What would reopen it is the evidence this round did not find — an
+application, or an agent, that leaves request data unescaped on the
+expression tier, or a measurement where the component tier is cheaper by
+the margin above. Both arms also reported the same gap, which belongs to
+the layer whichever tier it uses: no page shows a Datastar delete button.

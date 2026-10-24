@@ -632,27 +632,14 @@ piece: an app that asks, a wire gate, then the lift.
   - `apps/datastar_todo` is the Datastar reference: its list is one line,
     verbatim as the `elements` of every broadcast frame
     (`m0-datastar/test/test_fragment_frame.mojo`, SPEC N7).
-  - **Three tiers over one escaping rule** (D67;
-    docs/notes/a-component-tier.md): the builder (allocates once, for a
-    renderer that is hot), the expression tier (`el`, `void`, `attr`,
-    `flag`, `text`, `Fragment.el`; every `el` allocates, and a bare string
-    child is MARKUP) and the component tier (`from m0_http.tags import
-    Div, Li`; `El`, `Child`, `Raw`, `Fragment.element`; a bare string
-    child is TEXT, escaped by construction; SPEC N54, N55). The expression
-    tier is superseded and kept while the applications on it move, one
-    per round under its own gate: **never mix the two in one file** — they
-    invert what a bare string means. `fragment_notes` keeps its list in
-    the component tier and its detail in the builder on purpose
-    (byte-identical in `test_html.mojo`); `table_notes`, `blobs` and the
-    templates are still on `el` (N10). The tag goes to `Fragment.el` and
-    `Fragment.element` once (the vocabulary reads it), so there is no
-    swap-attributes-as-a-string function, and a swap attribute typed as a
-    keyword (`hx_post=`, `hx_target=`, `data_on_*=`) is refused at render.
-    A void element takes keywords only, so `Input(P("x"))` does not
-    compile. `Html.raw_attrs` refuses a non-empty value that does not open
-    with a space, so `el("p", "none")` raises instead of rendering
-    `<pnone>`. The tag functions live in `m0_http.tags`, not the root,
-    where `Form` is the parsed form; there is no `Html` tag.
+  - **Two tiers over one buffer**: the builder (allocates once) and the
+    expression tier (`el`, `void`, `attr`, `flag`, `text`, `Fragment.el`;
+    every `el` allocates). `fragment_notes` keeps its list in the tier and
+    its detail in the builder on purpose (SPEC N10; byte-identical in
+    `test_html.mojo`). The tag goes to `Fragment.el` once (the vocabulary
+    reads it), so there is no swap-attributes-as-a-string function.
+    `Html.raw_attrs` refuses a non-empty value that does not open with a
+    space, so `el("p", "none")` raises instead of rendering `<pnone>`.
 - **`page_or_fragment`** (`src/fragment.mojo`, SPEC N22) decides from five
   headers, and **`HX-Request-Type` decides when present**
   (docs/notes/the-layer-moves-to-htmx-4.md). Every answer names all five in
