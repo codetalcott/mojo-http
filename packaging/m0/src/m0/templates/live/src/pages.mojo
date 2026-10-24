@@ -8,10 +8,15 @@ carries, so the fragment's own id is the whole of the targeting.
 Every frame is the FULL state, never a delta. A viewer whose 64 KB outbox
 overflows misses frames; a missed full frame is healed by the next one, a
 missed delta would leave that screen wrong forever.
+
+An element is a call: `I(style=...)`, `P(readout, cls="meta")`. A bare
+string child is TEXT and escaped, and a keyword is an attribute (`cls` for
+`class`). The document around the fragment is the `Html` builder.
 """
 
 from m0_datastar.sse import patch_elements
-from m0_http import Datastar, Fragment, attr, el, text
+from m0_http import Datastar, El, Fragment, Html
+from m0_http.tags import H1, Div, I, P
 
 # Pinned: a floating version lets an upstream release break this app
 # without a commit here.
@@ -43,17 +48,15 @@ def render_live(step: Int, heights: List[Int], viewers: Int) raises -> String:
     to trust a number that becomes CSS.
     """
     var f = Frag(ROOT_ID)
-    var bars = String()
+    var bars = List[El]()
     for i in range(len(heights)):
         var h = heights[i]
         h = 0 if h < 0 else (100 if h > 100 else h)
-        bars += el("i", attr("style", String("height:", h, "%")))
-    f.raw(el("div", attr("class", "bars"), bars))
-    f.raw(el("p", attr("class", "meta"),
-        text(String("step ", step, " · ", viewers, " watching")),
-    ))
-    # `f.el` writes the click action: data-on:click="@post('/kick')".
-    f.raw(f.el("button", "post", KICK, "", text("Kick")))
+        bars.append(I(style=String("height:", h, "%")))
+    f.raw(Div(bars, cls="bars"))
+    f.raw(P(String("step ", step, " · ", viewers, " watching"), cls="meta"))
+    # `f.element` writes the click action: data-on:click="@post('/kick')".
+    f.raw(f.element("button", "post", KICK, "Kick"))
     return f^.finish()
 
 
@@ -72,17 +75,25 @@ def render_page() raises -> String:
     after a deploy: a draining server closes the stream cleanly, and
     Datastar's default retries only errors."""
     var still = List[Int](length=BARS, fill=0)
-    return String(
-        '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">\n',
-        el("title", "", text("__M0_APP__")),
-        '\n<script type="module" src="', DATASTAR_CDN, '"></script>\n',
-        _STYLE,
-        "\n</head>\n<body",
-        attr("data-init", String("@get('", EVENTS, "', {retry: 'always'})")),
-        ">\n<main>\n",
-        el("h1", "", text("__M0_APP__")),
-        "\n",
-        render_live(0, still, 0),
-        "\n</main>\n</body>\n</html>\n",
-    )
+    var h = Html(4096)
+    h.raw('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n')
+    h.raw('<meta name="viewport" content="width=device-width,initial-scale=1">\n')
+    h.open("title")
+    h.text("__M0_APP__")
+    h.close("title")
+    h.raw("\n")
+    h.open("script")
+    h.attr("type", "module")
+    h.attr("src", DATASTAR_CDN)
+    h.close("script")
+    h.raw("\n")
+    h.raw(_STYLE)
+    h.raw("\n</head>\n")
+    h.open("body")
+    h.attr("data-init", String("@get('", EVENTS, "', {retry: 'always'})"))
+    h.raw("\n<main>\n")
+    h.raw(H1("__M0_APP__"))
+    h.raw("\n")
+    h.raw(render_live(0, still, 0))
+    h.raw("\n</main>\n</body>\n</html>\n")
+    return h^.finish()

@@ -73,20 +73,31 @@ functions in `test/test_*.mojo`; adding one needs no registration.
 
 ## Rendering
 
-- `void(tag, attrs)` writes a void element (`<input>`, `<br>`, `<img>`);
-  `el` closes its tag, so `el("input", …)` renders `</input>`.
-- `Fragment[V]("id")` writes the root id once; `f.el(tag, verb, url, …)`
-  and `f.swap(verb, url)` generate the attributes that target it. **Never
-  type an `hx-*` or `data-on:*` swap attribute by hand**, and never retype
-  the id as `#id`.
+- An element is a call, imported by name from `m0_http.tags` (not
+  `m0_http`, where `Form` is the parsed form): `Li(title)`,
+  `P(error, role="alert")`, `Input(name="q", required=True)`. A bare
+  string child is TEXT and is escaped; an element is markup; a `List[El]`
+  is each in turn. A keyword is an attribute: `cls` for `class`, `_for`
+  for `for`, every other `_` a `-` (`aria_label`, `data_bind`); a `Bool`
+  is the attribute's presence, an `Int` its decimal. A void element
+  (`Input`, `Img`, `Br`) takes no children. `f.raw(e)` puts an element
+  into a fragment, `e.html()` is its `String`, and `element(tag, …)` is a
+  tag `m0_http.tags` does not name.
+- `Raw(markup)` is the one way markup in a string gets in: an entity
+  (`Raw("&times;")`), the field `csrf_input(token)` renders. Request data
+  in `Raw` is an injection.
+- An attribute with a `:` has no keyword: Datastar's `data-bind:text` is
+  `data_bind="text"`, which Datastar reads the same way.
+- `Fragment[V]("id")` writes the root id once;
+  `f.element(tag, verb, url, children…, attrs…)` and `f.swap(verb, url)`
+  generate the attributes that target it. **Never type an `hx-*` or
+  `data-on:*` swap attribute** — a keyword spelling one (`hx_post=`,
+  `hx_target=`) is refused when it renders — and never retype the id as
+  `#id`.
 - A swap that arrives at a VIEW — a filtered list, a detail — takes
   `push=True`, so the address bar follows and the view can be reloaded and
   linked to. A `get` only; `Fragment[Datastar]` refuses it (Datastar has no
   history handling), so a view that needs an address there is a plain link.
-- Escaping is named at every hole: `text(x)` for data in an element,
-  `attr(name, x)` for data in an attribute (it owns the quotes), `raw`/a
-  bare string only for markup this code wrote. Request data in a bare
-  string is an injection.
 - `page_or_fragment(req, fragment, Shell(...))` decides document-or-fragment
   from the request's headers and sets `Vary`. No view branches on a header.
 - **htmx 4 swaps every answer, 4xx included.** An error a person may see is
@@ -96,7 +107,7 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   nothing and a 4xx is dropped. Keep an invalid submission in the browser
   (`required`), and answer a client that bypasses it with `reply.problem`.
   An `application/json` answer is a signal patch: `{"text":""}` empties
-  an input bound with `data-bind:text`.
+  an input bound with `data_bind="text"`.
 - Moving a `Fragment[Htmx]` app to Datastar is `Fragment[Datastar]` and the
   script tag. A Datastar URL sits inside a JavaScript string: build it with
   `url_for`, which encodes; a URL carrying `'`, `\`, CR or LF is refused.
@@ -128,8 +139,8 @@ what a `views`, `board` or `live` application adds the day it needs one.
   fields in the query string and a token in a URL is a token in every log.
   `Fragment[Datastar]` refuses a header: a Datastar write carries its token
   in a field.
-- **Login and logout are PLAIN forms** (`el("form", attr("method", "post")
-  + attr("action", url))`), answered with a 303 — never `f.el("form", …)`.
+- **Login and logout are PLAIN forms** (`Form(…, method="post",
+  action=url)`), answered with a 303 — never `f.element("form", …)`.
   A swap changes the fragment and not the address bar, so signing in
   leaves the application under `/login` and signing out leaves the login
   form under whatever was open. `sign_in(user, password)` is the

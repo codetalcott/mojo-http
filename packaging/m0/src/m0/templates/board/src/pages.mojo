@@ -7,9 +7,15 @@ fragment's own id is the whole of the targeting.
 
 The form is a fragment of its own, outside the board: a frame replaces the
 board in every tab, and a visitor halfway through a message keeps it.
+
+An element is a call: `Li(message)`, `P("nothing yet", cls="meta")`. A
+bare string child is TEXT and escaped, and a keyword is an attribute
+(`cls` for `class`, `data_bind` for `data-bind`). The document around the
+fragments is the `Html` builder.
 """
 
-from m0_http import Datastar, Fragment, attr, el, flag, text, void
+from m0_http import Datastar, El, Fragment, Html
+from m0_http.tags import H1, Button, Input, Li, P, Ul
 
 # Pinned: a floating version lets an upstream release break this app
 # without a commit here.
@@ -73,38 +79,39 @@ def render_board(messages: List[String]) raises -> String:
     """
     var f = Frag(BOARD_ID)
     if len(messages) == 0:
-        f.raw(el("p", attr("class", "meta"), text("nothing yet")))
+        f.raw(P("nothing yet", cls="meta"))
         return f^.finish()
-    var rows = String()
+    var rows = List[El]()
     var used = 0
     for i in range(len(messages) - 1, -1, -1):
-        var row = el("li", "", text(messages[i]))
-        var cost = row.byte_length() + _framing_bytes(row)
+        var row = Li(messages[i])
+        var cost = row.byte_length() + _framing_bytes(row.html())
         if used + cost > BOARD_BUDGET:
             break
         used += cost
-        rows += row
-    f.raw(el("ul", "", rows))
+        rows.append(row^)
+    f.raw(Ul(rows))
     return f^.finish()
 
 
 def render_compose() raises -> String:
     """The `compose` fragment: the form.
 
-    `f.el` writes the submit action,
+    `f.element` writes the submit action,
     `data-on:submit__prevent="@post('/messages', {contentType: 'form'})"`,
-    which posts the form's fields urlencoded and no signals. `data-bind:text`
-    ties the field to `$text`, which `post`'s answer empties. An `<input>`
-    is a void element: `void` writes it, where `el` would close it.
+    which posts the form's fields urlencoded and no signals.
+    `data_bind="text"` ties the field to `$text`, which `post`'s answer
+    empties: Datastar takes the signal from the value when the attribute
+    has no `:key`, and a keyword cannot spell a `:`. `Input` is a void
+    element, so it takes no children and writes no `</input>`.
     """
     var f = Frag(COMPOSE_ID)
-    f.raw(f.el("form", "post", MESSAGES, "",
-        void("input",
-            attr("name", "text") + flag("data-bind:text") + flag("required")
-            + attr("maxlength", "500") + attr("autocomplete", "off")
-            + attr("placeholder", "say something"),
+    f.raw(f.element("form", "post", MESSAGES,
+        Input(
+            name="text", data_bind="text", required=True, maxlength=500,
+            autocomplete="off", placeholder="say something",
         ),
-        el("button", "", "Post"),
+        Button("Post"),
     ))
     return f^.finish()
 
@@ -113,19 +120,27 @@ def render_page(messages: List[String]) raises -> String:
     """The whole document. `retry: 'always'` is what brings a tab back
     after a restart: a draining server closes the stream cleanly, and
     Datastar's default retries only errors."""
-    return String(
-        '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width,initial-scale=1">\n',
-        el("title", "", text("__M0_APP__")),
-        '\n<script type="module" src="', DATASTAR_CDN, '"></script>\n',
-        _STYLE,
-        "\n</head>\n<body",
-        attr("data-init", String("@get('", EVENTS, "', {retry: 'always'})")),
-        ">\n<main>\n",
-        el("h1", "", text("__M0_APP__")),
-        "\n",
-        render_compose(),
-        "\n",
-        render_board(messages),
-        "\n</main>\n</body>\n</html>\n",
-    )
+    var h = Html(4096)
+    h.raw('<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n')
+    h.raw('<meta name="viewport" content="width=device-width,initial-scale=1">\n')
+    h.open("title")
+    h.text("__M0_APP__")
+    h.close("title")
+    h.raw("\n")
+    h.open("script")
+    h.attr("type", "module")
+    h.attr("src", DATASTAR_CDN)
+    h.close("script")
+    h.raw("\n")
+    h.raw(_STYLE)
+    h.raw("\n</head>\n")
+    h.open("body")
+    h.attr("data-init", String("@get('", EVENTS, "', {retry: 'always'})"))
+    h.raw("\n<main>\n")
+    h.raw(H1("__M0_APP__"))
+    h.raw("\n")
+    h.raw(render_compose())
+    h.raw("\n")
+    h.raw(render_board(messages))
+    h.raw("\n</main>\n</body>\n</html>\n")
+    return h^.finish()

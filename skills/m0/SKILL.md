@@ -55,8 +55,10 @@ Without `--host` the server listens on every interface.
 - `form(req)` is `Optional`: `None` unless the body is urlencoded.
   `var f = form(req)`, then `if not f:` refuses, then
   `f.take().first("text")` reads a field.
-- `void("input", attrs)` writes a void element; `el` closes its tag.
-  `text(x)` and `attr(name, x)` escape; a bare string does not.
+- Elements are calls from `m0_http.tags` (`Li(title)`, `P(e, cls="x")`,
+  `Input(name="q", required=True)`): a bare string child is text and
+  escaped, a keyword is an attribute (`cls`, `aria_label`, `data_bind`),
+  markup in a string goes in only as `Raw(...)`. `Input` takes no children.
 - `Fragment[Htmx]` or `Fragment[Datastar]` writes the swap attributes from
   the fragment's id: never type `hx-*` or `data-on:*` by hand.
 - Routes are `comptime` constants given to the table and to `url_for`.

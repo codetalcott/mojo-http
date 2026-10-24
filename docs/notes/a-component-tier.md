@@ -171,10 +171,48 @@ change.
   gate of its own (`smoke-table-notes`, `smoke-blobs`, the scaffold smoke
   and `sabotage-scaffold`), and the method is one application per round
   under its gate. The scaffold's `AGENTS.md` still teaches `el`; it moves
-  with the templates.
+  with the templates. (They moved the same day, in a round of their own:
+  below.)
 - **A `Component` trait.** Four lines, and nothing asks yet; a trait
   behind a `.mojoc` is also the shape that lost its witness table through
   Mojo 1.0 ([a-trait-and-a-directory-name](a-trait-and-a-directory-name.md)).
 - **A faster tier.** The builder's figure is not reachable by a form that
   evaluates children first; a form that writes into the parent's buffer
   needs a storable closure or a statement, and the statement form exists.
+
+## The templates — 2026-10-24
+
+The second round moved the scaffold's four templates, under
+`check-templates`, `smoke-scaffold` and `sabotage-scaffold`. Each
+template's `pages.mojo` left `el` whole; the scaffold's `AGENTS.md`, the
+product's page for an agent working in a new application, teaches the
+tier in its place, and so does the `m0` skill.
+
+Every renderer of every template was rendered on fixtures before and
+after, data that needs escaping included, and diffed. `views`, `auth` and
+`live` are byte-identical. `board` differs in one attribute: its input
+bound with `data-bind:text` now binds with `data-bind="text"`, because a
+keyword cannot spell a `:`. Datastar 1.0.4's bundle reads the two alike —
+its `bind` plugin is `requirement:"exclusive"` and takes the signal from
+the key when there is one, else from the value
+(`o=t!=null?L(t,r):s`) — and the scaffold smoke and the template's test
+assert the new spelling.
+
+Two things the tier cannot spell, found by moving real code onto it:
+
+- **An attribute with a `:`.** Datastar's key forms (`data-bind:x`,
+  `data-signals:x`, `data-class:x`) have no keyword. `bind` has a value
+  form the bundle reads the same; the others are a question for the round
+  whose application needs one.
+- **An attribute on a start tag whose element the renderer does not
+  hold.** `board` and `live` opened `<body` in a string and put
+  `data-init` on it with `attr`. They now write the document with the
+  `Html` builder, as `views` and `auth` already did in `Site.wrap`, so all
+  four follow one rule: the document is the builder, every element an
+  application writes is the tier.
+
+`sabotage-scaffold`'s five arms anchored in the old lines were re-pointed.
+The two that render data raw now wrap it in `Raw(...)` — a bare string is
+text here, so deleting a call no longer breaks anything — and `board`'s
+adds the import in the same rule, so nothing sits in a template only for a
+sabotage to use.

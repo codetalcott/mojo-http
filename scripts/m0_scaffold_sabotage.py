@@ -173,8 +173,8 @@ SABOTAGES = [
      '        return reply.problem(422, "Unprocessable Content", "a title is required", ITEMS)\n',
      "the 422 is application/problem+json", WIRE),
     ("views: the error carries no alert role", "views", T + "views/src/pages.mojo",
-     '        f.raw(el("p", attr("role", "alert"), text(error)))\n',
-     '        f.raw(el("p", "", text(error)))\n',
+     '        f.raw(P(error, role="alert"))\n',
+     '        f.raw(P(error))\n',
      "is not the fragment holding an alert", WIRE),
     ("layer: a status alone says OK", "views", "packages/m0-http/src/fragment.mojo",
      "        resp.status_text = reason_phrase(status)\n",
@@ -184,8 +184,8 @@ SABOTAGES = [
      "htmx.org@4.0.0/dist", "htmx.org@latest/dist",
      "does not carry the pinned htmx 4 tag", WIRE),
     ("views: a title is rendered raw", "views", T + "views/src/pages.mojo",
-     '            f.el("a", "get", url, attr("href", url), text(titles[i])),\n',
-     '            f.el("a", "get", url, attr("href", url), titles[i]),\n',
+     '            f.element("a", "get", url, titles[i], href=url),\n',
+     '            f.element("a", "get", url, Raw(titles[i]), href=url),\n',
      "create did not answer the list with the item escaped", WIRE),
     # Served under --blocking-threads 2: a read left on the pool answers from
     # a list of its own, which the item just created is not in.
@@ -228,9 +228,9 @@ SABOTAGES = [
      "    var refused = Optional[HTTPResponse](None)\n",
      "POST /items without the token answered 200, not 403", WIRE),
     ("auth: the delete button carries no token", "auth", T + "auth/src/pages.mojo",
-     '            f.el("button", "delete", url, attr("aria-label", "delete"), "&times;",\n'
-     "                 header=csrf_header(csrf)),\n",
-     '            f.el("button", "delete", url, attr("aria-label", "delete"), "&times;"),\n',
+     '            f.element("button", "delete", url, Raw("&times;"), aria_label="delete",\n'
+     "                      header=csrf_header(csrf)),\n",
+     '            f.element("button", "delete", url, Raw("&times;"), aria_label="delete"),\n',
      "the delete button does not carry the token as hx-headers", WIRE),
     ("auth: the list is read off the loop", "auth", T + "auth/src/views.mojo",
      '    v.add_read("GET", ITEMS, index, on_loop=True)\n',
@@ -315,10 +315,10 @@ SABOTAGES = [
      "datastar@v1.0.4/bundles", "datastar@main/bundles",
      "lacks the fragment or the pinned Datastar tag", WIRE),
     ("live: the document paints no fragment", "live", T + "live/src/pages.mojo",
-     "        render_live(0, still, 0),\n",
+     "    h.raw(render_live(0, still, 0))\n",
      # `still` stays USED: dropping its one use makes the build warn, and
      # N34's no-warning check then fails first -- MISSED (failed elsewhere).
-     '        String("<!-- ", len(still), " -->"),\n',
+     '    h.raw(String("<!-- ", len(still), " -->"))\n',
      "lacks the fragment or the pinned Datastar tag", WIRE),
 
     # --- board, on the wire: served under --blocking-threads 2 ----------------
@@ -346,8 +346,12 @@ SABOTAGES = [
      "comptime BOARD_BUDGET = OUTBOX_BYTES * 100\n",
      "test_a_full_board_still_reaches_an_open_stream", TEST),
     ("board: a message is rendered raw", "board", T + "board/src/pages.mojo",
-     '        var row = el("li", "", text(messages[i]))\n',
-     '        var row = el("li", "", messages[i])\n',
+     # A bare string is text in the component tier, so the raw path is
+     # `Raw(...)`, and its import goes in with it.
+     ("from m0_http import Datastar, El, Fragment, Html\n",
+      "        var row = Li(messages[i])\n"),
+     ("from m0_http import Datastar, El, Fragment, Html, Raw\n",
+      "        var row = Li(Raw(messages[i]))\n"),
      "did not receive the message, escaped", WIRE),
     ("board: a late stream is sent nothing", "board", T + "board/src/views.mojo",
      "journal_entries=0, send_latest=True)", "journal_entries=0, send_latest=False)",

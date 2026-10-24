@@ -564,7 +564,7 @@ def wire_board(port):
         fail("GET / is not the document with the pinned Datastar tag: %s" % body[:300])
     if '<section id="board"' not in body or '<section id="compose"' not in body:
         fail("GET / lacks the board or the form: %s" % body[:600])
-    if "contentType: &#x27;form&#x27;" not in body or " data-bind:text" not in body:
+    if "contentType: &#x27;form&#x27;" not in body or ' data-bind="text"' not in body:
         fail("the form does not post its fields with its input bound to $text")
 
     events = "http://127.0.0.1:%d/events" % port

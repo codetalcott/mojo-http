@@ -643,8 +643,9 @@ piece: an app that asks, a wire gate, then the lift.
     per round under its own gate: **never mix the two in one file** — they
     invert what a bare string means. `fragment_notes` keeps its list in
     the component tier and its detail in the builder on purpose
-    (byte-identical in `test_html.mojo`); `table_notes`, `blobs` and the
-    templates are still on `el` (N10). The tag goes to `Fragment.el` and
+    (byte-identical in `test_html.mojo`); the scaffold's templates moved
+    in a round of their own, and `table_notes` and `blobs` are still on
+    `el` (N10). The tag goes to `Fragment.el` and
     `Fragment.element` once (the vocabulary reads it), so there is no
     swap-attributes-as-a-string function, and a swap attribute typed as a
     keyword (`hx_post=`, `hx_target=`, `data_on_*=`) is refused at render.

@@ -1,16 +1,18 @@
 """Rendering: the routes as values, the fragment, and the document around it.
 
 Every renderer builds the SAME fragment — `Frag(ROOT_ID)` writes
-`id="items"` once, and `f.el("form", "post", ITEMS, ...)` generates the
-swap attributes that target it from that id. Nothing here types an `hx-`
-attribute or a `#items`.
+`id="items"` once, and `f.element("form", "post", ITEMS, ...)` generates
+the swap attributes that target it from that id. Nothing here types an
+`hx-` attribute or a `#items`.
 
-Escaping is named at every hole: `text(...)` for data in an element,
-`attr(name, value)` for data in an attribute, a bare string only for
-markup this file wrote itself.
+An element is a call: `Li(title)`, `P(error, role="alert")`. A bare string
+child is TEXT and escaped, a keyword is an attribute (`cls` for `class`),
+and markup goes in by name, as another element or `Raw("&times;")`. The
+document around the fragment is the `Html` builder.
 """
 
-from m0_http import Fragment, Html, Htmx, PageShell, attr, el, flag, text, url_for, void
+from m0_http import El, Fragment, Html, Htmx, PageShell, Raw, url_for
+from m0_http.tags import H1, Button, Input, Li, P, Ul
 
 # Pinned: a floating version lets an upstream release break this app
 # without a commit here.
@@ -71,36 +73,37 @@ def render_list(
 ) raises -> String:
     """The `items` fragment: the form, the error if there is one, the list."""
     var f = Frag(ROOT_ID)
-    f.raw(f.el("form", "post", ITEMS, attr("class", "new"),
-        void("input", attr("name", "title") + attr("placeholder", "a new item")),
-        el("button", "", "Add"),
+    f.raw(f.element("form", "post", ITEMS,
+        Input(name="title", placeholder="a new item"),
+        Button("Add"),
+        cls="new",
     ))
     if error.byte_length() > 0:
-        f.raw(el("p", attr("role", "alert"), text(error)))
-    var rows = String()
+        f.raw(P(error, role="alert"))
+    var rows = List[El]()
     for i in range(len(ids)):
         var url = url_for(ITEM, String(ids[i]))
-        rows += el("li", "",
-            f.el("a", "get", url, attr("href", url), text(titles[i])),
-            f.el("button", "delete", url, attr("aria-label", "delete"), "&times;"),
-        )
-    f.raw(el("ul", "", rows))
+        rows.append(Li(
+            f.element("a", "get", url, titles[i], href=url),
+            f.element("button", "delete", url, Raw("&times;"), aria_label="delete"),
+        ))
+    f.raw(Ul(rows))
     if len(ids) == 0:
-        f.raw(el("p", "", text("nothing yet")))
+        f.raw(P("nothing yet"))
     return f^.finish()
 
 
 def render_item(title: String) raises -> String:
     """The same fragment showing one item, so a swap lands in the same place."""
     var f = Frag(ROOT_ID)
-    f.raw(el("h1", "", text(title)))
-    f.raw(el("p", "", f.el("a", "get", ITEMS, attr("href", ITEMS), text("all items"))))
+    f.raw(H1(title))
+    f.raw(P(f.element("a", "get", ITEMS, "all items", href=ITEMS)))
     return f^.finish()
 
 
 def render_missing() raises -> String:
     """A 404 a person may see is the fragment too."""
     var f = Frag(ROOT_ID)
-    f.raw(el("p", attr("role", "alert"), text("no item with this id")))
-    f.raw(el("p", "", f.el("a", "get", ITEMS, attr("href", ITEMS), text("all items"))))
+    f.raw(P("no item with this id", role="alert"))
+    f.raw(P(f.element("a", "get", ITEMS, "all items", href=ITEMS)))
     return f^.finish()

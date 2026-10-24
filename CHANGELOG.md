@@ -22,6 +22,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   first under its unchanged smoke. Measured: a 50-item list in 24 us
   against the expression tier's 28 and the builder's 7.5.
 
+### Changed
+
+- **The m0 scaffold's templates are written in the component tier** (D67,
+  SPEC N10; docs/notes/a-component-tier.md): `views`, `auth`, `board` and
+  `live` build their elements from `m0_http.tags`, and the scaffold's
+  `AGENTS.md` and the `m0` skill teach it. Three render byte-identical;
+  `board`'s input binds with `data-bind="text"`, the same signal, since a
+  keyword cannot spell `data-bind:text`.
+
 ## [1.16.0] — 2026-10-23
 
 The toolchain moves to Mojo 1.2.0, and nothing served changes. The m0serve

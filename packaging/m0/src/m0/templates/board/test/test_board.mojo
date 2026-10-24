@@ -138,10 +138,10 @@ def test_a_message_is_escaped_where_it_is_rendered() raises:
 def test_the_form_posts_its_fields_and_the_document_opens_the_stream() raises:
     var compose = render_compose()
     assert_true(compose.startswith('<section id="compose"'))
-    # `attr` escaped the quotes for the HTML context; a browser undoes it.
+    # The quotes are escaped for the HTML context; a browser undoes it.
     assert_true("data-on:submit__prevent=" in compose)
     assert_true("contentType: &#x27;form&#x27;" in compose)
-    assert_true(" data-bind:text" in compose)
+    assert_true(' data-bind="text"' in compose)
     assert_true(" required" in compose)
     assert_false("</input>" in compose)
     var page = render_page(List[String]())

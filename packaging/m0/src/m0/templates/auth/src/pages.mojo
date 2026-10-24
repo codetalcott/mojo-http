@@ -1,9 +1,9 @@
 """Rendering: the routes as values, the fragment, and the document around it.
 
 Every renderer builds the SAME fragment — `Frag(ROOT_ID)` writes
-`id="items"` once, and `f.el("form", "post", ITEMS, ...)` generates the
-swap attributes that target it from that id. Nothing here types an `hx-`
-attribute or a `#items`.
+`id="items"` once, and `f.element("form", "post", ITEMS, ...)` generates
+the swap attributes that target it from that id. Nothing here types an
+`hx-` attribute or a `#items`.
 
 Every write carries the session's CSRF token, spelled once each way: a
 POST as a hidden field (`csrf_input`), a DELETE as a request header
@@ -12,24 +12,25 @@ the query string and a token in a URL is a token in every log. The login
 and the logout are PLAIN forms, never swaps: a swap changes the fragment
 and not the address bar, so signing in would leave the list under /login.
 
-Escaping is named at every hole: `text(...)` for data in an element,
-`attr(name, value)` for data in an attribute, a bare string only for
-markup this file wrote itself.
+An element is a call: `Li(title)`, `P(error, role="alert")`. A bare string
+child is TEXT and escaped, a keyword is an attribute (`cls` for `class`),
+and markup goes in by name, as another element or `Raw(...)` — the hidden
+field `csrf_input` renders, the `&times;` entity. The document around the
+fragment is the `Html` builder.
 """
 
 from m0_http import (
+    El,
     Fragment,
     Html,
     Htmx,
     PageShell,
-    attr,
+    Raw,
     csrf_header,
     csrf_input,
-    el,
-    text,
     url_for,
-    void,
 )
+from m0_http.tags import H1, Button, Div, Form, Input, Li, P, Ul
 
 # Pinned: a floating version lets an upstream release break this app
 # without a commit here.
@@ -96,32 +97,31 @@ def render_list(
     """The `items` fragment: the form, the error if there is one, the list,
     and who is signed in."""
     var f = Frag(ROOT_ID)
-    f.raw(f.el("form", "post", ITEMS, attr("class", "new"),
-        csrf_input(csrf),
-        void("input", attr("name", "title") + attr("placeholder", "a new item")),
-        el("button", "", "Add"),
+    f.raw(f.element("form", "post", ITEMS,
+        Raw(csrf_input(csrf)),
+        Input(name="title", placeholder="a new item"),
+        Button("Add"),
+        cls="new",
     ))
     if error.byte_length() > 0:
-        f.raw(el("p", attr("role", "alert"), text(error)))
-    var rows = String()
+        f.raw(P(error, role="alert"))
+    var rows = List[El]()
     for i in range(len(ids)):
         var url = url_for(ITEM, String(ids[i]))
-        rows += el("li", "",
-            f.el("a", "get", url, attr("href", url), text(titles[i])),
-            f.el("button", "delete", url, attr("aria-label", "delete"), "&times;",
-                 header=csrf_header(csrf)),
-        )
-    f.raw(el("ul", "", rows))
+        rows.append(Li(
+            f.element("a", "get", url, titles[i], href=url),
+            f.element("button", "delete", url, Raw("&times;"), aria_label="delete",
+                      header=csrf_header(csrf)),
+        ))
+    f.raw(Ul(rows))
     if len(ids) == 0:
-        f.raw(el("p", "", text("nothing yet")))
+        f.raw(P("nothing yet"))
     # A div, not a p: `p` takes phrasing content only, and a `form` is flow
     # content -- a browser would close the paragraph before it.
-    f.raw(el("div", attr("class", "who"),
-        text(String("signed in as ", user)),
-        el("form", attr("method", "post") + attr("action", LOGOUT),
-            csrf_input(csrf),
-            el("button", "", "Sign out"),
-        ),
+    f.raw(Div(
+        String("signed in as ", user),
+        Form(Raw(csrf_input(csrf)), Button("Sign out"), method="post", action=LOGOUT),
+        cls="who",
     ))
     return f^.finish()
 
@@ -131,16 +131,15 @@ def render_login(error: String) raises -> String:
     signed-out swap gets lands where the list was. A plain form: it posts
     as a navigation, and the 303 that answers it moves the address bar."""
     var f = Frag(ROOT_ID)
-    f.raw(el("h1", "", "Sign in"))
+    f.raw(H1("Sign in"))
     if error.byte_length() > 0:
-        f.raw(el("p", attr("role", "alert"), text(error)))
-    f.raw(el("form", attr("class", "login") + attr("method", "post") + attr("action", LOGIN),
-        void("input", attr("name", "user") + attr("autocomplete", "username")
-                      + attr("placeholder", "user")),
-        void("input", attr("name", "password") + attr("type", "password")
-                      + attr("autocomplete", "current-password")
-                      + attr("placeholder", "password")),
-        el("button", "", "Sign in"),
+        f.raw(P(error, role="alert"))
+    f.raw(Form(
+        Input(name="user", autocomplete="username", placeholder="user"),
+        Input(name="password", type="password", autocomplete="current-password",
+              placeholder="password"),
+        Button("Sign in"),
+        cls="login", method="post", action=LOGIN,
     ))
     return f^.finish()
 
@@ -148,14 +147,14 @@ def render_login(error: String) raises -> String:
 def render_item(title: String) raises -> String:
     """The same fragment showing one item, so a swap lands in the same place."""
     var f = Frag(ROOT_ID)
-    f.raw(el("h1", "", text(title)))
-    f.raw(el("p", "", f.el("a", "get", ITEMS, attr("href", ITEMS), text("all items"))))
+    f.raw(H1(title))
+    f.raw(P(f.element("a", "get", ITEMS, "all items", href=ITEMS)))
     return f^.finish()
 
 
 def render_missing() raises -> String:
     """A 404 a person may see is the fragment too."""
     var f = Frag(ROOT_ID)
-    f.raw(el("p", attr("role", "alert"), text("no item with this id")))
-    f.raw(el("p", "", f.el("a", "get", ITEMS, attr("href", ITEMS), text("all items"))))
+    f.raw(P("no item with this id", role="alert"))
+    f.raw(P(f.element("a", "get", ITEMS, "all items", href=ITEMS)))
     return f^.finish()
