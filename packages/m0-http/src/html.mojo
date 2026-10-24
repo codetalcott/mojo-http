@@ -27,11 +27,16 @@ These are helpers, not a safety type. `String` stays the currency,
 they do is make the escaped path the SHORTER one: `text` and `attr` escape,
 `raw` says so by name. They do not make the unsafe path impossible.
 
-Two tiers over one buffer. The builder (`Html`, `Fragment`) is
-statement-shaped and allocates once; the expression tier at the bottom of
-this file (`el`, `void`, `attr`, `flag`, `text`, and `Fragment.el` for a
-swapping element) makes an element a string so a renderer reads like its
-markup, and allocates per element. Same escaping, same vocabulary seam.
+Three tiers over one escaping rule. The builder (`Html`, `Fragment`) is
+statement-shaped and allocates once; the expression tier (`el`, `void`,
+`attr`, `flag`, `text`, and `Fragment.el` for a swapping element) makes
+an element a string so a renderer reads like its markup, and allocates per
+element; the component tier at the bottom of this file (`El`, `Child`, the
+tag functions of `m0_http.tags`, and `Fragment.element`) does the same
+with a bare string meaning TEXT, escaped by construction, so nothing is
+named at the hole. The expression tier is superseded by the component
+tier (D67) and kept while the applications still on it move, one under
+its own gate at a time. Same vocabulary seam throughout.
 
 Three contexts stay the caller's, as `html_escape.mojo` already refuses
 them: a `<script>` or `<style>` body, a `javascript:`/`data:` URL, and an
@@ -91,6 +96,8 @@ importing m0-core is downward. A specific frontend library's attribute
 names do not belong in the zero-dependency package `build-ffi` compiles
 into `libm0core`.
 """
+
+from std.collections import StringDict
 
 from lightbug_http.strings import is_token_char
 from m0_core.html_escape import escape_html_into
@@ -596,6 +603,12 @@ struct Html(Movable):
         self._end_tag()
         self._buf.extend(s.as_bytes())
 
+    def raw(mut self, e: El):
+        """An element the component tier rendered, into the buffer as it
+        stands: markup by construction, so `raw` is the honest name."""
+        self._end_tag()
+        self._buf.extend(e._buf.copy())
+
     def close(mut self, tag: String):
         """`</tag>`."""
         self._end_tag()
@@ -702,6 +715,33 @@ struct Fragment[V: Vocabulary](Movable):
         h.close(tag)
         return h^.finish()
 
+    def element(
+        self, tag: String, verb: String, url: String, *children: Child,
+        push: Bool = False,
+        header: Optional[RequestHeader] = None,
+        var **attrs: AttrValue,
+    ) raises -> El:
+        """`swap` in the component tier: a whole `<tag>` that fetches `url`
+        with `verb` and replaces this fragment, as an `El`, with keyword
+        attributes and `Child` children — a bare string is text, an `El`
+        is markup. The tag is given here because the vocabulary reads it,
+        as in `el`; the attributes come first and the swap after them, so
+        `f.element("a", "get", url, title, href=url)` renders the bytes
+        `f.el("a", "get", url, attr("href", url), text(title))` does. A
+        swap attribute among the keywords is refused as everywhere in the
+        tier: the point of this method is that nobody types one. `push=True`
+        and `header` are `swap`'s. Reads nothing from and writes nothing to
+        the fragment's own buffer; `raw` it in where it belongs."""
+        var h = Html(128)
+        h.open(tag)
+        _write_component_attrs(h._buf, attrs)
+        _swap[Self.V](h, verb, url, self.selector(), push, header)
+        h._end_tag()
+        for c in children:
+            h._buf.extend(c._buf.copy())
+        h.close(tag)
+        return El(h._buf.copy())
+
     # --- the builder, delegated, so a fragment reads like a page -------------
 
     def open(mut self, tag: String):
@@ -718,6 +758,9 @@ struct Fragment[V: Vocabulary](Movable):
 
     def raw(mut self, s: String):
         self.html.raw(s)
+
+    def raw(mut self, e: El):
+        self.html.raw(e)
 
     def close(mut self, tag: String):
         self.html.close(tag)
@@ -808,3 +851,249 @@ def _is_identifier(s: String) -> Bool:
         elif not (alpha or (c >= ord("0") and c <= ord("9")) or c == ord("_") or c == ord("-")):
             return False
     return True
+
+
+# --- the component tier ----------------------------------------------------
+#
+# The expression tier above made an element a string, and left one hole in
+# its own rule: a bare string child is markup the caller trusts, so a
+# request-derived value passed without `text(...)` is an injection that
+# reads like every other argument. This tier closes it from the other
+# side. A bare `String` is TEXT and is escaped by construction; markup
+# goes in by name, as an `El` another tag function made or `Raw` wrapped.
+# The tag functions (`Div`, `P`, `Input` ...) live in `m0_http.tags`, each
+# one line over `_element`/`_void_element` here, and a void element takes
+# no children, so `Input(P("x"))` is a compile error rather than
+# `<input><p>x</p></input>`.
+#
+# Measured on 2026-10-24 (docs/notes/a-component-tier.md): one `List[UInt8]`
+# per element, presized from its parts, renders a 50-item list in 24 us
+# against the expression tier's 28 and the builder's 7.5. A tree rendered
+# once at the root was tried and did not pay (38 us): the children are
+# evaluated before the parent whatever the shape, so each allocates, and
+# the keyword dictionary is a quarter of the cost. The builder stays for a
+# renderer that is hot (D19); this tier replaces the expression tier for
+# the rest, application by application under each one's gate (D67).
+
+
+comptime _HYPHEN = UInt8(45)  # '-'
+comptime _UNDERSCORE = UInt8(95)  # '_'
+
+
+struct El(Copyable, Movable):
+    """An element already rendered: the bytes of its markup.
+
+    Made by a tag function (`m0_http.tags`), by `element` for a tag the
+    module does not name, by `void_element`, or by `Raw` for markup the
+    caller wrote. It is a child of another element as it stands, goes into
+    a builder or a fragment through `raw`, and `html()` reads it as a
+    `String` for `reply.html`.
+    """
+
+    var _buf: List[UInt8]
+
+    def __init__(out self, var buf: List[UInt8]):
+        self._buf = buf^
+
+    def html(self) -> String:
+        """The markup as a `String` — the boundary where the tier hands
+        over to `reply.html`, a `Fragment.raw` or a frame."""
+        return String(unsafe_from_utf8=Span(self._buf))
+
+    def byte_length(self) -> Int:
+        return len(self._buf)
+
+
+struct Child(Copyable, Movable):
+    """What a tag function takes as a child: a `String` or literal, which
+    is TEXT and escaped; an `El`, which is markup; or a `List[El]`, which
+    is each in turn. The conversions are implicit, so a call site reads
+    as its markup; the escaping follows from the type and is never named
+    at the hole, which is the whole difference from `el`."""
+
+    var _buf: List[UInt8]
+
+    @implicit
+    def __init__(out self, s: String):
+        self._buf = List[UInt8](capacity=s.byte_length() + 8)
+        escape_html_into(self._buf, s)
+
+    @implicit
+    def __init__(out self, s: StringLiteral):
+        var st = String(s)
+        self._buf = List[UInt8](capacity=st.byte_length() + 8)
+        escape_html_into(self._buf, st)
+
+    @implicit
+    def __init__(out self, e: El):
+        self._buf = e._buf.copy()
+
+    @implicit
+    def __init__(out self, xs: List[El]):
+        var n = 0
+        for x in xs:
+            n += len(x._buf)
+        self._buf = List[UInt8](capacity=n)
+        for x in xs:
+            self._buf.extend(x._buf.copy())
+
+
+struct AttrValue(Copyable, Movable):
+    """What a keyword attribute takes: a `String` or literal, escaped and
+    quoted; an `Int`, written in decimal; or a `Bool`, which is the
+    attribute's presence — `checked=True` renders ` checked` and
+    `checked=False` renders nothing."""
+
+    var _value: String
+    var _present: Bool
+    var _bare: Bool
+
+    @implicit
+    def __init__(out self, s: String):
+        self._value = s
+        self._present = True
+        self._bare = False
+
+    @implicit
+    def __init__(out self, s: StringLiteral):
+        self._value = String(s)
+        self._present = True
+        self._bare = False
+
+    @implicit
+    def __init__(out self, n: Int):
+        self._value = String(n)
+        self._present = True
+        self._bare = False
+
+    @implicit
+    def __init__(out self, b: Bool):
+        self._value = String()
+        self._present = b
+        self._bare = True
+
+
+def _attr_name(key: String) -> String:
+    """The attribute a keyword spells: `cls` is `class` (a keyword in
+    Mojo), a leading `_` is dropped (`_for` is `for`), and every other
+    `_` is `-` (`hx_boost`, `aria_label`, `data_n`)."""
+    if key == "cls":
+        return "class"
+    var b = key.as_bytes()
+    var out = List[UInt8](capacity=len(b))
+    var i = 0
+    if len(b) > 1 and b[0] == _UNDERSCORE:
+        i = 1
+    while i < len(b):
+        out.append(_HYPHEN if b[i] == _UNDERSCORE else b[i])
+        i += 1
+    return String(unsafe_from_utf8=Span(out))
+
+
+def _check_component_attr(name: String) raises:
+    """Refuse a swap attribute typed as a keyword. The layer's rule is
+    that an application never spells one — the id and the vocabulary
+    come from the fragment — and this tier has no `attrs` string to grep,
+    so the rule is held here, at render, where an application outside the
+    tree meets it too. Refused: the attributes the two shipped
+    vocabularies write (`hx-VERB`, `hx-target`, `hx-swap`,
+    `hx-push-url`, `hx-headers`) and `data-on` or anything under
+    `data-on-`, which a keyword cannot spell anyway (Datastar's keys
+    carry a `:`). Compared lowercased, because HTML reads an attribute
+    name that way: `HX_GET=` is htmx's `hx-get`. Other `hx-*` attributes
+    pass (`hx_boost`, `hx_confirm`, `hx_indicator` are not a swap), and
+    so does a `data-` name that only begins with the letters
+    (`data_one`)."""
+    var swap = False
+    var low = name.lower()
+    if low == "data-on" or low.startswith("data-on-"):
+        swap = True
+    elif low.startswith("hx-"):
+        var tail = String(unsafe_from_utf8=low.as_bytes()[3:])
+        swap = (
+            tail == "target" or tail == "swap" or tail == "push-url"
+            or tail == "headers" or _verb_is_in(tail, HTMX_VERBS)
+        )
+    if swap:
+        raise Error(
+            'tag(..., ', name, '=...): a swap attribute is the vocabulary\'s to '
+            "spell — write the element with Fragment.element(tag, verb, url, ...) "
+            "so the target id and the attribute names come from the fragment"
+        )
+
+
+def _write_component_attrs(mut buf: List[UInt8], attrs: StringDict[AttrValue]) raises:
+    for item in attrs.items():
+        ref v = item.value
+        if not v._present:
+            continue
+        var name = _attr_name(item.key)
+        _check_component_attr(name)
+        buf.append(_SPACE)
+        buf.extend(name.as_bytes())
+        if v._bare:
+            continue
+        buf.append(_EQ)
+        buf.append(_QUOTE)
+        escape_html_into(buf, v._value)
+        buf.append(_QUOTE)
+
+
+def _attrs_size(attrs: StringDict[AttrValue]) -> Int:
+    var n = 0
+    for item in attrs.items():
+        n += item.key.byte_length() + item.value._value.byte_length() + 4
+    return n
+
+
+def _element(tag: String, children: VariadicList[Child, False], attrs: StringDict[AttrValue]) raises -> El:
+    """`<tag attrs>children</tag>` as an `El`, into one buffer sized from
+    its parts. What every tag function in `m0_http.tags` calls."""
+    var n = 2 * tag.byte_length() + 5 + _attrs_size(attrs)
+    for c in children:
+        n += len(c._buf)
+    var buf = List[UInt8](capacity=n)
+    buf.append(_LT)
+    buf.extend(tag.as_bytes())
+    _write_component_attrs(buf, attrs)
+    buf.append(_GT)
+    for c in children:
+        buf.extend(c._buf.copy())
+    buf.append(_LT)
+    buf.append(_SLASH)
+    buf.extend(tag.as_bytes())
+    buf.append(_GT)
+    return El(buf^)
+
+
+def _void_element(tag: String, attrs: StringDict[AttrValue]) raises -> El:
+    """`<tag attrs>` as an `El`: a void element, which has no children and
+    no closing tag."""
+    var buf = List[UInt8](capacity=tag.byte_length() + 2 + _attrs_size(attrs))
+    buf.append(_LT)
+    buf.extend(tag.as_bytes())
+    _write_component_attrs(buf, attrs)
+    buf.append(_GT)
+    return El(buf^)
+
+
+def element(tag: String, *children: Child, var **attrs: AttrValue) raises -> El:
+    """An element whose tag `m0_http.tags` does not name — a custom element,
+    or `html`, whose name the builder already holds: `element("my-card",
+    P("x"), cls="wide")`. Everything else is a tag function."""
+    return _element(tag, children, attrs)
+
+
+def void_element(tag: String, var **attrs: AttrValue) raises -> El:
+    """A void element whose tag `m0_http.tags` does not name."""
+    return _void_element(tag, attrs)
+
+
+def Raw(markup: String) -> El:
+    """Markup the caller wrote, as an `El`, so it can be a child: an
+    entity (`Raw("&times;")`), a `comptime` stylesheet, a fragment another
+    renderer finished. It says so by name, as the builder's `raw` does;
+    a request-derived value here is an injection."""
+    var buf = List[UInt8](capacity=markup.byte_length())
+    buf.extend(markup.as_bytes())
+    return El(buf^)

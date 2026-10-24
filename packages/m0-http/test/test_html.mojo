@@ -11,9 +11,10 @@ type parameter and in nothing an app writes.
 from std.testing import TestSuite, assert_equal, assert_true
 
 from src.html import (
-    Datastar, Fragment, Html, Htmx, RequestHeader, Vocabulary, attr, el, flag,
-    text, void,
+    Datastar, El, Fragment, Html, Htmx, Raw, RequestHeader, Vocabulary, attr, el,
+    element, flag, text, void, void_element,
 )
+from src.tags import A, Button, Div, Form, Input, Li, P, Span, Ul
 
 
 struct Bare(Vocabulary):
@@ -716,6 +717,199 @@ def test_datastar_refuses_a_request_header() raises:
     assert_true("carry the token in a form field" in raised, raised)
     assert_true(f.el("button", "delete", "/notes/1", "").find("@delete(") >= 0)
     _ = f^.finish()
+
+
+def test_components_escape_a_bare_string_and_take_markup_by_name() raises:
+    """The component tier: a bare string child is TEXT and is escaped, an
+    `El` is markup, a `List[El]` is each in turn, and `Raw` is the one way
+    markup in a string gets in. Keywords are attributes — `cls` is
+    `class`, `_for` is `for`, `data_n` is `data-n` — in call order. Same
+    bytes the builder and the expression tier make for the same list.
+
+    covers: N54
+    """
+    assert_equal(
+        Div(P("a<b"), Raw("&times;"), cls="card", _for="x", data_n=3).html(),
+        '<div class="card" for="x" data-n="3"><p>a&lt;b</p>&times;</div>',
+    )
+    var items = List[El]()
+    items.append(Li("1"))
+    items.append(Li("2"))
+    assert_equal(Ul(items).html(), "<ul><li>1</li><li>2</li></ul>")
+    assert_equal(element("my-card", P("x"), cls="wide").html(), '<my-card class="wide"><p>x</p></my-card>')
+    var title = String("a<b")
+    assert_equal(Span(title, title=title).html(), '<span title="a&lt;b">a&lt;b</span>')
+    # The same list, all three tiers, byte for byte.
+    var h = Html()
+    h.open("li")
+    h.attr("class", "x")
+    h.attr("title", "a<b")
+    h.text("<b>")
+    h.raw("&times;")
+    h.close("li")
+    var built = h^.finish()
+    assert_equal(built, el("li", attr("class", "x") + attr("title", "a<b"), text("<b>"), "&times;"))
+    assert_equal(built, Li("<b>", Raw("&times;"), cls="x", title="a<b").html())
+    # Into a builder or a fragment it goes as markup, under the honest name.
+    var f = Fragment[Htmx]("notes")
+    f.raw(P("x"))
+    assert_equal(f^.finish(), '<section id="notes"><p>x</p></section>')
+
+
+def test_a_void_element_closes_nothing_and_a_bool_is_presence() raises:
+    """`Input`, `Img` and the other void elements take keywords only and
+    write no closing tag — a child handed to one is a compile error, not
+    `<input></input>` — and a `Bool` keyword is the attribute's presence:
+    `checked=True` is ` checked`, `checked=False` is nothing.
+
+    covers: N54
+    """
+    assert_equal(
+        Input(type="checkbox", name="t", checked=True, disabled=False).html(),
+        '<input type="checkbox" name="t" checked>',
+    )
+    assert_equal(void_element("my-void", n=1).html(), '<my-void n="1">')
+    assert_equal(Input(name="t", required=True).html(), void("input", attr("name", "t") + flag("required")))
+
+
+def test_a_swap_attribute_typed_as_a_keyword_is_refused() raises:
+    """An application never spells a swap: the fragment does. The tier
+    refuses the attributes the two vocabularies write — `hx-VERB`,
+    `hx-target`, `hx-swap`, `hx-push-url`, `hx-headers` — and anything
+    under `data-on-`, at render, so an application outside the tree meets
+    the rule too, in any case, since HTML reads `HX-GET` as `hx-get`. An
+    htmx attribute that is not a swap passes, and so does a `data-` name
+    that only begins with the letters `on`.
+
+    covers: N54
+    """
+    for key in [
+        "hx_get", "hx_post", "hx_query", "hx_target", "hx_swap", "hx_push_url", "hx_headers",
+        "data_on_click", "HX_GET", "Hx_Target", "DATA_ON_CLICK",
+    ]:
+        var refused = False
+        try:
+            if key == "hx_get":
+                _ = Div(hx_get="/x")
+            elif key == "hx_post":
+                _ = Div(hx_post="/x")
+            elif key == "hx_query":
+                _ = Div(hx_query="/x")
+            elif key == "hx_target":
+                _ = Div(hx_target="#x")
+            elif key == "hx_swap":
+                _ = Div(hx_swap="outerHTML")
+            elif key == "hx_push_url":
+                _ = Div(hx_push_url="true")
+            elif key == "hx_headers":
+                _ = Div(hx_headers="{}")
+            elif key == "HX_GET":
+                _ = Div(HX_GET="/x")
+            elif key == "Hx_Target":
+                _ = Div(Hx_Target="#x")
+            elif key == "DATA_ON_CLICK":
+                _ = Div(DATA_ON_CLICK="@get('/x')")
+            else:
+                _ = Div(data_on_click="@get('/x')")
+        except e:
+            refused = True
+            assert_true(
+                String(e).find("Fragment.element") >= 0,
+                String("the refusal names the way to write a swap: ", String(e)),
+            )
+        assert_true(refused, String("a swap keyword rendered: ", key))
+    assert_equal(
+        Div(hx_boost="true", hx_confirm="sure?", hx_indicator="#spin").html(),
+        '<div hx-boost="true" hx-confirm="sure?" hx-indicator="#spin"></div>',
+    )
+    assert_equal(
+        Div(data_one="1", data_onboarding_step="2").html(),
+        '<div data-one="1" data-onboarding-step="2"></div>',
+    )
+
+
+def test_fragment_element_renders_what_fragment_el_does_in_both_vocabularies() raises:
+    """`Fragment.element` is `swap` in the component tier: keyword
+    attributes first, then the swap, then the children, so it renders the
+    bytes `Fragment.el` renders for the same element — in both
+    vocabularies, a Datastar form submitting where its button clicks. The
+    fragment's own buffer is untouched.
+
+    covers: N55
+    """
+    var hx = Fragment[Htmx]("notes")
+    assert_equal(
+        hx.element("a", "get", "/notes/7", "t<", href="/notes/7").html(),
+        hx.el("a", "get", "/notes/7", attr("href", "/notes/7"), text("t<")),
+    )
+    assert_equal(
+        hx.element("a", "get", "/notes/7", "t", href="/notes/7").html(),
+        '<a href="/notes/7" hx-get="/notes/7" hx-target="#notes" hx-swap="outerHTML">t</a>',
+    )
+    var ds = Fragment[Datastar]("notes")
+    assert_equal(
+        ds.element("form", "post", "/notes", Input(name="q")).html(),
+        ds.el("form", "post", "/notes", "", void("input", attr("name", "q"))),
+    )
+    assert_equal(
+        ds.element("form", "post", "/notes", Input(name="q"), Button("Go")).html(),
+        '<form data-on:submit__prevent="@post(&#x27;/notes&#x27;, {contentType: &#x27;form&#x27;})">'
+        '<input name="q"><button>Go</button></form>',
+    )
+    # A swap keyword is refused here as everywhere in the tier.
+    var refused = False
+    try:
+        _ = hx.element("a", "get", "/x", "t", hx_target="#other")
+    except:
+        refused = True
+    assert_true(refused, "hx_target on a swapping element rendered")
+    assert_equal(hx^.finish(), '<section id="notes"></section>')
+    assert_equal(ds^.finish(), '<section id="notes"></section>')
+
+
+def test_a_pushed_swap_and_a_header_in_the_component_tier() raises:
+    """`push=True` and `header=` on `Fragment.element` are `swap`'s, written
+    after the swap as `Fragment.el` writes them, byte for byte; a push is
+    still a `get`'s alone, and Datastar still refuses both.
+
+    covers: N55
+    """
+    var hx = Fragment[Htmx]("notes")
+    var hdr = RequestHeader("X-CSRF-Token", "abc")
+    assert_equal(
+        hx.element("a", "get", "/n/7", "t", href="/n/7", push=True).html(),
+        hx.el("a", "get", "/n/7", attr("href", "/n/7"), text("t"), push=True),
+    )
+    assert_equal(
+        hx.element("form", "delete", "/n/7", Button(Raw("&times;")), cls="delete", header=hdr.copy()).html(),
+        hx.el("form", "delete", "/n/7", attr("class", "delete"), el("button", "", "&times;"), header=hdr.copy()),
+    )
+    assert_equal(
+        hx.element("form", "delete", "/n/7", cls="delete", header=hdr.copy()).html(),
+        '<form class="delete" hx-delete="/n/7" hx-target="#notes" hx-swap="outerHTML"'
+        ' hx-headers="{&quot;X-CSRF-Token&quot;:&quot;abc&quot;}"></form>',
+    )
+    var refused = False
+    try:
+        _ = hx.element("form", "post", "/n", push=True)
+    except:
+        refused = True
+    assert_true(refused, "a pushed post rendered")
+    var ds = Fragment[Datastar]("notes")
+    refused = False
+    try:
+        _ = ds.element("a", "get", "/n/7", "t", push=True)
+    except:
+        refused = True
+    assert_true(refused, "Datastar pushed")
+    refused = False
+    try:
+        _ = ds.element("form", "delete", "/n/7", header=hdr.copy())
+    except:
+        refused = True
+    assert_true(refused, "Datastar sent a header")
+    _ = hx^.finish()
+    _ = ds^.finish()
 
 
 def main() raises:

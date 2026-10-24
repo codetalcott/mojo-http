@@ -2701,9 +2701,9 @@
       "id": "N10",
       "section": "N",
       "category": "N. Writing an application in Mojo",
-      "capability": "Elements as expressions: `el(tag, attrs, children...)`, `void`, `attr`, `flag` and `text` compose as strings with the builder's escaping \u2014 the same list from both tiers is byte-identical \u2014 and `Fragment[V].el(tag, verb, url, ...)` spells the swap for the vocabulary from the tag it is given once, so a renderer reads as its markup with each escaping context named at the hole; `apps/fragment_notes`'s list is written this way beside its detail view in the builder",
+      "capability": "Elements as expressions: `el(tag, attrs, children...)`, `void`, `attr`, `flag` and `text` compose as strings with the builder's escaping \u2014 the same list from both tiers is byte-identical \u2014 and `Fragment[V].el(tag, verb, url, ...)` spells the swap for the vocabulary from the tag it is given once, so a renderer reads as its markup with each escaping context named at the hole. Superseded by the component tier (N54, D67) and kept while the applications on it move off, one under its own gate at a time: `apps/table_notes`, `apps/blobs` and the four scaffold templates are still written this way; `apps/fragment_notes` left it on 2026-10-24",
       "status": "verified",
-      "evidence": "`test_html.mojo:test_elements_compose_as_expressions_with_escaping_named` (every PR) \u2014 the swapping form is `test_html.mojo:test_fragment_el_spells_the_swap_from_the_tag_it_is_given`; `smoke-fragment-notes` did not change when the list moved onto the tier"
+      "evidence": "`test_html.mojo:test_elements_compose_as_expressions_with_escaping_named` (every PR) \u2014 the swapping form is `test_html.mojo:test_fragment_el_spells_the_swap_from_the_tag_it_is_given`; `smoke-fragment-notes` did not change when the list moved onto the tier, nor when it moved off"
     },
     {
       "id": "N11",
@@ -3048,6 +3048,22 @@
       "capability": "An `Accept` entry's weight is its parameter named `q`, a name matched whole and in any case: `parse_accept` splits an entry's parameters on `;` and takes the first whose name, folded in ASCII, is `q` (RFC 9110 \u00a712.4.2, \u00a75.6.6), so `Q=0` refuses a type as `q=0` does and a parameter such as `xq=0` is not a weight; whitespace around the `=`, which the grammar does not allow, is read past rather than misread, so `q = 0` refuses and `q= 0.5` weighs 0.5",
       "status": "verified",
       "evidence": "`test_content_negotiation.mojo:test_the_weight_is_the_parameter_named_q_in_any_case` (every PR) \u2014 beside it, `test_a_parameter_whose_name_ends_in_q_is_not_the_weight` and `test_whitespace_around_a_weights_equals_sign_is_tolerated`. The weight was the first substring `q=` (review record LF69): `Q=0` was no weight, `;xq=0` refused the type, `q =0` was ignored and `q= 0.5` read as 0. Reverting each rule alone (the substring, the case, the whitespace before and after the `=`, the parameters after the first) fails one of the three"
+    },
+    {
+      "id": "N54",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "The component tier: an element is an `El` a tag function renders (`m0_http.tags`, one per HTML element, `element` for any other and `void_element` for a void one), its children `Child` \u2014 a bare string is TEXT and escaped by construction, an `El` is markup, a `List[El]` is each in turn, and `Raw` is the one named way markup in a string gets in \u2014 and its attributes keywords in call order (`cls` is `class`, `_for` is `for`, every other `_` is `-`, a `Bool` is the attribute's presence, an `Int` its decimal); a void element takes keywords only and closes nothing, so a child handed to `Input` is a compile error rather than `<input></input>`; a swap attribute typed as a keyword \u2014 `hx-VERB`, `hx-target`, `hx-swap`, `hx-push-url`, `hx-headers`, anything under `data-on` \u2014 is refused at render, so the rule that an application never spells a swap reaches an application outside the tree, while an htmx attribute that is not a swap passes; and the same list renders byte-identical from all three tiers",
+      "status": "verified",
+      "evidence": "`test_html.mojo:test_components_escape_a_bare_string_and_take_markup_by_name` (every PR) \u2014 `test_html.mojo:test_a_void_element_closes_nothing_and_a_bool_is_presence` and `test_html.mojo:test_a_swap_attribute_typed_as_a_keyword_is_refused` are the other two arms; `apps/fragment_notes`' list and login form are written in it, and `smoke-fragment-notes` did not change when they moved off the expression tier. Measured 2026-10-24 (docs/notes/a-component-tier.md): a 50-item list in 24 us against the expression tier's 28 and the builder's 7.5, so the builder stays for a renderer that is hot (D19)"
+    },
+    {
+      "id": "N55",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "`Fragment[V].element(tag, verb, url, children..., push=, header=, **attrs)` is the swap in the component tier: the keyword attributes, then the vocabulary's swap for the tag it is given once, then the push and the header as `swap` writes them, then the children \u2014 byte-identical with the element `Fragment.el` renders in both shipped vocabularies, a Datastar form submitting where its button clicks; a swap keyword among the attributes is refused as everywhere in the tier, a push is still a `get`'s alone, and Datastar still refuses a push and a header",
+      "status": "verified",
+      "evidence": "`test_html.mojo:test_fragment_element_renders_what_fragment_el_does_in_both_vocabularies` (every PR) \u2014 the push and header arm is `test_html.mojo:test_a_pushed_swap_and_a_header_in_the_component_tier`"
     },
     {
       "id": "O1",
