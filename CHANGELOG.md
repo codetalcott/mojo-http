@@ -20,6 +20,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
   goes out as written. A proxy still compresses buffered responses (J8),
   and the deploy target's leaves streams alone
   ([the note](docs/notes/compressing-a-stream.md)).
+### Changed
+
+- **CI runs on GIL-enabled CPython 3.14**, moved from 3.13. A setup step
+  fails a job whose pin resolved to a free-threaded build, and py-canary's
+  restore checks the build rather than the version string, which is the
+  same for 3.14 and 3.14t. m0serve's refusal of an ASGI application on a
+  free-threaded build now names the uv fix for a venv on 3.14t,
+  `uv python install 3.14 && uv sync --python 3.14+gil`
+  ([RUNNING](docs/RUNNING.md)).
 
 ### Fixed
 

@@ -543,8 +543,8 @@ def app_checks(
             "the executor runs on a GIL-enabled build",
             asgi_free_threading_refusal(interp.value()),
             "run this application on a GIL-enabled CPython (3.10-3.14 without the"
-            " t suffix; with uv, put 3.13 in .python-version), with --workers for"
-            " concurrency", EXIT_NOT_FREE_THREADED)
+            " t suffix; with uv, `uv python install 3.14 && uv sync --python"
+            " 3.14+gil`), with --workers for concurrency", EXIT_NOT_FREE_THREADED)
     if len(opts.mount_prefixes) > 0:
         # Which mounts are WSGI is decided by importing them, so this is the
         # mount rule that has to wait: on the offloaded loop a job submitted

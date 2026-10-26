@@ -319,10 +319,13 @@ the values this server would use, and `m0serve --help` names every flag.
   on the buffered path, and underscore names are dropped as for WSGI.
 - **A lifespan startup that fails exits 1**, where uvicorn exits 3
   ([Install and start](#install-and-start)).
-- **ASGI needs a GIL-enabled CPython.** A free-threaded build, which uv may
-  pick for a project with no pin, is refused with exit 78
-  ([why](ROADMAP.md#known-issues)). With uv, put `3.13` in
-  `.python-version`; the refusal says so too.
+- **ASGI needs a GIL-enabled CPython.** A free-threaded build is refused
+  with exit 78 ([why](ROADMAP.md#known-issues)), and uv can land on one
+  unasked: a `3.14` pin is satisfied by 3.14t, which uv picks where it is
+  the only 3.14 installed, and a venv already on 3.14t is kept. Install the
+  GIL build beside it, then rebuild the venv on it:
+  `uv python install 3.14 && uv sync --python 3.14+gil`. The refusal says
+  so too.
 
 ## Platforms
 

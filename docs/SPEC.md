@@ -28,7 +28,7 @@ improves.
 reads a test's meaning, and a gate can be looser than its row. Cadence is
 part of the evidence. `(every PR)` is a step in `.github/workflows/test.yml`.
 `(weekly)` is `py-canary.yml` or `nightly-canary.yml` on a cron; the
-free-threading rows live there because CI pins GIL-enabled 3.13.
+free-threading rows live there because CI pins GIL-enabled 3.14.
 `(monthly)` is `citations.yml`, which asks the RFC Editor whether the cited
 RFCs are still current. `(pre-release)` is a gate `docs/RELEASING.md`
 requires and CI does not run, because shared runners cannot reproduce the
