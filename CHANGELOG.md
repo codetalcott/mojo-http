@@ -8,6 +8,19 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Added
+
+- **A Datastar stream can be compressed** (SPEC I45, I46; DECISIONS D69).
+  `DatastarStream.open(req, url, compress=True)`, or
+  `sse_response(zstd=accepts_zstd(req))`, sends the stream in zstd to a
+  client that accepts it. It uses one context for the stream's life and
+  flushes a block at every write, the heartbeat and the farewell
+  included, so each event decodes as it lands. libzstd is opened at run
+  time (`M0_LIBZSTD` names it), and where it cannot be opened the stream
+  goes out as written. A proxy still compresses buffered responses (J8),
+  and the deploy target's leaves streams alone
+  ([the note](docs/notes/compressing-a-stream.md)).
+
 ### Fixed
 
 - **A state stream catches a stalled subscriber up at its next drain**

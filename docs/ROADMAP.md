@@ -256,8 +256,9 @@ optimising the HTTP layer buys nothing here.
   to start from.
 - **Automatic `Vary` tracking and dynamic compression.** Negotiation covers
   `Accept`; the `Accept-Encoding` and `Accept-Language` negotiators nothing
-  called were removed on 2026-09-29 (DECISIONS D54). The framework ships no
-  compressor.
+  called were removed on 2026-09-29 (DECISIONS D54). The framework ships one
+  compressor, for streams (D69, SPEC I45): a proxy compresses buffered
+  responses, and the deploy target's leaves a stream alone.
 
 ## Recently resolved
 

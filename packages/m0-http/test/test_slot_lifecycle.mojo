@@ -69,7 +69,8 @@ from lightbug_http.loop.state import (
     _stream_idle,
     _ws_linger,
 )
-from lightbug_http.loop.state import _close_slot, _farewell_streams
+from lightbug_http.loop.state import _chunked_stream_ends, _close_slot, _farewell_streams
+from lightbug_http.c.zstd import ZstdCompressor, ZstdDecompressor
 from lightbug_http.websocket import WS_CLOSE_GOING_AWAY
 from lightbug_http.c.socket import ShutdownOption, shutdown
 from lightbug_http.loop.response import _finish_response, _owe_interim
@@ -1233,6 +1234,136 @@ def test_a_heartbeat_rearms_first_writes_its_frame_and_ends_a_dead_stream() rais
     assert_false(sse_beat in backend.timers, "a heartbeat for no stream was re-armed")
     _close_slot(app, backend, st, ws_slot, ws[0])
     close(RawFileDescriptor(c_int(ws[1])))
+
+
+struct QueuedEvents(HTTPService):
+    """An SSE producer whose queue the drain empties; records the slots its
+    streams left from."""
+
+    var queued: List[UInt8]
+    var left: List[Int]
+
+    def __init__(out self):
+        self.queued = List[UInt8]()
+        self.left = List[Int]()
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        var out = self.queued^
+        self.queued = List[UInt8]()
+        return out^
+
+    def sse_slot_disconnected(mut self, slot: Int):
+        self.left.append(slot)
+
+
+def _index_of(hay: List[UInt8], needle: StaticString) -> Int:
+    """Where `needle` first begins in `hay`, or -1."""
+    var n = needle.as_bytes()
+    for i in range(len(hay) - len(n) + 1):
+        var hit = True
+        for j in range(len(n)):
+            if hay[i + j] != n[j]:
+                hit = False
+                break
+        if hit:
+            return i
+    return -1
+
+
+def _decoded(mut d: ZstdDecompressor, data: Span[UInt8, _]) raises -> String:
+    var out = d.push(data)
+    return String(unsafe_from_utf8=Span(out))
+
+
+def test_a_compressed_stream_writes_every_byte_after_its_head_through_its_context() raises:
+    """A stream whose response asked for zstd (`zstd_stream`) gets its
+    context where `_finish_response` marks it a stream, and every byte
+    after the head goes through it: the response's own body, a frame the
+    drain takes, a heartbeat, and the farewell, which closes the frame.
+    Written raw, any one of them is garbage inside the frame the client is
+    decoding. The head goes out plain, and the context goes with the slot.
+
+    covers: I45
+    """
+    ignore_sigpipe()
+    var app = QueuedEvents()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = fd
+    st.fd_to_slot[fd] = slot
+    st.active_count = 1
+    st.offload.http11[slot] = True
+    st.offload.is_head[slot] = False
+    st.provision_pool.provisions[slot].state = ConnectionState.processing()
+    var response = OK(": open\n\n", "text/event-stream")
+    response.sse_streaming = True
+    response.zstd_stream = True
+    response.headers["content-encoding"] = "zstd"
+    _finish_response(app, backend, st, slot, fd, response^)
+    assert_true(Bool(st.slot_zstd[slot]), "a stream that asked for zstd has no context")
+
+    var wire = List[UInt8]()
+    _ = _read_available(peer, wire)
+    var head_end = _index_of(wire, "\r\n\r\n")
+    assert_true(head_end > 0, "no head reached the client")
+    var head = String(unsafe_from_utf8=Span(wire)[:head_end]).lower()
+    assert_true("content-encoding: zstd" in head, head)
+    var d = ZstdDecompressor()
+    assert_equal(_decoded(d, Span(wire)[head_end + 4 :]), ": open\n\n")
+
+    app.queued = List[UInt8](String("event: tick\ndata: 1\n\n").as_bytes())
+    st.offload.streaming_hint = 1
+    _drain_outboxes(app, backend, st)
+    var frame = List[UInt8]()
+    _ = _read_available(peer, frame)
+    assert_equal(_decoded(d, Span(frame)), "event: tick\ndata: 1\n\n")
+
+    _on_timer(app, backend, st, TIMER_SSE_HEARTBEAT + UInt(fd))
+    var beat = List[UInt8]()
+    _ = _read_available(peer, beat)
+    assert_equal(_decoded(d, Span(beat)), ": heartbeat\n\n")
+    assert_false(d.frame_complete, "the frame ended before the stream did")
+
+    _farewell_streams(app, backend, st)
+    var last = List[UInt8]()
+    _ = _read_available(peer, last)
+    assert_equal(_decoded(d, Span(last)), ": close\n\n")
+    assert_true(d.frame_complete, "the farewell left the frame open")
+    assert_equal(st.slot_fds[slot], UNUSED)
+    assert_false(Bool(st.slot_zstd[slot]), "the closed stream kept its context")
+    close(RawFileDescriptor(c_int(peer)))
+
+
+def test_a_compressed_streams_context_goes_with_its_slot() raises:
+    """The context has the stream flag's two owners (review record C4):
+    `_close_slot`, whatever closed the stream, and `_chunked_stream_ends`,
+    a channel stream's terminator. A slot reused for another stream never
+    writes into the last one's.
+
+    covers: I45
+    """
+    var app = Departures()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var slot = _stream_slot(st, pair[0], False)
+    st.slot_zstd[slot] = Optional[ZstdCompressor](ZstdCompressor())
+    _close_slot(app, backend, st, slot, pair[0])
+    assert_false(Bool(st.slot_zstd[slot]), "_close_slot left the context")
+    close(RawFileDescriptor(c_int(pair[1])))
+
+    var again = st.provision_pool.borrow()
+    st.slot_sse[again] = True
+    st.slot_zstd[again] = Optional[ZstdCompressor](ZstdCompressor())
+    _chunked_stream_ends(st, again)
+    assert_false(Bool(st.slot_zstd[again]), "_chunked_stream_ends left the context")
 
 
 def test_admission_takes_what_the_pool_has_room_for_and_maps_any_descriptor() raises:

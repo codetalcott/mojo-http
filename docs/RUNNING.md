@@ -158,7 +158,9 @@ has the Flask version of the whole thing, and CI drives that exact file.
   (`DatastarStream(send_latest=True)`) gain nothing from the frames
   before them. Caddy's `encode` and nginx's `gzip` can be set either way;
   check the proxy's streaming behaviour with `curl -N --compressed`
-  before trusting it on a stream.
+  before trusting it on a stream. Fly's proxy leaves a stream alone
+  (measured 2026-10-26); a Mojo application's stream can compress itself
+  (SPEC I45).
 - **A header whose name holds an underscore is dropped** before a WSGI
   application sees it, so behind HAProxy, Caddy or Traefik, which forward
   such names, a client's `X_Forwarded_For` cannot replace the proxy's

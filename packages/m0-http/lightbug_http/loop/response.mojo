@@ -17,6 +17,7 @@ from lightbug_http.http import (
 )
 from lightbug_http.http.date import http_date_from_unix, unix_now
 from lightbug_http.c.sendfile import send_file
+from lightbug_http.c.zstd import ZstdCompressor
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.server import ConnectionProvision
 from lightbug_http.service import HTTPService
@@ -333,6 +334,8 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         st.offload.streaming_hint += 1
         st.provision_pool.provisions[slot].should_close = False
         _keep_stream_alive(st, fd_val)
+        if response.zstd_stream:
+            _begin_zstd_stream(st, slot, response)
 
     if upgraded_ws:
         st.slot_ws[slot] = True
@@ -541,6 +544,32 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     _arm_send_deadline(st, slot)
     if not _await_write(backend, st, slot, fd_val):
         _close_slot(handler, backend, st, slot, fd_val)
+
+
+def _begin_zstd_stream(mut st: LoopState, slot: Int, mut response: HTTPResponse):
+    """Give a stream that asked for zstd its context, and compress its body.
+
+    The head goes out plain; the body behind it (the `: open` comment, or a
+    first frame) is the context's first block, so the context starts at the
+    first byte after the head, never at the first drain. A HEAD never gets
+    here: its stream was dropped above.
+
+    A context libzstd cannot give -- no library on this box, or one it
+    refuses -- leaves the stream uncompressed rather than refused: the
+    response's `Content-Encoding` comes off, since nothing will honour it,
+    and the reason is printed once per loop.
+    """
+    try:
+        var c = ZstdCompressor()
+        if len(response.body_raw) > 0:
+            response.body_raw = c.push(Span(response.body_raw))
+        st.slot_zstd[slot] = Optional[ZstdCompressor](c^)
+    except e:
+        response.zstd_stream = False
+        response.headers.pop("content-encoding")
+        if not st.zstd_refused:
+            st.zstd_refused = True
+            print("zstd: compressed streams go out uncompressed on this loop: " + String(e), flush=True)
 
 
 def _after_send[T: HTTPService, B: EventLoopBackend](

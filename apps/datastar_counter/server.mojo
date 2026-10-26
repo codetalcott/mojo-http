@@ -116,7 +116,8 @@ struct CounterHandler(AppHandler):
             ))
 
         if path == STREAM_URL:
-            var resp = self.stream.open(req, STREAM_URL)
+            # zstd for a client that accepts it (`smoke-stream-zstd` reads it).
+            var resp = self.stream.open(req, STREAM_URL, compress=True)
             # Which worker owns this stream — the multi-worker smoke reads
             # this to prove its streams span workers before asserting that
             # one POST reaches all of them.

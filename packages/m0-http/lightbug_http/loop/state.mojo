@@ -14,6 +14,7 @@ The constants the loop's modules share are here too: the timer idents,
 
 from lightbug_http.accept_share import AcceptShare
 from lightbug_http.broadcast import BusReader
+from lightbug_http.c.zstd import ZstdCompressor
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import send, close
 from lightbug_http.connection import ConnectionState
@@ -153,6 +154,17 @@ struct LoopState(Movable):
     stream that ends takes it back from here (`_chunked_stream_ends`).
     `_keep_stream_close` writes it for every response, so no slot inherits
     a previous connection's."""
+    var slot_zstd: List[Optional[ZstdCompressor]]
+    """The stream's zstd context, when its response asked for one
+    (`HTTPResponse.zstd_stream`): made where `_finish_response` marks the
+    slot a stream, and every byte after the head goes through it -- the
+    drain's, the heartbeat's and the farewell's. Freed by `_close_slot` and
+    `_chunked_stream_ends`, the two owners of the stream flag's reset, so
+    a reused slot never writes into a previous stream's context."""
+    var zstd_refused: Bool
+    """A compressed stream was asked for and libzstd could not give one:
+    those streams go out uncompressed, and the reason is printed once per
+    loop, here recorded as printed."""
     var fd_to_slot: List[Int]
     var active_count: Int
     var metrics: ServerMetrics
@@ -243,6 +255,7 @@ struct LoopState(Movable):
         # reset (not reallocated) when a slot is reused.
         var slot_ws_state = List[WSState](capacity=max_conns)
         var slot_close_after_stream = List[Bool](capacity=max_conns)
+        var slot_zstd = List[Optional[ZstdCompressor]](capacity=max_conns)
 
         for _ in range(max_conns):
             slot_fds.append(UNUSED)
@@ -255,6 +268,7 @@ struct LoopState(Movable):
             slot_idle_deadline.append(0)
             slot_ws_state.append(WSState(config.max_request_body_size))
             slot_close_after_stream.append(False)
+            slot_zstd.append(None)
 
         var fd_map_size = 65536
         var fd_to_slot = List[Int](capacity=fd_map_size)
@@ -284,6 +298,8 @@ struct LoopState(Movable):
         self.slot_idle_deadline = slot_idle_deadline^
         self.slot_ws_state = slot_ws_state^
         self.slot_close_after_stream = slot_close_after_stream^
+        self.slot_zstd = slot_zstd^
+        self.zstd_refused = False
         self.fd_to_slot = fd_to_slot^
         self.active_count = 0
         self.metrics = metrics^
@@ -646,6 +662,7 @@ def _chunked_stream_ends(mut st: LoopState, slot: Int):
     `slot_close_after_stream` held it for here.
     """
     st.slot_sse[slot] = False
+    st.slot_zstd[slot] = None
     st.offload.chunked[slot] = False
     if st.slot_close_after_stream[slot]:
         st.provision_pool.provisions[slot].should_close = True
@@ -780,6 +797,12 @@ def _farewell_streams[T: HTTPService, B: EventLoopBackend](
                 else:
                     farewell = List[UInt8](String(": close\n\n").as_bytes())
                 try:
+                    # A compressed stream's farewell goes through its
+                    # context and closes the frame (`end=True`), so the
+                    # client reads a complete one. Raw bytes here would be
+                    # garbage inside it.
+                    if st.slot_zstd[s]:
+                        farewell = st.slot_zstd[s].value().push(Span(farewell), end=True)
                     _ = send(RawFileDescriptor(c_int(st.slot_fds[s])), Span(farewell), 0)
                 except:
                     pass
@@ -853,6 +876,7 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     # never armed as backend timers (see slot_idle_deadline).
     backend.try_delete_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT)
     st.slot_sse[slot] = False
+    st.slot_zstd[slot] = None
     st.slot_ws[slot] = False
     st.slot_ws_state[slot].reset()
     # The answer still owed goes with the connection. Left, a client that

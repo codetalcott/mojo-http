@@ -42,6 +42,11 @@ def _noise(n: Int, seed: UInt64) -> List[UInt8]:
 
 
 def test_library_opens_at_or_above_the_floor() raises:
+    """The search path, or `M0_LIBZSTD`, finds a libzstd at or above 1.4.0,
+    opened at run time: nothing links it.
+
+    covers: I46
+    """
     var fns = zstd_library()
     assert_true(fns.version_number() >= ZSTD_MIN_VERSION)
 

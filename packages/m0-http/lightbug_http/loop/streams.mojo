@@ -91,6 +91,15 @@ def _send_frame[T: HTTPService, B: EventLoopBackend](
     return True
 
 
+def _zstd_failed[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slot: Int, e: Error,
+):
+    """A compressed stream libzstd could not write: closed, since bytes
+    after a frame the client cannot finish decoding are garbage to it."""
+    print("zstd: a compressed stream could not be written and is closed: " + String(e), flush=True)
+    _close_slot(handler, backend, st, slot, st.slot_fds[slot])
+
+
 def _heartbeat[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, timer_ident: UInt,
 ):
@@ -128,6 +137,14 @@ def _heartbeat[T: HTTPService, B: EventLoopBackend](
     else:
         var hb = String(": heartbeat\n\n")
         frame = Bytes(hb.as_bytes())
+        # A compressed stream's comment goes through its context like any
+        # frame; written raw it would be garbage inside the zstd frame.
+        if st.slot_zstd[hb_slot]:
+            try:
+                frame = st.slot_zstd[hb_slot].value().push(Span(frame))
+            except e:
+                _zstd_failed(handler, backend, st, hb_slot, e)
+                return
     # EPIPE/ECONNRESET here is the heartbeat doing its other job:
     # discovering a dead subscriber that never sent a FIN, whose slot
     # `_send_frame` closes (telling the handler) rather than leaving a
@@ -357,6 +374,14 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
             # window replenished by wire bytes shrinks by the framing
             # overhead on every chunk, and a long stream starves itself.
             var payload_len = len(pending)
+            if payload_len > 0 and st.slot_zstd[s]:
+                # Compressed first, framed second. `payload_len` stays what
+                # the producer queued, so the credit window is unchanged.
+                try:
+                    pending = st.slot_zstd[s].value().push(Span(pending))
+                except e:
+                    _zstd_failed(handler, backend, st, s, e)
+                    continue
             var out = Bytes()
             if framed:
                 if payload_len > 0:
