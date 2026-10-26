@@ -25,6 +25,26 @@ runs:
     - uses: astral-sh/setup-uv@v7
       with:
         enable-cache: true
+    # SPEC's cadence rules read CI as a GIL-enabled build: `smoke-threads`
+    # proves only the threaded mode's refusal, and free-threaded serving is
+    # py-canary's, weekly. A bare `3.14` pin is also satisfied by 3.14t, which
+    # uv picks where it is the only 3.14 installed, so the interpreter the pin
+    # resolves to is asked rather than assumed.
+    - name: Check the pinned interpreter is a GIL-enabled build
+      shell: bash
+      run: |
+        uv python install
+        py="$(uv python find)"
+        "$py" - "$(cat .python-version)" <<'EOF'
+        import sys, sysconfig
+        want = sys.argv[1].strip()
+        have = "%d.%d" % sys.version_info[:2]
+        free = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+        print(f"{sys.executable}: {sys.version.split()[0]}, free-threaded build: {free}")
+        if have != want or free:
+            print(f"::error title=Wrong CI interpreter::.python-version pins {want}; uv resolved {have}, free-threaded={free}")
+            sys.exit(1)
+        EOF
     # Normally about 6 s. It has been seen hanging for 63 min against an
     # unreachable apt mirror, and a cap turns that into a fast, legible
     # failure; the job's own cap is the backstop, and this is the one setup
