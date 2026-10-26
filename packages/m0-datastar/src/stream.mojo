@@ -82,7 +82,9 @@ struct DatastarStream:
       the live feed; nothing older is ever replayed. Without it a new
       subscriber sees nothing until the next broadcast, which for a slow
       cadence, or a producer paused while nobody watched, is a blank page
-      (`apps/blobs` is the worked example).
+      (`apps/blobs` is the worked example). A subscriber whose full outbox
+      refused a state is sent the newest at its next drain (SPEC I44), so
+      a stall ends on the current state, not a stale one.
     """
 
     var registry: SSERegistry
@@ -303,7 +305,9 @@ struct DatastarStream:
 
         Counted once per subscriber per frame. A client that is refused a
         change of a replay stream holds a state that never existed until
-        its next reconnect, so a count that grows is worth logging.
+        its next reconnect, so a count that grows is worth logging. Under
+        `send_latest` the refusal is still counted, though the client is
+        caught up at its next drain (SPEC I44).
         """
         return self.refused_count
 
@@ -312,8 +316,42 @@ struct DatastarStream:
             self.gapped[slot] = value
 
     def drain(mut self, slot: Int) -> List[UInt8]:
-        """Return and clear pending bytes for a slot. Wire to `sse_drain_slot`."""
-        return self.registry.drain(slot)
+        """Return and clear pending bytes for a slot. Wire to `sse_drain_slot`.
+
+        Under `send_latest`, a slot that drains while behind the newest
+        frame for its url is queued that frame, so the next drain carries
+        it (SPEC I44): a subscriber whose full outbox refused a state is
+        sent the newest once it has room, rather than holding a stale one
+        until the next broadcast, which for a paused producer never comes.
+        The loop drains every idle stream slot every pass, so the catch-up
+        needs nothing from it.
+        """
+        var out = self.registry.drain(slot)
+        if self.send_latest:
+            self._catch_up(slot)
+        return out^
+
+    def _catch_up(mut self, slot: Int):
+        """Queue the newest frame for `slot`'s url when the slot is behind it.
+
+        Called with the slot's outbox just cleared, so a frame that fits the
+        outbox at all fits now, and one that never fits is refused as it
+        was. A slot standing at the newest id is queued nothing, so this is
+        one frame per state a subscriber missed, never a storm. The frame
+        goes out under its own id, so the registry advances the slot past
+        it and the live feed does not send it again. Not counted as a
+        refusal: the refusal was counted when it happened.
+        """
+        if not self.registry.is_slot_streaming(slot):
+            return
+        var url = self.registry.filter_urls[slot]
+        for i in range(len(self.latest_urls)):
+            if self.latest_urls[i] == url:
+                if self.registry.last_event_ids[slot] < self.latest_ids[i]:
+                    _ = self.registry.queue_frame(
+                        slot, self.latest_ids[i], self.latest_frames[i].copy()
+                    )
+                return
 
     def is_streaming(self, slot: Int) -> Bool:
         """Whether a slot is streaming. Wire to `sse_is_streaming`."""

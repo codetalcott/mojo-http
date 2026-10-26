@@ -184,8 +184,11 @@ later frame that fits does. The client's `Last-Event-ID` moves past the
 gap, so a reconnect cannot replay the frames it lost. A WebSocket has no
 replay at all, so a message the cap refuses is missed. For a stream of
 whole states, such as `DatastarStream(send_latest=True)` and the blobs
-demo, that is the right degradation: the next frame supersedes what was
-lost. For a stream that is a log, it is not.
+demo, the next frame supersedes what was lost, and since 2026-10-26 the
+stream sends the newest at the subscriber's next drain rather than
+waiting for a producer to broadcast one (SPEC I44;
+[latest-wins-after-a-stall](latest-wins-after-a-stall.md)). For a stream
+that is a log, the gap stands.
 
 ## What would retire it
 

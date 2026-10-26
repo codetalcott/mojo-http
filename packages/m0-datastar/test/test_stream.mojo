@@ -595,6 +595,87 @@ def test_state_stream_never_replays_the_journal() raises:
     assert_true(_text(s.frame_for(1)).find('{"a":1}') >= 0)
 
 
+def test_state_stream_catches_a_drained_subscriber_up() raises:
+    """A subscriber whose outbox refused a state is sent the newest at drain.
+
+    Four whole-state frames of 20 KB against a 64 KB outbox: three fit,
+    the fourth is refused. The stalled subscriber drains the three; its
+    next drain is exactly frame 4, once; the one after that is empty, as
+    is every drain of a subscriber on another url. A producer paused after
+    frame 4 would otherwise leave the tab on frame 3 for good — the case
+    hyperlith's per-connection rule (render only once the last frame was
+    taken) closes, done here where the loop already drains every pass.
+
+    covers: I44
+    """
+    var s = DatastarStream(4, journal_entries=0, send_latest=True)
+    _ = s.open(_get("/e"), "/e")
+    var other = _get("/o")
+    other.slot_id = 1
+    _ = s.open(other, "/o")
+    var pad = _pad(20000)
+    for i in range(1, 5):
+        _ = s.patch_elements("/e", String('<p id="p">', pad, "frame", i, "</p>"))
+    assert_equal(s.refused(), 1)
+
+    var first = _text(s.drain(0))
+    assert_equal(first.count("event: "), 3)
+    assert_true(first.find("frame3<") >= 0)
+    assert_false(first.find("frame4<") >= 0)
+
+    var second = _text(s.drain(0))
+    assert_equal(second.count("event: "), 1)
+    assert_true(second.find("frame4<") >= 0)
+    assert_true(second.find("id: 4\n") >= 0)
+
+    assert_equal(len(s.drain(0)), 0)
+    assert_equal(len(s.drain(1)), 0)
+    assert_equal(s.refused(), 1)
+
+    # Current, so a broadcast reaches it once and the drain after is empty.
+    _ = s.patch_elements("/e", '<p id="p">frame5</p>')
+    assert_equal(_text(s.drain(0)).count("event: "), 1)
+    assert_equal(len(s.drain(0)), 0)
+
+
+def test_a_change_stream_leaves_a_refused_frame_lost() raises:
+    """The catch-up is the state stream's alone: a change stream stays as it was.
+
+    The same four frames on the default stream: the refused fourth is not
+    sent at the next drain, since under replay the client's reconnect is
+    the catch-up (SPEC I30), and a frame sent again would be a change
+    applied twice.
+
+    covers: I44
+    """
+    var s = DatastarStream(4)
+    _ = s.open(_get("/e"), "/e")
+    var pad = _pad(20000)
+    for i in range(1, 5):
+        _ = s.patch_elements("/e", String('<p id="p">', pad, "frame", i, "</p>"))
+    assert_equal(s.refused(), 1)
+    assert_equal(_text(s.drain(0)).count("event: "), 3)
+    assert_equal(len(s.drain(0)), 0)
+
+
+def test_a_newest_frame_over_the_outbox_is_still_refused() raises:
+    """A state that never fits an outbox is not sent at drain either.
+
+    One frame of 70 KB: refused at broadcast, refused at every drain, and
+    counted once — the catch-up queues through the same cap and adds no
+    count of its own.
+
+    covers: I44
+    """
+    var s = DatastarStream(4, journal_entries=0, send_latest=True)
+    _ = s.open(_get("/e"), "/e")
+    _ = s.patch_elements("/e", String('<p id="p">', _pad(70000), "</p>"))
+    assert_equal(s.refused(), 1)
+    for _ in range(3):
+        assert_equal(len(s.drain(0)), 0)
+    assert_equal(s.refused(), 1)
+
+
 def test_frame_for_returns_journaled_bytes() raises:
     """`frame_for` hands back exactly what went out — the persistence hook."""
     var s = DatastarStream(4)

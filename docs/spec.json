@@ -1866,6 +1866,14 @@
       "evidence": "`Smoke test --doctor against the server's own exit codes` (every PR) \u2014 4097 by flag, 100000 by flag under `--realtime` and 4097 by `M0_REPLAY_FRAMES`, each required to agree with the doctor and to exit 78, and 4096 serving; 5000 beside `--pg-listen` without `--realtime` is the usage refusal's 2. The unit half is `test_checks.mojo:test_a_journal_deeper_than_the_cap_is_refused_with_78`"
     },
     {
+      "id": "I44",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A stream of states catches a stalled subscriber up at its next drain: under `send_latest`, a slot whose full outbox refused a state is queued the newest frame for its url when the loop next drains it, under the frame's own id and once per state missed, so a client that stops reading and resumes ends on the current state rather than the one before the refusal, which with a producer paused after it stood until the tab reconnected; a change stream (the default) is unchanged, since a reconnect's replay is its catch-up (I30) and a frame sent again would be a change applied twice; a state larger than the outbox is refused at every drain as it is at broadcast; and the refusal count is what it was, the catch-up adding none",
+      "status": "verified",
+      "evidence": "`test_stream.mojo:test_state_stream_catches_a_drained_subscriber_up` (every PR) \u2014 four 20 KB whole-state frames against the 64 KB outbox, three taken and the fourth refused, then one drain of the three, one of exactly frame 4 and an empty one, a subscriber on another url drained empty throughout, and a broadcast to the caught-up slot reaching it once; `test_a_change_stream_leaves_a_refused_frame_lost` is the control on the default stream, and `test_a_newest_frame_over_the_outbox_is_still_refused` a 70 KB state refused at broadcast and at every drain, counted once. With the catch-up call removed the first test fails and the other two pass. Before the change the fourth frame reached that subscriber only when the producer broadcast again. The rule is hyperlith's per-connection one (render for a connection only once its previous frame was taken), done where the loop already drains every idle stream slot every pass (`_drain_outboxes`), so the loop is unchanged; the note is [latest-wins-after-a-stall](notes/latest-wins-after-a-stall.md)"
+    },
+    {
       "id": "I39",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
