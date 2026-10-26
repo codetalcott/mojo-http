@@ -173,9 +173,10 @@ def asgi_free_threading_refusal(report: FreeThreadingReport) -> String:
         " for the GIL build, so building the executor's Python type"
         " segfaults (" + PYOBJECT_LAYOUT_ISSUE + "). Run this application"
         " on a GIL-enabled CPython (3.10-3.14 without the t suffix; with uv,"
-        " put 3.13 in .python-version, since uv may pick a free-threaded"
-        " build), with --workers for concurrency; there is no free-threaded"
-        " ASGI mode on this toolchain."
+        " `uv python install 3.14 && uv sync --python 3.14+gil`, since a 3.14"
+        " pin is satisfied by 3.14t and uv keeps a venv already on it), with"
+        " --workers for concurrency; there is no free-threaded ASGI mode on"
+        " this toolchain."
     )
 
 

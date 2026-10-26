@@ -351,7 +351,7 @@ capability, a permanent **id** (`A7`), four status words (`verified`,
 must exist, a `docs/ROADMAP.md` heading that must resolve, or a reason.
 `scripts/spec_sheet.py` holds the rules (docs/notes/traceability.md):
 
-- **Cadence is part of the evidence.** CI pins GIL-enabled 3.13, so every
+- **Cadence is part of the evidence.** CI pins GIL-enabled 3.14, so every
   `--threads` phase skips and `smoke-threads` proves only the refusal (its
   step is named "the threaded mode's **guard**"). Free-threaded serving is
   `(weekly)` (`py-canary.yml`), the RFC snapshot's live comparison

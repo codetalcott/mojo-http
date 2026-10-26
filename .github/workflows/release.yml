@@ -192,7 +192,7 @@ jobs:
       - name: pip install and serve, on several CPython minors
         run: |
           set -euo pipefail
-          for img in python:3.10-slim python:3.12-slim python:3.13-slim; do
+          for img in python:3.10-slim python:3.12-slim python:3.13-slim python:3.14-slim; do
             echo "== $img"
             docker run --rm --network none -v "$PWD/dist:/w:ro" "$img" sh -c '
               set -e

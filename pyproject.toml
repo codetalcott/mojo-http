@@ -4405,7 +4405,7 @@ python3 scripts/emit.py --covers F19 --task smoke-serve
 """
 
 # The threaded execution mode. Phase 1 runs everywhere and pins the guard:
-# on an interpreter with the GIL enabled (the pinned 3.13, every CI runner)
+# on an interpreter with the GIL enabled (the pinned 3.14, every CI runner)
 # M0_THREADS>1 must refuse to start — exit 78, a sentence that names the
 # requirement — and never warn-and-run, because a thread pool under the GIL
 # is strictly worse than prefork and would mislead every benchmark. Phase 2
@@ -10432,14 +10432,17 @@ echo "CANARY PASSED against $(mojo --version)"
 # compiler.
 #
 # The traps, learned the way the nightly canary's were:
-# 1. While swapped, every task must be invoked as bare `poe` - a plain
-#    `uv run` re-syncs .venv to the lock's 3.13 resolution and the canary
-#    then reports a green *stable* run that means nothing.
+# 1. While swapped, every task is invoked as bare `poe`. Under the 3.13 pin
+#    a plain `uv run` re-synced .venv to the pin and the canary reported a
+#    green *stable* run that meant nothing. Under the 3.14 pin the opposite
+#    holds: 3.14t satisfies `3.14`, so nothing re-syncs the swapped venv
+#    back, and only the restore does - which therefore checks the BUILD
+#    (`Py_GIL_DISABLED`), since `--version` prints the same for both.
 # 2. PYTHON_GIL=0 (honest mode: an extension that needs the GIL fails loudly
 #    instead of silently re-enabling it and voiding the measurement) applies
 #    to EVERY CPython that starts under it, including poe and the mojo driver
-#    script themselves. On the 3.14t venv that is fine; exported into a 3.13
-#    process it is an instant "Disabling the GIL is not supported by this
+#    script themselves. On the 3.14t venv that is fine; exported into a
+#    GIL-enabled process it is an instant "Disabling the GIL is not supported by this
 #    build" abort - so py-canary never sets it before the swap, and the
 #    restore path unsets it first.
 # 3. Target 3.14t only, never 3.13t: 3.13t systematically immortalizes
@@ -10463,7 +10466,7 @@ cmd = "mojo run scripts/probes/py_thread_stdpy_probe.mojo"
 # the C-API symbols it calls directly (PyGILState_*, PyEval_*Thread) are not
 # resolvable by the JIT before std.python's lazy dlopen — the same
 # build-then-run rule m0-sqlite lives by. It therefore probes whichever
-# interpreter the venv holds: the 3.13 pin, or 3.14t after `poe py314t-try`
+# interpreter the venv holds: the 3.14 pin, or 3.14t after `poe py314t-try`
 # (invoke as bare `poe py-thread-probe` while swapped).
 # Knobs: M0_PROBE_MODE=interop|raw|naive, M0_PROBE_THREADS, M0_PROBE_N.
 [tool.poe.tasks.py-thread-probe]
@@ -10493,19 +10496,20 @@ if ! uv sync --frozen --python 3.14t; then
   exit 1
 fi
 .venv/bin/python3 -VV
-echo 'Now on 3.14t. Run tasks as: poe <task> (bare poe - a plain uv run re-syncs back to 3.13).'
+echo 'Now on 3.14t. Run tasks as: poe <task>. The 3.14 pin accepts this venv, so nothing swaps it back: finish with uv run poe py314t-restore.'
 """
 
 [tool.poe.tasks.py314t-restore]
-help = "Restore the pinned 3.13 venv (no artifact rebuild needed - both venvs install the same mojo compiler)"
+help = "Restore the pinned 3.14 venv, the GIL build (no artifact rebuild needed - both venvs install the same mojo compiler)"
 shell = """
 if [ -d .venv-pinned ]; then
   rm -rf .venv || exit 2
   mv .venv-pinned .venv || exit 2
 else
-  uv sync || exit 2
+  # A bare `uv sync` would keep a 3.14t venv: it satisfies the 3.14 pin.
+  uv python install 3.14 && uv sync --python 3.14+gil || exit 2
 fi
-.venv/bin/python3 --version 2>&1 | grep -q ' 3.13' || { echo 'py314t-restore: restore left the wrong python in .venv' >&2; exit 2; }
+.venv/bin/python3 -c 'import sys, sysconfig; sys.exit(0 if "%d.%d" % sys.version_info[:2] == sys.argv[1].strip() and not sysconfig.get_config_var("Py_GIL_DISABLED") else 1)' "$(cat .python-version)" || { echo 'py314t-restore: restore left the wrong python in .venv (not the pinned GIL build)' >&2; exit 2; }
 .venv/bin/mojo --version >/dev/null || exit 2
 echo "restored $(.venv/bin/python3 --version 2>&1)"
 """
@@ -10535,17 +10539,17 @@ run() { echo "--- $phase $(date -u +%H:%M:%S)"; perl -e 'alarm shift; exec @ARGV
 
 restore() {
   code=$?
-  # PYTHON_GIL=0 aborts any 3.13 interpreter at startup - clear it before
+  # PYTHON_GIL=0 aborts any GIL-enabled interpreter at startup - clear it before
   # anything from the restored venv runs.
   unset PYTHON_GIL MOJO_PYTHON_LIBRARY M0_RSS_LIMIT_KB
   echo ''
-  echo '--- restoring the pinned 3.13 venv ---'
+  echo '--- restoring the pinned 3.14 venv ---'
   # Inlined rather than `poe py314t-restore`: poe itself runs on the venv
   # being deleted, and uv/mv/grep do not.
   if [ -d .venv-pinned ]; then
     rm -rf .venv && mv .venv-pinned .venv || { echo 'PY-CANARY: restore FAILED - recover with: uv run poe py314t-restore' >&2; exit 2; }
   fi
-  .venv/bin/python3 --version 2>&1 | grep -q ' 3.13' || { echo 'PY-CANARY: restore left the wrong python - recover with: uv run poe py314t-restore' >&2; exit 2; }
+  .venv/bin/python3 -c 'import sys, sysconfig; sys.exit(0 if "%d.%d" % sys.version_info[:2] == sys.argv[1].strip() and not sysconfig.get_config_var("Py_GIL_DISABLED") else 1)' "$(cat .python-version)" || { echo 'PY-CANARY: restore left the wrong python (not the pinned GIL build) - recover with: uv run poe py314t-restore' >&2; exit 2; }
   git diff --quiet -- uv.lock .python-version || { echo 'PY-CANARY: the pin files changed during the canary' >&2; exit 2; }
   echo ''
   echo '--- PY-CANARY REPORT (full log: py-canary.log) ---'
