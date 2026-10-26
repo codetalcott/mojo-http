@@ -440,6 +440,11 @@ The rules the `live` scaffold follows:
 - `DatastarStream(send_latest=True)` gives a new subscriber the newest
   frame at once, and a reader whose outbox dropped one the newest as soon
   as it drains (SPEC I44).
+- `stream.open(req, url, compress=True)` sends the stream in zstd to a
+  client that accepts it: one context for the stream's life, so a frame
+  that repeats the markup before it costs a fraction of its size. A
+  client that did not offer zstd reads the stream as written, and so does
+  every client of a box without libzstd (SPEC I45).
 - The registry's capacity is at least `ctx.capacity`.
 - What workers and the producer share lives on the `page_slots` page.
 

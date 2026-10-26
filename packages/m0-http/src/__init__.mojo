@@ -61,6 +61,8 @@ from .sse import (
     ReplayJournal,
     sse_response,
     SSE_CONTENT_TYPE,
+    accepts_zstd,
+    zstd_acceptable,
 )
 from .multiworker import (
     EX_CONFIG, SharedAtomics, WorkerSupervisor, exit_worker, shared_fetch_add,

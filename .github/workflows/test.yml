@@ -1033,6 +1033,10 @@ jobs:
       # different client's open SSE stream, single-framed and in spec order.
       - name: Smoke test the Datastar counter
         run: uv run poe smoke-counter
+      # The same stream compressed: zstd per connection, every event decoded
+      # as it lands, the heartbeat inside the frame (SPEC I45).
+      - name: Smoke test the compressed Datastar stream
+        run: uv run poe smoke-stream-zstd
       - name: Record the measurements
         if: always()
         uses: ./.github/actions/record-measurements

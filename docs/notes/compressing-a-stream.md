@@ -19,6 +19,10 @@ The first version chose gzip through the system zlib. The owner chose zstd
 on 2026-10-26, on the evidence in "Why zstd" below. The gzip design is in
 this note's history if a second coding is ever wanted.
 
+Where it stands: steps 0 and 2 landed with the binding (#632), and steps
+1, 3, 4 and 5 with the stream (rows I45 and I46, D69). Step 6, with the
+blobs setting and the image probe it needs, remains.
+
 Read `CLAUDE.md` first and run `uv run poe milestones`. This brief adds
 one capability, opt-in, and changes no default.
 
@@ -346,10 +350,11 @@ and has no business with a C library.
 
 ### 4. The API: a response that asks
 
-- `sse_response(initial, encoding="")`: with `"zstd"`, the response sets
+- `sse_response(initial, zstd=False)`: with `True`, the response sets
   the field and carries `Content-Encoding: zstd`, with `Accept-Encoding`
   appended to `Vary` through `reply.vary`. It does not negotiate; the
-  caller does.
+  caller does. A Bool, not a coding's name: with one coding there is no
+  name to get wrong, and the function stays one that cannot raise.
 - **The negotiation is one question.** `negotiate_encoding` was removed
   on 2026-09-29 with nothing calling it (D54). A stream needs only to know
   whether the request accepts zstd. So `accepts_zstd(req) -> Bool` sits
@@ -367,8 +372,8 @@ and has no business with a C library.
 - The scaffold's `live` template keeps its default. `apps/datastar_counter`
   turns compression on, as the demo the gate drives; its frames are small
   signal patches, so it proves correctness and not the ratio.
-  `apps/blobs` keeps compression off by default and takes an app setting
-  that turns it on for step 6.
+  `apps/blobs` keeps compression off; the setting that turns it on for a
+  measurement is step 6's.
 
 ### 5. The gates
 
@@ -412,11 +417,13 @@ and has no business with a C library.
   venv onto free-threaded 3.14t from the same lock, and 0.23.0 does not
   build there (`ob_refcnt`, measured), where 0.25.0 imports with its C
   backend on both.
-- `scripts/mojo_image_probe.py`, with M26's no-interpreter check: the
-  runtime image resolves `libzstd.so.1` (`debian:12-slim` ships
-  `libzstd1`, which `dpkg` depends on; the probe makes that a fact rather
-  than a belief). `scripts/mojo_image_sabotage.py` anchors the probe's
-  lines: run it after the edit.
+- Moved to step 6: `scripts/mojo_image_probe.py`, with M26's
+  no-interpreter check, resolving `libzstd.so.1` in the runtime image
+  (`debian:12-slim` ships `libzstd1`, which `dpkg` depends on; the probe
+  makes that a fact rather than a belief). It matters once an application
+  in the image compresses, which blobs's setting is the first to do, and
+  `scripts/mojo_image_sabotage.py` anchors the probe's lines: run it
+  after the edit.
 
 ### 6. Measure
 

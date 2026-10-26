@@ -1874,6 +1874,22 @@
       "evidence": "`test_stream.mojo:test_state_stream_catches_a_drained_subscriber_up` (every PR) \u2014 four 20 KB whole-state frames against the 64 KB outbox, three taken and the fourth refused, then one drain of the three, one of exactly frame 4 and an empty one, a subscriber on another url drained empty throughout, and a broadcast to the caught-up slot reaching it once; `test_a_change_stream_leaves_a_refused_frame_lost` is the control on the default stream, and `test_a_newest_frame_over_the_outbox_is_still_refused` a 70 KB state refused at broadcast and at every drain, counted once. With the catch-up call removed the first test fails and the other two pass. Before the change the fourth frame reached that subscriber only when the producer broadcast again. The rule is hyperlith's per-connection one (render for a connection only once its previous frame was taken), done where the loop already drains every idle stream slot every pass (`_drain_outboxes`), so the loop is unchanged; the note is [latest-wins-after-a-stall](notes/latest-wins-after-a-stall.md)"
     },
     {
+      "id": "I45",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "An SSE stream that asks, through `sse_response` or `DatastarStream.open`, is compressed with zstd when its request accepts it (`accepts_zstd`: a `zstd` member weighted above 0, or a `*` one where none is named, and nothing for a request without the field): one context per connection for the stream's life, a block flushed at every write \u2014 the body after the head, the drain's frames, the heartbeat and the farewell, which closes the frame \u2014 under `Content-Encoding: zstd` with `Accept-Encoding` in `Vary`. A client that did not offer zstd, or refused it with a weight of 0, reads the stream as written; where libzstd cannot be opened the stream goes out uncompressed without the header, the reason printed once per loop",
+      "status": "verified",
+      "evidence": "`Smoke test the compressed Datastar stream` (every PR) \u2014 the counter demo at one worker and at two, read over a raw socket: each of five POSTs' events decoded before the next POST goes, a heartbeat decoded inside the frame and an event after it, the stream as written for no `Accept-Encoding` and for `zstd;q=0`, and no `Content-Encoding` on the buffered page (J8); with the counter not asking it fails on the head, and with the heartbeat written raw on the decode. `test_slot_lifecycle.mojo:test_a_compressed_stream_writes_every_byte_after_its_head_through_its_context` and `test_a_compressed_streams_context_goes_with_its_slot` drive the loop, eight reverts of its wiring each caught; `test_zstd_absent.mojo:test_a_stream_that_asked_for_zstd_without_the_library_goes_out_plain` is the fallback, and `test_sse_zstd.mojo:test_the_accept_encoding_table` the negotiation ([the note](notes/compressing-a-stream.md))"
+    },
+    {
+      "id": "I46",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "libzstd is opened at run time rather than linked, one handle per process kept for its life, so no binary in this repo carries a libzstd dependency on its link line; an absent library is one error naming every path tried, `M0_LIBZSTD` naming the file outright, and a library missing an entry point or older than 1.4.0 is refused by name",
+      "status": "verified",
+      "evidence": "`test_zstd.mojo:test_library_opens_at_or_above_the_floor` (every PR) \u2014 the search path and the floor; `test_a_library_that_is_not_libzstd_is_named` and `test_absent_paths_are_each_named` the refusals, and the binding's own round trip, flush per push, output growth, window and memory bound beside them. Reverting the flush or the output loop fails them"
+    },
+    {
       "id": "I39",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
@@ -2015,7 +2031,7 @@
       "category": "J. Static file serving",
       "capability": "Response compression (gzip, brotli, zstd)",
       "status": "out of scope",
-      "evidence": "recorded in ROADMAP as deliberate: no dynamic compression; a proxy compresses"
+      "evidence": "recorded in ROADMAP as deliberate: no dynamic compression of buffered responses; a proxy compresses (Fly's does, measured 2026-10-26); a stream may ask (I45)"
     },
     {
       "id": "J9",

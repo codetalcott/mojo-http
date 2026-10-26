@@ -10,4 +10,6 @@ from .format import (
 )
 from .registry import SSERegistry, MAX_PENDING_BYTES
 from .replay import ReplayJournal
-from .response import sse_response, SSE_CONTENT_TYPE, SSE_OPEN_COMMENT
+from .response import (
+    sse_response, SSE_CONTENT_TYPE, SSE_OPEN_COMMENT, accepts_zstd, zstd_acceptable,
+)

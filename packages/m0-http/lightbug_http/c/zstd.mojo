@@ -452,6 +452,9 @@ struct ZstdDecompressor(Movable):
     var _fns: ZstdFns
     var _dctx: Int
     var _bufs: List[Int]
+    var frame_complete: Bool
+    """Whether the last `push` ended on a complete frame: what a stream's
+    farewell, pushed with `end=True`, leaves behind it."""
 
     def __init__(out self, window_log_max: Int = 0) raises:
         """A decoding context; `window_log_max`, when not 0, refuses a frame
@@ -471,6 +474,7 @@ struct ZstdDecompressor(Movable):
         self._fns = fns
         self._dctx = dctx
         self._bufs = List[Int](length=6, fill=0)
+        self.frame_complete = False
 
     def __deinit__(deinit self):
         self._fns.free_dctx(self._dctx)
@@ -492,6 +496,8 @@ struct ZstdDecompressor(Movable):
                 raise Error("zstd: " + self._fns.error_name(rc))
             written += self._bufs[2]
             out._len = written
+            # 0 is zstd.h's word for "a frame is completely decoded".
+            self.frame_complete = rc == 0
             if self._bufs[5] == self._bufs[4] and self._bufs[2] < self._bufs[1]:
                 break
             out.reserve(out.capacity() * 2)

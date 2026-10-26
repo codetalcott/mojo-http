@@ -949,7 +949,8 @@ and the cookie a grant binds to; `sessionid`), `M0_SPAWN_WORKERS`,
 m0serve flags, read by m0serve's `from_env`, which reports every `M0_*`
 value it cannot read rather than ignoring it silently), `M0_INVERTED` (`1`
 runs the loop inside the executor's asyncio loop, where the topology
-allows), and `M0_LIBPQ` and `M0_LIBSQLITE3` (the library to `dlopen`).
+allows), and `M0_LIBPQ`, `M0_LIBSQLITE3` and `M0_LIBZSTD` (the library to
+`dlopen`).
 
 A/B knobs, not flags, each a gate's negative arm or a measurement's:
 `M0_ACCEPT_SHARE` (`0` off), `M0_ACCEPT_BATCH` (default 16; `0` takes the

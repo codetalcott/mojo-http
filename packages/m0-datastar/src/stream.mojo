@@ -19,7 +19,7 @@ from lightbug_http import Headers, Header, HeaderKey, HTTPRequest, HTTPResponse
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.hold import request_last_event_id
 
-from m0_http import NO_EVENT_ID, SSERegistry, sse_response
+from m0_http import NO_EVENT_ID, SSERegistry, accepts_zstd, sse_response
 from m0_http.multiworker import shared_fetch_add, shared_load, shared_store
 
 from .consts import DEFAULT_PATCH_MODE
@@ -172,7 +172,9 @@ struct DatastarStream:
 
     # --- Lifecycle: drive these from the HTTPService SSE hooks -------------
 
-    def open(mut self, req: HTTPRequest, url: String) -> HTTPResponse:
+    def open(
+        mut self, req: HTTPRequest, url: String, compress: Bool = False
+    ) -> HTTPResponse:
         """Subscribe this request's slot to `url` and open the stream.
 
         Returns `409 Conflict` when the request has no event-loop slot
@@ -211,6 +213,11 @@ struct DatastarStream:
         that saw frame 5000 from the last incarnation would otherwise wait
         out 5000 steps of this one — and because re-sending a state the
         client already holds costs one frame and changes nothing.
+
+        `compress=True` asks for the stream in zstd when the request accepts
+        it (`accepts_zstd`): one context for the stream's life, so a frame
+        that repeats the markup before it costs a fraction of its size. The
+        catch-up and the replay reach the wire through the same context.
         """
         if req.slot_id < 0:
             return HTTPResponse(
@@ -222,6 +229,7 @@ struct DatastarStream:
                 status_code=409,
                 status_text="Conflict",
             )
+        var zstd = compress and accepts_zstd(req)
         if self.send_latest:
             self.registry.subscribe(req.slot_id, url, 0)
             for i in range(len(self.latest_urls)):
@@ -232,7 +240,7 @@ struct DatastarStream:
                         self.latest_frames[i].copy(),
                     )
                     break
-            return sse_response()
+            return sse_response(zstd=zstd)
         var last_id = 0
         var reconnecting = False
         var ahead = False
@@ -250,7 +258,7 @@ struct DatastarStream:
         self._set_gapped(req.slot_id, False)
         if reconnecting and (ahead or not self._replay(req.slot_id, url, last_id)):
             self._set_gapped(req.slot_id, True)
-        return sse_response()
+        return sse_response(zstd=zstd)
 
     def _replay(mut self, slot: Int, url: String, last_id: Int) -> Bool:
         """Queue every journaled frame for `url` after `last_id`, or none.

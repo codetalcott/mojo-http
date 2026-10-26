@@ -70,6 +70,16 @@ struct HTTPResponse(Encodable, Movable, Writable):
     var protocol: String
     var sse_streaming: Bool
 
+    var zstd_stream: Bool
+    """Whether the loop compresses this stream with zstd: one context for
+    the stream's life and a block flushed per write, the body after the
+    head included (`m0_http.sse_response(zstd=True)`, which also sets
+    `Content-Encoding`; docs/notes/compressing-a-stream.md).
+
+    A field rather than the header, on purpose: an application that
+    compresses its own stream sets `Content-Encoding` itself, and the
+    loop must not compress it again. Read only beside `sse_streaming`."""
+
     var body_fd: Int
     """An open file to send as the body instead of `body_raw`, or -1.
 
@@ -159,6 +169,7 @@ struct HTTPResponse(Encodable, Movable, Writable):
         var body_len = len(owned_body)
         self.body_raw = owned_body^
         self.sse_streaming = False
+        self.zstd_stream = False
         self.body_fd = -1
         self.body_fd_offset = 0
         self.body_fd_len = 0
