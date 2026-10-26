@@ -150,6 +150,15 @@ has the Flask version of the whole thing, and CI drives that exact file.
 - **Terminate TLS at a proxy.** There is no TLS and no HTTP/2 here, by
   design. Fly, nginx, Caddy and a cloud load balancer all speak HTTP/1.1 to
   the app.
+- **Compression is the proxy's, and a stream needs two things from it.**
+  The server sends no `Content-Encoding` (SPEC J8). A proxy that
+  compresses a held SSE stream must flush at every event rather than
+  buffer the body, or the stream stalls, and must keep one compression
+  context for the life of the connection, or repeated whole-state frames
+  (`DatastarStream(send_latest=True)`) gain nothing from the frames
+  before them. Caddy's `encode` and nginx's `gzip` can be set either way;
+  check the proxy's streaming behaviour with `curl -N --compressed`
+  before trusting it on a stream.
 - **A header whose name holds an underscore is dropped** before a WSGI
   application sees it, so behind HAProxy, Caddy or Traefik, which forward
   such names, a client's `X_Forwarded_For` cannot replace the proxy's
