@@ -2080,6 +2080,19 @@ lightbug_http
         `ZstdDecompressor` is for the tests. Nothing in the fork calls it
         yet, so the wire bytes are unchanged.
 
+      - http/response.mojo, loop/state.mojo, loop/response.mojo,
+        loop/streams.mojo, c/zstd.mojo (2026-10-26): a stream compressed
+        per connection (SPEC I45). `HTTPResponse.zstd_stream` asks for it;
+        `_finish_response` gives the slot a context where it marks the
+        slot a stream (`_begin_zstd_stream`), compressing the body after
+        the head; the drain, the heartbeat and the farewell push through
+        it, the farewell closing the frame; `_close_slot` and
+        `_chunked_stream_ends` free it. Without libzstd the stream goes out
+        as written, its `Content-Encoding` removed and the reason printed
+        once per loop. `ZstdDecompressor.frame_complete` reports a
+        finished frame. A response that does not ask is unchanged on the
+        wire.
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 
