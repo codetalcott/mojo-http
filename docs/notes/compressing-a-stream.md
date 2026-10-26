@@ -101,7 +101,7 @@ Each read on 2026-10-26 at its repository's head.
     `Content-Encoding: none` for streaming HTML.
 
   The page does not say whether the client's `Accept-Encoding` reaches
-  the app (step 0).
+  the app; step 0 measured that it does.
 
 ## Why zstd
 
@@ -198,11 +198,23 @@ What it costs, accepted with the choice:
 
 ### 0. The deploy target forwards `Accept-Encoding`
 
-Before the loop is touched, confirm that the client's `Accept-Encoding`
-reaches the app behind Fly's proxy. Read it back from a deployed app: a
-route that echoes it, or the access log. If the proxy strips or rewrites
-the header, the app never learns what the client takes, and the feature
-does nothing on the deploy target.
+Answered on 2026-10-26, before the loop was touched, through a throwaway
+Fly app in the `textshelf` organisation. It was a Python server with one
+route that echoed the request's headers and one that sent a zstd stream,
+an event every 0.5 s; it was destroyed after the run.
+
+- **The client's `Accept-Encoding` reaches the app unchanged**, q-values
+  included: `gzip, deflate, br, zstd`, `zstd;q=0, gzip` and
+  `br;q=1, zstd;q=0.5` each arrived as sent. The proxy's own choice for
+  the echo honours them: zstd for the first, gzip for the second, brotli
+  for the third.
+- **A stream the app compressed passes through with its coding and
+  unbuffered**: `content-encoding: zstd` at the client, and each of 20
+  events decoded on arrival, 0.43 to 0.58 s apart.
+
+Had the proxy stripped or rewritten the header, the app would never have
+learnt what the client takes, and the feature would do nothing on the
+deploy target.
 
 ### 1. The decision, and the rows
 
@@ -396,7 +408,10 @@ and has no business with a C library.
   The row cites the step `(every PR)`, and the task declares the row with
   `emit.py --covers`. CI's Python 3.13 has no `compression.zstd`, so
   `zstandard` goes in `[dependency-groups] dev`, or the gate is green
-  having tested nothing.
+  having tested nothing. It must be 0.25.0 or later: py-canary moves the
+  venv onto free-threaded 3.14t from the same lock, and 0.23.0 does not
+  build there (`ob_refcnt`, measured), where 0.25.0 imports with its C
+  backend on both.
 - `scripts/mojo_image_probe.py`, with M26's no-interpreter check: the
   runtime image resolves `libzstd.so.1` (`debian:12-slim` ships
   `libzstd1`, which `dpkg` depends on; the probe makes that a fact rather
@@ -419,10 +434,9 @@ and has no business with a C library.
   wire bytes). That repo pins `mojo==1.1.0` and `m0==0.12.0`. It moves to
   1.2.0 and the m0 release carrying this first, and its capture's section
   of `measurements.md` is pushed, so the seat's ratio can be checked.
-- Through Fly: a compressed stream from a deployed app keeps its coding and
-  its events' timing past the proxy. Fly's documentation says a response
-  that carries a coding passes through unmodified; whether it also passes
-  through unbuffered is unmeasured.
+- Through Fly: m0's own compressed stream, from a deployed app, keeps its
+  coding and its events' timing past the proxy, as the Python stream in
+  step 0 did.
 
 ## Not in this plan
 
@@ -457,6 +471,5 @@ and has no business with a C library.
 - Step 6's measurements in `docs/BENCHMARKS.md`: the hello row before and
   after, blobs at three subscriber counts with the hello latency beside
   them, and the seat.
-- Whether the client's `Accept-Encoding` reaches the app on Fly (step 0),
-  and whether a zstd stream passes the proxy flushed per event.
+- Step 0's pass-through, re-measured with m0's own stream.
 - A note on anything libzstd's ABI made awkward.
