@@ -2069,6 +2069,17 @@ lightbug_http
         descriptor stands: 1.2.0 constructs it
         (docs/notes/the-pin-moves-to-1-2-0.md).
 
+      - c/zstd.mojo (new, 2026-10-26): a binding to the system's libzstd,
+        opened at run time and never linked, for a compressed SSE stream
+        (docs/notes/compressing-a-stream.md). One handle per process,
+        `RTLD_NOW | RTLD_LOCAL`, published in a global word by
+        compare-and-swap and never closed; `M0_LIBZSTD` names the file,
+        else a search path; a library that is not libzstd, or older than
+        1.4.0, is refused by name. `ZstdCompressor` flushes a block per
+        push (`ZSTD_e_flush`, `ZSTD_e_end` to close the frame);
+        `ZstdDecompressor` is for the tests. Nothing in the fork calls it
+        yet, so the wire bytes are unchanged.
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 
