@@ -438,7 +438,8 @@ The rules the `live` scaffold follows:
 - Every frame is the whole state. A slow reader's outbox drops frames, and
   the next whole frame heals it.
 - `DatastarStream(send_latest=True)` gives a new subscriber the newest
-  frame at once.
+  frame at once, and a reader whose outbox dropped one the newest as soon
+  as it drains (SPEC I44).
 - The registry's capacity is at least `ctx.capacity`.
 - What workers and the producer share lives on the `page_slots` page.
 

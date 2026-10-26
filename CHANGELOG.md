@@ -8,6 +8,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ## [Unreleased]
 
+### Fixed
+
+- **A state stream catches a stalled subscriber up at its next drain**
+  (SPEC I44). Under `DatastarStream(send_latest=True)`, a subscriber whose
+  full outbox refused a frame was left on the state before it until the
+  producer broadcast again, which a paused producer never did; `drain`
+  now queues the newest frame for a slot that is behind it. The change
+  stream is unchanged ([the note](docs/notes/latest-wins-after-a-stall.md)).
+
 ## [1.16.0] — 2026-10-23
 
 The toolchain moves to Mojo 1.2.0, and nothing served changes. The m0serve
