@@ -50,6 +50,12 @@ say what the image measured about itself -- its version, its unpacked
 size, and that no interpreter is in it -- read once per handler from the
 file `M0_IMAGE_FACTS` names (`about.mojo`).
 
+`M0_BLOBS_ZSTD=1` compresses the stream for a client that offers zstd,
+one context per stream and a flush per frame (SPEC I45); a client that
+does not offer it gets the stream as written. Off by default. A frame
+here is a whole state with little markup repeated, about 3.4:1
+(docs/notes/compressing-a-stream.md).
+
 Run it:  uv run poe serve-blobs
 """
 
@@ -123,6 +129,16 @@ def _env_int(name: String, default: Int) -> Int:
             return default
         result = result * 10 + (c - ord("0"))
     return result
+
+
+def _compress_streams() -> Optional[Bool]:
+    """`M0_BLOBS_ZSTD`: `1` on, `0` or unset off, anything else None."""
+    var val = getenv("M0_BLOBS_ZSTD", "")
+    if val == "" or val == "0":
+        return False
+    if val == "1":
+        return True
+    return None
 
 
 def _now_ms() -> Int:
@@ -252,6 +268,7 @@ struct BlobState(Movable):
     var worker: Int
     var workers: Int
     var capacity: Int
+    var compress: Bool
     var facts: ImageFacts
     var page_html: String
     var _window_ms: List[Int]
@@ -259,7 +276,7 @@ struct BlobState(Movable):
 
     def __init__(
         out self, capacity: Int, board: Board, worker: Int, workers: Int,
-        var facts: ImageFacts,
+        compress: Bool, var facts: ImageFacts,
     ) raises:
         # A stream of states: the newest frame at open, never a replay, and
         # no journal, since nothing here reads one.
@@ -268,6 +285,7 @@ struct BlobState(Movable):
         self.worker = worker
         self.workers = workers
         self.capacity = capacity
+        self.compress = compress
         self.page_html = render_page(render_footer(facts))
         self.facts = facts^
         self._window_ms = List[Int](length=capacity, fill=0)
@@ -322,7 +340,7 @@ def about(req: HTTPRequest, params: List[String], st: BlobState) raises -> HTTPR
 def events(
     req: HTTPRequest, params: List[String], mut st: BlobState
 ) raises -> HTTPResponse:
-    var resp = st.stream.open(req, EVENTS)
+    var resp = st.stream.open(req, EVENTS, compress=st.compress)
     st.publish_viewers()
     # Which worker holds this stream: how a client tells that a frame
     # crossed the bus rather than being produced beside it.
@@ -413,7 +431,7 @@ struct BlobsHandler(AppHandler):
             urls(),
             BlobState(
                 ctx.capacity, Board(ctx.page), ctx.worker, ctx.workers,
-                read_image_facts(),
+                _compress_streams().or_else(False), read_image_facts(),
             ),
         )
 
@@ -448,6 +466,10 @@ def main() raises:
     if not cadence.valid():
         print("blobs: M0_BLOBS_HZ and M0_BLOBS_IDLE_HZ must be positive", flush=True)
         process_exit(78)
+    var zstd = _compress_streams()
+    if zstd is None:
+        print("blobs: M0_BLOBS_ZSTD must be 1 or 0", flush=True)
+        process_exit(78)
     # With the command line applied, so the address printed below is the
     # one `serve` binds under `--port` (`m0_host.flags`).
     var config = host_config()
@@ -456,6 +478,7 @@ def main() raises:
             "blobs on ", config.base_url, " -- ", cadence.hz, " Hz, ",
             cadence.idle_hz, " Hz after ", cadence.idle_after_ms,
             " ms without a drop, ", config.workers, " worker(s)",
+            ", zstd streams" if zstd.value() else "",
         ),
         flush=True,
     )

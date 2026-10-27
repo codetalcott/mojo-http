@@ -22,6 +22,8 @@ What it asserts, for every app:
     PID 1, and does not forward SIGTERM);
   * no interpreter is in the image: no `python3` or `python` on the path and
     no `python3.x` or `libpython` file anywhere on its filesystem;
+  * libzstd resolves: the loader's cache names a `libzstd.so.1` that can be
+    read, the library a compressed stream opens at run time (SPEC I46);
   * the image's facts file (`/app/about.json`, written by the image's last
     layer) is true: its version is `pyproject.toml`'s, its target CPU is the
     one asked for, its architecture is the container's, it says no Python,
@@ -38,6 +40,10 @@ And for `blobs`, the app that does more than answer:
     through the published port -- the producer thread steps, frames arrive
     at cadence and well-formed, drops reach every stream, the newest state
     at open, the pause with nobody watching;
+  * a compressed stream from the image: run as the deploy runs it
+    (`M0_BLOBS_ZSTD=1`), a stream that offers zstd comes back
+    `Content-Encoding: zstd` and decodes into whole-state frames as they
+    arrive, and the log says nothing of the library;
   * a held stream through the drain: a stream that has received a frame is
     ENDED BY THE SERVER on `docker stop`, the exit is 0 within 10 s, and the
     log names nothing abandoned -- the producer was told to stop and joined.
@@ -48,7 +54,9 @@ fresh producer. It asserts `/health`; `/about` naming the app, no Python
 and the version given (`--version`, default `pyproject.toml`'s); the
 footer saying what `/about` says; a stream that receives three frames with
 increasing ids, each a `datastar-patch-signals` event carrying every slot;
-and `/stats` counting steps.
+the same stream offered zstd, which must come through the proxy coded and
+decode frame by frame as they arrive, not in a buffered burst; and `/stats`
+counting steps.
 
 Measured and recorded (scripts/emit.py; a no-op outside CI): the build
 time, the image size the daemon reports (compressed under the containerd
@@ -73,10 +81,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 from emit import emit  # noqa: E402
-from probelib import fail, free_port, phase, sse_events, stamp  # noqa: E402
+from probelib import SSEParser, fail, free_port, phase, sse_events, stamp  # noqa: E402
 
 BINARY = "/app/server"
 HELD = 100
+# The deploy's environment, which the probe runs blobs under (deploy/blobs/fly.toml).
+BLOBS_ENV = ["-e", "M0_BLOBS_ZSTD=1"]
+CODED_FRAMES = 20
 GRACE = 20
 DRAIN_BOUND_S = 10
 
@@ -237,6 +248,90 @@ def hold_connections(port, app, n):
     return socks
 
 
+def coded_frames(target, want, bound_s):
+    """`want` whole-state frames from `/events` offered zstd, decoded as they
+    arrive. Returns (arrival, frames completed by that read) per read that
+    completed any, and the stream's bytes on the wire and decoded.
+
+    Read through the response, not its socket: a proxy in front may send
+    the body chunked, and `read1` returns what one read brought.
+    """
+    try:
+        from compression import zstd
+    except ImportError:
+        fail("decoding the stream needs Python 3.14's compression.zstd")
+    conn = _connect(target, bound_s)
+    conn.request("GET", "/events", headers={"Accept": "text/event-stream",
+                                            "Accept-Encoding": "gzip, deflate, br, zstd"})
+    sock = conn.sock
+    resp = conn.getresponse()
+    coding = resp.getheader("content-encoding")
+    if resp.status != 200 or coding != "zstd":
+        fail(f"/events offered zstd answered {resp.status} with Content-Encoding {coding!r}")
+    if "accept-encoding" not in (resp.getheader("vary") or "").lower():
+        fail(f"a coded stream must vary on Accept-Encoding; Vary was {resp.getheader('vary')!r}")
+    decoder = zstd.ZstdDecompressor()
+    parser = SSEParser()
+    reads, ids, wire, decoded = [], [], 0, 0
+    deadline = time.monotonic() + bound_s
+    try:
+        while len(ids) < want:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                fail(f"{len(ids)} frames decoded in {bound_s} s")
+            sock.settimeout(left)
+            try:
+                chunk = resp.read1(65536)
+            except TimeoutError:
+                fail(f"{len(ids)} frames decoded in {bound_s} s")
+            if not chunk:
+                fail(f"the coded stream ended after {len(ids)} frames")
+            wire += len(chunk)
+            try:
+                text = decoder.decompress(chunk)
+            except zstd.ZstdError as e:
+                fail(f"the stream did not decode as zstd: {e}")
+            decoded += len(text)
+            done = 0
+            for ev in parser.feed(text):
+                if ev.event != "datastar-patch-signals":
+                    continue
+                missing = [k for k in range(SLOTS) if f'"_b{k}"' not in (ev.data or "")]
+                if ev.id is None or missing:
+                    fail(f"a coded frame without an id or lacking slots {missing}: {ev!r:.120}")
+                ids.append(int(ev.id))
+                done += 1
+            if done:
+                reads.append((time.monotonic(), done))
+    finally:
+        conn.close()
+    if ids != sorted(ids) or len(set(ids)) != len(ids):
+        fail(f"coded frame ids are not increasing: {ids}")
+    return reads, wire, decoded
+
+
+def check_coded(target, bound_s):
+    """A coded stream decodes frame by frame, as the frames are sent.
+
+    A proxy that buffered the stream to compress it, or held a coded one,
+    would hand the client most frames in one burst: here the median gap
+    between reads that completed a frame must be a cadence's, not zero.
+    """
+    reads, wire, decoded = coded_frames(target, CODED_FRAMES, bound_s)
+    gaps = [b[0] - a[0] for a, b in zip(reads, reads[1:])]
+    gap_ms = 1000 * sorted(gaps)[len(gaps) // 2] if gaps else 0.0
+    burst = max(n for _, n in reads)
+    if gap_ms < 30:
+        fail(f"{CODED_FRAMES} frames came in {len(reads)} reads, the median gap {gap_ms:.1f} ms "
+             f"and {burst} frames in one: buffered, not decoded as they arrive")
+    ratio = decoded / wire
+    if ratio < 2.0:
+        fail(f"{decoded} bytes decoded from {wire} on the wire, {ratio:.2f}:1: "
+             "frames compressed apart, not through one context")
+    return (f"{CODED_FRAMES} frames, {wire:,} bytes on the wire for {decoded:,} decoded "
+            f"({ratio:.1f}:1), median gap {gap_ms:.0f} ms, at most {burst} per read")
+
+
 def build(args, tag, arch):
     phase("build the image")
     cpu = args.target_cpu
@@ -263,7 +358,8 @@ def probe(args, tag, arch):
         phase("start it")
         port = args.port or free_port()
         print(f"publishing on 127.0.0.1:{port}")
-        run("docker", "run", "-d", "--name", name, "-p", f"127.0.0.1:{port}:8080", tag)
+        env = BLOBS_ENV if args.app == "blobs" else []
+        run("docker", "run", "-d", "--name", name, "-p", f"127.0.0.1:{port}:8080", *env, tag)
         deadline = time.monotonic() + 30
         while True:
             try:
@@ -295,6 +391,20 @@ def probe(args, tag, arch):
         ).stdout.split()
         if found:
             fail(f"an interpreter is in the image: {found}")
+
+        phase("libzstd resolves in the image")
+        # The plain name is the first the loader tries (lightbug_http.c.zstd),
+        # so the cache's entry is the one opened; the file must be there too,
+        # since a cache can outlive what it names.
+        zstd_lib = root_sh(
+            name,
+            "ldconfig -p | sed -n 's/^[[:space:]]*libzstd[.]so[.]1 .*=> //p' | "
+            "while read -r p; do [ -r \"$p\" ] && readlink -f \"$p\"; done",
+        ).stdout.split()
+        if not zstd_lib:
+            fail("the loader's cache names no readable libzstd.so.1: a stream that asks "
+                 "for zstd would go out uncompressed")
+        print(f"libzstd.so.1: {zstd_lib[0]}")
 
         phase("the image's facts are true")
         raw = run("docker", "exec", name, "cat", "/app/about.json").stdout
@@ -335,6 +445,12 @@ def probe(args, tag, arch):
             if res.returncode != 0:
                 fail(f"blobs_probe serve failed through the image:\n{res.stdout}{res.stderr}\n" + logs(name))
             print(f"serve: {res.stdout.strip()}")
+
+            phase("a compressed stream from the image")
+            print(f"coded: {check_coded(port, 30)}")
+            said = run("docker", "logs", name, check=False)
+            if "zstd:" in said.stdout + said.stderr:
+                fail("the server said something of the library:\n" + logs(name))
 
         phase(f"RSS, {HELD} connections held")
         held = hold_connections(port, args.app, HELD)
@@ -442,6 +558,9 @@ def probe_url(args):
     conn.close()
     if ids != sorted(ids) or len(set(ids)) != len(ids):
         fail(f"frame ids are not increasing: {ids}")
+
+    phase("a compressed stream through the proxy")
+    print(f"coded: {check_coded(base, 30)}")
 
     phase("the producer is stepping")
     status, body = http_get(base, "/stats")

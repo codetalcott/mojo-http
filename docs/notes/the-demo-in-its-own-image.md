@@ -31,7 +31,7 @@ headline figure compared two different things, as described below.
   verification.
 - **`poe smoke-blobs-image`**, on every pull request in the `pid1` job
   (SPEC M26, which moved here from pre-release, and M27, new).
-- **`poe sabotage-mojo-image`** (pre-release): ten sabotaged images, each
+- **`poe sabotage-mojo-image`** (pre-release): twelve sabotaged images, each
   required to fail where it should.
 - **`scripts/bench_blobs_modes.py`**, the measurement behind D36.
 
@@ -257,7 +257,7 @@ come from, not the binary.
 
 ```bash
 uv run poe smoke-blobs-image                  # build for the daemon's arch, probe from outside
-uv run poe sabotage-mojo-image                # ten sabotaged images, each caught where it should be
+uv run poe sabotage-mojo-image                # twelve sabotaged images, each caught where it should be
 uv run poe probe-mojo-image                   # the hello floor
 python3 scripts/bench_blobs_modes.py --build                                  # one core
 python3 scripts/bench_blobs_modes.py --build --cpus 0.0625 --viewers 25,100   # its baseline share

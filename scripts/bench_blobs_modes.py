@@ -15,6 +15,10 @@ Each arm is a fresh container of the SAME image PINNED TO ONE CORE
     loop         the host's default: one event loop, the producer beside it
     workers=N    M0_WORKERS=N: prefork, a supervisor, accept sharing
     threads=N    M0_THREADS=N: N loops on N threads of one process
+    ARM+zstd     any of those with M0_BLOBS_ZSTD=1: each stream compressed
+                 for its viewer, one zstd context per stream
+    before       the loop arm on `--before-image`, an image built from an
+                 earlier commit: the same arm across a change, in one round
 
 The pin is load-bearing. `--cpus` alone is a QUOTA of CPU time, which two
 loops spend on two cores at once whenever the machine has them, and that
@@ -25,8 +29,9 @@ there. `--cpus` below one then models the machine's sustained share on
 top (a shared-cpu-1x's baseline is 1/16 of its vCPU).
 
 The load is the demo's: V viewers each holding `/events` (every step's
-frame fanned out to all of them), plus one keep-alive connection timing a
-trivial `/now` every 50 ms. The client runs in a container on the same
+frame fanned out to all of them), each offering what a browser offers
+(`Accept-Encoding: gzip, deflate, br, zstd`), plus one keep-alive
+connection timing a trivial `/now` every 50 ms. The client runs in a container on the same
 docker network, so the published port's forwarding is not what is measured,
 and it is not CPU-limited. Over a measured window after a warm-up:
 
@@ -36,6 +41,8 @@ and it is not CPU-limited. Over a measured window after a warm-up:
   * delivery: the fraction of (viewer, frame) pairs that arrived, over the
     frames any viewer saw -- a mode that sheds frames under its budget
     shows here, not in its CPU;
+  * bytes: what reached the viewers on the wire over the window, and what
+    that decoded to (the same, for a stream as written);
   * fan-out spread: per frame, last arrival minus first across viewers
     (p50/p99) -- how long the slowest tab waits behind the fastest;
   * `/now` p50/p99/max: what a request waits behind the fan-out;
@@ -43,6 +50,8 @@ and it is not CPU-limited. Over a measured window after a warm-up:
 
     python3 scripts/bench_blobs_modes.py --build                    # local arch
     python3 scripts/bench_blobs_modes.py --image m0-blobs:dev --viewers 100,400
+    python3 scripts/bench_blobs_modes.py --image m0-blobs:dev --before-image m0-blobs:base \
+        --arms before,loop,loop+zstd --viewers 1,10,100 --secs 60 --name blobs_zstd
 
 Writes `bench/results/blobs-modes-*.json` through bench_record. Absolute
 figures move with the machine; the within-round ratios between arms are the
@@ -95,23 +104,30 @@ def pct(values, q):
     return s[min(len(s) - 1, int(q * (len(s) - 1) + 0.5))]
 
 
-def client(host, port, viewers, warm, secs):
+def client(host, port, viewers, warm, secs, offer):
     """Hold `viewers` streams and time `/now`; print one JSON line at the end.
 
     Prints `START` and `END` lines at the window's edges, so the driver can
-    read the server's cgroup at the same moments.
+    read the server's cgroup at the same moments. A stream whose head says
+    `Content-Encoding: zstd` is decoded as it arrives, one decoder per
+    stream, which needs Python 3.14 (`compression.zstd`).
     """
     phase("opening the streams")
     sel = selectors.DefaultSelector()
     bufs = {}
+    heads = {}  # i -> b"" until the head is read, then the decoder or None
     arrivals = {}  # id -> list of arrival times within the window
     got = [0] * viewers
+    wire = [0] * viewers
+    decoded = [0] * viewers
+    accept = f"Accept-Encoding: {offer}\r\n".encode() if offer else b""
     for i in range(viewers):
         s = socket.create_connection((host, port), timeout=10)
-        s.sendall(b"GET /events HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n\r\n")
+        s.sendall(b"GET /events HTTP/1.1\r\nHost: x\r\nAccept: text/event-stream\r\n" + accept + b"\r\n")
         s.setblocking(False)
         sel.register(s, selectors.EVENT_READ, i)
         bufs[i] = b""
+        heads[i] = b""
     now_lat = []
     stop = threading.Event()
     window = {"on": False}
@@ -158,6 +174,22 @@ def client(host, port, viewers, warm, secs):
                 sel.unregister(key.fileobj)
                 continue
             t = time.perf_counter()
+            if window["on"]:
+                wire[i] += len(chunk)
+            if isinstance(heads[i], bytes):
+                raw = heads[i] + chunk
+                if b"\r\n\r\n" not in raw:
+                    heads[i] = raw
+                    continue
+                head, chunk = raw.split(b"\r\n\r\n", 1)
+                coded = b"\r\ncontent-encoding: zstd" in head.lower()
+                if coded:
+                    from compression import zstd
+                heads[i] = zstd.ZstdDecompressor() if coded else None
+            if heads[i] is not None:
+                chunk = heads[i].decompress(chunk)
+            if window["on"]:
+                decoded[i] += len(chunk)
             buf = bufs[i] + chunk
             while b"\n\n" in buf:
                 block, buf = buf.split(b"\n\n", 1)
@@ -202,6 +234,12 @@ def client(host, port, viewers, warm, secs):
         "now_max_us": round(max(now_lat) if now_lat else 0),
         "now_samples": len(now_lat),
         "viewers_min_frames": min(got),
+        "coded_streams": sum(1 for h in heads.values() if h is not None and not isinstance(h, bytes)),
+        "wire_bytes": sum(wire),
+        "decoded_bytes": sum(decoded),
+        "wire_kBps_per_viewer": round(sum(wire) / secs / viewers / 1000, 2),
+        "decoded_kBps_per_viewer": round(sum(decoded) / secs / viewers / 1000, 2),
+        "ratio": round(sum(decoded) / sum(wire), 3) if sum(wire) else 0.0,
         "step_us": producer["step_us"],
         "step_us_max": producer["step_us_max"],
         "over_budget": producer["over_budget"],
@@ -235,11 +273,15 @@ def rss_kb(name):
     return sum(int(x) for x in out.split() if x.isdigit())
 
 
-def arm_env(arm, n):
-    if arm == "loop":
-        return []
-    kind = "M0_WORKERS" if arm.startswith("workers") else "M0_THREADS"
-    return ["-e", f"{kind}={n}"]
+def arm_env(arm):
+    """`loop`, `workers=N` or `threads=N`, with `+zstd` to compress; `before`
+    is the loop on the earlier image, and takes no environment."""
+    mode, _, flag = arm.partition("+")
+    env = ["-e", "M0_BLOBS_ZSTD=1"] if flag == "zstd" else []
+    if mode in ("loop", "before"):
+        return env
+    kind, _, n = mode.partition("=")
+    return env + ["-e", f"{'M0_WORKERS' if kind == 'workers' else 'M0_THREADS'}={n}"]
 
 
 def run_arm(args, net, image, arm, viewers, rnd):
@@ -247,7 +289,7 @@ def run_arm(args, net, image, arm, viewers, rnd):
     phase(f"r{rnd} {arm} v{viewers}: start")
     run("docker", "run", "-d", "--name", name, "--network", net,
         "--cpuset-cpus", args.cpuset, "--cpus", str(args.cpus), "--memory", args.memory,
-        *arm_env(arm, args.n), image)
+        *arm_env(arm), args.before_image if arm == "before" else image)
     try:
         # The script travels on stdin, not a bind mount: a daemon in a VM
         # (colima) sees only the directories it shares, and a worktree under
@@ -257,6 +299,7 @@ def run_arm(args, net, image, arm, viewers, rnd):
             "--cpuset-cpus", args.client_cpuset, args.client_image,
             "python3", "-", "client", "--host", name,
             "--viewers", str(viewers), "--warm", str(args.warm), "--secs", str(args.secs),
+            "--offer", args.offer,
         ]
         # Wait for health from inside the network.
         deadline = time.monotonic() + 30
@@ -311,8 +354,9 @@ def main():
         ap.add_argument("--viewers", type=int, required=True)
         ap.add_argument("--warm", type=float, default=3)
         ap.add_argument("--secs", type=float, default=20)
+        ap.add_argument("--offer", default="")
         a = ap.parse_args()
-        client(a.host, a.port, a.viewers, a.warm, a.secs)
+        client(a.host, a.port, a.viewers, a.warm, a.secs, a.offer)
         return 0
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
@@ -320,6 +364,10 @@ def main():
     src.add_argument("--image", help="an image built from deploy/mojo/Dockerfile with APP=blobs")
     src.add_argument("--build", action="store_true", help="build it first, for the daemon's arch")
     ap.add_argument("--n", type=int, default=2, help="workers, and loops")
+    ap.add_argument("--arms", default="", help="default: loop,workers=N,threads=N")
+    ap.add_argument("--before-image", default="", help="the image the `before` arm runs")
+    ap.add_argument("--offer", default="gzip, deflate, br, zstd",
+                    help="each viewer's Accept-Encoding (empty: none)")
     ap.add_argument("--viewers", default="100,400")
     ap.add_argument("--cpus", type=float, default=1.0)
     ap.add_argument("--cpuset", default="1", help="the ONE core the server is pinned to")
@@ -328,7 +376,7 @@ def main():
     ap.add_argument("--warm", type=float, default=3)
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--gap", type=float, default=2.0)
-    ap.add_argument("--client-image", default="python:3.13-slim")
+    ap.add_argument("--client-image", default="python:3.14-slim")
     ap.add_argument("--name", default="blobs_modes")
     ap.add_argument("--no-artifact", action="store_true")
     args = ap.parse_args()
@@ -357,7 +405,15 @@ def main():
         fail("the daemon has one core; the client would share it with the server")
     net = f"m0-bench-{uuid.uuid4().hex[:8]}"
     run("docker", "network", "create", net)
-    arms = ["loop", f"workers={args.n}", f"threads={args.n}"]
+    arms = args.arms.split(",") if args.arms else ["loop", f"workers={args.n}", f"threads={args.n}"]
+    if "loop" not in arms:
+        fail("every comparison is against the loop arm: --arms must name `loop`")
+    if "before" in arms and not args.before_image:
+        fail("the `before` arm runs --before-image")
+    before_facts = None
+    if args.before_image:
+        before_facts = json.loads(run("docker", "run", "--rm", "--entrypoint", "cat", args.before_image,
+                                      "/app/about.json").stdout)
     rows = []
     try:
         for rnd in range(1, args.rounds + 1):
@@ -368,7 +424,8 @@ def main():
                     print(f"  r{rnd} {r['name']:<16} cores={r['cores']:<6} thr={r['throttled_frac']:<5} "
                           f"rss={r['rss_kb_summed']}kB deliv={r['delivered']} "
                           f"spread p99={r['spread_p99_ms']}ms now p99={r['now_p99_us']}us "
-                          f"max={r['now_max_us']}us", flush=True)
+                          f"max={r['now_max_us']}us wire={r['wire_kBps_per_viewer']}kB/s "
+                          f"ratio={r['ratio']}", flush=True)
                     time.sleep(args.gap)
     finally:
         run("docker", "network", "rm", net, check=False)
@@ -377,23 +434,40 @@ def main():
 
     phase("the comparison")
     comparisons = {"definition": "per (viewers): median over rounds of each arm's figure over the loop arm's, same round"}
+    comparisons["cpu_ms_per_mb"] = ("for a +zstd arm: its cores less its plain arm's, in ms of CPU a "
+                                     "second, per MB a second the viewers decoded")
     for v in sorted({r["viewers"] for r in rows}):
-        for arm in arms[1:]:
-            ratios = {"cores": [], "rss": [], "now_p99": []}
+        for arm in arms:
+            if arm == "loop":
+                continue
+            ratios = {"cores": [], "rss": [], "now_p99": [], "wire": []}
+            per_mb = []
             for rnd in range(1, args.rounds + 1):
                 base = next(r for r in rows if r["round"] == rnd and r["viewers"] == v and r["arm"] == "loop")
                 other = next(r for r in rows if r["round"] == rnd and r["viewers"] == v and r["arm"] == arm)
                 ratios["cores"].append(other["cores"] / base["cores"] if base["cores"] else 0)
                 ratios["rss"].append(other["rss_kb_summed"] / base["rss_kb_summed"])
                 ratios["now_p99"].append(other["now_p99_us"] / base["now_p99_us"] if base["now_p99_us"] else 0)
-            comparisons[f"{arm} / loop, v{v}"] = {k: round(statistics.median(x), 2) for k, x in ratios.items()}
+                ratios["wire"].append(other["wire_bytes"] / base["wire_bytes"] if base["wire_bytes"] else 0)
+                plain = arm.partition("+")[0]
+                if arm.endswith("+zstd") and plain in arms:
+                    p0 = next(r for r in rows if r["round"] == rnd and r["viewers"] == v and r["arm"] == plain)
+                    mb_s = other["decoded_bytes"] / args.secs / 1e6
+                    if mb_s:
+                        per_mb.append((other["cores"] - p0["cores"]) * 1000 / mb_s)
+            c = {k: round(statistics.median(x), 2) for k, x in ratios.items()}
+            if per_mb:
+                c["cpu_ms_per_mb"] = round(statistics.median(per_mb), 2)
+            comparisons[f"{arm} / loop, v{v}"] = c
     for k, c in comparisons.items():
-        if k != "definition":
-            print(f"  {k:<24} cores {c['cores']}x  rss {c['rss']}x  now p99 {c['now_p99']}x")
+        if isinstance(c, dict):
+            print(f"  {k:<24} cores {c['cores']}x  rss {c['rss']}x  now p99 {c['now_p99']}x  "
+                  f"wire {c['wire']}x" + (f"  {c['cpu_ms_per_mb']} ms/MB" if "cpu_ms_per_mb" in c else ""))
     # Every measured field, median per arm across rounds: what the note
     # quotes. The standard `medians` block knows only rps, cores and p99.
     fields = ("cores", "throttled_frac", "rss_kb_summed", "delivered", "spread_p50_ms",
-              "spread_p99_ms", "now_p50_us", "now_p99_us", "now_max_us", "step_us")
+              "spread_p99_ms", "now_p50_us", "now_p99_us", "now_max_us", "step_us",
+              "wire_kBps_per_viewer", "decoded_kBps_per_viewer", "ratio", "coded_streams")
     by_arm = {}
     for name in dict.fromkeys(r["name"] for r in rows):
         rs = [r for r in rows if r["name"] == name]
@@ -410,6 +484,9 @@ def main():
         "window": f"{args.secs}s after {args.warm}s", "rounds": str(args.rounds),
         "subject": "apps/blobs in deploy/mojo/Dockerfile's image; /events held by V viewers, /now every 50 ms",
         "image": {k: facts.get(k) for k in ("version", "target_cpu", "arch", "image_bytes", "app_bytes")},
+        "arms": ",".join(arms), "offer": args.offer,
+        "before_image": {k: before_facts.get(k) for k in ("version", "target_cpu", "arch", "image_bytes",
+                                                          "app_bytes")} if before_facts else None,
         "daemon": daemon,
     }, extra={"comparisons": comparisons, "by_arm": by_arm})
     return 0

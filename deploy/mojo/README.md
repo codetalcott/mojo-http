@@ -9,7 +9,7 @@ whatever the app.
 ```bash
 uv run poe smoke-blobs-image      # apps/blobs: build, then probe from outside (every PR)
 uv run poe probe-mojo-image       # apps/hello: the floor under every Mojo image
-uv run poe sabotage-mojo-image    # ten sabotaged images, each caught where it should be
+uv run poe sabotage-mojo-image    # twelve sabotaged images, each caught where it should be
 
 docker build -f deploy/mojo/Dockerfile --build-arg APP=blobs --build-arg TARGET_CPU=generic .
 ```
