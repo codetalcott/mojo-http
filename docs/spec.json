@@ -874,6 +874,14 @@
       "evidence": "`test_process.mojo:test_each_process_call_answers_what_it_cannot_do` (every PR) \u2014 each failure provoked in a child of the test's (lowered `RLIMIT_NPROC`; root, which Linux exempts from it, skips the fork check), reported by the child's exit code; `test_a_wait_status_is_read_as_posix_lays_it_out` reads literal statuses (exits 0, 1, 78 and 255; signals 9 and 11, the second with its core bit) and real ones (a child that exited 255, one SIGKILL ended), and `test_a_shutdown_pipe_past_the_descriptor_limit_is_refused` lowers `RLIMIT_NOFILE`. `test_respawn.mojo` drives the same calls through a supervisor's real forks. Pinned by the 2026-10-08 audit of the fork's inherited code (A4); each answer sabotaged and caught by its own assertion"
     },
     {
+      "id": "E41",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "A thread `ThreadSet.spawn` cannot start is left as never spawned: the failed `pthread_create` raises and its id slot is zeroed, so `join_all` and `join_within` pass it rather than join an id POSIX leaves undefined, which on glibc is a descriptor the library stored and then freed when `clone` refused",
+      "status": "verified",
+      "evidence": "`test_threads.mojo:test_a_thread_the_process_limit_refuses_is_left_never_spawned` (every PR) \u2014 a forked child at RLIMIT_NPROC 0 asks for a thread. On the Linux leg, as the runner's unprivileged user, the create must be refused and its slot read 0 before `join_all` returns. macOS counts no threads against that limit and root is exempt from it, so those runs accept a create that succeeded. Reverting the zeroing fails it on glibc 2.36 (Debian 12, in a container as uid 1000), where the refused create left its freed descriptor in the slot. datastar-builder's review found it by reading glibc's `pthread_create`"
+    },
+    {
       "id": "E4",
       "section": "E",
       "category": "E. Process and worker model",
