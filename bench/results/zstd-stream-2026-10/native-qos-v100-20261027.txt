@@ -1,0 +1,26 @@
+# blobs natively on an Apple M4, the loop held on performance cores (M0_QOS=1), 100 viewers offering zstd,
+# 12 s windows after 3 s, three rounds; the client is scripts/bench_blobs_modes.py's own (client mode).
+# cores = the server's ps cputime over the window. The binary was apps/blobs at 8dbfcf41 with the
+# compressor's level, window log and hash log read from the environment for this run only;
+# 'plain' is M0_BLOBS_ZSTD=0 and L1W15 the shipped default. Recorded 2026-10-27.
+r0 plain          cores 0.009 ratio 1.00 now p99 231us spread p99 1.82ms deliv 1.0
+r0 L1W15          cores 0.022 ratio 3.44 now p99 1282us spread p99 3.4ms deliv 1.0
+r0 L1W13H11       cores 0.018 ratio 3.20 now p99 889us spread p99 2.81ms deliv 1.0
+r0 Lm1W15         cores 0.022 ratio 3.06 now p99 182us spread p99 3.58ms deliv 1.0
+r0 L1W19          cores 0.027 ratio 3.39 now p99 594us spread p99 4.61ms deliv 1.0
+r1 plain          cores 0.008 ratio 1.00 now p99 320us spread p99 1.64ms deliv 1.0
+r1 L1W15          cores 0.025 ratio 3.43 now p99 302us spread p99 3.95ms deliv 1.0
+r1 L1W13H11       cores 0.018 ratio 3.19 now p99 203us spread p99 2.72ms deliv 1.0
+r1 Lm1W15         cores 0.023 ratio 3.07 now p99 1507us spread p99 3.33ms deliv 1.0
+r1 L1W19          cores 0.026 ratio 3.40 now p99 223us spread p99 4.11ms deliv 1.0
+r2 plain          cores 0.008 ratio 1.00 now p99 195us spread p99 1.31ms deliv 1.0
+r2 L1W15          cores 0.021 ratio 3.43 now p99 914us spread p99 2.9ms deliv 1.0
+r2 L1W13H11       cores 0.018 ratio 3.19 now p99 350us spread p99 2.69ms deliv 1.0
+r2 Lm1W15         cores 0.043 ratio 3.06 now p99 1630us spread p99 6.38ms deliv 1.0
+r2 L1W19          cores 0.026 ratio 3.39 now p99 860us spread p99 3.85ms deliv 1.0
+median:
+  plain          cores 0.008 (+0.000) ratio 1.00 now p99 231us
+  L1W15          cores 0.022 (+0.013) ratio 3.43 now p99 914us
+  L1W13H11       cores 0.018 (+0.009) ratio 3.19 now p99 350us
+  Lm1W15         cores 0.023 (+0.014) ratio 3.06 now p99 1507us
+  L1W19          cores 0.026 (+0.018) ratio 3.39 now p99 594us

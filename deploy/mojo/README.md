@@ -30,6 +30,12 @@ to say what it runs in reads the file: `apps/blobs`'s footer and `/about` do
 (`apps/blobs/about.mojo`). So "no Python in this image" and the size are
 measurements, not prose, and the probe checks them again from outside.
 
+**libzstd comes with the base.** `debian:12-slim` ships `libzstd1`, since
+`dpkg` depends on it, so an app in this image can compress a stream
+(SPEC I45). The probe makes it a fact: the loader's cache must name a
+readable `libzstd.so.1`, and blobs, run with `M0_BLOBS_ZSTD=1`, must send a
+stream offered zstd that decodes frame by frame.
+
 ## Measured, 2026-09-18
 
 On `linux/arm64` under colima on an Apple M4, with the Django demo's image

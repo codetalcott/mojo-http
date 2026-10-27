@@ -47,6 +47,14 @@ visit: two clicks in its first day, so a visitor arrived to shapes moving
 in 500 ms straight lines. The deploy stays at 10 Hz; the cost is the
 paragraph above, which the limits already bound.
 
+**Streams go out as written** (`M0_BLOBS_ZSTD` unset). The app can
+compress each viewer's stream, 3.4:1 on these frames (23 kB/s a viewer
+down to 6.8 when measured). But at 100 and 400 viewers on one core that costs 2.6 times the
+loop's CPU and 160 KB a stream, so the limits above would no longer fit
+the machine's baseline share. Turning it on means lowering `hard_limit`
+to about 150, or accepting the burst
+([the measurement](../../docs/notes/compressing-a-stream.md)).
+
 **Heartbeats every 25 s** (`M0_SSE_HEARTBEAT_MS`): frames already flow while
 anyone watches, so this matters only through a quiet proxy. Keep the DNS
 records unproxied, as the demo's.
@@ -109,5 +117,7 @@ above the 400 connections the hard concurrency limit admits. It held
 
 The probe asserts `/health`, `/about` naming blobs, no Python and the
 version, the footer saying what `/about` says, a stream receiving three
-whole-state frames with increasing ids, and `/stats` counting steps. It is
+whole-state frames with increasing ids, and `/stats` counting steps. With
+`--zstd`, for a deploy that sets `M0_BLOBS_ZSTD=1`, it also decodes 20
+frames of a stream offered zstd through the proxy, one read at a time. It is
 what the workflow runs after a deploy, up to three times 20 s apart.
