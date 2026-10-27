@@ -13,7 +13,9 @@ server on the same fixed port under `wrk -t2 -cC -dS` after a 2 s warm-up,
 with keep-alive throughout.
 
 Cores are the server's CPU seconds over the window's wall seconds, from
-`ps -o cputime` before and after (the server is one process). The machine
+`ps -o cputime` before and after (the server is one process). On macOS run
+it under `M0_QOS=1`, which both builds read: an efficiency core serves this
+several times slower, and a round placed there is a round of placement. The machine
 is refused while anything else is busy (`bench_guard.py`), checked before
 every round. Writes `bench/results/<name>-*.json` through bench_record:
 per row its rps, cores and wrk's p50 and p99; `comparisons` holds the
@@ -21,6 +23,7 @@ after/before ratio of each, the median over rounds.
 """
 
 import argparse
+import os
 import re
 import statistics
 import subprocess
@@ -62,7 +65,7 @@ def latency_us(text, label):
 
 
 def measure(binary, conns, secs):
-    proc = subprocess.Popen([binary], env={"M0_PORT": str(PORT), "PATH": "/usr/bin:/bin"},
+    proc = subprocess.Popen([binary], env=dict(os.environ, M0_PORT=str(PORT)),
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         deadline = time.monotonic() + 15

@@ -54,9 +54,10 @@ fresh producer. It asserts `/health`; `/about` naming the app, no Python
 and the version given (`--version`, default `pyproject.toml`'s); the
 footer saying what `/about` says; a stream that receives three frames with
 increasing ids, each a `datastar-patch-signals` event carrying every slot;
-the same stream offered zstd, which must come through the proxy coded and
-decode frame by frame as they arrive, not in a buffered burst; and `/stats`
-counting steps.
+and `/stats` counting steps. With `--zstd`, for a deploy that sets
+`M0_BLOBS_ZSTD=1`, also the stream offered zstd, which must come through the
+proxy coded and decode frame by frame as the frames arrive, not in a
+buffered burst.
 
 Measured and recorded (scripts/emit.py; a no-op outside CI): the build
 time, the image size the daemon reports (compressed under the containerd
@@ -559,8 +560,9 @@ def probe_url(args):
     if ids != sorted(ids) or len(set(ids)) != len(ids):
         fail(f"frame ids are not increasing: {ids}")
 
-    phase("a compressed stream through the proxy")
-    print(f"coded: {check_coded(base, 30)}")
+    if args.zstd:
+        phase("a compressed stream through the proxy")
+        print(f"coded: {check_coded(base, 30)}")
 
     phase("the producer is stepping")
     status, body = http_get(base, "/stats")
@@ -579,6 +581,8 @@ def main():
     mode.add_argument("--image", help="probe an image already built")
     mode.add_argument("--url", help="probe a running deploy over HTTP(S) (blobs only)")
     ap.add_argument("--version", default="", help="--url: the version /about must name")
+    ap.add_argument("--zstd", action="store_true",
+                    help="--url: the deploy compresses (M0_BLOBS_ZSTD=1); require a coded stream")
     ap.add_argument("--target-cpu", default="", help="default: M0_TARGET_CPU, else by the daemon's arch")
     ap.add_argument("--port", type=int, help="the host port to publish on (default: a free one)")
     ap.add_argument("--task", default="", help="the poe task the measurements are recorded under")
