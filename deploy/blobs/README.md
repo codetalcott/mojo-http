@@ -49,11 +49,15 @@ paragraph above, which the limits already bound.
 
 **Streams go out as written** (`M0_BLOBS_ZSTD` unset). The app can
 compress each viewer's stream, 3.4:1 on these frames (23 kB/s a viewer
-down to 6.8 when measured). But at 100 and 400 viewers on one core that costs 2.6 times the
-loop's CPU and 160 KB a stream, so the limits above would no longer fit
-the machine's baseline share. Turning it on means lowering `hard_limit`
-to about 150, or accepting the burst
-([the measurement](../../docs/notes/compressing-a-stream.md)).
+down to 6.8 when measured). On this machine type a compressed viewer
+costs the loop about 12 times a plain one. Measured on a throwaway app
+of the same shape on 2026-10-27, 150 compressed viewers took 21 % of a
+core, and 400 plain ones took 6 %. To stay inside the baseline share with
+every viewer compressed, the hard limit would be about 40, or about 60
+with a smaller compressor context than the library's default
+([the measurement](../../docs/notes/compressing-a-stream.md)). Setting
+`M0_BLOBS_ZSTD = "1"` in `fly.toml` is all it takes. The deploy job then
+checks the coded stream too.
 
 **Heartbeats every 25 s** (`M0_SSE_HEARTBEAT_MS`): frames already flow while
 anyone watches, so this matters only through a quiet proxy. Keep the DNS

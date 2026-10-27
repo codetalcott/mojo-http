@@ -254,6 +254,10 @@ jobs:
           fi
       - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1  # 1.6
         if: steps.tree.outputs.present == 'true'
+      # The probe decodes a compressed stream with Python 3.14's
+      # compression.zstd, which the runner's python3 does not have.
+      - uses: astral-sh/setup-uv@v7
+        if: steps.tree.outputs.present == 'true'
       - name: Deploy
         if: steps.tree.outputs.present == 'true'
         env:
@@ -262,8 +266,12 @@ jobs:
       # The deploy's verification is the image probe's --url mode: /health,
       # /about naming blobs, no Python and this version, the footer saying
       # what /about says, whole-state frames with increasing ids, and the
-      # producer stepping. Tolerance for a transient edge failure lives here,
-      # as in deploy-demo: three runs, 20 s apart.
+      # producer stepping; and, where the deployed fly.toml compresses
+      # (M0_BLOBS_ZSTD = "1"), a stream offered zstd decoding frame by frame
+      # through the proxy. Read from the tree rather than assumed, so a
+      # dispatch of a tag from before the setting runs that tag's own probe
+      # as it was. Tolerance for a transient edge failure lives here, as in
+      # deploy-demo: three runs, 20 s apart.
       - name: Verify the live Mojo demo
         if: steps.tree.outputs.present == 'true'
         run: |
@@ -278,9 +286,11 @@ jobs:
             sleep 5
           done
           [ "$ok" = 3 ] || { echo "::error::blobs.m0serve.dev/health never answered steadily"; exit 1; }
+          zstd=""
+          grep -q '^ *M0_BLOBS_ZSTD = "1"' deploy/blobs/fly.toml && zstd="--zstd"
           for attempt in 1 2 3; do
-            python3 scripts/mojo_image_probe.py --app blobs --url https://blobs.m0serve.dev \
-              --version "${{ steps.v.outputs.version }}" && break
+            uv run --no-project --python 3.14 python scripts/mojo_image_probe.py --app blobs \
+              --url https://blobs.m0serve.dev --version "${{ steps.v.outputs.version }}" $zstd && break
             [ "$attempt" = 3 ] && { echo "::error::the live Mojo demo failed the probe three times"; exit 1; }
             echo "probe attempt $attempt failed; retrying in 20 s"; sleep 20
           done

@@ -24,8 +24,9 @@ Where it stands: steps 0 and 2 landed with the binding (#632), steps 1,
 blobs's setting and the image probe it needs. Its results are in "What
 step 6 measured" below. A compressed stream reads 3.4:1 on blobs, decodes
 frame by frame through Fly's proxy, and leaves an uncompressed one where
-it was. It costs the loop more than this brief expected, so the blobs
-deploy does not turn it on yet.
+it was. It costs the loop far more than this brief expected, most of all
+on the deploy's own machine type. There a compressed blobs viewer costs
+12 times a plain one, so the blobs deploy does not turn it on.
 
 Read `CLAUDE.md` first and run `uv run poe milestones`. This brief adds
 one capability, opt-in, and changes no default.
@@ -537,14 +538,59 @@ subscribers all get the same frames is compressed once per subscriber.
 Compressing it once would need every subscriber's context in one state,
 which only subscribers that joined together share.
 
+### On the deploy's own machine
+
+The M4's figures do not carry over to Fly. A throwaway app of the
+deploy's shape (`m0-zstd-load-probe`: a shared-cpu-1x x86-64 machine in
+`iad` with 256 MB, Debian's libzstd 1.5.4, and the setting on) was held
+by viewers from outside, through the proxy, for 60 s an arm. The
+server's CPU was read inside the machine from `/proc` over `fly ssh`
+(`fly-load-x86-20261027.txt`, and `fly_load.py` beside it):
+
+| Viewers | Stream | Cores | To each viewer |
+| ---: | --- | ---: | ---: |
+| 10 | as written | 0.014 | 27.8 kB/s |
+| 10 | zstd | 0.025 | 7.4 kB/s |
+| 150 | as written | 0.029, 0.030 | 24.2 kB/s |
+| 150 | zstd | 0.209 to 0.213 (six runs) | 7.5 kB/s |
+| 400 | as written | 0.057, 0.060 | 25.7 kB/s |
+
+Every frame reached every viewer in every arm. But a compressed viewer
+adds about 12 times a plain one's CPU here. That is about 120 µs a push,
+where the M4 took 14. The M4's 16 MB L2 had held most of a hundred cold
+contexts. A shared x86 core's cache holds few, so nearly every push goes to
+memory. 150 compressed viewers cost 3.5 times what 400 plain ones do.
+
+A smaller context helps, though not enough. At 150 viewers on the same
+machine (`fly-context-sizes-x86-20261027.txt`, through a scratch build
+that read the sizes from its environment):
+
+| Window log, hash log | Ratio | Cores |
+| --- | ---: | ---: |
+| 15, the library's default | 3.39:1 | 0.212 |
+| 14, 12 | 3.32:1 | 0.169 |
+| 13, 11 | 3.17:1 | 0.141 |
+| 12, 10 | 2.72:1 | 0.132 |
+
 ### The deploy keeps its stream as written
 
 `deploy/blobs/fly.toml` sizes its connection limit so that 400 viewers fit
-a shared CPU's baseline share, 6.25 % of a core. At 2.6 times the loop's
-CPU a compressed stream would not fit at the hard limit. So
-`M0_BLOBS_ZSTD` stays unset on the deploy. Turning it on is the owner's
-call: on with the hard limit at about 150, on as it is, or off. The
-viewer's saving is 16 kB/s.
+a shared CPU's baseline share, 6.25 % of a core, and 400 plain viewers
+measured 6 % above. With every viewer compressed, the same share holds
+about 40 at the default context, or about 60 at window log 13.
+`M0_BLOBS_ZSTD` stays unset on the deploy, with the limits as they were.
+The viewer's saving would be 16 kB/s.
+
+Other ways to turn it on, none taken:
+- **Compress only the first viewers**, the rest as written. That keeps
+  the bound at any count, and blobs would count its coded streams itself.
+- **A smaller context, per application.** "Not in this plan" leaves that
+  knob to a stream that wants one. The seat's deck repeats within 16 KB,
+  which a 4 KB window would lose.
+
+If `fly.toml` ever sets the variable, the deploy job passes the probe
+`--zstd`. It runs on a uv-managed Python 3.14, since the runner's own
+Python has no `compression.zstd`.
 
 The image is ready either way. `poe smoke-blobs-image` runs blobs with the
 setting on, on every pull request. The loader's cache in the image names a

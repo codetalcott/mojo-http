@@ -104,6 +104,35 @@ def pct(values, q):
     return s[min(len(s) - 1, int(q * (len(s) - 1) + 0.5))]
 
 
+class Dechunk:
+    """A chunked body, incrementally: `feed(bytes)` returns the payload they
+    complete. A proxy in front of the server may re-frame the stream so."""
+
+    def __init__(self):
+        self.buf = b""
+        self.left = 0
+
+    def feed(self, data):
+        self.buf += data
+        out = []
+        while self.buf:
+            if self.left == 0:
+                end = self.buf.find(b"\r\n")
+                if end < 0:
+                    break
+                line, self.buf = self.buf[:end], self.buf[end + 2:]
+                if not line:
+                    continue  # the CRLF after a chunk's data
+                self.left = int(line.split(b";")[0], 16)
+                if self.left == 0:
+                    break
+            take = self.buf[:self.left]
+            out.append(take)
+            self.left -= len(take)
+            self.buf = self.buf[len(take):]
+        return b"".join(out)
+
+
 def client(host, port, viewers, warm, secs, offer):
     """Hold `viewers` streams and time `/now`; print one JSON line at the end.
 
@@ -116,6 +145,7 @@ def client(host, port, viewers, warm, secs, offer):
     sel = selectors.DefaultSelector()
     bufs = {}
     heads = {}  # i -> b"" until the head is read, then the decoder or None
+    chunked = {}  # i -> a Dechunk, for a stream a proxy sends chunked
     arrivals = {}  # id -> list of arrival times within the window
     got = [0] * viewers
     wire = [0] * viewers
@@ -183,9 +213,13 @@ def client(host, port, viewers, warm, secs, offer):
                     continue
                 head, chunk = raw.split(b"\r\n\r\n", 1)
                 coded = b"\r\ncontent-encoding: zstd" in head.lower()
+                if b"\r\ntransfer-encoding: chunked" in head.lower():
+                    chunked[i] = Dechunk()
                 if coded:
                     from compression import zstd
                 heads[i] = zstd.ZstdDecompressor() if coded else None
+            if i in chunked:
+                chunk = chunked[i].feed(chunk)
             if heads[i] is not None:
                 chunk = heads[i].decompress(chunk)
             if window["on"]:

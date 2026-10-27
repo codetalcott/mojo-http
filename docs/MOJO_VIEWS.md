@@ -447,7 +447,9 @@ The rules the `live` scaffold follows:
   every client of a box without libzstd (SPEC I45).
 - <!-- observed: docs/notes/compressing-a-stream.md, "What step 6 measured" -->Each compressed subscriber costs the loop its own compression of every
   frame and a context of about 160 KB. On blobs's whole-state frames that
-  was 3.4:1 for 2.6 times the loop's CPU at 100 subscribers on one core.
+  was 3.4:1, for 2.6 times the loop's CPU at 100 subscribers on an M4
+  core. On a Fly shared-cpu-1x each compressed subscriber cost 12 times a
+  plain one.
 - The registry's capacity is at least `ctx.capacity`.
 - What workers and the producer share lives on the `page_slots` page.
 

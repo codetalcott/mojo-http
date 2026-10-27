@@ -1,0 +1,14 @@
+# 150 viewers offering zstd on the same Fly machine as fly-load-x86-20261027.txt, 2026-10-27, at four context sizes.
+# A scratch build of mojo-http 20b55cf7 read the compressor's window log and hash log from M0_ZSTD_WLOG and
+# M0_ZSTD_HLOG (level 1 throughout); each arm set them with fly machine update, and the line before it is
+# what the server's /proc/<pid>/environ held. The scratch hooks were never committed. Before this run, five
+# arms meant as these all ran the default (a shell that did not split the pair): 0.2086, 0.2095, 0.2101, 0.2089
+# and 0.2120 cores at 3.39:1, beside a plain anchor of 0.0287 cores at 150 viewers.
+== M0_ZSTD_HLOG=10 M0_ZSTD_WLOG=12 
+v150 zstd cores 0.1316 over 60.3s  coded 150 ratio 2.719 wire 9.31kB/s deliv 1.0 spread p99 19.08ms min frames 599 step 535us
+== M0_ZSTD_HLOG=11 M0_ZSTD_WLOG=13 
+v150 zstd cores 0.1409 over 59.8s  coded 150 ratio 3.167 wire 8.0kB/s deliv 1.0 spread p99 22.69ms min frames 600 step 549us
+== M0_ZSTD_HLOG=12 M0_ZSTD_WLOG=14 
+v150 zstd cores 0.1690 over 59.9s  coded 150 ratio 3.316 wire 7.64kB/s deliv 1.0 spread p99 25.7ms min frames 600 step 523us
+== M0_ZSTD_HLOG=0 M0_ZSTD_WLOG=15 
+v150 zstd cores 0.2122 over 60.2s  coded 150 ratio 3.392 wire 7.47kB/s deliv 1.0 spread p99 35.26ms min frames 600 step 593us

@@ -1,0 +1,14 @@
+# blobs on Fly's own machine type, 2026-10-27: a throwaway app (m0-zstd-load-probe, textshelf org, destroyed after)
+# built from mojo-http 20b55cf7 with deploy/blobs/fly.toml as this branch sets it (M0_BLOBS_ZSTD=1) except
+# force_https off and the connection limits at 500, so a plain-HTTP client could hold 400. shared-cpu-1x, 256 MB, iad,
+# x86_64 at x86-64-v2, libzstd 1.5.4. V viewers from a home connection through Fly's proxy, each offering
+# 'gzip, deflate, br, zstd' (zstd) or 'gzip, deflate, br' (none), held for 60 s after 8 s; the client is
+# scripts/bench_blobs_modes.py's own. cores = the server's utime+stime from /proc/<pid>/stat over the machine's
+# /proc/uptime, read inside the machine over fly ssh at the window's edges (fly_load.py beside this file).
+v10 zstd cores 0.0254 over 55.1s  coded 10 ratio 3.421 wire 7.39kB/s deliv 1.0 spread p99 3.92ms min frames 600 step 490us
+v10 none cores 0.0138 over 60.0s  coded 0 ratio 0.997 wire 27.78kB/s deliv 1.0 spread p99 5.3ms min frames 600 step 413us
+v150 zstd cores 0.2101 over 59.9s  coded 150 ratio 3.404 wire 7.67kB/s deliv 1.0 spread p99 48.68ms min frames 600 step 711us
+v150 none cores 0.0299 over 59.9s  coded 0 ratio 0.996 wire 24.15kB/s deliv 1.0 spread p99 106.55ms min frames 599 step 560us
+v400 none cores 0.0572 over 64.2s  coded 0 ratio 0.996 wire 25.83kB/s deliv 1.0 spread p99 175.73ms min frames 600 step 533us
+v150 zstd cores 0.2126 over 59.6s  coded 150 ratio 3.428 wire 7.71kB/s deliv 1.0 spread p99 38.6ms min frames 600 step 543us
+v400 none cores 0.0599 over 59.8s  coded 0 ratio 0.996 wire 25.65kB/s deliv 1.0 spread p99 191.05ms min frames 600 step 681us
