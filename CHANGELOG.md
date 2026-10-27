@@ -22,8 +22,13 @@ in a minor release: `m0serve`'s flags and environment variables, the
   ([the note](docs/notes/compressing-a-stream.md)).
 - **The blobs demo compresses its stream with `M0_BLOBS_ZSTD=1`**, for a
   client that offers zstd. Any other value is refused with exit 78. The
-  deploy leaves it unset: measured at 100 and 400 viewers on one core, it
-  costs 2.6 times the loop's CPU and 160 KB a stream, for 3.4:1.
+  deploy leaves it unset. Measured at 100 and 400 viewers on an M4 core,
+  it costs 2.6 times the loop's CPU and 160 KB a stream, for 3.4:1. On
+  the deploy's own shared-cpu-1x x86, 150 compressed viewers took 21 % of
+  a core, against 6 % for 400 plain. If `fly.toml` sets the variable, the
+  deploy job's probe checks the coded stream, on a uv-managed Python
+  3.14. `bench_blobs_modes.py`'s client decodes a stream that a proxy
+  sends chunked.
   `smoke-blobs-image` runs the image with it on. It checks that the
   image's loader names a readable `libzstd.so.1`, and that the stream
   decodes frame by frame. Its `--url` mode checks the same through the
