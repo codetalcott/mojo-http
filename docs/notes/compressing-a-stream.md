@@ -19,9 +19,13 @@ The first version chose gzip through the system zlib. The owner chose zstd
 on 2026-10-26, on the evidence in "Why zstd" below. The gzip design is in
 this note's history if a second coding is ever wanted.
 
-Where it stands: steps 0 and 2 landed with the binding (#632), and steps
-1, 3, 4 and 5 with the stream (rows I45 and I46, D69). Step 6, with the
-blobs setting and the image probe it needs, remains.
+Where it stands: steps 0 and 2 landed with the binding (#632), steps 1,
+3, 4 and 5 with the stream (rows I45 and I46, D69), and step 6 with
+blobs's setting and the image probe it needs. Its results are in "What
+step 6 measured" below. A compressed stream reads 3.4:1 on blobs, decodes
+frame by frame through Fly's proxy, and leaves an uncompressed one where
+it was. It costs the loop more than this brief expected, so the blobs
+deploy does not turn it on yet.
 
 Read `CLAUDE.md` first and run `uv run poe milestones`. This brief adds
 one capability, opt-in, and changes no default.
@@ -444,6 +448,182 @@ and has no business with a C library.
 - Through Fly: m0's own compressed stream, from a deployed app, keeps its
   coding and its events' timing past the proxy, as the Python stream in
   step 0 did.
+
+## What step 6 measured
+
+On 2026-10-26 and 27, on an Apple M4. The blobs runs are
+`scripts/bench_blobs_modes.py --arms before,loop,loop+zstd`: the demo's
+deploy image under colima (`linux/arm64`, Ubuntu 24.04's kernel), pinned
+to one core at the machine's 256 MB, three rounds of 60 s at each viewer
+count. Every viewer offers what a browser offers
+(`gzip, deflate, br, zstd`), and one keep-alive connection times `/now`
+every 50 ms on the same loop. `before` is the image built at `05d28811`,
+the commit before the binding. The artifacts are in
+`bench/results/zstd-stream-2026-10/`.
+
+### Uncompressed, nothing moved
+
+- **The HTTP layer.** `apps/hello` built at `05d28811` and after the
+  stream, interleaved over six rounds by `scripts/bench_hello_ab.py`
+  under `M0_QOS=1`: 1.002x the requests per second (0.99 to 1.01 by
+  round), 0.999x the cores and the same p50. The binding added 52 KB to
+  the binary and nothing to a request.
+- **An uncompressed stream.** Blobs before and after, as written to every
+  viewer: 0.93 to 1.00x the CPU at 1, 10, 100 and 400 viewers, the same
+  RSS within 5 %, and every frame delivered. The `/now` p99 moved 0.85
+  to 1.23x, inside what the rounds of one arm spread.
+
+### Blobs, compressed and not
+
+Medians of three rounds, one core:
+
+| Viewers | Stream | Cores | RSS | `/now` p50 | `/now` p99 | Fan-out p99 | To each viewer |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 1 | as written | 0.013 | 11.8 MB | 247 µs | 0.73 ms | | 23.1 kB/s |
+| 1 | zstd | 0.014 | 12.3 MB | 278 µs | 1.32 ms | | 6.74 kB/s |
+| 10 | as written | 0.014 | 12.0 MB | 263 µs | 0.93 ms | 0.44 ms | 23.1 kB/s |
+| 10 | zstd | 0.019 | 14.0 MB | 291 µs | 1.03 ms | 1.06 ms | 6.75 kB/s |
+| 100 | as written | 0.027 | 14.3 MB | 309 µs | 1.46 ms | 3.04 ms | 23.1 kB/s |
+| 100 | zstd | 0.065 | 30.1 MB | 259 µs | 5.56 ms | 10.0 ms | 6.76 kB/s |
+| 400 | as written | 0.062 | 19.6 MB | 261 µs | 4.95 ms | 9.00 ms | 23.1 kB/s |
+| 400 | zstd | 0.167 | 83.5 MB | 161 µs | 20.5 ms | 25.6 ms | 6.74 kB/s |
+
+- **The ratio is the one predicted, 3.42:1 at every count**, and every
+  frame reached every viewer in both arms.
+- **The CPU is not.** The compressed stream costs 2.6 to 2.7 times the
+  loop's CPU at 100 and 400 viewers, 11 to 17 ms of CPU per MB a viewer
+  decoded, where this brief expected about 3.
+- **A fast request waits behind the fan-out.** One frame is 400
+  compressions in one pass, so at 400 viewers `/now`'s p99 is 20.5 ms
+  against 5.0.
+- **Each stream holds about 160 KB**, its context: 83.5 MB at 400
+  viewers against 19.6, on a 256 MB machine.
+
+The VM's figures overstate the CPU, and the native run says by how much.
+The VM's virtual CPU is a macOS thread, which the host places on a
+performance or an efficiency core as it likes, and an efficiency core
+spends several times the CPU on the same work. The compressed arm's three
+rounds at 100 viewers read 0.038, 0.065 and 0.083 cores. Run natively
+with the loop held on performance cores (`M0_QOS=1`, three rounds of 12 s
+at 100 viewers), the plain stream took 0.008 cores and the compressed one
+0.022. That is about 6 ms per MB, and `/now`'s p99 was 0.91 ms against
+0.23. Unpinned, the plain arm alone read 0.020 to 0.028.
+
+Why 6 rather than 3. The 3.1 ms a MB in "Why zstd" was one context
+compressing a capture back to back, and the binding matches it: 4.8 µs a
+push and 2.2 ms a MB on the blobs frames, the same as CPython's
+`compression.zstd`. A hundred contexts used in turn in a tight loop cost
+5.3 µs a push. In the loop a push costs about 14 µs, because 100 ms of
+other work separates two pushes on one context: each starts with its
+hash table and its window out of cache. The profile agrees: three quarters of
+the push's time is zstd's matcher, mostly `ZSTD_compressBlock_fast_extDict`
+as in CPython's own loop, and almost none is the binding's code. It is the
+price of a context per subscriber, paid once per subscriber per frame.
+
+Measured beside the default, natively under `M0_QOS=1` at 100 viewers:
+
+| Setting | Ratio | Cores above plain | `ZSTD_sizeof_CCtx` after 200 KB |
+| --- | ---: | ---: | ---: |
+| level 1, window log 15 (the default) | 3.43:1 | 0.013 | 312 KB |
+| level 1, window log 14, hash log 12 | | | 153 KB |
+| level 1, window log 13, hash log 11 | 3.19:1 | 0.009 | 89 KB |
+| level −1, window log 15 | 3.06:1 | 0.014 | |
+| level 1, window log 19 | 3.39:1 | 0.018 | |
+
+The smaller context saves about a third of the CPU and over half the
+memory for 7 % of the ratio. The default stays, since "Not in this plan" puts a
+setting per application behind a stream that wants one. A broadcast whose
+subscribers all get the same frames is compressed once per subscriber.
+Compressing it once would need every subscriber's context in one state,
+which only subscribers that joined together share.
+
+### The deploy keeps its stream as written
+
+`deploy/blobs/fly.toml` sizes its connection limit so that 400 viewers fit
+a shared CPU's baseline share, 6.25 % of a core. At 2.6 times the loop's
+CPU a compressed stream would not fit at the hard limit. So
+`M0_BLOBS_ZSTD` stays unset on the deploy. Turning it on is the owner's
+call: on with the hard limit at about 150, on as it is, or off. The
+viewer's saving is 16 kB/s.
+
+The image is ready either way. `poe smoke-blobs-image` runs blobs with the
+setting on, on every pull request. The loader's cache in the image names a
+readable `libzstd.so.1` (1.5.4 in `debian:12-slim`), and 20 whole-state
+frames decode from a stream offered zstd, one read at a time, at 3.2:1.
+`sabotage-mojo-image` removes the library and ignores the setting, and the
+probe fails each in the phase it names.
+
+### The seat
+
+datastar-builder's own tools, on its `origin/main` (`223e9a8`, already on
+mojo 1.2.0 and m0 0.13.0, with P3's section pushed), against an m0 wheel
+built from this tree (`0.13.0+zstd`). The seat's two streams were opened
+with `compress=True`. `bench/capture.sh` also read both streams offered
+zstd, as they came off the wire, and `bench/compress.mjs` gained zstd
+through `node:zlib` and m0's wire bytes. It was a 240 s game against the
+computer, as in P3 (`seat-compress-20261027.txt`):
+
+| The main stream, 3,030,862 bytes, 2,817 events | Bytes | Ratio |
+| --- | ---: | ---: |
+| m0 on the wire, offered zstd | 120,627 | 25.1:1 |
+| zstd 1, 32 KB window, flushed per event (m0's setting, in node) | 121,954 | 24.9:1 |
+| zstd 3, 512 KB window, flushed per event | 109,075 | 27.8:1 |
+| deflate 6, 32 KB window, flushed per event | 125,957 | 24.1:1 |
+| brotli q5, 64 KB window, flushed per event | 99,046 | 30.6:1 |
+| each event alone, brotli q5 | 1,024,285 | 3.0:1 |
+
+- **m0's bytes decode to the plain capture, byte for byte**: the same
+  3,030,862 bytes in the same 2,817 events.
+- **They come within 1 % of zstd at m0's setting** compressing the plain
+  capture event by event. m0 flushes per drain, which can carry more than
+  one event.
+- **The tree's stream is 44.8:1 on the wire**, against node's 44.8:1 at
+  the same setting.
+- **The 23:1 holds:** deflate reads 24.1:1 on this game, where P3's read
+  22.8.
+- **Brotli's edge is still the deck:** 30.6:1 against zstd's 25.1, as
+  P3 found.
+
+datastar-builder adopts it with the next m0 release. Its pins stay at
+0.13.0, and the two edits to its tools are on a local branch there
+(`measure/zstd-seat`), unpushed.
+
+### Through Fly
+
+The probe's `--url` with `--zstd` passed against a throwaway app on Fly
+(`m0-zstd-stream-probe`, built from this tree with `M0_BLOBS_ZSTD=1` on a
+shared-cpu-1x machine in `iad`, proxy `Fly/331937a822`, and destroyed
+after). It got 20 frames at 3.3:1, decoded 100 ms apart, one frame per
+read. A coded and a plain stream read side by side for 60 s:
+
+- **Bytes:** 601 frames on both, 7.26 kB/s coded against 24.88 plain
+  (3.43:1).
+- **Timing:** the coded frame decoded 0.2 ms after the plain one at the
+  median, 2.4 ms at p99, 7.6 at most, the frames 100.1 ms apart (91.8 to
+  109.2 from p1 to p99).
+- **The page:** the proxy compressed the buffered page itself, with zstd
+  for a client that offered it (J8).
+
+So the proxy passes m0's own coded stream through with its coding and its
+timing, as it did the Python stream in step 0.
+
+### What libzstd's ABI made awkward
+
+Little.
+- `ZSTD_inBuffer` and `ZSTD_outBuffer` are three machine words each,
+  passed by address. The binding keeps both in one `List[Int]` of six,
+  whose storage never moves.
+- `ZSTD_compressStream2` returns the bytes it still holds, so a push loops
+  until 0.
+- The parameter ids are plain integers, stable since 1.4.0, which is the
+  floor.
+
+No struct crosses by value, and there are no callbacks and no varargs.
+The one thing left on the table is the stable-buffer parameters
+(`ZSTD_c_stableInBuffer`, `ZSTD_c_stableOutBuffer`). They would drop the
+context's own input and output buffers, about 96 KB at the default
+window. But zstd.h declares them only under `ZSTD_STATIC_LINKING_ONLY`, as
+experimental, so a library opened at run time cannot rely on them.
 
 ## Not in this plan
 

@@ -24,7 +24,7 @@ the line. A `probe` entry whose image does not build is a miss, never a
 catch. `sabotage_lib.py` owns everything around the table: each gate's
 baseline, the unsabotaged image, must pass first, and SIGINT or SIGTERM
 ends the build and removes the copy and the image before the harness dies
-by the signal. Pre-release: ten sabotaged image builds after the two
+by the signal. Pre-release: twelve sabotaged image builds after the two
 baselines, most of them a layer or two.
 
     uv run poe sabotage-mojo-image
@@ -137,6 +137,20 @@ SABOTAGES = [
         '    return reply.json(200, "OK", st.facts.json)\n',
         '    return reply.json(200, "OK", \'{"version":"1.4.0"}\')\n',
         "the page says what the image is",
+    ),
+    (
+        "libzstd gone from the runtime image (a coded stream would go out plain)",
+        "probe", DOCKERFILE,
+        "USER app\n",
+        "RUN rm -f /usr/lib/*-linux-gnu/libzstd.so.1* && ldconfig\nUSER app\n",
+        "libzstd resolves in the image",
+    ),
+    (
+        "the stream opened without the setting (M0_BLOBS_ZSTD read and ignored)",
+        "probe", SERVER,
+        "    var resp = st.stream.open(req, EVENTS, compress=st.compress)\n",
+        "    var resp = st.stream.open(req, EVENTS)\n",
+        "a compressed stream from the image",
     ),
     (
         "the producer is never told to stop",

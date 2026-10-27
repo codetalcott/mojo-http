@@ -1,0 +1,200 @@
+{
+  "bench": "hello_zstd_ab",
+  "recorded_utc": "2026-10-27T02:00:15+00:00",
+  "environment": {
+    "version": "1.16.0",
+    "git_sha": "f19db5bd",
+    "source_stamp": "",
+    "git_dirty": false,
+    "os": "Darwin 27.0.0",
+    "machine": "arm64",
+    "python": "Python 3.14.7 (main, Aug 14 2026, 15:24:10) [Clang 22.1.3 ]",
+    "mojo": "Mojo 1.2.0 (2016d0cd)",
+    "granian": "",
+    "wrk": "wrk 4.2.0 [kqueue] Copyright (C) 2012 Will Glozer",
+    "numpy": "2.5.3",
+    "cpu": "Apple M4",
+    "cores_physical": "10",
+    "os_build": "macOS 27.0.1 (26A434)",
+    "memory_bytes": "17179869184",
+    "cores_performance": "4",
+    "cores_efficiency": "6",
+    "power_source": "AC Power",
+    "low_power_mode": "0",
+    "thermal": "No thermal warning level has been recorded; No performance warning level has been recorded; No CPU power status has been recorded"
+  },
+  "parameters": {
+    "before": "../mojo-http-before/bin/hello_before",
+    "after": "bin/hello_after",
+    "subject": "apps/hello at 05d28811 (before the zstd binding and stream) against a35293ce's fork (after: the binding and the loop's per-slot context), M0_QOS=1",
+    "wrk": "-t2 -c16 -d10s after a 2s warm-up",
+    "rounds": "6",
+    "order": "ABBA: before first in odd rounds, after first in even"
+  },
+  "definitions": {
+    "medians.rps_per_core": "median rps across rounds / median cores across rounds; the figure docs/BENCHMARKS.md renders",
+    "medians.rps_per_core_rounds": "median across rounds of each round's own rps per core",
+    "cores": "process CPU seconds over wall seconds during the measured window",
+    "comparisons": "after / before, each round's own ratio, then the median and the range"
+  },
+  "rows": [
+    {
+      "round": 1,
+      "name": "hello before",
+      "rps": 242815.77,
+      "cores": 0.99,
+      "p50_us": 50.0,
+      "p99_us": 131.0,
+      "rps_per_core": 245268
+    },
+    {
+      "round": 1,
+      "name": "hello after",
+      "rps": 243905.68,
+      "cores": 0.99,
+      "p50_us": 50.0,
+      "p99_us": 132.0,
+      "rps_per_core": 246369
+    },
+    {
+      "round": 2,
+      "name": "hello after",
+      "rps": 243416.03,
+      "cores": 0.987,
+      "p50_us": 50.0,
+      "p99_us": 141.0,
+      "rps_per_core": 246622
+    },
+    {
+      "round": 2,
+      "name": "hello before",
+      "rps": 241078.88,
+      "cores": 0.987,
+      "p50_us": 50.0,
+      "p99_us": 169.0,
+      "rps_per_core": 244254
+    },
+    {
+      "round": 3,
+      "name": "hello before",
+      "rps": 247326.19,
+      "cores": 0.99,
+      "p50_us": 50.0,
+      "p99_us": 126.0,
+      "rps_per_core": 249824
+    },
+    {
+      "round": 3,
+      "name": "hello after",
+      "rps": 244897.73,
+      "cores": 0.988,
+      "p50_us": 50.0,
+      "p99_us": 132.0,
+      "rps_per_core": 247872
+    },
+    {
+      "round": 4,
+      "name": "hello after",
+      "rps": 248028.63,
+      "cores": 0.986,
+      "p50_us": 49.0,
+      "p99_us": 146.0,
+      "rps_per_core": 251550
+    },
+    {
+      "round": 4,
+      "name": "hello before",
+      "rps": 248176.89,
+      "cores": 0.99,
+      "p50_us": 50.0,
+      "p99_us": 125.0,
+      "rps_per_core": 250684
+    },
+    {
+      "round": 5,
+      "name": "hello before",
+      "rps": 244031.6,
+      "cores": 0.987,
+      "p50_us": 50.0,
+      "p99_us": 144.0,
+      "rps_per_core": 247246
+    },
+    {
+      "round": 5,
+      "name": "hello after",
+      "rps": 245050.87,
+      "cores": 0.983,
+      "p50_us": 49.0,
+      "p99_us": 176.0,
+      "rps_per_core": 249289
+    },
+    {
+      "round": 6,
+      "name": "hello after",
+      "rps": 238759.8,
+      "cores": 0.983,
+      "p50_us": 50.0,
+      "p99_us": 177.0,
+      "rps_per_core": 242889
+    },
+    {
+      "round": 6,
+      "name": "hello before",
+      "rps": 240414.85,
+      "cores": 0.98,
+      "p50_us": 50.0,
+      "p99_us": 252.0,
+      "rps_per_core": 245321
+    }
+  ],
+  "medians": {
+    "hello before": {
+      "rounds": 6,
+      "rps": 243423.685,
+      "cores": 0.9884999999999999,
+      "rps_per_core": 246256,
+      "rps_per_core_rounds": 246284,
+      "p99_us": 137.5,
+      "p99_us_min": 125.0,
+      "p99_us_max": 252.0
+    },
+    "hello after": {
+      "rounds": 6,
+      "rps": 244401.70500000002,
+      "cores": 0.9864999999999999,
+      "rps_per_core": 247746,
+      "rps_per_core_rounds": 247247,
+      "p99_us": 143.5,
+      "p99_us_min": 132.0,
+      "p99_us_max": 177.0
+    }
+  },
+  "comparisons": {
+    "definition": "after / before, each round's own ratio, then the median and the range",
+    "rps": {
+      "median": 1.002,
+      "min": 0.99,
+      "max": 1.01
+    },
+    "cores": {
+      "median": 0.999,
+      "min": 0.996,
+      "max": 1.003
+    },
+    "rps_per_core": {
+      "median": 1.004,
+      "min": 0.99,
+      "max": 1.01
+    },
+    "p50_us": {
+      "median": 1.0,
+      "min": 0.98,
+      "max": 1.0
+    },
+    "p99_us": {
+      "median": 1.028,
+      "min": 0.702,
+      "max": 1.222
+    }
+  }
+}

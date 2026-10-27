@@ -1,0 +1,52 @@
+# datastar-builder's seat, re-measured 2026-10-27 on an Apple M4 (docs/notes/compressing-a-stream.md, step 6).
+# datastar-builder at 223e9a8 (origin/main: mojo 1.2.0), with m0 0.13.0+zstd built from mojo-http a35293ce,
+# apps/drones' seat and tree streams opened with compress=True, and two edits to its own tools:
+# bench/capture.sh also reads both streams offered zstd into main.zst and tree.zst (raw, as on the wire),
+# and bench/compress.mjs adds zstd through node:zlib (node 24.15) and m0's wire bytes.
+#     ./bench/capture.sh DIR 240 && node bench/compress.mjs DIR 240
+# Cost is node's wall time per MB of input, not the loop's.
+
+== main.sse: 3030862 bytes, 2817 events, 12.3 KB/s over 240 s ==
+  other        16 events       203 B    0 %      13 B each
+  frame      2400 events   1608149 B   53 %     670 B each
+  deck        401 events   1422510 B   47 %    3547 B each
+scheme                                           bytes     ratio  to the page      cost
+deflate 6, 32 KB window, flushed per event    125957 B    24.1:1     0.51 KB/s     17 ms/MB
+zstd 1, 32 KB window, flushed per event       121954 B    24.9:1     0.50 KB/s     11 ms/MB
+zstd 3, 512 KB window, flushed per event      109075 B    27.8:1     0.44 KB/s     11 ms/MB
+m0 on the wire, offered zstd                  120627 B    25.1:1     0.49 KB/s  (decodes to 3030862 B, 2817 events)
+brotli q5, 64 KB window, flushed per event     99046 B    30.6:1     0.40 KB/s     20 ms/MB
+brotli q5, 263 KB window, flushed per event     98820 B    30.7:1     0.40 KB/s     20 ms/MB
+brotli q5, 4 MB window, flushed per event      99191 B    30.6:1     0.40 KB/s     20 ms/MB
+brotli q5, 16 MB window, flushed per event     99191 B    30.6:1     0.40 KB/s     20 ms/MB
+brotli q9, 263 KB window, flushed per event     98710 B    30.7:1     0.40 KB/s     23 ms/MB
+brotli q11, 263 KB window, flushed per event     99675 B    30.4:1     0.41 KB/s    473 ms/MB
+  frame alone, deflate 6, 32 KB, flushed      103124 B    15.6:1     0.42 KB/s     25 ms/MB
+  frame alone, brotli q5, 64 KB, flushed       90848 B    17.7:1     0.37 KB/s     33 ms/MB
+  deck alone, deflate 6, 32 KB, flushed        19046 B    74.7:1     0.08 KB/s      5 ms/MB
+  deck alone, brotli q5, 64 KB, flushed         6717 B   211.8:1     0.03 KB/s      6 ms/MB
+brotli q5, each event alone                  1024285 B     3.0:1     4.17 KB/s     20 ms/MB
+deflate 6, each event alone                  1092970 B     2.8:1     4.45 KB/s     15 ms/MB
+brotli q5, 263 KB, whole buffer, no flush      51239 B    59.2:1     0.21 KB/s      2 ms/MB
+brotli q11, 16 MB, whole buffer (the floor)     44758 B    67.7:1     0.18 KB/s    453 ms/MB
+
+== tree.sse: 247137 bytes, 84 events, 1.0 KB/s over 240 s ==
+  other        16 events       203 B    0 %      13 B each
+  tree         68 events    246934 B  100 %    3631 B each
+scheme                                           bytes     ratio  to the page      cost
+deflate 6, 32 KB window, flushed per event      5076 B    48.7:1     0.02 KB/s     10 ms/MB
+zstd 1, 32 KB window, flushed per event         5518 B    44.8:1     0.02 KB/s      5 ms/MB
+zstd 3, 512 KB window, flushed per event        3645 B    67.8:1     0.01 KB/s      5 ms/MB
+m0 on the wire, offered zstd                    5515 B    44.8:1     0.02 KB/s  (decodes to 247137 B, 84 events)
+brotli q5, 64 KB window, flushed per event      2844 B    86.9:1     0.01 KB/s      9 ms/MB
+brotli q5, 263 KB window, flushed per event      2833 B    87.2:1     0.01 KB/s      9 ms/MB
+brotli q5, 4 MB window, flushed per event       2833 B    87.2:1     0.01 KB/s      9 ms/MB
+brotli q5, 16 MB window, flushed per event      2833 B    87.2:1     0.01 KB/s      9 ms/MB
+brotli q9, 263 KB window, flushed per event      2787 B    88.7:1     0.01 KB/s     12 ms/MB
+brotli q11, 263 KB window, flushed per event      2905 B    85.1:1     0.01 KB/s    125 ms/MB
+  tree alone, deflate 6, 32 KB, flushed         4885 B    50.5:1     0.02 KB/s      7 ms/MB
+  tree alone, brotli q5, 64 KB, flushed         2644 B    93.4:1     0.01 KB/s      7 ms/MB
+brotli q5, each event alone                    52440 B     4.7:1     0.21 KB/s      9 ms/MB
+deflate 6, each event alone                    57602 B     4.3:1     0.23 KB/s      7 ms/MB
+brotli q5, 263 KB, whole buffer, no flush       1850 B   133.6:1     0.01 KB/s      1 ms/MB
+brotli q11, 16 MB, whole buffer (the floor)      1825 B   135.4:1     0.01 KB/s     80 ms/MB

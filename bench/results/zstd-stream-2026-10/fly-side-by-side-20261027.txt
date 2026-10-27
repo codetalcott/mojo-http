@@ -1,0 +1,26 @@
+# m0's compressed stream through Fly's proxy, 2026-10-27: a throwaway app (m0-zstd-stream-probe, textshelf org,
+# destroyed after) built from mojo-http 8dbfcf41 with deploy/blobs/fly.toml's settings plus M0_BLOBS_ZSTD=1,
+# shared-cpu-1x in iad, proxy Fly/331937a822 (2026-10-23). One coded (Accept-Encoding: gzip, deflate, br, zstd)
+# and one plain (gzip, deflate, br) stream read side by side for 60 s from a home connection; per frame id,
+# the time each decoded. Before it, mojo_image_probe.py --url --zstd passed:
+#   coded: 20 frames, 13,213 bytes on the wire for 43,745 decoded (3.3:1), median gap 100 ms, at most 1 per read
+{
+ "secs": 60.0,
+ "coded_coding": "zstd",
+ "plain_coding": null,
+ "frames_both": 601,
+ "coded_wire_kBps": 7.26,
+ "plain_wire_kBps": 24.88,
+ "ratio": 3.43,
+ "coded_minus_plain_ms": {
+  "p50": 0.2,
+  "p99": 2.4,
+  "min": -3.8,
+  "max": 7.6
+ },
+ "coded_gap_ms": {
+  "p50": 100.1,
+  "p1": 91.8,
+  "p99": 109.2
+ }
+}

@@ -277,6 +277,23 @@ file's default groups. It is in the `bench` group, pinned at the version
 every number here names, and installing it is one flag:
 `uv sync --group bench`.
 
+## A compressed stream
+
+`DatastarStream.open(compress=True)` (SPEC I45) sends a stream in zstd,
+one context per subscriber. It was measured by
+`scripts/bench_hello_ab.py`, and by `scripts/bench_blobs_modes.py` with
+`--arms before,loop,loop+zstd` on the blobs demo's image, pinned to one
+core. The artifacts are in
+[`bench/results/zstd-stream-2026-10/`](../bench/results/zstd-stream-2026-10/),
+and the tables are in
+[notes/compressing-a-stream.md](notes/compressing-a-stream.md).
+
+- <!-- observed: bench/results/zstd-stream-2026-10/hello-zstd-ab-20261027T020015Z.json -->**A server that compresses nothing did not move.** `apps/hello` built before the binding and after, interleaved over six rounds on performance cores, served 1.002x the requests per second (0.99 to 1.01 by round) on the same cores.
+- <!-- observed: bench/results/zstd-stream-2026-10/blobs-zstd-20261027T013922Z.json -->**Neither did a stream as written.** Blobs before and after, at 1, 10, 100 and 400 viewers, used 0.93 to 1.00x the CPU and delivered every frame.
+- <!-- observed: bench/results/zstd-stream-2026-10/blobs-zstd-20261027T013922Z.json -->**A compressed stream is a fraction of the bytes.** Blobs's whole-state frames go 3.42:1, 23.1 kB/s a viewer down to 6.75, at every count.
+- <!-- observed: bench/results/zstd-stream-2026-10/blobs-zstd-20261027T013922Z.json; notes/compressing-a-stream.md for the native run -->**It costs a loop more than that suggests.** At 100 and 400 viewers on one core it took 2.6 to 2.7 times the loop's CPU and 160 KB a stream. Beside 400 compressed streams a fast request's p99 was 20.5 ms, against 5.0. Natively, on a performance core, a push costs about 14 µs, where one hot context takes 5. Each subscriber's context is cold by its next frame.
+- <!-- observed: bench/results/zstd-stream-2026-10/seat-compress-20261027.txt -->**A stream that repeats its markup goes much further.** A Datastar game's seat, captured for 240 s with its own tools, reached the page at 25.1:1, 3.03 MB in 121 KB. Its bytes decoded to the plain capture exactly.
+
 ## What this page does not measure
 
 - **TLS and HTTP/2.** m0serve has neither; terminate at a proxy, which is

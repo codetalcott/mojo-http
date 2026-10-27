@@ -20,6 +20,17 @@ in a minor release: `m0serve`'s flags and environment variables, the
   goes out as written. A proxy still compresses buffered responses (J8),
   and the deploy target's leaves streams alone
   ([the note](docs/notes/compressing-a-stream.md)).
+- **The blobs demo compresses its stream with `M0_BLOBS_ZSTD=1`**, for a
+  client that offers zstd. Any other value is refused with exit 78. The
+  deploy leaves it unset: measured at 100 and 400 viewers on one core, it
+  costs 2.6 times the loop's CPU and 160 KB a stream, for 3.4:1.
+  `smoke-blobs-image` runs the image with it on. It checks that the
+  image's loader names a readable `libzstd.so.1`, and that the stream
+  decodes frame by frame. Its `--url` mode checks the same through the
+  proxy with `--zstd`. `bench_blobs_modes.py` gains `+zstd` and `before`
+  arms and counts the bytes on the wire, and `bench_hello_ab.py`
+  interleaves two hello builds
+  ([the measurements](docs/notes/compressing-a-stream.md)).
 ### Changed
 
 - **CI runs on GIL-enabled CPython 3.14**, moved from 3.13. A setup step

@@ -9,7 +9,7 @@ whatever the app.
 ```bash
 uv run poe smoke-blobs-image      # apps/blobs: build, then probe from outside (every PR)
 uv run poe probe-mojo-image       # apps/hello: the floor under every Mojo image
-uv run poe sabotage-mojo-image    # ten sabotaged images, each caught where it should be
+uv run poe sabotage-mojo-image    # twelve sabotaged images, each caught where it should be
 
 docker build -f deploy/mojo/Dockerfile --build-arg APP=blobs --build-arg TARGET_CPU=generic .
 ```
@@ -29,6 +29,12 @@ result, with the version, target CPU, architecture and base, to
 to say what it runs in reads the file: `apps/blobs`'s footer and `/about` do
 (`apps/blobs/about.mojo`). So "no Python in this image" and the size are
 measurements, not prose, and the probe checks them again from outside.
+
+**libzstd comes with the base.** `debian:12-slim` ships `libzstd1`, since
+`dpkg` depends on it, so an app in this image can compress a stream
+(SPEC I45). The probe makes it a fact: the loader's cache must name a
+readable `libzstd.so.1`, and blobs, run with `M0_BLOBS_ZSTD=1`, must send a
+stream offered zstd that decodes frame by frame.
 
 ## Measured, 2026-09-18
 
