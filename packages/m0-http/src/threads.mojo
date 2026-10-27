@@ -141,6 +141,12 @@ struct ThreadSet(Movable):
             self._tids + i * 8, 0, body_addr, self.block(i).addr
         )
         if rc != c_int(0):
+            # POSIX leaves the id undefined when the create fails, and glibc
+            # has by then stored a descriptor it frees (`clone` refused at a
+            # process or thread limit). Zeroed, the slot reads as never
+            # spawned, so `join_all` and `join_within` pass it rather than
+            # join a freed id.
+            _slot(self._tids + i * 8)[] = 0
             raise Error("pthread_create failed for thread ", i, ": ", Int(rc))
 
     def join_all(mut self) raises:

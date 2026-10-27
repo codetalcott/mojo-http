@@ -48,6 +48,14 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Fixed
 
+- **A thread that cannot start is no longer joined** (SPEC E41). On
+  glibc, a `pthread_create` that `clone` refused, at a process or thread
+  limit, had already stored a descriptor in its id slot and freed it.
+  `ThreadSet.spawn` raised with that id left in place, so a caller that
+  cleaned up with `join_all` joined a freed descriptor, which is undefined
+  behaviour. The slot is zeroed now, which `join_all` and `join_within`
+  read as never spawned. datastar-builder's review found it, and nothing
+  in m0 joined after a failed spawn.
 - **A state stream catches a stalled subscriber up at its next drain**
   (SPEC I44). Under `DatastarStream(send_latest=True)`, a subscriber whose
   full outbox refused a frame was left on the state before it until the
