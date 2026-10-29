@@ -1753,6 +1753,12 @@ comptime _SLOW_SLOT = 7
 
 comptime _SLOW_HOLD_S = 0.2
 
+comptime _HELD_SLOT = 6
+"""With `slow`, a job on this slot holds its echo thread until the test
+sets `_BLK_RELEASE_AT` in that thread's block (at most `_HOLD_CAP_NS`): a
+view that outlasts whatever the test does while it holds, however slowly
+the runner runs the test."""
+
 
 comptime _BLK_SERVED = 11
 """Block slot an echo thread counts its jobs in; read after the join."""
@@ -1767,7 +1773,8 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
     """A pool thread that answers every job with a 200, until its pill —
     registered on its lane exactly as `m0_wsgi`'s pool body registers
     itself, so it parks on a channel of its own and the elastic rules
-    apply to it. With `slow`, `_SLOW_SLOT` is a 200 ms view."""
+    apply to it. With `slow`, `_SLOW_SLOT` is a 200 ms view, and
+    `_HELD_SLOT` a view held until its release."""
     var block = ThreadBlock(arg)
     ref pool = Pointer[OffloadPool, MutUntrackedOrigin](
         unsafe_from_address=block.get(BLK_USER)
@@ -1791,6 +1798,15 @@ def _echo_thread[slow: Bool](arg: Int) -> Int:
         comptime if slow:
             if job.slot == _SLOW_SLOT:
                 sleep(_SLOW_HOLD_S)
+            elif job.slot == _HELD_SLOT:
+                var release = atomic_at(block.slot_addr(_BLK_RELEASE_AT))
+                var cap = perf_counter_ns() + _HOLD_CAP_NS
+                while True:
+                    var now = perf_counter_ns()
+                    var at = Int(release[].load())
+                    if (at != 0 and now >= at) or now >= cap:
+                        break
+                    sleep(0.001)
         pool.put_response(job.slot, OK(String("x")))
         pool.complete(job.slot)
         served += 1
@@ -2142,17 +2158,32 @@ def test_a_thread_that_takes_a_job_while_spinning_gives_up_the_spin() raises:
 def test_a_burst_into_a_parked_lane_wakes_one_thread() raises:
     """Four jobs pushed back to back into two parked threads send ONE
     wake: the first push wakes the last-parked thread, and from then on
-    the lane is not all idle — a woken thread is on its way — so the
-    other three wake nobody. All four complete, on that one thread."""
+    the lane is not all idle — a woken thread is on its way, then busy —
+    so the other three wake nobody. All four complete, on that one thread.
+
+    The first job holds its thread until the four are pushed
+    (`_HELD_SLOT`), which is what makes them a burst however slowly the
+    runner runs this test. With a job that ended at once, a pause between
+    two pushes let the woken thread serve it and park again, and the next
+    push then woke a thread, as the rule says it must: a second wake the
+    test read as the rule broken, in 12 of 25 failed CI runs from
+    2026-09-18 to 2026-10-29. A 10 ms sleep between those pushes made
+    every push a wake, 4 against 1, in each of three runs."""
     var pool = OffloadPool(8)
     if not pool.elastic_active():
         return
     var threads = ThreadSet(2)
-    _spawn_echo[False](pool, threads, 2)
-    for slot in range(4):
+    _spawn_echo[True](pool, threads, 2)
+    var slots: List[Int] = [_HELD_SLOT, 0, 1, 2]
+    for slot in slots:
         pool.park_request(slot, _request("/b"))
         assert_true(pool.submit(slot))
     assert_equal(pool.wake_counts(0)[1], 1)
+    # The burst is in: the held job may end, and the three behind it are
+    # the woken thread's to take.
+    var now = perf_counter_ns()
+    for t in range(2):
+        atomic_at(threads.block(t).slot_addr(_BLK_RELEASE_AT))[].store(Int64(now))
     var seen = 0
     var deadline = perf_counter_ns() + 2_000_000_000
     while seen < 4 and perf_counter_ns() < deadline:
@@ -2177,9 +2208,10 @@ comptime _BLK_TOOK = 13
 
 comptime _BLK_RELEASE_AT = 14
 """Block slot holding the `perf_counter_ns` at which `_unregistered_thread`
-may leave its slow view; 0, the view holds. The test sets it once the lane
-is full, so the view outlasts the fill however slowly the test runs
-(review LF76)."""
+may leave its slow view, or an echo thread its `_HELD_SLOT` view; 0, the
+view holds. The test sets it once what the hold covers is done -- the
+lane full, the burst pushed -- so the view outlasts it however slowly the
+test runs (review LF76)."""
 
 comptime _HOLD_CAP_NS = 10_000_000_000
 """The longest the slow view waits for its release, so a test that fails
