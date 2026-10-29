@@ -10,6 +10,15 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
+- **A comment follows each SSE event** (SPEC I47, #641). 50 ms after the
+  server writes an event on a stream it holds, it sends `: flush`, unless
+  another event went first, so a burst is followed by one comment. Behind
+  an HTTP/2 proxy that forwards an event in two pieces, Safari's `fetch`
+  reader holds the second piece until a third arrives. On a quiet stream
+  the third piece was the next heartbeat, so a Datastar patch could wait
+  the full 15 s. `M0_SSE_FLUSH_MS` sets the delay and `0` turns it off. A
+  stream an application writes through the chunk channel gets none, as it
+  gets no heartbeat ([the note](docs/notes/a-comment-after-an-event.md)).
 - **A Datastar stream can be compressed** (SPEC I45, I46; DECISIONS D69).
   `DatastarStream.open(req, url, compress=True)`, or
   `sse_response(zstd=accepts_zstd(req))`, sends the stream in zstd to a

@@ -2277,6 +2277,25 @@ python3 scripts/emit.py --covers I45 --task smoke-stream-zstd
 echo "smoke-stream-zstd OK"
 """
 
+# The comment after an event (SPEC I47): at a long interval, so the lower
+# bound is the server's and not the runner's, and with it off. The tick is
+# off and the heartbeat a minute away, so nothing else writes the stream.
+[tool.poe.tasks.smoke-sse-flush]
+help = "A comment follows each SSE event once, M0_SSE_FLUSH_MS later, and none with it at 0 (SPEC I47)"
+shell = """
+. scripts/smoke/lib.sh
+port=$(free_port)
+for ms in 400 0; do
+  spawn flush-$ms.log env M0_PORT=$port M0_SSE_FLUSH_MS=$ms M0_SSE_HEARTBEAT_MS=60000 M0_APP_TICK_MS=0 mojo run -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-datastar/ -I apps/ \
+    apps/datastar_counter/server.mojo
+  wait_ready http://localhost:$port/health $pid
+  python3 scripts/sse_flush_probe.py --port $port --interval $ms || fail "the flush at M0_SSE_FLUSH_MS=$ms"
+  stop $pid
+done
+python3 scripts/emit.py --covers I47 --task smoke-sse-flush
+echo "smoke-sse-flush OK"
+"""
+
 # Periodic work with a real budget does not belong on the event loop, and
 # this is where that stops being an assertion. The app runs the identical
 # step in two places behind one variable, so the gate measures both rather

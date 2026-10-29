@@ -1037,6 +1037,11 @@ jobs:
       # as it lands, the heartbeat inside the frame (SPEC I45).
       - name: Smoke test the compressed Datastar stream
         run: uv run poe smoke-stream-zstd
+      # One comment after each event, so a reader that holds an event's
+      # last piece until another arrives (Safari's fetch behind an HTTP/2
+      # proxy) is given one; none with the interval at 0 (SPEC I47).
+      - name: Smoke test the comment after an SSE event
+        run: uv run poe smoke-sse-flush
       - name: Record the measurements
         if: always()
         uses: ./.github/actions/record-measurements

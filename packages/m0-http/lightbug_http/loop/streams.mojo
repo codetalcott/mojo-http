@@ -2,12 +2,14 @@
 
 A WebSocket's frames are read and handed to the handler
 (`_read_websocket`); what the handler queued for any stream goes out every
-pass (`_drain_outboxes`); a heartbeat keeps an idle stream alive and finds
-a dead one (`_heartbeat`); frames other workers publish arrive over the
-bus (`_deliver_bus_frames`); and the closes and resumed reads the handler
-asks for are applied at the bottom of every pass. Every frame this module
-puts on a stream -- a heartbeat, a pong or close echo, what the handler
-queued -- goes through `_send_frame`: one send, and one rule for a client
+pass (`_drain_outboxes`); a comment follows an SSE event, so a reader that
+holds an event's last piece is given another (`_flush_streams`); a
+heartbeat keeps an idle stream alive and finds a dead one (`_heartbeat`);
+frames other workers publish arrive over the bus (`_deliver_bus_frames`);
+and the closes and resumed reads the handler asks for are applied at the
+bottom of every pass. Every frame this module puts on a stream -- a
+heartbeat, a flush, a pong or close echo, what the handler queued -- goes
+through `_send_frame`: one send, and one rule for a client
 that has gone. Two sends elsewhere do not, each a best-effort send just
 before its slot closes: the shutdown farewell (`_farewell_streams`,
 `loop/state.mojo`) and an aborted stream's last bytes
@@ -23,13 +25,15 @@ from lightbug_http.service import HTTPService
 from lightbug_http.websocket import encode_ws_frame, WS_OP_PING
 
 from lightbug_http.loop.state import (
-    LoopState, TIMER_SSE_HEARTBEAT, UNUSED, _arm_reads, _arm_ws_linger,
-    _await_write, _chunked_stream_ends, _close_slot, _rearm_reads,
-    _slot_of, _stop_reads, _takes_an_out_of_band_frame, _ws_linger,
+    FLUSH_AFTER_SEND, LoopState, SSE_FLUSH_COMMENT, TIMER_SSE_FLUSH,
+    TIMER_SSE_HEARTBEAT, UNUSED, _arm_reads, _arm_ws_linger, _await_write,
+    _chunked_stream_ends, _close_slot, _owe_flush, _rearm_reads, _slot_of,
+    _stop_reads, _takes_an_out_of_band_frame, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
 from std.ffi import c_int
+from std.time import perf_counter_ns
 
 
 def _deliver_bus_frames[T: HTTPService](
@@ -153,6 +157,66 @@ def _heartbeat[T: HTTPService, B: EventLoopBackend](
         return
     if st.slot_send_offset[hb_slot] >= len(st.slot_response[hb_slot]):
         st.provision_pool.provisions[hb_slot].state = ConnectionState.streaming_ws() if hb_is_ws else ConnectionState.streaming_sse()
+
+
+def _flush_streams[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+):
+    """The flush timer fired (SPEC I47): every SSE stream whose flush is due
+    is sent the comment `: flush`, and the timer is set again for the
+    earliest still owed, or deleted when none is.
+
+    A stream still sending its event -- RESPONDING, the frame waiting on
+    writability -- is owed the comment once the event has gone
+    (`FLUSH_AFTER_SEND`, which `_stream_idle` takes up): the comment is the
+    piece AFTER the event, and written now it would land inside it. Waiting
+    there rather than here costs a reader that has stopped reading no wakes
+    at all. A stream that no longer takes a frame its application did not
+    write is owed nothing.
+
+    Every path reaches the set or the delete below the sweep; nothing
+    returns early. The timer is a one-shot on both backends, and on epoll
+    a timerfd left expired is reported by every wait after it.
+    """
+    st.flush_armed = False
+    var now = perf_counter_ns()
+    var next_due = 0
+    for s in range(st.max_conns):
+        var due = st.slot_flush_due[s]
+        if due <= 0:
+            continue
+        # The timer counts whole milliseconds and the stamps nanoseconds:
+        # one that fires within a millisecond of a due takes it now, rather
+        # than setting itself for less than one.
+        if due > now + 1_000_000:
+            if next_due == 0 or due < next_due:
+                next_due = due
+            continue
+        st.slot_flush_due[s] = 0
+        if not st.slot_sse[s]:
+            continue
+        if not _takes_an_out_of_band_frame(st, s):
+            if st.provision_pool.provisions[s].state.kind == ConnectionState.RESPONDING:
+                st.slot_flush_due[s] = FLUSH_AFTER_SEND
+            continue
+        var frame = Bytes(StringSlice(SSE_FLUSH_COMMENT).as_bytes())
+        # Through a compressed stream's context, as the heartbeat is.
+        if st.slot_zstd[s]:
+            try:
+                frame = st.slot_zstd[s].value().push(Span(frame))
+            except e:
+                _zstd_failed(handler, backend, st, s, e)
+                continue
+        if not _send_frame(handler, backend, st, s, st.slot_fds[s], frame^):
+            continue
+        if st.slot_send_offset[s] >= len(st.slot_response[s]):
+            st.provision_pool.provisions[s].state = ConnectionState.streaming_sse()
+    if next_due != 0:
+        var ms = (next_due - now + 999_999) // 1_000_000
+        backend.try_add_timer(TIMER_SSE_FLUSH, max(ms, 1))
+        st.flush_armed = True
+    else:
+        backend.try_delete_timer(TIMER_SSE_FLUSH)
 
 
 def _read_websocket[T: HTTPService, B: EventLoopBackend](
@@ -399,6 +463,10 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
                     # The client is gone, or its write registration
                     # failed: the slot closed in this pass (`_send_frame`).
                     continue
+                # An event on an SSE stream is followed by a comment unless
+                # another follows it first (`_owe_flush`; a channel stream
+                # and a WebSocket are owed none).
+                _owe_flush(backend, st, s)
                 if st.slot_send_offset[s] >= len(st.slot_response[s]):
                     # Landed in one send: ack here and cancel what the
                     # write-ready path would otherwise have owed.
