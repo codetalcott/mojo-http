@@ -4,12 +4,26 @@ Notable changes to `mojo-http`. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/). From 1.0.0 the served contract does not break
 in a minor release: `m0serve`'s flags and environment variables, the
-`M0-Hold`/`M0-Channel` response headers, and `m0pub.publish()`.
+`M0-Hold`/`M0-Channel` response headers, and `m0pub.publish()`. A minor
+leaves every second Thursday, and a behaviour change one ships on by
+default is listed under **Behaviour changes**
+([Releases](docs/RELEASES.md)).
 
 ## [Unreleased]
 
 ### Added
 
+- **Releases leave on a train** ([Releases](docs/RELEASES.md)). A minor
+  every second Thursday, from 1.17.0 on 2026-11-05, with `m0` the same day
+  whenever anything it bundles changed, and a patch any time for a
+  security fix or a regression in the latest minor, the one version
+  supported. A behaviour change a minor ships on by default needs an off
+  switch and an entry under **Behaviour changes**, and a contract break
+  waits for a major after one minor of deprecation. Each of the next two
+  trains is a GitHub milestone. The policy page and `llms.txt` name the
+  next train, which `check-docs` holds to the version, and
+  `poe milestones` reports the days to it and any soak that would be stale
+  at its version ([the note](docs/notes/a-two-weekly-train.md)).
 - **A Datastar stream can be compressed** (SPEC I45, I46; DECISIONS D69).
   `DatastarStream.open(req, url, compress=True)`, or
   `sse_response(zstd=accepts_zstd(req))`, sends the stream in zstd to a

@@ -29,6 +29,10 @@ milestones derive from row status:
   (permanent ids, each with a retiring condition), kept resolvable by
   `check-docs`.
 
+Releases leave on a two-weekly Thursday train (`docs/RELEASES.md`, and a
+GitHub milestone for each of the next two); `poe milestones` names the next
+train, the days to it, and a soak that must run before it.
+
 No row is `implemented` now. Gating one has always found real defects (an
 unbounded WebSocket close linger, close codes echoed rather than validated,
 2932 of 3000 inbound WebSocket messages dropped, `Expect: 100-continue`

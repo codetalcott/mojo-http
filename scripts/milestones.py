@@ -63,6 +63,7 @@ SPEC_JSON = ROOT / "docs" / "spec.json"
 ROADMAP = ROOT / "docs" / "ROADMAP.md"
 REAL_APP = ROOT / "docs" / "REAL_APP_VALIDATION.md"
 PYPROJECT = ROOT / "pyproject.toml"
+RELEASES = ROOT / "docs" / "RELEASES.md"
 
 # How far the real-application pass may lag the current version before it
 # stops being evidence. Two minors: far enough not to gate every release,
@@ -188,6 +189,45 @@ def _lag(cur, ran):
     return (cur[0] - ran[0]) * 1000 + (cur[1] - ran[1])
 
 
+# The two sentences docs/RELEASES.md states the next train in, and the one
+# llms.txt repeats. check_docs.py holds them to the version and the calendar
+# (`train_problems`); the report counts the days to the first. One parser,
+# here, for both.
+_TRAIN = re.compile(
+    r"\*\*(\d+)\.(\d+)\.(\d+) leaves on Thursday (\d{4}-\d{2}-\d{2})\.\*\* "
+    r"The train after it is (\d+)\.(\d+)\.(\d+) on Thursday (\d{4}-\d{2}-\d{2})\.")
+_TRAIN_SHORT = re.compile(
+    r"The next train is (\d+)\.(\d+)\.(\d+), on Thursday (\d{4}-\d{2}-\d{2})\.")
+
+
+def _date(iso):
+    import datetime
+    try:
+        return datetime.date.fromisoformat(iso)
+    except ValueError:
+        return None
+
+
+def next_trains(text):
+    """Every (version, date, version after, date after) a page states, its
+    whitespace folded so the sentences may wrap; a date that is not one is
+    None."""
+    flat = " ".join(text.split())
+    return [
+        (tuple(int(x) for x in m.group(1, 2, 3)), _date(m.group(4)),
+         tuple(int(x) for x in m.group(5, 6, 7)), _date(m.group(8)))
+        for m in _TRAIN.finditer(flat)
+    ]
+
+
+def next_train_short(text):
+    """Every (version, date) `The next train is X.Y.Z, on Thursday DATE.`
+    states, as llms.txt carries it."""
+    flat = " ".join(text.split())
+    return [(tuple(int(x) for x in m.group(1, 2, 3)), _date(m.group(4)))
+            for m in _TRAIN_SHORT.finditer(flat)]
+
+
 # --- the report -------------------------------------------------------------
 
 def report():
@@ -258,12 +298,40 @@ def report():
     else:
         layer_soak_met = False
     print()
+    _report_train(cur, ra, ls)
     remaining = len(impl) + len(plan)
     layer_left = len(layer_impl) + len(layer_plan)
     print("%d row(s) between here and 1.0. %d row(s)%s between here and the "
           "application layer's milestone."
           % (remaining, layer_left,
              "" if layer_soak_met else " and the soak"))
+
+
+def _report_train(cur, server_soak, layer_soak):
+    """The next train, from docs/RELEASES.md: its version and date, the days
+    to it, and a soak that would be stale at its version. Read here rather
+    than checked: the date against today is the clock's, and a required check
+    that turned red with the calendar would block every pull request."""
+    import datetime
+    trains = next_trains(RELEASES.read_text()) if RELEASES.exists() else []
+    if not trains or trains[0][1] is None:
+        print("NEXT TRAIN — docs/RELEASES.md states none (check-docs says why)")
+        print()
+        return
+    ver, day = trains[0][0], trains[0][1]
+    print("NEXT TRAIN — %d.%d.%d on Thursday %s (docs/RELEASES.md)"
+          % (ver + (day.isoformat(),)))
+    left = (day - datetime.date.today()).days
+    if left >= 0:
+        print("  leaves in %d day(s)" % left)
+    else:
+        print("  LATE by %d day(s): release it, or move the date in "
+              "docs/RELEASES.md" % -left)
+    for name, ran in (("server", server_soak), ("layer", layer_soak)):
+        if ran and _lag(ver, ran) > REAL_APP_MAX_MINOR_LAG:
+            print("  the %s soak (at %d.%d.%d) is stale at %d.%d.%d: re-soak "
+                  "before it leaves" % ((name,) + ran + ver))
+    print()
 
 
 # --- the gates --------------------------------------------------------------

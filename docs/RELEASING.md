@@ -5,6 +5,26 @@ Releases are tag-driven: pushing a `v*` tag runs the `Release` workflow
 platform, installs and serves each one on a machine that did not build it,
 and publishes a GitHub release with the wheels attached.
 
+## A train
+
+A minor leaves every second Thursday ([Releases](RELEASES.md) is the
+policy; `uv run poe milestones` names the next train, the days to it, and
+a soak that must run before it). On the day:
+
+1. The pre-release gates below, on a cool machine, and `m0`'s
+   ([Releasing m0](#releasing-m0)) when anything it bundles changed.
+2. The release pull request: the version bumped, the changelog's section
+   dated, and the next-train sentences moved one train on, on
+   [Releases](RELEASES.md) and in `llms.txt`. `check-docs` refuses it
+   until they move: once the version is bumped, they name a train that has
+   left.
+3. Once the tags are pushed, the train's milestone is closed, what did not
+   make it moves to the next one, and the milestone two trains out is
+   opened, so the next two are always open.
+
+A train whose gates fail leaves when they pass, and the train after it
+keeps its date.
+
 **Before any of it: `uv run poe stress-asgi`.** The one check CI cannot
 run. Each round drives `chunked_keepalive.py` and then
 `apps/asgi_bare/ws_probe.py` under CPU hogs — thirty rounds per loop

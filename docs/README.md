@@ -47,6 +47,7 @@ They age.
 
 | page | contents |
 |---|---|
+| [Releases](RELEASES.md) | When the next release leaves and what it will carry; a minor every second Thursday, what a version promises, which versions are supported. |
 | [Changelog](../CHANGELOG.md) | Changes by version. |
 | [Roadmap](ROADMAP.md) | Milestones, known issues with what retires each, what is not planned. |
 | [Decisions](DECISIONS.md) | Standing decisions about the application layer, each with what would retire it. |

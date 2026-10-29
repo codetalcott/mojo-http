@@ -190,6 +190,11 @@ PAGES = [
          "broke, what was measured, what changed.",
          "Measurements", optional=True),
     # The project record.
+    Page("docs/RELEASES.md", "/docs/releases/", "Releases",
+         "When the next release leaves and what it will carry: a minor every "
+         "second Thursday, what a version promises, how a behaviour change "
+         "is announced, and which versions are supported.",
+         "Project", nav="Releases"),
     Page("CHANGELOG.md", "/changelog/", "Changelog",
          "Changes to mojo-http and the m0serve wheel, by version.",
          "Project", nav="Changelog", optional=True),

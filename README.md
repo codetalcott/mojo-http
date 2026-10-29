@@ -82,8 +82,8 @@ multi-tab sync**, and CI executes every command in it on every pull request
 - **The served contract is stable from 1.0** — flags and environment
   variables, the `M0-Hold`/`M0-Channel` headers, and `m0pub.publish()`.
   A minor release does not break them; everything else — the Mojo APIs,
-  the package layout, the fork's internals — is still free to move
-  ([CHANGELOG](CHANGELOG.md)).
+  the package layout, the fork's internals — is still free to move.
+  A minor leaves every second Thursday ([Releases](docs/RELEASES.md)).
 - **macOS arm64 and Linux x86_64/aarch64 only.** No Intel Mac (no
   toolchain), no Windows, no musl.
 
