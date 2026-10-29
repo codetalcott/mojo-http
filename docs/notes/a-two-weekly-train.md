@@ -75,13 +75,35 @@ every `Tests` run and in every session that plans work: the days to the
 train, LATE once it has passed, and a soak that would be stale at the
 train's version.
 
+## The records, apart from the process
+
+RELEASING.md had grown to 1,213 lines, more than 500 of them a record of
+each `m0` release's run since 0.1.0. Some of the rules those runs taught
+lived only in the records: the order of the two tags, the image rules run
+one at a time with a trim that names the mount, `< /dev/null` in a loop
+over labels, the local wheel built on the merge commit, a held job's log
+read through the jobs API, `--refresh-package` past the index's cache, the
+browsers installed before the browser gates. The records moved to
+[Release records](../RELEASE_RECORDS.md), newest first under a heading per
+release, and each of those rules was written into the step it belongs to.
+
+## No releases file
+
+A machine-readable releases file beside `spec.json` was weighed and not
+made. Each fact an agent asks for already has a live machine source:
+
+- **Every released version and its date:** PyPI's JSON for both packages.
+- **The next train:** its milestone, and the sentence `llms.txt` carries.
+- **What a train carries:** the milestone's issues and pull requests, and
+  `main`'s `[Unreleased]`.
+
+A file of its own would be a further copy of each, rendered only at a
+release, so staler than its sources between releases, with a generator
+and a check of its own to keep. It is owed if an agent-usability run finds
+agents failing to answer "which version, when, and what is next" from
+those sources, or if a consumer cannot reach the two APIs.
+
 ## Not yet done
 
-- **RELEASING.md mixes the process with records of past releases**, which
-  makes the steps hard to find for a person or an agent. Moving the records
-  to a page of their own is the next piece.
-- **A machine-readable releases file**, the versions and dates beside
-  `spec.json`, waits on whether the milestones API is enough for the agents
-  that read it.
 - **The first train runs on all this:** 1.17.0, which needs the re-soak
   (both soaks are recorded at 1.14.0).

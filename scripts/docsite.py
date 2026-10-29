@@ -214,6 +214,10 @@ PAGES = [
          "How a release happens: the gates CI runs, the two it cannot, and "
          "the order.",
          "Project", optional=True),
+    Page("docs/RELEASE_RECORDS.md", "/docs/release-records/", "Release records",
+         "How each release's run went, newest first: every step as it went, "
+         "what each gate found and cost, and the traps met.",
+         "Project", optional=True),
     Page("README.md", "/readme/", "The mojo-http README",
          "The repository as a whole: the server, the Mojo web framework, the "
          "Datastar adapter and the SQLite bindings.",

@@ -65,5 +65,7 @@ header and call.
 | the next train's date and version | this page |
 | what is meant for a train | [the open milestones](https://github.com/codetalcott/mojo-http/milestones), or the API: [`/repos/codetalcott/mojo-http/milestones`](https://api.github.com/repos/codetalcott/mojo-http/milestones), each with a `title` and a `due_on` |
 | what has merged since the last release | [Unreleased](https://github.com/codetalcott/mojo-http/blob/main/CHANGELOG.md#unreleased) on `main` |
+| every released version and its date | PyPI's JSON, [`m0serve`](https://pypi.org/pypi/m0serve/json) and [`m0`](https://pypi.org/pypi/m0/json): `releases`, each file with its `upload_time` |
 | what a release changed | [the changelog](../CHANGELOG.md) |
 | how a release is made | [Releasing](RELEASING.md) |
+| how each release's run went | [Release records](RELEASE_RECORDS.md) |

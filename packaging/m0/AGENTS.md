@@ -91,7 +91,7 @@ one home; `0.x` until the layer soak). Rules:
   prints nothing.
 - **`release-m0.yml` runs on a tag and nothing else** (N32; `m0-v0.1.0`
   on 2026-09-21 and `m0-v0.2.0` on 2026-09-25, each green first time,
-  docs/RELEASING.md recording every run — no gate exercises it) — tags `m0-v*`, environment
+  docs/RELEASE_RECORDS.md recording every run — no gate exercises it) — tags `m0-v*`, environment
   `pypi-m0`, `M0_WHEEL_LOCAL` unset and never through `poe
   build-m0-wheel`. `m0_release_problems` in `check_docs.py` holds its
   rules; docs/RELEASING.md has the order. Push no `m0-v*` tag casually.

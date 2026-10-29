@@ -60,6 +60,8 @@ minor is supported. What a train will carry is its milestone
 (https://github.com/codetalcott/mojo-http/milestones, each titled with its
 version and due on its date) and main's Unreleased section
 (https://raw.githubusercontent.com/codetalcott/mojo-http/main/CHANGELOG.md).
+Every released version and its date is PyPI's JSON
+(https://pypi.org/pypi/m0serve/json, https://pypi.org/pypi/m0/json).
 [Releases](docs/RELEASES.md) is the policy: the cadence, what a version
 promises, and how a behaviour change is announced.
 
