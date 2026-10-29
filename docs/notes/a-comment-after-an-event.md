@@ -146,8 +146,19 @@ Not proved here: that Safari, behind Fly's proxy, now reads each event
 whole. Only a browser behind that proxy can show it, and the measurement
 above is the one to repeat with the heartbeat back at its default.
 
-Not measured: what the comment costs the server's side of a broadcast
-slower than the interval, where each comment is a send of its own per
-viewer. The blobs demo at 10 Hz takes none. At its idle rate, 2 Hz, each
-frame takes one: four sends a viewer a second where there were two. Not
-proved either: Chromium on a phone, or behind an HTTP/2 proxy.
+What a comment costs the server, measured 2026-10-29 on the same Mac: the
+blobs demo natively, one binary with `M0_SSE_FLUSH_MS` at its default
+against 0, 400 plain viewers holding `/events`, three interleaved rounds
+of 30 s per arm, the server's CPU time over each window:
+
+| Broadcast | Interval | Comments a second | Server CPU (median of 3) |
+| --- | --- | --- | --- |
+| 2 Hz, blobs' idle rate | 150 ms | 800 | 1.50 % of a core |
+| 2 Hz | 0, off | 0 | 1.13 % |
+| 10 Hz, its running rate | 150 ms | 0 | 6.03 % |
+| 10 Hz | 0, off | 0 | 5.50 % |
+
+At 2 Hz each frame takes a comment, a send of its own per viewer, and the
+800 a second cost 0.37 % of a core, about 4.6 µs each, in every round. At
+10 Hz none is sent, and the medians' gap is inside the rounds' spread (5.4
+to 6.4 %). Not proved: Chromium on a phone, or behind an HTTP/2 proxy.
