@@ -47,12 +47,14 @@ They age.
 
 | page | contents |
 |---|---|
+| [Releases](RELEASES.md) | When the next release leaves and what it will carry; a minor every second Thursday, what a version promises, which versions are supported. |
 | [Changelog](../CHANGELOG.md) | Changes by version. |
 | [Roadmap](ROADMAP.md) | Milestones, known issues with what retires each, what is not planned. |
 | [Decisions](DECISIONS.md) | Standing decisions about the application layer, each with what would retire it. |
 | [Design notes](notes/) | The engineering record: dated, long-form, kept as written. |
 | [WSGI conformance](WSGI_CONFORMANCE.md) | PEP 3333, clause by clause. |
 | [Releasing](RELEASING.md) | How a release happens, and the gates CI cannot run. |
+| [Release records](RELEASE_RECORDS.md) | How each release's run went, newest first: what each gate found and cost, and the traps met. |
 | [README](../README.md) | The mojo-http repository as a whole: what it is, how to install it, the packages and their example applications, and a link to the page that owns each of the rest ([why](notes/the-readme-points.md)). |
 | [Provenance](../PROVENANCE.md) | Where the code came from, and the licensing record. |
 
