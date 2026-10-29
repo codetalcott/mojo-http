@@ -10,9 +10,10 @@ in a minor release: `m0serve`'s flags and environment variables, the
 
 ### Added
 
-- **A comment follows each SSE event** (SPEC I47, #641). 50 ms after the
-  server writes an event on a stream it holds, it sends `: flush`, unless
-  another event went first, so a burst is followed by one comment. Behind
+- **A comment follows each SSE event** (SPEC I47, #641). 150 ms after
+  the server writes an event on a stream it holds, it sends `: flush`,
+  unless another event went first, so a burst is followed by one comment
+  and a stream at 7 Hz or faster is sent none. Behind
   an HTTP/2 proxy that forwards an event in two pieces, Safari's `fetch`
   reader holds the second piece until a third arrives. On a quiet stream
   the third piece was the next heartbeat, so a Datastar patch could wait

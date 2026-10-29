@@ -81,11 +81,16 @@ comptime STREAM_KEEPALIVE_PROBES = 3
 # page the first piece at once and holds the second until a third arrives:
 # on a quiet stream the event waited for the next heartbeat. The comment is
 # that third piece, one per event rather than a heartbeat four times a
-# second on every stream. Late enough that the proxy has forwarded the
-# event before it comes, and so carries it as a piece of its own; well
-# inside what a person notices. `M0_SSE_FLUSH_MS` overrides it; 0 sends
-# none.
-comptime SSE_FLUSH_MS = 50
+# second on every stream.
+#
+# The interval bounds two things at once. Safari holds an event's tail no
+# longer than it, and a stream gets a comment only when its next event is
+# further off than it, so a stream faster than the interval pays nothing:
+# its next event is the piece. 150 ms exempts every stream at 7 Hz and
+# above (blobs' 10 Hz frames among them, which at 50 ms each took a
+# comment, +8% of Chromium's main-thread time) and stays inside what reads
+# as immediate after a click. `M0_SSE_FLUSH_MS` overrides it; 0 sends none.
+comptime SSE_FLUSH_MS = 150
 comptime SSE_FLUSH_COMMENT = ": flush\n\n"
 # The most of a grown buffer a slot keeps once its connection closes. A
 # slot's receive and encode buffers start at one read (4 KiB) and grow to

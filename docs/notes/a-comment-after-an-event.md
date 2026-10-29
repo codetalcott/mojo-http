@@ -39,7 +39,7 @@ holds either way: an event's second piece waits for a third.
 ## What the server does
 
 Each event the server writes on an SSE stream it holds is followed by the
-comment `: flush`, 50 ms later, unless another event was written to that
+comment `: flush`, 150 ms later, unless another event was written to that
 stream first (`M0_SSE_FLUSH_MS`; `0` sends none). The comment is the third
 piece. A parser ignores a comment line, Datastar's and `EventSource`'s
 alike, as it ignores the heartbeat.
@@ -51,8 +51,8 @@ alike, as it ignores the heartbeat.
   last of them.
 - **Late enough to be a piece of its own.** Written with the event, the
   comment would reach the proxy in the same read and leave in the same
-  frame. 50 ms is past any proxy's read and well inside what a person
-  notices.
+  frame. Any delay past a proxy's read is enough for that; the interval
+  is chosen by what it costs (below).
 - **Only where a heartbeat may go** (`_takes_an_out_of_band_frame`, SPEC
   D13). A stream the application writes through the chunk channel gets
   none, since an event there may span two chunks. A WebSocket gets none,
@@ -74,15 +74,49 @@ alike, as it ignores the heartbeat.
   comment too. `send_latest`'s queued frame at open goes through the
   outbox drain like any other event.
 
+## The interval
+
+For a stream whose events are S apart, Safari holds an event's tail for
+the lesser of S and the interval, and the stream is sent a comment only
+when S is longer than the interval. A stream faster than the interval
+pays nothing, since its next event is the piece. So the interval bounds
+two things at once: how long Safari can hold an event, and how often a
+stream can be sent a comment, never more than once an interval.
+
+The first draft used 50 ms. The blobs demo broadcasts at 10 Hz, so each
+of its frames took a comment, for at most 50 ms that the next frame would
+have saved anyway. 150 ms exempts every stream at about 7 Hz and faster,
+blobs' frames among them, and an event held for 150 ms still reads as an
+immediate answer to a click. datastar-builder's 250 ms heartbeat, the
+stopgap, put its build list on the page at 187 and 363 ms.
+
 ## What it costs
 
-A comment of 9 bytes per event, or per burst. A quiet stream pays it once
-after each change and is otherwise left at the heartbeat's 15 s. A stream
-at 10 Hz pays it after every event, 10 a second. That is more comments
-than the 250 ms heartbeat's 4, and 90 bytes a second against the 19 KB a
-seat already gets. A stream at 25 Hz pays nothing, since each event is
-followed by the next inside the interval. The timer fires about once per
-interval while any flush is owed, and its sweep reads one word per slot.
+A comment of 9 bytes per event, or per burst, sent only on a stream
+slower than the interval. A quiet stream pays it once after each change
+and is otherwise left at the heartbeat's 15 s. The most a stream can pay
+is one comment per interval, about 7 a second for a stream just slower
+than it. The timer fires about once per interval while any flush is owed,
+and its sweep reads one word per slot.
+
+What a comment costs a browser, measured 2026-10-29 in headless Chromium
+on an M-series Mac, against the blobs page at 10 Hz over loopback. Five
+rounds of 20 s for each arm, interleaved, each against a fresh server.
+CDP's `Performance.getMetrics` gave the page's main-thread time, and
+`Network.dataReceived` counted the stream's chunks:
+
+| Interval | Stream chunks a second | Bytes a second | Main-thread time a second (median) |
+| --- | --- | --- | --- |
+| 0, off | 10.05 | 23,903 | 33.7 ms |
+| 150 ms, the default | 10.05 | 23,903 | 32.8 ms |
+| 50 ms | 20.05 | 23,993 | 34.3 ms |
+
+At 150 ms the stream carries no comment at all, so its cost is zero by
+construction, and the times agree within the rounds' spread (27.8 to 35.2
+ms). At 50 ms each frame was followed by one. Compared within a round,
+those cost 1.5 to 2.6 ms of main-thread time a second (an earlier run of
+the same pair gave 2.7), most of it Chromium delivering a chunk rather
+than script: about 0.2 ms a comment.
 
 ## What was not done
 
@@ -112,8 +146,8 @@ Not proved here: that Safari, behind Fly's proxy, now reads each event
 whole. Only a browser behind that proxy can show it, and the measurement
 above is the one to repeat with the heartbeat back at its default.
 
-Not measured yet: what the comment costs a broadcast. Each comment is a
-send of its own, and the blobs demo broadcasts at 10 Hz, every frame more
-than the interval after the last. So its viewers now take two sends a
-frame where they took one, and `bench_blobs_modes.py`'s CPU per viewer is
-the figure to take again.
+Not measured: what the comment costs the server's side of a broadcast
+slower than the interval, where each comment is a send of its own per
+viewer. The blobs demo at 10 Hz takes none. At its idle rate, 2 Hz, each
+frame takes one: four sends a viewer a second where there were two. Not
+proved either: Chromium on a phone, or behind an HTTP/2 proxy.
