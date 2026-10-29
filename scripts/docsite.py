@@ -190,6 +190,11 @@ PAGES = [
          "broke, what was measured, what changed.",
          "Measurements", optional=True),
     # The project record.
+    Page("docs/RELEASES.md", "/docs/releases/", "Releases",
+         "When the next release leaves and what it will carry: a minor every "
+         "second Thursday, what a version promises, how a behaviour change "
+         "is announced, and which versions are supported.",
+         "Project", nav="Releases"),
     Page("CHANGELOG.md", "/changelog/", "Changelog",
          "Changes to mojo-http and the m0serve wheel, by version.",
          "Project", nav="Changelog", optional=True),
@@ -208,6 +213,10 @@ PAGES = [
     Page("docs/RELEASING.md", "/docs/releasing/", "Releasing",
          "How a release happens: the gates CI runs, the two it cannot, and "
          "the order.",
+         "Project", optional=True),
+    Page("docs/RELEASE_RECORDS.md", "/docs/release-records/", "Release records",
+         "How each release's run went, newest first: every step as it went, "
+         "what each gate found and cost, and the traps met.",
          "Project", optional=True),
     Page("README.md", "/readme/", "The mojo-http README",
          "The repository as a whole: the server, the Mojo web framework, the "

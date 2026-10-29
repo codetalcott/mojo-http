@@ -2407,6 +2407,164 @@ def check_decisions_ledger():
         fail(msg)
 
 
+RELEASES_PAGE = "docs/RELEASES.md"
+
+
+def _fmt(v):
+    return "%d.%d.%d" % v
+
+
+def train_problems(releases, llms, version):
+    """docs/RELEASES.md states the next train and the one after it, and
+    llms.txt repeats the first. The next train is the minor after `version`
+    (or the major after it), the one after it the minor after that, both on
+    Thursdays a fortnight apart, and llms.txt names the same train.
+
+    No clock. Whether the date has passed is `poe milestones`' to say: this
+    is the one required check, and a rule that turned red with the calendar
+    would block every pull request, the release's own included. What is
+    held here is what the release pull request must move: once it bumps the
+    version, the page names a train that has left, and is refused until the
+    sentences move one train on. A pure function of its arguments, so
+    `--selftest` can hand it doctored copies."""
+    import milestones
+    if releases is None:
+        return [f"{RELEASES_PAGE} is missing"]
+    form = ("`**X.Y.Z leaves on Thursday YYYY-MM-DD.** The train after it is "
+            "X.Y.Z on Thursday YYYY-MM-DD.`")
+    trains = milestones.next_trains(releases)
+    if len(trains) != 1:
+        return [f"{RELEASES_PAGE} must state the next train once, as {form}; "
+                f"it states it {len(trains)} times"]
+    v1, d1, v2, d2 = trains[0]
+    problems = []
+    nexts = [(version[0], version[1] + 1, 0), (version[0] + 1, 0, 0)]
+    if v1 not in nexts:
+        problems.append(
+            f"{RELEASES_PAGE} names {_fmt(v1)} as the next train, and the "
+            f"version is {_fmt(version)}: the next train is {_fmt(nexts[0])} "
+            f"(or the major {_fmt(nexts[1])}). A release moves the sentence "
+            f"one train on")
+    if v2 != (v1[0], v1[1] + 1, 0):
+        problems.append(
+            f"{RELEASES_PAGE} names {_fmt(v2)} as the train after "
+            f"{_fmt(v1)}; it is {_fmt((v1[0], v1[1] + 1, 0))}")
+    for what, day in (("the next train", d1), ("the train after it", d2)):
+        if day is None:
+            problems.append(f"{RELEASES_PAGE}: the date of {what} is not a date")
+        elif day.weekday() != 3:
+            problems.append(
+                f"{RELEASES_PAGE}: {what} leaves on {day.isoformat()}, a "
+                f"{day.strftime('%A')}; trains leave on Thursdays")
+    if d1 and d2 and (d2 - d1).days != 14:
+        problems.append(
+            f"{RELEASES_PAGE}: the train after the next leaves "
+            f"{(d2 - d1).days} days after it; trains are 14 days apart")
+    short = milestones.next_train_short(llms or "")
+    if len(short) != 1:
+        problems.append(
+            "llms.txt must say `The next train is X.Y.Z, on Thursday "
+            f"YYYY-MM-DD.` once; it says it {len(short)} times")
+    elif short[0] != (v1, d1):
+        got_v, got_d = short[0]
+        problems.append(
+            f"llms.txt names the next train {_fmt(got_v)} on "
+            f"{got_d.isoformat() if got_d else '(not a date)'}, and "
+            f"{RELEASES_PAGE} {_fmt(v1)} on "
+            f"{d1.isoformat() if d1 else '(not a date)'}")
+    return problems
+
+
+def _repo_version():
+    m = re.search(r'^version = "(\d+)\.(\d+)\.(\d+)',
+                  (REPO / "pyproject.toml").read_text(), re.M)
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+def check_release_train():
+    """The next train docs/RELEASES.md and llms.txt state follows from the
+    version (`train_problems`)."""
+    path = REPO / RELEASES_PAGE
+    version = _repo_version()
+    if version is None:
+        fail("could not read the version from pyproject.toml")
+        return
+    llms = (REPO / "llms.txt").read_text()
+    for msg in train_problems(path.read_text() if path.exists() else None,
+                              llms, version):
+        fail(msg)
+
+
+def _train_cases():
+    """The train rules reverted one at a time against the committed page,
+    llms.txt and version, each case a mutation in memory. A case whose
+    mutation leaves both texts and the version as committed is NOT
+    APPLICABLE and fails the selftest. Returns
+    (label, releases, llms, version, must_fire)."""
+    import datetime
+    import milestones
+    real = (REPO / RELEASES_PAGE).read_text()
+    llms = (REPO / "llms.txt").read_text()
+    version = _repo_version()
+    flat = " ".join(real.split())
+    v1, d1, v2, d2 = milestones.next_trains(real)[0]
+    sentence = milestones._TRAIN.search(flat).group(0)
+
+    def page(new_sentence):
+        # The page with its stated trains replaced; the sentences may wrap
+        # on the page, so the page is compared and rebuilt folded.
+        return flat.replace(sentence, new_sentence)
+
+    def stated(a, da, b, db):
+        return (f"**{_fmt(a)} leaves on Thursday {da}.** The train after it "
+                f"is {_fmt(b)} on Thursday {db}.")
+
+    def short(a, da):
+        return f"The next train is {_fmt(a)}, on Thursday {da}."
+
+    flat_llms = " ".join(llms.split())
+    real_short = short(v1, d1.isoformat())
+    assert real_short in flat_llms, "llms.txt does not carry the next train"
+
+    def llms_with(new):
+        return flat_llms.replace(real_short, new)
+
+    later = (v1[0], v1[1] + 1, 0)
+    major = (v1[0] + 1, 0, 0)
+    friday = (d1 + datetime.timedelta(days=1)).isoformat()
+    return [
+        ("(control: the page, llms.txt and version as committed)",
+         real, llms, version, False),
+        ("the next train named a minor too far",
+         page(stated(later, d1, (later[0], later[1] + 1, 0), d2)), llms, version, True),
+        ("the version moved and the page did not (a release that left it)",
+         real, llms, v1, True),
+        ("(control: a major as the next train)",
+         page(stated(major, d1, (major[0], 1, 0), d2)),
+         llms_with(short(major, d1.isoformat())), version, False),
+        ("the train after it is not the minor after the next",
+         page(stated(v1, d1, (v2[0], v2[1] + 1, 0), d2)), llms, version, True),
+        ("the next train leaves on a Friday",
+         page(stated(v1, friday, v2, d2)), llms_with(short(v1, friday)), version, True),
+        ("the train after it is a week later, not two",
+         page(stated(v1, d1, v2, (d2 - datetime.timedelta(days=7)).isoformat())),
+         llms, version, True),
+        ("a date that is not a date",
+         page(stated(v1, "2026-11-31", v2, d2)),
+         llms_with(short(v1, "2026-11-31")), version, True),
+        ("the page states the next train twice",
+         page(sentence + " " + sentence), llms, version, True),
+        ("the page states no next train", page(""), llms, version, True),
+        ("the page is missing", None, llms, version, True),
+        ("llms.txt does not say the next train", real, llms_with(""), version, True),
+        ("llms.txt names another date",
+         real, llms_with(short(v1, (d1 + datetime.timedelta(days=14)).isoformat())),
+         version, True),
+        ("llms.txt names another version",
+         real, llms_with(short(later, d1.isoformat())), version, True),
+    ]
+
+
 def _ledger_cases():
     """The ledger rules reverted one at a time against the committed page.
 
@@ -2949,6 +3107,20 @@ def selftest():
         good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
+    # The release train: each rule reverted against the committed page,
+    # llms.txt and version, with the same NOT APPLICABLE discipline.
+    real_page = (REPO / RELEASES_PAGE).read_text()
+    real_llms = (REPO / "llms.txt").read_text()
+    real_version = _repo_version()
+    for label, page, llms_text, version, must_fire in _train_cases():
+        if must_fire and (page, llms_text, version) == (real_page, real_llms, real_version):
+            print(f"  MISSED          {label} -- NOT APPLICABLE, the mutation changed nothing")
+            ok = False
+            continue
+        got = train_problems(page, llms_text, version)
+        good = bool(got) == must_fire
+        print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
+        ok &= good
     # The Dependabot gate: each rule reverted against the committed workflow,
     # with the ledger's NOT APPLICABLE discipline -- a mutation that leaves
     # the file unchanged is an anchor that has drifted, and counts as MISSED.
@@ -3382,6 +3554,7 @@ def main():
     check_docs_cite_tracked_paths()
     check_row_statuses_in_prose()
     check_decisions_ledger()
+    check_release_train()
     check_bench_prose_figures()
     if failures:
         print("check-docs: FAIL")

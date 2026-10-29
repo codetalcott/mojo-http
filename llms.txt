@@ -51,6 +51,20 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
 - SIGTERM drains in-flight work and exits 0; the server runs as PID 1
   correctly.
 
+## Releases
+
+The next train is 1.17.0, on Thursday 2026-11-05. A minor leaves every
+second Thursday, with `m0` beside it whenever anything it bundles changed,
+and a patch any time for a security fix or a regression; only the latest
+minor is supported. What a train will carry is its milestone
+(https://github.com/codetalcott/mojo-http/milestones, each titled with its
+version and due on its date) and main's Unreleased section
+(https://raw.githubusercontent.com/codetalcott/mojo-http/main/CHANGELOG.md).
+Every released version and its date is PyPI's JSON
+(https://pypi.org/pypi/m0serve/json, https://pypi.org/pypi/m0/json).
+[Releases](docs/RELEASES.md) is the policy: the cadence, what a version
+promises, and how a behaviour change is announced.
+
 ## Start here
 
 - [Quickstart](QUICKSTART.md): live multi-tab sync from one file of sync
