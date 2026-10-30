@@ -898,6 +898,14 @@
       "evidence": "`test_threads.mojo:test_a_thread_the_process_limit_refuses_is_left_never_spawned` (every PR) \u2014 a forked child at RLIMIT_NPROC 0 asks for a thread. On the Linux leg, as the runner's unprivileged user, the create must be refused and its slot read 0 before `join_all` returns. macOS counts no threads against that limit and root is exempt from it, so those runs accept a create that succeeded. Reverting the zeroing fails it on glibc 2.36 (Debian 12, in a container as uid 1000), where the refused create left its freed descriptor in the slot. datastar-builder's review found it by reading glibc's `pthread_create`"
     },
     {
+      "id": "E42",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "Under `M0_BLOCKING_THREADS`, an application whose state lives in one handler's memory (`max_threads()` 1, which `max_workers()` 1 implies) is refused with 78 while a view given the state is left on the pool: each pool thread builds a state of its own with `make`, so that view would answer from its thread's copy. The refusal, `pool-vs-application` in `host_checks` and so in the doctor, names the first such route and how many more, and the fix: `on_loop=True`, a state every thread sees with a larger `max_threads()`, or no pool. `ViewsApp` answers from its table (`Views.pool_state_routes`: every `add_read` and `add_write` without `on_loop`, `resource`'s included), and another handler declares its own through `AppHandler.pool_state_routes`, none by default. Before, the m0 scaffold's list served under a pool with an `on_loop` forgotten lost an item to another thread's copy, silently",
+      "status": "verified",
+      "evidence": "`test_host.mojo:test_a_view_given_one_process_state_is_refused_on_the_pool` (every PR) \u2014 a pool view on one-process state refused naming the route and the fix; served with no pool, with `max_threads()` 0, and with every such view on the loop; `test_views.mojo:test_the_routes_a_pool_answers_with_the_state_are_listed` the table's list, under a mount, a resource's routes on it and an `on_loop` or stateless loop route not"
+    },
+    {
       "id": "E4",
       "section": "E",
       "category": "E. Process and worker model",
@@ -3128,6 +3136,14 @@
       "capability": "`Fragment[V].element(tag, verb, url, children..., **attrs)`, the swap in the component tier",
       "status": "out of scope",
       "evidence": "withdrawn with N54 (DECISIONS D68)"
+    },
+    {
+      "id": "N56",
+      "section": "N",
+      "category": "N. Writing an application in Mojo",
+      "capability": "An application's release artifact carries the licences of what it holds that is not its author's: `m0 build --release` writes `dist/licenses/` beside the binary and the runtime -- mojo-http's and lightbug_http's MIT texts, for the framework and the fork compiled into the binary, the Mojo runtime's Apache 2.0 with LLVM Exceptions and the MAX License of 2026-10-21, and a `NOTICE.txt` saying which covers which, the runtime libraries' modification notice and MAX's closed libraries a binary that links MAX carries among them -- and `m0 image` copies it into `/app/` with the rest of `dist/`. The wheel carries the runtime's two and the notice as `m0/_release/`, beside its own MIT two in `m0/licenses/`, byte for byte the tree's. Until m0 0.14.0 an artifact shipped the runtime and the compiled-in MIT code with no licence text, which redistributing breaks the terms of",
+      "status": "verified",
+      "evidence": "`Smoke test the m0 wheel` (every PR) \u2014 `m0/_release/` holds exactly its three files, each the tree's byte for byte, and a release build's `dist/licenses/` all five"
     },
     {
       "id": "O1",

@@ -97,6 +97,11 @@ Mojo runtime libraries (redistributed in every macOS binary artifact)
     which that licence does not govern, without it.
     docs/FFI_DISTRIBUTION.md has the reasoning.
 
+    An APPLICATION's artifact carries them too from m0 0.14.0: `m0 build
+    --release` copies both texts, the two MIT texts and
+    licenses/NOTICE.m0-release.txt (as NOTICE.txt) into dist/licenses/,
+    which `m0 image` copies into the image with the rest of dist/.
+
 --------------------------------------------------------------------------------
 
 lightbug_http

@@ -8533,6 +8533,7 @@ python3 scripts/emit.py --covers N25 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N26 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N39 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N41 --task smoke-m0-wheel
+python3 scripts/emit.py --covers N56 --task smoke-m0-wheel
 """
 
 [tool.poe.tasks.sabotage-m0-wheel]

@@ -168,6 +168,44 @@ struct OneProcess(ViewState):
         return 1
 
 
+struct PoolRead(ViewState):
+    """State in one handler's memory, one view of which is left on the pool:
+    the scaffold's list with an `on_loop=True` forgotten."""
+
+    var items: Int
+
+    def __init__(out self):
+        self.items = 0
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        return PoolRead()
+
+    @staticmethod
+    def urls() raises -> Views[Self]:
+        var v = Views[PoolRead]()
+        v.add_read("GET", "/items", _pool_read_items)
+        v.add_write("POST", "/items", _pool_add_item, on_loop=True)
+        return v^
+
+    @staticmethod
+    def max_workers() -> Int:
+        return 1
+
+
+def _pool_read_items(
+    req: HTTPRequest, params: List[String], st: PoolRead
+) raises -> HTTPResponse:
+    return OK(String(st.items))
+
+
+def _pool_add_item(
+    req: HTTPRequest, params: List[String], mut st: PoolRead
+) raises -> HTTPResponse:
+    st.items += 1
+    return OK(String(st.items))
+
+
 def _await(page: SharedAtomics, slot: Int, at_least: Int) raises:
     """Return once `slot` has reached `at_least`; raise after `WAIT_NS`."""
     var t0 = perf_counter_ns()
@@ -417,6 +455,34 @@ def test_a_views_app_answers_for_its_state() raises:
     var page = _page(1)
     var app = ViewsApp[OneProcess].make(_ctx(1, page))
     assert_equal(app.state.worker, 0)
+
+
+def test_a_view_given_one_process_state_is_refused_on_the_pool() raises:
+    """Under `M0_BLOCKING_THREADS`, each pool thread builds a state of its
+    own, so an application whose state lives in one handler's memory
+    (`max_threads()` 1) is refused while a view that reads it is left on
+    the pool, named; `on_loop=True` on every such view, no pool, or a state
+    the threads may each build is served.
+
+    covers: E42
+    """
+    var routes = ViewsApp[PoolRead].pool_state_routes()
+    assert_equal(len(routes), 1)
+    assert_equal(routes[0], "GET /items")
+    assert_equal(len(ViewsApp[OneProcess].pool_state_routes()), 0)
+    _ = setenv("M0_BLOCKING_THREADS", "4", True)
+    var pooled = AppConfig()
+    _ = unsetenv("M0_BLOCKING_THREADS")
+    var why = host_refusal(pooled, 1, 1, parallel_runtime=False, pool_state_routes=routes)
+    assert_true(Bool(why), "a pool view on one-process state was served")
+    assert_true("M0_BLOCKING_THREADS=4" in why.value(), why.value())
+    assert_true("GET /items" in why.value(), why.value())
+    assert_true("on_loop=True" in why.value(), why.value())
+    assert_false(Bool(host_refusal(pooled, 1, 1, parallel_runtime=False)))
+    assert_false(Bool(host_refusal(pooled, 0, 0, parallel_runtime=False, pool_state_routes=routes)))
+    assert_false(
+        Bool(host_refusal(AppConfig(), 1, 1, parallel_runtime=False, pool_state_routes=routes))
+    )
 
 
 def test_the_host_refuses_more_workers_than_the_app_serves() raises:

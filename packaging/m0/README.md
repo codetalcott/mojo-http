@@ -13,7 +13,7 @@ runs on macOS arm64 and glibc Linux (x86-64, aarch64).
 
 ```bash
 uvx m0 new shop                   # writes ./shop; needs no toolchain and no network
-cd shop && uv sync                # the pair it pinned: m0, and the one exact mojo it is gated on
+cd shop && uv sync                # the pair it pinned: m0, and the one exact mojo it is gated on (about 205 MB the first time)
 uv run m0 build                   # src/server.mojo -> bin/server, about ten seconds
 uv run m0 test                    # mojo run over test/test_*.mojo, two to four seconds a file
 uv run m0 dev -- --port 8080      # build, serve, rebuild on save; the old server serves until a build succeeds

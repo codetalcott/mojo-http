@@ -58,6 +58,18 @@ LICENSES = {
     "licenses/LICENSE.lightbug_http.txt": "LICENSE.lightbug_http.txt",
 }
 
+# What `m0 build --release` copies into `dist/licenses/` beside an
+# application's binary, with the two above (SPEC N56): the Mojo runtime's
+# texts and the notice that says which covers what. Kept out of `licenses/`,
+# which is the wheel's own and carries no runtime; and not a second copy of
+# the two above, since `force_include` maps a source to ONE destination and
+# a second silently replaced the first.
+RELEASE_LICENSES = {
+    "licenses/LICENSE.mojo-runtime.txt": "LICENSE.mojo-runtime.txt",
+    "licenses/LICENSE.max.txt": "LICENSE.max.txt",
+    "licenses/NOTICE.m0-release.txt": "NOTICE.txt",
+}
+
 
 def _git(*args):
     try:
@@ -139,6 +151,8 @@ class CustomBuildHook(BuildHookInterface):
             include[str(ROOT / rel)] = f"m0/_tools/{Path(rel).name}"
         for rel, name in LICENSES.items():
             include[str(ROOT / rel)] = f"m0/licenses/{name}"
+        for rel, name in RELEASE_LICENSES.items():
+            include[str(ROOT / rel)] = f"m0/_release/{name}"
 
         root_text = (ROOT / "pyproject.toml").read_text()
         info = {

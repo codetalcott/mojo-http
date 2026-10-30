@@ -22,8 +22,12 @@ uv sync
 `m0 new` writes `./shop`, or the empty current directory as `m0 new .`,
 and needs neither a toolchain nor a network.
 `uv sync` installs the two packages `pyproject.toml` pins exactly: `m0`, and
-the one `mojo` that `m0` release was tested on. The toolchain is a few
-hundred megabytes the first time and comes from uv's cache after that.
+the one `mojo` that `m0` release was tested on.
+
+<!-- observed: uv.lock's wheel sizes and the installed RECORDs, mojo 1.2.0, 2026-10-29 -->
+The first `uv sync` downloads about 205 MB of toolchain (225 MB on Linux
+x86-64), which unpacks to about 630 MB in `.venv`, most of it the compiler
+and the debugger's libraries. A second project takes it from uv's cache.
 
 ```text
 shop/
