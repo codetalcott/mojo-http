@@ -943,7 +943,8 @@ free-threaded CPython only), `M0_BLOCKING_THREADS` (handler threads per
 loop; composes with either and with `--realtime`),
 `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`, `M0_STREAM_KEEPALIVE_S` (keepalive
 on a stream's socket: idle seconds and probe interval, default 15; `0`
-off), `M0_APP_TICK_MS`, `M0_QOS` (macOS:
+off), `M0_SSE_FLUSH_MS` (the comment that follows an SSE event, default
+150 ms; `0` off), `M0_APP_TICK_MS`, `M0_QOS` (macOS:
 keeps the loop and its workers on performance cores; accepted and ignored
 elsewhere), `M0_MAX_KEEPALIVE_REQUESTS` (the keep-alive cap; 0 = never close
 for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and

@@ -1898,6 +1898,14 @@
       "evidence": "`test_zstd.mojo:test_library_opens_at_or_above_the_floor` (every PR) \u2014 the search path and the floor; `test_a_library_that_is_not_libzstd_is_named` and `test_absent_paths_are_each_named` the refusals, and the binding's own round trip, flush per push, output growth, window and memory bound beside them. Reverting the flush or the output loop fails them"
     },
     {
+      "id": "I47",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "An event the server writes on an SSE stream it holds is followed by one comment, `: flush`, `M0_SSE_FLUSH_MS` after it (150; 0 sends none), unless another event is written first, which moves it: a burst is followed by one comment, after its last event, and a stream whose events come closer together than the interval is sent none. Behind an HTTP/2 proxy that forwards an event in two pieces, Safari's `fetch` reader hands the page the first at once and holds the second until a third arrives, so a quiet stream's event waited for the next heartbeat; the comment is that third piece. It goes only where a heartbeat may (D13): never into a stream the application writes through the chunk channel, never into a WebSocket, and never inside an event still being sent, which it follows once the event lands. A compressed stream's goes through its context, and a stream whose head carries an event is owed one too. One timer serves the loop, set for the earliest comment owed and deleted when none is",
+      "status": "verified",
+      "evidence": "`Smoke test the comment after an SSE event` (every PR) \u2014 the counter demo at a 400 ms interval, its tick off and its heartbeat a minute away: the stream's opening, whose head carries a comment, and each of three events are followed by one `: flush`, no sooner than 200 ms after the request that caused it, then by nothing for 1.8 s; at 0, nothing follows. `test_slot_lifecycle.mojo:test_an_event_is_followed_by_one_flush_once_nothing_follows_it` drives the drain and the timer over epoll's timer semantics: a firing before the due sends nothing and sets the timer again, a second event moves the due, and a timer with nothing owed is deleted, not left expired. `test_a_flush_waits_for_its_event_and_goes_only_where_a_heartbeat_may` covers the event still being sent, the chunk channel, the WebSocket, the comment turned off and the close. `test_the_flush_interval_is_read_from_the_environment` covers the variable, and `test_a_compressed_stream_writes_every_byte_after_its_head_through_its_context` the context and a head that carries an event. Sixteen reverts of the rules were each caught by one of the four. Not proved here: that Safari behind Fly's proxy now reads each event whole, which only a browser behind that proxy can show ([the note](notes/a-comment-after-an-event.md))"
+    },
+    {
       "id": "I39",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",

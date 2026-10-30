@@ -26,7 +26,7 @@ from lightbug_http.websocket import is_ws_upgrade_response
 from lightbug_http.loop.state import (
     LoopState, STREAM_KEEPALIVE_PROBES, UNUSED, _arm_send_deadline,
     _await_write, _close_slot, _end_request, _keep_stream_close,
-    _record_response, _slot_of, _stream_idle, _ws_linger,
+    _owe_flush, _record_response, _slot_of, _stream_idle, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 from std.ffi import c_int
@@ -508,6 +508,11 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # The access log's method and path were recorded in `_process_request`,
     # before the request could leave this thread.
     st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    # A stream that opens with an event in its head's body is owed the
+    # comment that follows one, as an event the drain sends is
+    # (`_owe_flush`, SPEC I47).
+    if st.slot_sse[slot] and st.provision_pool.provisions[slot].response_body_len > 0:
+        _owe_flush(backend, st, slot)
 
     var response_len = len(st.slot_response[slot])
 

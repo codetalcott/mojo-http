@@ -11,6 +11,21 @@ default is listed under **Behaviour changes**
 
 ## [Unreleased]
 
+### Behaviour changes
+
+- **A comment follows each SSE event, on by default** (SPEC I47, #641).
+  150 ms after the server writes an event on a stream it holds, it sends
+  `: flush`, unless another event went first, so a burst is followed by
+  one comment and a stream at 7 Hz or faster is sent none. Behind an
+  HTTP/2 proxy that forwards an event in two pieces, Safari's `fetch`
+  reader holds the second piece until a third arrives. On a quiet stream
+  the third piece was the next heartbeat, so a Datastar patch could wait
+  the full 15 s. A parser skips a comment line, so no client sees an
+  event it did not before; one that reads the stream's bytes sees the
+  comment. `M0_SSE_FLUSH_MS` sets the delay and `0` turns it off. A
+  stream an application writes through the chunk channel gets none, as it
+  gets no heartbeat ([the note](docs/notes/a-comment-after-an-event.md)).
+
 ### Added
 
 - **Releases leave on a train** ([Releases](docs/RELEASES.md)). A minor

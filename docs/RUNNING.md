@@ -171,6 +171,13 @@ has the Flask version of the whole thing, and CI drives that exact file.
   (`M0_SSE_HEARTBEAT_MS`, default `15000`). Set the variable only to change
   the cadence, and keep it below the proxy's idle timeout: a proxy that
   closes at 60 s is fine with the default, and `25000` would be too.
+- **An SSE event is followed by a comment.** 150 ms after an event goes
+  out on a stream the server holds, it sends `: flush`, unless another
+  event went first, so a stream at 7 Hz or faster is sent none. Behind an HTTP/2 proxy that forwards an event in two pieces,
+  Safari's `fetch` reader holds the second piece until a third arrives,
+  and Datastar reads its streams through `fetch` (SPEC I47).
+  `M0_SSE_FLUSH_MS` sets the delay; `0` turns it off. A stream your ASGI
+  application writes itself gets none.
 - **A client that vanishes from a quiet stream is dropped in about a
   minute.** A stream's socket has TCP keepalive on: after 15 s with
   nothing received the kernel probes the client every 15 s, and closes the

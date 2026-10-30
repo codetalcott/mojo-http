@@ -28,7 +28,7 @@ that send it.
 """
 
 from std.ffi import c_int, external_call
-from std.os import remove
+from std.os import getenv, remove, setenv, unsetenv
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
@@ -53,9 +53,12 @@ from lightbug_http.websocket import (
     WS_OP_CLOSE, WS_OP_PING, WS_OP_TEXT, close_frame, encode_ws_frame_masked,
 )
 from lightbug_http.loop.state import (
+    FLUSH_AFTER_SEND,
     LoopState,
     SLOT_BUFFER_KEEP,
+    SSE_FLUSH_MS,
     TIMER_BODY,
+    TIMER_SSE_FLUSH,
     TIMER_SSE_HEARTBEAT,
     UNUSED,
     WS_CLOSE_LINGER_NS,
@@ -64,7 +67,9 @@ from lightbug_http.loop.state import (
     _await_write,
     _begin_request,
     _end_request,
+    _owe_flush,
     _record_response,
+    _sse_flush_from_env,
     _stop_reads,
     _stream_idle,
     _ws_linger,
@@ -1282,11 +1287,13 @@ def test_a_compressed_stream_writes_every_byte_after_its_head_through_its_contex
     """A stream whose response asked for zstd (`zstd_stream`) gets its
     context where `_finish_response` marks it a stream, and every byte
     after the head goes through it: the response's own body, a frame the
-    drain takes, a heartbeat, and the farewell, which closes the frame.
-    Written raw, any one of them is garbage inside the frame the client is
-    decoding. The head goes out plain, and the context goes with the slot.
+    drain takes, the flush that follows it, a heartbeat, and the farewell,
+    which closes the frame. Written raw, any one of them is garbage inside
+    the frame the client is decoding. The head goes out plain, and the
+    context goes with the slot. A head whose body is an event owes the
+    stream a flush, as the drain's event does.
 
-    covers: I45
+    covers: I45, I47
     """
     ignore_sigpipe()
     var app = QueuedEvents()
@@ -1306,8 +1313,10 @@ def test_a_compressed_stream_writes_every_byte_after_its_head_through_its_contex
     response.sse_streaming = True
     response.zstd_stream = True
     response.headers["content-encoding"] = "zstd"
+    st.sse_flush_ms = 50
     _finish_response(app, backend, st, slot, fd, response^)
     assert_true(Bool(st.slot_zstd[slot]), "a stream that asked for zstd has no context")
+    assert_true(st.slot_flush_due[slot] > 0, "a head whose body is an event owed no flush")
 
     var wire = List[UInt8]()
     _ = _read_available(peer, wire)
@@ -1324,6 +1333,12 @@ def test_a_compressed_stream_writes_every_byte_after_its_head_through_its_contex
     var frame = List[UInt8]()
     _ = _read_available(peer, frame)
     assert_equal(_decoded(d, Span(frame)), "event: tick\ndata: 1\n\n")
+
+    st.slot_flush_due[slot] = perf_counter_ns() - 1
+    _on_timer(app, backend, st, TIMER_SSE_FLUSH)
+    var flush = List[UInt8]()
+    _ = _read_available(peer, flush)
+    assert_equal(_decoded(d, Span(flush)), ": flush\n\n")
 
     _on_timer(app, backend, st, TIMER_SSE_HEARTBEAT + UInt(fd))
     var beat = List[UInt8]()
@@ -1364,6 +1379,197 @@ def test_a_compressed_streams_context_goes_with_its_slot() raises:
     st.slot_zstd[again] = Optional[ZstdCompressor](ZstdCompressor())
     _chunked_stream_ends(st, again)
     assert_false(Bool(st.slot_zstd[again]), "_chunked_stream_ends left the context")
+
+
+def test_an_event_is_followed_by_one_flush_once_nothing_follows_it() raises:
+    """An event the drain sends on an SSE stream owes the stream a comment,
+    `: flush`, `sse_flush_ms` later: the piece after the event that a
+    reader holding the event's last piece waits for (Safari's `fetch`
+    behind an HTTP/2 proxy). The loop's one timer is set as the first is
+    owed; a firing before the due sends nothing and sets it again; an event
+    written meanwhile moves the due, so a burst is followed by one comment,
+    after its last event; at the due the comment goes out, alone, and with
+    nothing more owed the timer is deleted rather than left expired, so a
+    firing after it sends nothing: one comment per event, not a cadence.
+
+    covers: I47
+    """
+    ignore_sigpipe()
+    var app = QueuedEvents()
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    st.sse_flush_ms = 50
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = _stream_slot(st, fd, False)
+    st.offload.streaming_hint = 1
+
+    app.queued = List[UInt8](String("event: tick\ndata: 1\n\n").as_bytes())
+    _drain_outboxes(app, backend, st)
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    assert_equal(String(unsafe_from_utf8=Span(got)), "event: tick\ndata: 1\n\n")
+    var first_due = st.slot_flush_due[slot]
+    assert_true(first_due > 0, "an event owed its stream no flush")
+    assert_true(TIMER_SSE_FLUSH in backend.timers, "the flush timer was not set")
+
+    # Early: nothing is due, nothing is sent, and the timer is set again.
+    backend.expire(TIMER_SSE_FLUSH)
+    _on_timer(app, backend, st, TIMER_SSE_FLUSH)
+    var early = List[UInt8]()
+    _ = _read_available(peer, early)
+    assert_equal(len(early), 0, "a flush went out before it was due")
+    assert_true(TIMER_SSE_FLUSH in backend.timers, "an early firing left no timer set")
+    assert_false(TIMER_SSE_FLUSH in backend.expired, "an early firing was left expired")
+    assert_equal(st.slot_flush_due[slot], first_due)
+
+    # A second event before the due is the piece the first waited for, and
+    # the one comment follows it instead.
+    app.queued = List[UInt8](String("event: tick\ndata: 2\n\n").as_bytes())
+    _drain_outboxes(app, backend, st)
+    got.clear()
+    _ = _read_available(peer, got)
+    assert_equal(String(unsafe_from_utf8=Span(got)), "event: tick\ndata: 2\n\n")
+    assert_true(st.slot_flush_due[slot] > first_due, "a later event left the due where it was")
+
+    # The due: the comment alone, and nothing left to set the timer for.
+    st.slot_flush_due[slot] = perf_counter_ns() - 1
+    backend.expire(TIMER_SSE_FLUSH)
+    _on_timer(app, backend, st, TIMER_SSE_FLUSH)
+    got.clear()
+    _ = _read_available(peer, got)
+    assert_equal(String(unsafe_from_utf8=Span(got)), ": flush\n\n")
+    assert_equal(st.slot_flush_due[slot], 0)
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind,
+        ConnectionState.STREAMING_SSE,
+    )
+    assert_false(TIMER_SSE_FLUSH in backend.timers, "a timer with nothing owed was left set")
+    assert_false(st.flush_armed)
+
+    backend.try_add_timer(TIMER_SSE_FLUSH, 50)
+    _on_timer(app, backend, st, TIMER_SSE_FLUSH)
+    var after = List[UInt8]()
+    _ = _read_available(peer, after)
+    assert_equal(len(after), 0, "a second comment followed one event")
+    assert_false(TIMER_SSE_FLUSH in backend.timers)
+
+    _close_slot(app, backend, st, slot, fd)
+    close(RawFileDescriptor(c_int(peer)))
+
+
+def test_a_flush_waits_for_its_event_and_goes_only_where_a_heartbeat_may() raises:
+    """The comment is the piece AFTER an event, so a stream still sending
+    one when its flush comes due is written nothing (`FLUSH_AFTER_SEND`),
+    and owed the flush afresh by `_stream_idle` as the event lands; a
+    reader that has stopped reading holds no timer meanwhile. It goes only
+    where a heartbeat may: an SSE stream its application writes through
+    the chunk channel, where an event may span two chunks, is owed none and
+    sent none, and so is a WebSocket, whose frames arrive whole; no stream
+    is owed one with the flush off; and a flush still owed goes with a
+    stream that closes.
+
+    covers: I47
+    """
+    ignore_sigpipe()
+    var pool = OffloadPool(8)
+    pool.enable_stream_channel()
+    var acks = make_stream_ack_pair()
+    var config = _config()
+    config.max_connections = 8
+    var app = Departures()
+    var backend = FakeBackend()
+    var st = LoopState(
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr(),
+    )
+    st.sse_flush_ms = 50
+
+    var sse = _stream_pair()
+    var slot = _stream_slot(st, sse[0], False)
+    _owe_flush(backend, st, slot)
+    st.provision_pool.provisions[slot].state = ConnectionState.responding()
+    st.slot_flush_due[slot] = perf_counter_ns() - 1
+    _on_timer(app, backend, st, TIMER_SSE_FLUSH)
+    var got = List[UInt8]()
+    _ = _read_available(sse[1], got)
+    assert_equal(len(got), 0, "a flush was written inside the event it follows")
+    assert_equal(st.slot_flush_due[slot], FLUSH_AFTER_SEND)
+    assert_false(
+        TIMER_SSE_FLUSH in backend.timers,
+        "a flush waiting on its event kept the timer set",
+    )
+    _stream_idle(backend, st, slot, sse[0])
+    assert_true(st.slot_flush_due[slot] > 0, "the landed event's flush was not owed again")
+    assert_true(TIMER_SSE_FLUSH in backend.timers, "the landed event's flush set no timer")
+    st.slot_flush_due[slot] = perf_counter_ns() - 1
+    _on_timer(app, backend, st, TIMER_SSE_FLUSH)
+    _ = _read_available(sse[1], got)
+    assert_equal(String(unsafe_from_utf8=Span(got)), ": flush\n\n")
+
+    var chan = _stream_pair()
+    var chan_slot = _stream_slot(st, chan[0], False)
+    pool.set_slot_ack_fd(chan_slot, acks[1])
+    _owe_flush(backend, st, chan_slot)
+    assert_equal(st.slot_flush_due[chan_slot], 0, "a chunk-channel stream was owed a flush")
+    var ws = _stream_pair()
+    var ws_slot = _stream_slot(st, ws[0], True)
+    _owe_flush(backend, st, ws_slot)
+    assert_equal(st.slot_flush_due[ws_slot], 0, "a WebSocket was owed a flush")
+    # Stamped all the same, neither is written anything.
+    st.slot_flush_due[chan_slot] = perf_counter_ns() - 1
+    st.slot_flush_due[ws_slot] = perf_counter_ns() - 1
+    _on_timer(app, backend, st, TIMER_SSE_FLUSH)
+    var chan_got = List[UInt8]()
+    _ = _read_available(chan[1], chan_got)
+    assert_equal(len(chan_got), 0, "a comment went into a chunk-channel stream")
+    var ws_got = List[UInt8]()
+    _ = _read_available(ws[1], ws_got)
+    assert_equal(len(ws_got), 0, "a comment went into a WebSocket")
+
+    st.sse_flush_ms = 0
+    _owe_flush(backend, st, slot)
+    assert_equal(st.slot_flush_due[slot], 0, "a flush was owed with the flush off")
+    st.sse_flush_ms = 50
+
+    _owe_flush(backend, st, slot)
+    assert_true(st.slot_flush_due[slot] > 0)
+    _close_slot(app, backend, st, slot, sse[0])
+    assert_equal(st.slot_flush_due[slot], 0, "a closed stream left its flush owed")
+    close(RawFileDescriptor(c_int(sse[1])))
+    _close_slot(app, backend, st, chan_slot, chan[0])
+    close(RawFileDescriptor(c_int(chan[1])))
+    _close_slot(app, backend, st, ws_slot, ws[0])
+    close(RawFileDescriptor(c_int(ws[1])))
+    close(RawFileDescriptor(c_int(acks[0])))
+    close(RawFileDescriptor(c_int(acks[1])))
+    # The loop holds the pool by its address, which keeps nothing alive.
+    _ = pool
+
+
+def test_the_flush_interval_is_read_from_the_environment() raises:
+    """`M0_SSE_FLUSH_MS`: milliseconds, 0 for off, and the default for
+    anything else, read by the loop as it is built. The variable is put
+    back as it was found.
+
+    covers: I47
+    """
+    var was = getenv("M0_SSE_FLUSH_MS", "")
+    _ = unsetenv("M0_SSE_FLUSH_MS")
+    assert_equal(_sse_flush_from_env(), SSE_FLUSH_MS)
+    _ = setenv("M0_SSE_FLUSH_MS", "0")
+    assert_equal(_sse_flush_from_env(), 0)
+    assert_equal(_loop(_config()).sse_flush_ms, 0, "the loop did not read the variable")
+    _ = setenv("M0_SSE_FLUSH_MS", "400")
+    assert_equal(_sse_flush_from_env(), 400)
+    _ = setenv("M0_SSE_FLUSH_MS", "-1")
+    assert_equal(_sse_flush_from_env(), SSE_FLUSH_MS)
+    _ = setenv("M0_SSE_FLUSH_MS", "soon")
+    assert_equal(_sse_flush_from_env(), SSE_FLUSH_MS)
+    if was.byte_length() > 0:
+        _ = setenv("M0_SSE_FLUSH_MS", was)
+    else:
+        _ = unsetenv("M0_SSE_FLUSH_MS")
 
 
 def test_admission_takes_what_the_pool_has_room_for_and_maps_any_descriptor() raises:

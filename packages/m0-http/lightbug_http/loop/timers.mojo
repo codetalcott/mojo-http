@@ -2,7 +2,9 @@
 
 A timer's ident says whose it is (`TIMER_*`, in `loop/state.mojo`): the
 application's tick, a stream's heartbeat (`_heartbeat`, in
-`loop/streams.mojo`) or a request body that stopped arriving. The loop's
+`loop/streams.mojo`), the flush that follows SSE events (`_flush_streams`,
+there too, one timer for the loop) or a request body that stopped
+arriving. The loop's
 other clocks -- the idle, send, linger and header deadlines -- are stamps
 in `LoopState` (`slot_idle_deadline`, `slot_header_start`) that
 `_sweep_deadlines` checks once a second, rather than a timer per request.
@@ -15,19 +17,20 @@ from lightbug_http.service import HTTPService
 from std.time import perf_counter_ns
 
 from lightbug_http.loop.state import (
-    LoopState, TIMER_APP_TICK, TIMER_BODY, TIMER_IDLE, TIMER_SSE_HEARTBEAT,
-    UNUSED, _close_slot, _notice_once, _slot_of,
+    LoopState, TIMER_APP_TICK, TIMER_BODY, TIMER_IDLE, TIMER_SSE_FLUSH,
+    TIMER_SSE_HEARTBEAT, UNUSED, _close_slot, _notice_once, _slot_of,
 )
 from lightbug_http.loop.response import _send_error_to_fd, _take_owed_interim
-from lightbug_http.loop.streams import _heartbeat
+from lightbug_http.loop.streams import _flush_streams, _heartbeat
 
 
 def _on_timer[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, timer_ident: UInt,
 ):
-    """A timer fired: the application tick, a stream's heartbeat, or a
-    request's body timer. Nothing arms a timer of any other kind: idle,
-    send and header deadlines are swept (`_sweep_deadlines`)."""
+    """A timer fired: the application tick, a stream's heartbeat, the
+    loop's flush timer, or a request's body timer. Nothing arms a timer of
+    any other kind: idle, send and header deadlines are swept
+    (`_sweep_deadlines`)."""
     # Application tick: hand the handler its scheduled wakeup.
     if timer_ident >= TIMER_APP_TICK:
         # Re-arm FIRST — one-shot on both backends, and on epoll
@@ -47,6 +50,13 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
     # discover dead clients that never sent a FIN).
     if timer_ident >= TIMER_SSE_HEARTBEAT:
         _heartbeat(handler, backend, st, timer_ident)
+        return
+
+    # The comment that follows SSE events: one timer for the loop, below
+    # the body timers' range. The check under this would pass it over, and
+    # on epoll an expired timer passed over is reported by every wait.
+    if timer_ident == TIMER_SSE_FLUSH:
+        _flush_streams(handler, backend, st)
         return
 
     # A body timer, the one kind left. Idle deadlines are swept, never

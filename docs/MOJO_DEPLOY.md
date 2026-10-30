@@ -105,6 +105,11 @@ fly scale count 1 -a NAME
   stops the machine, and sets a 25-second SSE heartbeat: a held stream is
   one connection for its whole life, and a quiet one needs traffic to stay
   open through the proxy.
+- **Safari behind Fly's proxy.** The proxy speaks HTTP/2 to the browser
+  and can forward an event in two pieces, and Safari's `fetch` reader holds
+  the second until something follows it. The server sends a comment
+  shortly after each event for that (`M0_SSE_FLUSH_MS`, SPEC I47), so a
+  quiet stream needs no faster heartbeat.
 - **A volume for the database.** `fly volumes create data --size 1 -a NAME
   -r iad`, then the `[mounts]` block the scaffold's `fly.toml` carries
   commented out: it names the volume, and a deploy naming one that does

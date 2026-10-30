@@ -35,8 +35,11 @@ from m0_http.log import LogClock, log_access
 
 # Timer ident offsets to distinguish timeout types from fd-based events.
 # fd values are small (typically < 65536), so these offsets avoid collision.
-# 0x100000 was the header timer's: header deadlines are swept
-# (`_sweep_deadlines`), and nothing arms one.
+# 0x100000 was the header timer's, per descriptor: header deadlines are
+# swept (`_sweep_deadlines`), and nothing arms one. The range is the flush
+# timer's now, and the flush timer is the loop's, not a descriptor's: one
+# ident, `TIMER_SSE_FLUSH` itself.
+comptime TIMER_SSE_FLUSH: UInt = 0x100000
 comptime TIMER_BODY: UInt = 0x200000
 comptime TIMER_IDLE: UInt = 0x300000
 comptime TIMER_SSE_HEARTBEAT: UInt = 0x400000
@@ -71,6 +74,24 @@ comptime ACCEPT_BATCH = 16
 # seconds; 0 sets nothing, as the server did before.
 comptime STREAM_KEEPALIVE_S = 15
 comptime STREAM_KEEPALIVE_PROBES = 3
+# The comment that follows an event on an SSE stream, this long after the
+# event was written, unless something else was written there first (SPEC
+# I47; docs/notes/a-comment-after-an-event.md). Safari's `fetch` reader,
+# behind an HTTP/2 proxy that forwards an event in two pieces, hands the
+# page the first piece at once and holds the second until a third arrives:
+# on a quiet stream the event waited for the next heartbeat. The comment is
+# that third piece, one per event rather than a heartbeat four times a
+# second on every stream.
+#
+# The interval bounds two things at once. Safari holds an event's tail no
+# longer than it, and a stream gets a comment only when its next event is
+# further off than it, so a stream faster than the interval pays nothing:
+# its next event is the piece. 150 ms exempts every stream at 7 Hz and
+# above (blobs' 10 Hz frames among them, which at 50 ms each took a
+# comment, +8% of Chromium's main-thread time) and stays inside what reads
+# as immediate after a click. `M0_SSE_FLUSH_MS` overrides it; 0 sends none.
+comptime SSE_FLUSH_MS = 150
+comptime SSE_FLUSH_COMMENT = ": flush\n\n"
 # The most of a grown buffer a slot keeps once its connection closes. A
 # slot's receive and encode buffers start at one read (4 KiB) and grow to
 # the largest request or response they have held; `_close_slot` hands one
@@ -110,6 +131,21 @@ def _stream_keepalive_from_env() -> Int:
     except:
         pass
     return STREAM_KEEPALIVE_S
+
+
+def _sse_flush_from_env() -> Int:
+    """`M0_SSE_FLUSH_MS`, else `SSE_FLUSH_MS`. 0 is off; anything
+    unreadable or negative is the default."""
+    var raw = getenv("M0_SSE_FLUSH_MS", "")
+    if raw.byte_length() == 0:
+        return SSE_FLUSH_MS
+    try:
+        var n = Int(raw)
+        if n >= 0:
+            return n
+    except:
+        pass
+    return SSE_FLUSH_MS
 
 
 struct LoopState(Movable):
@@ -161,6 +197,17 @@ struct LoopState(Movable):
     drain's, the heartbeat's and the farewell's. Freed by `_close_slot` and
     `_chunked_stream_ends`, the two owners of the stream flag's reset, so
     a reused slot never writes into a previous stream's context."""
+    var slot_flush_due: List[Int]
+    """When the slot's flush comment is due (`perf_counter_ns`; 0 for
+    none): stamped by `_owe_flush` as an event goes out on an SSE stream,
+    moved by every event after it, cleared by the comment and by
+    `_close_slot`."""
+    var sse_flush_ms: Int
+    """How long after an event its flush comment follows
+    (`M0_SSE_FLUSH_MS`); 0 sends none."""
+    var flush_armed: Bool
+    """`TIMER_SSE_FLUSH` is set, for the earliest flush owed: a slot
+    stamped while it is set is due no sooner, so stamping arms nothing."""
     var zstd_refused: Bool
     """A compressed stream was asked for and libzstd could not give one:
     those streams go out uncompressed, and the reason is printed once per
@@ -256,6 +303,7 @@ struct LoopState(Movable):
         var slot_ws_state = List[WSState](capacity=max_conns)
         var slot_close_after_stream = List[Bool](capacity=max_conns)
         var slot_zstd = List[Optional[ZstdCompressor]](capacity=max_conns)
+        var slot_flush_due = List[Int](length=max_conns, fill=0)
 
         for _ in range(max_conns):
             slot_fds.append(UNUSED)
@@ -299,6 +347,9 @@ struct LoopState(Movable):
         self.slot_ws_state = slot_ws_state^
         self.slot_close_after_stream = slot_close_after_stream^
         self.slot_zstd = slot_zstd^
+        self.slot_flush_due = slot_flush_due^
+        self.sse_flush_ms = _sse_flush_from_env()
+        self.flush_armed = False
         self.zstd_refused = False
         self.fd_to_slot = fd_to_slot^
         self.active_count = 0
@@ -571,6 +622,11 @@ def _stream_idle[B: EventLoopBackend](
         st.provision_pool.provisions[slot].state = ConnectionState.streaming_sse()
         st.slot_idle_deadline[slot] = 0
         _ = _arm_reads(backend, st, slot, fd_val)
+        # A flush that came due while its event was still going out
+        # follows it now that it has gone (`_flush_streams`).
+        if st.slot_flush_due[slot] == FLUSH_AFTER_SEND:
+            st.slot_flush_due[slot] = 0
+            _owe_flush(backend, st, slot)
     # The heartbeat timer (the configured interval, re-armed by each beat).
     if st.config.sse_heartbeat_ms > 0:
         backend.try_add_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT, st.config.sse_heartbeat_ms)
@@ -778,6 +834,42 @@ def _takes_an_out_of_band_frame(st: LoopState, slot: Int) -> Bool:
     return False
 
 
+comptime FLUSH_AFTER_SEND = -1
+"""A slot's flush due once its event has gone: it came due while the event
+was still waiting on writability, and `_stream_idle` stamps it afresh when
+the event lands."""
+
+
+def _owe_flush[B: EventLoopBackend](
+    mut backend: B, mut st: LoopState, slot: Int,
+):
+    """An event the application wrote is going out on an SSE stream: the
+    flush comment is due `sse_flush_ms` from now (SPEC I47).
+
+    One comment for the LAST event of a burst: an event written while the
+    one before it is still owed its comment moves the due, because each
+    event is the further piece the one before it waited for. Only a stream
+    that takes a frame its application did not write (`_takes_an_out_of_band_frame`)
+    -- not one written through the chunk channel, where an event may span
+    two chunks -- and never a WebSocket, whose frames arrive whole.
+
+    The timer is the loop's, set once for the earliest flush owed
+    (`flush_armed`): every stamp is the same interval from its own moment,
+    so none is due before the one the timer is set for, and a broadcast to
+    a thousand streams sets it once.
+    """
+    if (
+        st.sse_flush_ms <= 0
+        or not st.slot_sse[slot]
+        or st.offload.slot_channel_stream(slot)
+    ):
+        return
+    st.slot_flush_due[slot] = perf_counter_ns() + st.sse_flush_ms * 1_000_000
+    if not st.flush_armed:
+        backend.try_add_timer(TIMER_SSE_FLUSH, st.sse_flush_ms)
+        st.flush_armed = True
+
+
 def _farewell_streams[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ):
@@ -877,6 +969,9 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
     backend.try_delete_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT)
     st.slot_sse[slot] = False
     st.slot_zstd[slot] = None
+    # A flush still owed goes with its stream; the loop's timer, which may
+    # be set for it, finds nothing due and is deleted when it fires.
+    st.slot_flush_due[slot] = 0
     st.slot_ws[slot] = False
     st.slot_ws_state[slot].reset()
     # The answer still owed goes with the connection. Left, a client that
