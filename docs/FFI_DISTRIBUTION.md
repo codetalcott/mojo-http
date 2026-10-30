@@ -149,7 +149,12 @@ Apache-2.0 WITH LLVM-exception`: a `LicenseRef-` for MAX would flag every
 install of m0serve for review on a reading nothing confirms, and the
 notice says what the expression cannot. A user who distributes an `m0
 build --release` artifact or an `m0 image` carries the same runtime and the
-same condition; `m0` does not yet put the copy in either. Modular shipping
+same condition, and from m0 0.14.0 both carry the texts: `--release` writes
+`dist/licenses/`, the two MIT texts for the framework and the fork compiled
+into the binary, both runtime texts, and a `NOTICE.txt` written for an
+application's artifact (`licenses/NOTICE.m0-release.txt`, which also names
+MAX's closed libraries for a binary that links them), and the image copies
+`dist/` whole (SPEC N56). Modular shipping
 a licence file that identifies the runtime's components in the
 `mojo-compiler` wheel would settle the question under section 1.5.
 

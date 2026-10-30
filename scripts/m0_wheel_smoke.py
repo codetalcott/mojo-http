@@ -37,7 +37,8 @@ The phases, each of which names the rule it holds (SPEC N23-N26):
   own prefix EVERY real command above ran with the stub `mojo` FIRST on
              PATH; the marker must not exist
   release    m0 build --release: dist/server carries no trace of the build
-             venv and answers --doctor from elsewhere with no environment
+             venv and answers --doctor from elsewhere with no environment,
+             and dist/licenses/ holds the texts the artifact must carry
 
 The refusal sentences are asserted whole. A sentence is the product here:
 it is what stands between a user and the raw compiler message.
@@ -71,6 +72,18 @@ TREES = {
     "packages/m0-postgres/src": "m0_postgres",
 }
 TOOLS = ("relocate.py", "bundle_artifact.py", "binfmt.py")
+# The hook's LICENSES and RELEASE_LICENSES, spelled again: tree path -> name
+# in m0/licenses/ and m0/_release/, and together in a release build's
+# dist/licenses/.
+LICENSES = {
+    "LICENSE": "LICENSE.mojo-http.txt",
+    "licenses/LICENSE.lightbug_http.txt": "LICENSE.lightbug_http.txt",
+}
+RELEASE_LICENSES = {
+    "licenses/LICENSE.mojo-runtime.txt": "LICENSE.mojo-runtime.txt",
+    "licenses/LICENSE.max.txt": "LICENSE.max.txt",
+    "licenses/NOTICE.m0-release.txt": "NOTICE.txt",
+}
 
 # A test the smoke's project runs through `m0 test`: the storage tree is in
 # the wheel AND its library opens at run time under `mojo run`, which is the
@@ -169,6 +182,14 @@ def check_wheel(whl, pin, max_pin):
                     "licenses/LICENSE.lightbug_http.txt")):
         if n not in names or z.read(n) != (ROOT / src).read_bytes():
             fail("%s is missing or differs from %s" % (n, src))
+    # What a release build puts beside an application's binary: the second
+    # spelling of the hook's RELEASE_LICENSES, which is the guard.
+    shipped = {n for n in names if n.startswith("m0/_release/")}
+    if shipped != {"m0/_release/" + t for t in RELEASE_LICENSES.values()}:
+        fail("m0/_release/ holds %r" % sorted(shipped))
+    for src, t in RELEASE_LICENSES.items():
+        if z.read("m0/_release/" + t) != (ROOT / src).read_bytes():
+            fail("m0/_release/%s is not %s byte for byte" % (t, src))
 
     junk = [n for n in names if n.endswith((".mojoc", ".pyc")) or "__pycache__" in n]
     if junk:
@@ -673,8 +694,16 @@ def run(work, whl, pin, max_pin, m0v, port, servers):
     shipped = dist / "server"
     if not shipped.is_file() or (proj / ".dist.next").exists() or (dist / ".build").exists():
         fail("dist/ is %r" % sorted(p.name for p in dist.iterdir()))
-    if len(list(dist.iterdir())) < 2:
+    if not [p for p in dist.iterdir() if p.name not in ("server", "licenses")]:
         fail("no Mojo runtime was bundled beside dist/server")
+    # The licences the artifact must carry, as the tree has them (SPEC N56).
+    every = {**LICENSES, **RELEASE_LICENSES}
+    got = sorted(p.name for p in (dist / "licenses").iterdir()) if (dist / "licenses").is_dir() else []
+    if got != sorted(every.values()):
+        fail("dist/licenses/ is %r, want %r" % (got, sorted(every.values())))
+    for src, t in every.items():
+        if (dist / "licenses" / t).read_bytes() != (ROOT / src).read_bytes():
+            fail("dist/licenses/%s is not %s byte for byte" % (t, src))
     # The SEARCH PATH, not the bytes: a binary built from source carries its
     # source files' paths for error locations, which load nothing.
     if sys.platform == "darwin":

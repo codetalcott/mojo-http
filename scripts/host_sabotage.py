@@ -272,7 +272,10 @@ SABOTAGES = [
         "the host never asks how many workers the app serves",
         SMOKE,
         HOST,
-        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
+        "    var refusal = host_refusal(\n"
+        "        config, H.max_workers(), H.max_threads(),\n"
+        "        pool_state_routes=_pool_state_routes[H](),\n"
+        "    )\n",
         "    var refusal = host_refusal(config)\n",
     ),
     (
@@ -286,9 +289,15 @@ SABOTAGES = [
         "the refusal comes after the bind",
         SMOKE,
         HOST,
-        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
+        "    var refusal = host_refusal(\n"
+        "        config, H.max_workers(), H.max_threads(),\n"
+        "        pool_state_routes=_pool_state_routes[H](),\n"
+        "    )\n",
         "    var early_listener = ListenConfig().listen(config.address())\n"
-        "    var refusal = host_refusal(config, H.max_workers(), H.max_threads())\n",
+        "    var refusal = host_refusal(\n"
+        "        config, H.max_workers(), H.max_threads(),\n"
+        "        pool_state_routes=_pool_state_routes[H](),\n"
+        "    )\n",
     ),
     # --- round 4: the id space and a raising make (SPEC E25) -------------------
     # `_prefork_pieces` makes the page for both paths, so a worker REPLACES
@@ -561,7 +570,8 @@ SABOTAGES = [
         DOCTOR,
         HOST,
         "    var checks = host_checks(\n"
-        "        config, H.max_workers(), H.max_threads(), parallel_runtime\n"
+        "        config, H.max_workers(), H.max_threads(), parallel_runtime,\n"
+        "        _pool_state_routes[H](),\n"
         "    )\n",
         "    var checks = host_checks(config, parallel_runtime=parallel_runtime)\n",
     ),

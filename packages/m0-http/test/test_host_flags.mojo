@@ -366,7 +366,7 @@ def test_the_checks_are_whole_and_in_the_order_serve_refuses() raises:
     covers: E31
     """
     var clean = host_checks(AppConfig())
-    assert_equal(len(clean), 10)
+    assert_equal(len(clean), 11)
     for i in range(len(clean)):
         assert_true(clean[i].ok, clean[i].name + " failed on a default config")
         assert_equal(clean[i].fix, "")
@@ -374,10 +374,11 @@ def test_the_checks_are_whole_and_in_the_order_serve_refuses() raises:
     assert_equal(clean[1].name, "address")
     assert_equal(clean[2].name, "workers-count")
     assert_equal(clean[5].name, "workers-vs-threads")
+    assert_equal(clean[7].name, "pool-vs-application")
     assert_equal(clean[len(clean) - 1].name, "workers-vs-parallel-runtime")
     # Two failures: too many workers for the app, and both modes at once.
     var two = host_checks(_parse("--workers", "2", "--threads", "2").config, 1)
-    assert_equal(len(two), 10)
+    assert_equal(len(two), 11)
     assert_false(two[3].ok)
     assert_false(two[5].ok)
     var first = host_refusal(_parse("--workers", "2", "--threads", "2").config, 1)

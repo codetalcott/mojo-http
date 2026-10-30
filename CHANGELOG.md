@@ -36,6 +36,15 @@ default is listed under **Behaviour changes**
   `EventSource` does not reconnect after a `503`, so a page that should
   keep trying reconnects on `error` itself
   ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
+- **The Mojo host refuses a pool view on one-process state** (SPEC E42).
+  Under `M0_BLOCKING_THREADS`, an application whose `max_threads()` is 1
+  (its state in one handler's memory, as `max_workers() -> 1` says) and
+  whose table leaves a view given the state off the loop exits 78, naming
+  the route: each pool thread builds a state of its own, so the m0
+  scaffold's list with one `on_loop=True` forgotten lost items to another
+  thread's copy, silently. Every template keeps its state's views on the
+  loop and is served as before; `on_loop=True`, a shared state with a
+  larger `max_threads()`, or no pool is the way out.
 - **`x-thread` is off by default** (SPEC F26). Every response from a
   handler-pool thread named the thread, which told every client the
   server's thread layout. `M0_THREAD_HEADER=1` puts it back, for matching
@@ -120,6 +129,13 @@ default is listed under **Behaviour changes**
 
 ### Fixed
 
+- **An m0 release artifact carries its licences** (SPEC N56). `m0 build
+  --release` put the Mojo runtime in `dist/` beside a binary that compiles
+  in the MIT-licensed framework and fork, and no licence text with either.
+  `dist/licenses/` now holds both MIT texts, the runtime's Apache 2.0 with
+  LLVM Exceptions, the MAX License copy m0serve has shipped since 1.16.0,
+  and a `NOTICE.txt` saying which covers what; `m0 image` copies it in
+  with the rest of `dist/`.
 - **The server raises its own open-file limit** to what its connections
   need, before it binds (SPEC C21). The soft limit, not the connection
   count, was the real ceiling. Under launchd's default of 256, m0serve

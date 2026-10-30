@@ -21,8 +21,9 @@ Two rules here are load-bearing:
   line (exit 2).
 
 `--release` is the image's recipe, from the wheel: compile for the baseline,
-strip the build venv out of the binary's search path (`relocate.py`), and
-copy the Mojo runtime beside it (`bundle_artifact.py`), so `dist/` is what a
+strip the build venv out of the binary's search path (`relocate.py`), copy
+the Mojo runtime beside it (`bundle_artifact.py`) and the licence texts that
+must travel with it into `dist/licenses/` (SPEC N56), so `dist/` is what a
 runtime stage copies and nothing else. The two tools ride in the wheel
 unedited and run as subprocesses; `bundle_artifact.py` finds the runtime
 under `./.venv`, which is where `uv run m0 build` has it.
@@ -133,6 +134,14 @@ def _release_locked(project, target_cpu):
         if _tool(project, "bundle_artifact.py", "--layout", "flat", str(rel),
                  str(stage.relative_to(project))) != 0:
             return 1
+        # The framework and the fork are compiled in and the runtime is
+        # copied beside: each one's licence goes with them, or redistributing
+        # `dist/` breaks its terms (NOTICE.txt there says which is which).
+        licences = stage / "licenses"
+        licences.mkdir()
+        for where in paths.release_licenses_dirs():
+            for text in sorted(where.iterdir()):
+                shutil.copy2(text, licences / text.name)
         shutil.rmtree(work)
         shutil.rmtree(final, ignore_errors=True)
         os.replace(stage, final)

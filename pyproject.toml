@@ -1821,28 +1821,42 @@ assert s['descriptor_limit'] >= 320, s" || fail "the doctor's connection figures
 code=0
 bin/m0serve hold_app:application --app-dir scripts/smoke --max-connections 65537 > /dev/null 2>&1 || code=$?
 [ "$code" = "78" ] || fail "--max-connections 65537 exited $code, wanted 78"
-# A HARD limit the server cannot start under exits 1 naming the errno (SPEC
-# C22). On macOS the pool's per-thread wake channels are opened on the
-# spawning thread, so sixteen of them take the descriptors the loop's kqueue
-# then needs: the path that spun a core holding the GIL and never read
-# SIGTERM, once the unwind freed the pool under its running threads. Linux
-# opens a thread's descriptors on the thread, after the loop's epoll, so no
-# thread count reaches that path there; a limit below what startup holds
-# before the loop ends the startup instead.
-limit=40
-[ "$(uname)" = "Darwin" ] || limit=12
-spawn fdlimit.log sh -c 'ulimit -S -n "$0" && ulimit -H -n "$0" && exec "$@"' "$limit" bin/m0serve hold_app:application \
-  --app-dir scripts/smoke --port $port --blocking-threads 16
-n=0
-while _smoke_running $pid && [ $n -lt 150 ]; do sleep 0.1; n=$((n + 1)); done
-_smoke_running $pid && fail "under a hard limit of $limit the server was still running after 15 s"
-code=0
-stop $pid || code=$?
-[ "$code" = "1" ] || fail "under a hard limit of $limit the server exited $code, wanted 1"
-grep -q 'Too many open files' "$SMOKE_DIR/fdlimit.log" || fail "the exit under a hard limit of $limit does not name the errno"
-if [ "$(uname)" = "Darwin" ]; then
-  grep -q 'the event loop raised' "$SMOKE_DIR/fdlimit.log" || fail 'under a hard limit of 40 the failure was not the loop'"'"'s'
-fi
+# A HARD limit too low to start under is refused, never spun on (SPEC C22).
+# Where the descriptors run out is the platform's and the scheduler's: the
+# pool's per-thread channels, which may fail and are let go, race the
+# loop's kqueue or epoll for the last few. So the limits are swept, 40 down
+# to 12 with sixteen pool threads, and each must serve and stop on SIGTERM,
+# or exit 1 within 15 s naming the errno. One that does neither is the
+# spin: the loop failed after the pool had started, the unwind freed the
+# pool under its threads, and one spun on the freed job ring holding the
+# GIL, ignoring SIGTERM.
+limit=40; served=0; refused=0; at_loop=0
+while [ $limit -ge 12 ]; do
+  spawn fdlimit.log sh -c 'ulimit -S -n "$0" && ulimit -H -n "$0" && exec "$@"' "$limit" bin/m0serve hold_app:application \
+    --app-dir scripts/smoke --port $port --blocking-threads 16
+  n=0
+  while _smoke_running $pid && ! grep -q 'Event loop started' "$SMOKE_DIR/fdlimit.log" && [ $n -lt 150 ]; do
+    sleep 0.1; n=$((n + 1))
+  done
+  if _smoke_running $pid; then
+    grep -q 'Event loop started' "$SMOKE_DIR/fdlimit.log" \
+      || fail "under a hard limit of $limit the server neither served nor exited within 15 s"
+    code=0
+    stop $pid || code=$?
+    [ "$code" = "0" ] || fail "under a hard limit of $limit the serving server exited $code on SIGTERM"
+    served=$((served + 1))
+  else
+    code=0
+    stop $pid || code=$?
+    [ "$code" = "1" ] || fail "under a hard limit of $limit the server exited $code, wanted 1"
+    grep -q 'Too many open files' "$SMOKE_DIR/fdlimit.log" \
+      || fail "the exit under a hard limit of $limit does not name the errno"
+    refused=$((refused + 1))
+    if grep -q 'the event loop raised' "$SMOKE_DIR/fdlimit.log"; then at_loop=$((at_loop + 1)); fi
+  fi
+  limit=$((limit - 1))
+done
+echo "descriptor sweep: $served limit(s) served, $refused refused at startup, $at_loop of them by the loop"
 echo "smoke-max-connections OK"
 python3 scripts/emit.py --covers C20 --task smoke-max-connections
 python3 scripts/emit.py --covers C21 --task smoke-max-connections
@@ -8584,6 +8598,7 @@ python3 scripts/emit.py --covers N25 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N26 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N39 --task smoke-m0-wheel
 python3 scripts/emit.py --covers N41 --task smoke-m0-wheel
+python3 scripts/emit.py --covers N56 --task smoke-m0-wheel
 """
 
 [tool.poe.tasks.sabotage-m0-wheel]

@@ -269,6 +269,11 @@ struct Views[S: Movable]:
 
     var _not_found: Optional[Self.ReadView]
 
+    var _pool_routes: List[String]
+    """`METHOD /pattern` of every `add_read`/`add_write` route WITHOUT
+    `on_loop`: the views a pool thread answers with a state of its own
+    (`pool_state_routes`)."""
+
     var mount: Mount
     """Where this table is mounted; every pattern registers under it."""
 
@@ -284,6 +289,7 @@ struct Views[S: Movable]:
         self._loop_kind = List[UInt8]()
         self._loop_slot = List[Int32]()
         self._not_found = None
+        self._pool_routes = List[String]()
 
     def add_read(
         mut self,
@@ -303,6 +309,8 @@ struct Views[S: Movable]:
         self._slot.append(Int32(len(self._reads)))
         if on_loop:
             self._place_on_loop(method, pattern, LOOP_READ, len(self._reads))
+        else:
+            self._pool_routes.append(method + " " + self.mount.join(pattern))
         self._reads.append(view)
 
     def add_write(
@@ -324,6 +332,8 @@ struct Views[S: Movable]:
         self._slot.append(Int32(len(self._writes)))
         if on_loop:
             self._place_on_loop(method, pattern, LOOP_WRITE, len(self._writes))
+        else:
+            self._pool_routes.append(method + " " + self.mount.join(pattern))
         self._writes.append(view)
 
     def resource(
@@ -384,6 +394,20 @@ struct Views[S: Movable]:
         self._loop_router.add(method, self.mount.join(pattern), len(self._loop_kind))
         self._loop_kind.append(kind)
         self._loop_slot.append(Int32(slot))
+
+    def pool_state_routes(self) -> List[String]:
+        """The routes whose views get the state and are answered by
+        `dispatch`, which under a pool runs on a pool thread: every
+        `add_read` and `add_write` without `on_loop=True`, `resource`'s
+        included, as `METHOD /pattern` in registration order.
+
+        Under `--blocking-threads` each pool thread holds a state of its
+        own, so where the state lives in the handler's memory these views
+        answer from a copy no other thread sees. The host refuses that
+        configuration from this list (`ViewsApp.pool_state_routes`, SPEC
+        E42); a stateless `add_loop` route is never on it.
+        """
+        return self._pool_routes.copy()
 
     def add_loop(mut self, method: String, pattern: String, view: Self.LoopView):
         """Register a view answered on the loop, without becoming a job.
