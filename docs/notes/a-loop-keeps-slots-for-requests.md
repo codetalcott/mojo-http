@@ -82,11 +82,35 @@ begin is one comparison and a counter. Slots are provisioned lazily
 as connections arrive. The per-slot tables and the once-a-second sweep grow
 with it.
 
-## Found beside it, not fixed here
+## Found beside it, and fixed after it (SPEC C22)
 
-At a HARD limit of 40, m0serve 1.16.0 and this change alike spin a core
-before the loop starts, print nothing past the banner, and do not stop on
-SIGTERM (SIGKILL ends them). The server needs more descriptors than that to
-build its pool, and something on that path retries instead of failing. A hard limit that low is not a real
-configuration. It is recorded so that the next server to meet one does
-not read it as a new bug.
+At a HARD limit of 40, m0serve 1.16.0 and this change alike spun a core
+before the loop started, printed nothing past the banner, and did not stop
+on SIGTERM (SIGKILL ended them). A started server holds about 14
+descriptors and 4 per pool thread before its first connection: 22 with two
+threads, 46 with the auto eight. At 40 the pool was up when the loop's
+`kqueue` failed with EMFILE, and `_serve_offloaded` raised past a thread
+state it had already given up. The unwind freed the `OffloadPool` under its
+threads; one of them, the first to take the GIL, read the freed job ring,
+whose sequence numbers a free had scrambled, and spun in the ring's retry
+holding the GIL. Main's teardown then waited in `PyGILState_Ensure` for a
+GIL nobody would release, and SIGTERM's byte sat in a pipe nothing read.
+`sample` showed both: main in `List[WSGIApp].__deinit__` waiting on
+`take_gil`, one pool thread at 100 % in `_pool_serve`, the other seven
+queued for the GIL.
+
+A loop that raises now exits 1 at once through `_fail`, which is `_exit`
+and unwinds nothing, naming the call and its errno: `m0serve: the event
+loop raised: kqueue: Too many open files (errno 24)`. The backend's
+construction moved inside the `try`, since it is what opens the kqueue; the
+first version of the fix wrapped the loop alone, and still spun. `--threads`
+loops do the same, and the inline path too, for one rule. The Mojo host
+needed nothing: its pool takes no GIL, so its unwind finished and it
+already exited 1. `smoke-max-connections` runs sixteen pool threads under a
+hard limit of 40 and wants exit 1 within 15 s; with the backend moved back
+above the `try` it was still running at 15 s.
+
+The limit's notice had a wrong number of its own. It said "a loop will
+hold about 0" at 40, from `limit - 256`, though 256 is the headroom asked
+for, not what is used, and that server served. The line now says that a
+connection past the limit is refused at accept, and no figure.

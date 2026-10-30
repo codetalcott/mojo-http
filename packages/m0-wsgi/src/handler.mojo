@@ -59,6 +59,7 @@ from m0_http.sse.format import NO_EVENT_ID, format_sse_event_bytes
 from .app import WSGIApp
 from .cli import match_mount, is_compiled_mount
 from .cli import ServeOptions, static_header_set
+from .ws_origin import ws_origin_allowed
 from lightbug_http.hold import (
     take_hold, request_last_event_id, ws_message_request, send_hold_frame,
     HOLD_STREAM, HOLD_WEBSOCKET,
@@ -185,6 +186,15 @@ struct WSGIHandler(ThreadHandler):
     is on — the `X-Worker` precedent, and what `smoke-threads` reads to
     prove connections spread.
     """
+    var ws_origins: List[String]
+    """The origins beside the request's own that a held WebSocket may be
+    opened from (`--ws-origin`, `M0_WS_ORIGIN`; `*` any), each through
+    `normalize_ws_origin`. Every other origin is answered 403 before the
+    upgrade (`ws_origin_allowed`, SPEC I48)."""
+    var ws_origin_noticed: Bool
+    """Whether this handler has named the knob for a refused origin: once,
+    because a page on another origin can be refused as often as it
+    likes, and the line is about the setting."""
     var thread_header: Bool
     """`M0_THREAD_HEADER=1`: name the serving thread in `x-thread` on every
     response (SPEC F26). Off by default since 1.17.0: the header told every
@@ -392,6 +402,7 @@ struct WSGIHandler(ThreadHandler):
         replay_frames: Int = 64,
         max_connections: Int = 1024,
         thread_header: Bool = False,
+        var ws_origins: List[String] = List[String](),
     ):
         # One slot is exactly the unmounted case; `mount` grows it.
         self.apps = List[WSGIApp](capacity=1)
@@ -404,6 +415,8 @@ struct WSGIHandler(ThreadHandler):
         self.health_path = health_path^
         self.thread_index = -1
         self.thread_header = thread_header
+        self.ws_origins = ws_origins^
+        self.ws_origin_noticed = False
         self.asgi_notify_fd = -1
         self.lane = -1
         self.ws_pool_fds = List[Int]()
@@ -489,6 +502,7 @@ struct WSGIHandler(ThreadHandler):
             replay_frames=opts.replay_frames,
             max_connections=opts.loop_connections(),
             thread_header=opts.thread_header,
+            ws_origins=opts.ws_origins.copy(),
         )
 
     @staticmethod
@@ -556,6 +570,7 @@ struct WSGIHandler(ThreadHandler):
             replay_frames=opts.replay_frames,
             max_connections=opts.loop_connections(),
             thread_header=opts.thread_header,
+            ws_origins=opts.ws_origins.copy(),
         )
         handler.route_prefixes = opts.mount_prefixes.copy()
         if only_mount >= 0:
@@ -973,6 +988,18 @@ struct WSGIHandler(ThreadHandler):
             if ws_resp.status_code != 101:
                 # A malformed or wrong-version handshake: 400/426, verbatim.
                 return ws_resp^
+            # Before the hold frame and the subscription, so a refusal
+            # leaves nothing to undo. The view approved a socket; it did not
+            # ask which page opened it (`ws_origin.mojo`).
+            var origin = req.headers.get("origin").or_else(String(""))
+            var host = req.headers.get(HeaderKey.HOST).or_else(String(""))
+            if not ws_origin_allowed(
+                origin, host,
+                req.headers.get("x-forwarded-host").or_else(String("")),
+                self.ws_origins,
+            ):
+                self._notice_origin(origin, host)
+                return _cross_origin_refused()
             ws_resp.headers["x-worker"] = String(getpid())
             if self.hold_notify_fd >= 0:
                 # A pool thread: the handshake is ours (the client's key is
@@ -1003,6 +1030,21 @@ struct WSGIHandler(ThreadHandler):
             return ws_resp^
 
         return resp^
+
+    def _notice_origin(mut self, origin: String, host: String):
+        """Name the knob, once per handler, for a WebSocket refused its
+        origin. The origin is the client's to send, so the line quotes it
+        and says where it would go, not that it should."""
+        if self.ws_origin_noticed:
+            return
+        self.ws_origin_noticed = True
+        print(
+            "m0serve: a WebSocket from Origin " + origin + " was answered"
+            " 403, its host not this request's (" + host + "); if that page"
+            " is yours, add --ws-origin " + origin + " or M0_WS_ORIGIN, or"
+            " '*' for any origin",
+            flush=True,
+        )
 
     def _health(self) -> HTTPResponse:
         """Liveness, and under `--realtime` the live subscriber counts.
@@ -1883,6 +1925,15 @@ def _conflict() -> HTTPResponse:
         headers=Headers(Header(HeaderKey.CONTENT_TYPE, "application/json")),
         status_code=409,
         status_text="Conflict",
+    )
+
+
+def _cross_origin_refused() -> HTTPResponse:
+    return HTTPResponse(
+        body_bytes=String("cross-origin WebSocket refused\n").as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=403,
+        status_text="Forbidden",
     )
 
 

@@ -43,6 +43,22 @@ default is listed under **Behaviour changes**
 - **The default `Server` header is `mojo-http`**, where it named the
   archived upstream the server was forked from, `lightbug_http`. An
   application that sets its own `Server` still sends only its own (A26).
+- **The server listens on `127.0.0.1` unless told otherwise** (SPEC M31),
+  m0serve and the Mojo host alike, as uvicorn, gunicorn and Django's
+  runserver do. It listened on `0.0.0.0`, so a server tried on a laptop
+  answered the network the laptop was on. `--host 0.0.0.0` or
+  `M0_HOST=0.0.0.0` puts it back, and is what a container needs: every
+  image in this repository and the m0 scaffold's already set it.
+- **A held WebSocket opens from its own origin** (SPEC I48). A handshake
+  whose `Origin` names another host than the request's `Host`, or the
+  first `X-Forwarded-Host`, is answered `403` before the upgrade, whatever
+  the view approved, and the first refusal prints a line naming the origin
+  and the switch. A browser attaches the site's cookies to a WebSocket
+  whatever page opens it, and the quickstart's view checked nothing. A
+  handshake with no `Origin`, which no browser sends, is still upgraded.
+  `--ws-origin ORIGIN` (repeatable; `M0_WS_ORIGIN`, comma-separated) names
+  more origins, and `*` allows every one, the old behaviour. An ASGI
+  application's sockets are its own to check, as under uvicorn.
 
 ### Added
 
@@ -51,6 +67,9 @@ default is listed under **Behaviour changes**
   constant. The handler's per-slot tables follow it, `/__metrics` counts
   `http_streams_held` and `http_streams_refused_total`, and `--doctor`
   reports `max_connections` and `stream_limit`.
+- **`--ws-origin ORIGIN`** (`M0_WS_ORIGIN`): an origin a held WebSocket may
+  be opened from beside the server's own, `*` for any (SPEC I48); the
+  doctor reports `ws_origins`.
 
 - **Releases leave on a train** ([Releases](docs/RELEASES.md)). A minor
   every second Thursday, from 1.17.0 on 2026-11-05, with `m0` the same day
@@ -109,6 +128,15 @@ default is listed under **Behaviour changes**
   never past the hard limit, and with one line when the hard limit stops
   it short; `--doctor` reports `descriptor_limit`. The Mojo host does the
   same.
+- **A loop that cannot start exits 1 instead of spinning** (SPEC C22).
+  Under a hard descriptor limit below what the server holds before its
+  first connection, about 14 and 4 per pool thread, the loop's `kqueue` or
+  `epoll` failed after the pool had started, and the unwind freed the pool
+  under its threads: one spun on the freed job ring holding the GIL, and
+  the process sat at 100 % of a core, ignoring SIGTERM (1.16.0 too). It
+  now exits at once, naming the call and its errno. The limit notice also
+  stopped saying a loop would hold "about 0" connections of a server that
+  served ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
 
 - **A thread that cannot start is no longer joined** (SPEC E41). On
   glibc, a `pthread_create` that `clone` refused, at a process or thread

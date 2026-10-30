@@ -7,7 +7,9 @@ Env vars:
     M0_HOST       — Listen address: an IPv4 literal, an IPv6 one (`::`
                     listens on both families, `::1` is the IPv6 loopback;
                     brackets, `[::1]`, are accepted), or "localhost" for
-                    127.0.0.1 (default: 0.0.0.0 — every IPv4 interface).
+                    127.0.0.1 (default: 127.0.0.1 — this machine alone, since
+                    1.17.0; `0.0.0.0` is every IPv4 interface, as a
+                    container needs).
                     Not resolved: a hostname would need DNS the server
                     deliberately does not do.
     M0_PORT       — HTTP listen port (default: 8080)
@@ -148,11 +150,17 @@ def threads_conflict(workers: Int, threads: Int) -> Optional[String]:
 
 
 def _parse_host(raw: String) -> String:
-    """Normalize a listen address; empty means every interface
-    (`listen_host` for the rest)."""
+    """Normalize a listen address; empty means the default, the IPv4
+    loopback (`listen_host` for the rest).
+
+    Loopback since 1.17.0 (SPEC M31), as uvicorn, gunicorn and Django's
+    runserver default: a server started on a laptop to try it is not
+    answering the cafe's network. A deployment names the interface, as
+    every image in this tree does (`M0_HOST=0.0.0.0`).
+    """
     var host = raw.strip()
     if host.byte_length() == 0:
-        return String("0.0.0.0")
+        return String("127.0.0.1")
     return listen_host(host)
 
 

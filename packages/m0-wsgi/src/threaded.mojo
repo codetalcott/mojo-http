@@ -73,7 +73,7 @@ from lightbug_http.server_config import ServerConfig
 from lightbug_http.c.platform import PlatformBackend
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 
-from .cli import ServeOptions, serves_offloaded
+from .cli import EXIT_STARTUP, ServeOptions, serves_offloaded
 from .offload_threads import OffloadThreads, join_offload, wire_offload
 from .thread_handler import ThreadContext, ThreadHandler
 
@@ -469,12 +469,23 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     var stream_bus_fd = pool.stream_chunk_read if pool.chunk_active() else -1
     var peer_fd = block.get(BLK_BUS_FD)
 
-    var backend = DetachingBackend[PlatformBackend](PlatformBackend())
-    run_event_loop(
-        listen, handler, backend, server[].config, server[].address, True,
-        block.get(BLK_SHUTDOWN_FD), stream_bus_fd, pool_addr,
-        peer_bus_fd=peer_fd,
-    )
+    try:
+        var backend = DetachingBackend[PlatformBackend](PlatformBackend())
+        run_event_loop(
+            listen, handler, backend, server[].config, server[].address, True,
+            block.get(BLK_SHUTDOWN_FD), stream_bus_fd, pool_addr,
+            peer_bus_fd=peer_fd,
+        )
+    except e:
+        # Exit, never unwind: the unwind frees `pool` under its running
+        # threads, and one spun on the freed job ring holding the GIL every
+        # other thread then waited for (m0serve.mojo's `_loop_raised`).
+        print(
+            "m0serve: thread[" + String(ctx.index) + "]'s event loop raised: "
+            + String(e),
+            flush=True,
+        )
+        process_exit(EXIT_STARTUP)
 
     if use_offload:
         # From a serving thread a straggler's `_exit` ends every loop at

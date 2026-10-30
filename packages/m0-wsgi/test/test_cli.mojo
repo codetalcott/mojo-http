@@ -164,7 +164,7 @@ def test_a_copy_of_the_options_owns_its_lists() raises:
     copied.host = String("10.0.0.9")
     assert_equal(seed.mount_prefixes[0], "/api")
     assert_equal(len(seed.reload_dirs), 1)
-    assert_equal(seed.host, "0.0.0.0")
+    assert_equal(seed.host, "127.0.0.1")
     var moved = copied^
     assert_equal(len(moved.mount_prefixes), 1)
     assert_equal(moved.mount_prefixes[0], "/other")
@@ -451,6 +451,7 @@ def _clear_env():
         String("M0_MAX_KEEPALIVE_REQUESTS"), String("M0_MAX_BODY"),
         String("M0_BODY_TIMEOUT"), String("M0_REPLAY_FRAMES"),
         String("M0_MAX_CONNECTIONS"), String("M0_THREAD_HEADER"),
+        String("M0_WS_ORIGIN"),
     ]:
         _ = setenv(name, "", True)
 
@@ -1741,6 +1742,40 @@ def test_the_thread_header_is_off_unless_the_environment_turns_it_on() raises:
     assert_false(junk.thread_header)
     assert_equal(len(junk.env_ignored), 1)
     assert_true(junk.env_ignored[0].find("M0_THREAD_HEADER") >= 0, junk.env_ignored[0])
+    _clear_env()
+
+
+def test_ws_origins_come_from_the_flag_over_the_environment() raises:
+    """`--ws-origin` is repeatable and replaces `M0_WS_ORIGIN`'s list
+    rather than adding to it; each is normalised as the check compares it,
+    a value that is not an origin is a usage error, and junk in the
+    environment is said once and leaves same-origin alone (SPEC I48)."""
+    _clear_env()
+    assert_equal(len(ServeOptions.from_env().ws_origins), 0)
+    var flagged = _parse(
+        [
+            String("m.wsgi"), String("--ws-origin"), String("HTTPS://App.example.com/"),
+            String("--ws-origin"), String("*"),
+        ]
+    )
+    assert_equal(len(flagged.ws_origins), 2)
+    assert_equal(flagged.ws_origins[0], "https://app.example.com")
+    assert_equal(flagged.ws_origins[1], "*")
+    assert_true(_fails([String("m.wsgi"), String("--ws-origin"), String("app.example.com")]))
+    _ = setenv("M0_WS_ORIGIN", "https://a.example, http://localhost:5173", True)
+    var env = ServeOptions.from_env()
+    assert_equal(len(env.ws_origins), 2)
+    assert_equal(env.ws_origins[1], "http://localhost:5173")
+    var over = parse_args(
+        [String("m.wsgi"), String("--ws-origin"), String("https://b.example")], env
+    )
+    assert_equal(len(over.ws_origins), 1)
+    assert_equal(over.ws_origins[0], "https://b.example")
+    _ = setenv("M0_WS_ORIGIN", "https://a.example,a.example", True)
+    var junk = ServeOptions.from_env()
+    assert_equal(len(junk.ws_origins), 0)
+    assert_equal(len(junk.env_ignored), 1)
+    assert_true(junk.env_ignored[0].find("M0_WS_ORIGIN") >= 0, junk.env_ignored[0])
     _clear_env()
 
 

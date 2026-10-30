@@ -290,11 +290,13 @@ def ws(request):
     message it sent itself, which `ws_message` runs on the worker holding
     the socket.
 
-    The server makes no `Origin` check because it cannot know the policy,
-    and this view authenticates with a cookie, which a page on any origin
-    could get the browser to attach: so the policy is here. A browser always
-    sends `Origin` on an upgrade; a non-browser client (the probe) sends
-    none and is let through, having no cookie jar to be tricked with.
+    This view authenticates with a cookie, which a page on any origin could
+    get the browser to attach, so it refuses another origin itself. The
+    server does the same since 1.17.0 (SPEC I48), and the view's own check
+    stays: it holds whatever `--ws-origin` the deploy is given. A browser
+    always sends `Origin` on an upgrade; a non-browser client (the probe)
+    sends none and is let through, having no cookie jar to be tricked
+    with.
     """
     token = _token(request)
     if token is None:

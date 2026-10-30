@@ -237,8 +237,9 @@ def run(args):
     print("    uv sync")
     if template in ENV_HINT:
         print("    " + ENV_HINT[template])
-    # This machine alone: without `--host` the server listens on every
-    # interface.
+    # This machine alone, said rather than left to the default: a binary
+    # built by an m0 older than 0.14.0 listens on every interface without
+    # `--host`.
     print("    uv run m0 build && bin/server --host 127.0.0.1 --port 8080")
     print()
     print("AGENTS.md is the page to read first; `uv run m0 test` is the fast loop.")

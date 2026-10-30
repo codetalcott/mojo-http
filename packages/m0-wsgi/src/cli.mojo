@@ -34,6 +34,8 @@ from lightbug_http.header import Headers
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig, listen_host, parse_env_int
 
+from .ws_origin import normalize_ws_origin
+
 
 comptime M0SERVE_VERSION = "1.16.0"
 """Reported by `--version`. Bumped with the release (see docs/RELEASING.md)."""
@@ -226,6 +228,14 @@ struct ServeOptions(Copyable, Movable):
     `ServerConfig`'s default (1024) alone. Streams take all but the
     loop's reserve (`ServerConfig.stream_limit`), and the handler's
     per-slot tables are sized from it (`loop_connections`)."""
+    var ws_origins: List[String]
+    """`--ws-origin` (repeatable) / `M0_WS_ORIGIN` (comma-separated): the
+    origins a held WebSocket may be opened from beside the request's own,
+    each through `normalize_ws_origin`; `*` is any (SPEC I48). Empty is
+    same-origin only, the default since 1.17.0."""
+    var ws_origins_from_flag: Bool
+    """Whether a `--ws-origin` has been read: the first one replaces what
+    `M0_WS_ORIGIN` named rather than adding to it (flag over env)."""
     var thread_header: Bool
     """`M0_THREAD_HEADER=1`: every response names the handler-pool thread
     that served it in `x-thread` (SPEC F26). Off by default; an operator's
@@ -323,7 +333,7 @@ struct ServeOptions(Copyable, Movable):
         self.mojo_mounts = List[Int]()
         self.hold_mounts = List[Int]()
         self.protocol = String(PROTOCOL_AUTO)
-        self.host = String("0.0.0.0")
+        self.host = String("127.0.0.1")
         self.port = DEFAULT_PORT
         self.workers = 1
         self.threads = 1
@@ -345,6 +355,8 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = -1
         self.replay_frames = DEFAULT_REPLAY_FRAMES
         self.max_connections = -1
+        self.ws_origins = List[String]()
+        self.ws_origins_from_flag = False
         self.thread_header = False
         self.max_keepalive_requests = -1
         self.idle_timeout = -1
@@ -423,6 +435,21 @@ struct ServeOptions(Copyable, Movable):
                     _ignored(
                         "M0_MAX_CONNECTIONS", raw, "a whole number of connections",
                         String(defaults.max_connections),
+                    )
+                )
+        raw = getenv("M0_WS_ORIGIN", "")
+        if raw.byte_length() > 0:
+            try:
+                for part in raw.split(","):
+                    if String(part.strip()).byte_length() > 0:
+                        opts.ws_origins.append(normalize_ws_origin(String(part)))
+            except:
+                opts.ws_origins = List[String]()
+                opts.env_ignored.append(
+                    _ignored(
+                        "M0_WS_ORIGIN", raw,
+                        "origins like https://example.com, comma-separated",
+                        "same-origin only",
                     )
                 )
         raw = getenv("M0_REPLAY_FRAMES", "")
@@ -1519,6 +1546,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--protocol"
         or name == "--mount"
         or name == "--pg-listen"
+        or name == "--ws-origin"
     )
 
 
@@ -1634,6 +1662,11 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
             opts.mount_explicit.append(True)
         else:
             opts.mount_explicit.append(spec.find(":") >= 0)
+    elif name == "--ws-origin":
+        if not opts.ws_origins_from_flag:
+            opts.ws_origins = List[String]()
+            opts.ws_origins_from_flag = True
+        opts.ws_origins.append(normalize_ws_origin(value))
     elif name == "--static-cache-control":
         opts.static_cache_control = value
     elif name == "--static-header":
@@ -1778,8 +1811,10 @@ def usage() -> String:
         "MODULE also tries MODULE.asgi, MODULE.wsgi, MODULE:app and\n"
         "MODULE.main:app. Flags override M0_* environment variables.\n"
         "\n"
-        "  --host ADDR                 bind address (default 0.0.0.0; M0_HOST);\n"
-        "                              :: takes IPv6 and IPv4, ::1 IPv6 alone\n"
+        "  --host ADDR                 bind address (default 127.0.0.1, this\n"
+        "                              machine alone; M0_HOST). 0.0.0.0 takes\n"
+        "                              every IPv4 interface, as a container\n"
+        "                              needs; :: IPv6 and IPv4, ::1 IPv6 alone\n"
         "  --port N                    port (default 8000; M0_PORT)\n"
         "  --workers N                 prefork worker processes (default 1; M0_WORKERS)\n"
         "  --threads N                 serving threads in ONE process, free-threaded\n"
@@ -1836,6 +1871,11 @@ def usage() -> String:
         "  --metrics                   serve Prometheus metrics at /__metrics\n"
         "  --realtime                  hold SSE streams and WebSockets the app\n"
         "                              approves with M0-Hold; publish with m0pub.py\n"
+        "  --ws-origin ORIGIN          an origin a held WebSocket may be opened\n"
+        "                              from beside the request's own, like\n"
+        "                              https://app.example.com; repeatable, '*'\n"
+        "                              for any (M0_WS_ORIGIN, comma-separated).\n"
+        "                              Other origins are answered 403\n"
         "  --pg-listen URL             also publish what arrives on a Postgres\n"
         "                              LISTEN, so a trigger, a cron job or psql\n"
         "                              can reach a held stream (needs --realtime;\n"

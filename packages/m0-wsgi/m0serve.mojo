@@ -228,6 +228,20 @@ def _fail(message: String, code: Int):
     process_exit(code)
 
 
+def _loop_raised(e: Error):
+    """Report an event loop that raised, and exit 1 without unwinding.
+
+    Unwinding is what must not happen. Under a pool this thread gave its
+    thread state up before the loop, and the pool's threads are still
+    running: the unwind freed `OffloadPool` under them, one then spun on the
+    freed job ring holding the GIL, and the teardown waited for that GIL for
+    good, with SIGTERM's byte in a pipe nothing read (a loop that could not
+    open its kqueue under a hard limit of 40 descriptors; SPEC C22). `_exit`
+    leaves the threads and the pool where they are.
+    """
+    _fail("the event loop raised: " + String(e), EXIT_STARTUP)
+
+
 def _announce_armed(worker: Int, shutdown_fd: Int):
     """Say that this worker drains on SIGTERM from here on, in the Mojo host's words.
 
@@ -878,6 +892,12 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
         String("server"), String("replay_frames"),
         opts.replay_frames if opts.realtime else 0,
     )
+    # The origins a held WebSocket may be opened from beside its own (SPEC
+    # I48), space-separated; "same-origin" when none is named.
+    var ws_origins = String("same-origin")
+    if len(opts.ws_origins) > 0:
+        ws_origins = String(" ").join(opts.ws_origins)
+    report.add_fact(String("server"), String("ws_origins"), ws_origins)
     # Escaped: a directory is a path, and a path may hold a quote. The
     # mounts were concatenated raw, so one did not parse.
     var statics = String("[")
@@ -931,16 +951,16 @@ def _raise_descriptors(opts: ServeOptions):
     var limit = raise_descriptor_limit(wanted)
     if limit < 0 or limit >= wanted or spawned_worker_index() >= 0:
         return
-    var loops = opts.threads if opts.threads > 1 else 1
-    var room = limit - DESCRIPTOR_HEADROOM
+    # No estimate of what the limit leaves: the headroom is what is asked
+    # for, not what is used (about 14 descriptors and 4 per pool thread), so
+    # `limit - DESCRIPTOR_HEADROOM` said "about 0" of a server that served.
     print(
         String(
             "m0serve: the open-file limit is ", limit, ", under the ",
             wanted, " that ", opts.loop_connections(),
-            " connections per loop need; a loop will hold about ",
-            (room if room > 0 else 0) // loops,
-            ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=)"
-            " or lower --max-connections",
+            " connections per loop need, and a connection past the limit"
+            " is refused at accept. Raise the hard limit (ulimit -Hn,"
+            " systemd's LimitNOFILE=) or lower --max-connections",
         ),
         flush=True,
     )
@@ -1217,16 +1237,19 @@ def main() raises:
     # (#310, SPEC E20).
     # `DetachingBackend` releases the thread state around each wait and
     # restores it after, the threaded mode's shape.
-    var backend = DetachingBackend[PlatformBackend](PlatformBackend())
     # The listener is the loop's, closed once as its drain begins (review
     # B26). It used to be kept alive past the loop with `_ = listener`, and
     # that closed the number a second time, after the drain had freed it.
-    run_event_loop(
-        listener^.into_fd(), handler, backend, server.config,
-        server.address(), server.tcp_keep_alive,
-        shutdown_fd, bus.read_fd(worker),
-        accept_share=share,
-    )
+    try:
+        var backend = DetachingBackend[PlatformBackend](PlatformBackend())
+        run_event_loop(
+            listener^.into_fd(), handler, backend, server.config,
+            server.address(), server.tcp_keep_alive,
+            shutdown_fd, bus.read_fd(worker),
+            accept_share=share,
+        )
+    except e:
+        _loop_raised(e)
     handler.shutdown()
     pg.stop()
     if is_supervised:
@@ -1375,15 +1398,20 @@ def _serve_offloaded(
 
     if opts.qos:
         _ = request_qos_class(QOS_CLASS_USER_INTERACTIVE)
-    var backend = DetachingBackend[PlatformBackend](PlatformBackend())
-    if not loop_attached:
-        backend.set_loop_detached()
-    run_event_loop(
-        listener^.into_fd(), handler, backend, config, opts.address(), True,
-        shutdown_fd, stream_bus_fd, pool.addr(),
-        peer_bus_fd=peer_bus_fd,
-        accept_share=accept_share,
-    )
+    try:
+        # Inside the try: `PlatformBackend()` opens the kqueue or epoll
+        # descriptor, the first thing to fail under a hard limit too low.
+        var backend = DetachingBackend[PlatformBackend](PlatformBackend())
+        if not loop_attached:
+            backend.set_loop_detached()
+        run_event_loop(
+            listener^.into_fd(), handler, backend, config, opts.address(), True,
+            shutdown_fd, stream_bus_fd, pool.addr(),
+            peer_bus_fd=peer_bus_fd,
+            accept_share=accept_share,
+        )
+    except e:
+        _loop_raised(e)
     if not loop_attached:
         cpy0.PyEval_RestoreThread(loop_ts)
 
