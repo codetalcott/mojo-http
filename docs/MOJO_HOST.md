@@ -122,7 +122,7 @@ A flag overrides its `M0_` variable, which overrides the default.
 
 | flag | variable | default |
 |---|---|---|
-| `--host ADDR` | `M0_HOST` | 0.0.0.0 |
+| `--host ADDR` | `M0_HOST` | 127.0.0.1 |
 | `--port N` | `M0_PORT` | 8080 |
 | `--workers N` | `M0_WORKERS` | 1 |
 | `--threads N` | `M0_THREADS` | 1 |

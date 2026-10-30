@@ -82,11 +82,59 @@ begin is one comparison and a counter. Slots are provisioned lazily
 as connections arrive. The per-slot tables and the once-a-second sweep grow
 with it.
 
-## Found beside it, not fixed here
+## Found beside it, and fixed after it (SPEC C22)
 
-At a HARD limit of 40, m0serve 1.16.0 and this change alike spin a core
-before the loop starts, print nothing past the banner, and do not stop on
-SIGTERM (SIGKILL ends them). The server needs more descriptors than that to
-build its pool, and something on that path retries instead of failing. A hard limit that low is not a real
-configuration. It is recorded so that the next server to meet one does
-not read it as a new bug.
+At a HARD limit of 40, m0serve 1.16.0 and this change alike spun a core
+before the loop started, printed nothing past the banner, and did not stop
+on SIGTERM (SIGKILL ended them). A started server holds about 14
+descriptors and 4 per pool thread before its first connection: 22 with two
+threads, 46 with the auto eight. At 40 the pool was up when the loop's
+`kqueue` failed with EMFILE, and `_serve_offloaded` raised past a thread
+state it had already given up. The unwind freed the `OffloadPool` under its
+threads; one of them, the first to take the GIL, read the freed job ring,
+whose sequence numbers a free had scrambled, and spun in the ring's retry
+holding the GIL. Main's teardown then waited in `PyGILState_Ensure` for a
+GIL nobody would release, and SIGTERM's byte sat in a pipe nothing read.
+`sample` showed both: main in `List[WSGIApp].__deinit__` waiting on
+`take_gil`, one pool thread at 100 % in `_pool_serve`, the other seven
+queued for the GIL.
+
+A loop that raises now exits 1 at once through `_fail`, which is `_exit`
+and unwinds nothing, naming the call and its errno: `m0serve: the event
+loop raised: kqueue: Too many open files (errno 24)`. The backend's
+construction moved inside the `try`, since it is what opens the kqueue; the
+first version of the fix wrapped the loop alone, and still spun. `--threads`
+loops do the same, and the inline path too, for one rule. The Mojo host
+needed nothing: its pool takes no GIL, so its unwind finished and it
+already exited 1.
+
+That exit is the backstop, not the fix. A gate for it was tried three
+ways and each found something. Sixteen pool threads at a hard limit of 40
+reached the loop's failure on an M4 every time and on neither CI runner,
+where both served: a pool thread's wake and ack channels may fail and are
+let go, and they race the loop's kqueue or epoll for the last descriptors.
+A sweep from 40 down to 12 then found, in a Linux container, every ODD
+limit from 39 to 15 segfaulting and every even one serving. gdb put main
+in `fclose(NULL)` under `_serve_offloaded`: the stdlib's `print(flush=
+True)` flushes through `fdopen(dup(1))`, and with one descriptor left for
+a pair and none for the `dup`, `fdopen` returned NULL, which it closed. On
+the x86-64 runner the same limit ended in `LLVM ERROR: IO failure on output
+stream`. So a startup under a limit that low fails wherever the last
+descriptor goes, and no exit path can be made safe for all of them.
+
+So the server refuses first. `descriptor-floor`, the last of the checks
+after the import, the doctor's too, compares the limit as the server
+raises it with what the configuration holds before its first connection
+plus 16 for connections, and exits 78 naming both and the fix before any
+pool exists. The count is the M4's, the larger platform's: 8, and per loop
+with a pool or an executor 8 more and 4 a handler thread, 8 for the
+executor. In the container every limit from 48 to 12 then exits 78 with
+sixteen threads; with two, 48 to 40 serve and 39 down are refused. The
+gate holds both shapes on both runners, and the exit that unwinds nothing
+stays for an estimate that is wrong, proven by the sabotage above and
+reached on purpose by no limit now.
+
+The limit's notice had a wrong number of its own. It said "a loop will
+hold about 0" at 40, from `limit - 256`, though 256 is the headroom asked
+for, not what is used, and that server served. The line now says that a
+connection past the limit is refused at accept, and no figure.

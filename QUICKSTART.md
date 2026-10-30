@@ -147,8 +147,9 @@ m0serve realtime:application --realtime --health-path /health --host 127.0.0.1 -
 
 `--realtime` turns the `M0-` headers into held connections and wires the
 publish bus. Without it the same app still serves, the hold views return
-short responses, and a `publish()` reaches nobody. `--host 127.0.0.1` binds
-this machine alone; without it the server listens on every interface.
+short responses, and a `publish()` reaches nobody. `--host 127.0.0.1`, the
+default, binds this machine alone; `--host 0.0.0.0` listens on every
+interface, as a container needs.
 
 ## 4. Verify
 
@@ -235,10 +236,11 @@ The hold moves the connection out of Python. Authorization stays in the view.
   `ws_message` are `csrf_exempt` above so `curl` can post to them; a form
   in your own page sends Django's CSRF token as usual, and the view keeps
   the decorator off.
-- **The WebSocket handshake carries no `Origin` check.** If you authenticate
-  sockets with cookies, a page on any origin can open one and the browser
-  will attach them. Check `Origin` in the view that approves the upgrade, or
-  authenticate with something a cross-site page cannot supply.
+- **A socket opens from its own origin.** A browser attaches your cookies
+  to a WebSocket whatever page opens it, so the server answers 403 to a
+  handshake whose `Origin` is not the request's own host, whatever the view
+  approved. A page on another origin that should connect is named with
+  `--ws-origin https://app.example.com`.
 
 Inbound WebSocket messages arrive as a `POST` to `/ws/message`. The server
 reserves that path: a request for it from the network is answered 404

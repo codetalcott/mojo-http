@@ -27,6 +27,11 @@ prepended to `sys.path` and defaults to the current directory.
 The protocol is detected from the object: a coroutine-function callable is
 served as ASGI, anything else as WSGI. `--protocol wsgi|asgi` overrides.
 
+The server listens on `127.0.0.1:8000`, this machine alone, unless told
+otherwise: `--host 0.0.0.0` (or `M0_HOST=0.0.0.0`) takes every IPv4
+interface, which a container needs for its published port to reach the
+server. The default was `0.0.0.0` until 1.17.0.
+
 m0serve carries no interpreter. It loads the `libpython` of the `python3`
 on `PATH`, so run it where that is the interpreter your application is
 installed into, an activated virtualenv being the usual way;
@@ -38,7 +43,7 @@ The ready signal is one line per worker, printed after the application has
 imported and, for ASGI, after its lifespan startup has completed:
 
 ```text
-🔥 m0serve: myproject.wsgi:application on http://0.0.0.0:8000 (protocol=wsgi workers=1) blocking-threads=8 (auto)
+🔥 m0serve: myproject.wsgi:application on http://127.0.0.1:8000 (protocol=wsgi workers=1) blocking-threads=8 (auto)
 ```
 
 An application that fails to import, or whose lifespan startup fails (it
@@ -106,6 +111,21 @@ worker. Inbound WebSocket messages arrive at the application as a `POST` to
 `/ws/message` with `M0-Channel`, `M0-Slot` and `M0-Opcode` headers; that view
 must be CSRF-exempt. Channel names beginning with a control byte are
 reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
+
+**A held WebSocket opens from its own origin.** A browser attaches the
+site's cookies to a WebSocket whatever page opens it, and the same-origin
+policy that keeps another page from reading a `fetch` does not cover one.
+So a handshake whose `Origin` names another host than the request's `Host`
+(or the first `X-Forwarded-Host`) is answered `403`, whatever the view
+approved, and the first refusal prints a line naming the origin. A handshake
+without `Origin`, which no browser sends, is upgraded. `--ws-origin ORIGIN`,
+repeatable, names an origin beside the server's own, such as a front end on
+another port in development (`M0_WS_ORIGIN` takes a comma-separated list;
+`*` allows every origin, the behaviour before 1.17.0). Behind a proxy that
+rewrites `Host` and sets no `X-Forwarded-Host`, nginx's default among them,
+name the public origin or forward the host (`proxy_set_header Host $host`).
+An ASGI application accepts its own sockets, and checks their origin
+itself as it would under uvicorn.
 
 **A hold replays what the journal holds, and says when it cannot.** Event
 ids are numbered from one counter across every worker, and each loop
@@ -259,7 +279,11 @@ has the Flask version of the whole thing, and CI drives that exact file.
   It never lowers the limit or passes the hard one. Where the hard limit
   stops it short, it prints the limit, what it wanted and the fix
   (`ulimit -Hn`, systemd's `LimitNOFILE=`); `--doctor` reports
-  `descriptor_limit` beside `descriptors_wanted`.
+  `descriptor_limit` beside `descriptors_wanted`. A hard limit too low for
+  the server's own startup (its pool's channels, the bus, the loop) and a
+  few connections beside is refused with 78 before anything starts, the
+  line naming what the configuration holds; fewer `--blocking-threads`
+  lower that.
 - `--max-body SIZE` (or `M0_MAX_BODY`) caps request bodies (default 4m;
   `512k`, `64m`, `1g`). A chunked body is bounded on the wire as well as
   decoded. Over the cap

@@ -41,7 +41,8 @@ uv run m0 dev -- --host 127.0.0.1 --port 8080   # rebuild on save
 
 `uvx m0 new NAME` writes `./NAME` instead. `board` and `m0 new .` arrived
 after m0 0.8.0; `uvx m0 new --help` lists what the installed one has.
-Without `--host` the server listens on every interface.
+Without `--host` the server listens on this machine alone; `--host 0.0.0.0`
+takes every interface.
 
 ## Rules that cost a build when missed
 

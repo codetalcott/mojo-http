@@ -1179,15 +1179,16 @@ def _raise_descriptors(config: AppConfig, server_config: ServerConfig):
     var limit = raise_descriptor_limit(wanted)
     if limit < 0 or limit >= wanted:
         return
-    var loops = config.threads if config.threads > 1 else 1
-    var room = limit - DESCRIPTOR_HEADROOM
+    # No estimate of what the limit leaves: the headroom is what is asked
+    # for, not what is used, so `limit - DESCRIPTOR_HEADROOM` said "about 0"
+    # of a server that served.
     print(
         String(
             "host: the open-file limit is ", limit, ", under the ", wanted,
             " that ", server_config.max_connections,
-            " connections per loop need; a loop will hold about ",
-            (room if room > 0 else 0) // loops,
-            ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=)",
+            " connections per loop need, and a connection past the limit"
+            " is refused at accept. Raise the hard limit (ulimit -Hn,"
+            " systemd's LimitNOFILE=)",
         ),
         flush=True,
     )

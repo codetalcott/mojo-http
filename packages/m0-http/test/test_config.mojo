@@ -188,10 +188,16 @@ def test_app_tick_is_read_from_the_environment() raises:
     assert_equal(_with("M0_APP_TICK_MS", "1000").app_tick_ms, 1000)
 
 
-def test_address_binds_all_interfaces() raises:
+def test_address_binds_the_loopback_unless_an_interface_is_named() raises:
+    """Unset, the server listens on this machine alone; `M0_HOST=0.0.0.0`
+    is every IPv4 interface, what a container sets.
+
+    covers: M31
+    """
     var c = _with("M0_PORT", "8081")
-    assert_equal(c.host, "0.0.0.0")
-    assert_equal(c.address(), "0.0.0.0:8081")
+    assert_equal(c.host, "127.0.0.1")
+    assert_equal(c.address(), "127.0.0.1:8081")
+    assert_equal(_with("M0_HOST", "0.0.0.0").address(), "0.0.0.0:8080")
 
 
 def test_host_is_read_from_the_environment() raises:
@@ -231,7 +237,7 @@ def test_an_ipv6_host_is_bracketed_in_the_address() raises:
 
 def test_host_is_trimmed_and_otherwise_verbatim() raises:
     assert_equal(_with("M0_HOST", " 10.0.0.5 ").host, "10.0.0.5")
-    assert_equal(_with("M0_HOST", "   ").host, "0.0.0.0")
+    assert_equal(_with("M0_HOST", "   ").host, "127.0.0.1")
 
 
 def test_config_is_copyable_and_movable() raises:

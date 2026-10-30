@@ -30,7 +30,8 @@ with methods — and keep views thin. A test is also the only thing that
 vouches for a function nothing calls yet: in an imported module the compiler
 does not diagnose one, malformed signature included, so a green build says
 nothing about it. `bin/server --host 127.0.0.1 --port 8080` runs the app on
-this machine alone (without `--host`, on every interface); `--doctor`
+this machine alone, as it does without `--host`; `--host 0.0.0.0` takes
+every interface, which the image sets; `--doctor`
 prints its configuration and starts nothing.
 
 Every refusal, from `m0` and from the binary, is exit **78** and one line

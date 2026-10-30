@@ -65,7 +65,8 @@ bin/server --host 127.0.0.1 --port 8080
 
 Open <http://127.0.0.1:8080/>. Add an item, open it, delete it: each is one
 request whose answer replaces the `<section id="items">` element. Stop the
-server with Ctrl-C. Without `--host` the server listens on every interface.
+server with Ctrl-C. `--host 0.0.0.0` listens on every interface; without
+it, on this machine alone.
 
 From a second terminal, in `shop/`:
 

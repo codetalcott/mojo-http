@@ -1821,9 +1821,56 @@ assert s['descriptor_limit'] >= 320, s" || fail "the doctor's connection figures
 code=0
 bin/m0serve hold_app:application --app-dir scripts/smoke --max-connections 65537 > /dev/null 2>&1 || code=$?
 [ "$code" = "78" ] || fail "--max-connections 65537 exited $code, wanted 78"
+# A HARD limit too low for the server's own startup is refused with 78
+# before it starts anything (SPEC C22). Under one that low a descriptor ran
+# out somewhere in the startup, and where was the platform's and the
+# scheduler's: on an M4 the loop's kqueue failed under the running pool,
+# whose unwind spun a core holding the GIL and never read SIGTERM; on Linux
+# the stdlib's print flush crashed in fclose(NULL) after its dup failed.
+# Sixteen pool threads hold about 80 before the first connection.
+# `sh -c "$fdlimit" LIMIT COMMAND...`: a script, not a function, since
+# `spawn` execs what it is given.
+fdlimit='ulimit -S -n "$0" && ulimit -H -n "$0" && exec "$@"'
+spawn fdlimit.log sh -c "$fdlimit" 40 bin/m0serve hold_app:application \
+  --app-dir scripts/smoke --port $port --blocking-threads 16
+n=0
+while _smoke_running $pid && [ $n -lt 150 ]; do sleep 0.1; n=$((n + 1)); done
+_smoke_running $pid && fail 'under a hard limit of 40 the server was still running after 15 s'
+code=0
+stop $pid || code=$?
+[ "$code" = "78" ] || fail "under a hard limit of 40 with sixteen pool threads the server exited $code, wanted 78"
+grep -q 'the open-file limit is 40, and this configuration holds about 80 descriptors' "$SMOKE_DIR/fdlimit.log" \
+  || fail 'the refusal under a hard limit of 40 does not say what the startup holds'
+grep -q 'lower --blocking-threads' "$SMOKE_DIR/fdlimit.log" || fail 'the refusal under a hard limit of 40 names no fix'
+code=0
+sh -c "$fdlimit" 40 bin/m0serve hold_app:application --app-dir scripts/smoke --blocking-threads 16 --doctor > /dev/null 2>&1 || code=$?
+[ "$code" = "78" ] || fail "the doctor under a hard limit of 40 exited $code, wanted 78"
+# Every limit the floor admits starts and stops: two pool threads hold about
+# 24 and want 16 beside, so 40 is the lowest. Each from 48 down must serve
+# and stop with 0, and 39 is refused.
+limit=48
+while [ $limit -ge 40 ]; do
+  spawn fdlimit.log sh -c "$fdlimit" $limit bin/m0serve hold_app:application \
+    --app-dir scripts/smoke --port $port --blocking-threads 2
+  n=0
+  while _smoke_running $pid && ! grep -q 'Event loop started' "$SMOKE_DIR/fdlimit.log" && [ $n -lt 150 ]; do
+    sleep 0.1; n=$((n + 1))
+  done
+  grep -q 'Event loop started' "$SMOKE_DIR/fdlimit.log" \
+    || fail "under a hard limit of $limit, which the floor admits, the server did not start"
+  code=0
+  stop $pid || code=$?
+  [ "$code" = "0" ] || fail "under a hard limit of $limit the server exited $code on SIGTERM, wanted 0"
+  limit=$((limit - 1))
+done
+code=0
+sh -c "$fdlimit" 39 bin/m0serve hold_app:application --app-dir scripts/smoke --port $port --blocking-threads 2 \
+  > "$SMOKE_DIR/fdlimit.log" 2>&1 || code=$?
+[ "$code" = "78" ] || fail "under a hard limit of 39 with two pool threads the server exited $code, wanted 78"
 echo "smoke-max-connections OK"
 python3 scripts/emit.py --covers C20 --task smoke-max-connections
 python3 scripts/emit.py --covers C21 --task smoke-max-connections
+python3 scripts/emit.py --covers C22 --task smoke-max-connections
 """
 
 # B1. The body timer was armed above the decode of what came with the
@@ -3315,6 +3362,26 @@ code=$(curl -s -o "$out/plain_ws" -w '%{http_code}' "http://localhost:$port/ws?c
 [ "$code" = "426" ] || fail "expected 426 for an approved upgrade with no Upgrade header, got $code"
 grep -iq 'm0-hold' "$out/plain_ws" && fail 'the hold instruction leaked into the 426 body'
 
+# The handshake's Origin (SPEC I48). Django approved every upgrade below;
+# the server refuses a page on another origin 403 before upgrading, and
+# upgrades its own host's and a handshake with none (no browser). Curl
+# holds a 101 until --max-time, which is what the status is read after.
+ws_code() {
+  curl -s -o /dev/null -w '%{http_code}' --max-time 2 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$@" \
+    "http://localhost:$port/ws?channel=origin&token=letmein"
+}
+code=$(ws_code -H "Origin: http://localhost:$port")
+[ "$code" = "101" ] || fail "a same-origin WebSocket answered $code, want 101"
+code=$(ws_code)
+[ "$code" = "101" ] || fail "a WebSocket without an Origin answered $code, want 101"
+code=$(ws_code -H 'Origin: https://evil.example')
+[ "$code" = "403" ] || fail "a cross-origin WebSocket answered $code, want 403"
+code=$(ws_code -H 'Origin: https://evil.example')
+[ "$code" = "403" ] || fail "a second cross-origin WebSocket answered $code, want 403"
+n=$(grep -c 'add --ws-origin https://evil.example' "$out/ws1.log")
+[ "$n" = "1" ] || fail "the cross-origin notice should appear once, appeared $n times"
+
 stop $pid
 
 # Phase 2: two workers, both transports, ONE publish.
@@ -3373,7 +3440,8 @@ stop $pid
 # executor's shape plus the channel, since a pool thread's registries are
 # empty), so the whole probe -- handshake, fan-out, relay through Django,
 # channel isolation -- has to pass with the pool in front of it.
-spawn ws3.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --blocking-threads 4
+spawn ws3.log env M0_CORE_LIB="$core_lib" M0_SSE_HEARTBEAT_MS=500 "$srv" $SPEC --static-cache-control "$CC" --blocking-threads 4 \
+  --ws-origin https://app.example
 wait_ready http://localhost:$port/health $pid
 grep -q 'blocking-threads=4' "$out/ws3.log" || fail 'the banner does not show the pool'
 t_base=$(python3 -c 'import time; print(time.time())')
@@ -3403,6 +3471,12 @@ wait $slow1 $slow2
 delta=$((took - base_ms))
 [ "$delta" -lt 1000 ] || fail "the socket probe took ${took}ms against a ${base_ms}ms baseline (+${delta}ms) with two 1.5s views in flight; the pool is not isolating it"
 echo "phase 3: sockets held by pool threads, probe +${delta}ms behind two 1.5s views (baseline ${base_ms}ms)"
+# A pool thread's hold is held to the same Origin rule, and an origin the
+# operator named is upgraded beside the server's own.
+code=$(ws_code -H 'Origin: https://app.example')
+[ "$code" = "101" ] || fail "an origin named by --ws-origin answered $code under the pool, want 101"
+code=$(ws_code -H 'Origin: https://evil.example')
+[ "$code" = "403" ] || fail "a cross-origin WebSocket answered $code under the pool, want 403"
 kill $pid 2>/dev/null
 wait $pid; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM under --realtime --blocking-threads with sockets: exit $rc, want 0"
@@ -3481,6 +3555,7 @@ wait $pid; rc=$?
 echo "smoke-django-realtime-ws OK"
 python3 scripts/emit.py --covers I12 --task smoke-django-realtime-ws
 python3 scripts/emit.py --covers I26 --task smoke-django-realtime-ws
+python3 scripts/emit.py --covers I48 --task smoke-django-realtime-ws
 """
 
 # The CLI itself, as a user meets it: what --help and --version say, which
@@ -4258,7 +4333,7 @@ if [ $waited -ge 12 ]; then
 fi
 wait $pid2 2>/dev/null; rc2=$?
 [ "$rc2" = "1" ] || fail "second server on a busy port: exit $rc2, want 1"
-grep -q "address already in use: 0.0.0.0:$bport" "$second" || fail 'busy port: the message does not name the address'
+grep -q "address already in use: 127.0.0.1:$bport" "$second" || fail 'busy port: the message does not name the address'
 grep -q -e 'Ready to accept' -e '[(]protocol=' "$second" && fail 'busy port: the second server printed a ready banner'
 curl --silent --fail http://localhost:$bport/ > /dev/null || fail 'the first server stopped answering after the refused second bind'
 kill -TERM $pid; wait $pid 2>/dev/null; rc=$?

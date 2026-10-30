@@ -19,7 +19,9 @@ from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from src.checks import (
     ServeCheck,
     CheckFacts,
+    DESCRIPTOR_MARGIN,
     flag_checks,
+    startup_descriptors,
     interpreter_checks,
     app_checks,
     first_refusal,
@@ -544,6 +546,36 @@ def test_an_import_that_failed_is_the_whole_list() raises:
         c.detail,
         "could not load nosuch.wsgi:application from .: No module named 'nosuch'",
     )
+
+
+def test_a_descriptor_limit_below_the_startup_is_refused_before_anything_starts() raises:
+    """A hard limit that cannot hold what the configuration opens before its
+    first connection, and a stream reserve's worth beside it, is refused
+    with 78 naming the limit, the count and the fix, rather than started to
+    run out; unknown (-1), the rule is not evaluated.
+
+    covers: C22
+    """
+    var pooled = _opts([String("app.wsgi"), String("--blocking-threads"), String("16")])
+    assert_equal(startup_descriptors(pooled, False), 80)
+    var low = app_checks(pooled, None, False, None, descriptor_limit=40)
+    assert_equal(_failed(low), "descriptor-floor")
+    var c = _first(low)
+    assert_equal(c.code, EXIT_CONFIG)
+    assert_true(c.detail.find("the open-file limit is 40") >= 0, c.detail)
+    assert_true(c.detail.find("about 80 descriptors") >= 0, c.detail)
+    assert_true(c.detail.find("16 handler thread(s)") >= 0, c.detail)
+    assert_true(c.fix.find("lower --blocking-threads") >= 0, c.fix)
+    var enough = app_checks(pooled, None, False, None, descriptor_limit=80 + DESCRIPTOR_MARGIN)
+    assert_equal(_failed(enough), "")
+    assert_equal(_names(enough), "application,descriptor-floor")
+    assert_equal(_names(app_checks(pooled, None, False, None)), "application")
+    # An ASGI application's executor takes the lane and the pool is off.
+    assert_equal(startup_descriptors(pooled, True), 24)
+    var inline = _opts([String("app.wsgi"), String("--blocking-threads"), String("0")])
+    assert_equal(startup_descriptors(inline, False), 8)
+    var three = _opts([String("app.wsgi"), String("--blocking-threads"), String("2"), String("--threads"), String("3")])
+    assert_equal(startup_descriptors(three, False), 8 + 3 * 16)
 
 
 def test_the_application_rules_are_in_the_order_the_server_applies_them() raises:

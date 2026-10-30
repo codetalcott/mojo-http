@@ -725,9 +725,17 @@
       "id": "C21",
       "section": "C",
       "category": "C. Connection management and denial of service",
-      "capability": "The server raises its own soft descriptor limit to what its connections need -- each loop's `max_connections` and 256 beside them, `--threads` counting its loops -- before the bind and the fork, never lowering it, never past the hard limit and never past 2^20, where epoll's timer idents stop telling descriptors apart; where the hard limit stops it short, one line says the limit, what was wanted, about how many connections a loop will hold, and the fix, and the doctor reports `descriptor_limit` beside `descriptors_wanted`. The Mojo host does the same. Before, the soft limit, not `max_connections`, bounded the server: under launchd's default of 256 the quickstart held 208 streams while its banner said 1024, and the 209th connection and the health checks after it were reset at accept; systemd's default soft limit is 1024",
+      "capability": "The server raises its own soft descriptor limit to what its connections need -- each loop's `max_connections` and 256 beside them, `--threads` counting its loops -- before the bind and the fork, never lowering it, never past the hard limit and never past 2^20, where epoll's timer idents stop telling descriptors apart; where the hard limit stops it short, one line says the limit, what was wanted, that a connection past the limit is refused at accept, and the fix, and the doctor reports `descriptor_limit` beside `descriptors_wanted`. The Mojo host does the same. Before, the soft limit, not `max_connections`, bounded the server: under launchd's default of 256 the quickstart held 208 streams while its banner said 1024, and the 209th connection and the health checks after it were reset at accept; systemd's default soft limit is 1024",
       "status": "verified",
       "evidence": "`Smoke test the connection limit` (every PR) \u2014 the server is started under a soft limit of 40 and holds 64 connections, which it cannot without raising its own, and prints no shortfall; the doctor under the same limit reports `descriptor_limit` of at least 320. `test_process.mojo:test_the_descriptor_limit_is_raised_to_what_is_asked_and_never_lowered`, in a child whose limit starts at 64. The design is [a-loop-keeps-slots-for-requests](notes/a-loop-keeps-slots-for-requests.md)"
+    },
+    {
+      "id": "C22",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A hard descriptor limit too low for the server's own startup is refused with 78 before anything starts: `descriptor-floor`, the last check after the import and so the doctor's too, compares the limit as the server raises it with what the configuration holds before its first connection -- 8, and per loop with a pool or an executor 8 more and 4 a handler thread, 8 for the executor, measured on an M4 -- and 16 connections beside, and the line names the limit, the count and the fix. Under such a limit a descriptor ran out somewhere in the startup, and where was the platform's and the scheduler's: on macOS the loop's kqueue failed after the pool had started, the unwind freed the pool under its threads, and one spun on the freed job ring holding the GIL, a core at 100 % that SIGTERM never stopped (1.16.0 too); on Linux the stdlib's `print(flush=True)` crashed in `fclose(NULL)` after its `dup` failed. A loop that still cannot open its kqueue or epoll, the estimate wrong, exits 1 naming the call and its errno, inline, behind a pool or as one of `--threads`, and unwinds nothing",
+      "status": "verified",
+      "evidence": "`Smoke test the connection limit` (every PR) \u2014 sixteen pool threads under a hard limit of 40 are refused 78 by serving and by the doctor, naming the count and the fix; with two, every limit from 48 down to 40 serves and stops with 0, and 39 is refused; `test_checks.mojo:test_a_descriptor_limit_below_the_startup_is_refused_before_anything_starts` the estimate and the rule. The exit that unwinds nothing is proven by sabotage on an M4 before the floor existed (with the backend's construction moved above the `try`, the server at 40 was still running at 15 s): no limit reaches it on purpose now"
     },
     {
       "id": "D1",
@@ -1938,6 +1946,14 @@
       "evidence": "`Smoke test the comment after an SSE event` (every PR) \u2014 the counter demo at a 400 ms interval, its tick off and its heartbeat a minute away: the stream's opening, whose head carries a comment, and each of three events are followed by one `: flush`, no sooner than 200 ms after the request that caused it, then by nothing for 1.8 s; at 0, nothing follows. `test_slot_lifecycle.mojo:test_an_event_is_followed_by_one_flush_once_nothing_follows_it` drives the drain and the timer over epoll's timer semantics: a firing before the due sends nothing and sets the timer again, a second event moves the due, and a timer with nothing owed is deleted, not left expired. `test_a_flush_waits_for_its_event_and_goes_only_where_a_heartbeat_may` covers the event still being sent, the chunk channel, the WebSocket, the comment turned off and the close. `test_the_flush_interval_is_read_from_the_environment` covers the variable, and `test_a_compressed_stream_writes_every_byte_after_its_head_through_its_context` the context and a head that carries an event. Sixteen reverts of the rules were each caught by one of the four. Not proved here: that Safari behind Fly's proxy now reads each event whole, which only a browser behind that proxy can show ([the note](notes/a-comment-after-an-event.md))"
     },
     {
+      "id": "I48",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A WebSocket an application holds with `M0-Hold: websocket` is upgraded from its own origin only: a handshake whose `Origin` names another host or port than the request's `Host`, or the first `X-Forwarded-Host` a proxy set, compared with case folded in ASCII and a default port dropped, is answered `403` before the upgrade, the hold frame and the subscription, and the first refusal a handler makes prints one line naming the origin and the switch. A handshake with no `Origin`, which no browser sends, is upgraded. `--ws-origin ORIGIN` (repeatable; `M0_WS_ORIGIN`, comma-separated, a flag replacing the list) names origins beside the server's own, `*` any; a value that is not an origin is a usage error, and the doctor reports them. An ASGI application accepts its own sockets and checks their origin itself, as under uvicorn. Until 1.17.0 every origin was upgraded, so a page on another origin, a sibling host the site's SameSite cookies treat as the same site among them, could open a socket the browser attached the site's cookies to",
+      "status": "verified",
+      "evidence": "`Smoke test the Django realtime example over WebSockets` (every PR) \u2014 inline, the server's own origin and a handshake with none are upgraded and another origin is refused 403, its notice printed once over two refusals; under the pool, an origin `--ws-origin` names is upgraded and another refused; `test_ws_origin.mojo:test_a_handshake_is_upgraded_from_its_own_origin_and_refused_from_another` the rule, a sibling host, `null` and KELVIN SIGN among the refusals"
+    },
+    {
       "id": "I39",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
@@ -2696,6 +2712,14 @@
       "capability": "IPv6: `--host ::` (and `M0_HOST=::`, and a `Server.listen_and_serve` on `[::]:PORT`) listens on IPv6 and IPv4, with `IPV6_V6ONLY` set to 0 rather than left to a system default that differs by host; `--host ::1` listens on the IPv6 loopback alone; `[::1]`, as a URL writes it, is accepted wherever a host is read; `0.0.0.0`, `127.0.0.1` and `localhost` listen as they always did. A client is reported in its own family -- `REMOTE_ADDR`, ASGI's `scope[\"client\"]`, the access log's `remote_addr` -- and an IPv4 client of `::` as IPv4 (`127.0.0.1`, where gunicorn and uvicorn report `::ffff:127.0.0.1`), so moving a server from `0.0.0.0` to `::` changes no address an application sees",
       "status": "verified",
       "evidence": "`Smoke test IPv6 listeners` (every PR) \u2014 m0serve on `::` (WSGI and ASGI, a query string answered, `--workers 2` with connections handed between workers, `--workers 2 --spawn-workers`, `--reload`, the doctor), on `[::1]` refusing IPv4 and on `127.0.0.1` refusing IPv6, and the Mojo host on `M0_HOST=::` and `--host ::1` and its doctor's `[::]:PORT`; its first phase fails a runner with no IPv6 loopback. Before: `AF_INET6` was OpenBSD's 24, which macOS refuses and Linux reads as `AF_PPPOX`, `inet_pton` kept four of an IPv6 address's sixteen bytes, and every listener was IPv4. The unit half is `test_ipv6.mojo:test_dual_stack_is_set_not_inherited`"
+    },
+    {
+      "id": "M31",
+      "section": "M",
+      "category": "M. Deployment and operations",
+      "capability": "The listen address defaults to the IPv4 loopback, `127.0.0.1`, for m0serve and the Mojo host alike: a server started without `--host` or `M0_HOST` answers this machine alone, as uvicorn, gunicorn and Django's runserver do, and `0.0.0.0` is every IPv4 interface, which each deploy image here and the m0 scaffold's set. Until 1.17.0 the default was `0.0.0.0`, so a server tried on a laptop answered the network the laptop was on",
+      "status": "verified",
+      "evidence": "`test_config.mojo:test_address_binds_the_loopback_unless_an_interface_is_named` (every PR) \u2014 unset, the loopback; `M0_HOST=0.0.0.0`, every interface; m0serve's options start from the same `AppConfig`"
     },
     {
       "id": "N1",

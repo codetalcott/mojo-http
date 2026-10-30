@@ -937,7 +937,8 @@ Properties of the design, not defects to fix in passing. Each names its note.
 
 ## Configuration
 
-Env vars, all `M0_`-prefixed: `M0_HOST`, `M0_PORT`, `M0_BASE_URL`,
+Env vars, all `M0_`-prefixed: `M0_HOST` (`127.0.0.1` by default since
+1.17.0; every image sets `0.0.0.0`), `M0_PORT`, `M0_BASE_URL`,
 `M0_WORKERS`, `M0_THREADS` (mutually exclusive with `M0_WORKERS>1`;
 free-threaded CPython only), `M0_BLOCKING_THREADS` (handler threads per
 loop; composes with either and with `--realtime`),
@@ -952,8 +953,8 @@ for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and
 and the cookie a grant binds to; `sessionid`), `M0_THREAD_HEADER` (`1`
 names the handler-pool thread in `x-thread` on every response; off),
 `M0_SPAWN_WORKERS`,
-`M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT`, `M0_REPLAY_FRAMES` and
-`M0_MAX_CONNECTIONS` (the env forms of those
+`M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT`, `M0_REPLAY_FRAMES`,
+`M0_MAX_CONNECTIONS` and `M0_WS_ORIGIN` (the env forms of those
 m0serve flags, read by m0serve's `from_env`, which reports every `M0_*`
 value it cannot read rather than ignoring it silently), `M0_INVERTED` (`1`
 runs the loop inside the executor's asyncio loop, where the topology
