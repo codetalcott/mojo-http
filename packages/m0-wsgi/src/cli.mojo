@@ -49,6 +49,12 @@ frames of up to 64 KB, and the journal evicts by shifting its lists on the
 loop thread (`checks.flag_checks`' `replay-frames` rule refuses more)."""
 comptime DEFAULT_REPLAY_FRAMES = 64
 """`--replay-frames`' default: `DatastarStream`'s journal depth, per loop."""
+comptime MAX_CONNECTIONS = 65536
+"""The largest `--max-connections` the server accepts, per loop. A loop's
+periodic sweeps (idle deadlines, flushes, the drain) walk every slot, so the
+cap keeps one loop's walk short; more connections are more loops
+(`--workers`, `--threads`), and `checks.flag_checks`' `max-connections`
+rule refuses more."""
 
 comptime EXIT_CONFIG = 78
 """`EX_CONFIG` from sysexits: the configuration names something absent.
@@ -214,6 +220,12 @@ struct ServeOptions(Copyable, Movable):
     each loop journals so a held stream that reconnects with
     `Last-Event-ID` is caught up on what it missed (SPEC I33); 0 keeps
     none, so every such reconnect that missed a frame is told so."""
+    var max_connections: Int
+    """`--max-connections` / `M0_MAX_CONNECTIONS`: connections one loop
+    holds open at once, streams included (SPEC C20); -1 leaves
+    `ServerConfig`'s default (1024) alone. Streams take all but the
+    loop's reserve (`ServerConfig.stream_limit`), and the handler's
+    per-slot tables are sized from it (`loop_connections`)."""
     var max_keepalive_requests: Int
     """`--max-keepalive-requests`: requests a keep-alive connection may carry
     before the server closes it (0 = never); -1 leaves the environment's
@@ -328,6 +340,7 @@ struct ServeOptions(Copyable, Movable):
         self.spawn_workers = False
         self.max_body = -1
         self.replay_frames = DEFAULT_REPLAY_FRAMES
+        self.max_connections = -1
         self.max_keepalive_requests = -1
         self.idle_timeout = -1
         self.body_timeout = -1
@@ -392,6 +405,17 @@ struct ServeOptions(Copyable, Movable):
                         String(defaults.body_read_timeout),
                     )
                 )
+        raw = getenv("M0_MAX_CONNECTIONS", "")
+        if raw.byte_length() > 0:
+            try:
+                opts.max_connections = parse_max_connections(raw)
+            except:
+                opts.env_ignored.append(
+                    _ignored(
+                        "M0_MAX_CONNECTIONS", raw, "a whole number of connections",
+                        String(defaults.max_connections),
+                    )
+                )
         raw = getenv("M0_REPLAY_FRAMES", "")
         if raw.byte_length() > 0:
             try:
@@ -424,6 +448,15 @@ struct ServeOptions(Copyable, Movable):
         _check_bool_env(opts.env_ignored, "M0_QOS")
         _check_bool_env(opts.env_ignored, "M0_SPAWN_WORKERS")
         return opts^
+
+    def loop_connections(self) -> Int:
+        """Connections one loop holds: `--max-connections` (or
+        `M0_MAX_CONNECTIONS`), else `ServerConfig`'s default. What the
+        handler sizes its per-slot tables by, so a slot the loop hands out
+        is one they can hold."""
+        if self.max_connections > 0:
+            return self.max_connections
+        return ServerConfig().max_connections
 
     def address(self) -> String:
         """The listen address, `host:port`, an IPv6 host bracketed
@@ -470,6 +503,8 @@ struct ServeOptions(Copyable, Movable):
             sc.access_log = True
         if self.max_body >= 0:
             sc.max_request_body_size = self.max_body
+        if self.max_connections > 0:
+            sc.max_connections = self.max_connections
         if self.max_keepalive_requests >= 0:
             sc.max_keepalive_requests = self.max_keepalive_requests
         if self.idle_timeout >= 0:
@@ -488,6 +523,13 @@ struct ServeOptions(Copyable, Movable):
             sc.body_read_timeout,
             "s) after its headers was refused; raise --body-timeout or"
             " M0_BODY_TIMEOUT if clients upload that slowly",
+        )
+        sc.stream_cap_notice = String(
+            "m0serve: a stream was answered 503: streams held ",
+            sc.stream_limit(), " of this loop's ", sc.max_connections,
+            " connections, and the last ", sc.stream_reserve(),
+            " are kept for requests; raise --max-connections or"
+            " M0_MAX_CONNECTIONS, or serve more loops (--workers, --threads)",
         )
         return sc^
 
@@ -548,6 +590,22 @@ def parse_size(text: String) raises -> Int:
         raise Error(
             "--max-body must be a size like 4m or 4194304, got '" + text + "'"
         )
+
+
+def parse_max_connections(text: String) raises -> Int:
+    """`--max-connections`: a whole number of connections, 1 or more. The
+    ceiling is `flag_checks`' (78), since a number above it can be read."""
+    var count: Int
+    try:
+        count = parse_int(String(text.strip()), "--max-connections")
+    except:
+        count = 0
+    if count < 1:
+        raise Error(
+            "--max-connections must be a whole number of connections, 1 or"
+            " more, got '" + text + "'"
+        )
+    return count
 
 
 def parse_replay_frames(text: String) raises -> Int:
@@ -1442,6 +1500,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--static-header"
         or name == "--max-body"
         or name == "--replay-frames"
+        or name == "--max-connections"
         or name == "--max-keepalive-requests"
         or name == "--idle-timeout"
         or name == "--body-timeout"
@@ -1575,6 +1634,8 @@ def _apply(mut opts: ServeOptions, name: String, value: String) raises:
         opts.max_body = parse_size(value)
     elif name == "--replay-frames":
         opts.replay_frames = parse_replay_frames(value)
+    elif name == "--max-connections":
+        opts.max_connections = parse_max_connections(value)
     elif name == "--max-keepalive-requests":
         var cap = parse_int(value, "--max-keepalive-requests")
         if cap < 0:
@@ -1742,6 +1803,12 @@ def usage() -> String:
         "                              (default 4m; M0_MAX_BODY); over it the\n"
         "                              server answers 413 itself, before the app\n"
         "                              runs\n"
+        "  --max-connections N         connections each loop holds open at once\n"
+        "                              (default 1024, at most 65536;\n"
+        "                              M0_MAX_CONNECTIONS). Streams take all but\n"
+        "                              N/16 of them, at most 16, kept for\n"
+        "                              requests; one more is answered 503 with\n"
+        "                              Retry-After\n"
         "  --max-keepalive-requests N  close a keep-alive connection after N\n"
         "                              requests (default 1000, 0 = never;\n"
         "                              M0_MAX_KEEPALIVE_REQUESTS)\n"

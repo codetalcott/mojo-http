@@ -25,8 +25,25 @@ default is listed under **Behaviour changes**
   comment. `M0_SSE_FLUSH_MS` sets the delay and `0` turns it off. A
   stream an application writes through the chunk channel gets none, as it
   gets no heartbeat ([the note](docs/notes/a-comment-after-an-event.md)).
+- **Streams leave a loop's last slots to requests** (SPEC C20). Held SSE
+  streams and WebSockets take all but a sixteenth of a loop's
+  connections, at most 16, and the stream after that is answered `503`
+  with `Retry-After: 5`. Before, streams could take every slot, and each
+  connection after the last was reset at accept, the health check's among
+  them, so a load balancer marked a busy realtime server dead. The
+  default now holds 1008 streams per loop where it held 1024;
+  `--max-connections 1040` holds 1024 as before. A browser's
+  `EventSource` does not reconnect after a `503`, so a page that should
+  keep trying reconnects on `error` itself
+  ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
 
 ### Added
+
+- **`--max-connections N`** (`M0_MAX_CONNECTIONS`): the connections one
+  loop holds, 1024 by default and at most 65536 (SPEC C20). It was a
+  constant. The handler's per-slot tables follow it, `/__metrics` counts
+  `http_streams_held` and `http_streams_refused_total`, and `--doctor`
+  reports `max_connections` and `stream_limit`.
 
 - **Releases leave on a train** ([Releases](docs/RELEASES.md)). A minor
   every second Thursday, from 1.17.0 on 2026-11-05, with `m0` the same day
@@ -76,6 +93,15 @@ default is listed under **Behaviour changes**
   ([RUNNING](docs/RUNNING.md)).
 
 ### Fixed
+
+- **The server raises its own open-file limit** to what its connections
+  need, before it binds (SPEC C21). The soft limit, not the connection
+  count, was the real ceiling. Under launchd's default of 256, m0serve
+  held 208 streams while its banner said 1024, and the next connection and
+  every health check after it were reset. Raised only as far as needed,
+  never past the hard limit, and with one line when the hard limit stops
+  it short; `--doctor` reports `descriptor_limit`. The Mojo host does the
+  same.
 
 - **A thread that cannot start is no longer joined** (SPEC E41). On
   glibc, a `pthread_create` that `clone` refused, at a process or thread

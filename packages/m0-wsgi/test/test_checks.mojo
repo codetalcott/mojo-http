@@ -111,7 +111,7 @@ def test_a_plain_configuration_passes_every_rule_it_meets() raises:
     """The positional spec with nothing else: the three rules that always
     apply, all passing, and nothing for the server to refuse."""
     var checks = flag_checks(_opts([String("app.wsgi")]), _facts())
-    assert_equal(_names(checks), "port,address,app-dir,threads-vs-workers,replay-frames,workers-vs-parallel-runtime")
+    assert_equal(_names(checks), "port,address,app-dir,threads-vs-workers,max-connections,replay-frames,workers-vs-parallel-runtime")
     assert_false(Bool(first_refusal(checks)))
     for i in range(len(checks)):
         assert_true(checks[i].ok)
@@ -140,7 +140,7 @@ def test_the_flag_rules_are_in_the_order_the_server_applies_them() raises:
         "port,address,app-dir,static-dir,reload-dir,threads-vs-workers,protocol-vs-realtime,"
         + "pg-listen,mounts-without-python,hold-mount-vs-realtime,hold-mount-key,"
         + "compiled-mount-vs-threads,compiled-mount-threads,mount-lanes,"
-        + "replay-frames,workers-vs-parallel-runtime",
+        + "max-connections,replay-frames,workers-vs-parallel-runtime",
     )
     assert_false(Bool(first_refusal(checks)), _failed(checks))
     assert_equal(checks[7].detail, "libpq 16.4 at /usr/lib/libpq.so")
@@ -200,6 +200,37 @@ def test_a_journal_deeper_than_the_cap_is_refused_with_78() raises:
     for ok in [String("0"), String("64"), String("4096")]:
         var checks = flag_checks(
             _opts([String("app.wsgi"), String("--replay-frames"), ok]),
+            _facts(),
+        )
+        assert_false(Bool(first_refusal(checks)), ok + ": " + _failed(checks))
+
+
+def test_more_connections_than_a_loop_holds_are_refused_with_78() raises:
+    """`--max-connections` (and `M0_MAX_CONNECTIONS`, which resolves into
+    the same option) above 65536 is refused through the list; 1 and the cap
+    itself pass, and the doctor's detail names the configured count and the
+    streams it leaves room for (SPEC C20). The default is 1024, 1008 of them
+    streams.
+
+    covers: C20
+    """
+    var c = _first(flag_checks(
+        _opts([String("app.wsgi"), String("--max-connections"), String("65537")]),
+        _facts(),
+    ))
+    assert_equal(c.name, "max-connections")
+    assert_equal(c.code, 78)
+    assert_true(c.detail.find("65537") >= 0, c.detail)
+    assert_true(c.fix.find("--workers or --threads") >= 0, c.fix)
+    var plain = flag_checks(_opts([String("app.wsgi")]), _facts())
+    var rule = plain[len(plain) - 3].copy()
+    assert_equal(rule.name, "max-connections")
+    assert_equal(
+        rule.detail, "1024 connections per loop, streams taking up to 1008"
+    )
+    for ok in [String("1"), String("64"), String("65536")]:
+        var checks = flag_checks(
+            _opts([String("app.wsgi"), String("--max-connections"), ok]),
             _facts(),
         )
         assert_false(Bool(first_refusal(checks)), ok + ": " + _failed(checks))

@@ -8,7 +8,12 @@ struct ServerConfig(Copyable, Movable):
     """Configuration for the HTTP server."""
 
     var max_connections: Int
-    """Maximum number of concurrent connections."""
+    """Connections one event loop holds open at once: its slot count.
+
+    Streams may take all of them but `stream_reserve()`, which a loop keeps
+    for requests (`stream_limit`, SPEC C20). Every per-slot table a handler
+    keeps is sized from this, because slots index those tables directly.
+    """
 
     var max_keepalive_requests: Int
     """Maximum requests per keepalive connection (0 = unlimited)."""
@@ -74,6 +79,10 @@ struct ServerConfig(Copyable, Movable):
     """The same, the first time a loop ends a body that stopped arriving
     (`body_read_timeout`)."""
 
+    var stream_cap_notice: String
+    """The same, the first time a loop answers a stream 503 because streams
+    already hold all its slots but the reserve (`stream_limit`)."""
+
     def __init__(out self):
         self.max_connections = 1024
         # 1000, nginx's default since 1.19.10, from 100: every close is a
@@ -99,6 +108,27 @@ struct ServerConfig(Copyable, Movable):
         self.app_tick_ms = 0
         self.body_size_notice = String("")
         self.body_timeout_notice = String("")
+        self.stream_cap_notice = String("")
+
+    def stream_reserve(self) -> Int:
+        """Slots a loop keeps for requests, which no stream may take: a
+        sixteenth of `max_connections`, and never more than 16.
+
+        A stream holds its slot until its client leaves, so a loop whose
+        every slot is a stream refuses every connection after it, its
+        health path's among them: a load balancer marks the server dead at
+        the moment it is busiest (SPEC C20). Sixteen is room for the health
+        checks and the page loads that arrive while streams are full; a
+        loop of fewer than 16 slots keeps none, so a test's small loop is
+        unchanged.
+        """
+        var share = self.max_connections // 16
+        return share if share < 16 else 16
+
+    def stream_limit(self) -> Int:
+        """Streams a loop holds at once: `max_connections` less the reserve.
+        One that would be the next is answered 503 (`_finish_response`)."""
+        return self.max_connections - self.stream_reserve()
 
     def recv_buffer_limit(self) -> Int:
         """The most bytes one connection may hold buffered and unprocessed.

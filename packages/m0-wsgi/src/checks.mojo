@@ -38,6 +38,7 @@ from std.sys.info import CompilationTarget
 
 from lightbug_http.address import NetworkType, join_host_port, parse_address
 from lightbug_http.c.process import process_exit
+from lightbug_http.server_config import ServerConfig
 from m0_http import GRANT_KEY_ENV, threads_conflict
 from m0_http.parallel_runtime import parallel_runtime_linked
 
@@ -57,6 +58,7 @@ from .cli import (
     EXIT_STARTUP,
     EXIT_USAGE,
     MAX_MOUNTS,
+    MAX_CONNECTIONS,
     MAX_REPLAY_FRAMES,
     PROTOCOL_ASGI,
 )
@@ -286,6 +288,12 @@ def _rule(
         out.append(ServeCheck(name, refused, fix, code, usage=usage))
 
 
+def _stream_limit(connections: Int) -> Int:
+    var config = ServerConfig()
+    config.max_connections = connections
+    return config.stream_limit()
+
+
 def flag_checks(opts: ServeOptions, facts: CheckFacts) -> List[ServeCheck]:
     """The rules decidable before the bind, in the order the server applies them.
 
@@ -442,6 +450,20 @@ def flag_checks(opts: ServeOptions, facts: CheckFacts) -> List[ServeCheck]:
             "mount at most " + String(MAX_MOUNTS)
             + " applications per server, and serve the rest from another",
             EXIT_CONFIG)
+
+    # Connections per loop, whatever named it (flag or `M0_MAX_CONNECTIONS`;
+    # both refuse a number under 1 as unreadable). The ceiling keeps one
+    # loop's slot sweeps short; more is more loops. Before `replay-frames`,
+    # whose place second from the end the doctor's readers count on.
+    var loop_connections = opts.loop_connections()
+    _rule(out, "max-connections", loop_connections <= MAX_CONNECTIONS,
+        String(loop_connections) + " connections per loop, streams taking up to "
+        + String(_stream_limit(loop_connections)),
+        "--max-connections (M0_MAX_CONNECTIONS) is " + String(loop_connections)
+        + ", above the " + String(MAX_CONNECTIONS) + " one loop holds: its"
+        + " sweeps walk every slot",
+        "set --max-connections (M0_MAX_CONNECTIONS) to " + String(MAX_CONNECTIONS)
+        + " or fewer, and serve more with --workers or --threads", EXIT_CONFIG)
 
     # The journal's depth, whatever named it (flag or `M0_REPLAY_FRAMES`),
     # capped whether or not `--realtime` is given, though only `--realtime`

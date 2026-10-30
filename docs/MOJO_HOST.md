@@ -76,7 +76,14 @@ exit 78 and its message. It is not retried.
 ## Execution modes
 
 One loop in one process is the default, and on one vCPU it is the whole
-answer ([Deploy](MOJO_DEPLOY.md)).
+answer ([Deploy](MOJO_DEPLOY.md)). A loop holds 1024 connections, and
+streams take all but the last 16 of them: the stream after that is
+answered `503` with `Retry-After`, so the health path is still answered
+while streams hold the rest. More streams are more loops. The host raises
+its own open-file limit to what its loops need before it binds, and says
+so when the hard limit stops it short. The doctor reports
+`max_connections_per_loop`, `stream_limit_per_loop` and
+`descriptor_limit`.
 
 **`M0_THREADS=N`** runs N loops on N threads of one process, and is the
 way to more than one core. Nothing is forked, so a runtime that cannot

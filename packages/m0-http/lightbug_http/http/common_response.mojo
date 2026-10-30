@@ -83,6 +83,20 @@ def NotImplemented() -> HTTPResponse:
     )
 
 
+def ServiceUnavailable(retry_after: Int) -> HTTPResponse:
+    """503 with `Retry-After` in seconds (RFC 9110 §15.6.4, §10.2.3): the
+    server is up and cannot take this now. A loop answers a stream with it
+    when streams already hold every slot it lets them take (SPEC C20)."""
+    var response = HTTPResponse(
+        "Service Unavailable".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=503,
+        status_text="Service Unavailable",
+    )
+    response.headers[HeaderKey.RETRY_AFTER] = String(retry_after)
+    return response^
+
+
 def InternalError() -> HTTPResponse:
     return HTTPResponse(
         "Failed to process request".as_bytes(),

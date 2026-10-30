@@ -1787,6 +1787,45 @@ echo "smoke-stream-keepalive OK"
 python3 scripts/emit.py --covers I32 --task smoke-stream-keepalive
 """
 
+# SPEC C20 and C21. A loop let streams take every slot, so once they had,
+# every connection after the last was reset at accept, the health check's
+# among them; and the soft descriptor limit, not `max_connections`, was the
+# real ceiling (launchd's 256 held 208 streams). The server starts under a
+# soft limit of 40 for 64 connections, so nothing here holds unless it
+# raised its own limit first; the probe fills the stream share and asks the
+# health path, an ordinary request and a WebSocket what they are answered.
+[tool.poe.tasks.smoke-max-connections]
+help = "Streams leave a loop's last slots to requests, and the server raises its own descriptor limit to hold them"
+deps = ["build-serve"]
+shell = """
+. scripts/smoke/lib.sh
+port=$(free_port)
+spawn maxconn.log sh -c 'ulimit -S -n 40 && exec "$@"' sh bin/m0serve hold_app:application \
+  --app-dir scripts/smoke --port $port --realtime --max-connections 64 \
+  --health-path /health --metrics
+wait_ready http://localhost:$port/health $pid
+python3 scripts/max_connections_probe.py $port 64 || fail
+# The first stream refused names the knob, once, however many follow.
+n=$(grep -c 'raise --max-connections or M0_MAX_CONNECTIONS' "$SMOKE_DIR/maxconn.log")
+[ "$n" = "1" ] || fail "the stream notice should appear once, appeared $n times"
+grep -q 'the open-file limit is' "$SMOKE_DIR/maxconn.log" && fail 'the server could not raise a soft limit of 40'
+stop $pid
+# The doctor reports the count, the stream share and the limit the server
+# would run under, raised as it raises it; and refuses a count above one
+# loop's with 78, as serving would.
+out=$(sh -c 'ulimit -S -n 40 && exec "$@"' sh bin/m0serve hold_app:application --app-dir scripts/smoke \
+  --max-connections 64 --doctor | tail -n 1)
+echo "$out" | python3 -c "import json, sys; s = json.load(sys.stdin)['server']; \
+assert (s['max_connections'], s['stream_limit'], s['descriptors_wanted']) == (64, 60, 320), s; \
+assert s['descriptor_limit'] >= 320, s" || fail "the doctor's connection figures: $out"
+code=0
+bin/m0serve hold_app:application --app-dir scripts/smoke --max-connections 65537 > /dev/null 2>&1 || code=$?
+[ "$code" = "78" ] || fail "--max-connections 65537 exited $code, wanted 78"
+echo "smoke-max-connections OK"
+python3 scripts/emit.py --covers C20 --task smoke-max-connections
+python3 scripts/emit.py --covers C21 --task smoke-max-connections
+"""
+
 # B1. The body timer was armed above the decode of what came with the
 # headers, so every body that arrived whole left it running: it closed a
 # keep-alive connection `body_read_timeout` after its POST, and under the

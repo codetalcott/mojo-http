@@ -346,7 +346,21 @@ def test_server_config_defaults_are_the_documented_ones() raises:
     assert_equal(sc.app_tick_ms, 0)
     assert_equal(sc.body_size_notice, "")
     assert_equal(sc.body_timeout_notice, "")
+    assert_equal(sc.stream_cap_notice, "")
+    assert_equal(sc.stream_limit(), 1008)
     assert_true(sc.socket_buffer_size > 0)
+
+
+def test_a_loop_keeps_a_sixteenth_of_its_slots_for_requests_and_at_most_16() raises:
+    """`stream_reserve` (SPEC C20): the slots no stream may take, so a loop
+    full of streams still answers its health path. A loop under 16 slots
+    keeps none, so a test's small loop holds as many streams as before."""
+    var sc = ServerConfig()
+    for row in [(1, 0), (15, 0), (16, 1), (64, 4), (255, 15), (256, 16),
+                (1024, 16), (65536, 16)]:
+        sc.max_connections = row[0]
+        assert_equal(sc.stream_reserve(), row[1], String(row[0]))
+        assert_equal(sc.stream_limit(), row[0] - row[1])
 
 
 def main() raises:

@@ -181,6 +181,8 @@ def test_every_family_has_help_type_and_its_sample() raises:
     m.pool_available = 1021
     m.pool_capacity = 1024
     m.bus_frames_refused = 2
+    m.streams_held = 7
+    m.streams_refused = 9
     var text = m.to_text()
     var families = [
         ("http_requests_total", "counter", "11"),
@@ -191,6 +193,8 @@ def test_every_family_has_help_type_and_its_sample() raises:
         ("http_pool_available", "gauge", "1021"),
         ("http_pool_capacity", "gauge", "1024"),
         ("http_bus_frames_refused_total", "counter", "2"),
+        ("http_streams_held", "gauge", "7"),
+        ("http_streams_refused_total", "counter", "9"),
     ]
     for f in families:
         var name = String(f[0])

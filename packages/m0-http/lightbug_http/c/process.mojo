@@ -232,6 +232,75 @@ comptime SIG_IGN = 1
 """`signal(2)`'s ignore disposition."""
 
 
+comptime RLIMIT_NOFILE = 8 if CompilationTarget.is_macos() else 7
+"""`getrlimit(2)`'s resource for open descriptors: 8 on macOS, 7 on Linux."""
+
+comptime DESCRIPTOR_CEILING = 1 << 20
+"""The highest soft limit `raise_descriptor_limit` sets. epoll's timer
+idents tell descriptors apart only below 2^20 (`c/epoll_backend.mojo`,
+review record LF18), so the server never asks for a descriptor above it."""
+
+comptime DESCRIPTOR_HEADROOM = 256
+"""Descriptors a server needs beside its connections: the listener, the
+bus and accept-share channels, a pool's wake pipes, the files a static
+mount and the application open. A loop's connection count plus this is
+what `raise_descriptor_limit` is asked for (SPEC C21)."""
+
+
+def descriptor_limit() -> Int:
+    """This process's soft limit on open descriptors (`ulimit -n`), or -1
+    when `getrlimit` fails."""
+    var lim = Array[UInt64, 2](fill=UInt64(0))
+    comptime LimPtr = type_of(Pointer(to=lim[0]))
+    if external_call["getrlimit", c_int, c_int, LimPtr](
+        c_int(RLIMIT_NOFILE), Pointer(to=lim[0])
+    ) != 0:
+        return -1
+    if lim[0] > UInt64(DESCRIPTOR_CEILING):
+        return DESCRIPTOR_CEILING
+    return Int(lim[0])
+
+
+def raise_descriptor_limit(want: Int) -> Int:
+    """Raise the soft limit on open descriptors to `want`, as far as the hard
+    limit lets it; never lower it. Answers the soft limit after, which the
+    caller compares with `want` to say when it fell short (SPEC C21).
+
+    A connection is a descriptor, so the soft limit, not `max_connections`,
+    is what bounded a server: macOS's launchd default is 256, which held 208
+    streams where the banner said 1024, and the 209th connection and every
+    health check after it were reset at accept. systemd's default soft limit
+    is 1024 under a hard limit of 524288. Raising the soft limit needs no
+    privilege, and nginx (`worker_rlimit_nofile`) and the Go runtime do it at
+    startup. Raised only to `want`, never to the hard limit, because a child
+    process inherits it, and a program that sizes a table by
+    `sysconf(_SC_OPEN_MAX)` pays for whatever it is. Capped at
+    `DESCRIPTOR_CEILING`. On macOS a soft limit above
+    `kern.maxfilesperproc` is EINVAL even under an unlimited hard limit, so
+    a refused raise is retried at half the step until one is taken.
+    """
+    var lim = Array[UInt64, 2](fill=UInt64(0))
+    comptime LimPtr = type_of(Pointer(to=lim[0]))
+    if external_call["getrlimit", c_int, c_int, LimPtr](
+        c_int(RLIMIT_NOFILE), Pointer(to=lim[0])
+    ) != 0:
+        return -1
+    var soft = lim[0]
+    var target = UInt64(want if want < DESCRIPTOR_CEILING else DESCRIPTOR_CEILING)
+    if target > lim[1]:
+        target = lim[1]
+    if soft >= target:
+        return Int(soft) if soft < UInt64(DESCRIPTOR_CEILING) else DESCRIPTOR_CEILING
+    while target > soft:
+        lim[0] = target
+        if external_call["setrlimit", c_int, c_int, LimPtr](
+            c_int(RLIMIT_NOFILE), Pointer(to=lim[0])
+        ) == 0:
+            return Int(target)
+        target = soft + (target - soft) // 2
+    return Int(soft)
+
+
 def ignore_sigpipe():
     """Make a write to a peer that has gone an error, not the end of the process.
 

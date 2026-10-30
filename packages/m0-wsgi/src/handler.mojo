@@ -67,12 +67,6 @@ from lightbug_http.broadcast import reserved_stream_url
 from .threaded import ThreadHandler, ThreadContext
 
 
-comptime REALTIME_SLOTS = 1024
-"""Registry capacity under `--realtime`; must cover the server's max connections.
-
-Slots index the registries directly, so a slot the server can hand out and
-the registry cannot hold is a subscription that silently does not happen.
-"""
 
 comptime NOT_POOL_HELD = -2
 """`hold_lane` for a slot no pool thread's view is holding.
@@ -390,6 +384,7 @@ struct WSGIHandler(ThreadHandler):
         asgi_streaming: Bool = False,
         var root_prefix: String = String(""),
         replay_frames: Int = 64,
+        max_connections: Int = 1024,
     ):
         # One slot is exactly the unmounted case; `mount` grows it.
         self.apps = List[WSGIApp](capacity=1)
@@ -419,7 +414,11 @@ struct WSGIHandler(ThreadHandler):
         # them — no branch in the hot path, and no branch to get wrong.
         # `asgi_streaming` (the executor mode) needs the same registries:
         # they are the per-slot outboxes ASGI response chunks ride.
-        var slots = REALTIME_SLOTS if (realtime or asgi_streaming) else 0
+        # `max_connections` is the loop's own (`ServeOptions.loop_connections`):
+        # slots index the registries directly, so a slot the loop can hand
+        # out and a registry cannot hold is a subscription that silently
+        # does not happen. It was a constant 1024 while the loop's count was.
+        var slots = max_connections if (realtime or asgi_streaming) else 0
         self.streams = SSERegistry(slots)
         self.sockets = SSERegistry(slots)
         self.replay = ReplayJournal(replay_frames if realtime else 0)
@@ -480,6 +479,7 @@ struct WSGIHandler(ThreadHandler):
             app^, Self.mounts_for(opts), opts.realtime, opts.health_path,
             asgi_streaming=opts.asgi_streaming,
             replay_frames=opts.replay_frames,
+            max_connections=opts.loop_connections(),
         )
 
     @staticmethod
@@ -545,6 +545,7 @@ struct WSGIHandler(ThreadHandler):
             asgi_streaming=opts.asgi_streaming,
             root_prefix=opts.mount_prefixes[head],
             replay_frames=opts.replay_frames,
+            max_connections=opts.loop_connections(),
         )
         handler.route_prefixes = opts.mount_prefixes.copy()
         if only_mount >= 0:

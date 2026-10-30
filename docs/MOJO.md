@@ -20,7 +20,7 @@ uv run m0 build && bin/server --host 127.0.0.1 --port 8080
 
 It suits an application whose cost is work on the server per request, per
 tick or per connection: a simulation pushed to every open tab, a filtered
-scan over data held in memory, thousands of held streams. It has no ORM, no
+scan over data held in memory, a thousand held streams on each loop. It has no ORM, no
 admin and no template engine; `form(req)` parses a urlencoded form, and
 the view validates it. An application that needs those is a Django
 application, and [m0serve](RUNNING.md) serves it;

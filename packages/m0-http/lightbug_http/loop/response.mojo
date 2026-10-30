@@ -13,7 +13,8 @@ from lightbug_http.c.socket import MSG_PEEK, recv, send, close, set_tcp_keepaliv
 from lightbug_http.connection import ConnectionState
 from lightbug_http.header import HeaderKey, KH_DATE
 from lightbug_http.http import (
-    HTTPResponse, encode, enforce_bodiless_framing, is_bodiless_status,
+    HTTPResponse, ServiceUnavailable, encode, enforce_bodiless_framing,
+    is_bodiless_status,
 )
 from lightbug_http.http.date import http_date_from_unix, unix_now
 from lightbug_http.c.sendfile import send_file
@@ -24,9 +25,10 @@ from lightbug_http.service import HTTPService
 from lightbug_http.websocket import is_ws_upgrade_response
 
 from lightbug_http.loop.state import (
-    LoopState, STREAM_KEEPALIVE_PROBES, UNUSED, _arm_send_deadline,
-    _await_write, _close_slot, _end_request, _keep_stream_close,
-    _owe_flush, _record_response, _slot_of, _stream_idle, _ws_linger,
+    LoopState, STREAM_KEEPALIVE_PROBES, STREAM_REFUSED_RETRY_S, UNUSED,
+    _arm_send_deadline, _await_write, _close_slot, _end_request,
+    _keep_stream_close, _notice_once, _owe_flush, _record_response,
+    _slot_of, _stream_idle, _ws_linger,
 )
 from lightbug_http.loop.request import _drain_pipelined
 from std.ffi import c_int
@@ -265,6 +267,29 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
     # once the handshake response is on the wire (see _after_send).
     var upgraded_ws = is_ws_upgrade_response(response)
 
+    # A loop keeps its last slots for requests (SPEC C20): a stream that
+    # would take one is answered 503 instead, so the health path and an
+    # ordinary request still find a slot while streams hold the rest. Before,
+    # streams could hold every slot, and each connection after the last was
+    # reset at accept, the health check's among them. The handler has
+    # already subscribed the slot; drop that through the hook a stream's
+    # close calls, as the HEAD case below does. A stream on the chunk
+    # channel ends on its own and its producer is mid-flight, so it is never
+    # refused; it is counted, because it holds its slot while it runs. A HEAD
+    # becomes an ordinary answer below, so it takes nothing to refuse.
+    if (
+        (response.sse_streaming or upgraded_ws)
+        and not st.offload.is_head[slot]
+        and st.streams_held >= st.config.stream_limit()
+        and not st.offload.slot_channel_stream(slot)
+    ):
+        handler.sse_slot_disconnected(slot)
+        response = ServiceUnavailable(STREAM_REFUSED_RETRY_S)
+        upgraded_ws = False
+        st.provision_pool.provisions[slot].should_close = True
+        st.metrics.streams_refused += 1
+        _notice_once(st.config.stream_cap_notice)
+
     # A client that has half-closed is answered with a close once its last
     # request is (review record LF11). The EOF set `should_close` and the
     # request's own `Connection` replaced it: the answer read `keep-alive`,
@@ -328,6 +353,10 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         handler.sse_slot_disconnected(slot)
 
     if response.sse_streaming:
+        # Counted once per stream, by the flag's edge: `_close_slot` and
+        # `_chunked_stream_ends`, the flag's two resets, take it back.
+        if not st.slot_sse[slot]:
+            st.streams_held += 1
         st.slot_sse[slot] = True
         # The outbox sweep's gate: every site that sets a stream flag
         # raises it, or the sweep skips a stream nothing else drains.
@@ -338,6 +367,8 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
             _begin_zstd_stream(st, slot, response)
 
     if upgraded_ws:
+        if not st.slot_ws[slot]:
+            st.streams_held += 1
         st.slot_ws[slot] = True
         st.offload.streaming_hint += 1
         st.slot_ws_state[slot].reset()

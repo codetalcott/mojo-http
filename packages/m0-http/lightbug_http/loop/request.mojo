@@ -848,6 +848,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     # Intercept /__metrics before user handler
     if st.config.enable_metrics and request_path == "/__metrics":
         st.metrics.active_connections = st.active_count
+        st.metrics.streams_held = st.streams_held
         st.metrics.pool_available = st.provision_pool.available_count()
         var body = st.metrics.to_text()
         response = HTTPResponse(

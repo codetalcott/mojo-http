@@ -21,7 +21,8 @@ from std.time import sleep
 
 from lightbug_http.c.pipe import create_shutdown_pipe
 from lightbug_http.c.process import (
-    SIGKILL, exit_code, fork, kill_process, process_exit, term_signal,
+    DESCRIPTOR_CEILING, SIGKILL, descriptor_limit, exit_code, fork,
+    kill_process, process_exit, raise_descriptor_limit, term_signal,
     waitpid_blocking, waitpid_nonblocking, was_signaled,
 )
 
@@ -165,6 +166,53 @@ def test_each_process_call_answers_what_it_cannot_do() raises:
     assert_equal(wrong & 16, 0, "the child could not lower its process limit")
     assert_equal(wrong & 32, 0, "fork at the process limit did not raise")
     assert_equal(wrong, 0, "the scenario itself raised")
+
+
+def _raised_descriptor_limit_scenario():
+    """In a child: the soft limit lowered to 64, then raised. Exits with a
+    bit per answer that was wrong, 0 when every one was right. Never
+    returns."""
+    if not _set_soft_limit(_RLIMIT_NOFILE, 64):
+        process_exit(64)
+    var wrong = 0
+    if descriptor_limit() != 64:
+        wrong |= 1
+    if raise_descriptor_limit(600) != 600 or descriptor_limit() != 600:
+        wrong |= 2
+    # Never lowered: a smaller ask leaves what is there.
+    if raise_descriptor_limit(100) != 600 or descriptor_limit() != 600:
+        wrong |= 4
+    # Never past the ceiling, whatever is asked.
+    if raise_descriptor_limit(DESCRIPTOR_CEILING * 4) > DESCRIPTOR_CEILING:
+        wrong |= 8
+    if descriptor_limit() < 600:
+        wrong |= 16
+    process_exit(wrong)
+
+
+def test_the_descriptor_limit_is_raised_to_what_is_asked_and_never_lowered() raises:
+    """`raise_descriptor_limit` (SPEC C21) raises the soft limit on open
+    descriptors to what a server's connections need, never lowers it and
+    never sets it past `DESCRIPTOR_CEILING`, where epoll's timer idents stop
+    telling descriptors apart; in a child whose soft limit starts at 64, as
+    launchd's 256 and systemd's 1024 are where a server is started.
+
+    covers: C21
+    """
+    var pid = fork()
+    if pid == 0:
+        _raised_descriptor_limit_scenario()
+        process_exit(99)  # unreachable: the scenario exits on every path
+    var result = waitpid_blocking(pid)
+    assert_false(was_signaled(result[1]), "the child died on a signal")
+    var wrong = exit_code(result[1])
+    assert_true(wrong != 64, "the child could not lower its descriptor limit")
+    assert_equal(wrong & 1, 0, "descriptor_limit did not read the soft limit")
+    assert_equal(wrong & 2, 0, "the soft limit was not raised to what was asked")
+    assert_equal(wrong & 4, 0, "a smaller ask lowered the soft limit")
+    assert_equal(wrong & 8, 0, "the soft limit was raised past the ceiling")
+    assert_equal(wrong & 16, 0, "an ask past the ceiling lowered the soft limit")
+    assert_equal(wrong, 0)
 
 
 def _pipe_at_the_descriptor_limit_scenario():

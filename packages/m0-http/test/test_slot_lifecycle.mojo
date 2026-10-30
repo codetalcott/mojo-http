@@ -3288,5 +3288,124 @@ def _discard_all(fd: Int):
             break
 
 
+def _answer_on_slot(
+    mut app: Departures, mut backend: FakeBackend, mut st: LoopState,
+    var response: HTTPResponse,
+) raises -> Tuple[Int, Int]:
+    """A fresh connection's slot answered with `response` through
+    `_finish_response`, as a request's answer arrives: the slot, and the
+    client's end of the connection."""
+    var pair = _stream_pair()
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = pair[0]
+    st.fd_to_slot[pair[0]] = slot
+    st.active_count += 1
+    st.offload.http11[slot] = True
+    st.offload.is_head[slot] = False
+    st.provision_pool.provisions[slot].state = ConnectionState.processing()
+    _finish_response(app, backend, st, slot, pair[0], response^)
+    return (slot, pair[1])
+
+
+def _sse_head() -> HTTPResponse:
+    var response = OK(": open\n\n", "text/event-stream")
+    response.sse_streaming = True
+    return response^
+
+
+def _ws_head() -> HTTPResponse:
+    var response = HTTPResponse(
+        Bytes(), status_code=101, status_text="Switching Protocols"
+    )
+    response.headers["upgrade"] = "websocket"
+    response.headers["connection"] = "Upgrade"
+    return response^
+
+
+def _head_of(peer: Int) raises -> String:
+    var wire = List[UInt8]()
+    _ = _read_available(peer, wire)
+    return String(unsafe_from_utf8=Span(wire)).lower()
+
+
+def test_streams_leave_a_loops_last_slots_to_requests() raises:
+    """A loop keeps its last slots for requests (SPEC C20): streams, SSE or
+    WebSocket, take all but `ServerConfig.stream_reserve()`, and the next
+    is answered 503 with `Retry-After`, closed, and dropped through the
+    handler's disconnect hook, which had subscribed it; the notice is said
+    once. An ordinary answer is unaffected at the limit, and a stream that
+    leaves gives its place back -- by a close, and by a chunked stream's
+    end -- so the next stream is held again. Before, streams could take
+    every slot, and every connection after the last was reset at accept,
+    the health check's among them.
+
+    covers: C20
+    """
+    ignore_sigpipe()
+    var config = _config()
+    config.max_connections = 32
+    config.enable_metrics = True
+    config.stream_cap_notice = String("streams are full")
+    assert_equal(config.stream_reserve(), 2)
+    assert_equal(config.stream_limit(), 30)
+    var app = Departures()
+    var backend = FakeBackend()
+    var st = _loop(config)
+    var slots = List[Int]()
+    var peers = List[Int]()
+    for i in range(30):
+        var got = _answer_on_slot(
+            app, backend, st, _sse_head() if i % 2 == 0 else _ws_head()
+        )
+        slots.append(got[0])
+        peers.append(got[1])
+        assert_true(st.slot_sse[got[0]] or st.slot_ws[got[0]], "a stream under the limit was not held")
+    assert_equal(st.streams_held, 30)
+    assert_equal(len(app.left), 0)
+
+    for ws in [False, True]:
+        var refused = _answer_on_slot(app, backend, st, _ws_head() if ws else _sse_head())
+        var wire = List[UInt8]()
+        var eof = _read_available(refused[1], wire)
+        var head = String(unsafe_from_utf8=Span(wire)).lower()
+        assert_true(head.startswith("http/1.1 503 "), head)
+        assert_true("retry-after: 5\r\n" in head, head)
+        assert_true("connection: close\r\n" in head, head)
+        assert_true(eof, "a refused stream's connection was left open")
+        assert_equal(st.slot_fds[refused[0]], UNUSED)
+        assert_false(st.slot_sse[refused[0]] or st.slot_ws[refused[0]], "a stream past the limit was held")
+        assert_equal(app.left[len(app.left) - 1], refused[0], "the refused stream's subscription was kept")
+        assert_equal(st.streams_held, 30)
+        close(RawFileDescriptor(c_int(refused[1])))
+    assert_equal(st.metrics.streams_refused, 2)
+    assert_equal(st.config.stream_cap_notice, "", "the notice was not said")
+    assert_equal(len(app.left), 2, "a refused slot's close told the handler again")
+
+    var plain = _answer_on_slot(app, backend, st, OK("ok", "text/plain"))
+    var plain_head = _head_of(plain[1])
+    assert_true(plain_head.startswith("http/1.1 200 "), plain_head)
+    _close_slot(app, backend, st, plain[0], st.slot_fds[plain[0]])
+    close(RawFileDescriptor(c_int(plain[1])))
+
+    # A close gives its place back, once.
+    _close_slot(app, backend, st, slots[0], st.slot_fds[slots[0]])
+    assert_equal(st.streams_held, 29)
+    var again = _answer_on_slot(app, backend, st, _sse_head())
+    assert_true(st.slot_sse[again[0]], "a stream was refused after one left")
+    assert_equal(st.streams_held, 30)
+    # So does a chunked stream's end, and its close after that takes nothing.
+    _chunked_stream_ends(st, again[0])
+    assert_equal(st.streams_held, 29)
+    _close_slot(app, backend, st, again[0], st.slot_fds[again[0]])
+    assert_equal(st.streams_held, 29)
+    close(RawFileDescriptor(c_int(again[1])))
+    close(RawFileDescriptor(c_int(peers[0])))
+
+    for i in range(1, 30):
+        _close_slot(app, backend, st, slots[i], st.slot_fds[slots[i]])
+        close(RawFileDescriptor(c_int(peers[i])))
+    assert_equal(st.streams_held, 0)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

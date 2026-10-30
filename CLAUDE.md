@@ -950,7 +950,8 @@ elsewhere), `M0_MAX_KEEPALIVE_REQUESTS` (the keep-alive cap; 0 = never close
 for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and
 `M0_GRANT_COOKIE` (the hold mount's key, its previous key during a rotation,
 and the cookie a grant binds to; `sessionid`), `M0_SPAWN_WORKERS`,
-`M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT` and `M0_REPLAY_FRAMES` (the env forms of those
+`M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT`, `M0_REPLAY_FRAMES` and
+`M0_MAX_CONNECTIONS` (the env forms of those
 m0serve flags, read by m0serve's `from_env`, which reports every `M0_*`
 value it cannot read rather than ignoring it silently), `M0_INVERTED` (`1`
 runs the loop inside the executor's asyncio loop, where the topology

@@ -74,6 +74,10 @@ comptime ACCEPT_BATCH = 16
 # seconds; 0 sets nothing, as the server did before.
 comptime STREAM_KEEPALIVE_S = 15
 comptime STREAM_KEEPALIVE_PROBES = 3
+# The `Retry-After` of the 503 a stream gets when streams already hold all
+# of a loop's slots but its reserve (`ServerConfig.stream_limit`, SPEC C20):
+# long enough that a page's reconnect loop does not spin on a full server.
+comptime STREAM_REFUSED_RETRY_S = 5
 # The comment that follows an event on an SSE stream, this long after the
 # event was written, unless something else was written there first (SPEC
 # I47; docs/notes/a-comment-after-an-event.md). Safari's `fetch` reader,
@@ -214,6 +218,11 @@ struct LoopState(Movable):
     loop, here recorded as printed."""
     var fd_to_slot: List[Int]
     var active_count: Int
+    var streams_held: Int
+    """Slots that are streams, SSE or WebSocket: raised where
+    `_finish_response` sets a stream flag and lowered by the flag's two
+    resets (`_close_slot`, `_chunked_stream_ends`). A stream past
+    `config.stream_limit()` is answered 503 (SPEC C20)."""
     var metrics: ServerMetrics
     var last_idle_sweep: Int
     var date_cache_sec: Int64
@@ -353,6 +362,7 @@ struct LoopState(Movable):
         self.zstd_refused = False
         self.fd_to_slot = fd_to_slot^
         self.active_count = 0
+        self.streams_held = 0
         self.metrics = metrics^
         self.last_idle_sweep = perf_counter_ns()
         self.date_cache_sec = date_cache_sec
@@ -717,6 +727,8 @@ def _chunked_stream_ends(mut st: LoopState, slot: Int):
     `keep-alive` and its connection kept (review record LF13).
     `slot_close_after_stream` held it for here.
     """
+    if st.slot_sse[slot]:
+        st.streams_held -= 1
     st.slot_sse[slot] = False
     st.slot_zstd[slot] = None
     st.offload.chunked[slot] = False
@@ -961,6 +973,7 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
         # One disconnect hook serves both stream kinds — the handler-side
         # cleanup (drop the subscription, forget the slot) is identical.
         handler.sse_slot_disconnected(slot)
+        st.streams_held -= 1
     backend.try_delete_read(fd_val)
     backend.try_delete_write(fd_val)
     backend.try_delete_timer(UInt(fd_val) + TIMER_BODY)
