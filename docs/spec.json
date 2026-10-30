@@ -1266,6 +1266,14 @@
       "evidence": "`test_ipv6.mojo:test_the_banner_names_the_port_bound` (every PR) \u2014 read from a pipe standing in for stdout, for `127.0.0.1:0` and `[::1]:0`. It named the port it was asked for, `http://127.0.0.1:0`, a port nothing can connect to; reached by a port of 0 an application passes `Server.listen_and_serve` or `ListenConfig.listen` itself, such as one not on the Mojo host (review record LF47); m0serve and the Mojo host refuse a port of 0 (LF56)"
     },
     {
+      "id": "F26",
+      "section": "F",
+      "category": "F. Observability",
+      "capability": "A response names the handler-pool thread that served it, as `x-thread: N`, only when `M0_THREAD_HEADER=1` (or `true`); by default no response carries it, and the server's default `Server` header is `mojo-http`, an application's own replacing it (A26). Until 1.17.0 every pooled response carried `x-thread`, telling every client the server's thread layout, and the default `Server` named the archived upstream the server was forked from, `lightbug_http`",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 the zero-config WSGI pool with the variable unset answers with no `x-thread` and with `server: mojo-http`, and with it set (the gates that read the header to see which thread or loop answered set it for the whole task) the pooled answers name their thread; `test_cli.mojo:test_the_thread_header_is_off_unless_the_environment_turns_it_on` reads the switch, junk said once"
+    },
+    {
       "id": "F8",
       "section": "F",
       "category": "F. Observability",
