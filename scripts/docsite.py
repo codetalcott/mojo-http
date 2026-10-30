@@ -318,6 +318,68 @@ def slugify(text):
     return s.replace(" ", "-")
 
 
+GLANCE_SOURCE = "docs/SPEC.md"
+
+_GLANCE_ROW = re.compile(r"^\| ([A-Z][0-9]+) \| (.*?) \| (verified|implemented|planned|out of scope) \|")
+_GLANCE_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_GLANCE_STOP = re.compile(r"(?:: |; | -- | — |\. |, which | \(|$)")
+
+
+def glance_line(capability, limit=110):
+    """A row's capability as one short line: its text up to the first
+    colon, semicolon, dash, sentence end or parenthesis, links reduced to
+    their text and emphasis dropped, cut at a word under `limit` with an
+    ellipsis, and never leaving a code span open."""
+    text = _GLANCE_LINK.sub(r"\1", capability).replace("**", "")
+    for m in _GLANCE_STOP.finditer(text):
+        if text.count("`", 0, m.start()) % 2 == 0:  # not inside a code span
+            text = text[: m.start()].strip()
+            break
+    if len(text) > limit:
+        cut = text.rfind(" ", 0, limit)
+        text = text[: cut if cut > 0 else limit].rstrip(",;") + " …"
+    if text.count("`") % 2:
+        text = text[: text.rfind("`")].rstrip() + " …"
+    return text
+
+
+def with_glance(source, md):
+    """The Capabilities page with an "At a glance" section before its first
+    lettered section: every row as id, one short line and status, a table
+    per section, so a reader scans 400-odd capabilities in lines rather
+    than reading 60,000 words of evidence. The rows below are unchanged and
+    remain the record; `spec.json` is the same data in full."""
+    if source != GLANCE_SOURCE:
+        return md
+    sections, current = [], None
+    for line in md.splitlines():
+        m = re.match(r"^## ([A-Z])\. (.+)$", line)
+        if m:
+            current = (m.group(1), m.group(2), [])
+            sections.append(current)
+            continue
+        r = _GLANCE_ROW.match(line)
+        if r and current is not None:
+            current[2].append((r.group(1), glance_line(r.group(2)), r.group(3)))
+    if not sections:
+        return md
+    out = ["## At a glance", "",
+           "Every capability in one line, by section: its id, the start of its row, and "
+           "its status. The full rows below carry the evidence and the gate that proves "
+           "each one.", ""]
+    for letter, title, rows in sections:
+        if not rows:
+            continue
+        out += [f"**{letter}. {title}** ([the rows](#{slugify(f'{letter}. {title}')}))", "",
+                "| id | capability | status |", "| --- | --- | --- |"]
+        out += [f"| {i} | {t} | {st} |" for i, t, st in rows]
+        out.append("")
+    first = re.search(r"^## A\. ", md, re.M)
+    if not first:
+        return md
+    return md[: first.start()] + "\n".join(out) + "\n" + md[first.start():]
+
+
 def headings(md):
     """(level, text, slug) for every ATX heading outside a fence, slugs
     de-duplicated the way GitHub does (`-1`, `-2`, ...)."""
@@ -565,6 +627,7 @@ class Site:
         for p in self.pages:
             src = strip_comments((self.repo / p.source).read_text())
             src = self._with_lede(p, src)
+            src = with_glance(p.source, src)
             first, last = git_dates(self.repo, p.source)
             html_md = self.rewrite(p.source, src, "html", [])
             twin_md = self.rewrite(p.source, src, "md", [])
@@ -932,6 +995,21 @@ def selftest():
             failures.append(f"markdown flavor does not link twins: {twin!r}")
         if slugify("`M0_WORKERS` and friends: a (test)?") != "m0_workers-and-friends-a-test":
             failures.append(f"slugify drifted from GitHub: {slugify('`M0_WORKERS` and friends: a (test)?')!r}")
+        for row, want in [
+            ("`Expect: 100-continue`, honoured: both ways", "`Expect: 100-continue`, honoured"),
+            ("A [linked](x.md) **bold** thing; and more", "A linked bold thing"),
+            ("x " * 80, None),
+        ]:
+            got = glance_line(row)
+            if want is not None and got != want:
+                failures.append(f"glance line of {row!r}: {got!r}, wanted {want!r}")
+            if len(got) > 112 or got.count("`") % 2:
+                failures.append(f"glance line too long or a code span left open: {got!r}")
+        glance = with_glance(GLANCE_SOURCE, "# S\n\n## A. One\n\n| A1 | Cap: more | verified | `g` (every PR) |\n")
+        if "| A1 | Cap | verified |" not in glance or "(#a-one)" not in glance:
+            failures.append(f"the at-a-glance section: {glance!r}")
+        if with_glance("docs/OTHER.md", "## A. One\n") != "## A. One\n":
+            failures.append("the at-a-glance section reached a page that is not the sheet")
         hs = headings("# A\n\n## Same\n\n## Same\n\n```\n# not one\n```\n")
         if [s for _, _, s in hs] != ["a", "same", "same-1"]:
             failures.append(f"heading slugs: {hs}")

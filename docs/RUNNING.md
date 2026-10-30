@@ -361,7 +361,10 @@ the values this server would use, and `m0serve --help` names every flag.
 
 ## Platforms
 
-macOS arm64 (13+), Linux x86_64 and aarch64 (glibc; the exact floor is in
-the wheel filename, and `pip` declines an older system rather than crash).
-CPython 3.10 to 3.14, free-threaded builds included for WSGI. No Windows, no
-musl, no Intel Mac.
+macOS arm64 (13+), Linux x86_64 and aarch64 with glibc 2.35 or newer: Ubuntu
+22.04, Debian 12 and RHEL 10 and later. RHEL 9 and Amazon Linux 2023 ship
+glibc 2.34 and are below the floor; there `pip` declines the wheel rather
+than install one that would crash. The floor is measured from the binary at
+each release and is in the wheel's filename (`manylinux_2_35`). CPython 3.10
+to 3.14, free-threaded builds included for WSGI. No Windows, no musl, no
+Intel Mac.

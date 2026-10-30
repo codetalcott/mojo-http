@@ -15,8 +15,9 @@ reporting what someone last wrote down.)*
 
 A plain sync Django or Flask view can hold a Server-Sent Events stream or a
 WebSocket by answering with two response headers, and reach every subscriber
-on every worker with one function call. No Channels, no Redis, no daphne, no
-Pushpin, no second process.
+on every worker with one function call. On one machine: no Channels, no
+Redis, no daphne, no Pushpin, no second process. Across machines, Postgres
+`NOTIFY` is the bus (`--pg-listen`).
 
 ```python
 from m0serve import m0pub
@@ -67,8 +68,10 @@ multi-tab sync**, and CI executes every command in it on every pull request
   conformance is validated by `wsgiref`, ASGI by a validator written from
   the spec.
 - **Where it stands on throughput**, from [docs/BENCHMARKS.md](docs/BENCHMARKS.md):
-  <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x uvicorn with uvloop on bare ASGI at 16 connections
-  (<!-- num:asgi-vs-uvicorn@2 -->2.34<!-- /num -->x `uvicorn --loop asyncio`), on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
+  level with the fast servers, not ahead. Per core,
+  <!-- num:asgi-per-core-vs-uvloop@2 -->0.99<!-- /num -->x uvicorn with uvloop on bare ASGI at 16
+  connections; <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x in requests per second
+  (<!-- num:asgi-vs-uvicorn@2 -->2.34<!-- /num -->x `uvicorn --loop asyncio`) on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
   measured cores where uvicorn has one; the fast-request tail under mixed
   load ahead of uvicorn in every recorded run; and <!-- num:m0-vs-granian-rps@2 -->1.01<!-- /num -->x
   Granian on bare WSGI at one worker and one handler thread each
