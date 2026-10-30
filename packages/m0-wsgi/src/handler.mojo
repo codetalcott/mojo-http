@@ -181,9 +181,15 @@ struct WSGIHandler(ThreadHandler):
     var thread_index: Int
     """Which serving thread owns this handler; -1 under prefork or alone.
 
-    Reported as `x-thread` on every response when >= 0 — the `X-Worker`
-    precedent, and what `smoke-threads` reads to prove connections spread.
+    Reported as `x-thread` on every response when >= 0 and `thread_header`
+    is on — the `X-Worker` precedent, and what `smoke-threads` reads to
+    prove connections spread.
     """
+    var thread_header: Bool
+    """`M0_THREAD_HEADER=1`: name the serving thread in `x-thread` on every
+    response (SPEC F26). Off by default since 1.17.0: the header told every
+    client the server's thread layout, and only the server's own gates and
+    an operator matching interleaved log lines to responses read it."""
     var asgi_done: List[Bool]
     """ASGI stream slots whose end frame arrived while bytes were still
     pending: the final `sse_drain_slot` hands those bytes out and then
@@ -385,6 +391,7 @@ struct WSGIHandler(ThreadHandler):
         var root_prefix: String = String(""),
         replay_frames: Int = 64,
         max_connections: Int = 1024,
+        thread_header: Bool = False,
     ):
         # One slot is exactly the unmounted case; `mount` grows it.
         self.apps = List[WSGIApp](capacity=1)
@@ -396,6 +403,7 @@ struct WSGIHandler(ThreadHandler):
         self.realtime = realtime
         self.health_path = health_path^
         self.thread_index = -1
+        self.thread_header = thread_header
         self.asgi_notify_fd = -1
         self.lane = -1
         self.ws_pool_fds = List[Int]()
@@ -480,6 +488,7 @@ struct WSGIHandler(ThreadHandler):
             asgi_streaming=opts.asgi_streaming,
             replay_frames=opts.replay_frames,
             max_connections=opts.loop_connections(),
+            thread_header=opts.thread_header,
         )
 
     @staticmethod
@@ -546,6 +555,7 @@ struct WSGIHandler(ThreadHandler):
             root_prefix=opts.mount_prefixes[head],
             replay_frames=opts.replay_frames,
             max_connections=opts.loop_connections(),
+            thread_header=opts.thread_header,
         )
         handler.route_prefixes = opts.mount_prefixes.copy()
         if only_mount >= 0:
@@ -1028,7 +1038,7 @@ struct WSGIHandler(ThreadHandler):
     def after_response(
         mut self, req_method: String, req_path: String, mut resp: HTTPResponse
     ):
-        if self.thread_index >= 0:
+        if self.thread_header and self.thread_index >= 0:
             resp.headers["x-thread"] = String(self.thread_index)
 
     # --- Streamed WSGI bodies: the pool thread as a chunk-channel producer. ---

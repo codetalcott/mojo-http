@@ -212,7 +212,7 @@ struct HTTPResponse(Encodable, Movable, Writable):
         writer.write(lineBreak)
 
         if HeaderKey.SERVER not in self.headers:
-            writer.write("server: lightbug_http", lineBreak)
+            writer.write("server: mojo-http", lineBreak)
 
         writer.write(
             self.headers,
@@ -265,7 +265,7 @@ struct HTTPResponse(Encodable, Movable, Writable):
             writer.write(self.status_text)
         writer.write(lineBreak)
         if self.headers.known_index(KH_SERVER) < 0:
-            writer.write("server: lightbug_http", lineBreak)
+            writer.write("server: mojo-http", lineBreak)
         if self.headers.known_index(KH_DATE) < 0:
             write_header(writer, HeaderKey.DATE, http_date_now())
         self.headers.write_latin1_to(writer)

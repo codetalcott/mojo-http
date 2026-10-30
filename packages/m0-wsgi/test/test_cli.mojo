@@ -450,7 +450,7 @@ def _clear_env():
         String("M0_BLOCKING_THREADS"), String("M0_QOS"), String("M0_SPAWN_WORKERS"),
         String("M0_MAX_KEEPALIVE_REQUESTS"), String("M0_MAX_BODY"),
         String("M0_BODY_TIMEOUT"), String("M0_REPLAY_FRAMES"),
-        String("M0_MAX_CONNECTIONS"),
+        String("M0_MAX_CONNECTIONS"), String("M0_THREAD_HEADER"),
     ]:
         _ = setenv(name, "", True)
 
@@ -1719,6 +1719,28 @@ def test_from_env_reads_max_connections_and_the_flag_wins() raises:
         "ignoring M0_MAX_CONNECTIONS='lots', not a whole number of"
         " connections; using 1024",
     )
+    _clear_env()
+
+
+def test_the_thread_header_is_off_unless_the_environment_turns_it_on() raises:
+    """`x-thread` (SPEC F26) is named on a response only under
+    `M0_THREAD_HEADER=1` (or `true`); unset, `0` and junk leave it off, and
+    junk is said once, as every switch the environment cannot read is.
+
+    covers: F26
+    """
+    _clear_env()
+    assert_false(ServeOptions.from_env().thread_header)
+    for on in [String("1"), String("true")]:
+        _ = setenv("M0_THREAD_HEADER", on, True)
+        assert_true(ServeOptions.from_env().thread_header, on)
+    _ = setenv("M0_THREAD_HEADER", "0", True)
+    assert_false(ServeOptions.from_env().thread_header)
+    _ = setenv("M0_THREAD_HEADER", "yes", True)
+    var junk = ServeOptions.from_env()
+    assert_false(junk.thread_header)
+    assert_equal(len(junk.env_ignored), 1)
+    assert_true(junk.env_ignored[0].find("M0_THREAD_HEADER") >= 0, junk.env_ignored[0])
     _clear_env()
 
 

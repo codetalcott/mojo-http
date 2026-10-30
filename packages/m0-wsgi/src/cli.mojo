@@ -226,6 +226,10 @@ struct ServeOptions(Copyable, Movable):
     `ServerConfig`'s default (1024) alone. Streams take all but the
     loop's reserve (`ServerConfig.stream_limit`), and the handler's
     per-slot tables are sized from it (`loop_connections`)."""
+    var thread_header: Bool
+    """`M0_THREAD_HEADER=1`: every response names the handler-pool thread
+    that served it in `x-thread` (SPEC F26). Off by default; an operator's
+    switch and the gates', so it has no flag."""
     var max_keepalive_requests: Int
     """`--max-keepalive-requests`: requests a keep-alive connection may carry
     before the server closes it (0 = never); -1 leaves the environment's
@@ -341,6 +345,7 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = -1
         self.replay_frames = DEFAULT_REPLAY_FRAMES
         self.max_connections = -1
+        self.thread_header = False
         self.max_keepalive_requests = -1
         self.idle_timeout = -1
         self.body_timeout = -1
@@ -375,6 +380,10 @@ struct ServeOptions(Copyable, Movable):
         opts.access_log = config.access_log
         opts.qos = config.qos
         opts.spawn_workers = config.spawn_workers
+        # m0serve's alone, read here as M0_PG_LISTEN is: the Mojo host
+        # stamps no thread on its responses.
+        var thread_header = getenv("M0_THREAD_HEADER", "")
+        opts.thread_header = thread_header == "1" or thread_header == "true"
         # Read here rather than through `AppConfig`: this is an m0serve
         # option, not a server one, so it has no ServerConfig field to
         # reach — the same position `M0_GRANT_KEY` is in.
@@ -447,6 +456,7 @@ struct ServeOptions(Copyable, Movable):
         _check_bool_env(opts.env_ignored, "M0_ACCESS_LOG")
         _check_bool_env(opts.env_ignored, "M0_QOS")
         _check_bool_env(opts.env_ignored, "M0_SPAWN_WORKERS")
+        _check_bool_env(opts.env_ignored, "M0_THREAD_HEADER")
         return opts^
 
     def loop_connections(self) -> Int:

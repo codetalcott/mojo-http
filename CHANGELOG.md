@@ -36,6 +36,13 @@ default is listed under **Behaviour changes**
   `EventSource` does not reconnect after a `503`, so a page that should
   keep trying reconnects on `error` itself
   ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
+- **`x-thread` is off by default** (SPEC F26). Every response from a
+  handler-pool thread named the thread, which told every client the
+  server's thread layout. `M0_THREAD_HEADER=1` puts it back, for matching
+  interleaved log lines to responses.
+- **The default `Server` header is `mojo-http`**, where it named the
+  archived upstream the server was forked from, `lightbug_http`. An
+  application that sets its own `Server` still sends only its own (A26).
 
 ### Added
 

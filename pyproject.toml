@@ -2738,6 +2738,8 @@ python3 scripts/emit.py --covers K8 --task smoke-django
 [tool.poe.tasks.smoke-django-realtime]
 help = "Realtime demo: Django-gated SSE holds, Django-originated publish, channel isolation, cleanup, cross-worker fan-out"
 deps = ["build-serve"]
+# These read `x-thread` to see which thread or loop answered (SPEC F26).
+env = { M0_THREAD_HEADER = "1" }
 shell = """
 . scripts/smoke/lib.sh
 out=$SMOKE_DIR
@@ -4688,6 +4690,8 @@ python3 scripts/emit.py --covers D5 --task smoke-reload
 [tool.poe.tasks.smoke-threads]
 help = "Threaded mode: refuses a GIL-enabled interpreter (exit 78); on free-threaded CPython serves across threads and drains cleanly"
 deps = ["build-serve"]
+# These read `x-thread` to see which thread or loop answered (SPEC F26).
+env = { M0_THREAD_HEADER = "1" }
 shell = """
 . scripts/smoke/lib.sh
 srv=bin/m0serve
@@ -7110,6 +7114,8 @@ cmd = "bin/m0serve bareapp.asgi:application --app-dir apps/asgi_bare --port 8088
 [tool.poe.tasks.smoke-asgi]
 help = "ASGI conformance: detection, scope shape, lifespan, streaming guard, zero-config defaults"
 deps = ["build-serve"]
+# These read `x-thread` to see which thread or loop answered (SPEC F26).
+env = { M0_THREAD_HEADER = "1" }
 shell = """
 . scripts/smoke/lib.sh
 out=$SMOKE_DIR
@@ -7527,6 +7533,15 @@ echo "$scope" | grep -qF '"content-length"' && fail "buffered: a GET's scope car
 echo "$scope" | grep -qF '"connection"' && fail "buffered: a GET's scope carries a connection header curl never sent (L25): $scope"
 stop $pid
 
+# The thread header is the operator's to turn on (SPEC F26): with
+# M0_THREAD_HEADER unset, no response names the thread that served it.
+spawn asgi-wsgi-quiet.log env -u M0_THREAD_HEADER "$srv" bareapp.wsgi:application --app-dir apps/wsgi_bare --port $port
+wait_ready $B/ $pid
+curl -s -D "$out/hdr" $B/ -o /dev/null
+grep -qi '^x-thread' "$out/hdr" && fail 'x-thread on a response with M0_THREAD_HEADER unset (F26)'
+grep -qi '^server: mojo-http' "$out/hdr" || fail "the response does not name the server mojo-http: $(cat "$out/hdr")"
+stop $pid
+
 # And the WSGI half of zero-config: no topology flags against the WSGI bare
 # app must pick the auto pool.
 log=$SMOKE_DIR/asgi-wsgi.log
@@ -7661,6 +7676,7 @@ code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' $B/validate/canary)
 
 echo "smoke-asgi OK"
 python3 scripts/emit.py --covers L1 --task smoke-asgi
+python3 scripts/emit.py --covers F26 --task smoke-asgi
 python3 scripts/emit.py --covers L2 --task smoke-asgi
 python3 scripts/emit.py --covers L3 --task smoke-asgi
 python3 scripts/emit.py --covers L4 --task smoke-asgi
