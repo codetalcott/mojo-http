@@ -50,6 +50,7 @@ from .cli import (
     has_wsgi_mount,
     parallel_runtime_forked,
     pg_listen_forked,
+    pool_thread_count,
     supervised,
     use_asgi_executor,
     wsgi_lanes,
@@ -286,6 +287,32 @@ def _rule(
         out.append(ServeCheck(name, passed))
     else:
         out.append(ServeCheck(name, refused, fix, code, usage=usage))
+
+
+comptime DESCRIPTOR_MARGIN = 16
+"""Connections a server that starts must have room for beyond its startup
+descriptors (`startup_descriptors`), the size of a loop's stream reserve."""
+
+
+def startup_descriptors(opts: ServeOptions, executor: Bool) -> Int:
+    """About how many descriptors one process of this configuration holds
+    before its first connection (SPEC C22).
+
+    Measured on an M4 with `lsof`: 8 alone, and per loop with a pool 6 more
+    and 4 per handler thread, its wake and ack channels -- 22 at two
+    threads, 46 at eight, 78 at sixteen; counted here as 8 a loop and an
+    executor's channels as 8 more. Linux holds fewer per thread, so the
+    estimate is the larger platform's: it is a floor to refuse under, and
+    one too low lets the server start where a descriptor then runs out.
+    """
+    var loops = opts.threads if opts.threads > 1 else 1
+    var threads = pool_thread_count(opts, executor, opts.blocking_threads)
+    var per_loop = 0
+    if threads > 0 or executor:
+        per_loop = 8 + 4 * threads
+    if executor:
+        per_loop += 8
+    return 8 + loops * per_loop
 
 
 def _stream_limit(connections: Int) -> Int:
@@ -525,6 +552,7 @@ def app_checks(
     load_error: Optional[String],
     is_asgi: Bool,
     interp: Optional[FreeThreadingReport],
+    descriptor_limit: Int = -1,
 ) -> List[ServeCheck]:
     """The rules that need the application imported, in the order the server
     applies them. `opts` is the resolved one: the winners of discovery
@@ -535,7 +563,9 @@ def app_checks(
     entry: every later rule would be judged against an application that is
     not there. `interp` is the interpreter's report when the caller has one;
     without it the executor rule is not evaluated, as a doctor whose probe
-    failed invents no refusal.
+    failed invents no refusal. `descriptor_limit` is the open-file limit
+    the server runs under, raised as far as it raises it; -1, unknown, does
+    not evaluate the floor.
     """
     var out = List[ServeCheck]()
     if load_error:
@@ -576,6 +606,31 @@ def app_checks(
             "no WSGI mount is left without a thread",
             wsgi_lanes_unserved_message(unserved, opts.blocking_threads),
             "add --blocking-threads " + String(len(wsgi_lanes(opts))) + " or more",
+            EXIT_CONFIG)
+    if descriptor_limit >= 0:
+        # Last, and before any pool is built: under a hard limit this low a
+        # descriptor runs out somewhere in the startup, where the stdlib's
+        # `print(flush=True)` crashes in `fclose(NULL)` (its `dup` failed)
+        # and a loop that cannot open its kqueue or epoll used to unwind
+        # under a running pool. Refused here, nothing has been started.
+        var startup = startup_descriptors(opts, executor)
+        var threads = pool_thread_count(opts, executor, opts.blocking_threads)
+        _rule(out, "descriptor-floor", descriptor_limit >= startup + DESCRIPTOR_MARGIN,
+            String(
+                "the open-file limit, ", descriptor_limit,
+                ", holds the startup's ", startup, " and connections beside",
+            ),
+            String(
+                "the open-file limit is ", descriptor_limit, ", and this"
+                " configuration holds about ", startup, " descriptors before"
+                " its first connection (", threads, " handler thread(s) per"
+                " loop), with ", DESCRIPTOR_MARGIN, " more wanted for"
+                " connections: one would run out as it starts. Raise the hard"
+                " limit (ulimit -Hn, systemd's LimitNOFILE=) or lower"
+                " --blocking-threads",
+            ),
+            "raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=) or"
+            " lower --blocking-threads",
             EXIT_CONFIG)
     return out^
 

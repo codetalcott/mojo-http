@@ -399,7 +399,12 @@ def _import_and_check(
         except:
             pass
     return Imported(
-        True, is_asgi, auto_pool, executor, app_checks(opts, None, is_asgi, report)
+        True, is_asgi, auto_pool, executor,
+        app_checks(
+            opts, None, is_asgi, report,
+            # As `main` raised it, and the doctor reports it: idempotent.
+            descriptor_limit=raise_descriptor_limit(_descriptors_wanted(opts)),
+        ),
     )
 
 

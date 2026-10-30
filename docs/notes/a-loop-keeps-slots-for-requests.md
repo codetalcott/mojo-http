@@ -108,17 +108,31 @@ loops do the same, and the inline path too, for one rule. The Mojo host
 needed nothing: its pool takes no GIL, so its unwind finished and it
 already exited 1.
 
-The gate sweeps. A single limit was tried first, sixteen pool threads at a
-hard limit of 40, and it reached the loop's failure on an M4 every time
-and on neither CI runner: both served. A pool thread's wake and ack
-channels may fail and are let go, and they race the loop's kqueue or epoll
-for the last descriptors, so which call runs out first is the platform's
-and the scheduler's. `smoke-max-connections` now runs every hard limit from
-40 down to 12, and each must serve and stop on SIGTERM with 0 or exit 1
-within 15 s naming the errno, which holds wherever the limit lands; the
-task prints how many of the refusals were the loop's (21 of 29 on the M4).
-With the backend moved back above the `try`, the limit of 40 was still
-running at 15 s.
+That exit is the backstop, not the fix. A gate for it was tried three
+ways and each found something. Sixteen pool threads at a hard limit of 40
+reached the loop's failure on an M4 every time and on neither CI runner,
+where both served: a pool thread's wake and ack channels may fail and are
+let go, and they race the loop's kqueue or epoll for the last descriptors.
+A sweep from 40 down to 12 then found, in a Linux container, every ODD
+limit from 39 to 15 segfaulting and every even one serving. gdb put main
+in `fclose(NULL)` under `_serve_offloaded`: the stdlib's `print(flush=
+True)` flushes through `fdopen(dup(1))`, and with one descriptor left for
+a pair and none for the `dup`, `fdopen` returned NULL, which it closed. On
+the x86-64 runner the same limit ended in `LLVM ERROR: IO failure on output
+stream`. So a startup under a limit that low fails wherever the last
+descriptor goes, and no exit path can be made safe for all of them.
+
+So the server refuses first. `descriptor-floor`, the last of the checks
+after the import, the doctor's too, compares the limit as the server
+raises it with what the configuration holds before its first connection
+plus 16 for connections, and exits 78 naming both and the fix before any
+pool exists. The count is the M4's, the larger platform's: 8, and per loop
+with a pool or an executor 8 more and 4 a handler thread, 8 for the
+executor. In the container every limit from 48 to 12 then exits 78 with
+sixteen threads; with two, 48 to 40 serve and 39 down are refused. The
+gate holds both shapes on both runners, and the exit that unwinds nothing
+stays for an estimate that is wrong, proven by the sabotage above and
+reached on purpose by no limit now.
 
 The limit's notice had a wrong number of its own. It said "a loop will
 hold about 0" at 40, from `limit - 256`, though 256 is the headroom asked

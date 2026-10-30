@@ -1821,42 +1821,52 @@ assert s['descriptor_limit'] >= 320, s" || fail "the doctor's connection figures
 code=0
 bin/m0serve hold_app:application --app-dir scripts/smoke --max-connections 65537 > /dev/null 2>&1 || code=$?
 [ "$code" = "78" ] || fail "--max-connections 65537 exited $code, wanted 78"
-# A HARD limit too low to start under is refused, never spun on (SPEC C22).
-# Where the descriptors run out is the platform's and the scheduler's: the
-# pool's per-thread channels, which may fail and are let go, race the
-# loop's kqueue or epoll for the last few. So the limits are swept, 40 down
-# to 12 with sixteen pool threads, and each must serve and stop on SIGTERM,
-# or exit 1 within 15 s naming the errno. One that does neither is the
-# spin: the loop failed after the pool had started, the unwind freed the
-# pool under its threads, and one spun on the freed job ring holding the
-# GIL, ignoring SIGTERM.
-limit=40; served=0; refused=0; at_loop=0
-while [ $limit -ge 12 ]; do
-  spawn fdlimit.log sh -c 'ulimit -S -n "$0" && ulimit -H -n "$0" && exec "$@"' "$limit" bin/m0serve hold_app:application \
-    --app-dir scripts/smoke --port $port --blocking-threads 16
+# A HARD limit too low for the server's own startup is refused with 78
+# before it starts anything (SPEC C22). Under one that low a descriptor ran
+# out somewhere in the startup, and where was the platform's and the
+# scheduler's: on an M4 the loop's kqueue failed under the running pool,
+# whose unwind spun a core holding the GIL and never read SIGTERM; on Linux
+# the stdlib's print flush crashed in fclose(NULL) after its dup failed.
+# Sixteen pool threads hold about 80 before the first connection.
+# `sh -c "$fdlimit" LIMIT COMMAND...`: a script, not a function, since
+# `spawn` execs what it is given.
+fdlimit='ulimit -S -n "$0" && ulimit -H -n "$0" && exec "$@"'
+spawn fdlimit.log sh -c "$fdlimit" 40 bin/m0serve hold_app:application \
+  --app-dir scripts/smoke --port $port --blocking-threads 16
+n=0
+while _smoke_running $pid && [ $n -lt 150 ]; do sleep 0.1; n=$((n + 1)); done
+_smoke_running $pid && fail 'under a hard limit of 40 the server was still running after 15 s'
+code=0
+stop $pid || code=$?
+[ "$code" = "78" ] || fail "under a hard limit of 40 with sixteen pool threads the server exited $code, wanted 78"
+grep -q 'the open-file limit is 40, and this configuration holds about 80 descriptors' "$SMOKE_DIR/fdlimit.log" \
+  || fail 'the refusal under a hard limit of 40 does not say what the startup holds'
+grep -q 'lower --blocking-threads' "$SMOKE_DIR/fdlimit.log" || fail 'the refusal under a hard limit of 40 names no fix'
+code=0
+sh -c "$fdlimit" 40 bin/m0serve hold_app:application --app-dir scripts/smoke --blocking-threads 16 --doctor > /dev/null 2>&1 || code=$?
+[ "$code" = "78" ] || fail "the doctor under a hard limit of 40 exited $code, wanted 78"
+# Every limit the floor admits starts and stops: two pool threads hold about
+# 24 and want 16 beside, so 40 is the lowest. Each from 48 down must serve
+# and stop with 0, and 39 is refused.
+limit=48
+while [ $limit -ge 40 ]; do
+  spawn fdlimit.log sh -c "$fdlimit" $limit bin/m0serve hold_app:application \
+    --app-dir scripts/smoke --port $port --blocking-threads 2
   n=0
   while _smoke_running $pid && ! grep -q 'Event loop started' "$SMOKE_DIR/fdlimit.log" && [ $n -lt 150 ]; do
     sleep 0.1; n=$((n + 1))
   done
-  if _smoke_running $pid; then
-    grep -q 'Event loop started' "$SMOKE_DIR/fdlimit.log" \
-      || fail "under a hard limit of $limit the server neither served nor exited within 15 s"
-    code=0
-    stop $pid || code=$?
-    [ "$code" = "0" ] || fail "under a hard limit of $limit the serving server exited $code on SIGTERM"
-    served=$((served + 1))
-  else
-    code=0
-    stop $pid || code=$?
-    [ "$code" = "1" ] || fail "under a hard limit of $limit the server exited $code, wanted 1"
-    grep -q 'Too many open files' "$SMOKE_DIR/fdlimit.log" \
-      || fail "the exit under a hard limit of $limit does not name the errno"
-    refused=$((refused + 1))
-    if grep -q 'the event loop raised' "$SMOKE_DIR/fdlimit.log"; then at_loop=$((at_loop + 1)); fi
-  fi
+  grep -q 'Event loop started' "$SMOKE_DIR/fdlimit.log" \
+    || fail "under a hard limit of $limit, which the floor admits, the server did not start"
+  code=0
+  stop $pid || code=$?
+  [ "$code" = "0" ] || fail "under a hard limit of $limit the server exited $code on SIGTERM, wanted 0"
   limit=$((limit - 1))
 done
-echo "descriptor sweep: $served limit(s) served, $refused refused at startup, $at_loop of them by the loop"
+code=0
+sh -c "$fdlimit" 39 bin/m0serve hold_app:application --app-dir scripts/smoke --port $port --blocking-threads 2 \
+  > "$SMOKE_DIR/fdlimit.log" 2>&1 || code=$?
+[ "$code" = "78" ] || fail "under a hard limit of 39 with two pool threads the server exited $code, wanted 78"
 echo "smoke-max-connections OK"
 python3 scripts/emit.py --covers C20 --task smoke-max-connections
 python3 scripts/emit.py --covers C21 --task smoke-max-connections

@@ -144,15 +144,19 @@ default is listed under **Behaviour changes**
   never past the hard limit, and with one line when the hard limit stops
   it short; `--doctor` reports `descriptor_limit`. The Mojo host does the
   same.
-- **A loop that cannot start exits 1 instead of spinning** (SPEC C22).
-  Under a hard descriptor limit below what the server holds before its
-  first connection, about 14 and 4 per pool thread, the loop's `kqueue` or
-  `epoll` failed after the pool had started, and the unwind freed the pool
-  under its threads: one spun on the freed job ring holding the GIL, and
-  the process sat at 100 % of a core, ignoring SIGTERM (1.16.0 too). It
-  now exits at once, naming the call and its errno. The limit notice also
-  stopped saying a loop would hold "about 0" connections of a server that
-  served ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
+- **A descriptor limit too low to start under is refused, not spun on**
+  (SPEC C22). Under a hard limit below what the server holds before its
+  first connection, a descriptor ran out somewhere in the startup: on
+  macOS the loop's `kqueue` failed after the pool had started, the unwind
+  freed the pool under its threads, and one spun on the freed job ring
+  holding the GIL, a core at 100 % that ignored SIGTERM (1.16.0 too); on
+  Linux the stdlib's print flush crashed. The server now exits 78 before
+  it starts anything, naming the limit, what the configuration holds
+  (about 8, and 16 more a loop plus 4 a pool thread) and the fix, and the
+  doctor says the same. A loop that still cannot start exits 1 naming the
+  call, unwinding nothing. The limit notice also stopped saying a loop
+  would hold "about 0" connections of a server that served
+  ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
 
 - **A thread that cannot start is no longer joined** (SPEC E41). On
   glibc, a `pthread_create` that `clone` refused, at a process or thread

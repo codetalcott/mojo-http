@@ -279,7 +279,11 @@ has the Flask version of the whole thing, and CI drives that exact file.
   It never lowers the limit or passes the hard one. Where the hard limit
   stops it short, it prints the limit, what it wanted and the fix
   (`ulimit -Hn`, systemd's `LimitNOFILE=`); `--doctor` reports
-  `descriptor_limit` beside `descriptors_wanted`.
+  `descriptor_limit` beside `descriptors_wanted`. A hard limit too low for
+  the server's own startup (its pool's channels, the bus, the loop) and a
+  few connections beside is refused with 78 before anything starts, the
+  line naming what the configuration holds; fewer `--blocking-threads`
+  lower that.
 - `--max-body SIZE` (or `M0_MAX_BODY`) caps request bodies (default 4m;
   `512k`, `64m`, `1g`). A chunked body is bounded on the wire as well as
   decoded. Over the cap
