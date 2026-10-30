@@ -85,8 +85,8 @@ with it.
 ## Found beside it, not fixed here
 
 At a HARD limit of 40, m0serve 1.16.0 and this change alike spin a core
-before the loop starts and print nothing past the banner. The server
-needs more descriptors than that to build its pool, and something on that
-path retries instead of failing. A hard limit that low is not a real
+before the loop starts, print nothing past the banner, and do not stop on
+SIGTERM (SIGKILL ends them). The server needs more descriptors than that to
+build its pool, and something on that path retries instead of failing. A hard limit that low is not a real
 configuration. It is recorded so that the next server to meet one does
 not read it as a new bug.
