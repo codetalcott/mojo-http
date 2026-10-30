@@ -46,6 +46,12 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
   `--replay-frames` frames (`M0_REPLAY_FRAMES`, 64), or one unnumbered
   `event: m0-gap` frame when the journal cannot supply all of it; listen
   for `m0-gap` and fetch, instead of polling beside the stream.
+- `--max-connections N` (`M0_MAX_CONNECTIONS`, 1024) is the connections
+  ONE LOOP holds; `--workers`/`--threads` multiply it. Held streams take
+  all but the last 16, and the next stream is answered `503` with
+  `Retry-After`, so `--health-path` still answers when streams are full.
+  The server raises its own open-file limit to fit, and says so when the
+  hard limit stops it.
 - `--static PREFIX=DIR` serves files from the server with sendfile, ETags
   and byte ranges; a miss falls through to the application.
 - SIGTERM drains in-flight work and exits 0; the server runs as PID 1

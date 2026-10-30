@@ -907,6 +907,12 @@ jobs:
       # pool thread still held, so the next connection read that answer.
       - name: Smoke test the request body timeout
         run: uv run poe smoke-body-timeout
+      # A loop keeps its last slots for requests (SPEC C20): streams took
+      # every slot, and each connection after the last was reset at accept,
+      # the health check's among them. The server starts under a soft
+      # descriptor limit of 40, which it must raise itself (C21).
+      - name: Smoke test the connection limit
+        run: uv run poe smoke-max-connections
       # The two backends genuinely disagree about trigger mode, and used to
       # disagree about half-close too; each disagreement hid a bug on the
       # platform that forgives it. These smokes run on both runners for

@@ -235,6 +235,27 @@ has the Flask version of the whole thing, and CI drives that exact file.
 
 ## Limits and lifecycle
 
+- `--max-connections N` (or `M0_MAX_CONNECTIONS`) is the connections one
+  event loop holds open at once: 1024 by default, at most 65536. It counts
+  per loop, so `--workers 4` holds four times as many, and so does
+  `--threads 4`. **Streams leave a reserve:** held SSE streams and
+  WebSockets take all but a sixteenth of the slots, at most 16 (1008 of
+  the default 1024). The stream after that is answered `503` with
+  `Retry-After: 5`, so the health path and ordinary requests are still
+  answered while streams hold the rest. A connection past the whole count
+  is refused at accept. The first refused stream prints one line naming
+  the knob; `/__metrics` counts `http_streams_held` and
+  `http_streams_refused_total`, and `--doctor` reports `max_connections`
+  and `stream_limit`. A browser's `EventSource` does not reconnect after a
+  `503`, as it does after a dropped connection, so a page that should keep
+  trying listens for `error` and reconnects itself.
+- **The server raises its own open-file limit** to what its connections
+  need (each loop's count plus 256) before it binds, so launchd's default
+  of 256 and systemd's soft 1024 no longer cap it below `--max-connections`.
+  It never lowers the limit or passes the hard one. Where the hard limit
+  stops it short, it prints the limit, what it wanted and the fix
+  (`ulimit -Hn`, systemd's `LimitNOFILE=`); `--doctor` reports
+  `descriptor_limit` beside `descriptors_wanted`.
 - `--max-body SIZE` (or `M0_MAX_BODY`) caps request bodies (default 4m;
   `512k`, `64m`, `1g`). A chunked body is bounded on the wire as well as
   decoded. Over the cap

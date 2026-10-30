@@ -105,6 +105,14 @@ struct ServerMetrics(Movable):
     var latency_count: Int
     """Requests sampled into the histogram (monotonic)."""
 
+    var streams_held: Int
+    """Slots holding a stream, SSE or WebSocket, at the last scrape
+    (`LoopState.streams_held`)."""
+
+    var streams_refused: Int
+    """Streams answered 503 because streams already held every slot the
+    loop lets them take (monotonic; SPEC C20)."""
+
     var bus_frames_refused: Int
     """Datagrams this loop drained from a bus-shaped channel -- its
     `BroadcastBus` channel, or the chunk channel an executor or a streaming
@@ -129,6 +137,8 @@ struct ServerMetrics(Movable):
             self.latency_bands.append(0)
         self.latency_sum_us = 0
         self.latency_count = 0
+        self.streams_held = 0
+        self.streams_refused = 0
         self.bus_frames_refused = 0
 
     def record_duration(mut self, elapsed_us: Int):
@@ -222,6 +232,14 @@ struct ServerMetrics(Movable):
             "# HELP http_pool_capacity Total connection pool capacity\n",
             "# TYPE http_pool_capacity gauge\n",
             "http_pool_capacity ", String(self.pool_capacity), "\n",
+            "# HELP http_streams_held Connections held as streams, SSE or"
+            " WebSocket\n",
+            "# TYPE http_streams_held gauge\n",
+            "http_streams_held ", String(self.streams_held), "\n",
+            "# HELP http_streams_refused_total Streams answered 503 because"
+            " streams held every slot but the loop's reserve\n",
+            "# TYPE http_streams_refused_total counter\n",
+            "http_streams_refused_total ", String(self.streams_refused), "\n",
             "# HELP http_bus_frames_refused_total Datagrams drained from the"
             " cross-worker bus or the stream chunk channel and not delivered:"
             " over-long or malformed\n",

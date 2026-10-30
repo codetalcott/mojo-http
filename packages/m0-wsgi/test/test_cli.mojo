@@ -450,6 +450,7 @@ def _clear_env():
         String("M0_BLOCKING_THREADS"), String("M0_QOS"), String("M0_SPAWN_WORKERS"),
         String("M0_MAX_KEEPALIVE_REQUESTS"), String("M0_MAX_BODY"),
         String("M0_BODY_TIMEOUT"), String("M0_REPLAY_FRAMES"),
+        String("M0_MAX_CONNECTIONS"),
     ]:
         _ = setenv(name, "", True)
 
@@ -914,7 +915,7 @@ def test_usage_mentions_every_flag() raises:
         String("--static"), String("--static-cache-control"), String("--static-header"),
         String("--access-log"),
         String("--max-body"), String("--max-keepalive-requests"), String("--metrics"), String("--realtime"),
-        String("--body-timeout"), String("--replay-frames"),
+        String("--body-timeout"), String("--replay-frames"), String("--max-connections"),
         String("--health-path"), String("--reload"), String("--reload-dir"),
         String("--protocol"), String("--blocking-threads"), String("--mount"),
         String("--help"), String("--version"), String("--doctor"),
@@ -1659,6 +1660,64 @@ def test_from_env_ignores_an_unreadable_replay_depth_and_says_so() raises:
     assert_equal(
         seed.env_ignored[0],
         "ignoring M0_REPLAY_FRAMES='lots', not a whole number of frames; using 64",
+    )
+    _clear_env()
+
+
+def test_max_connections_is_a_count_of_one_or_more_and_reaches_the_loop() raises:
+    """`--max-connections` (SPEC C20): unset (-1) leaves `ServerConfig`'s
+    1024, which `loop_connections` reports for the handler's tables too; a
+    count reaches `max_connections`, and the notice the loop prints on its
+    first refused stream names the flag, the variable and the reserve. 0,
+    a negative and junk are usage errors; the ceiling is `flag_checks`'.
+
+    covers: C20
+    """
+    _clear_env()
+    var unset = _parse([String("m.wsgi")])
+    assert_equal(unset.max_connections, -1)
+    assert_equal(unset.loop_connections(), 1024)
+    assert_equal(unset.server_config(AppConfig()).max_connections, 1024)
+    var set = _parse([String("m.wsgi"), String("--max-connections"), String("4096")])
+    assert_equal(set.loop_connections(), 4096)
+    var sc = set.server_config(AppConfig())
+    assert_equal(sc.max_connections, 4096)
+    assert_equal(
+        sc.stream_cap_notice,
+        "m0serve: a stream was answered 503: streams held 4080 of this"
+        " loop's 4096 connections, and the last 16 are kept for requests;"
+        " raise --max-connections or M0_MAX_CONNECTIONS, or serve more"
+        " loops (--workers, --threads)",
+    )
+    for bad in [String("0"), String("-1"), String("many"), String("")]:
+        assert_true(
+            _fails([String("m.wsgi"), String("--max-connections"), bad]),
+            "--max-connections accepted '" + bad + "'",
+        )
+    try:
+        _ = _parse([String("m.wsgi"), String("--max-connections"), String("0")])
+        assert_true(False, "0 was accepted")
+    except e:
+        assert_true(String(e).find("--max-connections") >= 0, String(e))
+
+
+def test_from_env_reads_max_connections_and_the_flag_wins() raises:
+    _clear_env()
+    _ = setenv("M0_MAX_CONNECTIONS", "2048", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.max_connections, 2048)
+    assert_equal(len(seed.env_ignored), 0)
+    var opts = parse_args(
+        [String("m.wsgi"), String("--max-connections"), String("64")], seed
+    )
+    assert_equal(opts.max_connections, 64)
+    _ = setenv("M0_MAX_CONNECTIONS", "lots", True)
+    var junk = ServeOptions.from_env()
+    assert_equal(junk.max_connections, -1)
+    assert_equal(
+        junk.env_ignored[0],
+        "ignoring M0_MAX_CONNECTIONS='lots', not a whole number of"
+        " connections; using 1024",
     )
     _clear_env()
 

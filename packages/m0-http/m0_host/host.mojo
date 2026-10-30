@@ -180,7 +180,9 @@ from lightbug_http.address import NetworkType
 from lightbug_http.address import join_host_port, parse_address
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.c.process import getpid, process_exit
+from lightbug_http.c.process import (
+    DESCRIPTOR_HEADROOM, getpid, process_exit, raise_descriptor_limit,
+)
 from lightbug_http.connection import ListenConfig
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
@@ -1061,6 +1063,11 @@ def host_report[H: AppHandler](
         loops * config.blocking_threads if _wants_pool(config) else 0,
     )
     report.add_int("topology", "max_connections_per_loop", server_config.max_connections)
+    report.add_int("topology", "stream_limit_per_loop", server_config.stream_limit())
+    report.add_int(
+        "topology", "descriptor_limit",
+        raise_descriptor_limit(_descriptors_wanted(config, server_config)),
+    )
     report.add_bool(
         "topology", "accept_share",
         loops > 1 and getenv("M0_ACCEPT_SHARE", "") != "0",
@@ -1079,6 +1086,36 @@ def host_report[H: AppHandler](
         else:
             report.fail_check(checks[i].name, checks[i].detail, checks[i].fix, EX_CONFIG)
     return report^
+
+
+def _descriptors_wanted(config: AppConfig, server_config: ServerConfig) -> Int:
+    """The open descriptors one process of this host needs (SPEC C21): each
+    of its loops' connections -- `M0_THREADS` loops in one process, a
+    forked worker a process of its own -- and the headroom beside them."""
+    var loops = config.threads if config.threads > 1 else 1
+    return server_config.max_connections * loops + DESCRIPTOR_HEADROOM
+
+
+def _raise_descriptors(config: AppConfig, server_config: ServerConfig):
+    """Raise the soft descriptor limit to what the connections need, and say
+    when the hard limit stops it short: connections past it are refused at
+    accept, whatever `max_connections` says."""
+    var wanted = _descriptors_wanted(config, server_config)
+    var limit = raise_descriptor_limit(wanted)
+    if limit < 0 or limit >= wanted:
+        return
+    var loops = config.threads if config.threads > 1 else 1
+    var room = limit - DESCRIPTOR_HEADROOM
+    print(
+        String(
+            "host: the open-file limit is ", limit, ", under the ", wanted,
+            " that ", server_config.max_connections,
+            " connections per loop need; a loop will hold about ",
+            (room if room > 0 else 0) // loops,
+            ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=)",
+        ),
+        flush=True,
+    )
 
 
 def serve[H: AppHandler, P: Producer = NoProducer](config: AppConfig) raises:
@@ -1202,6 +1239,9 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     if refusal:
         print("host: " + refusal.value(), flush=True)
         process_exit(EX_CONFIG)
+    # The descriptors the connections need, before the bind, the fork and
+    # the threads, so every loop inherits them (SPEC C21).
+    _raise_descriptors(config, server_config)
     if config.threads > 1:
         _serve_threaded[H, P](config, server_config)
         return

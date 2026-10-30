@@ -72,7 +72,10 @@ from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType, TCPAddr, is_ipv6_literal, parse_address
 from lightbug_http.c.address import AddressFamily
 from lightbug_http.socket import Socket
-from lightbug_http.c.process import getpid, process_exit, executable_path
+from lightbug_http.c.process import (
+    DESCRIPTOR_HEADROOM, executable_path, getpid, process_exit,
+    raise_descriptor_limit,
+)
 from lightbug_http.c.fcntl import set_cloexec
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.header import Header, Headers, HeaderKey
@@ -855,6 +858,20 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     report.add_int(
         String("server"), String("body_timeout"), limits.body_read_timeout
     )
+    # Per loop, and the share streams may take (SPEC C20); and the
+    # descriptor limit the server would run under, raised as `main` raises
+    # it (C21), beside what it asked for.
+    report.add_int(
+        String("server"), String("max_connections"), limits.max_connections
+    )
+    report.add_int(String("server"), String("stream_limit"), limits.stream_limit())
+    report.add_int(
+        String("server"), String("descriptors_wanted"), _descriptors_wanted(opts)
+    )
+    report.add_int(
+        String("server"), String("descriptor_limit"),
+        raise_descriptor_limit(_descriptors_wanted(opts)),
+    )
     # Kept only under --realtime: without it the handler builds an empty
     # journal (`ReplayJournal(0)`) whatever the flag says.
     report.add_int(
@@ -897,6 +914,38 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     return report.exit_code()
 
 
+def _descriptors_wanted(opts: ServeOptions) -> Int:
+    """The open descriptors one process of this server needs (SPEC C21):
+    each of its loops' connections, `--threads` being several loops in one
+    process and a worker a process of its own, and the headroom beside
+    them."""
+    var loops = opts.threads if opts.threads > 1 else 1
+    return opts.loop_connections() * loops + DESCRIPTOR_HEADROOM
+
+
+def _raise_descriptors(opts: ServeOptions):
+    """Raise the soft descriptor limit to what the connections need, and
+    say once, from the process that read the flags, when the hard limit
+    stops it short: the connections past it are refused at accept."""
+    var wanted = _descriptors_wanted(opts)
+    var limit = raise_descriptor_limit(wanted)
+    if limit < 0 or limit >= wanted or spawned_worker_index() >= 0:
+        return
+    var loops = opts.threads if opts.threads > 1 else 1
+    var room = limit - DESCRIPTOR_HEADROOM
+    print(
+        String(
+            "m0serve: the open-file limit is ", limit, ", under the ",
+            wanted, " that ", opts.loop_connections(),
+            " connections per loop need; a loop will hold about ",
+            (room if room > 0 else 0) // loops,
+            ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=)"
+            " or lower --max-connections",
+        ),
+        flush=True,
+    )
+
+
 def main() raises:
     var args = List[String]()
     var raw = argv()
@@ -935,6 +984,11 @@ def main() raises:
     # child refused, the parent respawned them -- so a usage error read as a
     # crash loop, which is how the pg-listen and mount refusals first shipped.
     refuse_first(flag_checks(opts, _check_facts(opts)))
+
+    # The descriptors the connections need, before the bind and the fork so
+    # every worker inherits them (SPEC C21): under launchd's default of 256
+    # a loop held 208 streams while its banner said 1024.
+    _raise_descriptors(opts)
 
     # Bind before forking; every worker accepts from this one socket.
     var listener = _listen_or_fail(opts)
