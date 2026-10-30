@@ -38,6 +38,13 @@ def tools_dir():
     return PACKAGE / "_tools"
 
 
+def release_licenses_dirs():
+    """Where the texts `m0 build --release` puts in `dist/licenses/` are:
+    the wheel's own MIT texts, and the runtime's with the artifact's
+    notice (the hook's `LICENSES` and `RELEASE_LICENSES`)."""
+    return [PACKAGE / "licenses", PACKAGE / "_release"]
+
+
 def prefix():
     return Path(sys.prefix)
 

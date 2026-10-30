@@ -383,6 +383,21 @@ trait AppHandler(HTTPService, Movable, Deinitable):
         """
         return Self.max_workers()
 
+    @staticmethod
+    def pool_state_routes() raises -> List[String]:
+        """The routes whose views read or write the state on a pool thread,
+        as `METHOD /pattern`; none, the default.
+
+        Under `M0_BLOCKING_THREADS` each pool thread builds the handler
+        again with `make`, so where `max_threads()` is 1, the state living
+        in one handler's memory, such a route answers from a copy no other
+        thread sees: an item one thread creates is missing from the list
+        another answers. The host refuses that with 78 (SPEC E42).
+        `ViewsApp` answers from its table; a handler of its own that keeps
+        state in memory and answers from it in `func` names its routes.
+        """
+        return List[String]()
+
 
 trait ViewState(Movable, Deinitable):
     """The state a `Views` table dispatches to, served by `ViewsApp`."""
@@ -466,6 +481,11 @@ struct ViewsApp[S: ViewState](AppHandler):
     @staticmethod
     def max_threads() -> Int:
         return Self.S.max_threads()
+
+    @staticmethod
+    def pool_state_routes() raises -> List[String]:
+        # The table's own: every view given the state and not `on_loop`.
+        return Self.S.urls().pool_state_routes()
 
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
         # With the state: an `on_loop` route is answered here, on the loop
@@ -802,6 +822,7 @@ def host_checks(
     max_workers: Int = 0,
     max_threads: Int = 0,
     parallel_runtime: Optional[Bool] = None,
+    pool_state_routes: List[String] = List[String](),
 ) -> List[HostCheck]:
     """Every rule the host refuses a configuration by, in the order `serve`
     applies them, each evaluated.
@@ -818,7 +839,8 @@ def host_checks(
     `parallel_runtime` is the one fact a caller may supply instead of
     letting this gather it (`parallel_runtime_linked`): the unit test links
     no MAX and still has to see the refusal, and the smoke that links it
-    (SPEC E32) is where the gathered fact is proven.
+    (SPEC E32) is where the gathered fact is proven. `pool_state_routes`
+    is the application's `AppHandler.pool_state_routes`.
     """
     var out = List[HostCheck]()
     # The port, first: what the listener binds. `--port` and `M0_PORT` are
@@ -917,6 +939,45 @@ def host_checks(
             if max_threads == 0
             else String("the application serves from at most ", max_threads, " loop(s)"),
         ))
+    # A pool thread's handler is built by `make` like a loop's, so state an
+    # application keeps in one handler's memory (`max_threads()` of 1) is
+    # divided by the pool as by `--threads`; the view that reads it there
+    # answers from its own thread's copy. Unrefused, an item one thread
+    # created was missing from a list another answered, silently (SPEC E42).
+    if (
+        config.blocking_threads > 0
+        and max_threads == 1
+        and len(pool_state_routes) > 0
+    ):
+        var named = String(pool_state_routes[0])
+        if len(pool_state_routes) > 1:
+            named += String(" and ", len(pool_state_routes) - 1, " more")
+        out.append(HostCheck(
+            "pool-vs-application",
+            String(
+                "M0_BLOCKING_THREADS=", config.blocking_threads, ", but ",
+                named, " read or write the state on a pool thread, and each"
+                " pool thread builds a state of its own: this application"
+                " keeps its state in one handler's memory (max_threads() is"
+                " 1), so its threads would answer from different copies",
+            ),
+            "register those views with on_loop=True, or keep the state where"
+            " every thread sees it (a database, ctx.page) and raise"
+            " max_threads(), or set --blocking-threads (M0_BLOCKING_THREADS)"
+            " to 0",
+        ))
+    elif config.blocking_threads == 0:
+        out.append(HostCheck("pool-vs-application", "no handler pool"))
+    elif max_threads != 1:
+        out.append(HostCheck(
+            "pool-vs-application",
+            "the application's state may be built once per pool thread",
+        ))
+    else:
+        out.append(HostCheck(
+            "pool-vs-application",
+            "every view given the state is answered on the loop",
+        ))
     if config.spawn_workers:
         out.append(HostCheck(
             "spawn-workers",
@@ -976,15 +1037,28 @@ def host_refusal(
     max_workers: Int = 0,
     max_threads: Int = 0,
     parallel_runtime: Optional[Bool] = None,
+    pool_state_routes: List[String] = List[String](),
 ) -> Optional[String]:
     """Why the host will not serve `config`, or None: the first of
-    `host_checks` that failed, with its fix. `parallel_runtime` is
-    `host_checks`' own optional, for the test that supplies the fact."""
-    var checks = host_checks(config, max_workers, max_threads, parallel_runtime)
+    `host_checks` that failed, with its fix. `parallel_runtime` and
+    `pool_state_routes` are `host_checks`' own."""
+    var checks = host_checks(
+        config, max_workers, max_threads, parallel_runtime, pool_state_routes
+    )
     for i in range(len(checks)):
         if not checks[i].ok:
             return String(checks[i].detail, " (", checks[i].fix, ")")
     return None
+
+
+def _pool_state_routes[H: AppHandler]() -> List[String]:
+    """`H.pool_state_routes()`, or none where the table cannot be built:
+    that is `make`'s refusal to report, 78 with its own line (D30), and
+    this check has nothing to add to it."""
+    try:
+        return H.pool_state_routes()
+    except:
+        return List[String]()
 
 
 def host_report[H: AppHandler](
@@ -1078,7 +1152,8 @@ def host_report[H: AppHandler](
     report.add_int("application", "page_slots", H.page_slots(loops if loops > 0 else 1))
 
     var checks = host_checks(
-        config, H.max_workers(), H.max_threads(), parallel_runtime
+        config, H.max_workers(), H.max_threads(), parallel_runtime,
+        _pool_state_routes[H](),
     )
     for i in range(len(checks)):
         if checks[i].ok:
@@ -1235,7 +1310,10 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         var report = host_report[H](flags, server_config)
         print(report.render(), flush=True)
         process_exit(report.exit_code())
-    var refusal = host_refusal(config, H.max_workers(), H.max_threads())
+    var refusal = host_refusal(
+        config, H.max_workers(), H.max_threads(),
+        pool_state_routes=_pool_state_routes[H](),
+    )
     if refusal:
         print("host: " + refusal.value(), flush=True)
         process_exit(EX_CONFIG)

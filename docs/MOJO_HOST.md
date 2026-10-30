@@ -167,6 +167,7 @@ the host applies them:
 | `threads-count` | `M0_THREADS` is below 1 |
 | `workers-vs-threads` | `M0_WORKERS` and `M0_THREADS` are both above 1 |
 | `threads-vs-application` | `M0_THREADS` is above the application's `max_threads()` |
+| `pool-vs-application` | `M0_BLOCKING_THREADS` is above 0, the application's `max_threads()` is 1, and a view given the state is left on the pool: each pool thread builds a state of its own, so that view would answer from its thread's copy |
 | `spawn-workers` | `M0_SPAWN_WORKERS` is set: the host forks without exec |
 | `spawned-marker` | `M0_WORKER_SPAWNED` is inherited from an m0serve worker |
 | `workers-vs-parallel-runtime` | `M0_WORKERS` is above 1 and the binary links MAX's parallel runtime |

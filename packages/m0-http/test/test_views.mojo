@@ -237,6 +237,22 @@ def test_a_mounted_resource_is_under_its_prefix() raises:
     assert_equal(v.dispatch(_req("GET", "/things/7"), st).status_code, 404)
 
 
+def test_the_routes_a_pool_answers_with_the_state_are_listed() raises:
+    """`pool_state_routes` names every view given the state and not kept
+    on the loop, under its mount, `resource`'s included; an `on_loop` view
+    and a stateless loop route are not on it (SPEC E42)."""
+    var v = Views[Counter](Mount("/app"))
+    v.add_read(String("GET"), String("/notes"), _index)
+    v.add_write(String("POST"), String("/notes"), _bump, on_loop=True)
+    v.add_loop(String("GET"), String("/health"), _health)
+    v.resource(THINGS, list=_r_list, delete=_r_delete)
+    var routes = v.pool_state_routes()
+    assert_equal(len(routes), 3)
+    assert_equal(routes[0], "GET /app/notes")
+    assert_equal(routes[1], "GET /app/things")
+    assert_equal(routes[2], "DELETE /app/things/:id")
+
+
 def test_dispatch_calls_the_registered_view() raises:
     var v = _table()
     var st = Counter()

@@ -60,6 +60,8 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   `M0_WORKERS=2` is then refused rather than served as two different
   copies; every view that reads or writes it is `on_loop=True`, since
   under `--blocking-threads` each pool thread builds a state of its own.
+  The host refuses one left on the pool there with 78, naming it
+  (`pool-vs-application`), rather than serve a copy per thread.
   Move the state out (a database, the shared page) before raising
   `M0_WORKERS`.
 - `form(req)` is `None` unless the body is a urlencoded form. Check it.
