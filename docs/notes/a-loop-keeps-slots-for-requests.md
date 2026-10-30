@@ -107,8 +107,15 @@ first version of the fix wrapped the loop alone, and still spun. `--threads`
 loops do the same, and the inline path too, for one rule. The Mojo host
 needed nothing: its pool takes no GIL, so its unwind finished and it
 already exited 1. `smoke-max-connections` runs sixteen pool threads under a
-hard limit of 40 and wants exit 1 within 15 s; with the backend moved back
-above the `try` it was still running at 15 s.
+hard limit of 40 on macOS and wants exit 1 within 15 s, naming the loop;
+with the backend moved back above the `try` it was still running at 15 s.
+The arm is macOS's because the order is: there `PoolThreads.deal` opens
+each thread's wake channel on the spawning thread, before the kqueue. On
+Linux no wake channel is opened, and a thread's own descriptors wait for
+the GIL that main releases just before it opens epoll, so epoll is served
+first and the threads' failures are tolerated; the first CI run of the arm
+found the Linux server serving at 15 s. Linux's arm holds a limit of 12,
+below what startup holds before the loop, to the same prompt exit.
 
 The limit's notice had a wrong number of its own. It said "a loop will
 hold about 0" at 40, from `limit - 256`, though 256 is the headroom asked

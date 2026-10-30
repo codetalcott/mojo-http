@@ -735,7 +735,7 @@
       "category": "C. Connection management and denial of service",
       "capability": "A loop that cannot start -- its kqueue or epoll descriptor refused, as under a hard descriptor limit below what the server holds before its first connection, about 14 and 4 per pool thread -- ends the process with exit 1 and one line naming the call and its errno, the pool and its threads left where they are, whether one loop serves inline, behind a pool, or as one of `--threads`. Before, an m0serve whose pool had started unwound instead: the pool was freed under its threads, one spun on the freed job ring holding the GIL, and the teardown waited for that GIL for good, a core at 100 % that SIGTERM never stopped (1.16.0 did it too). The Mojo host, whose pool takes no GIL, already exited",
       "status": "verified",
-      "evidence": "`Smoke test the connection limit` (every PR) \u2014 under a hard limit of 40 with sixteen pool threads the server exits 1 within 15 s naming `Too many open files`; with the backend's construction moved back above the `try`, it is still running at 15 s"
+      "evidence": "`Smoke test the connection limit` (every PR) \u2014 on macOS, where the pool's per-thread wake channels are opened on the spawning thread before the loop's kqueue, sixteen pool threads under a hard limit of 40 end with exit 1 within 15 s, naming `Too many open files` and the loop; with the backend's construction moved back above the `try`, it is still running at 15 s. Linux opens a thread's descriptors on the thread, after the loop's epoll, so no thread count reaches that path deterministically there, and its arm holds a hard limit of 12 to the same exit"
     },
     {
       "id": "D1",
