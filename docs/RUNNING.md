@@ -224,6 +224,10 @@ has the Flask version of the whole thing, and CI drives that exact file.
   left out when the server could not read one.
 - `--metrics` serves Prometheus exposition at `/__metrics`, with latency
   histograms.
+- `M0_THREAD_HEADER=1` names the handler-pool thread that served each
+  response in an `x-thread` header, for matching interleaved log lines to
+  responses. It is off by default. The server's own `Server` header is
+  `mojo-http`; an application that sets one sends only its own.
 - `--doctor` prints the whole resolved configuration as JSON and starts
   nothing. It exits with the code the server itself would use for the same
   arguments, so it answers "will this run?" in a CI step. The JSON names
@@ -357,7 +361,10 @@ the values this server would use, and `m0serve --help` names every flag.
 
 ## Platforms
 
-macOS arm64 (13+), Linux x86_64 and aarch64 (glibc; the exact floor is in
-the wheel filename, and `pip` declines an older system rather than crash).
-CPython 3.10 to 3.14, free-threaded builds included for WSGI. No Windows, no
-musl, no Intel Mac.
+macOS arm64 (13+), Linux x86_64 and aarch64 with glibc 2.35 or newer: Ubuntu
+22.04, Debian 12 and RHEL 10 and later. RHEL 9 and Amazon Linux 2023 ship
+glibc 2.34 and are below the floor; there `pip` declines the wheel rather
+than install one that would crash. The floor is measured from the binary at
+each release and is in the wheel's filename (`manylinux_2_35`). CPython 3.10
+to 3.14, free-threaded builds included for WSGI. No Windows, no musl, no
+Intel Mac.

@@ -14,8 +14,9 @@ m0serve myproject.wsgi:application
 What it adds over gunicorn or uvicorn is that a **plain synchronous view**
 can hold a Server-Sent Events stream or a WebSocket, by answering with two
 response headers — and reach every subscriber on every worker with one
-function call. No Channels, no Redis, no daphne, no Pushpin, no second
-process:
+function call. On one machine: no Channels, no Redis, no daphne, no
+Pushpin, no second process (across machines, Postgres `NOTIFY` is the bus,
+through `--pg-listen`):
 
 ```python
 from m0serve import m0pub

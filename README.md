@@ -15,8 +15,9 @@ reporting what someone last wrote down.)*
 
 A plain sync Django or Flask view can hold a Server-Sent Events stream or a
 WebSocket by answering with two response headers, and reach every subscriber
-on every worker with one function call. No Channels, no Redis, no daphne, no
-Pushpin, no second process.
+on every worker with one function call. On one machine: no Channels, no
+Redis, no daphne, no Pushpin, no second process. Across machines, Postgres
+`NOTIFY` is the bus (`--pg-listen`).
 
 ```python
 from m0serve import m0pub
@@ -67,8 +68,10 @@ multi-tab sync**, and CI executes every command in it on every pull request
   conformance is validated by `wsgiref`, ASGI by a validator written from
   the spec.
 - **Where it stands on throughput**, from [docs/BENCHMARKS.md](docs/BENCHMARKS.md):
-  <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x uvicorn with uvloop on bare ASGI at 16 connections
-  (<!-- num:asgi-vs-uvicorn@2 -->2.34<!-- /num -->x `uvicorn --loop asyncio`), on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
+  level with the fast servers, not ahead. Per core,
+  <!-- num:asgi-per-core-vs-uvloop@2 -->0.99<!-- /num -->x uvicorn with uvloop on bare ASGI at 16
+  connections; <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x in requests per second
+  (<!-- num:asgi-vs-uvicorn@2 -->2.34<!-- /num -->x `uvicorn --loop asyncio`) on <!-- num:asgi-m0-cores@1 -->1.6<!-- /num -->
   measured cores where uvicorn has one; the fast-request tail under mixed
   load ahead of uvicorn in every recorded run; and <!-- num:m0-vs-granian-rps@2 -->1.01<!-- /num -->x
   Granian on bare WSGI at one worker and one handler thread each
@@ -196,10 +199,10 @@ def main() raises:
 | `m0-core` | wyhash64, SHA-256 and HMAC-SHA256, SIMD JSON escape, HTML escape, JSON field parser, a C-ABI export | 85 |
 | `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 1190 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 99 |
-| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 210 |
+| `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 211 |
 | `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table, scalar functions written in Mojo, stamps that say which rows changed | 169 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 84 |
-| **Total** | | **1837** |
+| **Total** | | **1838** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix. Every capability, with the gate that proves it, is a row of [docs/SPEC.md](docs/SPEC.md).
 
@@ -569,7 +572,7 @@ is silently a different number.
 ```bash
 uv run poe                  # every task, with what it does
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1837 unit tests, then compiles every example
+uv run poe test-all         # 1838 unit tests, then compiles every example
 uv run poe check-docs       # the docs gate, as the required check runs it
 uv run poe canary           # the whole suite against the Mojo nightly, then restore the pin
 ```

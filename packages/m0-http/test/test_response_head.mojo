@@ -277,7 +277,7 @@ def test_a_server_header_the_application_set_is_the_only_one() raises:
             wire = String(plain)
         lines = _server_lines(wire)
         assert_equal(len(lines), 1, wire)
-        assert_equal(lines[0], "server: lightbug_http", wire)
+        assert_equal(lines[0], "server: mojo-http", wire)
 
 
 def _lines_named(wire: String, name: String) raises -> List[String]:

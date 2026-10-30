@@ -301,7 +301,9 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     an m0-sqlite `Connection` (opened `NOMUTEX`). Shared mutable Python
     objects are the measured 0.7x cliff (`docs/notes/wsgi-vs-asgi-history.md` §5); keep
     per-request state thread-local. `print`/`log_access` from N threads can
-    interleave — `x-thread` is on every response for that reason.
+    interleave — `M0_THREAD_HEADER=1` puts `x-thread` on every response for
+    that reason (off by default since 1.17.0, SPEC F26; the gates that read
+    it set it per task).
   - **The asyncio executor (`m0_wsgi.asgi_executor`; the ASGI default).**
     One Python thread per event loop runs the bridge's persistent asyncio
     loop, fed through the same `OffloadPool` the handler pool speaks — the

@@ -2,7 +2,8 @@
 
 One file of synchronous Django whose browser tabs stay in sync. The server
 holds the Server-Sent Events streams and the WebSockets; the views only
-approve them. It needs neither Channels nor Redis, and runs as one process.
+approve them. On one machine it needs neither Channels nor Redis, and runs
+as one process.
 
 A sync view approves a connection by setting two response headers, and
 m0serve holds it from there. `m0pub.publish()` from any view reaches every

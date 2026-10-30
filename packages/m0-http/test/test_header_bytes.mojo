@@ -466,7 +466,7 @@ def _check(
                 break
         if is_default:
             continue
-        if server_default and not server_seen and _eq(lines[k], List[Byte](String("server: lightbug_http").as_bytes())):
+        if server_default and not server_seen and _eq(lines[k], List[Byte](String("server: mojo-http").as_bytes())):
             server_seen = True
             continue
         _refuse(seed, it, writer, "a line the rules do not give: " + _hex(lines[k]), c)
