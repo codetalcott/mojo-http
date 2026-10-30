@@ -8,6 +8,7 @@ transcripts.
     python3 scripts/agent_runs.py probe RUN_DIR          # re-run the contract probe
     python3 scripts/agent_runs.py score RUN_DIR          # re-score one run
     python3 scripts/agent_runs.py summary DIR            # table over every run under DIR
+    python3 scripts/agent_runs.py shed RUN_DIR           # record, then delete, its virtual environments
 
 A run is one `claude -p` session (Claude Code, headless) started in an
 empty directory with no settings, hooks, plugins, MCP servers or CLAUDE.md
@@ -27,10 +28,23 @@ included, which the first pilot found), and the finished run moves to
     brief.md         the prompt as sent
     transcript.jsonl the session, stream-json, every tool call and result
     result.json      the session's final result message (cost, turns, time)
-    work/            the directory the agent worked in, as it left it
+    work/            the directory the agent worked in, as it left it, less its
+                     virtual environments
+    env.json         each virtual environment the session made: its path,
+                     pyvenv.cfg and distributions, recorded before it was deleted
     probe.json       the contract probe's verdict, and the server's output
     score.json       counts read off the transcript, and the flagged results
     score.md         the same, to read
+
+The virtual environments a session made under `work/` (any directory that
+holds a `pyvenv.cfg`) are deleted once the run is scored; `--keep-env` keeps
+them. They are the session's own work, made by following the docs, so the
+harness never shares one between runs. On APFS uv clones an environment from
+its cache, so fifty of them showed as 21.6 GB to `du` and held about 1 GB; a
+pip-made one, or one on another volume or on Linux, is a full copy.
+`work/uv.lock`, where the session made one, rebuilds an environment exactly
+(`uv sync --frozen` in `work/`), and `env.json` lists what each one held. A
+`probe` of an old run needs its environment rebuilt first.
 
 `--plugin-dir PLUGIN` loads one Claude Code plugin into every session of
 the run, for measuring a skill against the baseline. The plugin is copied
@@ -426,6 +440,39 @@ def score(run_dir: Path) -> dict:
     return s
 
 
+def shed_envs(run_dir: Path) -> dict:
+    """Record every virtual environment under the run's `work/` in `env.json`,
+    then delete it (the module docstring says why). A virtual environment is a
+    directory holding `pyvenv.cfg`; its distributions are read from the names
+    of its `.dist-info` directories. `work/` itself is never deleted, even if
+    the session made it one."""
+    work = (run_dir / "work").resolve()
+    venvs: list[Path] = []
+    if work.is_dir():
+        for root, dirs, files in os.walk(work):
+            if "pyvenv.cfg" in files:
+                venvs.append(Path(root))
+                dirs[:] = []
+    envs = []
+    for venv in venvs:
+        dists = sorted("==".join(d.name[: -len(".dist-info")].split("-", 1))
+                       for d in venv.glob("lib/python*/site-packages/*.dist-info"))
+        apparent = sum(f.stat().st_size for f in venv.rglob("*") if f.is_file() and not f.is_symlink())
+        envs.append({"path": str(venv.relative_to(work)),
+                     "pyvenv_cfg": (venv / "pyvenv.cfg").read_text(errors="replace"),
+                     "distributions": dists, "apparent_bytes": apparent})
+    removed = [e["path"] for e in envs if e["path"] != "."]
+    record = {"removed": removed, "kept": [e["path"] for e in envs if e["path"] == "."],
+              "rebuild": ("uv sync --frozen in work/" if (work / "uv.lock").exists()
+                          else "install the distributions listed"),
+              "environments": envs}
+    (run_dir / "env.json").write_text(json.dumps(record, indent=1) + "\n")
+    for venv in venvs:
+        if venv != work and venv.is_relative_to(work) and not venv.is_symlink():
+            shutil.rmtree(venv)
+    return record
+
+
 def summary(out: Path) -> str:
     rows = []
     for d in sorted(p for p in out.iterdir() if p.is_dir() and (p / "transcript.jsonl").exists()):
@@ -462,6 +509,9 @@ def main() -> int:
                    help="load this Claude Code plugin into every session (a skill under test)")
     r.add_argument("--archive", type=Path, default=None,
                    help="move each finished run here (the stage may not be under ~/projects)")
+    r.add_argument("--keep-env", action="store_true",
+                   help="keep the session's virtual environments under work/ (by default they are "
+                        "recorded in env.json and deleted once the run is scored)")
     p = sub.add_parser("probe")
     p.add_argument("run_dir", type=Path)
     p.add_argument("--ready", type=int, default=120)
@@ -469,6 +519,8 @@ def main() -> int:
     s.add_argument("run_dir", type=Path)
     m = sub.add_parser("summary")
     m.add_argument("out", type=Path)
+    e = sub.add_parser("shed")
+    e.add_argument("run_dir", type=Path)
     a = ap.parse_args()
 
     if a.cmd == "run":
@@ -487,6 +539,9 @@ def main() -> int:
             sc = score(run_dir)
             print(f"   score: {sc['tool_calls']} calls, {len(sc['flagged'])} flagged, "
                   f"{len(sc['violations'])} violations", flush=True)
+            if not a.keep_env:
+                env = shed_envs(run_dir)
+                print(f"   env: removed {', '.join(env['removed']) or 'none'}", flush=True)
             if a.archive:
                 a.archive.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(run_dir), str(a.archive / run_dir.name))
@@ -500,6 +555,8 @@ def main() -> int:
         print(json.dumps(score(a.run_dir), indent=1))
     elif a.cmd == "summary":
         print(summary(a.out))
+    elif a.cmd == "shed":
+        print(json.dumps({k: v for k, v in shed_envs(a.run_dir).items() if k != "environments"}, indent=1))
     return 0
 
 
