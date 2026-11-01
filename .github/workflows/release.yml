@@ -373,4 +373,4 @@ jobs:
       # v1.14.2 -- exactly what `release/v1` pointed at when it was set, so
       # this froze current behaviour rather than changing it. Dependabot's
       # github-actions ecosystem keeps it current and rewrites the comment.
-      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086  # v1.14.3
