@@ -181,7 +181,8 @@ from lightbug_http.address import join_host_port, parse_address
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.process import (
-    DESCRIPTOR_HEADROOM, getpid, process_exit, raise_descriptor_limit,
+    DESCRIPTOR_HEADROOM, DESCRIPTORS_PER_CONNECTION, connections_within,
+    getpid, process_exit, raise_descriptor_limit,
 )
 from lightbug_http.connection import ListenConfig
 from lightbug_http.event_loop import run_event_loop
@@ -1146,12 +1147,15 @@ def host_report[H: AppHandler](
         "topology", "handler_threads",
         loops * config.blocking_threads if _wants_pool(config) else 0,
     )
-    report.add_int("topology", "max_connections_per_loop", server_config.max_connections)
-    report.add_int("topology", "stream_limit_per_loop", server_config.stream_limit())
-    report.add_int(
-        "topology", "descriptor_limit",
-        raise_descriptor_limit(_descriptors_wanted(config, server_config)),
-    )
+    # As fitted under the limit the host would run under (SPEC C21, C25):
+    # what a loop would hold, not what it asked for, when the hard limit is
+    # short.
+    var fitted = server_config.copy()
+    var limit = raise_descriptor_limit(_descriptors_wanted(config, server_config))
+    _ = _fit_connections(config, fitted, limit)
+    report.add_int("topology", "max_connections_per_loop", fitted.max_connections)
+    report.add_int("topology", "stream_limit_per_loop", fitted.stream_limit())
+    report.add_int("topology", "descriptor_limit", limit)
     report.add_bool(
         "topology", "accept_share",
         loops > 1 and getenv("M0_ACCEPT_SHARE", "") != "0",
@@ -1173,35 +1177,69 @@ def host_report[H: AppHandler](
     return report^
 
 
+def _startup_descriptors(config: AppConfig) -> Int:
+    """About how many descriptors one host process holds before its first
+    connection (SPEC C25), counted as m0serve counts its own
+    (`m0_wsgi.checks.startup_descriptors`, measured on an M4): 8, and per
+    loop with a handler pool 8 more and 4 a thread."""
+    var loops = config.threads if config.threads > 1 else 1
+    var per_loop = (8 + 4 * config.blocking_threads) if _wants_pool(config) else 0
+    return 8 + loops * per_loop
+
+
 def _descriptors_wanted(config: AppConfig, server_config: ServerConfig) -> Int:
     """The open descriptors one process of this host needs (SPEC C21): each
     of its loops' connections -- `M0_THREADS` loops in one process, a
-    forked worker a process of its own -- and the headroom beside them."""
+    forked worker a process of its own, each connection two on Linux
+    (`DESCRIPTORS_PER_CONNECTION`) -- what the host holds itself
+    (`_startup_descriptors`), and the headroom beside them."""
     var loops = config.threads if config.threads > 1 else 1
-    return server_config.max_connections * loops + DESCRIPTOR_HEADROOM
+    return (
+        server_config.max_connections * loops * DESCRIPTORS_PER_CONNECTION
+        + _startup_descriptors(config) + DESCRIPTOR_HEADROOM
+    )
 
 
-def _raise_descriptors(config: AppConfig, server_config: ServerConfig):
-    """Raise the soft descriptor limit to what the connections need, and say
-    when the hard limit stops it short: connections past it are refused at
-    accept, whatever `max_connections` says."""
+def _fit_connections(
+    config: AppConfig, mut server_config: ServerConfig, limit: Int
+) -> Bool:
+    """Cut each loop's connections to what `limit` can hold (SPEC C25,
+    `connections_within`); True when it cut them. The loop's slots and its
+    stream reserve count from the cut."""
+    var loops = config.threads if config.threads > 1 else 1
+    var asked = server_config.max_connections
+    var each = connections_within(limit, _startup_descriptors(config), loops, asked)
+    if each >= asked:
+        return False
+    server_config.max_connections = each
+    return True
+
+
+def _raise_descriptors(config: AppConfig, mut server_config: ServerConfig):
+    """Raise the soft descriptor limit to what the connections need, fit each
+    loop's connections to it where the hard limit stops it short, and say
+    so (SPEC C21, C25). Before, a loop kept its count under a limit that
+    could not hold it, and streams took every descriptor before they reached
+    the reserve kept for requests (C20)."""
+    var asked = server_config.max_connections
     var wanted = _descriptors_wanted(config, server_config)
     var limit = raise_descriptor_limit(wanted)
     if limit < 0 or limit >= wanted:
         return
-    # No estimate of what the limit leaves: the headroom is what is asked
-    # for, not what is used, so `limit - DESCRIPTOR_HEADROOM` said "about 0"
-    # of a server that served.
-    print(
-        String(
-            "host: the open-file limit is ", limit, ", under the ", wanted,
-            " that ", server_config.max_connections,
-            " connections per loop need, and a connection past the limit"
-            " is refused at accept. Raise the hard limit (ulimit -Hn,"
-            " systemd's LimitNOFILE=)",
-        ),
-        flush=True,
+    var said = String(
+        "host: the open-file limit is ", limit, ", under the ", wanted,
+        " that ", asked, " connections per loop and the host's own need",
     )
+    if _fit_connections(config, server_config, limit):
+        said += String(
+            ": each loop holds ", server_config.max_connections, ", streams ",
+            server_config.stream_limit(), " of them, so its last are still"
+            " kept for requests",
+        )
+    else:
+        said += ", leaving less room for the application's own files"
+    said += ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=)"
+    print(said, flush=True)
 
 
 def serve[H: AppHandler, P: Producer = NoProducer](config: AppConfig) raises:

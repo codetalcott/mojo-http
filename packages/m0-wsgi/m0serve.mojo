@@ -73,8 +73,8 @@ from lightbug_http.address import NetworkType, TCPAddr, is_ipv6_literal, parse_a
 from lightbug_http.c.address import AddressFamily
 from lightbug_http.socket import Socket
 from lightbug_http.c.process import (
-    DESCRIPTOR_HEADROOM, executable_path, getpid, process_exit,
-    raise_descriptor_limit,
+    DESCRIPTOR_HEADROOM, DESCRIPTORS_PER_CONNECTION, connections_within,
+    executable_path, getpid, process_exit, raise_descriptor_limit,
 )
 from lightbug_http.c.fcntl import set_cloexec
 from lightbug_http.server_config import ServerConfig
@@ -106,7 +106,7 @@ from m0_wsgi import (
     use_loop_inversion, supervised, serves_offloaded, pool_thread_count,
     ServeCheck, CheckFacts, flag_checks, interpreter_checks, app_checks,
     first_refusal, refuse_first, add_checks, pg_listen_needs_libpq,
-    OffloadThreads, wire_offload, join_offload,
+    startup_descriptors_bound, OffloadThreads, wire_offload, join_offload,
     M0SERVE_VERSION, prepend_to_path, DEFAULT_PORT, EXIT_USAGE, EXIT_STARTUP,
     DEFAULT_CHANNEL, PgListener,
 )
@@ -863,6 +863,12 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     # The values the server would USE: flag over M0_* over the default, the
     # defaults included. `opts` keeps -1 for "unset", which told an agent
     # reading this nothing about the limit it would meet.
+    # The descriptor limit the server would run under, raised as `main`
+    # raises it (C21), and the connections fitted under it (C25): what a
+    # loop would hold, not what was asked for, when the hard limit is short.
+    var wanted = _descriptors_wanted(opts)
+    var limit = raise_descriptor_limit(wanted)
+    _ = _fit_connections(opts, limit)
     var limits = opts.server_config(AppConfig(default_port=DEFAULT_PORT))
     report.add_int(
         String("server"), String("max_body"), limits.max_request_body_size
@@ -877,20 +883,14 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
     report.add_int(
         String("server"), String("body_timeout"), limits.body_read_timeout
     )
-    # Per loop, and the share streams may take (SPEC C20); and the
-    # descriptor limit the server would run under, raised as `main` raises
-    # it (C21), beside what it asked for.
+    # Per loop, and the share streams may take (SPEC C20), each as fitted
+    # under the limit (C25); and the limit beside what was asked for (C21).
     report.add_int(
         String("server"), String("max_connections"), limits.max_connections
     )
     report.add_int(String("server"), String("stream_limit"), limits.stream_limit())
-    report.add_int(
-        String("server"), String("descriptors_wanted"), _descriptors_wanted(opts)
-    )
-    report.add_int(
-        String("server"), String("descriptor_limit"),
-        raise_descriptor_limit(_descriptors_wanted(opts)),
-    )
+    report.add_int(String("server"), String("descriptors_wanted"), wanted)
+    report.add_int(String("server"), String("descriptor_limit"), limit)
     # Kept only under --realtime: without it the handler builds an empty
     # journal (`ReplayJournal(0)`) whatever the flag says.
     report.add_int(
@@ -942,33 +942,71 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
 def _descriptors_wanted(opts: ServeOptions) -> Int:
     """The open descriptors one process of this server needs (SPEC C21):
     each of its loops' connections, `--threads` being several loops in one
-    process and a worker a process of its own, and the headroom beside
-    them."""
+    process and a worker a process of its own, each connection two on Linux,
+    where a stream's heartbeat is a timerfd (`DESCRIPTORS_PER_CONNECTION`);
+    what the server holds itself
+    before its first connection, at the most the application's import can
+    make it (`startup_descriptors_bound`); and the headroom beside them.
+    The startup was not counted, and eight loops of eight pool threads hold
+    328 descriptors of their own, more than the headroom."""
     var loops = opts.threads if opts.threads > 1 else 1
-    return opts.loop_connections() * loops + DESCRIPTOR_HEADROOM
+    return (
+        opts.loop_connections() * loops * DESCRIPTORS_PER_CONNECTION
+        + startup_descriptors_bound(opts) + DESCRIPTOR_HEADROOM
+    )
 
 
-def _raise_descriptors(opts: ServeOptions):
-    """Raise the soft descriptor limit to what the connections need, and
-    say once, from the process that read the flags, when the hard limit
-    stops it short: the connections past it are refused at accept."""
+def _fit_connections(mut opts: ServeOptions, limit: Int) -> Bool:
+    """Cut each loop's connections to what `limit` can hold (SPEC C25),
+    `connections_within`; True when it cut them. Set on `opts`, so the
+    handler's tables, the loop's slots, its stream reserve, the notices and
+    the doctor all count from the cut."""
+    var loops = opts.threads if opts.threads > 1 else 1
+    var asked = opts.loop_connections()
+    var each = connections_within(limit, startup_descriptors_bound(opts), loops, asked)
+    if each >= asked:
+        return False
+    opts.max_connections = each
+    return True
+
+
+def _raise_descriptors(mut opts: ServeOptions):
+    """Raise the soft descriptor limit to what the connections need, fit
+    each loop's connections to it where the hard limit stops it short, and
+    say so once, from the process that read the flags.
+
+    In every process, a spawned worker's too, before the bind and the fork:
+    each fits alike from the same flags and the same inherited limit.
+    Before, a loop kept its count under a limit that could not hold it, and
+    streams took every descriptor before they reached the reserve kept for
+    requests (C20): under a hard limit of 300 a loop of 1024 held 276
+    streams and the health check read an EOF."""
+    var asked = opts.loop_connections()
     var wanted = _descriptors_wanted(opts)
     var limit = raise_descriptor_limit(wanted)
-    if limit < 0 or limit >= wanted or spawned_worker_index() >= 0:
+    if limit < 0 or limit >= wanted:
         return
-    # No estimate of what the limit leaves: the headroom is what is asked
-    # for, not what is used (about 14 descriptors and 4 per pool thread), so
-    # `limit - DESCRIPTOR_HEADROOM` said "about 0" of a server that served.
-    print(
-        String(
-            "m0serve: the open-file limit is ", limit, ", under the ",
-            wanted, " that ", opts.loop_connections(),
-            " connections per loop need, and a connection past the limit"
-            " is refused at accept. Raise the hard limit (ulimit -Hn,"
-            " systemd's LimitNOFILE=) or lower --max-connections",
-        ),
-        flush=True,
+    var cut = _fit_connections(opts, limit)
+    if spawned_worker_index() >= 0:
+        return
+    var said = String(
+        "m0serve: the open-file limit is ", limit, ", under the ", wanted,
+        " that ", asked, " connections per loop and the server's own need",
     )
+    if cut:
+        var config = opts.server_config(AppConfig(default_port=DEFAULT_PORT))
+        said += String(
+            ": each loop holds ", config.max_connections, ", streams ",
+            config.stream_limit(), " of them, so its last are still kept for"
+            " requests",
+        )
+    else:
+        said += ", leaving less room for the application's own files"
+    said += (
+        ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=) or lower"
+        " --max-connections"
+    )
+    print(said, flush=True)
 
 
 def main() raises:

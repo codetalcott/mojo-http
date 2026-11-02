@@ -21,7 +21,9 @@ from std.time import sleep
 
 from lightbug_http.c.pipe import create_shutdown_pipe
 from lightbug_http.c.process import (
-    DESCRIPTOR_CEILING, SIGKILL, descriptor_limit, exit_code, fork,
+    DESCRIPTOR_CEILING, DESCRIPTOR_HEADROOM, DESCRIPTOR_MARGIN,
+    DESCRIPTORS_PER_CONNECTION, SIGKILL,
+    connections_within, descriptor_limit, exit_code, fork, max_files_per_process,
     kill_process, process_exit, raise_descriptor_limit, term_signal,
     waitpid_blocking, waitpid_nonblocking, was_signaled,
 )
@@ -244,6 +246,90 @@ def test_a_shutdown_pipe_past_the_descriptor_limit_is_refused() raises:
     assert_true(code != 1, "a shutdown pipe was made past the descriptor limit")
     assert_true(code != 2, "the child could not lower its descriptor limit")
     assert_equal(code, 0, "the refusal did not name pipe()")
+
+
+def test_connections_fit_what_the_descriptor_limit_leaves() raises:
+    """`connections_within` (SPEC C25) holds a loop to what an open-file limit
+    leaves after the server's own descriptors and a margin for the
+    application's -- an eighth of what is left, at least
+    `DESCRIPTOR_MARGIN` and at most `DESCRIPTOR_HEADROOM` -- shared among
+    the loops, never more than was asked, never fewer than the margin, and
+    unchanged where the limit was raised to what the connections need or is
+    unknown. Before, a loop kept its count under a limit that held fewer,
+    and its streams took every descriptor before they reached the reserve.
+
+    covers: C25
+    """
+    comptime P = DESCRIPTORS_PER_CONNECTION
+    # Raised to what was asked (1024 connections + startup 24 + headroom):
+    # unchanged.
+    assert_equal(connections_within(1024 * P + 24 + DESCRIPTOR_HEADROOM, 24, 1, 1024), 1024)
+    assert_equal(connections_within(-1, 24, 1, 1024), 1024, "an unknown limit cut the count")
+    # A hard limit of 300: 276 past the startup, 34 of them kept, the rest
+    # at P descriptors a connection (242 on macOS, 121 on Linux).
+    assert_equal(connections_within(300, 24, 1, 1024), 242 // P)
+    assert_equal(connections_within(300, 24, 2, 1024), 242 // (2 * P), "the loops do not share what is left")
+    # The margin's floor and ceiling.
+    assert_equal(connections_within(400, 24, 1, 1024), (400 - 24 - 47) // P)
+    assert_equal(connections_within(100000 * P, 0, 1, 200000), (100000 * P - DESCRIPTOR_HEADROOM) // P)
+    assert_equal(connections_within(24 + 96, 24, 1, 1024), (96 - DESCRIPTOR_MARGIN) // P)
+    # Never fewer than the margin, never more than was asked.
+    assert_equal(connections_within(40, 24, 1, 1024), DESCRIPTOR_MARGIN)
+    assert_equal(connections_within(300, 24, 1, 100), 100)
+    # Linux counts a connection's timerfd beside its socket; macOS does not.
+    comptime if CompilationTarget.is_macos():
+        assert_equal(P, 1)
+    else:
+        assert_equal(P, 2)
+
+
+def _raise_past_the_per_process_ceiling_scenario():
+    """In a child: the soft limit lowered to 1024, then a raise asked for
+    `DESCRIPTOR_CEILING`. Exits with a bit per answer that was wrong. Never
+    returns."""
+    if not _set_soft_limit(_RLIMIT_NOFILE, 1024):
+        process_exit(64)
+    var per_process = max_files_per_process()
+    var wrong = 0
+    var got = raise_descriptor_limit(DESCRIPTOR_CEILING)
+    if got > per_process:
+        wrong |= 1
+    if descriptor_limit() > per_process:
+        wrong |= 2
+    if got < 1024:
+        wrong |= 4
+    process_exit(wrong)
+
+
+def test_a_raise_reports_no_more_than_the_process_can_hold() raises:
+    """On macOS `raise_descriptor_limit` (SPEC C21) sets and answers no more
+    than `kern.maxfilesperproc`, what a descriptor can reach, from a soft
+    limit below it as from one above: Darwin 27 accepts a soft limit past
+    it and enforces it anyway, so the answer was a limit nothing reached
+    and no shortfall was said. Elsewhere there is no such ceiling, and
+    `max_files_per_process` says so.
+
+    covers: C21
+    """
+    var per_process = max_files_per_process()
+    comptime if CompilationTarget.is_macos():
+        assert_true(per_process > 0, "kern.maxfilesperproc was not read")
+        # From above: a soft limit already past it answers no more.
+        assert_true(raise_descriptor_limit(1024) <= per_process)
+        var pid = fork()
+        if pid == 0:
+            _raise_past_the_per_process_ceiling_scenario()
+            process_exit(99)
+        var result = waitpid_blocking(pid)
+        assert_false(was_signaled(result[1]), "the child died on a signal")
+        var wrong = exit_code(result[1])
+        assert_true(wrong != 64, "the child could not lower its descriptor limit")
+        assert_equal(wrong & 1, 0, "a raise answered a limit past kern.maxfilesperproc")
+        assert_equal(wrong & 2, 0, "a raise set a soft limit past kern.maxfilesperproc")
+        assert_equal(wrong & 4, 0, "a raise past the ceiling lowered the soft limit")
+        assert_equal(wrong, 0)
+    else:
+        assert_equal(per_process, -1)
 
 
 def main() raises:

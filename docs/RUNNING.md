@@ -285,12 +285,17 @@ has the Flask version of the whole thing, and CI drives that exact file.
   dropped connection, so a page that should keep trying listens for
   `error` and reconnects itself.
 - **The server raises its own open-file limit** to what its connections
-  need (each loop's count plus 256) before it binds, so launchd's default
-  of 256 and systemd's soft 1024 no longer cap it below `--max-connections`.
-  It never lowers the limit or passes the hard one. Where the hard limit
-  stops it short, it prints the limit, what it wanted and the fix
-  (`ulimit -Hn`, systemd's `LimitNOFILE=`); `--doctor` reports
-  `descriptor_limit` beside `descriptors_wanted`. A hard limit too low for
+  need (each loop's count, twice on Linux, where a stream's heartbeat
+  timer is a descriptor of its own; what the server holds itself; and 256) before
+  it binds, so launchd's default of 256 and systemd's soft 1024 no longer
+  cap it below `--max-connections`. It never lowers the limit or passes
+  the hard one, or on macOS `kern.maxfilesperproc`. Where the hard limit
+  stops it short, **each loop holds what the limit leaves**, and its stream
+  reserve is kept from that, so the health path is still answered when
+  streams fill it: it prints the limit, what it wanted, what a loop holds
+  and the fix (`ulimit -Hn`, systemd's `LimitNOFILE=`); `--doctor` reports
+  the fitted `max_connections` and `descriptor_limit` beside
+  `descriptors_wanted`. A hard limit too low for
   the server's own startup (its pool's channels, the bus, the loop) and a
   few connections beside is refused with 78 before anything starts, the
   line naming what the configuration holds; fewer `--blocking-threads`

@@ -68,6 +68,7 @@ from .checks import (
     add_checks,
     pg_listen_needs_libpq,
     realtime_without_wsgi,
+    startup_descriptors_bound,
 )
 from .blocking_pool import BlockingPool, JOIN_TIMEOUT_NS
 from .asgi_executor import AsgiExecutor, serve_inverted

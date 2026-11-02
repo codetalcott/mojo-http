@@ -85,8 +85,9 @@ answered `503` with `Retry-After`, so the health path is still answered
 while streams hold the rest. A connection that finds every slot in use
 takes one back from the connection idle longest between requests, and is
 refused only when none is idle. More streams are more loops. The host raises
-its own open-file limit to what its loops need before it binds, and says
-so when the hard limit stops it short. The doctor reports
+its own open-file limit to what its loops need before it binds; where the
+hard limit stops it short, each loop holds what the limit leaves, its
+stream reserve kept from that, and the host says so. The doctor reports
 `max_connections_per_loop`, `stream_limit_per_loop` and
 `descriptor_limit`.
 

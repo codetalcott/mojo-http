@@ -37,7 +37,7 @@ from std.os.path import isdir
 from std.sys.info import CompilationTarget
 
 from lightbug_http.address import NetworkType, join_host_port, parse_address
-from lightbug_http.c.process import process_exit
+from lightbug_http.c.process import DESCRIPTOR_MARGIN, process_exit
 from lightbug_http.server_config import ServerConfig
 from m0_http import GRANT_KEY_ENV, threads_conflict
 from m0_http.parallel_runtime import parallel_runtime_linked
@@ -50,6 +50,7 @@ from .cli import (
     has_wsgi_mount,
     parallel_runtime_forked,
     pg_listen_forked,
+    pool_is_default,
     pool_thread_count,
     supervised,
     use_asgi_executor,
@@ -58,6 +59,7 @@ from .cli import (
     EXIT_CONFIG,
     EXIT_STARTUP,
     EXIT_USAGE,
+    MAX_AUTO_BLOCKING_THREADS,
     MAX_MOUNTS,
     MAX_CONNECTIONS,
     MAX_REPLAY_FRAMES,
@@ -289,9 +291,6 @@ def _rule(
         out.append(ServeCheck(name, refused, fix, code, usage=usage))
 
 
-comptime DESCRIPTOR_MARGIN = 16
-"""Connections a server that starts must have room for beyond its startup
-descriptors (`startup_descriptors`), the size of a loop's stream reserve."""
 
 
 def startup_descriptors(opts: ServeOptions, executor: Bool) -> Int:
@@ -313,6 +312,21 @@ def startup_descriptors(opts: ServeOptions, executor: Bool) -> Int:
     if executor:
         per_loop += 8
     return 8 + loops * per_loop
+
+
+def startup_descriptors_bound(opts: ServeOptions) -> Int:
+    """The most `startup_descriptors` can come to once the application is
+    imported, from the flags alone (SPEC C21, C25): the larger of an
+    executor's and a pool's, a pool the flags leave to the import at its
+    automatic size (`MAX_AUTO_BLOCKING_THREADS`). What the raise asks for
+    beside the connections, and what they are fitted under, before the
+    bind -- the protocol, and so the executor, is learnt after it."""
+    var probe = opts.copy()
+    if pool_is_default(opts) and probe.blocking_threads < MAX_AUTO_BLOCKING_THREADS:
+        probe.blocking_threads = MAX_AUTO_BLOCKING_THREADS
+    var with_executor = startup_descriptors(probe, True)
+    var with_pool = startup_descriptors(probe, False)
+    return with_executor if with_executor > with_pool else with_pool
 
 
 def _stream_limit(connections: Int) -> Int:

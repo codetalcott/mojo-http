@@ -1842,8 +1842,9 @@ stop $pid
 out=$(sh -c 'ulimit -S -n 40 && exec "$@"' sh bin/m0serve hold_app:application --app-dir scripts/smoke \
   --max-connections 64 --doctor | tail -n 1)
 echo "$out" | python3 -c "import json, sys; s = json.load(sys.stdin)['server']; \
-assert (s['max_connections'], s['stream_limit'], s['descriptors_wanted']) == (64, 60, 320), s; \
-assert s['descriptor_limit'] >= 320, s" || fail "the doctor's connection figures: $out"
+import platform; per = 2 if platform.system() == 'Linux' else 1; want = 64 * per + 48 + 256; \
+assert (s['max_connections'], s['stream_limit'], s['descriptors_wanted']) == (64, 60, want), s; \
+assert s['descriptor_limit'] >= want, s" || fail "the doctor's connection figures: $out"
 code=0
 bin/m0serve hold_app:application --app-dir scripts/smoke --max-connections 65537 > /dev/null 2>&1 || code=$?
 [ "$code" = "78" ] || fail "--max-connections 65537 exited $code, wanted 78"
@@ -1893,12 +1894,33 @@ code=0
 sh -c "$fdlimit" 39 bin/m0serve hold_app:application --app-dir scripts/smoke --port $port --blocking-threads 2 \
   > "$SMOKE_DIR/fdlimit.log" 2>&1 || code=$?
 [ "$code" = "78" ] || fail "under a hard limit of 39 with two pool threads the server exited $code, wanted 78"
+# A hard limit the raise cannot reach fits the loop to what it leaves, and
+# the reserve is kept from that (SPEC C25): under 300, with two pool
+# threads, 300 less the startup's 24 and an eighth of the rest is 242
+# descriptors, 242 connections on macOS and 121 on Linux, where a stream's
+# heartbeat is a timerfd beside its socket; 227 and 114 of them streams.
+# Before, the loop kept its 1024 and 276 streams took every descriptor on
+# macOS, the health check reading an EOF; on Linux 148 of 242 were held.
+if [ "$(uname)" = "Linux" ]; then fit=121; streams=114; else fit=242; streams=227; fi
+spawn fit.log sh -c "$fdlimit" 300 bin/m0serve hold_app:application --app-dir scripts/smoke \
+  --port $port --blocking-threads 2 --realtime --health-path /health --metrics
+wait_ready http://localhost:$port/health $pid
+python3 scripts/max_connections_probe.py $port $fit || fail
+grep -q "each loop holds $fit, streams $streams of them" "$SMOKE_DIR/fit.log" \
+  || fail 'under a hard limit of 300 the notice does not say what the loop holds'
+stop $pid
+out=$(sh -c "$fdlimit" 300 bin/m0serve hold_app:application --app-dir scripts/smoke --blocking-threads 2 \
+  --doctor | tail -n 1)
+echo "$out" | python3 -c "import json, sys; s = json.load(sys.stdin)['server']; \
+assert (s['max_connections'], s['stream_limit'], s['descriptor_limit']) == ($fit, $streams, 300), s" \
+  || fail "the doctor under a hard limit of 300: $out"
 echo "smoke-max-connections OK"
 python3 scripts/emit.py --covers C20 --task smoke-max-connections
 python3 scripts/emit.py --covers C21 --task smoke-max-connections
 python3 scripts/emit.py --covers C22 --task smoke-max-connections
 python3 scripts/emit.py --covers C23 --task smoke-max-connections
 python3 scripts/emit.py --covers C24 --task smoke-max-connections
+python3 scripts/emit.py --covers C25 --task smoke-max-connections
 """
 
 # B1. The body timer was armed above the decode of what came with the

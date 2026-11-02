@@ -77,10 +77,17 @@ RUNNING.md says so.
 
 Reserving slots cuts the default stream capacity from 1024 to 1008.
 `--max-connections 1040` holds 1024 streams, as 1.16.0 did. A stream's
-begin is one comparison and a counter. Slots are provisioned lazily
-(`ConnectionProvision.ensure_buffers`), so a larger count costs memory only
-as connections arrive. The per-slot tables and the once-a-second sweep grow
-with it.
+begin is one comparison and a counter. A connection's buffers are sized
+on its slot's first use (`ConnectionProvision.ensure_buffers`), about 8 KB
+of resident memory a held stream, but a larger count is not free before
+any connection arrives: measured on an M4 on 2026-11-02, m0serve's idle
+resident memory was 40 MB at 1024 slots, 92 MB at 16384 and 256 MB at
+65536, about 3.35 KB a slot. 0.87 KB of it is the loop's own tables and
+provisions, and 2.5 KB the handler pool's (`OffloadPool.requests` and
+`responses`, a whole request and response struct reserved for every slot,
+though at most a few hundred jobs are ever in flight); without a pool
+(`--blocking-threads 0`) it is the 0.87 KB alone. The once-a-second sweep
+grows with the count too.
 
 ## Found beside it, and fixed after it (SPEC C22)
 
@@ -138,3 +145,50 @@ The limit's notice had a wrong number of its own. It said "a loop will
 hold about 0" at 40, from `limit - 256`, though 256 is the headroom asked
 for, not what is used, and that server served. The line now says that a
 connection past the limit is refused at accept, and no figure.
+
+## Found after it: a limit the raise cannot reach (SPEC C25)
+
+Where the hard limit stopped the raise short, the server said so and kept
+its count: one line, and a connection past the limit "refused at accept".
+But the reserve was taken from the count, not from the limit, so under a
+limit that held fewer connections than the count, streams took every
+descriptor before they reached the reserve. Under a hard limit of 300 with
+two pool threads, 400 holds got 276 answers and 124 resets, and the health
+check read an EOF: the case C20 exists for, met one level down. C23's
+taking back of idle slots does not reach it either, since the failure is
+`accept` itself, out of descriptors, below the slot pool.
+
+So the loop is fitted to the limit (`connections_within`): what the limit
+leaves after the server's own descriptors (C22's estimate, at the most the
+application's import can make it, since the protocol and so the executor
+are learnt after the bind) and a margin for the files the application
+opens -- an eighth of what is left, at least 16 and at most 256 -- shared
+among the loops. The reserve is then taken from the fitted count. Under
+300 a loop holds 242, streams 227 of them, the next 15 are answered 503,
+and the health path is answered while they are held. The notice names the
+count and the streams' share, and the doctor reports them.
+
+That is macOS. The gate's first run on a Linux runner held 148 of 242: the
+epoll backend arms each connection's timer -- a stream's heartbeat, a
+body's deadline -- as a timerfd of its own, where kqueue's timers are no
+descriptor, so a held stream is two descriptors on Linux. The raise had
+counted one a connection since C21, so a server raised to what its
+connections "needed" under systemd's soft 1024 would have run out near 640
+of its 1008 streams, the failure C21 was written against. Both the raise
+and the fit now count `DESCRIPTORS_PER_CONNECTION`, one on macOS and two on
+Linux: under 300 a Linux loop holds 121, streams 114 of them.
+
+The raise asks for more than it did: each loop's connections, the server's
+own descriptors and the 256 of headroom, where it asked for the connections
+and the 256, which the server's own came out of. Eight loops of eight pool
+threads hold 328 of their own, so a raise that succeeded could still leave
+the connections short. Asked for so, a raise that succeeds fits every
+loop's count unchanged.
+
+The same change caps the raise on macOS at `kern.maxfilesperproc`. Darwin
+27 accepts a soft limit above it and enforces it anyway: `setrlimit` set
+65792 and read it back, and the 61441st `dup` failed with EMFILE. So
+`--max-connections 65536` reported a limit of 65792 and no shortfall, where
+connections past about 61000 were refused. The raise now answers no more
+than the ceiling, from a soft limit below it and from one above (a shell's
+`ulimit -n unlimited`), and the fit counts from that.
