@@ -738,6 +738,14 @@
       "evidence": "`Smoke test the connection limit` (every PR) \u2014 sixteen pool threads under a hard limit of 40 are refused 78 by serving and by the doctor, naming the count and the fix; with two, every limit from 48 down to 40 serves and stops with 0, and 39 is refused; `test_checks.mojo:test_a_descriptor_limit_below_the_startup_is_refused_before_anything_starts` the estimate and the rule. The exit that unwinds nothing is proven by sabotage on an M4 before the floor existed (with the backend's construction moved above the `try`, the server at 40 was still running at 15 s): no limit reaches it on purpose now"
     },
     {
+      "id": "C23",
+      "section": "C",
+      "category": "C. Connection management and denial of service",
+      "capability": "A loop whose every slot is in use takes one back for a new connection, from a connection one of its deadlines is already counting down, and refuses the new one only when none is: the connection between requests that has been idle longest, closed as the idle sweep closes it, else the one whose head has been arriving longest, once that is a second, answered as the header timeout answers it (a 408 to a first request); never a stream, a body, a response going out or a request on a pool thread. Choosing is O(1) however full the loop: the takeable slots queue in the order they became takeable. The first full loop prints one line naming the knob, `/__metrics` counts `http_connections_reclaimed_total` and `http_connections_refused_total`, and `M0_RECLAIM=0` keeps the old refusal. Before, the new connection was closed unread and its client read a reset whatever the slots held: 1008 streams beside 16 idle keep-alive connections, the page loads of the tabs holding them, reset the health check that C20 keeps the reserve for, 1024 idle keep-alive connections from one client reset every connection for the 60 s of their idle timeout, and 1024 that never sent a byte did for the 10 s of the header timeout",
+      "status": "verified",
+      "evidence": "`Smoke test the connection limit` (every PR) \u2014 64 connections per loop: 60 held streams and 4 idle keep-alive connections fill it, the health path and an ordinary request are answered, the idle connections are taken oldest first and every stream is still held; 64 connections that say nothing refuse a new one while they are under a second and admit it after, the oldest answered 408; `/__metrics` counting both; the notice once; and under `M0_RECLAIM=0` the health path on the full loop is reset. `test_slot_lifecycle.mojo:test_a_full_loop_takes_back_its_longest_idle_connection`, `test_slot_lifecycle.mojo:test_a_full_loop_takes_a_head_only_after_a_second_and_after_every_idle_one` and `test_slot_lifecycle.mojo:test_a_full_loop_takes_no_stream_no_body_and_nothing_with_reclaim_off` the order, the floor and what is never taken, each sabotaged; `test_slot_queue.mojo` the queues. The design is [a-full-loop-takes-back-an-idle-slot](notes/a-full-loop-takes-back-an-idle-slot.md)"
+    },
+    {
       "id": "C24",
       "section": "C",
       "category": "C. Connection management and denial of service",
@@ -1213,9 +1221,9 @@
       "id": "F4",
       "section": "F",
       "category": "F. Observability",
-      "capability": "Prometheus exposition 0.0.4: 9 counter and gauge families, each with HELP, TYPE and a sample",
+      "capability": "Prometheus exposition 0.0.4: 14 counter and gauge families, each with HELP, TYPE and a sample",
       "status": "verified",
-      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`, which checks eight of them on the wire; `test_metrics.mojo:test_every_family_has_help_type_and_its_sample` holds all nine, `http_bus_frames_refused_total` (I40) among them, and that each sample is the field it names"
+      "evidence": "`Smoke test the serve CLI` (every PR) \u2014 `--metrics`, which checks eight of them on the wire; `test_metrics.mojo:test_every_family_has_help_type_and_its_sample` holds all fourteen, `http_bus_frames_refused_total` (I40), C20's two, C23's two and C24's one among them, and that each sample is the field it names"
     },
     {
       "id": "F5",

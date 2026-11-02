@@ -83,6 +83,11 @@ struct ServerConfig(Copyable, Movable):
     """The same, the first time a loop answers a stream 503 because streams
     already hold all its slots but the reserve (`stream_limit`)."""
 
+    var slots_full_notice: String
+    """The same, the first time a new connection finds every one of a
+    loop's slots in use, whether an idle one was then taken back for it or
+    it was refused (SPEC C23)."""
+
     def __init__(out self):
         self.max_connections = 1024
         # 1000, nginx's default since 1.19.10, from 100: every close is a
@@ -109,6 +114,7 @@ struct ServerConfig(Copyable, Movable):
         self.body_size_notice = String("")
         self.body_timeout_notice = String("")
         self.stream_cap_notice = String("")
+        self.slots_full_notice = String("")
 
     def stream_reserve(self) -> Int:
         """Slots a loop keeps for requests, which no stream may take: a

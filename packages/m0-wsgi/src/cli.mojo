@@ -568,6 +568,14 @@ struct ServeOptions(Copyable, Movable):
             " are kept for requests; raise --max-connections or"
             " M0_MAX_CONNECTIONS, or serve more loops (--workers, --threads)",
         )
+        sc.slots_full_notice = String(
+            "m0serve: all ", sc.max_connections, " of a loop's connections"
+            " were in use: one idle between requests, or still sending its"
+            " request after a second, is closed to admit the next, and a"
+            " connection is refused only when none is; raise"
+            " --max-connections or M0_MAX_CONNECTIONS, or serve more loops"
+            " (--workers, --threads)",
+        )
         return sc^
 
 

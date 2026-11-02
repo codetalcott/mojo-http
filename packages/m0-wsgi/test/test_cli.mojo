@@ -1690,6 +1690,14 @@ def test_max_connections_is_a_count_of_one_or_more_and_reaches_the_loop() raises
         " raise --max-connections or M0_MAX_CONNECTIONS, or serve more"
         " loops (--workers, --threads)",
     )
+    assert_equal(
+        sc.slots_full_notice,
+        "m0serve: all 4096 of a loop's connections were in use: one idle"
+        " between requests, or still sending its request after a second, is"
+        " closed to admit the next, and a connection is refused only when"
+        " none is; raise --max-connections or M0_MAX_CONNECTIONS, or serve"
+        " more loops (--workers, --threads)",
+    )
     for bad in [String("0"), String("-1"), String("many"), String("")]:
         assert_true(
             _fails([String("m.wsgi"), String("--max-connections"), bad]),

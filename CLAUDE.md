@@ -222,7 +222,9 @@ changes to this repo, with nothing to rebase onto.
   `_spend_read_edge` (a read that filled its buffer); the idle
   deadline to `_begin_request`, `_end_request`, `_arm_send_deadline` and
   `_arm_ws_linger`; a phase to `_stream_idle`, `_ws_linger`,
-  `_record_response` and `_farewell_streams`. Change a reset there, never
+  `_record_response` and `_farewell_streams`; the header clock's stamp,
+  and the reclaim queues a full loop takes a slot back from (SPEC C23),
+  to `_start_head`, `_end_request` and `_close_slot`. Change a reset there, never
   beside a call site: each bug of the class (review B1, B2, the arm-once
   bug) was a site that forgot a reset or made one twice.
   `test_slot_lifecycle.mojo` drives the transitions.
@@ -969,7 +971,8 @@ allows), and `M0_LIBPQ`, `M0_LIBSQLITE3` and `M0_LIBZSTD` (the library to
 
 A/B knobs, not flags, each a gate's negative arm or a measurement's:
 `M0_ACCEPT_SHARE` (`0` off), `M0_ACCEPT_BATCH` (default 16; `0` takes the
-whole backlog), `M0_POOL_TURN` (`0` drops the pool's GIL hand-off barrier),
+whole backlog), `M0_RECLAIM` (`0` resets a connection that meets a full
+loop rather than taking an idle slot back), `M0_POOL_TURN` (`0` drops the pool's GIL hand-off barrier),
 `M0_POOL_TURN_KEEP` (`0` drops the GIL between every job of a thread's
 slice, the shape that starved a waiter), `M0_LOOP_ATTACHED` (`1` keeps
 m0serve's loop thread attached, the pre-0.18 shape), `M0_POOL_RING` (`0`

@@ -101,6 +101,20 @@ def _on_timer[T: HTTPService, B: EventLoopBackend](
     _close_slot(handler, backend, st, slot, fd_val)
 
 
+def _expire_head[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slot: Int,
+):
+    """End a connection whose head is still arriving, as the header timeout
+    ends it: a 408 to a connection's first request, nothing to a kept-alive
+    one's next, then the close. The sweep calls it once the timeout has
+    passed, and a full loop that cannot wait for it (SPEC C23,
+    `_reclaim_slot`). The 408 tells a client with a request in transit that
+    it may repeat it (RFC 9110 §15.5.9), where a bare close says nothing."""
+    if st.provision_pool.provisions[slot].keepalive_count == 0:
+        _send_error_to_fd(st.slot_fds[slot], RequestTimeout())
+    _close_slot(handler, backend, st, slot, st.slot_fds[slot])
+
+
 def _sweep_deadlines[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ):
@@ -144,6 +158,4 @@ def _sweep_deadlines[T: HTTPService, B: EventLoopBackend](
                     == ConnectionState.READING_HEADERS
                     and sweep_now - st.slot_header_start[s] > header_ns
                 ):
-                    if st.provision_pool.provisions[s].keepalive_count == 0:
-                        _send_error_to_fd(st.slot_fds[s], RequestTimeout())
-                    _close_slot(handler, backend, st, s, st.slot_fds[s])
+                    _expire_head(handler, backend, st, s)

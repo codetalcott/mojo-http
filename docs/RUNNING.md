@@ -266,16 +266,24 @@ has the Flask version of the whole thing, and CI drives that exact file.
   WebSockets take all but a sixteenth of the slots, at most 16 (1008 of
   the default 1024). The stream after that is answered `503` with
   `Retry-After: 5`, so the health path and ordinary requests are still
-  answered while streams hold the rest. A connection past the whole count
-  is refused at accept. The first refused stream prints one line naming
-  the knob; `/__metrics` counts `http_streams_held` and
+  answered while streams hold the rest. The first refused stream prints
+  one line naming the knob; `/__metrics` counts `http_streams_held` and
   `http_streams_refused_total`, and `--doctor` reports `max_connections`
-  and `stream_limit`. Idle streams cost a loop's requests nothing: each
-  pass drains only the streams with something to send, and `/__metrics`
-  counts `http_stream_drain_visits_total`, one per stream drained. A
-  browser's `EventSource` does not reconnect after a `503`, as it does
-  after a dropped connection, so a page that should keep trying listens
-  for `error` and reconnects itself.
+  and `stream_limit`. **A full loop takes a slot back:** a connection that
+  finds every slot in use is given the slot of the connection idle longest
+  between requests, which is closed as `--idle-timeout` would close it, or
+  else of the one that has been sending its request's head longest, once
+  that is a second, answered `408` as the header timeout answers it. It is
+  refused at accept, closed unread, only when every slot is a stream, a
+  body arriving, a response going out or a request being answered. The
+  first full loop prints one line; `/__metrics` counts
+  `http_connections_reclaimed_total` and `http_connections_refused_total`.
+  Idle streams cost a loop's requests nothing: each pass drains only the
+  streams with something to send, and `/__metrics` counts
+  `http_stream_drain_visits_total`, one per stream drained. A browser's
+  `EventSource` does not reconnect after a `503`, as it does after a
+  dropped connection, so a page that should keep trying listens for
+  `error` and reconnects itself.
 - **The server raises its own open-file limit** to what its connections
   need (each loop's count plus 256) before it binds, so launchd's default
   of 256 and systemd's soft 1024 no longer cap it below `--max-connections`.

@@ -55,6 +55,7 @@ from lightbug_http.websocket import (
 from lightbug_http.loop.state import (
     FLUSH_AFTER_SEND,
     LoopState,
+    RECLAIM_HEAD_FLOOR_NS,
     SLOT_BUFFER_KEEP,
     SSE_FLUSH_MS,
     TIMER_BODY,
@@ -3410,6 +3411,75 @@ def test_streams_leave_a_loops_last_slots_to_requests() raises:
     assert_equal(st.streams_held, 0)
 
 
+struct Streamer(HTTPService):
+    """Answers `/events` with an SSE stream's head and anything else with a
+    200, and records the slots its streams left from."""
+
+    var left: List[Int]
+
+    def __init__(out self):
+        self.left = List[Int]()
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        if req.uri.path == "/events":
+            return _sse_head()
+        return OK("ok", "text/plain")
+
+    def sse_slot_disconnected(mut self, slot: Int):
+        self.left.append(slot)
+
+
+comptime GET = "GET / HTTP/1.1\r\nHost: x\r\n\r\n"
+
+
+def _full_loop(slots: Int) -> LoopState:
+    """A loop of `slots` slots, metrics on and a notice to say."""
+    var config = _config()
+    config.max_connections = slots
+    config.enable_metrics = True
+    config.slots_full_notice = String("every slot is in use")
+    return _loop(config)
+
+
+def _connect(
+    mut app: Streamer, mut backend: FakeBackend, mut st: LoopState,
+    request: String,
+) raises -> Tuple[Int, Int]:
+    """A new connection admitted through the accept path, its client having
+    written `request` first (nothing, for a client that has not spoken):
+    the server's end and the client's."""
+    var pair = _stream_pair()
+    if request.byte_length() > 0:
+        _send_all(pair[1], request)
+    _admit_connection(app, backend, st, pair[0], String("127.0.0.1"), pair[1])
+    return pair
+
+
+def _ended(peer: Int, mut said: String) raises -> Bool:
+    """Whether the server has closed the client's end, and what it wrote
+    that the client had not yet read, lowercased. A reset is an end: a
+    connection closed with its request unread reads one on Linux, where
+    macOS reads an EOF."""
+    var got = List[UInt8]()
+    var buf = List[UInt8](length=65536, fill=0)
+    while True:
+        var n: UInt
+        try:
+            n = recv(RawFileDescriptor(c_int(peer)), Span(buf), MSG_DONTWAIT)
+        except err:
+            said = String(unsafe_from_utf8=Span(got)).lower()
+            return not err.would_block()
+        if n == 0:
+            said = String(unsafe_from_utf8=Span(got)).lower()
+            return True
+        got.extend(Span(buf)[: Int(n)])
+
+
+def _release(mut app: Streamer, mut backend: FakeBackend, mut st: LoopState, peers: List[Int]) raises:
+    """Close every slot still held and every client end."""
+    for s in range(st.max_conns):
+        if st.slot_fds[s] != UNUSED:
+            _close_slot(app, backend, st, s, st.slot_fds[s])
 struct Outboxes(HTTPService):
     """Streams whose outboxes it keeps, one a slot, naming each slot it
     queues for when `names` is set (`take_ready_streams`), and counting the
@@ -3539,6 +3609,159 @@ def test_a_pass_drains_only_the_streams_its_handler_names() raises:
         close(RawFileDescriptor(c_int(p)))
 
 
+def test_a_full_loop_takes_back_its_longest_idle_connection() raises:
+    """A loop whose every slot is in use takes one back for a new connection
+    (SPEC C23): the connection between requests that has been idle longest
+    is closed, as the idle sweep would close it, and the new one is served.
+    Idle is counted from the last answer, so a connection that answered
+    again waits from then. The notice is said once, and each one taken is
+    counted. Before, the new connection was closed unread, which its client
+    read as a reset, while connections it could have had sat idle.
+
+    covers: C23
+    """
+    var app = Streamer()
+    var backend = FakeBackend()
+    var st = _full_loop(3)
+    var conns = List[Tuple[Int, Int]]()
+    for _ in range(3):
+        conns.append(_connect(app, backend, st, GET))
+    for c in conns:
+        assert_true(_head_of(c[1]).startswith("http/1.1 200 "), "a connection under the limit was not answered")
+    _send_all(conns[0][1], GET)
+    _on_read(app, backend, st, conns[0][0], False)
+    assert_true(_head_of(conns[0][1]).startswith("http/1.1 200 "))
+    assert_equal(st.active_count, 3)
+    assert_equal(st.config.slots_full_notice, "every slot is in use")
+
+    var said = String()
+    var fourth = _connect(app, backend, st, GET)
+    assert_true(_head_of(fourth[1]).startswith("http/1.1 200 "), "the new connection was not served")
+    assert_true(_ended(conns[1][1], said), "the longest idle connection was not closed")
+    assert_equal(said, "", "an idle connection was told something as it closed")
+    assert_false(_ended(conns[0][1], said), "a connection idle for less time was closed")
+    assert_false(_ended(conns[2][1], said), "a connection idle for less time was closed")
+    assert_equal(st.active_count, 3)
+    assert_equal(st.metrics.connections_reclaimed, 1)
+    assert_equal(st.metrics.connections_refused, 0)
+    assert_equal(st.config.slots_full_notice, "", "the notice was not said")
+
+    # The next goes to the next longest idle, then the one that answered
+    # again, then the newest.
+    var order = [2, 0]
+    var later = List[Tuple[Int, Int]]()
+    for i in range(2):
+        later.append(_connect(app, backend, st, String("")))
+        assert_true(_ended(conns[order[i]][1], said), "the next longest idle was not the next closed")
+    assert_equal(st.metrics.connections_reclaimed, 3)
+    var last = _connect(app, backend, st, String(""))
+    assert_true(_ended(fourth[1], said), "the newest idle connection was not taken once it was the only one")
+    assert_equal(st.metrics.connections_reclaimed, 4)
+
+    var peers = List[Int]()
+    for c in conns:
+        peers.append(c[1])
+    for c in later:
+        peers.append(c[1])
+    peers.append(fourth[1])
+    peers.append(last[1])
+    _release(app, backend, st, peers)
+
+
+def test_a_full_loop_takes_a_head_only_after_a_second_and_after_every_idle_one() raises:
+    """With no connection between requests, a full loop takes back the one
+    whose head has been arriving longest, answered as the header timeout
+    answers it -- a 408 to a connection's first request -- but only once
+    that head has been arriving for `RECLAIM_HEAD_FLOOR_NS`: a client that
+    has only just connected is about to send, and the new connection is
+    refused instead, closed unread and counted. A connection between
+    requests goes first, however long a head has waited.
+
+    covers: C23
+    """
+    var app = Streamer()
+    var backend = FakeBackend()
+    var st = _full_loop(2)
+    var said = String()
+    var silent = _connect(app, backend, st, String(""))
+    var partial = _connect(app, backend, st, String("GET / HTTP/1.1\r\nHost: x\r\n"))
+    var refused = _connect(app, backend, st, GET)
+    assert_true(_ended(refused[1], said), "a new connection was admitted to a full loop with nothing to take")
+    assert_equal(said, "", "a refused connection was answered")
+    assert_equal(st.metrics.connections_refused, 1)
+    assert_equal(st.metrics.connections_reclaimed, 0)
+    assert_false(_ended(silent[1], said), "a head younger than the floor was taken")
+    assert_false(_ended(partial[1], said), "a head younger than the floor was taken")
+
+    # Both past the floor, in the order they started.
+    for fd in [silent[0], partial[0]]:
+        st.slot_header_start[st.fd_to_slot[fd]] -= 2 * RECLAIM_HEAD_FLOOR_NS
+    var first = _connect(app, backend, st, GET)
+    assert_true(_head_of(first[1]).startswith("http/1.1 200 "), "the new connection was not served")
+    assert_true(_ended(silent[1], said), "the oldest head was not taken")
+    assert_true(said.startswith("http/1.1 408 "), "a first request's head was not answered 408: " + said)
+    assert_false(_ended(partial[1], said), "a newer head was taken first")
+    assert_equal(st.metrics.connections_reclaimed, 1)
+
+    # `first` is now between requests, and goes before the older head.
+    var second = _connect(app, backend, st, String(""))
+    assert_true(_ended(first[1], said), "a head was taken while a connection sat between requests")
+    assert_false(_ended(partial[1], said), "a head was taken while a connection sat between requests")
+    var third = _connect(app, backend, st, String(""))
+    assert_true(_ended(partial[1], said), "the old head was not taken once nothing was idle")
+    assert_true(said.startswith("http/1.1 408 "), said)
+    assert_equal(st.metrics.connections_reclaimed, 3)
+    assert_equal(st.metrics.connections_refused, 1)
+    _release(app, backend, st, [silent[1], partial[1], refused[1], first[1], second[1], third[1]])
+
+
+def test_a_full_loop_takes_no_stream_no_body_and_nothing_with_reclaim_off() raises:
+    """A stream, and a request whose body is arriving, are never taken back:
+    neither waits on a deadline that would close it, and each is a client
+    being served. A loop that holds only those refuses a new connection,
+    as before. `M0_RECLAIM=0` refuses it whatever the loop holds.
+
+    covers: C23
+    """
+    var app = Streamer()
+    var backend = FakeBackend()
+    var st = _full_loop(2)
+    var said = String()
+    var stream = _connect(app, backend, st, GET)
+    _ = _head_of(stream[1])
+    _send_all(stream[1], "GET /events HTTP/1.1\r\nHost: x\r\n\r\n")
+    _on_read(app, backend, st, stream[0], False)
+    var stream_slot = st.fd_to_slot[stream[0]]
+    assert_true(st.slot_sse[stream_slot], "the stream was not held")
+    var upload = _connect(
+        app, backend, st,
+        String("POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\nabc"),
+    )
+    var upload_slot = st.fd_to_slot[upload[0]]
+    assert_true(upload_slot != UNUSED)
+    st.slot_header_start[stream_slot] -= 2 * RECLAIM_HEAD_FLOOR_NS
+    st.slot_header_start[upload_slot] -= 2 * RECLAIM_HEAD_FLOOR_NS
+    var refused = _connect(app, backend, st, GET)
+    assert_true(_ended(refused[1], said), "a stream or an upload was taken back")
+    assert_equal(said, "")
+    assert_equal(st.metrics.connections_refused, 1)
+    assert_equal(st.metrics.connections_reclaimed, 0)
+    assert_true(st.slot_sse[stream_slot] and st.slot_fds[stream_slot] == stream[0], "the stream was closed")
+    assert_equal(st.slot_fds[upload_slot], upload[0], "the upload was closed")
+    assert_equal(len(app.left), 0)
+    _release(app, backend, st, [stream[1], upload[1], refused[1]])
+
+    _ = setenv("M0_RECLAIM", "0", True)
+    var off = _full_loop(1)
+    _ = unsetenv("M0_RECLAIM")
+    var idle = _connect(app, backend, off, GET)
+    assert_true(_head_of(idle[1]).startswith("http/1.1 200 "))
+    var turned_away = _connect(app, backend, off, GET)
+    assert_true(_ended(turned_away[1], said), "M0_RECLAIM=0 took a slot back")
+    assert_false(_ended(idle[1], said), "M0_RECLAIM=0 closed an idle connection")
+    assert_equal(off.metrics.connections_refused, 1)
+    assert_equal(off.metrics.connections_reclaimed, 0)
+    _release(app, backend, off, [idle[1], turned_away[1]])
 def test_a_stream_still_sending_is_drained_once_its_frame_lands() raises:
     """What a handler names while its stream's last frame is still going out
     is passed by -- the slot cannot take another -- and drained as soon as
