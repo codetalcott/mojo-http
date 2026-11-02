@@ -78,11 +78,13 @@ SABOTAGES = [
                 self.pending_bufs[slot].extend(Span(frame))
                 if event_id != NO_EVENT_ID:
                     self.last_event_ids[slot] = event_id
+                self.mark_ready(slot)
                 return True""",
         """            if False:
                 self.pending_bufs[slot].extend(Span(frame))
                 if event_id != NO_EVENT_ID:
                     self.last_event_ids[slot] = event_id
+                self.mark_ready(slot)
                 return True""",
     ),
 ]

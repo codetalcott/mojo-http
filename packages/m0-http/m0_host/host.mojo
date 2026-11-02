@@ -446,6 +446,13 @@ trait ViewState(Movable, Deinitable):
         """As `HTTPService.sse_slot_disconnected`."""
         pass
 
+    def take_ready_streams(mut self, mut slots: List[Int]) -> Bool:
+        """As `HTTPService.take_ready_streams`: a state whose streams all
+        live in one `Feed` or `DatastarStream` forwards its `take_ready`
+        and answers True, and the loop drains the streams it names rather
+        than every one (SPEC C24)."""
+        return False
+
     def tick(mut self, now_ms: Int):
         """As `HTTPService.tick`: on the loop thread, every `app_tick_ms`."""
         pass
@@ -455,7 +462,7 @@ struct ViewsApp[S: ViewState](AppHandler):
     """A `Views` table and its state as the host's handler.
 
     `m0_http.ViewService` with a `make`: it forwards `func` to `dispatch`,
-    `before_request` to `answer_on_loop`, and the three stream hooks and
+    `before_request` to `answer_on_loop`, and the four stream hooks and
     the tick to the state, whose defaults are the handler's.
     """
 
@@ -503,6 +510,9 @@ struct ViewsApp[S: ViewState](AppHandler):
 
     def sse_slot_disconnected(mut self, slot: Int):
         self.state.sse_slot_disconnected(slot)
+
+    def take_ready_streams(mut self, mut slots: List[Int]) -> Bool:
+        return self.state.take_ready_streams(slots)
 
     def tick(mut self, now_ms: Int):
         self.state.tick(now_ms)

@@ -119,6 +119,23 @@ default is listed under **Behaviour changes**
   ([the measurements](docs/notes/compressing-a-stream.md)).
 ### Changed
 
+- **Held streams no longer slow a loop's other requests** (SPEC C24). Each
+  pass of the event loop asked the handler for the pending bytes of every
+  stream it held, idle or not, so on m0serve 1008 idle streams cost a loop
+  13% of its requests a second, and 15000 took a request's median from
+  0.035 ms to 0.37 ms. A pass now drains the streams with something to
+  send, and the health path under `--realtime` counts its subscribers as
+  they change rather than walking every slot: it answers 225k requests a
+  second at 0, 1008 and 4000 idle streams alike, where it answered 158k,
+  137k and 66k, and the 15000-stream median is 0.043 ms. A handler names
+  them through a new `HTTPService.take_ready_streams` hook, which defaults
+  to naming none, so a handler written for an earlier release keeps the
+  sweep of every stream and works as before. `SSERegistry`, `DatastarStream`,
+  `WSHub` and `Feed` keep the list, and a handler forwards their
+  `take_ready`; `ViewState` and `ViewsApp` carry the hook for a Mojo
+  application. `/__metrics` counts `http_stream_drain_visits_total`
+  ([the note](docs/notes/a-pass-drains-only-what-has-output.md)).
+
 - **CI runs on GIL-enabled CPython 3.14**, moved from 3.13. A setup step
   fails a job whose pin resolved to a free-threaded build, and py-canary's
   restore checks the build rather than the version string, which is the

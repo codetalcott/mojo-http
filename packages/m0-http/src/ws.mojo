@@ -53,6 +53,11 @@ struct WSHub(Movable):
     var connected: List[Bool]
     var outbox: List[List[UInt8]]
     var capacity: Int
+    var ready: List[Int]
+    """Slots whose outbox has gained a frame since the last `take_ready`,
+    each at most once: what a handler names to the loop's drain
+    (`take_ready_streams`, SPEC C24)."""
+    var _named: List[Bool]
 
     # Bus state — empty/idle until enable_bus. Write fds are plain ints, so
     # holding a copy (instead of the whole bus) keeps this struct cheap.
@@ -66,6 +71,8 @@ struct WSHub(Movable):
         self.connected = List[Bool](capacity=capacity)
         self.outbox = List[List[UInt8]](capacity=capacity)
         self.capacity = capacity
+        self.ready = List[Int]()
+        self._named = List[Bool](length=capacity, fill=False)
         for _ in range(capacity):
             self.connected.append(False)
             self.outbox.append(List[UInt8]())
@@ -106,6 +113,7 @@ struct WSHub(Movable):
 
     # --- Sending ------------------------------------------------------------
 
+    @always_inline
     def _queue(mut self, slot: Int, frame: List[UInt8]):
         """Append one whole frame to a slot's outbox, or drop it.
 
@@ -117,6 +125,19 @@ struct WSHub(Movable):
             return
         for j in range(len(frame)):
             self.outbox[slot].append(frame[j])
+        if not self._named[slot]:
+            self._named[slot] = True
+            self.ready.append(slot)
+
+    def take_ready(mut self, mut into: List[Int]):
+        """Append the slots that gained a frame since the last call to
+        `into`, and forget them: what a handler's `take_ready_streams`
+        forwards (SPEC C24)."""
+        for i in range(len(self.ready)):
+            var slot = self.ready[i]
+            into.append(slot)
+            self._named[slot] = False
+        self.ready.clear()
 
     def send(mut self, slot: Int, frame: List[UInt8]):
         """Queue one encoded frame for one connection.
@@ -128,6 +149,7 @@ struct WSHub(Movable):
             return
         self._queue(slot, frame)
 
+    @always_inline
     def drain(mut self, slot: Int) -> List[UInt8]:
         """Return and clear a slot's pending bytes. Wire to `sse_drain_slot`."""
         if not self._in_range(slot) or len(self.outbox[slot]) == 0:

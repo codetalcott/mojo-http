@@ -422,7 +422,9 @@ def events(req: HTTPRequest, params: List[String], mut st: Store) raises -> HTTP
 ```
 
 The state forwards `sse_drain_slot`, `sse_is_streaming` and
-`sse_slot_disconnected` to the feed. A delta is sent whole: one that
+`sse_slot_disconnected` to the feed, and `take_ready_streams` too (to
+`take_ready`, answering True) when a loop holds many of its subscribers:
+each pass then drains the slots the feed sent a delta to, not every one. A delta is sent whole: one that
 does not fit beside what a slow subscriber still holds waits, the
 subscriber is left out of `behind` until its socket drains, and the
 next asks from where that subscriber stands. A page that renders the

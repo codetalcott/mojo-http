@@ -270,9 +270,12 @@ has the Flask version of the whole thing, and CI drives that exact file.
   is refused at accept. The first refused stream prints one line naming
   the knob; `/__metrics` counts `http_streams_held` and
   `http_streams_refused_total`, and `--doctor` reports `max_connections`
-  and `stream_limit`. A browser's `EventSource` does not reconnect after a
-  `503`, as it does after a dropped connection, so a page that should keep
-  trying listens for `error` and reconnects itself.
+  and `stream_limit`. Idle streams cost a loop's requests nothing: each
+  pass drains only the streams with something to send, and `/__metrics`
+  counts `http_stream_drain_visits_total`, one per stream drained. A
+  browser's `EventSource` does not reconnect after a `503`, as it does
+  after a dropped connection, so a page that should keep trying listens
+  for `error` and reconnects itself.
 - **The server raises its own open-file limit** to what its connections
   need (each loop's count plus 256) before it binds, so launchd's default
   of 256 and systemd's soft 1024 no longer cap it below `--max-connections`.

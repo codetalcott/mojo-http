@@ -4,7 +4,7 @@ from lightbug_http.http import HTTPRequest, HTTPResponse
 trait HTTPService:
     """The handler contract. `func` is the only method you must write.
 
-    The other thirteen carry default bodies — the same empty implementations
+    The other fourteen carry default bodies — the same empty implementations
     every handler used to spell out by hand — so a handler declares only the
     hooks it actually uses. Overriding one is ordinary: define it and yours
     wins.
@@ -165,6 +165,31 @@ trait HTTPService:
         `ws_message_take` never names a slot; the default is that handler.
         """
         return List[Int]()
+
+    def take_ready_streams(mut self, mut slots: List[Int]) -> Bool:
+        """Name the streams that have something for the loop, and say
+        whether this handler names them at all.
+
+        Called once per loop pass, before the outbox drain
+        (`loop/streams.mojo`). A handler that answers True appends to `slots`
+        every slot whose outbox has gained bytes since its last call, and
+        every slot whose stream has ended since -- whatever would change
+        what `sse_drain_slot` hands out or what `sse_is_streaming` answers
+        -- and the loop drains those, with the slots whose last frame has
+        just landed, rather than every stream it holds (SPEC C24). A slot
+        named twice, or named with nothing left to send, costs one visit.
+        A slot it fails to name waits: its bytes go out when something
+        else names it, which may be never, so a handler that answers True
+        names from every outbox `sse_drain_slot` drains.
+
+        The default names nothing and answers False, and the loop then asks
+        `sse_drain_slot` of every stream on every pass: right for any
+        handler, at the cost of a visit per held stream per pass, which on
+        m0serve was 13% of a loop's requests a second at 1008 idle streams,
+        and with 15000 a request's median went from 0.035 ms to 0.37 ms. `SSERegistry`, `DatastarStream`, `WSHub` and
+        `Feed` keep the list; a handler forwards their `take_ready`.
+        """
+        return False
 
     def direct_job(mut self, slot: Int) -> Bool:
         """Take a parked request for an executor lane on THIS thread, or decline.

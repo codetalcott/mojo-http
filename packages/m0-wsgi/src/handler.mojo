@@ -754,8 +754,18 @@ struct WSGIHandler(ThreadHandler):
         and the loop's `ended and not framed` branch closes the connection.
         The peer sees the bytes that exist and then a close with no close
         frame — the truth about a message stream with a hole in it."""
+        self._end_once_drained(slot)
+
+    def _end_once_drained(mut self, slot: Int):
+        """End `slot`'s stream at the drain that hands out its last bytes
+        (`asgi_done`, read by `sse_drain_slot`), and name the slot to the
+        loop so that drain comes (`take_ready_streams`, SPEC C24): with
+        nothing more queued for it, nothing else would. Every end of a
+        stream with bytes still pending comes through here."""
         if slot >= 0 and slot < len(self.asgi_done):
             self.asgi_done[slot] = True
+            self.streams.mark_ready(slot)
+            self.sockets.mark_ready(slot)
 
     def set_ws_pool_notify(mut self, lane: Int, fd: Int):
         """Realtime-with-a-pool wiring: lane `lane`'s submit write end.
@@ -1202,6 +1212,17 @@ struct WSGIHandler(ThreadHandler):
 
     # --- Held connections. Inert at capacity 0, so no `realtime` branch. ---
 
+    def take_ready_streams(mut self, mut slots: List[Int]) -> Bool:
+        """The streams with something for the loop's drain (SPEC C24): every
+        slot either registry queued for or unsubscribed since the last
+        pass, and every stream set to end (`_end_once_drained`). Those are
+        all the drain's inputs here -- `sse_drain_slot` reads the two
+        registries and `asgi_done`, `sse_is_streaming` the registries -- so
+        the loop visits these and not every stream it holds."""
+        self.streams.take_ready(slots)
+        self.sockets.take_ready(slots)
+        return True
+
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         if self.sockets.is_slot_streaming(slot):
             var ws_out = self.sockets.drain(slot)
@@ -1390,8 +1411,7 @@ struct WSGIHandler(ThreadHandler):
                 if not self._gen_matches(slot, event_id):
                     return
                 if self.streams.has_pending(slot):
-                    if slot < len(self.asgi_done):
-                        self.asgi_done[slot] = True
+                    self._end_once_drained(slot)
                 else:
                     self.streams.unsubscribe(slot)
             elif ub[1] == UInt8(ord("h")):
@@ -1469,8 +1489,7 @@ struct WSGIHandler(ThreadHandler):
                         if self._claim_lost(slot, String("websocket close frame")):
                             self._end_socket(slot)
                 if self.sockets.has_pending(slot):
-                    if slot < len(self.asgi_done):
-                        self.asgi_done[slot] = True
+                    self._end_once_drained(slot)
                 else:
                     self.sockets.unsubscribe(slot)
             elif ub[1] == UInt8(ord("r")):
@@ -1803,8 +1822,8 @@ struct WSGIHandler(ThreadHandler):
         )
         if not queued:
             self._end_socket(slot)
-        elif slot < len(self.asgi_done):
-            self.asgi_done[slot] = True
+        else:
+            self._end_once_drained(slot)
         if held:
             self.ws_closes.append(slot)
 
