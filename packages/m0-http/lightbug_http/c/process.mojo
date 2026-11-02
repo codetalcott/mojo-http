@@ -241,10 +241,76 @@ idents tell descriptors apart only below 2^20 (`c/epoll_backend.mojo`,
 review record LF18), so the server never asks for a descriptor above it."""
 
 comptime DESCRIPTOR_HEADROOM = 256
-"""Descriptors a server needs beside its connections: the listener, the
-bus and accept-share channels, a pool's wake pipes, the files a static
-mount and the application open. A loop's connection count plus this is
-what `raise_descriptor_limit` is asked for (SPEC C21)."""
+"""Descriptors a server asks for beside its connections and its own startup
+(the listener, the bus and accept-share channels, a pool's wake pipes):
+the files a static mount and the application open. Each loop's connections,
+the startup's descriptors and this are what `raise_descriptor_limit` is
+asked for (SPEC C21)."""
+
+comptime DESCRIPTOR_MARGIN = 16
+"""The fewest connections a loop is fitted to under a descriptor limit
+(`connections_within`), and the fewest descriptors it leaves the
+application beside them: a server whose limit leaves less than this past
+its startup is refused (SPEC C22)."""
+
+
+def connections_within(limit: Int, startup: Int, loops: Int, asked: Int) -> Int:
+    """The connections each of `loops` loops holds under an open-file limit of
+    `limit` (SPEC C25): what the limit leaves after the server's own
+    `startup` descriptors and a margin for the files the application opens
+    -- an eighth of what is left, at least `DESCRIPTOR_MARGIN` and at most
+    `DESCRIPTOR_HEADROOM` -- shared among the loops, and never more than
+    `asked`.
+
+    A loop counted to `asked` under a limit that holds fewer let streams
+    take every descriptor before they reached the reserve kept for requests
+    (C20): under a hard limit of 300 a loop of 1024 held 276 streams and the
+    health check read an EOF. Fitted, the reserve is taken from the count
+    the limit can hold. A limit raised to what the connections need
+    (`raise_descriptor_limit`, asked for `asked * loops + startup +
+    DESCRIPTOR_HEADROOM`) fits `asked` unchanged, and a `limit` below zero,
+    unknown, leaves it too.
+    """
+    if limit < 0 or loops < 1:
+        return asked
+    var spare = limit - startup
+    var margin = spare // 8
+    if margin < DESCRIPTOR_MARGIN:
+        margin = DESCRIPTOR_MARGIN
+    if margin > DESCRIPTOR_HEADROOM:
+        margin = DESCRIPTOR_HEADROOM
+    var each = (spare - margin) // loops
+    if each < DESCRIPTOR_MARGIN:
+        each = DESCRIPTOR_MARGIN
+    return each if each < asked else asked
+
+
+def max_files_per_process() -> Int:
+    """macOS's `kern.maxfilesperproc`, the most descriptors one process may
+    hold whatever its soft limit says; -1 elsewhere, or when it cannot be
+    read.
+
+    macOS accepts a soft limit above it and enforces it anyway: on Darwin
+    27 `setrlimit` set 65792 and read 65792 back, and the 61441st `dup`
+    failed with EMFILE, so a raise past it reported a limit no descriptor
+    could reach (SPEC C21)."""
+    comptime if not CompilationTarget.is_macos():
+        return -1
+    var name = List[UInt8](String("kern.maxfilesperproc").as_bytes())
+    name.append(0)
+    var value = Array[c_int, 1](fill=c_int(0))
+    var size = Array[UInt, 1](fill=UInt(4))
+    comptime NamePtr = type_of(name.unsafe_ptr())
+    comptime ValuePtr = type_of(Pointer(to=value[0]))
+    comptime SizePtr = type_of(Pointer(to=size[0]))
+    var rc = external_call["sysctlbyname", c_int, NamePtr, ValuePtr, SizePtr, Int, UInt](
+        name.unsafe_ptr(), Pointer(to=value[0]), Pointer(to=size[0]), 0, UInt(0)
+    )
+    # The name's buffer is read through its pointer above; keep it alive.
+    _ = name
+    if rc != 0 or value[0] <= 0:
+        return -1
+    return Int(value[0])
 
 
 def descriptor_limit() -> Int:
@@ -263,8 +329,10 @@ def descriptor_limit() -> Int:
 
 def raise_descriptor_limit(want: Int) -> Int:
     """Raise the soft limit on open descriptors to `want`, as far as the hard
-    limit lets it; never lower it. Answers the soft limit after, which the
-    caller compares with `want` to say when it fell short (SPEC C21).
+    limit lets it; never lower it. Answers the descriptors the process can
+    hold after -- the soft limit, or on macOS `kern.maxfilesperproc` where
+    that is lower -- which the caller compares with `want` to say when it
+    fell short and fits its connections to (SPEC C21, C25).
 
     A connection is a descriptor, so the soft limit, not `max_connections`,
     is what bounded a server: macOS's launchd default is 256, which held 208
@@ -275,9 +343,12 @@ def raise_descriptor_limit(want: Int) -> Int:
     startup. Raised only to `want`, never to the hard limit, because a child
     process inherits it, and a program that sizes a table by
     `sysconf(_SC_OPEN_MAX)` pays for whatever it is. Capped at
-    `DESCRIPTOR_CEILING`. On macOS a soft limit above
-    `kern.maxfilesperproc` is EINVAL even under an unlimited hard limit, so
-    a refused raise is retried at half the step until one is taken.
+    `DESCRIPTOR_CEILING`, and on macOS at `kern.maxfilesperproc`
+    (`max_files_per_process`): Darwin 27 accepts a soft limit above it and
+    enforces it anyway, so the limit reported was one no descriptor could
+    reach and no shortfall was said. An older macOS refused such a raise
+    with EINVAL, so a refused raise is still retried at half the step until
+    one is taken.
     """
     var lim = Array[UInt64, 2](fill=UInt64(0))
     comptime LimPtr = type_of(Pointer(to=lim[0]))
@@ -289,8 +360,16 @@ def raise_descriptor_limit(want: Int) -> Int:
     var target = UInt64(want if want < DESCRIPTOR_CEILING else DESCRIPTOR_CEILING)
     if target > lim[1]:
         target = lim[1]
+    var per_process = max_files_per_process()
+    if per_process > 0 and target > UInt64(per_process):
+        target = UInt64(per_process)
     if soft >= target:
-        return Int(soft) if soft < UInt64(DESCRIPTOR_CEILING) else DESCRIPTOR_CEILING
+        # What a descriptor can reach: a soft limit past macOS's per-process
+        # ceiling (a shell's `ulimit -n unlimited`) is not one.
+        var reach = Int(soft) if soft < UInt64(DESCRIPTOR_CEILING) else DESCRIPTOR_CEILING
+        if per_process > 0 and reach > per_process:
+            reach = per_process
+        return reach
     while target > soft:
         lim[0] = target
         if external_call["setrlimit", c_int, c_int, LimPtr](

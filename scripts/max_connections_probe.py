@@ -24,11 +24,19 @@ hold), the probe holds N SSE streams at once and expects:
 
 usage: max_connections_probe.py PORT N
 """
+import resource
 import socket
 import sys
 import time
 
 from probelib import fail, phase, stamp
+
+# The client holds N connections and a few more: past launchd's default
+# soft limit of 256 when N is the 242 a hard limit of 300 leaves (C25).
+_soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+if _soft != resource.RLIM_INFINITY and _soft < 4096:
+    _want = 4096 if _hard == resource.RLIM_INFINITY else min(4096, _hard)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (_want, _hard))
 
 stamp("max_connections_probe: FAIL")
 

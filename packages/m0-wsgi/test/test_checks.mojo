@@ -16,12 +16,13 @@ while the doctor said 0.
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
+from lightbug_http.c.process import DESCRIPTOR_MARGIN
 from src.checks import (
     ServeCheck,
     CheckFacts,
-    DESCRIPTOR_MARGIN,
     flag_checks,
     startup_descriptors,
+    startup_descriptors_bound,
     interpreter_checks,
     app_checks,
     first_refusal,
@@ -42,6 +43,7 @@ from src.cli import (
     EXIT_CONFIG,
     EXIT_STARTUP,
     EXIT_USAGE,
+    MAX_AUTO_BLOCKING_THREADS,
     MAX_MOUNTS,
 )
 from src.threaded import (
@@ -634,6 +636,25 @@ def test_realtime_without_wsgi_asks_what_a_mount_is() raises:
     ])
     none.asgi_mounts.append(1)
     assert_true(realtime_without_wsgi(none, True))
+
+
+def test_the_startup_bound_is_the_most_the_import_can_make_it() raises:
+    """`startup_descriptors_bound` (SPEC C21, C25), what the raise asks for
+    beside the connections and what they are fitted under, before the
+    import says whether there is an executor: the larger of the executor's
+    estimate and the pool's, a pool the flags leave to the import counted
+    at its automatic size.
+
+    covers: C25
+    """
+    var unset = _opts([String("app.wsgi")])
+    assert_equal(startup_descriptors_bound(unset), 8 + (8 + 4 * MAX_AUTO_BLOCKING_THREADS))
+    var two = _opts([String("app.wsgi"), String("--blocking-threads"), String("2")])
+    assert_equal(startup_descriptors_bound(two), 24)
+    var none = _opts([String("app.wsgi"), String("--blocking-threads"), String("0")])
+    assert_equal(startup_descriptors_bound(none), 8 + 16, "an executor's channels were not counted")
+    var loops = _opts([String("app.wsgi"), String("--blocking-threads"), String("16"), String("--threads"), String("2")])
+    assert_equal(startup_descriptors_bound(loops), 8 + 2 * (8 + 4 * 16))
 
 
 def main() raises:

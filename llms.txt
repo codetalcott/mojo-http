@@ -58,8 +58,9 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
   `Retry-After`, so `--health-path` still answers when streams are full.
   A loop with every slot in use closes its longest-idle connection to
   admit a new one, and resets a connection only when none is idle.
-  The server raises its own open-file limit to fit, and says so when the
-  hard limit stops it.
+  The server raises its own open-file limit to fit; where the hard limit
+  stops it, each loop holds what the limit leaves, its reserve kept, and
+  says so.
 - `--static PREFIX=DIR` serves files from the server with sendfile, ETags
   and byte ranges; a miss falls through to the application.
 - SIGTERM drains in-flight work and exits 0; the server runs as PID 1

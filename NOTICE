@@ -2126,6 +2126,15 @@ lightbug_http
         full sweep still runs for a handler that names nothing and under
         the pump executor (docs/notes/a-pass-drains-only-what-has-output.md).
 
+      - c/process.mojo (2026-11-02): `connections_within` fits a loop's
+        connections to an open-file limit the raise could not pass (SPEC
+        C25), the limit less the server's own descriptors and a margin of
+        an eighth of the rest, at least `DESCRIPTOR_MARGIN` (moved here
+        from m0-wsgi) and at most `DESCRIPTOR_HEADROOM`;
+        `max_files_per_process` reads macOS's `kern.maxfilesperproc`, at
+        which `raise_descriptor_limit` now stops and which it answers when
+        the soft limit is already past it (C21).
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 

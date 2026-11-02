@@ -162,6 +162,22 @@ default is listed under **Behaviour changes**
 
 ### Fixed
 
+- **A loop the open-file limit cannot hold at its count holds what the
+  limit leaves** (SPEC C25). Where the hard limit stopped the server's
+  raise short, a loop kept its count, and streams took every descriptor
+  before they reached the reserve C20 keeps for requests: under a hard
+  limit of 300, 400 holds got 276 answers and 124 resets, and the health
+  check read an EOF. Each loop is now cut to the limit less the server's
+  own descriptors and a margin for the application's files, and its
+  reserve is kept from that: under 300 a loop holds 242, streams 227 of
+  them, and the health path is answered. The notice names the count, and
+  `--doctor` reports it. The raise asks for the server's own descriptors
+  too, which came out of the 256 of headroom, and on macOS stops at
+  `kern.maxfilesperproc`, which Darwin 27 enforces above a soft limit it
+  accepts: `--max-connections 65536` reported a limit of 65792 that no
+  descriptor past 61440 could reach. The Mojo host does the same
+  ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
+
 - **An m0 release artifact carries its licences** (SPEC N56). `m0 build
   --release` put the Mojo runtime in `dist/` beside a binary that compiles
   in the MIT-licensed framework and fork, and no licence text with either.
