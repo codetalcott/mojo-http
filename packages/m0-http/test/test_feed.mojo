@@ -186,5 +186,35 @@ def test_since_of_reads_the_header_before_the_query() raises:
     assert_equal(since_of(_open("/e?since=1234567890123456789", 0)), -1)
 
 
+def test_a_feed_names_the_slots_it_sends_to_and_closes() raises:
+    """`take_ready` names a slot `send` queued a delta for -- written past the
+    registry's own queueing, so named by `send` itself -- and a slot that
+    closed, and not one it refused or only moved (`skip`) (SPEC C24).
+
+    covers: C24
+    """
+    var feed = Feed(4)
+    _ = feed.open(_open("/notes", 1), "notes")
+    _ = feed.open(_open("/notes", 2), "notes")
+    var got = List[Int]()
+    feed.take_ready(got)
+    got.clear()
+    assert_true(feed.send(1, 3, _frame(3, "a")))
+    feed.skip(2, 3)
+    feed.take_ready(got)
+    assert_equal(got, [1], "the slot sent to was not the one named")
+    got.clear()
+    _ = feed.drain(1)
+    assert_true(feed.send(1, 4, _frame(4, _pad(FEED_SLOT_BUDGET))))
+    feed.take_ready(got)
+    got.clear()
+    assert_false(feed.send(1, 5, _frame(5, "b")))
+    feed.take_ready(got)
+    assert_equal(len(got), 0, "a refused delta named its slot")
+    feed.closed(2)
+    feed.take_ready(got)
+    assert_equal(got, [2], "a closed slot was not named")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

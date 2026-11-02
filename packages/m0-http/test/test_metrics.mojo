@@ -185,6 +185,7 @@ def test_every_family_has_help_type_and_its_sample() raises:
     m.streams_refused = 9
     m.connections_reclaimed = 13
     m.connections_refused = 8
+    m.stream_drain_visits = 21
     var text = m.to_text()
     var families = [
         ("http_requests_total", "counter", "11"),
@@ -199,6 +200,7 @@ def test_every_family_has_help_type_and_its_sample() raises:
         ("http_streams_refused_total", "counter", "9"),
         ("http_connections_reclaimed_total", "counter", "13"),
         ("http_connections_refused_total", "counter", "8"),
+        ("http_stream_drain_visits_total", "counter", "21"),
     ]
     for f in families:
         var name = String(f[0])
@@ -244,6 +246,7 @@ def test_a_new_server_counts_nothing() raises:
     assert_equal(m.bus_frames_refused, 0)
     assert_equal(m.connections_reclaimed, 0)
     assert_equal(m.connections_refused, 0)
+    assert_equal(m.stream_drain_visits, 0)
     assert_equal(len(m.latency_bands), LATENCY_BUCKET_COUNT)
     assert_equal(m.latency_sum_us, 0)
     assert_equal(m.latency_count, 0)

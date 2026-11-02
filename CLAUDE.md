@@ -481,8 +481,8 @@ dependencies: a consumer passes every `-I` in the chain, and apps add
 
 ## The handler contract
 
-`HTTPService` (`lightbug_http/service.mojo`) has fourteen methods, and **only
-`func` is required**: the other thirteen carry default bodies, so a handler
+`HTTPService` (`lightbug_http/service.mojo`) has fifteen methods, and **only
+`func` is required**: the other fourteen carry default bodies, so a handler
 declares just the hooks it uses.
 
 - `func` answers; `before_request` runs on the LOOP before a request is
@@ -493,7 +493,13 @@ declares just the hooks it uses.
   and `sse_peer_frame` (frames from the cross-worker `BroadcastBus`). The
   `sse_*` names are historical: they serve WebSocket slots identically — a WS
   handler queues `encode_ws_frame(...)` bytes and returns them from
-  `sse_drain_slot`.
+  `sse_drain_slot`. `take_ready_streams` names the slots with output, so a
+  pass drains those and not every stream it holds (SPEC C24); the default
+  answers False and keeps the sweep of every stream. A handler that answers
+  True must name from EVERY outbox it drains, a stream's end included, or
+  that stream waits: `SSERegistry`, `DatastarStream`, `WSHub` and `Feed`
+  keep the list, and a write to `pending_bufs` outside them calls
+  `mark_ready` (docs/notes/a-pass-drains-only-what-has-output.md).
 - `tick` fires every `app_tick_ms` when configured, ON the event loop
   thread, so keep it quick.
 - WebSockets: `ws_message` gets complete messages (fragments assembled,

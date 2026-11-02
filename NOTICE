@@ -2115,6 +2115,16 @@ lightbug_http
         `ServerMetrics` counts `connections_reclaimed` and
         `connections_refused`; `M0_RECLAIM=0` keeps the old refusal
         (docs/notes/a-full-loop-takes-back-an-idle-slot.md).
+      - service.mojo, loop/state.mojo, loop/streams.mojo (2026-11-02): a
+        pass drains the streams that have something to send rather than
+        every stream it holds (SPEC C24). `HTTPService.take_ready_streams`,
+        defaulted to False, lets a handler name them; the loop adds each
+        slot whose frame lands (`_stream_idle`) and walks the two
+        (`drain_due`, swapped with `drain_now`, so a slot named while the
+        drain runs is the next drain's). The per-slot body of
+        `_drain_outboxes` moved, unchanged, into `_drain_slot`, which the
+        full sweep still runs for a handler that names nothing and under
+        the pump executor (docs/notes/a-pass-drains-only-what-has-output.md).
 
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http

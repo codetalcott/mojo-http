@@ -294,6 +294,20 @@ struct LoopState(Movable):
     state has moved on is dropped where `_reclaim_slot` meets it."""
     var reclaim_enabled: Bool
     """`M0_RECLAIM` is not `0`."""
+    var drain_due: List[Int]
+    """Stream slots the next outbox drain visits (SPEC C24): those whose
+    last frame landed since the drain before (`_stream_idle`), then those
+    the handler names (`take_ready_streams`). A slot may be in it twice."""
+    var drain_now: List[Int]
+    """The list the drain walks, swapped with `drain_due` as it begins, so
+    a slot named while it walks waits for the next drain instead of being
+    cleared with this one's."""
+    var slot_drain_seen: List[Bool]
+    """Set for a slot the drain under way has visited, so a slot in its
+    list twice is visited once; cleared as the drain ends."""
+    var names_streams: Bool
+    """The handler's last `take_ready_streams` answered True: it names its
+    streams with output, so a drain with no stream held asks it nothing."""
 
     def __init__(
         out self,
@@ -422,6 +436,10 @@ struct LoopState(Movable):
         self.handoffs_owed = False
         self.reclaim = SlotQueues(max_conns, RECLAIM_QUEUES)
         self.reclaim_enabled = _reclaim_from_env()
+        self.drain_due = List[Int]()
+        self.drain_now = List[Int]()
+        self.slot_drain_seen = List[Bool](length=max_conns, fill=False)
+        self.names_streams = False
 
     def owes_accepts(self) -> Bool:
         """A batch was left in the backlog or the hand-off channel."""
@@ -721,6 +739,11 @@ def _stream_idle[B: EventLoopBackend](
     # The heartbeat timer (the configured interval, re-armed by each beat).
     if st.config.sse_heartbeat_ms > 0:
         backend.try_add_timer(UInt(fd_val) + TIMER_SSE_HEARTBEAT, st.config.sse_heartbeat_ms)
+    # Free to take its next frame: the drain visits it (SPEC C24). The
+    # handler named whatever it queued while the frame was going out, and
+    # the drain met the slot busy and passed it by; this is what brings
+    # those bytes out, and a Datastar state stream its newest frame.
+    st.drain_due.append(slot)
 
 
 @always_inline

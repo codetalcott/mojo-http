@@ -34,9 +34,12 @@ different copies.
 
 **`ViewsApp[S]`** is the `AppHandler` for an application that is a
 [views table](MOJO_VIEWS.md). `S: ViewState` has `make(ctx)` and `urls()`,
-the same three optional methods, and the three stream hooks and the tick
+the same three optional methods, and the four stream hooks and the tick
 with the handler's defaults, so a state that holds a stream (a `Feed`, a
-`DatastarStream`) forwards them to it. The `views` scaffold uses it;
+`DatastarStream`) forwards them to it. The fourth, `take_ready_streams`,
+is for a loop that holds many streams: forwarded to the stream's
+`take_ready`, answering True, it has each pass drain the streams with
+something to send rather than visit every one. The `views` scaffold uses it;
 `live`, whose handler owns a `DatastarStream` and a producer, is an
 `AppHandler` of its own.
 
@@ -53,7 +56,7 @@ holds: a frame it publishes reaches the subscribers of the worker that
 answered the request. Every other worker's are reached once `make` has
 called `stream.enable_bus(ctx.bus, ctx.worker, ctx.id_addr)` and the
 handler forwards `sse_peer_frame` to `deliver_peer`; `ViewsApp` forwards
-the other three stream hooks and not that one, so this takes an
+the other stream hooks and not that one, so this takes an
 `AppHandler` of the application's own, which `apps/datastar_todo` is.
 Without the bus a frame stays in its process, the `board` scaffold's
 shape (`max_workers() -> 1`).
