@@ -25,6 +25,7 @@ from lightbug_http.metrics import ServerMetrics
 from lightbug_http.offload import OffloadLoopState
 from lightbug_http.server import ProvisionPool
 from lightbug_http.server_config import ServerConfig
+from lightbug_http.slot_queue import NO_SLOT, SlotQueues
 from lightbug_http.service import HTTPService
 from lightbug_http.websocket import WSState, close_frame, WS_CLOSE_GOING_AWAY
 from std.ffi import c_int
@@ -105,6 +106,28 @@ comptime SSE_FLUSH_COMMENT = ": flush\n\n"
 # their buffers warm from one connection to the next.
 comptime SLOT_BUFFER_KEEP = 64 * 1024
 comptime UNUSED: Int = -1
+# A loop whose every slot is in use takes one back for a new connection
+# from a connection one of its deadlines is already counting down (SPEC
+# C23; docs/notes/a-full-loop-takes-back-an-idle-slot.md): the deadline
+# arrives early, for the slot nearest it. First a connection BETWEEN
+# requests, the longest idle first, closed as the idle sweep closes it:
+# either side may close an idle connection at any time (RFC 9112 §9.5),
+# and clients reopen one. Then a connection whose head is still
+# arriving, the oldest first, answered as the header timeout answers it
+# -- a 408 to a first request -- but only once its head has been arriving for
+# `RECLAIM_HEAD_FLOOR_NS`, so a client that has just connected and is
+# about to send is never the one taken. A stream, a body, a response going
+# out and a request on a pool thread are never taken. Before, a new
+# connection that met a full loop was closed unread, which its client read
+# as a reset: 1008 streams beside 16 idle keep-alive connections -- the
+# page loads of the tabs holding them -- reset the health check, and 1024
+# idle keep-alive connections from one client reset every connection for
+# the 60 s of their idle timeout. The two queues are `SlotQueues`;
+# `M0_RECLAIM=0` turns the taking off, an A/B knob.
+comptime RECLAIM_IDLE = 0
+comptime RECLAIM_HEAD = 1
+comptime RECLAIM_QUEUES = 2
+comptime RECLAIM_HEAD_FLOOR_NS = 1_000_000_000
 
 
 def _accept_batch_from_env() -> Int:
@@ -135,6 +158,12 @@ def _stream_keepalive_from_env() -> Int:
     except:
         pass
     return STREAM_KEEPALIVE_S
+
+
+def _reclaim_from_env() -> Bool:
+    """`M0_RECLAIM`: `0` keeps a full loop from taking a slot back (SPEC
+    C23); anything else, or nothing, leaves it on."""
+    return getenv("M0_RECLAIM", "") != "0"
 
 
 def _sse_flush_from_env() -> Int:
@@ -258,6 +287,13 @@ struct LoopState(Movable):
     still hold connections no edge will announce again."""
     var handoffs_owed: Bool
     """The same for the accept-share channel."""
+    var reclaim: SlotQueues
+    """The slots a full loop may take back, in the order they became
+    takeable (`RECLAIM_IDLE`, `RECLAIM_HEAD`; SPEC C23). Joined by
+    `_end_request` and `_start_head`, left by `_close_slot`; a slot whose
+    state has moved on is dropped where `_reclaim_slot` meets it."""
+    var reclaim_enabled: Bool
+    """`M0_RECLAIM` is not `0`."""
 
     def __init__(
         out self,
@@ -384,6 +420,8 @@ struct LoopState(Movable):
         self.stream_keepalive_s = _stream_keepalive_from_env()
         self.accept_owed = False
         self.handoffs_owed = False
+        self.reclaim = SlotQueues(max_conns, RECLAIM_QUEUES)
+        self.reclaim_enabled = _reclaim_from_env()
 
     def owes_accepts(self) -> Bool:
         """A batch was left in the backlog or the hand-off channel."""
@@ -557,6 +595,46 @@ def _begin_request(mut st: LoopState, slot: Int):
     st.slot_idle_deadline[slot] = 0
 
 
+@always_inline
+def _start_head(mut st: LoopState, slot: Int):
+    """A head's first byte, or a new connection's arrival: the header clock
+    starts, and the slot joins the queue of heads still arriving, at its
+    back (SPEC C23). Every stamp of `slot_header_start` comes through
+    here -- the accept path for a new connection, the read path and the
+    pipelined drain for a kept-alive one's next request -- so the queue is
+    in the order the clocks started, and its front is the oldest head."""
+    st.slot_header_start[slot] = perf_counter_ns()
+    st.reclaim.push_back(RECLAIM_HEAD, slot)
+
+
+def _between_requests(st: LoopState, slot: Int) -> Bool:
+    """The slot holds a kept-alive connection with nothing in progress: it
+    answered a request, and nothing of the next one has arrived, is
+    buffered or is out. What `RECLAIM_IDLE` holds, while it holds."""
+    return (
+        st.slot_fds[slot] != UNUSED
+        and not st.offload.offloaded[slot]
+        and not (st.slot_sse[slot] or st.slot_ws[slot])
+        and st.provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS
+        and st.slot_header_start[slot] == 0
+        and st.provision_pool.provisions[slot].keepalive_count > 0
+        and st.provision_pool.provisions[slot].pending_len() == 0
+    )
+
+
+def _head_arriving(st: LoopState, slot: Int) -> Bool:
+    """The slot's connection is still sending a request's head: its clock
+    has started and no head has been framed. What `RECLAIM_HEAD` holds,
+    while it holds."""
+    return (
+        st.slot_fds[slot] != UNUSED
+        and not st.offload.offloaded[slot]
+        and not (st.slot_sse[slot] or st.slot_ws[slot])
+        and st.provision_pool.provisions[slot].state.kind == ConnectionState.READING_HEADERS
+        and st.slot_header_start[slot] != 0
+    )
+
+
 def _end_request[B: EventLoopBackend](
     mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
 ):
@@ -577,6 +655,9 @@ def _end_request[B: EventLoopBackend](
     # Stamping it here made every keep-alive gap longer than header_read_timeout
     # answer 408 to a request the client had just sent perfectly promptly.
     st.slot_header_start[slot] = 0
+    # Between requests from now, so the longest idle a full loop may take
+    # back (SPEC C23).
+    st.reclaim.push_back(RECLAIM_IDLE, slot)
     # The idle deadline, replacing whatever the response left: a send
     # deadline, if the response had to wait for its client. With idle
     # timeouts off nothing arms one, and the slot keeps none.
@@ -1003,6 +1084,7 @@ def _close_slot[T: HTTPService, B: EventLoopBackend](
         pass
 
     st.slot_fds[slot] = UNUSED
+    st.reclaim.remove(slot)
     if fd_val < len(st.fd_to_slot):
         st.fd_to_slot[fd_val] = UNUSED
     st.provision_pool.provisions[slot].prepare_for_new_request()

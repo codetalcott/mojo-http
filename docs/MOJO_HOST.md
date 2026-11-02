@@ -79,7 +79,9 @@ One loop in one process is the default, and on one vCPU it is the whole
 answer ([Deploy](MOJO_DEPLOY.md)). A loop holds 1024 connections, and
 streams take all but the last 16 of them: the stream after that is
 answered `503` with `Retry-After`, so the health path is still answered
-while streams hold the rest. More streams are more loops. The host raises
+while streams hold the rest. A connection that finds every slot in use
+takes one back from the connection idle longest between requests, and is
+refused only when none is idle. More streams are more loops. The host raises
 its own open-file limit to what its loops need before it binds, and says
 so when the hard limit stops it short. The doctor reports
 `max_connections_per_loop`, `stream_limit_per_loop` and

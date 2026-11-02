@@ -38,7 +38,7 @@ from std.time import perf_counter_ns
 from lightbug_http.loop.state import (
     LoopState, TIMER_BODY, UNUSED, _arm_reads, _await_write, _begin_request,
     _close_slot, _notice_once, _rearm_reads, _slot_of, _spend_read_edge,
-    _stop_reads,
+    _start_head, _stop_reads,
 )
 from lightbug_http.loop.response import (
     _finish_response, _send_error_to_fd, _send_interim, _take_owed_interim,
@@ -417,7 +417,7 @@ def _handle_read_headers[T: HTTPService, B: EventLoopBackend](
         # log subtracted a stamp never taken, so every keep-alive request
         # after a connection's first (the accept stamps that one) logged
         # the time since boot (review record LF14).
-        st.slot_header_start[slot] = perf_counter_ns()
+        _start_head(st, slot)
     elif st.config.header_read_timeout > 0:
         var elapsed_s = (perf_counter_ns() - st.slot_header_start[slot]) / 1_000_000_000
         if elapsed_s >= Int(st.config.header_read_timeout):
@@ -533,7 +533,7 @@ def _frame_buffered[T: HTTPService, B: EventLoopBackend](
     (`_begin_request`).
     """
     if st.slot_header_start[slot] == 0:
-        st.slot_header_start[slot] = perf_counter_ns()
+        _start_head(st, slot)
     _begin_request(st, slot)
 
     var start = st.provision_pool.provisions[slot].head_start

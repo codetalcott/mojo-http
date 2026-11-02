@@ -56,6 +56,8 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
   ONE LOOP holds; `--workers`/`--threads` multiply it. Held streams take
   all but the last 16, and the next stream is answered `503` with
   `Retry-After`, so `--health-path` still answers when streams are full.
+  A loop with every slot in use closes its longest-idle connection to
+  admit a new one, and resets a connection only when none is idle.
   The server raises its own open-file limit to fit, and says so when the
   hard limit stops it.
 - `--static PREFIX=DIR` serves files from the server with sendfile, ETags

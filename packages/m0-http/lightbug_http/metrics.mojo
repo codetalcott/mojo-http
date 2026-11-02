@@ -113,6 +113,16 @@ struct ServerMetrics(Movable):
     """Streams answered 503 because streams already held every slot the
     loop lets them take (monotonic; SPEC C20)."""
 
+    var connections_reclaimed: Int
+    """Connections closed to give their slot to a new one, every slot being
+    in use: idle between requests, or a head arriving for at least a second
+    (monotonic; SPEC C23)."""
+
+    var connections_refused: Int
+    """New connections closed unread, every slot being in use and none
+    reclaimable (monotonic; SPEC C23). Not in `accepts_total`, which counts
+    the connections a slot took."""
+
     var bus_frames_refused: Int
     """Datagrams this loop drained from a bus-shaped channel -- its
     `BroadcastBus` channel, or the chunk channel an executor or a streaming
@@ -139,6 +149,8 @@ struct ServerMetrics(Movable):
         self.latency_count = 0
         self.streams_held = 0
         self.streams_refused = 0
+        self.connections_reclaimed = 0
+        self.connections_refused = 0
         self.bus_frames_refused = 0
 
     def record_duration(mut self, elapsed_us: Int):
@@ -240,6 +252,16 @@ struct ServerMetrics(Movable):
             " streams held every slot but the loop's reserve\n",
             "# TYPE http_streams_refused_total counter\n",
             "http_streams_refused_total ", String(self.streams_refused), "\n",
+            "# HELP http_connections_reclaimed_total Connections closed to"
+            " give their slot to a new one when every slot was in use\n",
+            "# TYPE http_connections_reclaimed_total counter\n",
+            "http_connections_reclaimed_total ",
+            String(self.connections_reclaimed), "\n",
+            "# HELP http_connections_refused_total New connections closed unread"
+            " when every slot was in use and none could be reclaimed\n",
+            "# TYPE http_connections_refused_total counter\n",
+            "http_connections_refused_total ", String(self.connections_refused),
+            "\n",
             "# HELP http_bus_frames_refused_total Datagrams drained from the"
             " cross-worker bus or the stream chunk channel and not delivered:"
             " over-long or malformed\n",

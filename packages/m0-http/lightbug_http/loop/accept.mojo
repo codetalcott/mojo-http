@@ -16,12 +16,18 @@ from lightbug_http.c.socket import accept_with_peer, close, set_tcp_nodelay
 from lightbug_http.c.socket_error import SysError
 from lightbug_http.connection import ConnectionState
 from lightbug_http.service import HTTPService
+from lightbug_http.slot_queue import NO_SLOT
 from std.ffi import ErrNo, c_int
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns
 
-from lightbug_http.loop.state import LoopState, UNUSED, _arm_reads, _close_slot
+from lightbug_http.loop.state import (
+    LoopState, RECLAIM_HEAD, RECLAIM_HEAD_FLOOR_NS, RECLAIM_IDLE,
+    UNUSED, _arm_reads, _between_requests, _close_slot, _head_arriving,
+    _notice_once, _start_head,
+)
 from lightbug_http.loop.request import _drain_pipelined, _handle_read_headers
+from lightbug_http.loop.timers import _expire_head
 
 
 def _admit_batches[T: HTTPService, B: EventLoopBackend](
@@ -51,6 +57,77 @@ def _admit_batches[T: HTTPService, B: EventLoopBackend](
         st.handoffs_owed = _admit_handoffs(handler, backend, st, st.accept_batch)
 
 
+def _reclaim_slot[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+) -> Bool:
+    """Free a slot for a new connection on a loop that has none (SPEC C23):
+    close the connection between requests that has been idle longest, as
+    the idle sweep would, else the one whose head has been arriving
+    longest, once that is `RECLAIM_HEAD_FLOOR_NS`, as the header timeout
+    would. True when one was closed and its slot is free.
+
+    The queues are fronted by the longest waiting, and a slot whose state
+    has moved on since it joined -- a head now framed, a request now on a
+    pool thread, a stream -- is removed where it is met, so each slot is
+    passed over at most once per time it queued, and taking one is O(1)
+    however full the loop. The head queue is in the order its clocks
+    started, so a front younger than the floor is a queue with nothing
+    old enough behind it.
+
+    Never a stream, a body, a response going out or an offloaded request:
+    none of those is waiting on a deadline that would close it, and each
+    is a client being served. A loop that has only those refuses the new
+    connection, as before.
+    """
+    if not st.reclaim_enabled:
+        return False
+    while True:
+        var idle = st.reclaim.front(RECLAIM_IDLE)
+        if idle == NO_SLOT:
+            break
+        if _between_requests(st, idle):
+            _close_slot(handler, backend, st, idle, st.slot_fds[idle])
+            st.metrics.connections_reclaimed += 1
+            return True
+        st.reclaim.remove(idle)
+    var now = perf_counter_ns()
+    while True:
+        var head = st.reclaim.front(RECLAIM_HEAD)
+        if head == NO_SLOT:
+            break
+        if not _head_arriving(st, head):
+            st.reclaim.remove(head)
+            continue
+        if now - st.slot_header_start[head] < RECLAIM_HEAD_FLOOR_NS:
+            break
+        _expire_head(handler, backend, st, head)
+        st.metrics.connections_reclaimed += 1
+        return True
+    return False
+
+
+def _borrow_slot[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+) -> Int:
+    """A free slot for a new connection, taking one back from an idle
+    connection when every slot is in use (`_reclaim_slot`, SPEC C23);
+    `UNUSED` when none can be had. The first time a loop finds every slot
+    in use it says so once (`slots_full_notice`), and each connection it
+    then cannot place is counted (`http_connections_refused_total`)."""
+    try:
+        return st.provision_pool.borrow()
+    except:
+        pass
+    _notice_once(st.config.slots_full_notice)
+    if _reclaim_slot(handler, backend, st):
+        try:
+            return st.provision_pool.borrow()
+        except:
+            pass
+    st.metrics.connections_refused += 1
+    return UNUSED
+
+
 def _admit_connection[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, fd_val: Int,
     var peer_host: String, peer_port: Int,
@@ -66,10 +143,12 @@ def _admit_connection[T: HTTPService, B: EventLoopBackend](
     """
     var new_fd = RawFileDescriptor(c_int(fd_val))
 
-    var slot: Int
-    try:
-        slot = st.provision_pool.borrow()
-    except:
+    # A loop with every slot in use takes one back from a connection a
+    # deadline is counting down, and refuses this one only when none is
+    # (SPEC C23). Refused, it is closed unread, which its client reads as a
+    # reset: nothing else can be told to a connection with nowhere to read.
+    var slot = _borrow_slot(handler, backend, st)
+    if slot == UNUSED:
         try:
             close(new_fd)
         except:
@@ -103,7 +182,9 @@ def _admit_connection[T: HTTPService, B: EventLoopBackend](
     st.provision_pool.provisions[slot].peer_host = peer_host^
     st.provision_pool.provisions[slot].peer_port = peer_port
     st.slot_send_offset[slot] = 0
-    st.slot_header_start[slot] = perf_counter_ns()
+    # The header clock starts, and the slot queues as a head still arriving
+    # (`_start_head`, SPEC C23).
+    _start_head(st, slot)
     st.slot_read_armed[slot] = False
     st.slot_idle_deadline[slot] = 0
     # A recycled slot must not inherit the previous
