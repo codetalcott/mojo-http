@@ -286,8 +286,8 @@ def connections_within(limit: Int, startup: Int, loops: Int, asked: Int) -> Int:
 
 
 def max_files_per_process() -> Int:
-    """macOS's `kern.maxfilesperproc`, the most descriptors one process may
-    hold whatever its soft limit says; -1 elsewhere, or when it cannot be
+    """The most descriptors one process may hold on macOS, whatever its soft
+    limit says (`kern.maxfilesperproc`); -1 elsewhere, or when it cannot be
     read.
 
     macOS accepts a soft limit above it and enforces it anyway: on Darwin
