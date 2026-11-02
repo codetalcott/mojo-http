@@ -3459,20 +3459,17 @@ def _ended(peer: Int, mut said: String) raises -> Bool:
     macOS reads an EOF."""
     var got = List[UInt8]()
     var buf = List[UInt8](length=65536, fill=0)
-    var ended = False
     while True:
         var n: UInt
         try:
             n = recv(RawFileDescriptor(c_int(peer)), Span(buf), MSG_DONTWAIT)
         except err:
-            ended = not err.would_block()
-            break
+            said = String(unsafe_from_utf8=Span(got)).lower()
+            return not err.would_block()
         if n == 0:
-            ended = True
-            break
+            said = String(unsafe_from_utf8=Span(got)).lower()
+            return True
         got.extend(Span(buf)[: Int(n)])
-    said = String(unsafe_from_utf8=Span(got)).lower()
-    return ended
 
 
 def _release(mut app: Streamer, mut backend: FakeBackend, mut st: LoopState, peers: List[Int]) raises:
