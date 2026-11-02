@@ -170,9 +170,13 @@ default is listed under **Behaviour changes**
   check read an EOF. Each loop is now cut to the limit less the server's
   own descriptors and a margin for the application's files, and its
   reserve is kept from that: under 300 a loop holds 242, streams 227 of
-  them, and the health path is answered. The notice names the count, and
-  `--doctor` reports it. The raise asks for the server's own descriptors
-  too, which came out of the 256 of headroom, and on macOS stops at
+  them (121 and 114 on Linux), and the health path is answered. The notice
+  names the count, and `--doctor` reports it. The raise counts two
+  descriptors a connection on Linux, where a stream's heartbeat timer is a
+  timerfd beside its socket: counted as one, a server raised under
+  systemd's soft 1024 would have run out near 640 of its 1008 streams. It
+  asks for the server's own descriptors too, which came out of the 256 of
+  headroom, and on macOS stops at
   `kern.maxfilesperproc`, which Darwin 27 enforces above a soft limit it
   accepts: `--max-connections 65536` reported a limit of 65792 that no
   descriptor past 61440 could reach. The Mojo host does the same

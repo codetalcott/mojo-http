@@ -73,8 +73,8 @@ from lightbug_http.address import NetworkType, TCPAddr, is_ipv6_literal, parse_a
 from lightbug_http.c.address import AddressFamily
 from lightbug_http.socket import Socket
 from lightbug_http.c.process import (
-    DESCRIPTOR_HEADROOM, connections_within, executable_path, getpid,
-    process_exit, raise_descriptor_limit,
+    DESCRIPTOR_HEADROOM, DESCRIPTORS_PER_CONNECTION, connections_within,
+    executable_path, getpid, process_exit, raise_descriptor_limit,
 )
 from lightbug_http.c.fcntl import set_cloexec
 from lightbug_http.server_config import ServerConfig
@@ -942,15 +942,17 @@ def _run_doctor(mut opts: ServeOptions) -> Int:
 def _descriptors_wanted(opts: ServeOptions) -> Int:
     """The open descriptors one process of this server needs (SPEC C21):
     each of its loops' connections, `--threads` being several loops in one
-    process and a worker a process of its own; what the server holds itself
+    process and a worker a process of its own, each connection two on Linux,
+    where a stream's heartbeat is a timerfd (`DESCRIPTORS_PER_CONNECTION`);
+    what the server holds itself
     before its first connection, at the most the application's import can
     make it (`startup_descriptors_bound`); and the headroom beside them.
     The startup was not counted, and eight loops of eight pool threads hold
     328 descriptors of their own, more than the headroom."""
     var loops = opts.threads if opts.threads > 1 else 1
     return (
-        opts.loop_connections() * loops + startup_descriptors_bound(opts)
-        + DESCRIPTOR_HEADROOM
+        opts.loop_connections() * loops * DESCRIPTORS_PER_CONNECTION
+        + startup_descriptors_bound(opts) + DESCRIPTOR_HEADROOM
     )
 
 

@@ -181,8 +181,8 @@ from lightbug_http.address import join_host_port, parse_address
 from lightbug_http.broadcast import BroadcastBus, publish_to_channels
 from lightbug_http.c.platform import PlatformBackend
 from lightbug_http.c.process import (
-    DESCRIPTOR_HEADROOM, connections_within, getpid, process_exit,
-    raise_descriptor_limit,
+    DESCRIPTOR_HEADROOM, DESCRIPTORS_PER_CONNECTION, connections_within,
+    getpid, process_exit, raise_descriptor_limit,
 )
 from lightbug_http.connection import ListenConfig
 from lightbug_http.event_loop import run_event_loop
@@ -1190,12 +1190,13 @@ def _startup_descriptors(config: AppConfig) -> Int:
 def _descriptors_wanted(config: AppConfig, server_config: ServerConfig) -> Int:
     """The open descriptors one process of this host needs (SPEC C21): each
     of its loops' connections -- `M0_THREADS` loops in one process, a
-    forked worker a process of its own -- what the host holds itself
+    forked worker a process of its own, each connection two on Linux
+    (`DESCRIPTORS_PER_CONNECTION`) -- what the host holds itself
     (`_startup_descriptors`), and the headroom beside them."""
     var loops = config.threads if config.threads > 1 else 1
     return (
-        server_config.max_connections * loops + _startup_descriptors(config)
-        + DESCRIPTOR_HEADROOM
+        server_config.max_connections * loops * DESCRIPTORS_PER_CONNECTION
+        + _startup_descriptors(config) + DESCRIPTOR_HEADROOM
     )
 
 

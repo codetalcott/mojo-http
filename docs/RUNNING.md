@@ -285,7 +285,8 @@ has the Flask version of the whole thing, and CI drives that exact file.
   dropped connection, so a page that should keep trying listens for
   `error` and reconnects itself.
 - **The server raises its own open-file limit** to what its connections
-  need (each loop's count, what the server holds itself, and 256) before
+  need (each loop's count, twice on Linux, where a stream's heartbeat
+  timer is a descriptor of its own; what the server holds itself; and 256) before
   it binds, so launchd's default of 256 and systemd's soft 1024 no longer
   cap it below `--max-connections`. It never lowers the limit or passes
   the hard one, or on macOS `kern.maxfilesperproc`. Where the hard limit

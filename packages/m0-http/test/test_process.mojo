@@ -21,7 +21,8 @@ from std.time import sleep
 
 from lightbug_http.c.pipe import create_shutdown_pipe
 from lightbug_http.c.process import (
-    DESCRIPTOR_CEILING, DESCRIPTOR_HEADROOM, DESCRIPTOR_MARGIN, SIGKILL,
+    DESCRIPTOR_CEILING, DESCRIPTOR_HEADROOM, DESCRIPTOR_MARGIN,
+    DESCRIPTORS_PER_CONNECTION, SIGKILL,
     connections_within, descriptor_limit, exit_code, fork, max_files_per_process,
     kill_process, process_exit, raise_descriptor_limit, term_signal,
     waitpid_blocking, waitpid_nonblocking, was_signaled,
@@ -259,18 +260,27 @@ def test_connections_fit_what_the_descriptor_limit_leaves() raises:
 
     covers: C25
     """
-    # Raised to what was asked (1024 + startup 24 + headroom): unchanged.
-    assert_equal(connections_within(1024 + 24 + DESCRIPTOR_HEADROOM, 24, 1, 1024), 1024)
+    comptime P = DESCRIPTORS_PER_CONNECTION
+    # Raised to what was asked (1024 connections + startup 24 + headroom):
+    # unchanged.
+    assert_equal(connections_within(1024 * P + 24 + DESCRIPTOR_HEADROOM, 24, 1, 1024), 1024)
     assert_equal(connections_within(-1, 24, 1, 1024), 1024, "an unknown limit cut the count")
-    # A hard limit of 300: 276 past the startup, 34 of them kept.
-    assert_equal(connections_within(300, 24, 1, 1024), 242)
-    assert_equal(connections_within(300, 24, 2, 1024), 121, "the loops do not share what is left")
+    # A hard limit of 300: 276 past the startup, 34 of them kept, the rest
+    # at P descriptors a connection (242 on macOS, 121 on Linux).
+    assert_equal(connections_within(300, 24, 1, 1024), 242 // P)
+    assert_equal(connections_within(300, 24, 2, 1024), 242 // (2 * P), "the loops do not share what is left")
     # The margin's floor and ceiling.
-    assert_equal(connections_within(64, 24, 1, 1024), 64 - 24 - DESCRIPTOR_MARGIN)
-    assert_equal(connections_within(100000, 0, 1, 200000), 100000 - DESCRIPTOR_HEADROOM)
+    assert_equal(connections_within(400, 24, 1, 1024), (400 - 24 - 47) // P)
+    assert_equal(connections_within(100000 * P, 0, 1, 200000), (100000 * P - DESCRIPTOR_HEADROOM) // P)
+    assert_equal(connections_within(24 + 96, 24, 1, 1024), (96 - DESCRIPTOR_MARGIN) // P)
     # Never fewer than the margin, never more than was asked.
     assert_equal(connections_within(40, 24, 1, 1024), DESCRIPTOR_MARGIN)
     assert_equal(connections_within(300, 24, 1, 100), 100)
+    # Linux counts a connection's timerfd beside its socket; macOS does not.
+    comptime if CompilationTarget.is_macos():
+        assert_equal(P, 1)
+    else:
+        assert_equal(P, 2)
 
 
 def _raise_past_the_per_process_ceiling_scenario():

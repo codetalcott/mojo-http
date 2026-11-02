@@ -247,6 +247,16 @@ the files a static mount and the application open. Each loop's connections,
 the startup's descriptors and this are what `raise_descriptor_limit` is
 asked for (SPEC C21)."""
 
+comptime DESCRIPTORS_PER_CONNECTION = 1 if CompilationTarget.is_macos() else 2
+"""The most descriptors one connection holds: its socket, and on Linux its
+timer -- a stream's heartbeat, a body's deadline -- which epoll arms as a
+timerfd of its own (`c/epoll_backend.mojo`), where kqueue's timers are no
+descriptor at all. So a held stream is two descriptors on Linux. Counted
+as one there, a server raised to what its connections "need" ran out of
+descriptors at about half its streams: under a hard limit of 300, 148 of
+242 holds were answered on a Linux runner, where macOS answered all of
+them (SPEC C21, C25)."""
+
 comptime DESCRIPTOR_MARGIN = 16
 """The fewest connections a loop is fitted to under a descriptor limit
 (`connections_within`), and the fewest descriptors it leaves the
@@ -259,15 +269,16 @@ def connections_within(limit: Int, startup: Int, loops: Int, asked: Int) -> Int:
     `limit` (SPEC C25): what the limit leaves after the server's own
     `startup` descriptors and a margin for the files the application opens
     -- an eighth of what is left, at least `DESCRIPTOR_MARGIN` and at most
-    `DESCRIPTOR_HEADROOM` -- shared among the loops, and never more than
-    `asked`.
+    `DESCRIPTOR_HEADROOM` -- shared among the loops at
+    `DESCRIPTORS_PER_CONNECTION` a connection, and never more than `asked`.
 
     A loop counted to `asked` under a limit that holds fewer let streams
     take every descriptor before they reached the reserve kept for requests
-    (C20): under a hard limit of 300 a loop of 1024 held 276 streams and the
-    health check read an EOF. Fitted, the reserve is taken from the count
-    the limit can hold. A limit raised to what the connections need
-    (`raise_descriptor_limit`, asked for `asked * loops + startup +
+    (C20): under a hard limit of 300 a loop of 1024 held 276 streams on
+    macOS and the health check read an EOF. Fitted, the reserve is taken
+    from the count the limit can hold: 242 a loop on macOS, 121 on Linux. A
+    limit raised to what the connections need (`raise_descriptor_limit`,
+    asked for `asked * loops * DESCRIPTORS_PER_CONNECTION + startup +
     DESCRIPTOR_HEADROOM`) fits `asked` unchanged, and a `limit` below zero,
     unknown, leaves it too.
     """
@@ -279,7 +290,7 @@ def connections_within(limit: Int, startup: Int, loops: Int, asked: Int) -> Int:
         margin = DESCRIPTOR_MARGIN
     if margin > DESCRIPTOR_HEADROOM:
         margin = DESCRIPTOR_HEADROOM
-    var each = (spare - margin) // loops
+    var each = (spare - margin) // (loops * DESCRIPTORS_PER_CONNECTION)
     if each < DESCRIPTOR_MARGIN:
         each = DESCRIPTOR_MARGIN
     return each if each < asked else asked

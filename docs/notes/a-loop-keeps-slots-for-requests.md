@@ -168,6 +168,16 @@ among the loops. The reserve is then taken from the fitted count. Under
 and the health path is answered while they are held. The notice names the
 count and the streams' share, and the doctor reports them.
 
+That is macOS. The gate's first run on a Linux runner held 148 of 242: the
+epoll backend arms each connection's timer -- a stream's heartbeat, a
+body's deadline -- as a timerfd of its own, where kqueue's timers are no
+descriptor, so a held stream is two descriptors on Linux. The raise had
+counted one a connection since C21, so a server raised to what its
+connections "needed" under systemd's soft 1024 would have run out near 640
+of its 1008 streams, the failure C21 was written against. Both the raise
+and the fit now count `DESCRIPTORS_PER_CONNECTION`, one on macOS and two on
+Linux: under 300 a Linux loop holds 121, streams 114 of them.
+
 The raise asks for more than it did: each loop's connections, the server's
 own descriptors and the 256 of headroom, where it asked for the connections
 and the 256, which the server's own came out of. Eight loops of eight pool

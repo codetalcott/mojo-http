@@ -2126,7 +2126,10 @@ lightbug_http
         full sweep still runs for a handler that names nothing and under
         the pump executor (docs/notes/a-pass-drains-only-what-has-output.md).
 
-      - c/process.mojo (2026-11-02): `connections_within` fits a loop's
+      - c/process.mojo (2026-11-02): `DESCRIPTORS_PER_CONNECTION` (1 on
+        macOS, 2 on Linux, where epoll arms a connection's timer as a
+        timerfd) counts what the raise asks for and the fit divides by;
+        `connections_within` fits a loop's
         connections to an open-file limit the raise could not pass (SPEC
         C25), the limit less the server's own descriptors and a margin of
         an eighth of the rest, at least `DESCRIPTOR_MARGIN` (moved here
