@@ -1,11 +1,11 @@
-"""The `HTTPService` contract: `func` is required, the other thirteen default.
+"""The `HTTPService` contract: `func` is required, the other fourteen default.
 
 This file is the guard for the trait's default bodies. `MinimalService`
 implements `func` and nothing else — **it not compiling is the failure**, so
 the assertions below are secondary to the file existing at all. Revert any
 default in `service.mojo` to `...` and `poe test-http` fails naming this file.
 
-The defaults are not cosmetic. The event loop calls all fourteen methods on
+The defaults are not cosmetic. The event loop calls all fifteen methods on
 every handler regardless of what the handler cares about (`event_loop.mojo`
 is parameterized on `[T: HTTPService, B: EventLoopBackend]`, and it reaches
 `ws_message` through `ws_message_take`'s default), so a default that
@@ -13,8 +13,9 @@ returned the wrong thing would be a silent behaviour change across every app
 rather than a compile error. That is what the value assertions pin: an empty
 drain, a non-streaming slot, a `before_request` that does not
 short-circuit, no WebSocket closed by the handler, a `ws_message_take` that
-keeps the socket reading, no suspended read resumed, and a `direct_job`
-that declines.
+keeps the socket reading, no suspended read resumed, no stream named to
+the drain (so the loop visits every stream), and a `direct_job` that
+declines.
 """
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
@@ -94,6 +95,15 @@ def test_default_take_ws_resumes_is_empty() raises:
     default suspends none, so it resumes none."""
     var s = MinimalService(0)
     assert_equal(len(s.take_ws_resumes()), 0)
+
+
+def test_default_take_ready_streams_names_nothing() raises:
+    """The default keeps the loop's sweep of every stream (SPEC C24): it
+    names no slot and answers False."""
+    var s = MinimalService(0)
+    var slots = List[Int]()
+    assert_false(s.take_ready_streams(slots))
+    assert_equal(len(slots), 0)
 
 
 def test_default_direct_job_declines() raises:

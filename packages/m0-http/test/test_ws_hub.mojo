@@ -215,5 +215,32 @@ def test_broadcast_and_peer_delivery_respect_the_cap() raises:
     assert_equal(len(peer.drain(0)), 0)
 
 
+def test_a_hub_names_each_slot_it_queues_a_frame_for() raises:
+    """`take_ready` names each slot `send` queued a frame for since the last
+    call, once, and none whose frame the cap refused (SPEC C24).
+
+    covers: C24
+    """
+    var hub = WSHub(4)
+    hub.open(0)
+    hub.open(2)
+    var got = List[Int]()
+    hub.take_ready(got)
+    assert_equal(len(got), 0, "an opened socket was named")
+    var frame = List[UInt8](length=10, fill=UInt8(1))
+    hub.send(2, frame.copy())
+    hub.send(2, frame.copy())
+    hub.send(0, frame.copy())
+    hub.take_ready(got)
+    assert_equal(got, [2, 0])
+    got.clear()
+    hub.take_ready(got)
+    assert_equal(len(got), 0, "a slot was named twice")
+    var big = List[UInt8](length=MAX_PENDING_BYTES, fill=UInt8(1))
+    hub.send(0, big)
+    hub.take_ready(got)
+    assert_equal(len(got), 0, "a slot whose frame was refused was named")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

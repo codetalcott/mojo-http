@@ -4,6 +4,7 @@ from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from src.sse.format import (
     format_sse_event,
+    format_sse_event_bytes,
     format_sse_heartbeat,
     split_sse_lines,
     sse_data_payload,
@@ -397,14 +398,28 @@ def test_registry_unsubscribe() raises:
 
 
 def test_registry_active_count() raises:
-    """`active_count` should track subscribed slots."""
+    """`active_count` tracks subscribed slots, kept as they change rather
+    than counted (SPEC C24): a slot subscribed twice counts once, and one
+    unsubscribed twice, or never subscribed, takes nothing off. m0serve's
+    health answer reads it on every check, and walked every slot to count.
+
+    covers: C24
+    """
     var reg = SSERegistry(4)
     assert_equal(reg.active_count(), 0)
     reg.subscribe(0, "/a", 0)
     reg.subscribe(2, "/b", 0)
     assert_equal(reg.active_count(), 2)
+    reg.subscribe(2, "/c", 5)
+    assert_equal(reg.active_count(), 2, "a slot subscribed again counted twice")
     reg.unsubscribe(0)
     assert_equal(reg.active_count(), 1)
+    reg.unsubscribe(0)
+    reg.unsubscribe(3)
+    reg.unsubscribe(9)
+    assert_equal(reg.active_count(), 1, "an unsubscribe of a slot not streaming took one off")
+    reg.unsubscribe(2)
+    assert_equal(reg.active_count(), 0)
 
 
 def test_registry_skips_old_events() raises:
@@ -559,6 +574,50 @@ def test_filter_url_is_empty_when_unsubscribed_or_out_of_range() raises:
     assert_equal(reg.filter_url(0), "")
     assert_equal(reg.filter_url(-1), "")
     assert_equal(reg.filter_url(99), "")
+
+
+def _names(mut reg: SSERegistry) -> List[Int]:
+    var got = List[Int]()
+    reg.take_ready(got)
+    return got^
+
+
+def test_the_registry_names_each_slot_whose_drain_would_change() raises:
+    """`take_ready` names every slot the registry queued for since the last
+    call, once however many frames it queued, and every slot it
+    unsubscribed -- a channel stream's end is read at the drain too -- and
+    nothing else: a subscription, a frame refused at the cap, or a slot out
+    of range (SPEC C24). What a handler forwards from `take_ready_streams`.
+
+    covers: C24
+    """
+    var reg = SSERegistry(8)
+    reg.subscribe(1, "/a", 0)
+    reg.subscribe(2, "/a", 0)
+    reg.subscribe(3, "/b", 0)
+    assert_equal(len(_names(reg)), 0, "a subscription was named")
+    var frame = format_sse_event_bytes(NO_EVENT_ID, "e", "x")
+    _ = reg.notify_frame("/a", NO_EVENT_ID, frame)
+    _ = reg.notify_frame("/a", NO_EVENT_ID, frame)
+    _ = reg.queue_frame(3, NO_EVENT_ID, frame)
+    assert_equal(_names(reg), [1, 2, 3])
+    assert_equal(len(_names(reg)), 0, "a slot was named twice")
+
+    # A frame the cap refuses names nothing.
+    _ = reg.drain(1)
+    var big = List[UInt8](length=MAX_PENDING_BYTES, fill=UInt8(ord("x")))
+    assert_true(reg.queue_frame(1, NO_EVENT_ID, big))
+    _ = _names(reg)
+    assert_false(reg.queue_frame(1, NO_EVENT_ID, frame))
+    assert_equal(reg.notify_frame("/a", NO_EVENT_ID, frame), 1)
+    assert_equal(_names(reg), [2], "a slot whose frame was refused was named")
+
+    reg.unsubscribe(3)
+    assert_equal(_names(reg), [3], "an unsubscribed slot was not named")
+    reg.mark_ready(5)
+    reg.mark_ready(8)
+    reg.mark_ready(-1)
+    assert_equal(_names(reg), [5])
 
 
 def main() raises:

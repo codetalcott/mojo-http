@@ -853,5 +853,30 @@ def test_execute_script_passes_its_options_through() raises:
     assert_true(_text(s.drain(0)).find('<script type="module">go()</script>') >= 0)
 
 
+def test_a_catch_up_names_its_slot_for_the_next_drain() raises:
+    """Under `send_latest`, the newest frame a drain queues for a subscriber
+    behind it names the slot (SPEC C24), so the loop's next drain carries
+    it without a broadcast; `take_ready` forwards the registry's list.
+
+    covers: C24
+    """
+    var s = DatastarStream(4, journal_entries=0, send_latest=True)
+    _ = s.open(_get("/e"), "/e")
+    var pad = _pad(20000)
+    for i in range(1, 5):
+        _ = s.patch_elements("/e", String('<p id="p">', pad, "frame", i, "</p>"))
+    var got = List[Int]()
+    s.take_ready(got)
+    assert_equal(got, [0])
+    got.clear()
+    _ = s.drain(0)
+    s.take_ready(got)
+    assert_equal(got, [0], "the catch-up did not name its slot")
+    got.clear()
+    assert_true(_text(s.drain(0)).find("frame4<") >= 0)
+    s.take_ready(got)
+    assert_equal(len(got), 0, "a slot standing at the newest was named")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -1810,6 +1810,17 @@ n=$(grep -c 'raise --max-connections or M0_MAX_CONNECTIONS' "$SMOKE_DIR/maxconn.
 [ "$n" = "1" ] || fail "the stream notice should appear once, appeared $n times"
 grep -q 'the open-file limit is' "$SMOKE_DIR/maxconn.log" && fail 'the server could not raise a soft limit of 40'
 stop $pid
+# A pass drains the streams with something to send, not every stream it
+# holds (SPEC C24): 60 idle streams cost 200 requests no drain visits, and
+# a publish to them a visit each, where the sweep made one a stream a pass.
+mkdir -p "$SMOKE_DIR/m0serve"
+: > "$SMOKE_DIR/m0serve/__init__.py"
+cp packaging/m0serve/src/m0serve/m0pub.py "$SMOKE_DIR/m0serve/m0pub.py"
+spawn drain.log env PYTHONPATH="$SMOKE_DIR" bin/m0serve hold_app:application --app-dir scripts/smoke \
+  --port $port --realtime --max-connections 64 --health-path /health --metrics
+wait_ready http://localhost:$port/health $pid
+python3 scripts/drain_visits_probe.py $port 60 || fail
+stop $pid
 # The doctor reports the count, the stream share and the limit the server
 # would run under, raised as it raises it; and refuses a count above one
 # loop's with 78, as serving would.
@@ -1871,6 +1882,7 @@ echo "smoke-max-connections OK"
 python3 scripts/emit.py --covers C20 --task smoke-max-connections
 python3 scripts/emit.py --covers C21 --task smoke-max-connections
 python3 scripts/emit.py --covers C22 --task smoke-max-connections
+python3 scripts/emit.py --covers C24 --task smoke-max-connections
 """
 
 # B1. The body timer was armed above the decode of what came with the

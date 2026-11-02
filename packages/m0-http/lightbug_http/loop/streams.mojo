@@ -380,13 +380,202 @@ def _read_websocket[T: HTTPService, B: EventLoopBackend](
             _close_slot(handler, backend, st, slot, fd_val)
 
 
+def _drain_slot[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, s: Int,
+):
+    """One stream slot's turn at the outbox drain: what its handler queued
+    goes out, a channel stream's end is written or closes it, and the
+    producer's credit is acked. A slot that streams nothing, or is busy
+    sending, is passed by: one whose frame is still going out is visited
+    again once it lands (`_stream_idle`, SPEC C24).
+    """
+    if not (st.slot_sse[s] or st.slot_ws[s]):
+        return
+    var s_idle = (
+        st.slot_sse[s] and st.provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_SSE
+    ) or (
+        st.slot_ws[s] and st.provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
+    )
+    if not (s_idle and st.slot_fds[s] != UNUSED and not st.offload.offloaded[s]):
+        return
+    # A channel stream — an executor's, or a pool thread's WSGI
+    # iterable (asked per slot: a held stream on the same loop
+    # is drained by the same pass and is none of this): drained
+    # bytes are acked back to the producer's credit window, and
+    # `sse_is_streaming` — unread by the loop anywhere else —
+    # becomes the end-of-stream signal: the handler unsubscribes
+    # once the final chunk has been handed out, and the loop
+    # closes after those bytes land. Close is how a
+    # content-length-free streamed body ends.
+    var channel_stream = st.offload.slot_channel_stream(s)
+    st.metrics.stream_drain_visits += 1
+    var pending = handler.sse_drain_slot(s)
+    # Read ONCE per pass: `sse_drain_slot` above is what makes it
+    # go false, so asking twice can straddle the transition and
+    # send a terminator on a stream that just queued more.
+    var ended = channel_stream and not handler.sse_is_streaming(s)
+    var framed = st.offload.chunked[s]
+
+    # Payload bytes are what the producer's credit window counts.
+    # Framing bytes are added below and deliberately excluded: a
+    # window replenished by wire bytes shrinks by the framing
+    # overhead on every chunk, and a long stream starves itself.
+    var payload_len = len(pending)
+    if payload_len > 0 and st.slot_zstd[s]:
+        # Compressed first, framed second. `payload_len` stays what
+        # the producer queued, so the credit window is unchanged.
+        try:
+            pending = st.slot_zstd[s].value().push(Span(pending))
+        except e:
+            _zstd_failed(handler, backend, st, s, e)
+            return
+    var out = Bytes()
+    if framed:
+        if payload_len > 0:
+            out = encode_chunk(Span(pending))
+        if ended:
+            out.extend(chunked_terminator())
+    elif payload_len > 0:
+        out = Bytes(Span(pending))
+
+    if len(out) > 0:
+        # What the write-ready completion owes the producer if
+        # this buffer does not land in one send below.
+        st.offload.ack_payload[s] = payload_len if channel_stream else 0
+        if not _send_frame(handler, backend, st, s, st.slot_fds[s], out^):
+            # The client is gone, or its write registration
+            # failed: the slot closed in this pass (`_send_frame`).
+            return
+        # An event on an SSE stream is followed by a comment unless
+        # another follows it first (`_owe_flush`; a channel stream
+        # and a WebSocket are owed none).
+        _owe_flush(backend, st, s)
+        if st.slot_send_offset[s] >= len(st.slot_response[s]):
+            # Landed in one send: ack here and cancel what the
+            # write-ready path would otherwise have owed.
+            st.offload.ack_payload[s] = 0
+            if channel_stream and payload_len > 0:
+                if not st.offload.pool()[].ack_stream(s, payload_len):
+                    if st.offload.ack_owed[s] == 0:
+                        st.offload.ack_owed_count += 1
+                    st.offload.ack_owed[s] += payload_len
+            if ended:
+                # Whatever comes next on this slot is not this
+                # stream: forget its producer's ack fd and its
+                # generation before the connection is reused
+                # or closed.
+                st.offload.clear_stream(s)
+                if framed:
+                    # The terminator landed: the message is
+                    # complete and the connection is reusable,
+                    # unless its request asked otherwise.
+                    # Clearing the stream flag is what routes
+                    # `_after_send` down its keep-alive path
+                    # instead of back into streaming.
+                    _chunked_stream_ends(st, s)
+                    _after_send(handler, backend, st, s, st.slot_fds[s])
+                    _drain_pipelined(handler, backend, st, s, st.slot_fds[s])
+                elif st.slot_ws[s] and st.config.idle_timeout > 0:
+                    # The application's Close frame is on the wire,
+                    # and closing HERE -- which is what this did --
+                    # reset the peer's reply off the wire. Linger for
+                    # it instead; `_arm_ws_linger` says why, and why
+                    # this branch, which the drain reaches on every
+                    # pass while the slot lingers, must arm ONCE.
+                    _ws_linger(backend, st, s, st.slot_fds[s])
+                else:
+                    _close_slot(handler, backend, st, s, st.slot_fds[s])
+                return
+            st.provision_pool.provisions[s].state = ConnectionState.streaming_ws() if st.slot_ws[s] else ConnectionState.streaming_sse()
+        else:
+            if ended:
+                # The final buffer is on its way; the stream's
+                # bookkeeping is over even so. The credit its
+                # last bytes owe was recorded in `ack_payload`
+                # before this and is acked by the write-ready
+                # path through `slot_channel_stream` — which
+                # stays true for an executor's slot (lane) and,
+                # for a pool thread's, is answered by the ack
+                # the eager send already covered.
+                st.offload.clear_stream(s)
+            if ended and not framed:
+                # The rest of the final buffer flushes through
+                # the write-ready path; _after_send's existing
+                # should_close branch closes it there — or lingers
+                # it, for a WebSocket, on the same `closing` flag
+                # the landed-whole branch above sets.
+                st.provision_pool.provisions[s].should_close = True
+                if st.slot_ws[s] and st.config.idle_timeout > 0:
+                    st.slot_ws_state[s].closing = True
+            elif ended and framed:
+                # Same flush, but the message ends with the
+                # terminator already in this buffer — so the
+                # write-ready completion must finish it as a
+                # keep-alive response, or the close its request
+                # asked for.
+                _chunked_stream_ends(st, s)
+    elif ended:
+        # End marked with nothing left to send. Only reachable
+        # unframed: a framed stream always has a terminator to
+        # write, so `out` is never empty when it ends.
+        st.offload.clear_stream(s)
+        if st.slot_ws[s] and st.config.idle_timeout > 0:
+            # Same linger as the landed-whole branch above, and for
+            # the same reason: the peer's Close reply must not reach
+            # a socket that is already closed. This is the branch
+            # that was measured re-arming ~once a second forever.
+            _ws_linger(backend, st, s, st.slot_fds[s])
+        else:
+            _close_slot(handler, backend, st, s, st.slot_fds[s])
+
+
 def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ):
     """Outbox drain: push pending bytes to streaming connections — SSE
     events and WebSocket frames share the same per-slot outbox contract
     (sse_drain_slot returns whichever the handler queued).
+
+    A handler that names its streams with output (`take_ready_streams`)
+    has those drained, with the slots whose last frame landed since the
+    drain before (`_stream_idle`), so a pass costs what it sends rather
+    than what the loop holds (SPEC C24). Before, every pass visited every
+    held stream: on m0serve, 1008 idle streams took 13% of a loop's
+    requests a second, and 15000 took a request's median from 0.035 ms to
+    0.37 ms. A handler that does not name them has every stream swept, as
+    before.
     """
+    # A handler that names its streams, on a loop where nothing streams,
+    # has nothing for the drain: it costs nothing, as the hint's skip made
+    # it for the sweep (below). `streams_held` counts the flagged slots
+    # exactly -- raised where `_finish_response` sets a flag, lowered by
+    # both resets (SPEC C20) -- and what the handler named for a slot not
+    # yet streaming waits in its list for the next drain that runs.
+    if st.names_streams and st.streams_held == 0 and not st.offload.sweep_every_pass():
+        st.drain_due.clear()
+        return
+    var named = handler.take_ready_streams(st.drain_due)
+    st.names_streams = named
+    if named and not st.offload.sweep_every_pass():
+        # Walk a list nothing adds to: a slot named while this drain runs
+        # -- a Datastar state stream's catch-up, queued by its own drain --
+        # lands in the fresh `drain_due` and is the next drain's, as it was
+        # the next sweep's.
+        swap(st.drain_due, st.drain_now)
+        for i in range(len(st.drain_now)):
+            var s = st.drain_now[i]
+            if s < 0 or s >= st.max_conns or st.slot_drain_seen[s]:
+                continue
+            st.slot_drain_seen[s] = True
+            _drain_slot(handler, backend, st, s)
+        for i in range(len(st.drain_now)):
+            var s = st.drain_now[i]
+            if s >= 0 and s < st.max_conns:
+                st.slot_drain_seen[s] = False
+        st.drain_now.clear()
+        return
+    # Every stream is visited below, so the slots named are not needed.
+    st.drain_due.clear()
     # Skipped whole when no slot streams (`streaming_hint`, an upper
     # bound the flag-setting sites raise and this sweep recounts) — its
     # miss path is 1.2 µs per pass, +3.5% on the hello row and +4% on the
@@ -410,140 +599,7 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
         if not (st.slot_sse[s] or st.slot_ws[s]):
             continue
         streaming_seen += 1
-        var s_idle = (
-            st.slot_sse[s] and st.provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_SSE
-        ) or (
-            st.slot_ws[s] and st.provision_pool.provisions[s].state.kind == ConnectionState.STREAMING_WS
-        )
-        if s_idle and st.slot_fds[s] != UNUSED and not st.offload.offloaded[s]:
-            # A channel stream — an executor's, or a pool thread's WSGI
-            # iterable (asked per slot: a held stream on the same loop
-            # is drained by the same pass and is none of this): drained
-            # bytes are acked back to the producer's credit window, and
-            # `sse_is_streaming` — unread by the loop anywhere else —
-            # becomes the end-of-stream signal: the handler unsubscribes
-            # once the final chunk has been handed out, and the loop
-            # closes after those bytes land. Close is how a
-            # content-length-free streamed body ends.
-            var channel_stream = st.offload.slot_channel_stream(s)
-            var pending = handler.sse_drain_slot(s)
-            # Read ONCE per pass: `sse_drain_slot` above is what makes it
-            # go false, so asking twice can straddle the transition and
-            # send a terminator on a stream that just queued more.
-            var ended = channel_stream and not handler.sse_is_streaming(s)
-            var framed = st.offload.chunked[s]
-
-            # Payload bytes are what the producer's credit window counts.
-            # Framing bytes are added below and deliberately excluded: a
-            # window replenished by wire bytes shrinks by the framing
-            # overhead on every chunk, and a long stream starves itself.
-            var payload_len = len(pending)
-            if payload_len > 0 and st.slot_zstd[s]:
-                # Compressed first, framed second. `payload_len` stays what
-                # the producer queued, so the credit window is unchanged.
-                try:
-                    pending = st.slot_zstd[s].value().push(Span(pending))
-                except e:
-                    _zstd_failed(handler, backend, st, s, e)
-                    continue
-            var out = Bytes()
-            if framed:
-                if payload_len > 0:
-                    out = encode_chunk(Span(pending))
-                if ended:
-                    out.extend(chunked_terminator())
-            elif payload_len > 0:
-                out = Bytes(Span(pending))
-
-            if len(out) > 0:
-                # What the write-ready completion owes the producer if
-                # this buffer does not land in one send below.
-                st.offload.ack_payload[s] = payload_len if channel_stream else 0
-                if not _send_frame(handler, backend, st, s, st.slot_fds[s], out^):
-                    # The client is gone, or its write registration
-                    # failed: the slot closed in this pass (`_send_frame`).
-                    continue
-                # An event on an SSE stream is followed by a comment unless
-                # another follows it first (`_owe_flush`; a channel stream
-                # and a WebSocket are owed none).
-                _owe_flush(backend, st, s)
-                if st.slot_send_offset[s] >= len(st.slot_response[s]):
-                    # Landed in one send: ack here and cancel what the
-                    # write-ready path would otherwise have owed.
-                    st.offload.ack_payload[s] = 0
-                    if channel_stream and payload_len > 0:
-                        if not st.offload.pool()[].ack_stream(s, payload_len):
-                            if st.offload.ack_owed[s] == 0:
-                                st.offload.ack_owed_count += 1
-                            st.offload.ack_owed[s] += payload_len
-                    if ended:
-                        # Whatever comes next on this slot is not this
-                        # stream: forget its producer's ack fd and its
-                        # generation before the connection is reused
-                        # or closed.
-                        st.offload.clear_stream(s)
-                        if framed:
-                            # The terminator landed: the message is
-                            # complete and the connection is reusable,
-                            # unless its request asked otherwise.
-                            # Clearing the stream flag is what routes
-                            # `_after_send` down its keep-alive path
-                            # instead of back into streaming.
-                            _chunked_stream_ends(st, s)
-                            _after_send(handler, backend, st, s, st.slot_fds[s])
-                            _drain_pipelined(handler, backend, st, s, st.slot_fds[s])
-                        elif st.slot_ws[s] and st.config.idle_timeout > 0:
-                            # The application's Close frame is on the wire,
-                            # and closing HERE -- which is what this did --
-                            # reset the peer's reply off the wire. Linger for
-                            # it instead; `_arm_ws_linger` says why, and why
-                            # this branch, which the drain reaches on every
-                            # pass while the slot lingers, must arm ONCE.
-                            _ws_linger(backend, st, s, st.slot_fds[s])
-                        else:
-                            _close_slot(handler, backend, st, s, st.slot_fds[s])
-                        continue
-                    st.provision_pool.provisions[s].state = ConnectionState.streaming_ws() if st.slot_ws[s] else ConnectionState.streaming_sse()
-                else:
-                    if ended:
-                        # The final buffer is on its way; the stream's
-                        # bookkeeping is over even so. The credit its
-                        # last bytes owe was recorded in `ack_payload`
-                        # before this and is acked by the write-ready
-                        # path through `slot_channel_stream` — which
-                        # stays true for an executor's slot (lane) and,
-                        # for a pool thread's, is answered by the ack
-                        # the eager send already covered.
-                        st.offload.clear_stream(s)
-                    if ended and not framed:
-                        # The rest of the final buffer flushes through
-                        # the write-ready path; _after_send's existing
-                        # should_close branch closes it there — or lingers
-                        # it, for a WebSocket, on the same `closing` flag
-                        # the landed-whole branch above sets.
-                        st.provision_pool.provisions[s].should_close = True
-                        if st.slot_ws[s] and st.config.idle_timeout > 0:
-                            st.slot_ws_state[s].closing = True
-                    elif ended and framed:
-                        # Same flush, but the message ends with the
-                        # terminator already in this buffer — so the
-                        # write-ready completion must finish it as a
-                        # keep-alive response, or the close its request
-                        # asked for.
-                        _chunked_stream_ends(st, s)
-            elif ended:
-                # End marked with nothing left to send. Only reachable
-                # unframed: a framed stream always has a terminator to
-                # write, so `out` is never empty when it ends.
-                st.offload.clear_stream(s)
-                if st.slot_ws[s] and st.config.idle_timeout > 0:
-                    # Same linger as the landed-whole branch above, and for
-                    # the same reason: the peer's Close reply must not reach
-                    # a socket that is already closed. This is the branch
-                    # that was measured re-arming ~once a second forever.
-                    _ws_linger(backend, st, s, st.slot_fds[s])
-                else:
-                    _close_slot(handler, backend, st, s, st.slot_fds[s])
+        _drain_slot(handler, backend, st, s)
     # The recount: what this sweep saw flagged is the bound for the next
     # pass. Nothing between the top of the sweep and here sets a flag
     # (`_finish_response` is not on this path), so a stream that begins

@@ -113,6 +113,12 @@ struct ServerMetrics(Movable):
     """Streams answered 503 because streams already held every slot the
     loop lets them take (monotonic; SPEC C20)."""
 
+    var stream_drain_visits: Int
+    """Times the outbox drain asked the handler for a stream's pending bytes
+    (`sse_drain_slot`; monotonic; SPEC C24). One a stream with something to
+    send where the handler names its streams; one a stream a pass where it
+    does not."""
+
     var bus_frames_refused: Int
     """Datagrams this loop drained from a bus-shaped channel -- its
     `BroadcastBus` channel, or the chunk channel an executor or a streaming
@@ -139,6 +145,7 @@ struct ServerMetrics(Movable):
         self.latency_count = 0
         self.streams_held = 0
         self.streams_refused = 0
+        self.stream_drain_visits = 0
         self.bus_frames_refused = 0
 
     def record_duration(mut self, elapsed_us: Int):
@@ -240,6 +247,11 @@ struct ServerMetrics(Movable):
             " streams held every slot but the loop's reserve\n",
             "# TYPE http_streams_refused_total counter\n",
             "http_streams_refused_total ", String(self.streams_refused), "\n",
+            "# HELP http_stream_drain_visits_total Times the outbox drain asked"
+            " the handler for a stream's pending bytes\n",
+            "# TYPE http_stream_drain_visits_total counter\n",
+            "http_stream_drain_visits_total ", String(self.stream_drain_visits),
+            "\n",
             "# HELP http_bus_frames_refused_total Datagrams drained from the"
             " cross-worker bus or the stream chunk channel and not delivered:"
             " over-long or malformed\n",

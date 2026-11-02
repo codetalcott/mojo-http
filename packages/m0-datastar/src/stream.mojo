@@ -45,6 +45,14 @@ struct DatastarStream:
         def sse_slot_disconnected(mut self, slot: Int):
             self.stream.closed(slot)
 
+    A loop that holds thousands of streams also wires the drain's list, so
+    each pass visits the streams with something to send instead of every
+    one (SPEC C24); a handler with another outbox names from it as well:
+
+        def take_ready_streams(mut self, mut slots: List[Int]) -> Bool:
+            self.stream.take_ready(slots)
+            return True
+
     Two limits worth knowing before you design around this:
 
     - **Single process by default.** `WorkerSupervisor` forks, and each child
@@ -331,8 +339,10 @@ struct DatastarStream:
         it (SPEC I44): a subscriber whose full outbox refused a state is
         sent the newest once it has room, rather than holding a stale one
         until the next broadcast, which for a paused producer never comes.
-        The loop drains every idle stream slot every pass, so the catch-up
-        needs nothing from it.
+        The catch-up needs nothing more from the loop: the frame it queues
+        names the slot (`take_ready`), so the next drain carries it, and a
+        drain reaches a stalled slot the moment its last frame lands
+        (`_stream_idle`, SPEC C24) -- when it has room again.
         """
         var out = self.registry.drain(slot)
         if self.send_latest:
@@ -360,6 +370,13 @@ struct DatastarStream:
                         slot, self.latest_ids[i], self.latest_frames[i].copy()
                     )
                 return
+
+    def take_ready(mut self, mut into: List[Int]):
+        """The slots queued for, or closed, since the last call, appended to
+        `into` and forgotten. Wire to `take_ready_streams`, answering True,
+        to have the loop drain these rather than every stream (SPEC C24);
+        a handler with another outbox names from it too."""
+        self.registry.take_ready(into)
 
     def is_streaming(self, slot: Int) -> Bool:
         """Whether a slot is streaming. Wire to `sse_is_streaming`."""

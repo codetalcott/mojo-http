@@ -1118,6 +1118,9 @@ def _stream_slot(mut st: LoopState, fd: Int, ws: Bool) raises -> Int:
     else:
         st.slot_sse[slot] = True
         st.provision_pool.provisions[slot].state = ConnectionState.streaming_sse()
+    # As `_finish_response` counts a stream it flags (SPEC C20), so the
+    # close that lowers the count finds it raised.
+    st.streams_held += 1
     return slot
 
 
@@ -3405,6 +3408,182 @@ def test_streams_leave_a_loops_last_slots_to_requests() raises:
         _close_slot(app, backend, st, slots[i], st.slot_fds[slots[i]])
         close(RawFileDescriptor(c_int(peers[i])))
     assert_equal(st.streams_held, 0)
+
+
+struct Outboxes(HTTPService):
+    """Streams whose outboxes it keeps, one a slot, naming each slot it
+    queues for when `names` is set (`take_ready_streams`), and counting the
+    drain's visits (`sse_drain_slot`)."""
+
+    var outbox: List[List[UInt8]]
+    var visits: List[Int]
+    var named: List[Int]
+    var names: Bool
+    var catch_up: Int
+    """A slot whose drain queues `: more` behind what it hands out, once,
+    naming it, as a Datastar state stream's catch-up does; -1 for none."""
+
+    def __init__(out self, slots: Int, names: Bool):
+        self.outbox = List[List[UInt8]]()
+        self.visits = List[Int](length=slots, fill=0)
+        for _ in range(slots):
+            self.outbox.append(List[UInt8]())
+        self.named = List[Int]()
+        self.names = names
+        self.catch_up = -1
+
+    def queue(mut self, slot: Int, text: String):
+        self.outbox[slot].extend(text.as_bytes())
+        if self.names:
+            self.named.append(slot)
+
+    def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
+        return OK("unused", "text/plain")
+
+    def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
+        self.visits[slot] += 1
+        var out = self.outbox[slot].copy()
+        self.outbox[slot].clear()
+        if slot == self.catch_up:
+            self.catch_up = -1
+            self.queue(slot, ": more\n\n")
+        return out^
+
+    def take_ready_streams(mut self, mut slots: List[Int]) -> Bool:
+        if not self.names:
+            return False
+        for s in self.named:
+            slots.append(s)
+        self.named.clear()
+        return True
+
+
+def _visited(app: Outboxes) -> Int:
+    var n = 0
+    for v in app.visits:
+        n += v
+    return n
+
+
+def _wire(peer: Int) raises -> String:
+    var got = List[UInt8]()
+    _ = _read_available(peer, got)
+    return String(unsafe_from_utf8=Span(got))
+
+
+def test_a_pass_drains_only_the_streams_its_handler_names() raises:
+    """A handler that names its streams with output (`take_ready_streams`)
+    has those drained and no other (SPEC C24): a pass with nothing named
+    visits no stream, a slot named twice is visited once, a slot named
+    while the drain runs -- a catch-up its own drain queued -- waits for
+    the next drain rather than being lost with this one's list, and a slot
+    named after its stream closed is not visited. A handler that names
+    none has every stream visited every pass, as before. Before, every
+    pass visited every held stream, whatever had something to send: on
+    m0serve, 1008 idle streams took 12% of a loop's requests a second.
+
+    covers: C24
+    """
+    ignore_sigpipe()
+    var config = _config()
+    config.max_connections = 16
+    var app = Outboxes(16, True)
+    var backend = FakeBackend()
+    var st = _loop(config)
+    var slots = List[Int]()
+    var fds = List[Int]()
+    var peers = List[Int]()
+    for i in range(8):
+        var pair = _stream_pair()
+        slots.append(_stream_slot(st, pair[0], i % 2 == 1))
+        fds.append(pair[0])
+        peers.append(pair[1])
+    st.offload.streaming_hint = 8
+
+    _drain_outboxes(app, backend, st)
+    assert_equal(_visited(app), 0, "a pass with nothing named visited a stream")
+
+    app.queue(slots[3], "data: 3\n\n")
+    app.queue(slots[3], "data: 3b\n\n")
+    app.queue(slots[4], "data: 4\n\n")
+    _drain_outboxes(app, backend, st)
+    assert_equal(app.visits[slots[3]], 1, "a slot named twice was visited twice")
+    assert_equal(app.visits[slots[4]], 1)
+    assert_equal(_visited(app), 2, "a stream nothing named was visited")
+    assert_equal(_wire(peers[3]), "data: 3\n\ndata: 3b\n\n")
+    assert_equal(_wire(peers[4]), "data: 4\n\n")
+
+    app.catch_up = slots[1]
+    app.queue(slots[1], "data: 1\n\n")
+    _drain_outboxes(app, backend, st)
+    assert_equal(_wire(peers[1]), "data: 1\n\n")
+    _drain_outboxes(app, backend, st)
+    assert_equal(_wire(peers[1]), ": more\n\n", "what a drain named for its own slot was lost")
+    assert_equal(app.visits[slots[1]], 2)
+
+    _close_slot(app, backend, st, slots[7], fds[7])
+    app.queue(slots[7], "data: 7\n\n")
+    var before = _visited(app)
+    _drain_outboxes(app, backend, st)
+    assert_equal(_visited(app), before, "a slot that no longer streams was visited")
+
+    var sweeper = Outboxes(16, False)
+    _drain_outboxes(sweeper, backend, st)
+    assert_equal(_visited(sweeper), 7, "a handler that names nothing did not have every stream swept")
+    _drain_outboxes(sweeper, backend, st)
+    assert_equal(_visited(sweeper), 14)
+
+    for i in range(7):
+        _close_slot(app, backend, st, slots[i], fds[i])
+    for p in peers:
+        close(RawFileDescriptor(c_int(p)))
+
+
+def test_a_stream_still_sending_is_drained_once_its_frame_lands() raises:
+    """What a handler names while its stream's last frame is still going out
+    is passed by -- the slot cannot take another -- and drained as soon as
+    that frame lands: the write-ready path's `_stream_idle` names the slot
+    to the next drain (SPEC C24), with nothing further from the handler.
+    Without it the bytes waited for whatever named the slot next.
+
+    covers: C24
+    """
+    ignore_sigpipe()
+    var app = Outboxes(SLOTS, True)
+    var backend = FakeBackend()
+    var st = _loop(_config())
+    var pair = _stream_pair()
+    var fd = pair[0]
+    var peer = pair[1]
+    var slot = _stream_slot(st, fd, False)
+    var big = String("data: ")
+    for _ in range(1 << 20):
+        big += "x"
+    big += "\n\n"
+    app.queue(slot, big)
+    _drain_outboxes(app, backend, st)
+    assert_equal(
+        st.provision_pool.provisions[slot].state.kind, ConnectionState.RESPONDING,
+        "a frame larger than the socket's buffer landed in one send",
+    )
+    app.queue(slot, "data: tail\n\n")
+    _drain_outboxes(app, backend, st)
+    assert_equal(app.visits[slot], 1, "a stream still sending was drained")
+
+    var got = List[UInt8]()
+    var turns = 0
+    while st.provision_pool.provisions[slot].state.kind == ConnectionState.RESPONDING:
+        _ = _read_available(peer, got)
+        _on_write(app, backend, st, fd)
+        turns += 1
+        assert_true(turns < 100000, "the frame never landed")
+    _ = _read_available(peer, got)
+    assert_equal(len(got), big.byte_length(), "the frame did not land whole")
+    _drain_outboxes(app, backend, st)
+    assert_equal(app.visits[slot], 2, "the landed stream was not drained")
+    assert_equal(_wire(peer), "data: tail\n\n")
+    _close_slot(app, backend, st, slot, fd)
+    close(RawFileDescriptor(c_int(peer)))
 
 
 def main() raises:

@@ -211,6 +211,8 @@ struct Feed(Movable):
             return False
         self._refused_at[slot] = -1
         self._registry.pending_bufs[slot].extend(frames.as_bytes())
+        # Written past the registry's own queueing, so named here (SPEC C24).
+        self._registry.mark_ready(slot)
         # Where the application says, down as well as up: a resync for a
         # client that stood above the head brings it back to the head.
         self._registry.last_event_ids[slot] = head
@@ -229,10 +231,17 @@ struct Feed(Movable):
     def subscribers(self, key: String) -> Int:
         return self._registry.subscriber_count(key)
 
+    @always_inline
     def drain(mut self, slot: Int) -> List[UInt8]:
         """`sse_drain_slot`."""
         return self._registry.drain(slot)
 
+    def take_ready(mut self, mut into: List[Int]):
+        """`take_ready_streams`: the slots sent a delta, or closed, since the
+        last call (SPEC C24)."""
+        self._registry.take_ready(into)
+
+    @always_inline
     def is_streaming(self, slot: Int) -> Bool:
         """`sse_is_streaming`."""
         return self._registry.is_slot_streaming(slot)
