@@ -32,7 +32,11 @@ default is listed under **Behaviour changes**
   connection after the last was reset at accept, the health check's among
   them, so a load balancer marked a busy realtime server dead. The
   default now holds 1008 streams per loop where it held 1024;
-  `--max-connections 1040` holds 1024 as before. A browser's
+  `--max-connections 1040` holds 1024 as before. The Mojo host has no
+  such flag yet (#658): a host application holds 1024 again by setting
+  `max_connections` to 1040 on `config.server_config()` and passing that
+  to `serve` as its second argument, or by serving another loop. A
+  browser's
   `EventSource` does not reconnect after a `503`, so a page that should
   keep trying reconnects on `error` itself
   ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
@@ -48,7 +52,8 @@ default is listed under **Behaviour changes**
   connections from one client reset every connection for the 60 s of
   their idle timeout. A stream, a body arriving, a response going out and
   a request being answered are never taken, and a loop holding only those
-  still resets the next connection. The first full loop prints one line;
+  still resets the next connection. m0serve prints one line the first
+  time a loop is full, and the Mojo host prints nothing yet (#658);
   `/__metrics` counts `http_connections_reclaimed_total` and
   `http_connections_refused_total`; `M0_RECLAIM=0` turns it off
   ([the note](docs/notes/a-full-loop-takes-back-an-idle-slot.md)).
@@ -91,7 +96,8 @@ default is listed under **Behaviour changes**
   loop holds, 1024 by default and at most 65536 (SPEC C20). It was a
   constant. The handler's per-slot tables follow it, `/__metrics` counts
   `http_streams_held` and `http_streams_refused_total`, and `--doctor`
-  reports `max_connections` and `stream_limit`.
+  reports `max_connections` and `stream_limit`. Only m0serve reads the
+  flag and the variable; the Mojo host reads neither yet (#658).
 - **`--ws-origin ORIGIN`** (`M0_WS_ORIGIN`): an origin a held WebSocket may
   be opened from beside the server's own, `*` for any (SPEC I48); the
   doctor reports `ws_origins`.
