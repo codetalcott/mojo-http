@@ -1811,8 +1811,10 @@ n=$(grep -c 'raise --max-connections or M0_MAX_CONNECTIONS' "$SMOKE_DIR/maxconn.
 grep -q 'the open-file limit is' "$SMOKE_DIR/maxconn.log" && fail 'the server could not raise a soft limit of 40'
 stop $pid
 # A full loop takes a slot back for a new connection, from one idle between
-# requests or still sending its head after a second, and refuses one only
-# when none is (SPEC C23); M0_RECLAIM=0 is the old reset, the negative arm.
+# requests or still sending its head, each once that is a second, and
+# refuses one only when none is (SPEC C23): busy keep-alive clients lose no
+# request to newcomers. M0_RECLAIM=0 is the old reset, the negative arm,
+# and --idle-timeout 0 keeps every idle connection; each notice says so.
 spawn reclaim.log bin/m0serve hold_app:application --app-dir scripts/smoke --port $port \
   --realtime --max-connections 64 --health-path /health --metrics
 wait_ready http://localhost:$port/health $pid
@@ -1824,6 +1826,14 @@ spawn reclaim-off.log env M0_RECLAIM=0 bin/m0serve hold_app:application --app-di
   --port $port --realtime --max-connections 64 --health-path /health --metrics
 wait_ready http://localhost:$port/health $pid
 python3 scripts/reclaim_probe.py $port 64 --off || fail
+grep -q 'M0_RECLAIM=0 takes none back' "$SMOKE_DIR/reclaim-off.log" || fail 'the full-loop notice under M0_RECLAIM=0 does not say it refuses'
+stop $pid
+spawn reclaim-noidle.log bin/m0serve hold_app:application --app-dir scripts/smoke --port $port \
+  --realtime --max-connections 64 --health-path /health --metrics --idle-timeout 0
+wait_ready http://localhost:$port/health $pid
+python3 scripts/reclaim_probe.py $port 64 --no-idle-timeout || fail
+grep -q 'were in use: one still sending its request after a second is closed' "$SMOKE_DIR/reclaim-noidle.log" \
+  || fail 'the full-loop notice under --idle-timeout 0 does not leave idle connections out'
 stop $pid
 # A pass drains the streams with something to send, not every stream it
 # holds (SPEC C24): 60 idle streams cost 200 requests no drain visits, and

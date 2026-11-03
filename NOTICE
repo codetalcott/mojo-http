@@ -2103,10 +2103,11 @@ lightbug_http
         server_config.mojo (2026-11-02): a loop whose every slot is in use
         takes one back for a new connection (SPEC C23), where
         `_admit_connection` closed the new connection unread. The
-        connection between requests idle longest is closed as the idle
-        sweep closes it, else the one whose head has been arriving
-        longest, once that is `RECLAIM_HEAD_FLOOR_NS`, as the header
-        timeout closes it (`_expire_head`, factored out of
+        connection between requests idle longest, once that is
+        `RECLAIM_IDLE_FLOOR_NS`, is closed as the idle sweep closes it,
+        else the one whose head has been arriving longest, once that is
+        `RECLAIM_HEAD_FLOOR_NS`, as the header timeout closes it, and
+        neither while its timeout is off (`_expire_head`, factored out of
         `_sweep_deadlines`); a stream, a body, a response and an
         offloaded request are never taken. `SlotQueues` holds the two
         FIFO queues, joined in `_end_request` and in `_start_head`, through

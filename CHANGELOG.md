@@ -42,20 +42,24 @@ default is listed under **Behaviour changes**
   ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
 - **A full loop takes a slot back for a new connection, on by default**
   (SPEC C23). A connection that finds every one of a loop's slots in use
-  is given the slot of the connection idle longest between requests,
-  closed as the idle timeout would close it, or else of the one that has
-  been sending a request's head longest, once that is a second, answered
-  `408` as the header timeout answers it. Before, the new connection was
-  reset at accept while slots it could have had sat idle: 1008 streams
-  beside the 16 idle connections of the page loads that opened them reset
-  the health check C20 keeps the reserve for, and 1024 idle keep-alive
-  connections from one client reset every connection for the 60 s of
-  their idle timeout. A stream, a body arriving, a response going out and
-  a request being answered are never taken, and a loop holding only those
-  still resets the next connection. m0serve prints one line the first
-  time a loop is full, and the Mojo host prints nothing yet (#658);
-  `/__metrics` counts `http_connections_reclaimed_total` and
-  `http_connections_refused_total`; `M0_RECLAIM=0` turns it off
+  is given the slot of the connection idle longest between requests, once
+  that is a second, closed as the idle timeout would close it, or else of
+  the one that has been sending a request's head longest, once that is a
+  second, answered `408` as the header timeout answers it. A connection
+  answered a moment ago is never taken, since its next request may be in
+  its socket unread, so busy keep-alive clients lose nothing to newcomers,
+  and neither kind is taken while its timeout is off. Before, the new
+  connection was reset at accept while slots it could have had sat idle:
+  1008 streams beside the 16 idle connections of the page loads that
+  opened them reset the health check C20 keeps the reserve for, and 1024
+  idle keep-alive connections from one client reset every connection for
+  the 60 s of their idle timeout. A stream, a body arriving, a response
+  going out and a request being answered are never taken, and a loop
+  holding only those still resets the next connection. m0serve prints one
+  line the first time a loop is full, saying what it takes back, and the
+  Mojo host prints nothing yet (#658); `/__metrics` counts
+  `http_connections_reclaimed_total` and `http_connections_refused_total`;
+  `M0_RECLAIM=0` turns it off
   ([the note](docs/notes/a-full-loop-takes-back-an-idle-slot.md)).
 - **The Mojo host refuses a pool view on one-process state** (SPEC E42).
   Under `M0_BLOCKING_THREADS`, an application whose `max_threads()` is 1

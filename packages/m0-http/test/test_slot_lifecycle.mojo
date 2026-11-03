@@ -56,6 +56,7 @@ from lightbug_http.loop.state import (
     FLUSH_AFTER_SEND,
     LoopState,
     RECLAIM_HEAD_FLOOR_NS,
+    RECLAIM_IDLE_FLOOR_NS,
     SLOT_BUFFER_KEEP,
     SSE_FLUSH_MS,
     TIMER_BODY,
@@ -3480,6 +3481,16 @@ def _release(mut app: Streamer, mut backend: FakeBackend, mut st: LoopState, pee
     for s in range(st.max_conns):
         if st.slot_fds[s] != UNUSED:
             _close_slot(app, backend, st, s, st.slot_fds[s])
+    for p in peers:
+        close(RawFileDescriptor(c_int(p)))
+
+
+def _age_idle(mut st: LoopState, fd: Int):
+    """Make the connection on `fd` idle for twice `RECLAIM_IDLE_FLOOR_NS`
+    longer than it has been, as the clock would: its idle deadline is what
+    `_reclaim_slot` reads its idle time from."""
+    st.slot_idle_deadline[st.fd_to_slot[fd]] -= 2 * RECLAIM_IDLE_FLOOR_NS
+
 struct Outboxes(HTTPService):
     """Streams whose outboxes it keeps, one a slot, naming each slot it
     queues for when `names` is set (`take_ready_streams`), and counting the
@@ -3634,7 +3645,17 @@ def test_a_full_loop_takes_back_its_longest_idle_connection() raises:
     assert_equal(st.active_count, 3)
     assert_equal(st.config.slots_full_notice, "every slot is in use")
 
+    # Answered under `RECLAIM_IDLE_FLOOR_NS` ago, none is taken yet.
     var said = String()
+    var early = _connect(app, backend, st, GET)
+    assert_true(_ended(early[1], said), "a connection idle for under the floor was taken back")
+    assert_equal(st.metrics.connections_refused, 1)
+    assert_equal(st.metrics.connections_reclaimed, 0)
+    assert_equal(st.config.slots_full_notice, "", "the notice was not said")
+    for c in conns:
+        assert_false(_ended(c[1], said), "a connection idle for under the floor was closed")
+        _age_idle(st, c[0])
+
     var fourth = _connect(app, backend, st, GET)
     assert_true(_head_of(fourth[1]).startswith("http/1.1 200 "), "the new connection was not served")
     assert_true(_ended(conns[1][1], said), "the longest idle connection was not closed")
@@ -3643,8 +3664,7 @@ def test_a_full_loop_takes_back_its_longest_idle_connection() raises:
     assert_false(_ended(conns[2][1], said), "a connection idle for less time was closed")
     assert_equal(st.active_count, 3)
     assert_equal(st.metrics.connections_reclaimed, 1)
-    assert_equal(st.metrics.connections_refused, 0)
-    assert_equal(st.config.slots_full_notice, "", "the notice was not said")
+    assert_equal(st.metrics.connections_refused, 1)
 
     # The next goes to the next longest idle, then the one that answered
     # again, then the newest.
@@ -3654,6 +3674,7 @@ def test_a_full_loop_takes_back_its_longest_idle_connection() raises:
         later.append(_connect(app, backend, st, String("")))
         assert_true(_ended(conns[order[i]][1], said), "the next longest idle was not the next closed")
     assert_equal(st.metrics.connections_reclaimed, 3)
+    _age_idle(st, fourth[0])
     var last = _connect(app, backend, st, String(""))
     assert_true(_ended(fourth[1], said), "the newest idle connection was not taken once it was the only one")
     assert_equal(st.metrics.connections_reclaimed, 4)
@@ -3663,9 +3684,69 @@ def test_a_full_loop_takes_back_its_longest_idle_connection() raises:
         peers.append(c[1])
     for c in later:
         peers.append(c[1])
+    peers.append(early[1])
     peers.append(fourth[1])
     peers.append(last[1])
     _release(app, backend, st, peers)
+
+
+def test_a_full_loop_leaves_a_busy_connection_its_next_request() raises:
+    """A connection answered a moment ago is not idle, whatever the loop
+    has read: its client may have sent the next request already, waiting
+    in the socket unread, and a close over it resets the client and loses
+    the request. The review of 2026-11-02 found the full loop taking such
+    a connection for every new one, so that more busy keep-alive clients
+    than slots evicted each other. Under `RECLAIM_IDLE_FLOOR_NS` the new
+    connection is refused instead, and the busy one's request is answered.
+
+    covers: C23
+    """
+    var app = Streamer()
+    var backend = FakeBackend()
+    var st = _full_loop(1)
+    var said = String()
+    var busy = _connect(app, backend, st, GET)
+    assert_true(_head_of(busy[1]).startswith("http/1.1 200 "))
+    _send_all(busy[1], GET)  # in the socket, not yet read by the loop
+    var newcomer = _connect(app, backend, st, GET)
+    assert_true(_ended(newcomer[1], said), "a connection answered under a second ago was taken back")
+    assert_false(_ended(busy[1], said), "the busy connection was closed over its next request")
+    assert_equal(st.metrics.connections_refused, 1)
+    assert_equal(st.metrics.connections_reclaimed, 0)
+    _on_read(app, backend, st, busy[0], False)
+    assert_true(_head_of(busy[1]).startswith("http/1.1 200 "), "the busy connection's next request was lost")
+    _release(app, backend, st, [busy[1], newcomer[1]])
+
+
+def test_a_full_loop_takes_nothing_from_a_queue_whose_timeout_is_off() raises:
+    """With `idle_timeout` 0 no connection between requests is ever closed,
+    and with `header_read_timeout` 0 no head is: no deadline counts either
+    down, so a full loop takes neither back, however long it has waited,
+    and refuses the new connection.
+
+    covers: C23
+    """
+    var app = Streamer()
+    var backend = FakeBackend()
+    var said = String()
+    var config = _config()
+    config.max_connections = 2
+    config.enable_metrics = True
+    config.idle_timeout = 0
+    config.header_read_timeout = 0
+    var st = _loop(config)
+    var idle = _connect(app, backend, st, GET)
+    assert_true(_head_of(idle[1]).startswith("http/1.1 200 "))
+    assert_equal(st.slot_idle_deadline[st.fd_to_slot[idle[0]]], 0)
+    var silent = _connect(app, backend, st, String(""))
+    st.slot_header_start[st.fd_to_slot[silent[0]]] -= 2 * RECLAIM_HEAD_FLOOR_NS
+    var refused = _connect(app, backend, st, GET)
+    assert_true(_ended(refused[1], said), "a slot was taken back from a queue whose timeout is off")
+    assert_false(_ended(idle[1], said), "an idle connection was closed with the idle timeout off")
+    assert_false(_ended(silent[1], said), "a head was closed with the header timeout off")
+    assert_equal(st.metrics.connections_refused, 1)
+    assert_equal(st.metrics.connections_reclaimed, 0)
+    _release(app, backend, st, [idle[1], silent[1], refused[1]])
 
 
 def test_a_full_loop_takes_a_head_only_after_a_second_and_after_every_idle_one() raises:
@@ -3703,7 +3784,9 @@ def test_a_full_loop_takes_a_head_only_after_a_second_and_after_every_idle_one()
     assert_false(_ended(partial[1], said), "a newer head was taken first")
     assert_equal(st.metrics.connections_reclaimed, 1)
 
-    # `first` is now between requests, and goes before the older head.
+    # `first` is now between requests; past the idle floor, it goes before
+    # the older head.
+    _age_idle(st, first[0])
     var second = _connect(app, backend, st, String(""))
     assert_true(_ended(first[1], said), "a head was taken while a connection sat between requests")
     assert_false(_ended(partial[1], said), "a head was taken while a connection sat between requests")
@@ -3762,6 +3845,8 @@ def test_a_full_loop_takes_no_stream_no_body_and_nothing_with_reclaim_off() rais
     assert_equal(off.metrics.connections_refused, 1)
     assert_equal(off.metrics.connections_reclaimed, 0)
     _release(app, backend, off, [idle[1], turned_away[1]])
+
+
 def test_a_stream_still_sending_is_drained_once_its_frame_lands() raises:
     """What a handler names while its stream's last frame is still going out
     is passed by -- the slot cannot take another -- and drained as soon as

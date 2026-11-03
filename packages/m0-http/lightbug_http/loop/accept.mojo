@@ -23,6 +23,7 @@ from std.time import perf_counter_ns
 
 from lightbug_http.loop.state import (
     LoopState, RECLAIM_HEAD, RECLAIM_HEAD_FLOOR_NS, RECLAIM_IDLE,
+    RECLAIM_IDLE_FLOOR_NS,
     UNUSED, _arm_reads, _between_requests, _close_slot, _head_arriving,
     _notice_once, _start_head,
 )
@@ -61,10 +62,23 @@ def _reclaim_slot[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ) -> Bool:
     """Free a slot for a new connection on a loop that has none (SPEC C23):
-    close the connection between requests that has been idle longest, as
-    the idle sweep would, else the one whose head has been arriving
-    longest, once that is `RECLAIM_HEAD_FLOOR_NS`, as the header timeout
-    would. True when one was closed and its slot is free.
+    close the connection between requests that has been idle longest, once
+    that is `RECLAIM_IDLE_FLOOR_NS`, as the idle sweep would, else the one
+    whose head has been arriving longest, once that is
+    `RECLAIM_HEAD_FLOOR_NS`, as the header timeout would. True when one was
+    closed and its slot is free.
+
+    The idle floor is the review finding of 2026-11-02: with no floor, a
+    loop with more busy keep-alive clients than slots closed, for each new
+    connection, the one answered longest ago -- microseconds ago -- whose
+    next request was often in its socket unread (`_between_requests` sees
+    only what the loop has read), so the close reset it and lost the
+    request, and the client it belonged to evicted another as it
+    reconnected. Idle is read off the idle deadline, which `_end_request`
+    arms at the timeout from the moment the slot joins the queue, so the
+    queue is in deadline order too and a front too young means nothing
+    behind it is older. A queue whose timeout is off is never taken from:
+    nothing is counting its connections down.
 
     The queues are fronted by the longest waiting, and a slot whose state
     has moved on since it joined -- a head now framed, a request now on a
@@ -81,16 +95,26 @@ def _reclaim_slot[T: HTTPService, B: EventLoopBackend](
     """
     if not st.reclaim_enabled:
         return False
-    while True:
-        var idle = st.reclaim.front(RECLAIM_IDLE)
-        if idle == NO_SLOT:
-            break
-        if _between_requests(st, idle):
+    var now = perf_counter_ns()
+    if st.config.idle_timeout > 0:
+        # Idle at least the floor (or the whole timeout, were it shorter):
+        # at most this much of the timeout left.
+        var timeout_ns = st.config.idle_timeout * 1_000_000_000
+        var left_at_most = max(timeout_ns - RECLAIM_IDLE_FLOOR_NS, 0)
+        while True:
+            var idle = st.reclaim.front(RECLAIM_IDLE)
+            if idle == NO_SLOT:
+                break
+            if not _between_requests(st, idle):
+                st.reclaim.remove(idle)
+                continue
+            if st.slot_idle_deadline[idle] - now > left_at_most:
+                break
             _close_slot(handler, backend, st, idle, st.slot_fds[idle])
             st.metrics.connections_reclaimed += 1
             return True
-        st.reclaim.remove(idle)
-    var now = perf_counter_ns()
+    if st.config.header_read_timeout <= 0:
+        return False
     while True:
         var head = st.reclaim.front(RECLAIM_HEAD)
         if head == NO_SLOT:

@@ -271,12 +271,14 @@ has the Flask version of the whole thing, and CI drives that exact file.
   `http_streams_refused_total`, and `--doctor` reports `max_connections`
   and `stream_limit`. **A full loop takes a slot back:** a connection that
   finds every slot in use is given the slot of the connection idle longest
-  between requests, which is closed as `--idle-timeout` would close it, or
-  else of the one that has been sending its request's head longest, once
-  that is a second, answered `408` as the header timeout answers it. It is
-  refused at accept, closed unread, only when every slot is a stream, a
-  body arriving, a response going out or a request being answered. The
-  first full loop prints one line; `/__metrics` counts
+  between requests, once that is a second, which is closed as
+  `--idle-timeout` would close it, or else of the one that has been
+  sending its request's head longest, once that is a second, answered
+  `408` as the header timeout answers it. It is refused at accept, closed
+  unread, when every slot is a stream, a body arriving, a response going
+  out, a request being answered, or a connection idle or sending under a
+  second; with `--idle-timeout 0` no idle connection is taken. The first
+  full loop prints one line saying what it takes back; `/__metrics` counts
   `http_connections_reclaimed_total` and `http_connections_refused_total`.
   Idle streams cost a loop's requests nothing: each pass drains only the
   streams with something to send, and `/__metrics` counts

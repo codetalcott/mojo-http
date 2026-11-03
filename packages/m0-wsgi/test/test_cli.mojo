@@ -12,6 +12,7 @@ from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
 from src.cli import (
     DEFAULT_REPLAY_FRAMES,
+    slots_full_notice,
     ServeOptions,
     parse_args,
     parse_app_spec,
@@ -451,7 +452,7 @@ def _clear_env():
         String("M0_MAX_KEEPALIVE_REQUESTS"), String("M0_MAX_BODY"),
         String("M0_BODY_TIMEOUT"), String("M0_REPLAY_FRAMES"),
         String("M0_MAX_CONNECTIONS"), String("M0_THREAD_HEADER"),
-        String("M0_WS_ORIGIN"),
+        String("M0_WS_ORIGIN"), String("M0_RECLAIM"),
     ]:
         _ = setenv(name, "", True)
 
@@ -1665,6 +1666,54 @@ def test_from_env_ignores_an_unreadable_replay_depth_and_says_so() raises:
     _clear_env()
 
 
+def test_the_full_loop_notice_says_what_the_loop_takes_back() raises:
+    """The line a loop prints the first time every slot is in use (SPEC
+    C23) says what it then does under this configuration: with
+    `--idle-timeout 0` it takes back only a head still arriving, under
+    `M0_RECLAIM=0` nothing, and with both timeouts off nothing. The review
+    of 2026-11-02 found it saying an idle connection "is closed to admit
+    the next" under `M0_RECLAIM=0`, where every new connection was being
+    refused.
+
+    covers: C23
+    """
+    _clear_env()
+    var tail = String(
+        "; raise --max-connections or M0_MAX_CONNECTIONS, or serve more"
+        " loops (--workers, --threads)"
+    )
+    var no_idle = _parse([
+        String("m.wsgi"), String("--max-connections"), String("64"),
+        String("--idle-timeout"), String("0"),
+    ]).server_config(AppConfig())
+    assert_equal(
+        no_idle.slots_full_notice,
+        "m0serve: all 64 of a loop's connections were in use: one still"
+        " sending its request after a second is closed to admit the next,"
+        " and a connection is refused only when none is" + tail,
+    )
+    _ = setenv("M0_RECLAIM", "0", True)
+    var off = _parse([String("m.wsgi"), String("--max-connections"), String("64")])
+    var off_sc = off.server_config(AppConfig())
+    _clear_env()
+    assert_equal(
+        off_sc.slots_full_notice,
+        "m0serve: all 64 of a loop's connections were in use: M0_RECLAIM=0"
+        " takes none back, so each new connection is refused until one"
+        " closes" + tail,
+    )
+    var neither = ServerConfig()
+    neither.max_connections = 64
+    neither.idle_timeout = 0
+    neither.header_read_timeout = 0
+    assert_equal(
+        slots_full_notice(neither, True),
+        "m0serve: all 64 of a loop's connections were in use: with the idle"
+        " and header timeouts off none is taken back, so each new connection"
+        " is refused until one closes" + tail,
+    )
+
+
 def test_max_connections_is_a_count_of_one_or_more_and_reaches_the_loop() raises:
     """`--max-connections` (SPEC C20): unset (-1) leaves `ServerConfig`'s
     1024, which `loop_connections` reports for the handler's tables too; a
@@ -1693,10 +1742,10 @@ def test_max_connections_is_a_count_of_one_or_more_and_reaches_the_loop() raises
     assert_equal(
         sc.slots_full_notice,
         "m0serve: all 4096 of a loop's connections were in use: one idle"
-        " between requests, or still sending its request after a second, is"
-        " closed to admit the next, and a connection is refused only when"
-        " none is; raise --max-connections or M0_MAX_CONNECTIONS, or serve"
-        " more loops (--workers, --threads)",
+        " between requests for a second, or one still sending its request"
+        " after a second, is closed to admit the next, and a connection is"
+        " refused only when none is; raise --max-connections or"
+        " M0_MAX_CONNECTIONS, or serve more loops (--workers, --threads)",
     )
     for bad in [String("0"), String("-1"), String("many"), String("")]:
         assert_true(
