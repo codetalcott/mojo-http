@@ -29,7 +29,7 @@ from std.sys.info import CompilationTarget, num_performance_cores
 from lightbug_http.offload import match_path_prefix, _WAKE_MAX_LANES
 from lightbug_http.c.platform import SC_NPROCESSORS_ONLN
 from lightbug_http.address import join_host_port
-from lightbug_http.server_config import ServerConfig
+from lightbug_http.server_config import ServerConfig, reclaim_from_env
 from lightbug_http.header import Headers
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig, listen_host, parse_env_int
@@ -568,15 +568,41 @@ struct ServeOptions(Copyable, Movable):
             " are kept for requests; raise --max-connections or"
             " M0_MAX_CONNECTIONS, or serve more loops (--workers, --threads)",
         )
-        sc.slots_full_notice = String(
-            "m0serve: all ", sc.max_connections, " of a loop's connections"
-            " were in use: one idle between requests, or still sending its"
-            " request after a second, is closed to admit the next, and a"
-            " connection is refused only when none is; raise"
-            " --max-connections or M0_MAX_CONNECTIONS, or serve more loops"
-            " (--workers, --threads)",
-        )
+        sc.slots_full_notice = slots_full_notice(sc, reclaim_from_env())
         return sc^
+
+
+def slots_full_notice(sc: ServerConfig, reclaim: Bool) -> String:
+    """The line a loop prints the first time a new connection finds every
+    slot in use (SPEC C23), saying what the loop then does with this
+    configuration: which connections it takes back -- one idle between
+    requests for a second, while `--idle-timeout` is on; one still sending
+    its head after a second, while the header timeout is -- or, with
+    `M0_RECLAIM=0` or both timeouts off, that it refuses each new one."""
+    var taken = List[String]()
+    if reclaim and sc.idle_timeout > 0:
+        taken.append(String("one idle between requests for a second"))
+    if reclaim and sc.header_read_timeout > 0:
+        taken.append(String("one still sending its request after a second"))
+    var what: String
+    if len(taken) == 0:
+        var why = String("M0_RECLAIM=0 takes none back")
+        if reclaim:
+            why = String("with the idle and header timeouts off none is taken back")
+        what = why + ", so each new connection is refused until one closes"
+    else:
+        var which = String(taken[0])
+        if len(taken) == 2:
+            which = String(taken[0], ", or ", taken[1], ",")
+        what = String(
+            which, " is closed to admit the next, and a connection is"
+            " refused only when none is",
+        )
+    return String(
+        "m0serve: all ", sc.max_connections, " of a loop's connections"
+        " were in use: ", what, "; raise --max-connections or"
+        " M0_MAX_CONNECTIONS, or serve more loops (--workers, --threads)",
+    )
 
 
 def parse_app_spec(spec: String) raises -> Tuple[String, String]:

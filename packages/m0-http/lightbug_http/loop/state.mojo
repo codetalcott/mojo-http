@@ -24,7 +24,7 @@ from lightbug_http.io.bytes import Bytes
 from lightbug_http.metrics import ServerMetrics
 from lightbug_http.offload import OffloadLoopState
 from lightbug_http.server import ProvisionPool
-from lightbug_http.server_config import ServerConfig
+from lightbug_http.server_config import ServerConfig, reclaim_from_env
 from lightbug_http.slot_queue import NO_SLOT, SlotQueues
 from lightbug_http.service import HTTPService
 from lightbug_http.websocket import WSState, close_frame, WS_CLOSE_GOING_AWAY
@@ -112,12 +112,19 @@ comptime UNUSED: Int = -1
 # arrives early, for the slot nearest it. First a connection BETWEEN
 # requests, the longest idle first, closed as the idle sweep closes it:
 # either side may close an idle connection at any time (RFC 9112 §9.5),
-# and clients reopen one. Then a connection whose head is still
+# and clients reopen one. But only once it has been idle for
+# `RECLAIM_IDLE_FLOOR_NS`: a keep-alive client answered a moment ago may
+# have its next request in the socket already, unread, and closing over
+# it resets the client and loses the request; under more busy clients
+# than slots every connection is that one, and each new client would
+# evict a busy one. Then a connection whose head is still
 # arriving, the oldest first, answered as the header timeout answers it
 # -- a 408 to a first request -- but only once its head has been arriving for
 # `RECLAIM_HEAD_FLOOR_NS`, so a client that has just connected and is
 # about to send is never the one taken. A stream, a body, a response going
-# out and a request on a pool thread are never taken. Before, a new
+# out and a request on a pool thread are never taken, and neither queue
+# is taken from while its timeout is off: no deadline is counting it
+# down. Before, a new
 # connection that met a full loop was closed unread, which its client read
 # as a reset: 1008 streams beside 16 idle keep-alive connections -- the
 # page loads of the tabs holding them -- reset the health check, and 1024
@@ -128,6 +135,7 @@ comptime RECLAIM_IDLE = 0
 comptime RECLAIM_HEAD = 1
 comptime RECLAIM_QUEUES = 2
 comptime RECLAIM_HEAD_FLOOR_NS = 1_000_000_000
+comptime RECLAIM_IDLE_FLOOR_NS = 1_000_000_000
 
 
 def _accept_batch_from_env() -> Int:
@@ -158,12 +166,6 @@ def _stream_keepalive_from_env() -> Int:
     except:
         pass
     return STREAM_KEEPALIVE_S
-
-
-def _reclaim_from_env() -> Bool:
-    """`M0_RECLAIM`: `0` keeps a full loop from taking a slot back (SPEC
-    C23); anything else, or nothing, leaves it on."""
-    return getenv("M0_RECLAIM", "") != "0"
 
 
 def _sse_flush_from_env() -> Int:
@@ -435,7 +437,7 @@ struct LoopState(Movable):
         self.accept_owed = False
         self.handoffs_owed = False
         self.reclaim = SlotQueues(max_conns, RECLAIM_QUEUES)
-        self.reclaim_enabled = _reclaim_from_env()
+        self.reclaim_enabled = reclaim_from_env()
         self.drain_due = List[Int]()
         self.drain_now = List[Int]()
         self.slot_drain_seen = List[Bool](length=max_conns, fill=False)

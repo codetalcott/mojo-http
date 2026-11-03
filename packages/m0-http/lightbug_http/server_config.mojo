@@ -2,6 +2,15 @@
 and event_loop.mojo."""
 
 from lightbug_http.connection import default_buffer_size
+from std.os import getenv
+
+
+def reclaim_from_env() -> Bool:
+    """`M0_RECLAIM`: `0` keeps a full loop from taking a slot back (SPEC
+    C23); anything else, or nothing, leaves it on. The loop reads it as it
+    starts, and a server reads it to word its full-loop notice, so the line
+    describes what the loop does."""
+    return getenv("M0_RECLAIM", "") != "0"
 
 
 struct ServerConfig(Copyable, Movable):
