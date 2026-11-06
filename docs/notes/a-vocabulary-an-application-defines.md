@@ -1,5 +1,12 @@
 # A vocabulary an application defines — 2026-09-18
 
+> **Superseded in part the next day.** The built-in `Htmx` speaks htmx 4
+> with six verbs, `HX-Request-Type` is the fifth header, and the gate's
+> five-verb refusal of `query` is `Datastar`'s (SPEC N22;
+> [the layer moves to htmx 4](the-layer-moves-to-htmx-4.md)).
+
+> A design note from the engineering record.
+
 `Fragment[V: Vocabulary]` takes the frontend library as a type parameter.
 DECISIONS D7 kept its two conformances, `Htmx` and `Datastar`, inside
 `html.mojo`, because on Mojo 1.0 an application's conformance to a trait

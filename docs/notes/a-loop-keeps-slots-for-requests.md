@@ -1,7 +1,12 @@
 # A loop keeps slots for requests — 2026-10-29
 
-A design note from the engineering record. SPEC C20 and C21 are its rows;
-[Running m0serve](../RUNNING.md#limits-and-lifecycle) states the limits.
+> A design note from the engineering record. SPEC C20 and C21 are its rows;
+> [Running m0serve](../RUNNING.md#limits-and-lifecycle) states the limits.
+
+Streams may take all of a loop's slots but a reserve, a sixteenth and at
+most 16, and the stream after that is answered 503 with `Retry-After`. The
+server raises its own descriptor limit to what its connections need. Found
+when 1100 held streams on m0serve 1.16.0 left `/health` reading a reset.
 
 ## What was found
 

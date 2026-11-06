@@ -1,7 +1,11 @@
 # Latest wins after a stall — 2026-10-26
 
-A design note from the engineering record. SPEC I44 is the row; D57 is
-the decision it works within.
+> A design note from the engineering record. SPEC I44 is the row; D57 is
+> the decision it works within.
+
+A subscriber to a stream of whole states that stalls is sent the newest
+state when it next drains, so it ends on the current state. The rule comes
+from hyperlith's render loop, read against this tree.
 
 ## The question
 

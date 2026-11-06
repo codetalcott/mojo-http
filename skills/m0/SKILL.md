@@ -39,8 +39,8 @@ bin/server --host 127.0.0.1 --port 8080
 uv run m0 dev -- --host 127.0.0.1 --port 8080   # rebuild on save
 ```
 
-`uvx m0 new NAME` writes `./NAME` instead. `board` and `m0 new .` arrived
-after m0 0.8.0; `uvx m0 new --help` lists what the installed one has.
+`uvx m0 new NAME` writes `./NAME` instead. `uvx m0 new --help` lists the
+templates the installed `m0` has.
 Without `--host` the server listens on this machine alone; `--host 0.0.0.0`
 takes every interface.
 
@@ -77,7 +77,9 @@ takes every interface.
 - State in one process declares `max_workers() -> 1`. Reaching other
   workers' tabs takes the bus and an `AppHandler` of your own that
   forwards `sse_peer_frame`; `ViewsApp` does not.
-- Work on a cadence is a `Producer` (`live`), never the loop's `tick`.
+- Work on a cadence is a `Producer` (`live`), never the loop's `tick`. A
+  `Feed` fans out from `tick`, which runs only once `--app-tick-ms` gives
+  it a period (the views page, Streams).
 - Datastar 1.0 applies an action's answer only on a 200: a 4xx is
   dropped. An `application/json` answer patches signals, so
   `{"text":""}` empties an input bound with `data-bind:text`.
@@ -89,8 +91,9 @@ takes every interface.
   stop by pid, never by name.
 - `uv run m0 doctor --json` prints every toolchain check and the binary's
   resolved configuration as one object.
-- Exit codes from `m0` and the binary: 0; 1 the compiler or a test
-  failed; 2 a command line that cannot be read; 78 a refusal, one line
-  naming the fix. Read the line; do not retry.
+- Exit codes from `m0` and the binary: 0; 1 what ran failed (the
+  compiler or a test under `m0`, the bind or a loop from the binary); 2 a
+  command line that cannot be read; 78 a refusal, one line naming the
+  fix. Read the line; do not retry.
 - A build does not check a function nothing calls; a test that calls it
   does.

@@ -1,6 +1,8 @@
-# A swap that moves the address bar
+# A swap that moves the address bar — 2026-09-21
 
-2026-09-21. The first application outside `apps/` on the layer — `unotes`,
+> A design note from the engineering record.
+
+The first application outside `apps/` on the layer — `unotes`,
 a reader over a private notes corpus, the application-layer soak — has a
 filter form and a list of links, all of them swaps. Its log's third
 finding: a filter that swaps without changing the URL cannot be reloaded,

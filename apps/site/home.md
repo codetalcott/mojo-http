@@ -72,17 +72,17 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
 
 ## Beyond realtime
 
-- **WSGI and ASGI from one binary.** The protocol is detected from the
+- WSGI and ASGI from one binary. The protocol is detected from the
   application object. Django, Flask, FastAPI and FastHTML each have a smoke
   test in CI. WSGI conformance is checked with `wsgiref`, ASGI with a validator
   written from the specification.
-- **Several applications in one process.**
+- Several applications in one process.
   `m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on
   handler threads and async FastHTML on an asyncio executor, behind one
   listener with one shutdown.
-- **A slow view does not stall the rest.** Handler threads behind each
+- A slow view does not stall the rest. Handler threads behind each
   event loop are the default for WSGI.
-- **Throughput is level with the fast servers, not ahead of them.** Per
+- Throughput is level with the fast servers. Per
   core on a bare ASGI app it is <!-- num:asgi-per-core-vs-uvloop@2 -->0.99<!-- /num -->x uvicorn with uvloop; it
   serves <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x the requests per second only because it uses
   <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn uses one. On bare WSGI, one worker with
@@ -101,7 +101,7 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
   the server it runs in, and no other. Servers on several machines share
   a bus through Postgres: each runs with `--pg-listen URL`, and a publisher
   anywhere executes `m0pub.notify_sql(channel, data)` on its own database
-  connection ([Running](../../docs/RUNNING.md)).
+  connection ([Running](../../docs/RUNNING.md#the-realtime-contract)).
 - **A loop holds 1024 connections**, `--max-connections` to change it, and
   held streams take all but the last 16 of them, so the health path still
   answers when streams are full. A stream past that is answered `503`.

@@ -1,5 +1,11 @@
 # A login on the notes app — shipped 2026-09-12
 
+> **Superseded in part.** Under htmx 4 a DELETE carries its CSRF token in
+> an `X-CSRF-Token` header, and the htmx-config meta is gone (SPEC N13,
+> N22, N44). `Vary` names five headers. The configuration and the guard
+> are `m0_http.login`, which also requires `M0_NOTES_SECURE` (N43;
+> [a login in the layer](a-login-in-the-layer.md)).
+
 > A design note from the engineering record. The fifth phase of the
 > application layer's plan: the row the layer had left, and the decision
 > it retires.

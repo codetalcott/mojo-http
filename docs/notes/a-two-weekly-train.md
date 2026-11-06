@@ -1,7 +1,12 @@
 # A two-weekly train — 2026-10-29
 
-A design note from the engineering record. [Releases](../RELEASES.md) is
-the policy it produced.
+> A design note from the engineering record. [Releases](../RELEASES.md) is
+> the policy it produced.
+
+From 1.17.0 a minor release leaves every other Thursday, `m0` rides the
+same train, and only the latest minor is supported. The note records why,
+and how the next train's date and contents stay correct on the pages that
+name them.
 
 ## The question
 

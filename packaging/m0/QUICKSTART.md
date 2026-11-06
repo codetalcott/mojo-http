@@ -8,8 +8,8 @@ save and builds its deploy image.
 macOS arm64 and glibc Linux (x86-64, aarch64). It needs
 [uv](https://docs.astral.sh/uv/) and a C compiler named `cc` (Xcode's
 command line tools, or `build-essential`); `uv sync` installs the Mojo
-toolchain into the project. CI extracts the tagged commands below and runs
-them on every pull request (`poe smoke-quickstart-mojo`).
+toolchain into the project. Every tagged command below is run on macOS
+and Linux (N33 in [Capabilities](../../docs/SPEC.md)).
 
 ## 1. A project
 
@@ -154,10 +154,7 @@ docker run --rm -p 8080:8080 shop
 then the image's own `/app/about.json` as the last line of output. The
 compiler runs in the builder stage, so this step needs docker, a committed
 `uv.lock`, and no local toolchain. The image holds the binary and the Mojo
-runtime libraries and no Python. CI builds this image from a scaffolded
-project on x86-64 Linux on every pull request (`poe smoke-scaffold-image`);
-the commands above are not among the ones this page's gate runs, because
-half of its runners have no docker. [Deploy](../../docs/MOJO_DEPLOY.md) has
+runtime libraries and no Python. [Deploy](../../docs/MOJO_DEPLOY.md) has
 the rest, Fly.io included.
 
 ## Next

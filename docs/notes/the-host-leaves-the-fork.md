@@ -1,5 +1,7 @@
 # The host leaves the fork — 2026-09-18
 
+> A design note from the engineering record.
+
 DECISIONS D28 put `host.mojo` beside `mojo_pool.mojo` in the hard fork,
 because on Mojo 1.0 an application could not conform to a trait behind a
 `.mojoc` built from a directory named other than its package. Mojo 1.1.0

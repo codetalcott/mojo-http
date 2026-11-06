@@ -1,5 +1,15 @@
 # The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20
 
+> **Superseded in part.** The layer soak landed on 2026-10-02 and `m0`
+> stayed `0.x`; [The Mojo stack](../MOJO.md) states the condition `1.0.0`
+> waits on.
+
+> A design note from the engineering record.
+
+The `m0` wheel: the framework's source as an exact pair with its
+toolchain, a CLI that refuses a mismatched one, and the gate that proves
+both from outside the tree (SPEC N23–N26; D39–D43).
+
 Until this round an application in Mojo could be written in one place:
 `apps/`, inside this repository, against `.mojoc` files a `poe` task had
 built. This is the first of three pull requests that let one be written

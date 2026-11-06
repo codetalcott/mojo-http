@@ -1,6 +1,8 @@
 # Changelog
 
-Notable changes to `mojo-http`. Format follows
+Notable changes to `mojo-http`: the m0serve wheel, and the `m0` wheel,
+which is versioned apart ([DECISIONS](docs/DECISIONS.md) D43) and recorded
+in the m0serve release it ships beside. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/). From 1.0.0 the served contract does not break
 in a minor release: `m0serve`'s flags and environment variables, the
@@ -26,6 +28,12 @@ default is listed under **Behaviour changes**
   server prints. A supervisor or a script that read a refusal from
   stdout reads it from stderr now, and `2>&1` gives back the one stream
   it read before.
+
+### Changed
+
+- **The m0serve wheel is classified
+  `Development Status :: 5 - Production/Stable`** on PyPI, matching the
+  1.x contract; it read `4 - Beta` since before 1.0.
 
 ## [1.17.0] — 2026-11-05
 

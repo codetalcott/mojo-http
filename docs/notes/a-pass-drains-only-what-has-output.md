@@ -1,8 +1,12 @@
 # A pass drains only what has output — 2026-11-02
 
-A design note from the engineering record. SPEC C24 is its row. It
-extends [the outbox sweep](outbox-sweep.md), which made a pass skip the
-drain when nothing streams, to a loop holding many streams that are idle.
+> A design note from the engineering record. SPEC C24 is its row. It
+> extends [the outbox sweep](outbox-sweep.md), which made a pass skip the
+> drain when nothing streams, to a loop holding many streams that are idle.
+
+The event loop's drain visits only the streams with something to send,
+which the handler names through `take_ready_streams`. A request on a loop
+holding many idle streams no longer pays a visit to each.
 
 ## What was found
 

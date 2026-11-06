@@ -1,4 +1,8 @@
-# Structured CI results
+# Structured CI results — 2026-08-30
+
+> **Since extended.** Every job that sets `$M0_RESULTS` records, renders
+> and uploads its measurements through `.github/actions/record-measurements`
+> (CLAUDE.md, CI and the gates).
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the

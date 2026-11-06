@@ -1,5 +1,11 @@
 # The Mojo handler pool — shipped 2026-08-28
 
+> **Superseded in part.** The pool is `m0_http.mojo_pool` in `src/` (D28
+> retired; [the host leaves the fork](the-host-leaves-the-fork.md)), and a
+> Mojo mount's view may hold a stream as an `M0-Hold` under `--realtime`.
+> Any other streaming response is still refused (D22; SPEC N11;
+> [hold from a Mojo mount](hold-from-a-mojo-mount.md)).
+
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the
 > project's state; the reasoning lives here.

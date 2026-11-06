@@ -1,4 +1,4 @@
-# Mojo language capabilities, surveyed 2026-08-28
+# Mojo language capabilities — surveyed 2026-08-28
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the

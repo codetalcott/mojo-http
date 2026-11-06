@@ -2,8 +2,9 @@
 
 Measured against `m0-sqlite` on macOS (arm64, Apple system libsqlite3 3.51.0),
 August 2026. Every number here came from a benchmark in this repo's style —
-build a real database, run the real bindings, time the real calls. Reproduce
-with the scripts described at the end.
+build a real database, run the real bindings, time the real calls.
+`uv run poe bench-sqlite` reproduces the read-out rows;
+[Reproducing](#reproducing) describes the other workloads.
 
 The short version:
 
@@ -17,15 +18,7 @@ The short version:
 | `carray()` | Unavailable, and unusable from Mojo structs anyway | Superseded by `m0_array` — see below |
 | Aggregating in Mojo instead of in SQL | **1.37x** on sum+min+max over 200k rows | Use when the rows are wanted anyway |
 
-> **Written in parallel with `m0_array`.** This study and the `m0_array`
-> virtual table landed from two separate sessions that did not see each other's
-> work. They agree on the facts and answer the same question differently: this
-> document establishes that the *carray extension* cannot be reached from here,
-> and `m0_array` supplies the capability anyway by registering a Mojo-side
-> virtual table instead of loading a C one. Where they overlap, `m0_array` is
-> the answer; the analysis below is why it had to be built rather than borrowed.
-
-## What the library we link actually has
+## What the system library has
 
 `PRAGMA compile_options` on the macOS system library, filtered to what matters:
 
@@ -46,24 +39,23 @@ extension can ever be used on macOS with the system library — that single flag
 decides the carray question below. And `THREADSAFE=2` means the library defaults
 to multi-thread rather than serialized mode; `open_serialized`'s
 `SQLITE_OPEN_FULLMUTEX` still selects per-connection serialization, so that
-helper works, but the docstring's "serialized by default" describes the upstream
-default, not this build.
+helper works.
 
 Probed, not assumed: `json_each` and FTS5 are present; `carray` and
-`generate_series` are not. `sqlite3_bind_pointer` links; `sqlite3_enable_load_extension`
-does not link at all.
+`generate_series` are not. `sqlite3_bind_pointer` resolves;
+`sqlite3_enable_load_extension` does not exist in it, so looking it up fails.
 
 ## carray(), and whether Mojo structs can feed it
 
 **Short answer: no, on two independent grounds.**
 
 **It isn't there.** `SELECT ... FROM carray(...)` fails with `no such table:
-carray` on the library we link. carray only became part of the amalgamation in
+carray` on the system library. carray only became part of the amalgamation in
 SQLite 3.51.0 and even then it is off unless built with `-DSQLITE_ENABLE_CARRAY`;
 before that it was a loadable extension. Loading it at runtime is not an option
 on macOS, because the system library is compiled `OMIT_LOAD_EXTENSION` — the
 symbol `sqlite3_enable_load_extension` isn't merely disabled, it doesn't exist,
-and a binary referencing it fails to link. Linux distributions usually do enable
+so looking it up fails. Linux distributions usually do enable
 loading, so a shipped `carray.so` could work there, but a feature that exists on
 one of two supported platforms isn't a feature this package can offer.
 
@@ -85,15 +77,19 @@ What does map cleanly is a flat numeric list:
 | `List[UInt8]` blobs | `CARRAY_BLOB` | No — needs an array of `struct iovec`, hand-built |
 | `List[SomeStruct]` | — | **No.** No layout guarantee, no stride support |
 
-There's a pleasing consequence: the parallel-array (SoA) style this repo already
-uses — because `List[Struct]` fights `ImplicitlyCopyable` — is exactly the layout
-carray wants. A `List[Int]` field of an SoA struct is already a bindable C array.
+A consequence: the parallel-array (SoA) style this repo uses for per-field
+scans is exactly the layout carray wants. A `List[Int]` field of an SoA
+struct is already a bindable C array.
 So if carray ever becomes available, the data is in the right shape; the blocker
 is availability, not representation.
 
 `sqlite3_bind_pointer` does resolve, so the pointer-passing machinery carray
 depends on is present. If a host's libsqlite3 were built with
 `SQLITE_ENABLE_CARRAY`, wiring it up would be a small change.
+
+`m0_array` supplies what carray would, by registering a virtual table from
+Mojo, so nothing has to be loaded. Where the two overlap, `m0_array` is the
+answer.
 
 ## The portable substitute: json_each
 
@@ -173,15 +169,14 @@ supporting index.
 
 Batching is **46x**. Weakening durability to `synchronous=OFF` — which risks
 database corruption on an OS crash — buys 2.6x, still eighteen times slower than
-just wrapping the loop in a transaction. This is the single most valuable thing
-to know about writing to SQLite, and it costs two method calls this package
-already exposes.
+just wrapping the loop in a transaction. Batching costs two method calls this
+package already exposes.
 
 ## Statement caching, revisited
 
-The decision recorded in [ROADMAP.md](ROADMAP.md) not to build a statement cache
-still holds, and now has a second measurement behind it. For the same trivial
-point query:
+The decision not to build a statement cache ([README.md](../README.md),
+"Not implemented") still holds, and now has a second measurement behind it.
+For the same trivial point query:
 
 - `prepare` + `step` + `finalize`: 1,651 ns
 - `reset` + `step` on a cached statement: 999 ns
@@ -195,11 +190,9 @@ is what the benchmark's fastest column does.
 ## Aggregates: SQL is not automatically the fast side
 
 `Statement.fetch_ints` was written to hand back a column-major `List` because
-that "is what a SIMD pass over the results wants". `stats_ints` is that pass
-— `m0_sqlite.stats_ints` until 2026-09-29, when it moved into
-`bench_sqlite.mojo`, its one user — and measuring it turned up something
-worth writing down: **pulling a column out and reducing it here beats asking
-SQLite to aggregate it.**
+that "is what a SIMD pass over the results wants". `stats_ints` is that pass,
+kept in `bench_sqlite.mojo`, its one user. **Pulling a column out and
+reducing it here beats asking SQLite to aggregate it.**
 
 200,000 integer rows, in-memory database, `sum` + `min` + `max`, values
 checked against SQLite's own answers before timing (`bench_reduce` in
@@ -234,31 +227,11 @@ Integer addition reassociates exactly, so these agree bit for bit at every
 length, and `bench_reduce` refuses to time an answer that differs from
 SQLite's own.
 
-## The WSGI-bridge techniques, checked against this package
+## Reading TEXT without a String per row
 
-The bridge work (docs/WSGI_PERFORMANCE.md) distilled into a short method:
-split a cost by part before designing against it; check whether a missing
-API is missing or merely unbound; eliminate copies; hoist per-call
-overhead; and measure a cache's *hit* path before building it. Checked here
-deliberately, item by item:
-
-| technique | status here |
-|-----------|-------------|
-| reach the unbound C API | **no analog** — every entry point the package uses is loaded from libsqlite3 by name at run time (`lib.mojo`, since 2026-09-25); `carray()` is absent from the *library binary*, which no loader trick fixes |
-| replace interpreted work with C calls | **no analog** — there is no interpreter boundary |
-| batch N calls into one (`PyDict_Copy`) | **no analog** — SQLite has no bulk row API (`sqlite3_step` is per row; already recorded at the SoA readers) |
-| eliminate copies on the hot path | **already applied** — `column_blob` memcpy (13–20x), `column_blob_into` reuse, `m0_array` borrow-by-shape (3.4x) |
-| measure a cache's hit path first | **already practiced** — the statement cache was rejected twice by measurement |
-| hoist hidden per-call work | **checked, nothing there** — the `StringLiteral` → `String` conversion every binder pays on its happy path (`_check(rc, "bind_int")`) measures at **0.0 ns** in an optimized build; the compiler hoists it |
-| read a value where its owner holds it, through a borrowed pointer (`PyBridge.read_head`) | **measured, not shipped** — a borrowed `Span` over SQLite's cell saves 2–3 ns/row at 64 B and 12–24 ns (4–6%) at 4 KB against `column_blob_into`, and the compile-time borrow that would make it safe does not exist on Mojo 1.0; see below |
-| sabotage-prove every guard (`shim_ownership.py --sabotage`) | **was missing for `verify_layout.c`**, and the guard turned out to check the header against its own literals rather than against vtab.mojo; it now reads the Mojo constants and `poe sabotage-vtab` moves each of the 28 in turn — see "The layout guard" below |
-
-Two things did come out of the check.
-
-**A text scan pays 2.1x for its per-row `String`, and the zero-allocation
-read already existed — undocumented.** The bench had int, float and blob
-rows but no TEXT row, so `column_text`'s per-row allocation had never been
-priced. Now it is (`bench_sqlite.mojo`, 100k rows, best of 5):
+A text scan pays 2.1x for its per-row `String`, and `column_blob_into`
+reads the same column with no allocation (`bench_sqlite.mojo`, 100k rows,
+best of 5):
 
 | read | 64 B | 4096 B |
 |------|-----:|-------:|
@@ -272,18 +245,15 @@ handoff. No new API was added — the fix is the two docstrings that now
 point at each other, per this package's own rule: add the variant the day
 something needs it, not speculatively.
 
-**The verdict on the package**: it already embodies the method. The
-remaining per-row cost of a scan is SQLite's own VM (`sqlite3_step`), which
-is the same kind of floor the WSGI bridge just reached — the boundary code
-is direct calls and single copies, and what is left is the engine itself.
+The remaining per-row cost of a scan is SQLite's own VM (`sqlite3_step`):
+the boundary code is direct calls and single copies.
 
-### A borrowed read, measured and not shipped
+## A borrowed read, measured and not shipped
 
-The one bridge technique the table above had not tried here was
-`PyBridge.read_head`'s shape: hand back the bytes where their owner holds
-them, and copy nothing. `column_blob_into` is one `memcpy` away from that;
-a `Span[Byte, origin_of(stmt)]` over `sqlite3_column_blob`'s pointer would
-be zero copies. `bench_sqlite.mojo` carries it as `_column_bytes_span`,
+The WSGI bridge's `PyBridge.read_head` hands back the bytes where their
+owner holds them, and copies nothing. `column_blob_into` is one `memcpy`
+away from that; a `Span[Byte, origin_of(stmt)]` over `sqlite3_column_blob`'s
+pointer would be zero copies. `bench_sqlite.mojo` carries it as `_column_bytes_span`,
 beside the per-byte loop it keeps for the same reason — an A/B, not an
 API. 100k rows, best of 5, 2026-09-04, same run for every row:
 
@@ -305,24 +275,24 @@ SQLite says the pointer is valid until the next `sqlite3_step`,
 the same cell; the first three take `mut self`, and the premise was that a
 span carrying `origin_of(stmt)` would make the compiler refuse
 `stmt.step()` while the span is alive — the borrow the Python side could
-only document, enforced here for free. **It is not.** On Mojo 1.0.0 a
-program that takes the span, steps, and then reads the span builds and
-runs (printing the stale length), and so do the `reset` and `finalize`
-shapes — and so does the stdlib's own `Span(list)` followed by
+only document, enforced here for free. **It was not, on Mojo 1.0.0 on
+2026-09-04.** A program that takes the span, steps, and then reads the
+span built and ran (printing the stale length), and so did the `reset` and
+`finalize` shapes — and so did the stdlib's own `Span(list)` followed by
 `list.append`, and a `ref`-returning method followed by a `mut` one.
-Origins do the two jobs the manual gives them, extending the referent's
-lifetime and enforcing argument exclusivity within one call; they do not
-refuse a sequential mutation. A borrowed span here would therefore be
-`column_blob_into` minus 4% plus a use-after-step the compiler cannot see,
-which is exactly the class of bug `m0_array`'s borrow is enforced by
-*shape* to prevent (`stmt.mojo`, "Array parameters"). Add to that the
-package's rule — the variant is added the day something needs it, and
-nothing in this repo or in the sibling SQLite projects scans large
-TEXT/BLOB columns through m0-sqlite — and the answer is no API. The day
+Origins did the two jobs the manual gave them, extending the referent's
+lifetime and enforcing argument exclusivity within one call; they did not
+refuse a sequential mutation. A borrowed span here would therefore have
+been `column_blob_into` minus 4% plus a use-after-step the compiler could
+not see, which is exactly the class of bug `m0_array`'s borrow is enforced
+by *shape* to prevent (`stmt.mojo`, "Array parameters"). The package adds
+a variant the day something needs it, and nothing in this repo or the
+sibling SQLite projects scans large TEXT or BLOB columns through m0-sqlite.
+So there is no API. The day
 one of the four probes under "Reproducing" stops compiling, the API is
 shippable, with that probe as its negative compile gate.
 
-### The layout guard checked C against C
+## The layout guard checked C against C
 
 `test/verify_layout.c` asserts every offset `vtab.mojo` hardcodes against
 the installed `sqlite3.h` — and until 2026-09 it did so with its own copy
@@ -345,20 +315,18 @@ each closed-set rule, and insists on a failure for every one.
 
 ## Recommendations
 
-1. **Document batching prominently.** A `README` example that inserts in a loop
-   without a transaction teaches the 46x-slower pattern.
-2. **Consider a `mmap_size` argument or an `open_tuned` variant** rather than
-   changing `open()`, given the SIGBUS trade. Left undone deliberately: it
-   changes failure modes, so it is your call.
-3. **Add a `json_each` helper** if fetching by id-set becomes common — the
+1. Consider a `mmap_size` argument or an `open_tuned` variant rather than
+   changing `open()`, given the SIGBUS trade. Not done: it changes failure
+   modes, a choice that belongs to the application.
+2. Add a `json_each` helper if fetching by id-set becomes common — the
    ergonomics, not the speed, are the reason: building the JSON array by hand at
    every call site invites an injection-shaped mistake that `?` normally
    prevents.
-4. **Do not pursue carray.** Unavailable on macOS, unusable with structs, and
+3. Do not pursue carray. Unavailable on macOS, unusable with structs, and
    both `m0_array` and `json_each` already cover what motivates it — `m0_array`
    for binding a Mojo `List` directly (~3x on bulk inserts), `json_each` for an
    id-set that arrives as data rather than as a live buffer.
-5. **Revisit if the toolchain ever links its own SQLite.** Building the
+4. Revisit if the toolchain ever links its own SQLite. Building the
    amalgamation with `-DSQLITE_ENABLE_CARRAY -DSQLITE_ENABLE_MATH_FUNCTIONS`
    and a controlled version would make several of these questions moot — at the
    cost of owning the build.
@@ -366,10 +334,9 @@ each closed-set rule, and insists on a failure for every one.
 ## Reproducing
 
 The benchmarks were written as standalone Mojo programs against `-I
-packages/m0-sqlite`. They are not checked in; the measurements above are the
-deliverable. To redo them, the four workloads are: N-row fetch by the four
-strategies above; 20k random point reads under each pragma set; 10k inserts
-under each transaction mode; and prepare-versus-reset for one trivial query.
+packages/m0-sqlite`. They are not checked in. To redo them, the four
+workloads are: N-row fetch by the four strategies above; 20k random point
+reads under each pragma set; 10k inserts under each transaction mode; and prepare-versus-reset for one trivial query.
 
 The read-out rows (blob, text, borrowed span, ingest, reduce) are the
 exception: `uv run poe bench-sqlite` is checked in and prints them. The
@@ -377,9 +344,8 @@ layout guard is `uv run poe verify-vtab-layout`, and `uv run poe
 sabotage-vtab` proves it can fail.
 
 The origin finding is four programs of a dozen lines, built with
-`mojo build -I packages/m0-sqlite` (with `-Xlinker -lsqlite3` at the time;
-the library has been opened at run time since 2026-09-25). The shape that must
-NOT build for a borrowed span to be safe, and does:
+`uv run mojo build -I packages/m0-sqlite`. The shape that must NOT build
+for a borrowed span to be safe, and did on 2026-09-04:
 
 ```mojo
 var q = db.prepare("SELECT v FROM t")

@@ -1,5 +1,12 @@
 # Flags and a doctor for the host — 2026-09-19
 
+> **Superseded in part.** Since 2026-09-28 m0serve's doctor reads one list
+> too, `m0_wsgi.checks`, in the shape of `host_checks`
+> (`packages/m0-wsgi/src/checks.mojo`;
+> [Running m0serve](../RUNNING.md#observability)).
+
+> A design note from the engineering record.
+
 A Mojo host application was configured by environment alone. That was
 decided, not overlooked: D29 recorded "no CLI flags and no `--doctor`" with
 the retiring condition "a flag its operator cannot set in the environment",

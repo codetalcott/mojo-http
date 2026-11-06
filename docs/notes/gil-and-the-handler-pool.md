@@ -1,8 +1,9 @@
 # The GIL and the handler pool — measured 2026-09-09
 
-> Whether `--blocking-threads N` gives a view N threads *at once* is decided
-> inside the view, not by the server. This is the measurement that says so,
-> the row it produced (SPEC E19), and what it settles about running model
+> A design note from the engineering record. Whether
+> `--blocking-threads N` gives a view N threads *at once* is decided inside
+> the view, not by the server. This is the measurement that says so, the
+> row it produced (SPEC E19), and what it settles about running model
 > inference on this server.
 
 ## The question

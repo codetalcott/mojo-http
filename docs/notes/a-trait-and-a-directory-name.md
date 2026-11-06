@@ -1,13 +1,17 @@
-# A trait and a directory name, 2026-09-15
+# A trait and a directory name — 2026-09-15
 
-> **Fixed upstream.** Mojo 1.1.0 records a trait's identity so that a
-> package name differing from its source directory costs nothing, and
-> this repo pinned it on 2026-09-18. `poe check-mojoc-trait` is now a
-> regression guard rather than a countdown. The decisions this page
-> describes still stand, because the code has not moved yet; see
-> [The pin moves to Mojo 1.1.0](the-pin-moves-to-1-1-0.md).
+> **Fixed upstream.** Mojo 1.1.0 records a trait's identity, so an
+> application's conformance to a trait behind a `.mojoc` compiles whatever
+> its source directory is named; the pin moved to it on 2026-09-18
+> ([The pin moves to Mojo 1.1.0](the-pin-moves-to-1-1-0.md)). The code
+> then moved. The pool and the host left the fork, the page shell became a
+> `PageShell`, and vocabularies opened to an application's own (D28, D12
+> and D7 retired 2026-09-18;
+> [the host leaves the fork](the-host-leaves-the-fork.md)). D14 stands on
+> its other half. `poe check-mojoc-trait` now requires every case to
+> compile.
 
-> A correction from the engineering record. For three weeks this repo
+> A design note from the engineering record. For three weeks this repo
 > believed a language limitation that does not exist, and shaped four
 > decisions around it. This is what the limitation actually is, how it was
 > found, and what it costs to leave in place.

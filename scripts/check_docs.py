@@ -2495,6 +2495,15 @@ def check_release_train():
         fail(msg)
 
 
+def check_doc_copies():
+    """The summary passages docs/copies.json lists still agree with the SPEC
+    rows they restate and the code's defaults they state
+    (scripts/doc_copies.py)."""
+    import doc_copies
+    for msg in doc_copies.check(REPO):
+        fail(msg)
+
+
 def _train_cases():
     """The train rules reverted one at a time against the committed page,
     llms.txt and version, each case a mutation in memory. A case whose
@@ -3505,6 +3514,10 @@ def selftest():
         good = bool(got) == must_fire
         print(f"  {'caught' if good else 'MISSED'}          {label}" + ("" if good else f" -- got {got}"))
         ok &= good
+    # The summaries' ledger: each rule reverted against the committed
+    # ledger, pages, sheet and sources (scripts/doc_copies.py).
+    import doc_copies
+    ok &= doc_copies.selftest(REPO)
     print("check_docs selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -3555,6 +3568,7 @@ def main():
     check_row_statuses_in_prose()
     check_decisions_ledger()
     check_release_train()
+    check_doc_copies()
     check_bench_prose_figures()
     if failures:
         print("check-docs: FAIL")

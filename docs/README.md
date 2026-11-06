@@ -13,7 +13,7 @@ version does not stop the soak going stale.
 | [Quickstart](../QUICKSTART.md) | Live updates between browser tabs from one file of synchronous Django, in five steps. CI runs every command on it. |
 | [After the quickstart](QUICKSTART_NEXT.md) | The same application under two workers, in Flask, and under gunicorn. |
 | [demo.m0serve.dev](https://demo.m0serve.dev) | The quickstart's two-tab sync, live. [apps/demo](../apps/demo/README.md) is the file, [deploy/demo](../deploy/demo/README.md) the deployment. |
-| [blobs.m0serve.dev](https://blobs.m0serve.dev) | An application written in Mojo, served from an image with no Python in it: one world stepped on the server and streamed to every tab. [apps/blobs](../apps/blobs/server.mojo) is the app, [deploy/blobs](../deploy/blobs/README.md) the deployment, which each release makes from 1.5.0. |
+| [blobs.m0serve.dev](https://blobs.m0serve.dev) | An application written in Mojo, served from an image with no Python in it: one world stepped on the server and streamed to every tab. [apps/blobs](../apps/blobs/server.mojo) is the app, [deploy/blobs](../deploy/blobs/README.md) the deployment, which every release redeploys. |
 | [Running m0serve](RUNNING.md) | Flags, execution modes, what to put in front of it, shutdown and exit codes. |
 | [Capabilities](SPEC.md) | One row per capability with the test that proves it. Also [spec.json](spec.json). |
 | [WSGI and ASGI modes](WSGI_VS_ASGI.md) | What each mode is for, what free-threading changes, where each has a cliff. |
@@ -38,9 +38,9 @@ They age.
 
 | page | contents |
 |---|---|
-| [Benchmarks](BENCHMARKS.md) | Against gunicorn, uvicorn and Granian: where m0serve wins, where it loses, and how the numbers were taken. |
-| [WSGI and ASGI performance](WSGI_PERFORMANCE.md) | Throughput and tail latency for both paths, rendered from dated artifacts. |
-| [Server performance](SERVER_PERFORMANCE.md) | The Mojo server serving Mojo handlers, without Python in the path. |
+| [Benchmarks](BENCHMARKS.md) | Against uvicorn and Granian: where m0serve wins, where it loses, and how the numbers were taken. |
+| [WSGI and ASGI performance](WSGI_PERFORMANCE.md) | Throughput and tail latency for both paths against gunicorn, Granian and uvicorn, recorded by dated session; one table renders from an artifact. |
+| [Server performance](SERVER_PERFORMANCE.md) | The Mojo server's own hot path with handlers that cost nearly nothing, a Mojo mount against a numpy mount in one process, and workers against threads for a Mojo application. |
 | [Real applications](REAL_APP_VALIDATION.md) | The server against Django projects nobody here wrote. |
 
 ## Project
