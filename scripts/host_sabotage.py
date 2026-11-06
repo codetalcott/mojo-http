@@ -330,10 +330,10 @@ SABOTAGES = [
         SMOKE,
         HOST,
         "producer's make raised, so this configuration is refused: \"\n"
-        "            + String(e),\n            flush=True,\n        )\n"
+        "            + String(e),\n            file=stderr,\n        )\n"
         "        process_exit(EX_CONFIG)\n",
         "producer's make raised, so this configuration is refused: \"\n"
-        "            + String(e),\n            flush=True,\n        )\n"
+        "            + String(e),\n            file=stderr,\n        )\n"
         "        process_exit(1)\n",
     ),
     (

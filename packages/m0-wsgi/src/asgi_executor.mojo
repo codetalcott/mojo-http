@@ -35,6 +35,7 @@ Streaming is still refused here (the Phase-1 watchdog rides along in
 from std.ffi import c_int
 from std.python import Python, PythonObject
 from std.python.bindings import PythonModuleBuilder
+from std.sys import stderr
 from std.format import Writable, Writer
 from std.time import sleep
 
@@ -1252,7 +1253,7 @@ def serve_inverted(
         print(
             "m0serve: could not load " + opts.served() + " from "
             + opts.app_dir + ": " + String(e),
-            flush=True,
+            file=stderr,
         )
         process_exit(EXIT_STARTUP)
         return
@@ -1440,7 +1441,9 @@ def _executor_body(arg: Int) -> Int:
         _executor_serve(block)
         status = STATUS_OK
     except e:
-        print("asgi-executor raised: " + String(e), flush=True)
+        # stderr: at startup this is the error `wire_offload`'s refusal
+        # points up at ("the error is above"), and the two share a stream.
+        print("asgi-executor raised: " + String(e), file=stderr)
     cpy.PyGILState_Release(gs)
     block.set(BLK_STATUS, status)
     return 0

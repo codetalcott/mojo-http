@@ -16,9 +16,9 @@ Beyond the code, per row: the doctor prints exactly one JSON object as the
 LAST line of its stdout (an application may print its own banner first), its
 `exit` and `ok` agree with the process's, the facts say what the row says
 (port, mode, where each value came from), a refusal names its check and
-carries a `fix`, and no doctor run ever logs `listening` -- nothing was
-bound, which one row proves outright by doctoring a port a live server
-holds.
+carries a `fix` -- the server's on stderr, never stdout, as a usage error is
+both ways -- and no doctor run ever logs `listening` -- nothing was bound,
+which one row proves outright by doctoring a port a live server holds.
 
 Exits 0 printing one summary line, or 1 naming the first row that failed.
 Stdlib only.
@@ -71,9 +71,13 @@ def healthy(port: int) -> bool:
 
 def run_server(binary: str, args: list, env: dict, port: int, log: str) -> tuple:
     """Run for real. A process that exits on its own reports its code; one
-    that serves is probed on `port`, SIGTERMed, and reports its drain's."""
-    with open(log, "w") as out:
-        p = subprocess.Popen([binary, *args], env=clean_env(env), stdout=out, stderr=out)
+    that serves is probed on `port`, SIGTERMed, and reports its drain's.
+
+    The log is stdout then stderr, and stderr alone comes back too: a
+    refusal is said there (host.mojo, step 0)."""
+    err_log = log + ".err"
+    with open(log, "w") as out, open(err_log, "w") as err:
+        p = subprocess.Popen([binary, *args], env=clean_env(env), stdout=out, stderr=err)
         try:
             wait_healthy("http://127.0.0.1:%d/health" % port, p, timeout=30)
             served = True
@@ -92,7 +96,8 @@ def run_server(binary: str, args: list, env: dict, port: int, log: str) -> tuple
         except subprocess.TimeoutExpired:
             p.kill()
             fail("still running 20 s after SIGTERM")
-    return code, served, open(log).read(), extra
+    said = open(err_log).read()
+    return code, served, open(log).read() + said, said, extra
 
 
 def after_healthy(port: int) -> str:
@@ -219,7 +224,7 @@ def main() -> int:
             fail("the doctor started a server:\n" + dout + derr)
         port = expect["port"] if isinstance(expect, dict) and "port" in expect else int(env.get("M0_PORT", "0") or 0)
         log = os.path.join(out_dir, "row.log")
-        scode, served, slog, worker = run_server(binary, args, env, port, log)
+        scode, served, slog, serr, worker = run_server(binary, args, env, port, log)
         if dcode != scode:
             fail("--doctor exited %d, the server %d, for the same arguments\n--- doctor\n%s%s--- server\n%s"
                  % (dcode, scode, dout, derr, slog))
@@ -229,11 +234,13 @@ def main() -> int:
             fail("exit %d but served=%s" % (scode, served))
 
         if want == 2:
-            for text, who in ((dout, "the doctor"), (slog, "the server")):
+            # On stderr both ways, and nothing on the doctor's stdout: no
+            # report, and no line a reader of the last one could take for it.
+            for text, who in ((derr, "the doctor"), (serr, "the server")):
                 if "usage:" not in text or "host: " not in text:
-                    fail("%s did not print the usage and the reason:\n%s" % (who, text))
-            if any(ln.lstrip().startswith("{") for ln in dout.splitlines()):
-                fail("a usage error printed a report")
+                    fail("%s did not print the usage and the reason on stderr:\n%s" % (who, text))
+            if dout.strip():
+                fail("a usage error printed on stdout:\n" + dout)
             continue
         if expect == "app":
             if "M0_HOSTCHECK_REFUSES" not in dout or "M0_HOSTCHECK_REFUSES" not in slog:
@@ -254,9 +261,10 @@ def main() -> int:
                 fail("want the first failed check to be %r, got %r" % (expect["check"], failed[:1]))
             if not failed[0].get("fix") or failed[0].get("exit") != 78:
                 fail("a failed check without a fix or its exit: %r" % failed[0])
-            # The server's own line is the same finding, and names the fix.
-            if failed[0]["detail"] not in slog or failed[0]["fix"] not in slog:
-                fail("the server's refusal is not the doctor's check:\n%s\n%r" % (slog, failed[0]))
+            # The server's own line is the same finding, and names the fix,
+            # on stderr.
+            if failed[0]["detail"] not in serr or failed[0]["fix"] not in serr:
+                fail("the server's refusal on stderr is not the doctor's check:\n%s\n%r" % (slog, failed[0]))
             if "listening" in slog.lower():
                 fail("a refused configuration was bound first:\n" + slog)
         cfg, topo = doc["config"], doc["topology"]

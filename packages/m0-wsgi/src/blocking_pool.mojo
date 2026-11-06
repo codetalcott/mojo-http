@@ -41,6 +41,7 @@ exists for.
 from std.ffi import c_int, external_call
 from std.os import getenv
 from std.python import Python
+from std.sys import stderr
 from std.time import perf_counter_ns
 
 from lightbug_http.offload import (
@@ -566,7 +567,7 @@ def _pool_body[T: ThreadHandler](arg: Int) -> Int:
         print(
             "blocking-thread[" + String(block.get(BLK_INDEX)) + "] raised: "
             + String(e),
-            flush=True,
+            file=stderr,
         )
     cpy.PyGILState_Release(gs)
     leave_pool(block, status)

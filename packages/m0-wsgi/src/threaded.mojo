@@ -63,6 +63,7 @@ state.
 
 from std.ffi import c_int
 from std.python import Python, PythonObject
+from std.sys import stderr
 
 from lightbug_http import HTTPService
 from lightbug_http.c.process import process_exit
@@ -195,14 +196,14 @@ def require_free_threading(threads: Int) raises:
 
     No-op for `threads <= 1`. Otherwise probes the interpreter — the
     process's first Python call, on the calling thread — and on a
-    GIL-enabled one prints `refusal_message` and exits
+    GIL-enabled one prints `refusal_message` to stderr and exits
     `EXIT_NOT_FREE_THREADED`. Never warns-and-runs, never falls back.
     """
     if threads <= 1:
         return
     var refusal = free_threading_refusal(threads, probe_free_threading())
     if refusal:
-        print(refusal.value(), flush=True)
+        print(refusal.value(), file=stderr)
         process_exit(EXIT_NOT_FREE_THREADED)
 
 
@@ -483,7 +484,7 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
         print(
             "m0serve: thread[" + String(ctx.index) + "]'s event loop raised: "
             + String(e),
-            flush=True,
+            file=stderr,
         )
         process_exit(EXIT_STARTUP)
 
@@ -514,7 +515,7 @@ def _thread_body[T: ThreadHandler](arg: Int) -> Int:
     except e:
         print(
             "thread[" + String(block.get(BLK_INDEX)) + "] raised: " + String(e),
-            flush=True,
+            file=stderr,
         )
     cpy.PyGILState_Release(gs)
     block.set(BLK_STATUS, status)

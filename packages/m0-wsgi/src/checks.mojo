@@ -34,6 +34,7 @@ import -- is the caller's, done once and handed in.
 
 from std.os import getenv
 from std.os.path import isdir
+from std.sys import stderr
 from std.sys.info import CompilationTarget
 
 from lightbug_http.address import NetworkType, join_host_port, parse_address
@@ -659,17 +660,22 @@ def first_refusal(checks: List[ServeCheck]) -> Optional[ServeCheck]:
 
 def refuse_first(checks: List[ServeCheck]):
     """`main`'s reading of a list: print the first failure and exit with its
-    code. Returns only when every check passed."""
+    code. Returns only when every check passed.
+
+    To stderr, as a supervisor expects; `--doctor` keeps stdout. Unflushed
+    on purpose: `print` writes straight to the descriptor, and `flush=True`
+    is a `dup` and an `fclose` that crash with no descriptor free (the
+    `descriptor-floor` comment above), with nothing to flush."""
     var refused = first_refusal(checks)
     if not refused:
         return
     ref check = refused.value()
     if check.usage:
-        print(usage(), flush=True)
+        print(usage(), file=stderr)
     if check.prefixed:
-        print("m0serve: " + check.detail, flush=True)
+        print("m0serve: " + check.detail, file=stderr)
     else:
-        print(check.detail, flush=True)
+        print(check.detail, file=stderr)
     process_exit(check.code)
 
 
