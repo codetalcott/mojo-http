@@ -210,17 +210,6 @@ fails if it does not resolve. **Nothing is planned.** A row added here
 names the application that pulls it, the gate that will verify it, and the
 [decision](DECISIONS.md) it retires, before it is built.
 
-The last entries, all built:
-
-- [A login on the notes app — shipped 2026-09-12](notes/a-login-on-the-notes-app.md)
-- [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md)
-- [An SSE hold from a Mojo mount — shipped 2026-09-11](notes/hold-from-a-mojo-mount.md)
-- [Accept sharing: workers sharing a listener share its connections](notes/accept-sharing.md)
-- [A conformance-suite tier](notes/conformance-suite-tier.md)
-- [Structured CI results](notes/structured-ci-results.md)
-- [Traceability: stable ids, then declared coverage](notes/traceability.md)
-- [Proven once, unloaded: an inventory of the gates with that shape](notes/proven-once-unloaded.md)
-
 ## Not planned, and why
 
 Recorded so they are not re-proposed. The number that frames each: the
@@ -252,85 +241,10 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
-- <!-- observed: scripts/probes/pool_ab.py LF24 on an M4, 2026-10-09 (bench/results/pool-ab-2026-10/) -->**The handler pool's wake and thread records may share a cache line on Apple silicon** (each lane's wake words and each thread's record on a 64-byte stride, in blocks `malloc` aligns to 16, where an M4's lines are 128-byte) — resolved 2026-10-09 by measurement (fork review LF24): a 128-byte stride with 128-aligned blocks, alternated with the 64-byte stride over five rounds on a quiet M4, was faster in no cell — pooled p50 0.116 ms against 0.125 at slow 1 and 0.124 against 0.123 at slow 2, the ranges overlapping, and 0.658 ms a request in the fair arm for both. The strides stay; the three docstrings that called each record a cache line of its own now say what it is. The artifact is `bench/results/pool-ab-2026-10/pool-ab-LF24-20261009T042627Z.json`; the runbook is `scripts/probes/quiet-machine-ab.md`.
-- <!-- observed: scripts/probes/pool_ab.py LF22 on an M4, 2026-10-09 (bench/results/pool-ab-2026-10/) -->**A pool thread's park cost one more system call, unmeasured** (since LF22's fix, SPEC I39, a thread parking on its own channel makes one non-blocking `recv` on its lane socket after announcing the park) — resolved 2026-10-09 by measurement: an arm without that look, alternated with it over five rounds on a quiet M4, differed by about 2 µs a request in opposite directions — pooled p50 0.126 ms with the look against 0.124 without at slow 1, 0.124 against 0.127 at slow 2, under 2 % of either median and the ranges overlapping — and not at all in the fair arm (0.658 ms). The look costs nothing measurable and stays. The artifact is `bench/results/pool-ab-2026-10/pool-ab-LF22-20261009T042937Z.json`.
-- **A WSGI hold replayed nothing on reconnect** (`M0-Hold: stream` subscribed to a registry whose `Last-Event-ID` handling was the redelivery filter alone, so every application kept a poll beside the stream) — resolved 2026-10-06 (I33, D65): each loop journals the last `--replay-frames` published frames and a reconnecting hold is caught up from it, all or nothing, with one unnumbered `m0-gap` event where the journal cannot supply what was missed, and an id from a previous incarnation clamped rather than left to starve the client. The write-up is [A hold that replays — 2026-10-06](notes/a-hold-that-replays.md).
-- <!-- observed: asgi_bare and wsgi_bare under m0serve, curl, 2026-09-23; FastHTML's examples under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**Two ASGI loading and scope differences from uvicorn** (a request whose chunked body the loop decoded reached the application with both `transfer-encoding: chunked` and a `content-length`, and a GET with a `content-length: 0` and a `connection: keep-alive` its client never sent; a module calling `asyncio.create_task` at import, FastHTML's first official example, failed to load with a bare `RuntimeError: no running event loop`) — resolved 2026-09-23 by L25 and L26. A parsed request carries the headers its client sent: the outgoing constructor it used to be built through no longer fills in a length, a `Connection` and a `Host`, and a de-chunked body is described by its length with its `chunked` coding removed. The WSGI environ follows, mapping the same headers. The import is refused by name, with the fix, a lifespan startup handler, from the server, `--doctor` and discovery alike; uvicorn refuses the same module without `--reload`. Both conformance steps read the scope and the environ back, and the ASGI step loads the module.
-- <!-- observed: asgi_bare and wsgi_bare under m0serve at da6de53, raw sockets, 2026-09-23; FastHTML's examples under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**The gateway rewrote parts of an application's response head** (a redirect, a 204 and FastHTML's default 404 page went out as `application/octet-stream`, a `FileResponse` HEAD as `content-length: 0`, and every 204 and 304 with `content-length: 0`, a native one included) — resolved 2026-09-23 by A21 and K12: the gateway relays the head as sent, adding only the framing that is the server's — a buffered body's measured length, and on a HEAD the application's own — and the event loop drops a length and a body from every 1xx and 204, whoever set them, keeping only a 304's own length. Found beside them and fixed with them (L27): a HEAD to a streaming ASGI route was streamed like a GET, and the loop wrote the whole body after the head, 10,000 of 10,000 bytes, where a keep-alive client reads its next response; a HEAD to a hold or a native SSE route was held as the stream a GET opens, the same way. `scripts/head_probe.py` reads each head in both conformance steps, and a request after it on the same connection.
-- <!-- observed: FastHTML's `xtermjs` example under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**A process the application started inherited the server's sockets** (FastHTML's terminal example took 10 s to close a WebSocket, because the shell it had started held the connection) — resolved 2026-09-23 by G16: every descriptor the server creates is close-on-exec, atomically on Linux and by a second call straight after on macOS; the spawned-worker hand-off keeps exactly the descriptors the new image adopts across its own exec, where it used to keep them across every exec in every mode; and `m0pub` writes only to a bus it can see, never into a child's own file on an inherited number. `smoke-exec-inherit` requires a child started with `close_fds=False` to hold nothing of the server's in six shapes.
-- **`mojo build` needs a C compiler on Linux and nothing said so** (a `python:*-slim` image failed with `unable to find suitable c compiler for linking`, after the whole compile) — resolved 2026-09-20 for an application built with the `m0` CLI (N25): `m0 build` and `m0 doctor` check before running the compiler and name the fix, `apt-get install build-essential` or the platform's own. The check is not the one first planned, on two measured counts: mojo 1.1.0 looks for the literal name `cc` and nothing else, so a machine with `gcc` and no `cc` is refused by name, and a `cc` that exists and cannot link (gcc without `libc6-dev`) is caught by linking a one-line program. Inside this repository nothing changes — `mojo build` by hand still says what it said, and `deploy/mojo/Dockerfile` installs `build-essential`. The write-up is [The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20](notes/the-m0-wheel.md).
-- **Mojo 1.0's `PythonObject` interop leaked a reference per call argument and per `__setitem__` value** — resolved 2026-09-18 by moving the pin to Mojo 1.1.0, which carries the upstream fix (modular/modular#6833). Measured in this tree against 1.0.0 as the null case: +1001 references per 1000 operations before, 0 after. The bridge keeps its raw C API environ build, which was always the faster path as well as the safe one, so nothing about the request path changes; what changes is that a per-request `PythonObject` argument is now a performance preference rather than a correctness constraint. The write-up is [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md).
-- **The Mojo host's drain and its producer join ran in sequence** — resolved 2026-09-17 with the pool lane (E26, D31): the loop stamps the producer's stop word as its drain begins and both joins count from that stamp, so a request in flight at SIGTERM beside a step past its bound leaves inside one bound. The premise as first recorded was wrong in one detail (the drain ends a HELD stream at once, so what stretches it is a request in flight), and the gate holds a request of a few seconds instead. The write-up is [The ramp test: lanes in the host, one module on two hosts — 2026-09-17](notes/the-ramp-test.md).
-- **Sessions and CSRF behind a login** (N13) — built 2026-09-12: a stateless signed cookie and a CSRF token derived from its tag, on `apps/fragment_notes` with one user; `m0_http.session` beside `grant.mojo`, forged and admitted on the wire by a CPython issuer, five rules sabotage-proven. D15 retired; D24 and D25 record what it deliberately is not. The write-up is [A login on the notes app — shipped 2026-09-12](notes/a-login-on-the-notes-app.md).
-- **A Datastar form, end to end** (N12) — built 2026-09-12: the todo demo's rename form, `form(req)` on the other side, a smoke on the wire and a Chromium run that recorded what the pinned bundle sends; D21 confirmed. The write-up is [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md).
-- **Prefork workers did not share a listener's connections** (the same worker won 32 of 32 on macOS and 23–31 of 32 on Linux, so `--workers 2` served a keep-alive load at one worker's throughput) — resolved by E16, the accept-sharing hand-off; the write-up is [Accept sharing — shipped 2026-09-05](notes/accept-sharing.md).
-- **A request body still arriving at SIGTERM held the drain to its deadline** — resolved; the write-up is [A request body still arriving at SIGTERM held the drain to its deadline — resolved](notes/request-body-at-sigterm.md).
-- **The WebSocket close path RSTing instead of FINning** — resolved v0.15.1; the write-up is [The WebSocket close path RSTing instead of FINning — resolved v0.15.1](notes/websocket-close-rst.md).
+Nothing yet in the 1.18.0 train. An issue resolved in an earlier train is
+in the [changelog](../CHANGELOG.md) under the release that resolved it,
+and in its note where it has one.
 
 ## Design notes
 
-The engineering record: long-form, dated, kept as written.
-
-**How it got here**
-
-- [v0.1.0: the first release](notes/first-release.md)
-- [The Django server aims](notes/django-server-aims.md)
-
-**Built, and how** (the Django server work, in order)
-
-- [Hold on a pool thread: the refusal that keeps `--realtime` off real applications](notes/hold-on-a-pool-thread.md)
-- [Streamed WSGI bodies — shipped 2026-08-27](notes/streamed-wsgi-bodies.md)
-- [Hardening the streaming seam — shipped 2026-08-27](notes/streaming-seam-hardening.md)
-- [The WebSocket send window — shipped 2026-08-28](notes/websocket-send-window.md)
-- [The loop inversion — in progress 2026-08-28](notes/loop-inversion.md)
-- [Where the loop inversion wins, on a constrained box — 2026-09-08](notes/inversion-on-a-constrained-box.md)
-- [Do the benchmark page's conclusions hold on Linux? — 2026-09-08](notes/the-conclusions-on-linux.md)
-- [The outbox sweep — taken, scoped (2026-08-29)](notes/outbox-sweep.md)
-- [Pacing the pump's loop thread](notes/pump-pacing.md)
-- [The Mojo handler pool — shipped 2026-08-28](notes/mojo-handler-pool.md)
-- [The detached loop — shipped 2026-09-03](notes/detached-loop.md)
-- [The executor's per-request Python work, and the C-API head read — shipped 2026-09-04](notes/executor-python-objects.md)
-- [Accept sharing: workers sharing a listener share its connections — shipped 2026-09-05](notes/accept-sharing.md)
-- [Scheduling stickiness: which worker wins the accept race is CPU placement, not load](notes/accept-placement.md)
-- [Mojo language capabilities, surveyed 2026-08-28](notes/mojo-language-capabilities.md)
-- [Considered, not built: routes that carry a function](notes/routes-that-carry-a-function.md)
-- [Periodic work off the event loop — shipped 2026-09-14](notes/periodic-work-off-the-loop.md)
-
-**The gates and the evidence**
-
-- [A conformance-suite tier](notes/conformance-suite-tier.md)
-- [Structured CI results](notes/structured-ci-results.md)
-- [Traceability: stable ids, then declared coverage](notes/traceability.md)
-- [Proven once, unloaded: an inventory of the gates with that shape](notes/proven-once-unloaded.md)
-
-**Open questions, and questions since answered**
-
-- [The desktop-Mac server, and what the wheel gives up to ship](notes/desktop-mac-server.md)
-- [Mojo 1.0's PythonObject leak, and what the pin bump will hit — answered by the bump](notes/pythonobject-leak-and-the-pin-bump.md)
-- [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md)
-- [The pin moves to Mojo 1.2.0 — 2026-10-22](notes/the-pin-moves-to-1-2-0.md)
-- [The host leaves the fork — 2026-09-18](notes/the-host-leaves-the-fork.md)
-- [The page shell becomes a trait — 2026-09-18](notes/the-page-shell-becomes-a-trait.md)
-- [A vocabulary an application defines — 2026-09-18](notes/a-vocabulary-an-application-defines.md)
-- [Loops on threads — 2026-09-18](notes/loops-on-threads.md)
-- [Threads first for m0 applications — 2026-09-25](notes/threads-first-for-m0-apps.md)
-- [The demo in its own image — 2026-09-18](notes/the-demo-in-its-own-image.md)
-- [Flags and a doctor for the host — 2026-09-19](notes/flags-and-a-doctor-for-the-host.md)
-- [The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20](notes/the-m0-wheel.md)
-- [The scaffold: two templates that compile where they lie — 2026-09-20](notes/the-scaffold.md)
-- [`m0 dev`, `m0 image`, and a release nobody has run — 2026-09-20](notes/dev-image-and-a-release.md)
-- [The Mojo stack's pages, and a front door CI walks through — 2026-09-20](notes/the-mojo-stack-pages.md)
-- [The scaffold's upgrade path — 2026-09-27](notes/the-scaffold-upgrade-path.md)
-- [A login in the layer — 2026-09-27](notes/a-login-in-the-layer.md)
-- [A resource over a table — 2026-10-02](notes/a-resource-over-a-table.md)
-- [A database that remembers what changed — 2026-10-02](notes/a-database-that-remembers-what-changed.md)
-- [What the agent runs asked for — 2026-10-07](notes/what-the-agent-runs-asked-for.md)
-- [A component tier, measured and withdrawn — 2026-10-24](notes/a-component-tier.md)
-- [MiniLM on the Neural Engine, served — measured 2026-09-04](notes/coreml-embeddings.md)
-- [Inbound WebSocket flow control — shipped 2026-08-31](notes/inbound-websocket-flow-control.md)
-- [The drain does not read a request body in flight — resolved](notes/drain-and-request-bodies.md)
-
-**Post-mortems**
-
-- [A request body still arriving at SIGTERM held the drain to its deadline — resolved](notes/request-body-at-sigterm.md)
-- [The WebSocket close path RSTing instead of FINning — resolved v0.15.1](notes/websocket-close-rst.md)
+The design notes are [indexed here](notes/).
