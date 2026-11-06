@@ -188,6 +188,9 @@ handler pool (SPEC E42). `m0 build --release` puts the licences in
   free-threaded build now names the uv fix for a venv on 3.14t,
   `uv python install 3.14 && uv sync --python 3.14+gil`
   ([RUNNING](docs/RUNNING.md)).
+- **The macOS wheel is built and installed on `macos-15`**, GitHub having
+  retired every macOS 14 image on 2026-11-02. Its floor is the deployment
+  target the build sets, macOS 13.0, measured from the binaries as before.
 
 ### Fixed
 

@@ -521,7 +521,8 @@ different machine from the one that built the artifact**. That property was
 worth the trouble.
 
 `wheel-consume-macos` passed, and that is worth stating plainly rather than
-taking as reassurance: it builds on `macos-14` and consumes on `macos-14`,
+taking as reassurance: it builds and consumes on one pinned image
+(`macos-14` then, `macos-15` since 1.17.0, when GitHub retired macOS 14),
 so build and consumer share a CPU and the defect is invisible there too.
 The macOS side is protected by the pin below, not by that job.
 
