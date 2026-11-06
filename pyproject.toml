@@ -10927,6 +10927,8 @@ shell = """
 # because a harness that only ever runs against somebody else's Django project
 # rots silently. hybrid_mix produces every population but uploads and sockets
 # (four mounts, two executors, a pool); asgi_bare produces those two.
+# Every leg serves with --max-keepalive-requests 100, under the driver's 120
+# requests a connection, so each keep-alive burst crosses the cap.
 python3 scripts/soak.py --selftest || exit 1
 
 secs=${M0_SOAK_SECONDS:-30}
@@ -10950,7 +10952,8 @@ python3 scripts/soak.py \
   --churn-every $(( secs / 3 )) --churn-mode sigterm \
   --serve "bin/m0serve --mount /=shop.wsgi --mount /portal=portal.wsgi:app \
            --mount /app=live.asgi --mount /live=feed.asgi \
-           --app-dir apps/hybrid_mix --port $port --metrics" || exit 1
+           --app-dir apps/hybrid_mix --port $port --metrics \
+           --max-keepalive-requests 100" || exit 1
 
 # Leg 2: the same mix under --reload, re-forked by a touch every third of
 # the run. The supervisor keeps the listener, so this one should tolerate
@@ -10961,14 +10964,16 @@ python3 scripts/soak.py \
   --churn-every $(( secs / 3 )) --churn-mode reload \
   --serve "bin/m0serve --mount /=shop.wsgi --mount /portal=portal.wsgi:app \
            --mount /app=live.asgi --mount /live=feed.asgi \
-           --app-dir apps/hybrid_mix --port $(( port + 2 )) --metrics --reload" || exit 1
+           --app-dir apps/hybrid_mix --port $(( port + 2 )) --metrics --reload \
+           --max-keepalive-requests 100" || exit 1
 
 # Leg 3: uploads and WebSockets, which the mix cannot produce.
 python3 scripts/soak.py \
   --manifest scripts/soak_manifests/asgi_bare.json \
   --url http://127.0.0.1:$(( port + 1 )) --seconds "$secs" --log soak-bare.log \
   --serve "bin/m0serve bareapp.asgi --app-dir apps/asgi_bare \
-           --port $(( port + 1 )) --metrics --max-body 8m" || exit 1
+           --port $(( port + 1 )) --metrics --max-body 8m \
+           --max-keepalive-requests 100" || exit 1
 
 echo "soak-apps: three in-tree legs clean over ${secs}s each"
 """
