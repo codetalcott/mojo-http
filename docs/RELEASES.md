@@ -1,7 +1,7 @@
 # Releases
 
 m0serve and the `m0` package leave on a train: a minor version every
-second Thursday, and a patch whenever a security fix or a regression in
+other Thursday, and a patch whenever a security fix or a regression in
 the latest minor cannot wait for the next one.
 
 ## The next train
@@ -23,7 +23,7 @@ names the train after that release. The milestones are the live list.
 
 ## The cadence
 
-- **A minor every second Thursday.** The dates do not move to fit the
+- **A minor every other Thursday.** The dates do not move to fit the
   work: what has merged when a train leaves goes on it, and what has not
   waits for the next.
 - **A train whose gates fail on its Thursday** leaves when they pass, and

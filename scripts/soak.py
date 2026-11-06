@@ -767,9 +767,10 @@ class Stats:
 def pop_burst(cfg, stop, stats):
     """Short requests on long-lived connections, verified against the capture.
 
-    `requests_per_connection` deliberately exceeds the server's keep-alive
-    cap (100), so every connection crosses it repeatedly. That is the one
-    previously-silent defect; here it is traffic rather than luck.
+    `requests_per_connection` (120) exceeds the keep-alive cap the soak
+    serves with (`--max-keepalive-requests 100`), so every connection
+    crosses it. That is the one previously-silent defect; here it is traffic
+    rather than luck, and `report` fails a run in which no burst crossed.
     """
     routes = [r for r in cfg["routes"] if r.get("class") == "short"]
     if not routes:
@@ -1423,6 +1424,22 @@ def report(cfg, stats, samples, args):
     if getattr(args, "churn_every", 0) and not stats.counts.get("churn_restarts"):
         print("soak FAIL: churn was requested and never happened")
         return 1
+    # The bursts exist to cross the server's keep-alive cap: a server whose
+    # cap is above `--requests-per-connection` never closes one, the only
+    # reconnects are the restarts', and the boundary the 2026-08-31 pass
+    # found a defect at goes unexercised (the cap rose from 100 to 1000 in
+    # 0.19.0, and no soak crossed it after). Judged once every burst client
+    # has run two connections' worth, so a short run is not refused.
+    clients = getattr(args, "burst", 0)
+    per_conn = cfg.get("requests_per_connection", 0)
+    if clients and per_conn \
+            and stats.counts.get("burst_requests", 0) >= 2 * per_conn * clients \
+            and stats.counts.get("burst_reconnects", 0) \
+            <= stats.counts.get("churn_restarts", 0) * clients:
+        print("soak FAIL: no keep-alive burst crossed the server's keep-alive "
+              "cap; serve it with --max-keepalive-requests below "
+              "--requests-per-connection (%d)" % per_conn)
+        return 1
     if args.max_rss_growth_kb and growth is not None \
             and growth > args.max_rss_growth_kb:
         print("soak FAIL: rss grew %dkB (limit %dkB)"
@@ -1659,6 +1676,29 @@ def cmd_selftest():
     else:
         print("  ok   requested churn that never happened fails")
 
+    # 11. keep-alive bursts that never crossed the server's cap fail; ones
+    #     that did pass. Two burst clients, 120 a connection, no churn.
+    _Args.churn_every = 0
+    _Args.burst = 2
+    under = Stats()
+    under.bump("verified", 10)
+    under.bump("burst_requests", 2400)
+    rc = report({"name": "selftest-under-cap", "requests_per_connection": 120},
+                under, [], _Args())
+    if rc == 0:
+        print("  FAIL bursts that never crossed the keep-alive cap reported success")
+        bad += 1
+    else:
+        print("  ok   bursts that never crossed the keep-alive cap fail")
+    under.bump("burst_reconnects", 20)
+    rc = report({"name": "selftest-crossed-cap", "requests_per_connection": 120},
+                under, [], _Args())
+    if rc != 0:
+        print("  FAIL bursts that crossed the keep-alive cap were refused")
+        bad += 1
+    else:
+        print("  ok   bursts that crossed the keep-alive cap pass")
+
     print("soak selftest: %s" % ("FAIL" if bad else "ok"))
     return 1 if bad else 0
 
@@ -1699,7 +1739,8 @@ def main():
     ap.add_argument("--sessions", type=int, default=4,
                     help="logins opened concurrently at startup")
     ap.add_argument("--requests-per-connection", type=int, default=120,
-                    help="deliberately over the server's keep-alive cap")
+                    help="above the server's keep-alive cap, which the soak serves "
+                         "at 100 (--max-keepalive-requests 100)")
     ap.add_argument("--abandon-bytes", type=int, default=4096)
     ap.add_argument("--abandon-seconds", type=float, default=0.5,
                     help="how long an abandoner reads before vanishing")

@@ -5,7 +5,7 @@ Notable changes to `mojo-http`. Format follows
 [SemVer](https://semver.org/). From 1.0.0 the served contract does not break
 in a minor release: `m0serve`'s flags and environment variables, the
 `M0-Hold`/`M0-Channel` response headers, and `m0pub.publish()`. A minor
-leaves every second Thursday, and a behaviour change one ships on by
+leaves every other Thursday, and a behaviour change one ships on by
 default is listed under **Behaviour changes**
 ([Releases](docs/RELEASES.md)).
 
