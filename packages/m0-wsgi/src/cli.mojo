@@ -37,7 +37,7 @@ from m0_http.config import AppConfig, listen_host, parse_env_int
 from .ws_origin import normalize_ws_origin
 
 
-comptime M0SERVE_VERSION = "1.16.0"
+comptime M0SERVE_VERSION = "1.17.0"
 """Reported by `--version`. Bumped with the release (see docs/RELEASING.md)."""
 
 comptime DEFAULT_ATTRIBUTE = "application"
