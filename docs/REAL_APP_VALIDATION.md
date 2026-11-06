@@ -7,17 +7,21 @@ the newest section below. The full pass it re-runs was **2026-09-01 and
 macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
 below and in the history of this file.
 
+<!-- The headline above is the line `poe milestones` reads for the server's
+soak: `**Last run DATE**, against m0serve X.Y.Z`, on one line, ahead of every
+other such line outside "The application layer". Move it with each re-soak. -->
+
 Every application this server had been tested against was written to test
 it — until the 2026-08-26 pass below, which put three real Django projects
 in front of it and found five defects. This pass re-runs those three
 against a server five minor versions on, adds a fourth application nobody
-here wrote at all, and replaces the pass's phase 5 — six thousand requests
-sampling RSS — with a driver that asserts **bytes**: every response
+here wrote at all, and replaces the pass's phase 5, six thousand requests
+sampling RSS, with a driver that asserts **bytes**: every response
 compared, status and headers and body digest, against a capture recorded
 from a reference server (gunicorn, uvicorn, daphne), under five concurrent
 populations, with logins, and with the server SIGTERM'd and restarted
-underneath. Three of the previous six defects were silent — a clean status
-over a short or empty body — and a request loop passes every one.
+underneath. Three of the previous six defects were silent: a clean status
+over a short or empty body. A request loop passes every one.
 
 ## The four applications
 
@@ -39,7 +43,7 @@ the server, each measured rather than assumed.
 | # | finding | triage |
 |---|---|---|
 | 1 | **A request body still arriving at SIGTERM holds the drain to its deadline.** With 9.7 MB uploads in flight every color-separation drain took exactly 5.0 s; bisected to the uploads population alone, then reproduced directly: a 10 MB POST with 5 MB delivered when SIGTERM lands and the rest sent a second later is never read — the drain loop dispatches writes only — so the client is reset at 5.03 s and the process exits at 5.09 s. gunicorn's graceful timeout keeps reading. The request-side twin of the response-side defect `drain_inflight_probe.py` fixed. | **fixed** — SPEC D9, gated every PR by `Smoke test the drain with an upload in flight`; `scripts/drain_upload_probe.py` became the two-sided gate, and the write-up is [A request body still arriving at SIGTERM held the drain to its deadline](notes/request-body-at-sigterm.md) |
-| 2 | textshelf's SSE views **stall the whole server under WSGI**: the `LISTEN/NOTIFY` async generator is consumed synchronously (Django's own warning), blocks 30 s per abandoned client, and eight abandoned clients hold the whole pool — every other request then times out. Without abandoners the WSGI row is clean; on the executor the same workload is clean with them. | **the documented WSGI limit meeting an app whose generators sleep 30 s** — bounded at shutdown as CLAUDE.md says, a full stall in service, which that sentence does not say. A deployment rule, recorded: this app's SSE views run on the executor or as holds, never on pool threads |
+| 2 | textshelf's SSE views **stall the whole server under WSGI**: the `LISTEN/NOTIFY` async generator is consumed synchronously (Django's own warning), blocks 30 s per abandoned client, and eight abandoned clients hold the whole pool — every other request then times out. Without abandoners the WSGI row is clean; on the executor the same workload is clean with them. | **the documented WSGI limit meeting an app whose generators sleep 30 s**: a streamed body holds a pool thread ([RUNNING.md](RUNNING.md#limits-and-lifecycle)), so the stall is bounded at shutdown and total in service. A deployment rule, recorded: this app's SSE views run on the executor or as holds, never on pool threads |
 | 3 | textshelf at `--workers 4` fails with Postgres's `FATAL: sorry, too many clients already` | **the application**: per-thread connections, `CONN_MAX_AGE = 10`, no pool configured despite `psycopg[pool]` in its dependencies; four processes exceed a default `max_connections` of 100. daphne × 4 would do the same |
 | 4 | bakerydemo bodies differ between gunicorn and m0serve in a CSS class order and site history's "model/page log entries" label | **Wagtail renders both from Python sets**, so they follow the interpreter's hash seed: ten seeds split 4/6 on the first, four seeds on m0serve alone split 2/2 on the second. gunicorn's workers agree with each other only because they fork from one master |
 | 5 | transcripts' PDF and XLSX differ on every request at identical size | **timestamps and per-process font tags**: `/CreationDate`, `/ModDate`, XMP dates and IDs, typst's six-letter subset-font prefix (constant per process, four workers give four); openpyxl's creation second. All bounded substitutions that pass the driver's blinding lint |
@@ -51,7 +55,7 @@ upload in flight at the instant of the signal, which only a population
 that uploads continuously produces. Finding 2 could not have come from
 the previous pass either, whose textshelf row never abandoned a stream.
 
-## Phase 0 — will it even load?
+## Phase 0: the import
 
 `m0serve --doctor` `ok: true` on every entry point: `transcript_manager.wsgi`
 (`--app-dir src`), `halftone_studio.wsgi` and `.asgi`, `config.wsgi` and
@@ -67,27 +71,29 @@ unconditionally (it is in the uv lockfile's dev group; `uv sync` works).
 color-separation keeps real source under `output/` — `composite.py`,
 `raster.py`, `vector.py` — and `.gitignore` excludes `output/`, so a clone
 fails on its first request with `No module named 'output'`; the doctor
-passed, because Django imports its URLconf lazily. **Phase 0 answers "does
-the callable import", not "does the first request work".**
+passed, because Django imports its URLconf lazily. Phase 0 checks that the
+callable imports. It does not send a request.
 
 ## Phase 1 — parity, byte for byte
 
 Each application captured from a reference server and every response of
 the soak held to it. The only differences that survived were named
-substitutions (findings 4 and 5), a framing choice — uvicorn frames an
-undeclared-length body as chunked where m0serve buffers it and sends
-`Content-Length`; the decoded bytes are identical — and the four
-security headers `runserver`'s `StaticFilesHandler` bypasses, on which
-gunicorn agrees with m0serve byte for byte.
+substitutions (findings 4 and 5), a framing choice (uvicorn chunks an
+undeclared-length body; m0serve buffers it and sends `Content-Length`; the
+decoded bytes match), and the four security headers `runserver`'s
+`StaticFilesHandler` bypasses, on which gunicorn agrees with m0serve byte
+for byte.
 
 ## Phases 3 and 5 — topology, churn, and the soak
 
-Every row: five populations at once (keep-alive bursts at 120 requests per
-connection, over the cap of 100; streams read to completion; uploads, slow
-views and logins; WebSocket echoes where the app has any; abandoners that
-vanish mid-body by FIN and by RST and reuse the slot at once), sampling
-RSS, descriptors, threads and the server's own `/__metrics`. "verified"
-is responses byte-identical to the reference capture.
+Every row: five populations at once (keep-alive bursts of 120 requests per
+connection; streams read to completion; uploads, slow views and logins;
+WebSocket echoes where the app has any; abandoners that vanish mid-body by
+FIN and by RST and reuse the slot at once), sampling RSS, descriptors,
+threads and the server's own `/__metrics`. "verified" is responses
+byte-identical to the reference capture. Through 0.18.0 the bursts crossed
+the keep-alive cap of 100. The cap has been 1000 since 0.19.0, so the
+bursts stay under it, and `smoke-keepalive-cap` (SPEC A3) holds the cap.
 
 | app | mode | seconds | verified | failures | churn | RSS |
 |---|---|---|---|---|---|---|
@@ -110,15 +116,15 @@ not run: none of the four dependency trees builds on free-threaded CPython
 
 ## What this changes about the guards
 
-- **The driver itself** (`scripts/soak.py`, `poe soak-apps`,
+- The driver itself (`scripts/soak.py`, `poe soak-apps`,
   `poe soak-selftest`): its comparator is a pure function with a
-  self-test that found the driver's own first hole — a substitution greedy
-  enough to absorb a truncation blinds the instrument — so a capture now
+  self-test that found the driver's own first hole (a substitution greedy
+  enough to absorb a truncation blinds the instrument), so a capture now
   refuses any route its patterns blind and carries a fingerprint of the
   rules it was recorded under. Sabotaging a manifest's byte count makes the
   task exit 1 naming the failure.
-- **`scripts/drain_upload_probe.py`**, finding 1's reproducer and the gate
-  the fix will land with, two-sided like its sibling: the upload must be
+- `scripts/drain_upload_probe.py`, finding 1's reproducer and now its gate
+  (SPEC D9), two-sided like its sibling: the upload must be
   answered whole, and the process must exit inside 3 s of the signal.
 - Four manifests under `scripts/soak_manifests/` are the re-runnable
   record of each application's shape, including every substitution and
@@ -277,13 +283,13 @@ and `Fragment`.
 **The staleness rule, ahead of the 1.17.0 train.** The 1.14.0 pass is
 three minors behind 1.17.0, past the limit of two, so the train would read
 it STALE. What moved under these applications since: the fixes of 1.15.0
-and 1.16.0, and on main for 1.17.0 the loop's connection limits -- a full
-loop takes a slot back from an idle connection (C23), a pass drains only
-the streams with output (C24), and a loop the open-file limit cannot hold
-at its count holds what it leaves, the raise counting two descriptors a
-connection on Linux (C25) -- beside the comment that follows an SSE event
-(I47) and loopback by default (M31). Every keep-alive request in the rows
-crosses C23's queues, every held stream C24's drain. `bin/m0serve` reports
+and 1.16.0, and on main for 1.17.0 the loop's connection limits, the
+comment that follows an SSE event (I47) and loopback by default (M31).
+Under the limits, a full loop takes a slot back from an idle connection
+(C23), a pass drains only the streams with output (C24), and a loop the
+open-file limit cannot hold at its count holds what it leaves, the raise
+counting two descriptors a connection on Linux (C25). Every keep-alive
+request in the rows crosses C23's queues, every held stream C24's drain. `bin/m0serve` reports
 1.16.0: the version moves on the release branch, and the code is the
 train's. The access log is off in every row, as before.
 
@@ -321,7 +327,7 @@ mirroring them, so no loop was full and C23 had nothing to take back: the
 rows cross its queue moves on every request, and `smoke-max-connections`
 holds its taking.
 Uploads: 256 of 256 landed under the executor, and in the WSGI row 327 of
-328 -- the 328th was answered, and its landing check, a second request,
+328: the 328th was answered, and its landing check, a second request,
 met the restart and was counted as tolerated, not wrong.
 
 textshelf's executor row reads 177 → 288 MB, and is flat within each of
@@ -333,7 +339,7 @@ sample, taken before its transient, with its plateau, which had not yet
 come down as the first epoch's had. The 2026-10-09 row's second epoch
 came down within the row (173 → 183 MB).
 
-Against 2026-10-09 the counts moved up in five rows and down in one --
+Against 2026-10-09 the counts moved up in five rows and down in one:
 transcripts 46,750 against 26,041, color-separation's WSGI row 49,819
 against 41,955, textshelf's executor row 82,185 against 74,016,
 textshelf's WSGI row 26,843 against 27,435. The rows assert bytes rather
@@ -574,8 +580,8 @@ I22), a Mojo mount an application supplies as a module (N14), sessions and
 CSRF behind a login (N13), the Datastar form (N12), and a fix for a
 splitter that a request could trap (G14). Only the last is on the request
 path of these four applications; the rest is reached by configuration none
-of them sets. So this pass asks the same question the others did — does
-somebody else's Django project still work, byte for byte, under churn —
+of them sets. So this pass asks the same question the others did (does
+somebody else's Django project still work, byte for byte, under churn?)
 against a server whose surface grew rather than shifted.
 
 The checkouts under `/tmp/soak/` survived this time, which is unusual. Every
@@ -615,8 +621,8 @@ up was in the pre-release TOOLING rather than the server: the Linux
 container's build list never gained `postgres` after `m0-wsgi` began
 importing `m0_postgres` for `--pg-listen`, so `build-wsgi` could not build
 in the container at all and `stress-pool` failed before its first round.
-CI cannot see it — there is no such container there — which is the reason
-that tier exists. Fixed in the FOUR places that name the list: `scripts/probes/linux_sync.sh`,
+CI cannot see it, because CI has no such container; the tier exists for
+that reason. Fixed in the FOUR places that name the list: `scripts/probes/linux_sync.sh`,
 the `stress-pool` task, `scripts/bench_linux_conclusions.py` (which would
 have hit it next), and `scripts/probes/linux_setup.sh` — the last found in
 review, and the one that matters most, because it is what CREATES the
@@ -676,8 +682,8 @@ WSGI row again opens on the ~490 MB startup transient that finding 7
 describes and settles inside the minute; the executor rows again carry more
 threads than the pooled ones, which is asgiref's thread pool for that app's
 synchronous views. One count differs by one on the color-separation churn
-row — 343 uploads, 342 landed — and it is the same shape 2026-09-07
-recorded (344 and 343): the POST is counted when it answers, the follow-up
+row, 343 uploads and 342 landed, the same shape 2026-09-07 recorded
+(344 and 343): the POST is counted when it answers, the follow-up
 GET of the page it redirects to is what marks it landed, and a restart
 between the two is a tolerated connection error rather than a failure.
 
@@ -772,7 +778,7 @@ each cost time and the next pass should not pay it again:
   9.6 MB where a photograph's was 4.7 — the fixture is noise, which does
   not compress), and a `components.css` that textshelf has since grown by
   187 bytes. The pins now carry the fixture sizes with a comment saying
-  so. The rule the pass above added — re-baseline before every pass —
+  so. The rule the pass above added, re-baseline before every pass,
   covers the captures; a manifest pin is a second expectation and rots
   the same way, so re-pin with the fixtures.
 
@@ -840,14 +846,14 @@ the claim can open a stream, hold it, and time the drain.
 `--threads` (none of the four dependency trees builds on free-threaded
 CPython), NiceGUI (phase 0 only, no manifest), the proxy and worker shapes.
 
-## What would make this worth repeating
+## Shapes not yet covered
 
 The shapes these four still lack: a WebSocket application (NiceGUI passed
-phase 0 — its socket.io transport works in a real browser through the
-executor — and has no manifest yet), a real proxy in front
-(`X-Forwarded-Proto` → `SECURE_PROXY_SSL_HEADER`, which textshelf on Fly
-will supply), a background worker, and free-threaded `--threads`. And a
-week of real traffic, which is the plan.
+phase 0, its socket.io transport working in a real browser through the
+executor, and has no manifest yet), a background worker, free-threaded
+`--threads`, and a week of real traffic. A real proxy in front
+(`X-Forwarded-Proto` → `SECURE_PROXY_SSL_HEADER`) is covered by textshelf,
+in production behind Fly's proxy since 2026-09-12 (the record above).
 
 ---
 
@@ -864,8 +870,7 @@ for a smoke suite and the wrong shape for the question **"would this serve my
 application?"**
 
 The gap was not hypothetical. The one time the wheel had met a real Django
-project it produced the `--app-dir` shadowing defect
-([Known issues](ROADMAP.md#known-issues)). This pass produced **four more**,
+project it produced the `--app-dir` shadowing defect. This pass produced **four more**,
 three of which no in-repo app could have shown, and every one of them is now
 fixed with a test that fails without the fix.
 
@@ -883,8 +888,7 @@ against scratch databases; their own settings, unmodified.
 
 ## What was found
 
-Five defects. Four are fixed in this repo with a guard; one was already known
-and stays open on purpose.
+Five defects, each fixed with a guard; the fifth was already known.
 
 | # | defect | how it presented | triage |
 |---|---|---|---|
@@ -892,7 +896,7 @@ and stays open on purpose.
 | 2 | **Uploads between ~1.5 MB and `--max-body` were refused `400`** | `color-separation`'s image upload (7.1 MB) failed with a truncated connection under `--max-body 64m`; on a bare echo app the threshold was between 1.5 MB and 2 MB whatever the flag said, including the default. The receive buffer had its own 2 MB ceiling that `--max-body` never raised, and it answers `400 Bad Request` rather than the `413` the body cap sends — so the error named the wrong thing. | **fixed** — `ServerConfig.recv_buffer_limit()`, + a `test_config.mojo` case, + `smoke-serve` now asserts a 3 MB body at the default cap and 7 MB at `--max-body 8m` |
 | 3 | **Concurrent ASGI streams truncated each other** | `textshelf` serves its static files through WhiteNoise, so every page load is several `FileResponse`s. Twelve concurrent fetches of one 232 KB file left bodies short — a clean `200` with fewer bytes — and enough of them wedged the executor entirely: the server stopped answering and `SIGTERM` needed 12+ s and then `SIGKILL`. Cause: the credit window is **per stream** (64 KB) while the chunk channel is **shared and finite**, so N streams over-commit it and `send_stream_chunk` dropped the datagram it could not place. | **fixed** — a global in-flight budget in the shim (`_ASGI_TOTAL_WINDOW`), an owed-ack retry on the loop side, and a full channel that **waits detached** rather than dropping; + `smoke-asgi` runs 32 concurrent `FileResponse`-shaped streams and checks every byte |
 | 4 | **`SIGTERM` never returned when a handler thread was inside a response that never ends** | `textshelf`'s SSE endpoints served under WSGI are buffered, so the generator never returns and its pool thread never comes back. `stop_and_join` waited for it forever: the drain finished, the process did not exit, and `docker stop` would end in `SIGKILL` after its grace. | **fixed** — `ThreadSet.join_within` and a 5 s join budget matching the drain's, after which the process leaves and says what it left behind; + a `smoke-blocking-threads` phase with two never-returning views |
-| 5 | `--app-dir` is appended to `sys.path`, not prepended | Confirmed again at the time: a probe app reported `--app-dir` at position 5, after site-packages. It did **not** bite any of the three (no top-level module name collides with an installed package in any of them), which is why it was a latent hazard rather than a visible failure. | **fixed in 0.12.0** — `prepend_to_path` puts `--app-dir` at `sys.path[0]` the way gunicorn, uvicorn and `runserver` do, and `smoke-serve`'s shadowing case (a project module named like an installed package) pins it; struck through in [Known issues](ROADMAP.md#known-issues) |
+| 5 | `--app-dir` is appended to `sys.path`, not prepended | Confirmed again at the time: a probe app reported `--app-dir` at position 5, after site-packages. It did **not** bite any of the three (no top-level module name collides with an installed package in any of them), which is why it was a latent hazard rather than a visible failure. | **fixed in 0.12.0** — `prepend_to_path` puts `--app-dir` at `sys.path[0]` the way gunicorn, uvicorn and `runserver` do, and `smoke-serve`'s shadowing case (a project module named like an installed package) pins it |
 
 Findings 1, 3 and 4 could not have come from `apps/`: they need a real cookie
 policy, a real static-file middleware, and a real never-ending response
@@ -1195,17 +1199,6 @@ cap still fires for an ordinary response — without it the gate would pass on
 a build whose cap never fires. Four sabotages: reverting the fix, each guard
 alone, and raising the cap, each caught by the phase that should catch it.
 
-The `m0serve X.Y.Z` marker in this file's opening line is the ONE the
-milestone gate reads, and it deliberately stays at the version the full
-three-application pass was run against. A second marker anywhere in the page
-would become a fallback for `_real_app_version` and silently defeat the
-sabotage that proves the gate can miss an unreadable record — which is why
-this heading says "against 0.16.0" rather than naming the binary.
-
-**This pass is not the 1.0 soak.** `transcripts` and `color-separation` have
-not been run against 0.16.0, so the record above still stands at 0.11.0 for
-them and the milestone stays stale until they are.
-
 ## What would make this worth repeating
 
 It already was: four defects in one pass, three of them invisible to any
@@ -1267,9 +1260,9 @@ and `smoke.sh` passed. The 2026-10-09 run, on 1.14.0, verified 1,762,770
 and 881,953 in the same times, with the same zero; the rows assert bytes,
 not rate.
 
-**The deployed instance**, `unotes.fly.dev` on a `shared-cpu-1x`, on
-`m0` 0.4.0 since 2026-09-30. Signed in on 2026-10-02: the list, a note and
-the themes page each answer 200, and the list signed out is a 303 to the
+**The deployed instance on 2026-10-02**, `unotes.fly.dev` on a
+`shared-cpu-1x`, then on `m0` 0.4.0. Signed in that day: the list, a note
+and the themes page each answer 200, and the list signed out is a 303 to the
 login. The corpus scan on that CPU, `x-scan-us`, six requests of each:
 
 | query | µs |
@@ -1285,7 +1278,7 @@ phone that sleeps and reconnects, were taken on the deployed instance on
 the log owed").
 
 **What this does not show.** The framework as published: this run's is
-the release branch's, in a wheel not yet on the index. Traffic from anyone but its owner, an
+main's at `1a3a0796`, in a wheel not yet on the index. Traffic from anyone but its owner, an
 application with writes (unotes reads), a stream, or a second author's
 habits. The layer's write path is gated by `apps/fragment_notes`,
 `apps/datastar_todo` and `apps/table_notes` inside the tree and has no
