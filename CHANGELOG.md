@@ -13,6 +13,10 @@ default is listed under **Behaviour changes**
 
 ## [Unreleased]
 
+### Changed
+
+- **The m0serve wheel is classified `Development Status :: 5 - Production/Stable`** on PyPI, matching the 1.x contract; it read `4 - Beta` since before 1.0.
+
 ## [1.17.0] — 2026-11-05
 
 The first release on the two-weekly train ([Releases](docs/RELEASES.md)),
