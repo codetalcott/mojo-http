@@ -76,9 +76,9 @@ What an application is written with, and the page that holds each piece.
 
 Its exit codes are a closed set: 0; 1, the tool `m0` ran failed; 2, the
 command line cannot be accepted; 78, `m0` refused before running anything,
-with one line naming the fix. `m0` runs the `mojo` in its own environment,
-never the one on `PATH`, and refuses any version other than the one it was
-tested on.
+with one line on stderr naming the fix. `m0` runs the `mojo` in its own
+environment, never the one on `PATH`, and refuses any version other than the
+one it was tested on.
 
 [blobs.m0serve.dev](https://blobs.m0serve.dev) is an application on this
 stack: one simulation stepped on the server and streamed to every viewer,

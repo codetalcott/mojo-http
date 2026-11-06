@@ -387,7 +387,7 @@ has the Flask version of the whole thing.
   import or lifespan, the bind), 78 a configuration this machine or build
   cannot serve (a value above its cap, a port out of range, a missing
   library, an interpreter the mode cannot use); each prints one sentence
-  naming the fix.
+  on stderr naming the fix.
 
 ## Configuration precedence
 

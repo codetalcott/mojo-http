@@ -4233,41 +4233,49 @@ SPEC="bareapp.wsgi:application --app-dir apps/wsgi_bare"
 port=$(free_port 2)
 envport=$((port + 1))
 log=$SMOKE_DIR/serve.log
+# A refusal's own stream: stderr, which a supervisor keeps (journald, a
+# container's log). Named .log so that a failure prints it.
+err=$SMOKE_DIR/serve-err.log
 
-# --help and --version exit 0 and say what they must. The version is read
-# from pyproject so the two cannot drift apart silently.
-"$srv" --help > "$log" 2>&1 || fail '--help did not exit 0'
+# --help and --version exit 0 and say what they must, on stdout. The version
+# is read from pyproject so the two cannot drift apart silently.
+"$srv" --help > "$log" 2> "$err" || fail '--help did not exit 0'
 for flag in --app-dir --static --max-body --workers --host --port --metrics; do
-  grep -q -- "$flag" "$log" || fail "--help does not mention $flag"
+  grep -q -- "$flag" "$log" || fail "--help does not mention $flag on stdout"
 done
 ver=$("$srv" --version) || fail '--version did not exit 0'
 want="m0serve $(grep -m1 '^version = ' pyproject.toml | sed 's/version = //; s/"//g')"
 [ "$ver" = "$want" ] || fail "--version printed '$ver', want '$want'"
 
-# Usage errors exit 2 and print usage. A flag typo is told, not defaulted —
-# unlike M0_PORT=80eighty, which the environment loader ignores, saying so
-# (the doctor phase below).
-"$srv" > "$log" 2>&1; rc=$?
+# Usage errors exit 2 and print usage, on stderr and not on stdout. A flag
+# typo is told, not defaulted -- unlike M0_PORT=80eighty, which the
+# environment loader ignores, saying so (the doctor phase below).
+"$srv" > "$log" 2> "$err"; rc=$?
 [ "$rc" = "2" ] || fail "no positional: exit $rc, want 2"
-grep -q '^usage: m0serve' "$log" || fail 'no positional: usage not printed'
+grep -q '^usage: m0serve' "$err" || fail 'no positional: usage not printed on stderr'
+grep -q '^usage: m0serve' "$log" && fail 'no positional: the usage error printed on stdout'
 "$srv" x.wsgi --bogus > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "--bogus: exit $rc, want 2"
-"$srv" x.wsgi --port 80eighty > "$log" 2>&1; rc=$?
+"$srv" x.wsgi --port 80eighty > "$log" 2> "$err"; rc=$?
 [ "$rc" = "2" ] || fail "--port 80eighty: exit $rc, want 2"
-grep -q 'must be a number' "$log" || fail '--port 80eighty: the message does not say why'
+grep -q 'must be a number' "$err" || fail '--port 80eighty: the message does not say why on stderr'
+grep -q 'must be a number' "$log" && fail '--port 80eighty: the usage error printed on stdout'
 "$srv" x.wsgi --static-header 'Cache-Control: no-store' > "$log" 2>&1; rc=$?
 [ "$rc" = "2" ] || fail "--static-header 'Cache-Control: no-store': exit $rc, want 2"
 grep -q -- '--static-cache-control' "$log" || fail '--static-header Cache-Control: the message does not point to --static-cache-control'
 
-# Startup failures exit 1 and name the thing. The directory checks run before
-# any interpreter starts; the module and attribute ones are Python's own words.
-"$srv" x.wsgi --app-dir /no/such/dir > "$log" 2>&1; rc=$?
+# Startup failures exit 1 and name the thing, on stderr. The directory checks
+# run before any interpreter starts; the module and attribute ones are
+# Python's own words.
+"$srv" x.wsgi --app-dir /no/such/dir > "$log" 2> "$err"; rc=$?
 [ "$rc" = "1" ] || fail "bad --app-dir: exit $rc, want 1"
-grep -q 'app dir does not exist: /no/such/dir' "$log" || fail 'bad --app-dir: message does not name it'
-"$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare > "$log" 2>&1; rc=$?
+grep -q 'app dir does not exist: /no/such/dir' "$err" || fail 'bad --app-dir: message does not name it on stderr'
+grep -q 'app dir does not exist' "$log" && fail 'bad --app-dir: the refusal printed on stdout'
+"$srv" nosuch.wsgi:application --app-dir apps/wsgi_bare > "$log" 2> "$err"; rc=$?
 [ "$rc" = "1" ] || fail "bad module: exit $rc, want 1"
-grep -q 'could not load nosuch.wsgi:application' "$log" || fail 'bad module: message does not name it'
-grep -q 'Traceback' "$log" && fail 'bad module: a traceback for a module that does not exist is noise'
+grep -q 'could not load nosuch.wsgi:application' "$err" || fail 'bad module: message does not name it on stderr'
+grep -q 'could not load' "$log" && fail 'bad module: the refusal printed on stdout'
+grep -q 'Traceback' "$log" "$err" && fail 'bad module: a traceback for a module that does not exist is noise'
 "$srv" bareapp.wsgi:nosuch --app-dir apps/wsgi_bare > "$log" 2>&1; rc=$?
 [ "$rc" = "1" ] || fail "bad attribute: exit $rc, want 1"
 grep -q 'nosuch' "$log" || fail 'bad attribute: message does not name it'
@@ -4412,12 +4420,12 @@ kill -TERM $pid; wait $pid 2>/dev/null; rc=$?
 # notice and the time are asserted, so a slow runner cannot pass a retrying
 # build.
 t0=$(date +%s)
-"$srv" $SPEC --host 192.0.2.1 --port $port > "$log" 2>&1; rc=$?
+"$srv" $SPEC --host 192.0.2.1 --port $port > "$log" 2> "$err"; rc=$?
 took=$(( $(date +%s) - t0 ))
 [ "$rc" = "1" ] || fail "an address not on this machine: exit $rc, want 1"
-grep -q 'address already in use' "$log" && fail 'an address not on this machine was reported as in use'
-grep -q "cannot listen on 192.0.2.1:$port" "$log" || fail 'the listen failure does not name the address'
-grep -q 'Retrying' "$log" && fail 'a bind failure that waiting cannot cure was retried'
+grep -q 'address already in use' "$log" "$err" && fail 'an address not on this machine was reported as in use'
+grep -q "cannot listen on 192.0.2.1:$port" "$err" || fail 'the listen failure does not name the address on stderr'
+grep -q 'Retrying' "$log" "$err" && fail 'a bind failure that waiting cannot cure was retried'
 [ "$took" -lt 3 ] || fail "an address not on this machine took ${took}s to be refused: it was retried"
 
 # A static mount is answered in Mojo with the freshness policy given; a path

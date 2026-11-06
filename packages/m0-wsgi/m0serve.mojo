@@ -54,6 +54,7 @@ from std.ffi import c_int
 from std.os import getenv, setenv
 from std.os.path import isdir, isfile
 from std.python import Python, PythonObject
+from std.sys import stderr
 from std.sys.arg import argv
 from std.sys.info import CompilationTarget
 
@@ -217,14 +218,16 @@ struct HoldMount(PoolHandler):
 
 
 def _fail(message: String, code: Int):
-    """Report and exit with `code`.
+    """Report on stderr and exit with `code`, which is never 0.
 
     `process_exit` is `_exit(2)`: no atexit, no unwinding — which is what a
     forked worker needs (the runtime's teardown is unusable after fork) and
-    harmless everywhere else, because every message is flushed first. (The
-    stdlib's `exit` was tried and the status did not reach the shell.)
+    harmless everywhere else, because `print` has written the line to the
+    descriptor before it returns. Unflushed: `flush=True` is a `dup` that
+    crashes with no descriptor free (SPEC C22), and has nothing to flush.
+    (The stdlib's `exit` was tried and the status did not reach the shell.)
     """
-    print("m0serve: " + message, flush=True)
+    print("m0serve: " + message, file=stderr)
     process_exit(code)
 
 
@@ -1019,7 +1022,7 @@ def main() raises:
     try:
         opts = parse_args(args, ServeOptions.from_env())
     except e:
-        print(usage(), flush=True)
+        print(usage(), file=stderr)
         _fail(String(e), EXIT_USAGE)
         return
     if opts.show_help:
@@ -1404,7 +1407,9 @@ def _serve_offloaded(
         # loop has accepted nothing, so there is nothing to drain, and the
         # executor is still inside the application, where nothing here can
         # unwind it: leave as `join_offload` does past its budget.
-        _fail("stopped before the application was ready", 0)
+        # Not a failure: nothing was accepted, and the exit is 0.
+        print("m0serve: stopped before the application was ready", flush=True)
+        process_exit(0)
         return
     print(banner, flush=True)
     # The compiled mounts' workers, sized and reserved by `wire_offload`.

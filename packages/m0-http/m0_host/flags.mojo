@@ -38,6 +38,7 @@ exits.
 """
 
 from std.os import getenv
+from std.sys import stderr
 from std.sys.arg import argv
 
 from lightbug_http.c.process import process_exit
@@ -301,7 +302,8 @@ def program_name() -> String:
 
 def read_flags_or_exit(seed: AppConfig) -> HostFlags:
     """The command line over `seed`, or the exit it earns: the usage and 2
-    for one that cannot be read, the usage and 0 for `--help`."""
+    for one that cannot be read, both on stderr, and the usage and 0 for
+    `--help`, on stdout."""
     try:
         var flags = parse_host_flags(host_args(), seed)
         if flags.help:
@@ -309,8 +311,8 @@ def read_flags_or_exit(seed: AppConfig) -> HostFlags:
             process_exit(0)
         return flags^
     except e:
-        print(host_usage(program_name()), flush=True)
-        print("host: " + String(e), flush=True)
+        print(host_usage(program_name()), file=stderr)
+        print("host: " + String(e), file=stderr)
         process_exit(EX_USAGE)
         return HostFlags(seed.copy())  # never reached: the process has left
 

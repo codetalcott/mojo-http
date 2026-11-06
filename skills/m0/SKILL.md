@@ -93,7 +93,7 @@ takes every interface.
   resolved configuration as one object.
 - Exit codes from `m0` and the binary: 0; 1 what ran failed (the
   compiler or a test under `m0`, the bind or a loop from the binary); 2 a
-  command line that cannot be read; 78 a refusal, one line naming the
-  fix. Read the line; do not retry.
+  command line that cannot be read; 78 a refusal, one line on stderr naming
+  the fix. Read the line; do not retry.
 - A build does not check a function nothing calls; a test that calls it
   does.

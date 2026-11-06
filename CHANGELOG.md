@@ -13,9 +13,27 @@ default is listed under **Behaviour changes**
 
 ## [Unreleased]
 
+### Behaviour changes
+
+- **Refusals go to stderr.** m0serve and a Mojo host application write
+  each line they print to refuse or to fail before exiting non-zero to
+  stderr, where they wrote stdout: the usage and the reason for a command
+  line that cannot be read (exit 2); a configuration refused (exit 78:
+  m0serve's checks, the host's `host_checks`, and a handler's or a
+  producer's `make` that raises); and a startup that fails (exit 1: an
+  application that cannot be loaded, an address that cannot be bound, an
+  event loop or a serving thread that raised). The report `--doctor`
+  prints, still the last line of stdout, stays there, as do `--help`,
+  `--version`, the banner, the access log and the notices a running
+  server prints. A supervisor or a script that read a refusal from
+  stdout reads it from stderr now, and `2>&1` gives back the one stream
+  it read before.
+
 ### Changed
 
-- **The m0serve wheel is classified `Development Status :: 5 - Production/Stable`** on PyPI, matching the 1.x contract; it read `4 - Beta` since before 1.0.
+- **The m0serve wheel is classified
+  `Development Status :: 5 - Production/Stable`** on PyPI, matching the
+  1.x contract; it read `4 - Beta` since before 1.0.
 
 ## [1.17.0] — 2026-11-05
 

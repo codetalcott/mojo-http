@@ -15,7 +15,9 @@ wrong. In this order:
    (`m0_host.flags`; flag > env > default, m0serve's precedence). One that
    cannot be read is the usage and exit 2; `--doctor` prints what the
    steps below WOULD do as one JSON object (`host_report`) and leaves with
-   the code step 1 would, having bound nothing.
+   the code step 1 would, having bound nothing. Every refusal and startup
+   failure is said on stderr; the report, `--help` and the banners keep
+   stdout.
 1. **Refuse what it does not serve** (`host_checks`): `M0_SPAWN_WORKERS`
    is m0serve's, and a variable the host silently ignored would be a
    configuration that reads as applied; `M0_WORKERS` and `M0_THREADS`
@@ -171,6 +173,7 @@ from m0_http.parallel_runtime import PARALLEL_RUNTIME_IMAGE, parallel_runtime_li
 from std.ffi import c_int
 from std.memory import Pointer
 from std.os import getenv
+from std.sys import stderr
 from std.sys.info import CompilationTarget
 from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns, sleep
@@ -559,7 +562,7 @@ struct PoolLane[H: AppHandler](PoolHandler):
                 + String(ctx.index)
                 + ", so this configuration is refused: "
                 + String(e),
-                flush=True,
+                file=stderr,
             )
             raise e
 
@@ -1314,7 +1317,7 @@ def _make_handler[H: AppHandler](ctx: HostContext) raises -> H:
         print(
             "host: the handler's make raised, so this configuration is refused: "
             + String(e),
-            flush=True,
+            file=stderr,
         )
         process_exit(EX_CONFIG)
         raise e  # never reached: the process has left
@@ -1335,7 +1338,7 @@ def _start_producer_or_refuse[P: Producer](
         print(
             "host: the producer's make raised, so this configuration is refused: "
             + String(e),
-            flush=True,
+            file=stderr,
         )
         process_exit(EX_CONFIG)
 
@@ -1364,7 +1367,7 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         pool_state_routes=_pool_state_routes[H](),
     )
     if refusal:
-        print("host: " + refusal.value(), flush=True)
+        print("host: " + refusal.value(), file=stderr)
         process_exit(EX_CONFIG)
     # The descriptors the connections need, before the bind, the fork and
     # the threads, so every loop inherits them (SPEC C21).
@@ -1497,7 +1500,7 @@ def _start_pool[H: AppHandler](
                     "host: the handler's make raised on ", raised,
                     " pool thread(s), so this configuration is refused",
                 ),
-                flush=True,
+                file=stderr,
             )
         else:
             print(
@@ -1506,7 +1509,7 @@ def _start_pool[H: AppHandler](
                     " handler ", POOL_READY_TIMEOUT_NS // 1_000_000_000,
                     " s after starting, so this configuration is refused",
                 ),
-                flush=True,
+                file=stderr,
             )
         process_exit(EX_CONFIG)
     print(
@@ -1670,7 +1673,7 @@ def _loop_body[H: AppHandler](arg: Int) -> Int:
                 "host: loop ", block.get(BLK_INDEX), " raised, and a loop"
                 " that dies takes the process: ", e,
             ),
-            flush=True,
+            file=stderr,
         )
         process_exit(1)
     # Last act, and load-bearing: `join_within` waits on this slot.

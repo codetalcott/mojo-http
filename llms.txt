@@ -133,8 +133,8 @@ platforms: macOS arm64, glibc Linux x86_64 and aarch64.
   `/app/about.json` (`"python":false`, the CPU compiled for, bytes) as the
   last line of stdout. It needs docker and a committed `uv.lock`.
 - Exit codes, from `m0` and from the binary: 0; 1 the tool that ran failed;
-  2 a command line that cannot be read; 78 a refusal, one line naming the
-  fix. Read the line; do not retry.
+  2 a command line that cannot be read; 78 a refusal, one line on stderr naming
+  the fix. Read the line; do not retry.
 - The binary: flag over `M0_*` variable over default. `--workers N` forks,
   `--threads N` is loops in one process (not both above 1),
   `--blocking-threads N` is a handler pool behind each loop. `--doctor`
