@@ -7,8 +7,8 @@ code. The reference is two pages: https://m0serve.dev/mojo/host/ (what
 https://m0serve.dev/mojo/views/ (the views table, `reply`, fragments and
 their vocabularies, a page or a fragment from one view, URLs, sessions,
 streams); each is Markdown at its URL with `.md` in place of the trailing
-slash. The framework's own source is installed and readable too — `uv run
-m0 include` prints where — for what the pages leave out.
+slash. For what the pages leave out, read the framework's own source:
+`uv run m0 include` prints where it is installed.
 
 ## Commands
 
@@ -24,19 +24,21 @@ Always `uv run m0 …` (the project's own venv; `uvx` is for `m0 new` alone).
 | `uv run m0 image` | `docker build -f deploy/Dockerfile`, then the image's own `about.json`; needs docker and a committed `uv.lock`, and no local toolchain | minutes the first time |
 | `./smoke.sh` | build, serve on its own port, probe the wire, stop | a build, plus a second |
 
-The test loop is three to five times faster than the build loop. **Put logic in
-functions a test can reach** — a renderer that takes values, a state struct
-with methods — and keep views thin. A test is also the only thing that
-vouches for a function nothing calls yet: in an imported module the compiler
-does not diagnose one, malformed signature included, so a green build says
-nothing about it. `bin/server --host 127.0.0.1 --port 8080` runs the app on
-this machine alone, as it does without `--host`; `--host 0.0.0.0` takes
-every interface, which the image sets; `--doctor`
+The test loop is three to five times faster than the build loop. **Put
+logic in functions a test can reach**, such as a renderer that takes values
+or a state struct with methods, and keep views thin. A test is also the
+only thing that vouches for a function nothing calls yet: in an imported
+module the compiler does not diagnose one, malformed signature included, so
+a green build says nothing about it.
+`bin/server --host 127.0.0.1 --port 8080` runs the app on this machine
+alone, as it does without `--host`;
+`--host 0.0.0.0` takes every interface, which the image sets; `--doctor`
 prints its configuration and starts nothing.
 
 Every refusal, from `m0` and from the binary, is exit **78** and one line
-naming the fix. Exit 1 is the compiler's or a test's own failure; exit 2 is
-a command line that cannot be read. Read the line; do not retry.
+naming the fix. Exit 1 is a failure of what ran: under `m0` the compiler
+or a test, from the binary the bind or a loop. Exit 2 is a command line
+that cannot be read. Read the line; do not retry.
 
 ## Layout
 
@@ -58,13 +60,12 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   never a query string: `Query().add(name, value)` then `q.on(url_for(X))`
   encodes both halves, request data included.
 - State that lives in one process answers `max_workers() -> 1`, and
-  `M0_WORKERS=2` is then refused rather than served as two different
-  copies; every view that reads or writes it is `on_loop=True`, since
-  under `--blocking-threads` each pool thread builds a state of its own.
-  The host refuses one left on the pool there with 78, naming it
-  (`pool-vs-application`), rather than serve a copy per thread.
-  Move the state out (a database, the shared page) before raising
-  `M0_WORKERS`.
+  `M0_WORKERS=2` is then refused, since two workers would hold two
+  different copies. Every view that reads or writes it is `on_loop=True`,
+  since under `--blocking-threads` each pool thread builds a state of its
+  own; the host refuses a view left on the pool there with 78, naming it
+  (`pool-vs-application`). Move the state out (a database, the shared
+  page) before raising `M0_WORKERS`.
 - `form(req)` is `None` unless the body is a urlencoded form. Check it.
 - `reply.html(body)`, `reply.json(status, text, body)`, `reply.redirect(status,
   url)`, `reply.no_content()`, and `reply.problem(status, title, detail,
@@ -82,7 +83,7 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   and `f.swap(verb, url)` generate the attributes that target it. **Never
   type an `hx-*` or `data-on:*` swap attribute by hand**, and never retype
   the id as `#id`.
-- A swap that arrives at a VIEW — a filtered list, a detail — takes
+- A swap that arrives at a VIEW (a filtered list, a detail) takes
   `push=True`, so the address bar follows and the view can be reloaded and
   linked to. A `get` only; `Fragment[Datastar]` refuses it (Datastar has no
   history handling), so a view that needs an address there is a plain link.
@@ -100,8 +101,11 @@ functions in `test/test_*.mojo`; adding one needs no registration.
   (`required`), and answer a client that bypasses it with `reply.problem`.
   An `application/json` answer is a signal patch: `{"text":""}` empties
   an input bound with `data-bind:text`.
-- Moving a `Fragment[Htmx]` app to Datastar is `Fragment[Datastar]` and the
-  script tag. A Datastar URL sits inside a JavaScript string: build it with
+- Moving a `Fragment[Htmx]` app to Datastar is `Fragment[Datastar]`, the
+  script tag, and the four differences the views page lists under
+  Vocabularies: an error is kept in the browser (`required`), a write's
+  CSRF token goes in a field, a delete behind a login is a POST, and a 401
+  is dropped. A Datastar URL sits inside a JavaScript string: build it with
   `url_for`, which encodes; a URL carrying `'`, `\`, CR or LF is refused.
 
 ## A login
@@ -115,14 +119,14 @@ what a `views`, `board` or `live` application adds the day it needs one.
   missing. Read it in `main` BEFORE `serve` and exit 78 on the error, so
   `--doctor` refuses what the run would; read it again in `make`.
 - **`APP_SECURE` is stated, never assumed**: `1` wherever the app is
-  served over HTTPS, so the session cookie carries `Secure` --
-  `deploy/fly.toml` says so -- and `0` over plain http such as
+  served over HTTPS, so the session cookie carries `Secure`
+  (`deploy/fly.toml` says so), and `0` over plain http such as
   `http://localhost`, where a browser need not keep a `Secure` cookie at
   all. Never put it in the image: a platform that says nothing is then
-  refused rather than served in clear.
+  refused, and no session goes out in clear.
 - A view behind it opens with two lines: `var session =
   st.login.session_of(req)`, then, without one, `return
-  refuse_signed_out(req, LOGIN, render_login(...))` -- a 303 for a
+  refuse_signed_out(req, LOGIN, render_login(...))`: a 303 for a
   navigation, a 401 carrying the form for a swap.
 - **Every write needs the session's CSRF token**, checked on the view's
   next line by `csrf_refusal(req, form(req), session, url)`: a POST carries
@@ -146,9 +150,10 @@ what a `views`, `board` or `live` application adds the day it needs one.
   `jar.add_pairs("name=value")`, then `HTTPRequest(uri, headers=…,
   cookies=jar^)`. Without it every such test is answered as signed out.
   The `auth` template's test signs in through the table and does this.
-- One user, its secret in the environment: no user table, no password
-  hashing, no session store. A session ends at its expiry, or when its key
-  leaves the ring (`APP_KEY_PREV` keeps the old key through a rotation).
+- One user, its secret in the environment. There is no user table,
+  password hashing or session store. A session ends at its expiry, or when
+  its key leaves the ring (`APP_KEY_PREV` keeps the old key through a
+  rotation).
 
 ## Streaming (SSE)
 
@@ -175,7 +180,10 @@ what a `views`, `board` or `live` application adds the day it needs one.
 - Work on a cadence goes in a `Producer` (`step` returns the nanoseconds to
   the next step), never in the loop's `tick`, which stalls every
   connection. Number frames with `out.next_id()`, and COUNT a publish that
-  returns `False`: a refused frame is otherwise invisible.
+  returns `False`: a refused frame is otherwise invisible. A `Feed`'s
+  fan-out is the exception: it asks the database and sends what changed,
+  from `tick`, which runs only once `--app-tick-ms` gives it a period (the
+  views page, Streams).
 - What workers and the producer share crosses a process boundary: it lives
   on the `page_slots` shared page, never in `malloc`'d memory.
 
@@ -195,7 +203,7 @@ what a `views`, `board` or `live` application adds the day it needs one.
 - **A value that must survive a restart is written in the request that
   changes it**, so the answer the client sees is a committed row. A
   producer that writes state back on its poll loses whatever landed
-  between its last poll and SIGTERM; `live` lost a kick that way on CI.
+  between its last poll and SIGTERM.
 - Two workers over one file are fine under WAL. A mutation that then
   BROADCASTS holds the write lock (`db.begin_immediate()` … `db.commit()`)
   from its change until its frame is numbered, or a stale render can take
@@ -205,7 +213,7 @@ what a `views`, `board` or `live` application adds the day it needs one.
   volume mounted there. The `live` template's `store.mojo` is the worked
   example.
 
-## Mojo traps this framework has paid for
+## Mojo traps
 
 - A `String` that came from a request may not be UTF-8. **Never slice one
   with `s[byte=a:b]`** — it traps on a non-boundary byte and takes the
@@ -222,8 +230,10 @@ Flag > environment > default; `bin/server --doctor` prints the result.
 `M0_HOST`, `M0_PORT`, `M0_BASE_URL`, `M0_WORKERS` (processes),
 `M0_THREADS` (loops in one process; not beside `M0_WORKERS>1`),
 `M0_BLOCKING_THREADS` (handler threads per loop), `M0_SPAWN_WORKERS`
-(refused), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`, `M0_APP_TICK_MS`,
-`M0_MAX_KEEPALIVE_REQUESTS`, `M0_QOS`. A count that cannot be
+(refused), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`, `M0_SSE_FLUSH_MS` (the
+comment that follows an SSE event), `M0_STREAM_KEEPALIVE_S` (TCP keepalive
+on a stream's socket), `M0_APP_TICK_MS`, `M0_MAX_KEEPALIVE_REQUESTS`,
+`M0_QOS`. A count that cannot be
 served is a 78 whichever way it arrived. More than one core is
 `M0_THREADS=N`; `M0_WORKERS` forks, and is refused when the binary links
 MAX's parallel runtime (`max.algorithm.parallelize`), whose threads a
@@ -251,7 +261,7 @@ the probe, not from the last command of a pipe. `smoke.sh` does all four.
   `parallelize`, because `fork()` copies one thread and the runtime's
   workers were started before `main`. On macOS this holds for every
   binary built while `max-core` is installed, whether or not it imports
-  MAX -- the toolchain links the runtime regardless -- so there
+  MAX, because the toolchain links the runtime regardless. There
   `M0_THREADS` is the way to N cores for any app in a MAX venv.
 - `uv run m0 build --release` bundles its runtime library
   (`libAsyncRTMojoBindings`) beside the binary with the rest, so the image
@@ -261,15 +271,15 @@ the probe, not from the last command of a pipe. `smoke.sh` does all four.
 
 Take the newer `m0` (`uv add --dev 'm0==X'`), then run `uv run m0 doctor`.
 Its `mojo-gated` line names the ONE `uv add` that moves the rest of the
-toolchain — `mojo`, and `max-core` beside it when it is installed, since
+toolchain: `mojo`, and `max-core` beside it when it is installed, since
 `max-core` pins its own compiler exactly and moving `mojo` alone cannot
-resolve. Nothing rewrites this project's files: the doctor's `scaffold`
-line names those `m0 new` wrote — the deploy files, the ignore files, the
-workflow, this page — that differ from what the new `m0` writes, whether
-you edited them or an older `m0` wrote them. `uv run m0 new /tmp/NAME`
+resolve. Nothing rewrites this project's files. The doctor's `scaffold`
+line names the files `m0 new` wrote (the deploy files, the ignore files,
+the workflow, this page) that differ from what the new `m0` writes,
+whether you edited them or an older `m0` wrote them. `uv run m0 new /tmp/NAME`
 writes the new ones beside yours; carry over what you want by hand.
 
-## Not built, on purpose
+## Not built
 
 No template engine, middleware, ORM, multipart parsing, session store or
 password hashing. Documentation: https://m0serve.dev/mojo/ (the host, views

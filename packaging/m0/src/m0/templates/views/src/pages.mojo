@@ -23,8 +23,11 @@ comptime ITEM = "/items/:id"
 
 comptime ROOT_ID = "items"
 
-# The vocabulary, named once. `Fragment[Datastar]` here, and Datastar's
-# script tag in `Site.wrap`, is the whole of moving this app to Datastar.
+# The vocabulary, named once. Moving this app to Datastar is
+# `Fragment[Datastar]` here, Datastar's script tag in `Site.wrap`, and a
+# 200 for every answer a person should see: Datastar drops the 422 and the
+# 404s htmx swaps in, so an empty title is kept in the browser
+# (`required`) and a delete of a gone item answers the list.
 comptime Frag = Fragment[Htmx]
 
 comptime _STYLE = """<style>
