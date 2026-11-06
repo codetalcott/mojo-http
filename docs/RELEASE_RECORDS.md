@@ -7,6 +7,89 @@ of both packages together. The rules these runs taught are in Releasing
 itself; a release before `m0` 0.1.0 is recorded in the
 [changelog](../CHANGELOG.md) alone.
 
+## m0 0.14.0 and m0serve 1.17.0 — 2026-11-06
+
+The first train on the two-weekly cadence ([Releases](RELEASES.md)), due
+Thursday 2026-11-05: its gates ran that evening and its tags went out after
+midnight. `m0 0.14.0`: tag `m0-v0.14.0` at `4889a0b`, cut beside m0serve
+1.17.0. A minor release because `m0` bundles the fork #642 changed (the SSE
+flush comment) and the host #649 changed (SPEC E42's refusal), and because
+its CLI and templates changed (#649: `m0 build --release` writes
+`dist/licenses/`, SPEC N56). The Mojo pin is unchanged at 1.2.0.
+
+- Step 1: `sabotage-m0-wheel` 26 of 26 (603 s). `sabotage-scaffold` 84 of
+  84, in three runs. The 72 rules outside `image:` (1435 s) caught 67 and
+  read **5 MISSED (failed elsewhere)**: every one a rule that takes
+  `on_loop=True` off a template's state view (views' and auth's list,
+  board's post, stream and document). Since #649 the host refuses that
+  application at startup with 78, naming the route (SPEC E42), so the wire
+  check each rule expected never ran: still guarded, by an earlier refusal,
+  but not in the words the rule named. #649 changed the host without
+  re-running this harness. The release pull request re-pointed the five to
+  the refusal's line for each route, and `--only "off the loop"` then
+  caught all six that match (210 s). The twelve `image:` rules ran one at a
+  time (79–136 s each), with a builder prune and an `fstrim -v
+  /var/lib/docker` between them. Before the run, every anchor of the
+  fourteen harnesses on `sabotage_lib` was applied to the tree in memory:
+  323 rules, none stale; an anchor check cannot see a stale expectation,
+  which is what these five were.
+- Step 3: the local wheel, built on the merge commit, was
+  `m0-0.14.0-py3-none-any.whl`, 763,167 bytes, its `_build_info.json`
+  naming framework 1.17.0, `4889a0b`, a clean tree, mojo 1.2.0 and max-core
+  26.7.0; a scaffold from it pinned `mojo==1.2.0` and `m0==0.14.0`.
+- Step 4: the release pull request (#663) was merged by the `automerge`
+  label, 19 checks green, and `build` read the pull request head's run
+  (`0ff2838`). It printed `m0 0.14.0, cut from 4889a0b…` and was green at
+  the first attempt. Its wheel artifact, the local wheel and the file on
+  the index share one SHA-256 (`23e87ee3…`).
+- The tags went out together, after midnight, the owner approving
+  `pypi-m0` first. **The first `v1.17.0` run could not build the macOS
+  wheel**: GitHub retired every macOS 14 image on 2026-11-02, and the
+  `macos-14` job was refused in one second ("The configuration
+  'macos-14-arm64-us-default' is not supported"). Nothing was published;
+  the run was cancelled, #664 moved `build-wheels` and
+  `wheel-consume-macos` to `macos-15`, the oldest arm64 image left, and
+  `v1.17.0` was deleted and pushed again at #664's merge, `dda630b`. The
+  wheel's floor did not move: the build sets `MACOSX_DEPLOYMENT_TARGET=13.0`
+  and `wheel_tag.py` measures it from the binaries. `m0-v0.14.0` stayed at
+  `4889a0b`; the two commits differ in `release.yml`, the changelog and one
+  documentation line. A pinned runner image retires on GitHub's calendar,
+  not the train's: read
+  [runner-images](https://github.com/actions/runner-images) for a pinned
+  image's retirement before a train.
+- Step 5 on macOS arm64: `uvx --refresh-package m0 m0 new probe` pinned
+  `m0==0.14.0`, and `uv.lock` named it from pypi.org. The first build took
+  18 s with no warning, `smoke.sh` and `m0 test` (6 of 6) passed, and every
+  `m0 doctor` check passed. `m0 image` built in 41 s: 103.7 MB, 3.06 MB of
+  it the app, `libsqlite3-0` installed and no interpreter. The builder's
+  `uv sync --frozen` installed `m0==0.14.0` and `mojo-compiler==1.2.0` from
+  the index.
+- Step 6: 8 blocks passed against the published package (35 s). `uvx m0
+  --version` read `m0 0.14.0`, and `uvx --from m0serve==1.17.0 m0serve --version` read `m0serve 1.17.0`.
+- m0serve 1.17.0: `v1.17.0` at `dda630b`. The second Release run built the three wheels, inspected them, consumed
+  each on a machine that did not build it (the macOS one on `macos-15`,
+  measuring `macosx_13_0_arm64` as before), published the GitHub release,
+  and uploaded after the owner's approval. Each file on the index has the
+  SHA-256 the release's `SHA256SUMS.txt` names, and the site deployed
+  after it.
+- The pre-release run, for the record: every gate in this page, from a
+  release worktree with its own venv, on the bumped tree, 21:11–23:40
+  local, the quiet stage first on the cold machine with `mediaanalysisd`
+  stopped for it alone. `probe-pool-fairness` (32 s) kept job order, its
+  barrier-off arm convoying and its keep-off arm starving; `probe-pool`
+  (892 s) held the pooled p99 at 0.2 ms at slow 0, 1 and 2;
+  `bench-linux-conclusions` (652 s) held all five conclusions, with the VM
+  the only busy process; `stress-asgi` 30 of 30 in both modes (192 s).
+  `stress-pool` held 20 of 20 rounds and 40 of 40 holds in all three wake
+  modes, `autobahn` held its baseline with no thin section,
+  `sabotage-host` caught 69 of 69 (`--skip parallel` 1898 s, `--only
+  parallel` 20 s with `max-core` installed), and the other sabotages caught
+  every rule. The browsers were already current. No bench re-record (the
+  artifacts are at 1.16.0, due 1.18.0), no soak (both at 1.16.0, re-run on
+  2026-11-02 against the train's code), no pool A/B (no pool record or
+  park change since 1.16.0). Disk stayed near 33 GiB, so for the first time
+  it was not a constraint.
+
 ## m0 0.13.0 and m0serve 1.16.0 — 2026-10-23
 
 `m0 0.13.0`: tag `m0-v0.13.0` at `bc74dfd`, 2026-10-23, cut beside m0serve
