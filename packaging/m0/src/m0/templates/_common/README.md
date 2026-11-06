@@ -29,8 +29,8 @@ Commit `uv.lock`: it is what makes the next checkout the same toolchain.
 ## Editor
 
 The Mojo VS Code extension resolves imports through `mojo.lsp.includeDirs`,
-which takes absolute paths and passes them on unexpanded — so it is a
-setting for your machine, not a file in this repository. In
+which takes absolute paths and passes them on unexpanded, so the setting
+belongs to your machine and stays out of this repository. In
 `.vscode/settings.json` (ignored by git):
 
 ```json

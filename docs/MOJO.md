@@ -20,9 +20,9 @@ uv run m0 build && bin/server --host 127.0.0.1 --port 8080
 
 It suits an application whose cost is work on the server per request, per
 tick or per connection: a simulation pushed to every open tab, a filtered
-scan over data held in memory, a thousand held streams on each loop. It has no ORM, no
-admin and no template engine; `form(req)` parses a urlencoded form, and
-the view validates it. An application that needs those is a Django
+scan over data held in memory, a thousand held streams on each loop. It
+carries no ORM, admin or template engine: `form(req)` parses a urlencoded
+form, and the view validates it. An application that needs those is a Django
 application, and [m0serve](RUNNING.md) serves it;
 [the two share a process](MOJO_RAMP.md) when one route needs to be fast.
 
@@ -32,7 +32,7 @@ refused by `m0 doctor`, with no fix to offer.
 ## Pages
 
 - [Quickstart (Mojo)](../packaging/m0/QUICKSTART.md): a project, a build, a
-  served page, tests, rebuild on save, an image. CI runs the page.
+  served page, tests, rebuild on save, an image.
 - [The host](MOJO_HOST.md): what `main` hands over, workers and threads, a
   handler pool, flags, the doctor, every refusal and exit code.
 - [Views and fragments](MOJO_VIEWS.md): the views table, fragments and
@@ -60,7 +60,7 @@ What an application is written with, and the page that holds each piece.
 | `url_for`, `Query`, `Mount` | routes as constants, reversed and encoded | [URLs](MOJO_VIEWS.md#urls) |
 | `Login`, `csrf_refusal` | one user behind a signed session | [Sessions](MOJO_VIEWS.md#sessions) |
 | `DatastarStream`, `Feed`, `Cached` | a stream of whole states, a stream of what changed, a rendering kept until the data changes | [Streams](MOJO_VIEWS.md#streams) |
-| `m0_sqlite`, `m0_postgres` | the bindings, their libraries opened at run time | the scaffold's `AGENTS.md`; [Deploy](MOJO_DEPLOY.md) for what an image carries |
+| `m0_sqlite`, `m0_postgres` | the bindings, their libraries opened at run time | [SQLite](../README.md#sqlite), [PostgreSQL](../README.md#postgresql); [Deploy](MOJO_DEPLOY.md) for what an image carries |
 
 ## The `m0` command
 
