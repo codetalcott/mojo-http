@@ -966,6 +966,12 @@ shell = "python3 -m pyflakes packages/m0-wsgi/shim/m0_shim.py scripts/render_shi
 help = "Render docs/SPEC.md's rollup and docs/spec.json from its capability tables"
 shell = "python3 scripts/spec_sheet.py"
 
+# After re-reading a summary passage docs/copies.json lists against the SPEC
+# rows it restates: record that it was read (scripts/doc_copies.py).
+[tool.poe.tasks.stamp-copies]
+help = "Re-stamp docs/copies.json's stale rows once their summaries are re-read"
+shell = "python3 scripts/doc_copies.py --stamp"
+
 # Guard the guard, the way sabotage-pool and test-shim --sabotage do: revert
 # each rule in memory and insist the checker fails for every one. A patch that
 # no longer applies is itself a failure, so renaming a rule out of existence
