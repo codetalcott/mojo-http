@@ -1,4 +1,4 @@
-# WSGI performance: mojo-http vs gunicorn
+# WSGI and ASGI performance
 
 First measured 2026-08-16, once the prefork concurrency story existed. Before
 that, `HTTPService.func` served one request at a time per process and any
@@ -25,7 +25,7 @@ middleware), same worker counts, same machine, same load generator.
   row was therefore measured by alternating against its comparator inside
   one session, and the ratios are what carry meaning.
 - mojo-http: `bin/m0serve` (`poe build-serve`) serving `apps/django_wsgi`
-  (Mojo 1.0, the `uv.lock` pin), `M0_WORKERS=N`. Workers accept from one
+  (Mojo 1.0, the pin on that date), `M0_WORKERS=N`. Workers accept from one
   listener bound before the fork, the same model gunicorn uses — a busy
   worker simply doesn't accept, so connections land on free workers. (An
   earlier per-worker `SO_REUSEPORT` design measured ~20% lower at 4 workers,
@@ -122,9 +122,9 @@ What the table says, and what it does not:
   slower client) rather than a server change — and the pinning mechanism
   is unchanged: a keep-alive connection still belongs to whichever loop
   accepted it, in both modes. The honest statement is that this run did
-  not excite the tail, not that the tail is gone; Stage B (ROADMAP.md)
-  remains the fix for it, and a `wrk` run on the same box is the next
-  measurement worth making. **That run has now happened — the next section
+  not excite the tail, not that the tail is gone; Stage B (built as
+  `--blocking-threads`) remains the fix for it, and a `wrk` run on the
+  same box is the next measurement worth making. **That run has now happened — the next section
   is the one that settles it, and it revises this bullet's conclusion.**
 - **Not in the table:** 3.13 vs 3.14t. Every row is 3.14.7t; the 3.13
   numbers above were a different day, tool and container and do not
@@ -166,14 +166,14 @@ Byte parity was checked before timing: both servers return the identical
 - **Threads and prefork are indistinguishable on the tail**, and at
   throughput parity under `wrk` too (0.95–1.0x), which confirms the `ab`
   row with a second tool.
-- **Granian is 1.4–2.0x faster than either mode**, with a consistently
-  tighter p99, on the same free-threaded interpreter and a byte-identical
+- **Granian was 1.4–2.0x faster than either mode** in this run, with a
+  consistently tighter p99, on the same free-threaded interpreter and a byte-identical
   response. That gap is the honest headline of this table.
 
 ### Stage B: this benchmark could not settle it — see the mixed-workload row
 
-Stage B (ROADMAP.md) is an acceptor loop feeding a Python thread pool with
-deferred responses — ~8 touchpoints in `event_loop.mojo`. It exists for two
+Stage B (built as `--blocking-threads`) is an acceptor loop feeding a
+Python thread pool with deferred responses — ~8 touchpoints in `event_loop.mojo`. It exists for two
 things: **per-request balancing** and **slow-view isolation**.
 
 This benchmark cannot speak to the second at all. Its view is trivial, so
@@ -703,8 +703,8 @@ the `A`–`Z` range by one byte, which makes it fail.
 **What was left of `build_response`, and what taking it bought
 (2026-09-04).** The `PythonObject` read was 1.27 µs (38% of the remaining
 3.30) and `Headers()` plus six stores another 1.39; the first belonged in
-`bridge.mojo` rather than `response.mojo` if CLAUDE.md's "everything
-touching the interpreter lives in one file" was to hold, so it waited for
+`bridge.mojo` rather than `response.mojo` if the bridge was to stay the
+one file that touches the interpreter, so it waited for
 a design decision. The decision is `PyBridge.read_head`: the list walked
 through `PyObject_Length`, `PyList_GetItem` and `PyTuple_GetItem`
 (borrowed references, never DecRef'd), each `str` read through
@@ -757,12 +757,12 @@ artifact does support:
   cost **1.36x**
 - Granian + bare WSGI: **100,009 rps/core** — so the net was **0.85x**
 
-**Re-recorded 2026-09-05** on CPython 3.13.6, with one worker measured in
-three shapes (docs/BENCHMARKS.md says why): `apps/hello`
+From the newest artifact, the table below, with one worker in three
+shapes: `apps/hello`
 <!-- num:hello-rps-k@1 -->231.2<!-- /num -->k rps/core; the app inline on that loop <!-- num:m0-loop-rps-k@1 -->133.6<!-- /num -->k, the
 bridge <!-- num:bridge-tax@2 -->1.73<!-- /num -->x of a faster HTTP layer; one handler thread, Granian's
 shape, <!-- num:m0-wsgi-rps-k@1 -->112.2<!-- /num -->k against Granian's <!-- num:granian-rps-k@1 -->110.0<!-- /num -->k per core, the
-net <!-- num:m0-per-granian@2 -->1.02<!-- /num -->x, which is the table below.
+net <!-- num:m0-per-granian@2 -->1.02<!-- /num -->x.
 
 Granian's own bridge cost is unknown here, and a per-side split needs a
 `granian`-equivalent of the hello row. The figure had been propagated into
@@ -774,10 +774,8 @@ the sentences (`check_bench_prose`); the current one generates the
 numbers in place — the `num:` spans `render_bench_docs.py` writes and
 `--check` refuses stale.
 
-A caveat the artifacts made visible: identical binaries move ~1.5x in
-absolute rps across sessions on this hardware (thermal and load state).
-Within-run ratios are the signal; absolute rows are not comparable across
-dated sections of this file.
+Absolute rows are not comparable across dated sections of this file
+([BENCHMARKS.md](BENCHMARKS.md#how-to-read-this-page) says why).
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
 Source: [`layer-split-20261023T024755Z.json`](../bench/results/layer-split-20261023T024755Z.json) — 2026-10-23T02:47:55+00:00, commit `d207a9ef`.
@@ -803,21 +801,18 @@ memory. The prose around it stays hand-written.
 
 **Which per-core rows to trust, and why (2026-08-25).** The cores column's
 first artifact showed m0serve w4 at ~51k rps/core against ~84k at w1, which
-reads like a prefork scaling defect. Chased down, it is the benchmark box:
-this machine has **4 performance + 6 efficiency cores**, and an E-core
-serves this workload at **18.6k rps against a P-core's 81.7k — 4.4x
-slower** (measured by pinning a worker to background QoS). At w4 the
-server (~3.2 cores) plus wrk (~2.3) demand ~5.5 cores, so worker
-CPU-seconds spill onto E-cores and the blended rps/core craters while
-total rps plateaus at the box's ~165–170k co-located ceiling; raising
-offered load (c16→c128) moves neither number, which rules out
-under-driving. The clean scaling data: **w2 runs at 96% of w1's per-core
-rate** (83.2k vs 86.9k, server+wrk ≤ 4 P-cores), and w3's 60k/core sits
-exactly on the spillover curve (2.76 + ~2 > 4). So: per-core rows are
-comparable only where server + load-generator demand fits the P-cores —
-on this box, w1 and w2 — and the w4 rows measure scheduling, not the
-server. The same mechanism retro-explains Granian's recorded "19% loss
-from w1 to w4": that was never purely its own oversubscription either.
+reads like a prefork scaling defect. Chased down, it is the benchmark
+box's efficiency cores
+([BENCHMARKS.md](BENCHMARKS.md#how-to-read-this-page) has their rate and
+which rows they leave comparable). At w4 the server (~3.2 cores) plus wrk
+(~2.3) demand ~5.5 cores, so worker CPU-seconds spill onto E-cores and the
+blended rps/core craters while total rps plateaus at the box's ~165–170k
+co-located ceiling; raising offered load (c16→c128) moves neither number,
+which rules out under-driving. The clean scaling data: **w2 runs at 96%
+of w1's per-core rate** (83.2k vs 86.9k, server+wrk ≤ 4 P-cores), and
+w3's 60k/core sits exactly on the spillover curve (2.76 + ~2 > 4). The
+same mechanism retro-explains Granian's recorded "19% loss from w1 to
+w4": that was never purely its own oversubscription either.
 
 ## A slow view strands the connections pinned behind it
 
@@ -904,18 +899,12 @@ run.
 recorded before `bench_record.py` existed and are kept as the narrative of
 how the pool was justified; the current, machine-readable version is
 rendered on [BENCHMARKS.md](BENCHMARKS.md#slow-view-isolation) from
-`bench/results/mixed-workload-*.json`. The artifact records throughput
-medians only, so the table is held to the file and the p99 narrative here
-is not — those figures are `probe-pool`'s territory and are quoted as
-measurements, not recomputed. The shape reproduced exactly — ~1 ms →
-~195 ms without the flag, flat with it, in both execution modes.
+`bench/results/mixed-workload-*.json`. The shape reproduced exactly —
+~1 ms → ~195 ms without the flag, flat with it, in both execution modes.
 
-That run also retired this paragraph's note that `granian` is absent
-"because it is not in this repo's lock file". It *is* in the lock file, in
-the `bench` group, pinned at 2.8.1 then and 2.8.2 now — `uv sync --group bench`. With it
-installed its row appears, and it is better than ours: ~0.6 ms flat, about
-4x below our best. The pool's claim is that it removes the stall, not that
-it wins the remaining tail.
+At the same shape, one worker with four handler threads, Granian's row and
+m0serve's now read the same
+([BENCHMARKS.md](BENCHMARKS.md#slow-view-isolation)).
 
 Fast-route p99, by how many slow requests are in flight (both rounds):
 
@@ -935,62 +924,54 @@ Fast-route p99, by how many slow requests are in flight (both rounds):
   133 ms: by two slow views, more than a tenth of all requests are stopped
   dead, which is what "the connections pinned to the busy loop" means
   arithmetically. With the pool it stays ~1 ms throughout.
-- **It costs throughput, and the cost is not the same in both modes.** At
-  slow=0, two-round means: prefork gives up **7.3%** (34.9k → 32.3k rps) and
-  threads **21.3%** (32.7k → 25.7k). The extra hop is one datagram each way per
-  request, and that is the 7% both modes pay. The remaining 14% is *not*
-  explained by thread count: `--threads 4 --blocking-threads 4` is four loops
-  plus sixteen handler threads, and `--workers 4 --blocking-threads 4` is four
+- **It cost throughput in this run, and the cost was not the same in both
+  modes.** At slow=0, two-round means: prefork gave up **7.3%** (34.9k →
+  32.3k rps) and threads **21.3%** (32.7k → 25.7k). The 14% between them
+  is *not* explained by thread count: `--threads 4 --blocking-threads 4` is
+  four loops plus sixteen handler threads, and `--workers 4 --blocking-threads 4` is four
   processes of five — **twenty threads either way**, on four performance
   cores. What differs is four independent interpreters against one shared
   between twenty threads. See "Sizing the pool" below, which also says why no
   startup warning fires on a large pool.
-- **So the flag is a trade, and that is why it is off by default**: a few
-  percent of peak throughput, and a p99 that stops depending on what other
-  requests are doing. An application whose views are uniformly fast should
-  not take it; one with a single slow report, an upstream call or a large
-  query should.
+
+The pool is a zero-config WSGI application's default
+([RUNNING.md](RUNNING.md#which-mode)), and `--blocking-threads 0` serves on
+the loop alone. On the layer-split table above, the row with one handler
+thread serves more than the inline one.
 
 ### Sizing the pool
 
-The measurement above says what oversubscription costs but not what to
-choose, so: **size `B` to the number of requests you expect to be *waiting*
-at once, not to the core count.**
-
-The arithmetic first, because it is easy to get wrong in the other
-direction. Both modes create the same total:
+**Size `B` to the number of requests you expect to be *waiting* at once,
+not to the core count.** Both modes create the same total:
 
     --workers W --blocking-threads B   →  W × (B + 1) threads, across W processes
     --threads T --blocking-threads B   →  T × (B + 1) threads, in one process
 
 `+ 1` because each loop keeps its own acceptor thread. `--workers 4
 --blocking-threads 4` and `--threads 4 --blocking-threads 4` are both twenty
-threads. That matters because it means **thread count alone does not explain
-the 7.3% against 21.3%** — the two rows above have identical thread counts.
-What differs is that four processes are four independent interpreters, and
-four loops are twenty threads contending on one interpreter's shared
-structures. Recorded as the honest limit of this measurement: the mechanism
-is inferred, not measured, and separating them would need a profile rather
-than a throughput number.
+threads, so **thread count alone does not explain the 7.3% against 21.3%**
+of the run above. What differs is that four processes are four independent
+interpreters, and four loops are twenty threads contending on one
+interpreter's shared structures. The mechanism is inferred; a profile would
+separate them.
 
 The rule that follows from what the pool is *for*:
 
-- **A thread waiting on a database, an upstream call or a `sleep` is not
-  runnable**, and costs no core. That is the entire workload the pool exists
+- A thread waiting on a database, an upstream call or a `sleep` is not
+  runnable, and costs no core. That is the entire workload the pool exists
   to isolate. So `B` tracks *concurrent waits*, and a pool much larger than
-  the core count is correct when views genuinely wait — which is why
-  gunicorn's `--threads` is routinely 4–8 per worker against far fewer cores.
-- **A thread running Python bytecode is runnable**, and there the cost above
-  is real. The benchmark's fast view does no waiting at all, which is exactly
-  why it shows the penalty so cleanly — it is the worst case for the flag,
-  not the typical one.
-- **A starting point**, when the mix is unknown: `B = 4` with `W` or `T` at
-  the core count, then raise `B` only while p99 under mixed load keeps
-  improving. Past that, more threads buy queueing rather than concurrency.
-- **Prefer `--workers W --blocking-threads B` to `--threads T
-  --blocking-threads B`** at the same total, on this evidence: same thread
-  count, a third of the throughput cost, and it needs no free-threaded
-  interpreter.
+  the core count is correct when views genuinely wait. gunicorn's
+  `--threads` is routinely 4–8 per worker for the same reason.
+- A thread running Python bytecode is runnable, and there oversubscription
+  costs throughput. The benchmark's fast view does no waiting at all. That
+  makes it the flag's worst case.
+- Start from the zero-config pool ([RUNNING.md](RUNNING.md#which-mode)
+  gives its size and what more threads overlap), and raise `B` while p99
+  under mixed load improves. Past that, more threads only add queueing.
+- Prefer `--workers W --blocking-threads B` to `--threads T
+  --blocking-threads B` at the same total, on the run above: the same
+  thread count, a third of the throughput cost, and no free-threaded
+  interpreter needed.
 
 No startup warning is emitted for a large `T × (B + 1)`. A pool sized for
 waiting views is *supposed* to exceed the core count, so the server cannot
@@ -1059,7 +1040,7 @@ Three findings:
   acceptor never runs application code). The await-concurrency itself is
   unambiguous — eight concurrent 1.5 s awaits complete in 1.51 s on one
   loop with zero threads, where the buffered bridge takes 12 s.
-- **Hello-world throughput stands at 0.88–0.94x uvicorn across runs.** The
+- **Hello-world throughput stood at 0.88–0.94x uvicorn across runs.** The
   gap is *located*, not mysterious: the WSGI pool row proves the offload
   machinery itself clears uvicorn (4,530), so the remainder is the
   executor being ONE thread doing pump + scope hand-off + task + response
@@ -1101,8 +1082,8 @@ The uvicorn baseline row stays `--loop asyncio` per this repo's standing
 benchmark configuration, with the uvloop row recorded in the same
 artifact since 2026-08-27, because `uvicorn[standard]` is what a default
 install runs and the number a developer's own machine produces should be
-on the page: 0.53x at 16 connections, against 0.75x for
-the asyncio-loop comparator.
+on the page; on 2026-08-27 it read 0.53x at 16 connections, against
+0.75x for the asyncio-loop comparator.
 
 **Which loop the executor itself runs on is a property of the
 interpreter, and the record did not say.** The shim adopts uvloop where
@@ -1340,17 +1321,19 @@ boundary artifact of switching load patterns, not steady-state behavior.
 ## Reproducing
 
 Every run needs `bin/m0serve` from `poe build-serve`, `wrk`, and a machine
-with nothing else busy: both shell benches refuse to start, and refuse to
+with nothing else busy: the shell benches refuse to start, and refuse to
 begin a round, while any process outside their own tree is busy
-(`scripts/bench_guard.py`). Granian is the `bench` dependency group,
-`uv sync --group bench`, pinned at 2.8.2 so a comparator drift cannot move
-the rows silently; a `uv run` keeps it, a bare `uv sync` removes it.
+(`scripts/bench_guard.py`). Granian is the `bench` dependency group
+(`uv sync --group bench`), pinned exactly in `pyproject.toml` so a
+comparator drift cannot move the rows silently; a `uv run` keeps it, a
+bare `uv sync` removes it.
 
 **The tables on [BENCHMARKS.md](BENCHMARKS.md)**, each one script, on the
-pinned venv unless stated:
+default venv unless stated:
 
 - Layer split: build `apps/hello` to `/tmp/bench_hello_server`
-  (`mojo build -I packages/m0-core -I packages/m0-http apps/hello/server.mojo -o /tmp/bench_hello_server`),
+  (`uv run poe build-all`, then
+  `uv run mojo build -I packages/m0-core -I packages/m0-http apps/hello/server.mojo -o /tmp/bench_hello_server`),
   then `scripts/bench_layer_split.sh`.
 - ASGI throughput: `poe bench-asgi-wrk`. Fast-request tail under mixed
   load: `poe bench-asgi`. Both use the venv's uvicorn and uvloop, which the
@@ -1391,7 +1374,8 @@ cd apps/django_wsgi && uv run --with gunicorn python -m gunicorn \
 
 **The free-threaded swap.** `uv run poe py314t-try`, export
 `MOJO_PYTHON_LIBRARY` (from `sysconfig`'s `LIBDIR`/`INSTSONAME`) and
-`PYTHON_GIL=0`, `uv pip install --python .venv/bin/python granian==2.8.2`
+`PYTHON_GIL=0`, install the locked Granian with
+`uv export --frozen --only-group bench --no-hashes | uv pip install --python .venv/bin/python -r -`
 (the swap syncs without the `bench` group), then `.venv/bin/poe build-serve`.
 Afterwards `uv run poe py314t-restore`, then `poe build-serve` again. Two
 rules, each of which has produced a confident wrong answer:
