@@ -470,7 +470,7 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
      true of a dylib and false of `bin/m0serve`, so they agreed that a
      binary resolving the Mojo runtime through a developer's venv was
      self-contained. Fixed, self-tested, and written up in
-     [FFI_DISTRIBUTION.md](../FFI_DISTRIBUTION.md). The licensing analysis in
+     [the-c-abi-artifact.md](the-c-abi-artifact.md#2026-08-25-executables-differ-from-dylibs-and-both-tools-missed-it). The licensing analysis in
      [NOTICE](../../NOTICE) did transfer, with one addition: the wheel is the
      first artifact that redistributes the lightbug fork in binary form,
      so its MIT notice has to travel with it.

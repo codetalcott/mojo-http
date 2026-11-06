@@ -1,635 +1,79 @@
-# The C-ABI artifact that did not load off the machine that built it
+# libm0core in the m0serve wheel
 
-> Releases after v1.8.0 do not attach `libm0core`. It ships inside the
-> m0serve wheel, where `m0pub` loads it, and releases v0.1.0 through v1.8.0
-> keep the assets this page describes. The last section, "2026-09-30: no
-> longer published", records why.
+`libm0core` is the C-ABI shared library built from m0-core. It is
+m0serve's private runtime: it ships inside the m0serve wheel and nowhere
+else, and no ABI is promised to anyone outside this repository
+(DECISIONS D56). Releases v0.1.0 through v1.8.0 attached it as an asset,
+and those assets keep their notices; later releases attach none. How the
+artifact came to load off the machine that built it, from 2026-08-23 on,
+is [a dated note](notes/the-c-abi-artifact.md).
 
-Releases v0.1.0 through v1.8.0 attached `libm0core` for "Bun's `dlopen`,
-Node's N-API, or Python's `ctypes`". **The asset of every release from
-v0.1.0 to v0.7.0 loads for none of them.**
+## What ships
 
-## What is wrong
+- `poe build-ffi` builds `packages/m0-core/ffi_exports.mojo` into
+  `libm0core.so` (`.dylib` on macOS) for the oldest CPU each platform
+  must support: `--target-cpu apple-m1` on macOS arm64, `x86-64-v2` on
+  Linux and macOS x86-64, and `generic` on Linux aarch64. On macOS it
+  builds with `MACOSX_DEPLOYMENT_TARGET=13.0`, the floor the Mojo
+  toolchain's own wheel is tagged for.
+- `scripts/relocate.py` then rewrites the install name and the search
+  path `mojo build` records from the build machine, so the library finds
+  its runtime beside itself: `@loader_path` on macOS, `$ORIGIN` on Linux.
+- `poe stage-wheel` copies it into the wheel's `_lib/`, beside the
+  binary's `_bin/`, with the Mojo runtime libraries it depends on.
+  `scripts/bundle_artifact.py` finds those by walking the dependency
+  graph, so a toolchain that adds a library is followed.
+- The library exports one function, `m0_shared_fetch_add`. `m0pub` calls
+  it through `ctypes` to number the events it publishes, and finds the
+  library through `M0_CORE_LIB`, which the wheel's launcher and
+  `m0serve --realtime` set to the copy beside the binary. Without it,
+  `m0pub` publishes unnumbered frames.
+- `scripts/ffi_portability_check.py --require-self-contained` refuses a
+  `_lib/libm0core` whose search paths are not relative to itself, or that
+  depends on a library neither shipped beside it nor supplied by the
+  platform. It runs in `stage-wheel`, which `smoke-wheel` runs on every
+  pull request, and again in the release's `wheel-inspect` job.
+  `poe smoke-ffi` calls the export through `ctypes` on every pull
+  request.
 
-A Mojo shared library records a search path (`LC_RPATH` on Mach-O,
-`DT_RUNPATH` on ELF) pointing at the **absolute path of the venv it was
-built in**, and resolves the Mojo runtime through it. Downloading v0.7.0 and
-inspecting it:
+Publishing resumes, with a versioned ABI, when a named caller outside
+this repository asks for a C ABI.
 
-```
-install name  : packages/m0-core/libm0core.dylib
-search paths  : ['/Users/runner/work/mojo-http/mojo-http/.venv/lib/python3.13/site-packages/modular/lib']
-dependencies  : ['@rpath/libKGENCompilerRTShared.dylib', '/usr/lib/libSystem.B.dylib']
-```
+## The licensing position
 
-That search path is the **CI runner's home directory**, baked into a
-published asset. `dlopen` on any other machine fails with:
+The wheel redistributes the Mojo runtime libraries it bundles, and no one
+source settles their licence:
 
-```
-Library not loaded: @rpath/libKGENCompilerRTShared.dylib
-  tried: '/Users/runner/work/mojo-http/mojo-http/.venv/.../modular/lib/...' (no such file)
-```
+- Mojo's compiler and runtime sources were open-sourced on 2026-08-18
+  under Apache 2.0 with LLVM Exceptions, by `modular/modular`'s root
+  `LICENSE`. The runtime's sources are in that repository (`KGEN/`,
+  `AsyncRT/`, `Support/lib/`).
+- The `mojo_compiler` wheel that ships the prebuilt libraries declares
+  `License: LicenseRef-MAX-Platform-Software-License` in its METADATA, in
+  1.0.0, 1.1.0 and 1.2.0 alike, and carries no licence file.
+- That string now names the MAX License of 2026-10-21, which governs the
+  1.2.0 runtime. Its section 1.2 lets an application with material
+  functionality of its own redistribute MAX in object code form, under
+  terms of its choosing, provided a human-readable copy of the Terms goes
+  with it. Its section 1.5 keeps the portions released under Apache 2.0
+  with LLVM Exceptions, as the licence file or header accompanying each
+  identifies them, under those terms. The runtime's sources carry those
+  headers, and the built files carry neither.
 
-Three distinct defects, two of which are entirely ours:
-
-1. **The search path is a build-tree absolute path.** Ours. Nothing resolves
-   through it anywhere else.
-2. **The install name is a build-tree relative path**
-   (`packages/m0-core/libm0core.dylib`). Ours. `dlopen` ignores it, but
-   anything that *links* against the library records it and then cannot find
-   it.
-3. **The Mojo runtime is not shipped alongside.** Not ours to fix
-   unilaterally — see the licensing question below.
-
-## Why no test caught it, for seven releases
-
-`smoke-ffi` builds the library and `dlopen`s it **in the build tree**, where
-the venv it was linked against is still present. It therefore passes on
-exactly the machine where the defect cannot manifest, and would pass forever.
-The release workflow runs the same smoke, so CI proving the artifact "through
-the same `ctypes` smoke" proved only that it works *there*.
-
-This is a test-design flaw, not an oversight: a load attempt on the build
-machine cannot detect a dependency on the build machine.
-
-`poe check-ffi-portable` (`scripts/ffi_portability_check.py`) checks the
-property a load attempt cannot: **every recorded search path is relative to
-the artifact, and every dependency is either a system library or shipped
-beside it.** Static inspection, both formats. It failed on every artifact
-published through v0.7.0.
-
-## The fix, demonstrated
-
-Rewriting the two paths that are ours and shipping the runtime's dependency
-closure alongside produces an artifact that loads from an unrelated directory
-with a clean environment:
-
-```
-install name  : @rpath/libm0core.dylib
-search paths  : ['@loader_path']
-=> portable: every search path is self-relative and every dependency is a
-   system library or shipped alongside
-```
-
-The runtime closure is **three files, 1.57 MB** — `libKGENCompilerRTShared`
-(1.12 MB), which itself needs `libMSupportGlobals` (0.12 MB) and
-`libAsyncRTRuntimeGlobals` (0.33 MB). It is a closure, not one file; the
-first attempt shipped only the first and failed on the second.
-
-Verified: the bundled artifact `dlopen`s from `/tmp` with `DYLD_LIBRARY_PATH`
-unset and answers the public FNV-1a and xxHash32 vectors.
-
-## The open question: may we redistribute the Mojo runtime?
-
-**Not resolved here, because it is a licensing determination and the two
-sources of truth disagree.**
-
-- **Mojo's compiler and tooling were open sourced on 2026-08-18**, under
-  **Apache 2.0 with LLVM Exceptions**. Verified from `modular/modular`'s own
-  root `LICENSE`, not only the announcement; no carve-out for the runtime
-  appears in it.
-- **The runtime sources are in that repo** — `KGEN/`, `AsyncRT/`,
-  `Support/lib/`, with real build files and C++ — so the three libraries are
-  built from what is now Apache-licensed source.
-- **But the wheel that ships the prebuilt binaries says otherwise.** The
-  three dylibs are installed by `mojo_compiler-1.0.0`, whose METADATA
-  declares `License: LicenseRef-MAX-Platform-Software-License` — Modular's
-  proprietary MAX Platform license, not Apache.
-
-So the *sources* are Apache 2.0 + LLVM Exceptions while the *binaries as
-distributed to us* declare a proprietary license. The likeliest explanation
-is stale wheel metadata — Mojo 1.0.0 shipped the same day as the
-relicensing — but "likeliest" is not a basis for redistributing someone
-else's binaries.
-
-Note also that the LLVM Exception addresses a different case than this one.
-It covers portions of the Software *embedded into Object form as a result of
-compiling your source* — which is `libm0core.dylib` itself, and is fine. It
-does not obviously cover redistributing the runtime libraries as separate
-files, which is ordinary Apache §4 redistribution and depends on those files
-actually being Apache-licensed.
-
-**What would settle it**, in increasing order of effort: the wheel metadata
-being corrected in a later Mojo release; a statement from Modular about
-redistributing prebuilt runtime binaries; or building the runtime from the
-Apache-licensed source ourselves rather than shipping Modular's build.
-
-The cheapest of those has now been tried and did not settle it. A later
-release arrived — Mojo 1.1.0, pinned here on 2026-09-18 — and
-`mojo_compiler-1.1.0`'s METADATA still declares `License:
-LicenseRef-MAX-Platform-Software-License`, byte for byte what 1.0.0
-declared. So the determination stands where it was, and the next release is
-worth the same one-line check.
-
-Mojo 1.2.0, pinned on 2026-10-22, did not settle it either:
-`mojo_compiler-1.2.0`'s METADATA declares the same string, and the wheel
-still carries no licence file (read from its zip directory by range
-requests). What changed is the licence that string names. Modular replaced
-the Community License of 2026-08-18 with the "MAX License" of 2026-10-21,
-whose section 1.2 lets an application with material functionality of its
-own redistribute MAX "in object code form, and under terms of Your
-choosing", provided a human-readable copy of the Terms goes with it; the
-earlier text allowed only "Redistributable Components" it never named. Each
-release is governed by the terms current at its date, so the new grant
-covers the 1.2.0 runtime and not 1.1.0's. If the metadata is right, then,
-shipping the runtime beside `libm0core` needs that copy of the Terms in the
-bundle; NOTICE's Apache §4 compliance covers the reading in which it is not.
-
-So from m0serve 1.16.0 the bundle and the wheel ship both texts:
+The LLVM Exception covers what is compiled into `libm0core` itself. The
+runtime libraries beside it are redistributed as files of their own,
+which NOTICE's Apache §4 compliance covers in the reading where they are
+Apache-licensed. So from m0serve 1.16.0 the wheel ships both texts:
 `LICENSE.max.txt`, the terms of 2026-10-21 verbatim, beside
-`LICENSE.mojo-runtime.txt`, and the bundle's `NOTICE.txt` says why. The
-same terms' section 1.5 points the other way: portions of MAX released
-under Apache 2.0 with LLVM Exceptions, "as identified in the LICENSE file
-or license header accompanying each such component", stay under those
-terms, which control in a conflict. The runtime's sources carry those
-headers and the built files carry neither, so both texts ship. The wheel's licence expression stays `MIT AND
-Apache-2.0 WITH LLVM-exception`: a `LicenseRef-` for MAX would flag every
-install of m0serve for review on a reading nothing confirms, and the
-notice says what the expression cannot. A user who distributes an `m0
-build --release` artifact or an `m0 image` carries the same runtime and the
-same condition, and from m0 0.14.0 both carry the texts: `--release` writes
-`dist/licenses/`, the two MIT texts for the framework and the fork compiled
-into the binary, both runtime texts, and a `NOTICE.txt` written for an
-application's artifact (`licenses/NOTICE.m0-release.txt`, which also names
-MAX's closed libraries for a binary that links them), and the image copies
-`dist/` whole (SPEC N56). Modular shipping
-a licence file that identifies the runtime's components in the
-`mojo-compiler` wheel would settle the question under section 1.5.
-
-## Update, 2026-08-24: the two owned defects are fixed
-
-`build-ffi` now rewrites both paths after the link (they cannot be
-suppressed with a linker flag, because `mojo build` adds them itself):
-
-| | before | after |
-|---|---|---|
-| install name | `packages/m0-core/libm0core.dylib` | `@rpath/libm0core.dylib` |
-| search path | `/Users/runner/work/.../modular/lib` | `@loader_path` |
-| state | **BROKEN** | **SATISFIABLE** |
-
-macOS uses `install_name_tool` plus an ad-hoc `codesign` — arm64 invalidates
-the signature on any Mach-O edit, and an unsigned dylib will not load at all.
-
-**`smoke-ffi` was silently undoing this.** It ran its own `mojo build` into
-the same output path, so it overwrote whatever `build-ffi` produced and
-tested an unfixed artifact. It now takes `build-ffi` as a dependency and
-tests what that task actually emits, supplying the Mojo runtime through
-`DYLD_LIBRARY_PATH` — which is the documented consumer requirement, so the
-smoke exercises it rather than accidentally depending on a baked-in path.
-
-### Linux was never broken in the way macOS is
-
-Parsing the published `.so` (the checker reads ELF itself, so a macOS
-checkout can inspect it) shows **no `DT_NEEDED` entries at all** and no `.so`
-references anywhere in the file: the Linux artifact is statically linked and
-resolves nothing at load time. Its `DT_RUNPATH` was inert debris — it named
-`/home/runner/work/...` but nothing was ever looked up through it.
-
-So **the missing-runtime problem is macOS-only**, and the Linux artifact has
-been loadable all along. That is worth stating plainly because the original
-report implied both were broken.
-
-> **Correction, 2026-08-25.** That holds for `libm0core.so` and does not
-> generalise. `bin/m0serve` links the three Mojo runtime `.so` files
-> dynamically on Linux, exactly as on macOS — the first Linux CI run that
-> tried to bundle the executable is what established it, by refusing. The
-> lesson is narrow and worth keeping: "the Linux artifact is statically
-> linked" was measured on one file and then carried as a platform fact.
-> Nothing in the tooling decides by platform any more, only by what the file
-> records.
->
-> With `patchelf` installed, the Linux path now produces what the macOS one
-> does:
->
-> ```
-> relocated bin/m0serve (search paths: ['$ORIGIN', '$ORIGIN/../_lib'])
-> bundle ready: dist/m0serve-linux-x86_64
-> smoke-wheel OK (m0serve-0.9.0-py3-none-manylinux_2_35_x86_64.whl)
-> ```
->
-> The measured glibc floor is worth one more note, because it is not where
-> anyone would look for it: 2.35, on a runner whose own glibc is 2.39. The
-> floor is what the toolchain's output requires, not what the build image
-> has — so unlike the macOS deployment target, building on an older image
-> would not lower it.
-
-The checker reports three states rather than pass/fail, which is what makes
-it gateable: `BROKEN` (only loads where it was built), `SATISFIABLE` (loads
-once named files are placed beside it), `SELF-CONTAINED` (loads with nothing
-else). `--require-self-contained` demands the strongest. On 2026-08-24
-macOS was satisfiable and Linux self-contained; the wheel's copy is
-self-contained on both.
-
-## The licensing question, re-checked 2026-08-24
-
-**The nightly metadata has not changed.** `mojo_compiler-1.1.0.dev2026082305`
-— built five days *after* the relicensing — still declares:
-
-    License: LicenseRef-MAX-Platform-Software-License
-
-(read via HTTP range requests against the 71.6 MB wheel's central directory,
-so this costs one request rather than a download.)
-
-So the discrepancy is not a same-day packaging slip that has since been
-corrected. It has persisted across five nightlies. That does not make
-redistribution impermissible — the sources really are Apache-2.0 — but it
-does remove the "obviously just stale" reading, and it is not a question to
-answer by inference.
-
-### Building the runtime from source: assessed, not recommended
-
-The sources are Apache-2.0 and the repo ships `bazelw` and `MODULE.bazel`, so
-it is possible in principle. In practice `KGEN/BUILD.bazel` is an MLIR-based
-compiler stack (`CODialect`, `HLCFDialect`, TableGen targets), so this means
-building LLVM/MLIR — hours and gigabytes, per platform, in CI, kept in step
-with the pinned Mojo version, and re-done on every pin move. For a 1.57 MB
-bundle that only affects macOS, that is far more machinery than the problem
-justifies.
-
-**Ask Modular instead.** The question is one line — *are the prebuilt runtime
-libraries in the `mojo-compiler` wheel covered by the Apache-2.0 relicensing,
-or still under the MAX Platform license?* — and the forum and Discord are
-both linked from the wheel's own metadata. A definitive answer costs nothing
-and unblocks the last step; the mechanism is already proven and
-`check-ffi-portable --require-self-contained` already validates the result.
-
-## Resolved, 2026-08-24: the bundle ships
-
-All three defects are fixed. `poe bundle-ffi` (removed on 2026-09-30, see
-the last section) assembled `dist/libm0core-<platform>/` containing the
-artifact, the Mojo runtime it loads, and both licences — and **refused to
-finish unless the result was self-contained**, so the assembly step and the
-assertion could not drift apart.
-Verified by loading it from `/tmp` with `DYLD_LIBRARY_PATH` and
-`DYLD_FALLBACK_LIBRARY_PATH` unset: every public vector passes.
-
-**The closure is discovered, not listed.** `bundle_artifact.py` walks the
-dependency graph, so a toolchain bump that adds a fourth library is picked up
-instead of silently producing a broken bundle — which is exactly the failure
-the first hand-written attempt hit, shipping only the library named in the
-error message and then failing on its dependency.
-
-Until v1.8.0, CI ran `bundle-ffi` on every commit, and the release workflow
-shipped the bundle as `<asset>.tar.gz` beside the bare library (kept so
-existing download URLs kept working), so no release published an asset that
-only loads on the runner.
-
-### Why proceeding was reasonable, and what it does not rest on
-
-The evidence is not unanimous, so the position is stated rather than implied:
-
-- The `mojo_compiler` wheel contains **only** `modular/bin`, `modular/lib`
-  and `mojo` — the compiler and its runtime, **no MAX components**. That is
-  precisely the scope open sourced on 2026-08-18.
-- It ships **no licence file of its own**, so its `License:` metadata field
-  is the only contrary signal — and a packaging field is weak evidence
-  against the `LICENSE` actually governing the sources.
-- The same runtime code is *already* redistributed by this project, embedded,
-  in the statically linked Linux artifact. macOS differs only because
-  Modular's toolchain links it dynamically there; a licence outcome should
-  not turn on their linking strategy.
-
-**Nothing here rests on the LLVM Exception.** That exception excuses Apache
-sections 4(a), 4(b) and 4(d) for portions embedded into Object form by
-compiling one's own source — which describes `libm0core` itself and the
-Linux artifact, and was never in doubt. Rather than argue it stretches to
-separate files, the bundle simply **complies with section 4 in full**: the
-Apache text ships as `LICENSE.mojo-runtime.txt`, and `NOTICE.txt` carries
-attribution plus an explicit 4(b) modification notice (install name, rpath
-and ad-hoc re-signing changed; executable code byte-for-byte as built).
-
-If Modular later states that the prebuilt binaries are *not* Apache-licensed,
-the remedy is one line — drop the copy step — and everything else here still
-stands.
-
-**That remedy shrinks once anything is on PyPI.** A GitHub release asset can
-be deleted. A PyPI file cannot be re-uploaded under the same filename ever
-again, even after deletion, and a *yank* (PEP 592) leaves the file
-downloadable and installable by exact pin — it only removes it from range
-resolution. So "drop the copy step" fixes future versions and recalls
-nothing. The actual remedy for a published wheel is: yank, republish without
-the component, and record in this file what was shipped and when. Worth
-knowing before the first upload rather than after.
-
-## Recommended sequence
-
-1. ~~**Fix defects 1 and 2.**~~ **Done** — see the update above. macOS was
-   `SATISFIABLE`, Linux `SELF-CONTAINED`, neither `BROKEN`.
-2. ~~**Document the three files** a consumer must supply on macOS.~~
-   Moot: the wheel ships the runtime beside `libm0core`, so a consumer
-   supplies nothing.
-3. ~~**Ship the runtime alongside once the licensing question is
-   answered.**~~ **Done**: the bundle shipped it from 2026-08-24, and the
-   wheel ships it now, with the licensing position above.
-
-The check is a **gate**: `stage-wheel`, inside `smoke-wheel` on every pull
-request, and the release's `wheel-inspect` run `ffi_portability_check.py
---require-self-contained` on the wheel's `_lib/libm0core` and refuse a copy
-that is not self-contained.
-
-## 2026-08-25: executables differ from dylibs, and both tools missed it
-
-Scoping the PyPI wheel meant pointing this machinery at `bin/m0serve` instead
-of `libm0core`. It answered immediately, and the answer was wrong:
-
-```
-$ python3 scripts/ffi_portability_check.py bin/m0serve
-install name  : @rpath/libKGENCompilerRTShared.dylib
-dependencies  : ['/usr/lib/libSystem.B.dylib']
-
-SELF-CONTAINED — nothing is resolved at load time.
-exit 0
-```
-
-`otool -L` prints a header line, then — **for a dylib only** — the file's own
-`LC_ID_DYLIB` install name, then its dependencies. `inspect_macho` dropped the
-first entry unconditionally. `bin/m0serve` is an `MH_EXECUTE` and has no
-`LC_ID_DYLIB` at all, so what got dropped was
-`@rpath/libKGENCompilerRTShared.dylib` — the Mojo runtime — leaving only a
-system library, and therefore nothing to complain about.
-
-`bundle_ffi.py` had its own copy of the same four lines, so it would have
-copied **zero** runtime libraries and declared the bundle complete. The two
-tools would then have agreed with each other about an artifact neither could
-see. That is the same shape as the defect that shipped for seven releases,
-one level up: not a test that passes where the defect cannot appear, but a
-*pair* of tests blind in the same direction.
-
-The dependency was real. Deleting the build-machine rpath from a copy and
-running it:
-
-```
-$ install_name_tool -delete_rpath /Users/.../.venv/.../modular/lib /tmp/m0serve
-$ /tmp/m0serve --version
-dyld: Library not loaded: @rpath/libKGENCompilerRTShared.dylib
-  Reason: no LC_RPATH's found
-```
-
-### The fix
-
-The parse moved to `scripts/binfmt.py`, shared by both tools, keyed on
-**`LC_ID_DYLIB`'s presence** rather than on the header's filetype — an
-`MH_BUNDLE` may or may not carry one, and the question being asked is only
-ever *is the first entry this file's own name?*
-
-`binfmt.py --selftest` runs both cases against canned `otool` output, in CI,
-beside the warning-parser self-test and for the same reason: a parser whose
-regression is invisible to every test that uses it is not a guard.
-
-### Verified by sabotage
-
-| command | before | after |
-|---|---|---|
-| `ffi_portability_check.py bin/m0serve` | `SELF-CONTAINED`, exit 0 | **`BROKEN`, exit 1** |
-| `ffi_portability_check.py .../libm0core.dylib` | `SATISFIABLE`, exit 0 | **`SATISFIABLE`, exit 0** |
-| `bundle_artifact.py bin/m0serve <dir>` | copies 0 dylibs | **copies 3, 1.57 MB** |
-
-The middle row is the one worth insisting on. Without it, "the checker now
-fails on `m0serve`" is equally consistent with having simply broken the
-checker; with it, the change is localised to the case that was wrong.
-
-Reintroducing the bug in a copy of `binfmt.py` (`entries[1:]` unconditionally)
-fails the self-test with `executable's runtime dependency was dropped`, and
-assuming every Mach-O has an install name fails it the same way.
-
-### `bin/m0serve` had no post-link surgery at all
-
-`build-ffi` rewrote install name and rpath; `build-serve` did neither, because
-the surgery was ~25 lines of shell inside one task rather than a thing tasks
-could share. So every `bin/m0serve` ever built recorded a search path into the
-venv that built it. It now runs `scripts/relocate.py`, which `build-ffi` also
-runs, and takes **two** self-relative rpaths — `@loader_path` and
-`@loader_path/../_lib` — so one build output serves both the flat tarball
-layout and the wheel's `_bin/`+`_lib/` layout with no second pass.
-
-`build-serve` then completes the bundle in place, so `bin/` *is* the shipped
-shape rather than a development-only arrangement that works for a different
-reason. That closes the loop the original defect opened: the binary the smokes
-exercise is now the binary a user gets. Before this, removing the venv rpath
-broke every `serve-*` and `smoke-*` task, which is a fair measure of how much
-the development path had been relying on it.
-
-### A third machine dependency, previously invisible: the deployment target
-
-```
-$ otool -l bin/m0serve | grep -A4 LC_BUILD_VERSION
- platform 1
-    minos 26.0
-      sdk 26.5          (build host: macOS 26.6.1)
-```
-
-A Mojo binary inherits the build host's SDK. The Mojo toolchain *wheel* is
-tagged `macosx_13_0_arm64`, but what it emits here requires macOS 26 — so a
-PyPI wheel tagged from `uv.lock` would install cleanly on macOS 15 and then
-fail in dyld, and the published `libm0core-macos-arm64.dylib` assets carry
-whatever `minos` the runner happened to have.
-
-The checker reports `min OS` now and accepts `--require-min-os=X.Y`. The
-consequence for the wheel is that **the platform tag must be measured from the
-staged binary, never copied from the toolchain's.**
-
-### It is a choice, though, not a fate
-
-`mojo build` honours `MACOSX_DEPLOYMENT_TARGET`. Measured:
-
-```
-$ MACOSX_DEPLOYMENT_TARGET=13.0 mojo build --emit shared-lib ... -o probe.dylib
-$ otool -l probe.dylib | grep -A3 LC_BUILD_VERSION
-    minos 13.0
-```
-
-So `build-ffi` and `build-serve` pin it to **13.0** — the same version the
-Mojo toolchain's own wheel is tagged for (`macosx_13_0_arm64`). Not lower:
-the toolchain does not claim to run below that, and promising more than the
-compiler does would just move the failure. Modular's runtime dylibs turn out
-to be built for 11.0, so they satisfy 13.0 comfortably — `wheel_tag.py`
-reports the spread rather than hiding it:
-
-```
-note: floors differ across files, taking the strictest (macosx_13_0_arm64):
-  macosx_11_0_arm64 <- libAsyncRTRuntimeGlobals.dylib
-  macosx_13_0_arm64 <- libm0core.dylib
-```
-
-Pinning changes the wheel's reach from macOS 26+ to macOS 13+, and — more
-usefully — makes the floor a property of this repository rather than of
-whichever image GitHub is currently calling `macos-latest`. The measurement
-stays regardless: `smoke-wheel` asserts the tag is never below the binary's
-own `LC_BUILD_VERSION`, so if the pin ever stops working the wheel gets a
-narrower tag instead of a false promise.
-
-## 2026-08-25: the first real release crashed, and it was the CPU
-
-The `v0.10.0rc1` release run built both wheels, passed `smoke-wheel` inside
-both build jobs, and passed `wheel-consume-macos`. Then
-`wheel-consume-linux` did this:
-
-```
-Stack dump without symbol names ...
-0  libKGENCompilerRTShared.so 0x00007f39a1540f8e
-...
-4  m0serve                    0x000056203c1260e9
-Illegal instruction (core dumped)
-```
-
-`m0serve --version` — the simplest thing the binary can do — died with
-SIGILL in a clean container, having worked on the runner that built it
-minutes earlier.
-
-### `mojo build` compiles for the host CPU by default
-
-```
---target-cpu <CPU>
-    Sets the compilation target CPU. Defaults to the host CPU.
-```
-
-That is `-march=native`, silently, for every artifact this repository has
-ever produced. Asking the compiler what it was actually doing on a developer
-machine:
-
-```
-$ mojo build --print-effective-target ...
-  --target-cpu apple-m4
-  --target-features +aes,+bf16,...,+sme,+sme-f64f64,+sme-i16i64,+sme2
-```
-
-`+sme` and `+sme2` are the Scalable Matrix Extension. **No M1, M2 or M3 has
-them.** Every wheel built on that machine — including the ones dogfooded
-against three real Django projects, all on the same M4 — would very likely
-have crashed on any other Apple Silicon Mac.
-
-### Why nothing caught it earlier
-
-This is the rpath defect one level up, and it fails the same way for the same
-reason:
-
-| | rpath | target CPU |
-|---|---|---|
-| passes where built | yes | yes |
-| fails elsewhere | yes | yes |
-| detectable on the build machine | **statically** | **no** |
-
-The rpath version was at least visible to static inspection — that is what
-`ffi_portability_check.py` exists for. This one is not: the binary is
-*correct*, it simply requires instructions the consumer's CPU does not
-implement. Nothing short of running it on different silicon can tell.
-
-So `wheel-consume-linux` did not merely catch a bug; it caught the one class
-of bug that no amount of care on the build machine could have. It caught it
-because it has no repository, no toolchain, and — crucially — **runs on a
-different machine from the one that built the artifact**. That property was
-worth the trouble.
-
-`wheel-consume-macos` passed, and that is worth stating plainly rather than
-taking as reassurance: it builds and consumes on one pinned image
-(`macos-14` then, `macos-15` since 1.17.0, when GitHub retired macOS 14),
-so build and consumer share a CPU and the defect is invisible there too.
-The macOS side is protected by the pin below, not by that job.
-
-### The fix, and the guard
-
-`build-ffi` and `build-serve` pin `--target-cpu` to the oldest CPU each
-platform must support:
-
-| platform | baseline | dropped |
-|---|---|---|
-| macOS arm64 | `apple-m1` | `+sme`, `+sme2`, `+i8mm`, `+bf16` |
-| Linux / macOS x86_64 | `x86-64-v2` | AVX, AVX2, BMI, FMA |
-| Linux aarch64 | `generic` | |
-
-`x86-64-v2` is SSE4.2 and POPCNT — hardware from 2009 onward, and the
-baseline RHEL 9 itself requires. `apple-m1` is simply the oldest Apple
-Silicon.
-
-**The cost is zero, measured rather than assumed.** The obvious objection to
-pinning a baseline is lost performance, and it was worth checking before
-accepting it — or before offering a tuned build alongside. Compiling the same
-sources both ways and diffing the disassembly:
-
-| binary | disassembly lines | differing lines, `apple-m1` vs `apple-m4` |
-|---|---|---|
-| `run_benchmarks` (m0-core hot paths) | 41,248 | **0** (only the filename in otool's header) |
-| `m0serve` | 257,735 | **0** |
-
-The compiler emits byte-identical machine code. That is a stronger result
-than a timing comparison — identical code cannot differ in speed — and it
-makes sense on inspection: the features `apple-m4` adds over `apple-m1` are
-`+sme`, `+sme2`, `+i8mm`, `+bf16`, all matrix and ML extensions, and nothing
-in an HTTP server auto-vectorizes into them. The hot paths are syscalls,
-byte scanning, hashing and memcpy.
-
-So the pin costs nothing here, and a microarchitecture-tuned build has
-nothing to ship. That conclusion is specific to this code at this commit: add
-SIMD-heavy work and it could change, in which case the way to find out is to
-re-run this diff, not to assume either way.
-
-`check_docs.py` asserts both tasks pass the flag. Note *how* it asserts it:
-the first version searched the whole task body, which contains a comment
-explaining what `--target-cpu` is for, so it passed with the flag deleted —
-a guard satisfied by its own documentation. It now parses the `mojo build`
-command itself, with continuations joined, and both tasks were sabotaged to
-confirm it fails.
-
-### Should there be an M4-tuned build alongside?
-
-No, on two independent grounds.
-
-**Nothing to ship.** The measurement above: `apple-m1` and `apple-m4` produce
-byte-identical code for both the core benchmarks and the server. A tuned
-wheel would be the same bytes under a different name.
-
-**And nowhere to put it if there were.** A wheel's platform tag has no field
-for microarchitecture — `macosx_13_0_arm64` is the only arm64 macOS tag
-there is. Two differently-tuned wheels for one version would have the *same
-filename*, so only one can exist and `pip` has no way to choose between them.
-Shipping a tuned build would mean a separate distribution name that users
-opt into by hand, or a download outside PyPI entirely. Both are real options;
-neither is worth it for identical bytes.
-
-If that ever changes, the honest order is: measure the delta first with the
-diff above, then decide on a mechanism — not the reverse.
-
-## 2026-09-29: one export left
-
-The hash exports the sections above call through (`m0_fnv1a`,
-`m0_xxhash32`, `m0_format_hash`) were removed with m0-core's FNV-1a and
-xxHash32, which nothing in the tree called ([DECISIONS](DECISIONS.md) D54),
-and so was `run_benchmarks.mojo`, the "core benchmarks" of the disassembly
-comparison. `libm0core` now exports `m0_shared_fetch_add` alone, the call
-`m0pub` makes through `ctypes` to number the events it publishes, and
-`smoke-ffi` makes that call. The bundling, the portability checks and the
-licensing position above are unchanged.
-
-## 2026-09-30: no longer published
-
-Releases after v1.8.0 attach no `libm0core` asset, bare or bundled:
-`release.yml`'s `build-artifacts` job and `poe bundle-ffi` were removed
-([DECISIONS](DECISIONS.md) D56). The library is still built. `poe build-ffi`
-emits it, `stage-wheel` copies it into the m0serve wheel's `_lib/` beside
-the binary, and the wheel's launcher points `m0pub` at that copy through
-`M0_CORE_LIB`. It is m0serve's private runtime, with no ABI promised to
-anyone else.
-
-The evidence, as of 2026-09-30:
-
-- Across the 32 releases from v0.1.0 to v1.8.0, the 114 `libm0core`
-  assets were downloaded 32 times in all, and 0 times on each of the seven
-  releases from v1.2.0 on (GitHub's releases API, `download_count`).
-- No project outside this repository names `libm0core` or
-  `m0_shared_fetch_add`, apart from a vendored copy of this repository.
-- `m0pub` is the one caller of its one export, `m0_shared_fetch_add`,
-  which it passes the address of the event-id word on the shared page
-  m0serve maps at startup (`M0_SHARED_ID_ADDR`). No caller through Bun's
-  `dlopen` or Node's N-API, the two this page opened by naming, is known.
-
-What carries over to the wheel's copy: the relocation above
-(`bundle_artifact.py --also`), the licensing position (the wheel carries
-`licenses/NOTICE.m0serve.txt`), and the self-containment check `bundle-ffi`
-ran on the standalone bundle, which now runs on the wheel's
-`_lib/libm0core` in `stage-wheel`, on every pull request, and again in the
-release's `wheel-inspect` job. `licenses/NOTICE.bundle.txt`, the notice
-that travelled inside the bundle, left the tree with it. Past releases keep
-their assets and their notices; nothing was deleted.
-
-Publishing resumes, with a versioned ABI, when a named caller outside this
-repository asks for a C ABI.
+`LICENSE.mojo-runtime.txt`, with a `NOTICE.txt` that says why. The
+wheel's licence expression stays `MIT AND Apache-2.0 WITH
+LLVM-exception`: a `LicenseRef-` for MAX would flag every install of
+m0serve for review on a reading nothing confirms, and the notice says
+what the expression cannot. An `m0 build --release` artifact and an
+`m0 image` carry the same runtime, and from m0 0.14.0 the same texts
+(SPEC N56).
+
+Modular shipping a licence file in the `mojo-compiler` wheel that
+identifies the runtime's components would settle the question under
+section 1.5. Each new release's METADATA is worth the same one-line
+check.

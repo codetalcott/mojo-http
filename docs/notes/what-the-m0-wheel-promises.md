@@ -95,7 +95,7 @@ The evidence: across 32 releases its 114 assets were downloaded 32 times,
 and 0 times on each of the seven releases from v1.2.0 to v1.8.0; no project
 outside this repository names it, apart from a vendored copy of this
 repository; and `m0pub` is the only caller of its only export.
-`docs/FFI_DISTRIBUTION.md` has the history of the bundle and what carried
+[the-c-abi-artifact.md](the-c-abi-artifact.md) has the history of the bundle and what carried
 over to the wheel's copy, including the self-containment check.
 
 ## What would retire it
