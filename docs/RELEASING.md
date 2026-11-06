@@ -7,7 +7,7 @@ and publishes a GitHub release with the wheels attached.
 
 ## A train
 
-A minor leaves every second Thursday ([Releases](RELEASES.md) is the
+A minor leaves every other Thursday ([Releases](RELEASES.md) is the
 policy; `uv run poe milestones` names the next train, the days to it, and
 a soak that must run before it). On the day:
 
