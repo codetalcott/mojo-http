@@ -6,6 +6,11 @@
 > its handler threads now rides in-memory rings, and the two datagram
 > socketpairs carry only wakes and payloads.
 
+The handoff from the event loop to a pool thread moved from datagrams to
+a ring in memory (`M0_POOL_RING=0` puts the datagrams back), and at 256
+connections the loop's per-request cost fell to what Granian's tokio
+thread costs.
+
 Bare WSGI at one worker and one handler thread, the same binary with the
 ring on and off in the same session, is 155k requests per second against
 131k at 16 connections and 184k against 154k at 256. The loop thread's

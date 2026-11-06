@@ -1,5 +1,11 @@
 # The Mojo stack's pages, and a front door CI walks through — 2026-09-20
 
+> A design note from the engineering record.
+
+The six site pages that document the Mojo stack, its section of
+`llms.txt`, and the gate that executes its quickstart (SPEC N33–N35;
+D45).
+
 The fourth round of the work that lets an application in Mojo be written
 outside this repository. The first three built the product — the `m0` wheel
 ([the-m0-wheel](the-m0-wheel.md)), `m0 new` and its templates

@@ -4,15 +4,18 @@
 > [elastic-pool.md](elastic-pool.md) left open: the mixed-workload table's
 > pooled rows held a fast-route p99 of 2–4 ms where Granian's row held
 > 0.5–0.6 ms on the same application, BENCHMARKS.md conceded the 4x, and
-> nobody had found the mechanism. This note names it, with the instruments
-> that placed it and the A/B that moves it by six times the run-to-run
-> spread. The time was never on the server's request path. It was
-> `ServerConfig.max_keepalive_requests`, which was 100: the server closed
-> every keep-alive connection after its hundredth request, the client
-> reconnected, and one reconnect in a hundred requests IS the 99th
-> percentile. Granian has no such cap. The default is now 1000 (nginx's),
-> `--max-keepalive-requests` / `M0_MAX_KEEPALIVE_REQUESTS` set it (0 =
-> never), and at equal shape the two servers' rows are the same row.
+> nobody had found the mechanism.
+
+The fast route's p99 tail behind slow views was the keep-alive cap,
+`ServerConfig.max_keepalive_requests`, which was 100: the server closed
+every keep-alive connection after its hundredth request, the client
+reconnected, and one reconnect in a hundred requests IS the 99th
+percentile. The time was never on the server's request path, and Granian
+has no such cap. The default is now 1000 (nginx's),
+`--max-keepalive-requests` / `M0_MAX_KEEPALIVE_REQUESTS` set it (0 =
+never), and at equal shape the two servers' rows are the same row. Below
+are the instruments that placed it and the A/B that moves it by six times
+the run-to-run spread.
 
 ## The instruments
 

@@ -6,8 +6,8 @@ The review of the lightbug fork, 2026-10-07 and 2026-10-08: the method,
 the numbers before and after, which instrument found which record, and
 what was left open. It raised 76 records (LF1–LF76). 72 are fixed, two
 were races in tests, one is a duplicate, and the last, LF24, was retired
-by measurement on 2026-10-09. The share of the fork's code lines unchanged since the
-upstream import fell from 34% to 23%.
+by measurement on 2026-10-09. The share of the fork's code lines
+unchanged since the upstream import fell from 34% to 23%.
 
 The plan, the four audit ledgers (one row per function) and the lane
 reports are kept outside this repository. The ids are in the commits, the

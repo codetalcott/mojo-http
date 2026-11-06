@@ -1,5 +1,7 @@
 # libpq keeps its handle — 2026-10-01
 
+> A design note from the engineering record.
+
 `m0-sqlite` found on 2026-09-30 that its pin did not do on macOS what its
 row said (SPEC O23; [functions-inside-the-query](functions-inside-the-query.md)),
 and fixed it there. The pin was `m0-postgres`'s code, copied, so

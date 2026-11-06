@@ -1,4 +1,4 @@
-# A fragment that names itself, 2026-09-10
+# A fragment that names itself — 2026-09-10
 
 > A design note from the engineering record: the framework layer for an
 > application written in Mojo, built app-first under a wire gate. What was

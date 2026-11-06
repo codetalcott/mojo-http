@@ -1,4 +1,4 @@
-# One renderer, two transports, 2026-09-11
+# One renderer, two transports — 2026-09-11
 
 > A design note from the engineering record: what Datastar 1.0 asks of a
 > server-rendered fragment, checked against the shipped bundle rather than

@@ -1,8 +1,12 @@
 # What the m0 wheel promises — 2026-09-29
 
-A design note from the engineering record. D54 and D55 are the decisions;
-SPEC G9 and M14 move to `out of scope`. D56 joined them on 2026-09-30,
-under "libm0core" below.
+> A design note from the engineering record. D54 and D55 are the decisions;
+> SPEC G9 and M14 move to `out of scope`. D56 joined them on 2026-09-30,
+> under "libm0core" below.
+
+Every name in the `m0` wheel's source reads as a promise. The names
+nothing in the tree used left on 2026-09-29, and the HTTP client went with
+them. On 2026-09-30 `libm0core` stopped being a release asset.
 
 ## The question
 

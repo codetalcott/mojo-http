@@ -4,12 +4,11 @@
 > 2026-09-03 and kept as written. The roadmap itself now holds only the
 > project's state; the reasoning lives here.
 
-The one path above that an ordinary application reaches, made to work
-rather than merely to fail honestly. `websocket.send` had no window: an
-app faster than its client filled the loop's 64 KB per-slot outbox and
-every frame past it was dropped — 430,693 of 1,638,400 bytes under a
-clean close frame. It waits for drain credit now, exactly as `_emit` does
-for a streaming HTTP response, and the same flood arrives whole:
+`websocket.send` waits for drain credit, as `_emit` does for a streaming
+HTTP response. It had no window: an app faster than its client filled the
+loop's 64 KB per-slot outbox and every frame past it was dropped — 430,693
+of 1,638,400 bytes under a clean close frame. With the window the same
+flood arrives whole:
 **1,640,193 bytes on the wire, byte for byte** (400 × 4 KB payload plus
 4-byte headers, the handshake and the close frame).
 

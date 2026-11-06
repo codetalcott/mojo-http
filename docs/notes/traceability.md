@@ -1,15 +1,13 @@
-# Traceability: stable ids, then declared coverage
+# Traceability: stable ids, then declared coverage — 2026-09-01
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the
 > project's state; the reasoning lives here.
 
-[SPEC.md](../SPEC.md) is a requirements traceability matrix -- the standard
-artifact in safety-critical software, whose defining property is that it traces
-BOTH ways: every capability to its evidence, and every piece of evidence back
-to a capability. That second direction is the half most homegrown versions omit
-and the half this one has, over two closed sets (the CI steps in `test.yml`,
-the flags `cli.mojo` accepts).
+[SPEC.md](../SPEC.md) is a requirements traceability matrix, the standard
+artifact in safety-critical software. It traces every capability to its
+evidence, and every piece of evidence back to a capability, over two closed
+sets: the CI steps in `test.yml` and the flags `cli.mojo` accepts.
 
 It also has a structural weakness, and the 2026-08-30 audit is the evidence.
 The sheet asserts things ABOUT tests, from outside them. The established

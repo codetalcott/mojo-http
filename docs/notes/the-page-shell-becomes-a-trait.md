@@ -1,5 +1,11 @@
 # The page shell becomes a trait — 2026-09-18
 
+> A design note from the engineering record.
+
+The document shell becomes the application's own `PageShell` trait, which
+`page_or_fragment` takes, replacing D12's `thin` function over a separate
+context struct.
+
 DECISIONS D12 made the document shell a `thin` function over a separate
 context struct:
 

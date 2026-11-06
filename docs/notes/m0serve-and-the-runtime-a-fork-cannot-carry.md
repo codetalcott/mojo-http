@@ -1,5 +1,7 @@
 # m0serve and the runtime a fork cannot carry — 2026-09-25
 
+> A design note from the engineering record.
+
 The Mojo host refuses `M0_WORKERS` above 1 when its binary links MAX's
 parallel runtime, because a `parallelize` in a forked worker never
 returns (SPEC E32, DECISIONS D48, [threads-first-for-m0-apps](threads-first-for-m0-apps.md)).

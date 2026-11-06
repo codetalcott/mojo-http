@@ -1,4 +1,4 @@
-# Mojo 1.0's PythonObject leak, and what the pin bump will hit
+# Mojo 1.0's PythonObject leak, and what the pin bump will hit — 2026-09-05
 
 > **Answered.** The pin moved to Mojo 1.1.0 on 2026-09-18 and the leak
 > is gone, measured against 1.0.0 as the null case. This page is the

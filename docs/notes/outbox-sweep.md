@@ -1,10 +1,14 @@
-# The outbox sweep — taken, scoped (2026-08-29)
+# The outbox sweep — taken, scoped 2026-08-29
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the
 > project's state; the reasoning lives here.
 
-The second lever the inversion entry named. Every pass swept all 1,024
+A pass skips the outbox sweep while no slot streams. The pump keeps the
+per-pass sweep, because the microsecond it took was pacing the pump's
+batches.
+
+Every pass swept all 1,024
 slots for a streaming one to drain, and the miss path — two flag loads
 per slot, none set — measured **1.2–1.3 µs per pass** in isolation, on a
 pass that carries one or two requests at low concurrency. The ceiling,

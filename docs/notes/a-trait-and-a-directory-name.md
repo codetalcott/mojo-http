@@ -1,4 +1,4 @@
-# A trait and a directory name, 2026-09-15
+# A trait and a directory name — 2026-09-15
 
 > **Fixed upstream.** Mojo 1.1.0 records a trait's identity, so an
 > application's conformance to a trait behind a `.mojoc` compiles whatever
