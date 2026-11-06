@@ -20,28 +20,29 @@ def main() raises:
 
 **`H: AppHandler`** is an `HTTPService` with a static `make(ctx)`. The host
 calls `make` once per worker, after the fork, so each worker builds its own
-handler. Three more static methods have defaults:
+handler. Four more static methods have defaults:
 
 | method | default | what it declares |
 |---|---|---|
 | `page_slots(workers) -> Int` | 0 | words of shared memory, created before the fork and handed to every `make` as `ctx.page` |
 | `max_workers() -> Int` | 0, any number | the most processes this application serves from |
 | `max_threads() -> Int` | `max_workers()` | the most loops in one process |
+| `pool_state_routes() raises -> List[String]` | none | the routes, as `METHOD /pattern`, whose views read or write in-memory state on a pool thread, which `pool-vs-application` reads; `ViewsApp` names them from its table |
 
 An application whose state lives in the handler answers `max_workers() -> 1`.
 `M0_WORKERS=2` is then refused at startup: two workers would hold two
 different copies.
 
 **`ViewsApp[S]`** is the `AppHandler` for an application that is a
-[views table](MOJO_VIEWS.md). `S: ViewState` has `make(ctx)` and `urls()`,
-the same three optional methods, and the four stream hooks and the tick
-with the handler's defaults, so a state that holds a stream (a `Feed`, a
-`DatastarStream`) forwards them to it. The fourth, `take_ready_streams`,
-is for a loop that holds many streams: forwarded to the stream's
-`take_ready`, answering True, it has each pass drain the streams with
-something to send rather than visit every one. The `views` scaffold uses it;
-`live`, whose handler owns a `DatastarStream` and a producer, is an
-`AppHandler` of its own.
+[views table](MOJO_VIEWS.md). `S: ViewState` has `make(ctx)` and `urls()`;
+`page_slots`, `max_workers` and `max_threads` as above; and the four stream
+hooks and the tick, with the handler's defaults, so a state that holds a
+stream (a `Feed`, a `DatastarStream`) forwards them to it. The fourth,
+`take_ready_streams`, is for a loop that holds many streams. A state that
+forwards it to its stream's `take_ready` and answers True has each pass
+drain only the streams with something to send. The `views`, `board` and
+`auth` scaffolds are `ViewsApp`; `live`, whose handler owns a
+`DatastarStream` and a producer, is an `AppHandler` of its own.
 
 **`P: Producer`** is work on a cadence, off the event loop: `make(ctx)`, and
 `step(mut self, mut out: Publisher) -> Int`, which returns the nanoseconds
@@ -70,8 +71,12 @@ shape (`max_workers() -> 1`).
 | `thread` | -1 for the loop's own handler, 0 upward for a pool thread's |
 | `capacity` | the connection capacity; a stream registry needs at least this many slots |
 | `page` | address of the application's shared page, or 0 |
+| `id_addr` | the shared event-id word every worker numbers from; `enable_bus` takes it |
 | `bus` | every worker's channel, for a handler that publishes to its peers |
 | `config` | the resolved configuration |
+
+`ctx.tick_owner()` is true on worker 0, and `ctx.on_loop()` on the loop's
+own instance.
 
 A `make` that raises, in a handler or a producer, ends the process with
 exit 78 and its message. It is not retried.
@@ -93,10 +98,10 @@ The doctor reports `max_connections_per_loop`, `stream_limit_per_loop` and
 `descriptor_limit`.
 
 **`M0_THREADS=N`** runs N loops on N threads of one process, and is the
-way to more than one core. Nothing is forked, so a runtime that cannot
-survive a fork works — MAX's parallel runtime, Core ML, CoreFoundation —
-and the loops share an address space. There is no supervisor: a loop that
-dies takes the process, and the platform restarts it. Refused beside
+way to more than one core. Nothing is forked, so the loops share an
+address space and a runtime that cannot survive a fork works: MAX's
+parallel runtime, Core ML, CoreFoundation. There is no supervisor: a loop
+that dies takes the process, and the platform restarts it. Refused beside
 `M0_WORKERS` above 1.
 
 **`M0_WORKERS=N`** forks N processes that share the listener. A worker that
@@ -142,6 +147,12 @@ A flag overrides its `M0_` variable, which overrides the default.
 | `--spawn-workers` | `M0_SPAWN_WORKERS` | m0serve's; refused here |
 | `--doctor` | | print the configuration, start nothing |
 | `--help` | | |
+
+Read from the environment alone: `M0_BASE_URL` (`config.base_url`,
+`http://localhost:PORT` by default), `M0_SSE_FLUSH_MS` (the comment that
+follows an SSE event; 150, 0 off), `M0_STREAM_KEEPALIVE_S` (TCP keepalive
+on a stream's socket; 15, 0 off), and `M0_LIBSQLITE3`, `M0_LIBPQ` and
+`M0_LIBZSTD`, which name a library file outright.
 
 A variable the host cannot read, such as `M0_PORT=80eighty` or a number too
 large for an `Int`, falls back to its default without a word: unlike
@@ -192,9 +203,10 @@ application declares (`max_workers`, `max_threads`, `page_slots`), and a
 code serving would exit with for the same arguments, because `serve` and the
 doctor read the same list of checks.
 
-`uv run m0 doctor` runs the toolchain's checks first (`platform`,
-`mojo-installed`, `mojo-gated`, `max-gated`, `c-compiler`, `patchelf`, `project`; the doctor skips `patchelf`, which only
-`m0 build --release` asks), then this one.
+m0's toolchain checks are `platform`, `mojo-installed`, `mojo-gated`,
+`max-gated`, `c-compiler`, `patchelf`, `project`. `uv run m0 doctor` runs
+every one but `patchelf`, which only `m0 build --release` asks, then this
+one.
 
 ## Shutdown
 
@@ -204,7 +216,9 @@ pool's join and the producer's join share one five-second bound. A thread
 still running after it is named on stdout and the process exits anyway, so
 `docker stop` never waits for SIGKILL. The binary runs correctly as PID 1.
 
-The capability rows are E21 to E32 in [Capabilities](SPEC.md). The design is
+The capability rows are E21 to E32 and E42, C20, C21 and C23 to C25 for a
+loop's connections, and M31 for the listen address, in
+[Capabilities](SPEC.md). The design is
 recorded in [the Mojo host](notes/the-mojo-host.md),
 [loops on threads](notes/loops-on-threads.md) and
 [flags and a doctor for the host](notes/flags-and-a-doctor-for-the-host.md).

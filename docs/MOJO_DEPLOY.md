@@ -10,16 +10,16 @@ beside it. `m0 new` writes `deploy/Dockerfile`, `deploy/fly.toml` and a
 uv run m0 build --release
 ```
 
-This compiles for the platform's baseline CPU rather than the machine doing
-the build, rewrites the binary's library search path to its own directory,
+This compiles for the platform's baseline CPU, whatever machine does the
+build, rewrites the binary's library search path to its own directory,
 and bundles the runtime into `dist/`. `dist/` is relocatable: copy it
 anywhere on the same platform and run `dist/server`. `--target-cpu CPU`
 compiles for something newer; `native` is refused, because the machine
-that builds is rarely the machine that runs. The bundle is the closure the
-binary names, discovered rather than listed, so an application that links
-MAX's parallel runtime (`parallelize`) ships `libAsyncRTMojoBindings`
-beside it with the rest — CI runs the bundled binary from its own
-directory to hold that (E32 in [Capabilities](SPEC.md)).
+that builds is rarely the machine that runs. The bundle is read from the
+binary: the libraries it names and the libraries those name, so an
+application that links MAX's parallel runtime (`parallelize`) ships
+`libAsyncRTMojoBindings` beside it with the rest (E32 in
+[Capabilities](SPEC.md)).
 
 A build needs a C compiler reachable as `cc`: `mojo build` links through
 that name and takes no other. `m0 build` checks for it first, with a link
@@ -60,7 +60,8 @@ volume mounted there (the Fly.io section below).
 ### What `about.json` proves
 
 The image's last layer measures the image from inside and writes
-`/app/about.json`; `m0 image` prints it as its last line.
+`/app/about.json`; `m0 image` prints it as its last line (N31 in
+[Capabilities](SPEC.md)).
 
 ```json
 {"app":"shop","version":"0.1.0","arch":"x86_64","cpu":"x86-64-v2","base":"debian:12-slim","libs":"libsqlite3-0","python":false,"app_bytes":2953336,"image_bytes":102047098}
@@ -69,7 +70,7 @@ The image's last layer measures the image from inside and writes
 | key | source |
 |---|---|
 | `python` | always `false`: the layer searches the filesystem for an interpreter and fails the build if it finds one |
-| `cpu` | what the builder's release build said it compiled for, not what was asked |
+| `cpu` | the CPU the builder's release build reported compiling for: the platform's baseline unless `--target-cpu` named one |
 | `libs` | the `RUNTIME_LIBS` build argument the runtime stage installed |
 | `app_bytes`, `image_bytes` | `du` over `/app` and over the whole filesystem, unpacked |
 | `version` | the project's `pyproject.toml` |
@@ -79,11 +80,6 @@ The `views` scaffold's `/app` is about 3 MB and the image about 102 MB
 unpacked, nearly all of it the Debian base. A cold build spends about 10 s
 on apt, 5 s on the frozen sync and 13 s compiling.
 
-CI builds this image from a freshly scaffolded project on x86-64 Linux on
-every pull request, reads `about.json`, checks PID 1 and that libsqlite3
-is present, probes the application through a published port and requires
-`docker stop` to exit 0 (N31 in [Capabilities](SPEC.md)).
-
 ## Fly.io
 
 ```bash
@@ -92,12 +88,12 @@ fly deploy -c deploy/fly.toml --remote-only
 fly scale count 1 -a NAME
 ```
 
-- **`--remote-only`.** Fly's machines are x86-64. An image built on an Apple
-  Silicon laptop is built under emulation, and the Mojo compiler does not
-  survive it.
-- **`scale count 1`.** The first deploy creates two machines. An application
-  whose state lives in the process has one machine's state on each.
-- **One loop.** On one shared vCPU a second worker or loop has no core to
+- Build with `--remote-only`: Fly's machines are x86-64, and on an Apple
+  Silicon laptop the image is built under emulation, which the Mojo
+  compiler does not survive.
+- Scale to one machine: the first deploy creates two, and an application
+  whose state lives in the process would have one machine's state on each.
+- One loop: on one shared vCPU a second worker or loop has no core to
   run on, so the scaffold's `fly.toml` leaves `M0_WORKERS` and `M0_THREADS`
   unset. On a machine with more than one vCPU, set `M0_THREADS` to the
   count ([the host](MOJO_HOST.md)).
@@ -105,12 +101,12 @@ fly scale count 1 -a NAME
   stops the machine, and sets a 25-second SSE heartbeat: a held stream is
   one connection for its whole life, and a quiet one needs traffic to stay
   open through the proxy.
-- **Safari behind Fly's proxy.** The proxy speaks HTTP/2 to the browser
+- Safari behind Fly's proxy: the proxy speaks HTTP/2 to the browser
   and can forward an event in two pieces, and Safari's `fetch` reader holds
   the second until something follows it. The server sends a comment
   shortly after each event for that (`M0_SSE_FLUSH_MS`, SPEC I47), so a
   quiet stream needs no faster heartbeat.
-- **A volume for the database.** `fly volumes create data --size 1 -a NAME
+- Give the database a volume: `fly volumes create data --size 1 -a NAME
   -r iad`, then the `[mounts]` block the scaffold's `fly.toml` carries
   commented out: it names the volume, and a deploy naming one that does
   not exist fails. Without it the `live` scaffold's kick count, and
@@ -124,7 +120,7 @@ loop.
 The server speaks HTTP/1.1 and no TLS; terminate TLS in front of it.
 SIGTERM drains and exits 0 within five seconds, which is inside
 `docker stop`'s default grace. [The host](MOJO_HOST.md) has the shutdown
-rules and every environment variable the binary reads.
+rules and the configuration the binary reads.
 
 <https://blobs.m0serve.dev> is `apps/blobs` from the repository, deployed
 this way; its footer is its own `about.json`.

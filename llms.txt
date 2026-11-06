@@ -1,38 +1,45 @@
 # m0serve
 
-> A WSGI and ASGI server written in Mojo: `pip install m0serve`, no Mojo
-> toolchain, no dependencies, nothing fetched at install. Its distinguishing
-> capability: held SSE and WebSocket connections gated by plain synchronous
-> views (Django, Flask, ...), with cross-worker publish, needing on one
-> machine neither Channels nor Redis nor a second process; across machines,
-> Postgres NOTIFY is the bus. It is Pushpin's GRIP pattern (`Grip-Hold`,
-> `Grip-Channel`) moved into the server that runs the view. On throughput
-> it is level with the fast servers, not ahead: per core it ties uvicorn
-> with uvloop on bare ASGI on macOS and trails it a little on Linux, ties
-> Granian on bare WSGI, and leads uvicorn on the fast-request tail under
-> mixed load; the benchmarks page has the numbers, each rendered from a
-> dated artifact.
+> A WSGI and ASGI server written in Mojo: `pip install m0serve`, one wheel
+> with no dependencies, needing no Mojo toolchain and fetching nothing at
+> install. Its distinguishing capability: held SSE and WebSocket
+> connections gated by plain synchronous views (Django, Flask, ...), with
+> cross-worker publish, needing on one machine neither Channels nor Redis
+> nor a second process; across machines, Postgres NOTIFY is the bus. It is
+> Pushpin's GRIP pattern (`Grip-Hold`, `Grip-Channel`) moved into the
+> server that runs the view. On throughput it is level with the fast
+> servers: per core it ties uvicorn with uvloop on bare ASGI on macOS and
+> trails it a little on Linux, ties Granian on bare WSGI, and leads
+> uvicorn on the fast-request tail under mixed load; the benchmarks page
+> has the numbers, each rendered from a dated artifact.
 
 Platforms: macOS arm64 (13+), Linux x86_64 and aarch64 with glibc 2.35+
 (Ubuntu 22.04, Debian 12, RHEL 10 and later; not RHEL 9 or Amazon Linux
-2023, at 2.34, where pip declines the wheel). CPython 3.10-3.14; free-threaded builds run WSGI only. No Windows,
-no musl, no TLS/HTTP2 (terminate at a proxy).
+2023, at 2.34, where pip declines the wheel). CPython 3.10-3.14;
+free-threaded builds run WSGI only. Not supported: Windows, musl. TLS and
+HTTP/2 terminate at a proxy.
 
 ## Operating contract
 
 - `m0serve MODULE[:ATTR]` serves WSGI or ASGI, detected from the object.
-  Bare `MODULE` tries `MODULE.asgi:application`, `MODULE.wsgi:application`,
-  `MODULE:app`, `MODULE.main:app`.
+  Bare `MODULE` tries `MODULE:application`, then `MODULE.asgi:application`,
+  `MODULE.wsgi:application`, `MODULE:app` and `MODULE.main:app`.
 - Zero-config topology follows the protocol: WSGI gets one loop with a pool
-  of `min(cores, 8)` handler threads; ASGI gets an asyncio executor.
-  `--workers N` preforks; `--mount PREFIX=SPEC` hosts several applications
-  in one process, each in its own mode; `--threads N` is free-threaded
-  CPython only and WSGI only (an ASGI app there is refused with exit 78).
+  of `min(cores, 8)` handler threads; ASGI gets an asyncio executor. Any
+  topology flag or variable (`--workers`, `--threads`, `--blocking-threads`,
+  even `M0_WORKERS=1`) turns that pool off for an unmounted application, so
+  add `--blocking-threads N` to keep one. `--workers N` preforks; `--mount
+  PREFIX=SPEC` hosts several applications in one process, each in its own
+  mode; `--threads N` is free-threaded CPython only and WSGI only (an ASGI
+  app there is refused with exit 78).
 - Flags are strict and named in `m0serve --help`; flags override `M0_*`
   environment variables, which override defaults.
-- Refusals explain themselves on stderr and name the fix. Exit 2 is usage,
-  1 is a startup failure, 78 is a configuration the interpreter cannot run.
-  `--version` prints `m0serve X.Y.Z`.
+- Refusals explain themselves on stderr and name the fix. Exit 2 is a
+  command line that cannot be read or a flag combination wrong on any
+  machine; 1 a startup failure (the application's import or lifespan, the
+  bind); 78 a configuration this machine or build cannot serve (a value
+  above its cap, a port out of range, a missing library, an interpreter
+  the mode cannot use). `--version` prints `m0serve X.Y.Z`.
 - `m0serve --doctor [OPTIONS] [MODULE]` prints one JSON object and starts
   nothing: platform, interpreter, the application spec discovery chose and
   its protocol, the resolved topology, and a `checks` array where every
@@ -50,8 +57,8 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
   nothing could take a hold (an ASGI-only server). A stream that reconnects
   with `Last-Event-ID` is sent what it missed from a per-loop journal of
   `--replay-frames` frames (`M0_REPLAY_FRAMES`, 64), or one unnumbered
-  `event: m0-gap` frame when the journal cannot supply all of it; listen
-  for `m0-gap` and fetch, instead of polling beside the stream.
+  `event: m0-gap` frame when the journal cannot supply all of it. On
+  `m0-gap`, fetch the current state; the stream needs no poll beside it.
 - `--max-connections N` (`M0_MAX_CONNECTIONS`, 1024) is the connections
   ONE LOOP holds; `--workers`/`--threads` multiply it. Held streams take
   all but the last 16, and the next stream is answered `503` with
@@ -94,8 +101,8 @@ promises, and how a behaviour change is announced.
   that proves it; `docs/spec.json` is the same data. `verified` means a
   gate runs on the stated cadence, not that the capability is correct.
 - [Benchmarks](docs/BENCHMARKS.md): throughput and tail latency against
-  gunicorn, uvicorn and Granian, from dated artifacts, including where this
-  server loses.
+  uvicorn and Granian, from dated artifacts, including where this server
+  loses.
 - The realtime example the quickstart builds on, as a project:
   [apps/django_realtime](apps/django_realtime/).
 
@@ -136,9 +143,10 @@ platforms: macOS arm64, glibc Linux x86_64 and aarch64.
   exits 0.
 - A view is a free function `(req, params, state) raises -> HTTPResponse`
   in a `Views[S]` table: `add_read` borrows the state, `add_write` takes it
-  `mut`, `add_loop` has none and runs on the event loop. No middleware, no
-  decorators: a guard is an early return. State held in one process
-  declares `max_workers() -> 1`, and a second worker is then refused.
+  `mut`, `add_loop` has none and runs on the event loop. A guard is an
+  early return; there is no middleware and there are no decorators. State
+  held in one process declares `max_workers() -> 1`, and a second worker is
+  then refused.
 - `Fragment[Htmx]` (htmx 4) or `Fragment[Datastar]` generates every swap
   attribute from the fragment's root id; never type one by hand. `text` and
   `attr` escape, `raw` does not. `page_or_fragment` answers a document or

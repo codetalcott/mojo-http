@@ -175,15 +175,18 @@ PAGES = [
          "The Mojo stack"),
     # Measurements: records that age, kept with their environment.
     Page("docs/BENCHMARKS.md", "/docs/benchmarks/", "Benchmarks",
-         "m0serve against gunicorn, uvicorn and Granian: where it wins, "
-         "where it loses, and how the numbers were taken.",
+         "m0serve against uvicorn and Granian: where it wins, where it "
+         "loses, and how the numbers were taken.",
          "Measurements", nav="Benchmarks", optional=True),
     Page("docs/WSGI_PERFORMANCE.md", "/docs/wsgi-performance/", "WSGI and ASGI performance",
-         "Requests per second and tail latency for both paths, rendered from "
-         "dated benchmark artifacts.",
+         "Requests per second and tail latency for both paths against "
+         "gunicorn, Granian and uvicorn, recorded by dated session; one "
+         "table renders from a benchmark artifact.",
          "Measurements", optional=True),
     Page("docs/SERVER_PERFORMANCE.md", "/docs/server-performance/", "Server performance",
-         "The Mojo server serving Mojo handlers, without Python in the path.",
+         "The Mojo server's own hot path with handlers that cost nearly "
+         "nothing, a Mojo mount against a numpy mount in one process, and "
+         "workers against threads for a Mojo application.",
          "Measurements", optional=True),
     Page("docs/REAL_APP_VALIDATION.md", "/docs/real-app-validation/", "Real applications",
          "The server run against Django projects nobody here wrote: what "

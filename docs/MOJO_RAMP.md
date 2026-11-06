@@ -27,24 +27,23 @@ page nobody has moved.
 `main` ([the host](MOJO_HOST.md)). No interpreter is in the process or the
 image.
 
-CI builds both from the one file on every pull request and sends each the
-same requests under the prefix: the index, a route answered on the event
-loop, a compute route, a 404 inside the prefix, a 405 with its `Allow`, an
-`OPTIONS`. The answers are byte-identical apart from `Date`, and a link
-rendered by one host resolves on the other (N20 in
+Both builds answer the same requests under the prefix (the index, a route
+answered on the event loop, a compute route, a 404 inside the prefix, a
+405 with its `Allow`, an `OPTIONS`) with bytes identical apart from
+`Date`, and a link rendered by one host resolves on the other (N20 in
 [Capabilities](SPEC.md)).
 
 ## What makes a module portable
 
-- **The prefix is a value.** The table is built as `Views[S](Mount("/x"))`
+- The prefix is a value: the table is built as `Views[S](Mount("/x"))`
   and every link goes through that `Mount`'s `url_for`. A request under a
   mount arrives with its whole path, so a link rendered as `/now` would
   land on the Python application.
-- **The state is built from the prefix alone**, so both adapters call one
+- The state is built from the prefix alone, so both adapters call one
   function.
-- **No body says where it ran.** A thread index means a handler thread on
+- No body says where it ran: a thread index means a handler thread on
   one host and the loop on the other.
-- **A route that must not queue is `add_loop`**, on both hosts.
+- A route that must not queue is `add_loop`, on both hosts.
 
 Each adapter is about a page: `apps/ramp/mount/m0serve_mount.mojo` for the
 mount, `apps/ramp/server.mojo` for the host.
