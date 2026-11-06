@@ -576,7 +576,7 @@ piece: an app that asks, a wire gate, then the lift.
     m0serve's Mojo mounts too (SPEC E33).
   - **`host_checks` is the ONE list** that `serve` (its first failure) and
     `--doctor` (all of them, same exit) read: add a refusal THERE, never
-    beside it (`m0_host/flags.mojo`, SPEC E30–E31, D37, `smoke-host-doctor`;
+    beside it (`m0_host/host.mojo` and `flags.mojo`, SPEC E30–E31, D37, `smoke-host-doctor`;
     docs/notes/flags-and-a-doctor-for-the-host.md). `serve` lays the flags
     over the `AppConfig` it is handed — flag > env > default, strict, exit 2
     for what cannot be READ, 78 for what cannot be SERVED — idempotently, so
