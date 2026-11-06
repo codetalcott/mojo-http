@@ -91,12 +91,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 RESULTS = REPO / "bench" / "results"
 
-CORES_NOTE = (
-    "Cores are measured (sampled `%cpu` of the pids on the listen socket),"
-    " not configured — the column exists because a \"1 worker\" comparator"
-    " was found running well over one core. Cross-session absolute rps on this"
-    " hardware varies ~1.5x; within-run ratios are the signal."
-)
+CORES_NOTE = "Cores: sampled `%cpu` of the pids on the listen socket."
 
 # Presentation order and labels, per kind. A median key the list does not
 # name still renders, at the end, without a label -- a new row appears in
@@ -759,8 +754,8 @@ def render_mount_table(kind, path, d):
         "",
         "Throughput and per core are Mojo over numpy: the median across rounds"
         " of the ratio within each round. In parentheses, the same per-core"
-        " ratio from the medians block — median rps over median cores for each"
-        " arm — which is what the columns to its left divide out to. Cores are"
+        " ratio from the medians block: median rps over median cores for each"
+        " arm, which the columns to its left divide out to. Cores are"
         " the server process's CPU seconds over wall seconds across the"
         " measured window; both arms share one process, so the column is"
         " each arm's own load, measured one at a time."

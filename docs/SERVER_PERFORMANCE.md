@@ -515,7 +515,7 @@ Environment: Python 3.13.6; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0.1 (26A
 | 25 % | 17,855 | 1.35 | 13,226 | 74,058 | 3.00 | 24,686 | 3.46x | 1.93x (1.87x) |
 | 5 % | 43,840 | 1.53 | 28,653 | 108,576 | 2.30 | 47,207 | 2.54x | 1.66x (1.65x) |
 
-Throughput and per core are Mojo over numpy: the median across rounds of the ratio within each round. In parentheses, the same per-core ratio from the medians block — median rps over median cores for each arm — which is what the columns to its left divide out to. Cores are the server process's CPU seconds over wall seconds across the measured window; both arms share one process, so the column is each arm's own load, measured one at a time. numpy 2.5.3.
+Throughput and per core are Mojo over numpy: the median across rounds of the ratio within each round. In parentheses, the same per-core ratio from the medians block: median rps over median cores for each arm, which the columns to its left divide out to. Cores are the server process's CPU seconds over wall seconds across the measured window; both arms share one process, so the column is each arm's own load, measured one at a time. numpy 2.5.3.
 <!-- /generated: mojo-mount -->
 
 ## Workers or threads, for a Mojo application (2026-09-18)

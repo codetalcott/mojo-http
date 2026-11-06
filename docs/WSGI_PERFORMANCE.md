@@ -793,7 +793,7 @@ Environment: Python 3.13.6; granian 2.8.4; Apple M4 (10 cores: 4P+6E); 16 GB; ma
 | `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 155,887 | 4.57 | 34,111 |
 | `granian` + bare WSGI, 4 workers, 1 blocking thread each | 155,112 | 4.10 | 37,832 |
 
-Cores are measured (sampled `%cpu` of the pids on the listen socket), not configured — the column exists because a "1 worker" comparator was found running well over one core. Cross-session absolute rps on this hardware varies ~1.5x; within-run ratios are the signal.
+Cores: sampled `%cpu` of the pids on the listen socket.
 <!-- /generated: layer-split -->
 
 The table between the markers is rendered from the newest artifact in
