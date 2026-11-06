@@ -1,4 +1,4 @@
-# The drain does not read a request body in flight — resolved
+# The drain does not read a request body in flight — resolved 2026-09-02
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the

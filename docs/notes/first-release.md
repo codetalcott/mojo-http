@@ -1,4 +1,4 @@
-# v0.1.0: the first release
+# v0.1.0: the first release — 2026-08-17
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the

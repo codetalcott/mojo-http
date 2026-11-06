@@ -1,5 +1,7 @@
 # The demo in its own image — 2026-09-18
 
+> A design note from the engineering record.
+
 Phase 5 of the Mojo-native host plan: `apps/blobs` shipped as an image with
 no interpreter and no toolchain in it, proven on x86-64, gated on every pull
 request, and measured beside the Django demo. The same work settled the

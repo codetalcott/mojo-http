@@ -1,8 +1,12 @@
 # The Linux floor is the runtime's, not the build host's — 2026-10-06
 
-A measurement from the engineering record. It corrects the known issue
-"The Linux wheel misses RHEL 9 by one glibc minor", whose stated closer —
-build inside a `manylinux_2_34` container — would not have closed it.
+> A design note from the engineering record. It corrects the known issue
+> "The Linux wheel misses RHEL 9 by one glibc minor", whose stated closer —
+> build inside a `manylinux_2_34` container — would not have closed it.
+
+The Linux wheel's glibc floor, `manylinux_2_35` on release 1.11.0, is set
+by the Mojo runtime libraries it bundles. Building inside a
+`manylinux_2_34` container would not have brought RHEL 9 in.
 
 ## The question
 

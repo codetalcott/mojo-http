@@ -1,5 +1,12 @@
 # A `mut` argument is not a reference — 2026-09-29
 
+> A design note from the engineering record.
+
+From `-O1`, Mojo copies a `mut` argument of 256 bytes or less in and stores
+it back on return, `self` included. A write made through the struct's
+address during the call is lost, so such a struct is passed by its
+address.
+
 B20 (PR #463) lost two writes the same way. `_flush_inverted` and
 `dispatch_job` took the asyncio executor's `ExecutorState` as a `mut`
 argument, code re-entered during the call wrote to that struct through its

@@ -576,7 +576,7 @@ piece: an app that asks, a wire gate, then the lift.
     m0serve's Mojo mounts too (SPEC E33).
   - **`host_checks` is the ONE list** that `serve` (its first failure) and
     `--doctor` (all of them, same exit) read: add a refusal THERE, never
-    beside it (`m0_host/flags.mojo`, SPEC E30–E31, D37, `smoke-host-doctor`;
+    beside it (`m0_host/host.mojo` and `flags.mojo`, SPEC E30–E31, D37, `smoke-host-doctor`;
     docs/notes/flags-and-a-doctor-for-the-host.md). `serve` lays the flags
     over the `AppConfig` it is handed — flag > env > default, strict, exit 2
     for what cannot be READ, 78 for what cannot be SERVED — idempotently, so
@@ -846,7 +846,8 @@ Properties of the design, not defects to fix in passing. Each names its note.
   `/reentrant`, pinned by `poe smoke-wsgi`). Apple's libsqlite3 can fault in
   a forked child (docs/notes/a-signpost-in-a-forked-child.md), so a worker
   that opens an m0-sqlite connection after the fork on macOS wants
-  `--spawn-workers` or `OS_ACTIVITY_MODE=disable`, which `test-sqlite` sets.
+  `OS_ACTIVITY_MODE=disable`, which `test-sqlite` sets, or m0serve's
+  `--spawn-workers`, which the Mojo host refuses.
   A rerun is not the answer: the crash is rare, real and not ours.
 - **SIGPIPE is ignored where every server starts** (SPEC A25):
   `ListenConfig.listen` calls `ignore_sigpipe` before any fork, thread or

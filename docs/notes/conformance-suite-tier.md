@@ -1,4 +1,7 @@
-# A conformance-suite tier
+# A conformance-suite tier — 2026-08-30
+
+> **Since built.** Autobahn|Testsuite runs at pre-release (SPEC I13,
+> `poe autobahn`), and the parser fuzzer is G13, on every pull request.
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the

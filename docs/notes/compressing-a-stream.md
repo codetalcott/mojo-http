@@ -1,4 +1,11 @@
-# Compressing a stream
+# Compressing a stream — 2026-10-26
+
+> A design note from the engineering record.
+
+How m0 compresses a stream that asks for it (D69; SPEC I45, I46): one zstd
+context per connection, a block flushed at every write, through a libzstd
+opened at run time. The note is the brief the build followed, with what
+step 6 measured.
 
 A brief for the session implementing it. Written 2026-10-26 in the
 datastar-builder repo, from a measurement there

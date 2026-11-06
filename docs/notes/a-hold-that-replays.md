@@ -1,8 +1,13 @@
 # A hold that replays — 2026-10-06
 
-A design note from the engineering record. D65 is the decision; SPEC I33
-names the capability. It retires the known issue "A WSGI hold replays
-nothing on reconnect", open since 2026-09-17.
+> A design note from the engineering record. D65 is the decision; SPEC I33
+> names the capability. It retires the known issue "A WSGI hold replays
+> nothing on reconnect", open since 2026-09-17.
+
+A held stream that reconnects with `Last-Event-ID` is sent what it missed
+from the loop's journal of the last `--replay-frames` frames, in order and
+ahead of the live feed. When the journal cannot cover the gap, the client
+gets one `m0-gap` frame.
 
 ## The question
 

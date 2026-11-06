@@ -1,4 +1,12 @@
-# A Mojo mount from somewhere else
+# A Mojo mount from somewhere else — 2026-09-12
+
+> **Superseded in part.** Mojo 1.1.0 emits the witness table behind a
+> `.mojoc` (`poe check-mojoc-trait`;
+> [a trait and a directory name](a-trait-and-a-directory-name.md)), so the
+> precompile warning below rests on the 1.0 defect. The mount stays a
+> source directory because `M0SERVE_MOUNT_DIR` replaces it (SPEC N14).
+
+> A design note from the engineering record.
 
 `--mount PREFIX=mojo` serves a Mojo handler on pool threads that never touch
 Python. The handler is a compile-time type, so no command line can name one

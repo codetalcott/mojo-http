@@ -8,6 +8,11 @@
 > measurement recorder's first results are
 > [structured-ci-results](structured-ci-results.md).
 
+Why the workflows are shaped as they are: measurements each job records
+and renders, the unfiltered `Docs` workflow as the one required check,
+merging by the `automerge` label, three smoke jobs and two unit-test jobs
+that wait on nothing, the warning floor, and sabotage anchors.
+
 ## Measurements are recorded, not echoed
 
 Several smokes compute a real quantity and print it — RSS growth over 10k

@@ -12,9 +12,7 @@ a word: an application directory added BESIDE the default builds cleanly
 and serves the demo, so a wrong path has to be an error, not a silent
 fallback (SPEC N14). The entry file is never copied, so it cannot drift
 from the release the application builds against, and the module is
-resolved from SOURCE, never a `.mojoc` -- a `PoolHandler` conformance
-behind a precompiled package emits no witness table, so an application
-must not `precompile` its mount directory.
+resolved from SOURCE and compiled with it.
 
 The contract is one name: `struct MojoMount(PoolHandler)`. It is built on
 each pool thread by `make(ctx)`, answers `func`, and is told `shutdown`.

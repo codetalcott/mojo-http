@@ -1,5 +1,12 @@
 # A resource over a table — 2026-10-02
 
+> **Superseded in part.** The change feed below was built the next day as
+> `m0_http.Feed` over stamps (SPEC N50, N51;
+> [a database that remembers what changed](a-database-that-remembers-what-changed.md)),
+> and `m0 new` also writes `board` (N52).
+
+> A design note from the engineering record.
+
 Two applications on the layer's pattern registered the same routes over
 every table they served, and one experiment had measured how a rendering
 of a table is kept current. This round lifts the first into the table and

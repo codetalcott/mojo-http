@@ -1,5 +1,13 @@
 # m0-sqlite at run time — 2026-09-25
 
+> **Superseded in part.** A `Statement` copies the whole table
+> (`SqliteFns`; `StmtLib` is gone), and the pin is the first connection's
+> handle kept open, with a second image refused, since on macOS
+> `RTLD_NODELETE` alone let a reopen map a fresh copy (SPEC O18, O23;
+> [functions inside the query](functions-inside-the-query.md)).
+
+> A design note from the engineering record.
+
 Until this round `m0-sqlite` reached SQLite through `external_call`, which
 put libsqlite3 on the link line of every binary that used it: no flag on
 macOS, where the dyld shared cache resolves it, and `-Xlinker -lsqlite3`

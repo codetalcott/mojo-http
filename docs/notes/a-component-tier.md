@@ -1,5 +1,12 @@
 # A component tier — 2026-10-24
 
+> **Withdrawn the same day.** Measured on an agent writing an application
+> from the scaffold, the tier showed no gain and was removed, and D1's
+> helpers stand (DECISIONS D68; SPEC N54 and N55 are out of scope). The
+> measurement is under "Measured, and withdrawn" below.
+
+> A design note from the engineering record.
+
 A design review of the layer's HTML surface, written against `2d28ad2`,
 asked whether m0 should render markup the way FastHTML does —
 `Div(P("x"), cls="card")`, a function per tag, children positional,

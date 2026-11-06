@@ -1,5 +1,7 @@
 # What the agent runs asked for — 2026-10-07
 
+> A design note from the engineering record.
+
 The follow-ups from [the agent usability runs](agent-usability-runs.md):
 the lines each page lacked, three changes to `m0`, and the two skills.
 Each stumble the runs counted became a line on a page, a change to the

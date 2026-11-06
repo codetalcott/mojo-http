@@ -1,8 +1,13 @@
-# Django views the right way, translated to Mojo, 2026-09-10
+# Django views the right way, translated to Mojo — 2026-09-10
 
 > A design note from the engineering record. Prompted by reading
 > [The Pattern](https://spookylukey.github.io/django-views-the-right-way/the-pattern.html)
 > and asking what it should be built out of here instead of Python.
+
+Django's function-based views, as *Django Views the Right Way* recommends
+them, translated to Mojo as `Views[S]`: views stored as `thin` function
+pointers over a state type, reads borrowed and writes `mut`, guards as
+early returns.
 
 The article's claim is narrow and worth taking literally. A view is a
 function that takes a request and returns a response; the recommended

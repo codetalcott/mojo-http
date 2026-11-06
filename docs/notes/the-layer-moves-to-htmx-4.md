@@ -1,6 +1,12 @@
-# The layer moves to htmx 4
+# The layer moves to htmx 4 — 2026-09-19
 
-2026-09-19. `Fragment[Htmx]`, `page_or_fragment` and `apps/fragment_notes`
+> **Superseded in part.** The layer writes a DELETE's CSRF header,
+> `header=csrf_header(token)` on `swap` and `el` (D38 retired 2026-09-27;
+> SPEC N44; [a login in the layer](a-login-in-the-layer.md)).
+
+> A design note from the engineering record.
+
+`Fragment[Htmx]`, `page_or_fragment` and `apps/fragment_notes`
 were gated against htmx 2.0.4, provisionally (DECISIONS D6: "moving the
 pin" was the retiring condition, and what would weigh was written down
 with it). This is the move: the built-in vocabulary is htmx 4, the notes

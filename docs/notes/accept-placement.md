@@ -1,4 +1,4 @@
-# Scheduling stickiness: which worker wins the accept race is CPU placement, not load
+# Scheduling stickiness: which worker wins the accept race is CPU placement, not load — 2026-09-05
 
 > A design note from the engineering record, moved out of ROADMAP.md's
 > Known issues on 2026-09-05 and kept as written. The change that followed
