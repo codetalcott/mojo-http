@@ -38,7 +38,7 @@ IMAGE = "ghcr.io/astral-sh/uv:python3.13-bookworm"
 # The peaks this measures, so a reader can size a box for it: the isolation
 # rows want ~3.6 cores of server, the load generator ~1-2 more. Eight
 # dedicated vcpus is what produced 0.8-2.1% spreads; four covers the
-# one-worker rows, which are the two that inverted.
+# one-worker rows.
 KINDS = {
     "asgi":  ("asgi_wrk_hello", {"client": "wrk -t2 -c16 -d8s, browser headers",
                                  "app": "apps/asgi_bare bareapp.asgi:application /"}),
