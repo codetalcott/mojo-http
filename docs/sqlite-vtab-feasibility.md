@@ -31,11 +31,11 @@ make the work cheaper:
   have meant new native machinery either way.)
 - **Do not model Mojo structs.** One bound pointer per column beats one strided
   pointer per struct. It sidesteps Mojo layout guarantees entirely and matches
-  the parallel-`List` layout `CLAUDE.md` already mandates.
+  the parallel-`List` layout the server's registries use.
 - **carray's headline benefit mostly is not there.** Its big win in Python
   bindings is avoiding per-value FFI trampolines. Mojo's `external_call` is a
-  direct call, so that saving largely evaporates — which is why the `IN`-clause
-  numbers are unremarkable and the ingest numbers are not.
+  direct call, so that saving largely evaporates. The `IN`-clause numbers are
+  unremarkable for that reason, and the ingest numbers are not.
 
 ## Numbers
 
@@ -96,7 +96,7 @@ bulk ingest, which was the case worth having.
 
 Shipped in `packages/m0-sqlite/src/vtab.mojo` with `Statement.execute_over` and
 `Statement.fetch_ints_over`, opt-in per connection via
-`Connection.register_array_module`, covered by 20 tests. The single-column
+`Connection.register_array_module`, covered by `test_vtab.mojo`. The single-column
 `IN`-clause path came along for free, as predicted; it is still not the reason
 to use this.
 
@@ -136,23 +136,15 @@ aarch64 ELF object.
 
 ## Still unverified
 
-- **Execution on aarch64.** No qemu-user and no aarch64 runner here, so the
-  layout is proven but the runtime is not. Specifically untested: whether Mojo's
-  `abi("C")` lowering is correct under AAPCS, and how the vtab interacts with
-  macOS's system SQLite (which already diverges from Linux's on
-  `sqlite3_step` past `SQLITE_DONE` — see `stmt.mojo`). The related open Mojo
-  bug modular/modular#6567 is SysV-specific and concerns by-value aggregates;
-  every callback here passes only pointers and ints, so it should not apply, but
-  the AAPCS equivalent has not been exercised.
-- **macOS's own `sqlite3.h`.** The `arm64-apple-macos` check compiled against
-  the Linux SQLite 3.45.1 headers installed here, since no macOS SDK is present.
-  It validates the ABI rules, not Apple's header text.
+- **Execution on Linux aarch64.** macOS arm64 runs the layout check against
+  the SDK's header and the vtab tests against Apple's libsqlite3 on every pull
+  request (`unit-gates`); no Linux aarch64 job runs `test-sqlite`.
 
 ## Scope note
 
 `m0-sqlite` advertises itself as "a thin, honest layer over the SQLite C API —
 no ORM, no query builder, no connection pool" (`src/__init__.mojo:1-6`). A vtab
 module would be the largest piece of native machinery in the repo. For
-comparison, a statement cache measured at ~10% and was deliberately not built
-(`README.md:152-154`). A 2.96x ingest win is well clear of that bar; a 1.2x
+comparison, a statement cache measured at about 650 ns a prepare and was not
+built ([SQLite performance](SQLITE_PERFORMANCE.md)). A 2.96x ingest win is well clear of that bar; a 1.2x
 `IN`-clause win is not.
