@@ -207,8 +207,9 @@ PAGES = [
          "with where each is recorded and what would retire it.",
          "Project", optional=True),
     Page("docs/WSGI_CONFORMANCE.md", "/docs/wsgi-conformance/", "WSGI conformance",
-         "Where the WSGI implementation stands against PEP 3333, clause by "
-         "clause.",
+         "How the WSGI bridge is held to PEP 3333: the standard library's "
+         "validator on two applications, a bare callable for what no "
+         "framework reaches, and one contract every framework row runs.",
          "Project", optional=True),
     Page("docs/RELEASING.md", "/docs/releasing/", "Releasing",
          "How a release happens: the gates CI runs, the two it cannot, and "
@@ -227,9 +228,10 @@ PAGES = [
          "the licensing record.",
          "Project", optional=True),
     # The Mojo packages, for people building on them directly.
-    Page("docs/FFI_DISTRIBUTION.md", "/docs/ffi-distribution/", "FFI distribution",
-         "The C-ABI library built from m0-core that the m0serve wheel "
-         "carries, and its licensing position.",
+    Page("docs/FFI_DISTRIBUTION.md", "/docs/ffi-distribution/", "libm0core",
+         "The C-ABI library built from m0-core that ships inside the "
+         "m0serve wheel: what the wheel carries, how it is checked, and its "
+         "licensing position.",
          "Mojo packages", optional=True),
     Page("docs/SQLITE_PERFORMANCE.md", "/docs/sqlite-performance/", "SQLite performance",
          "m0-sqlite findings: transactions around batch writes, mmap_size "
