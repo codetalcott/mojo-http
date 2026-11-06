@@ -187,12 +187,14 @@ SABOTAGES = [
      '            f.el("a", "get", url, attr("href", url), text(titles[i])),\n',
      '            f.el("a", "get", url, attr("href", url), titles[i]),\n',
      "create did not answer the list with the item escaped", WIRE),
-    # Served under --blocking-threads 2: a read left on the pool answers from
-    # a list of its own, which the item just created is not in.
+    # Served under --blocking-threads 2: the list is one handler's memory, so
+    # a read left on the pool is refused at startup with 78, naming its route
+    # (SPEC E42). Before E42 it answered from a list of its own, which the
+    # item just created was not in.
     ("views: the list is read off the loop", "views", T + "views/src/views.mojo",
      '    v.add_read("GET", ITEMS, index, on_loop=True)\n',
      '    v.add_read("GET", ITEMS, index)\n',
-     "after the create, lacks the item", WIRE),
+     "but GET /items read or write the state on a pool thread", WIRE),
     ("views: delete removes nothing", "views", T + "views/src/views.mojo",
      "    items.remove(i)\n",
      "    _ = i\n",
@@ -235,7 +237,7 @@ SABOTAGES = [
     ("auth: the list is read off the loop", "auth", T + "auth/src/views.mojo",
      '    v.add_read("GET", ITEMS, index, on_loop=True)\n',
      '    v.add_read("GET", ITEMS, index)\n',
-     "after the create, lacks the item", WIRE),
+     "but GET /items read or write the state on a pool thread", WIRE),
     ("auth: the list is cacheable", "auth", T + "auth/src/views.mojo",
      "    return no_store(page_or_fragment(\n        req,\n"
      "        render_list(items.ids, items.titles, session.subject, session.csrf, error),\n",
@@ -322,9 +324,10 @@ SABOTAGES = [
      "lacks the fragment or the pinned Datastar tag", WIRE),
 
     # --- board, on the wire: served under --blocking-threads 2 ----------------
-    # A view is the sender. Each rule a view off the loop breaks is caught
-    # only because the wire runs behind a handler pool, where every pool
-    # thread has a state of its own.
+    # A view is the sender. The board is one handler's memory, so each view
+    # moved off the loop is refused at startup with 78, naming its route
+    # (SPEC E42): the wire runs behind a handler pool, where every pool
+    # thread would build a state of its own.
     ("board: a post reaches no stream", "board", T + "board/src/views.mojo",
      "    _ = st.stream.patch_elements(EVENTS, render_board(st.messages))\n",
      "    _ = render_board(st.messages)\n",
@@ -332,15 +335,15 @@ SABOTAGES = [
     ("board: the post runs off the loop", "board", T + "board/src/views.mojo",
      '    v.add_write("POST", MESSAGES, post, on_loop=True)\n',
      '    v.add_write("POST", MESSAGES, post)\n',
-     "stream did not receive the message", WIRE),
+     "but POST /messages read or write the state on a pool thread", WIRE),
     ("board: the stream opens off the loop", "board", T + "board/src/views.mojo",
      '    v.add_write("GET", EVENTS, events, on_loop=True)\n',
      '    v.add_write("GET", EVENTS, events)\n',
-     "GET /events answered 409", WIRE),
+     "but GET /events read or write the state on a pool thread", WIRE),
     ("board: the document is rendered off the loop", "board", T + "board/src/views.mojo",
      '    v.add_read("GET", PAGE, page, on_loop=True)\n',
      '    v.add_read("GET", PAGE, page)\n',
-     "does not hold the board as it stands", WIRE),
+     "but GET / read or write the state on a pool thread", WIRE),
     ("board: the frame is not held to the outbox", "board", T + "board/src/pages.mojo",
      "comptime BOARD_BUDGET = OUTBOX_BYTES - FRAME_MARGIN\n",
      "comptime BOARD_BUDGET = OUTBOX_BYTES * 100\n",

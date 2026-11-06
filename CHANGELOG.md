@@ -11,6 +11,24 @@ default is listed under **Behaviour changes**
 
 ## [Unreleased]
 
+## [1.17.0] — 2026-11-05
+
+The first release on the two-weekly train ([Releases](docs/RELEASES.md)),
+with `m0 0.14.0` beside it. Eight changes of behaviour or default are
+listed under Behaviour changes; three of them change what a server does
+before an application's code runs. It listens on `127.0.0.1` unless
+`--host` or `M0_HOST` says otherwise, a held WebSocket opens only from its
+own origin unless `--ws-origin` names more, and a full loop takes a slot
+back from a connection idle a second. A loop holds the connections
+`--max-connections` names, 1024 by default, raises the open-file limit to
+fit them, and leaves its last slots to requests. `m0 0.14.0` carries the
+same framework and server: a Mojo application listens on loopback, raises
+its open-file limit, drains only the streams with output (the
+`take_ready_streams` hook, which `ViewState` and `ViewsApp` carry), and
+is refused with 78 when it leaves a view on one-process state to the
+handler pool (SPEC E42). `m0 build --release` puts the licences in
+`dist/licenses/`. The Mojo pin is unchanged at 1.2.0.
+
 ### Behaviour changes
 
 - **A comment follows each SSE event, on by default** (SPEC I47, #641).
@@ -143,6 +161,7 @@ default is listed under **Behaviour changes**
   arms and counts the bytes on the wire, and `bench_hello_ab.py`
   interleaves two hello builds
   ([the measurements](docs/notes/compressing-a-stream.md)).
+
 ### Changed
 
 - **Held streams no longer slow a loop's other requests** (SPEC C24). Each
@@ -9160,6 +9179,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.17.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.17.0
 [1.16.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.16.0
 [1.15.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.15.0
 [1.14.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.14.0

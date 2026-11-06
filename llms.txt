@@ -68,7 +68,7 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
 
 ## Releases
 
-The next train is 1.17.0, on Thursday 2026-11-05. A minor leaves every
+The next train is 1.18.0, on Thursday 2026-11-19. A minor leaves every
 second Thursday, with `m0` beside it whenever anything it bundles changed,
 and a patch any time for a security fix or a regression; only the latest
 minor is supported. What a train will carry is its milestone
