@@ -142,8 +142,7 @@ same terms' section 1.5 points the other way: portions of MAX released
 under Apache 2.0 with LLVM Exceptions, "as identified in the LICENSE file
 or license header accompanying each such component", stay under those
 terms, which control in a conflict. The runtime's sources carry those
-headers and the built files arrive with neither, which is why both texts
-ship rather than one. The wheel's licence expression stays `MIT AND
+headers and the built files carry neither, so both texts ship. The wheel's licence expression stays `MIT AND
 Apache-2.0 WITH LLVM-exception`: a `LicenseRef-` for MAX would flag every
 install of m0serve for review on a reading nothing confirms, and the
 notice says what the expression cannot. A user who distributes an `m0
