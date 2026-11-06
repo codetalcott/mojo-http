@@ -103,7 +103,7 @@ What this stack is *hostile* to is a classic ASGI host, for reasons that are
 design invariants rather than gaps: the handler runs synchronously on the
 event loop, the process is single-threaded, Mojo never acquires the GIL, and
 the fork happens before the first Python call
-([WSGI_CONFORMANCE.md](../WSGI_CONFORMANCE.md), "A note on beyond Django"). ASGI
+([WSGI_CONFORMANCE.md](../WSGI_CONFORMANCE.md#beyond-wsgi), "Beyond WSGI"). ASGI
 wants a Python event loop coexisting with the Mojo one. That remains a
 separate package to be taken on deliberately — if it is ever needed at all.
 
