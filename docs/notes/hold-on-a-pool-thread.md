@@ -10,7 +10,7 @@
 > project's state; the reasoning lives here.
 
 **Where this comes from.** Serving `textshelf`
-([REAL_APP_VALIDATION.md](../REAL_APP_VALIDATION.md), 2026-08-26) showed the
+([the-soak-record.md](the-soak-record.md), 2026-08-26) showed the
 realtime mode is not deployable for the application class it exists for,
 and the reason is a refusal this server makes on purpose: `--realtime`
 refuses `--blocking-threads`, so a held-stream server runs its views on the
@@ -74,7 +74,7 @@ what the numbers above are about; sockets second.
 
 **2. `--realtime` with `--mount` — shipped 2026-08-26, and it came before
 the socket half.** Re-measuring `textshelf` after stage 1 settled the order
-([REAL_APP_VALIDATION.md](../REAL_APP_VALIDATION.md), *Revisited*). Holds and
+([the-soak-record.md](the-soak-record.md#revisited-after-stage-1-2026-08-26), *Revisited*). Holds and
 an ASGI mount in one process is what a mixed application needs, because
 stream *shape* decides where an endpoint belongs: its four pub/sub
 endpoints convert to holds, while `ai/streaming.py` is a request-scoped

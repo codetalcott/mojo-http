@@ -552,7 +552,7 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
   **Before 0.12.0**: exercise the server against real applications rather
   than only the ones written to test it — three local Django projects,
   staged from `--doctor` through a realtime retrofit. **Done** (2026-08-26;
-  [REAL_APP_VALIDATION.md](../REAL_APP_VALIDATION.md) is the record): four
+  [the-soak-record.md](the-soak-record.md) is the record): four
   defects, each fixed with a guard that fails without it, three of which no
   in-repo application could have shown — and one finding about the shape
   of the server itself, which is the section below. The precedent held: the

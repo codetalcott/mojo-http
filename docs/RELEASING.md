@@ -243,7 +243,14 @@ a body cut short is a failure even then. Its comparator's `--selftest` (also
 cannot mean the comparator checks nothing. Against a real subject the same
 driver takes a manifest with a `login` block and a capture recorded from a
 reference server (`--baseline`, gunicorn or uvicorn) — see
-`scripts/soak_manifests/bakerydemo.json` for the worked example.
+`scripts/soak_manifests/bakerydemo.json` for the worked example. Four rules
+for a pass against real subjects, each from a pass that broke it:
+re-record every reference capture before the pass, since the soak's own
+traffic changes the applications' databases and a stale capture fails on
+content; re-pin a manifest's fixture sizes with the captures; soak against
+the application's scratch database, never its development one; and put the
+checkout's `.venv/bin` on `PATH`, or `m0serve` embeds the system
+interpreter.
 
 **And `uv run poe browser-datastar-form`** (SPEC N12) — the Datastar form
 arm in Chromium. `smoke-todo` proves the server's half on every pull

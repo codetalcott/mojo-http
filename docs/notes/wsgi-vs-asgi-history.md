@@ -535,7 +535,7 @@ recommended realtime surface for synchronous WSGI codebases.
 A generator the application did not size — `StreamingHttpResponse`, a
 Flask `Response` over a generator — used to be joined whole by the shim:
 the buffered-bridge limit applied to WSGI, and the one
-[REAL_APP_VALIDATION.md](../REAL_APP_VALIDATION.md) found illegible on
+[the 2026-08-26 soak](the-soak-record.md) found illegible on
 textshelf (a never-ending SSE generator that never answered and held its
 thread until shutdown). A `--blocking-threads` pool thread is now a
 **second producer on the executor's chunk channel**: the same
