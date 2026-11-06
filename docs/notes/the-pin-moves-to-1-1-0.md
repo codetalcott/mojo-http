@@ -1,5 +1,7 @@
 # The pin moves to Mojo 1.1.0 — 2026-09-18
 
+> A design note from the engineering record.
+
 Mojo 1.1.0 reached PyPI on 2026-09-17. It carries fixes for two things this
 tree had built around: a `PythonObject` reference leak the WSGI bridge
 routes every request away from, and a witness-table bug that shaped where

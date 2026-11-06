@@ -1,6 +1,12 @@
-# A signpost in a forked child
+# A signpost in a forked child — 2026-09-21
 
-2026-09-21. `test_two_processes_open_one_fresh_database` has gone red on
+> **Corrected.** `--spawn-workers` is m0serve's alone, and the Mojo host
+> refuses it with 78 ([The host](../MOJO_HOST.md#exit-codes-and-refusals)).
+> A host application's mitigation is `OS_ACTIVITY_MODE=disable`.
+
+> A design note from the engineering record.
+
+`test_two_processes_open_one_fresh_database` has gone red on
 macOS CI twice in two days, both times on a pull request that touched
 nothing near it: the failure that prompted #364 (which taught the test to
 name the signal a child died of, precisely because a bare `-1` could not),

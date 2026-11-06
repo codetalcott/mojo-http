@@ -1,4 +1,9 @@
-# Considered, not built: routes that carry a function
+# Considered, not built: routes that carry a function — 2026-09-03
+
+> **Built 2026-09-10 as `Views[S]`.** Each route's view is a `thin`
+> function over a state type the handler owns (SPEC N2;
+> [views the Mojo way](views-the-mojo-way.md)). Routes stay patterns for
+> `url_for` (D5).
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the

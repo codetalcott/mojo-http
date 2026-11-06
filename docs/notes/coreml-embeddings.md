@@ -1,5 +1,12 @@
 # MiniLM on the Neural Engine, served — measured 2026-09-04
 
+> A design note from the engineering record.
+
+MiniLM embeddings served from the Neural Engine through Core ML. Process
+for process, m0serve serves the view 17% faster at 44% lower p99. Handler
+threads do nothing for a view that holds the GIL. Three things prefork
+could not do here led to `--spawn-workers` (SPEC E15).
+
 *M4 (4P+6E), macOS 26.6.1, coremltools 9.0, m0serve 0.17.1 (portable
 `apple-m1` build), uvicorn 0.52.4 with uvloop and `--interface wsgi`. Every
 row is one sequential run on an idle machine, driven one configuration at a

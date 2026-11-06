@@ -10,6 +10,11 @@
 > that decided the fourth, and what the trivial and slow rows cost
 > before and after.
 
+Under the GIL, the handler pool serves on one thread and wakes another
+only when a job has waited. Zero-config bare WSGI then matched
+`--blocking-threads 1`, and a fast request behind two slow views is still
+answered in 2 ms.
+
 Bare WSGI at one worker, `apps/wsgi_bare`, `wrk -t2` with browser
 headers, Apple M4, CPython 3.13.6, granian 2.8.2, the same binary with
 the rules on and off in the same session, arms alternated. Zero-config

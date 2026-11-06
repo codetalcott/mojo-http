@@ -1,9 +1,15 @@
 # A full loop takes back an idle slot — 2026-11-02
 
-A design note from the engineering record. SPEC C23 is its row;
-[Running m0serve](../RUNNING.md#limits-and-lifecycle) states the limits.
-It follows [a loop keeps slots for requests](a-loop-keeps-slots-for-requests.md),
-whose reserve it makes hold.
+> A design note from the engineering record. SPEC C23 is its row;
+> [Running m0serve](../RUNNING.md#limits-and-lifecycle) states the limits.
+> It follows [a loop keeps slots for requests](a-loop-keeps-slots-for-requests.md),
+> whose reserve it makes hold.
+
+A loop with every slot in use takes one back for a new connection from a
+connection whose deadline is already counting down: first the connection
+longest idle between requests, then the oldest head still arriving, each
+once it has waited a second. The new connection is refused only when no
+slot qualifies.
 
 ## What was found
 

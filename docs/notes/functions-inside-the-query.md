@@ -1,5 +1,7 @@
 # Functions inside the query — 2026-09-30
 
+> A design note from the engineering record.
+
 `m0-sqlite` can now register a Mojo type as a scalar SQL function on a
 connection, and the function runs inside SQLite's query plan, reading each
 value where SQLite already holds it. SPEC O19 to O22 are its rows, D58 and

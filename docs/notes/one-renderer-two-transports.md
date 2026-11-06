@@ -1,4 +1,4 @@
-# One renderer, two transports, 2026-09-11
+# One renderer, two transports — 2026-09-11
 
 > A design note from the engineering record: what Datastar 1.0 asks of a
 > server-rendered fragment, checked against the shipped bundle rather than
@@ -11,6 +11,12 @@
 > 1.1.0 and that row is built:
 > [a-vocabulary-an-application-defines](a-vocabulary-an-application-defines.md).
 > The note is kept as written.
+
+> **Superseded in part.** Since the move to htmx 4.0.0, `page_or_fragment`
+> reads five headers, and `HX-Request-Type` decides when present (D6
+> retired, D9; SPEC N22;
+> [the layer moves to htmx 4](the-layer-moves-to-htmx-4.md)). D10 was
+> retired with `Query` (SPEC N36).
 
 [A fragment that names itself](a-fragment-that-names-itself.md) built the
 fragment layer for htmx and left one claim unproven: that the same

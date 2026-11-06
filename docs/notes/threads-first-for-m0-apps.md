@@ -1,5 +1,7 @@
 # Threads first for m0 applications — 2026-09-25
 
+> A design note from the engineering record.
+
 The Mojo host has had two ways to more than one core since 2026-09-18:
 `M0_WORKERS=N`, forked processes under a supervisor, and `M0_THREADS=N`, N
 loops on N threads of one process. They measured the same, so the

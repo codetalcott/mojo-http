@@ -1,5 +1,7 @@
 # The pin moves to Mojo 1.2.0 — 2026-10-22
 
+> A design note from the engineering record.
+
 Mojo 1.2.0 and MAX 26.7.0 reached PyPI on 2026-10-22, with a new MAX
 License dated the day before. This is the record of moving the pin onto
 them: `mojo==1.2.0`, and `max-core==26.7.0` in the `max` group, which pins

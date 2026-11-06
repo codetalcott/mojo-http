@@ -1,4 +1,4 @@
-# The WebSocket close path RSTing instead of FINning — resolved v0.15.1
+# The WebSocket close path RSTing instead of FINning — resolved 2026-08-30 in v0.15.1
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the

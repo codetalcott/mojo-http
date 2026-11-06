@@ -9,7 +9,7 @@ templates, the three `scripts/` it ships, and the six `/mojo/…` docs pages.
 stdlib-Python CLI that builds an application against it (SPEC N23–N26,
 D39–D43; docs/notes/the-m0-wheel.md). Pure Python, `py3-none-any`,
 versioned apart from the repo (`__version__` in `src/m0/__init__.py`, its
-one home; `0.x` until the layer soak). Rules:
+one home; `0.x` until the condition docs/MOJO.md opens with). Rules:
 
 - **Nothing is staged.** `hatch_build.py` force-includes `git ls-files` of
   the seven source trees into `m0/_mojo/<import name>/`, and the three

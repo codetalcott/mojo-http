@@ -1,14 +1,13 @@
-# The C-ABI artifact does not load off the machine that built it
+# The C-ABI artifact that did not load off the machine that built it
 
 > Releases after v1.8.0 do not attach `libm0core`. It ships inside the
 > m0serve wheel, where `m0pub` loads it, and releases v0.1.0 through v1.8.0
 > keep the assets this page describes. The last section, "2026-09-30: no
 > longer published", records why.
 
-`libm0core` is published with every GitHub release for "Bun's `dlopen`,
-Node's N-API, or Python's `ctypes`". **It does not work for any of them.**
-Every release from v0.1.0 to v0.7.0 ships an asset that a consumer cannot
-load.
+Releases v0.1.0 through v1.8.0 attached `libm0core` for "Bun's `dlopen`,
+Node's N-API, or Python's `ctypes`". **The asset of every release from
+v0.1.0 to v0.7.0 loads for none of them.**
 
 ## What is wrong
 
@@ -56,8 +55,8 @@ machine cannot detect a dependency on the build machine.
 `poe check-ffi-portable` (`scripts/ffi_portability_check.py`) checks the
 property a load attempt cannot: **every recorded search path is relative to
 the artifact, and every dependency is either a system library or shipped
-beside it.** Static inspection, both formats. It fails on the current
-artifact and on every published one, which is how it was verified.
+beside it.** Static inspection, both formats. It failed on every artifact
+published through v0.7.0.
 
 ## The fix, demonstrated
 
@@ -143,8 +142,7 @@ same terms' section 1.5 points the other way: portions of MAX released
 under Apache 2.0 with LLVM Exceptions, "as identified in the LICENSE file
 or license header accompanying each such component", stay under those
 terms, which control in a conflict. The runtime's sources carry those
-headers and the built files arrive with neither, which is why both texts
-ship rather than one. The wheel's licence expression stays `MIT AND
+headers and the built files carry neither, so both texts ship. The wheel's licence expression stays `MIT AND
 Apache-2.0 WITH LLVM-exception`: a `LicenseRef-` for MAX would flag every
 install of m0serve for review on a reading nothing confirms, and the
 notice says what the expression cannot. A user who distributes an `m0
@@ -218,8 +216,9 @@ report implied both were broken.
 The checker reports three states rather than pass/fail, which is what makes
 it gateable: `BROKEN` (only loads where it was built), `SATISFIABLE` (loads
 once named files are placed beside it), `SELF-CONTAINED` (loads with nothing
-else). `--require-self-contained` demands the strongest. Today macOS is
-satisfiable and Linux is self-contained; neither is broken.
+else). `--require-self-contained` demands the strongest. On 2026-08-24
+macOS was satisfiable and Linux self-contained; the wheel's copy is
+self-contained on both.
 
 ## The licensing question, re-checked 2026-08-24
 
@@ -256,10 +255,11 @@ and unblocks the last step; the mechanism is already proven and
 
 ## Resolved, 2026-08-24: the bundle ships
 
-All three defects are fixed. `poe bundle-ffi` assembles
-`dist/libm0core-<platform>/` containing the artifact, the Mojo runtime it
-loads, and both licences — and **refuses to finish unless the result is
-self-contained**, so the assembly step and the assertion cannot drift apart.
+All three defects are fixed. `poe bundle-ffi` (removed on 2026-09-30, see
+the last section) assembled `dist/libm0core-<platform>/` containing the
+artifact, the Mojo runtime it loads, and both licences — and **refused to
+finish unless the result was self-contained**, so the assembly step and the
+assertion could not drift apart.
 Verified by loading it from `/tmp` with `DYLD_LIBRARY_PATH` and
 `DYLD_FALLBACK_LIBRARY_PATH` unset: every public vector passes.
 
@@ -269,10 +269,10 @@ instead of silently producing a broken bundle — which is exactly the failure
 the first hand-written attempt hit, shipping only the library named in the
 error message and then failing on its dependency.
 
-CI runs `bundle-ffi` on every commit, and the release workflow ships the
-bundle as `<asset>.tar.gz` beside the bare library (kept so existing download
-URLs keep working). A release can no longer publish an asset that only loads
-on the runner.
+Until v1.8.0, CI ran `bundle-ffi` on every commit, and the release workflow
+shipped the bundle as `<asset>.tar.gz` beside the bare library (kept so
+existing download URLs kept working), so no release published an asset that
+only loads on the runner.
 
 ### Why proceeding was reasonable, and what it does not rest on
 
@@ -313,19 +313,19 @@ knowing before the first upload rather than after.
 
 ## Recommended sequence
 
-1. ~~**Fix defects 1 and 2.**~~ **Done** — see the update above. macOS is
-   `SATISFIABLE`, Linux is `SELF-CONTAINED`, neither is `BROKEN`.
-2. **Document the three files** a consumer must supply on macOS. Done in the
-   README; the release notes should say it too.
-3. **Ship the runtime alongside once the licensing question is answered** —
-   by asking Modular, not by inferring from the Apache-2.0 sources while the
-   shipped binaries say otherwise. The mechanism is proven and
-   `check-ffi-portable --require-self-contained` already validates it.
+1. ~~**Fix defects 1 and 2.**~~ **Done** — see the update above. macOS was
+   `SATISFIABLE`, Linux `SELF-CONTAINED`, neither `BROKEN`.
+2. ~~**Document the three files** a consumer must supply on macOS.~~
+   Moot: the wheel ships the runtime beside `libm0core`, so a consumer
+   supplies nothing.
+3. ~~**Ship the runtime alongside once the licensing question is
+   answered.**~~ **Done**: the bundle shipped it from 2026-08-24, and the
+   wheel ships it now, with the licensing position above.
 
-`check-ffi-portable` can now be a **gate** rather than a diagnostic: it
-passes today on both platforms, and fails if either regresses to `BROKEN`.
-It is not yet wired into CI as one — that belongs with the release workflow
-change in (3).
+The check is a **gate**: `stage-wheel`, inside `smoke-wheel` on every pull
+request, and the release's `wheel-inspect` run `ffi_portability_check.py
+--require-self-contained` on the wheel's `_lib/libm0core` and refuse a copy
+that is not self-contained.
 
 ## 2026-08-25: executables differ from dylibs, and both tools missed it
 

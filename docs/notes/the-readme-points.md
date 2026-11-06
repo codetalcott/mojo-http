@@ -1,8 +1,11 @@
 # The README points to the page that owns a fact — 2026-10-10
 
-A record from the engineering notes. It holds the incident behind the
-README's rule, the rule, and the two halves of the rule no gate enforces
-yet.
+> A design note from the engineering record.
+
+The README links to the page that owns a fact instead of copying it.
+After 1.12.0 gave a hold a replay journal, the README's copy said the
+opposite through 1.14.0. The note holds that incident, the rule, and the
+two halves of the rule no gate enforces yet.
 
 ## The incident
 

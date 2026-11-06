@@ -1,14 +1,13 @@
-# Proven once, unloaded: an inventory of the gates with that shape
+# Proven once, unloaded: an inventory of the gates with that shape — 2026-08-31
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the
 > project's state; the reasoning lives here.
 
-The v0.15.1 bug came from a shape rather than an oversight: **proven once, by
-a smoke, and stressed not at all.** The measure of how little that guarantees
-is exact. Reverting the `websocket.send` credit gate was caught on round 1 by
-the extended `stress-asgi`, and passed the old chunked-only gate 30 of 30
-under 8 hogs.
+An inventory of the gates that prove a capability once and never under
+load, the shape behind the v0.15.1 bug. Reverting the `websocket.send`
+credit gate passed the old chunked-only gate 30 of 30 under 8 hogs, and
+the extended `stress-asgi` caught it on round 1.
 
 This is the inventory that shape asked for, taken 2026-08-30 by reading each
 gate rather than by assuming from its name. Two of the three candidates turn

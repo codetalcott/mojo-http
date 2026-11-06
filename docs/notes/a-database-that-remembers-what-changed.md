@@ -1,5 +1,7 @@
 # A database that remembers what changed — 2026-10-02
 
+> A design note from the engineering record.
+
 The change clock ([a-resource-over-a-table](a-resource-over-a-table.md))
 says that something was committed. This round adds what: `m0-sqlite`
 stamps each row a watched table writes, so "what changed since N" is a

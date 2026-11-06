@@ -1,7 +1,11 @@
 # A login in the layer — 2026-09-27
 
-A design note from the engineering record. SPEC N43–N45 are the rows,
-D53 the decision; D38 and D44 retire.
+> A design note from the engineering record. SPEC N43–N45 are the rows,
+> D53 the decision; D38 and D44 retire.
+
+The login `apps/fragment_notes` wrote by hand becomes a module of the
+layer, `m0_http.login`, and a scaffold template, `m0 new --template auth`.
+The notes app moves onto it.
 
 ## The question
 

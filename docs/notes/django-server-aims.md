@@ -1,4 +1,4 @@
-# The Django server aims
+# The Django server aims — 2026-08-21
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the

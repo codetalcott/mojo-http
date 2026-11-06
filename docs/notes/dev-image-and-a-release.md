@@ -1,5 +1,10 @@
 # `m0 dev`, `m0 image`, and a release nobody has run — 2026-09-20
 
+> A design note from the engineering record.
+
+`m0 dev` and `m0 image`, the gate that builds the scaffold's image, and the
+workflow that publishes the `m0` wheel (SPEC N30–N32).
+
 The third of three pull requests that let an application in Mojo be written
 outside this repository. The first added the wheel and the commands that
 need no template ([the-m0-wheel](the-m0-wheel.md)); the second `m0 new` and

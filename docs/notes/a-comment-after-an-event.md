@@ -1,7 +1,12 @@
 # A comment after an event — 2026-10-29
 
-A design note from the engineering record. SPEC I47 is the capability;
-issue #641 is the report.
+> A design note from the engineering record. SPEC I47 is the capability;
+> issue #641 is the report.
+
+Why an event on an SSE stream is followed by one `: flush` comment 150 ms
+later (`M0_SSE_FLUSH_MS`). Behind Fly's HTTP/2 proxy, Safari's `fetch`
+held the second piece of a split event until more bytes arrived, so a
+Datastar page showed each change one change late.
 
 ## What was seen
 

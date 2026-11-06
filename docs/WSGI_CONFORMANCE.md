@@ -1,22 +1,13 @@
 # WSGI conformance
 
-`m0-wsgi` hosts WSGI applications. Django is one, and the package has no
-opinion about which one you run — `grep -i django packages/m0-wsgi/**/*.mojo`
-returns nothing. What *is* Django-shaped is the evidence: `apps/django_wsgi` is
-the only WSGI example, `smoke-django` is the only proof the bridge works, and
-the example handler is named `DjangoHandler`. This document is about closing
-that gap without deepening it.
-
 ## Tier 1 — PEP 3333 conformance (done)
 
 `wsgiref.validate` is the stdlib's own WSGI checker and the closest thing that
-exists to a conformance suite for a *server*. `poe smoke-django` runs a pass
-with `M0_WSGI_VALIDATE=1`, which wraps the application in it, plus a
-`/pep3333/canary` route that proves the wrapper is engaged. See the "PEP 3333
-conformance" section of [ROADMAP.md](ROADMAP.md).
-
-It rides on the Django example today only because that is the WSGI example
-that exists. It should move to the bare app below.
+exists to a conformance suite for a *server*. `M0_WSGI_VALIDATE=1` wraps the
+application in it, and `poe smoke-django` and `poe smoke-wsgi` each run a pass
+with it set. In that pass a non-conforming route in each app, Django's
+`/pep3333/canary` and the bare app's `/no-content-type`, must answer 500,
+which proves the wrapper is engaged.
 
 ## Tier 2 — do not vendor Django's test tree
 
@@ -50,7 +41,7 @@ worth reading once for assertions to port, and nothing more.
 ### 1. A bare WSGI example
 
 [`apps/wsgi_bare/`](../apps/wsgi_bare/) — a plain PEP 3333 callable with zero
-third-party dependencies, 19 routes, each pinning one paragraph of the spec.
+third-party dependencies, 40 routes, each pinning one paragraph of the spec.
 It is served by the same `m0serve` binary as the Django and Flask rows —
 `bin/m0serve bareapp.wsgi:application --app-dir apps/wsgi_bare` — so the rows
 are Python-only and the diff between them is the point: there is none on the
@@ -65,8 +56,7 @@ demonstrable rather than asserted.
 `poe smoke-wsgi`, wired into CI ahead of `smoke-django`. It runs
 `M0_WORKERS=2` throughout, then repeats a subset under `M0_WSGI_VALIDATE=1`.
 
-It reaches PEP 3333 surface no framework-based test can, which is what makes it
-a *better* corpus than Django's suite rather than merely a cheaper one: the
+It reaches PEP 3333 surface no framework-based test can reach: the
 `write()` callable, a second `start_response` with and without `exc_info`,
 multi-chunk iterables, `close()` on the response iterable, arbitrary status
 passthrough, and `wsgi.input` read patterns (`read()`, `readline()`, iteration,
@@ -93,7 +83,7 @@ call winning. PEP 3333 makes it an application error; the shim now raises and
 the server answers 500. With `exc_info` the spec requires replacing the stored
 status and headers unless the headers have already gone out — which for a
 fully-buffering server is never, so replacing is always the correct branch.
-That part was already right by accident; it is now right on purpose and pinned.
+That part was already right; it is now pinned.
 
 **`urlopen` from inside a view SIGKILLs the worker on macOS.** Not a bug in
 this server, but a trap for anyone using it. `urlopen` consults the system
@@ -144,13 +134,10 @@ rather than once per row:
 [`apps/django_wsgi`](../apps/django_wsgi/) and
 [`apps/flask_wsgi`](../apps/flask_wsgi/) both implement it, and
 `smoke-django` and `smoke-flask` both call the same script. A row that needed
-assertions of its own would be evidence the host is *not* framework-agnostic,
-so the shared script is the test — not a convenience.
+assertions of its own would show the host is not framework-agnostic.
 
-Flask required **no changes to `m0-wsgi`**: the app, a `server.mojo` identical
-to the other two apart from the module name and port, and a task that calls the
-contract. It passed on the first run. One framework is an anecdote; two that
-share a contract are a claim.
+Flask required **no changes to `m0-wsgi`**: the app and a task that calls the
+contract. It passed on the first run.
 
 Django keeps its own extra assertions — signed-cookie sessions, the RSS leak
 guard, `wsgi.multiprocess`, the prefork parallelism check, the validator pass —
@@ -165,7 +152,7 @@ dependency and not a line of the contract. Flask is a dev dependency and
 
 | | |
 |---|---|
-| `apps/wsgi_bare/` — 19 routes, no third-party imports | built |
+| `apps/wsgi_bare/`, no third-party imports | built |
 | served by `m0serve` (no per-row `server.mojo`) | built |
 | `poe smoke-wsgi`, `poe serve-wsgi-bare` | built |
 | `write()` + double-`start_response` fixes in `bridge.mojo` | fixed |
@@ -177,27 +164,12 @@ dependency and not a line of the contract. Flask is a dev dependency and
 app. Removing it there would have dropped real coverage — Django is the
 realistic-traffic case — and it costs four lines to keep.
 
-Warning ratchet unchanged at 68. No sdist fetch, no pinned source tree, no
-expectations file.
-
 ## A note on "beyond Django"
 
 The fork matters for how much of this is reusable:
 
-- **Flask, Pyramid, Bottle, Werkzeug** are WSGI. Same bridge, adapter only —
-  they are matrix rows, and the suite above covers them the day it exists.
-- **FastAPI, Starlette, Litestar are ASGI**, which is a different protocol and
-  a different package, not an adapter. *(Dated record, kept as written; it
-  has been superseded — the ASGI executor hosts them now, a Python event
-  loop per serving loop coexisting with the Mojo one, and
-  [the design record §8](notes/wsgi-vs-asgi-history.md) is the current account.)* The
-  current architecture is actively hostile to it: the handler runs
-  synchronously on the event loop, the process is single-threaded, Mojo
-  never acquires the GIL, and the fork must happen before the first Python
-  call. ASGI wants a Python event loop coexisting with the Mojo one. That
-  is a design problem to be taken on deliberately, not reached by
-  extending `m0-wsgi`.
-
-The HTTP-level assertions in the suite above are protocol-agnostic and would
-carry over to an ASGI host unchanged — which is a further argument for writing
-them against a bare callable now rather than against Django's test tree.
+- **Flask, Pyramid, Bottle, Werkzeug** are WSGI. Same bridge, adapter only:
+  they are matrix rows, and the suite above covers them.
+- **FastAPI, Starlette and Litestar are ASGI.** m0serve hosts them through the
+  ASGI executor, a Python event loop beside each Mojo loop
+  ([the design record §8](notes/wsgi-vs-asgi-history.md)).

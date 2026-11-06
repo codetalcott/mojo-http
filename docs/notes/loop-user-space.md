@@ -1,4 +1,4 @@
-# The loop thread's user space — measured and cut, 2026-09-06
+# The loop thread's user space — measured and cut 2026-09-06
 
 > A design note from the engineering record. It is the step after
 > [pool-ring-handoff.md](pool-ring-handoff.md): with the handoff in
@@ -7,6 +7,10 @@
 > Granian's tokio thread, all of it user space. This note re-took the
 > profile on the ring build, let its ranking set the order, and reports
 > what moved and what did not.
+
+User-space work cut from the loop thread's request path brought bare WSGI
+at one worker and one thread to 0.97–0.99x Granian, and the loop's
+per-request cost to what Granian's tokio thread costs.
 
 Bare WSGI at one worker and one handler thread, main at `043ac1d` and
 this branch, the same session, arms alternated: 186k requests per

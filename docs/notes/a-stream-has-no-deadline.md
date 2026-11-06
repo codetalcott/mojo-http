@@ -1,7 +1,12 @@
 # A stream has no deadline — 2026-09-30
 
-A design note from the engineering record. D57 is the decision; SPEC A24
-names it.
+> A design note from the engineering record. D57 is the decision; SPEC A24
+> names it.
+
+Why an SSE or WebSocket stream has no send deadline. A stalled reader's
+slot costs what an idle reader's does, a deadline would not stop a client
+that reads a byte a second, a slot's queue is capped, and TCP keepalive
+reaps a client that vanished.
 
 ## The question
 

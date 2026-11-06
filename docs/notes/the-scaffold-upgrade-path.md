@@ -1,7 +1,11 @@
 # The scaffold's upgrade path — 2026-09-27
 
-A design note from the engineering record. SPEC N42 is the row and D52 the
-decision.
+> A design note from the engineering record. SPEC N42 is the row and D52 the
+> decision.
+
+A project `m0 new` wrote learns what a newer `m0` changed through
+`m0 doctor`, which names the scaffold's files that differ from what the
+running `m0` writes. Nothing rewrites them.
 
 ## The question
 

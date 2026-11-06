@@ -780,10 +780,11 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       in the request it holds) and sends an `H` frame, and the inbound half
       rides the submit channel back as a `TAG_WS_MESSAGE` datagram — the
       executor's shape plus the CHANNEL, because a pool thread's own
-      registries are empty. `ws_message` asks the pool question FIRST: on a
-      mixed mounted server `asgi_notify_fd` is set for the ASGI mount, and
-      asking that one first hands every socket's message to an executor
-      that never accepted the connection (docs/notes/hold-on-a-pool-thread.md).
+      registries are empty. `_ws_forward`, behind `ws_message_take`, asks
+      the pool question FIRST: on a mixed mounted server `asgi_notify_fd`
+      is set for the ASGI mount, and asking that one first hands every
+      socket's message to an executor that never accepted the connection
+      (docs/notes/hold-on-a-pool-thread.md).
     - **A pool thread streams an unsized WSGI iterable, as a second
       producer on the executor's chunk channel.** The shim decides
       (`_lazily_produced` in `shim/m0_shim.py`): an app-supplied

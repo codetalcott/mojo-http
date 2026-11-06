@@ -1,5 +1,7 @@
 # Storage and MAX in the m0 wheel — 2026-09-25
 
+> A design note from the engineering record.
+
 The `m0` wheel carried five source trees and no way to a database, and no
 word about MAX. This round adds both, on the two decisions the rounds
 before it made: `m0-sqlite` opens its library at run time (D49), so it can

@@ -1,5 +1,7 @@
 # Agent usability runs — 2026-10-07
 
+> A design note from the engineering record.
+
 Fifteen headless coding-agent sessions on the two quickstarts' task and
 on a Django Channels baseline, scored from their transcripts. The
 harness is `scripts/agent_runs.py`; the briefs are `scripts/agent_runs/`.

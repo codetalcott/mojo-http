@@ -9,6 +9,12 @@
 > [the-conclusions-on-linux.md](the-conclusions-on-linux.md) and
 > [inversion-on-a-constrained-box.md](inversion-on-a-constrained-box.md).
 
+The ASGI executor per core against uvicorn with uvloop, on macOS, a
+container and a rented box. The one-thread inverted shape is ahead of
+uvloop per core everywhere measured. The default pump is level on macOS
+and a few percent behind on Linux, and its extra CPU is its second
+thread.
+
 ## What was measured
 
 `apps/asgi_bare` under `wrk -t2 -c16` with browser headers, the shape of
