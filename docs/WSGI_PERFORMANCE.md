@@ -21,27 +21,27 @@ between m0serve and Granian before any timing.
 
 From the newest artifact, the table below, with one worker in three
 shapes: `apps/hello`
-<!-- num:hello-rps-k@1 -->231.2<!-- /num -->k rps/core; the app inline on that loop <!-- num:m0-loop-rps-k@1 -->133.6<!-- /num -->k, the
-bridge <!-- num:bridge-tax@2 -->1.73<!-- /num -->x of a faster HTTP layer; one handler thread, Granian's
-shape, <!-- num:m0-wsgi-rps-k@1 -->112.2<!-- /num -->k against Granian's <!-- num:granian-rps-k@1 -->110.0<!-- /num -->k per core, the
+<!-- num:hello-rps-k@1 -->232.2<!-- /num -->k rps/core; the app inline on that loop <!-- num:m0-loop-rps-k@1 -->130.4<!-- /num -->k, the
+bridge <!-- num:bridge-tax@2 -->1.78<!-- /num -->x of a faster HTTP layer; one handler thread, Granian's
+shape, <!-- num:m0-wsgi-rps-k@1 -->111.7<!-- /num -->k against Granian's <!-- num:granian-rps-k@1 -->109.4<!-- /num -->k per core, the
 net <!-- num:m0-per-granian@2 -->1.02<!-- /num -->x.
 
 Absolute rows are not comparable across sessions
 ([BENCHMARKS.md](BENCHMARKS.md#how-to-read-this-page) says why).
 
 <!-- generated: layer-split -- edit bench/results, not this table -->
-Source: [`layer-split-20261023T024755Z.json`](../bench/results/layer-split-20261023T024755Z.json) — 2026-10-23T02:47:55+00:00, commit `d207a9ef`.
-Environment: Python 3.13.6; granian 2.8.4; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0.1 (26A434); AC Power; wrk -c16 -d10s, 3 rounds, medians.
+Source: [`layer-split-20261106T212053Z.json`](../bench/results/layer-split-20261106T212053Z.json) — 2026-11-06T21:20:53+00:00, commit `5f069aec`.
+Environment: Python 3.14.7; granian 2.8.7; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0.1 (26A434); AC Power; wrk -c16 -d10s, 3 rounds, medians.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `apps/hello` — mojo-http HTTP layer, zero Python | 230,009 | 0.99 | 231,165 |
-| `m0serve` + bare WSGI, 1 worker, app inline on the loop (no handler thread) | 132,891 | 0.99 | 133,559 |
-| `m0serve` + bare WSGI, 1 worker, 1 handler thread | 198,067 | 1.77 | 112,219 |
-| `granian` + bare WSGI, 1 worker, 1 blocking thread | 196,977 | 1.79 | 110,043 |
-| `m0serve` + bare WSGI, zero-config (what `m0serve app.wsgi` runs) | 198,025 | 1.75 | 112,835 |
-| `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 155,887 | 4.57 | 34,111 |
-| `granian` + bare WSGI, 4 workers, 1 blocking thread each | 155,112 | 4.10 | 37,832 |
+| `apps/hello` — mojo-http HTTP layer, zero Python | 229,872 | 0.99 | 232,193 |
+| `m0serve` + bare WSGI, 1 worker, app inline on the loop (no handler thread) | 129,065 | 0.99 | 130,369 |
+| `m0serve` + bare WSGI, 1 worker, 1 handler thread | 197,699 | 1.77 | 111,694 |
+| `granian` + bare WSGI, 1 worker, 1 blocking thread | 196,925 | 1.80 | 109,403 |
+| `m0serve` + bare WSGI, zero-config (what `m0serve app.wsgi` runs) | 198,377 | 1.77 | 112,078 |
+| `m0serve` + bare WSGI, 4 workers, 1 handler thread each | 155,321 | 4.60 | 33,765 |
+| `granian` + bare WSGI, 4 workers, 1 blocking thread each | 153,491 | 4.05 | 37,899 |
 
 Cores: sampled `%cpu` of the pids on the listen socket.
 <!-- /generated: layer-split -->
