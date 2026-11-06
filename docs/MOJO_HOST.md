@@ -83,8 +83,9 @@ answer ([Deploy](MOJO_DEPLOY.md)). A loop holds 1024 connections, and
 streams take all but the last 16 of them: the stream after that is
 answered `503` with `Retry-After`, so the health path is still answered
 while streams hold the rest. A connection that finds every slot in use
-takes one back from the connection idle longest between requests, once
-that is a second, and is refused only when none is. More streams are more
+takes one back from the connection idle longest between requests, or else
+from the one longest sending its head (answered `408`), each once that is
+a second, and is refused only when neither is there. More streams are more
 loops. The host raises its own open-file limit to what its loops need
 before it binds; where the hard limit stops it short, each loop holds what
 the limit leaves, its stream reserve kept from that, and the host says so.

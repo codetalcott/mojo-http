@@ -56,8 +56,10 @@ no musl, no TLS/HTTP2 (terminate at a proxy).
   ONE LOOP holds; `--workers`/`--threads` multiply it. Held streams take
   all but the last 16, and the next stream is answered `503` with
   `Retry-After`, so `--health-path` still answers when streams are full.
-  A loop with every slot in use closes its longest-idle connection to
-  admit a new one, and resets a connection only when none is idle.
+  A loop with every slot in use admits a new connection in the slot of
+  the one idle longest between requests, or else of the one longest
+  sending its head (answered `408`), each once that is a second; with
+  neither, the new connection is reset.
   The server raises its own open-file limit to fit; where the hard limit
   stops it, each loop holds what the limit leaves, its reserve kept, and
   says so.
