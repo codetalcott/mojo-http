@@ -1,6 +1,8 @@
 # Changelog
 
-Notable changes to `mojo-http`. Format follows
+Notable changes to `mojo-http`: the m0serve wheel, and the `m0` wheel,
+which is versioned apart ([DECISIONS](docs/DECISIONS.md) D43) and recorded
+in the m0serve release it ships beside. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow
 [SemVer](https://semver.org/). From 1.0.0 the served contract does not break
 in a minor release: `m0serve`'s flags and environment variables, the
