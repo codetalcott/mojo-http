@@ -59,8 +59,8 @@ fly scale count 1 -a __M0_APP__
   the first, so `M0_WORKERS`/`M0_THREADS` stay unset. On more than one
   vCPU, set `M0_THREADS` to the count.
 - Data that must outlive a deploy needs a volume at `/app/data`, created
-  once and named in `fly.toml`'s `[mounts]` (commented out there until it
-  exists -- a deploy naming a volume that does not exist fails):
+  once and named in `fly.toml`'s `[mounts]` (commented out there until the
+  volume exists: a deploy naming a volume that does not exist fails):
 
   ```sh
   fly volumes create data --size 1 -a __M0_APP__ -r iad
