@@ -45,37 +45,37 @@ it: any other use of the VM, even a `docker exec` or a container stopping,
 can thin an Autobahn section. Each run is recorded in
 [Release records](RELEASE_RECORDS.md).
 
-**`uv run poe stress-asgi`**, the quiet stage's last gate. Each round
-drives `chunked_keepalive.py` and then `apps/asgi_bare/ws_probe.py` under
-CPU hogs, thirty rounds per loop mode: once on the pump and once under
-`M0_INVERTED=1`. That order is the shape that finds a slot-ownership race
-in the ASGI executor: the probe's HTTP/1.0 request closes after its head,
-so what follows lands on the connection slot it just released, and the
-hogs make the previous task's cancellation and done-callback land late
-enough to collide with its successor. On shared CI runners it passed for a
-whole day with the bug live, so it runs here. The WebSocket half covers
-the combination a CI flake landed in and nothing gated: the WS path, the
-inversion and contention together
-([the entry](notes/websocket-close-rst.md), closed 2026-08-30). Reverting
-the `websocket.send` credit gate is caught on round 1, and the streamed
-rounds alone do not catch it. The deterministic half of the same guard,
-`poe test-shim`, runs in CI inside `test-all`. Tune with
-`M0_STRESS_ITERS` and `M0_STRESS_HOGS`, and narrow a rerun to the mode a
-failure named with `M0_STRESS_MODES=inverted`; it must be N of N in both
-modes.
+The pre-release gates, in the run's order:
 
-**And `uv run poe probe-pool`**, the Mojo handler pool's timing half,
-pre-release for the same reason as `stress-asgi`: a p99 table from a
-shared runner is noise. The pooled row must hold single-digit
-milliseconds at `slow=1` and `slow=2`; the loop-only row collapsing to
-about the blocking duration is expected. A pooled p50 near a millisecond
-means the loop no longer looks at a waiting job when its lane's threshold
-runs out (SPEC E37). The final column has more blockers than threads, and
-there the pooled row is expected to collapse too. The deterministic
-halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
+| gate | command | needs | about | SPEC |
+|---|---|---|---|---|
+| [Pool fairness on the reference Mac](#pool-fairness-on-the-reference-mac) | `uv run poe probe-pool-fairness` | the quiet stage, on the reference Mac | the GIL hand-off answers twenty connections in job order | E11, E34 |
+| [Pool timing](#pool-timing) | `uv run poe probe-pool` | the quiet stage | the pooled row's p99 under slow views | E37 |
+| [Pool A/Bs](#pool-abs) | `uv run --no-sync python scripts/probes/pool_ab.py LF24`, then `LF22` | the quiet stage, when the pool's records or its park path change | the records' stride and the park's look at its lane socket | — |
+| [Benchmarks](#benchmarks) | the recorders its section lists | the quiet stage, a clean checkout, when `check-docs` says so | every table on [BENCHMARKS.md](BENCHMARKS.md) | — |
+| [Linux conclusions](#linux-conclusions) | `uv run poe bench-linux-conclusions` | the quiet stage; docker idle and the `m0lin` container | whether the benchmark page's conclusions hold on Linux | — |
+| [ASGI stress](#asgi-stress) | `uv run poe stress-asgi` | the quiet stage, last | the executor's slot ownership under CPU hogs, in both loop modes | L9, L29 |
+| [PostgreSQL on the reference Mac](#postgresql-on-the-reference-mac) | `uv run poe test-postgres-server` | a local PostgreSQL on the reference Mac | libpq found and driven on macOS | O9–O16, O24 |
+| [Deep fuzz](#deep-fuzz) | `uv run poe fuzz-request-long` | — | the request decoder, eight seeds x 250k iterations | G13 |
+| [Soak driver shakedown](#soak-driver-shakedown) | `uv run poe soak-apps` | — | the soak driver against two in-tree subjects | — |
+| [Datastar form in a browser](#datastar-form-in-a-browser) | `uv run poe browser-datastar-form` | Chromium | what the pinned Datastar bundle sends from a form | N12 |
+| [Notes login in a browser](#notes-login-in-a-browser) | `uv run poe browser-notes-login`, `uv run poe sabotage-notes-login` | Chromium | what htmx 4 sends behind the notes app's login | N13, N22 |
+| [Blobs demo in a browser](#blobs-demo-in-a-browser) | `uv run poe browser-blobs`, `uv run poe sabotage-blobs` | Chromium | the blobs demo's signals, clicks and reconnect | N16 |
+| [SVG sandbox in three browsers](#svg-sandbox-in-three-browsers) | `uv run poe browser-svg-sandbox` | Chromium, Firefox and WebKit | SVGs draw, and their scripts do not run | J14 |
+| [Host sabotage](#host-sabotage) | `uv run --group max poe sabotage-host` | the `max` group; two runs on the reference Mac | each rule of the Mojo host | E21–E32, N18, N19 |
+| [m0 wheel sabotage](#m0-wheel-sabotage) | `uv run poe sabotage-m0-wheel` | — | each rule of the `m0` wheel's recipe and CLI | N23–N26 |
+| [Scaffold sabotage](#scaffold-sabotage) | `uv run poe sabotage-scaffold` | docker idle and 9 GiB free for the `image:` rules | each rule of `m0 new` and its templates | N27, N29 |
+| [Outbox-cap sabotage](#outbox-cap-sabotage) | `uv run poe sabotage-outbox-cap` | — | each outbox-cap rule against the I17 probe | I17 |
+| [Parser differential sabotage](#parser-differential-sabotage) | `uv run poe sabotage-differential` | — | each request rule of the fork's parser and loop | B26 |
+| [Pool lost-wake stress](#pool-lost-wake-stress) | `uv run poe stress-pool` | docker idle and the `m0lin` container | the pool's lost-wake reproducers, in three wake modes | E18 |
+| [Autobahn](#autobahn) | `uv run poe autobahn` | docker idle, and a gap after the gate before it | Autobahn\|Testsuite against the pinned baseline | I13 |
+| [Mojo image floor](#mojo-image-floor) | `uv run poe probe-mojo-image` | docker idle | the size and RSS of a Mojo image that only answers | — |
+| [Mojo image sabotage](#mojo-image-sabotage) | `uv run poe sabotage-mojo-image` | docker idle | twelve sabotaged images against `smoke-blobs-image` | M26, M27 |
 
-**And `uv run poe probe-pool-fairness` on the reference Mac** (SPEC E11,
-E34): the loop thread holds no thread state while it serves
+### Pool fairness on the reference Mac
+
+`uv run poe probe-pool-fairness` runs on the reference Mac (SPEC E11,
+E34). The loop thread holds no thread state while it serves
 (docs/notes/detached-loop.md), so the pool's hand-off barrier is the only
 thing keeping five handler threads from convoying on the GIL under a
 CPU-bound view. CI runs it on Linux on every pull request, in the
@@ -93,10 +93,24 @@ variable queues its waiters; how macOS's queues them was not traced. If
 the keep arm answers in order, record that, and run the other two arms
 again with `M0_FAIRNESS_EXPECT_STARVATION=0`, which skips it.
 
-**And, when the pool's records or its park path change, the two pool A/Bs
-in `scripts/probes/quiet-machine-ab.md`** (fork review LF24 and LF22): whether
-the pool's wake and thread records on 128-byte lines beat 64, and what the
-park's look at its lane socket costs. Each is a few microseconds a request,
+### Pool timing
+
+`uv run poe probe-pool` is the Mojo handler pool's timing half,
+pre-release for the same reason as `stress-asgi`: a p99 table from a
+shared runner is noise. The pooled row must hold single-digit
+milliseconds at `slow=1` and `slow=2`; the loop-only row collapsing to
+about the blocking duration is expected. A pooled p50 near a millisecond
+means the loop no longer looks at a waiting job when its lane's threshold
+runs out (SPEC E37). The final column has more blockers than threads, and
+there the pooled row is expected to collapse too. The deterministic
+halves, `test_mojo_pool` and `poe sabotage-pool`, run in CI.
+
+### Pool A/Bs
+
+When the pool's records or its park path change, the two pool A/Bs in
+`scripts/probes/quiet-machine-ab.md` (fork review LF24 and LF22) measure
+whether the pool's wake and thread records on 128-byte lines beat 64, and
+what the park's look at its lane socket costs. Each is a few microseconds a request,
 which only this stage's quiet machine resolves. The page names arm B's
 edit for each, the builds, and the result that changes the code;
 `uv run --no-sync python scripts/probes/pool_ab.py LF24` (then `LF22`)
@@ -106,42 +120,46 @@ every cell, and writes its artifact under a `pool-ab-` subdirectory of
 difference (the page has the figures), so neither is owed again until
 that code changes.
 
-**And `uv run poe test-postgres-server` on a Mac with a local PostgreSQL**
-(SPEC O9–O16, O24). CI runs these on Linux on every pull request, in a
-job with a service container. GitHub's service containers require a Linux
-runner, so that job has no macOS arm. The rules the job pins are toolchain
-behaviour, so Linux covers them; this arm catches a macOS-only difference
-in how the library is found, since the search path differs by platform
-and Homebrew's libpq is keg-only. Point it at a server with
-`M0_PG_TEST_URL`, or let it default to `postgres:///postgres`. A role with
-a password needs a URL whose host matches its `~/.pgpass` line: the
-default connects over the Unix socket, which a `localhost` entry does not
-cover, and fails every test with `fe_sendauth: no password supplied`,
-where `M0_PG_TEST_URL=postgres://postgres@localhost:5432/postgres` passes.
-It fails without a server; it never skips. Of its four files,
-`test_pin.mojo` (SPEC O24) also runs in CI's `postgres-macos` job on every
-pull request, against the libpq that job installs; here it runs against
-the reference Mac's.
+### Benchmarks
 
-**And `uv run poe stress-pool`** (SPEC E18): the handler pool's lost-wake
-reproducers, in the `m0lin` Linux container — the only place a lost pool
-wake has ever been caught (`smoke-django-realtime` phase 5, 2 of 10 rounds
-on the ring's first build, docs/notes/pool-ring-handoff.md; never on macOS,
-whose kernel wakes every receiver parked on a datagram socket and so never
-leaves one parked beside a job). Per wake mode — the GIL rules,
-`M0_POOL_PARALLEL=1` (the free-threaded default, forced on the container's
-GIL build) and `M0_POOL_ELASTIC=0` (the eager wakes) —
-`scripts/probes/phase5_probe.py` runs that phase twenty times with a fresh
-server each round and `scripts/probes/hold_race_probe.py` opens forty holds
-while three clients keep the loop busy; each must be N of N. The task copies
-the tree into the container and rebuilds there, so it needs Docker and the
-container that `scripts/probes/linux_setup.sh`'s header creates. Pre-release
-rather than CI because CI has no such container and a shared runner's
-scheduler is not the one under test; `M0_STRESS_POOL_ROUNDS` and
-`M0_STRESS_POOL_MODES` tune it.
+The benchmarks are re-recorded when `check-docs` says so. Every table in
+docs/BENCHMARKS.md renders from the newest committed artifact, and
+`render_bench_docs.py --check` (inside `poe check-docs`) refuses one that
+is more than a minor version behind `pyproject.toml`, was recorded on a
+dirty tree, or lacks a version stamp — so the bump in step 2 fails
+`check-docs` once the artifacts are two minors old. Re-record on a clean
+checkout of the bumped tree with nothing else running — the two shell
+benches refuse to start, and refuse to begin a round, while any process
+outside their own tree is above half a core across three samples
+(`scripts/bench_guard.py`), because three system daemons once depressed
+the pool rows 7 % with the comparators unmoved: build `apps/hello`
+to `/tmp/bench_hello_server`, then `scripts/bench_layer_split.sh`,
+`poe bench-asgi-wrk`, `poe bench-asgi`, `poe bench-mojo-mount` (the table in
+docs/SERVER_PERFORMANCE.md, its comparators the numpy rows),
+`poe bench-host-modes` (prefork against loops on threads under the Mojo
+host, the same page; its comparators the one-worker rows), and
+`scripts/bench_mixed_workload.sh`
+under `poe py314t-try` (the swap's rules are in WSGI_PERFORMANCE.md's
+Reproducing section; `.venv-pinned/` is ignored so the parked venv does not
+stamp the artifact dirty). The swap builds its venv from the default groups
+only, and Granian, the mixed workload's comparator row, is in the `bench`
+group, so run `uv sync --frozen --python 3.14t --group bench` after the swap
+and put `.venv/bin` first on `PATH` for the bench. The bench refuses to
+start without Granian, and `render_bench_docs.py --check` refuses an
+artifact of any kind that holds none of its comparator rows. Commit the artifacts and run
+`poe render-bench-docs`. Its `--check` refuses a new artifact whose
+non-comparator rows moved more than 5 % against the comparators' own
+move since the previous artifact of that kind — the contamination
+signature, and also what a real change looks like; when the code did
+change, `render_bench_docs.py --accept-drift` stamps the artifact with
+the comparison it accepts, and the stamp is committed beside it. The
+mixed-workload artifact needs three rounds (its p99 is bimodal on a GIL
+build and the table renders the min–max beside each median).
 
-**And `uv run poe bench-linux-conclusions`**: do the benchmark page's
-conclusions still hold on Linux? Every artifact
+### Linux conclusions
+
+`uv run poe bench-linux-conclusions` asks whether the benchmark page's
+conclusions still hold on Linux. Every artifact
 [BENCHMARKS.md](BENCHMARKS.md) renders is macOS arm64, and a cross-thread
 handoff costs less on epoll and futex than on kqueue; the handoff is what
 m0serve's two-thread shape pays for its isolation
@@ -175,7 +193,248 @@ through two layers of virtualization with the server sharing cores with the
 client; a box that cannot beat that is not buying anything, and the
 container is then the right permanent answer.
 
-**`uv run poe autobahn`**: Autobahn|Testsuite against the pinned baseline
+### ASGI stress
+
+`uv run poe stress-asgi` is the quiet stage's last gate. Each round
+drives `chunked_keepalive.py` and then `apps/asgi_bare/ws_probe.py` under
+CPU hogs, thirty rounds per loop mode: once on the pump and once under
+`M0_INVERTED=1`. That order is the shape that finds a slot-ownership race
+in the ASGI executor: the probe's HTTP/1.0 request closes after its head,
+so what follows lands on the connection slot it just released, and the
+hogs make the previous task's cancellation and done-callback land late
+enough to collide with its successor. On shared CI runners it passed for a
+whole day with the bug live, so it runs here. The WebSocket half covers
+the combination a CI flake landed in and nothing gated: the WS path, the
+inversion and contention together
+([the entry](notes/websocket-close-rst.md), closed 2026-08-30). Reverting
+the `websocket.send` credit gate is caught on round 1, and the streamed
+rounds alone do not catch it. The deterministic half of the same guard,
+`poe test-shim`, runs in CI inside `test-all`. Tune with
+`M0_STRESS_ITERS` and `M0_STRESS_HOGS`, and narrow a rerun to the mode a
+failure named with `M0_STRESS_MODES=inverted`; it must be N of N in both
+modes.
+
+### PostgreSQL on the reference Mac
+
+`uv run poe test-postgres-server` runs on a Mac with a local PostgreSQL
+(SPEC O9–O16, O24). CI runs these on Linux on every pull request, in a
+job with a service container. GitHub's service containers require a Linux
+runner, so that job has no macOS arm. The rules the job pins are toolchain
+behaviour, so Linux covers them; this arm catches a macOS-only difference
+in how the library is found, since the search path differs by platform
+and Homebrew's libpq is keg-only. Point it at a server with
+`M0_PG_TEST_URL`, or let it default to `postgres:///postgres`. A role with
+a password needs a URL whose host matches its `~/.pgpass` line: the
+default connects over the Unix socket, which a `localhost` entry does not
+cover, and fails every test with `fe_sendauth: no password supplied`,
+where `M0_PG_TEST_URL=postgres://postgres@localhost:5432/postgres` passes.
+It fails without a server; it never skips. Of its four files,
+`test_pin.mojo` (SPEC O24) also runs in CI's `postgres-macos` job on every
+pull request, against the libpq that job installs; here it runs against
+the reference Mac's.
+
+### Deep fuzz
+
+`uv run poe fuzz-request-long` is the deep fuzz sweep, eight seeds x
+250k iterations (G13's release depth; CI runs the short form every PR).
+
+### Soak driver shakedown
+
+`uv run poe soak-apps` is the soak driver's shakedown against the two
+in-tree subjects (`apps/hybrid_mix`, `apps/asgi_bare`). This is **not** the
+1.0 soak, which is third-party applications and lives in
+[REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md); it is what keeps the
+DRIVER honest between passes, because a harness exercised only against
+somebody else's Django project rots unnoticed. It runs five populations at
+once: keep-alive bursts, streams, uploads and logins, WebSocket echoes,
+and abandoners that vanish mid-body and let the freed slot be recycled at
+once. Its legs run the server with `--max-keepalive-requests 100`, so each
+120-request keep-alive burst crosses the cap, the boundary at which the
+2026-08-31 pass found its defect. It asserts a digest of every verified
+body rather than its status, the shape three of the six real-app defects
+had. Two of its three legs **churn the server under that
+load**: one SIGTERMs and restarts it (the drain must exit 0 inside its
+budget and leave no worker behind), one re-forks it through `--reload`;
+connection errors are tolerated only between the signal and readiness, and
+a body cut short is a failure even then. Its comparator's `--selftest` (also
+`poe soak-selftest`, which is deterministic) runs first, so a green run
+cannot mean the comparator checks nothing. Against a real subject the same
+driver takes a manifest with a `login` block and a capture recorded from a
+reference server (`--baseline`, gunicorn or uvicorn) — see
+`scripts/soak_manifests/bakerydemo.json` for the worked example. Four rules
+for a pass against real subjects, each from a pass that broke it:
+re-record every reference capture before the pass, since the soak's own
+traffic changes the applications' databases and a stale capture fails on
+content; re-pin a manifest's fixture sizes with the captures; soak against
+the application's scratch database, never its development one; and put the
+checkout's `.venv/bin` on `PATH`, or `m0serve` embeds the system
+interpreter.
+
+### Datastar form in a browser
+
+`uv run poe browser-datastar-form` (SPEC N12) is the Datastar form
+arm in Chromium. `smoke-todo` proves the server's half on every pull
+request; only a browser can prove that the attribute `Fragment[Datastar]`
+emits on a `<form>` makes the pinned bundle send the form's fields when a
+person presses Enter, and a wrong modifier or option there fails silently
+— the page looks fine until someone types. The run renames a todo from the
+keyboard, prints the two request bodies the bundle made (the form's fields
+urlencoded; a bound field's action the signal store as JSON, D21) and
+checks a second tab morphed. Pre-release because it needs Chromium, and
+because the bundle is pinned (D20): what the run guards changes when the
+pin moves, and a release is where a moved pin ships. Ten seconds.
+
+### Notes login in a browser
+
+Two gates hold the notes app's login (SPEC N13).
+`uv run poe browser-notes-login` drives the notes app's login in Chromium
+and prints what the bundle actually sent — the point being what htmx 4.0.0
+does that no wire gate can see (SPEC N22): every swap says
+`HX-Request-Type`, the header `page_or_fragment` decides by; the DELETE
+carries its CSRF token as an `X-CSRF-Token` header with no `csrf` in its
+URL, htmx 4 sending a DELETE's fields in the query string with no setting to
+change it; and a 401 answered to a swap lands where the list was. Only
+a browser can prove where the token went. `uv run poe sabotage-notes-login`
+reverts each session, CSRF and htmx 4 rule, in the app and in the layer's
+`grant.mojo`, `session.mojo`, `login.mojo`, `html.mojo` and `fragment.mojo`
+(a rule in the layer rebuilds `m0-http` on the way in and out), and insists
+the gate catches every one.
+
+### Blobs demo in a browser
+
+Two gates hold the blobs demo (SPEC N16). `uv run poe browser-blobs`
+drives `apps/blobs` in Chromium: a patched `_`-signal must draw a slot's `clip-path`, a click must post exactly `x` and `y`, and two
+tabs must reopen the stream after the server restarts, which Datastar's
+default retry does not do after a clean close. It prints the body the
+bundle sent. Pre-release for the reason `browser-datastar-form` is: it
+needs Chromium, and the bundle is pinned (D20). Ten seconds.
+`uv run poe sabotage-blobs` breaks each rule in `apps/blobs/` and requires
+a gate to fail for every one: `smoke-blobs` for what reaches the wire, a twist and
+both kinds of pop among them, and the kernel's unit tests for the kernel's.
+Each rule rebuilds the app and reruns its gate, about six minutes in all
+(`--only unit` runs the kernel's in about fifteen seconds).
+
+### SVG sandbox in three browsers
+
+`uv run poe browser-svg-sandbox` (SPEC J14) serves SVGs from a `--static`
+mount through the tree's `bin/m0serve` and drives Chromium, Firefox and
+WebKit: an `<img>`, a CSS background and a `<use>` sprite must draw, judged by pixels, and a scripted
+SVG must leave no mark in the origin's storage, framed or opened directly.
+Its second arm replaces the policy with one that allows script and insists
+the probe then sees the script run, so the first arm's silence is evidence.
+Pre-release because it needs three browsers; `smoke-serve` holds the header
+on every pull request. About twenty seconds.
+
+### Host sabotage
+
+`uv run --group max poe sabotage-host` (SPEC E21–E32, N18, N19)
+breaks each rule of the host, in `m0_host/host.mojo` and `m0_host/flags.mojo`
+and in the shared pieces under it (`src/prefork.mojo`, `src/cmdline.mojo`,
+`src/multiworker.mojo`, `src/views.mojo`, `accept_share.mojo` and the loop's
+shutdown), and requires a gate to fail for every one: `smoke-host` for what
+the wire shows, `smoke-host-threads` for the loops on threads (`--only
+threads`, about six minutes), `smoke-fragment-notes` for the `ViewsApp`
+adapter's worker and loop limits, `test_host.mojo`, `test_prefork.mojo`
+(the pre-fork pieces both hosts share), `test_respawn.mojo` (the
+supervisor's part) and `test_views.mojo`; the command line's against
+`smoke-host-doctor` (`--only doctor`, about five minutes),
+`test_host_flags.mojo` (`--only flags`) and `test_cmdline.mojo`; and the
+parallel-runtime refusal against `smoke-parallel-runtime` (`--only
+parallel`), which builds against MAX — the reason for `--group max`. The
+harness's docstring lists every `--only`, and a run's last line counts the
+rules it proved. On Linux every other gate holds in
+that venv too: the unit tests supply the parallel runtime's fact rather
+than read the one `mojo run` gives them beside MAX (ROADMAP Known issues).
+**On the reference Mac the run splits in two.** A macOS build beside
+`max-core` links the runtime into every binary, so E32 refuses the prefork
+baselines with 78. There, run `uv run poe sabotage-host --skip parallel` (every
+rule but that one, about thirty minutes) and then `uv run --group max poe
+sabotage-host --only parallel`, and follow both with a plain `uv sync`,
+which takes `max-core` back out; a build made while it is installed reads
+as linked. A sabotage that
+does not compile is reported as MISSED (does not compile)
+and counted as a miss, not a catch. Pre-release because each rule reruns
+the whole smoke, about fifteen minutes; `--only unit` is about a minute.
+
+### m0 wheel sabotage
+
+`uv run poe sabotage-m0-wheel` (SPEC N23–N26) reverts each rule
+of the `m0` wheel's recipe and CLI in `packaging/m0/` and requires
+`smoke-m0-wheel` to fail AND to say the expected thing; a smoke that fails
+somewhere else is reported MISSED. The rules a refusal arm claims run with
+the smoke's unit phase off, so the arm and not a unit test is what must
+fail. Pre-release because each rule rebuilds the wheel and reruns the
+smoke, a minute or two apiece, after the unsabotaged smoke (the baseline)
+passes once per phase setting; `--only LABEL` runs one. Nothing here
+publishes the wheel; "Releasing m0" below does.
+
+### Scaffold sabotage
+
+`uv run poe sabotage-scaffold` (SPEC N27, N29) breaks each rule of
+`m0 new` and its templates from the template side, rebuilds the wheel,
+and requires `smoke-scaffold` to fail for that template AND to say the
+expected thing; its `dev:` rules run `smoke-scaffold-dev` (N30) and its
+`image:` rules `smoke-scaffold-image` (N31, docker needed). Every image rule is a COLD build,
+about 1.2 GB of BuildKit cache apiece; the runner prunes the records its
+own run created, but under colima the host gets the space back only after
+a trim, and only one that names the mount: `colima ssh -- sudo fstrim -v
+/var/lib/docker` (in 1.15.0 it freed 4.3 GiB where `fstrim -av` freed 229
+MiB). So run the rules outside `image:` in one pass, then each `image:`
+rule alone with `--only`, a `docker builder prune` and that trim between
+them, and 9 GiB free before each: an image rule writes 4.6–7.5 GiB inside
+the VM before its trim. Check `df -h` first: a full disk here aborted the
+docker volume's journal, and what that looks like is a column of MISSED.
+Never `docker system prune`: it removes the `m0lin` container
+`stress-pool` runs in. In a shell loop over the labels, give every command
+`< /dev/null`, or read each label by its line number: `uv`, `docker` and
+`colima ssh` read the rest of the list from standard input, and the loop
+runs one label. The rules the wire holds run with the template's own tests
+switched off, so the wire assertion and not `m0 test` is what must fail;
+one rule runs the other way round, to show the template's test goes red.
+About a minute a rule, after a baseline for each smoke the chosen rules
+use (nine in a full run, the image's a cold build of its own); `--only
+LABEL` runs one.
+
+### Outbox-cap sabotage
+
+`uv run poe sabotage-outbox-cap` reverts each outbox-cap rule
+and insists the I17 probe fails; pre-release because its harness rebuilds
+`bin/m0serve` per sabotage, which is minutes of compile CI does not spend.
+
+### Parser differential sabotage
+
+`uv run poe sabotage-differential` (SPEC B26) undoes one
+request rule of the fork's parser or loop at a time (a bare LF ending the
+head or a field line, obs-fold, `Content-Length` beside `Transfer-Encoding`,
+a second `Host`, a `Host` value that is no uri-host, a coding before
+`chunked`, CONNECT, a 100 Continue sent to an HTTP/1.0 client) and
+requires `smoke-differential` to fail with the
+MISMATCH line of the case that shows it. Pre-release because each of the
+nine arms builds the echo server again, cold. An anchor that no
+longer matches is NOT APPLICABLE: re-point it with the line it names.
+
+### Pool lost-wake stress
+
+`uv run poe stress-pool` (SPEC E18) runs the handler pool's lost-wake
+reproducers, in the `m0lin` Linux container — the only place a lost pool
+wake has ever been caught (`smoke-django-realtime` phase 5, 2 of 10 rounds
+on the ring's first build, docs/notes/pool-ring-handoff.md; never on macOS,
+whose kernel wakes every receiver parked on a datagram socket and so never
+leaves one parked beside a job). Per wake mode — the GIL rules,
+`M0_POOL_PARALLEL=1` (the free-threaded default, forced on the container's
+GIL build) and `M0_POOL_ELASTIC=0` (the eager wakes) —
+`scripts/probes/phase5_probe.py` runs that phase twenty times with a fresh
+server each round and `scripts/probes/hold_race_probe.py` opens forty holds
+while three clients keep the loop busy; each must be N of N. The task copies
+the tree into the container and rebuilds there, so it needs Docker and the
+container that `scripts/probes/linux_setup.sh`'s header creates. Pre-release
+rather than CI because CI has no such container and a shared runner's
+scheduler is not the one under test; `M0_STRESS_POOL_ROUNDS` and
+`M0_STRESS_POOL_MODES` tune it.
+
+### Autobahn
+
+`uv run poe autobahn` runs Autobahn|Testsuite against the pinned baseline
 (SPEC I13). Pre-release because it needs Docker and about ten minutes, and
 what only it checks, close-code validation (I16), is a defect fixed once
 rather than a regression that recurs (ROADMAP, "A conformance-suite
@@ -219,167 +478,9 @@ those seven *passing* fails it too — the cap moved and SPEC I17 is wrong;
 do not absorb that silently. The comparator's `--selftest` runs first, so
 a green run cannot mean the parser checks nothing.
 
-**`uv run poe fuzz-request-long`** — the deep fuzz sweep, eight seeds x
-250k iterations (G13's release depth; CI runs the short form every PR).
+### Mojo image floor
 
-**`uv run poe soak-apps`** — the soak driver's shakedown against the two
-in-tree subjects (`apps/hybrid_mix`, `apps/asgi_bare`). This is **not** the
-1.0 soak, which is third-party applications and lives in
-[REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md); it is what keeps the
-DRIVER honest between passes, because a harness exercised only against
-somebody else's Django project rots unnoticed. It runs five populations at
-once: keep-alive bursts, streams, uploads and logins, WebSocket echoes,
-and abandoners that vanish mid-body and let the freed slot be recycled at
-once. Its legs run the server with `--max-keepalive-requests 100`, so each
-120-request keep-alive burst crosses the cap, the boundary at which the
-2026-08-31 pass found its defect. It asserts a digest of every verified
-body rather than its status, the shape three of the six real-app defects
-had. Two of its three legs **churn the server under that
-load**: one SIGTERMs and restarts it (the drain must exit 0 inside its
-budget and leave no worker behind), one re-forks it through `--reload`;
-connection errors are tolerated only between the signal and readiness, and
-a body cut short is a failure even then. Its comparator's `--selftest` (also
-`poe soak-selftest`, which is deterministic) runs first, so a green run
-cannot mean the comparator checks nothing. Against a real subject the same
-driver takes a manifest with a `login` block and a capture recorded from a
-reference server (`--baseline`, gunicorn or uvicorn) — see
-`scripts/soak_manifests/bakerydemo.json` for the worked example. Four rules
-for a pass against real subjects, each from a pass that broke it:
-re-record every reference capture before the pass, since the soak's own
-traffic changes the applications' databases and a stale capture fails on
-content; re-pin a manifest's fixture sizes with the captures; soak against
-the application's scratch database, never its development one; and put the
-checkout's `.venv/bin` on `PATH`, or `m0serve` embeds the system
-interpreter.
-
-**And `uv run poe browser-datastar-form`** (SPEC N12) — the Datastar form
-arm in Chromium. `smoke-todo` proves the server's half on every pull
-request; only a browser can prove that the attribute `Fragment[Datastar]`
-emits on a `<form>` makes the pinned bundle send the form's fields when a
-person presses Enter, and a wrong modifier or option there fails silently
-— the page looks fine until someone types. The run renames a todo from the
-keyboard, prints the two request bodies the bundle made (the form's fields
-urlencoded; a bound field's action the signal store as JSON, D21) and
-checks a second tab morphed. Pre-release because it needs Chromium, and
-because the bundle is pinned (D20): what the run guards changes when the
-pin moves, and a release is where a moved pin ships. Ten seconds.
-
-**And the login's two pre-release gates** (SPEC N13):
-`uv run poe browser-notes-login` drives the notes app's login in Chromium
-and prints what the bundle actually sent — the point being what htmx 4.0.0
-does that no wire gate can see (SPEC N22): every swap says
-`HX-Request-Type`, the header `page_or_fragment` decides by; the DELETE
-carries its CSRF token as an `X-CSRF-Token` header with no `csrf` in its
-URL, htmx 4 sending a DELETE's fields in the query string with no setting to
-change it; and a 401 answered to a swap lands where the list was. Only
-a browser can prove where the token went. `uv run poe sabotage-notes-login`
-reverts each session, CSRF and htmx 4 rule, in the app and in the layer's
-`grant.mojo`, `session.mojo`, `login.mojo`, `html.mojo` and `fragment.mojo`
-(a rule in the layer rebuilds `m0-http` on the way in and out), and insists
-the gate catches every one.
-
-**And the blobs demo's two pre-release gates** (SPEC N16). `uv run poe
-browser-blobs` drives `apps/blobs` in Chromium: a patched `_`-signal must
-draw a slot's `clip-path`, a click must post exactly `x` and `y`, and two
-tabs must reopen the stream after the server restarts, which Datastar's
-default retry does not do after a clean close. It prints the body the
-bundle sent. Pre-release for the reason `browser-datastar-form` is: it
-needs Chromium, and the bundle is pinned (D20). Ten seconds. `uv run poe
-sabotage-blobs` breaks each rule in `apps/blobs/` and requires a gate to
-fail for every one: `smoke-blobs` for what reaches the wire, a twist and
-both kinds of pop among them, and the kernel's unit tests for the kernel's.
-Each rule rebuilds the app and reruns its gate, about six minutes in all
-(`--only unit` runs the kernel's in about fifteen seconds).
-
-**And the SVG sandbox's browser gate** (SPEC J14). `uv run poe
-browser-svg-sandbox` serves SVGs from a `--static` mount through the tree's
-`bin/m0serve` and drives Chromium, Firefox and WebKit: an `<img>`, a CSS
-background and a `<use>` sprite must draw, judged by pixels, and a scripted
-SVG must leave no mark in the origin's storage, framed or opened directly.
-Its second arm replaces the policy with one that allows script and insists
-the probe then sees the script run, so the first arm's silence is evidence.
-Pre-release because it needs three browsers; `smoke-serve` holds the header
-on every pull request. About twenty seconds.
-
-**And `uv run --group max poe sabotage-host`** (SPEC E21–E32, N18, N19) —
-breaks each rule of the host, in `m0_host/host.mojo` and `m0_host/flags.mojo`
-and in the shared pieces under it (`src/prefork.mojo`, `src/cmdline.mojo`,
-`src/multiworker.mojo`, `src/views.mojo`, `accept_share.mojo` and the loop's
-shutdown), and requires a gate to fail for every one: `smoke-host` for what
-the wire shows, `smoke-host-threads` for the loops on threads (`--only
-threads`, about six minutes), `smoke-fragment-notes` for the `ViewsApp`
-adapter's worker and loop limits, `test_host.mojo`, `test_prefork.mojo`
-(the pre-fork pieces both hosts share), `test_respawn.mojo` (the
-supervisor's part) and `test_views.mojo`; the command line's against
-`smoke-host-doctor` (`--only doctor`, about five minutes),
-`test_host_flags.mojo` (`--only flags`) and `test_cmdline.mojo`; and the
-parallel-runtime refusal against `smoke-parallel-runtime` (`--only
-parallel`), which builds against MAX — the reason for `--group max`. The
-harness's docstring lists every `--only`, and a run's last line counts the
-rules it proved. On Linux every other gate holds in
-that venv too: the unit tests supply the parallel runtime's fact rather
-than read the one `mojo run` gives them beside MAX (ROADMAP Known issues).
-**On the reference Mac the run splits in two.** A macOS build beside
-`max-core` links the runtime into every binary, so E32 refuses the prefork
-baselines with 78. There, run `uv run poe sabotage-host --skip parallel` (every
-rule but that one, about thirty minutes) and then `uv run --group max poe
-sabotage-host --only parallel`, and follow both with a plain `uv sync`,
-which takes `max-core` back out; a build made while it is installed reads
-as linked. A sabotage that
-does not compile is reported as MISSED (does not compile)
-and counted as a miss, not a catch. Pre-release because each rule reruns
-the whole smoke, about fifteen minutes; `--only unit` is about a minute.
-
-**And `uv run poe sabotage-m0-wheel`** (SPEC N23–N26) — reverts each rule
-of the `m0` wheel's recipe and CLI in `packaging/m0/` and requires
-`smoke-m0-wheel` to fail AND to say the expected thing; a smoke that fails
-somewhere else is reported MISSED. The rules a refusal arm claims run with
-the smoke's unit phase off, so the arm and not a unit test is what must
-fail. Pre-release because each rule rebuilds the wheel and reruns the
-smoke, a minute or two apiece, after the unsabotaged smoke (the baseline)
-passes once per phase setting; `--only LABEL` runs one. Nothing here
-publishes the wheel; "Releasing m0" below does.
-
-**And `uv run poe sabotage-scaffold`** (SPEC N27, N29) — breaks each rule of
-`m0 new` and its templates from the template side, rebuilds the wheel,
-and requires `smoke-scaffold` to fail for that template AND to say the
-expected thing; its `dev:` rules run `smoke-scaffold-dev` (N30) and its
-`image:` rules `smoke-scaffold-image` (N31, docker needed). Every image rule is a COLD build,
-about 1.2 GB of BuildKit cache apiece; the runner prunes the records its
-own run created, but under colima the host gets the space back only after
-a trim, and only one that names the mount: `colima ssh -- sudo fstrim -v
-/var/lib/docker` (in 1.15.0 it freed 4.3 GiB where `fstrim -av` freed 229
-MiB). So run the rules outside `image:` in one pass, then each `image:`
-rule alone with `--only`, a `docker builder prune` and that trim between
-them, and 9 GiB free before each: an image rule writes 4.6–7.5 GiB inside
-the VM before its trim. Check `df -h` first: a full disk here aborted the
-docker volume's journal, and what that looks like is a column of MISSED.
-Never `docker system prune`: it removes the `m0lin` container
-`stress-pool` runs in. In a shell loop over the labels, give every command
-`< /dev/null`, or read each label by its line number: `uv`, `docker` and
-`colima ssh` read the rest of the list from standard input, and the loop
-runs one label. The rules the wire holds run with the template's own tests
-switched off, so the wire assertion and not `m0 test` is what must fail;
-one rule runs the other way round, to show the template's test goes red.
-About a minute a rule, after a baseline for each smoke the chosen rules
-use (nine in a full run, the image's a cold build of its own); `--only
-LABEL` runs one.
-
-**And `uv run poe sabotage-outbox-cap`** — reverts each outbox-cap rule
-and insists the I17 probe fails; pre-release because its harness rebuilds
-`bin/m0serve` per sabotage, which is minutes of compile CI does not spend.
-
-**And `uv run poe sabotage-differential`** (SPEC B26) — undoes one
-request rule of the fork's parser or loop at a time (a bare LF ending the
-head or a field line, obs-fold, `Content-Length` beside `Transfer-Encoding`,
-a second `Host`, a `Host` value that is no uri-host, a coding before
-`chunked`, CONNECT, a 100 Continue sent to an HTTP/1.0 client) and
-requires `smoke-differential` to fail with the
-MISMATCH line of the case that shows it. Pre-release because each of the
-nine arms builds the echo server again, cold. An anchor that no
-longer matches is NOT APPLICABLE: re-point it with the line it names.
-
-**And `uv run poe probe-mojo-image`** — builds `deploy/mojo/Dockerfile`
+`uv run poe probe-mojo-image` builds `deploy/mojo/Dockerfile`
 for `apps/hello` and probes it from outside, recording the floor under
 every Mojo image: the size and RSS of an app that only answers. The
 image's properties themselves (PID 1, no interpreter, the drain) are
@@ -389,7 +490,9 @@ figure `deploy/mojo/README.md` sets beside the blobs demo's. Needs docker
 daemon's architecture (`M0_TARGET_CPU` overrides, never `native`), and the
 README names the architecture each figure was taken on.
 
-**And `uv run poe sabotage-mojo-image`** (SPEC M26, M27) — builds twelve
+### Mojo image sabotage
+
+`uv run poe sabotage-mojo-image` (SPEC M26, M27) builds twelve
 sabotaged images from a copy of the build context and requires
 `smoke-blobs-image` to fail each one in the phase it names: a shell at PID
 1, a stop signal the server ignores, a size written rather than measured, a
@@ -398,41 +501,8 @@ itself. Nothing tracked is edited. Pre-release because it is fourteen
 image builds, the unsabotaged baseline of each of the two gates and then
 the twelve, most of them a layer or two from the cache.
 
-**And the benchmarks, when `check-docs` says so.** Every table in
-docs/BENCHMARKS.md renders from the newest committed artifact, and
-`render_bench_docs.py --check` (inside `poe check-docs`) refuses one that
-is more than a minor version behind `pyproject.toml`, was recorded on a
-dirty tree, or lacks a version stamp — so the bump in step 2 fails
-`check-docs` once the artifacts are two minors old. Re-record on a clean
-checkout of the bumped tree with nothing else running — the two shell
-benches refuse to start, and refuse to begin a round, while any process
-outside their own tree is above half a core across three samples
-(`scripts/bench_guard.py`), because three system daemons once depressed
-the pool rows 7 % with the comparators unmoved: build `apps/hello`
-to `/tmp/bench_hello_server`, then `scripts/bench_layer_split.sh`,
-`poe bench-asgi-wrk`, `poe bench-asgi`, `poe bench-mojo-mount` (the table in
-docs/SERVER_PERFORMANCE.md, its comparators the numpy rows),
-`poe bench-host-modes` (prefork against loops on threads under the Mojo
-host, the same page; its comparators the one-worker rows), and
-`scripts/bench_mixed_workload.sh`
-under `poe py314t-try` (the swap's rules are in WSGI_PERFORMANCE.md's
-Reproducing section; `.venv-pinned/` is ignored so the parked venv does not
-stamp the artifact dirty). The swap builds its venv from the default groups
-only, and Granian, the mixed workload's comparator row, is in the `bench`
-group, so run `uv sync --frozen --python 3.14t --group bench` after the swap
-and put `.venv/bin` first on `PATH` for the bench. The bench refuses to
-start without Granian, and `render_bench_docs.py --check` refuses an
-artifact of any kind that holds none of its comparator rows. Commit the artifacts and run
-`poe render-bench-docs`. Its `--check` refuses a new artifact whose
-non-comparator rows moved more than 5 % against the comparators' own
-move since the previous artifact of that kind — the contamination
-signature, and also what a real change looks like; when the code did
-change, `render_bench_docs.py --accept-drift` stamps the artifact with
-the comparison it accepts, and the stamp is committed beside it. The
-mixed-workload artifact needs three rounds (its p99 is bimodal on a GIL
-build and the table renders the min–max beside each median).
+## The release steps
 
-The steps, in order:
 
 1. **Update [CHANGELOG.md](../CHANGELOG.md).** Move `[Unreleased]`'s
    entries into a `## [X.Y.Z] — date` section below an empty
