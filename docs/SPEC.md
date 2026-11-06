@@ -19,7 +19,7 @@ improves.
 
 | status | means |
 |---|---|
-| `verified` | a named CI gate exercises this, on the cadence the evidence states |
+| `verified` | a named gate exercises this, on the cadence the evidence states |
 | `implemented` | in the tree, with no gate dedicated to it: the work queue, not a claim of correctness |
 | `planned` | intended and not built; the evidence names the roadmap heading |
 | `out of scope` | a deliberate refusal; the evidence is the reason |
@@ -31,16 +31,16 @@ part of the evidence. `(every PR)` is a step in `.github/workflows/test.yml`.
 free-threading rows live there because CI pins GIL-enabled 3.14.
 `(monthly)` is `citations.yml`, which asks the RFC Editor whether the cited
 RFCs are still current. `(pre-release)` is a gate `docs/RELEASING.md`
-requires and CI does not run, because shared runners cannot reproduce the
-timing.
+requires and CI does not run, each for its reason there: a quiet machine for
+timing, a container, a browser, or minutes of cold builds.
 
 `poe check-docs` fails the build when a `verified` row names a gate that
 does not exist or does not run, and when a CI step or a CLI flag is
 accounted for by no row (`scripts/spec_sheet.py`). The badges above report
-the newest run on `main`, not the commit you are reading. One external
-conformance suite runs, Autobahn at pre-release (I13); the WebSocket and
-smuggling rows are otherwise pinned by probes and unit tests written
-against the RFC text. How the rows were read against their gates, and what
+the newest run on `main`, not the commit you are reading. Two external
+conformance suites run: the Datastar SDK's own cases on every PR (I27) and
+Autobahn at pre-release (I13). The WebSocket and smuggling rows are
+otherwise pinned by probes and unit tests written against the RFC text. How the rows were read against their gates, and what
 that found, is in [the traceability note](notes/traceability.md).
 
 ## A. HTTP/1.1 framing and connection lifecycle
