@@ -13,7 +13,7 @@ expressiveness, and `HTTPService`'s default bodies and `m0_http.reply` are
 that gap closed. The rest is recorded here.
 
 - **More SIMD in the request path.** Was refused by our own profile — 31 of
-  35 stack samples in `__libc_send` (SERVER_PERFORMANCE.md) — and the
+  35 stack samples in `__libc_send` ([the-raw-hot-path.md](the-raw-hot-path.md)) — and the
   instrument that entry asked for, once built, disagreed with the profile.
   `scripts/probes/bench_http_parts.mojo` (2026-08-28) put `parse_request_headers`
   at **two thirds** of the user-space request: the profile's verdict was
@@ -30,7 +30,7 @@ that gap closed. The rest is recorded here.
   the compiler elides it), and the SIMD scanners were spending their time
   in a scalar walk over the lanes of a chunk they had already matched —
   9.4 ns per chunk against 0.8 for a `select` of `iota`. The story is in
-  SERVER_PERFORMANCE.md; the lesson for this list is that a part measured
+  [the-raw-hot-path.md](the-raw-hot-path.md#the-lever-taken-2026-08-29); the lesson for this list is that a part measured
   in isolation can be a fifth of its cost in context, and the instrument
   has to be split until the number stops moving. What remains is 0.86 µs
   against a 5.3 µs syscall floor no parser can touch; the per-byte token

@@ -20,7 +20,7 @@ so the harness is a stdlib `http.client` keep-alive loop on 8 threads —
 the client is a large share of each round trip, which compresses every
 server difference and makes the numbers meaningful only as ratios under
 the identical client (and this container's absolutes swing ±10% between
-runs; SERVER_PERFORMANCE.md records 1.7x swings between sessions).
+runs; [the-raw-hot-path.md](the-raw-hot-path.md#setup) records 1.7x swings between sessions).
 
 `apps/asgi_bare`, single process each, 15 s rounds. "mixed" is 4 fast
 threads measuring `/` latency while 2 threads hammer `/slow?ms=200`:

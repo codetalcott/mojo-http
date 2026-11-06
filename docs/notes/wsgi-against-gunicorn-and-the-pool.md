@@ -19,7 +19,7 @@ shared pre-fork listener, the move to the non-blocking event loop, and the
 leak-free bridge.
 
 Re-measured again 2026-08-18 after the server-layer work in
-[SERVER_PERFORMANCE.md](../SERVER_PERFORMANCE.md) — the syscall-budget pass and
+[the-raw-hot-path.md](the-raw-hot-path.md) — the syscall-budget pass and
 the span-based headers. The tables below are from that session; the earlier
 absolute numbers are not comparable to them (see the warning under Setup).
 
