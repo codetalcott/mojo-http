@@ -47,8 +47,7 @@ echo "one process tree, no dependencies"
 
 The publish's response says the frame reached both workers, and a
 subscriber received it. Which worker that subscriber landed on is the
-kernel's choice; the repository's `smoke-django-realtime` pins one
-subscriber on each worker and asserts the far one hears it.
+kernel's choice; a subscriber on either worker hears it.
 
 ## 2. The same views in Flask
 
@@ -148,9 +147,6 @@ data: hello from flask
 Flask: SSE delivered across 2 workers, WebSocket upgraded (101)
 ```
 
-CI extracts this file from this page and drives it with a raw RFC 6455
-probe, one socket pinned on each worker (`poe smoke-flask-realtime`).
-
 ## 3. Under gunicorn
 
 Stop m0serve and serve the Django file with gunicorn. The `M0-` headers mean
@@ -233,8 +229,8 @@ def application(environ, start_response):
 PY
 ```
 
-Serve it with the hold mount beside it. The mount needs `--realtime`, which
-is what wires a pool thread's hold to the event loop, and refuses to start
+Serve it with the hold mount beside it. The mount needs `--realtime`, the
+flag that wires a pool thread's hold to the event loop, and refuses to start
 without the key.
 
 ```bash serve
@@ -274,10 +270,9 @@ data: hello from python
 {"error":"invalid","reason":"no session cookie"}
 ```
 
-The grant is `v1.<key id>.<expiry>.<channel>.<session binding>.<signature>`
-and the mount checks it in that order — the signature in constant time,
-the expiry against its own clock, the cookie against the binding — before
-it holds. A refusal is a 401 whose `error` is `expired`, meaning ask for a
+The grant is `v1.<key id>.<expiry>.<channel>.<session binding>.<signature>`.
+Before it holds, the mount checks the signature in constant time, then the
+expiry against its own clock, then the cookie against the binding. A refusal is a 401 whose `error` is `expired`, meaning ask for a
 fresh URL, or `invalid`, meaning stop. Rotate the key by moving the old
 value to `M0_GRANT_KEY_PREV`; grants signed under either verify until you
 unset it. What the mount will not do is close a stream your application

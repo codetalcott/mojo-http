@@ -23,32 +23,32 @@ names the train after that release. The milestones are the live list.
 
 ## The cadence
 
-- **A minor every other Thursday.** The dates do not move to fit the
+- A minor leaves every other Thursday. The dates do not move to fit the
   work: what has merged when a train leaves goes on it, and what has not
   waits for the next.
-- **A train whose gates fail on its Thursday** leaves when they pass, and
+- A train whose gates fail on its Thursday leaves when they pass, and
   the train after it keeps its own date.
-- **A patch any time** for a security fix or for a regression in the latest
-  minor: the latest minor with the fix, and nothing else.
-- **`m0` rides the same train.** It is released the same day as m0serve
+- A patch leaves any time for a security fix or for a regression in the
+  latest minor: the latest minor with the fix, and nothing else.
+- `m0` rides the same train. It is released the same day as m0serve
   whenever anything it bundles has changed, which is nearly every train,
   since it carries the framework's source and the server's. A Mojo
   toolchain pin bump is an `m0` release, and rides a train like any change.
 
 ## What a version promises
 
-- **SemVer.** From 1.0 the served contract does not break in a minor
-  release: m0serve's flags and environment variables, the
+- Versions follow SemVer. From 1.0 the served contract does not break in a
+  minor release: m0serve's flags and environment variables, the
   `M0-Hold`/`M0-Channel` response headers, and `m0pub.publish()`.
-- **A behaviour change may ship on by default in a minor** when it keeps
+- A behaviour change may ship on by default in a minor when it keeps
   the contract, has a switch that turns it off, and is listed in the
   changelog under **Behaviour changes**, so it can be read before the
   upgrade.
-- **A contract break waits for a major**, and the minor before it
+- A contract break waits for a major, and the minor before it
   deprecates what is going: the old flag, variable or header keeps working,
   and prints one line at startup naming its replacement and the version
   that removes it.
-- **`m0` is 0.x.** Its Mojo API may change in any `m0` minor, and each
+- `m0` is 0.x. Its Mojo API may change in any `m0` minor, and each
   change is in the changelog.
 
 ## Which versions are supported

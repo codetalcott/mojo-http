@@ -1,8 +1,7 @@
 # Why m0serve has two execution modes
 
 One server, two ways of running Python, chosen by the protocol of the
-application it is given. This page says what each mode is, why one would not
-do, and where each one has a cliff. Which flags to pass is in
+application it is given. Which flags to pass is in
 [Running m0serve](RUNNING.md); the dated design essay with the measurements
 behind every claim here is [the design record](notes/wsgi-vs-asgi-history.md).
 
@@ -11,7 +10,6 @@ behind every claim here is [the design record](notes/wsgi-vs-asgi-history.md).
 | | WSGI application (Django, Flask) | ASGI application (FastHTML, Starlette, Django ASGI) |
 |---|---|---|
 | how the app is called | one synchronous call per request | one long-lived coroutine with `receive` and `send` |
-| what runs by default | one event loop and a pool of `min(cores, 8)` handler threads | one event loop and an asyncio executor |
 | where overlap comes from | threads waiting on I/O or inside a GIL-releasing C call; `--workers` processes for the rest | the app's own `await`s; `--workers` processes for CPU |
 | a slow view | holds its handler thread; the loop keeps serving | blocks the loop unless it awaits, as under uvicorn |
 | realtime | `--realtime`: a view approves a held SSE stream or WebSocket with two headers, `m0pub.publish` reaches every subscriber | native: the app streams its own response or takes a `websocket` scope |
@@ -25,8 +23,8 @@ Python. Only the step that runs the application differs.
 
 WSGI and ASGI answer the same question, how a request reaches Python code,
 in incompatible ways. A synchronous view cannot run *on* an event loop without
-a thread pool underneath it, which is what `WSGIMiddleware` in Starlette does
-and why it inherits every limit of the loop's thread pool. A coroutine cannot
+a thread pool underneath it. Starlette's `WSGIMiddleware` uses one, and
+inherits every limit of the loop's thread pool. A coroutine cannot
 run without an event loop at all. So each protocol gets the runtime it was
 designed for, and the server in front of both is the same.
 
@@ -37,7 +35,7 @@ and one `m0serve --mount` here.
 
 ## What the WSGI mode is for
 
-**A pool, not a loop per request.** A WSGI worker is busy for a request's
+**A pool of handler threads.** A WSGI worker is busy for a request's
 whole wall-clock time. Running views on the event loop thread would let one
 slow view stall every keep-alive connection behind it; running them on a pool
 of handler threads behind the loop keeps a slow view's cost to its own thread.
@@ -51,8 +49,7 @@ its worker for as long as the client stays. m0serve moves the held connection
 to the event loop: the view runs to completion, approves the hold with
 `M0-Hold` and `M0-Channel`, and returns; the loop keeps the socket, delivers
 what `m0pub.publish` sends, and closes it when the client leaves. That is the
-headline capability, and it is why WSGI is first-class here rather than a
-legacy path. Under gunicorn the same headers are ignored and the view degrades
+headline capability, and it makes WSGI a first-class mode here. Under gunicorn the same headers are ignored and the view degrades
 to a short plain response.
 
 **Parallelism.** `--workers N` forks N processes, the answer that always
@@ -60,12 +57,12 @@ works under the GIL. Handler threads also give real parallelism, but only for
 work that lets go of the lock: a database driver, an image codec, numpy or an
 inference engine overlaps across the pool, and pure Python does not (SPEC
 E19). Which of the two your slow view is decides whether more handler threads
-are worth anything, and it is not always obvious — Core ML's `predict` holds
-the lock, so an embedding app gained nothing from a second thread and lost a
-third of its throughput on eight ([the measurement](notes/gil-and-the-handler-pool.md)).
-On free-threaded CPython, `--threads N` runs N event loops in one process with
-one interpreter, each loop with its own pool; the weekly canary proves that
-path on 3.14t.
+are worth anything, and it is not always obvious. Core ML's `predict` holds
+the lock, so an embedding app gains nothing from more threads
+([the measurement](notes/gil-and-the-handler-pool.md)). On free-threaded
+CPython, `--threads N` runs N event loops in one process with one
+interpreter, each loop with a pool of its own when `--blocking-threads N` is
+given.
 
 ## What the ASGI mode is for
 
@@ -111,20 +108,19 @@ SPEC row with a gate:
   that contains one arrives encoded, where uvicorn decodes it (and routes
   the request elsewhere).
 
-**A buffered fallback.** `--blocking-threads N` with an ASGI app selects the
-older buffered path, one request at a time to completion on a pool thread. It
-exists as an escape hatch and refuses an infinite stream rather than hold a
-thread forever. It also answers only when the application returns, so a
+**A buffered fallback.** `--blocking-threads N` with an ASGI app selects a
+buffered path, one request at a time to completion on a pool thread. It
+exists as an escape hatch and refuses a streaming response still unfinished
+after 10 s, since an infinite stream would hold a thread forever. It also answers only when the application returns, so a
 response there still waits for its background tasks, and an error the
 application answers and then re-raises (Starlette's error page) is replaced
 by the server's own 500.
 
 **One limit, from the toolchain.** The executor is a Python type built
 in-process, and Mojo's Python bindings lay that type out for the
-GIL build (modular/modular#5726; measured on 1.0.0, 1.1.0 and 1.2.0). On a
-free-threaded CPython the server refuses an ASGI app with
-exit 78 rather than crash, so ASGI under `--threads` does not exist on this
-toolchain ([the known issue](ROADMAP.md#known-issues)).
+GIL build (modular/modular#5726, open on the Mojo 1.2.0 pin). On a
+free-threaded CPython the server refuses an ASGI app with exit 78, so ASGI
+under `--threads` does not exist on this toolchain ([the known issue](ROADMAP.md#known-issues)).
 
 ## Free-threading
 
@@ -143,9 +139,8 @@ interpreter.
 - **A generator that sleeps holds its pool thread** until it yields again,
   and the client leaving does not wake it. SSE views whose generators sleep
   belong on the executor or as `--realtime` holds, never on pool threads.
-- **A slow view under ASGI blocks the loop** unless it awaits. That is ASGI's
-  nature, not m0serve's; the pool is the WSGI answer to the same problem.
-- **The buffered ASGI path refuses infinite streams** by design.
+- **A slow view under ASGI blocks the loop** unless it awaits. Every ASGI
+  server behaves this way; the pool is the WSGI answer to the same problem.
 
 ## Choosing
 

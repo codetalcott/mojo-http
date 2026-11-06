@@ -9,15 +9,15 @@
 the quickstart, the operations guide and the capability matrix, with
 [docs/README.md](docs/README.md) as the map; for an agent, [llms.txt](llms.txt)
 at the site's root indexes every page, each also served as Markdown with
-`.md` in place of its trailing slash. For where the project stands,
-run `uv run poe milestones` — it computes what is left for 1.0 rather than
-reporting what someone last wrote down.)*
+`.md` in place of its trailing slash. For where the project stands, run
+`uv run poe milestones`: it computes the milestone conditions from the spec
+and the roadmap, and whether they still hold.)*
 
 A plain sync Django or Flask view can hold a Server-Sent Events stream or a
 WebSocket by answering with two response headers, and reach every subscriber
-on every worker with one function call. On one machine: no Channels, no
-Redis, no daphne, no Pushpin, no second process. Across machines, Postgres
-`NOTIFY` is the bus (`--pg-listen`).
+on every worker with one function call. On one machine it needs none of
+Channels, Redis, daphne, Pushpin or a second process. Across machines,
+Postgres `NOTIFY` is the bus (`--pg-listen`).
 
 ```python
 from m0serve import m0pub
@@ -40,18 +40,17 @@ pip install m0serve
 m0serve myproject.wsgi --realtime
 ```
 
-The view runs *first*, with sessions and permissions in hand — which is
-where your auth belongs, and why this is a feature of your app rather than
-of a sidecar. Under gunicorn the two headers mean nothing (they are passed
-through to the client) and the same view degrades to a short plain
-response, so adopting it is not a fork of your codebase. The Flask version
-is the same four views with one extra flag: the socket route is declared
-`websocket=True`, because Werkzeug's router refuses an upgrade request on
-an ordinary rule before any view runs; [After the quickstart](docs/QUICKSTART_NEXT.md) has it.
+The view runs *first*, with sessions and permissions in hand, so your auth
+stays in your app. Under gunicorn the two headers mean nothing (they are
+passed through to the client) and the same view degrades to a short plain
+response, so adopting it is not a fork of your codebase. The Flask version is
+the same four views with one extra flag: the socket route is declared
+`websocket=True`, because Werkzeug's router refuses an upgrade request on an
+ordinary rule before any view runs;
+[After the quickstart](docs/QUICKSTART_NEXT.md) has it.
 
 **[QUICKSTART.md](QUICKSTART.md) is ten minutes from `pip install` to live
-multi-tab sync**, and CI executes every command in it on every pull request
-— so it works, or the build is red.
+multi-tab sync**, and CI runs every command in it on every pull request.
 
 ### What else it does
 
@@ -62,8 +61,9 @@ multi-tab sync**, and CI executes every command in it on every pull request
   listener with one shutdown. With four blocking 2-second sync views holding
   every pool thread, the async mount still answers at p99 2.8 ms.
 - **It runs the app you already have.** WSGI or ASGI, detected from the
-  object. Django, Flask and FastHTML each have their own smoke test in CI
-  (FastHTML is Starlette-based, and is the flagship ASGI row), alongside
+  object. Django, Flask, FastAPI and FastHTML each have their own smoke
+  test in CI (FastAPI and FastHTML are Starlette-based; FastHTML is the
+  flagship ASGI row), alongside
   bare WSGI and ASGI apps that pin the specs clause by clause. PEP 3333
   conformance is validated by `wsgiref`, ASGI by a validator written from
   the spec.
@@ -84,11 +84,11 @@ multi-tab sync**, and CI executes every command in it on every pull request
   the same one applies here.
 - **The served contract is stable from 1.0** — flags and environment
   variables, the `M0-Hold`/`M0-Channel` headers, and `m0pub.publish()`.
-  A minor release does not break them; everything else — the Mojo APIs,
-  the package layout, the fork's internals — is still free to move.
+  A minor release does not break them. Everything else, such as the Mojo
+  APIs, the package layout and the fork's internals, may still change.
   A minor leaves every other Thursday ([Releases](docs/RELEASES.md)).
-- **macOS arm64 and Linux x86_64/aarch64 only.** No Intel Mac (no
-  toolchain), no Windows, no musl.
+- **macOS arm64 and Linux x86_64/aarch64 only.** Not supported: Intel Mac
+  (Modular ships no toolchain for it), Windows, musl.
 
 ---
 
@@ -100,11 +100,11 @@ server above is one package in it (`m0-wsgi`).
 
 The server itself is a hard fork of
 [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from
-v26.1.2 and maintained here since upstream was archived on 2026-05-12 — not
-a vendored snapshot. It adds hardening against request smuggling, slowloris,
-and integer overflow in request parsing, connection timeouts, an SSE- and
-WebSocket-aware event loop, and a fix for `epoll` struct layout on
-non-x86_64. See [NOTICE](NOTICE) for the full record.
+v26.1.2 and maintained here since upstream was archived on 2026-05-12. It adds
+hardening against request smuggling, slowloris, and integer overflow in
+request parsing, connection timeouts, an SSE- and WebSocket-aware event loop,
+and a fix for `epoll` struct layout on non-x86_64. See [NOTICE](NOTICE) for
+the full record.
 
 ## Install
 
@@ -123,11 +123,10 @@ and [docs/RUNNING.md](docs/RUNNING.md) for every flag, mode, limit and exit
 code.
 
 **One wheel per platform covers every supported CPython**, 3.10 through 3.14
-including free-threaded 3.14t. That is not a shortcut: `m0serve` does not
-link libpython — Mojo `dlopen`s the interpreter at run time — so there is no
-CPython ABI in the wheel to be compatible with, and no CPython inside it to
-redistribute. It has no Python dependencies and fetches nothing at install
-time.
+including free-threaded 3.14t. `m0serve` does not link libpython: Mojo
+`dlopen`s the interpreter at run time, so the wheel has no CPython ABI to
+match and no CPython to redistribute. It has no Python dependencies and
+fetches nothing at install time.
 
 | platform | status |
 |---|---|
@@ -138,10 +137,8 @@ time.
 | musl / Alpine, Windows | not supported |
 
 **The exact floors live in the wheel filename**, measured from the built
-binary rather than copied from the toolchain's own tag, so `pip` declines
-an older system rather than install something that crashes at startup. The
-Linux floor is the Mojo runtime's, not the build host's
-([the measurement](docs/notes/the-floor-is-the-runtime.md)).
+binary, so `pip` declines a system too old to run it. The Linux floor is the
+Mojo runtime's ([the measurement](docs/notes/the-floor-is-the-runtime.md)).
 
 To **write an application in Mojo** (preview), the `m0` package writes the
 project and installs the toolchain into it:
@@ -170,6 +167,7 @@ curl localhost:8080/health  # {"status":"ok"}
 
 ```mojo
 from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_http import AppConfig, install_shutdown_signals
 
 
 @fieldwise_init
@@ -179,15 +177,25 @@ struct HelloHandler(HTTPService):
             return OK('{"status":"ok"}', "application/json")
         return OK("hello from m0", "text/plain")
 
-
 def main() raises:
-    print("Starting hello server on 0.0.0.0:8080")
-    var server = Server()
+    # Reads M0_PORT and M0_ACCESS_LOG. This is the app `scripts/bench_hello.sh`
+    # drives, and being able to move its port and toggle access logging without
+    # a rebuild is worth the two lines.
+    var config = AppConfig()
+    print("Starting hello server on " + config.address())
+    var server = Server(config.server_config())
     var handler = HelloHandler()
     # The non-blocking loop multiplexes keep-alive connections instead of
     # serving one at a time — measurably better tail latency under
     # concurrent clients, and the same one-liner to call.
-    server.listen_and_serve_nonblocking("0.0.0.0:8080", handler)
+    # SIGTERM (docker stop) and SIGINT (Ctrl-C) now reach the loop's graceful
+    # drain instead of severing every open connection. -1 back means signal
+    # shutdown could not be armed, which is also the server's "no shutdown
+    # pipe" sentinel, so there is nothing to branch on here.
+    var shutdown_fd = install_shutdown_signals()
+    server.listen_and_serve_nonblocking(
+        config.address(), handler, shutdown_read_fd=shutdown_fd
+    )
 ```
 
 `func` is the one method a handler must write. The streaming hooks (`sse_*`, shared by SSE and WebSocket slots), the `tick` timer and `ws_message` all have default bodies, so a handler declares only the hooks it uses.
@@ -206,7 +214,7 @@ def main() raises:
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix. Every capability, with the gate that proves it, is a row of [docs/SPEC.md](docs/SPEC.md).
 
-Strict layering, no upward imports: `m0-core` has zero dependencies, and `m0-http` imports from it, never the reverse. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, which is exactly why it is a separate package. `m0-core` also builds the C-ABI library `m0pub` numbers its events through; it ships inside the m0serve wheel and is not an artifact of its own ([docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md)).
+Strict layering, no upward imports: `m0-core` has zero dependencies, and `m0-http` imports from it, never the reverse. `m0-datastar` splits in two — `consts` and `sse` are the pure wire format with no dependencies at all, while `stream` and `signals` are the server glue and are the only parts that pull in `m0-http`. `m0-wsgi` is the only package that embeds CPython, so it is a package of its own: a Python import elsewhere would put libpython on every build's link line. `m0-core` also builds the C-ABI library `m0pub` numbers its events through; it ships inside the m0serve wheel and is not an artifact of its own ([docs/FFI_DISTRIBUTION.md](docs/FFI_DISTRIBUTION.md)).
 
 [apps/notes_api/](apps/notes_api/server.mojo) composes most of the HTTP
 layer in one small app: CRUD with `:id` routes and a real `405` with
@@ -221,8 +229,7 @@ application layer: views a URL table names, fragments that name themselves,
 page-or-fragment decided from the request's headers, `comptime` routes
 reversed by `url_for`, and a signed-cookie login with CSRF from
 `m0_http.login`. [docs/MOJO_VIEWS.md](docs/MOJO_VIEWS.md) is that layer's
-page; `poe smoke-fragment-notes` pins the app's wire contract, which did
-not change while the app was refactored onto each piece
+page; `poe smoke-fragment-notes` pins the app's wire contract
 ([a-fragment-that-names-itself](docs/notes/a-fragment-that-names-itself.md)).
 
 ## Datastar
@@ -286,11 +293,11 @@ renders the same code as `Fragment[Htmx]` with Datastar's attributes
 screen. `websocket_upgrade(req)` answers the opening handshake inside `func`
 (101 on success, 426/400 for near-misses, `None` when the request isn't an
 upgrade at all so ordinary routing continues); `ws_message(slot, opcode,
-payload)` receives each complete message — fragments already assembled,
-control frames already answered by the event loop — and replies are queued
-as `encode_ws_frame(...)` bytes that the shared outbox hook delivers. Idle
+payload)` receives each complete message, its fragments assembled and its
+control frames answered by the event loop; replies are queued as
+`encode_ws_frame(...)` bytes that the shared outbox hook delivers. Idle
 sockets get protocol pings on the `M0_SSE_HEARTBEAT_MS` cadence, and every
-close path — close handshake, vanished client, failed ping — lands in
+close path (a close handshake, a vanished client, a failed ping) lands in
 `sse_slot_disconnected`. Run it with `uv run poe serve-ws`; `poe smoke-ws`
 proves the wire format against a from-scratch stdlib client.
 
@@ -322,9 +329,9 @@ The example applications are Python-only projects that `bin/m0serve`
 serves, each with a smoke test of its own:
 
 - [apps/django_wsgi/](apps/django_wsgi/) and [apps/flask_wsgi/](apps/flask_wsgi/)
-  run the same assertions ([scripts/wsgi_framework_contract.sh](scripts/wsgi_framework_contract.sh))
-  — routing, cookies in both directions, body round trips, error
-  handling — because every WSGI framework does those identically.
+  run the same assertions ([scripts/wsgi_framework_contract.sh](scripts/wsgi_framework_contract.sh)):
+  routing, cookies in both directions, body round trips and error
+  handling, which every WSGI framework does identically.
 - [apps/wsgi_bare/](apps/wsgi_bare/) is a plain PEP 3333 callable with no
   third-party imports, the conformance target for the parts of the spec a
   framework never exercises ([docs/WSGI_CONFORMANCE.md](docs/WSGI_CONFORMANCE.md)).
@@ -339,8 +346,8 @@ from leaking are [packages/m0-wsgi/AGENTS.md](packages/m0-wsgi/AGENTS.md).
 
 ## SQLite
 
-`m0-sqlite` is a thin, honest layer over the SQLite C API — no ORM, no query
-builder, no connection pool. It is a **sibling** of the HTTP packages, not a
+`m0-sqlite` is a thin layer over the SQLite C API, without an ORM, a query
+builder or a connection pool. It is a **sibling** of the HTTP packages, not a
 layer on them, and imports nothing else in this repo.
 
 ```mojo
@@ -364,8 +371,8 @@ a second owner that would close it twice — move with `^` to transfer ownership
 `open()` applies the pragmas a server actually wants: `journal_mode=WAL`,
 `synchronous=NORMAL`, `foreign_keys=ON`, plus a 5-second busy timeout so a
 contended write waits instead of failing on contact. It raises on a target
-that cannot do WAL — `:memory:`, a temp database, some network filesystems
-— rather than quietly falling back to a rollback journal; use
+that cannot do WAL (`:memory:`, a temp database, some network filesystems)
+and never falls back to a rollback journal; use
 `open_memory()` for an in-memory database. Transactions are explicit
 (`begin` / `commit` / `rollback`); there is no scope guard, because Mojo has
 no `defer` and a destructor that rolled back would make correctness depend
@@ -387,19 +394,17 @@ db.commit()
 ```
 
 **Reading in bulk.** `column_blob` copies with one `memcpy`, and
-`column_blob_into` reuses a caller buffer across a scan instead of
-allocating per row. `fetch_ints` / `fetch_floats` / `fetch_texts` append a
-whole column into a caller-owned `List`; they are a shape convenience
-rather than a speed-up — SQLite has no bulk column API — but a `List` per
-column is what a SIMD pass over the results wants. They signal exhaustion
-with a **short read**, so stop when you get fewer rows than you asked for
-rather than looping until zero.
+`column_blob_into` reuses a caller buffer across a scan instead of allocating
+per row. `fetch_ints` / `fetch_floats` / `fetch_texts` append a whole column
+into a caller-owned `List`. SQLite has no bulk column API, so they are no
+faster than stepping; a `List` per column is what a SIMD pass over the results
+wants. They signal exhaustion with a **short read**, so stop when you get
+fewer rows than you asked for rather than looping until zero.
 
-`prepare()` compiles exactly one statement; text after the first — or text that
-compiles to nothing, like a lone comment — is an error rather than silently
-ignored. Use `execute()` for a multi-statement script. Column indices are
-checked: an out-of-range index raises rather than reading back as a stored
-NULL.
+`prepare()` compiles exactly one statement; text after the first, and text
+that compiles to nothing such as a lone comment, raises an error. Use
+`execute()` for a multi-statement script. Column indices are checked: an
+out-of-range index raises rather than reading back as a stored NULL.
 
 **Errors carry a code.** Every failure that had a SQLite result code raises a
 message ending in `(rc=NN)`, and `error_code()` recovers it, so retrying a
@@ -488,9 +493,9 @@ realistic row counts, so it is not worth the ownership complexity yet.
 
 ## PostgreSQL
 
-`m0-postgres` is the same kind of layer over libpq — no ORM, no query builder,
-no connection pool — and the other **sibling**: it imports nothing else in this
-repo.
+`m0-postgres` is the same kind of layer over libpq, without an ORM, a query
+builder or a connection pool, and the other **sibling**: it imports nothing
+else in this repo.
 
 ```mojo
 from m0_postgres import Params, open
@@ -506,11 +511,11 @@ for r in range(rows.rows):     # rows and columns are both 0-based
     print(rows.int(r, 0), rows.text(r, 1))
 ```
 
-**libpq is opened at run time, not linked.** Nothing in this repo carries a
-libpq dependency on its link line — `bin/m0serve` and the wheel included — so a
-server that never names a database needs no library present, and an absent one
-is a single error naming every path that was tried. `M0_LIBPQ` names the file
-outright.
+**libpq is opened at run time, not linked.** Nothing in this repo,
+`bin/m0serve` and the wheel included, carries a libpq dependency on its link
+line, so a server that never names a database needs no library present, and an
+absent one is a single error naming every path that was tried. `M0_LIBPQ`
+names the file outright.
 
 **Parameters are bound with explicit types.** A parameter Postgres resolves as
 `unknown` means whatever the surrounding expression makes it, so `Params` sends
@@ -547,23 +552,23 @@ see is a hidden double write.
 them before deploying: workers times blocking threads times Postgres-backed
 mounts is what the server opens, against the server's `max_connections`.
 
-**`LISTEN`/`NOTIFY` is supported**, which is what lets a writer outside the
-server process — a trigger, a cron job, `psql` — reach a held SSE stream that
-the in-process datagram bus cannot.
+**`LISTEN`/`NOTIFY` is supported.** A writer outside the server process,
+such as a trigger, a cron job or `psql`, reaches a held SSE stream through
+it, where the in-process datagram bus cannot.
 
 **Not implemented:** `COPY`, pipeline mode, row-at-a-time results, and binary
 decoders for `numeric`, dates, intervals and arrays, which read as text. Each
-is a deliberate absence rather than an oversight; `numeric`'s binary form is a
-base-10000 digit vector with its own NaN encoding, and a wrong decoding of one
-is silently a different number.
+is left out by choice; `numeric`'s binary form is a base-10000 digit vector
+with its own NaN encoding, and a wrong decoding of one is silently a
+different number.
 
 ## Status and limits
 
-[docs/SPEC.md](docs/SPEC.md) is the full capability matrix — every row carries its evidence, and `poe check-docs` fails if a row claims a CI gate that does not exist or does not run. [docs/ROADMAP.md](docs/ROADMAP.md#known-issues) holds the known issues, each with what would retire it. The bullets below are what building on this repository needs to know.
+[docs/SPEC.md](docs/SPEC.md) is the full capability matrix — every row carries its evidence, and `poe check-docs` fails if a row claims a CI gate that does not exist or does not run. [docs/ROADMAP.md](docs/ROADMAP.md#known-issues) holds the known issues, each with what would retire it.
 
 - The Mojo toolchain is pinned in `uv.lock`. `.mojoc` artifacts are locked to the exact compiler that produced them, so rebuild after any toolchain change.
 - Building on Linux needs two system packages: a C compiler (`mojo build` shells out for linking) and `patchelf` (the binaries record a `$ORIGIN` `DT_RUNPATH` so they find the Mojo runtime beside themselves). `build-essential patchelf` covers it; `m0-sqlite` opens the runtime `libsqlite3` at run time, and `verify-vtab-layout` alone wants `libsqlite3-dev` for its header. None are needed on macOS.
-- `m0-wsgi` needs a discoverable `libpython`. Mojo resolves the interpreter from `PATH`, which is why the poe tasks — running inside the venv — pick up the venv's Python and its packages.
+- `m0-wsgi` needs a discoverable `libpython`. Mojo resolves the interpreter from `PATH`, so the poe tasks, which run inside the venv, pick up the venv's Python and its packages.
 - **SSE fan-out is per process unless the application joins the `BroadcastBus`.** Under `M0_WORKERS>1` each worker has its own subscribers; the bus, created before the fork, carries every broadcast to every worker's. The Mojo host wires it ([docs/MOJO_HOST.md](docs/MOJO_HOST.md)), and `apps/datastar_counter` is the reference. Cross-worker ordering is best-effort, and the redelivery filter keeps the newer id.
 - SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from a bounded in-memory frame journal; a client further behind than that is sent none of the history, `caught_up(slot)` answers false, and the view queues its current state for that connection alone with `send_to`. Replay across a *restart* needs the application to persist the journal and restore it at boot, as the todo demo does. A WSGI hold is caught up from m0serve's own per-loop journal, and told with one `m0-gap` frame when it cannot be ([docs/RUNNING.md](docs/RUNNING.md#the-realtime-contract)).
 

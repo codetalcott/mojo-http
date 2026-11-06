@@ -182,12 +182,10 @@ data: hello from curl
 SSE delivery verified (event id 1)
 ```
 
-Every publish takes a unique id from a counter shared across workers, and
-the server journals the last 64 of them (`--replay-frames`). A client that
-reconnects with `Last-Event-ID` is not re-sent what it already has, and is
-sent what it missed; one further behind than the journal reaches is sent an
-`m0-gap` event instead, so listen for it and fetch the current state there
-rather than polling beside the stream.
+Every publish takes an id from a counter shared across workers. A client
+that reconnects with `Last-Event-ID` is sent what it missed, or one `m0-gap`
+event when the journal no longer holds it; on `m0-gap`, fetch the current
+state ([the replay rules](docs/RUNNING.md#the-realtime-contract)).
 
 ## 5. Two tabs
 
@@ -201,14 +199,14 @@ Django view.
 
 The integration is two headers on the view that approves a subscription,
 `m0pub.publish()` wherever something happens, and
-`m0serve myproject.wsgi:application --realtime`. No settings changes, no
-`INSTALLED_APPS` entry, no middleware. Under any other WSGI server the same
-views return short plain responses.
+`m0serve myproject.wsgi:application --realtime`. It needs no settings
+change, `INSTALLED_APPS` entry or middleware. Under any other WSGI server the
+same views return short plain responses.
 
-The binary resolves libpython from the `python3` on `PATH`, so a start
-script activates the project's virtualenv, or puts its `bin/` first on
-`PATH`, before it runs `m0serve`; `MOJO_PYTHON_LIBRARY` names the library
-outright.
+The `m0serve` that `pip` installs runs the server on its own environment's
+interpreter, so a start script can call `.venv/bin/m0serve` without
+activating anything. A binary built from source loads the libpython of the
+`python3` on `PATH`; `MOJO_PYTHON_LIBRARY` names the library outright.
 
 A fuller example, with token auth, channel isolation and static files served
 by the server, is [`apps/django_realtime`](apps/django_realtime/); CI drives
@@ -218,25 +216,25 @@ it with a raw RFC 6455 probe.
 
 The hold moves the connection out of Python. Authorization stays in the view.
 
-- **The view that approves a hold is the access check.** Nothing downstream
+- The view that approves a hold is the access check. Nothing downstream
   asks again. The view runs before the connection becomes a stream, with
   sessions and permissions in hand, so use whatever your project already
   uses.
-- **`publish()` reaches every subscriber of a channel, on every worker.** If
+- `publish()` reaches every subscriber of a channel, on every worker. If
   the channel name comes from a request, so does the blast radius. The
   server refuses only its own reserved namespace (channel names opening
   with a `\x01` byte); every other name is yours to police.
-- **`publish(channel, data)` sends `data` as one event.** Each line of it
+- `publish(channel, data)` sends `data` as one event. Each line of it
   becomes one `data:` field, and the client joins the fields with a
   newline again, so a payload keeps its line breaks. The return value is
   the number of worker channels written; a `0` means the event went
   nowhere: a frame over the size limit, a refused channel, or no m0serve
   underneath, as under gunicorn.
-- **A view a browser form posts to is yours to protect.** `publish` and
+- A view a browser form posts to is yours to protect. `publish` and
   `ws_message` are `csrf_exempt` above so `curl` can post to them; a form
   in your own page sends Django's CSRF token as usual, and the view keeps
   the decorator off.
-- **A socket opens from its own origin.** A browser attaches your cookies
+- A socket opens from its own origin. A browser attaches your cookies
   to a WebSocket whatever page opens it, so the server answers 403 to a
   handshake whose `Origin` is not the request's own host, whatever the view
   approved. A page on another origin that should connect is named with
@@ -244,7 +242,7 @@ The hold moves the connection out of Python. Authorization stays in the view.
 
 Inbound WebSocket messages arrive as a `POST` to `/ws/message`. The server
 reserves that path: a request for it from the network is answered 404
-before Django sees it, which is why the view can be `csrf_exempt`.
+before Django sees it, so the view can safely be `csrf_exempt`.
 
 ## Next
 
