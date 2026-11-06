@@ -58,7 +58,8 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-14
+          # macos-15: GitHub retired every macOS 14 image on 2026-11-02.
+          - os: macos-15
             plat: macos-arm64
           - os: ubuntu-22.04
             plat: linux-x86_64
@@ -228,12 +229,13 @@ jobs:
           echo "correctly refused on an unsupported glibc"
 
   # macOS has no containers, so the separation available is a fresh runner in
-  # a different job with none of the contamination vectors -- on macos-14,
-  # the OLDEST arm64 image, which turns the declared macosx_ floor into a
-  # measurement rather than a claim.
+  # a different job with none of the contamination vectors -- on macos-15,
+  # the OLDEST arm64 image (macos-14 until GitHub retired it on 2026-11-02),
+  # which turns the declared macosx_ floor into a measurement rather than a
+  # claim.
   wheel-consume-macos:
     needs: build-wheels
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 20
     steps:
       - uses: actions/download-artifact@v8
