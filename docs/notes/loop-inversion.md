@@ -1,10 +1,15 @@
 # The loop inversion — in progress 2026-08-28
 
+> **Built.** Design item 6 landed 2026-09-08, and `M0_INVERTED=1` ships as
+> an opt-in for an ASGI application on one usable CPU
+> ([Running m0serve](../RUNNING.md#which-mode);
+> [inversion on a constrained box](inversion-on-a-constrained-box.md)).
+
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the
 > project's state; the reasoning lives here.
 
-The handoff's item 1: run the Mojo loop's pass as a callback inside the
+The plan: run the Mojo loop's pass as a callback inside the
 executor's `run_forever`, on one thread, so a request goes parse → app →
 response with no datagram and no cross-thread wake. At c16 the pump batches
 about one submit per pass, so every request pays two wakes today; removing

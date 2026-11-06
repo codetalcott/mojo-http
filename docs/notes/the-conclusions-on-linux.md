@@ -1,5 +1,12 @@
 # Do the benchmark page's conclusions hold on Linux? Two of four do not — 2026-09-08
 
+> **Superseded.** Neither inversion below stands. The WSGI one did not
+> reproduce on x86-64 the next day ("A second Linux environment, and a
+> correction" below), and the ASGI per-core one was gone when
+> [ASGI per core](asgi-per-core.md) measured it again on 2026-10-06. On
+> the 1.17.0 run (`bench/results/linux-2026-11/`) all five of the
+> comparison's rows hold on Linux.
+
 > A design note from the engineering record. Every artifact
 > [docs/BENCHMARKS.md](../BENCHMARKS.md) renders is macOS arm64, and the page
 > says so — as a caveat about absolute rates. This note asked the stronger

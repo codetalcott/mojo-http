@@ -1,5 +1,11 @@
 # The scaffold: two templates that compile where they lie — 2026-09-20
 
+> **Superseded in part.** `--template` takes four values, with `auth` (SPEC
+> N45, D53) and `board` (SPEC N52) added, and `live` keeps its kick count
+> in SQLite (SPEC N40). D44 was retired 2026-09-27.
+
+> A design note from the engineering record.
+
 The second of three pull requests that let an application in Mojo be
 written outside this repository. The first added the `m0` wheel and the
 commands that need no template

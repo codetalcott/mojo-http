@@ -1,10 +1,12 @@
 # The fork audited — 2026-10-08
 
+> A design note from the engineering record.
+
 The review of the lightbug fork, 2026-10-07 and 2026-10-08: the method,
 the numbers before and after, which instrument found which record, and
-what is still open. It raised 76 records (LF1–LF76). 72 are fixed, two
-were races in tests rather than in the server, one is a duplicate, and
-one is open. The share of the fork's code lines unchanged since the
+what was left open. It raised 76 records (LF1–LF76). 72 are fixed, two
+were races in tests, one is a duplicate, and the last, LF24, was retired
+by measurement on 2026-10-09. The share of the fork's code lines unchanged since the
 upstream import fell from 34% to 23%.
 
 The plan, the four audit ledgers (one row per function) and the lane
@@ -256,7 +258,7 @@ S3 and S4 found nothing. They hold the classes of LF1 and LF17.
 - **Review every diff, and run the whole suite on the train.** Those two
   caught overclaims and cross-lane breaks that no lane's own gates could.
 
-## Still open
+## What was left open
 
 LF24 and the cost of LF22's fix were ROADMAP Known issues, each retired by
 a measurement in a release's quiet stage. Both ran in 1.13.0's, on

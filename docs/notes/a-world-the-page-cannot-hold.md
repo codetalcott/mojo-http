@@ -1,5 +1,9 @@
 # A world the page cannot hold — wired 2026-09-16
 
+> **Superseded in part the same day.** Blobs runs on the Mojo host and
+> serves from two workers (SPEC E21; [the Mojo host](the-mojo-host.md)).
+> The one-process section below is the state before that.
+
 > A design note from the engineering record. The first application written
 > for the Mojo-native stack rather than for the Python gateway: what it had
 > to have that nothing in the tree provided, what was built for it, and

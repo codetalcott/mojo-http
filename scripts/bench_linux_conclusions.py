@@ -12,13 +12,11 @@ sharing, which is the one confound the container cannot remove. The host
 bills from creation to deletion regardless of this script, so the intended
 session is create, provision, run, DELETE.
 
-Every artifact docs/BENCHMARKS.md renders is macOS arm64. Measured
-2026-09-08 (docs/notes/the-conclusions-on-linux.md), TWO of its four
-headline conclusions invert on Linux -- both of the "No" answers -- because
-a cross-thread handoff costs less on epoll and futex than on kqueue, and
-the handoff is what m0serve's two-thread shape pays for its isolation. This
-re-runs that comparison so the answer can be refreshed rather than
-remembered.
+Every artifact docs/BENCHMARKS.md renders is macOS arm64. This runs the
+page's five headline comparisons on Linux and prints, for each, whether it
+holds there (m0serve on the same side of 1.0) or inverts. On the 1.17.0 run
+(bench/results/linux-2026-11/) all five hold. The 2026-09-08 run read two
+inversions, and neither stood (docs/notes/the-conclusions-on-linux.md).
 
 **Not in CI, and it must not be.** The differences that matter are narrow
 (0.98x -> 1.08x), and a shared 4-core runner cannot resolve a ten-percent

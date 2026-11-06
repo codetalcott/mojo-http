@@ -1,5 +1,12 @@
 # Periodic work off the event loop — measured 2026-09-14
 
+> **Superseded in part.** A Mojo application's off-loop cadence is now the
+> host's `Producer`, which owns the thread, the bus and the bounded join,
+> and `apps/sim_loop` is one (D26 retired 2026-09-16, D27; SPEC E23, E25;
+> [The host](../MOJO_HOST.md)).
+
+> A design note from the engineering record.
+
 *Linux container, 4 shared cores, Mojo 1.0.0. Eight closed-loop keep-alive
 connections against a trivial handler, driven from Python. The absolute
 throughput is the driver's, not the server's — every arm pays the same

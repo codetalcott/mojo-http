@@ -8,10 +8,10 @@
 
 ## The finding
 
-`--workers N` has every worker wait on the one listener the supervisor
-bound, and whichever worker wakes first drains the backlog until `EAGAIN`.
-On an idle box that is the same worker nearly every time, and a keep-alive
-load — whose connections are accepted once and then held — runs at that
+Under `--workers N` every worker waited on the one listener the supervisor
+bound, and whichever worker woke first drained the backlog until `EAGAIN`.
+On an idle box that was the same worker nearly every time, and a keep-alive
+load — whose connections are accepted once and then held — ran at that
 one worker's throughput for as long as they live. The Core ML embedding
 app (`bench/embed_coreml`) served 1675 req/s on one worker and 1675 on two
 spawned ones, with 197 of 200 warm connections on one pid
