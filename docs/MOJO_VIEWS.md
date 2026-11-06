@@ -86,6 +86,11 @@ two routes because a plain form cannot PUT: the edit form posts to the URL
 it was served from. A view of the other kind takes its route through
 `add_read` or `add_write` with the slot left empty.
 
+`resource` leaves every view on the pool. A table whose state lives in
+the process registers its routes with `add_read` and `add_write` and
+`on_loop=True` instead; otherwise the host refuses it under
+`--blocking-threads` (`pool-vs-application`).
+
 `form(req)` returns `None` unless the body is `application/x-www-form-urlencoded`,
 so a missing form cannot be read as an empty one. The `Form` keeps every
 value of a repeated key; `first("title")` is the usual read. htmx and
@@ -130,7 +135,7 @@ style. Application code never types an `hx-` or `data-on:` swap attribute,
 and never retypes the id as `#items`.
 
 `push=True` on either makes the swap move the address bar to its URL, so
-the view it arrives at — a filtered list, a detail — can be reloaded,
+the view it arrives at (a filtered list, a detail) can be reloaded,
 bookmarked and gone back to: `f.el("a", "get", url, attr("href", url),
 text(title), push=True)`. Only a `get` is pushed, a pushed URL being one
 the browser GETs on reload. htmx asks for it again on back with
@@ -181,7 +186,9 @@ What an application does differently under each:
 **Your own.** `Vocabulary` is a trait an application may conform to:
 `swap` writes the attributes, `h.open_kind()` says which element is open,
 and a static `verbs()` names the verbs the library takes. The layer refuses
-a verb outside that list before `swap` runs.
+a verb outside that list before `swap` runs. `push_url` and
+`request_header` refuse by default, so `push=True` and `header=` raise
+under a vocabulary that does not spell them.
 
 ## A page or a fragment
 
@@ -327,8 +334,8 @@ stamp can be bypassed, keep `Cached` on the clock.
 
 `m0_http.session` is a signed cookie and nothing else:
 `v1.<kid>.<exp>.<subject>.<tag>`, HMAC-SHA256 over the rest.
-`issue_session` signs one, its expiry in Unix seconds (a timestamp in
-milliseconds raises rather than issuing a cookie that never verifies),
+`issue_session` signs one, its expiry in Unix seconds (it raises on a
+timestamp in milliseconds, which would make a cookie that never verifies),
 `verify_session` refuses in the order malformed,
 unknown key, bad signature, expired, and `session_cookie_line` builds the
 `Set-Cookie`. `csrf_token` is a MAC over the session's own tag, so it needs
@@ -340,8 +347,7 @@ the identity.
 
 ### A login
 
-`m0_http.login` is one user behind that cookie, the glue two applications
-wrote the same way by hand:
+`m0_http.login` is one user behind that cookie:
 
 ```mojo
 var login = Login.from_env("APP", "shop-session")   # APP_KEY, APP_PASSWORD, APP_SECURE
@@ -357,8 +363,9 @@ if refused:
 - `Login.from_env(PREFIX, cookie)` reads `PREFIX_KEY` (`LOGIN_KEY_MIN`
   bytes at least; `openssl rand -hex 32` makes one), `PREFIX_PASSWORD` and
   `PREFIX_SECURE`, with `PREFIX_KEY_PREV`, `PREFIX_USER` and `PREFIX_TTL`
-  optional, and raises naming what is missing or malformed. Read it in `main` before `serve` and exit 78 on the error, so
-  `--doctor` refuses what the run would.
+  optional, and raises naming what is missing or malformed. Read it in
+  `main` before `serve` and exit 78 on the error, so `--doctor` refuses
+  what the run would.
 - `PREFIX_SECURE` is stated, never assumed: `1` wherever the application
   is served over HTTPS, so the session cookie carries `Secure`, and `0`
   over plain http such as `http://localhost`. The server cannot see the
@@ -376,9 +383,8 @@ if refused:
   string. `csrf_input(token)` and `csrf_header(token)` write the two.
 - `no_store(resp)` marks an answer the session chose as not cacheable.
 
-`m0 new NAME --template auth` writes an application on it, and
-`apps/fragment_notes` in the repository, the login it was lifted from,
-runs on it.
+`m0 new NAME --template auth` writes an application on it, and so does
+`apps/fragment_notes` in the repository.
 
 `m0_http.grant` verifies a signed, expiring permission to open one stream
 channel, bound to a session cookie. It is how a Python application behind
@@ -421,17 +427,22 @@ def events(req: HTTPRequest, params: List[String], mut st: Store) raises -> HTTP
     return st.feed.open(req, "items")      # the next tick sends what it lacks
 ```
 
-The state forwards `sse_drain_slot`, `sse_is_streaming` and
-`sse_slot_disconnected` to the feed, and `take_ready_streams` too (to
-`take_ready`, answering True) when a loop holds many of its subscribers:
-each pass then drains the slots the feed sent a delta to, not every one. A delta is sent whole: one that
-does not fit beside what a slow subscriber still holds waits, the
-subscriber is left out of `behind` until its socket drains, and the
-next asks from where that subscriber stands. A page that renders the
-view again opens its feed again from that rendering's stamp. Below the floor, or at a
-number this database never gave, the application answers with the view
-whole. `apps/table_notes` does this for its list, with htmx 4's
-`htmx.swap` applying each row's `hx-swap-oob`.
+The tick is off by default: `--app-tick-ms` (`M0_APP_TICK_MS`) is 0. A
+state that fans out from `tick` needs a period, given on the command line
+or set in `main` before `serve`, as `apps/table_notes` sets it:
+`if config.app_tick_ms == 0: config.app_tick_ms = 50`.
+
+The state forwards the stream hooks to the feed
+([the host](MOJO_HOST.md#what-an-application-supplies)), and with
+`take_ready_streams` each pass drains only the slots the feed sent a
+delta to. A delta is sent whole: one that does not fit beside what a slow
+subscriber still holds waits, the subscriber is left out of `behind`
+until its socket drains, and the next asks from where that subscriber
+stands. A page that renders the view again opens its feed again from
+that rendering's stamp. Below the floor, or at a number this database
+never gave, the application answers with the view whole.
+`apps/table_notes` does this for its list, with htmx 4's `htmx.swap`
+applying each row's `hx-swap-oob`.
 
 **A `DatastarStream`** is for state the server computes and publishes. A
 `Producer` ([the host](MOJO_HOST.md)) publishes frames to every worker.
@@ -459,15 +470,12 @@ A view sends through the same stream:
 `st.stream.patch_elements(EVENTS, render_board(st.messages))` numbers one
 frame and queues it for this process's subscribers. The view runs
 `on_loop=True`, as does every view that reads or writes what the stream
-sends, because under `--blocking-threads` each pool thread builds a state
-of its own and nothing drains its stream. Other workers' subscribers are
-reached through the bus: the handler's `make` calls
-`stream.enable_bus(ctx.bus, ctx.worker, ctx.id_addr)` and its
-`sse_peer_frame` forwards to `deliver_peer`. `ViewsApp` does not forward
-`sse_peer_frame`, so that takes an `AppHandler` of the application's own,
-as `apps/datastar_todo` has. The `board` scaffold sends from a view and
-keeps its list in one process (`max_workers() -> 1`); `live` sends from a
-producer.
+sends: a pool thread's state has a stream that nothing drains
+([Views](#views)). Other workers' subscribers are reached through the
+bus, which takes an `AppHandler` of the application's own
+([the host](MOJO_HOST.md#what-an-application-supplies)). The `board`
+scaffold sends from a view and keeps its list in one process
+(`max_workers() -> 1`); `live` sends from a producer.
 
 ## A delete button
 
@@ -554,4 +562,5 @@ application that needs an ORM, an admin and a form library, Django behind
 [m0serve](RUNNING.md) is the answer, and [the ramp](MOJO_RAMP.md) is how
 the two share a process.
 
-The capability rows are section N of [Capabilities](SPEC.md).
+The capability rows are section N of [Capabilities](SPEC.md), with O25 to
+O27 for the clock and stamps and I44 and I45 for a `DatastarStream`.
