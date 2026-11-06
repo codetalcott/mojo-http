@@ -154,6 +154,27 @@ removed after `close_v2`. `test_change_clock.mojo` pins what moves the
 clock and what does not, the truncating checkpoint's move with nothing
 behind it included.
 
+**The virtual table's layout guard compares the C header with Mojo's
+constants** (`poe verify-vtab-layout`; `poe sabotage-vtab` proves it
+can fail). `test/verify_layout.c` asserts every offset `vtab.mojo` hardcodes against
+the installed `sqlite3.h` — and until 2026-09 it did so with its own copy
+of each number (`offsetof(sqlite3_module, xBestIndex) == 3 * 8`), so a
+wrong `M_BESTINDEX` in the Mojo source compiled, passed the gate, and would
+have corrupted rows in silence. The question that found it was the one the
+handoff asked first: *what does the guard compare?* — not a sabotage, which
+would have reported the right answer for the wrong reason. Now
+`scripts/vtab_layout.py` extracts every `comptime NAME: Int` from
+`vtab.mojo`, compiles the C file with each as `-DM0_NAME=N`, and holds the
+two files to one closed set of names in both directions (a constant the C
+file asserts must exist in Mojo; a constant Mojo defines must be asserted
+or declared Mojo-own). Four offsets that were literals inside
+`_x_best_index` (`base + 4`, `base + 5`, `u + 4`, the 32-byte `sqlite3_vtab`
+allocation) became constants so the guard could see them, and
+`SQLITE_INDEX_CONSTRAINT_EQ`, the one header constant copied by value, is
+checked too. `poe sabotage-vtab` moves each of the 28 in turn (the two
+allocation sizes to one word, because a larger buffer is legal) and breaks
+each closed-set rule, and insists on a failure for every one.
+
 **The package has two globals**, each a `pop.global_alloc` word behind an
 `@no_inline` accessor (m0-http's `src/global_slot.mojo` idiom, copied, since
 this package imports nothing): `function.mojo`'s published table and

@@ -292,27 +292,6 @@ So there is no API. The day
 one of the four probes under "Reproducing" stops compiling, the API is
 shippable, with that probe as its negative compile gate.
 
-## The layout guard checked C against C
-
-`test/verify_layout.c` asserts every offset `vtab.mojo` hardcodes against
-the installed `sqlite3.h` — and until 2026-09 it did so with its own copy
-of each number (`offsetof(sqlite3_module, xBestIndex) == 3 * 8`), so a
-wrong `M_BESTINDEX` in the Mojo source compiled, passed the gate, and would
-have corrupted rows in silence. The question that found it was the one the
-handoff asked first: *what does the guard compare?* — not a sabotage, which
-would have reported the right answer for the wrong reason. Now
-`scripts/vtab_layout.py` extracts every `comptime NAME: Int` from
-`vtab.mojo`, compiles the C file with each as `-DM0_NAME=N`, and holds the
-two files to one closed set of names in both directions (a constant the C
-file asserts must exist in Mojo; a constant Mojo defines must be asserted
-or declared Mojo-own). Four offsets that were literals inside
-`_x_best_index` (`base + 4`, `base + 5`, `u + 4`, the 32-byte `sqlite3_vtab`
-allocation) became constants so the guard could see them, and
-`SQLITE_INDEX_CONSTRAINT_EQ`, the one header constant copied by value, is
-checked too. `poe sabotage-vtab` moves each of the 28 in turn (the two
-allocation sizes to one word, because a larger buffer is legal) and breaks
-each closed-set rule, and insists on a failure for every one.
-
 ## Recommendations
 
 1. Consider a `mmap_size` argument or an `open_tuned` variant rather than
@@ -341,7 +320,8 @@ reads under each pragma set; 10k inserts under each transaction mode; and prepar
 The read-out rows (blob, text, borrowed span, ingest, reduce) are the
 exception: `uv run poe bench-sqlite` is checked in and prints them. The
 layout guard is `uv run poe verify-vtab-layout`, and `uv run poe
-sabotage-vtab` proves it can fail.
+sabotage-vtab` proves it can fail; `packages/m0-sqlite/AGENTS.md` says
+what the guard compares.
 
 The origin finding is four programs of a dozen lines, built with
 `uv run mojo build -I packages/m0-sqlite`. The shape that must NOT build
