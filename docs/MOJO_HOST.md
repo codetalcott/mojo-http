@@ -171,7 +171,7 @@ applies the flags itself.
 | 2 | a command line that cannot be read: an unknown flag, a value that is not a number |
 | 78 | a configuration that was read and will not be served |
 
-Every 78 is said on stdout, on lines that open with `host:`: a check's
+Every 78 is said on stderr, on lines that open with `host:`: a check's
 refusal is one line, what was found and then the fix in parentheses, and a
 `make` that raises is refused with its own error. The checks, in the order
 the host applies them:
