@@ -17,9 +17,7 @@ Three derive from row status in SPEC.md; no row carries a milestone of its
 own.
 
 **beta**: no row is `implemented`, the sheet's word for "in the tree with no
-gate dedicated to it". Gating an `implemented` row has found a real defect
-four times out of four (A4, I16, L17, A11), so those rows are both the
-finish line and the highest-yield work.
+gate dedicated to it".
 
 **1.0**: beta, plus every `planned` row outside section N built or moved
 to `out of scope` with a reason, plus a soak against real applications
@@ -33,10 +31,10 @@ its rows are the next milestone's.
 the layer — an application outside `apps/` running on `Views` or
 `Fragment`, recorded in
 [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md#the-application-layer)
-under the same staleness rule. MET on 2026-10-02 by `unotes`, written
-outside the tree by this repository's owner to exercise the layer: the
-record says what that does and does not show, an independent author's
-application among the second. Standing decisions about the layer are in
+under the same staleness rule. MET on 2026-10-02 by `unotes`, which this
+repository's owner wrote outside the tree to exercise the layer. The
+record says what that shows and what it does not; an application by an
+independent author is among what it does not. Standing decisions about the layer are in
 [DECISIONS.md](DECISIONS.md).
 
 `poe check-milestones` gates the rot: every known issue carries a
@@ -66,8 +64,7 @@ somebody else's Django projects inside the pull request that trips it.
   the cue to lift the refusal and run `smoke-django-realtime` phase 6 on
   3.14t, with L18 keeping the refusal honest until then. Retiring it also means turning
   `smoke-mounts-threads`' pinned ASGI refusal back into a served ASGI mount
-  beside the WSGI ones (SPEC M23), the mixed phase `smoke-hybrid` carried
-  as phase 3t until 2026-09-14.
+  beside the WSGI ones (SPEC M23).
 
 - **The Linux wheel misses RHEL 9 by one glibc minor.** The wheel is tagged
   `manylinux_2_35`, which covers Ubuntu 22.04 and Debian 12 but not RHEL 9
@@ -168,8 +165,8 @@ somebody else's Django projects inside the pull request that trips it.
   double. Through Mojo 1.1.0 the parser was not either, so text mode's
   `float()` could differ from binary `float()`, which decodes exactly;
   from 1.2.0 it reads the server's shortest form as the double it names.
-  `Float32` printing has the same defect, which is why `float4` is not
-  rendered through it. SPEC O11 claims only the types that agree.
+  `Float32` printing has the same defect, so `float4` is not rendered
+  through it. SPEC O11 claims only the types that agree.
 
   **Closed by:** none — a design round retires it: a calendar and the
   session's `TimeZone` for timestamps, `float4out` and `float8out`'s
@@ -209,16 +206,9 @@ somebody else's Django projects inside the pull request that trips it.
 ## Planned
 
 A `planned` row in [SPEC.md](SPEC.md) names a heading here, and the checker
-fails if it does not resolve. **Nothing is planned**: the server's last two
-rows (L25 and L26, from serving FastHTML's own examples beside uvicorn)
-shipped on 2026-09-23, and the application layer's last (N13, sessions and
-CSRF behind a login) on 2026-09-12. A row added here names the application
-that pulls it, the gate that will verify it, and the [decision](DECISIONS.md)
-it retires, before it is built.
-
-What stands between the application layer and its milestone is no longer
-a row but the soak: an application outside `apps/` running on `Views` and
-`Fragment`, recorded in [REAL_APP_VALIDATION.md](REAL_APP_VALIDATION.md).
+fails if it does not resolve. **Nothing is planned.** A row added here
+names the application that pulls it, the gate that will verify it, and the
+[decision](DECISIONS.md) it retires, before it is built.
 
 The last entries, all built:
 
@@ -244,8 +234,8 @@ optimising the HTTP layer buys nothing here.
 - **io_uring as a third backend.** Linux-only, a whole event-loop
   implementation to maintain beside kqueue and epoll, and it optimises the
   layer that is not the bottleneck.
-- **A SIMD timer wheel.** The loop already does a 1 Hz O(1024) sweep with
-  no heap; there is no timer cost to remove.
+- **A SIMD timer wheel.** The loop already sweeps its slots once a second
+  (1024 by default) with no heap; there is no timer cost to remove.
 - **SIMD request parsing.** Done: `lightbug_http/http/parsing.mojo`.
 - **Native Mojo coroutines replacing asyncio Tasks.** The application is
   Python; its awaits are asyncio's. Replacing the executor's task
@@ -270,7 +260,7 @@ optimising the HTTP layer buys nothing here.
 - <!-- observed: FastHTML's `xtermjs` example under m0serve 1.5.x and uvicorn, 2026-09-22 (REAL_APP_VALIDATION.md) -->**A process the application started inherited the server's sockets** (FastHTML's terminal example took 10 s to close a WebSocket, because the shell it had started held the connection) — resolved 2026-09-23 by G16: every descriptor the server creates is close-on-exec, atomically on Linux and by a second call straight after on macOS; the spawned-worker hand-off keeps exactly the descriptors the new image adopts across its own exec, where it used to keep them across every exec in every mode; and `m0pub` writes only to a bus it can see, never into a child's own file on an inherited number. `smoke-exec-inherit` requires a child started with `close_fds=False` to hold nothing of the server's in six shapes.
 - **`mojo build` needs a C compiler on Linux and nothing said so** (a `python:*-slim` image failed with `unable to find suitable c compiler for linking`, after the whole compile) — resolved 2026-09-20 for an application built with the `m0` CLI (N25): `m0 build` and `m0 doctor` check before running the compiler and name the fix, `apt-get install build-essential` or the platform's own. The check is not the one first planned, on two measured counts: mojo 1.1.0 looks for the literal name `cc` and nothing else, so a machine with `gcc` and no `cc` is refused by name, and a `cc` that exists and cannot link (gcc without `libc6-dev`) is caught by linking a one-line program. Inside this repository nothing changes — `mojo build` by hand still says what it said, and `deploy/mojo/Dockerfile` installs `build-essential`. The write-up is [The m0 wheel: source, an exact pair, and a CLI that refuses — 2026-09-20](notes/the-m0-wheel.md).
 - **Mojo 1.0's `PythonObject` interop leaked a reference per call argument and per `__setitem__` value** — resolved 2026-09-18 by moving the pin to Mojo 1.1.0, which carries the upstream fix (modular/modular#6833). Measured in this tree against 1.0.0 as the null case: +1001 references per 1000 operations before, 0 after. The bridge keeps its raw C API environ build, which was always the faster path as well as the safe one, so nothing about the request path changes; what changes is that a per-request `PythonObject` argument is now a performance preference rather than a correctness constraint. The write-up is [The pin moves to Mojo 1.1.0 — 2026-09-18](notes/the-pin-moves-to-1-1-0.md).
-- **The Mojo host's drain and its producer join ran in sequence** — resolved 2026-09-17 with the pool lane (E26, D31): the loop stamps the producer's stop word as its drain begins and both joins count from that stamp, so a request in flight at SIGTERM beside a step past its bound leaves inside one bound. The premise as first recorded was wrong in one detail — the drain ends a HELD stream at once, so what stretches it is a request in flight, not a stream — and the gate holds a request of a few seconds instead. The write-up is [The ramp test: lanes in the host, one module on two hosts — 2026-09-17](notes/the-ramp-test.md).
+- **The Mojo host's drain and its producer join ran in sequence** — resolved 2026-09-17 with the pool lane (E26, D31): the loop stamps the producer's stop word as its drain begins and both joins count from that stamp, so a request in flight at SIGTERM beside a step past its bound leaves inside one bound. The premise as first recorded was wrong in one detail (the drain ends a HELD stream at once, so what stretches it is a request in flight), and the gate holds a request of a few seconds instead. The write-up is [The ramp test: lanes in the host, one module on two hosts — 2026-09-17](notes/the-ramp-test.md).
 - **Sessions and CSRF behind a login** (N13) — built 2026-09-12: a stateless signed cookie and a CSRF token derived from its tag, on `apps/fragment_notes` with one user; `m0_http.session` beside `grant.mojo`, forged and admitted on the wire by a CPython issuer, five rules sabotage-proven. D15 retired; D24 and D25 record what it deliberately is not. The write-up is [A login on the notes app — shipped 2026-09-12](notes/a-login-on-the-notes-app.md).
 - **A Datastar form, end to end** (N12) — built 2026-09-12: the todo demo's rename form, `form(req)` on the other side, a smoke on the wire and a Chromium run that recorded what the pinned bundle sends; D21 confirmed. The write-up is [A Datastar form, end to end — shipped 2026-09-12](notes/a-datastar-form-end-to-end.md).
 - **Prefork workers did not share a listener's connections** (the same worker won 32 of 32 on macOS and 23–31 of 32 on Linux, so `--workers 2` served a keep-alive load at one worker's throughput) — resolved by E16, the accept-sharing hand-off; the write-up is [Accept sharing — shipped 2026-09-05](notes/accept-sharing.md).
