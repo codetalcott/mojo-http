@@ -262,11 +262,17 @@ S3 and S4 found nothing. They hold the classes of LF1 and LF17.
 
 LF24 and the cost of LF22's fix were ROADMAP Known issues, each retired by
 a measurement in a release's quiet stage. Both ran in 1.13.0's, on
-2026-10-09, and found no difference, so both entries are retired (ROADMAP,
-Recently resolved, has the figures).
+2026-10-09, and found no difference, so both entries are retired; their
+figures are below the table.
 
 | item | retiring condition |
 |---|---|
 | LF24: the pool's wake and thread records sit on a 64-byte stride in blocks `malloc` aligns to 16, where Apple silicon's lines are 128-byte | `scripts/probes/pool_ab.py LF24`, run by `scripts/probes/quiet-machine-ab.md`: the strides and alignment change if 128 is faster, and the docstrings that call each record a cache line of its own are corrected if not. **Retired 2026-10-09:** no faster in any cell; the docstrings are corrected |
 | LF22's cost: a thread that parks makes one non-blocking `recv` on its lane socket after announcing the park | `pool_ab.py LF22`, by the same runbook, against an arm without the look; the owner rules on the result. **Retired 2026-10-09:** about 2 µs a request either way, the ranges overlapping; the look stays |
 | the pre-release gates the lanes could not run | `stress-pool`, after LF22 and LF23 changed the pool and the bus; `sabotage-host`, whose files lanes A1, A4, B, F and L touched (all 73 of its anchors still match exactly once at f5f15a53). Both are on RELEASING's list, so the next release runs them. **Ran 2026-10-09** in 1.13.0's pre-release run: `stress-pool` 20 of 20 rounds and 40 of 40 holds in all three wake modes, `sabotage-host` 70 of 70 |
+
+The two entries, moved here from ROADMAP's Recently resolved on
+2026-11-06:
+
+- <!-- observed: scripts/probes/pool_ab.py LF24 on an M4, 2026-10-09 (bench/results/pool-ab-2026-10/) -->**The handler pool's wake and thread records may share a cache line on Apple silicon** (each lane's wake words and each thread's record on a 64-byte stride, in blocks `malloc` aligns to 16, where an M4's lines are 128-byte) — resolved 2026-10-09 by measurement (fork review LF24): a 128-byte stride with 128-aligned blocks, alternated with the 64-byte stride over five rounds on a quiet M4, was faster in no cell — pooled p50 0.116 ms against 0.125 at slow 1 and 0.124 against 0.123 at slow 2, the ranges overlapping, and 0.658 ms a request in the fair arm for both. The strides stay; the three docstrings that called each record a cache line of its own now say what it is. The artifact is `bench/results/pool-ab-2026-10/pool-ab-LF24-20261009T042627Z.json`; the runbook is `scripts/probes/quiet-machine-ab.md`.
+- <!-- observed: scripts/probes/pool_ab.py LF22 on an M4, 2026-10-09 (bench/results/pool-ab-2026-10/) -->**A pool thread's park cost one more system call, unmeasured** (since LF22's fix, SPEC I39, a thread parking on its own channel makes one non-blocking `recv` on its lane socket after announcing the park) — resolved 2026-10-09 by measurement: an arm without that look, alternated with it over five rounds on a quiet M4, differed by about 2 µs a request in opposite directions — pooled p50 0.126 ms with the look against 0.124 without at slow 1, 0.124 against 0.127 at slow 2, under 2 % of either median and the ranges overlapping — and not at all in the fair arm (0.658 ms). The look costs nothing measurable and stays. The artifact is `bench/results/pool-ab-2026-10/pool-ab-LF22-20261009T042937Z.json`.

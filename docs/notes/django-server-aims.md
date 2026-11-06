@@ -61,7 +61,7 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
   modes and both sizes, with one non-recurring excursion, in *prefork* of
   all places. But a hello route cannot produce the failure Stage B is half
   designed for, so the gate became a mixed-workload run — and that run is
-  decisive ([WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md), 3.14.7t, two
+  decisive ([the mixed-workload run](wsgi-against-gunicorn-and-the-pool.md#a-slow-view-strands-the-connections-pinned-behind-it), 3.14.7t, two
   rounds).
 
   One slow view (`/slow?ms=200`) alongside fast traffic takes fast-request
@@ -131,7 +131,7 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
   compile-checked) sidesteps the leak and is where that ~10x lives.
 
   **Two doubts about that row, both since retired by measurement**
-  ([WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md)). The 78.3k could have been a
+  ([the layer split](the-wsgi-bridge-by-part.md#where-the-granian-gap-lives-the-bridge-not-the-http-layer)). The 78.3k could have been a
   round-trip latency measurement rather than a ceiling — 16 connections at
   178 µs is ~90k — but a concurrency sweep settles it: throughput moves 3%
   from `-c16` to `-c256` while p50 rises 17x, which is queueing added to a
@@ -283,8 +283,7 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
   real and **wakeup-bound, not CPU-bound** (0.72x while consuming 0.89
   cores: each request serializes loop → datagram → executor → datagram →
   loop, both threads idling between handoffs — artifact in
-  `bench/results/`, analysis in WSGI_PERFORMANCE.md §"The ASGI executor
-  vs uvicorn"). The throughput gate is recalibrated to ≥0.8x so it fails
+  `bench/results/`, analysis in [The ASGI executor against uvicorn](the-asgi-executor-against-uvicorn.md#the-asgi-executor-vs-uvicorn)). The throughput gate is recalibrated to ≥0.8x so it fails
   on mechanism regressions instead of on every run; **pump batching** is
   the recorded lever that would earn the threshold back up.
   Phase 3 — ASGI streaming and `websocket` scopes over the existing
@@ -395,7 +394,7 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
   `asgi-wrk-hello` artifact never had), the uvicorn rows re-measured in
   every run as the drift control; the concurrency table and its
   artifacts (`bench/results/asgi-wrk-conns-*.json`) are in
-  [WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md). Why 16 connections gain so
+  [The ASGI executor against uvicorn](the-asgi-executor-against-uvicorn.md). Why 16 connections gain so
   little is a number the record now carries: **a pass batches three
   submits on average there** (counted; batches of sixteen occurred 18
   times in 60,000) — keep-alive connections are not in lockstep, each
@@ -471,7 +470,7 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
      true of a dylib and false of `bin/m0serve`, so they agreed that a
      binary resolving the Mojo runtime through a developer's venv was
      self-contained. Fixed, self-tested, and written up in
-     [FFI_DISTRIBUTION.md](../FFI_DISTRIBUTION.md). The licensing analysis in
+     [the-c-abi-artifact.md](the-c-abi-artifact.md#2026-08-25-executables-differ-from-dylibs-and-both-tools-missed-it). The licensing analysis in
      [NOTICE](../../NOTICE) did transfer, with one addition: the wheel is the
      first artifact that redistributes the lightbug fork in binary form,
      so its MIT notice has to travel with it.
@@ -553,7 +552,7 @@ with evidence is [the design record](wsgi-vs-asgi-history.md):
   **Before 0.12.0**: exercise the server against real applications rather
   than only the ones written to test it — three local Django projects,
   staged from `--doctor` through a realtime retrofit. **Done** (2026-08-26;
-  [REAL_APP_VALIDATION.md](../REAL_APP_VALIDATION.md) is the record): four
+  [the-soak-record.md](the-soak-record.md) is the record): four
   defects, each fixed with a guard that fails without it, three of which no
   in-repo application could have shown — and one finding about the shape
   of the server itself, which is the section below. The precedent held: the

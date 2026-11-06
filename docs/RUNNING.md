@@ -101,6 +101,28 @@ WSGI mounts share the pool.
 `topology.loop` — `pump` (the default, two threads), `inverted`, or `n/a`
 where no executor serves the application.
 
+### A forked worker and the system frameworks
+
+A worker forked without `exec` must not enter the platform's runtimes,
+and the rule binds the application's code too. On macOS,
+`urllib.request.urlopen` reads the system proxy configuration through
+`_scproxy`, which calls into CoreFoundation, and Objective-C aborts a
+process forked without `exec`:
+
+```
+objc[13802]: +[NSNumber initialize] may have been in progress in another
+thread when fork() was called. We cannot safely call it or ignore it in the
+fork() child process. Crashing instead.
+```
+
+The supervisor respawns the worker, so the symptom is a dropped connection
+and a churning worker. Every forked worker is exposed: `--workers N`, and
+`--reload` even at one. From a view, call out with
+`http.client.HTTPConnection`, which performs no proxy lookup;
+`poe smoke-wsgi` pins it on `apps/wsgi_bare`'s `/reentrant`. A worker that
+needs the frameworks takes `--spawn-workers`, whose workers exec the binary
+afresh.
+
 ## The realtime contract
 
 Under `--realtime`, a sync view approves a held connection by answering with

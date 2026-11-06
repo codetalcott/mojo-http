@@ -52,7 +52,7 @@ They age.
 | [Roadmap](ROADMAP.md) | Milestones, known issues with what retires each, what is not planned. |
 | [Decisions](DECISIONS.md) | Standing decisions about the application layer, each with what would retire it. |
 | [Design notes](notes/) | The engineering record: dated, long-form, kept as written. |
-| [WSGI conformance](WSGI_CONFORMANCE.md) | PEP 3333, clause by clause. |
+| [WSGI conformance](WSGI_CONFORMANCE.md) | How the WSGI bridge is held to PEP 3333. |
 | [Releasing](RELEASING.md) | How a release happens, and the gates CI cannot run. |
 | [Release records](RELEASE_RECORDS.md) | How each release's run went, newest first: what each gate found and cost, and the traps met. |
 | [README](../README.md) | The mojo-http repository as a whole: what it is, how to install it, the packages and their example applications, and a link to the page that owns each of the rest ([why](notes/the-readme-points.md)). |
@@ -64,7 +64,7 @@ For building on mojo-http directly rather than serving a Python application.
 
 | page | contents |
 |---|---|
-| [FFI distribution](FFI_DISTRIBUTION.md) | The C-ABI library the m0serve wheel carries, and its licensing position. |
+| [libm0core](FFI_DISTRIBUTION.md) | The C-ABI library that ships inside the m0serve wheel: what it carries, how it is checked, and its licensing position. |
 | [SQLite performance](SQLITE_PERFORMANCE.md) | m0-sqlite: batch writes, `mmap_size`, `json_each`. |
 | [SQLite virtual tables](sqlite-vtab-feasibility.md) | Whether virtual tables are reachable from Mojo. |
 

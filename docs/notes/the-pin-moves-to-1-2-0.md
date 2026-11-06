@@ -86,7 +86,7 @@ still works, and it is the next pin's question: if the notes describe
   3.14t, and an ASGI mount is still refused with 78.
 - The wheels' licence metadata, `LicenseRef-MAX-Platform-Software-License`,
   with no licence file; what the new licence changes for the bundled
-  runtime is [FFI_DISTRIBUTION](../FFI_DISTRIBUTION.md).
+  runtime is [FFI_DISTRIBUTION](../FFI_DISTRIBUTION.md#the-licensing-position).
 
 ## What broke, and what it cost
 

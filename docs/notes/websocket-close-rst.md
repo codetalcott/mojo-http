@@ -334,7 +334,7 @@ requires every entry here to declare what would close it.
   PEP 3333-required `close()` on the application's result iterable, and
   `smoke-django` fails if 10k requests grow the worker's RSS by more than
   12 MB (verified to catch the old bridge at ~23 MB). Diagnosis narrative
-  and clean numbers in [WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md).
+  and clean numbers in [WSGI against gunicorn and the case for the pool](wsgi-against-gunicorn-and-the-pool.md#history-three-fixes-and-what-the-tails-actually-were).
 - **The event loop's accept drain broke on any `accept()` error.** An
   `ECONNABORTED` from a client that gave up while queued ended the whole
   drain, and on an edge-triggered listen socket (both backends) the

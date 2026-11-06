@@ -103,7 +103,7 @@ What this stack is *hostile* to is a classic ASGI host, for reasons that are
 design invariants rather than gaps: the handler runs synchronously on the
 event loop, the process is single-threaded, Mojo never acquires the GIL, and
 the fork happens before the first Python call
-([WSGI_CONFORMANCE.md](../WSGI_CONFORMANCE.md), "A note on beyond Django"). ASGI
+([WSGI_CONFORMANCE.md](../WSGI_CONFORMANCE.md#beyond-wsgi), "Beyond WSGI"). ASGI
 wants a Python event loop coexisting with the Mojo one. That remains a
 separate package to be taken on deliberately — if it is ever needed at all.
 
@@ -324,7 +324,7 @@ the weekly canary (phase D).
 What Stage A does **not** buy, stated plainly: per-request balancing. A
 keep-alive connection stays pinned to the loop that accepted it, exactly as
 under prefork, so the keep-alive p99 tail in
-[WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md) is unchanged by it — and a slow
+[the 2026-08 WSGI runs](wsgi-against-gunicorn-and-the-pool.md#the-keep-alive-tail-under-wrk-and-the-stage-b-decision) is unchanged by it — and a slow
 view stops every connection its loop holds, which the mixed-workload row in
 that document measures at ~120x on fast-request p99, identically under
 `--threads` and `--workers`.
@@ -453,8 +453,7 @@ fallback handler is built with `lifespan=False`).
 The bench-asgi gate against uvicorn: the mixed slow/fast tail **passes**
 (fast p99 2.87 ms vs 3.27 ms) and hello-world throughput stands at
 0.88–0.94x across runs — the located remainder and its fix paths are
-recorded in [WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md) §"The ASGI executor
-vs uvicorn". The executor opportunistically uses uvloop for its own loop
+recorded in [The ASGI executor against uvicorn](the-asgi-executor-against-uvicorn.md#the-asgi-executor-vs-uvicorn). The executor opportunistically uses uvloop for its own loop
 where installed, stdlib asyncio otherwise.
 
 **Phase 3a — shipped: streaming ASGI responses.** An `http.response.body`
@@ -536,7 +535,7 @@ recommended realtime surface for synchronous WSGI codebases.
 A generator the application did not size — `StreamingHttpResponse`, a
 Flask `Response` over a generator — used to be joined whole by the shim:
 the buffered-bridge limit applied to WSGI, and the one
-[REAL_APP_VALIDATION.md](../REAL_APP_VALIDATION.md) found illegible on
+[the 2026-08-26 soak](the-soak-record.md) found illegible on
 textshelf (a never-ending SSE generator that never answered and held its
 thread until shutdown). A `--blocking-threads` pool thread is now a
 **second producer on the executor's chunk channel**: the same
@@ -622,7 +621,7 @@ Measured, and pinned by `smoke-hybrid`: with four blocking 2-second Django
 views holding every pool thread, the FastHTML mount answers at **p50
 1.3 ms, p99 2.8 ms**. Sharing one execution mode puts those in the seconds
 — which is the same shape as the mixed-workload run that justified
-`--blocking-threads` in the first place (§`WSGI_PERFORMANCE.md`).
+`--blocking-threads` in the first place ([the mixed-workload run](wsgi-against-gunicorn-and-the-pool.md#a-slow-view-strands-the-connections-pinned-behind-it)).
 
 **Several ASGI mounts (2026-08).** The one-ASGI-mount limit is gone: each
 ASGI mount gets its own executor, and the ack routing that blocked a

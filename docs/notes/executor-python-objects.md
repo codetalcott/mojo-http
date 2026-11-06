@@ -33,8 +33,7 @@ One request cost the executor thread, in Python:
 Granian builds the scope in Rust and hands Python one object, its
 per-request protocol object is one struct, and the head never becomes
 `str`; uvicorn's `RequestResponseCycle` is one object with bound methods.
-The WSGI half had been priced already (WSGI_PERFORMANCE.md, "The response
-half"): reading the app's headers through `PythonObject` iteration was
+The WSGI half had been priced already ([The WSGI bridge, measured part by part](the-wsgi-bridge-by-part.md#the-response-half-which-no-split-had-ever-covered)): reading the app's headers through `PythonObject` iteration was
 1.27 µs of a six-header response's 3.30 on the box of the day, and the
 `Headers()` plus six stores another 1.39. Nothing on the ASGI side had
 been priced by part.

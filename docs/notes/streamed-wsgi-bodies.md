@@ -8,7 +8,7 @@ The last buffered shape. A generator the application did not size —
 Django's `StreamingHttpResponse`, the thing every Django SSE tutorial
 returns — was joined whole by the shim, so a never-ending one never
 answered and pinned its `--blocking-threads` thread until the bounded
-join abandoned it ([REAL_APP_VALIDATION.md](../REAL_APP_VALIDATION.md),
+join abandoned it ([the-soak-record.md](the-soak-record.md),
 textshelf). It streams now, and nothing new was invented to do it: a pool
 thread is a **second producer on the chunk channel the executor already
 streams through** — `P` begin frame, `s` chunks, `e` end, the loop's own

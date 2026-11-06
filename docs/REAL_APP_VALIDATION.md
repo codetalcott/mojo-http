@@ -2,18 +2,23 @@
 
 **A record. Last run 2026-11-02**, against m0serve 1.16.0 on main at
 `1a3a0796`, the 1.17.0 train's code, all four applications, six rows, in
-the newest section below. The full pass it re-runs was **2026-09-01 and
+the current soak below. The full pass it re-runs was **2026-09-01 and
 2026-09-02**, against 0.16.0 (`bin/m0serve` from the tree at `c823198`),
-macOS 26 on an M4, CPython 3.13.6. The plan and the previous records are
-below and in the history of this file.
+macOS 26 on an M4, CPython 3.13.6. The earlier re-soaks, the 2026-08
+records and the full production record are
+[a dated note](notes/the-soak-record.md).
 
 <!-- The headline above is the line `poe milestones` reads for the server's
 soak: `**Last run DATE**, against m0serve X.Y.Z`, on one line, ahead of every
 other such line outside "The application layer". Move it with each re-soak. -->
 
+The record is current while it is at most two minor versions behind
+`pyproject.toml`'s version; `poe milestones` reports it (at 1.16.0
+against 1.17.0: MET; it reads STALE at 1.19.0).
+
 Every application this server had been tested against was written to test
-it — until the 2026-08-26 pass below, which put three real Django projects
-in front of it and found five defects. This pass re-runs those three
+it — until the 2026-08-26 pass, which put three real Django projects
+in front of it and found five defects. The 2026-09-01 pass re-runs those three
 against a server five minor versions on, adds a fourth application nobody
 here wrote at all, and replaces the pass's phase 5, six thousand requests
 sampling RSS, with a driver that asserts **bytes**: every response
@@ -35,7 +40,76 @@ scratch databases, their own settings unmodified except where the row says.
 | `textshelf` | Django 6.1, allauth, WhiteNoise, **Postgres**, four SSE endpoints (one an async generator over psycopg `LISTEN/NOTIFY`), daphne in production; the Fly dog-food candidate | the **hard case**, run the way it will deploy: `config.asgi` on the executor with a real login, bot detection, rate limiting, and holds abandoned mid-stream |
 | Wagtail `bakerydemo` | Wagtail 8 / Django 6, the CMS's official demo | the **admin surface** behind a login: 60–130 KB pages, image renditions, a 670 KB static bundle; WSGI and ASGI |
 
-## What was found
+## The current soak — 2026-11-02, against 1.16.0 on main at `1a3a0796`, all four applications
+
+**The staleness rule, ahead of the 1.17.0 train.** The 1.14.0 pass is
+three minors behind 1.17.0, past the limit of two, so the train would read
+it STALE. What moved under these applications since: the fixes of 1.15.0
+and 1.16.0, and on main for 1.17.0 the loop's connection limits, the
+comment that follows an SSE event (I47) and loopback by default (M31).
+Under the limits, a full loop takes a slot back from an idle connection
+(C23), a pass drains only the streams with output (C24), and a loop the
+open-file limit cannot hold at its count holds what it leaves, the raise
+counting two descriptors a connection on Linux (C25). Every keep-alive
+request in the rows crosses C23's queues, every held stream C24's drain. `bin/m0serve` reports
+1.16.0: the version moves on the release branch, and the code is the
+train's. The access log is off in every row, as before.
+
+`/tmp/soak/` had not survived, so every checkout was made fresh:
+transcripts at `00dcb7a`, unchanged; bakerydemo at `c8f8255`, still on
+GitHub though upstream has moved to Wagtail 8.1 (`890285b`); textshelf at
+`7ada52ed`, 160 commits on from `7479ee7`, against its scratch database
+`textshelf_soak`, which took 32 new migrations and kept its soak user; and
+color-separation at `b927272`, two commits on, both moving its m0serve
+pin. CPython 3.13.6 (3.12.11 for color-separation and bakerydemo), Django
+6.0.4, 6.0.9 under Wagtail 8.0.1, 6.1.2 and 6.1.1; gunicorn 26.2.0,
+uvicorn 0.54.0, daphne 4.2.3; macOS 27 on an M4. textshelf no longer has
+the env file the older passes sourced (removed upstream on 2026-09-09),
+so only `DATABASE_URL` and `DJANGO_SETTINGS_MODULE` were set, as the
+2026-10-09 scripts did. Every reference capture was re-recorded the same
+evening, with no route failing. One manifest moved: textshelf's
+`components.css` is 106,118 bytes at `7ada52ed`, and its pin moved with
+it. textshelf's venv, which imports `m0serve.m0pub`, carries the wheel
+built from the same tree. Raw driver outputs and the scripts that set up
+the corpus, recorded the captures and drove the rows are in
+`bench/soak/2026-11-02/`.
+
+| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
+|---|---|---|---|---|---|---|---|
+| transcripts | WSGI, pool 8 | 150 | 46,750 | 0 | SIGTERM ×2, drains 146 ms max (window 709 ms) | 118.9 → 123.6 MB | 83 → 85 / 13 → 13 |
+| bakerydemo | WSGI, pool 8, 4 sessions, 346 logins | 180 | 22,773 | 0 | SIGTERM ×2, drains 156 ms max (window 1104 ms) | 173.3 → 180.9 MB | 86 → 83 / 13 → 13 |
+| color-separation | WSGI, pool 8, 328 uploads | 120 | 49,819 | 0 | SIGTERM ×1, drains 248 ms max (window 1000 ms) | 0.98 → 1.25 GB (finding 6) | 145 → 152 / 18 → 18 |
+| color-separation | ASGI executor vs uvicorn, 256 uploads | 90 | 19,960 | 0 | — | 1.07 → 1.35 GB (finding 6) | 140 → 131 / 29 → 32 |
+| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 82,185 | 0 | SIGTERM ×1, drains 146 ms max (window 955 ms) | 177.1 → 287.7 MB (below) | 118 → 104 / 19 → 17 |
+| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 26,843 | 0 | — | 495.7 → 194.2 MB (the startup transient) | 99 → 100 / 13 → 13 |
+
+**248,330 responses verified byte for byte, zero failures.** No row's
+active connections rose above the nine its populations open, free slots
+mirroring them, so no loop was full and C23 had nothing to take back: the
+rows cross its queue moves on every request, and `smoke-max-connections`
+holds its taking.
+Uploads: 256 of 256 landed under the executor, and in the WSGI row 327 of
+328: the 328th was answered, and its landing check, a second request,
+met the restart and was counted as tolerated, not wrong.
+
+textshelf's executor row reads 177 → 288 MB, and is flat within each of
+its two epochs: the first came down from its import's transient (489 MB
+at 5 s) to 186 MB by 30 s and held there to the restart; the second
+started at 177 MB, rose to 281 MB as its own transient landed, and held
+at 281 → 288 MB to the end. The figure compares the second epoch's first
+sample, taken before its transient, with its plateau, which had not yet
+come down as the first epoch's had. The 2026-10-09 row's second epoch
+came down within the row (173 → 183 MB).
+
+Against 2026-10-09 the counts moved up in five rows and down in one:
+transcripts 46,750 against 26,041, color-separation's WSGI row 49,819
+against 41,955, textshelf's executor row 82,185 against 74,016,
+textshelf's WSGI row 26,843 against 27,435. The rows assert bytes rather
+than rate, so the figures are recorded and not explained.
+
+**Nothing was found on the wire.**
+
+## What the 2026-09-01 pass found
 
 **One server defect, since fixed and gated.** And six things that were not
 the server, each measured rather than assumed.
@@ -205,646 +279,23 @@ servers.
 ## In production — 2026-09-12, textshelf's streams on the hold mount (m0serve 1.2.0)
 
 Not a soak: a production record, the first use of the grant-verified hold
-mount (SPEC I21) by an application nobody wrote for this server. textshelf
-(Django 6.1, allauth, Postgres, one Fly machine, `--realtime
---blocking-threads 8`) had run its five SSE streams as `M0-Hold` views
-since its cutover to m0serve; today it moved them onto
-`--mount /_m0/rt=hold`. Each view keeps its authentication and membership
-check and, asked with `?grant=1`, signs its decision into the stream URL
-(`m0serve.grant.stream_url`, bound to the session cookie, an hour's TTL)
-instead of holding; the page renders that URL, and a Mojo pool thread
-verifies the grant and holds with no Django request per connection. Its
-side of the change is textshelf PR #570 (`textshelf/utils/realtime.py`,
-a template tag, one renewal script, the four process commands), with the
-`M0_GRANT_KEY` secret staged on each app before the command that needs it
-ran.
-
-**Local, under the tree's 1.2.0 binary, before the deploy.** The view
-issued a grant into `/_m0/rt` bound to the session; `production_stream_check.py`
-followed it — 200, `text/event-stream`, both `M0-` headers stripped, `: open`
-as the mount's head, a heartbeat at 15 s; a `notifications_read` published
-from inside the process (mark-all-read) arrived on the mount-held stream;
-and the mount refused a missing cookie (`invalid`, no session cookie), a
-different session's cookie (`invalid`, session mismatch) and an expired
-grant (`expired`), each by name.
-
-**Staging (`textshelf-staging.fly.dev`), after the deploy.** The two
-remote stream smokes passed through the suite's own Playwright login (the
-view holds; the URL the view issues is a held stream). The production check
-on the grant route: `status 200 after 0.1s`, held by the mount, `: open`,
-`heartbeat at 15s`, ok — through Fly's proxy, with the same `Cache-Control:
-no-cache` and `X-Accel-Buffering: no` the view-held stream carries. A
-malformed grant is refused as `{"error":"invalid","reason":"malformed"}`.
-
-**Production (`textshelf.com`).** Promoted through textshelf's own workflow (staging validated, then
-`promote-to-production.yml`, then its post-deploy smoke, all green). The
-machine runs the 1.2.0 wheel's binary as
-`m0serve --mount /=config.wsgi --mount /_m0/rt=hold --realtime
---blocking-threads 8 ...` with `M0_GRANT_KEY` in its environment; the
-mount refuses a malformed grant as `{"error":"invalid","reason":"malformed"}`,
-the view answers 401 without a session, and `/_m0/health` answers.
-Then the check with a real session, run by the owner from a signed-in
-browser the same day:
-
-```
-GET https://textshelf.com/notifications/stream/?grant=1
-  status 200
-  stream url /_m0/rt/stream (the hold mount)
-  content-type 'text/event-stream'
-  hold headers stripped, so m0serve took the hold
-  `: open` from the mount
-  heartbeat at 15s: : heartbeat
-ok    stream is held
-```
-
-The view issued the grant, the mount took the hold, and the heartbeat
-only m0serve writes arrived on schedule through Fly's proxy: a stream
-held for a real user of a real application on a Mojo thread that never
-touched the interpreter.
-
-**Two things the pass found, neither in the server.** The check script
-read a stream's head and then nothing against staging over TLS, on the
-view path as much as the mount: a fresh `iter_content` per frame marked the
-response consumed, and a single generator reading the same stream
-heartbeated on time — textshelf PR #571. And the first staging check's
-24 s heartbeat window started before the connect, which a machine waking
-from auto-stop can consume; the window now starts at the response.
-
-**What this does and does not say.** The mount holds real streams for a
-real application behind a real proxy, refuses what it should by name, and
-renews through the view when a grant expires — the browser side of that,
-`held_stream.js`, is exercised by every page that opens a stream and by no
-gate yet. The application layer's own soak was unchanged by it (NOT MET
-then; recorded below on 2026-10-02): this is the server holding for textshelf, not textshelf on `Views`
-and `Fragment`.
-
-## Re-soak — 2026-11-02, against 1.16.0 on main at `1a3a0796`, all four applications
-
-**The staleness rule, ahead of the 1.17.0 train.** The 1.14.0 pass is
-three minors behind 1.17.0, past the limit of two, so the train would read
-it STALE. What moved under these applications since: the fixes of 1.15.0
-and 1.16.0, and on main for 1.17.0 the loop's connection limits, the
-comment that follows an SSE event (I47) and loopback by default (M31).
-Under the limits, a full loop takes a slot back from an idle connection
-(C23), a pass drains only the streams with output (C24), and a loop the
-open-file limit cannot hold at its count holds what it leaves, the raise
-counting two descriptors a connection on Linux (C25). Every keep-alive
-request in the rows crosses C23's queues, every held stream C24's drain. `bin/m0serve` reports
-1.16.0: the version moves on the release branch, and the code is the
-train's. The access log is off in every row, as before.
-
-`/tmp/soak/` had not survived, so every checkout was made fresh:
-transcripts at `00dcb7a`, unchanged; bakerydemo at `c8f8255`, still on
-GitHub though upstream has moved to Wagtail 8.1 (`890285b`); textshelf at
-`7ada52ed`, 160 commits on from `7479ee7`, against its scratch database
-`textshelf_soak`, which took 32 new migrations and kept its soak user; and
-color-separation at `b927272`, two commits on, both moving its m0serve
-pin. CPython 3.13.6 (3.12.11 for color-separation and bakerydemo), Django
-6.0.4, 6.0.9 under Wagtail 8.0.1, 6.1.2 and 6.1.1; gunicorn 26.2.0,
-uvicorn 0.54.0, daphne 4.2.3; macOS 27 on an M4. textshelf no longer has
-the env file the older passes sourced (removed upstream on 2026-09-09),
-so only `DATABASE_URL` and `DJANGO_SETTINGS_MODULE` were set, as the
-2026-10-09 scripts did. Every reference capture was re-recorded the same
-evening, with no route failing. One manifest moved: textshelf's
-`components.css` is 106,118 bytes at `7ada52ed`, and its pin moved with
-it. textshelf's venv, which imports `m0serve.m0pub`, carries the wheel
-built from the same tree. Raw driver outputs and the scripts that set up
-the corpus, recorded the captures and drove the rows are in
-`bench/soak/2026-11-02/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 46,750 | 0 | SIGTERM ×2, drains 146 ms max (window 709 ms) | 118.9 → 123.6 MB | 83 → 85 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions, 346 logins | 180 | 22,773 | 0 | SIGTERM ×2, drains 156 ms max (window 1104 ms) | 173.3 → 180.9 MB | 86 → 83 / 13 → 13 |
-| color-separation | WSGI, pool 8, 328 uploads | 120 | 49,819 | 0 | SIGTERM ×1, drains 248 ms max (window 1000 ms) | 0.98 → 1.25 GB (finding 6) | 145 → 152 / 18 → 18 |
-| color-separation | ASGI executor vs uvicorn, 256 uploads | 90 | 19,960 | 0 | — | 1.07 → 1.35 GB (finding 6) | 140 → 131 / 29 → 32 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 82,185 | 0 | SIGTERM ×1, drains 146 ms max (window 955 ms) | 177.1 → 287.7 MB (below) | 118 → 104 / 19 → 17 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 26,843 | 0 | — | 495.7 → 194.2 MB (the startup transient) | 99 → 100 / 13 → 13 |
-
-**248,330 responses verified byte for byte, zero failures.** No row's
-active connections rose above the nine its populations open, free slots
-mirroring them, so no loop was full and C23 had nothing to take back: the
-rows cross its queue moves on every request, and `smoke-max-connections`
-holds its taking.
-Uploads: 256 of 256 landed under the executor, and in the WSGI row 327 of
-328: the 328th was answered, and its landing check, a second request,
-met the restart and was counted as tolerated, not wrong.
-
-textshelf's executor row reads 177 → 288 MB, and is flat within each of
-its two epochs: the first came down from its import's transient (489 MB
-at 5 s) to 186 MB by 30 s and held there to the restart; the second
-started at 177 MB, rose to 281 MB as its own transient landed, and held
-at 281 → 288 MB to the end. The figure compares the second epoch's first
-sample, taken before its transient, with its plateau, which had not yet
-come down as the first epoch's had. The 2026-10-09 row's second epoch
-came down within the row (173 → 183 MB).
-
-Against 2026-10-09 the counts moved up in five rows and down in one:
-transcripts 46,750 against 26,041, color-separation's WSGI row 49,819
-against 41,955, textshelf's executor row 82,185 against 74,016,
-textshelf's WSGI row 26,843 against 27,435. The rows assert bytes rather
-than rate, so the figures are recorded and not explained.
-
-**Nothing was found on the wire.**
-
-## Re-soak — 2026-10-09, against 1.14.0 on the release branch at `57e9150`, all four applications
-
-**The staleness rule, ahead of the release.** The 1.11.0 pass is two
-minors behind 1.13.0, the limit, so 1.14.0 would have read it STALE. What
-moved under these applications since: the review of the fork's HTTP core,
-shipped in 1.12.1 and 1.13.0, changed where a request head ends, how
-pipelined and half-closed connections are answered, and how a stream open
-at a SIGTERM ends, which the rows' keep-alive bursts, abandoners and
-restarts all cross; and 1.14.0 closes a stream whose client has gone in the
-pass whose send failed, the path textshelf's abandoners take on its stream
-route. The access log is off in every row, as before.
-
-`/tmp/soak/` did not survive a reboot, so every checkout was made fresh:
-transcripts at `00dcb7a` and bakerydemo at `c8f8255`, the 2026-10-06
-commits; textshelf at `7479ee7`, one commit on that touches only its editor
-settings, against its scratch database `textshelf_soak`, whose soak user
-had survived; and color-separation at `0f81a9c`, thirteen commits on from
-`65c5445`, with Django 6.1.1 and Pillow 12.3.0, its `output/` package now
-tracked and m0serve now a dependency. The seeded fixtures and the processed
-archive came out at the sizes the manifests pin, and no manifest needed a
-change. transcripts' fresh venv had no gunicorn of its own, and without one
-its reference capture would have run the system Python's; gunicorn 26.2.0
-was installed into the venv first. Every reference capture was re-recorded
-the same evening. `bin/m0serve` was built from the release branch and
-reports `m0serve 1.14.0`, and textshelf's venv, which imports
-`m0serve.m0pub`, carries the 1.14.0 wheel. CPython 3.13.6 (3.12.11 for
-color-separation and bakerydemo), macOS 27 on an M4. Raw driver outputs and
-the scripts that drove it are in `bench/soak/2026-10-09/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 26,041 | 0 | SIGTERM ×2, drains 143 ms max (window 746 ms) | 119.7 → 124.0 MB | 89 → 88 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions, 306 logins | 180 | 20,559 | 0 | SIGTERM ×2, drains 185 ms max (window 1141 ms) | 177.5 → 184.1 MB | 83 → 84 / 13 → 13 |
-| color-separation | WSGI, pool 8, 286 uploads | 120 | 41,955 | 0 | SIGTERM ×1, drains 130 ms max (window 929 ms) | 0.98 → 1.21 GB (finding 6) | 150 → 146 / 17 → 18 |
-| color-separation | ASGI executor vs uvicorn, 214 uploads | 90 | 16,927 | 0 | — | 1.06 → 1.37 GB (finding 6) | 122 → 130 / 24 → 32 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 74,016 | 0 | SIGTERM ×1, drains 74 ms max (window 1196 ms) | 173.4 → 182.8 MB | 90 → 78 / 17 → 16 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 27,435 | 0 | — | 490.7 → 190.6 MB (the startup transient) | 100 → 99 / 13 → 13 |
-
-**206,933 responses verified byte for byte, zero failures.** No row's
-active connections rose above the nine its populations open, free slots
-mirroring them; the last sample is taken with traffic still in flight, as
-on 2026-10-06. Every upload landed: 286 of 286 in the WSGI row, whose
-restart cut none this time, and 214 of 214 under the executor.
-
-The rows ran while a remote session's `node` jobs held a core at times, as
-the 2026-10-06 rows ran beside another session's, and the counts moved
-against that pass's both ways: bakerydemo 20,559 against 15,306 (306
-logins against 199), textshelf's WSGI row 27,435 against 22,221,
-transcripts 26,041 against 30,159. The rows assert bytes rather than rate,
-so the figures are recorded and not explained.
-
-**Nothing was found on the wire.** The one application that moved,
-color-separation, moved through its own dependency upgrades, and the
-server answered it byte for byte as gunicorn and uvicorn did.
-
-## Re-soak — 2026-10-06, against 1.11.0 on the release branch at `3e64f2a`, all four applications
-
-**The staleness rule, ahead of the release.** The 1.8.0 pass is two
-minors behind 1.10.0, the limit, so 1.11.0 would have read it STALE. What
-moved under these applications since: an ASGI application's lifespan
-startup is now waited for before the ready banner, and a failed one exits
-1 (L33), which is the path both ASGI rows start on and the textshelf
-row's restart takes; the loop counts a response's body as sent, file
-bodies included, and `--metrics`, which every row sets, counts file
-bodies with it (F2); and `--max-body`, which the color-separation rows
-set to `64m`, gained an environment form and a first-refusal notice
-beside it. The access log, whose line changed shape (F20, F21), is off
-in every row, as it was before.
-
-The 2026-10-02 checkouts under `/tmp/soak/` had survived and were used
-as they were: transcripts at `00dcb7a`, color-separation at `65c5445`,
-textshelf at `7981657` against its scratch database `textshelf_soak`,
-bakerydemo at `c8f8255`. Every reference capture was re-recorded first,
-and no manifest needed a change. `bin/m0serve` was rebuilt from the
-release branch and reports `m0serve 1.11.0`, and textshelf's venv, which
-imports `m0serve.m0pub`, carries the 1.11.0 wheel. CPython 3.13.6
-(3.12.11 for color-separation and bakerydemo), macOS 27 on an M4. Raw
-driver outputs and the scripts that drove it are in
-`bench/soak/2026-10-06/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 30,159 | 0 | SIGTERM ×2, drains 138 ms max (window 721 ms) | 119.6 → 124.2 MB | 86 → 88 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions, 199 logins | 180 | 15,306 | 0 | SIGTERM ×2, drains 143 ms max (window 2055 ms) | 153.1 → 148.8 MB | 86 → 85 / 13 → 13 |
-| color-separation | WSGI, pool 8, 303 uploads | 120 | 45,643 | 0 | SIGTERM ×1, drains 195 ms max (window 951 ms) | 1.07 → 1.35 GB (finding 6) | 148 → 146 / 20 → 18 |
-| color-separation | ASGI executor vs uvicorn, 246 uploads | 90 | 17,960 | 0 | — | 1.12 → 1.41 GB (finding 6) | 124 → 122 / 28 → 32 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 75,605 | 0 | SIGTERM ×1, drains 37 ms max (window 1011 ms) | 172.3 → 206.8 MB | 98 → 85 / 16 → 17 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 22,221 | 0 | — | 492.1 → 163.7 MB (the startup transient) | 98 → 96 / 13 → 13 |
-
-**206,894 responses verified byte for byte, zero failures.** Each row
-ends with its active connections within one of where they began and
-never above the nine its populations open, free slots mirroring them:
-the last sample is taken with traffic still in flight, as on 2026-10-02.
-One upload of 303 was cut by the WSGI row's restart and counted as
-tolerated, as one of 256 was then.
-
-bakerydemo verified 15,306 against 21,490 in the same 180 s, signed in
-199 times against 311, and its longest restart window was 2,055 ms
-against 1,177. The machine was not quiet: the rows began minutes after a
-stage of sabotage builds, while Spotlight was indexing the new release
-worktree, and another session's `node` process held a core. The row
-asserts bytes rather than rate, so the figure is recorded and not
-explained.
-
-**Nothing was found on the wire,** and nothing moved with the
-applications: the four checkouts are the last pass's, and so is every
-manifest.
-
-## Re-soak — 2026-10-02, against 1.8.0 on main at `d624ae7`, all four applications
-
-**Run ahead of the staleness rule this time.** At 1.8.0 the 1.6.0 pass is
-two minors behind a limit of two, so the milestone still read MET, and
-1.9.0 would have read it STALE. Between the two passes the fork under
-every row was reviewed and cut: its typed socket errors became one
-`SysError`, the blocking accept loop and about 870 lines nothing used were
-removed, and 1.8.0's changelog lists the request-path fixes that came
-with it — a POST's leftover timer, a keep-alive request's second
-registration, a listener closed once by its drain, response heads that
-refuse CR and LF (G1, G2). So this pass asks the old question of a server
-whose loop was rewritten in place.
-
-Fresh clones under `/tmp/soak/` (the 2026-09-24 checkouts had not
-survived): transcripts at `00dcb7a`, color-separation at `65c5445` with
-its gitignored `output/` source copied in, textshelf at `7981657` against
-its scratch database `textshelf_soak`, bakerydemo at `c8f8255`. Every
-reference capture was re-recorded first. `bin/m0serve` was rebuilt from
-main and reports `m0serve 1.8.0`; CPython 3.13.6 (3.12.11 for
-color-separation and bakerydemo), macOS 27 on an M4. Raw driver outputs
-and the scripts that drove it are in `bench/soak/2026-10-02/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 26,563 | 0 | SIGTERM ×2, drains 179 ms max (window 1481 ms) | 119.6 → 124.8 MB | 91 → 89 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions, 311 logins | 180 | 21,490 | 0 | SIGTERM ×2, drains 244 ms max (window 1177 ms) | 177.7 → 186.0 MB | 84 → 83 / 13 → 13 |
-| color-separation | WSGI, pool 8, 256 uploads | 120 | 37,857 | 0 | SIGTERM ×1, drains 142 ms max (window 900 ms) | 1.01 → 1.33 GB (finding 6) | 151 → 158 / 19 → 18 |
-| color-separation | ASGI executor vs uvicorn, 244 uploads | 90 | 17,811 | 0 | — | 1.11 → 1.48 GB (finding 6) | 134 → 120 / 22 → 33 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 81,019 | 0 | SIGTERM ×1, drains 46 ms max (window 825 ms) | 177.0 → 182.9 MB | 111 → 106 / 16 → 16 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 26,921 | 0 | — | 491.3 → 192.5 MB (the startup transient) | 99 → 98 / 13 → 13 |
-
-**211,661 responses verified byte for byte, zero failures**, and every
-row ends with its active connections and free slots where they began.
-transcripts verified a third fewer than on 2026-09-24 in the same 150 s
-(26,563 against 40,117), back at the 2026-09-13 figure (29,989); the
-build that preceded the rows ran on the same machine minutes earlier, and
-the row asserts bytes rather than rate, so the figure is recorded and not
-explained.
-
-**Nothing was found on the wire.** Three things moved with the
-applications or the calendar, and the first cost a run of the two
-textshelf rows:
-
-- textshelf at `7981657` renders a masked CSRF token into every signed-in
-  page's `hx-headers` attribute, new bytes on each request. The first run
-  of its rows failed 8,273 comparisons on `/notifications/`,
-  `/users/~update/` and `/feeds/tokens/`, each a body of the capture's
-  length with one differing token. The manifest gained a `body_sub` rule
-  for `"X-CSRFToken": "…"`, daphne was re-captured under it (the rules
-  fingerprint refuses the old capture), and both rows were run again; the
-  table carries the second run.
-- textshelf's `components.css` is 103,602 bytes at `7981657`, where the
-  manifest had 121,037. WhiteNoise under daphne serves the new size.
-- color-separation files media by month, and the manifest names
-  `2026/09`. The checkout's `media/uploads/2026/09` and
-  `media/outputs/2026/09` are symbolic links to `10` for this pass, so the
-  manifest's two media routes read the files job 1 produced today.
-
-## Re-soak — 2026-09-24, against 1.6.0 on the release branch at `9b051fd`, all four applications
-
-**The staleness rule again.** At 1.6.0 the 1.3.0 pass is three minors
-behind a limit of two. Between the two passes the request path these
-applications take did change: a parsed request now carries only the
-headers its client sent, so a GET reaches Django with no `CONTENT_LENGTH`
-(L25); the ASGI executor's slot, disconnect and background-task rules
-moved for Starlette's sake (L20–L28), and textshelf and color-separation
-run on it; every descriptor the server creates is close-on-exec (G16); and
-a raw `@` in a target is data (A22). So this pass asks the old question of
-a server whose request path shifted, not merely grew.
-
-Fresh clones under `/tmp/soak/` (the 2026-09-13 checkouts had not
-survived): transcripts at `00dcb7a`, color-separation at `65c5445` with
-its gitignored `output/` source copied in, textshelf at `1ef2bfa`
-against its scratch database `textshelf_soak`, bakerydemo at `c8f8255`
-with the `asgi.py` this record added in 2026-09. Every reference capture
-was re-recorded first. One manifest pin moved with an application rather
-than the server: textshelf's `components.css` is 121,037 bytes at
-`1ef2bfa`, where the manifest had 125,113, and WhiteNoise under daphne
-serves exactly the new size. `bin/m0serve` reports `m0serve 1.6.0`;
-CPython 3.13.6 (3.12.11 for color-separation and bakerydemo, which pin
-it), macOS 27 on an M4. Raw driver outputs and the scripts that drove it
-are in `bench/soak/2026-09-24/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 40,117 | 0 | SIGTERM ×2, drains 138 ms max (window 710 ms) | 119.1 → 123.8 MB | 86 → 85 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions, 316 logins | 180 | 21,424 | 0 | SIGTERM ×2, drains 202 ms max (window 1189 ms) | 180.6 → 188.2 MB | 84 → 85 / 13 → 13 |
-| color-separation | WSGI, pool 8, 310 uploads | 120 | 42,163 | 0 | SIGTERM ×1, drains 139 ms max (window 901 ms) | 1.02 → 1.34 GB (finding 6) | 149 → 147 / 17 → 19 |
-| color-separation | ASGI executor vs uvicorn, 231 uploads | 90 | 17,702 | 0 | — | 1.09 → 1.50 GB (finding 6) | 130 → 129 / 25 → 31 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 72,458 | 0 | SIGTERM ×1, drains 85 ms max (window 860 ms) | 180.8 → 187.8 MB | 116 → 92 / 16 → 16 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 22,753 | 0 | — | 495.9 → 196.3 MB (the startup transient) | 103 → 101 / 13 → 13 |
-
-**216,617 responses verified byte for byte, zero failures**, and every
-row ends with its active connections and free slots where they began.
-transcripts verified a third more than on 2026-09-13 in the same 150 s
-(40,117 against 29,989). The rows otherwise read as that pass did:
-color-separation's two rows carry the application's own RSS (finding 6),
-its ASGI row's threads climb as asgiref's pool fills (25 → 31, max 36),
-and textshelf's WSGI row shows the startup transient falling away.
-
-**Nothing new was found on the wire.** The run found three problems in the
-pre-release tooling and none in the server:
-
-- `sabotage-blobs` reported a rule no gate guards. Its anchor still
-  matched an import line that the host's command line had changed
-  (`cda3cd0`), and it now matches the new one.
-- The browser gates failed at launch. The Playwright that `uv run --with`
-  resolved wanted a Chromium the cache lacked, and
-  `playwright install chromium` fixed it.
-- The first `bench-linux-conclusions` and `autobahn` runs came back
-  contaminated, one with its spreads up to 23 % and the other with a thin
-  section, while the host was busy. Both were discarded and rerun with the
-  machine quiet.
-
-## Re-soak — 2026-09-13, against 1.3.0 on the release branch at `8c43979`, all four applications
-
-**The staleness rule is why this pass exists, and this time the code under
-it moved a great deal.** At 1.3.0 the 1.0.0 pass is three minors behind a
-limit of two, so `poe milestones` prints the soak STALE and the 1.0
-milestone stops being MET. Between the two passes the tree gained
-`m0-postgres` and a Postgres `NOTIFY` door onto the broadcast bus (O6–O16,
-I22), a Mojo mount an application supplies as a module (N14), sessions and
-CSRF behind a login (N13), the Datastar form (N12), and a fix for a
-splitter that a request could trap (G14). Only the last is on the request
-path of these four applications; the rest is reached by configuration none
-of them sets. So this pass asks the same question the others did (does
-somebody else's Django project still work, byte for byte, under churn?)
-against a server whose surface grew rather than shifted.
-
-The checkouts under `/tmp/soak/` survived this time, which is unusual. Every
-reference capture was re-recorded first regardless: they dated from
-2026-09-10 and the rule is to re-baseline before each pass, because the
-soak's own traffic mutates the applications' databases and a stale capture
-fails on CONTENT, which reads as a server defect and is not one. textshelf
-ran against its scratch database `textshelf_soak`, never the adjacent dev
-database — the mistake a previous pass made, which put soak data into real
-developer data. `bin/m0serve` was built from the release branch and reports
-`m0serve 1.3.0`; CPython 3.13.6, macOS 26 on an M4. Raw driver outputs and
-the scripts that drove it are in `bench/soak/2026-09-13/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 29,989 | 0 | SIGTERM ×2, drains 136 ms max (window 685 ms) | 120.4 → 124.8 MB | 89 → 84 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions | 180 | 21,737 | 0 | SIGTERM ×2, drains 150 ms max (window 1219 ms) | 186.8 → 194.3 MB | 85 → 84 / 13 → 13 |
-| color-separation | WSGI, pool 8, uploads | 120 | 46,934 | 0 | SIGTERM ×1, drains 148 ms max (window 833 ms) | 985.8 MB → 1.43 GB (finding 6) | 141 → 156 / 18 → 18 |
-| color-separation | ASGI executor vs uvicorn | 90 | 18,701 | 0 | — | 1.21 → 1.51 GB (finding 6) | 132 → 133 / 23 → 32 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 72,311 | 0 | SIGTERM ×1, drains 82 ms max (window 1103 ms) | 174.6 → 169.8 MB | 103 → 87 / 16 → 17 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,484 | 0 | — | 491.9 → 191.8 MB (the startup transient) | 99 → 98 / 13 → 13 |
-
-**214,156 responses verified byte for byte, zero failures**, every sample
-reporting `failures=0` throughout. Descriptors and threads flat in every row
-but one: color-separation's ASGI row runs 23 → 32 threads (max 33), which is
-asgiref's thread pool filling under the executor, as the 2026-09-10 record
-says of the same row. The churn column reports the DRAIN, with the whole
-restart window beside it — 2026-09-10 reported drains alone, so reading this
-pass's window (1219 ms) against that pass's drain (0.26 s) would look like a
-regression and is not one: the drains here are 82–150 ms. The two color-separation rows carry the RSS the record has called the
-application's since 2026-09-10 (finding 6): gunicorn's two workers sum
-1.5–1.8 GB on the same workload. textshelf's WSGI row again shows the
-startup transient falling away rather than growth.
-
-**Nothing new was found on the wire.** The defect this release run did turn
-up was in the pre-release TOOLING rather than the server: the Linux
-container's build list never gained `postgres` after `m0-wsgi` began
-importing `m0_postgres` for `--pg-listen`, so `build-wsgi` could not build
-in the container at all and `stress-pool` failed before its first round.
-CI cannot see it, because CI has no such container; the tier exists for
-that reason. Fixed in the FOUR places that name the list: `scripts/probes/linux_sync.sh`,
-the `stress-pool` task, `scripts/bench_linux_conclusions.py` (which would
-have hit it next), and `scripts/probes/linux_setup.sh` — the last found in
-review, and the one that matters most, because it is what CREATES the
-container. Without it a fresh `m0lin` could not be built at all; this run
-escaped only because its container already existed.
-
-## Re-soak — 2026-09-10, against 1.0.0 as merged at `a4f0aa5`, all four applications
-
-**The version number is why this pass exists, and almost nothing else
-is.** The 1.0.0 release bumped `pyproject.toml` and left the soak record
-naming 0.19.0, so `poe milestones` printed the soak STALE from the merge
-commit onward — the milestone's staleness rule allows two minors of lag and
-scores a major bump far past it. The release commit's own message says the
-soak is current against this version; it was true when written against
-0.19.0 and false the moment the bump landed in the same commit. This pass
-is what makes it true.
-
-The code under it barely moved. Between the 0.19.0 pass and this one,
-exactly one commit touches the request path: `bf212a3`, which splits the
-graceful drain into begin, step and finish so the loop inversion can drive
-it one pass at a time. The blocking composition every default topology runs
-is unchanged, and the stepped path is reachable only under `M0_INVERTED=1`.
-Everything else since is `--doctor` reporting (`usable_cpus`,
-`topology.loop`), the FastAPI gate, the row-status ratchet and the Linux
-benchmark work — none of it on the wire. So the interesting half of this
-pass is the three churn rows, which SIGTERM the server mid-load and are the
-only place the corpus exercises that refactor.
-
-Fresh clones under `/tmp/soak/` (the 2026-09-07 checkouts had not survived,
-as always), each with its own venv on PATH, `bin/m0serve` rebuilt from
-`a4f0aa5`, CPython 3.13.6, macOS 26 on an M4. Same driver, same five
-populations, same durations and churn cadences; every reference capture
-re-recorded first. Raw driver outputs and the scripts that drove it are in
-`bench/soak/2026-09-10/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 29,546 | 0 | SIGTERM ×2, drains 0.04 / 0.14 s | 120.7 → 124.4 MB | 85 → 88 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions + 308 logins | 180 | 21,672 | 0 | SIGTERM ×2, 0.08 / 0.26 s | 185.0 → 190.6 MB | 80 → 85 / 13 → 13 |
-| color-separation | WSGI, pool 8, 343 uploads | 120 | 47,227 | 0 | SIGTERM ×1, 0.08 s | 1.05 → 1.36 GB | 144 → 151 / 18 → 19 |
-| color-separation | ASGI executor vs uvicorn, 268 uploads | 90 | 18,823 | 0 | — | 1.24 → 1.57 GB | 129 → 120 / 26 → 30 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 73,182 | 0 | SIGTERM ×1, 0.09 s | 173.1 → 181.1 MB | 101 → 125 / 17 → 16 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,764 | 0 | — | 493.3 → 191.1 MB (the startup transient) | 98 → 100 / 13 → 13 |
-
-215,214 requests verified byte for byte against the reference captures,
-**zero failures in every sample of every row**, every slot returned (the
-free-slot count back at its starting value at every sample), threads flat,
-and 5,682 abandoners across the run absorbed, half closing with FIN and
-half with RST. **No server defect.** The six
-drains all finished inside 0.26 s, which is the observation this pass was
-really after: the split left the composition alone, and a SIGTERM under
-load still ends in a quarter of a second.
-
-Nothing moved against the 2026-09-07 table that is not already explained
-there. The color-separation gigabytes are its image renditions; textshelf's
-WSGI row again opens on the ~490 MB startup transient that finding 7
-describes and settles inside the minute; the executor rows again carry more
-threads than the pooled ones, which is asgiref's thread pool for that app's
-synchronous views. One count differs by one on the color-separation churn
-row, 343 uploads and 342 landed, the same shape 2026-09-07 recorded
-(344 and 343): the POST is counted when it answers, the follow-up
-GET of the page it redirects to is what marks it landed, and a restart
-between the two is a tolerated connection error rather than a failure.
-
-**Three things about the corpus changed, all setup rather than server.**
-
-- **color-separation's fixtures are seeded now.** Its two images are noise
-  PNGs, generated fresh each pass and therefore a different size each pass,
-  which is what forced the manifest's `bytes` pins to be re-measured by
-  hand — the third of the three traps this record already lists.
-  `scripts/soak_fixtures.py` generates them from seed 20260910; a second
-  run reproduces both files byte for byte, so the pins are now a property
-  of the manifest rather than of the run. They moved once more in the
-  process, this seed's zip being 7.7 MB where the unseeded one was 9.6.
-- **The rows script no longer carries a database password.** 2026-09-07's
-  copy had textshelf's `DATABASE_URL` with the secret redacted by hand
-  before it was committed, which is a step that only has to be forgotten
-  once. libpq reads `~/.pgpass` for the `postgres` role, so the URL in
-  `bench/soak/2026-09-10/soak_rows.sh` names no password at all.
-- **textshelf now imports `m0serve.m0pub` at startup**, so the subject
-  cannot be served until the wheel is installed in its venv. This pass
-  built the tree's own 1.0.0 wheel and installed that, which makes the
-  application's realtime imports part of what the soak covers rather than
-  something stubbed around.
-
-**What this pass did not do**, unchanged from the records above:
-`--threads` (none of the four dependency trees builds on free-threaded
-CPython), NiceGUI, the proxy and worker shapes. It also did not exercise
-the stepped drain itself, the one thing that changed on the request path:
-that path needs `M0_INVERTED=1`, which no row here sets, and its gate is
-`smoke-asgi`'s inverted arm on every pull request.
-
-## Re-soak — 2026-09-07, against 0.19.0 as merged at `abf2016`, all four applications
-
-Three minor-version's worth of change landed between the pass above and
-this one, and two of them are on the request path of every keep-alive
-connection: the elastic pool (0.19.0 serves a trivial view on one handler
-thread until a job has waited, and wakes each thread by name on a channel
-of its own) and the keep-alive request cap, 1000 from 100, with
-`--max-keepalive-requests` to set it — the cap having turned out to be the
-whole of the fast-route tail the benchmark page had conceded to Granian
-([notes/pool-tail.md](notes/pool-tail.md)). So the corpus was run again on
-the release commit: fresh clones under `/tmp/soak/` (the 2026-09-01
-checkouts had not survived), each with its own venv on PATH, `bin/m0serve`
-built from `abf2016`, CPython 3.13.6 (the GIL build a `pip install`
-gets), macOS 26 on an M4. Same driver, same five populations, same
-durations and churn cadences; every reference capture re-recorded first,
-as the rule from the pass above says. Raw driver outputs and the three
-scripts that drove it are in `bench/soak/2026-09-07/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 30,271 | 0 | SIGTERM ×2, drains 0.07 / 0.08 s | 120.0 → 124.2 MB | 89 → 85 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions + 308 logins | 180 | 21,847 | 0 | SIGTERM ×2, 0.14 s | 183.8 → 193.5 MB | 82 → 86 / 13 → 13 |
-| color-separation | WSGI, pool 8, 343 uploads | 120 | 47,761 | 0 | SIGTERM ×1, 0.18 s | 1.06 → 1.35 GB | 144 → 143 / 18 → 18 |
-| color-separation | ASGI executor vs uvicorn, 270 uploads | 90 | 19,022 | 0 | — | 1.17 → 1.63 GB | 130 → 130 / 29 → 32 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 73,250 | 0 | SIGTERM ×1, 0.12 s | 176.8 → 185.3 MB | 113 → 120 / 17 → 16 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,755 | 0 | — | 493.1 → 193.9 MB (the startup transient) | 99 → 99 / 13 → 13 |
-
-Every row: zero failures, every slot returned (the free-slot count back at
-its starting 1,015 at every sample), threads flat, every drain inside a
-fifth of a second, and 560–1,550 abandoners per run (half FIN, half RST)
-absorbed. **No server defect.** Two shapes moved against the 2026-09-04
-table and neither is growth: the pooled rows hold 16–20 more descriptors
-from their first sample (the elastic pool parks each of the eight handler
-threads on a `SOCK_DGRAM` pair of its own — two descriptors per thread,
-allocated at start, flat for the run), and the executor rows carry more
-threads than before (29–33 on color-separation against 20), which is
-asgiref's thread pool for that app's synchronous views under a larger
-upload fixture, the application behaviour the 0.16.0 record already named.
-The color-separation gigabytes are its image renditions, as before, and
-textshelf's WSGI row again opens on the ~490 MB startup transient the
-record's finding 7 describes, settling inside the minute.
-
-**Three rows failed first, and none was the server.** Recorded because
-each cost time and the next pass should not pay it again:
-
-- **transcripts and bakerydemo, "never became ready"** — the runner had
-  put `<checkout>/bin` rather than `<checkout>/.venv/bin` on PATH, so
-  `m0serve` embedded the system interpreter, which has Django and none of
-  the apps' packages. The driver's log named the missing module on the
-  first line of the traceback.
-- **transcripts and textshelf came up on free-threaded 3.14t** — the
-  release worktree's benchmark swap had left that interpreter installed
-  and `uv sync` preferred it, so textshelf's `psycopg` had no wheel to
-  install. Both venvs were rebuilt with `--python 3.13`; color-separation
-  pins 3.12 itself and kept it.
-- **color-separation 3,062 and textshelf 22,752 "failed" stream reads**,
-  each one shape: the manifests pin a `bytes` value for their large
-  streams, and the pins were the 2026-09-01 fixtures' — a `big.png` twelve
-  bytes larger than the regenerated one, job 1 processed from the big
-  image (this pass had made it from the small one; rebuilt, and the zip is
-  9.6 MB where a photograph's was 4.7 — the fixture is noise, which does
-  not compress), and a `components.css` that textshelf has since grown by
-  187 bytes. The pins now carry the fixture sizes with a comment saying
-  so. The rule the pass above added, re-baseline before every pass,
-  covers the captures; a manifest pin is a second expectation and rots
-  the same way, so re-pin with the fixtures.
-
-**What this pass did not do**, unchanged from the records above:
-`--threads` (none of the four dependency trees builds on free-threaded
-CPython), NiceGUI, the proxy and worker shapes.
-
-## Re-soak — 2026-09-04, against 0.17.1 as merged at `0766272`, all four applications
-
-The event loop stopped holding a thread state while it serves (PR #229,
-`docs/notes/detached-loop.md`): the default runtime shape of every pooled
-and executor deployment changed, and the smokes that gated it were all
-written here. So the corpus was run again the same night — the four
-checkouts of 2026-09-01 under `/tmp/soak/`, each with its own venv on PATH,
-`bin/m0serve` built from main at `0766272`, CPython 3.13.6 (the GIL build a
-`pip install` gets), macOS 26 on an M4. Same driver, same five populations,
-same reference captures except where noted. Raw driver outputs are in
-`bench/soak/2026-09-04/`.
-
-| app | mode | seconds | verified | failures | churn | RSS | fds / threads |
-|---|---|---|---|---|---|---|---|
-| transcripts | WSGI, pool 8 | 150 | 41,749 | 0 | SIGTERM ×2, drains 0.14 s | 120.2 → 124.4 MB | 69 → 72 / 13 → 13 |
-| bakerydemo | WSGI, pool 8, 4 sessions + 300 logins | 180 | 21,980 | 0 | SIGTERM ×2, 0.14 s | 186.8 → 198.1 MB | 69 → 69 / 13 → 13 |
-| color-separation | WSGI, pool 8, 361 uploads | 120 | 53,394 | 0 | SIGTERM ×1, 0.08 s | 0.95 → 1.30 GB | 136 → 142 / 17 → 17 |
-| color-separation | ASGI executor vs uvicorn, 302 uploads | 90 | 20,980 | 0 | — | 1.11 → 1.60 GB | 132 → 128 / 20 → 20 |
-| textshelf | ASGI executor vs daphne, 3 sessions | 180 | 71,669 | 0 | SIGTERM ×1, **0.19 s** | 176.1 → 158.7 MB | 96 → 92 / 17 → 16 |
-| textshelf | WSGI, pool 8, no abandoners, 3 sessions | 60 | 24,588 | 0 | — | 497.3 → 195.2 MB (a startup transient) | 83 → 83 / 13 → 13 |
-
-Every row: descriptors and threads flat, the server's free-slot count back
-at its starting 1,015 at every sample (every slot returned), zero 5xx, and
-800–1,850 abandoners per run (half FIN, half RST) absorbed. The
-color-separation gigabytes are the application's image renditions, as in
-the 0.16.0 record; textshelf's executor RSS fell over the run, the
-sawtooth the record describes. **No server defect.**
-
-**Two rows failed first, and neither was the server.** Recorded because
-each cost an hour and the next pass should not pay it again:
-
-- **transcripts, 2,798 "failed" stream reads** — every read of the typst
-  PDF. Its normalised digest no longer matched the 2026-09-01 capture; a
-  fresh gunicorn from the same checkout produced the *same* digest as
-  m0serve, four fetches out of four, so the capture was stale: the soak's
-  own traffic had changed the database it renders from (`db/transcript.db`
-  modified that evening). Re-captured from gunicorn, re-run: the row above.
-  The rule this adds to the driver's page: **re-baseline before every
-  pass**, not only after a normalisation change — and before blaming the
-  server, fetch the route from the reference server and compare.
-- **textshelf, 3 of 3 logins answered 200** in both modes. The runs had
-  been pointed at the database the checkout's `.envs/.local/.django` names
-  — the *development* database — where no soak account exists; daphne
-  answered the same 200. The soak's database is the scratch `textshelf_soak`
-  (the 0.16.0 record's setup), and the rows above are against it. A soak
-  account created in the development database while diagnosing this was
-  removed the same minute.
-
-**One observation, not investigated.** textshelf's churn drain took 0.19 s
-with two stream clients and an abandoner in flight, where the 0.16.0
-record measured 5.0 s ("held streams never end, the drain waits its budget
-by design"). What changed between is D9 (2026-09-02): the drain now runs
-ordinary loop passes, so a stream whose client has gone is closed rather
-than waited for. Consistent, and not a defect either way; a pass that wants
-the claim can open a stream, hold it, and time the drain.
-
-**What this pass did not do**, unchanged from the record above:
-`--threads` (none of the four dependency trees builds on free-threaded
-CPython), NiceGUI (phase 0 only, no manifest), the proxy and worker shapes.
+mount (SPEC I21) by an application nobody wrote for this server.
+textshelf (Django 6.1, allauth, Postgres, one Fly machine, `--realtime
+--blocking-threads 8`) moved its five SSE streams from `M0-Hold` views
+onto `--mount /_m0/rt=hold`. Each view keeps its authentication and
+membership check and, asked with `?grant=1`, signs its decision into the
+stream URL (`m0serve.grant.stream_url`, bound to the session cookie, an
+hour's TTL). A Mojo pool thread verifies the grant and holds, with no
+Django request per connection.
+
+Locally, on staging and on `textshelf.com`, the mount held the stream
+through Fly's proxy with its `: open` head and a heartbeat at 15 s. It
+refused a missing cookie, another session's cookie, an expired grant and
+a malformed one, each by name. The production check ran from the owner's
+signed-in browser. A grant that expires renews through the view; the
+browser side of that, `held_stream.js`, runs on every page that opens a
+stream and is in no gate. This is the server holding for textshelf, which
+writes no Mojo, so it is not the application layer's soak.
 
 ## Shapes not yet covered
 
@@ -854,358 +305,6 @@ executor, and has no manifest yet), a background worker, free-threaded
 `--threads`, and a week of real traffic. A real proxy in front
 (`X-Forwarded-Proto` → `SECURE_PROXY_SSL_HEADER`) is covered by textshelf,
 in production behind Fly's proxy since 2026-09-12 (the record above).
-
----
-
-**The previous record. Run 2026-08-26**, against 0.11.0 (the PyPI-shaped wheel,
-`dist/wheels/m0serve-0.11.0-py3-none-macosx_13_0_arm64.whl`), macOS 26 on an
-M4, CPython 3.13.6 — plus one row on free-threaded 3.14.7t. The plan this
-replaces is in the history of this file.
-
-Every application this server had been tested against was written to test it.
-`apps/` holds bare WSGI and ASGI apps that pin spec clauses, a Django demo
-built around the realtime feature, and a FastHTML row — all small, all ours,
-none carrying a dependency tree somebody else chose. That is the right shape
-for a smoke suite and the wrong shape for the question **"would this serve my
-application?"**
-
-The gap was not hypothetical. The one time the wheel had met a real Django
-project it produced the `--app-dir` shadowing defect. This pass produced **four more**,
-three of which no in-repo app could have shown, and every one of them is now
-fixed with a test that fails without the fix.
-
-## The three applications
-
-Local Django projects, chosen because they stress different parts of the
-server rather than because they are convenient. Served from clean clones
-against scratch databases; their own settings, unmodified.
-
-| app | shape | Django | what it stressed |
-|---|---|---|---|
-| `transcripts` | plain WSGI, `src/` layout, allauth, 137 modules | 5.2 | the **baseline** — and the `--app-dir` case, since its code is under `src/` |
-| `color-separation` | image/halftone processing, numpy/scipy/Pillow, `FileResponse` | 6.0 | **CPU-bound views**, uploads, downloads |
-| `textshelf` | production-shaped: 4 SSE endpoints, 3 pubsub modules, djstripe, WhiteNoise, Docker/Fly | 6.1 | the **hard case** — an app that already built what this server claims to remove infrastructure for |
-
-## What was found
-
-Five defects, each fixed with a guard; the fifth was already known.
-
-| # | defect | how it presented | triage |
-|---|---|---|---|
-| 1 | **Every `Set-Cookie` lost `expires` and `SameSite`** | Django's session and CSRF cookies reached the browser as `sessionid=…; Max-Age=…; Path=/` where every other server sends `expires=…; HttpOnly; Max-Age=…; Path=/; SameSite=Lax`. Sessions still worked, so nothing failed loudly — but a persistent cookie became a session cookie for [any client that prefers `expires`](https://datatracker.ietf.org/doc/html/rfc6265#section-5.3), and CSRF cookies shipped without their `SameSite` defence. On all three apps, on every response. | **fixed** — `ResponseCookieJar.raw`, + `test_response_cookies.mojo`, + `smoke-django` asserts the attributes on the wire |
-| 2 | **Uploads between ~1.5 MB and `--max-body` were refused `400`** | `color-separation`'s image upload (7.1 MB) failed with a truncated connection under `--max-body 64m`; on a bare echo app the threshold was between 1.5 MB and 2 MB whatever the flag said, including the default. The receive buffer had its own 2 MB ceiling that `--max-body` never raised, and it answers `400 Bad Request` rather than the `413` the body cap sends — so the error named the wrong thing. | **fixed** — `ServerConfig.recv_buffer_limit()`, + a `test_config.mojo` case, + `smoke-serve` now asserts a 3 MB body at the default cap and 7 MB at `--max-body 8m` |
-| 3 | **Concurrent ASGI streams truncated each other** | `textshelf` serves its static files through WhiteNoise, so every page load is several `FileResponse`s. Twelve concurrent fetches of one 232 KB file left bodies short — a clean `200` with fewer bytes — and enough of them wedged the executor entirely: the server stopped answering and `SIGTERM` needed 12+ s and then `SIGKILL`. Cause: the credit window is **per stream** (64 KB) while the chunk channel is **shared and finite**, so N streams over-commit it and `send_stream_chunk` dropped the datagram it could not place. | **fixed** — a global in-flight budget in the shim (`_ASGI_TOTAL_WINDOW`), an owed-ack retry on the loop side, and a full channel that **waits detached** rather than dropping; + `smoke-asgi` runs 32 concurrent `FileResponse`-shaped streams and checks every byte |
-| 4 | **`SIGTERM` never returned when a handler thread was inside a response that never ends** | `textshelf`'s SSE endpoints served under WSGI are buffered, so the generator never returns and its pool thread never comes back. `stop_and_join` waited for it forever: the drain finished, the process did not exit, and `docker stop` would end in `SIGKILL` after its grace. | **fixed** — `ThreadSet.join_within` and a 5 s join budget matching the drain's, after which the process leaves and says what it left behind; + a `smoke-blocking-threads` phase with two never-returning views |
-| 5 | `--app-dir` is appended to `sys.path`, not prepended | Confirmed again at the time: a probe app reported `--app-dir` at position 5, after site-packages. It did **not** bite any of the three (no top-level module name collides with an installed package in any of them), which is why it was a latent hazard rather than a visible failure. | **fixed in 0.12.0** — `prepend_to_path` puts `--app-dir` at `sys.path[0]` the way gunicorn, uvicorn and `runserver` do, and `smoke-serve`'s shadowing case (a project module named like an installed package) pins it |
-
-Findings 1, 3 and 4 could not have come from `apps/`: they need a real cookie
-policy, a real static-file middleware, and a real never-ending response
-respectively. Finding 2 needed a file somebody wanted to upload.
-
-## Phase 0 — will it even load?
-
-`m0serve --doctor` against each entry point. **All six passed** (`"ok": true`,
-exit 0): `transcript_manager.wsgi`, `halftone_studio.wsgi`,
-`halftone_studio.asgi`, `config.wsgi`, `config.asgi`, and
-`transcript_manager.wsgi` again under `--threads 4` on 3.14.7t, which reported
-`free_threaded_build: true` and `mode: threads`. Protocol detection was right
-every time; the WSGI apps got the zero-config pool of 8, the ASGI apps got the
-executor.
-
-`transcripts` keeps its code in `src/`, so it is the shape the `--app-dir`
-defect targets. It loaded from both `--app-dir src` and `--app-dir .` (it is
-also installed as an editable package), and neither path was shadowed.
-
-## Phase 1 — parity against `runserver`
-
-Same routes under `m0serve` and `manage.py runserver`, raw HTTP/1.1, no
-redirect following, diffed on status, headers and body after normalising what
-is per-process by design (`Date`, CSRF token, session id). Home, admin index,
-admin login, allauth login, a static asset, a 404, a 500, and a full login
-round trip on each app.
-
-**After the cookie fix, every remaining difference is one of three, and all
-three are the server being itself:**
-
-- `connection: keep-alive` — m0serve sends it explicitly; `runserver` does not.
-- `x-thread: N` — which handler-pool thread served the request. Documented,
-  and absent under `--blocking-threads 0`.
-- Django's debug pages embed the request's own `host:port`, which differs
-  because the two servers are on different ports.
-
-Bodies were byte-identical on every route on all three apps, admin included.
-The login round trip — `GET` the form, `POST` credentials, `GET` the
-destination with the session — produced **identical headers at all three
-steps** on `color-separation` and `textshelf`. Before the fix the same
-comparison reported 15–24 differences per app, every one of them a cookie.
-
-Two app-level failures appeared identically under both servers and are the
-applications', not ours: `transcripts` answers `403` on `/accounts/login/`
-(its dev auto-login middleware logs you in, and allauth's login view forbids
-an authenticated user), and `textshelf` answers `500` on `/accounts/signup/`
-(no `SocialApp` row in a scratch database).
-
-## Phase 2 — the feature matrix
-
-| property | result |
-|---|---|
-| static via WhiteNoise (`textshelf`) | works; **found defect 3** under concurrency on ASGI. After the fix, 200 fetches of a 232 KB file at concurrency 16 take 0.35 s against uvicorn's 0.29 s on the same app |
-| static via `--static PREFIX=DIR` | works (`smoke-serve` covers it; not re-exercised here) |
-| upload > 4 MB | **found defect 2.** After the fix: a 7.1 MB multipart upload under `--max-body 64m` reaches Django, is validated, stored, and processed. Over the cap the answer is a legible `413 Payload Too Large` before the body is read |
-| `StreamingHttpResponse` under WSGI | buffered, as documented — and for `textshelf`'s never-ending SSE generators that means the response never completes and the thread is held. **Legible? No.** The client sees an open connection that yields nothing; nothing is logged. This is the documented limit meeting an app that does not know it, and it produced defect 4. **Since 2026-08-27 it streams**: a pool thread produces it through the loop's chunk channel, chunk by chunk (`smoke-wsgi-stream`); the thread returns when the client leaves, and a generator asleep between events is the bounded straggler at shutdown rather than a hang |
-| `StreamingHttpResponse` under ASGI | streams for real, chunk-framed |
-| `FileResponse` / download (`color-separation`) | byte-identical zip to `runserver`, correct `Content-Type`, `Content-Length` and `Content-Disposition` |
-| long-running view | `color-separation` runs its whole separation pipeline synchronously inside the request (`ImmediateBackend`); served correctly in every mode |
-| view that calls out over HTTP | not reached by these apps' fixtures; the documented `_scproxy` hazard is unchanged and pinned by `smoke-wsgi` |
-| management commands | `check`, `makemigrations`, `migrate`, `collectstatic`, `createsuperuser` all ran against the same settings; that is how the scratch databases were built |
-
-## Phase 3 — the topology matrix
-
-Each app, each mode: a route sweep, a 200-request burst at concurrency 16,
-and 16 concurrent logins (a session write per request).
-
-Every mode served every route correctly on all three apps, with **zero 5xx
-and zero dropped connections in the bursts** — `--workers 1`, `--workers 4`,
-`--blocking-threads 4`, `--workers 4 --blocking-threads 4`, and `--threads 4`
-on free-threaded 3.14.7t (`transcripts`, which is the app whose dependency
-tree is thread-clean).
-
-The 16-concurrent-login column found nothing about the server and one thing
-about the fixture: `textshelf` answers some of them `500` with
-`sqlite3.OperationalError: database is locked`. That is the scratch SQLite —
-the project runs PostgreSQL — and it reproduces at the same rate under
-**gunicorn `--workers 4` and under `runserver`**, so it is attributed there
-rather than here. `transcripts` answers all 16 with the same app-level `403`
-as in Phase 1. `textshelf` also rate-limits its own auth endpoints (`429`),
-which is the application working as designed.
-
-## Phase 4 — the realtime retrofit (`textshelf`)
-
-The claim is that a plain sync view can hold an SSE stream with two response
-headers and no added infrastructure. `textshelf/notifications/` was the
-honest test: an async `notification_stream` view, an `async_subscribe`
-generator over PostgreSQL `LISTEN/NOTIFY`, a polling fallback for SQLite, a
-sync copy of both, and a hard dependency on running under Daphne.
-
-The conversion is 20 lines of view:
-
-```python
-@login_required
-@require_http_methods(["GET"])
-def notification_stream(request):
-    response = HttpResponse(f"event: connected\ndata: {head}\n\n",
-                            content_type="text/event-stream")
-    response["M0-Hold"] = "stream"
-    response["M0-Channel"] = NotificationPubSub.get_user_channel(request.user.id)
-    return response
-```
-
-plus one `m0pub.publish` beside the existing `pg_notify` in the publish path,
-deferred to commit the same way.
-
-**Measured result: `+52 / −293` across two files — a net 241 lines removed**,
-because holding the connection in the server strands all four subscription
-implementations (sync, async, and a polling fallback for each: 236 of
-`pubsub.py`'s 336 lines), and with them the `psycopg` import that existed
-only for `LISTEN/NOTIFY`.
-
-It works: four `EventSource` clients held across **two prefork workers**, one
-`POST` to an ordinary synchronous Django view, and all four receive the same
-numbered event. No Daphne, no asyncio, no `LISTEN/NOTIFY`, and the database
-is SQLite — where the code being replaced had no delivery mechanism at all,
-only a 5-second poll.
-
-**The degradation is better than what it replaces, which was the surprise.**
-Under gunicorn the converted view answers a short buffered
-`text/event-stream` that the browser's `EventSource` reconnects on — the GRIP
-property. The *original* async view under gunicorn hangs: 12 s with no bytes,
-and the worker never serves again. So this is not a change that trades
-portability for the feature.
-
-The honest caveats: the app loses its SQLite polling fallback (nothing
-delivers under gunicorn now, where before it polled — at the cost above), and
-`M0-Channel` is one channel per connection, which suits a user-scoped
-notification stream and would not suit an endpoint that multiplexes several.
-
-**Verdict: a diff a maintainer would accept.** The claim survives contact.
-
-## Phase 5 — soak
-
-6,000 keep-alive requests per app over a mixed route set (home, admin, login,
-static, 404, an authenticated page), sampling RSS, open descriptors and
-threads.
-
-| app | RSS at 1k → 6k | fds | db fds | threads | errors |
-|---|---|---|---|---|---|
-| `transcripts` | 103.6 → 105.1 MB | 34 → 34 | 0 | 13 | 0 |
-| `color-separation` | 99.6 → 101.6 MB | 71 → 71 | 0 | 13 | 0 |
-| `textshelf` | 261.4 → 267.9 MB | 52 → 52 | 8 | 13 | 0 |
-
-Descriptors and threads are flat — nothing accumulates per request, and
-Django's `CONN_MAX_AGE = 10` holds its connections steady rather than growing
-them. RSS rises 1.5–6.5 MB over the 5,000 requests after warm-up and then
-stops, which is Python's allocator reaching steady state rather than a leak;
-`smoke-django`'s 10k-request guard still measures 0 KB against the bare app.
-Throughput was 363–819 rps single-worker on a laptop, which is not a
-benchmark and is not offered as one.
-
-## What this changes about the guards
-
-Every fix landed with something that fails without it, and each was checked by
-sabotage rather than assumed:
-
-- `test_response_cookies.mojo` — 4 of 6 cases fail when `add_raw` is reverted
-  to parse-and-reserialise.
-- `test_config.mojo::test_recv_buffer_limit_covers_headers_plus_body` — fails
-  when `recv_buffer_limit()` returns the bare field.
-- `smoke-django` — now reads the session cookie off the wire and requires
-  `expires`, `HttpOnly`, `Max-Age` and `SameSite=Lax`, because curl's cookie
-  jar stores name and value only and could never have seen this.
-- `smoke-serve` — a 3 MB body at the default cap and 7 MB at `--max-body 8m`
-  must be `200`; 5 MB and 9 MB must be `413`. Both sizes straddle the old
-  ceiling.
-- `smoke-asgi` — 32 concurrent 4 KB-piece streams, every body byte-exact.
-  **This one paid for itself on its first CI run**, and is why the fix looks
-  the way it does. It passed on macOS and failed on Linux: two streams short,
-  because the budget had been sized against a 256 KB socket buffer and Linux
-  clamps `SO_RCVBUF` to `net.core.rmem_max` and charges each datagram's whole
-  `skb` against it. Raising the number would have made this platform pass and
-  left the next to find out, so the number stopped being load-bearing instead
-  — a full channel now waits (detached, so the loop can drain it) rather than
-  dropping. Verified by removing the budget rather than trusting it: at
-  `_ASGI_TOTAL_WINDOW = 64 MB`, effectively no budget at all, 64 concurrent
-  streams still deliver every byte and log no drops.
-- `smoke-blocking-threads` — two views that never return, `SIGTERM`, and the
-  process must exit inside 20 s naming what it abandoned.
-
-## Revisited after stage 1 (2026-08-26)
-
-`--realtime` composing with `--blocking-threads` changed the answer this
-record originally implied, so the question was re-measured rather than
-re-reasoned. Same laptop, same scratch SQLite, five events 0.3 s apart,
-arrival time of each event recorded by a client that reads incrementally —
-`curl -w %{time_starttransfer}` will not do, because several of these
-servers send an empty first body chunk that satisfies it.
-
-| server | a **sync** generator | an **async** generator |
-|---|---|---|
-| `runserver` | 0.31, 0.61, 0.92, 1.23, 1.53 — streams | all at 1.51 — buffered |
-| daphne (their production) | all at 1.53 | 0.30, 0.61, 0.91, 1.21, 1.51 |
-| uvicorn | all at 1.53 | 0.30, 0.61, 0.91, 1.21, 1.51 |
-| m0serve, ASGI executor | all at 1.53 | 0.31, 0.60, 0.91, 1.21, 1.51 |
-| m0serve, `--realtime --blocking-threads` | all at 1.53 | all at 1.51 |
-
-Two things fall out, and the first is about their application rather than
-any server. **`textshelf`'s AI streaming endpoints do not stream, on their
-own production server.** `ai/views.py:summarize_submission` is a sync view
-returning `create_sse_response(...)` over
-`services.summarize_document_stream`, whose annotation is
-`Generator[str, None, None]` — a *sync* generator, which Django's ASGI
-handler must consume before it can serve it (it says so in a warning). Every
-ASGI server buffers it identically; the token-by-token delivery the endpoint
-is written for arrives in one lump at the end. The rows above are a
-same-shaped instrument rather than their endpoint (which needs an API key),
-but the shape is what decides it, and the shape is theirs.
-
-The second: **m0serve's executor matches uvicorn and daphne to the
-millisecond in both rows.** Whatever streams under them streams under it,
-and what buffers buffers everywhere.
-
-That changes the recommendation this record's Phase 4 pointed at. Before
-stage 1, holds cost the pool, so the hybrid mount was the only shape with
-both isolation and working streams. Now:
-
-| shape (4 workers) | pub/sub streams | AI endpoints | fast path, 8 slow views | app changes |
-|---|---|---|---|---|
-| `--realtime --blocking-threads 4` | held by the server: +2 MB per 200, no Python state, no database connection | buffered — exactly as they are today under daphne | 0.3 ms | convert 4 pub/sub endpoints (the notifications one was −241 lines) |
-| `--mount /=wsgi --mount /rt=asgi`, pool 4 | executor: one Postgres connection each in production | buffered — as today | 0.7 ms | none but a URL prefix |
-| daphne, as deployed | as today | buffered | 4.9 ms | none |
-
-**The AI endpoints cost nothing to move**, because they are already
-buffered wherever they run. So the choice was between the cheapest way to
-hold a stream and no application changes at all — and what forced it to be
-a choice was that `--realtime` and `--mount` could not be combined
-(measured the day this was written: exit 1, refused before the bind).
-
-**That is no longer true, and this pass is why.** The ROADMAP entry it
-produced was implemented the same day: `--realtime` now composes with
-`--blocking-threads`, with `--mount`, and with WebSocket holds under both
-(ROADMAP, *Hold on a pool thread*, stages 1–3). So the row this table calls
-"convert 4 pub/sub endpoints" no longer costs the pool or the ASGI mount —
-an application can hold its pub/sub streams, run its generator streams on
-an executor mount, and keep pool isolation for its slow views, in one
-process. What is left for `textshelf` is application work: converting the
-four endpoints, and making `ai/streaming.py`'s generator async so it
-streams at all.
-
-## Re-soak — 2026-08-31, against 0.16.0, `textshelf` only
-
-Five minor versions landed in five days after the record above — `--mount`,
-per-mount lanes, the batched pump, `ExecutorPort`, the WebSocket credit gate,
-the close linger — all on the request path, none of it seen by a real
-application. `textshelf` was re-run first because it is the app with four SSE
-endpoints, so it stresses the seam that churned most.
-
-**It found one defect, and the defect was on the ASGI path the WSGI record
-above could never have reached.** Clean clone, scratch SQLite,
-`config.settings.local`, the 0.16.0 wheel, CPython 3.13.6, macOS 26 on an M4.
-
-| phase | result |
-|---|---|
-| 0, load | `--doctor` `ok: true` on `config.wsgi` and `config.asgi`; protocol detection right, WSGI got the pool of 8, ASGI the executor |
-| 1, parity | 10 routes. Two apparent differences against `runserver` both resolved in m0serve's favour by measuring **gunicorn**: static-file headers (runserver's `StaticFilesHandler` bypasses the middleware stack; gunicorn's headers are byte-identical to m0serve's) and the debug page's env table (`wsgiref` copies `os.environ` into the environ, gunicorn and m0serve do not). Against gunicorn the only m0serve-only header is `x-thread`, and every residual environ key is a legitimate per-server one — `wsgi.multithread: True` correctly reporting the pool |
-| 3, topology | `--workers 1`, `--workers 4`, `--blocking-threads 4`, `--workers 4 --blocking-threads 4`, `--blocking-threads 0`, and ASGI. Every route correct, 192/192 burst at concurrency 16, 16/16 concurrent logins, zero 5xx. `--threads` not run: `psycopg-binary` ships no free-threaded wheel, so the 3.14t venv cannot be built |
-| 5, soak | 6,000 keep-alive requests over a mixed route set |
-
-| | RSS 1k → 6k | fds | db fds | threads | errors |
-|---|---|---|---|---|---|
-| WSGI | 167.2 → 171.5 MB | 69 → 69 | 8 | 13 | 0 |
-| ASGI | 177.5 → 216.0 MB | 58–110 | 3–56 | 7 | **9 truncated** |
-
-The WSGI row matches the 0.11.0 shape: +4.3 MB over 5,000 requests, flattening
-to +0.4 MB across the last 2,000, with descriptors, database descriptors and
-threads all flat and the thread count identical at 13. 540 rps, inside the
-record's 363–819 range. The ASGI descriptor and RSS churn is `asgiref`'s
-thread pool opening a connection per thread — application behaviour, not a
-leak.
-
-### The defect: the keep-alive cap destroyed the response it fired on
-
-Nine of the 6,000 ASGI requests came back truncated, all of them on the same
-124 KB WhiteNoise file, at intervals of exactly 700 requests — every hundredth
-time that route was hit. `max_keepalive_requests` was 100 (the default
-then; 1000 since [notes/pool-tail.md](notes/pool-tail.md), which found the
-cap itself to be the fast route's p99).
-
-Isolated on one connection, and the two faces are the same bug:
-
-| request 100 of a keep-alive connection | before | after |
-|---|---|---|
-| streamed body (124 KB `FileResponse`) | `200`, `Content-Length: 124926`, **0 bytes** | complete |
-| WebSocket upgrade | `101`, **no frame ever** | 101 and a live echo |
-| ordinary 45-byte response | `Connection: close` + complete body | unchanged |
-| same file under WSGI | `Connection: close` + complete body | unchanged |
-
-`_finish_response` clears `should_close` for a stream and for a 101, because
-each owns its connection until it ends. The cap check below those branches was
-guarded by `not should_close` — precisely the state they had just established
-— so the two shapes that had opted out were the two it caught, and
-`_after_send` closed the slot as soon as the head drained, before any body
-frame arrived over the chunk channel. Both faces are silent: correct status
-line, nothing in the server log.
-
-Gated by `poe smoke-keepalive-cap` (SPEC A3), whose third phase asserts the
-cap still fires for an ordinary response — without it the gate would pass on
-a build whose cap never fires. Four sabotages: reverting the fix, each guard
-alone, and raising the cap, each caught by the phase that should catch it.
-
-## What would make this worth repeating
-
-It already was: four defects in one pass, three of them invisible to any
-application written to test this server. The next pass should use applications
-with shapes these three lack — a background worker, an app behind a proxy with
-`SECURE_PROXY_SSL_HEADER`, an upload-heavy API, and something that is not
-Django.
 
 ## The application layer
 
