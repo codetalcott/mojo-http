@@ -846,7 +846,8 @@ Properties of the design, not defects to fix in passing. Each names its note.
   `/reentrant`, pinned by `poe smoke-wsgi`). Apple's libsqlite3 can fault in
   a forked child (docs/notes/a-signpost-in-a-forked-child.md), so a worker
   that opens an m0-sqlite connection after the fork on macOS wants
-  `--spawn-workers` or `OS_ACTIVITY_MODE=disable`, which `test-sqlite` sets.
+  `OS_ACTIVITY_MODE=disable`, which `test-sqlite` sets, or m0serve's
+  `--spawn-workers`, which the Mojo host refuses.
   A rerun is not the answer: the crash is rare, real and not ours.
 - **SIGPIPE is ignored where every server starts** (SPEC A25):
   `ListenConfig.listen` calls `ignore_sigpipe` before any fork, thread or

@@ -1,5 +1,13 @@
 # Loops on threads — 2026-09-18
 
+> **Superseded in part.** An m0 application reaches N cores as threads,
+> and `M0_WORKERS` above 1 is refused when the binary links MAX's parallel
+> runtime (DECISIONS D48, SPEC E32;
+> [threads first for m0 applications](threads-first-for-m0-apps.md)). The
+> measurement below stands.
+
+> A design note from the engineering record.
+
 The Mojo host served one loop per process and refused `M0_THREADS` with 78,
 because that variable was `m0serve`'s and a host that ignored it would serve
 a configuration other than the one written down. The reasons `m0serve`

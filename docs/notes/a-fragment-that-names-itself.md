@@ -11,7 +11,9 @@
 > in Mojo 1.1.0; `page_or_fragment` now takes a `PageShell` and
 > `check-mojoc-trait` guards the fix rather than counting down to it
 > ([the-page-shell-becomes-a-trait](the-page-shell-becomes-a-trait.md)).
-> The rest of the note stands as written.
+> Also overtaken: htmx 4 replaced the 2.0.4 pin (D6; SPEC N22). Sessions
+> and CSRF were built (D15; N13, N43). A Mojo mount holds as an `M0-Hold`
+> (D22; N11). The mount struct lives in `m0serve_mount` (N14).
 
 Every one of the 172 rows `docs/SPEC.md` carried at 1.0.0 was about serving
 Python. The tree's own Mojo apps were seven `server.mojo` files that each

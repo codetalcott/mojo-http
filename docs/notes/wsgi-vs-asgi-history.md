@@ -1,10 +1,16 @@
-# WSGI vs ASGI: the design record
+# WSGI vs ASGI: the design record — 2026-08-21
 
-> The dated essay that led to m0serve's two execution modes, kept as written
-> and moved here from docs/WSGI_VS_ASGI.md on 2026-09-03; that page is now the
-> concise answer. Section numbers are preserved because CLAUDE.md, the README
-> and the performance pages cite them: §5 is the free-threading path, §6 the
-> verdict that August 2026 reversed, §8 the hybrid ASGI gateway, §9 mounts.
+> **Reversed.** m0serve serves ASGI applications through the hybrid
+> gateway of §8, so §6's case against an ASGI host no longer stands.
+> [Why m0serve has two execution modes](../WSGI_VS_ASGI.md) is the current
+> answer.
+
+> A design note from the engineering record: the dated essay that led to
+> m0serve's two execution modes, kept as written and moved here from
+> docs/WSGI_VS_ASGI.md on 2026-09-03. Section numbers are preserved because
+> m0-wsgi's AGENTS.md, the README and the performance pages cite them: §5
+> is the free-threading path, §6 the verdict that August 2026 reversed, §8
+> the hybrid ASGI gateway, §9 mounts.
 > One correction since: the asyncio executor cannot run on a free-threaded
 > CPython build (the stdlib's PyObject layout; modular/modular#5726), so an
 > ASGI application under `--threads` is refused on this toolchain.

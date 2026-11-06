@@ -1,4 +1,9 @@
-# Hold on a pool thread: the refusal that keeps `--realtime` off real applications
+# Hold on a pool thread: the refusal that keeps `--realtime` off real applications — 2026-08-26
+
+> **Resolved.** `--realtime --blocking-threads N` has been accepted since
+> 2026-08-26 (Stage 1 below), and since 1.5.0 `--realtime` keeps the
+> default pool ([Running m0serve](../RUNNING.md#which-mode)). Below is the
+> problem as it stood.
 
 > A design note from the engineering record, moved out of ROADMAP.md on
 > 2026-09-03 and kept as written. The roadmap itself now holds only the
