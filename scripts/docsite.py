@@ -399,32 +399,40 @@ def headings(md):
     return out
 
 
+_BLOCK_START = re.compile(r"\s*(#{1,6}\s|>|[-*+]\s|\d+[.)]\s|\|)")
+_POINTER = re.compile(r"\s*>\s*\*\*")
+
+
 def _first_paragraph(md):
-    """The first prose paragraph after the H1, as one plain line: not a
-    heading, a blockquote, a list, a fence or a table."""
-    text = _HTML_COMMENT.sub("", md)
-    paras, cur, in_code = [], [], False
-    for line in text.splitlines():
-        if _FENCE.match(line):
-            in_code = not in_code
-            continue
-        if in_code:
-            continue
-        if line.strip() == "":
+    """A note's description, as one plain line of at most 220 characters:
+    its first prose paragraph, or a blockquote ahead of it that opens in
+    bold, the form of a pointer under the H1 (`> **Superseded in part.**`).
+    Text is read by blank-line blocks outside fences, and a block whose
+    first line is a heading, any other blockquote, a list item or a table
+    row is skipped whole. A line of that kind ends a paragraph."""
+    blocks, cur = [], []
+    for line, in_code in fenced(_HTML_COMMENT.sub("", md).splitlines()):
+        if in_code or not line.strip():
             if cur:
-                paras.append(" ".join(cur)); cur = []
+                blocks.append(cur); cur = []
             continue
-        if line.lstrip().startswith(("#", ">", "-", "*", "|", "```")) or re.match(r"^\s*\d+\. ", line):
-            if cur:
-                paras.append(" ".join(cur)); cur = []
-            continue
-        cur.append(line.strip())
+        cur.append(line)
     if cur:
-        paras.append(" ".join(cur))
-    for para in paras:
-        plain = heading_plain(re.sub(r"\s+", " ", para))
+        blocks.append(cur)
+    for block in blocks:
+        if _POINTER.match(block[0]):
+            lines = [re.sub(r"^\s*>\s?", "", line) for line in block]
+        elif _BLOCK_START.match(block[0]):
+            continue
+        else:
+            lines = []
+            for line in block:
+                if _BLOCK_START.match(line):
+                    break
+                lines.append(line)
+        plain = heading_plain(re.sub(r"\s+", " ", " ".join(lines)))
         if len(plain) > 40:
-            return plain[:220].rsplit(" ", 1)[0] + ("…" if len(plain) > 220 else "")
+            return plain if len(plain) <= 220 else plain[:220].rsplit(" ", 1)[0] + "…"
     return ""
 
 
@@ -1005,6 +1013,21 @@ def selftest():
                 failures.append(f"glance line of {row!r}: {got!r}, wanted {want!r}")
             if len(got) > 112 or got.count("`") % 2:
                 failures.append(f"glance line too long or a code span left open: {got!r}")
+        short = "A short paragraph that ends on its final word."
+        for name, note, want in [
+            ("a short paragraph", f"# N\n\n{short}\n", short),
+            ("a provenance blockquote", f"# N\n\n> A design note from the engineering record.\n\n{short}\n", short),
+            ("a first line in emphasis", "# N\n\n*M4, macOS 26*, and the rest\nof a paragraph.\n",
+             "M4, macOS 26, and the rest of a paragraph."),
+            ("a list item and its continuation", f"# N\n\n- an item\n  and a continuation line long enough to count\n\n{short}\n", short),
+            ("a paragraph a list interrupts", f"# N\n\n{short}\n- an item that is long enough to count\n", short),
+            ("a pointer in bold", f"# N\n\n> **Superseded in part.** The rule\n> below moved.\n\n{short}\n",
+             "Superseded in part. The rule below moved."),
+            ("a long paragraph", "# N\n\n" + "word " * 60 + "\n", "word " * 43 + "word…"),
+        ]:
+            got = _first_paragraph(note)
+            if got != want:
+                failures.append(f"note description, {name}: {got!r}, wanted {want!r}")
         glance = with_glance(GLANCE_SOURCE, "# S\n\n## A. One\n\n| A1 | Cap: more | verified | `g` (every PR) |\n")
         if "| A1 | Cap | verified |" not in glance or "(#a-one)" not in glance:
             failures.append(f"the at-a-glance section: {glance!r}")
