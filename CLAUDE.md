@@ -270,6 +270,7 @@ uv run poe check-warnings compile.log --update   # after genuinely fixing some
 uv run poe check-docs         # the docs gate the required check runs
 uv run poe render-bench-docs  # after committing a new bench artifact
 uv run poe render-spec        # after editing docs/SPEC.md's capability tables
+uv run poe stamp-copies       # after re-reading a summary docs/copies.json lists
 uv run poe sabotage-spec      # revert each spec-sheet rule; all must be caught
 uv run poe check-citations    # every RFC cited is current, by the committed snapshot
 uv run poe check-citations --update   # refetch scripts/rfc_status.json (network)
@@ -301,6 +302,12 @@ environment-stamped artifacts in `bench/results/`, and the table renders
 from the newest. In `BENCHMARKS.md` prose a figure is a num span or sits in
 an `observed: WHERE` block; a bare one fails `check-docs` naming its line.
 Cut sentences freely.
+**Summaries are stamped against their rows** (`scripts/doc_copies.py`):
+`docs/copies.json` lists each passage on llms.txt, the home page, the PyPI
+READMEs, the skills and the scaffold's files that restates a SPEC row or
+a default, by its opening words. A row's capability or status changing
+fails `check-docs`, naming the passage to re-read; fix it, then `poe
+stamp-copies`. A rewritten opening is re-pointed in the ledger.
 
 **The README states only what no other page owns**
 (docs/notes/the-readme-points.md): what the project is, install, the

@@ -1,0 +1,1519 @@
+{
+ "passages": [
+  {
+   "page": "README.md",
+   "opens": "**It runs the app you already have.** WSGI or ASGI, detected from the",
+   "rows": {
+    "L19": "e92556aa4e35"
+   }
+  },
+  {
+   "page": "README.md",
+   "opens": "**One wheel per platform covers every supported CPython**, 3.10 through 3.14",
+   "rows": {
+    "M30": "3d5d141ec227"
+   }
+  },
+  {
+   "page": "README.md",
+   "opens": "**SSE fan-out is per process unless the application joins the `BroadcastBus`.**",
+   "rows": {
+    "E24": "0f9dcfd2f962"
+   }
+  },
+  {
+   "page": "README.md",
+   "opens": "A plain sync Django or Flask view can hold a Server-Sent Events stream or a",
+   "rows": {
+    "I11": "da7e216c817a",
+    "I22": "8018ee962e19"
+   }
+  },
+  {
+   "page": "README.md",
+   "opens": "SSE replay is journal-deep. `DatastarStream` honours `Last-Event-ID` from",
+   "rows": {
+    "I30": "4e398061a78e",
+    "I33": "7b4e2f162e34"
+   }
+  },
+  {
+   "page": "README.md",
+   "opens": "The view runs *first*, with sessions",
+   "rows": {
+    "I11": "da7e216c817a"
+   }
+  },
+  {
+   "page": "README.md",
+   "opens": "To **write an application in Mojo** (preview), the `m0` package writes the",
+   "rows": {
+    "N23": "cf4e9b75c75a"
+   }
+  },
+  {
+   "page": "README.md",
+   "opens": "`m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on",
+   "rows": {
+    "M19": "22cac1b3d7cd"
+   }
+  },
+  {
+   "page": "apps/site/home.md",
+   "opens": "**A loop holds 1024 connections**, `--max-connections` to change it, and",
+   "rows": {
+    "C20": "4ff0dc453152"
+   },
+   "defaults": [
+    "max_connections"
+   ]
+  },
+  {
+   "page": "apps/site/home.md",
+   "opens": "**Fan-out is one machine's.** `m0pub.publish()` reaches every worker of",
+   "rows": {
+    "I22": "8018ee962e19"
+   }
+  },
+  {
+   "page": "apps/site/home.md",
+   "opens": "- A slow view does not",
+   "rows": {
+    "E17": "eb0f70e91422"
+   }
+  },
+  {
+   "page": "apps/site/home.md",
+   "opens": "- WSGI and ASGI from one",
+   "rows": {
+    "L19": "e92556aa4e35"
+   }
+  },
+  {
+   "page": "apps/site/home.md",
+   "opens": "A WSGI and ASGI server written in Mojo. A plain synchronous Django or Flask",
+   "rows": {
+    "I11": "da7e216c817a",
+    "I22": "8018ee962e19"
+   }
+  },
+  {
+   "page": "apps/site/home.md",
+   "opens": "The view runs first, with sessions and permissions in hand, so authorization",
+   "rows": {
+    "I11": "da7e216c817a"
+   }
+  },
+  {
+   "page": "apps/site/home.md",
+   "opens": "`m0serve --mount /=shop.wsgi --mount /app=live.asgi` runs sync Django on",
+   "rows": {
+    "M19": "22cac1b3d7cd"
+   }
+  },
+  {
+   "page": "apps/site/home.md",
+   "opens": "macOS arm64 (13 or newer), and Linux x86_64 and aarch64 with glibc",
+   "rows": {
+    "L18": "6d17cc34a372"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "- [Quickstart (Mojo)](../packaging/m0/QUICKSTART.md): a project, a",
+   "rows": {
+    "N33": "5cb11eb670f2"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "It suits an application whose cost",
+   "rows": {
+    "N6": "ba9b481175ca"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "Its exit codes are a closed set: 0; 1, the tool `m0` ran failed",
+   "rows": {
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "The `m0` package on PyPI carries the framework's source",
+   "rows": {
+    "N23": "cf4e9b75c75a",
+    "N41": "ff31fc05c598"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "Windows and musl are refused by `m0 doctor`, with no fix to offer",
+   "rows": {
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "`Fragment[Htmx]`, `Fragment[Datastar]`, `Html`, `el`, `void`, `attr`, `text`",
+   "rows": {
+    "N10": "5bd5e6868697",
+    "N3": "703c821e2b53",
+    "N7": "5d8663131840"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "`Views[S]`: `add_read`, `add_write`, `add_loop`, `resource` | the table of views",
+   "rows": {
+    "N19": "c8e4498e6c64",
+    "N2": "a095880218f6",
+    "N46": "c6991798d68a"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "`m0 test` | runs `test/test_*.mojo`; links nothing",
+   "rows": {
+    "N24": "abfc4f914de6",
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "`m0` runs the `mojo` in its own environment, never the one on `PATH`",
+   "rows": {
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "`serve[H, P](config)`, `AppHandler`, `ViewsApp[S]`, `Producer`, `HostContext`",
+   "rows": {
+    "E21": "c56ec10e6f4d",
+    "N18": "b1f9f88394e7"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "`src/server.mojo` to `bin/server`; with the release option, a relocatable `dist/`",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "a document or the bare fragment from one view",
+   "rows": {
+    "N22": "bcb91967424b"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "a stream of whole states, a stream of what changed",
+   "rows": {
+    "I44": "2640b0278563",
+    "N47": "eb0212aafd2d",
+    "N51": "a3cc8994c8c0"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "a urlencoded form; `html`, `json`, `redirect`, `no_content`, `problem`",
+   "rows": {
+    "N29": "7345d00e6cbf",
+    "N6": "ba9b481175ca"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "builds, serves, rebuilds on save; swaps only after a build succeeds",
+   "rows": {
+    "N30": "238664533b19"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "indexes every page, and each page is Markdown at its URL",
+   "rows": {
+    "N35": "eb65a1eb7f70"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "is an application on this stack: one simulation stepped on the server",
+   "rows": {
+    "M26": "fd2bf5bc7438",
+    "M27": "f6724e5ccdc2",
+    "N16": "9de7da585e18"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "one user behind a signed session",
+   "rows": {
+    "N43": "2ecc7ee78524"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "routes as constants, reversed and encoded",
+   "rows": {
+    "N36": "7a9d33b59022",
+    "N5": "7c429cf035b5",
+    "N9": "8702f7ef83ed"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "the bindings, their libraries opened at run time",
+   "rows": {
+    "N39": "7f1710758613",
+    "O23": "da740081bdb5",
+    "O24": "bfdf96be7dbe"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "the deploy image, then what it measured of itself",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "the toolchain's checks, the binary's resolved configuration, and which files",
+   "rows": {
+    "N26": "c9f5c16cd2ac",
+    "N42": "63905b18511f"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "uv run m0 build && bin/server --host 127.0.0.1 --port 8080",
+   "rows": {
+    "M31": "a6ee9c27c382",
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "where the framework's source is installed",
+   "rows": {
+    "N23": "cf4e9b75c75a"
+   }
+  },
+  {
+   "page": "docs/MOJO.md",
+   "opens": "writes a project from the `views`, `live`, `board` or `auth` template",
+   "rows": {
+    "N27": "61a04e0a3119",
+    "N45": "fc56890e35d0",
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "> A WSGI and ASGI server",
+   "rows": {
+    "I11": "da7e216c817a",
+    "I22": "8018ee962e19"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "A WSGI and ASGI server written in Mojo:",
+   "rows": {
+    "M30": "3d5d141ec227"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "A loop with every slot in use admits a new connection in the slot of",
+   "rows": {
+    "C23": "4a9bc88fe590"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "A request-derived `String` may not be UTF-8: never slice one with",
+   "rows": {
+    "G14": "8c03ec0a59d6"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "A view is a free function `(req, params, state) raises -> HTTPResponse`",
+   "rows": {
+    "N18": "b1f9f88394e7"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "Exit codes, from `m0` and from the binary: 0; 1 the tool that ran failed;",
+   "rows": {
+    "E30": "b50762d93c14"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "Flags are strict and named in `m0serve --help`; flags override `M0_*`",
+   "rows": {
+    "E30": "b50762d93c14",
+    "M6": "f23475cc8a96"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "Platforms: macOS arm64 (13+), Linux x86_64 and aarch64 with glibc 2.35+",
+   "rows": {
+    "L18": "6d17cc34a372"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "Preview. A second package, `m0`, for writing the application itself in",
+   "rows": {
+    "N23": "cf4e9b75c75a"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "Realtime: a view's response with `M0-Hold:",
+   "rows": {
+    "G7": "1c80629ff74e",
+    "I11": "da7e216c817a",
+    "I22": "8018ee962e19",
+    "I33": "7b4e2f162e34"
+   },
+   "defaults": [
+    "replay_frames"
+   ]
+  },
+  {
+   "page": "llms.txt",
+   "opens": "Refusals explain themselves on stderr and name the fix.",
+   "rows": {
+    "M5": "467fce9016f1"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "SIGTERM drains in-flight work and exits 0; the server runs as PID 1",
+   "rows": {
+    "M11": "2921a36aa9ba"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "The binary: flag over `M0_*` variable over default.",
+   "rows": {
+    "E27": "65498053162e",
+    "E30": "b50762d93c14"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "The server raises its own open-file limit to fit; where the hard limit",
+   "rows": {
+    "C21": "387b03245b13",
+    "C25": "084285510bdb"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "Zero-config topology follows the protocol: WSGI gets one loop with a pool",
+   "rows": {
+    "E17": "eb0f70e91422",
+    "E20": "f459037c30c2"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`--health-path /health` answers 200 in the server, before Python.",
+   "rows": {
+    "F6": "5d301831d114"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`--max-connections N` (`M0_MAX_CONNECTIONS`, 1024) is the connections",
+   "rows": {
+    "C20": "4ff0dc453152",
+    "C21": "387b03245b13",
+    "C23": "4a9bc88fe590",
+    "C25": "084285510bdb"
+   },
+   "defaults": [
+    "max_connections",
+    "stream_reserve_cap"
+   ]
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`--static PREFIX=DIR` serves files from the server with sendfile, ETags",
+   "rows": {
+    "C9": "6ab12ad27aee",
+    "J1": "6a4a6c250019"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`Fragment[Htmx]` (htmx 4) or `Fragment[Datastar]` generates every swap",
+   "rows": {
+    "N10": "5bd5e6868697",
+    "N22": "bcb91967424b"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`m0 build` compiles `src/server.mojo` to `bin/server` by rename, so a",
+   "rows": {
+    "N24": "abfc4f914de6",
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`m0 dev [-- HOST_ARGS]` builds, serves and rebuilds on save.",
+   "rows": {
+    "N30": "238664533b19"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`m0 doctor --json [-- HOST_ARGS]` prints one JSON object: every toolchain",
+   "rows": {
+    "N25": "a0e9cbedf8ff",
+    "N26": "c9f5c16cd2ac"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`m0 image` is `docker build -f deploy/Dockerfile` and then the image's",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "`m0serve --doctor [OPTIONS] [MODULE]` prints one JSON object and starts",
+   "rows": {
+    "M5": "467fce9016f1"
+   }
+  },
+  {
+   "page": "llms.txt",
+   "opens": "the empty current directory as `m0 new .`, and needs no toolchain and no",
+   "rows": {
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "# build, serve, rebuild on save; the old server serves until a build succeeds",
+   "rows": {
+    "N30": "238664533b19"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "# docker build of deploy/Dockerfile, then the image's about.json",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "# mojo run over test/test_*.mojo, two to four seconds a file",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "# src/server.mojo -> bin/server, about ten seconds",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "# the pair it pinned: m0, and the one exact mojo it is gated on",
+   "rows": {
+    "N25": "a0e9cbedf8ff",
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "# the toolchain checks, then bin/server's own --doctor",
+   "rows": {
+    "N26": "c9f5c16cd2ac"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "# writes ./shop; needs no toolchain and no network",
+   "rows": {
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "**Upgrading.** `uv add --dev 'm0==X'`, then `uv run m0 doctor`",
+   "rows": {
+    "N41": "ff31fc05c598",
+    "N42": "63905b18511f"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "Builds and serves `bin/server HOST_ARGS`, then polls `src/` and `pyproject.toml`",
+   "rows": {
+    "N30": "238664533b19"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "Compiles `src/server.mojo` and renames the result onto `bin/server`",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "Every check but the release-only `patchelf`, then `bin/server HOST_ARGS --doctor`",
+   "rows": {
+    "N26": "c9f5c16cd2ac",
+    "N42": "63905b18511f"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "Exit codes are a closed set: `0`; `1` the tool m0 ran failed",
+   "rows": {
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "This wheel carries the framework's **source** and a small CLI",
+   "rows": {
+    "N23": "cf4e9b75c75a",
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "Writes an application into `./NAME`, or into the empty current directory",
+   "rows": {
+    "N27": "61a04e0a3119",
+    "N45": "fc56890e35d0",
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "`docker build -f deploy/Dockerfile -t T DOCKER_ARGS .` from the project root",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "`m0` is versioned apart from the repository it is cut from",
+   "rows": {
+    "N23": "cf4e9b75c75a",
+    "N32": "1ae5f6d4e4dc"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "`mojo run` per file, serial, output untouched. Needs no C compiler.",
+   "rows": {
+    "N24": "abfc4f914de6",
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "a host that runs the lot as one binary with no interpreter in it",
+   "rows": {
+    "M26": "fd2bf5bc7438"
+   }
+  },
+  {
+   "page": "packaging/m0/README.md",
+   "opens": "m0 runs the `mojo` installed in **its own environment**",
+   "rows": {
+    "N25": "a0e9cbedf8ff",
+    "N41": "ff31fc05c598"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**A connection belongs to one thread, opened where that thread runs**",
+   "rows": {
+    "N40": "661a92bfcb2b",
+    "N48": "a08ef12439d6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**A hand-built request parses no `Cookie` header**",
+   "rows": {
+    "N45": "fc56890e35d0"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**A value that must survive a restart is written in the request that changes it**",
+   "rows": {
+    "N40": "661a92bfcb2b"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**Datastar 1.0 applies an action's answer only on a 200**",
+   "rows": {
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**Every frame is the full state, never a delta.**",
+   "rows": {
+    "I40": "ac587d11c885",
+    "I44": "2640b0278563"
+   },
+   "defaults": [
+    "replay_frames"
+   ]
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**Every write needs the session's CSRF token**",
+   "rows": {
+    "N43": "2ecc7ee78524",
+    "N44": "f72cdc12da18"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**Login and logout are PLAIN forms**",
+   "rows": {
+    "N45": "fc56890e35d0"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**`APP_SECURE` is stated, never assumed**: `1` wherever the app is",
+   "rows": {
+    "N43": "2ecc7ee78524",
+    "N45": "fc56890e35d0"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "**htmx 4 swaps every answer, 4xx included.**",
+   "rows": {
+    "N22": "bcb91967424b",
+    "N29": "7345d00e6cbf"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "- A swap that arrives at",
+   "rows": {
+    "N37": "420b3038db79"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "- Moving a `Fragment[Htmx]` app to",
+   "rows": {
+    "N7": "5d8663131840"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "- One user, its secret in",
+   "rows": {
+    "N13": "ea90f49857c4"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "A `String` that came from a request may not be UTF-8.",
+   "rows": {
+    "G14": "8c03ec0a59d6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "A binary that links it is served as loops on threads (`M0_THREADS`)",
+   "rows": {
+    "E32": "00dcaf573c56"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "A stream registry's capacity must be at least the server's connection count",
+   "rows": {
+    "E21": "c56ec10e6f4d"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "A view behind it opens with two lines",
+   "rows": {
+    "N43": "2ecc7ee78524",
+    "N45": "fc56890e35d0"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "A view is a free function `(req, params, state) raises -> HTTPResponse`.",
+   "rows": {
+    "N2": "a095880218f6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "A view sends through the state's stream: `st.stream.patch_elements(url,",
+   "rows": {
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Escaping is named at every hole: `text(x)` for data in an element",
+   "rows": {
+    "N10": "5bd5e6868697",
+    "N3": "703c821e2b53"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Every answer the session chose is `no_store(...)`",
+   "rows": {
+    "N43": "2ecc7ee78524"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Every refusal, from `m0` and from the binary, is exit **78**",
+   "rows": {
+    "E30": "b50762d93c14",
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Flag > environment > default; `bin/server --doctor` prints the result.",
+   "rows": {
+    "E27": "65498053162e",
+    "E30": "b50762d93c14",
+    "E31": "9642f9150528",
+    "E32": "00dcaf573c56"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Opening a stream is an `add_write(..., on_loop=True)` view",
+   "rows": {
+    "N19": "c8e4498e6c64"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Optional, and pinned beside mojo: `uv add --dev 'max-core==X'`",
+   "rows": {
+    "N41": "ff31fc05c598"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Other workers' subscribers are reached through the bus",
+   "rows": {
+    "E21": "c56ec10e6f4d",
+    "N17": "75c5a51a5e5b"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Routes are `comptime` patterns given to the table AND to `url_for`",
+   "rows": {
+    "N36": "7a9d33b59022",
+    "N5": "7c429cf035b5"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "State that lives in one process answers `max_workers() -> 1`",
+   "rows": {
+    "E29": "02504014b49d",
+    "E42": "a5842d80546d"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Take the newer `m0` (`uv add --dev 'm0==X'`), then run `uv run m0 doctor`.",
+   "rows": {
+    "N41": "ff31fc05c598",
+    "N42": "63905b18511f"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "The test loop is three to five times faster than the build loop.",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Two workers over one file are fine under WAL.",
+   "rows": {
+    "N17": "75c5a51a5e5b"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "What workers and the producer share crosses a process boundary",
+   "rows": {
+    "E21": "c56ec10e6f4d"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "Work on a cadence goes in a `Producer` (`step` returns the nanoseconds",
+   "rows": {
+    "E21": "c56ec10e6f4d",
+    "E25": "aa788c158790"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`Fragment[V](\"id\")` writes the root id once",
+   "rows": {
+    "N3": "703c821e2b53"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`Login.from_env(\"APP\", \"NAME-session\")` reads `APP_KEY` (at least 32 bytes)",
+   "rows": {
+    "N43": "2ecc7ee78524"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`M0_DB` names the file; the image points it at `/app/data`",
+   "rows": {
+    "N40": "661a92bfcb2b"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`bin/server --host 127.0.0.1 --port 8080` runs the app on this machine alone",
+   "rows": {
+    "E31": "9642f9150528",
+    "M31": "a6ee9c27c382"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`docker build -f deploy/Dockerfile`, then the image's own `about.json`",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`form(req)` is `None` unless the body is a urlencoded form.",
+   "rows": {
+    "N6": "ba9b481175ca"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`m0_sqlite` and `m0_postgres` ship with the framework and link NOTHING",
+   "rows": {
+    "N39": "7f1710758613",
+    "O23": "da740081bdb5",
+    "O24": "bfdf96be7dbe"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`page_or_fragment(req, fragment, Shell(...))` decides document-or-fragment from the request's headers",
+   "rows": {
+    "N22": "bcb91967424b"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`read_signals(req)` is Datastar's signal store as JSON text",
+   "rows": {
+    "I28": "0706be9323a4",
+    "I29": "8e52d4d2a866"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`reply.html(body)`, `reply.json(status, text, body)`, `reply.redirect(status, url)`, `reply.no_content()`",
+   "rows": {
+    "N29": "7345d00e6cbf"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`src/server.mojo` is `main` and imports its siblings by bare name",
+   "rows": {
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`uv run m0 build --release` bundles its runtime library",
+   "rows": {
+    "E32": "00dcaf573c56",
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "`void(tag, attrs)` writes a void element",
+   "rows": {
+    "N10": "5bd5e6868697"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "a relocatable `dist/` for the baseline CPU",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "build, serve on its own port, probe the wire, stop",
+   "rows": {
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "builds, serves, and rebuilds when `src/` or `pyproject.toml` changes",
+   "rows": {
+    "N30": "238664533b19"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "compiles `src/server.mojo` to `bin/server` | 10–13 s after an edit",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "every toolchain check, then the binary's resolved configuration, then which",
+   "rows": {
+    "N26": "c9f5c16cd2ac",
+    "N42": "63905b18511f"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
+   "opens": "runs `test/test_*.mojo`; no link, no server",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "./smoke.sh # build, serve, probe the wire, stop",
+   "rows": {
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "Commit `uv.lock`: it is what makes the next checkout the same toolchain.",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "`uv run m0 dev -- --port 8080` builds, serves, and rebuilds on every save",
+   "rows": {
+    "N30": "238664533b19"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "bin/server --port 8080 # serve; http://localhost:8080",
+   "rows": {
+    "M31": "a6ee9c27c382"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "uv run m0 build # src/server.mojo -> bin/server (~10 s after an edit)",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "uv run m0 doctor # toolchain checks + the binary's resolved configuration",
+   "rows": {
+    "N26": "c9f5c16cd2ac"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "uv run m0 image # the deploy image (docker), and what it measured of itself",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "uv run m0 test # test/test_*.mojo, 2–4 s: the fast loop",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/README.md",
+   "opens": "uv sync # the pinned mojo toolchain and m0, into .venv",
+   "rows": {
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "An application with a login takes its variables into the container as well",
+   "rows": {
+    "N45": "fc56890e35d0"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "Data that must outlive a deploy needs a volume at `/app/data`",
+   "rows": {
+    "N40": "661a92bfcb2b"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "The builder stage runs `uv run m0 build --release`: the platform's baseline",
+   "rows": {
+    "N24": "abfc4f914de6",
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "The image holds the binary, the Mojo runtime libraries beside it, and no Python.",
+   "rows": {
+    "M26": "fd2bf5bc7438",
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "The image sets `M0_DB` to `/app/data/__M0_APP__.db`",
+   "rows": {
+    "N40": "661a92bfcb2b"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "The runtime stage carries `libsqlite3-0`, which `m0_sqlite` opens at run time",
+   "rows": {
+    "N31": "7f2d411bff77",
+    "N39": "7f1710758613"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "`--tag T` names the image, `--target-cpu CPU` compiles for something newer",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "`/app/about.json` in the image is what the image measured about itself",
+   "rows": {
+    "M26": "fd2bf5bc7438",
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "`fly.toml` already states `APP_SECURE = \"1\"`",
+   "rows": {
+    "N45": "fc56890e35d0"
+   }
+  },
+  {
+   "page": "packaging/m0/src/m0/templates/_common/deploy/README.md",
+   "opens": "uv run m0 image # docker build -f deploy/Dockerfile -t __M0_APP__ .",
+   "rows": {
+    "N31": "7f2d411bff77"
+   }
+  },
+  {
+   "page": "packaging/m0serve/README.md",
+   "opens": "If something will not start, `m0serve --doctor myproject.wsgi` prints a JSON",
+   "rows": {
+    "M5": "467fce9016f1"
+   }
+  },
+  {
+   "page": "packaging/m0serve/README.md",
+   "opens": "Install it into the same virtual environment as your application, the way you",
+   "rows": {
+    "M30": "3d5d141ec227"
+   }
+  },
+  {
+   "page": "packaging/m0serve/README.md",
+   "opens": "It also hosts **several applications in one process**, each in its native",
+   "rows": {
+    "M19": "22cac1b3d7cd"
+   }
+  },
+  {
+   "page": "packaging/m0serve/README.md",
+   "opens": "One compiled binary and the Mojo runtime it loads.",
+   "rows": {
+    "M30": "3d5d141ec227"
+   }
+  },
+  {
+   "page": "packaging/m0serve/README.md",
+   "opens": "Run it with `m0serve myproject.wsgi --realtime`. The view runs *first*, with",
+   "rows": {
+    "I11": "da7e216c817a"
+   }
+  },
+  {
+   "page": "packaging/m0serve/README.md",
+   "opens": "The protocol is detected from the object, so the same command serves WSGI and",
+   "rows": {
+    "E27": "65498053162e"
+   }
+  },
+  {
+   "page": "packaging/m0serve/README.md",
+   "opens": "What it adds over gunicorn or uvicorn is that a **plain synchronous view**",
+   "rows": {
+    "I11": "da7e216c817a",
+    "I22": "8018ee962e19"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "- Exit codes from `m0` and",
+   "rows": {
+    "E30": "b50762d93c14",
+    "N25": "a0e9cbedf8ff"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "A request-derived `String` may not be UTF-8: never slice it",
+   "rows": {
+    "G14": "8c03ec0a59d6"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "A view is a free function `(req, params, state) raises -> HTTPResponse` in a `Views[S]` table",
+   "rows": {
+    "N18": "b1f9f88394e7",
+    "N2": "a095880218f6"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "A view sends: `st.stream.patch_elements(EVENTS, html)` on a",
+   "rows": {
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "Datastar 1.0 applies an action's answer only on a 200",
+   "rows": {
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "Every view that opens a stream, or reads or writes what one sends, is",
+   "rows": {
+    "N19": "c8e4498e6c64",
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "Routes are `comptime` constants given to the table and to `url_for`.",
+   "rows": {
+    "N5": "7c429cf035b5"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "State in one process declares `max_workers() -> 1`.",
+   "rows": {
+    "E29": "02504014b49d",
+    "N17": "75c5a51a5e5b"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "The registry's capacity is `ctx.capacity`.",
+   "rows": {
+    "E21": "c56ec10e6f4d"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "Without `--host` the server listens on this machine alone",
+   "rows": {
+    "M31": "a6ee9c27c382"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "Work on a cadence is a `Producer` (`live`), never the loop's `tick`.",
+   "rows": {
+    "E21": "c56ec10e6f4d",
+    "N15": "1031c65ab21a"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "`./smoke.sh` builds, serves on its own port, probes the wire",
+   "rows": {
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "`Fragment[Htmx]` or `Fragment[Datastar]` writes the swap attributes",
+   "rows": {
+    "N3": "703c821e2b53",
+    "N7": "5d8663131840"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "`form(req)` is `Optional`: `None` unless the body is urlencoded.",
+   "rows": {
+    "N6": "ba9b481175ca"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "`m0` writes a project, builds it against the framework's source",
+   "rows": {
+    "N25": "a0e9cbedf8ff",
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "`reply.problem(status, title, detail, instance)` takes all four",
+   "rows": {
+    "N29": "7345d00e6cbf"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "`uv run m0 doctor --json` prints every toolchain check",
+   "rows": {
+    "N26": "c9f5c16cd2ac"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "`void(\"input\", attrs)` writes a void element; `el` closes its tag.",
+   "rows": {
+    "N10": "5bd5e6868697"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "a list every tab shares: a POST view appends",
+   "rows": {
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "a producer thread steps a state on a cadence",
+   "rows": {
+    "N27": "61a04e0a3119",
+    "N40": "661a92bfcb2b"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "a server-rendered list that htmx 4 swaps in place",
+   "rows": {
+    "N27": "61a04e0a3119"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "the `views` list behind a login, with a CSRF token",
+   "rows": {
+    "N45": "fc56890e35d0"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "uv run m0 build # 10-13 s after an edit: bin/server",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "uv run m0 test # 2-4 s: no link, no server",
+   "rows": {
+    "N24": "abfc4f914de6"
+   }
+  },
+  {
+   "page": "skills/m0/SKILL.md",
+   "opens": "uvx m0 new . --template board # the empty current directory, named for it",
+   "rows": {
+    "N27": "61a04e0a3119",
+    "N52": "739de37031d1"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "- A held WebSocket opens from its own origin. A handshake whose `Origin`",
+   "rows": {
+    "I48": "cd50101c9b6e"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "- The `m0serve` that `pip` installs",
+   "rows": {
+    "M30": "3d5d141ec227"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "- The view that approves a",
+   "rows": {
+    "I11": "da7e216c817a"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "- `--host 127.0.0.1`, the default, binds",
+   "rows": {
+    "M31": "a6ee9c27c382"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "A WSGI and ASGI server, `pip",
+   "rows": {
+    "L18": "6d17cc34a372"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "A stream that reconnects with `Last-Event-ID` is sent what it missed, or",
+   "rows": {
+    "I33": "7b4e2f162e34"
+   },
+   "defaults": [
+    "replay_frames"
+   ]
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "A synchronous view approves a held connection with two response headers;",
+   "rows": {
+    "I11": "da7e216c817a"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "Channel names are yours to police, except a leading `\\x01` byte, which",
+   "rows": {
+    "G18": "cbaee862e67f",
+    "G7": "1c80629ff74e"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "Every event gets an `id:` from a counter shared across workers.",
+   "rows": {
+    "E24": "0f9dcfd2f962"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "Exit codes: 2 a command line that cannot be read, 1 a startup failure,",
+   "rows": {
+    "M5": "467fce9016f1"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "It returns the number of worker channels written.",
+   "rows": {
+    "I40": "ac587d11c885"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "`--realtime` is what turns the headers into held connections.",
+   "rows": {
+    "I11": "da7e216c817a"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "`--workers N` prefork workers, and `publish` reaches all of them.",
+   "rows": {
+    "E1": "d0fc8d0ac967",
+    "I11": "da7e216c817a"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "`m0serve --doctor [ARGS] MODULE` prints the resolved configuration as",
+   "rows": {
+    "M5": "467fce9016f1"
+   }
+  },
+  {
+   "page": "skills/m0serve/SKILL.md",
+   "opens": "`publish(channel, data)` sends `data` as ONE event.",
+   "rows": {
+    "I11": "da7e216c817a"
+   }
+  }
+ ]
+}
