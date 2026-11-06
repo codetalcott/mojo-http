@@ -15,10 +15,11 @@ What the mode buys: one process and one RSS instead of N copies, the app
 imported once — fan-out across the loops still rides the bus, one channel
 per loop (`ThreadedServer.bus_read_fds`) — and the whole class of
 fork-after-init hazards gone: no fork-before-first-Python-call, no
-`exit_worker()`, no `_scproxy` abort in a forked child. What it does NOT
-buy is per-request balancing: a keep-alive connection stays pinned to the
-loop that accepted it, exactly as under prefork, so the keep-alive p99 shape
-is unchanged (that is the thread-pool stage recorded in ROADMAP.md).
+`exit_worker()`, no `_scproxy` abort in a forked child. What it does NOT buy
+is per-request balancing: a keep-alive connection stays pinned to the loop
+that accepted it, exactly as under prefork, so the keep-alive p99 shape is
+unchanged (that is the thread-pool stage, Stage B, recorded in
+docs/notes/wsgi-against-gunicorn-and-the-pool.md).
 
 **The discipline, which is the whole file:**
 

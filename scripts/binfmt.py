@@ -17,7 +17,7 @@ through a build-machine `LC_RPATH` and cannot load anywhere else, and the
 bundler would have copied zero runtime libraries and called the bundle
 complete. Two tools agreeing with each other about an artifact neither could
 see: the same shape as the defect that shipped for seven releases, one level
-up. See docs/FFI_DISTRIBUTION.md.
+up. See docs/notes/the-c-abi-artifact.md.
 
 The discriminator is **`LC_ID_DYLIB`'s presence**, not the header's filetype.
 That is deliberate: an `MH_BUNDLE` may or may not carry one, so keying on the

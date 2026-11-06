@@ -7,9 +7,10 @@ multiplex away. `M0_POOL_THREADS` decides whether `func` runs on the loop
 (0, the default) or on a pool thread (N > 0).
 
 The question is whether the p99 of `/fast` collapses when slow requests are in
-flight, and whether the pool restores it. `docs/BENCHMARKS.md` records the
-Python answer for the same shape: p99 1.0 ms with no slow traffic, 190.7 ms
-with slow traffic and no pool, 7.4 ms with slow traffic and a pool of four.
+flight, and whether the pool restores it. `docs/BENCHMARKS.md` recorded the
+Python answer for the same shape in 2026-09: p99 1.0 ms with no slow traffic,
+190.7 ms with slow traffic and no pool, 7.4 ms with slow traffic and a pool
+of four.
 If a blocking Mojo handler does not show that collapse-and-recovery, the pool
 buys nothing here and `m0_http.mojo_pool` should be deleted rather than kept.
 

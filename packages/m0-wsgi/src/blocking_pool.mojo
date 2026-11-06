@@ -3,11 +3,11 @@
 Stage B. Stage A (`--threads N`) gave the process N event loops; it did not
 change the thing that actually strands connections, because a keep-alive
 connection belongs to whichever loop accepted it in *both* execution modes.
-The measurement is in `docs/WSGI_PERFORMANCE.md`: one `/slow?ms=200` beside
-fast traffic takes fast-request p99 from 1.6 ms to ~194 ms — 120x — while p50
-does not move at all, which is the signature of a subset of connections
-stopped dead rather than of general slowdown. Granian's `--blocking-threads`,
-which is this architecture, is flat under the same load.
+The measurement is in `docs/notes/wsgi-against-gunicorn-and-the-pool.md`: one
+`/slow?ms=200` beside fast traffic takes fast-request p99 from 1.6 ms to
+~194 ms — 120x — while p50 does not move at all, which is the signature of a
+subset of connections stopped dead rather than of general slowdown. Granian's
+`--blocking-threads`, which is this architecture, is flat under the same load.
 
 So the loop stops calling the handler. `lightbug_http.offload` is the queue;
 this file is the threads that drain it.

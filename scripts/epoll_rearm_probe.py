@@ -15,10 +15,11 @@ A connection's read interest is registered once and stays. A request needs a
 re-registration only when its read may have left bytes in the socket that no
 edge will announce -- a read that filled the staging buffer, or the peer's
 EOF -- and the loop's rule for headers (SPEC A13) used to re-register after
-EVERY read: an `epoll_ctl` ADD, refused EEXIST because the descriptor is
-still registered, then the MOD it falls back to, on every keep-alive request.
-That is the pair 9a6651f measured out of the hot path (docs/SERVER_PERFORMANCE.md,
-+10% with the idle-timer change beside it), back since b9145bf.
+EVERY read: an `epoll_ctl` ADD, refused EEXIST because the descriptor is still
+registered, then the MOD it falls back to, on every keep-alive request. That
+is the pair 9a6651f measured out of the hot path
+(docs/notes/the-raw-hot-path.md, +10% with the idle-timer change beside it),
+back since b9145bf.
 
   keep-alive  REQUESTS small requests over CONNECTIONS keep-alive
               connections: at most BOUND `epoll_ctl` calls per request,

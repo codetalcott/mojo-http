@@ -107,7 +107,7 @@ def prepend_to_path(directory: String) raises:
     application silently is not the one being served. Found by dogfooding
     the wheel against a real Django project, where the reported `sys.path`
     put `--app-dir` after site-packages, and reconfirmed by the
-    three-project pass (docs/REAL_APP_VALIDATION.md).
+    three-project pass (docs/notes/the-soak-record.md).
 
     A `PythonObject` call, so it leaks a reference by the toolchain bug the
     bridge documents — startup-only and once per process, which is the same

@@ -9,8 +9,9 @@ This is a stdlib-only, keep-alive, threaded client, because the CI
 container carries neither wrk nor ab. That caps the absolute numbers well
 below what wrk would report — the CLIENT is a big share of each loop — so
 the numbers are only meaningful as a ratio between the two servers under
-the identical client. Record them that way (see WSGI_PERFORMANCE.md's
-warning that absolute numbers swing between container sessions).
+the identical client. Record them that way (see
+docs/notes/the-asgi-executor-against-uvicorn.md's warning that absolute
+numbers swing between container sessions).
 
 Usage:
     python3 scripts/bench_asgi.py [--seconds N] [--threads N]
@@ -213,7 +214,7 @@ def main():
     # round trip; a gate on a number that moves with the client is a gate
     # on nothing, red or green. The record is the wrk artifacts
     # (scripts/bench_asgi_wrk.sh, bench/results/asgi-wrk-*.json;
-    # docs/WSGI_PERFORMANCE.md, "The ASGI executor vs uvicorn"). The gate
+    # docs/notes/the-asgi-executor-against-uvicorn.md). The gate
     # that carries the executor's actual claim is the mixed tail below:
     # fast requests keep their p99 while slow awaits run beside them.
     gate_p99 = m0["p99"] <= uv["p99"] * 1.5

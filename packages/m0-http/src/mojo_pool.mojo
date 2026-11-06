@@ -2,15 +2,16 @@
 
 `m0-wsgi`'s `blocking_pool.mojo` puts N handler threads behind one event loop
 so a slow view stops holding the keep-alive connections pinned to that loop
-(p99 1.0 ms -> 190.7 ms without it, -> 7.4 ms with; docs/BENCHMARKS.md). The
-two pools differ in what a thread RUNS, and that half cannot be shared: the
-WSGI body imports `std.python`, and importing it here would put libpython on
-the link line of every Mojo app in the repo. Everything else -- dealing the
-threads over the lanes, registering them, the pills and the bounded join --
-is `PoolThreads` below, which `blocking_pool` imports; it was a second copy
-there until 2026-09-28, `stop_and_join` byte for byte. `lightbug_http.offload`
-was written for exactly this split — its docstring says it "knows nothing
-about Python or about handlers" — so what is left here is the thread body.
+(p99 1.0 ms -> 190.7 ms without it, -> 7.4 ms with; docs/BENCHMARKS.md in
+2026-09). The two pools differ in what a thread RUNS, and that half cannot be
+shared: the WSGI body imports `std.python`, and importing it here would put
+libpython on the link line of every Mojo app in the repo. Everything else --
+dealing the threads over the lanes, registering them, the pills and the bounded
+join -- is `PoolThreads` below, which `blocking_pool` imports; it was a second
+copy there until 2026-09-28, `stop_and_join` byte for byte.
+`lightbug_http.offload` was written for exactly this split — its docstring says
+it "knows nothing about Python or about handlers" — so what is left here is the
+thread body.
 
 **Only for handlers that BLOCK.** A pool buys nothing for a handler that is
 merely slow to compute: `std.runtime.asyncrt` already parallelises CPU work
@@ -122,7 +123,7 @@ The same 5 s the loop gives its own drain. A Mojo handler blocked in a
 syscall with no timeout holds its thread for as long as the syscall does,
 and a WSGI view is inside the application for as long as the application
 keeps it: an SSE generator served under WSGI used to be the real case
-(docs/REAL_APP_VALIDATION.md, textshelf, 2026-08-26) -- buffered, it never
+(docs/notes/the-soak-record.md, textshelf, 2026-08-26) -- buffered, it never
 ended -- and a generator asleep between events still does not notice a
 disconnect until it wakes. `pthread_join` has no timeout, so `stop_and_join`
 used to wait for those forever: SIGTERM did nothing, and `docker stop`

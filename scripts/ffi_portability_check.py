@@ -27,7 +27,8 @@ parse lived here and assumed `otool -L`'s first entry was the file's own
 `LC_ID_DYLIB` — true of a dylib, false of `bin/m0serve` — so the CLI's one
 real dependency was discarded and a binary that loads nowhere reported as
 SELF-CONTAINED. The parse now lives in `binfmt.py`, which keys on the load
-command's presence and self-tests both cases. See docs/FFI_DISTRIBUTION.md.
+command's presence and self-tests both cases. See
+docs/notes/the-c-abi-artifact.md.
 
 Exit 0 = portable. Exit 1 = depends on its build machine. Exit 2 = could not
 inspect (missing tool, fat archive), which is reported rather than passed

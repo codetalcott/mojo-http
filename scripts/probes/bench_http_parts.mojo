@@ -1,12 +1,13 @@
 """Where the Mojo HTTP layer's per-request cost actually goes.
 
 The companion to `bench_bridge_parts.mojo`, one layer down. Every number in
-`docs/SERVER_PERFORMANCE.md` came from `wrk` plus gdb stack sampling, which is
-the right instrument for "is the server syscall-bound" and the wrong one for
-"did this change to `parse_http_version` do anything" — the executor row
-swings ±10% between wrk rounds, and a 100 ns change is invisible inside that.
-This splits the user-space request path by part, in isolation, so a change
-to one part is measured against that part and not against loopback noise.
+`docs/notes/the-raw-hot-path.md` up to its instrument section came from `wrk`
+plus gdb stack sampling, which is the right instrument for "is the server
+syscall-bound" and the wrong one for "did this change to `parse_http_version`
+do anything" — the executor row swings ±10% between wrk rounds, and a 100 ns
+change is invisible inside that. This splits the user-space request path by
+part, in isolation, so a change to one part is measured against that part and
+not against loopback noise.
 
     uv run mojo run -I packages/m0-http -I packages/m0-core \\
       scripts/probes/bench_http_parts.mojo

@@ -41,7 +41,7 @@ struct ServerConfig(Copyable, Movable):
     happened: 2 MB here against the 4 MB body default meant every upload
     between the two failed with a 400 under every `--max-body`, including
     no flag at all; three real Django projects' image uploads found it
-    (docs/REAL_APP_VALIDATION.md, 2026-08-26).
+    (docs/notes/the-soak-record.md, 2026-08-26).
     """
 
     var max_request_body_size: Int

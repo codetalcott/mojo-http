@@ -18,9 +18,10 @@ cannot drift from the artifact it cites: ``--check`` runs in CI (via
 ``poe check-docs``) and fails the build when someone commits a new
 artifact without re-rendering, or edits a table by hand.
 
-Five kinds are rendered, across three documents. docs/WSGI_PERFORMANCE.md is
-the working record — narrative, dead ends, the measurements that inverted a
-conclusion. docs/BENCHMARKS.md is the public page, and the reason it renders
+Six kinds are rendered, across three documents. docs/WSGI_PERFORMANCE.md
+renders the layer split; the working record behind it — narrative, dead
+ends, the measurements that inverted a conclusion — is the dated notes it
+links. docs/BENCHMARKS.md is the public page, and the reason it renders
 from the same artifacts rather than quoting the working record is the whole
 premise of publishing numbers at all: a public claim and a private
 measurement that can disagree eventually do. docs/SERVER_PERFORMANCE.md

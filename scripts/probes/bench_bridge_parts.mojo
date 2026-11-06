@@ -1,11 +1,11 @@
 """Where the WSGI bridge's per-request cost actually goes.
 
-`docs/WSGI_PERFORMANCE.md` splits the bridge by part rather than guessing at
-it, because guessing was wrong twice: the ~1 ms per request was "obviously"
-the Python shim and it was 48 µs of `serialize_request` in Mojo; then the
-remaining 1.07 µs was described as three costs and it was one of them. This
-is the instrument that settled both, and every later change to the boundary
-is measured with it before and after.
+`docs/notes/the-wsgi-bridge-by-part.md` splits the bridge by part rather than
+guessing at it, because guessing was wrong twice: the ~1 ms per request was
+"obviously" the Python shim and it was 48 µs of `serialize_request` in Mojo;
+then the remaining 1.07 µs was described as three costs and it was one of
+them. This is the instrument that settled both, and every later change to the
+boundary is measured with it before and after.
 
     uv run mojo run -I packages/m0-wsgi -I packages/m0-http -I packages/m0-core \\
       scripts/probes/bench_bridge_parts.mojo

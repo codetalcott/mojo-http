@@ -217,7 +217,7 @@ struct AsgiExecutor(Movable):
         Returns the count of threads that did not end cleanly. With
         `timeout_ns >= 0` the join is bounded, as `BlockingPool`'s is: an
         executor whose loop never comes back (a task awaiting a chunk credit
-        that will never arrive, docs/REAL_APP_VALIDATION.md) is counted in
+        that will never arrive, docs/notes/the-soak-record.md) is counted in
         `stragglers` and left behind rather than waited for forever.
 
         BLOCKS — detach from the interpreter around it, exactly as with
