@@ -434,6 +434,19 @@ def provenance_problems(kind, artifact, current):
                 "(a two-round median of a bimodal tail is a coin toss) -- "
                 "re-run the bench with BENCH_ROUNDS>=3 and commit the artifact"
             )
+    # The Environment line renders `parameters.rounds`, so a row measured in
+    # fewer rounds than that is a median the table misdescribes: on
+    # 2026-10-23 a server left on the port kept every m0serve arm out of the
+    # layer split's first round, and the page said three rounds over two.
+    claimed = str((artifact.get("parameters") or {}).get("rounds", ""))
+    if claimed.isdigit() and artifact.get("rows"):
+        have = rounds_behind(artifact)
+        if have < int(claimed):
+            out.append(
+                f"{kind}: the newest artifact says {claimed} rounds, but its "
+                f"thinnest row has {have}, so an arm dropped out of a round -- "
+                "re-run the bench and commit the artifact"
+            )
     recorded = env.get("version")
     m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", recorded or "")
     if not m:
@@ -1083,6 +1096,19 @@ def selftest():
     ok &= not got
     got = provenance_problems("layer-split", {"environment": art()["environment"], "rows": [{"name": "x", "rps": 1.0}]}, (0, 18, 0))
     print(f"  {'caught' if not got else 'MISSED'}          (control: the floor is the mixed table's, not every kind's)")
+    ok &= not got
+
+    def claimed(rounds_of):
+        rows = [{"name": name, "round": r, "rps": 1.0}
+                for name, n in rounds_of.items() for r in range(1, n + 1)]
+        return {"environment": art()["environment"], "parameters": {"rounds": "3"}, "rows": rows}
+
+    got = provenance_problems("layer-split", claimed({"granian+bare w1": 3, "m0serve+bare w1 bt0": 2}), (0, 18, 0))
+    short_ok = any("dropped out of a round" in g for g in got)
+    print(f"  {'caught' if short_ok else 'MISSED'}          an artifact saying three rounds with a row measured in two")
+    ok &= short_ok
+    got = provenance_problems("layer-split", claimed({"granian+bare w1": 3, "m0serve+bare w1 bt0": 3}), (0, 18, 0))
+    print(f"  {'caught' if not got else 'MISSED'}          (control: every row in the rounds it says passes)")
     ok &= not got
 
     # Comparator drift: the contamination signature is flagged, uniform

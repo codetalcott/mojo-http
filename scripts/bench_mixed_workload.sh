@@ -96,7 +96,7 @@ stop_slow() {
 
 measure() {   # $1 = label, $2 = concurrent slow requests
   curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o /dev/null http://127.0.0.1:8080/ \
-    || { echo "$1: never healthy" | tee -a "$OUT"; return; }
+    || { echo "$1: never healthy; a run with a row missing is refused, so no artifact is written" | tee -a "$OUT"; stop; exit 1; }
   # Warm every worker, THEN settle. Each worker imports Django lazily on its
   # first request, and a 200-400ms import landing inside the measured window
   # is indistinguishable from a slow-view tail — which is exactly the
@@ -151,6 +151,11 @@ if [ ! -x "${BENCH_VENV:-.venv}/bin/granian" ] && [ "${BENCH_NO_GRANIAN:-}" != 1
 fi
 SRVLOG=$(mktemp)
 quiet_or_die
+# A server left on the port is refused before anything starts: on
+# 2026-10-23 one held 8080, every m0serve arm of the first round was never
+# healthy, and the artifact carried two rounds where it said three.
+python3 "$(dirname "$0")/bench_guard.py" port 8080 | tee -a "$OUT"
+[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1
 for round in $(seq 1 $ROUNDS); do
   quiet_or_die
   for n in 4; do

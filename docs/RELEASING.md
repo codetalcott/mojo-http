@@ -154,7 +154,10 @@ signature, and also what a real change looks like; when the code did
 change, `render_bench_docs.py --accept-drift` stamps the artifact with
 the comparison it accepts, and the stamp is committed beside it. The
 mixed-workload artifact needs three rounds (its p99 is bimodal on a GIL
-build and the table renders the min–max beside each median).
+build and the table renders the min–max beside each median). The three
+shell benches write no artifact when port 8080 is already held, when an
+arm never answers, or when the parity check differs. `--check` refuses an
+artifact whose thinnest row has fewer rounds than it says.
 
 ### Linux conclusions
 
