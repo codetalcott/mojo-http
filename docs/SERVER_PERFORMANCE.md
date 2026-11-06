@@ -16,7 +16,7 @@ zero.
   the same session as its counterparts, and any before/after claim comes
   from alternating A/B runs rather than a remembered number.
 - `apps/hello/server.mojo` compiled with `mojo build` (Mojo 1.0, the
-  `uv.lock` pin). Single process, `listen_and_serve_nonblocking`, default
+  pin on that date). Single process, `listen_and_serve_nonblocking`, default
   `ServerConfig`.
 - wrk 4.1.0: 2 threads, 16 connections, 10 s runs after warm-up, keep-alive,
   against `/` (13-byte plain-text body). Three runs per configuration; the
@@ -397,8 +397,8 @@ benchmark page's row (stdlib asyncio, c16, uvicorn asyncio re-measured
 beside each arm, `bench/results/parse-lever-ab/`) the pump went 55.7k →
 60.1k rps and `M0_INVERTED=1` 54.5k → 59.7k — both now above the
 comparator's ~58.5k, which neither was before — and on the uvloop
-executor 63.2k → 69.1k and 60.2k → 66.4k. ROADMAP.md's inversion entry
-carries the reading.
+executor 63.2k → 69.1k and 60.2k → 66.4k.
+[notes/loop-inversion.md](notes/loop-inversion.md) carries the reading.
 
 What remains is ~0.86 µs of parse against the 5.3 µs of a request that is
 the two syscalls, which no parser touches.
@@ -432,7 +432,7 @@ costs in the same session; the bare WSGI row is 0.97–0.98x Granian at
 
 ## The outbox sweep (2026-08-29)
 
-The other per-pass cost the inversion entry in ROADMAP.md had named.
+The other per-pass cost [the inversion note](notes/loop-inversion.md) had named.
 Every pass swept all 1,024 slots for a streaming connection whose outbox
 needed draining, and the miss path — two flag loads per slot, none set —
 measured **1.2–1.3 µs per pass** in isolation (a scratch spike over two
@@ -471,8 +471,8 @@ within noise.
 
 The pump row's question — is an explicit pause better than the
 accidental one? — was answered the same day with fourteen more arms
-(`bench/results/outbox-sweep/pacing/`; the table is in ROADMAP.md,
-"Pacing the pump's loop thread"). A spin of 1.2–2 µs on *every* pass
+(`bench/results/outbox-sweep/pacing/`; the table is in
+[notes/pump-pacing.md](notes/pump-pacing.md)). A spin of 1.2–2 µs on *every* pass
 reproduces the sweep to within noise (60.0–60.1k against 59.95k); a
 spin only before a partial flush does nothing (58.6–59.0k, the same as
 no pause), because the batch is already whatever the previous `wait`
@@ -498,12 +498,11 @@ fused loop that checks each row's tag before touching its floats. Both arms
 generate the corpus from one LCG and must return the same top-k before
 anything is timed.
 
-The table shows both halves of the rule. Unfiltered, numpy hands one matvec
-to Accelerate, and the hand-written loop loses to it per core: a library call
-that already covers the work is not a place to write a kernel. Filtered, numpy
-has to gather, and the gather holds the GIL — visible in the numpy arm's
-cores column, which stays under a core and a half with four handler threads
-behind it, while the Mojo mount spreads across its threads (SPEC M25).
+Unfiltered, numpy hands one matvec to Accelerate, and the hand-written loop
+loses to it per core. Filtered, numpy has to gather, and the gather holds
+the GIL: the numpy arm's cores column stays near a core and a half with
+four handler threads behind it, while the Mojo mount spreads across its
+threads (SPEC M25).
 
 <!-- generated: mojo-mount -- edit bench/results, not this table -->
 Source: [`mojo-mount-20261023T022617Z.json`](../bench/results/mojo-mount-20261023T022617Z.json) — 2026-10-23T02:26:17+00:00, commit `d207a9ef`.
@@ -520,8 +519,8 @@ Throughput and per core are Mojo over numpy: the median across rounds of the rat
 
 ## Workers or threads, for a Mojo application (2026-09-18)
 
-`m0serve` defaults to prefork for Python's reasons: a GIL, an interpreter to
-fork before. A Mojo application under the Mojo host has neither, and
+`m0serve` scales across cores by prefork (`--workers N`) for Python's
+reasons: a GIL, an interpreter to fork before. A Mojo application under the Mojo host has neither, and
 `M0_THREADS=N` serves it as N loops on N threads of one process (SPEC E27).
 `uv run poe bench-host-modes` measures the two against each other on
 `apps/ramp`: `now` is answered on the loop and measures the loop, `search` is
@@ -543,9 +542,9 @@ The last four columns are threads over workers: the median across rounds of the 
 <!-- /generated: host-modes -->
 
 The modes serve the same requests at the same tail, and threads hold less
-memory: one runtime instead of N. On this machine the `now` rows are the
-client's — one worker serves as many as four, `wrk` running out of cores
-first — so what they compare is CPU per request. The Linux run, the reading
+memory: one runtime instead of N. On this machine `wrk` runs out of cores
+before the server does: one worker serves as many `now` requests as four.
+Those rows compare CPU per request. The Linux run, the reading
 of both, and why prefork stays the first recommendation (a worker that dies
 is replaced; a loop that dies takes the process) are in
 [loops-on-threads](notes/loops-on-threads.md) (DECISIONS D35). The x86-64
@@ -565,8 +564,8 @@ measures the modes on ONE core for the blobs deploy (D36).
   flatters servers that batch parse/write — mojo-http now answers that
   shape, but attempts no batching: one response per parse, one send each.
 - **`writev` for header/body split** — the response is already assembled
-  into one buffer and sent with one syscall; vectored IO would only help if
-  encode stopped copying the body, i.e. after next-step 4.
+  into one buffer and sent with one syscall; vectored IO would not help
+  until encode stops copying the body.
 - **io_uring** — a different backend entirely; the epoll loop is not the
   bottleneck at current rates.
 
@@ -594,4 +593,6 @@ sweep) and prints a summary table.
 
 The Mojo-mount table is `uv run poe bench-mojo-mount` (needs wrk; numpy is a
 dev dependency), which waits for a quiet machine, asserts both arms agree,
-and writes the artifact the table renders from.
+and writes the artifact the table renders from. The workers-or-threads
+table is `uv run poe bench-host-modes` (needs wrk; record from a clean
+tree, then `uv run poe render-bench-docs`).
