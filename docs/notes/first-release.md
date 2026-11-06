@@ -152,7 +152,7 @@ from ~140 ms to ~5 ms while lifting throughput at every worker count.
 Benchmarked against gunicorn (same Django project, same worker counts, wrk):
 ~1.6x gunicorn's throughput at 1–2 workers and ~2.2x at 4 under keep-alive,
 with the remaining tail-latency caveat on close-per-request traffic —
-methodology and numbers in [WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md).
+methodology and numbers in [WSGI against gunicorn and the case for the pool](wsgi-against-gunicorn-and-the-pool.md).
 
 ## PEP 3333 conformance (done)
 

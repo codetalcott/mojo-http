@@ -26,7 +26,7 @@ printed at exit). Wall per row ≈ 13 s:
 
 At saturation the loop was parked 5 % of the time and blocked on the GIL
 45 %: GIL-bound, not I/O-bound, which is why the pump measured one core with
-two threads (WSGI_PERFORMANCE.md, "Evaluated the same day") and why the
+two threads ([loop-inversion.md](loop-inversion.md), "Evaluated the same day") and why the
 inversion's gain was per-core only. Granian's tokio threads never take the
 GIL; its 1.9x on bare WSGI in the same session was 1.75 cores genuinely
 overlapping against m0serve's 1.1 that could not.

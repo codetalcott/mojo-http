@@ -33,8 +33,7 @@ queued job is an idle core rather than a GIL waiter.
 
 Zero-config runs `--blocking-threads min(cores, 8)` so that one slow
 view cannot stall every connection out of the box
-([WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md), "A slow view strands
-the connections pinned behind it"). The isolation is real and the cost
+([WSGI against gunicorn and the case for the pool](wsgi-against-gunicorn-and-the-pool.md#a-slow-view-strands-the-connections-pinned-behind-it)). The isolation is real and the cost
 on a view that never waits had become large, because the loop got fast
 and the pool did not. Per-thread CPU by `ps -M` (`scripts/probes/bench_threads.py`), medians
 over 8 s, main at `3a365c4`:

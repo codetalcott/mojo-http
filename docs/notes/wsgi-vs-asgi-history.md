@@ -324,7 +324,7 @@ the weekly canary (phase D).
 What Stage A does **not** buy, stated plainly: per-request balancing. A
 keep-alive connection stays pinned to the loop that accepted it, exactly as
 under prefork, so the keep-alive p99 tail in
-[WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md) is unchanged by it — and a slow
+[the 2026-08 WSGI runs](wsgi-against-gunicorn-and-the-pool.md#the-keep-alive-tail-under-wrk-and-the-stage-b-decision) is unchanged by it — and a slow
 view stops every connection its loop holds, which the mixed-workload row in
 that document measures at ~120x on fast-request p99, identically under
 `--threads` and `--workers`.
@@ -453,8 +453,7 @@ fallback handler is built with `lifespan=False`).
 The bench-asgi gate against uvicorn: the mixed slow/fast tail **passes**
 (fast p99 2.87 ms vs 3.27 ms) and hello-world throughput stands at
 0.88–0.94x across runs — the located remainder and its fix paths are
-recorded in [WSGI_PERFORMANCE.md](../WSGI_PERFORMANCE.md) §"The ASGI executor
-vs uvicorn". The executor opportunistically uses uvloop for its own loop
+recorded in [The ASGI executor against uvicorn](the-asgi-executor-against-uvicorn.md#the-asgi-executor-vs-uvicorn). The executor opportunistically uses uvloop for its own loop
 where installed, stdlib asyncio otherwise.
 
 **Phase 3a — shipped: streaming ASGI responses.** An `http.response.body`
@@ -622,7 +621,7 @@ Measured, and pinned by `smoke-hybrid`: with four blocking 2-second Django
 views holding every pool thread, the FastHTML mount answers at **p50
 1.3 ms, p99 2.8 ms**. Sharing one execution mode puts those in the seconds
 — which is the same shape as the mixed-workload run that justified
-`--blocking-threads` in the first place (§`WSGI_PERFORMANCE.md`).
+`--blocking-threads` in the first place ([the mixed-workload run](wsgi-against-gunicorn-and-the-pool.md#a-slow-view-strands-the-connections-pinned-behind-it)).
 
 **Several ASGI mounts (2026-08).** The one-ASGI-mount limit is gone: each
 ASGI mount gets its own executor, and the ack routing that blocked a

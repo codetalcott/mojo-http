@@ -132,8 +132,9 @@ writing overlap the executor's Python, and this row runs at
 and <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x uvicorn with uvloop in
 requests per second, <!-- num:asgi-per-core-vs-uvicorn@2 -->1.43<!-- /num -->x
 and <!-- num:asgi-per-core-vs-uvloop@2 -->0.99<!-- /num -->x per core. The
-executor can use two cores, and uvicorn one. The concurrency tables and
-the loop-by-loop comparison are in [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md).
+executor can use two cores, and uvicorn one. The 2026-08 concurrency
+tables and the loop-by-loop comparison are in
+[The ASGI executor against uvicorn](notes/the-asgi-executor-against-uvicorn.md).
 
 ## Fast-request tail under mixed load
 
