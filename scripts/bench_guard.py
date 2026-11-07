@@ -2,6 +2,7 @@
 
     python3 scripts/bench_guard.py wait            # block until quiet, or exit 1
     python3 scripts/bench_guard.py wait --threshold 50 --samples 3 --timeout 120
+    python3 scripts/bench_guard.py port 8080       # exit 1 if something listens there
     python3 scripts/bench_guard.py --selftest      # prove the guard can fire
 
 Why this exists: on 2026-09-06 a layer-split recording landed its pool
@@ -35,9 +36,18 @@ terminal this guard prints into, which is a feedback loop. The
 contamination the guard exists for was a core and a half, and a daemon
 doing real work (`mediaanalysisd` at 120 %) is caught at any threshold
 above its idle noise.
+
+`port` refuses a port something already listens on. On 2026-10-23 a
+server the previous bench left behind still held 8080: m0serve and
+`apps/hello` refused the port for the first round, Granian bound beside
+it, and the layer-split artifact went out with every m0serve median taken
+over two rounds where its parameters said three. A connect to the
+loopback address is the test, because a listener on the wildcard accepts
+there too.
 """
 
 import os
+import socket
 import subprocess
 import sys
 import time
@@ -133,6 +143,15 @@ def wait_quiet(threshold, samples, interval, timeout, out=sys.stdout):
         time.sleep(interval)
 
 
+def port_held(port, host="127.0.0.1"):
+    """True when something accepts connections on `host:port`."""
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
 def selftest():
     ok = True
 
@@ -182,6 +201,16 @@ def selftest():
     check("`wait` passes a threshold nothing can reach",
           wait_quiet(threshold=1e9, samples=1, interval=0, timeout=0, out=sink))
 
+    for bind in ("127.0.0.1", "0.0.0.0"):
+        listener = socket.socket()
+        listener.bind((bind, 0))
+        listener.listen()
+        held = listener.getsockname()[1]
+        check(f"`port` sees a listener on {bind}", port_held(held))
+        listener.close()
+        check(f"(control: the same port is free once the {bind} listener closes)",
+              not port_held(held))
+
     print("bench_guard selftest: " + ("PASS" if ok else "FAIL"))
     return ok
 
@@ -189,6 +218,13 @@ def selftest():
 def main(argv):
     if "--selftest" in argv:
         return 0 if selftest() else 1
+    if argv[:1] == ["port"] and len(argv) == 2 and argv[1].isdigit():
+        if port_held(int(argv[1])):
+            print(f"bench_guard: REFUSING — something already listens on port "
+                  f"{argv[1]} (`lsof -nP -iTCP:{argv[1]} -sTCP:LISTEN` names it); "
+                  "no artifact is written", flush=True)
+            return 1
+        return 0
     if not argv or argv[0] != "wait":
         print(__doc__)
         return 2

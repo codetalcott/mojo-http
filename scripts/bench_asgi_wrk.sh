@@ -82,7 +82,7 @@ drain_ports() {
 measure() {
   local name=$1
   curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o /dev/null "http://127.0.0.1:8080$REQ_PATH" \
-    || { echo "$name: never healthy" | tee -a "$OUT"; return; }
+    || { echo "$name: never healthy; a run with a row missing is refused, so no artifact is written" | tee -a "$OUT"; stop; exit 1; }
   wrk -t2 -c$CONNS -d2s "${HDRS[@]}" "http://127.0.0.1:8080$REQ_PATH" > /dev/null 2>&1
   local cpu_samples=/tmp/bench_cpu_$$
   ( : > "$cpu_samples"
@@ -122,16 +122,22 @@ parity() {
   local tmp=$(mktemp -d)
   m0;                 curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o "$tmp/m0" "http://127.0.0.1:8080$REQ_PATH"; stop
   uv_loop asyncio;    curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o "$tmp/uv" "http://127.0.0.1:8080$REQ_PATH"; stop
-  if cmp -s "$tmp/m0" "$tmp/uv"; then
+  if [ -s "$tmp/m0" ] && cmp -s "$tmp/m0" "$tmp/uv"; then
     echo "byte parity m0serve/uvicorn on the bare ASGI app: identical" | tee -a "$OUT"
   else
-    echo "byte parity m0serve/uvicorn: DIFFER - rows are not comparable" | tee -a "$OUT"
+    echo "byte parity m0serve/uvicorn: DIFFER - rows are not comparable, so no artifact is written" | tee -a "$OUT"
+    rm -rf "$tmp"; exit 1
   fi
   rm -rf "$tmp"
 }
 
 quiet_or_die
 drain_ports
+# A server left on the port is refused before anything starts: on
+# 2026-10-23 one held 8080, every m0serve arm of the first round was never
+# healthy, and the artifact carried two rounds where it said three.
+python3 "$(dirname "$0")/bench_guard.py" port 8080 | tee -a "$OUT"
+[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1
 parity
 
 for round in $(seq 1 $ROUNDS); do

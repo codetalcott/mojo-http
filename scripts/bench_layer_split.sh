@@ -87,7 +87,7 @@ drain_ports() {
 measure() {
   local name=$1
   curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o /dev/null http://127.0.0.1:8080/ \
-    || { echo "$name: never healthy" | tee -a "$OUT"; return; }
+    || { echo "$name: never healthy; a run with a row missing is refused, so no artifact is written" | tee -a "$OUT"; stop; exit 1; }
   wrk -t2 -c$CONNS -d3s "${HDRS[@]}" http://127.0.0.1:8080/ > /dev/null 2>&1
   # CPU sampling runs beside the measurement, because "1 worker" is a claim
   # about configuration, not about cores: Granian's w1 worker was measured
@@ -128,20 +128,31 @@ parity() {
       bareapp.wsgi:application ) > /dev/null 2>&1 & pid=$!
   curl --retry 30 --retry-delay 1 --retry-all-errors -s --fail -o "$tmp/gr" http://127.0.0.1:8080/; stop
   echo "sizes: hello=$(wc -c < "$tmp/hello" | tr -d ' ') m0serve=$(wc -c < "$tmp/m0" | tr -d ' ') granian=$(wc -c < "$tmp/gr" | tr -d ' ')" | tee -a "$OUT"
-  if cmp -s "$tmp/m0" "$tmp/gr"; then
+  if [ -s "$tmp/m0" ] && cmp -s "$tmp/m0" "$tmp/gr"; then
     echo "byte parity m0serve/granian on the bare app: identical" | tee -a "$OUT"
   else
-    echo "byte parity m0serve/granian: DIFFER — rows 2 and 3 are not comparable" | tee -a "$OUT"
+    echo "byte parity m0serve/granian: DIFFER — rows 2 and 3 are not comparable, so no artifact is written" | tee -a "$OUT"
+    rm -rf "$tmp"; exit 1
   fi
   rm -rf "$tmp"
 }
 
+# Granian's rows are the comparators the renderer measures every other
+# row's move against, so a run without them is refused, as the mixed
+# workload's is.
 if [ ! -x .venv/bin/granian ]; then
-  echo "NOTE: granian rows will be skipped - install the pinned comparator with: uv sync --group bench" | tee -a "$OUT"
+  echo "bench_layer_split: .venv/bin/granian is missing, so the comparator rows would be skipped." | tee -a "$OUT"
+  echo "  uv sync --frozen --group bench" | tee -a "$OUT"
+  exit 1
 fi
 
 quiet_or_die
 drain_ports
+# A server left on the port is refused before anything starts: on
+# 2026-10-23 one held 8080, every m0serve arm of the first round was never
+# healthy, and the artifact carried two rounds where it said three.
+python3 "$(dirname "$0")/bench_guard.py" port 8080 | tee -a "$OUT"
+[ "${PIPESTATUS[0]}" -eq 0 ] || exit 1
 parity
 
 for round in $(seq 1 $ROUNDS); do

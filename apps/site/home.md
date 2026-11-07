@@ -86,7 +86,7 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
   core on a bare ASGI app it is <!-- num:asgi-per-core-vs-uvloop@2 -->0.99<!-- /num -->x uvicorn with uvloop; it
   serves <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x the requests per second only because it uses
   <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn uses one. On bare WSGI, one worker with
-  one handler thread each, Granian to m0serve is <!-- num:granian-vs-m0-rps@2 -->0.99<!-- /num -->x, a tie.
+  one handler thread each, Granian to m0serve is <!-- num:granian-vs-m0-rps@2 -->1.00<!-- /num -->x, a tie.
   Under mixed load its fast-request p99 is ahead of uvicorn's in every
   recorded run. These are one Apple M4 laptop's numbers; on Linux the
   per-core ASGI figure is a little behind uvloop's. The
