@@ -969,10 +969,14 @@ for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and
 and the cookie a grant binds to; `sessionid`), `M0_THREAD_HEADER` (`1`
 names the handler-pool thread in `x-thread` on every response; off),
 `M0_SPAWN_WORKERS`,
-`M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT`, `M0_REPLAY_FRAMES`,
-`M0_MAX_CONNECTIONS` and `M0_WS_ORIGIN` (the env forms of those
-m0serve flags, read by m0serve's `from_env`, which reports every `M0_*`
-value it cannot read rather than ignoring it silently), `M0_INVERTED` (`1`
+`M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT`, `M0_REPLAY_FRAMES` and
+`M0_WS_ORIGIN` (the env forms of those m0serve flags, read by m0serve's
+`from_env`, which reports every `M0_*` value it cannot read rather than
+ignoring it silently), `M0_MAX_CONNECTIONS` (connections per loop, 1 to
+65536, 1024 by default: `--max-connections` in m0serve and in the Mojo
+host alike, which both refuse a count outside it with 78; `m0_http.limits`
+holds the bound and the full-loop lines both print, SPEC C20, E43),
+`M0_INVERTED` (`1`
 runs the loop inside the executor's asyncio loop, where the topology
 allows), and `M0_LIBPQ`, `M0_LIBSQLITE3` and `M0_LIBZSTD` (the library to
 `dlopen`).
