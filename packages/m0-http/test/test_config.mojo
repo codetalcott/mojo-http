@@ -31,6 +31,7 @@ def _clear():
         String("M0_SSE_HEARTBEAT_MS"),
         String("M0_APP_TICK_MS"),
         String("M0_MAX_KEEPALIVE_REQUESTS"),
+        String("M0_MAX_CONNECTIONS"),
     ]:
         _ = setenv(name, "", True)
 
@@ -292,8 +293,9 @@ def test_server_config_reflects_the_off_settings_too() raises:
 
 
 def test_server_config_leaves_server_only_tuning_at_defaults() raises:
-    # The environment is not allowed to reach connection limits or body caps;
-    # those stay wherever ServerConfig() puts them.
+    # The environment is not allowed to reach body caps or timeouts; those
+    # stay wherever ServerConfig() puts them. The connection count is the
+    # exception, `M0_MAX_CONNECTIONS`, and unset it is the default too.
     _clear()
     _ = setenv("M0_ACCESS_LOG", "true", True)
     var mapped = AppConfig().server_config()
@@ -305,6 +307,36 @@ def test_server_config_leaves_server_only_tuning_at_defaults() raises:
     assert_equal(mapped.header_read_timeout, plain.header_read_timeout)
     assert_equal(mapped.idle_timeout, plain.idle_timeout)
     _clear()
+
+
+def test_the_connection_count_reaches_the_server_config_when_a_loop_holds_it() raises:
+    """`M0_MAX_CONNECTIONS` is the fifth shared field (SPEC E43). It is read
+    as written, so the host's `max-connections` check sees 0 or 65537 and
+    refuses it with 78; and `server_config` passes on only a count one loop
+    can hold, so an application that builds a `Server` from it without the
+    host's checks gets the default rather than a loop of no slots.
+
+    covers: E43
+    """
+    _clear()
+    var plain = ServerConfig().max_connections
+    _ = setenv("M0_MAX_CONNECTIONS", "2048", True)
+    assert_equal(AppConfig().max_connections, 2048)
+    assert_equal(AppConfig().server_config().max_connections, 2048)
+    _ = setenv("M0_MAX_CONNECTIONS", "65536", True)
+    assert_equal(AppConfig().server_config().max_connections, 65536)
+    _ = setenv("M0_MAX_CONNECTIONS", "1", True)
+    assert_equal(AppConfig().server_config().max_connections, 1)
+    _ = setenv("M0_MAX_CONNECTIONS", "0", True)
+    assert_equal(AppConfig().max_connections, 0)
+    assert_equal(AppConfig().server_config().max_connections, plain)
+    _ = setenv("M0_MAX_CONNECTIONS", "65537", True)
+    assert_equal(AppConfig().max_connections, 65537)
+    assert_equal(AppConfig().server_config().max_connections, plain)
+    _ = setenv("M0_MAX_CONNECTIONS", "many", True)
+    assert_equal(AppConfig().max_connections, plain)
+    _clear()
+    assert_equal(AppConfig().max_connections, plain)
 
 
 def test_recv_buffer_limit_covers_headers_plus_body() raises:

@@ -42,6 +42,12 @@ Env vars:
                     The cap's cost is a reconnect per N requests, and at
                     100 that was the fast route's whole p99 on a loopback
                     benchmark (docs/notes/pool-tail.md)
+    M0_MAX_CONNECTIONS — connections one event loop holds open at once, 1 to
+                    65536 (default: 1024). Streams take all but a sixteenth,
+                    at most 16, kept for requests (SPEC C20). Read as written:
+                    a count the host cannot serve (0, or above 65536) is its
+                    `max-connections` check's to refuse with 78, and
+                    `server_config` passes on only a count a loop can hold
 
 Integers are read three ways, each for its own input: `parse_env_int`
 (Optional, digits only, overflow refused) for anything the environment or a
@@ -53,6 +59,8 @@ from std.os import getenv
 
 from lightbug_http.address import join_host_port
 from lightbug_http.server_config import ServerConfig
+
+from .limits import connections_servable
 
 
 struct AppConfig(Copyable, Movable):
@@ -74,6 +82,9 @@ struct AppConfig(Copyable, Movable):
     """`M0_SPAWN_WORKERS`: workers exec a fresh image after the fork."""
     var max_keepalive_requests: Int
     """`M0_MAX_KEEPALIVE_REQUESTS`: the keep-alive request cap (0 = never)."""
+    var max_connections: Int
+    """`M0_MAX_CONNECTIONS`: connections one loop holds, as written; the
+    host refuses one it cannot serve (`connections_servable`)."""
 
     def __init__(out self, default_port: Int = 8080):
         """Load configuration from M0_-prefixed env vars with defaults."""
@@ -99,6 +110,13 @@ struct AppConfig(Copyable, Movable):
         self.max_keepalive_requests = _parse_int_env("M0_MAX_KEEPALIVE_REQUESTS", 1000)
         if self.max_keepalive_requests < 0:
             self.max_keepalive_requests = 1000
+        # Digits are read whatever they name, as `M0_PORT` is: 0 and 70000
+        # reach the host's `max-connections` check, which refuses them with
+        # 78, rather than silently becoming the default. Anything else is
+        # the default, as every other variable's unreadable value is.
+        self.max_connections = _parse_int_env(
+            "M0_MAX_CONNECTIONS", ServerConfig().max_connections
+        )
 
         var base_url_env = getenv("M0_BASE_URL", "")
         if base_url_env.byte_length() > 0:
@@ -114,20 +132,26 @@ struct AppConfig(Copyable, Movable):
         """A `ServerConfig` carrying every field this config shares with it.
 
         `AppConfig` reads the environment; `ServerConfig` is what the server
-        actually consults. Three fields exist in both, and every app used to
-        copy them across by hand — which meant each app copied a different
-        subset, and two copied none at all, so `M0_ACCESS_LOG` silently did
-        nothing there. The mapping lives here now so there is one place to
-        update when a fourth shared field appears.
+        actually consults. Three fields existed in both, and every app used
+        to copy them across by hand — which meant each app copied a
+        different subset, and two copied none at all, so `M0_ACCESS_LOG`
+        silently did nothing there. The mapping lives here, so there is one
+        place to update when a shared field appears; there are five.
 
-        Server-only tuning (connection limits, timeouts, body caps) keeps its
-        defaults; this sets only what the environment is allowed to reach.
+        `max_connections` is passed on only when a loop can hold it
+        (`connections_servable`): the host refuses any other before it
+        serves, and an application that builds a `Server` from this without
+        the host gets the default rather than a loop of no slots. Other
+        server-only tuning (timeouts, body caps) keeps its defaults; this
+        sets only what the environment is allowed to reach.
         """
         var sc = ServerConfig()
         sc.access_log = self.access_log
         sc.sse_heartbeat_ms = self.sse_heartbeat_ms
         sc.app_tick_ms = self.app_tick_ms
         sc.max_keepalive_requests = self.max_keepalive_requests
+        if connections_servable(self.max_connections):
+            sc.max_connections = self.max_connections
         return sc^
 
 

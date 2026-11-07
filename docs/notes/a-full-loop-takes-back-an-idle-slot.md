@@ -204,5 +204,6 @@ A loop full of what may not be taken still refuses a new connection at
 accept. Leaving it in the listen backlog until a slot frees would turn a
 reset into a wait, and on an edge-triggered listener would need the freed
 slot to owe the accept a pass; nothing has measured which a client
-prefers. The Mojo host prints no notice: it has no `--max-connections` to
-name (#658).
+prefers. The Mojo host printed no notice until it had a
+`--max-connections` to name; since #658 it says the same line under its
+own name (SPEC E43).

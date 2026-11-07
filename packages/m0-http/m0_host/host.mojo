@@ -190,7 +190,7 @@ from lightbug_http.c.process import (
 from lightbug_http.connection import ListenConfig
 from lightbug_http.event_loop import run_event_loop
 from lightbug_http.offload import OffloadPool
-from lightbug_http.server_config import ServerConfig
+from lightbug_http.server_config import ServerConfig, reclaim_from_env
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.service import HTTPService
 
@@ -198,6 +198,9 @@ from lightbug_http.service import HTTPService
 # and `m0_http`, and neither imports it. See the module docstring.
 from m0_http.config import AppConfig, threads_conflict
 from m0_http.doctor import Report
+from m0_http.limits import (
+    MAX_CONNECTIONS, connections_servable, slots_full_notice, stream_cap_notice,
+)
 from m0_http.mojo_pool import JOIN_TIMEOUT_NS, MojoPool, PoolContext, PoolHandler
 from m0_http.multiworker import (
     EX_CONFIG,
@@ -953,6 +956,33 @@ def host_checks(
             if max_threads == 0
             else String("the application serves from at most ", max_threads, " loop(s)"),
         ))
+    # The connections each loop holds (SPEC E43): read whatever count the
+    # flag or the variable names, and refused here outside 1-65536, as
+    # m0serve's `max-connections` rule refuses it. The ceiling keeps one
+    # loop's slot sweeps short; more connections are more loops.
+    if not connections_servable(config.max_connections):
+        out.append(HostCheck(
+            "max-connections",
+            String(
+                "M0_MAX_CONNECTIONS must be 1-", MAX_CONNECTIONS, ", got ",
+                config.max_connections, ": a loop's sweeps walk every slot",
+            ),
+            String(
+                "set --max-connections (M0_MAX_CONNECTIONS) to a number from"
+                " 1 to ", MAX_CONNECTIONS, ", and serve more with --workers or"
+                " --threads",
+            ),
+        ))
+    else:
+        var asked = ServerConfig()
+        asked.max_connections = config.max_connections
+        out.append(HostCheck(
+            "max-connections",
+            String(
+                config.max_connections, " connections per loop, streams taking"
+                " up to ", asked.stream_limit(),
+            ),
+        ))
     # A pool thread's handler is built by `make` like a loop's, so state an
     # application keeps in one handler's memory (`max_threads()` of 1) is
     # divided by the pool as by `--threads`; the view that reads it there
@@ -1123,6 +1153,7 @@ def host_report[H: AppHandler](
     report.add_int("config", "sse_heartbeat_ms", server_config.sse_heartbeat_ms)
     report.add_int("config", "app_tick_ms", server_config.app_tick_ms)
     report.add_int("config", "max_keepalive_requests", server_config.max_keepalive_requests)
+    report.add_int("config", "max_connections", config.max_connections)
     report.add_bool("config", "qos", config.qos)
     report.add_bool("config", "spawn_workers", config.spawn_workers)
 
@@ -1135,6 +1166,7 @@ def host_report[H: AppHandler](
     report.add_fact("sources", "sse_heartbeat_ms", flags.source("--sse-heartbeat-ms"))
     report.add_fact("sources", "app_tick_ms", flags.source("--app-tick-ms"))
     report.add_fact("sources", "max_keepalive_requests", flags.source("--max-keepalive-requests"))
+    report.add_fact("sources", "max_connections", flags.source("--max-connections"))
     report.add_fact("sources", "qos", flags.source("--qos"))
     report.add_fact("sources", "spawn_workers", flags.source("--spawn-workers"))
 
@@ -1243,6 +1275,44 @@ def _raise_descriptors(config: AppConfig, mut server_config: ServerConfig):
         said += ", leaving less room for the application's own files"
     said += ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=)"
     print(said, file=stderr)
+
+
+def _size(n: Int) -> String:
+    """A byte count as the notices name it: whole MB or KB where it is one."""
+    if n > 0 and n % (1024 * 1024) == 0:
+        return String(n // (1024 * 1024), " MB")
+    if n > 0 and n % 1024 == 0:
+        return String(n // 1024, " KB")
+    return String(n, " bytes")
+
+
+def _set_notices(mut server_config: ServerConfig):
+    """The lines a loop prints the first time it refuses a body, ends one
+    that stopped arriving, answers a stream 503 at its reserve, or finds
+    every slot in use (SPEC E43): each once, naming the setting that moves
+    it, as m0serve's name its flags. A notice the application set itself is
+    kept. The connection lines are `m0_http.limits`', m0serve's own under
+    the host's name, since both take the same flags; the body has no flag
+    here, so its lines name the `ServerConfig` field."""
+    if server_config.body_size_notice.byte_length() == 0:
+        server_config.body_size_notice = String(
+            "host: a request body over ", _size(server_config.max_request_body_size),
+            " was refused with 413; raise max_request_body_size on the"
+            " ServerConfig the application passes to serve if it expects more",
+        )
+    if server_config.body_timeout_notice.byte_length() == 0:
+        server_config.body_timeout_notice = String(
+            "host: a request body still arriving ",
+            server_config.body_read_timeout, "s after its headers was refused;"
+            " raise body_read_timeout on the ServerConfig the application"
+            " passes to serve if clients upload that slowly",
+        )
+    if server_config.stream_cap_notice.byte_length() == 0:
+        server_config.stream_cap_notice = stream_cap_notice(server_config, "host")
+    if server_config.slots_full_notice.byte_length() == 0:
+        server_config.slots_full_notice = slots_full_notice(
+            server_config, reclaim_from_env(), "host"
+        )
 
 
 def serve[H: AppHandler, P: Producer = NoProducer](config: AppConfig) raises:
@@ -1372,6 +1442,8 @@ def serve[H: AppHandler, P: Producer = NoProducer](
     # The descriptors the connections need, before the bind, the fork and
     # the threads, so every loop inherits them (SPEC C21).
     _raise_descriptors(config, server_config)
+    # After the fit, so the lines name the count a loop holds.
+    _set_notices(server_config)
     if config.threads > 1:
         _serve_threaded[H, P](config, server_config)
         return

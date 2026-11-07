@@ -10,7 +10,8 @@ it), `test_host.mojo` for what only a thread-level test can see precisely
 the pre-fork pieces both hosts share (`m0_http.prefork`; a src edit the
 apps would only see after a `.mojoc` rebuild, which a test run of `src.*`
 does not need), `test_cmdline.mojo` for the command-line reader both hosts
-share (`m0_http.cmdline`, the same arrangement), or `test_respawn.mojo` for
+share (`m0_http.cmdline`, the same arrangement), `test_config.mojo` for
+`AppConfig` (`m0_http.config`, the same again), or `test_respawn.mojo` for
 the supervisor's part of the host's contract (a refusal ending the
 siblings, the respawn budget counted over a window, and what a worker it
 gave up on was handed closed, in `multiworker.mojo` and
@@ -93,6 +94,7 @@ THREADS = "threads"
 DOCTOR = "doctor"
 FLAGS = "flags"
 CMDLINE = "cmdline"
+CONFIG = "config"
 PARALLEL = "parallel"
 
 HOST = Path("packages/m0-http/m0_host/host.mojo")
@@ -101,6 +103,7 @@ VIEWS_SRC = Path("packages/m0-http/src/views.mojo")
 HOST_CHECK = Path("apps/host_check/server.mojo")
 FLAGS_SRC = Path("packages/m0-http/m0_host/flags.mojo")
 CMDLINE_SRC = Path("packages/m0-http/src/cmdline.mojo")
+CONFIG_SRC = Path("packages/m0-http/src/config.mojo")
 PREFORK_SRC = Path("packages/m0-http/src/prefork.mojo")
 ACCEPT_SHARE_SRC = Path("packages/m0-http/lightbug_http/accept_share.mojo")
 MULTIWORKER_SRC = Path("packages/m0-http/src/multiworker.mojo")
@@ -369,26 +372,29 @@ SABOTAGES = [
         "a worker killed by the stop before it armed is judged a failure",
         RESPAWN,
         MULTIWORKER_SRC,
-        '                    " its handler: a stop, not a failure".format(child_pid, sig)\n'
-        "                )\n                return\n",
-        '                    " its handler: a stop, not a failure".format(child_pid, sig)\n'
-        "                )\n                self._failed_stopping = True\n                return\n",
+        '                    " its handler: a stop, not a failure".format(child_pid, sig),\n'
+        "                    file=stderr,\n                )\n                return\n",
+        '                    " its handler: a stop, not a failure".format(child_pid, sig),\n'
+        "                    file=stderr,\n                )\n                self._failed_stopping = True\n"
+        "                return\n",
     ),
     (
         "a sibling's non-zero exit while stopping is not a failure",
         RESPAWN,
         MULTIWORKER_SRC,
-        '                " a failed drain".format(child_pid, code)\n'
-        "            )\n            self._failed_stopping = True\n",
-        '                " a failed drain".format(child_pid, code)\n            )\n',
+        '                " a failed drain".format(child_pid, code),\n'
+        "                file=stderr,\n            )\n            self._failed_stopping = True\n",
+        '                " a failed drain".format(child_pid, code),\n'
+        "                file=stderr,\n            )\n",
     ),
     (
         "a sibling killed by another signal while stopping is not a failure",
         RESPAWN,
         MULTIWORKER_SRC,
-        '                " a failed drain".format(child_pid, sig)\n'
-        "            )\n            self._failed_stopping = True\n",
-        '                " a failed drain".format(child_pid, sig)\n            )\n',
+        '                " a failed drain".format(child_pid, sig),\n'
+        "                file=stderr,\n            )\n            self._failed_stopping = True\n",
+        '                " a failed drain".format(child_pid, sig),\n'
+        "                file=stderr,\n            )\n",
     ),
     # --- the respawn budget is a rate (SPEC E36) ---------------------------------
     # Counted over the supervisor's life, the budget ran out on rare crashes
@@ -652,6 +658,39 @@ SABOTAGES = [
         '        config.threads = parse_int(value, "--threads")\n',
         '        config.threads = parse_int(value, "--threads")\n        if config.threads < 1:\n            raise Error("--threads must be at least 1")\n',
     ),
+    # --- The connection count (SPEC E43) --------------------------------------
+    (
+        "--max-connections never reaches a ServerConfig the application built",
+        DOCTOR,
+        FLAGS_SRC,
+        '        if self.was_given("--max-connections") and connections_servable(\n'
+        "            self.config.max_connections\n"
+        "        ):\n"
+        "            server_config.max_connections = self.config.max_connections\n",
+        "",
+    ),
+    (
+        "a connection count no loop can hold is served",
+        DOCTOR,
+        HOST,
+        "    if not connections_servable(config.max_connections):\n",
+        "    if False:\n",
+    ),
+    (
+        "a loop that fills says nothing",
+        DOCTOR,
+        HOST,
+        "    _set_notices(server_config)\n",
+        "",
+    ),
+    (
+        "server_config() passes on a count no loop can hold",
+        CONFIG,
+        CONFIG_SRC,
+        "        if connections_servable(self.max_connections):\n"
+        "            sc.max_connections = self.max_connections\n",
+        "        sc.max_connections = self.max_connections\n",
+    ),
     (
         "prefork is refused when MAX's parallel runtime is linked",
         PARALLEL,
@@ -721,6 +760,8 @@ GATES = {
     # `m0_http.cmdline` through the `.mojoc`, so `test_host_flags.mojo`
     # would not see an edit there until `build-http` ran.
     CMDLINE: _unit("test_cmdline.mojo"),
+    # `AppConfig`, compiled from `src/` for the same reason.
+    CONFIG: _unit("test_config.mojo"),
     FLAGS: _unit("test_host_flags.mojo"),
 }
 

@@ -33,6 +33,12 @@ from lightbug_http.server_config import ServerConfig, reclaim_from_env
 from lightbug_http.header import Headers
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig, listen_host, parse_env_int
+# `MAX_CONNECTIONS` is the host's bound too (SPEC E43), so it lives below
+# both; imported here, `checks.mojo` and the tests still read it from `cli`.
+from m0_http.limits import (
+    MAX_CONNECTIONS, slots_full_notice as _slots_full_notice,
+    stream_cap_notice,
+)
 
 from .ws_origin import normalize_ws_origin
 
@@ -51,12 +57,6 @@ frames of up to 64 KB, and the journal evicts by shifting its lists on the
 loop thread (`checks.flag_checks`' `replay-frames` rule refuses more)."""
 comptime DEFAULT_REPLAY_FRAMES = 64
 """`--replay-frames`' default: `DatastarStream`'s journal depth, per loop."""
-comptime MAX_CONNECTIONS = 65536
-"""The largest `--max-connections` the server accepts, per loop. A loop's
-periodic sweeps (idle deadlines, flushes, the drain) walk every slot, so the
-cap keeps one loop's walk short; more connections are more loops
-(`--workers`, `--threads`), and `checks.flag_checks`' `max-connections`
-rule refuses more."""
 
 comptime EXIT_CONFIG = 78
 """`EX_CONFIG` from sysexits: the configuration names something absent.
@@ -561,48 +561,16 @@ struct ServeOptions(Copyable, Movable):
             "s) after its headers was refused; raise --body-timeout or"
             " M0_BODY_TIMEOUT if clients upload that slowly",
         )
-        sc.stream_cap_notice = String(
-            "m0serve: a stream was answered 503: streams held ",
-            sc.stream_limit(), " of this loop's ", sc.max_connections,
-            " connections, and the last ", sc.stream_reserve(),
-            " are kept for requests; raise --max-connections or"
-            " M0_MAX_CONNECTIONS, or serve more loops (--workers, --threads)",
-        )
+        sc.stream_cap_notice = stream_cap_notice(sc, "m0serve")
         sc.slots_full_notice = slots_full_notice(sc, reclaim_from_env())
         return sc^
 
 
 def slots_full_notice(sc: ServerConfig, reclaim: Bool) -> String:
-    """The line a loop prints the first time a new connection finds every
-    slot in use (SPEC C23), saying what the loop then does with this
-    configuration: which connections it takes back -- one idle between
-    requests for a second, while `--idle-timeout` is on; one still sending
-    its head after a second, while the header timeout is -- or, with
-    `M0_RECLAIM=0` or both timeouts off, that it refuses each new one."""
-    var taken = List[String]()
-    if reclaim and sc.idle_timeout > 0:
-        taken.append(String("one idle between requests for a second"))
-    if reclaim and sc.header_read_timeout > 0:
-        taken.append(String("one still sending its request after a second"))
-    var what: String
-    if len(taken) == 0:
-        var why = String("M0_RECLAIM=0 takes none back")
-        if reclaim:
-            why = String("with the idle and header timeouts off none is taken back")
-        what = why + ", so each new connection is refused until one closes"
-    else:
-        var which = String(taken[0])
-        if len(taken) == 2:
-            which = String(taken[0], ", or ", taken[1], ",")
-        what = String(
-            which, " is closed to admit the next, and a connection is"
-            " refused only when none is",
-        )
-    return String(
-        "m0serve: all ", sc.max_connections, " of a loop's connections"
-        " were in use: ", what, "; raise --max-connections or"
-        " M0_MAX_CONNECTIONS, or serve more loops (--workers, --threads)",
-    )
+    """The line m0serve prints for a loop that finds every slot in use
+    (SPEC C23): `m0_http.limits.slots_full_notice`, which the Mojo host
+    prints too, under m0serve's name."""
+    return _slots_full_notice(sc, reclaim, "m0serve")
 
 
 def parse_app_spec(spec: String) raises -> Tuple[String, String]:

@@ -353,14 +353,14 @@
    "page": "llms.txt",
    "opens": "Exit codes, from `m0` and from the binary: 0; 1 the tool that ran failed;",
    "rows": {
-    "E30": "b50762d93c14"
+    "E30": "cb0e8b8d00f7"
    }
   },
   {
    "page": "llms.txt",
    "opens": "Flags are strict and named in `m0serve --help`; flags override `M0_*`",
    "rows": {
-    "E30": "b50762d93c14",
+    "E30": "cb0e8b8d00f7",
     "M6": "f23475cc8a96"
    }
   },
@@ -410,7 +410,7 @@
    "opens": "The binary: flag over `M0_*` variable over default.",
    "rows": {
     "E27": "65498053162e",
-    "E30": "b50762d93c14"
+    "E30": "cb0e8b8d00f7"
    }
   },
   {
@@ -806,7 +806,7 @@
    "page": "packaging/m0/src/m0/templates/_common/AGENTS.md",
    "opens": "Every refusal, from `m0` and from the binary, is exit **78**",
    "rows": {
-    "E30": "b50762d93c14",
+    "E30": "cb0e8b8d00f7",
     "N25": "a0e9cbedf8ff"
    }
   },
@@ -815,7 +815,7 @@
    "opens": "Flag > environment > default; `bin/server --doctor` prints the result.",
    "rows": {
     "E27": "65498053162e",
-    "E30": "b50762d93c14",
+    "E30": "cb0e8b8d00f7",
     "E31": "9642f9150528",
     "E32": "00dcaf573c56"
    }
@@ -1225,7 +1225,7 @@
    "page": "skills/m0/SKILL.md",
    "opens": "- Exit codes from `m0` and",
    "rows": {
-    "E30": "b50762d93c14",
+    "E30": "cb0e8b8d00f7",
     "N25": "a0e9cbedf8ff"
    }
   },

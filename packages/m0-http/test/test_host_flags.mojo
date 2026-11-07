@@ -15,7 +15,7 @@ from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
 from m0_host.flags import HostFlags, host_usage, parse_host_flags
 from m0_host.host import (
-    AppHandler, HostContext, host_checks, host_refusal, host_report,
+    AppHandler, HostContext, _set_notices, host_checks, host_refusal, host_report,
 )
 from m0_http.config import AppConfig
 from m0_http.parallel_runtime import parallel_runtime_linked
@@ -126,6 +126,7 @@ def test_every_flag_reaches_its_field() raises:
         "--host", "10.0.0.7", "--port", "81", "--workers", "2", "--threads", "1",
         "--blocking-threads", "3", "--sse-heartbeat-ms", "25000",
         "--app-tick-ms", "40", "--max-keepalive-requests", "0",
+        "--max-connections", "4096",
         "--access-log", "--qos", "--spawn-workers", "--doctor",
     )
     assert_equal(f.config.host, "10.0.0.7")
@@ -137,6 +138,7 @@ def test_every_flag_reaches_its_field() raises:
     assert_equal(f.config.sse_heartbeat_ms, 25000)
     assert_equal(f.config.app_tick_ms, 40)
     assert_equal(f.config.max_keepalive_requests, 0)
+    assert_equal(f.config.max_connections, 4096)
     assert_true(f.config.access_log)
     assert_true(f.config.qos)
     assert_true(f.config.spawn_workers)
@@ -318,6 +320,120 @@ def test_prefork_is_refused_when_the_parallel_runtime_is_linked() raises:
     assert_true(found, "workers-vs-parallel-runtime is not among host_checks")
 
 
+def test_a_connection_count_a_loop_cannot_hold_is_refused_whichever_way_it_came() raises:
+    """`--max-connections` and `M0_MAX_CONNECTIONS` are read whatever count
+    they name, and one a loop cannot hold -- 0, or above 65536 -- is the
+    `max-connections` check's refusal, 78, in the same words both ways, as
+    the port's is (E31). A sign or a word is unreadable: the usage, 2.
+
+    covers: E43
+    """
+    _ = setenv("M0_MAX_CONNECTIONS", "0", True)
+    var zero_env = host_refusal(AppConfig())
+    var over = host_refusal(_parse("--max-connections", "2048").config)
+    _ = setenv("M0_MAX_CONNECTIONS", "65537", True)
+    var high_env = host_refusal(AppConfig())
+    _ = unsetenv("M0_MAX_CONNECTIONS")
+    var zero_flag = host_refusal(_parse("--max-connections", "0").config)
+    var high_flag = host_refusal(_parse("--max-connections", "65537").config)
+    assert_true(Bool(zero_env), "M0_MAX_CONNECTIONS=0 was served")
+    assert_true(Bool(zero_flag), "--max-connections 0 was served")
+    assert_equal(zero_flag.value(), zero_env.value())
+    assert_true(
+        "M0_MAX_CONNECTIONS must be 1-65536, got 0" in zero_env.value(), zero_env.value()
+    )
+    assert_true("--max-connections (M0_MAX_CONNECTIONS)" in zero_env.value(), zero_env.value())
+    assert_true(Bool(high_env), "M0_MAX_CONNECTIONS=65537 was served")
+    assert_equal(high_flag.value(), high_env.value())
+    assert_true("got 65537" in high_flag.value(), high_flag.value())
+    assert_false(Bool(over), "--max-connections 2048 over M0_MAX_CONNECTIONS=0 was refused")
+    assert_false(Bool(host_refusal(_parse("--max-connections", "65536").config)))
+    assert_false(Bool(host_refusal(_parse("--max-connections", "1").config)))
+    assert_equal(_failed_checks(_parse("--max-connections", "0").config), "max-connections")
+    assert_true("must be a number" in _refused("--max-connections", "-1"))
+    assert_true("must be a number" in _refused("--max-connections", "many"))
+    # Served, the check says what a loop holds and how many may stream.
+    var checks = host_checks(_parse("--max-connections", "64").config)
+    assert_equal(checks[7].name, "max-connections")
+    assert_true(checks[7].ok)
+    assert_equal(checks[7].detail, "64 connections per loop, streams taking up to 60")
+
+
+def test_the_connection_count_reaches_the_server_config() raises:
+    """The count reaches the `ServerConfig` a loop consults, flag over
+    variable, as the four other shared fields do: `server_config()` carries
+    the variable's, and a given flag outranks a count the application set
+    in code, one not given leaving it alone. A count a loop cannot hold is
+    never laid on a `ServerConfig` -- the host refuses it first, and an
+    application building a `Server` from `server_config()` without the
+    host gets the default rather than a loop of no slots.
+
+    covers: E43
+    """
+    _ = setenv("M0_MAX_CONNECTIONS", "2048", True)
+    var from_env = AppConfig().server_config().max_connections
+    _ = setenv("M0_MAX_CONNECTIONS", "0", True)
+    var zero = AppConfig().server_config().max_connections
+    _ = setenv("M0_MAX_CONNECTIONS", "70000", True)
+    var high = AppConfig().server_config().max_connections
+    _ = setenv("M0_MAX_CONNECTIONS", "many", True)
+    var unread = AppConfig()
+    _ = unsetenv("M0_MAX_CONNECTIONS")
+    assert_equal(from_env, 2048)
+    assert_equal(zero, 1024)
+    assert_equal(high, 1024)
+    assert_equal(unread.max_connections, 1024)
+    assert_equal(AppConfig().server_config().max_connections, 1024)
+
+    var sc = AppConfig().server_config()
+    sc.max_connections = 5000
+    _parse("--port", "9300").apply_to(sc)
+    assert_equal(sc.max_connections, 5000)
+    _parse("--max-connections", "0").apply_to(sc)
+    assert_equal(sc.max_connections, 5000)
+    var said = _parse("--max-connections", "2048")
+    said.apply_to(sc)
+    assert_equal(sc.max_connections, 2048)
+    var text = host_report[Plain](said, sc, parallel_runtime=False).render()
+    assert_true('"max_connections":2048' in text, text)
+    assert_true('"max_connections_per_loop":2048' in text, text)
+    assert_true('"stream_limit_per_loop":2032' in text, text)
+    assert_true('"max_connections":"flag"' in text, text)
+
+
+def test_a_loop_says_why_it_refused_naming_the_hosts_settings() raises:
+    """The four lines a loop prints once each -- a body over its cap, a
+    body that stopped arriving, a stream answered 503 at the reserve, a
+    connection that found every slot in use -- set by `serve` after the
+    count is fitted, under the host's name and its settings; a line the
+    application set itself is kept.
+
+    covers: E43
+    """
+    var sc = AppConfig().server_config()
+    sc.max_connections = 64
+    sc.slots_full_notice = String("the application's own")
+    _set_notices(sc)
+    assert_equal(
+        sc.stream_cap_notice,
+        "host: a stream was answered 503: streams held 60 of this loop's 64"
+        " connections, and the last 4 are kept for requests; raise"
+        " --max-connections or M0_MAX_CONNECTIONS, or serve more loops"
+        " (--workers, --threads)",
+    )
+    assert_equal(sc.slots_full_notice, "the application's own")
+    assert_true(sc.body_size_notice.startswith("host: a request body over 4 MB"), sc.body_size_notice)
+    assert_true("max_request_body_size" in sc.body_size_notice, sc.body_size_notice)
+    assert_true("30s after its headers" in sc.body_timeout_notice, sc.body_timeout_notice)
+    var fresh = AppConfig().server_config()
+    _set_notices(fresh)
+    assert_true(
+        fresh.slots_full_notice.startswith("host: all 1024 of a loop's connections were in use:"),
+        fresh.slots_full_notice,
+    )
+    assert_true("--max-connections or M0_MAX_CONNECTIONS" in fresh.slots_full_notice)
+
+
 def test_the_overlay_is_idempotent() raises:
     """`host_config()` applies the command line and `serve` applies it again."""
     var args = _args("--port", "9200", "--workers", "2", "--access-log")
@@ -366,7 +482,7 @@ def test_the_checks_are_whole_and_in_the_order_serve_refuses() raises:
     covers: E31
     """
     var clean = host_checks(AppConfig())
-    assert_equal(len(clean), 11)
+    assert_equal(len(clean), 12)
     for i in range(len(clean)):
         assert_true(clean[i].ok, clean[i].name + " failed on a default config")
         assert_equal(clean[i].fix, "")
@@ -374,11 +490,12 @@ def test_the_checks_are_whole_and_in_the_order_serve_refuses() raises:
     assert_equal(clean[1].name, "address")
     assert_equal(clean[2].name, "workers-count")
     assert_equal(clean[5].name, "workers-vs-threads")
-    assert_equal(clean[7].name, "pool-vs-application")
+    assert_equal(clean[7].name, "max-connections")
+    assert_equal(clean[8].name, "pool-vs-application")
     assert_equal(clean[len(clean) - 1].name, "workers-vs-parallel-runtime")
     # Two failures: too many workers for the app, and both modes at once.
     var two = host_checks(_parse("--workers", "2", "--threads", "2").config, 1)
-    assert_equal(len(two), 11)
+    assert_equal(len(two), 12)
     assert_false(two[3].ok)
     assert_false(two[5].ok)
     var first = host_refusal(_parse("--workers", "2", "--threads", "2").config, 1)
@@ -430,8 +547,8 @@ def test_the_usage_names_every_flag_and_its_variable() raises:
     var flags = _args(
         "--host", "--port", "--workers", "--threads", "--blocking-threads",
         "--access-log", "--sse-heartbeat-ms", "--app-tick-ms",
-        "--max-keepalive-requests", "--qos", "--spawn-workers", "--doctor",
-        "--help",
+        "--max-keepalive-requests", "--max-connections", "--qos",
+        "--spawn-workers", "--doctor", "--help",
     )
     for i in range(len(flags)):
         assert_true(flags[i] in text, flags[i] + " is missing from the usage")
@@ -442,6 +559,7 @@ def test_the_usage_names_every_flag_and_its_variable() raises:
                 flags[i] + " is in the usage and unknown to the parser",
             )
     assert_true("M0_MAX_KEEPALIVE_REQUESTS" in text)
+    assert_true("M0_MAX_CONNECTIONS" in text)
     assert_true(text.startswith("usage: server [OPTIONS]"))
 
 
