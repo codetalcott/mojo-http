@@ -756,6 +756,19 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       (The old behaviour detached the fd, which dropped the response the
       pool thread was about to complete — the offloaded shape of the
       half-close bug.)
+    - **A job holds a table entry, not its slot** (SPEC C26).
+      `OffloadPool.requests` and `responses` hold `OFFLOAD_MAX_INFLIGHT`
+      entries whatever the slot count. `park_request` takes one and names
+      it in `slot_entry` before the submit publishes the job; only the loop
+      gives it back (`unpark_request`, `take_response`, `discard`), and a
+      pool thread touches it only between receiving the job and
+      `complete`. A path that parks outside `accepting()` aborts when the
+      entries are gone, and a response for a slot with no job is dropped,
+      so the loop closes that connection. `poe sabotage-pool` reverts each
+      rule against `test_offload.mojo`. A pool thread's handler is built
+      with `owns_streams=False` and sizes its stream tables at 0: give a
+      new per-slot table of the handler's the same rule, or each thread
+      pays it per slot for nothing (#657 measured 200 B a thread).
     - **Composes with `--realtime` by forwarding, never by subscribing.**
       The streaming hooks run on the loop's handler, so a pool thread must
       never subscribe its own registries — nothing drains them. On a pool

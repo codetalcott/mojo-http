@@ -201,7 +201,10 @@ def test_a_pool_threads_handler_keeps_no_stream_tables() raises:
     """A pool thread's holds go to the loop's handler as frames, and
     nothing drains a pool thread's registries, so its handler sizes them
     at 0. Sized by the count, each thread's copy was about 200 B a slot,
-    1600 B at the default eight threads (#657)."""
+    1600 B at the default eight threads (#657).
+
+    covers: C26
+    """
     var h = _made(pool=True)
     assert_equal(len(h.streams.is_streaming), 0, "the SSE registry was sized")
     assert_equal(len(h.sockets.is_streaming), 0, "the socket registry was sized")

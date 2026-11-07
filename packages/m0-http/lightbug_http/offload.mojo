@@ -174,7 +174,7 @@ from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.c.platform import MSG_DONTWAIT
 from lightbug_http.ring import Ring, atomic_at
 from std.atomic import Atomic
-from std.os import getenv
+from std.os import abort, getenv
 from std.time import perf_counter_ns
 from std.sys import stderr
 
@@ -202,7 +202,13 @@ non-privileged `SO_RCVBUF` at `net.core.rmem_max` (212 KB by default). 256
 jobs fit that with room to spare on every platform this runs on. Past the
 bound the loop runs requests inline, which is exactly today's behaviour — the
 degradation is graceful and never drops a request.
+
+It also sizes the pool's job tables (`OffloadPool.requests`): an entry per
+job that can be in flight, not per slot.
 """
+
+comptime NO_ENTRY: Int32 = -1
+"""`OffloadPool.slot_entry` for a slot with no job parked."""
 
 comptime POOL_SPIN_NS = 10_000
 """How long a pool thread whose ring is empty keeps looking before it
@@ -507,7 +513,30 @@ struct OffloadPool(Movable):
     """Pool threads poke the loop here."""
 
     var requests: List[Optional[HTTPRequest]]
+    """The parked requests, one ENTRY per job in flight, never one per slot.
+    At most `OFFLOAD_MAX_INFLIGHT` jobs exist at once (the loop submits only
+    while `OffloadLoopState.accepting`), so the table holds that many
+    whatever the slot count, and `slot_entry` names a slot's entry. Sized
+    by the slots, this and `responses` were 752 B a slot: 46 MB of a loop's
+    idle memory at 61000 slots, for a few hundred jobs (#657)."""
+
     var responses: List[Optional[HTTPResponse]]
+    """The answers, in the entries `requests` uses."""
+
+    var slot_entry: List[Int32]
+    """Each slot's entry in `requests` and `responses`, or `NO_ENTRY`.
+
+    The loop alone writes it: `park_request` takes an entry and names it
+    here, before the submit that publishes the job -- the edge that
+    published the request itself when the tables were per slot -- and
+    `unpark_request`, `take_response` and `discard` give it back. A pool
+    thread reads it after it has received the job, and is done with the
+    entry before its completion, which is what the loop waits for before
+    giving it back. Every lookup goes through the slot's own index, so a
+    write meant for one slot cannot land on another slot's job."""
+
+    var free_entries: List[Int]
+    """Entries no job holds: a stack only the loop touches."""
 
     var errored: List[Bool]
     """The handler raised for this slot. Written by the pool thread before
@@ -724,13 +753,19 @@ struct OffloadPool(Movable):
         self.aborts = List[Int]()
         self._drain_buf = List[UInt8](capacity=OFFLOAD_MAX_INFLIGHT * _JOB_BYTES)
         self._drain_buf.resize(OFFLOAD_MAX_INFLIGHT * _JOB_BYTES, 0)
-        self.requests = List[Optional[HTTPRequest]](capacity=slots)
-        self.responses = List[Optional[HTTPResponse]](capacity=slots)
-        self.errored = List[Bool](capacity=slots)
-        for _ in range(slots):
+        # The job tables hold what can be in flight, not what can connect:
+        # one entry per job, at most `OFFLOAD_MAX_INFLIGHT` (`requests`).
+        var entries = min(slots, OFFLOAD_MAX_INFLIGHT)
+        self.requests = List[Optional[HTTPRequest]](capacity=entries)
+        self.responses = List[Optional[HTTPResponse]](capacity=entries)
+        self.free_entries = List[Int](capacity=entries)
+        for e in range(entries):
             self.requests.append(None)
             self.responses.append(None)
-            self.errored.append(False)
+            # Popped from the end, so entry 0 is taken first.
+            self.free_entries.append(entries - 1 - e)
+        self.slot_entry = List[Int32](length=slots, fill=NO_ENTRY)
+        self.errored = List[Bool](length=slots, fill=False)
         self.capacity = capacity if capacity > 0 else 0
 
         self.stream_chunk_read = -1
@@ -1721,12 +1756,53 @@ struct OffloadPool(Movable):
 
     # --- loop side -------------------------------------------------------
 
+    def has_free_entry(self) -> Bool:
+        """Whether a job could be parked now. The in-flight bound implies it,
+        since every entry held is a job counted in flight; the loop asks
+        anyway (`OffloadLoopState.accepting`), so a count gone wrong runs a
+        request inline rather than parking it on another job's entry."""
+        return len(self.free_entries) > 0
+
+    def _entry(self, slot: Int) -> Int:
+        """The slot's entry in the job tables, or `NO_ENTRY`."""
+        if slot < 0 or slot >= len(self.slot_entry):
+            return Int(NO_ENTRY)
+        return Int(self.slot_entry[slot])
+
+    def _held_entry(self, slot: Int) -> Int:
+        """The slot's entry, for a caller whose job must have one. A slot
+        without one is a broken protocol, and indexing with `NO_ENTRY`
+        would read the LAST entry, another job's, so it stops the process
+        as taking an empty `Optional` did when the tables were per slot."""
+        var e = self._entry(slot)
+        if e == Int(NO_ENTRY):
+            abort(String("offload: slot ") + String(slot) + " has no job parked")
+        return e
+
+    def _release(mut self, slot: Int):
+        """Give the slot's entry back, emptied. The loop's alone: after a
+        failed submit, after the completion, or for an abandoned slot."""
+        var e = self._entry(slot)
+        if e == Int(NO_ENTRY):
+            return
+        self.requests[e] = None
+        self.responses[e] = None
+        self.slot_entry[slot] = NO_ENTRY
+        self.free_entries.append(e)
+
     def park_request(mut self, slot: Int, var request: HTTPRequest):
-        """Hand a request to the slot. Call immediately before `submit`.
-        Stamps `submit_ns` — the age `wake_aged` measures from (and, under
-        `M0_POOL_DEBUG`, what a pool thread's ring-wait histogram measures
-        from, elastic or not)."""
-        self.requests[slot] = request^
+        """Hand a request to the slot. Call immediately before `submit`, and
+        only while `OffloadLoopState.accepting`, which guarantees a free
+        entry. Stamps `submit_ns` — the age `wake_aged` measures from (and,
+        under `M0_POOL_DEBUG`, what a pool thread's ring-wait histogram
+        measures from, elastic or not)."""
+        var e = self._entry(slot)
+        if e == Int(NO_ENTRY):
+            if len(self.free_entries) == 0:
+                abort(String("offload: no free job entry for slot ") + String(slot))
+            e = self.free_entries.pop()
+            self.slot_entry[slot] = Int32(e)
+        self.requests[e] = request^
         if self.elastic or self.debug:
             self.submit_ns[slot] = perf_counter_ns()
 
@@ -1859,8 +1935,12 @@ struct OffloadPool(Movable):
         return True
 
     def unpark_request(mut self, slot: Int) -> HTTPRequest:
-        """Take a request back after a failed `submit`, to run it inline."""
-        return self.requests[slot].take()
+        """Take a request back after a failed `submit`, to run it inline.
+        Its entry goes back with it."""
+        var e = self._held_entry(slot)
+        var request = self.requests[e].take()
+        self._release(slot)
+        return request^
 
     def drain_completions(mut self, read_fd: Bool = True) -> List[Int]:
         """`drain_completions_into`, into a fresh list."""
@@ -1932,20 +2012,26 @@ struct OffloadPool(Movable):
                 done.append(got)
 
     def take_response(mut self, slot: Int) -> HTTPResponse:
-        """Take the response a pool thread parked. Only after its completion."""
-        return self.responses[slot].take()
+        """Take the response a pool thread parked. Only after its completion,
+        when no thread touches the entry again, so it goes back here.
+        `raised` stays answerable: `errored` is per slot."""
+        var e = self._held_entry(slot)
+        var response = self.responses[e].take()
+        self._release(slot)
+        return response^
 
     def has_response(self, slot: Int) -> Bool:
-        return Bool(self.responses[slot])
+        var e = self._entry(slot)
+        return e != Int(NO_ENTRY) and Bool(self.responses[e])
 
     def raised(self, slot: Int) -> Bool:
         """Whether the pool thread's handler raised. Only after its completion."""
         return self.errored[slot]
 
     def discard(mut self, slot: Int):
-        """Drop whatever is parked — the completion for an abandoned slot."""
-        self.requests[slot] = None
-        self.responses[slot] = None
+        """Drop whatever is parked — the completion for an abandoned slot —
+        and give its entry back."""
+        self._release(slot)
         self.errored[slot] = False
 
     def stop(mut self, threads: Int, lane: Int = 0, deadline_ns: Int = 0):
@@ -2203,12 +2289,20 @@ struct OffloadPool(Movable):
                 _sched_yield()
 
     def take_request(mut self, slot: Int) -> HTTPRequest:
-        """Take the parked request. Only for a slot this thread received."""
-        return self.requests[slot].take()
+        """Take the parked request. Only for a slot this thread received;
+        the entry stays the job's until the loop takes the response."""
+        var e = self._held_entry(slot)
+        return self.requests[e].take()
 
     def put_response(mut self, slot: Int, var response: HTTPResponse, raised: Bool = False):
-        """Park the response. Call immediately before `complete`."""
-        self.responses[slot] = response^
+        """Park the response. Call immediately before `complete`.
+
+        A slot with no job parked has no entry, and its response is dropped:
+        the loop then finds none at the completion and closes the
+        connection (`_complete_one`). Nothing makes one today."""
+        var e = self._entry(slot)
+        if e != Int(NO_ENTRY):
+            self.responses[e] = response^
         self.errored[slot] = raised
 
     def complete(self, slot: Int):
@@ -2569,8 +2663,14 @@ struct OffloadLoopState(Movable):
         return self.addr != 0
 
     def accepting(self) -> Bool:
-        """Whether another job may be submitted, or the loop must run inline."""
-        return self.addr != 0 and self.inflight < OFFLOAD_MAX_INFLIGHT
+        """Whether another job may be submitted, or the loop must run inline.
+        The pool's free entry is implied by the bound and asked anyway
+        (`OffloadPool.has_free_entry`)."""
+        return (
+            self.addr != 0
+            and self.inflight < OFFLOAD_MAX_INFLIGHT
+            and self.pool()[].has_free_entry()
+        )
 
     def pool(self) -> Pointer[OffloadPool, MutUntrackedOrigin]:
         """The caller-owned pool. Only valid when `enabled()`."""

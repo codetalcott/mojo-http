@@ -1,6 +1,7 @@
 # A loop keeps slots for requests — 2026-10-29
 
-> A design note from the engineering record. SPEC C20 and C21 are its rows;
+> A design note from the engineering record. SPEC C20 and C21 are its rows,
+> and C22, C25 and C26 the sections found after it;
 > [Running m0serve](../RUNNING.md#limits-and-lifecycle) states the limits.
 
 Streams may take all of a loop's slots but a reserve, a sixteenth and at
@@ -87,12 +88,10 @@ on its slot's first use (`ConnectionProvision.ensure_buffers`), about 8 KB
 of resident memory a held stream, but a larger count is not free before
 any connection arrives: measured on an M4 on 2026-11-02, m0serve's idle
 resident memory was 40 MB at 1024 slots, 92 MB at 16384 and 256 MB at
-65536, about 3.35 KB a slot. 0.87 KB of it is the loop's own tables and
-provisions, and 2.5 KB the handler pool's (`OffloadPool.requests` and
-`responses`, a whole request and response struct reserved for every slot,
-though at most a few hundred jobs are ever in flight); without a pool
-(`--blocking-threads 0`) it is the 0.87 KB alone. The once-a-second sweep
-grows with the count too.
+65536, about 3.35 KB a slot. About 0.9 KB of it is the loop's own tables
+and provisions, and the rest was the handler pool's, which now reserves
+28 B a slot (SPEC C26, below). The once-a-second sweep grows with the
+count too.
 
 ## Found beside it, and fixed after it (SPEC C22)
 
@@ -197,3 +196,58 @@ The same change caps the raise on macOS at `kern.maxfilesperproc`. Darwin
 connections past about 61000 were refused. The raise now answers no more
 than the ceiling, from a soft limit below it and from one above (a shell's
 `ulimit -n unlimited`), and the fit counts from that.
+
+## Found after it: what the pool reserved per slot (SPEC C26)
+
+The cost above put 2.5 KB of every slot on the handler pool's two job
+tables, a request and a response reserved for each slot. Measured
+(`scripts/probes/pool_idle_rss.py`, idle resident memory over the counts
+the doctor fits, M4, m0serve 1.17.0, 2026-11-07), the pool's share was
+2380 B a slot at the default eight threads, and the tables were 752 B of
+it: `Optional[HTTPRequest]` is 456 B and `Optional[HTTPResponse]` 296 B.
+The share grew with the thread count, 973, 1179, 1579 and 2380 B at one,
+two, four and eight threads: 773 B fixed and about 200 B a thread.
+
+The 200 B a thread were stream tables. m0serve sets `asgi_streaming`
+whenever there is a pool, since a pool thread streams a WSGI iterable
+through the chunk channel to the loop handler's registries, and every
+handler built from those options sized its two registries and eleven
+per-slot lists by the count, each pool thread's handler included. Nothing
+drains a pool thread's registries: a hold it takes travels to the loop's
+handler as a frame. A pool thread's handler now sizes them at 0
+(`WSGIHandler.make`, `owns_streams`), and a `--threads` serving loop's,
+which holds streams, keeps them.
+
+The tables never held more than a few hundred jobs. The loop submits only
+while fewer than `OFFLOAD_MAX_INFLIGHT` (256) are in flight, and every
+write and read of a slot's request and response falls inside its job's
+time in flight: the park before the count goes up, the take, discard or
+unpark after it comes down. So the tables now hold 256 entries whatever
+the slot count, and a slot keeps the index of its entry. Only the loop
+takes an entry, in `park_request`, writing the index before the submit
+that publishes the job, the edge that published the request itself; and
+only the loop gives one back, at `take_response`, `discard` or
+`unpark_request`, after which no thread touches it. Every lookup goes
+through the slot's own index, so a write meant for one slot cannot reach
+another's job. The loop accepts no job while every entry is held, which
+the in-flight count already implies; a count gone wrong then runs the
+request inline rather than parking it on another job's entry.
+
+| shape (`--realtime`) | before | after |
+| --- | --- | --- |
+| no pool | 1113 B a slot | 1117 B a slot |
+| eight pool threads | 3493 B a slot | 1145 B a slot |
+| the pool's share | 2380 B a slot | 28 B a slot |
+| eight threads, 61136 slots | 239.6 MB | 102.7 MB |
+
+An ASGI application on the executor pays its own: 2446 B a slot before,
+1697 after, against 916 for WSGI with no pool and no `--realtime`. The
+remainder is the executor's per-slot state (`ExecutorState`, whose
+`pending_101` is another response a slot) and its handler's stream
+tables, which are not this change's.
+
+`smoke-max-connections` measures the share at 1024 and 16384 connections
+and fails above 128 B a slot, a bound either cause, brought back, would
+exceed many times over.
+`poe sabotage-pool` reverts each entry rule, and `test_offload.mojo`
+catches every one.

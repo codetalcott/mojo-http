@@ -2150,6 +2150,18 @@ lightbug_http
         line before it returns and `flush=True` is a `dup` that fails with
         no descriptor free (C22).
 
+      - offload.mojo (2026-11-07): the handler pool's job tables,
+        `OffloadPool.requests` and `responses`, hold an entry per job that
+        can be in flight (`OFFLOAD_MAX_INFLIGHT`) rather than one per slot
+        (SPEC C26): each slot names its entry in `slot_entry` (`NO_ENTRY`
+        for none), the loop alone takes entries from `free_entries` in
+        `park_request` and gives them back in `unpark_request`,
+        `take_response` and `discard`, a response for a slot with no job is
+        dropped, and `OffloadLoopState.accepting` also asks
+        `has_free_entry`. The tables cost a slot its 4-byte index where
+        they cost it 752 B, and the pool reserves 28 B a slot in all
+        (docs/notes/a-loop-keeps-slots-for-requests.md).
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 

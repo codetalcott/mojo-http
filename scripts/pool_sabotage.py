@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Revert each rule in `mojo_pool.mojo` and insist a guard fails for every one.
+"""Revert each rule in `mojo_pool.mojo`, and each of the pool's job-entry
+rules in `offload.mojo`, and insist a guard fails for every one.
 
 Same idea as `shim_ownership.py --sabotage`: a guard nobody has broken on
 purpose is a guard nobody knows works. The table is this file's; everything
@@ -83,13 +84,56 @@ SABOTAGES = [
 RULES = [rule(label, POOL, old, new, only_on="Linux" if linux_only else "")
          for label, old, new, linux_only in SABOTAGES]
 
+OFFLOAD = Path("packages/m0-http/lightbug_http/offload.mojo")
+OFFLOAD_TEST = Path("packages/m0-http/test/test_offload.mojo")
+
+# The job tables hold an entry per job in flight, not per slot (#657, SPEC
+# C26): each slot names its entry, and only the loop takes and gives entries
+# back. Each rule reverted alone is a job reading or writing an entry it
+# does not own, which `test_offload.mojo` must see.
+ENTRY_SABOTAGES = [
+    (
+        "an entry given back when a thread takes the request (its answer lands nowhere)",
+        "        var e = self._held_entry(slot)\n        return self.requests[e].take()",
+        "        var e = self._held_entry(slot)\n        var r = self.requests[e].take()\n"
+        "        self._release(slot)\n        return r^",
+    ),
+    (
+        "accepting ignores the free entries",
+        "            and self.pool()[].has_free_entry()\n",
+        "",
+    ),
+    (
+        "an entry given back still holding its answer",
+        "        self.requests[e] = None\n        self.responses[e] = None\n"
+        "        self.slot_entry[slot] = NO_ENTRY\n",
+        "        self.requests[e] = None\n        self.slot_entry[slot] = NO_ENTRY\n",
+    ),
+    (
+        "a slot keeps its index after its entry goes back (two jobs, one entry)",
+        "        self.slot_entry[slot] = NO_ENTRY\n        self.free_entries.append(e)",
+        "        self.free_entries.append(e)",
+    ),
+    (
+        "park takes an entry without naming it",
+        "            e = self.free_entries.pop()\n            self.slot_entry[slot] = Int32(e)\n",
+        "            e = self.free_entries.pop()\n",
+    ),
+]
+
+RULES += [rule(label, OFFLOAD, old, new, gate="offload")
+          for label, old, new in ENTRY_SABOTAGES]
+
 # A hang is a catch only once the compiler says the sabotaged source builds
 # (sabotage_lib's timeout rule), so the timeout bounds a genuine hang.
-GATE = MojoRun(TEST, timeout=300)
+GATES = {
+    "": MojoRun(TEST, timeout=300),
+    "offload": MojoRun(OFFLOAD_TEST, timeout=300),
+}
 
 
 def main(argv: list[str]) -> int:
-    return run("sabotage-pool", RULES, GATE, argv)
+    return run("sabotage-pool", RULES, GATES, argv)
 
 
 if __name__ == "__main__":
