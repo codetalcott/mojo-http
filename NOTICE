@@ -2139,6 +2139,17 @@ lightbug_http
         which `raise_descriptor_limit` now stops and which it answers when
         the soft limit is already past it (C21).
 
+      - connection.mojo, event_loop.mojo, offload.mojo, loop/request.mojo,
+        loop/response.mojo, loop/shutdown.mojo, loop/state.mojo,
+        loop/streams.mojo (2026-11-06): every line the fork prints goes
+        to stderr but the listening line `ListenConfig.listen` prints and
+        the one after it, which keep stdout (SPEC F25): the bind retry,
+        the loop's start and accept-sharing lines, the pool's wait report,
+        a head refused by an unknown rule, the zstd fallbacks, a config
+        notice, and what a drain left. Unflushed, since `print` writes the
+        line before it returns and `flush=True` is a `dup` that fails with
+        no descriptor free (C22).
+
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http
 

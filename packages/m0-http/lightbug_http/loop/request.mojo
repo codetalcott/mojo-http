@@ -34,6 +34,7 @@ from std.memory import unsafe_memcpy
 from lightbug_http.server import BodyReadState
 from lightbug_http.service import HTTPService
 from std.time import perf_counter_ns
+from std.sys import stderr
 
 from lightbug_http.loop.state import (
     LoopState, TIMER_BODY, UNUSED, _arm_reads, _await_write, _begin_request,
@@ -952,7 +953,7 @@ def _refusal(rule: Int) -> HTTPResponse:
 
     Every rule it refuses by is named here but the body's, which is
     answered while the body may still be arriving (`_refuse_too_large`).
-    A rule this does not know is a 500 and a line on stdout, never a
+    A rule this does not know is a 500 and a line on stderr, never a
     silent 400: a refusal added to the framer is answered as it means only
     once it is added here too.
     """
@@ -968,7 +969,7 @@ def _refusal(rule: Int) -> HTTPResponse:
         return URITooLong()
     if rule == REFUSED_NOT_IMPLEMENTED:
         return NotImplemented()
-    print("event loop: a request head refused by a rule with no answer:", rule, flush=True)
+    print("event loop: a request head refused by a rule with no answer:", rule, file=stderr)
     return InternalError()
 
 

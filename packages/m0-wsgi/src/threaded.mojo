@@ -388,7 +388,7 @@ struct ThreadedServer(Movable):
             set.spawn(i, body_addr)
         print(
             "threaded: " + String(threads) + " loops on " + self.address,
-            flush=True,
+            file=stderr,
         )
 
         # The coordinator: sleep until the signal handler writes its byte.
@@ -400,10 +400,10 @@ struct ThreadedServer(Movable):
         var failed = 0
         for i in range(threads):
             if set.status(i) == STATUS_OK:
-                print("thread[" + String(i) + "] exited cleanly", flush=True)
+                print("thread[" + String(i) + "] exited cleanly", file=stderr)
             else:
                 failed += 1
-                print("thread[" + String(i) + "] did not exit cleanly", flush=True)
+                print("thread[" + String(i) + "] did not exit cleanly", file=stderr)
         return failed
 
 
@@ -419,7 +419,7 @@ def _serve_one[T: ThreadHandler](block: ThreadBlock) raises:
     )
     var ctx = ThreadContext(block.get(BLK_INDEX), block.get(BLK_USER))
     var handler = T.make(ctx)
-    print("thread[" + String(ctx.index) + "] serving", flush=True)
+    print("thread[" + String(ctx.index) + "] serving", file=stderr)
     var listen = RawFileDescriptor(c_int(block.get(BLK_LISTEN_FD)))
 
     # `--blocking-threads` or the asyncio executor: this loop's own queue

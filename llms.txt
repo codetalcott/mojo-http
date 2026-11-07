@@ -34,6 +34,8 @@ HTTP/2 terminate at a proxy.
   app there is refused with exit 78).
 - Flags are strict and named in `m0serve --help`; flags override `M0_*`
   environment variables, which override defaults.
+- stdout carries `--help`, `--version`, the `--doctor` report, the banner
+  and the access log; every other line the server prints is on stderr.
 - Refusals explain themselves on stderr and name the fix. Exit 2 is a
   command line that cannot be read or a flag combination wrong on any
   machine; 1 a startup failure (the application's import or lifespan, the

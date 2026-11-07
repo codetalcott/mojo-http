@@ -34,6 +34,7 @@ from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _after_send
 from std.ffi import c_int
 from std.time import perf_counter_ns
+from std.sys import stderr
 
 
 def _deliver_bus_frames[T: HTTPService](
@@ -100,7 +101,7 @@ def _zstd_failed[T: HTTPService, B: EventLoopBackend](
 ):
     """A compressed stream libzstd could not write: closed, since bytes
     after a frame the client cannot finish decoding are garbage to it."""
-    print("zstd: a compressed stream could not be written and is closed: " + String(e), flush=True)
+    print("zstd: a compressed stream could not be written and is closed: " + String(e), file=stderr)
     _close_slot(handler, backend, st, slot, st.slot_fds[slot])
 
 

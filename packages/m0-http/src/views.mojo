@@ -164,6 +164,7 @@ localises the damage to those lines instead of spreading it through the
 body.
 """
 
+from std.sys import stderr
 from lightbug_http.header import HeaderKey
 from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.service import HTTPService
@@ -462,7 +463,7 @@ struct Views[S: Movable]:
             print(
                 "views: an on-loop view raised (" + req.method + " " + req.uri.path
                 + "): " + String(e),
-                flush=True,
+                file=stderr,
             )
             return problem(
                 500,

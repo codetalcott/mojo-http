@@ -48,6 +48,7 @@ from lightbug_http.c.platform import MSG_DONTWAIT
 from std.ffi import c_int, external_call, get_errno
 from std.python import Python
 from std.time import sleep
+from std.sys import stderr
 
 from m0_http import (
     SSERegistry, ReplayJournal, StaticFiles, sse_data_payload,
@@ -702,7 +703,7 @@ struct WSGIHandler(ThreadHandler):
                 self.direct_lane, slot,
             )
         except e:
-            print("inverted executor: direct job raised: " + String(e), flush=True)
+            print("inverted executor: direct job raised: " + String(e), file=stderr)
         return True
 
     def _claim_lost(mut self, slot: Int, what: String) -> Bool:
@@ -726,7 +727,7 @@ struct WSGIHandler(ThreadHandler):
             + what + " (backpressure at " + String(MAX_PENDING_BYTES)
             + " bytes pending) — ending this connection rather than "
             "dropping bytes the client cannot know are missing",
-            flush=True,
+            file=stderr,
         )
         return True
 
@@ -1053,7 +1054,7 @@ struct WSGIHandler(ThreadHandler):
             " 403, its host not this request's (" + host + "); if that page"
             " is yours, add --ws-origin " + origin + " or M0_WS_ORIGIN, or"
             " '*' for any origin",
-            flush=True,
+            file=stderr,
         )
 
     def _health(self) -> HTTPResponse:
@@ -1138,7 +1139,7 @@ struct WSGIHandler(ThreadHandler):
                 print(
                     "m0serve: streamed response raised after its head: "
                     + String(e),
-                    flush=True,
+                    file=stderr,
                 )
                 aborted = True
                 break
@@ -1187,7 +1188,7 @@ struct WSGIHandler(ThreadHandler):
                     print(
                         "m0serve: chunk channel full, abandoning slot "
                         + String(slot) + "'s stream — the response is truncated",
-                        flush=True,
+                        file=stderr,
                     )
                     aborted = True
                     break
@@ -1323,7 +1324,7 @@ struct WSGIHandler(ThreadHandler):
                 try:
                     self.apps[0]._bridge.notify_disconnect(slot, close_code)
                 except e:
-                    print("inverted executor: disconnect notify raised: " + String(e), flush=True)
+                    print("inverted executor: disconnect notify raised: " + String(e), file=stderr)
             elif slot_url.byte_length() > 0:
                 _send_disconnect_tag(self._notify_fd_for(slot_url), slot, close_code)
             else:
@@ -1644,7 +1645,7 @@ struct WSGIHandler(ThreadHandler):
             )
             self._serve_synthetic(req, 0)
         except e:
-            print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
+            print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e, file=stderr)
 
     def ws_message_take(mut self, slot: Int, opcode: Int, payload: List[UInt8]) -> Bool:
         # Three ways a socket on this loop can be held, and the message goes
@@ -1671,7 +1672,7 @@ struct WSGIHandler(ThreadHandler):
         print(
             "ws_message: no channel would take an inbound message for slot "
             + String(slot) + "; it is lost",
-            flush=True,
+            file=stderr,
         )
         return True
 
@@ -1775,7 +1776,7 @@ struct WSGIHandler(ThreadHandler):
             )
             self._serve_synthetic(req, app)
         except e:
-            print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e)
+            print("ws_message: " + WS_MESSAGE_PATH + " raised: ", e, file=stderr)
         return True
 
     def _ws_datagram_room(self, slot: Int) -> Int:
@@ -1818,7 +1819,7 @@ struct WSGIHandler(ThreadHandler):
             + (String("closing slot ") + String(slot) + " with 1009" if queued
                else String("ending slot ") + String(slot)
                + " without a Close, its outbox being full"),
-            flush=True,
+            file=stderr,
         )
         if not queued:
             self._end_socket(slot)

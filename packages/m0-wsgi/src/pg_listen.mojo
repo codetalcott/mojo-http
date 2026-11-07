@@ -76,6 +76,7 @@ from std.ffi import c_int, external_call
 from std.memory import Pointer
 from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns, sleep
+from std.sys import stderr
 
 from lightbug_http.broadcast import publish_to_channels
 from lightbug_http.c.pipe import ShutdownHandle, create_shutdown_pipe
@@ -158,13 +159,14 @@ struct PgListenSpec(Movable):
 
 
 def _say(message: String):
-    """One line to stdout, flushed.
+    """One line to stderr, where every notice the server prints goes.
 
-    The listener runs on a thread of its own, so an unflushed line could
-    appear long after the event it describes — or after a line the loop
-    printed later.
+    The listener runs on a thread of its own, and `print` has written the
+    line to the descriptor before it returns, so it lands beside the event
+    it describes. Unflushed: `flush=True` is a `dup` that crashes with no
+    descriptor free (SPEC C22), and has nothing to flush.
     """
-    print(message, flush=True)
+    print(message, file=stderr)
 
 
 def _poll_two(fd_a: Int, fd_b: Int, timeout_ms: Int) -> Tuple[Bool, Bool]:

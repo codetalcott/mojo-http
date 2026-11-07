@@ -655,7 +655,7 @@ struct ExecutorPort(Movable, Writable):
                 "inverted executor: a loop pass was asked for inside another"
                 " pass and refused; it would have overwritten the events the"
                 " outer pass had not reached",
-                flush=True,
+                file=stderr,
             )
 
     @staticmethod
@@ -810,7 +810,7 @@ struct ExecutorPort(Movable, Writable):
         try:
             self._flush_inverted[PlatformBackend]()
         except e:
-            print("inverted executor: flush raised: " + String(e), flush=True)
+            print("inverted executor: flush raised: " + String(e), file=stderr)
         # Whether the drain has begun, read by address after everything the
         # flush ran. The pass inside it may be the one that read the
         # shutdown pipe, and that pass closed the listener and stopped
@@ -872,7 +872,7 @@ struct ExecutorPort(Movable, Writable):
         elif kind == "err":
             print(
                 "asgi-executor: request raised: " + String(py=ev[2]),
-                flush=True,
+                file=stderr,
             )
             var response = InternalError()
             handler.after_response(st.methods[slot], st.paths[slot], response)
@@ -990,14 +990,14 @@ struct ExecutorPort(Movable, Writable):
             print(
                 "asgi-executor: stream raised after its head: "
                 + String(py=ev[2]),
-                flush=True,
+                file=stderr,
             )
         elif kind == "log":
             # An application error the executor can only report: raised
             # after its response was answered (ServerErrorMiddleware
             # re-raises the error its 500 was for; a background task can
             # fail), so the slot is not this event's to touch.
-            print("asgi-executor: " + String(py=ev[2]), flush=True)
+            print("asgi-executor: " + String(py=ev[2]), file=stderr)
         elif kind == "ws_accept":
             # Begin frame before the 101 — the same FIFO anchor as a
             # stream's head, for the sockets registry this time.
@@ -1292,7 +1292,7 @@ def serve_inverted(
         pool.submit_read_fd(lane), pool.ack_read_fd(lane)
     )
     print(banner, flush=True)
-    print("inverted: the event loop runs inside asyncio (multiplexer fd " + String(backend.multiplexer_fd()) + ")", flush=True)
+    print("inverted: the event loop runs inside asyncio (multiplexer fd " + String(backend.multiplexer_fd()) + ")", file=stderr)
     handler.apps[0]._bridge.run_forever_inverted(backend.multiplexer_fd())
     _ = st
     _ = port_obj
@@ -1320,7 +1320,7 @@ def _report_lost(what: String, slot: Int, nbytes: Int):
         "asgi-executor: chunk channel would not take " + String(nbytes)
         + " bytes of " + what + " for slot " + String(slot)
         + " after ~5s — tearing this connection down rather than hanging it",
-        flush=True,
+        file=stderr,
     )
 
 
@@ -1337,7 +1337,7 @@ def _report_abort(mut pool: OffloadPool, slot: Int, gen: Int):
             "asgi-executor: could not abort slot " + String(slot)
             + "'s stream — the completion channel is full too; the "
             "connection will hang until the client closes it",
-            flush=True,
+            file=stderr,
         )
 
 
@@ -1381,7 +1381,7 @@ def _flush_completions(mut pool: OffloadPool, mut pending: List[Int]):
     print(
         "asgi-executor: completion channel full, " + String(len(pending))
         + " completion(s) still queued — the loop is not draining",
-        flush=True,
+        file=stderr,
     )
 
 def _send_chunk_frame(mut pool: OffloadPool, frame: Span[Byte, _]) -> Bool:

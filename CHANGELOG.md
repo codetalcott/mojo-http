@@ -15,19 +15,25 @@ default is listed under **Behaviour changes**
 
 ### Behaviour changes
 
-- **Refusals go to stderr.** m0serve and a Mojo host application write
-  each line they print to refuse or to fail before exiting non-zero to
-  stderr, where they wrote stdout: the usage and the reason for a command
-  line that cannot be read (exit 2); a configuration refused (exit 78:
-  m0serve's checks, the host's `host_checks`, and a handler's or a
-  producer's `make` that raises); and a startup that fails (exit 1: an
-  application that cannot be loaded, an address that cannot be bound, an
-  event loop or a serving thread that raised). The report `--doctor`
-  prints, still the last line of stdout, stays there, as do `--help`,
-  `--version`, the banner, the access log and the notices a running
-  server prints. A supervisor or a script that read a refusal from
-  stdout reads it from stderr now, and `2>&1` gives back the one stream
-  it read before.
+- **What the server says about itself goes to stderr.** m0serve and a
+  Mojo host application keep stdout for what was asked of them:
+  `--help`, `--version`, the report `--doctor` prints (still its last
+  line), the banner and the access log. Every other line they print is
+  on stderr, where it was on stdout:
+  - the usage and the reason for a command line that cannot be read
+    (exit 2);
+  - a configuration refused (exit 78: m0serve's checks, the host's
+    `host_checks`, and a handler's or a producer's `make` that raises);
+  - a startup that fails (exit 1: an application that cannot be loaded,
+    an address that cannot be bound, an event loop or a serving thread
+    that raised);
+  - the notices of a server that runs: each worker's `armed for a
+    graceful stop`, the supervisor's `[parent]` lines, an `M0_*` value
+    it could not read, an open-file limit it could not raise far enough,
+    an error it survives while serving, and what a drain left behind.
+
+  A supervisor or a script that read one of these lines from stdout
+  reads it from stderr now; `2>&1` puts them back on the one stream.
 
 ### Changed
 

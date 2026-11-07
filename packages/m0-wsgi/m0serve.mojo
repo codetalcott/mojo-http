@@ -263,7 +263,7 @@ def _announce_armed(worker: Int, shutdown_fd: Int):
     if shutdown_fd >= 0:
         print(
             "[worker {}] pid={} armed for a graceful stop".format(worker, getpid()),
-            flush=True,
+            file=stderr,
         )
 
 
@@ -1009,7 +1009,7 @@ def _raise_descriptors(mut opts: ServeOptions):
         ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=) or lower"
         " --max-connections"
     )
-    print(said, flush=True)
+    print(said, file=stderr)
 
 
 def main() raises:
@@ -1036,7 +1036,7 @@ def main() raises:
     # The doctor's report is still the last line it prints.
     if spawned_worker_index() < 0:
         for note in opts.env_ignored:
-            print("m0serve: " + note, flush=True)
+            print("m0serve: " + note, file=stderr)
     # Before the checks below, which stop at the first failure where the
     # doctor's job is to report all of them at once.
     if opts.show_doctor:
@@ -1233,7 +1233,7 @@ def main() raises:
             # serve: the server's own job is unaffected, and the thread
             # would retry a connection anyway. It is loud, and --doctor
             # reports the same condition before anything starts.
-            print("m0serve: pg-listen did not start: " + String(e), flush=True)
+            print("m0serve: pg-listen did not start: " + String(e), file=stderr)
 
     if serves_offloaded(opts, executor_mode, opts.blocking_threads):
         # Offloaded serving under prefork: this process gets one acceptor
@@ -1408,7 +1408,7 @@ def _serve_offloaded(
         # executor is still inside the application, where nothing here can
         # unwind it: leave as `join_offload` does past its budget.
         # Not a failure: nothing was accepted, and the exit is 0.
-        print("m0serve: stopped before the application was ready", flush=True)
+        print("m0serve: stopped before the application was ready", file=stderr)
         process_exit(0)
         return
     print(banner, flush=True)
@@ -1513,7 +1513,7 @@ def _serve_threaded(
                 shared_id_addr(),
             )
         except e:
-            print("m0serve: pg-listen did not start: " + String(e), flush=True)
+            print("m0serve: pg-listen did not start: " + String(e), file=stderr)
     # Import once on main (so Django's setup() runs single-threaded) and
     # detect the protocol while at it — the imports below are sys.modules
     # hits for every serving thread. Then the checks that needed it, as

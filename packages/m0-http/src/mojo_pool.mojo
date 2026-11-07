@@ -63,6 +63,7 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
 """
 
 from std.time import perf_counter_ns, sleep
+from std.sys import stderr
 
 from lightbug_http.offload import (
     OffloadPool, JOB_WS_MESSAGE, JOB_STOP, ns_left, stop_deadline,
@@ -577,7 +578,7 @@ def _pool_serve[T: PoolHandler](block: ThreadBlock) raises:
                 + " "
                 + request_path
                 + ")",
-                flush=True,
+                file=stderr,
             )
             response = _streaming_refused()
             raised = True
@@ -606,7 +607,7 @@ def _pool_body[T: PoolHandler](arg: Int) -> Int:
     except e:
         print(
             "mojo-pool[" + String(block.get(BLK_INDEX)) + "] raised: " + String(e),
-            flush=True,
+            file=stderr,
         )
     leave_pool(block, status)
     return 0
