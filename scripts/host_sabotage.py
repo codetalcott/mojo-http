@@ -372,26 +372,29 @@ SABOTAGES = [
         "a worker killed by the stop before it armed is judged a failure",
         RESPAWN,
         MULTIWORKER_SRC,
-        '                    " its handler: a stop, not a failure".format(child_pid, sig)\n'
-        "                )\n                return\n",
-        '                    " its handler: a stop, not a failure".format(child_pid, sig)\n'
-        "                )\n                self._failed_stopping = True\n                return\n",
+        '                    " its handler: a stop, not a failure".format(child_pid, sig),\n'
+        "                    file=stderr,\n                )\n                return\n",
+        '                    " its handler: a stop, not a failure".format(child_pid, sig),\n'
+        "                    file=stderr,\n                )\n                self._failed_stopping = True\n"
+        "                return\n",
     ),
     (
         "a sibling's non-zero exit while stopping is not a failure",
         RESPAWN,
         MULTIWORKER_SRC,
-        '                " a failed drain".format(child_pid, code)\n'
-        "            )\n            self._failed_stopping = True\n",
-        '                " a failed drain".format(child_pid, code)\n            )\n',
+        '                " a failed drain".format(child_pid, code),\n'
+        "                file=stderr,\n            )\n            self._failed_stopping = True\n",
+        '                " a failed drain".format(child_pid, code),\n'
+        "                file=stderr,\n            )\n",
     ),
     (
         "a sibling killed by another signal while stopping is not a failure",
         RESPAWN,
         MULTIWORKER_SRC,
-        '                " a failed drain".format(child_pid, sig)\n'
-        "            )\n            self._failed_stopping = True\n",
-        '                " a failed drain".format(child_pid, sig)\n            )\n',
+        '                " a failed drain".format(child_pid, sig),\n'
+        "                file=stderr,\n            )\n            self._failed_stopping = True\n",
+        '                " a failed drain".format(child_pid, sig),\n'
+        "                file=stderr,\n            )\n",
     ),
     # --- the respawn budget is a rate (SPEC E36) ---------------------------------
     # Counted over the supervisor's life, the budget ran out on rare crashes
