@@ -84,14 +84,16 @@ exit 78 and its message. It is not retried.
 ## Execution modes
 
 One loop in one process is the default, and on one vCPU it is the whole
-answer ([Deploy](MOJO_DEPLOY.md)). A loop holds 1024 connections, and
-streams take all but the last 16 of them: the stream after that is
-answered `503` with `Retry-After`, so the health path is still answered
-while streams hold the rest. A connection that finds every slot in use
-takes one back from the connection idle longest between requests, or else
-from the one longest sending its head (answered `408`), each once that is
-a second, and is refused only when neither is there. More streams are more
-loops. The host raises its own open-file limit to what its loops need
+answer ([Deploy](MOJO_DEPLOY.md)). A loop holds 1024 connections by
+default, and `--max-connections` (`M0_MAX_CONNECTIONS`) sets 1 to 65536;
+streams take all but a sixteenth of them, at most 16: the stream after
+that is answered `503` with `Retry-After`, so the health path is still
+answered while streams hold the rest. A connection that finds every slot
+in use takes one back from the connection idle longest between requests,
+or else from the one longest sending its head (answered `408`), each once
+that is a second, and is refused only when neither is there. Each is said
+once on stderr, naming the setting that moves it. More streams are a
+larger count or more loops. The host raises its own open-file limit to what its loops need
 before it binds; where the hard limit stops it short, each loop holds what
 the limit leaves, its stream reserve kept from that, and the host says so.
 The doctor reports `max_connections_per_loop`, `stream_limit_per_loop` and
@@ -143,6 +145,7 @@ A flag overrides its `M0_` variable, which overrides the default.
 | `--sse-heartbeat-ms N` | `M0_SSE_HEARTBEAT_MS` | 15000 |
 | `--app-tick-ms N` | `M0_APP_TICK_MS` | 0, off |
 | `--max-keepalive-requests N` | `M0_MAX_KEEPALIVE_REQUESTS` | 1000 |
+| `--max-connections N` | `M0_MAX_CONNECTIONS` | 1024 per loop, 1 to 65536 |
 | `--qos` | `M0_QOS` | off; macOS, keeps the loop on performance cores |
 | `--spawn-workers` | `M0_SPAWN_WORKERS` | m0serve's; refused here |
 | `--doctor` | | print the configuration, start nothing |
@@ -187,6 +190,7 @@ the host applies them:
 | `threads-count` | `M0_THREADS` is below 1 |
 | `workers-vs-threads` | `M0_WORKERS` and `M0_THREADS` are both above 1 |
 | `threads-vs-application` | `M0_THREADS` is above the application's `max_threads()` |
+| `max-connections` | `M0_MAX_CONNECTIONS` is 0 or above 65536: one loop holds 1 to 65536 connections |
 | `pool-vs-application` | `M0_BLOCKING_THREADS` is above 0, the application's `max_threads()` is 1, and a view given the state is left on the pool: each pool thread builds a state of its own, so that view would answer from its thread's copy |
 | `spawn-workers` | `M0_SPAWN_WORKERS` is set: the host forks without exec |
 | `spawned-marker` | `M0_WORKER_SPAWNED` is inherited from an m0serve worker |

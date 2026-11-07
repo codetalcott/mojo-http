@@ -35,6 +35,22 @@ default is listed under **Behaviour changes**
   A supervisor or a script that read one of these lines from stdout
   reads it from stderr now; `2>&1` puts them back on the one stream.
 
+### Added
+
+- **A Mojo host application takes `--max-connections` and
+  `M0_MAX_CONNECTIONS`** (SPEC E43, #658), as m0serve does: the
+  connections each loop holds, 1024 by default, 1 to 65536. A count
+  outside that is refused with 78 whichever way it came, the doctor too,
+  and the doctor reports the count, where it came from and what each loop
+  holds. A host loop now says once on stderr why it refused, as m0serve's
+  does: a stream answered `503` at the reserve, a connection that found
+  every slot in use, a body over its cap, and one that stopped arriving.
+  Before, a host application held 1008 streams a loop unless it set
+  `max_connections` in code, and printed nothing when a loop filled.
+  `AppConfig.server_config()` carries the variable's count, so an
+  application that builds its own `ServerConfig` from it reads it too
+  ([Mojo host](docs/MOJO_HOST.md#configuration)).
+
 ### Changed
 
 - **A loop's handler pool reserves 28 B a connection slot, where it

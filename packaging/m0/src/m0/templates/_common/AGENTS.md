@@ -233,6 +233,7 @@ Flag > environment > default; `bin/server --doctor` prints the result.
 (refused), `M0_ACCESS_LOG`, `M0_SSE_HEARTBEAT_MS`, `M0_SSE_FLUSH_MS` (the
 comment that follows an SSE event), `M0_STREAM_KEEPALIVE_S` (TCP keepalive
 on a stream's socket), `M0_APP_TICK_MS`, `M0_MAX_KEEPALIVE_REQUESTS`,
+`M0_MAX_CONNECTIONS` (connections per loop; 1024, at most 65536),
 `M0_QOS`. A count that cannot be
 served is a 78 whichever way it arrived. More than one core is
 `M0_THREADS=N`; `M0_WORKERS` forks, and is refused when the binary links

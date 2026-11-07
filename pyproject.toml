@@ -9197,6 +9197,7 @@ cat "$out/doctor.log"
 echo "smoke-host-doctor OK"
 python3 scripts/emit.py --covers E30 --task smoke-host-doctor
 python3 scripts/emit.py --covers E31 --task smoke-host-doctor
+python3 scripts/emit.py --covers E43 --task smoke-host-doctor
 """
 
 # IPv6 (SPEC M29, review R15): `--host ::` takes both families, `::1` IPv6
@@ -9288,23 +9289,25 @@ echo "smoke-serve-parallel-runtime OK"
 python3 scripts/emit.py --covers E33 --task smoke-serve-parallel-runtime
 """
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E32, N18, N19):
-# twenty-three against smoke-host, seven against smoke-host-threads, two
+# Each Mojo host rule, broken on purpose (SPEC E21-E32, E43, N18, N19):
+# twenty-four against smoke-host, seven against smoke-host-threads, two
 # against smoke-fragment-notes, six against test_host.mojo, six against test_prefork.mojo (the pre-fork
-# pieces both hosts share), one against test_respawn.mojo (the supervisor
-# ending the siblings on a refusal), one against test_views.mojo (the
-# placement flag), and the command line's twelve: seven against
-# smoke-host-doctor and five against test_host_flags.mojo -- plus one
+# pieces both hosts share), ten against test_respawn.mojo (the supervisor's
+# part: a refusal ending the siblings, the respawn budget over a window, and
+# what a worker it gave up on was handed closed), one
+# against test_views.mojo (the placement flag), and the command line's
+# sixteen: ten against smoke-host-doctor, four against test_host_flags.mojo,
+# one against test_cmdline.mojo and one against test_config.mojo -- plus one
 # against smoke-parallel-runtime, which needs the `max` group synced
 # (`--only parallel`), so the whole run is `uv run --group max poe
 # sabotage-host`: every other gate holds beside MAX too, the unit tests
 # supplying the parallel runtime's fact rather than reading the one `mojo
 # run` gives them there (ROADMAP Known issues). Pre-release:
-# fifty-nine runs, over an hour; `--only doctor` is about five minutes;
+# seventy-three runs, over an hour; `--only doctor` is about five minutes;
 # `--only threads` is about six minutes, and `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
 # about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_cmdline, test_prefork, test_respawn, test_views, smoke-host-doctor or smoke-parallel-runtime fails for every one (SPEC E21-E32, N19; run it as `uv run --group max poe sabotage-host` on Linux; on macOS, `--skip parallel` here, then `--only parallel` under `--group max`)"
+help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_cmdline, test_config, test_prefork, test_respawn, test_views, smoke-host-doctor or smoke-parallel-runtime fails for every one (SPEC E21-E32, E43, N19; run it as `uv run --group max poe sabotage-host` on Linux; on macOS, `--skip parallel` here, then `--only parallel` under `--group max`)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC

@@ -46,6 +46,7 @@ from lightbug_http.server_config import ServerConfig
 
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig, listen_host
+from m0_http.limits import connections_servable
 
 
 comptime EX_USAGE = 2
@@ -68,6 +69,7 @@ def _takes_value(name: String) -> Bool:
         or name == "--sse-heartbeat-ms"
         or name == "--app-tick-ms"
         or name == "--max-keepalive-requests"
+        or name == "--max-connections"
     )
 
 
@@ -99,6 +101,8 @@ def _env_of(name: String) -> String:
         return "M0_APP_TICK_MS"
     if name == "--max-keepalive-requests":
         return "M0_MAX_KEEPALIVE_REQUESTS"
+    if name == "--max-connections":
+        return "M0_MAX_CONNECTIONS"
     if name == "--access-log":
         return "M0_ACCESS_LOG"
     if name == "--qos":
@@ -144,10 +148,13 @@ struct HostFlags(Copyable, Movable):
 
         `serve(config, server_config)` is handed tuning the application
         chose in code (`apps/sim_loop` sets its own tick), made before the
-        command line was read. A flag that names one of the four shared
+        command line was read. A flag that names one of the five shared
         fields outranks it, being the operator's explicit word; one that
         was not given leaves the application's value alone, which is why
-        this is not `config.server_config()` again.
+        this is not `config.server_config()` again. A connection count a
+        loop cannot hold is not laid over it: `host_checks` refuses that
+        with 78 before anything is served, as `config.server_config()`
+        leaves it out.
         """
         if self.was_given("--access-log"):
             server_config.access_log = self.config.access_log
@@ -157,6 +164,10 @@ struct HostFlags(Copyable, Movable):
             server_config.app_tick_ms = self.config.app_tick_ms
         if self.was_given("--max-keepalive-requests"):
             server_config.max_keepalive_requests = self.config.max_keepalive_requests
+        if self.was_given("--max-connections") and connections_servable(
+            self.config.max_connections
+        ):
+            server_config.max_connections = self.config.max_connections
 
 
 def _apply(mut config: AppConfig, name: String, value: String) raises:
@@ -191,6 +202,10 @@ def _apply(mut config: AppConfig, name: String, value: String) raises:
         config.app_tick_ms = parse_int(value, "--app-tick-ms")
     elif name == "--max-keepalive-requests":
         config.max_keepalive_requests = parse_int(value, "--max-keepalive-requests")
+    elif name == "--max-connections":
+        # Read whatever count it names; 0 or one above 65536 is the
+        # `max-connections` check's to refuse, with 78, as its variable's is.
+        config.max_connections = parse_int(value, "--max-connections")
     else:
         # Unreachable: `_takes_value` gated entry. Explicit, so a flag added
         # there and forgotten here fails instead of being silently dropped.
@@ -268,6 +283,10 @@ def host_usage(program: String = "server") -> String:
         "                              (M0_APP_TICK_MS; 0)\n"
         "  --max-keepalive-requests N  requests per connection, 0 = no cap\n"
         "                              (M0_MAX_KEEPALIVE_REQUESTS; 1000)\n"
+        "  --max-connections N         connections each loop holds open at\n"
+        "                              once, 1-65536 (M0_MAX_CONNECTIONS;\n"
+        "                              1024). Streams take all but N/16 of\n"
+        "                              them, at most 16, kept for requests\n"
         "  --qos                       macOS: keep the loop on performance\n"
         "                              cores (M0_QOS)\n"
         "  --spawn-workers             m0serve's; refused here with 78\n"

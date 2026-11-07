@@ -30,8 +30,10 @@ import http.client
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
+import time
 
 from probelib import NotServing, fail, phase, server, stamp, wait_healthy
 
@@ -125,6 +127,114 @@ def report_of(stdout: str) -> dict:
     return doc
 
 
+def _connect(port: int) -> socket.socket:
+    s = socket.create_connection(("127.0.0.1", port), timeout=5)
+    s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+    return s
+
+
+def _head(s: socket.socket, timeout: float = 5.0) -> bytes:
+    """The response head `s` reads, or what it read before EOF or a reset."""
+    s.settimeout(timeout)
+    got = b""
+    deadline = time.monotonic() + timeout
+    while b"\r\n\r\n" not in got and time.monotonic() < deadline:
+        try:
+            chunk = s.recv(4096)
+        except ConnectionResetError:
+            return got + b"<reset>"
+        except socket.timeout:
+            break
+        if not chunk:
+            return got + b"<eof>"
+        got += chunk
+    return got
+
+
+def _status(head: bytes):
+    parts = head.split(b"\r\n", 1)[0].split(b" ")
+    return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+
+
+def _ask(port: int, path: str, close: bool = True) -> tuple:
+    """A GET on a new connection: its socket and the head it read."""
+    s = _connect(port)
+    conn = b"close" if close else b"keep-alive"
+    s.sendall(b"GET " + path.encode() + b" HTTP/1.1\r\nHost: x\r\nConnection: " + conn + b"\r\n\r\n")
+    return s, _head(s)
+
+
+def holds_its_count(binary: str, args: list, env: dict, port: int, out_dir: str) -> None:
+    """A loop of 32 connections, asked for by `args` and `env` (SPEC E43):
+    streams take 30 of them, the 31st and 32nd are answered 503 and the
+    health path still 200, and the stream line is said once; then two idle
+    keep-alive connections fill the loop, and the next connection is let
+    in, the one idle a second closed, the full-loop line said once. The
+    reserve, the 503 and the taking back are the loop's (C20, C23); what is
+    the host's is the count and the two lines that name its settings."""
+    n, reserve = 32, 2
+    log = os.path.join(out_dir, "count.log")
+    err_log = log + ".err"
+    held = []
+    with open(log, "w") as out, open(err_log, "w") as err:
+        p = subprocess.Popen([binary, "--port", str(port), *args], env=clean_env(env),
+                             stdout=out, stderr=err)
+        try:
+            try:
+                wait_healthy("http://127.0.0.1:%d/health" % port, p, timeout=30, log=log)
+            except NotServing as e:
+                fail("never served: %s" % e)
+            for i in range(n - reserve):
+                s, head = _ask(port, "/events", close=False)
+                if _status(head) != 200:
+                    fail("stream %d of %d was answered %r" % (i + 1, n - reserve, head[:80]))
+                held.append(s)
+            for i in range(2):
+                s, head = _ask(port, "/events")
+                if _status(head) != 503 or b"retry-after" not in head.lower():
+                    fail("a stream past the %d held was answered %r" % (n - reserve, head[:120]))
+                s.close()
+            s, head = _ask(port, "/health")
+            if _status(head) != 200:
+                fail("the health path was answered %r while streams held their share" % head[:80])
+            s.close()
+            # Two connections idle between requests fill the loop's last
+            # slots; a second later the next connection is let in.
+            for _ in range(reserve):
+                s, head = _ask(port, "/pid", close=False)
+                if _status(head) != 200:
+                    fail("an ordinary request was answered %r" % head[:80])
+                held.append(s)
+            time.sleep(1.3)
+            s, head = _ask(port, "/health")
+            if _status(head) != 200:
+                fail("a connection to a full loop was answered %r, not let in" % head[:80])
+            s.close()
+            time.sleep(0.2)
+        finally:
+            for s in held:
+                s.close()
+            p.send_signal(signal.SIGTERM)
+            try:
+                code = p.wait(timeout=20)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                fail("the server did not stop on SIGTERM")
+    said = open(err_log).read()
+    cap = ("host: a stream was answered 503: streams held %d of this loop's %d connections,"
+           " and the last %d are kept for requests; raise --max-connections or"
+           " M0_MAX_CONNECTIONS" % (n - reserve, n, reserve))
+    if said.count(cap) != 1:
+        fail("the stream line should be said once on stderr, was said %d times:\n%s"
+             % (said.count(cap), said))
+    full = "host: all %d of a loop's connections were in use: one idle between requests" % n
+    if said.count(full) != 1:
+        fail("the full-loop line should be said once on stderr, was said %d times:\n%s"
+             % (said.count(full), said))
+    if code != 0:
+        fail("the server exited %d on SIGTERM" % code)
+
+
 def main() -> int:
     binary, base = sys.argv[1], int(sys.argv[2])
     out_dir = os.path.dirname(binary)
@@ -203,6 +313,31 @@ def main() -> int:
     p = P()
     rows.append(("--spawn-workers", ["--port", str(p), "--spawn-workers"], {}, 78,
                  {"check": "spawn-workers"}))
+    # The connections each loop holds (SPEC E43): flag over variable over
+    # default, in both application shapes, as the doctor and the loop report
+    # it; a count one loop cannot hold is refused with 78 whichever way it
+    # came, and a sign is unreadable (below, with the other usage errors).
+    for shape, extra in (("", {}), (", serve(AppConfig())", {"M0_HOSTCHECK_ENV_CONFIG": "1"})):
+        p = P()
+        rows.append(("--max-connections outranks its variable" + shape,
+                     ["--port", str(p), "--max-connections", "64"],
+                     dict(extra, M0_MAX_CONNECTIONS="128"), 0,
+                     {"port": p, "max_connections": 64,
+                      "topology": {"max_connections_per_loop": 64, "stream_limit_per_loop": 60},
+                      "sources": {"max_connections": "flag"}}))
+    p = P()
+    rows.append(("M0_MAX_CONNECTIONS alone", ["--port", str(p)], {"M0_MAX_CONNECTIONS": "128"}, 0,
+                 {"port": p, "max_connections": 128,
+                  "topology": {"max_connections_per_loop": 128, "stream_limit_per_loop": 120},
+                  "sources": {"max_connections": "env"}}))
+    # Each names its port, so a server that should have refused and served
+    # instead is found there and stopped, and the codes then disagree.
+    p = P()
+    rows.append(("--max-connections 0", ["--port", str(p), "--max-connections", "0"], {}, 78,
+                 {"port": p, "check": "max-connections"}))
+    p = P()
+    rows.append(("an environment count of 65537", ["--port", str(p)],
+                 {"M0_MAX_CONNECTIONS": "65537"}, 78, {"port": p, "check": "max-connections"}))
     # Usage errors: 2 both ways, the usage text, and no report at all.
     for name, args in (
         ("an unknown flag", ["--prot", "9"]),
@@ -210,6 +345,7 @@ def main() -> int:
         ("a flag with no value", ["--workers"]),
         ("a value on a boolean", ["--qos=1"]),
         ("a positional", ["notes.db"]),
+        ("a connection count with a sign", ["--max-connections", "-1"]),
     ):
         rows.append((name, args, {"M0_PORT": str(P())}, 2, None))
     # The application's OWN check runs in its main before serve, so it is
@@ -275,6 +411,11 @@ def main() -> int:
         for key in ("mode", "loops", "handler_threads"):
             if key in expect and topo[key] != expect[key]:
                 fail("topology.%s is %r, want %r" % (key, topo[key], expect[key]))
+        if "max_connections" in expect and cfg["max_connections"] != expect["max_connections"]:
+            fail("config.max_connections is %r, want %r" % (cfg["max_connections"], expect["max_connections"]))
+        for key, want_value in expect.get("topology", {}).items():
+            if topo[key] != want_value:
+                fail("topology.%s is %r, want %r" % (key, topo[key], want_value))
         if "max_workers" in expect and doc["application"]["max_workers"] != expect["max_workers"]:
             fail("application.max_workers is %r" % doc["application"]["max_workers"])
         for key, src in expect.get("sources", {}).items():
@@ -309,6 +450,14 @@ def main() -> int:
         code, dout, derr = run_doctor(binary, ["--port", str(held)], {})
         if code != 0 or report_of(dout)["config"]["port"] != held:
             fail("doctoring a held port exited %d:\n%s%s" % (code, dout, derr))
+
+    for shape, args, env in (
+        ("by flag", ["--max-connections", "32"], {}),
+        ("by flag, serve(AppConfig())", ["--max-connections", "32"], {"M0_HOSTCHECK_ENV_CONFIG": "1"}),
+        ("by M0_MAX_CONNECTIONS", [], {"M0_MAX_CONNECTIONS": "32"}),
+    ):
+        phase("a loop holds the count it was given, " + shape)
+        holds_its_count(binary, args, env, P(), out_dir)
 
     print("host_doctor_probe: %d configurations agree both ways" % len(rows))
     return 0

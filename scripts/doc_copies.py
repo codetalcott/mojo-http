@@ -42,6 +42,7 @@ SPEC = "docs/SPEC.md"
 SERVER_CONFIG = "packages/m0-http/lightbug_http/server_config.mojo"
 LOOP_STATE = "packages/m0-http/lightbug_http/loop/state.mojo"
 CLI = "packages/m0-wsgi/src/cli.mojo"
+LIMITS = "packages/m0-http/src/limits.mojo"
 
 # name: (source, pattern whose group 1 is the value, how pages write it).
 # A default a passage states is named here once; every way a page may spell
@@ -49,7 +50,7 @@ CLI = "packages/m0-wsgi/src/cli.mojo"
 FACTS = {
     "max_connections": (SERVER_CONFIG, r"self\.max_connections = (\d+)\b",
                         lambda v: [v]),
-    "max_connections_cap": (CLI, r"comptime MAX_CONNECTIONS = (\d+)\b",
+    "max_connections_cap": (LIMITS, r"comptime MAX_CONNECTIONS = (\d+)\b",
                             lambda v: [v]),
     "stream_reserve_cap": (SERVER_CONFIG,
                            r"return share if share < (\d+) else \1\b",
