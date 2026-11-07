@@ -5,7 +5,7 @@
 times over while stopping short of this file, so a six-header Django-shaped
 response cost **22.97 µs here against 2.18 µs for the entire request side** —
 ten times the thing that had been optimised five times. See
-docs/WSGI_PERFORMANCE.md; the bench now covers both directions.
+docs/notes/the-wsgi-bridge-by-part.md; the bench now covers both directions.
 
 The header half is where the interesting bug lives. `Headers` is a
 `Dict[String, String]`, so writing `Set-Cookie` through it keeps only the last
@@ -16,7 +16,7 @@ never parsed into a `Cookie` and re-serialised. That round trip was lossy:
 `Expiration` was a stub, `SameSite=Lax` failed a lowercase-only match, and a
 value was cut at its first `=`. Serving three real Django projects, every
 session and CSRF cookie reached the browser without `expires` or `SameSite`
-(2026-08-26, docs/REAL_APP_VALIDATION.md). The application's line is the
+(2026-08-26, docs/notes/the-soak-record.md). The application's line is the
 header; PEP 3333 gives the server no licence to rewrite it. `smoke-django`
 asserts the count and that the attributes survive the wire.
 

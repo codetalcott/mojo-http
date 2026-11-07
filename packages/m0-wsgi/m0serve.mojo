@@ -1366,8 +1366,8 @@ def _serve_offloaded(
     ):
         # M0_INVERTED: the loop inversion, on one thread. Unmounted,
         # pool-free ASGI only -- the benchmark shape -- and behind the
-        # variable until its gate passes (docs/ROADMAP.md, "The loop
-        # inversion"), so the A/B against the pump is one env var. Every
+        # variable until its gate passes (docs/notes/loop-inversion.md),
+        # so the A/B against the pump is one env var. Every
         # other topology stays on the pump below.
         #
         # Known limitation, measured 2026-08-29 and recorded rather than

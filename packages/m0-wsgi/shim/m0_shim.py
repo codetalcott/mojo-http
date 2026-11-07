@@ -533,7 +533,7 @@ _ASGI_CHUNK_SPLIT = 32 * 1024
 # streams put N windows in flight against one finite buffer, and past it
 # `send_stream_chunk` cannot place the datagram -- a dropped chunk, which is
 # a short body under a clean terminator. Twelve concurrent WhiteNoise static
-# files under a real Django project were enough (docs/REAL_APP_VALIDATION.md,
+# files under a real Django project were enough (docs/notes/the-soak-record.md,
 # 2026-08-26). Kept well under the 256 KB socket buffer because the kernel
 # charges per-datagram overhead on top of payload, and because the drain is
 # per loop pass: this caps how far ahead of the wire the executor may run,

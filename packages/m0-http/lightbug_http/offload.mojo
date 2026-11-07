@@ -2,14 +2,14 @@
 handler threads, and two datagram channels between them.
 
 The problem this exists for is measured, not argued
-(`docs/WSGI_PERFORMANCE.md`, "A slow view strands the connections pinned
-behind it"): `HTTPService.func` runs synchronously on the event loop, so one
-slow view stops every keep-alive connection that loop happens to hold. One
-`/slow?ms=200` beside fast traffic takes fast-request p99 from 1.6 ms to
-~194 ms while p50 does not move at all — not general slowdown, a subset of
-connections stopped dead. More loops does not fix it: a keep-alive connection
-belongs to the loop that accepted it under `--workers` and under `--threads`
-alike.
+(`docs/notes/wsgi-against-gunicorn-and-the-pool.md`, "A slow view strands the
+connections pinned behind it"): `HTTPService.func` runs synchronously on the
+event loop, so one slow view stops every keep-alive connection that loop
+happens to hold. One `/slow?ms=200` beside fast traffic takes fast-request p99
+from 1.6 ms to ~194 ms while p50 does not move at all — not general slowdown,
+a subset of connections stopped dead. More loops does not fix it: a keep-alive
+connection belongs to the loop that accepted it under `--workers` and under
+`--threads` alike.
 
 The fix is to stop running the handler on the loop. The loop parses the
 request, parks it here, and returns to `wait()`; a pool thread picks it up,
@@ -590,7 +590,7 @@ struct OffloadPool(Movable):
     executor, which IS the loop's thread) skips the sweep while
     `OffloadLoopState.streaming_hint` is zero: +3.5% on the hello row,
     +4% inverted. Accidental pacing, kept deliberately and named
-    (ROADMAP.md, "Pacing the pump's loop thread")."""
+    (docs/notes/pump-pacing.md)."""
 
     var capacity: Int
 
@@ -883,7 +883,7 @@ struct OffloadPool(Movable):
         (`_ASGI_TOTAL_WINDOW`) keeps the sum of every stream's outstanding
         bytes under this channel's capacity, where per-stream credit alone
         did not — 12 concurrent WhiteNoise static files under Django were
-        enough to overflow it (docs/REAL_APP_VALIDATION.md, 2026-08-26).
+        enough to overflow it (docs/notes/the-soak-record.md, 2026-08-26).
         The False return is the last resort, and `_pump_events` says so on
         stdout rather than letting a truncated body look like a good one.
         """
@@ -2410,7 +2410,7 @@ struct OffloadLoopState(Movable):
     The sweep's miss path — 1024 slots, none streaming — is 1.2 µs per
     pass, and a pass carries one or two requests at low concurrency:
     +3.5% on the Mojo-only hello row and +4% on the inverted executor
-    when skipped (SERVER_PERFORMANCE.md, "The outbox sweep"). NOT
+    when skipped (docs/notes/outbox-sweep.md). NOT
     consulted when the pool says `sweeps_every_pass`: see there."""
     var done_scratch: List[Int]
     """`_service_completions`' list of finished slots, reused across

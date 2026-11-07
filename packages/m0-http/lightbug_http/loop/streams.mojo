@@ -584,8 +584,8 @@ def _drain_outboxes[T: HTTPService, B: EventLoopBackend](
     # there cost −3% rps at +6% CPU at c16 (nothing at c256), because a
     # loop that returns to `wait` a microsecond sooner batches fewer
     # submits and the executor takes more wakes per request. The
-    # microsecond is accidental pacing; ROADMAP.md, "Pacing the pump's
-    # loop thread", is the follow-up that would make it deliberate.
+    # microsecond is accidental pacing; docs/notes/pump-pacing.md is the
+    # follow-up that would make it deliberate.
     var sweep_slots = (
         st.max_conns
         if (st.offload.streaming_hint > 0 or st.offload.sweep_every_pass())

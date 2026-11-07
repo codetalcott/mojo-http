@@ -250,7 +250,8 @@ def reentrant(environ, start_response):
     worker dies with SIGKILL and the supervisor respawns it. Measured, on this
     route, with this server. `HTTPConnection` performs no proxy lookup and
     touches no system framework. The same trap is waiting for any application
-    that calls `urlopen` from a view -- see docs/WSGI_CONFORMANCE.md.
+    that calls `urlopen` from a view -- see docs/RUNNING.md, "A forked worker
+    and the system frameworks".
     """
     parts = urlsplit(_q(environ, "url"))
     try:

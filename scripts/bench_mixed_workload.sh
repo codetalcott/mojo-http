@@ -1,10 +1,11 @@
 #!/bin/bash
 # Does a slow view hurt OTHER requests? The measurement that gates Stage B.
 #
-# docs/WSGI_PERFORMANCE.md's wrk row closed the keep-alive tail question and
-# explicitly did NOT close the Stage B question, because its route was
-# trivial: a hello-route benchmark has no slow request for a fast one to be
-# stuck behind, and slow-view isolation is half of what Stage B buys.
+# docs/notes/wsgi-against-gunicorn-and-the-pool.md's wrk row closed the
+# keep-alive tail question and explicitly did NOT close the Stage B question,
+# because its route was trivial: a hello-route benchmark has no slow request
+# for a fast one to be stuck behind, and slow-view isolation is half of what
+# Stage B buys.
 #
 # This is that missing measurement. Every loop (worker or thread) runs its
 # requests synchronously, and a keep-alive connection stays pinned to the loop

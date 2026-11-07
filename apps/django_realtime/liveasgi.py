@@ -5,7 +5,7 @@ the repo runs, and a FastHTML dependency would make it conditional. What it
 provides is the one thing Django-under-a-hold cannot — a request-scoped
 generator stream, where the view *is* the producer — which is the shape that
 makes an ASGI mount worth having beside a held one (`ai/streaming.py` in the
-application that motivated this; docs/REAL_APP_VALIDATION.md).
+application that motivated this; docs/notes/the-soak-record.md).
 
 Held streams and this one share a loop and are told apart by lane
 (`OffloadPool.slot_is_executor`): this one is chunk-framed and credit-gated

@@ -1,11 +1,11 @@
 #!/bin/bash
 # Where does the Granian gap live: the HTTP layer, or the WSGI bridge?
 #
-# docs/WSGI_PERFORMANCE.md measured Granian 2.8.1 at 1.4-2.0x either mojo-http
-# mode on the same free-threaded interpreter, serving a byte-identical
-# response. That is one number for two possible causes, and they have
-# completely different fixes. This script splits it into three rows that
-# differ by exactly one layer each:
+# docs/notes/wsgi-against-gunicorn-and-the-pool.md measured Granian 2.8.1 at
+# 1.4-2.0x either mojo-http mode on the same free-threaded interpreter, serving
+# a byte-identical response. That is one number for two possible causes, and
+# they have completely different fixes. This script splits it into three rows
+# that differ by exactly one layer each:
 #
 #   1. apps/hello          Mojo handler, ZERO Python   -> mojo-http's HTTP ceiling
 #                          (single process: that app has no WorkerSupervisor)

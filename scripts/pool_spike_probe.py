@@ -4,7 +4,7 @@
 Mirrors what `hybrid_isolation.py` does for the WSGI side, against
 `apps/pool_spike`. For each configuration it measures the p99 of `/fast` on
 keep-alive connections while N slow requests are in flight, and reports the
-same shape `docs/BENCHMARKS.md` records for Python:
+same shape `docs/BENCHMARKS.md` recorded for Python in 2026-09:
 
     configuration        slow=0    slow=1    slow=2
     --workers 4           1.0 ms  190.7 ms  195.9 ms

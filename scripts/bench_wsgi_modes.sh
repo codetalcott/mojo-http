@@ -14,7 +14,8 @@ cd "$(dirname "$0")/.."
 OUT=${BENCH_OUT:-/tmp/bench_wsgi_modes.txt}; : > "$OUT"
 N=${BENCH_REQUESTS:-20000}
 # A browser-shaped request: twelve headers. wrk's default sends only Host,
-# which understates the header-handling cost ~2.4x (WSGI_PERFORMANCE.md).
+# which understates the header-handling cost ~2.4x
+# (docs/notes/wsgi-against-gunicorn-and-the-pool.md).
 HDRS=(-H 'User-Agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36'
       -H 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
       -H 'Accept-Language: en-US,en;q=0.9' -H 'Accept-Encoding: gzip, deflate, br'

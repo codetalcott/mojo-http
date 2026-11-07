@@ -3,12 +3,12 @@
 #
 # `bench_asgi.py` is the stdlib-client gate: portable to a CI container, and
 # measuring the client as much as the server — it once reported the executor
-# at 0.88-0.94x uvicorn where wrk found 0.72x (docs/WSGI_PERFORMANCE.md,
-# "The ASGI executor vs uvicorn"). This is the wrk run that produced the
-# `asgi-wrk-hello-*.json` artifact docs/BENCHMARKS.md renders, which until
-# now had no script behind it. Same shape as bench_layer_split.sh: browser
-# headers, keep-alive only, cores MEASURED off the listen socket, byte parity
-# asserted before any timing, median of ROUNDS.
+# at 0.88-0.94x uvicorn where wrk found 0.72x
+# (docs/notes/the-asgi-executor-against-uvicorn.md). This is the wrk run that
+# produced the `asgi-wrk-hello-*.json` artifact docs/BENCHMARKS.md renders,
+# which until now had no script behind it. Same shape as bench_layer_split.sh:
+# browser headers, keep-alive only, cores MEASURED off the listen socket, byte
+# parity asserted before any timing, median of ROUNDS.
 #
 # Rows:
 #   m0serve asgi-executor   zero-config: the per-loop asyncio executor

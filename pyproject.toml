@@ -818,7 +818,8 @@ mojo build --target-cpu "$tcpu" "$@" || exit 1
 # directory that exists on exactly one machine. Two rpaths, because one
 # build output serves both shapes -- flat (the tarball asset, libraries
 # beside the binary) and wheel (_bin/ and _lib/ siblings). See
-# docs/FFI_DISTRIBUTION.md; `poe check-serve-portable` asserts the result.
+# docs/notes/the-c-abi-artifact.md; `poe check-serve-portable` asserts the
+# result.
 python3 scripts/relocate.py --no-id \
   --rpath '@loader_path' --rpath '@loader_path/../_lib' "$out" || exit 1
 
@@ -890,7 +891,8 @@ mojo build --emit shared-lib --target-cpu "$tcpu" -I packages/m0-core \
 # The surgery is shared with build-serve rather than copied into it; the
 # copy is how bin/m0serve went without any. Linux is a best-effort cleanup
 # (that .so is statically linked, so its RUNPATH resolves nothing).
-# See docs/FFI_DISTRIBUTION.md; `poe check-ffi-portable` asserts the result.
+# See docs/notes/the-c-abi-artifact.md; `poe check-ffi-portable` asserts the
+# result.
 python3 scripts/relocate.py --id "libm0core.$ext" --rpath '@loader_path' "$lib" || exit 1
 echo "built $lib"
 """
@@ -942,7 +944,7 @@ help = "Fail if the tree cites an obsoleted RFC (--update refreshes the snapshot
 cmd = "python3 scripts/check_citations.py"
 
 [tool.poe.tasks.render-bench-docs]
-help = "Render the newest bench/results artifact into WSGI_PERFORMANCE.md"
+help = "Render the newest bench/results artifacts into BENCHMARKS.md, WSGI_PERFORMANCE.md and SERVER_PERFORMANCE.md"
 shell = "python3 scripts/render_bench_docs.py"
 
 # The executor shim is a Python file (packages/m0-wsgi/shim/m0_shim.py)
@@ -3209,8 +3211,9 @@ fi
 # Phase 5: the pool. `--realtime --blocking-threads` used to be refused, and
 # that refusal is what kept M0-Hold off applications with a slow view: a
 # held-stream server ran its views on the loop, so one AI call stalled every
-# stream and every request behind it (docs/REAL_APP_VALIDATION.md measured a
-# 1 543 ms fast-path p50 on textshelf under --realtime, 0.3 ms with a pool).
+# stream and every request behind it (docs/notes/hold-on-a-pool-thread.md
+# measured a 1 543 ms fast-path p50 on textshelf under --realtime, 0.3 ms with
+# a pool).
 # A pool thread now takes the hold and forwards it to the loop's registries
 # as a reserved frame on the loop's own bus channel. Everything phase 1
 # proved must hold here -- subscribe, publish, heartbeat, cleanup -- plus the
@@ -4514,7 +4517,7 @@ stop $pid
 # had its own 2 MB ceiling that --max-body never raised, so every upload
 # between 2 MB and the cap was refused -- as a 400 from the buffer check, not
 # a 413 -- under the default 4 MB cap too. Three real Django projects' image
-# uploads found it (docs/REAL_APP_VALIDATION.md). Sizes straddle the old
+# uploads found it (docs/notes/the-soak-record.md). Sizes straddle the old
 # ceiling on purpose: 3 MB under the default, 7 MB under --max-body 8m.
 spawn serve-cap.log "$srv" $SPEC --port $port
 wait_ready http://127.0.0.1:$port/ $pid
@@ -4738,8 +4741,8 @@ pid=
 #
 # Which worker answers a fresh connection is the scheduler's choice, not
 # the server's: both share one listen socket, and the worker that shares
-# the client's CPU loses every accept race (docs/ROADMAP.md, "Scheduling
-# stickiness": 80 of 80 to one worker under that placement, seen once on
+# the client's CPU loses every accept race (docs/notes/accept-placement.md:
+# 80 of 80 to one worker under that placement, seen once on
 # CI). So the second worker is not waited for -- it is MADE to answer. The
 # worker that did answer is stopped, and the other must serve the new body
 # on its own; the supervisor reaps with WNOHANG alone, so a stopped worker
@@ -5110,7 +5113,7 @@ grep -q 'slow done' "$SMOKE_DIR/slowbody.txt" || fail 'a request in flight at SI
 
 # SIGTERM with jobs that will NEVER finish: exit anyway, and say so. A
 # response that never ends -- an SSE generator under WSGI is the real case;
-# docs/REAL_APP_VALIDATION.md found it on textshelf -- holds its pool thread
+# docs/notes/the-soak-record.md found it on textshelf -- holds its pool thread
 # forever, and the join after the drain used to wait for it forever: SIGTERM
 # did nothing and `docker stop` ended in SIGKILL. The drain has a 5 s budget
 # and the join now has the same; 20 s here is both plus slack, and the old
@@ -6793,7 +6796,7 @@ python3 scripts/emit.py --covers K13 --task smoke-wsgi-stream
 # executor against uvicorn (single process, no uvloop), same app, same
 # stdlib client — so the numbers only mean anything as a ratio. Not in CI:
 # shared runners make latency gates flaky; run it where the numbers go
-# into WSGI_PERFORMANCE.md.
+# into docs/BENCHMARKS.md.
 [tool.poe.tasks.bench-asgi]
 help = "Bench the ASGI executor against uvicorn on apps/asgi_bare (gate: mixed-tail p99; the rps ratio is informational)"
 deps = ["build-serve"]
@@ -7354,7 +7357,7 @@ code=$(curl -s -o /dev/null -w '%{http_code}' $B/status/418)
 # DROP the datagram, and the body arrived short with a clean terminator -- a
 # corrupt 200 -- or, with the end frame gone, never completed. Twelve
 # concurrent WhiteNoise static files under a real Django project found it
-# (docs/REAL_APP_VALIDATION.md). Every body must be exactly 237568 bytes.
+# (docs/notes/the-soak-record.md). Every body must be exactly 237568 bytes.
 (for i in $(seq 1 32); do echo "$B/stream?size=237568&piece=4096"; done) \
   | xargs -P 32 -I{} curl -s -o /dev/null -w '%{size_download}\n' --max-time 30 {} > "$out/sizes"
 short=$(awk '$1 != 237568' "$out/sizes" | wc -l | tr -d ' ')
@@ -7857,7 +7860,7 @@ python3 scripts/emit.py --covers I26 --task smoke-asgi
 # precisely what they had just established. Both shapes were caught, and
 # `_after_send` closed the slot as the HEAD drained: a 200 with
 # `Content-Length` set and zero body bytes, and a 101 that never framed.
-# Found by a real-application soak (docs/REAL_APP_VALIDATION.md), on the
+# Found by a real-application soak (docs/notes/the-soak-record.md), on the
 # hundredth request of a keep-alive connection, silent in the server log.
 [tool.poe.tasks.smoke-keepalive-cap]
 help = "The keep-alive cap must close the connection, not destroy the response"

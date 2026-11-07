@@ -32,7 +32,7 @@ This replaced a design where Mojo serialized the whole request into a
 length-prefixed blob and a zero-argument `handle()` parsed it back in pure
 Python. That was correct and leak-free, but the parse was 28 Python-level
 `_read_str` calls for a twelve-header request and cost 12.09 µs of the
-bridge's 14.23 — 85% of it. See docs/WSGI_PERFORMANCE.md.
+bridge's 14.23 — 85% of it. See docs/notes/the-wsgi-bridge-by-part.md.
 
 **Both bodies cross through `PyBytes_*`, loaded from the interpreter's own
 handle** — see the `ExternalFunction` declarations below. The REQUEST body
@@ -969,10 +969,10 @@ struct PyBridge(Movable):
 
         This replaced iterating the list as `PythonObject`s with two
         `String(py=...)` per pair — priced at 1.27 µs of a six-header
-        response's 3.30 (docs/WSGI_PERFORMANCE.md), with `Headers()` plus
-        six stores another 1.39 — which is what the reserve from the
-        counted bytes is for. The two passes over borrowed pointers cost
-        nanoseconds; the reallocations they avoid cost more.
+        response's 3.30 (docs/notes/the-wsgi-bridge-by-part.md), with
+        `Headers()` plus six stores another 1.39 — which is what the reserve
+        from the counted bytes is for. The two passes over borrowed pointers
+        cost nanoseconds; the reallocations they avoid cost more.
 
         A `str` crosses as the UTF-8 CPython caches on the object, the
         same text `String(py=...)` produced, so the wire bytes are
