@@ -567,9 +567,9 @@ struct ServeOptions(Copyable, Movable):
 
 
 def slots_full_notice(sc: ServerConfig, reclaim: Bool) -> String:
-    """m0serve's line for a loop that finds every slot in use (SPEC C23):
-    `m0_http.limits.slots_full_notice`, which the Mojo host prints too,
-    under m0serve's name."""
+    """The line m0serve prints for a loop that finds every slot in use
+    (SPEC C23): `m0_http.limits.slots_full_notice`, which the Mojo host
+    prints too, under m0serve's name."""
     return _slots_full_notice(sc, reclaim, "m0serve")
 
 
