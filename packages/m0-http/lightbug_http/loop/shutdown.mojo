@@ -14,6 +14,7 @@ from lightbug_http.io.bytes import Bytes
 from lightbug_http.ring import atomic_at
 from lightbug_http.service import HTTPService
 from std.time import perf_counter_ns
+from std.sys import stderr
 
 from lightbug_http.loop.state import (
     LoopState, UNUSED, _close_slot, _farewell_streams,
@@ -309,7 +310,7 @@ def _shutdown_drain_step[T: HTTPService, B: EventLoopBackend](
     if (perf_counter_ns() - drain_start) > DRAIN_TIMEOUT_NS:
         var unfinished = _unfinished_at_deadline(st)
         if unfinished.byte_length() > 0:
-            print(unfinished, flush=True)
+            print(unfinished, file=stderr)
         return True
     var drain_events = _wait_for_events(backend, st, wait_ms)
     _ = _run_pass(handler, backend, st, drain_events)
@@ -356,7 +357,7 @@ def _shutdown_finish[T: HTTPService, B: EventLoopBackend](
             + String(st.accept_share.handoffs_in)
             + ", forwarded " + String(st.accept_share.handoffs_forwarded)
             + " after it left",
-            flush=True,
+            file=stderr,
         )
 
 

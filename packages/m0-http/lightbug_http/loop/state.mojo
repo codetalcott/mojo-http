@@ -31,6 +31,7 @@ from lightbug_http.websocket import WSState, close_frame, WS_CLOSE_GOING_AWAY
 from std.ffi import c_int
 from std.time import perf_counter_ns
 from std.os import getenv
+from std.sys import stderr
 from m0_http.log import LogClock, log_access
 
 
@@ -905,7 +906,7 @@ def _notice_once(mut notice: String):
     """
     if notice.byte_length() == 0:
         return
-    print(notice, flush=True)
+    print(notice, file=stderr)
     notice = String("")
 
 

@@ -21,6 +21,7 @@ from lightbug_http.socket import (
     TCPSocket,
 )
 from std.utils import Variant
+from std.sys import stderr
 
 
 @fieldwise_init
@@ -267,12 +268,13 @@ struct ListenConfig:
                     print(
                         "Bind failed on " + join_host_port(addr.ip, String(addr.port))
                         + " (address in use: another server on the port,"
-                        + " or a previous one still draining)"
+                        + " or a previous one still draining)",
+                        file=stderr,
                     )
                     var limit = String("unlimited") if self.max_bind_retries == 0 else String(self.max_bind_retries)
-                    print("Retrying (max", limit, "attempts, 1s apart)...")
+                    print("Retrying (max", limit, "attempts, 1s apart)...", file=stderr)
                     bind_fail_logged = True
-                print(".", end="", flush=True)
+                print(".", end="", file=stderr)
 
                 try:
                     socket.shutdown()

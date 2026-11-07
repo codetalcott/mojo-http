@@ -44,6 +44,7 @@ file-backed page is required, which is all either host decides.
 """
 
 from std.os import getenv, setenv
+from std.sys import stderr
 
 from lightbug_http.accept_share import (
     AcceptShare,
@@ -142,7 +143,7 @@ def prefork_page(workers: Int, required: Bool = False) raises -> SharedAtomics:
         print(
             "the shared page could not be file-backed (" + String(e)
             + "); a child process will publish unnumbered frames",
-            flush=True,
+            file=stderr,
         )
         page = SharedAtomics(slots)
     page.store(SHARED_PAGE_MAGIC_SLOT, SHARED_PAGE_MAGIC)

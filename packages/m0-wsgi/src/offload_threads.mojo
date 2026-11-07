@@ -28,6 +28,7 @@ channel exists before the first producer does; and the join is detached
 """
 
 from std.python import Python
+from std.sys import stderr
 
 from lightbug_http.c.process import process_exit
 from lightbug_http.offload import OffloadPool
@@ -247,12 +248,12 @@ def join_offload(mut threads: OffloadThreads, mut pool: OffloadPool, who: String
             who + String(stuck) + " handler thread(s) still inside the"
             " application " + String(JOIN_TIMEOUT_NS // 1_000_000_000)
             + " s after the drain; exiting without them",
-            flush=True,
+            file=stderr,
         )
         process_exit(0)
     cpy.PyEval_RestoreThread(join_ts)
     if failed > 0:
         print(
             who + String(failed) + " offload thread(s) did not exit cleanly",
-            flush=True,
+            file=stderr,
         )

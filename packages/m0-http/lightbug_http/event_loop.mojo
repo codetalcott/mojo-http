@@ -48,6 +48,7 @@ from lightbug_http.service import HTTPService
 from std.time import perf_counter_ns
 from std.sys.info import CompilationTarget
 from std.os import getenv
+from std.sys import stderr
 
 # The loop's modules. `LoopState`, `service_direct_completions` and the
 # shutdown's steps are imported for callers too: the ASGI executor takes
@@ -138,15 +139,21 @@ def prepare_loop[B: EventLoopBackend](
         backend.try_add_timer(TIMER_APP_TICK, config.app_tick_ms)
 
     comptime if CompilationTarget.is_macos():
-        print("Event loop started (kqueue, max_connections=" + String(st.max_conns) + ")")
+        print(
+            "Event loop started (kqueue, max_connections=" + String(st.max_conns) + ")",
+            file=stderr,
+        )
     else:
-        print("Event loop started (epoll, max_connections=" + String(st.max_conns) + ")")
+        print(
+            "Event loop started (epoll, max_connections=" + String(st.max_conns) + ")",
+            file=stderr,
+        )
     if accept_share.active():
         print(
             "Accept sharing: worker " + String(accept_share.worker) + " of "
             + String(accept_share.workers()) + " passes connections it"
             + " accepts to the least-loaded sibling",
-            flush=True,
+            file=stderr,
         )
     return st^
 
@@ -235,7 +242,7 @@ def run_event_loop[T: HTTPService, B: EventLoopBackend](
             if stop:
                 _run_shutdown(handler, backend, st)
                 if st.offload.ring_active() and getenv("M0_POOL_DEBUG", "") != "":
-                    print(st.offload.wait_report(), flush=True)
+                    print(st.offload.wait_report(), file=stderr)
                 break
     except e:
         # Reached from the backend's wait alone: `_wait_for_events`, before

@@ -32,6 +32,7 @@ from lightbug_http.loop.state import (
 )
 from lightbug_http.loop.request import _drain_pipelined
 from std.ffi import c_int
+from std.sys import stderr
 
 
 def _on_write[T: HTTPService, B: EventLoopBackend](
@@ -605,7 +606,7 @@ def _begin_zstd_stream(mut st: LoopState, slot: Int, mut response: HTTPResponse)
         response.headers.pop("content-encoding")
         if not st.zstd_refused:
             st.zstd_refused = True
-            print("zstd: compressed streams go out uncompressed on this loop: " + String(e), flush=True)
+            print("zstd: compressed streams go out uncompressed on this loop: " + String(e), file=stderr)
 
 
 def _after_send[T: HTTPService, B: EventLoopBackend](

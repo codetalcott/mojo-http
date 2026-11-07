@@ -421,7 +421,7 @@ def _pool_serve[T: ThreadHandler](block: ThreadBlock) raises:
             + " | " + _hist_line("ring-wait", h_ring)
             + " | " + _hist_line("gil-wait", h_gil)
             + " | " + _hist_line("service", h_service),
-            flush=True,
+            file=stderr,
         )
 
     block.set(BLK_KEPT, kept)

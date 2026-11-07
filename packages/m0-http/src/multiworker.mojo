@@ -21,6 +21,7 @@ from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
 from std.os import getenv, setenv
+from std.sys import stderr
 from lightbug_http.accept_share import (
     AcceptShare, close_reaped_handoffs, mark_reaped,
 )
@@ -547,7 +548,7 @@ struct WorkerSupervisor:
         print(
             "[worker " + String(index) + "] exec of " + self._spawn_path
             + " failed, errno " + errno,
-            flush=True,
+            file=stderr,
         )
         process_exit(EX_CONFIG)
 
@@ -566,7 +567,7 @@ struct WorkerSupervisor:
         """
         self.worker_index = index
         _forget_supervisor_signals()
-        print(note, flush=True)
+        print(note, file=stderr)
 
     def enable_reload(mut self, var dirs: List[String], var suffix: String):
         """Watch `dirs` for changed `suffix` files and restart workers on one.
@@ -629,10 +630,14 @@ struct WorkerSupervisor:
                 "[parent] pid={} told to stop after forking {} of {} workers;"
                 " forking no more".format(
                     getpid(), len(self.child_pids), self.num_workers
-                )
+                ),
+                file=stderr,
             )
         else:
-            print("[parent] pid={} supervising {} workers".format(getpid(), self.num_workers))
+            print(
+                "[parent] pid={} supervising {} workers".format(getpid(), self.num_workers),
+                file=stderr,
+            )
         var reloading = Bool(self._scanner)
         if reloading:
             # Prime the baseline here, in the parent, AFTER the fork: the
@@ -645,7 +650,8 @@ struct WorkerSupervisor:
                     self._scanner.value().describe(),
                     self._scanner.value().watching(),
                     self.reload_interval_ms,
-                )
+                ),
+                file=stderr,
             )
         var respawned: Bool
         if reloading:
@@ -718,7 +724,8 @@ struct WorkerSupervisor:
                 print(
                     "[parent] change under {} - reload {}".format(
                         self._scanner.value().describe(), self.reloads
-                    )
+                    ),
+                    file=stderr,
                 )
                 if self._reload():
                     return True
@@ -745,11 +752,14 @@ struct WorkerSupervisor:
                 # A stop, reaching a worker before it armed: propagate
                 # to the rest, and judge each as it goes.
                 self._judge_stopped(child_pid, status)
-                print("[parent] propagating signal {} to remaining workers".format(sig))
+                print(
+                    "[parent] propagating signal {} to remaining workers".format(sig),
+                    file=stderr,
+                )
                 self._kill_all(sig)
                 self._reap_the_rest()
                 return _EXIT_SHUTDOWN
-            print("[parent] worker pid={} killed by signal {}".format(child_pid, sig))
+            print("[parent] worker pid={} killed by signal {}".format(child_pid, sig), file=stderr)
             # Other signal (e.g., SIGKILL) — treat as crash, try respawn
             return self._try_respawn()
         var code = exit_code(status)
@@ -761,17 +771,26 @@ struct WorkerSupervisor:
             # runs on worker 0 alone, and a producer whose `make` raised
             # left worker 1 answering requests with no producer anywhere,
             # indefinitely.
-            print("[parent] worker pid={} refused its configuration (exit_code=78); not respawning".format(child_pid))
+            print(
+                "[parent] worker pid={} refused its configuration (exit_code=78); not respawning".format(child_pid),
+                file=stderr,
+            )
             self._config_refused = True
             if self._alive_count() > 0:
-                print("[parent] stopping the remaining workers: a refused configuration is not served by the rest")
+                print(
+                    "[parent] stopping the remaining workers: a refused configuration is not served by the rest",
+                    file=stderr,
+                )
                 self._kill_all(SIGTERM)
                 self._reap_the_rest()
             return _EXIT_SHUTDOWN
         if code != 0:
-            print("[parent] worker pid={} crashed (exit_code={})".format(child_pid, code))
+            print(
+                "[parent] worker pid={} crashed (exit_code={})".format(child_pid, code),
+                file=stderr,
+            )
             return self._try_respawn()
-        print("[parent] worker pid={} exited cleanly".format(child_pid))
+        print("[parent] worker pid={} exited cleanly".format(child_pid), file=stderr)
         return _RESPAWN_FAILED
 
     def _reap_the_rest(mut self) raises:
@@ -810,25 +829,31 @@ struct WorkerSupervisor:
             if sig == SIGTERM or sig == SIGINT:
                 print(
                     "[parent] worker pid={} killed by signal {} before it armed"
-                    " its handler: a stop, not a failure".format(child_pid, sig)
+                    " its handler: a stop, not a failure".format(child_pid, sig),
+                    file=stderr,
                 )
                 return
             print(
                 "[parent] worker pid={} killed by signal {} while stopping:"
-                " a failed drain".format(child_pid, sig)
+                " a failed drain".format(child_pid, sig),
+                file=stderr,
             )
             self._failed_stopping = True
             return
         var code = exit_code(status)
         if code == 0:
-            print("[parent] worker pid={} exited cleanly".format(child_pid))
+            print("[parent] worker pid={} exited cleanly".format(child_pid), file=stderr)
         elif code == EX_CONFIG:
-            print("[parent] worker pid={} refused its configuration (exit_code=78)".format(child_pid))
+            print(
+                "[parent] worker pid={} refused its configuration (exit_code=78)".format(child_pid),
+                file=stderr,
+            )
             self._config_refused = True
         else:
             print(
                 "[parent] worker pid={} crashed (exit_code={}) while stopping:"
-                " a failed drain".format(child_pid, code)
+                " a failed drain".format(child_pid, code),
+                file=stderr,
             )
             self._failed_stopping = True
 
@@ -867,7 +892,10 @@ struct WorkerSupervisor:
             self._remove_pid(result[0])
             alive = self._alive_count()
         if alive > 0:
-            print("[parent] {} worker(s) did not drain in time, killing".format(alive))
+            print(
+                "[parent] {} worker(s) did not drain in time, killing".format(alive),
+                file=stderr,
+            )
             self._kill_all(SIGKILL)
             while self._alive_count() > 0:
                 var forced = waitpid_blocking(-1)
@@ -897,7 +925,7 @@ struct WorkerSupervisor:
         # (`__pycache__` is skipped, but a project may write others), and
         # counting those as a change would reload forever.
         _ = self._scanner.value().changed()
-        print("[parent] reload {} complete".format(self.reloads))
+        print("[parent] reload {} complete".format(self.reloads), file=stderr)
         return False
 
     def _alive_count(self) -> Int:
@@ -921,7 +949,10 @@ struct WorkerSupervisor:
         `_reload` itself and spend nothing.
         """
         if supervisor_stopping():
-            print("[parent] stopping: a worker that failed during the drain is not respawned")
+            print(
+                "[parent] stopping: a worker that failed during the drain is not respawned",
+                file=stderr,
+            )
             self._failed_stopping = True
             return _RESPAWN_FAILED
         var since = perf_counter_ns() - self.respawn_window_ns
@@ -931,7 +962,8 @@ struct WorkerSupervisor:
             print(
                 "[parent] max respawns ({}) within {} s reached, not respawning".format(
                     self.max_respawns, Float64(self.respawn_window_ns) / 1e9
-                )
+                ),
+                file=stderr,
             )
             return self._give_up()
 
@@ -941,7 +973,7 @@ struct WorkerSupervisor:
         if elapsed_ns < 1_000_000_000:  # 1 second
             self.rapid_crash_count += 1
             if self.rapid_crash_count >= 5:
-                print("[parent] 5 rapid crashes detected, stopping respawn")
+                print("[parent] 5 rapid crashes detected, stopping respawn", file=stderr)
                 return self._give_up()
         else:
             self.rapid_crash_count = 0
@@ -963,7 +995,7 @@ struct WorkerSupervisor:
         if respawn_index >= 0 and respawn_index < len(self.child_pids):
             self.child_pids[respawn_index] = new_pid
             self._publish_children()
-        print("[parent] respawned worker {} as pid={}".format(respawn_index, new_pid))
+        print("[parent] respawned worker {} as pid={}".format(respawn_index, new_pid), file=stderr)
         return _RESPAWN_PARENT
 
     def _give_up(mut self) -> Int:
@@ -992,7 +1024,8 @@ struct WorkerSupervisor:
         if closed > 0:
             print(
                 "[parent] closed {} connection(s) handed to worker {} and"
-                " never taken".format(closed, index)
+                " never taken".format(closed, index),
+                file=stderr,
             )
         return _RESPAWN_FAILED
 
@@ -1051,7 +1084,7 @@ struct WorkerSupervisor:
         publish_child_pids(self.child_pids)
         if not live:
             print("[parent] signal propagation unavailable; workers will not"
-                  " be reaped if the supervisor alone is signalled")
+                  " be reaped if the supervisor alone is signalled", file=stderr)
             return
         var handler = _on_supervisor_signal
         var handler_address = Pointer(to=handler).unsafe_bitcast[Int]()[]

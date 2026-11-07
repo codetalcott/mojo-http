@@ -176,6 +176,7 @@ from lightbug_http.ring import Ring, atomic_at
 from std.atomic import Atomic
 from std.os import getenv
 from std.time import perf_counter_ns
+from std.sys import stderr
 
 # The channels' datagrams, codec and bounded send are offload_wire.mojo's.
 # Every name is imported here too, so callers keep importing it from this
@@ -885,7 +886,7 @@ struct OffloadPool(Movable):
         did not — 12 concurrent WhiteNoise static files under Django were
         enough to overflow it (docs/notes/the-soak-record.md, 2026-08-26).
         The False return is the last resort, and `_pump_events` says so on
-        stdout rather than letting a truncated body look like a good one.
+        stderr rather than letting a truncated body look like a good one.
         """
         return send_bounded(self.stream_chunk_write, frame)
 
@@ -1710,7 +1711,7 @@ struct OffloadPool(Movable):
                     "offload: a job batch reached a pool lane ("
                     + String((Int(n) - 1) // _JOB_BYTES)
                     + " slots) — sender bug; those requests will not be answered",
-                    flush=True,
+                    file=stderr,
                 )
                 return _none_job()
             # EOF (0 bytes), or a shape this version does not know.
@@ -1989,7 +1990,7 @@ struct OffloadPool(Movable):
                 + "aged wakes "
                 + String(counts[0]) + ", idle wakes " + String(counts[1])
                 + ", threads " + String(self.thread_count(lane)),
-                flush=True,
+                file=stderr,
             )
         var pill = _encode_job(_POISON)
         # A thread parked on its own channel is not reading the lane

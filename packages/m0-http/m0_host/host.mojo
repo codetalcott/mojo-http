@@ -15,9 +15,9 @@ wrong. In this order:
    (`m0_host.flags`; flag > env > default, m0serve's precedence). One that
    cannot be read is the usage and exit 2; `--doctor` prints what the
    steps below WOULD do as one JSON object (`host_report`) and leaves with
-   the code step 1 would, having bound nothing. Every refusal and startup
-   failure is said on stderr; the report, `--help` and the banners keep
-   stdout.
+   the code step 1 would, having bound nothing. The report, `--help`, the
+   listening line and the access log are stdout's; every other line the
+   host prints, a refusal, a startup failure or a notice, is stderr's.
 1. **Refuse what it does not serve** (`host_checks`): `M0_SPAWN_WORKERS`
    is m0serve's, and a variable the host silently ignored would be a
    configuration that reads as applied; `M0_WORKERS` and `M0_THREADS`
@@ -719,7 +719,7 @@ def _producer_body[P: Producer](arg: Int) -> Int:
         _producer_run[P](block)
         status = STATUS_OK
     except e:
-        print("host: the producer raised and has stopped: " + String(e), flush=True)
+        print("host: the producer raised and has stopped: " + String(e), file=stderr)
     # Last act, and load-bearing: `join_within` waits on this slot.
     block.set(BLK_STATUS, status)
     return 0
@@ -1242,7 +1242,7 @@ def _raise_descriptors(config: AppConfig, mut server_config: ServerConfig):
     else:
         said += ", leaving less room for the application's own files"
     said += ". Raise the hard limit (ulimit -Hn, systemd's LimitNOFILE=)"
-    print(said, flush=True)
+    print(said, file=stderr)
 
 
 def serve[H: AppHandler, P: Producer = NoProducer](config: AppConfig) raises:
@@ -1398,7 +1398,7 @@ def serve[H: AppHandler, P: Producer = NoProducer](
         # reached died without draining; from here it drains. A gate that
         # signals the supervisor waits for this line from every worker,
         # since one worker answering says nothing of the rest (S1).
-        print("[worker {}] pid={} armed for a graceful stop".format(worker, getpid()), flush=True)
+        print("[worker {}] pid={} armed for a graceful stop".format(worker, getpid()), file=stderr)
 
     var ctx = HostContext(
         worker, workers, server_config.max_connections, pieces.app_page,
@@ -1517,7 +1517,7 @@ def _start_pool[H: AppHandler](
             "host: ", ctx.config.blocking_threads,
             " handler thread(s) behind the loop (M0_BLOCKING_THREADS)",
         ),
-        flush=True,
+        file=stderr,
     )
 
 
@@ -1745,7 +1745,7 @@ def _serve_threaded[H: AppHandler, P: Producer](
         _start_producer_or_refuse[P](producer, ctx)
     for i in range(loops):
         set.block(i).set(BLK_LOOP_GO, 1)
-    print(String("host: ", loops, " loops on ", loops, " threads (M0_THREADS)"), flush=True)
+    print(String("host: ", loops, " loops on ", loops, " threads (M0_THREADS)"), file=stderr)
 
     # The coordinator: asleep until the signal handler writes its byte.
     _ = read_one_byte_blocking(shutdown_fd)
@@ -1759,7 +1759,7 @@ def _serve_threaded[H: AppHandler, P: Producer](
                 "host: ", lost, " loop(s) still running past the drain's"
                 " bound; exiting without them",
             ),
-            flush=True,
+            file=stderr,
         )
     if producer.stop_and_join(JOIN_TIMEOUT_NS) > 0:
         _abandoned_step_note()
@@ -1782,7 +1782,7 @@ def _join_pool(mut pool: OffloadPool, mut threads: MojoPool, began: Int) raises 
                 " application ", JOIN_TIMEOUT_NS // 1_000_000_000,
                 " s after the drain began; exiting without them",
             ),
-            flush=True,
+            file=stderr,
         )
     return stuck
 
@@ -1796,7 +1796,7 @@ def _abandoned_step_note():
             JOIN_TIMEOUT_NS // 1_000_000_000,
             " s after the drain; exiting without it",
         ),
-        flush=True,
+        file=stderr,
     )
 
 

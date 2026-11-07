@@ -171,7 +171,9 @@ applies the flags itself.
 | 2 | a command line that cannot be read: an unknown flag, a value that is not a number |
 | 78 | a configuration that was read and will not be served |
 
-Every 78 is said on stderr, on lines that open with `host:`: a check's
+The host prints to stderr every line but `--help`, the doctor's report,
+the listening line and the access log, which are stdout's. Every 78 is
+said there, on lines that open with `host:`: a check's
 refusal is one line, what was found and then the fix in parentheses, and a
 `make` that raises is refused with its own error. The checks, in the order
 the host applies them:
@@ -213,7 +215,7 @@ one.
 SIGTERM and SIGINT drain: in-flight requests finish, held streams are
 closed from the server, and the process exits 0. The drain, the handler
 pool's join and the producer's join share one five-second bound. A thread
-still running after it is named on stdout and the process exits anyway, so
+still running after it is named on stderr and the process exits anyway, so
 `docker stop` never waits for SIGKILL. The binary runs correctly as PID 1.
 
 The capability rows are E21 to E32 and E42, C20, C21 and C23 to C25 for a

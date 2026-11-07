@@ -50,7 +50,7 @@ orchestration, use `--health-path /health` (answered in the server, before
 Python) or a TCP check.
 
 Before its banner each worker prints `[worker N] pid=P armed for a
-graceful stop`, the Mojo host's line: a SIGTERM drains it from then on, and
+graceful stop` on stderr, the Mojo host's line: a SIGTERM drains it from then on, and
 kills it before then. Between the two, while an ASGI application's lifespan
 startup runs, SIGTERM or SIGINT ends the worker with exit 0 and nothing
 served; under `M0_INVERTED=1` a stop waits for the startup to finish. A script that stops the server soon after starting it
@@ -388,6 +388,10 @@ has the Flask version of the whole thing.
   cannot serve (a value above its cap, a port out of range, a missing
   library, an interpreter the mode cannot use); each prints one sentence
   on stderr naming the fix.
+- **Two streams.** stdout carries what was asked for: `--help`,
+  `--version`, the doctor's report (its last line), the banner and the
+  access log. Every other line m0serve prints, a refusal, a notice or an
+  error it survives while serving, is on stderr.
 
 ## Configuration precedence
 
