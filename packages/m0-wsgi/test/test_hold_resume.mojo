@@ -24,7 +24,9 @@ from m0_http import SharedAtomics, StaticFiles, shared_store
 from m0_http.sse.format import format_sse_event_bytes
 
 from src.app import WSGIApp
+from src.cli import ServeOptions
 from src.handler import WSGIHandler
+from src.thread_handler import ThreadContext
 
 
 comptime APP_MODULE = "m0_test_hold_resume"
@@ -168,6 +170,58 @@ def test_a_socket_held_inline_is_clamped_to_the_head() raises:
     assert_equal(h.sockets.last_event_ids[SLOT], 5)
     _publish(h, String("news"), 6)
     assert_true(h.sockets.has_pending(SLOT), "frame 6 was suppressed")
+
+
+comptime COUNT = 64
+
+
+def _made(pool: Bool) raises -> WSGIHandler:
+    """A handler built as `WSGIHandler.make` builds one for a thread: a
+    `--blocking-threads` pool thread's (`pool`), holding the loop's hold
+    channel, or a `--threads` serving loop's. `--realtime`, with the chunk
+    channel's registries on, as m0serve sets them under any pool."""
+    var builtins = Python.import_module("builtins")
+    builtins.exec(PythonObject(APP_SOURCE), Python.dict())
+    var opts = ServeOptions()
+    opts.module = String(APP_MODULE)
+    opts.realtime = True
+    opts.asgi_streaming = True
+    opts.max_connections = COUNT
+    var opts_ptr = Pointer(to=opts)
+    var ctx = ThreadContext(
+        0, Pointer(to=opts_ptr).unsafe_bitcast[Int]()[],
+        hold_fd=7 if pool else -1, pool=pool,
+    )
+    var handler = WSGIHandler.make(ctx)
+    _ = opts
+    return handler^
+
+
+def test_a_pool_threads_handler_keeps_no_stream_tables() raises:
+    """A pool thread's holds go to the loop's handler as frames, and
+    nothing drains a pool thread's registries, so its handler sizes them
+    at 0. Sized by the count, each thread's copy was about 200 B a slot,
+    1600 B at the default eight threads (#657).
+
+    covers: C26
+    """
+    var h = _made(pool=True)
+    assert_equal(len(h.streams.is_streaming), 0, "the SSE registry was sized")
+    assert_equal(len(h.sockets.is_streaming), 0, "the socket registry was sized")
+    assert_equal(len(h.hold_lane), 0, "the per-slot lists were sized")
+    assert_equal(len(h.ws_parked), 0, "the parked-message table was sized")
+    assert_equal(h.hold_notify_fd, 7, "the hold channel did not reach the handler")
+
+
+def test_a_serving_loops_handler_keeps_a_table_a_slot() raises:
+    """A `--threads` serving loop's handler holds its loop's streams, so
+    its tables are sized by the loop's count, as the loop's own handler's
+    are: a slot the loop hands out is one they can hold."""
+    var h = _made(pool=False)
+    assert_equal(len(h.streams.is_streaming), COUNT)
+    assert_equal(len(h.sockets.is_streaming), COUNT)
+    assert_equal(len(h.hold_lane), COUNT)
+    assert_equal(len(h.ws_parked), COUNT)
 
 
 def main() raises:

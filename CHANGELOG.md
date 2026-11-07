@@ -37,6 +37,16 @@ default is listed under **Behaviour changes**
 
 ### Changed
 
+- **A loop's handler pool reserves 28 B a connection slot, where it
+  reserved 2380** at the default eight threads (SPEC C26, #657). Its
+  request and response tables hold an entry per job in flight, at most
+  256, instead of one per slot, and a pool thread's handler no longer
+  sizes stream tables it never used. m0serve under `--realtime` with
+  eight threads holds 1145 B a slot idle where it held 3493, so
+  `--max-connections 65536` (fitted to 61136 on an M4) costs 102.7 MB
+  idle where it cost 239.6 MB. The Mojo host's pool
+  (`M0_BLOCKING_THREADS`) shares the tables and the change
+  ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
 - **The m0serve wheel is classified
   `Development Status :: 5 - Production/Stable`** on PyPI, matching the
   1.x contract; it read `4 - Beta` since before 1.0.

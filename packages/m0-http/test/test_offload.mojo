@@ -25,7 +25,7 @@ from lightbug_http.loop.state import LoopState
 from lightbug_http.service import HTTPService
 from lightbug_http.offload import (
     JOB_STOP, JOB_REQUEST, JOB_NONE, JOB_WS_MESSAGE,
-    OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, STREAM_GEN_NONE,
+    OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, NO_ENTRY, STREAM_GEN_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
     POOL_FREE_WAKE_AGE_NS, POOL_WAKE_WAIT_MS, _WAKE_MAX_LANES,
@@ -168,6 +168,118 @@ def test_raised_is_reported_and_cleared() raises:
     assert_false(pool.raised(0))
 
 
+def test_the_job_tables_hold_jobs_in_flight_not_slots() raises:
+    """At most `OFFLOAD_MAX_INFLIGHT` jobs exist at once, so the request and
+    response tables hold that many entries whatever the slot count. Sized
+    by the slots they were 752 B a slot, 46 MB idle at 61000 slots (#657);
+    the slot keeps only its index.
+
+    covers: C26
+    """
+    var big = OffloadPool(4096)
+    assert_equal(len(big.requests), OFFLOAD_MAX_INFLIGHT)
+    assert_equal(len(big.responses), OFFLOAD_MAX_INFLIGHT)
+    assert_equal(len(big.free_entries), OFFLOAD_MAX_INFLIGHT)
+    assert_equal(len(big.slot_entry), 4096)
+    var small = OffloadPool(8)
+    assert_equal(len(small.requests), 8)
+    assert_equal(len(small.free_entries), 8)
+
+
+def test_a_slot_past_the_entry_count_round_trips() raises:
+    """Slot 4000 of 4096 parks on one of 256 entries, crosses both
+    channels, and gives the entry back when the loop takes its answer."""
+    var pool = OffloadPool(4096)
+    pool.park_request(4000, _request("/far"))
+    assert_true(Int(pool.slot_entry[4000]) != Int(NO_ENTRY))
+    assert_equal(len(pool.free_entries), OFFLOAD_MAX_INFLIGHT - 1)
+    assert_true(pool.submit(4000))
+    assert_equal(_next_slot(pool), 4000)
+    assert_equal(pool.take_request(4000).uri.path, "/far")
+    pool.put_response(4000, OK(String("far")))
+    pool.complete(4000)
+    var done = pool.drain_completions()
+    assert_equal(len(done), 1)
+    assert_equal(done[0], 4000)
+    assert_true(pool.has_response(4000))
+    var resp = pool.take_response(4000)
+    assert_equal(String(unsafe_from_utf8=Span(resp.body_raw)), "far")
+    assert_equal(Int(pool.slot_entry[4000]), Int(NO_ENTRY))
+    assert_equal(len(pool.free_entries), OFFLOAD_MAX_INFLIGHT)
+
+
+def test_every_entry_held_stops_accepting_until_one_comes_back() raises:
+    """Each parked job holds an entry of its own, and with every entry held
+    the loop stops accepting even where its in-flight count says it may:
+    a count gone wrong runs a request inline, never parks it on another
+    job's entry. One given back, and it accepts again.
+
+    covers: C26
+    """
+    var pool = OffloadPool(1024)
+    var state = OffloadLoopState(pool.addr(), 1024)
+    var seen = List[Bool](length=OFFLOAD_MAX_INFLIGHT, fill=False)
+    for i in range(OFFLOAD_MAX_INFLIGHT):
+        var slot = i * 3
+        pool.park_request(slot, _request("/s" + String(slot)))
+        var e = Int(pool.slot_entry[slot])
+        assert_true(e >= 0 and e < OFFLOAD_MAX_INFLIGHT, String(e))
+        assert_false(seen[e], "two jobs on entry " + String(e))
+        seen[e] = True
+    assert_equal(state.inflight, 0)
+    assert_false(state.accepting())
+    var back = pool.unpark_request(3 * 7)
+    assert_equal(back.uri.path, "/s21")
+    assert_true(state.accepting())
+    assert_equal(pool.unpark_request(3 * 8).uri.path, "/s24")
+    _ = pool.capacity
+
+
+def test_an_entry_comes_back_empty() raises:
+    """An entry given back carries nothing to the next job that takes it:
+    the next slot finds its own request and no answer of the last job's.
+    Given back by `discard`, the abandoned slot's path, where the answer
+    is still in the entry; `take_response` empties it by taking it."""
+    var pool = OffloadPool(16)
+    pool.park_request(5, _request("/five"))
+    var e = Int(pool.slot_entry[5])
+    _ = pool.take_request(5)
+    pool.put_response(5, OK(String("five")))
+    pool.discard(5)
+    pool.park_request(9, _request("/nine"))
+    assert_equal(Int(pool.slot_entry[9]), e, "the stack did not hand back the same entry")
+    assert_false(pool.has_response(9))
+    assert_false(pool.has_response(5))
+    assert_equal(pool.take_request(9).uri.path, "/nine")
+
+
+def test_discard_gives_the_entry_back() raises:
+    """An abandoned slot's job, discarded at its completion, frees its
+    entry: discarded jobs must not leak entries until the pool runs dry."""
+    var pool = OffloadPool(16)
+    for _ in range(40):
+        pool.park_request(3, _request("/gone"))
+        _ = pool.take_request(3)
+        pool.put_response(3, OK(String("x")), raised=True)
+        pool.discard(3)
+    assert_equal(len(pool.free_entries), 16)
+    assert_equal(Int(pool.slot_entry[3]), Int(NO_ENTRY))
+    assert_false(pool.raised(3))
+
+
+def test_a_response_for_a_slot_with_no_job_is_dropped() raises:
+    """A response for a slot with no job parked has no entry to land in,
+    so it is dropped rather than written over another job's; the loop then
+    finds none at the completion and closes the connection."""
+    var pool = OffloadPool(16)
+    pool.park_request(1, _request("/one"))
+    pool.put_response(7, OK(String("stray")))
+    assert_false(pool.has_response(7))
+    assert_false(pool.has_response(1))
+    assert_equal(len(pool.free_entries), 15)
+    assert_equal(pool.take_request(1).uri.path, "/one")
+
+
 def test_stop_poisons_every_waiting_thread() raises:
     """`stop(n)` must release exactly `n` blocked receivers.
 
@@ -269,6 +381,10 @@ def _pool_fields(pool: OffloadPool) -> String:
         s += "R" if pool.requests[i] else "-"
     for i in range(len(pool.responses)):
         s += "S" if pool.responses[i] else "-"
+    s += "["
+    for i in range(len(pool.slot_entry)):
+        s += String(pool.slot_entry[i]) + ","
+    s += "]" + _ints(pool.free_entries)
     s += _bools(pool.errored)
     s += String(pool.stream_chunk_read) + "," + String(pool.stream_chunk_write) + ","
     s += String(pool.stream_ack_read) + "," + String(pool.stream_ack_write) + ","
@@ -337,6 +453,9 @@ def test_a_moved_pool_carries_every_field() raises:
     pool.reserve_threads(2)
     pool.set_slot_ack_fd(3, 17)
     pool.stamp_lane(5, 1)
+    # A response needs a job's entry: park one on slot 2 and answer it.
+    pool.park_request(2, _request("/r"))
+    _ = pool.take_request(2)
     pool.put_response(2, OK(String("x")), raised=True)
     assert_true(pool.abort_stream(4, 9))
     _ = pool.drain_completions()
