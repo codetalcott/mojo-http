@@ -404,6 +404,7 @@ struct WSGIHandler(ThreadHandler):
         max_connections: Int = 1024,
         thread_header: Bool = False,
         var ws_origins: List[String] = List[String](),
+        owns_streams: Bool = True,
     ):
         # One slot is exactly the unmounted case; `mount` grows it.
         self.apps = List[WSGIApp](capacity=1)
@@ -440,7 +441,17 @@ struct WSGIHandler(ThreadHandler):
         # slots index the registries directly, so a slot the loop can hand
         # out and a registry cannot hold is a subscription that silently
         # does not happen. It was a constant 1024 while the loop's count was.
-        var slots = max_connections if (realtime or asgi_streaming) else 0
+        # A pool thread's handler (`owns_streams=False`, from `make`) sizes
+        # them at 0: the streaming hooks run on the loop's handler, a hold
+        # taken on a pool thread travels to it as a frame, and nothing drains
+        # a pool thread's registries. Sized by the count, each thread's copy
+        # was about 200 B a slot for nothing, 1600 B at the default eight
+        # threads (#657; docs/notes/a-loop-keeps-slots-for-requests.md).
+        var slots = (
+            max_connections
+            if owns_streams and (realtime or asgi_streaming)
+            else 0
+        )
         self.streams = SSERegistry(slots)
         self.sockets = SSERegistry(slots)
         self.replay = ReplayJournal(replay_frames if realtime else 0)
@@ -495,14 +506,20 @@ struct WSGIHandler(ThreadHandler):
         return mounts^
 
     @staticmethod
-    def for_options(var app: WSGIApp, opts: ServeOptions) raises -> Self:
-        """The handler `opts` describes, around an already-built `WSGIApp`."""
+    def for_options(
+        var app: WSGIApp, opts: ServeOptions, owns_streams: Bool = True
+    ) raises -> Self:
+        """The handler `opts` describes, around an already-built `WSGIApp`.
+
+        `owns_streams=False` is a pool thread's handler: its stream tables
+        are sized at 0, since the loop's handler holds every stream."""
         return Self(
             app^, Self.mounts_for(opts), opts.realtime, opts.health_path,
             asgi_streaming=opts.asgi_streaming,
             replay_frames=opts.replay_frames,
             max_connections=opts.loop_connections(),
             thread_header=opts.thread_header,
+            owns_streams=owns_streams,
             ws_origins=opts.ws_origins.copy(),
         )
 
@@ -514,6 +531,7 @@ struct WSGIHandler(ThreadHandler):
         lifespan: Bool,
         project_path: String = String(""),
         only_mount: Int = -1,
+        owns_streams: Bool = True,
     ) raises -> Self:
         """The handler `opts` describes, applications and all.
 
@@ -530,6 +548,9 @@ struct WSGIHandler(ThreadHandler):
         lifespan per mount per thread for applications it will never call.
         The router still works — a one-mount table has one entry, and every
         job the thread receives already belongs to it.
+
+        `owns_streams=False` is the pool thread's too: the loop's handler
+        holds every stream, so this one sizes its stream tables at 0.
         """
         if len(opts.mount_prefixes) == 0:
             var app = WSGIApp(
@@ -543,7 +564,7 @@ struct WSGIHandler(ThreadHandler):
                 protocol=opts.protocol,
                 lifespan=lifespan,
             )
-            return Self.for_options(app^, opts)
+            return Self.for_options(app^, opts, owns_streams=owns_streams)
 
         # A `--mount X=mojo` has no Python object to build. Skip it here and
         # never register its prefix, so `app_for` answers -1 and a request
@@ -572,6 +593,7 @@ struct WSGIHandler(ThreadHandler):
             max_connections=opts.loop_connections(),
             thread_header=opts.thread_header,
             ws_origins=opts.ws_origins.copy(),
+            owns_streams=owns_streams,
         )
         handler.route_prefixes = opts.mount_prefixes.copy()
         if only_mount >= 0:
@@ -632,6 +654,9 @@ struct WSGIHandler(ThreadHandler):
             # lifespan.
             lifespan=opts[].handler_lifespan,
             only_mount=ctx.lane,
+            # A pool thread's stream tables would be sized by the count and
+            # never used: its holds travel to the loop's handler as frames.
+            owns_streams=not ctx.pool,
         )
         handler.thread_index = ctx.index
         handler.hold_notify_fd = ctx.hold_fd
