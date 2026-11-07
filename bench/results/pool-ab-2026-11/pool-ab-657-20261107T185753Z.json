@@ -1,0 +1,933 @@
+{
+ "b": "657",
+ "rounds": 5,
+ "fast_requests": 300,
+ "environment": {
+  "git_sha": "386b86710921f55be19dafa6f523f912687185e3",
+  "git_dirty": false,
+  "os": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "machine": "arm64",
+  "recorded_utc": "2026-11-07T18:57:53.968755+00:00"
+ },
+ "cells": [
+  {
+   "round": 1,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:57  up 6 days, 29 mins, 4 users, load averages: 2.07 2.41 2.35",
+    "ps": [
+     " %CPU COMM",
+     " 18.8 claude",
+     " 12.1 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     " 11.7 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  3.7 uv",
+     "  3.4 /usr/libexec/ApplicationFirewall/socketfilterfw",
+     "  2.3 /bin/zsh",
+     "  1.9 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN"
+    ]
+   },
+   "p50_ms": 0.10670849587768316,
+   "p99_ms": 0.1609169994480908,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:57  up 6 days, 29 mins, 4 users, load averages: 2.07 2.41 2.35",
+    "ps": [
+     " %CPU COMM",
+     " 41.2 /sbin/launchd",
+     " 11.8 claude",
+     " 10.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.5 /usr/libexec/syspolicyd",
+     "  8.5 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  7.9 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService",
+     "  2.2 uv"
+    ]
+   },
+   "p50_ms": 0.11989599443040788,
+   "p99_ms": 0.2814590116031468,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:57  up 6 days, 29 mins, 4 users, load averages: 2.07 2.41 2.35",
+    "ps": [
+     " %CPU COMM",
+     " 13.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.0 claude",
+     "  2.8 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  2.3 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.5 /sbin/launchd",
+     "  1.2 /usr/libexec/searchpartyd",
+     "  1.1 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN"
+    ]
+   },
+   "p50_ms": 0.12018700363114476,
+   "p99_ms": 0.28066703816875815,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:57  up 6 days, 29 mins, 4 users, load averages: 2.07 2.41 2.35",
+    "ps": [
+     " %CPU COMM",
+     " 10.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.3 claude",
+     "  2.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.8 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.5 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.7 /usr/libexec/wifip2pd",
+     "  0.4 /Applications/Google Drive.app/Contents/MacOS/Google Drive"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.87,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 1,
+   "arm": "657",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.99 2.38 2.33",
+    "ps": [
+     " %CPU COMM",
+     "  7.8 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  7.2 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.6 claude",
+     "  0.6 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  0.5 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.5 /usr/libexec/wifip2pd",
+     "  0.5 ps"
+    ]
+   },
+   "p50_ms": 0.07708353223279119,
+   "p99_ms": 0.12479099677875638,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "657",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.99 2.38 2.33",
+    "ps": [
+     " %CPU COMM",
+     " 11.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.9 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  5.6 /usr/libexec/syspolicyd",
+     "  4.5 /System/Library/PrivateFrameworks/XprotectFramework.framework/Versions/A/XPCServices/XprotectService.xpc/Contents/MacOS/XprotectService",
+     "  2.1 claude",
+     "  1.0 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  0.9 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN"
+    ]
+   },
+   "p50_ms": 0.12564548524096608,
+   "p99_ms": 0.2870829775929451,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "657",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.99 2.38 2.33",
+    "ps": [
+     " %CPU COMM",
+     " 10.4 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  8.7 claude",
+     "  3.7 /usr/libexec/ApplicationFirewall/socketfilterfw",
+     "  2.3 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  2.3 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.5 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.3 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"
+    ]
+   },
+   "p50_ms": 0.11902098776772618,
+   "p99_ms": 0.28500001644715667,
+   "n": 300
+  },
+  {
+   "round": 1,
+   "arm": "657",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.91 2.36 2.33",
+    "ps": [
+     " %CPU COMM",
+     " 11.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  9.2 claude",
+     "  4.0 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  2.5 claude",
+     "  1.8 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.4 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  1.1 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.86,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 2,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.83 2.33 2.32",
+    "ps": [
+     " %CPU COMM",
+     "  8.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  1.3 claude",
+     "  0.6 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.4 /usr/libexec/wifip2pd",
+     "  0.3 /Applications/Google Drive.app/Contents/MacOS/Google Drive",
+     "  0.2 claude",
+     "  0.1 /System/Library/CoreServices/ControlCenter.app/Contents/MacOS/ControlCenter"
+    ]
+   },
+   "p50_ms": 0.07454099250026047,
+   "p99_ms": 0.10904204100370407,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.83 2.33 2.32",
+    "ps": [
+     " %CPU COMM",
+     " 10.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  1.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  0.9 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.9 claude",
+     "  0.6 /usr/libexec/wifip2pd",
+     "  0.6 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.4 /Applications/Ghostty.app/Contents/MacOS/ghostty"
+    ]
+   },
+   "p50_ms": 0.12849998893216252,
+   "p99_ms": 0.30437501845881343,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.93 2.35 2.32",
+    "ps": [
+     " %CPU COMM",
+     " 10.7 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.2 claude",
+     "  3.0 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.6 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  0.9 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.6 /usr/libexec/wifip2pd",
+     "  0.4 /Applications/Google Drive.app/Contents/MacOS/Google Drive"
+    ]
+   },
+   "p50_ms": 0.12247898848727345,
+   "p99_ms": 0.3031669766642153,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.93 2.35 2.32",
+    "ps": [
+     " %CPU COMM",
+     " 12.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  3.9 claude",
+     "  2.3 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.8 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.6 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.9 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.8 /usr/libexec/wifip2pd"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.86,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 2,
+   "arm": "657",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.94 2.33 2.32",
+    "ps": [
+     " %CPU COMM",
+     "  9.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  0.9 claude",
+     "  0.8 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.4 /usr/libexec/wifip2pd",
+     "  0.3 /Applications/Google Drive.app/Contents/MacOS/Google Drive",
+     "  0.3 /usr/libexec/sharingd",
+     "  0.3 /usr/sbin/bluetoothd"
+    ]
+   },
+   "p50_ms": 0.07414599531330168,
+   "p99_ms": 0.11770898709073663,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "657",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.94 2.33 2.32",
+    "ps": [
+     " %CPU COMM",
+     "  9.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.1 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.9 /usr/sbin/bluetoothd",
+     "  0.9 claude",
+     "  0.7 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.7 /usr/libexec/sharingd"
+    ]
+   },
+   "p50_ms": 0.12218748452141881,
+   "p99_ms": 0.28787500923499465,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "657",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.94 2.33 2.32",
+    "ps": [
+     " %CPU COMM",
+     " 12.2 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.6 claude",
+     "  3.6 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.9 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  0.9 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.6 /usr/libexec/wifip2pd",
+     "  0.5 /Applications/Google Drive.app/Contents/MacOS/Google Drive"
+    ]
+   },
+   "p50_ms": 0.12333301128819585,
+   "p99_ms": 0.2673750277608633,
+   "n": 300
+  },
+  {
+   "round": 2,
+   "arm": "657",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:58  up 6 days, 29 mins, 4 users, load averages: 1.94 2.33 2.32",
+    "ps": [
+     " %CPU COMM",
+     " 12.2 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.5 claude",
+     "  3.1 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.9 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.5 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  1.3 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.9 /usr/libexec/wifip2pd"
+    ]
+   },
+   "ms_per_request": 0.659,
+   "p99_ms": 15.87,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 3,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:58  up 6 days, 30 mins, 4 users, load averages: 1.87 2.31 2.31",
+    "ps": [
+     " %CPU COMM",
+     "  9.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  1.0 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.9 /usr/libexec/locationd",
+     "  0.6 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.5 claude",
+     "  0.4 /usr/libexec/wifip2pd",
+     "  0.3 /usr/libexec/logd"
+    ]
+   },
+   "p50_ms": 0.07875001756474376,
+   "p99_ms": 0.10300002759322524,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:58  up 6 days, 30 mins, 4 users, load averages: 1.87 2.31 2.31",
+    "ps": [
+     " %CPU COMM",
+     " 11.4 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  0.8 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.7 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.6 /usr/libexec/locationd",
+     "  0.6 /usr/libexec/wifip2pd",
+     "  0.5 claude"
+    ]
+   },
+   "p50_ms": 0.12162452912889421,
+   "p99_ms": 0.28654199559241533,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:58  up 6 days, 30 mins, 4 users, load averages: 1.87 2.31 2.31",
+    "ps": [
+     " %CPU COMM",
+     " 11.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.8 claude",
+     "  4.6 claude",
+     "  3.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.7 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  0.6 /usr/sbin/bluetoothd"
+    ]
+   },
+   "p50_ms": 0.12831197818741202,
+   "p99_ms": 0.20287500228732824,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:58  up 6 days, 30 mins, 4 users, load averages: 1.87 2.31 2.31",
+    "ps": [
+     " %CPU COMM",
+     "  6.2 claude",
+     "  5.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  3.5 /usr/libexec/locationd",
+     "  2.5 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  2.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  2.0 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  1.2 /Applications/Ghostty.app/Contents/MacOS/ghostty"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.86,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 3,
+   "arm": "657",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:58  up 6 days, 30 mins, 4 users, load averages: 1.81 2.28 2.30",
+    "ps": [
+     " %CPU COMM",
+     "  8.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.5 /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd",
+     "  0.8 claude",
+     "  0.5 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.4 /usr/libexec/wifip2pd",
+     "  0.3 /Applications/Google Drive.app/Contents/MacOS/Google Drive",
+     "  0.2 claude"
+    ]
+   },
+   "p50_ms": 0.07160400855354965,
+   "p99_ms": 0.10279205162078142,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "657",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:58  up 6 days, 30 mins, 4 users, load averages: 1.81 2.28 2.30",
+    "ps": [
+     " %CPU COMM",
+     "  8.4 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  5.7 claude",
+     "  4.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.5 /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Resources/backgroundtaskmanagementd",
+     "  0.7 claude",
+     "  0.6 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.6 /usr/libexec/wifip2pd"
+    ]
+   },
+   "p50_ms": 0.1294159737881273,
+   "p99_ms": 0.24404196301475167,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "657",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:58  up 6 days, 30 mins, 4 users, load averages: 1.81 2.28 2.30",
+    "ps": [
+     " %CPU COMM",
+     " 11.0 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  3.5 claude",
+     "  3.0 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  2.9 /usr/sbin/bluetoothd",
+     "  1.7 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  1.6 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.5 /usr/libexec/locationd"
+    ]
+   },
+   "p50_ms": 0.11787499533966184,
+   "p99_ms": 0.22779201390221715,
+   "n": 300
+  },
+  {
+   "round": 3,
+   "arm": "657",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:58  up 6 days, 30 mins, 4 users, load averages: 1.75 2.26 2.29",
+    "ps": [
+     " %CPU COMM",
+     " 11.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.8 claude",
+     "  2.2 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.9 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.5 /usr/libexec/searchpartyd",
+     "  1.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.9 /usr/sbin/bluetoothd"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.86,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 4,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.09 2.32 2.31",
+    "ps": [
+     " %CPU COMM",
+     "  8.2 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  1.3 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.9 /usr/sbin/bluetoothd",
+     "  0.6 /usr/libexec/wifip2pd",
+     "  0.5 claude",
+     "  0.4 /usr/libexec/sharingd",
+     "  0.3 /usr/libexec/rapportd"
+    ]
+   },
+   "p50_ms": 0.07245800225064158,
+   "p99_ms": 0.10912504512816668,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.09 2.32 2.31",
+    "ps": [
+     " %CPU COMM",
+     " 10.1 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  1.6 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  1.2 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.6 /usr/libexec/wifip2pd",
+     "  0.6 /Library/SystemExtensions/97D85DC8-1D4D-43D6-89C9-CB38EE8F4ECA/io.tailscale.ipn.macsys.network-extension.systemextension/Contents/MacOS/io.tailscale.ipn.macsys.network-extension",
+     "  0.6 /usr/sbin/bluetoothd",
+     "  0.5 claude"
+    ]
+   },
+   "p50_ms": 0.12258303468115628,
+   "p99_ms": 0.27308298740535975,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.00 2.30 2.30",
+    "ps": [
+     " %CPU COMM",
+     " 14.0 claude",
+     " 10.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.9 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.6 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.1 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.9 /usr/libexec/wifip2pd",
+     "  0.6 /usr/sbin/bluetoothd"
+    ]
+   },
+   "p50_ms": 0.11854199692606926,
+   "p99_ms": 0.2569159842096269,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.00 2.30 2.30",
+    "ps": [
+     " %CPU COMM",
+     " 11.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.4 claude",
+     "  3.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.8 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.0 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.9 /usr/sbin/bluetoothd",
+     "  0.6 /usr/libexec/locationd"
+    ]
+   },
+   "ms_per_request": 0.659,
+   "p99_ms": 15.87,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 4,
+   "arm": "657",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.00 2.29 2.30",
+    "ps": [
+     " %CPU COMM",
+     " 10.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.8 claude",
+     "  2.0 /usr/sbin/bluetoothd",
+     "  1.0 /usr/libexec/sharingd",
+     "  0.9 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.8 /usr/libexec/searchpartyd",
+     "  0.7 /usr/libexec/rapportd"
+    ]
+   },
+   "p50_ms": 0.08024999988265336,
+   "p99_ms": 0.10475004091858864,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "657",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.00 2.29 2.30",
+    "ps": [
+     " %CPU COMM",
+     " 10.8 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  2.0 /usr/sbin/bluetoothd",
+     "  1.9 claude",
+     "  1.0 /usr/libexec/sharingd",
+     "  0.9 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.8 /usr/libexec/searchpartyd",
+     "  0.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3"
+    ]
+   },
+   "p50_ms": 0.1233744842465967,
+   "p99_ms": 0.25129097048193216,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "657",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.00 2.29 2.30",
+    "ps": [
+     " %CPU COMM",
+     " 13.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.2 claude",
+     "  2.5 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  2.0 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.7 /usr/sbin/bluetoothd",
+     "  1.3 claude",
+     "  1.3 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN"
+    ]
+   },
+   "p50_ms": 0.11806198745034635,
+   "p99_ms": 0.2227920340374112,
+   "n": 300
+  },
+  {
+   "round": 4,
+   "arm": "657",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.00 2.29 2.30",
+    "ps": [
+     " %CPU COMM",
+     " 14.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.0 claude",
+     "  2.2 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  2.1 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.5 /Applications/Tailscale.app/Contents/MacOS/Tailscale",
+     "  1.3 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  1.3 /usr/libexec/searchpartyd"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.86,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 5,
+   "arm": "A",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.15 2.31 2.31",
+    "ps": [
+     " %CPU COMM",
+     " 14.5 /sbin/launchd",
+     "  7.9 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  0.6 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.5 claude",
+     "  0.4 /usr/libexec/searchpartyd",
+     "  0.4 /usr/libexec/wifip2pd",
+     "  0.3 /usr/libexec/sharingd"
+    ]
+   },
+   "p50_ms": 0.07335451664403081,
+   "p99_ms": 0.10566698620095849,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "A",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.15 2.31 2.31",
+    "ps": [
+     " %CPU COMM",
+     "  9.1 /sbin/launchd",
+     "  9.0 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.5 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.1 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.7 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.6 claude",
+     "  0.4 /usr/libexec/wifip2pd"
+    ]
+   },
+   "p50_ms": 0.11952099157497287,
+   "p99_ms": 0.32770802499726415,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "A",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.15 2.31 2.31",
+    "ps": [
+     " %CPU COMM",
+     " 13.7 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  6.1 claude",
+     "  5.2 claude",
+     "  3.5 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  1.7 /usr/libexec/locationd",
+     "  1.6 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.5 /Applications/Ghostty.app/Contents/MacOS/ghostty"
+    ]
+   },
+   "p50_ms": 0.11879150406457484,
+   "p99_ms": 0.27483300073072314,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "A",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:59  up 6 days, 30 mins, 4 users, load averages: 2.15 2.31 2.31",
+    "ps": [
+     " %CPU COMM",
+     " 14.4 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.5 claude",
+     "  2.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  2.7 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  2.3 claude",
+     "  1.9 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.7 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder"
+    ]
+   },
+   "ms_per_request": 0.658,
+   "p99_ms": 15.86,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  },
+  {
+   "round": 5,
+   "arm": "657",
+   "measure": "pooled_slow0",
+   "machine": {
+    "uptime": "13:59  up 6 days, 31 mins, 4 users, load averages: 1.98 2.27 2.29",
+    "ps": [
+     " %CPU COMM",
+     " 10.6 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  1.6 claude",
+     "  0.9 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  0.9 /usr/libexec/locationd",
+     "  0.5 /usr/libexec/wifip2pd",
+     "  0.5 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.5 claude"
+    ]
+   },
+   "p50_ms": 0.07489547715522349,
+   "p99_ms": 0.11091696796938777,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "657",
+   "measure": "pooled_slow1",
+   "machine": {
+    "uptime": "13:59  up 6 days, 31 mins, 4 users, load averages: 1.98 2.27 2.29",
+    "ps": [
+     " %CPU COMM",
+     " 11.0 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  7.5 claude",
+     "  2.7 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  2.2 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  0.8 /System/Library/DriverExtensions/com.apple.DriverKit-AppleBCMWLAN.dext/com.apple.DriverKit-AppleBCMWLAN",
+     "  0.7 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  0.6 /usr/libexec/locationd"
+    ]
+   },
+   "p50_ms": 0.12068747309967875,
+   "p99_ms": 0.27237500762566924,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "657",
+   "measure": "pooled_slow2",
+   "machine": {
+    "uptime": "13:59  up 6 days, 31 mins, 4 users, load averages: 1.98 2.27 2.29",
+    "ps": [
+     " %CPU COMM",
+     " 12.3 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  4.5 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  3.4 claude",
+     "  2.6 claude",
+     "  1.6 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.5 /usr/sbin/bluetoothd",
+     "  1.2 /usr/libexec/searchpartyd"
+    ]
+   },
+   "p50_ms": 0.12231248547323048,
+   "p99_ms": 0.25587499840185046,
+   "n": 300
+  },
+  {
+   "round": 5,
+   "arm": "657",
+   "measure": "fair",
+   "machine": {
+    "uptime": "13:59  up 6 days, 31 mins, 4 users, load averages: 1.90 2.25 2.29",
+    "ps": [
+     " %CPU COMM",
+     " 19.5 /System/Library/PrivateFrameworks/SkyLight.framework/Resources/WindowServer",
+     "  5.9 claude",
+     "  4.7 claude",
+     "  3.4 /Users/williamtalcott/projects/mojo-http/.claude/worktrees/pool-657/.venv/bin/python3",
+     "  3.0 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+     "  1.9 /System/Library/CoreServices/Finder.app/Contents/MacOS/Finder",
+     "  1.6 /Applications/Ghostty.app/Contents/MacOS/ghostty"
+    ]
+   },
+   "ms_per_request": 0.659,
+   "p99_ms": 15.87,
+   "long_waits": 0.0,
+   "long_waits_bound": 5.0,
+   "in_order": true
+  }
+ ],
+ "summary": {
+  "pooled_slow0": {
+   "key": "p50_ms",
+   "A": {
+    "median": 0.07454099250026047,
+    "min": 0.07245800225064158,
+    "max": 0.10670849587768316
+   },
+   "657": {
+    "median": 0.07489547715522349,
+    "min": 0.07160400855354965,
+    "max": 0.08024999988265336
+   },
+   "b_vs_a": 0
+  },
+  "pooled_slow1": {
+   "key": "p50_ms",
+   "A": {
+    "median": 0.12162452912889421,
+    "min": 0.11952099157497287,
+    "max": 0.12849998893216252
+   },
+   "657": {
+    "median": 0.1233744842465967,
+    "min": 0.12068747309967875,
+    "max": 0.1294159737881273
+   },
+   "b_vs_a": 0
+  },
+  "pooled_slow2": {
+   "key": "p50_ms",
+   "A": {
+    "median": 0.12018700363114476,
+    "min": 0.11854199692606926,
+    "max": 0.12831197818741202
+   },
+   "657": {
+    "median": 0.11902098776772618,
+    "min": 0.11787499533966184,
+    "max": 0.12333301128819585
+   },
+   "b_vs_a": 0
+  },
+  "fair": {
+   "key": "ms_per_request",
+   "A": {
+    "median": 0.658,
+    "min": 0.658,
+    "max": 0.659
+   },
+   "657": {
+    "median": 0.658,
+    "min": 0.658,
+    "max": 0.659
+   },
+   "b_vs_a": 0
+  }
+ },
+ "verdict": "no difference"
+}
