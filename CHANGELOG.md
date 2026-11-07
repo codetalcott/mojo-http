@@ -53,6 +53,13 @@ default is listed under **Behaviour changes**
 
 ### Changed
 
+- **An ASGI application on the asyncio executor reserves 1156 B a
+  connection slot idle, where it reserved 1696** (SPEC C27, #682): the
+  executor thread's own handler no longer sizes stream tables it never
+  drains, and a request's method, path and held WebSocket 101 are kept per
+  job in flight, at most 256, instead of per slot. What remains over a WSGI
+  application served inline is the loop's stream outboxes, which ASGI
+  responses stream through ([the note](docs/notes/a-loop-keeps-slots-for-requests.md)).
 - **A loop's handler pool reserves 28 B a connection slot, where it
   reserved 2380** at the default eight threads (SPEC C26, #657). Its
   request and response tables hold an entry per job in flight, at most

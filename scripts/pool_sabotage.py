@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Revert each rule in `mojo_pool.mojo`, and each of the pool's job-entry
-rules in `offload.mojo`, and insist a guard fails for every one.
+"""Revert each rule in `mojo_pool.mojo`, each of the pool's job-entry rules
+in `offload.mojo` and the asyncio executor's in `asgi_executor.mojo`, and
+insist a guard fails for every one.
 
 Same idea as `shim_ownership.py --sabotage`: a guard nobody has broken on
 purpose is a guard nobody knows works. The table is this file's; everything
@@ -124,11 +125,40 @@ ENTRY_SABOTAGES = [
 RULES += [rule(label, OFFLOAD, old, new, gate="offload")
           for label, old, new in ENTRY_SABOTAGES]
 
+EXECUTOR = Path("packages/m0-wsgi/src/asgi_executor.mojo")
+EXECUTOR_TEST = Path("packages/m0-wsgi/test/test_executor_state.mojo")
+
+# The asyncio executor keeps what a job needs in the pool's job entries and
+# what a stream needs a slot (#682, SPEC C27); `test_executor_state.mojo`
+# sees each. The third rule, that its own thread's handler sizes no stream
+# tables, has no unit witness -- that handler is built on the executor's
+# thread -- and `smoke-max-connections`' executor bound holds it: reverted,
+# it read 431 B a slot against the bound of 360.
+EXECUTOR_SABOTAGES = [
+    (
+        "the executor keeps a job's method, path and 101 a slot",
+        "        var entries = jobs if jobs > 0 else min(max(capacity, 1), OFFLOAD_MAX_INFLIGHT)\n",
+        "        var entries = capacity\n",
+    ),
+    (
+        "an event on a slot with no job indexes the 101 table at -1",
+        "    return e >= 0 and Bool(st.pending_101[e])\n",
+        "    return Bool(st.pending_101[e])\n",
+    ),
+]
+
+RULES += [rule(label, EXECUTOR, old, new, gate="executor")
+          for label, old, new in EXECUTOR_SABOTAGES]
+
 # A hang is a catch only once the compiler says the sabotaged source builds
 # (sabotage_lib's timeout rule), so the timeout bounds a genuine hang.
 GATES = {
     "": MojoRun(TEST, timeout=300),
     "offload": MojoRun(OFFLOAD_TEST, timeout=300),
+    "executor": MojoRun(
+        EXECUTOR_TEST, timeout=300,
+        includes=("packages/m0-wsgi", "packages/m0-core", "packages/m0-http"),
+    ),
 }
 
 

@@ -768,7 +768,12 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       rule against `test_offload.mojo`. A pool thread's handler is built
       with `owns_streams=False` and sizes its stream tables at 0: give a
       new per-slot table of the handler's the same rule, or each thread
-      pays it per slot for nothing (#657 measured 200 B a thread).
+      pays it per slot for nothing (#657 measured 200 B a thread). The
+      asyncio executor's thread handler is built the same way, and its
+      per-JOB state (`ExecutorState.methods`, `paths`, `pending_101`) is
+      indexed by `pool.job_entry(slot)`, never by slot (SPEC C27): read
+      it only between the job's `take_request` and its `put_response`, and
+      keep what a stream needs after its head (`gens`, `lost`) a slot.
     - **Composes with `--realtime` by forwarding, never by subscribing.**
       The streaming hooks run on the loop's handler, so a pool thread must
       never subscribe its own registries — nothing drains them. On a pool

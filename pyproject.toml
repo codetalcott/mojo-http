@@ -1941,6 +1941,17 @@ assert (s['max_connections'], s['stream_limit'], s['descriptor_limit']) == ($fit
 python3 scripts/probes/pool_idle_rss.py --counts 1024,16384 --threads 8 --rounds 1 \
   --max-pool-bytes-per-slot 128 --emit smoke-max-connections \
   || fail "the handler pool reserves more than 128 B a connection slot"
+# The asyncio executor's share (SPEC C27, #682): an ASGI application served
+# by the executor, against a WSGI one served inline, neither with a pool.
+# What is left is the loop handler's stream registries, the outboxes ASGI
+# chunks ride, and each slot's stream generation. It was 781 B a slot (the
+# executor thread's own handler's stream tables, and a request's method,
+# path and held 101 kept a slot rather than a job), and 241 after.
+python3 scripts/probes/pool_idle_rss.py --counts 1024,16384 --rounds 1 --no-realtime \
+  --app bareapp.asgi:application --app-dir apps/asgi_bare \
+  --versus-app hold_app:application --versus-app-dir scripts/smoke \
+  --max-share-bytes-per-slot 360 --emit smoke-max-connections \
+  || fail "the asyncio executor reserves more than 360 B a connection slot"
 echo "smoke-max-connections OK"
 python3 scripts/emit.py --covers C20 --task smoke-max-connections
 python3 scripts/emit.py --covers C21 --task smoke-max-connections
@@ -1949,6 +1960,7 @@ python3 scripts/emit.py --covers C23 --task smoke-max-connections
 python3 scripts/emit.py --covers C24 --task smoke-max-connections
 python3 scripts/emit.py --covers C25 --task smoke-max-connections
 python3 scripts/emit.py --covers C26 --task smoke-max-connections
+python3 scripts/emit.py --covers C27 --task smoke-max-connections
 """
 
 # B1. The body timer was armed above the decode of what came with the
@@ -6855,7 +6867,7 @@ python3 scripts/emit.py --covers E4 --task smoke-pool
 """
 
 [tool.poe.tasks.sabotage-pool]
-help = "Revert each mojo_pool rule, and each of offload.mojo's job-entry rules, and insist test_mojo_pool or test_offload fails for every one"
+help = "Revert each mojo_pool rule, each of offload.mojo's job-entry rules and the executor's, and insist test_mojo_pool, test_offload or test_executor_state fails for every one"
 deps = ["build-core", "build-http"]
 cmd = "python3 scripts/pool_sabotage.py"
 

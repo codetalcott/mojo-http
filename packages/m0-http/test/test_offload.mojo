@@ -267,6 +267,30 @@ def test_discard_gives_the_entry_back() raises:
     assert_false(pool.raised(3))
 
 
+def test_a_receiver_finds_its_jobs_entry_while_the_job_is_in_flight() raises:
+    """`job_entry` names the slot's entry from the park until the loop takes
+    the answer, and -1 before and after: what the asyncio executor indexes
+    its own per-job state by (SPEC C27). `job_entries` is the tables' size.
+
+    covers: C27
+    """
+    var pool = OffloadPool(4096)
+    assert_equal(pool.job_entries(), OFFLOAD_MAX_INFLIGHT)
+    assert_equal(OffloadPool(8).job_entries(), 8)
+    assert_equal(pool.job_entry(4000), -1)
+    pool.park_request(4000, _request("/far"))
+    var e = pool.job_entry(4000)
+    assert_true(e >= 0 and e < OFFLOAD_MAX_INFLIGHT, String(e))
+    _ = pool.take_request(4000)
+    assert_equal(pool.job_entry(4000), e, "the entry left the job with its request")
+    pool.put_response(4000, OK(String("far")))
+    assert_equal(pool.job_entry(4000), e, "the entry left the job before its answer was taken")
+    _ = pool.take_response(4000)
+    assert_equal(pool.job_entry(4000), -1)
+    assert_equal(pool.job_entry(-1), -1)
+    assert_equal(pool.job_entry(5000), -1)
+
+
 def test_a_response_for_a_slot_with_no_job_is_dropped() raises:
     """A response for a slot with no job parked has no entry to land in,
     so it is dropped rather than written over another job's; the loop then
