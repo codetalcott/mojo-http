@@ -26,7 +26,12 @@ Against `m0serve scripts/smoke/hold_app.py --realtime --max-connections N
   and no busy client loses a request (the review finding of 2026-11-02:
   with no idle floor each newcomer closed the busy connection answered
   longest ago, over the next request already in its socket);
-- `/__metrics` counting all three.
+- a head still arriving when it is taken back -- a client trickling a
+  header line every 20 ms, older than `N - 1` silent neighbours -- reads its
+  408, though its next write is refused: the take-back closes the socket at
+  once, and the answer already sent is in its receive buffer (#660,
+  measured on macOS and Linux);
+- `/__metrics` counting all four.
 
 With `--off` (the server under `M0_RECLAIM=0`) the browser shape, its idle
 connections past a second, resets the health path, as before: the probe
@@ -362,4 +367,60 @@ if taken != 3 or refused != 2 + newcomers:
     fail("/__metrics counts %d taken back and %d refused, wanted 3 and %d" % (taken, refused, 2 + newcomers))
 print("%d busy clients asked %d times beside %d newcomers, every newcomer refused and no request lost"
       % (N, sum(asked), newcomers))
+refused_before = refused
+
+phase("a head still arriving when the loop takes it back")
+# `_expire_head` writes the 408 and closes at once; a linger would hold the
+# slot the take-back frees. A client still sending its head reads the 408
+# anyway, and its next write is refused, reaching a closed socket (#660,
+# measured on macOS and Linux). Its N - 1 neighbours connect after it and
+# say nothing, so it is the head arriving longest when a newcomer finds the
+# loop full, and the one taken.
+trickler = connect()
+trickler.sendall(b"GET /plain HTTP/1.1\r\nHost: x\r\n")
+stop_trickle = threading.Event()
+write_refused = []
+
+
+def trickle():
+    n = 0
+    while not stop_trickle.is_set():
+        try:
+            trickler.sendall(b"X-Pad-%d: aaaaaaaa\r\n" % n)
+        except OSError as e:
+            write_refused.append(type(e).__name__)
+            return
+        n += 1
+        time.sleep(0.02)
+
+
+feeder = threading.Thread(target=trickle)
+feeder.start()
+quiet = [connect() for _ in range(N - 1)]
+time.sleep(FLOOR_S + 0.3)
+code, head, _ = get("/health")
+# The trickler's next writes reach the closed socket before it reads.
+time.sleep(0.3)
+stop_trickle.set()
+feeder.join(5)
+got = head_of(trickler, timeout=3.0)
+if code != 200:
+    fail("a new connection to a loop whose oldest head was past a second read %r" % head[:120])
+if not got.startswith(b"HTTP/1.1 408 "):
+    fail("a head still arriving when the loop took it back read %r, not its 408" % got[:120])
+for s in quiet:
+    if not still_open(s):
+        fail("a silent connection newer than the trickling head was closed")
+trickler.close()
+for s in quiet:
+    s.close()
+drained()
+code, head, body = get("/__metrics")
+text = body.decode("latin-1")
+taken = metric(text, "http_connections_reclaimed_total")
+refused = metric(text, "http_connections_refused_total")
+if taken != 4 or refused != refused_before:
+    fail("/__metrics counts %d taken back and %d refused, wanted 4 and %d" % (taken, refused, refused_before))
+print("a head still arriving when it was taken back read its 408%s"
+      % (", its next write refused (%s)" % write_refused[0] if write_refused else ""))
 print("reclaim_probe OK")
