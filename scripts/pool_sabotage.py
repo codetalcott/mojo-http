@@ -136,9 +136,9 @@ EXECUTOR_TEST = Path("packages/m0-wsgi/test/test_executor_state.mojo")
 # it read 431 B a slot against the bound of 360.
 EXECUTOR_SABOTAGES = [
     (
-        "the executor keeps a job's method, path and 101 a slot",
-        "        var entries = jobs if jobs > 0 else min(max(capacity, 1), OFFLOAD_MAX_INFLIGHT)\n",
-        "        var entries = capacity\n",
+        "the executor keeps a job's method a slot",
+        '        self.methods = List[String](length=jobs, fill=String(""))\n',
+        '        self.methods = List[String](length=capacity, fill=String(""))\n',
     ),
     (
         "an event on a slot with no job indexes the 101 table at -1",

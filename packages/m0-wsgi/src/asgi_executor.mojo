@@ -49,7 +49,6 @@ from lightbug_http.http import HTTPResponse
 from lightbug_http.http.common_response import InternalError
 from lightbug_http.offload import (
     OffloadPool, stream_gen_seed, COMPLETE_BATCH_MAX, ns_left, stop_deadline,
-    OFFLOAD_MAX_INFLIGHT,
 )
 from lightbug_http.event_loop import (
     LoopState,
@@ -478,17 +477,16 @@ struct ExecutorState(Movable):
     var nested_named: Bool
     """Whether a refused nested pass has been named in the log (once)."""
 
-    def __init__(out self, lane: Int, capacity: Int, jobs: Int = 0):
+    def __init__(out self, lane: Int, capacity: Int, jobs: Int):
         """`capacity` slots, and `jobs` job entries: the pool's
-        `job_entries()`, or by default what a pool of `capacity` slots has
-        (`min(capacity, OFFLOAD_MAX_INFLIGHT)`)."""
-        var entries = jobs if jobs > 0 else min(max(capacity, 1), OFFLOAD_MAX_INFLIGHT)
-        self.methods = List[String](capacity=entries)
-        self.paths = List[String](capacity=entries)
-        self.pending_101 = List[Optional[HTTPResponse]](capacity=entries)
-        for _ in range(entries):
-            self.methods.append(String(""))
-            self.paths.append(String(""))
+        `job_entries()`, which is where that count is decided. Required, so
+        no second copy of the pool's sizing rule can drift from it; an entry
+        past these tables' end would stop the process at `List`'s bounds
+        assertion."""
+        self.methods = List[String](length=jobs, fill=String(""))
+        self.paths = List[String](length=jobs, fill=String(""))
+        self.pending_101 = List[Optional[HTTPResponse]](capacity=jobs)
+        for _ in range(jobs):
             self.pending_101.append(None)
         self.gens = List[Int](length=capacity, fill=0)
         self.lost = List[Bool](length=capacity, fill=False)

@@ -15,28 +15,29 @@ sizes and what a slot with no job reads.
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
 from lightbug_http.http import OK
-from lightbug_http.offload import OFFLOAD_MAX_INFLIGHT
+from lightbug_http.offload import OFFLOAD_MAX_INFLIGHT, OffloadPool
 
 from src.asgi_executor import ExecutorState, _held_101, _job_method, _job_path
 
 
 def test_a_jobs_state_is_kept_per_job_and_a_streams_per_slot() raises:
-    """4096 slots, 256 job entries: the method, path and held 101 are 256
-    long and the generation and lost flag 4096; a state built without the
-    pool's count sizes its job half as a pool of that many slots does.
+    """Built as the executor builds it, from the pool's own count: at 4096
+    slots the method, path and held 101 are as long as the pool's job
+    entries (`OFFLOAD_MAX_INFLIGHT`), and the generation and lost flag 4096;
+    at 8 slots both halves are 8. The count is the pool's alone, so this
+    pins the tables to it, not to a copy of its rule.
 
     covers: C27
     """
-    var st = ExecutorState(0, 4096, 256)
-    assert_equal(len(st.methods), 256)
-    assert_equal(len(st.paths), 256)
-    assert_equal(len(st.pending_101), 256)
+    var pool = OffloadPool(4096)
+    var st = ExecutorState(0, pool.capacity, pool.job_entries())
+    assert_equal(len(st.methods), OFFLOAD_MAX_INFLIGHT)
+    assert_equal(len(st.paths), OFFLOAD_MAX_INFLIGHT)
+    assert_equal(len(st.pending_101), OFFLOAD_MAX_INFLIGHT)
     assert_equal(len(st.gens), 4096)
     assert_equal(len(st.lost), 4096)
-    var many = ExecutorState(-1, 4096)
-    assert_equal(len(many.methods), OFFLOAD_MAX_INFLIGHT)
-    assert_equal(len(many.gens), 4096)
-    var few = ExecutorState(-1, 8)
+    var small = OffloadPool(8)
+    var few = ExecutorState(-1, small.capacity, small.job_entries())
     assert_equal(len(few.methods), 8)
     assert_equal(len(few.lost), 8)
 
