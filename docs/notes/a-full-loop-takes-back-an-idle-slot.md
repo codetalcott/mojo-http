@@ -155,9 +155,16 @@ were taken from with their timeouts off; the notice said an idle
 connection "is closed to admit the next" under `M0_RECLAIM=0`, which
 refuses every one; and the probe's keep-alive read spun on an early EOF
 where it should have failed. A reclaimed head's 408 is sent and the
-socket closed at once, which can turn the 408 into a reset if the rest of
-the head is unread; the header timeout's close has always done that, and
-it is left for its own change (#660).
+socket closed at once, which the review read as turning the 408 into a
+reset when the rest of the head is unread, and left for its own change
+(#660). Measured there, on macOS and Linux, it does not: a head that has
+stopped arriving reads its 408 behind a FIN, and one still arriving reads
+it too, its next write refused because it reaches a closed socket. A
+client that writes everything before it reads reports that write's error.
+Draining the socket before the close changed nothing for it, since its
+later bytes still reach a closed socket; only a linger would, and that
+holds the slot the reclaim exists to free. The probe's last phase now
+holds both halves: a trickling head taken back reads its 408.
 
 ## The cost
 

@@ -109,7 +109,21 @@ def _expire_head[T: HTTPService, B: EventLoopBackend](
     one's next, then the close. The sweep calls it once the timeout has
     passed, and a full loop that cannot wait for it (SPEC C23,
     `_reclaim_slot`). The 408 tells a client with a request in transit that
-    it may repeat it (RFC 9110 §15.5.9), where a bare close says nothing."""
+    it may repeat it (RFC 9110 §15.5.9), where a bare close says nothing.
+
+    It is delivered, measured on macOS and Linux (#660): a client that has
+    stopped sending has nothing unread here, so the close is a FIN behind
+    the 408; one still sending its head reads the 408 too, and its next
+    write is refused, that segment reaching a closed socket and being
+    answered with a reset. So a client that writes its whole request before
+    it reads (`http.client`) reports that write's error, not the 408.
+    Draining what the socket holds before the close changes nothing for it
+    (measured: its later segments still reach a closed socket); only a
+    linger would, as the read path's does (`_reject_and_linger`, review
+    record LF75), and here that would hold the slot a full loop takes back
+    to free. The header timeout met at a read, a client still sending,
+    lingers there; this is the quiet client's close, and the full loop's.
+    `reclaim_probe.py`'s last phase pins both halves."""
     if st.provision_pool.provisions[slot].keepalive_count == 0:
         _send_error_to_fd(st.slot_fds[slot], RequestTimeout())
     _close_slot(handler, backend, st, slot, st.slot_fds[slot])
