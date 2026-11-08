@@ -142,8 +142,8 @@ EXECUTOR_SABOTAGES = [
     ),
     (
         "an event on a slot with no job indexes the 101 table at -1",
-        "    return e >= 0 and Bool(st.pending_101[e])\n",
-        "    return Bool(st.pending_101[e])\n",
+        "    return e >= 0 and Bool(pending[e])\n",
+        "    return Bool(pending[e])\n",
     ),
 ]
 

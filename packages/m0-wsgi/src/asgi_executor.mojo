@@ -877,7 +877,7 @@ struct ExecutorPort(Movable, Writable):
             # a call result's item, one of the crossings the bridge
             # documents as leak-free.
             var e = pool.job_entry(slot)
-            var method = _job_method(st, e)
+            var method = _job_method(st.methods, e)
             var response: HTTPResponse
             var raised = False
             try:
@@ -888,7 +888,7 @@ struct ExecutorPort(Movable, Writable):
             except:
                 response = InternalError()
                 raised = True
-            handler.after_response(method, _job_path(st, e), response)
+            handler.after_response(method, _job_path(st.paths, e), response)
             # Written here, never through a function: the state is reached by
             # address and is no function's `mut` argument (its docstring). A
             # 101 the job still holds goes with it, so its entry carries none
@@ -904,7 +904,7 @@ struct ExecutorPort(Movable, Writable):
             )
             var e = pool.job_entry(slot)
             var response = InternalError()
-            handler.after_response(_job_method(st, e), _job_path(st, e), response)
+            handler.after_response(_job_method(st.methods, e), _job_path(st.paths, e), response)
             if e >= 0:
                 st.pending_101[e] = None
             pool.put_response(slot, response^, True)
@@ -944,7 +944,7 @@ struct ExecutorPort(Movable, Writable):
                 _report_lost(String("stream begin"), slot, len(begin_frame))
                 _send_disconnect_tag(pool.submit_write_fd(self.lane), slot)
                 var failed = InternalError()
-                handler.after_response(_job_method(st, e), _job_path(st, e), failed)
+                handler.after_response(_job_method(st.methods, e), _job_path(st.paths, e), failed)
                 if e >= 0:
                     st.pending_101[e] = None
                 pool.put_response(slot, failed^, True)
@@ -961,13 +961,13 @@ struct ExecutorPort(Movable, Writable):
             try:
                 response = build_asgi_response(
                     handler.apps[0]._bridge, Int(py=ev[2]), ev[3], ev[4],
-                    streaming=True, is_head=_job_method(st, e) == "HEAD",
+                    streaming=True, is_head=_job_method(st.methods, e) == "HEAD",
                 )
             except:
                 response = InternalError()
                 raised = True
             response.stream_gen = st.gens[slot]
-            handler.after_response(_job_method(st, e), _job_path(st, e), response)
+            handler.after_response(_job_method(st.methods, e), _job_path(st.paths, e), response)
             if e >= 0:
                 st.pending_101[e] = None
             pool.put_response(slot, response^, raised)
@@ -1039,7 +1039,7 @@ struct ExecutorPort(Movable, Writable):
             # stream's head, for the sockets registry this time. A slot with
             # no job in flight holds no 101 (`_held_101`).
             var e = pool.job_entry(slot)
-            if _held_101(st, e):
+            if _held_101(st.pending_101, e):
                 st.gens[slot] = st.next_gen
                 st.next_gen += 1
                 st.lost[slot] = False
@@ -1072,7 +1072,7 @@ struct ExecutorPort(Movable, Writable):
         elif kind == "ws_reject":
             # The application refused (or never answered) the handshake.
             var e = pool.job_entry(slot)
-            if _held_101(st, e):
+            if _held_101(st.pending_101, e):
                 _ = st.pending_101[e].take()
                 var response = _ws_forbidden()
                 handler.after_response(st.methods[e], st.paths[e], response)
@@ -1153,21 +1153,29 @@ struct ExecutorPort(Movable, Writable):
 
 
 
-def _job_method(st: ExecutorState, e: Int) -> String:
-    """The method of the job at entry `e`, or empty for an event on a slot
-    with no job in flight (`OffloadPool.job_entry` answered -1)."""
-    return st.methods[e] if e >= 0 else String("")
+# The three take a TABLE of the state's, never the state: a struct the port
+# writes by address must not be any function's argument, read-only copies
+# included (`copyback_guard.py`, docs/notes/mut-arguments-and-raw-addresses.md).
 
 
-def _job_path(st: ExecutorState, e: Int) -> String:
-    """The path of the job at entry `e`, or empty, as `_job_method`."""
-    return st.paths[e] if e >= 0 else String("")
+def _job_method(methods: List[String], e: Int) -> String:
+    """The method of the job at entry `e` of `ExecutorState.methods`, or
+    empty for an event on a slot with no job in flight (`OffloadPool.
+    job_entry` answered -1)."""
+    return methods[e] if e >= 0 else String("")
 
 
-def _held_101(st: ExecutorState, e: Int) -> Bool:
-    """Whether the job at entry `e` holds a 101 for its application to
-    accept; a slot with no job in flight holds none."""
-    return e >= 0 and Bool(st.pending_101[e])
+def _job_path(paths: List[String], e: Int) -> String:
+    """The path of the job at entry `e` of `ExecutorState.paths`, or empty,
+    as `_job_method`."""
+    return paths[e] if e >= 0 else String("")
+
+
+def _held_101(pending: List[Optional[HTTPResponse]], e: Int) -> Bool:
+    """Whether the job at entry `e` of `ExecutorState.pending_101` holds a
+    101 for its application to accept; a slot with no job in flight holds
+    none."""
+    return e >= 0 and Bool(pending[e])
 
 
 def dispatch_job(

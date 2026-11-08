@@ -53,13 +53,13 @@ def test_a_slot_with_no_job_reads_no_method_and_holds_no_101() raises:
     st.methods[15] = String("HEAD")
     st.paths[15] = String("/last")
     st.pending_101[15] = OK(String("held"))
-    assert_equal(_job_method(st, 15), "HEAD")
-    assert_equal(_job_path(st, 15), "/last")
-    assert_true(_held_101(st, 15))
-    assert_equal(_job_method(st, -1), "")
-    assert_equal(_job_path(st, -1), "")
-    assert_false(_held_101(st, -1), "a slot with no job read the last entry's 101")
-    assert_false(_held_101(st, 3))
+    assert_equal(_job_method(st.methods, 15), "HEAD")
+    assert_equal(_job_path(st.paths, 15), "/last")
+    assert_true(_held_101(st.pending_101, 15))
+    assert_equal(_job_method(st.methods, -1), "")
+    assert_equal(_job_path(st.paths, -1), "")
+    assert_false(_held_101(st.pending_101, -1), "a slot with no job read the last entry's 101")
+    assert_false(_held_101(st.pending_101, 3))
 
 
 def main() raises:
