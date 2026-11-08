@@ -100,7 +100,7 @@ SHARED = (
     Shared(
         name="ExecutorState",
         module="m0_wsgi.asgi_executor",
-        make="ExecutorState(-1, 1)",
+        make="ExecutorState(-1, 1, 1)",
         why="the asyncio executor's port re-enters itself and writes it by "
         "address (B20: SPEC L8, L30)",
     ),

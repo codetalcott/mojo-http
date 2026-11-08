@@ -282,12 +282,19 @@ def _executor_serve(block: ThreadBlock) raises:
     # run their lifespans a second time. `thread_index` stays -1 either way
     # — one executor is not a pool, and stamping `x-thread: 0` on every
     # response would claim it is.
+    #
+    # `owns_streams=False`, as a pool thread's: this loop's streams are its
+    # OWN handler's, the outboxes the chunk channel feeds, and nothing
+    # drains this one's, so sized by the count they were about 200 B a
+    # slot for nothing (#682). The inverted shape's handler IS the loop's
+    # (`serve_inverted`) and keeps them.
     var handler = WSGIHandler.build(
         opts[],
         multiprocess=opts[].workers > 1,
         multithread=False,
         lifespan=True,
         only_mount=lane,
+        owns_streams=False,
     ) if len(opts[].mount_prefixes) > 0 else WSGIHandler.for_options(
         WSGIApp(
             opts[].module,
@@ -300,6 +307,7 @@ def _executor_serve(block: ThreadBlock) raises:
             lifespan=True,
         ),
         opts[],
+        owns_streams=False,
     )
 
     # The executor's side of the pump, as a Python type the shim calls
@@ -309,7 +317,7 @@ def _executor_serve(block: ThreadBlock) raises:
     # address and handler; the module object only has to outlive the
     # instance, and it does -- both are locals of this frame.
     var native = _ensure_port_type()
-    var state = ExecutorState(lane, pool.capacity)
+    var state = ExecutorState(lane, pool.capacity, pool.job_entries())
     # Addresses the way `OffloadPool.addr` takes its own: a Pointer to the
     # value, read back through a Pointer to that pointer.
     var handler_ptr = Pointer(to=handler)
@@ -401,11 +409,16 @@ struct ExecutorState(Movable):
     `List[Optional[HTTPResponse]]` fails on `HTTPResponse` itself, whose
     `ResponseCookieJar` holds a `Dict` that is not `Writable` (probed on
     1.0.0 when `OwningList` was retired; the container was never the
-    obstacle). Four integers can. Parallel to the slots: what `after_response` needs after the
-    request itself has crossed into Python, the ready 101 held for a
-    WebSocket handshake until the application's `websocket.accept` comes
-    back, each stream's generation, and the completions parked since the
-    last flush. Only ever touched by this thread.
+    obstacle). Four integers can. Per JOB in flight, in the pool's job
+    entries (`OffloadPool.job_entry`): what `after_response` needs after
+    the request itself has crossed into Python, and the ready 101 held for
+    a WebSocket handshake until the application's `websocket.accept` comes
+    back -- read only between the job's `take_request` and its one
+    `put_response`, the time the entry is the job's, so at most
+    `OFFLOAD_MAX_INFLIGHT` of them, not one a slot (#682). Per slot: each
+    stream's generation and whether it lost a frame, which outlive the job
+    (a stream's frames follow its head). And the completions parked since
+    the last flush. Only ever touched by this thread.
 
     **Never pass it to a function as a `mut` argument; resolve it by address
     in the frame that uses it.** A `mut` argument is exclusive for the
@@ -424,8 +437,12 @@ struct ExecutorState(Movable):
     """
 
     var methods: List[String]
+    """Per job entry: the request's method, for `after_response` and HEAD."""
     var paths: List[String]
+    """Per job entry: the request's path, for `after_response`."""
     var pending_101: List[Optional[HTTPResponse]]
+    """Per job entry: the 101 held until the application accepts, or None.
+    Cleared where a job completes, so an entry carries none to the next."""
     var gens: List[Int]
     var lost: List[Bool]
     """Per slot: this stream lost a frame the chunk channel would not take,
@@ -460,18 +477,19 @@ struct ExecutorState(Movable):
     var nested_named: Bool
     """Whether a refused nested pass has been named in the log (once)."""
 
-    def __init__(out self, lane: Int, capacity: Int):
-        self.methods = List[String](capacity=capacity)
-        self.paths = List[String](capacity=capacity)
-        self.pending_101 = List[Optional[HTTPResponse]](capacity=capacity)
-        self.gens = List[Int](capacity=capacity)
-        self.lost = List[Bool](capacity=capacity)
-        for _ in range(capacity):
-            self.methods.append(String(""))
-            self.paths.append(String(""))
+    def __init__(out self, lane: Int, capacity: Int, jobs: Int):
+        """`capacity` slots, and `jobs` job entries: the pool's
+        `job_entries()`, which is where that count is decided. Required, so
+        no second copy of the pool's sizing rule can drift from it; an entry
+        past these tables' end would stop the process at `List`'s bounds
+        assertion."""
+        self.methods = List[String](length=jobs, fill=String(""))
+        self.paths = List[String](length=jobs, fill=String(""))
+        self.pending_101 = List[Optional[HTTPResponse]](capacity=jobs)
+        for _ in range(jobs):
             self.pending_101.append(None)
-            self.gens.append(0)
-            self.lost.append(False)
+        self.gens = List[Int](length=capacity, fill=0)
+        self.lost = List[Bool](length=capacity, fill=False)
         # This executor's generations are disjoint from every other
         # producer's by construction (`stream_gen_seed`).
         self.next_gen = stream_gen_seed(lane + 1)
@@ -856,17 +874,25 @@ struct ExecutorPort(Movable, Writable):
             # own (bytes, bytes) list -- read through the C API. `ev[2]` is
             # a call result's item, one of the crossings the bridge
             # documents as leak-free.
+            var e = pool.job_entry(slot)
+            var method = _job_method(st.methods, e)
             var response: HTTPResponse
             var raised = False
             try:
                 response = build_asgi_response(
                     handler.apps[0]._bridge, Int(py=ev[2]), ev[3], ev[4],
-                    is_head=st.methods[slot] == "HEAD",
+                    is_head=method == "HEAD",
                 )
             except:
                 response = InternalError()
                 raised = True
-            handler.after_response(st.methods[slot], st.paths[slot], response)
+            handler.after_response(method, _job_path(st.paths, e), response)
+            # Written here, never through a function: the state is reached by
+            # address and is no function's `mut` argument (its docstring). A
+            # 101 the job still holds goes with it, so its entry carries none
+            # to the next job that takes it.
+            if e >= 0:
+                st.pending_101[e] = None
             pool.put_response(slot, response^, raised)
             _queue_completion(pool, st.pending_done, slot)
         elif kind == "err":
@@ -874,8 +900,11 @@ struct ExecutorPort(Movable, Writable):
                 "asgi-executor: request raised: " + String(py=ev[2]),
                 file=stderr,
             )
+            var e = pool.job_entry(slot)
             var response = InternalError()
-            handler.after_response(st.methods[slot], st.paths[slot], response)
+            handler.after_response(_job_method(st.methods, e), _job_path(st.paths, e), response)
+            if e >= 0:
+                st.pending_101[e] = None
             pool.put_response(slot, response^, True)
             _queue_completion(pool, st.pending_done, slot)
         elif kind == "stream_start":
@@ -889,6 +918,7 @@ struct ExecutorPort(Movable, Writable):
             # closes the wrongful-early-close race. It also anchors the
             # FIFO that keeps a recycled slot safe: every frame of this
             # stream sits between its begin and its end on one channel.
+            var e = pool.job_entry(slot)
             st.gens[slot] = st.next_gen
             st.next_gen += 1
             st.lost[slot] = False
@@ -912,7 +942,9 @@ struct ExecutorPort(Movable, Writable):
                 _report_lost(String("stream begin"), slot, len(begin_frame))
                 _send_disconnect_tag(pool.submit_write_fd(self.lane), slot)
                 var failed = InternalError()
-                handler.after_response(st.methods[slot], st.paths[slot], failed)
+                handler.after_response(_job_method(st.methods, e), _job_path(st.paths, e), failed)
+                if e >= 0:
+                    st.pending_101[e] = None
                 pool.put_response(slot, failed^, True)
                 _queue_completion(pool, st.pending_done, slot)
                 return False
@@ -927,13 +959,15 @@ struct ExecutorPort(Movable, Writable):
             try:
                 response = build_asgi_response(
                     handler.apps[0]._bridge, Int(py=ev[2]), ev[3], ev[4],
-                    streaming=True, is_head=st.methods[slot] == "HEAD",
+                    streaming=True, is_head=_job_method(st.methods, e) == "HEAD",
                 )
             except:
                 response = InternalError()
                 raised = True
             response.stream_gen = st.gens[slot]
-            handler.after_response(st.methods[slot], st.paths[slot], response)
+            handler.after_response(_job_method(st.methods, e), _job_path(st.paths, e), response)
+            if e >= 0:
+                st.pending_101[e] = None
             pool.put_response(slot, response^, raised)
             _queue_completion(pool, st.pending_done, slot)
         elif kind == "stream_chunk":
@@ -1000,8 +1034,10 @@ struct ExecutorPort(Movable, Writable):
             print("asgi-executor: " + String(py=ev[2]), file=stderr)
         elif kind == "ws_accept":
             # Begin frame before the 101 — the same FIFO anchor as a
-            # stream's head, for the sockets registry this time.
-            if st.pending_101[slot]:
+            # stream's head, for the sockets registry this time. A slot with
+            # no job in flight holds no 101 (`_held_101`).
+            var e = pool.job_entry(slot)
+            if _held_101(st.pending_101, e):
                 st.gens[slot] = st.next_gen
                 st.next_gen += 1
                 st.lost[slot] = False
@@ -1019,24 +1055,25 @@ struct ExecutorPort(Movable, Writable):
                     # task its connection is gone.
                     st.lost[slot] = True
                     _report_lost(String("websocket begin"), slot, len(begin_frame))
-                    _ = st.pending_101[slot].take()
+                    _ = st.pending_101[e].take()
                     _send_disconnect_tag(pool.submit_write_fd(self.lane), slot)
                     var failed = InternalError()
-                    handler.after_response(st.methods[slot], st.paths[slot], failed)
+                    handler.after_response(st.methods[e], st.paths[e], failed)
                     pool.put_response(slot, failed^, True)
                     _queue_completion(pool, st.pending_done, slot)
                     return False
-                var held = st.pending_101[slot].take()
+                var held = st.pending_101[e].take()
                 held.stream_gen = st.gens[slot]
-                handler.after_response(st.methods[slot], st.paths[slot], held)
+                handler.after_response(st.methods[e], st.paths[e], held)
                 pool.put_response(slot, held^, False)
                 _queue_completion(pool, st.pending_done, slot)
         elif kind == "ws_reject":
             # The application refused (or never answered) the handshake.
-            if st.pending_101[slot]:
-                _ = st.pending_101[slot].take()
+            var e = pool.job_entry(slot)
+            if _held_101(st.pending_101, e):
+                _ = st.pending_101[e].take()
                 var response = _ws_forbidden()
-                handler.after_response(st.methods[slot], st.paths[slot], response)
+                handler.after_response(st.methods[e], st.paths[e], response)
                 pool.put_response(slot, response^, False)
                 _queue_completion(pool, st.pending_done, slot)
         elif kind == "ws_send":
@@ -1114,6 +1151,31 @@ struct ExecutorPort(Movable, Writable):
 
 
 
+# The three take a TABLE of the state's, never the state: a struct the port
+# writes by address must not be any function's argument, read-only copies
+# included (`copyback_guard.py`, docs/notes/mut-arguments-and-raw-addresses.md).
+
+
+def _job_method(methods: List[String], e: Int) -> String:
+    """The method of the job at entry `e` of `ExecutorState.methods`, or
+    empty for an event on a slot with no job in flight (`OffloadPool.
+    job_entry` answered -1)."""
+    return methods[e] if e >= 0 else String("")
+
+
+def _job_path(paths: List[String], e: Int) -> String:
+    """The path of the job at entry `e` of `ExecutorState.paths`, or empty,
+    as `_job_method`."""
+    return paths[e] if e >= 0 else String("")
+
+
+def _held_101(pending: List[Optional[HTTPResponse]], e: Int) -> Bool:
+    """Whether the job at entry `e` of `ExecutorState.pending_101` holds a
+    101 for its application to accept; a slot with no job in flight holds
+    none."""
+    return e >= 0 and Bool(pending[e])
+
+
 def dispatch_job(
     pool_addr: Int, handler_addr: Int, state_addr: Int, lane: Int, slot: Int,
 ) raises -> Bool:
@@ -1147,19 +1209,23 @@ def dispatch_job(
         st.stopping = True
         return True
     var request = pool.take_request(slot)
-    st.methods[slot] = request.method
-    st.paths[slot] = request.uri.path
+    # The job's entry, held until the loop takes its answer: its method,
+    # path and held 101 live there, not in a table a slot (#682).
+    var e = pool.job_entry(slot)
+    st.methods[e] = request.method
+    st.paths[e] = request.uri.path
+    st.pending_101[e] = None
     var early = handler.before_request(request)
     if early:
         var response = early.take()
-        handler.after_response(st.methods[slot], st.paths[slot], response)
+        handler.after_response(st.methods[e], st.paths[e], response)
         pool.put_response(slot, response^, False)
         _queue_completion(pool, st.pending_done, slot)
         return False
     var local = handler.serve_local(request)
     if local:
         var response = local.take()
-        handler.after_response(st.methods[slot], st.paths[slot], response)
+        handler.after_response(st.methods[e], st.paths[e], response)
         pool.put_response(slot, response^, False)
         _queue_completion(pool, st.pending_done, slot)
         return False
@@ -1173,17 +1239,17 @@ def dispatch_job(
         var probe = upgrade.take()
         if probe.status_code != 101:
             # Malformed or wrong-version handshake: 400/426 verbatim.
-            handler.after_response(st.methods[slot], st.paths[slot], probe)
+            handler.after_response(st.methods[e], st.paths[e], probe)
             pool.put_response(slot, probe^, False)
             _queue_completion(pool, st.pending_done, slot)
             return False
-        st.pending_101[slot] = probe^
+        st.pending_101[e] = probe^
         try:
             handler.apps[0]._bridge.spawn_asgi_ws(slot, request)
         except:
-            st.pending_101[slot] = None
+            st.pending_101[e] = None
             var response = InternalError()
-            handler.after_response(st.methods[slot], st.paths[slot], response)
+            handler.after_response(st.methods[e], st.paths[e], response)
             pool.put_response(slot, response^, True)
             _queue_completion(pool, st.pending_done, slot)
         return False
@@ -1194,7 +1260,7 @@ def dispatch_job(
         # same policy as a raising handler — 500 and a closed
         # connection, because what it left behind is unknown.
         var response = InternalError()
-        handler.after_response(st.methods[slot], st.paths[slot], response)
+        handler.after_response(st.methods[e], st.paths[e], response)
         pool.put_response(slot, response^, True)
         _queue_completion(pool, st.pending_done, slot)
     return False
@@ -1261,7 +1327,7 @@ def serve_inverted(
     handler.set_asgi_notify(pool.submit_write_fd(lane))
 
     var native = _ensure_port_type()
-    var state = ExecutorState(lane, pool.capacity)
+    var state = ExecutorState(lane, pool.capacity, pool.job_entries())
     var handler_ptr = Pointer(to=handler)
     var state_ptr = Pointer(to=state)
     var handler_addr = Pointer(to=handler_ptr).unsafe_bitcast[Int]()[]

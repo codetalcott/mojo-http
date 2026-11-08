@@ -1763,6 +1763,21 @@ struct OffloadPool(Movable):
         request inline rather than parking it on another job's entry."""
         return len(self.free_entries) > 0
 
+    def job_entries(self) -> Int:
+        """How many jobs can be parked at once: the job tables' entries."""
+        return len(self.requests)
+
+    def job_entry(self, slot: Int) -> Int:
+        """The entry of the job parked on `slot`, or -1 when it has none.
+
+        For a receiver that keeps state of its own per job in flight --
+        the asyncio executor's method, path and held 101 -- in tables of
+        `job_entries()` rather than one per slot (SPEC C26): the entry is
+        the job's from `park_request` until the loop takes its answer, so
+        a receiver reading it between `take_request` and `put_response`
+        reads its own job's."""
+        return self._entry(slot)
+
     def _entry(self, slot: Int) -> Int:
         """The slot's entry in the job tables, or `NO_ENTRY`."""
         if slot < 0 or slot >= len(self.slot_entry):
@@ -1771,9 +1786,11 @@ struct OffloadPool(Movable):
 
     def _held_entry(self, slot: Int) -> Int:
         """The slot's entry, for a caller whose job must have one. A slot
-        without one is a broken protocol, and indexing with `NO_ENTRY`
-        would read the LAST entry, another job's, so it stops the process
-        as taking an empty `Optional` did when the tables were per slot."""
+        without one is a broken protocol, and it stops the process, as
+        taking an empty `Optional` did when the tables were per slot, naming
+        the slot. Indexing with `NO_ENTRY` would stop it too, but less
+        legibly: `List` refuses a negative index with a bounds assertion,
+        on 1.2.0 under `mojo run` and in a built binary alike (measured)."""
         var e = self._entry(slot)
         if e == Int(NO_ENTRY):
             abort(String("offload: slot ") + String(slot) + " has no job parked")

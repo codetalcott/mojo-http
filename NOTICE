@@ -2161,6 +2161,10 @@ lightbug_http
         `has_free_entry`. The tables cost a slot its 4-byte index where
         they cost it 752 B, and the pool reserves 28 B a slot in all
         (docs/notes/a-loop-keeps-slots-for-requests.md).
+      - offload.mojo (2026-11-07): `OffloadPool.job_entry` and
+        `job_entries`, so a receiver can keep state of its own per job in
+        flight in tables of the pool's entries (SPEC C27, the asyncio
+        executor's method, path and held 101).
 
     For the modification history carried into this repository:
         git log --no-merges -- packages/m0-http/lightbug_http

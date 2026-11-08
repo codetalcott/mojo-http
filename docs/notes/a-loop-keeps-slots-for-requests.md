@@ -242,12 +242,52 @@ request inline rather than parking it on another job's entry.
 
 An ASGI application on the executor pays its own: 2446 B a slot before,
 1697 after, against 916 for WSGI with no pool and no `--realtime`. The
-remainder is the executor's per-slot state (`ExecutorState`, whose
-`pending_101` is another response a slot) and its handler's stream
-tables, which are not this change's.
+remainder was the executor's own per-slot state and its handler's stream
+tables, which the next section takes away.
 
 `smoke-max-connections` measures the share at 1024 and 16384 connections
 and fails above 128 B a slot, a bound either cause, brought back, would
 exceed many times over.
 `poe sabotage-pool` reverts each entry rule, and `test_offload.mojo`
 catches every one.
+
+## Found after it: what the executor reserved per slot (SPEC C27)
+
+With the pool's tables fixed, an ASGI application on the asyncio executor
+with no pool still held 1696 B a slot idle against 915 for WSGI served
+inline, both without `--realtime`: 781 B more (`scripts/probes/
+pool_idle_rss.py --versus-app`, M4, 2026-11-07). Some of it is needed:
+in executor mode the loop's handler sizes its stream registries by the
+count, and they are the outboxes ASGI chunks ride, about 200 B a slot. Two
+parts were not.
+
+- **The executor thread's own handler** (`_executor_serve`) sized the same
+  registries and lists, about 200 B a slot, and nothing drains them: the
+  chunks go to the loop's handler. It is now built with `owns_streams=False`,
+  as a pool thread's is. The inverted shape's handler is the loop's own
+  (`serve_inverted`), so it keeps them.
+- **`ExecutorState` kept a request's method and path and a handshake's held
+  101 a slot**, 344 B (`Optional[HTTPResponse]` is 296), though each is read
+  only between the job's `take_request` and its one `put_response`. That is
+  the time the pool's job entry is the job's (above), so they now live in
+  tables of the pool's `job_entries()`, indexed by `job_entry(slot)`: at
+  most 256 whatever the slot count. A stream's generation and its lost flag
+  are read by frames that follow the head, after the job has ended, and
+  stay a slot. An event on a slot with no job in flight (a late one from a
+  task whose job completed) finds no entry and reads no method and no held
+  101; an index of -1 would not read another job's entry, since `List`
+  refuses a negative index with a bounds assertion, but it would end the
+  process. A job's held 101 is cleared where it completes another way, and
+  again where the next job on the entry starts, so an entry carries none to
+  the next.
+
+| shape (no `--realtime`, no pool) | before | after |
+| --- | --- | --- |
+| WSGI, served inline | 915 B a slot | 917 B a slot |
+| ASGI, the executor | 1696 B a slot | 1156 B a slot |
+| the executor's share | 781 B a slot | 241 B a slot |
+
+`smoke-max-connections` measures the executor's share at 1024 and 16384
+connections and fails above 360 B a slot; the handler's sizing, reverted,
+read 431. `poe sabotage-pool` reverts the per-job sizing and the no-job
+guard against `test_executor_state.mojo`.

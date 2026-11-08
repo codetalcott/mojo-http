@@ -6,6 +6,7 @@ usage: uv run --no-sync python scripts/probes/pool_idle_rss.py
            [--binary bin/m0serve] [--counts 1024,16384,65536] [--threads 8]
            [--rounds 3] [--json PATH] [--max-pool-bytes-per-slot B]
            [--emit TASK] [--no-realtime] [--app SPEC --app-dir DIR]
+           [--versus-app SPEC --versus-app-dir DIR]
 
 Each cell is a fresh `m0serve hold_app:application --app-dir scripts/smoke
 --realtime --max-connections N --blocking-threads T`, asked its health path
@@ -28,9 +29,16 @@ share is the pooled arm's median slope less the pool-less arm's.
 `--no-realtime` drops `--realtime`, under which every handler -- the
 loop's and each pool thread's -- sizes its stream registries by the count.
 
-`--max-pool-bytes-per-slot B` makes it a gate: exit 1 when the pool's share
-is above B. `--emit TASK` records both slopes and the share through
-`scripts/emit.py` (a no-op without `$M0_RESULTS`).
+`--versus-app SPEC --versus-app-dir DIR` compares two applications instead
+of two pool sizes, both at `--blocking-threads 0`: the share is `--app`'s
+slope less the versus application's. An ASGI application against a WSGI
+one is the asyncio executor's share (#682), what a slot costs for being
+served by an executor rather than inline.
+
+`--max-pool-bytes-per-slot B` (or `--max-share-bytes-per-slot B`) makes it
+a gate: exit 1 when the share is above B. `--emit TASK` records both slopes and the share through
+`scripts/emit.py` (a no-op without `$M0_RESULTS`), named `pool.*`, or
+`executor.*` with `--versus-app`.
 
 Under `uv run`, so `bin/m0serve` embeds the venv's Python, not the first one
 on a bare PATH.
@@ -70,10 +78,10 @@ def flags(count, threads):
     ]
 
 
-def fitted(binary, count, threads):
+def fitted(binary, app, count, threads):
     """The count the loop holds, as the doctor reports it (C25's fit)."""
     out = subprocess.run(
-        [binary, *APP, *flags(count, threads), "--doctor"],
+        [binary, *app, *flags(count, threads), "--doctor"],
         capture_output=True, text=True, cwd=REPO,
     )
     lines = out.stdout.strip().splitlines()
@@ -95,10 +103,10 @@ def rss_kb(pid):
     return int(out)
 
 
-def measure(binary, count, threads, logdir):
+def measure(binary, app, count, threads, logdir):
     port = probelib.free_port()
     log = Path(logdir) / f"rss-{threads}-{count}.log"
-    argv = [binary, *APP, "--port", str(port), *flags(count, threads)]
+    argv = [binary, *app, "--port", str(port), *flags(count, threads)]
     url = f"http://127.0.0.1:{port}/health"
     with probelib.server(argv, url, timeout=60.0, log=log, cwd=REPO) as proc:
         time.sleep(1.0)
@@ -133,12 +141,16 @@ def main():
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--json", dest="json_path")
-    ap.add_argument("--max-pool-bytes-per-slot", type=float)
+    ap.add_argument("--max-pool-bytes-per-slot", "--max-share-bytes-per-slot",
+                    dest="max_pool_bytes_per_slot", type=float,
+                    help="exit 1 when the share is above this many bytes a slot")
     ap.add_argument("--emit", dest="emit_task")
     ap.add_argument("--app", help="the application spec to serve (default hold_app:application)")
     ap.add_argument("--app-dir", help="its directory, relative to the repository")
     ap.add_argument("--no-realtime", action="store_true",
                     help="serve without --realtime, whose handler tables are sized by the count")
+    ap.add_argument("--versus-app", help="compare --app with this application, both without a pool")
+    ap.add_argument("--versus-app-dir", help="its directory, relative to the repository")
     args = ap.parse_args()
     if args.no_realtime:
         REALTIME.clear()
@@ -151,43 +163,53 @@ def main():
     counts = [int(c) for c in args.counts.split(",")]
     if len(counts) < 2:
         fail("--counts needs at least two counts")
-    arms = [0, args.threads]
+    # Each arm: (its name, the application, the pool threads). The share is
+    # the second arm's slope less the first's.
+    if args.versus_app:
+        versus = [args.versus_app, "--app-dir", args.versus_app_dir or "."]
+        arms = [(args.versus_app, versus, 0), (APP[0], list(APP), 0)]
+        what, emitted = "the executor's share", "executor"
+    else:
+        arms = [("threads 0", list(APP), 0),
+                ("threads %d" % args.threads, list(APP), args.threads)]
+        what, emitted = "the pool's share", "pool"
+    names = [a[0] for a in arms]
 
-    fit = {(t, c): fitted(binary, c, t) for t in arms for c in counts}
+    fit = {(a[0], c): fitted(binary, a[1], c, a[2]) for a in arms for c in counts}
     load = os.getloadavg()
     print(f"binary {binary}, app {APP[0]}" + ("" if REALTIME else " (without --realtime)"))
     print(f"platform {platform.system()} {platform.machine()}, load {load[0]:.2f} {load[1]:.2f}")
-    for t in arms:
-        print(f"threads {t}: counts " + ", ".join(
-            f"{c}->{fit[(t, c)]}" for c in counts))
+    for name in names:
+        print(f"{name}: counts " + ", ".join(
+            f"{c}->{fit[(name, c)]}" for c in counts))
 
-    cells = {t: {fit[(t, c)]: [] for c in counts} for t in arms}
-    slopes = {t: [] for t in arms}
+    cells = {name: {fit[(name, c)]: [] for c in counts} for name in names}
+    slopes = {name: [] for name in names}
     with tempfile.TemporaryDirectory(prefix="pool-idle-rss-") as logdir:
         for r in range(args.rounds):
             order = arms if r % 2 == 0 else list(reversed(arms))
-            for t in order:
+            for name, app, threads in order:
                 points = {}
                 for c in counts:
-                    kb = measure(binary, c, t, logdir)
-                    points[fit[(t, c)]] = kb
-                    cells[t][fit[(t, c)]].append(kb)
-                slopes[t].append(slope(points))
-                print(f"round {r + 1} threads {t}: " + ", ".join(
+                    kb = measure(binary, app, c, threads, logdir)
+                    points[fit[(name, c)]] = kb
+                    cells[name][fit[(name, c)]].append(kb)
+                slopes[name].append(slope(points))
+                print(f"round {r + 1} {name}: " + ", ".join(
                     f"{n} slots {kb / 1024:.1f} MB" for n, kb in sorted(points.items()))
-                    + f"; {slopes[t][-1]:.0f} B a slot")
+                    + f"; {slopes[name][-1]:.0f} B a slot")
 
-    per_slot = {t: statistics.median(slopes[t]) for t in arms}
-    share = per_slot[args.threads] - per_slot[0]
+    per_slot = {name: statistics.median(slopes[name]) for name in names}
+    share = per_slot[names[1]] - per_slot[names[0]]
     print()
-    print(f"{'slots':>8}  " + "  ".join(f"{'threads ' + str(t):>12}" for t in arms))
+    print(f"{'slots':>8}  " + "  ".join(f"{name[:24]:>24}" for name in names))
     for c in counts:
-        row = [statistics.median(cells[t][fit[(t, c)]]) / 1024 for t in arms]
-        print(f"{c:>8}  " + "  ".join(f"{mb:>9.1f} MB" for mb in row))
-    for t in arms:
-        spread = f"{min(slopes[t]):.0f}-{max(slopes[t]):.0f}"
-        print(f"threads {t}: {per_slot[t]:.0f} B a slot (rounds {spread})")
-    print(f"the pool's share: {share:.0f} B a slot")
+        row = [statistics.median(cells[name][fit[(name, c)]]) / 1024 for name in names]
+        print(f"{c:>8}  " + "  ".join(f"{mb:>21.1f} MB" for mb in row))
+    for name in names:
+        spread = f"{min(slopes[name]):.0f}-{max(slopes[name]):.0f}"
+        print(f"{name}: {per_slot[name]:.0f} B a slot (rounds {spread})")
+    print(f"{what}: {share:.0f} B a slot")
 
     if args.json_path:
         Path(args.json_path).write_text(json.dumps({
@@ -195,21 +217,22 @@ def main():
             "platform": f"{platform.system()} {platform.machine()}",
             "loadavg": load,
             "counts": counts,
-            "fitted": {str(t): {str(c): fit[(t, c)] for c in counts} for t in arms},
-            "rss_kb": {str(t): {str(n): v for n, v in cells[t].items()} for t in arms},
-            "bytes_per_slot": {str(t): slopes[t] for t in arms},
-            "pool_bytes_per_slot": share,
+            "arms": names,
+            "fitted": {name: {str(c): fit[(name, c)] for c in counts} for name in names},
+            "rss_kb": {name: {str(n): v for n, v in cells[name].items()} for name in names},
+            "bytes_per_slot": {name: slopes[name] for name in names},
+            "share_bytes_per_slot": share,
             "measured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }, indent=1) + "\n")
 
     if args.emit_task:
-        emit(args.emit_task, "pool.idle_bytes_per_slot", per_slot[args.threads])
-        emit(args.emit_task, "loop.idle_bytes_per_slot", per_slot[0])
-        emit(args.emit_task, "pool.idle_share_bytes_per_slot", share,
+        emit(args.emit_task, emitted + ".idle_bytes_per_slot", per_slot[names[1]])
+        emit(args.emit_task, emitted + ".without_idle_bytes_per_slot", per_slot[names[0]])
+        emit(args.emit_task, emitted + ".idle_share_bytes_per_slot", share,
              args.max_pool_bytes_per_slot)
 
     if args.max_pool_bytes_per_slot is not None and share > args.max_pool_bytes_per_slot:
-        fail(f"the pool reserves {share:.0f} B a slot, above "
+        fail(f"{what} is {share:.0f} B a slot, above "
              f"{args.max_pool_bytes_per_slot:.0f}")
 
 
