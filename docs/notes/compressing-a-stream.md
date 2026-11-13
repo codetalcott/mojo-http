@@ -23,8 +23,9 @@ to where the code now lives: `loop/streams.mojo` (`_drain_outboxes`,
 J9, I14 and O17, and DECISIONS D33, D49 and D54.
 
 The first version chose gzip through the system zlib. The owner chose zstd
-on 2026-10-26, on the evidence in "Why zstd" below. The gzip design is in
-this note's history if a second coding is ever wanted.
+on 2026-10-26, on the evidence in "Why zstd" below. That version was never
+committed; what it held of zlib's own is the last section, "The first
+version: gzip through the system zlib", should a second coding be wanted.
 
 Where it stands: steps 0 and 2 landed with the binding (#632), steps 1,
 3, 4 and 5 with the stream (rows I45 and I46, D69), and step 6 with
@@ -682,7 +683,7 @@ experimental, so a library opened at run time cannot rely on them.
 
 - **gzip as a second coding.** For clients that do not offer zstd: Safari
   before 26.3, and anything older. It waits for those clients to ask.
-  The design is this note's first version, through the system zlib.
+  What it needs of zlib is the last section.
 - **brotli.** 29:1 against deflate's 23:1 on the seat's stream, and on
   blobs 3.8:1 against zstd's 3.4:1, at seven times zstd's CPU. It needs a
   package in the image (`libbrotli1`, which `dpkg` does not pull in) and
@@ -713,3 +714,57 @@ experimental, so a library opened at run time cannot rely on them.
   them, and the seat.
 - Step 0's pass-through, re-measured with m0's own stream.
 - A note on anything libzstd's ABI made awkward.
+
+## The first version: gzip through the system zlib
+
+Kept for a second coding ("Not in this plan"). The first version of this
+brief, written 2026-10-26 and replaced the same day before it was
+committed, chose gzip through the system zlib. Its loop and API steps are
+the ones above with the coding swapped, and the version above is the one
+to follow: it found the heartbeat and the farewell as writers, made the
+ask a field rather than the header, and moved the anchors. What follows is
+only what is zlib's own. The cost that decided against it is in "Why
+zstd": 53 to 65 ms of CPU per MB on blobs, about fifteen times zstd's.
+
+- **The coding is `gzip`, not `deflate`.** The `deflate` coding's framing
+  has a history of browser disagreement, raw deflate against the zlib
+  wrapper; `gzip` costs 18 bytes once a stream.
+- **The loader is zstd's** (`lightbug_http/c/zstd.mojo`), under the same
+  rules. A variable in `M0_LIBZSTD`'s shape names the file outright;
+  otherwise `libz.1.dylib` on macOS, which the dyld shared cache resolves
+  (there is no file at `/usr/lib/libz.1.dylib` to stat), and `libz.so.1`
+  on Linux. Unlike libzstd, zlib is on every Mac.
+- **Entry points.** `deflateInit2_`, `deflate`, `deflateEnd` and
+  `zlibVersion`; for the tests, `inflateInit2_`, `inflate` and
+  `inflateEnd`. The two `_` initialisers take the version string and
+  `sizeof(z_stream)`, which is how zlib checks the caller's struct: one of
+  the wrong length is refused with `Z_VERSION_ERROR`.
+- **`z_stream` is 112 bytes on a 64-bit ABI**, and the layout must be
+  exact: `next_in` (8), `avail_in` (4) and 4 of padding, `total_in` (8),
+  `next_out` (8), `avail_out` (4) and 4 of padding, `total_out` (8),
+  `msg` (8), `state` (8), `zalloc` (8), `zfree` (8), `opaque` (8),
+  `data_type` (4) and 4 of padding, `adler` (8), `reserved` (8). The size
+  check catches a struct of the wrong length, not a field at the wrong
+  offset, which is a crash rather than an error. This is the one struct
+  either binding passes that is more than machine words. Allocate it with
+  `malloc` and carry its address as an `Int`; `zalloc`, `zfree` and
+  `opaque` are 0 for zlib's own allocator.
+- **`Deflater`**: `Deflater(level=6, window_bits=14, mem_level=6)`,
+  gzip-wrapped (`window_bits + 16`); `push(bytes, end=False) ->
+  List[UInt8]`, `Z_SYNC_FLUSH` on every push and `Z_FINISH` on the last.
+  The output starts at `deflateBound` of the input, and `deflate` is
+  called again while `avail_out` comes back 0, the rule zstd's push keeps
+  by looping until its return is 0. A sync flush ends on an empty stored
+  block (`00 00 ff ff`), which is what lets the client decode each event
+  as it lands.
+- **Why those defaults.** On the seat's capture the first version
+  measured 22.8:1 at a 32 KB window, 21.5:1 at 16 KB, 14.1:1 at 8 KB and
+  6.1:1 at 4 KB. zconf.h puts deflate's memory at
+  `(1 << (windowBits + 2)) + (1 << (memLevel + 9))` plus a few kilobytes:
+  96 KB at 14 and 6, which the 103 KB measured in "Why zstd" agrees with,
+  against 256 KB at zlib's defaults (15 and 8). The first version's
+  arithmetic doubled the second term and read 140 KB and 390 KB.
+- **The gates** are the zstd ones with the coding swapped. The smoke's
+  client needs no new dependency: Python's own
+  `zlib.decompressobj(wbits=31)` decodes gzip one read at a time, where
+  zstd needed `zstandard` in the dev group.
