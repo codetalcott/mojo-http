@@ -2145,6 +2145,55 @@ def test_a_stop_read_by_a_flush_starts_the_drain(h):
     assert h.drain_steps >= 1 and h.drain_finished, (h.drain_steps, h.drain_finished)
 
 
+def test_the_serving_run_keeps_a_thread_pools_threads(h):
+    """L37: anyio ends each thread of its pool with the task it calls the
+    root, and finds that task by the done-callback `run_until_complete`
+    leaves. The serving run is one such call, so the root outlives every
+    request. Under a bare `run_forever` the root was the calling task: here,
+    two tasks one after the other, each asking the pool which thread it got.
+    Kept, they get the same thread; rebuilt, the first task's end stopped
+    its thread and the second got another. Starlette runs every `def`
+    handler this way, so the difference was a thread started and ended per
+    request."""
+    import threading
+
+    import anyio.to_thread
+
+    got = []
+    fired = []
+
+    async def one():
+        got.append(await anyio.to_thread.run_sync(threading.current_thread))
+
+    async def both():
+        await h.loop.create_task(one())
+        # The first task's done-callbacks run an iteration after it ends:
+        # that is where a thread bound to it is told to stop.
+        await asyncio.sleep(0.05)
+        await h.loop.create_task(one())
+        h.ns["_stop_serving"]()
+
+    def expire():
+        fired.append(True)
+        h.loop.stop()
+
+    h.loop.call_soon(lambda: got.append(h.loop.create_task(both())) and None)
+    guard = h.loop.call_later(5.0, expire)
+    try:
+        h.ns["run_forever"]()
+    except RuntimeError:
+        # The guard stopped a run its root task had not finished.
+        pass
+    guard.cancel()
+    threads = [t for t in got if isinstance(t, threading.Thread)]
+    assert not fired, "the serving run did not end when it was told to stop"
+    assert len(threads) == 2, threads
+    assert threads[0] is threads[1], (
+        "the second request's pool call ran on a new thread: the first "
+        "request's end stopped its own"
+    )
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -2259,6 +2308,7 @@ TESTS = [
     test_a_socket_hears_its_clients_close_code,
     test_an_inverted_disconnect_follows_the_messages_before_it,
     test_a_stop_read_by_a_flush_starts_the_drain,
+    test_the_serving_run_keeps_a_thread_pools_threads,
     test_background_work_inside_the_grace_finishes,
     test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
     test_a_task_left_behind_never_reaches_the_port,
@@ -2713,6 +2763,13 @@ SABOTAGES = [
         "    _exec_start_drain[0] = _start_drain\n",
         "",
         ("test_a_stop_read_by_a_flush_starts_the_drain",),
+    ),
+    (
+        "the serving run has no root task, so a thread pool's threads end with each request",
+        "    _exec_stop[0] = _loop.create_future()\n"
+        "    _loop.run_until_complete(_until_stopped())\n",
+        "    _loop.run_forever()\n",
+        ("test_the_serving_run_keeps_a_thread_pools_threads",),
     ),
     (
         "work scheduled at import is not named",

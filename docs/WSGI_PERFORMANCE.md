@@ -126,33 +126,35 @@ knowing what the views do.
 
 ## Framework rows
 
-Measured 2026-08-27 with batching and the `run_forever` pump in, and not
-re-recorded after the executor's later changes. The benchmark page's rows
-are bare handlers on purpose — a view's own work hides the server — but a
+Measured 2026-11-16 on m0serve `e674c14e`, macOS 27 on an M4, with
+python-fasthtml 0.14.19, Starlette 1.6.0, Django from the tree's lockfile,
+uvicorn 0.52.4 and uvloop 0.22.1. The benchmark page's rows are bare
+handlers on purpose — a view's own work hides the server — but a
 developer's first comparison is their own framework, so
 `scripts/bench_asgi_wrk.sh`, parametrized (`BENCH_NAME`,
 `BENCH_APP_DIR`, `BENCH_M0_SPEC`, `BENCH_UV_SPEC`, `BENCH_PATH`), ran the
 two ASGI framework apps in the tree at `/`: `wrk -t2 -c16 -d8s`, browser
 headers, the executor on uvloop (the venv's), medians of three with the
-uvicorn rows re-measured beside it, artifacts `asgi-wrk-fasthtml-*.json`
-and `asgi-wrk-django-*.json`:
+uvicorn rows re-measured beside it, artifacts
+`asgi-wrk-fasthtml-20261116T214544Z.json` and
+`asgi-wrk-django-20261116T214811Z.json`:
 
 | app, `GET /` | m0serve executor | `uvicorn --loop asyncio` | ratio | uvicorn + uvloop | ratio |
 |---|---:|---:|---:|---:|---:|
-| FastHTML (`apps/fasthtml_demo`: a `Titled` page) | 3,977 rps @ 0.74 cores | 4,668 @ 1.02 | 0.85 | 5,264 @ 1.00 | 0.76 |
-| Django ASGI (`apps/django_asgi`: a sync view through `ASGIHandler`) | 3,861 @ 0.73 | 3,261 @ 0.71 | **1.18** | 4,156 @ 0.72 | 0.93 |
+| FastHTML (`apps/fasthtml_demo`: a `Titled` page from a `def` handler) | 5,829 rps @ 1.06 cores | 4,838 @ 1.02 | 1.20 | 5,513 @ 1.01 | 1.06 |
+| Django ASGI (`apps/django_asgi`: a sync view through `ASGIHandler`) | 4,085 @ 0.74 | 3,249 @ 0.69 | 1.26 | 3,651 @ 0.72 | 1.12 |
 
-Two readings. FastHTML — Starlette's stack, a few hundred microseconds of
-Python per page — shows the bare app's shape at 16 connections: the
-executor at 0.74 cores, idle between handoffs, 0.85x the asyncio
-comparator and with the worse tail (p99 8.0 ms against 4.7). Django's
-`ASGIHandler` runs a sync view through `sync_to_async`, a thread hop on
-every request for every server — uvicorn sits at 0.71 cores there too —
-and the executor is 1.18x uvicorn-asyncio and 0.93x uvloop, p99 5.2 ms
-against 5.6 and 4.8. Both rows are a tenth of the bare app's rate: the
+p99: FastHTML 3.94 ms against 4.56 and 4.11; Django 5.23 ms against 8.02
+and 7.07. Both rows are a twentieth of the bare app's rate or less: the
 framework's own work dominates, which is the page's reason for keeping
-bare handlers, and it makes the server gap a smaller share of any real
-request than the bare rows make it look.
+bare handlers, and it makes any server difference a smaller share of a
+real request than the bare rows make it look.
+
+The FastHTML row read 0.85x and 0.76x from 2026-08-27 until this run. The
+cause was a thread started and ended for every `def` handler's request,
+fixed in SPEC L37; [the note](notes/a-root-task-for-the-executor.md) has
+the measurements that found it. Django's handler keeps its own thread
+pool and was not affected.
 
 ## Reproducing
 

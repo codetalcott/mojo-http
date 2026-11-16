@@ -1094,8 +1094,8 @@ def asgi_executor_init(fd, ack_fd):
 # built inside this interpreter and set here before the submit reader
 # existed. Every event is handed to it NOW, on this thread, inside the
 # loop iteration that produced it -- a ~70 ns call into Mojo -- and the
-# loop is never left: the executor thread parks in one run_forever for
-# its life (run_forever below), not a run_until_complete per pass.
+# loop is never left: the executor thread parks in one run for its life
+# (run_forever below), not a run_until_complete per pass.
 _port = None
 _flush_armed = [False]
 # The drain starts ONCE: a pill can reach the pump twice (macOS reports the
@@ -1119,6 +1119,9 @@ _exec_closed = [False]
 # from there -- not from the backend's next readiness or the 1 Hz tick,
 # neither of which is the drain's trigger (SPEC L8).
 _exec_start_drain = [None]
+# What ends the serving run: a future the run's root task awaits (see
+# _serve_under_a_root_task). None while nothing of the shim's is serving.
+_exec_stop = [None]
 
 
 def set_port(port):
@@ -1208,7 +1211,7 @@ async def _finish_and_stop():
     await _gather_in_flight()
     await asyncio.sleep(0)
     _exec_closed[0] = True
-    _loop.stop()
+    _stop_serving()
 
 
 async def _drain_and_stop():
@@ -1240,7 +1243,39 @@ async def _drain_and_stop():
     # application's lifespan shutdown.
     _port.drain_finish()
     _exec_closed[0] = True
-    _loop.stop()
+    _stop_serving()
+
+
+async def _until_stopped():
+    await _exec_stop[0]
+
+
+def _serve_under_a_root_task():
+    # The serving run is ONE run_until_complete, so the loop has a root
+    # task for its whole life. anyio ends each thread of its thread pool
+    # with the task it calls the root, and it finds that task by the
+    # done-callback run_until_complete leaves on it (find_root_task, in
+    # anyio's asyncio backend). Under a bare run_forever there was none,
+    # the root was each request's own task, and every `def` handler --
+    # Starlette's run_in_threadpool, so FastAPI's and FastHTML's -- started
+    # a thread and ended it with its request (SPEC L37): 0.83x uvicorn on a
+    # FastHTML page that an `async def` handler served at 1.09x.
+    _exec_stop[0] = _loop.create_future()
+    _loop.run_until_complete(_until_stopped())
+
+
+def _stop_serving():
+    # Ends the run above. The root task finishes first and the loop stops
+    # an iteration after it, so the threads anyio bound to it are told to
+    # stop on the way out. _exec_closed is already set by both callers:
+    # nothing in those iterations reaches the port. Where the loop is
+    # being run by something else (the shim's tests run it themselves),
+    # stopping it is all there is to do.
+    stop = _exec_stop[0]
+    if stop is None or stop.done():
+        _loop.stop()
+    else:
+        stop.set_result(None)
 
 
 def run_forever():
@@ -1248,7 +1283,7 @@ def run_forever():
     # via _finish_and_stop; a task that never completes (a chunk credit
     # that never arrives) keeps it here until stop_and_join's budget runs
     # out, exactly as the per-pass pump was.
-    _loop.run_forever()
+    _serve_under_a_root_task()
 
 
 def run_forever_inverted(backend_fd):
@@ -1297,7 +1332,7 @@ def run_forever_inverted(backend_fd):
     _exec_start_drain[0] = _start_drain
     _loop.add_reader(backend_fd, _on_backend)
     tick[0] = _loop.call_later(1.0, _tick)
-    _loop.run_forever()
+    _serve_under_a_root_task()
 
 
 # The request-invariant half of every executor scope, built once by

@@ -2546,6 +2546,14 @@
       "evidence": "`fasthtml-canary` (weekly) \u2014 `scripts/fasthtml_compare/compare.py` installs the newest python-fasthtml and uvicorn rather than the locked ones, and fails on a difference its list does not name, on a listed one that is gone or changed, on a probe application either server does not serve, on an example that starts under one server alone, and on a sweep thinned under its floor; an example that starts under neither is skipped and reported. The page's table is rendered from that list, and the docs gate fails a page that differs"
     },
     {
+      "id": "L37",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A thread an application's thread-pool call ran on is kept for the next request: the executor's serving run is one `run_until_complete`, the root task anyio ends its pool's threads with, so Starlette's pool, which runs every `def` handler of FastAPI and FastHTML, does not start a thread and end it per request",
+      "status": "verified",
+      "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR) \u2014 twenty requests to a `def` handler that counts the requests its own thread has served must include an answer above 1; every answer was 1 before. `Serve a FastAPI app through the ASGI bridge` asks the same of a `def` endpoint, and `poe test-shim` holds the rule in the shim, sabotage-proven: two tasks in turn get one thread from `anyio.to_thread`"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",

@@ -5942,6 +5942,19 @@ curl --silent --fail $B/ \
 grep -q 'protocol=asgi' "$log" || fail 'FastHTML was not detected as ASGI'
 curl -s $B/plain | grep -q 'plain text from fasthtml' || fail '/plain did not answer'
 
+# A `def` handler's thread is kept: Starlette runs it on anyio's thread
+# pool, and anyio ends a worker thread with the task it calls the root.
+# With no root task of the server's, that was the request's own, and every
+# request started a thread and ended it (L37). Twenty in a row: a thread
+# that is kept serves more than one.
+kept=0
+for _ in $(seq 1 20); do
+  n=$(curl -s --max-time 5 $B/thread-kept)
+  case "$n" in ''|*[!0-9]*) fail "/thread-kept answered '$n', not a count";; esac
+  [ "$n" -gt 1 ] && kept=1
+done
+[ "$kept" = 1 ] || fail 'every /thread-kept request ran on a thread that had served no other: the thread pool is rebuilt per request'
+
 # FastHTML's EventStream actually streams now: ticks arrive live, the
 # client walks away, the server shrugs.
 n=$(curl -sN --max-time 3 $B/sse | grep -c 'tick')
@@ -5983,6 +5996,7 @@ echo "smoke-fasthtml OK"
 python3 scripts/emit.py --covers L11 --task smoke-fasthtml
 python3 scripts/emit.py --covers L22 --task smoke-fasthtml
 python3 scripts/emit.py --covers L23 --task smoke-fasthtml
+python3 scripts/emit.py --covers L37 --task smoke-fasthtml
 """
 
 # FastHTML beside its reference server, at the NEWEST release of each (SPEC
@@ -6026,6 +6040,19 @@ curl --silent --fail $B/ \
 grep -q 'protocol=asgi' "$log" || fail 'FastAPI was not detected as ASGI'
 curl -s $B/plain | grep -q 'plain text from fastapi' || fail '/plain did not answer'
 
+# A `def` handler's thread is kept: Starlette runs it on anyio's thread
+# pool, and anyio ends a worker thread with the task it calls the root.
+# With no root task of the server's, that was the request's own, and every
+# request started a thread and ended it (L37). Twenty in a row: a thread
+# that is kept serves more than one.
+kept=0
+for _ in $(seq 1 20); do
+  n=$(curl -s --max-time 5 $B/thread-kept)
+  case "$n" in ''|*[!0-9]*) fail "/thread-kept answered '$n', not a count";; esac
+  [ "$n" -gt 1 ] && kept=1
+done
+[ "$kept" = 1 ] || fail 'every /thread-kept request ran on a thread that had served no other: the thread pool is rebuilt per request'
+
 # StreamingResponse streams for real: ticks arrive live, the client walks
 # away, the server shrugs.
 n=$(curl -sN --max-time 3 $B/stream | grep -c 'tick')
@@ -6063,6 +6090,7 @@ echo "smoke-fastapi OK"
 python3 scripts/emit.py --covers L19 --task smoke-fastapi
 python3 scripts/emit.py --covers L21 --task smoke-fastapi
 python3 scripts/emit.py --covers L24 --task smoke-fastapi
+python3 scripts/emit.py --covers L37 --task smoke-fastapi
 """
 
 # The documentation site: README, QUICKSTART, CHANGELOG, PROVENANCE and
