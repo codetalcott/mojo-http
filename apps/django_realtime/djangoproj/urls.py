@@ -103,6 +103,11 @@ def websocket(request):
     response = HttpResponse("", content_type="text/plain")
     response["M0-Hold"] = "websocket"
     response["M0-Channel"] = channel
+    # The body and the status are discarded for the 101, and the cookies are
+    # not: what a view (or the session middleware) sets while approving a
+    # socket reaches the browser on the handshake, as it does on `/events`.
+    response.set_cookie("ws-channel", channel, httponly=True, samesite="Lax")
+    response.set_cookie("ws-approved", "1", max_age=60, samesite="Strict")
     return response
 
 

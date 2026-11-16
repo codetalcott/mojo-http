@@ -134,6 +134,14 @@ worker. Inbound WebSocket messages arrive at the application as a `POST` to
 must be CSRF-exempt. Channel names beginning with a control byte are
 reserved and refused. The [Quickstart](../QUICKSTART.md) builds all of it.
 
+**What a hold keeps of the approving response.** A `stream` hold keeps
+all of it: the status and headers go out as written and the body is the
+head of the stream. A `websocket` hold keeps its cookies alone. The reply
+has to be a `101` the server computes, so the response's status, body and
+other headers are discarded, and each `Set-Cookie` line it carried is on
+the `101`, so a session the view wrote while approving the socket reaches
+the browser. Through 1.17.0 a WebSocket hold dropped those lines too.
+
 **A held WebSocket opens from its own origin.** A browser attaches the
 site's cookies to a WebSocket whatever page opens it, and the same-origin
 policy that keeps another page from reading a `fetch` does not cover one.
@@ -322,6 +330,16 @@ has the Flask version of the whole thing.
   `EventSource` does not reconnect after a `503`, as it does after a
   dropped connection, so a page that should keep trying listens for
   `error` and reconnects itself.
+- **Connections that arrive before the application is imported wait in
+  the kernel's accept queue**, which the server asks to be as long as the
+  system allows: 4096 on Linux, 128 on macOS. The listener is bound before
+  the import so that a busy port is refused first, and nothing accepts
+  until the import ends. A restart under more waiting clients than the
+  queue holds treats the surplus as the kernel does: Linux leaves them to
+  retry and they are answered about a second late; macOS resets them, and
+  a client that retries is served. Measured with a one-second import:
+  6000 at once on Linux were all answered, and of 1000 on macOS 873 were
+  reset ([Capabilities](SPEC.md), C12).
 - **The server raises its own open-file limit** to what its connections
   need (each loop's count, twice on Linux, where a stream's heartbeat
   timer is a descriptor of its own; what the server holds itself; and 256) before

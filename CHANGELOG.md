@@ -74,6 +74,21 @@ default is listed under **Behaviour changes**
   `Development Status :: 5 - Production/Stable`** on PyPI, matching the
   1.x contract; it read `4 - Beta` since before 1.0.
 
+### Fixed
+
+- **A WebSocket hold carries the approving view's cookies** (SPEC I49).
+  A view that answers `M0-Hold: websocket` has its response discarded for
+  the `101` the server computes, and its `Set-Cookie` lines went with it:
+  a session written while approving a socket never reached the browser,
+  lost outright under signed-cookie sessions and an orphaned row under a
+  session store. Each line is now on the `101`, verbatim, as a `stream`
+  hold's head has always carried them, from the loop and from a pool
+  thread alike; a handshake the server refuses carries none. The
+  response's status, body and other headers are still discarded, and
+  [Running m0serve](docs/RUNNING.md#the-realtime-contract) now says so.
+  An application that set a cookie on that response and relied on it not
+  arriving will see it arrive; there is no switch.
+
 ## [1.17.0] — 2026-11-05
 
 The first release on the two-weekly train ([Releases](docs/RELEASES.md)),

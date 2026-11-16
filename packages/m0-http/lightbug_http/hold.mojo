@@ -25,7 +25,9 @@ The two modes differ in what happens to the application's response. A
 the reply on the wire has to be `101 Switching Protocols` with a computed
 `Sec-WebSocket-Accept`, which Django cannot produce and which carries no
 body at all. `take_hold` therefore only *reports* a websocket hold; the
-handler answers it with `websocket_upgrade(req)`. That asymmetry is the whole
+handler answers it with `websocket_upgrade(req)`, and moves the discarded
+response's `Set-Cookie` lines onto that 101, the one part of it a browser
+would otherwise never be given (SPEC I49). That asymmetry is the whole
 reason a WSGI app can gate a WebSocket without being able to speak one:
 Django approves the connection, Mojo performs the handshake.
 
