@@ -92,9 +92,10 @@ what uvicorn does, and the gates below fail if anyio stops recognising it.
 
 ## After
 
-The same script and machine, the tree with the change and uncommitted
-documentation, so a run for this note and not the recorded artifact, which
-is the row on [WSGI and ASGI performance](../WSGI_PERFORMANCE.md):
+The same script and machine, on the tree with the change before it was
+committed. The run recorded afterwards from the clean tree is the row on
+[WSGI and ASGI performance](../WSGI_PERFORMANCE.md), and reads within 2%
+of this one:
 
 | | rps | p99 | cores |
 |---|---:|---:|---:|
