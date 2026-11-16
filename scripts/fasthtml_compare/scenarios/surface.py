@@ -1,10 +1,10 @@
-"""probe/main.py: the FastHTML API surface a server can get wrong."""
+"""apps/surface: the FastHTML API surface a server can get wrong."""
 import os, time, socket, json, concurrent.futures as cf
 import httpx
 from compare import obs, HERE
 
 OWN = True
-APP_DIR = os.path.join(HERE, "apps", "probe")
+APP_DIR = os.path.join(HERE, "apps", "surface")
 SPEC = "main:app"
 EXTRA = {}
 ENV = {}

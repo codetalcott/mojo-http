@@ -59,7 +59,7 @@ END = "<!-- /generated: fasthtml-differences -->"
 EXPECTED = [
     {
         "id": "state-m0",
-        "scenario": "probe", "step": "GET /state-keys",
+        "scenario": "surface", "step": "GET /state-keys",
         "m0": '[\\"m0\\"]', "uv": "[]",
         "what": "`scope[\"state\"]`",
         "m0serve": "carries `m0`, the cross-worker publisher, beside what the application's lifespan put there",
@@ -68,7 +68,7 @@ EXPECTED = [
     },
     {
         "id": "chunked-scope",
-        "scenario": "probe", "step": "POST /scope chunked",
+        "scenario": "surface", "step": "POST /scope chunked",
         "m0": '[\\"content-length\\",\\"7\\"]', "uv": '[\\"transfer-encoding\\",\\"chunked\\"]',
         "what": "the scope's headers for a request sent with `Transfer-Encoding: chunked`",
         "m0serve": "`content-length`, the size of the body the server already de-chunked",
@@ -77,7 +77,7 @@ EXPECTED = [
     },
     {
         "id": "chunked-upload",
-        "scenario": "probe", "step": "POST /upload chunked",
+        "scenario": "surface", "step": "POST /upload chunked",
         "m0": "got 200000 bytes", "uv": "Missing required field",
         "what": "a multipart upload sent chunked, to a handler taking an `UploadFile`",
         "m0serve": "the handler receives the file",
@@ -86,7 +86,7 @@ EXPECTED = [
     },
     {
         "id": "encoded-slash",
-        "scenario": "probe", "step": "GET /p/slash",
+        "scenario": "surface", "step": "GET /p/slash",
         "m0": "name=a%2Fb", "uv": "404 Not Found",
         "what": "`%2F` in a path, on a route with a `{name}` parameter",
         "m0serve": "stays encoded in `scope[\"path\"]`: the route matches and the parameter is `a%2Fb`",
@@ -196,8 +196,8 @@ def render_page():
 # ---------------------------------------------------------------- selftest
 
 def selftest():
-    ok = {"name": "probe", "own": True, "state": "ran", "diffs": [
-        (e["step"], "x " + e["m0"], "y " + e["uv"]) for e in EXPECTED if e["scenario"] == "probe"]}
+    ok = {"name": "surface", "own": True, "state": "ran", "diffs": [
+        (e["step"], "x " + e["m0"], "y " + e["uv"]) for e in EXPECTED if e["scenario"] == "surface"]}
     cases = [
         ("every listed difference, nothing else", [ok], 0),
         ("an unlisted difference", [dict(ok, diffs=ok["diffs"] + [("GET /", "a", "b")])], 1),

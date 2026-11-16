@@ -1,6 +1,6 @@
-"""probe with debug=True: does the developer see Starlette's traceback page?"""
+"""apps/surface with debug=True: does the developer see Starlette's traceback page?"""
 import httpx
-from probe import APP_DIR, SPEC, SETUP  # noqa: F401 (the scenario's application)
+from surface import APP_DIR, SPEC, SETUP  # noqa: F401 (the scenario's application)
 OWN = True
 EXTRA = {}
 ENV = {"PROBE_DEBUG": "1"}
