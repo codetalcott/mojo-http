@@ -7496,6 +7496,8 @@ M0_PORT=$port python3 scripts/chunked_keepalive.py \
 # must cancel the app task and leave the server healthy.
 M0_PORT=$port python3 apps/asgi_bare/ws_probe.py || fail 'the ASGI WebSocket probe failed'
 curl -s --fail $B/ > /dev/null || fail 'server died after an abrupt WebSocket disconnect'
+# Sockets opened, so nothing said they could not (L35's other half).
+grep -q 'reached the application as a plain GET' "$log" && fail 'the executor printed the buffered path'"'"'s WebSocket notice'
 # What the application is told when its client leaves (L28): the client's
 # own close code, 1005 for a Close with none, 1006 only when no Close came --
 # it used to be 1006 for all three. And an inbound message larger than the
@@ -7706,6 +7708,19 @@ grep -qi '^x-thread' "$out/hdr" || fail 'no x-thread: the explicit pool is not s
 code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 $B/stream-forever)
 [ "$code" = "500" ] || fail "buffered-pool infinite stream expected the watchdog's 500, got $code"
 curl -s --fail $B/ > /dev/null || fail 'server died after the buffered watchdog fired'
+# A WebSocket on the buffered path does not open, and says why (SPEC L35):
+# the upgrade reaches the application as a plain GET, which the bare app
+# answers 404, and each handler thread names the flag once, however many
+# upgrades it sees. Six upgrades on three threads: one to three lines.
+for i in 1 2 3 4 5 6; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' $B/ws)
+  [ "$code" = "404" ] || fail "an upgrade on the buffered path answered $code, want the application's 404"
+done
+n=$(grep -c 'a WebSocket upgrade for /ws reached the application as a plain GET' "$log")
+[ "$n" -ge 1 ] || fail 'six upgrades on the buffered path and no line says why none opened'
+[ "$n" -le 3 ] || fail "the buffered path's notice appeared $n times on three threads, want once a thread"
+grep -q 'M0_BLOCKING_THREADS' "$log" || fail 'the notice does not name the setting that chose the buffered path'
 # The same heads through the buffered bridge (A21, K12). It joins a stream
 # before answering, so the executor's streaming HEAD (L27) has nothing to
 # leak here.
@@ -7883,6 +7898,7 @@ python3 scripts/emit.py --covers L28 --task smoke-asgi
 python3 scripts/emit.py --covers L29 --task smoke-asgi
 python3 scripts/emit.py --covers L30 --task smoke-asgi
 python3 scripts/emit.py --covers L34 --task smoke-asgi
+python3 scripts/emit.py --covers L35 --task smoke-asgi
 python3 scripts/emit.py --covers L32 --task smoke-asgi
 python3 scripts/emit.py --covers L33 --task smoke-asgi
 python3 scripts/emit.py --covers I26 --task smoke-asgi

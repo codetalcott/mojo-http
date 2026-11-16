@@ -2538,6 +2538,14 @@
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `/ws/accept` accepts with two cookies, a header of its own, the last subprotocol offered and three of the handshake's headers, a forged accept value among them; `ws_probe.py` requires both cookie lines and the header as sent, the one subprotocol, exactly one accept value and it the key's own, one `Connection: Upgrade`, and no subprotocol header for a handshake that offered none. Run twice in CI, the second under the loop inversion. Without the carry the phase fails on the cookies; with the handshake's headers let through, on `the 101's accept value is not the server's own: ['forged']`"
     },
     {
+      "id": "L35",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An ASGI application on the buffered path (`--blocking-threads` or `M0_BLOCKING_THREADS` above 0) has no `websocket` scope, and the server says so: a WebSocket upgrade reaches the application as an `http` scope, answered as a plain GET, with the application's own 404 where the route is a socket's alone, and the first such request a handler thread sees prints one line on stderr naming the path, the setting and the way back to the executor. The request is not refused: a path may serve both. On the executor, the default and what the flag at 0 selects, the socket opens and nothing is printed",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 the bare app under `M0_BLOCKING_THREADS=3`: six upgrades to `/ws` are each answered the application's 404, and the log holds the line at least once and at most three times, naming the variable; the zero-config phase's log, where the socket probe opens `/ws`, must not hold it. With the notice removed the phase fails on `no line says why none opened`"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",
