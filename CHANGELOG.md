@@ -74,6 +74,34 @@ default is listed under **Behaviour changes**
   `Development Status :: 5 - Production/Stable`** on PyPI, matching the
   1.x contract; it read `4 - Beta` since before 1.0.
 
+### Fixed
+
+- **A WebSocket hold carries the approving view's cookies** (SPEC I49).
+  A view that answers `M0-Hold: websocket` has its response discarded for
+  the `101` the server computes, and its `Set-Cookie` lines went with it:
+  a session written while approving a socket never reached the browser,
+  lost outright under signed-cookie sessions and an orphaned row under a
+  session store. Each line is now on the `101`, verbatim, as a `stream`
+  hold's head has always carried them, from the loop and from a pool
+  thread alike; a handshake the server refuses carries none. The
+  response's status, body and other headers are still discarded, and
+  [Running m0serve](docs/RUNNING.md#the-realtime-contract) now says so.
+  An application that set a cookie on that response and relied on it not
+  arriving will see it arrive; there is no switch.
+- **An ASGI `websocket.accept` carries its headers and subprotocol**
+  (SPEC L34). The message's `headers` and `subprotocol` were not read:
+  the `101` went out with neither, so a cookie set while accepting a
+  socket was lost and a client that offered subprotocols was told none
+  was chosen.
+  The headers are now on the `101`, each `set-cookie` on its own line,
+  and the subprotocol is its `Sec-WebSocket-Protocol`. The handshake's
+  own headers stay the server's: an accept that names `connection`,
+  `upgrade`, `sec-websocket-accept`, `sec-websocket-extensions`,
+  `content-length` or `transfer-encoding` has them dropped, and a
+  `sec-websocket-protocol` among its headers gives way to the
+  `subprotocol` field. The subprotocol is not checked against what the
+  client offered.
+
 ## [1.17.0] — 2026-11-05
 
 The first release on the two-weekly train ([Releases](docs/RELEASES.md)),

@@ -79,6 +79,36 @@ def expect_silence(ws, seconds=2.0):
     fail("socket heard op=%d %r on a channel it never joined" % (op, payload))
 
 
+def expect_view_cookies(head, channel):
+    """The approving view's two cookies, each on its own line of the 101,
+    with the attributes Django wrote (SPEC I49).
+
+    The view's response is discarded for the handshake; a session written
+    while approving a socket exists only in its `Set-Cookie`, so those
+    lines are not. Every phase's every handshake comes through here, so
+    the hold taken on the loop and the one a pool thread performs are both
+    held to it. `expires` and `SameSite` are named because a cookie parsed
+    and built again loses them.
+    """
+    lines = [line.split(":", 1)[1].strip() for line in head.split("\r\n")
+             if line.lower().startswith("set-cookie:")]
+    if len(lines) != 2:
+        fail("the 101 carried %d Set-Cookie lines, want the view's 2: %r" % (len(lines), lines))
+    wanted = {
+        "ws-channel=": ("HttpOnly", "Path=/", "SameSite=Lax"),
+        "ws-approved=1": ("expires=", "Max-Age=60", "Path=/", "SameSite=Strict"),
+    }
+    for opening, attributes in wanted.items():
+        line = next((one for one in lines if one.startswith(opening)), None)
+        if line is None:
+            fail("no %s cookie on the 101: %r" % (opening, lines))
+        for attribute in attributes:
+            if attribute not in line:
+                fail("the 101's %s cookie lost %s: %r" % (opening, attribute, line))
+    if channel not in lines[0] + lines[1]:
+        fail("the 101's ws-channel cookie does not name %r: %r" % (channel, lines))
+
+
 def handshake(channel, token=TOKEN):
     """Open one socket and return (WebSocket, worker) — or (None, status, body).
 
@@ -102,6 +132,8 @@ def handshake(channel, token=TOKEN):
             fail("instruction header leaked to the client: " + line)
     if not ws.accept_ok():
         fail("bad accept key — the handshake was not really performed")
+    if GATED:
+        expect_view_cookies(ws.head.decode("latin-1"), channel)
     worker = ws.header("X-Worker")
     if worker is None:
         fail("no X-Worker header on the upgrade response")

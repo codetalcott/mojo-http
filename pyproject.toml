@@ -3472,6 +3472,18 @@ code=$(ws_code -H 'Origin: https://evil.example')
 [ "$code" = "403" ] || fail "a second cross-origin WebSocket answered $code, want 403"
 n=$(grep -c 'add --ws-origin https://evil.example' "$out/ws1.log")
 [ "$n" = "1" ] || fail "the cross-origin notice should appear once, appeared $n times"
+# The approving view's cookies ride the 101 (SPEC I49; realtime_probe.py
+# reads them off every handshake of every phase) and no refusal: the view
+# set both for this request too, and the server answered it 403.
+ws_cookies() {
+  curl -s -D - -o /dev/null --max-time 2 -H 'Connection: Upgrade' -H 'Upgrade: websocket' \
+    -H 'Sec-WebSocket-Version: 13' -H 'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==' "$@" \
+    "http://localhost:$port/ws?channel=origin&token=letmein" | grep -ci '^set-cookie:'
+}
+n=$(ws_cookies -H "Origin: http://localhost:$port")
+[ "$n" = "2" ] || fail "a same-origin 101 carried $n Set-Cookie lines, want the view's 2"
+n=$(ws_cookies -H 'Origin: https://evil.example')
+[ "$n" = "0" ] || fail "a cross-origin refusal carried $n Set-Cookie lines, want 0"
 
 stop $pid
 
@@ -3647,6 +3659,7 @@ echo "smoke-django-realtime-ws OK"
 python3 scripts/emit.py --covers I12 --task smoke-django-realtime-ws
 python3 scripts/emit.py --covers I26 --task smoke-django-realtime-ws
 python3 scripts/emit.py --covers I48 --task smoke-django-realtime-ws
+python3 scripts/emit.py --covers I49 --task smoke-django-realtime-ws
 """
 
 # The CLI itself, as a user meets it: what --help and --version say, which
@@ -7869,6 +7882,7 @@ python3 scripts/emit.py --covers L26 --task smoke-asgi
 python3 scripts/emit.py --covers L28 --task smoke-asgi
 python3 scripts/emit.py --covers L29 --task smoke-asgi
 python3 scripts/emit.py --covers L30 --task smoke-asgi
+python3 scripts/emit.py --covers L34 --task smoke-asgi
 python3 scripts/emit.py --covers L32 --task smoke-asgi
 python3 scripts/emit.py --covers L33 --task smoke-asgi
 python3 scripts/emit.py --covers I26 --task smoke-asgi

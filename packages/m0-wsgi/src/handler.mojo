@@ -1036,6 +1036,13 @@ struct WSGIHandler(ThreadHandler):
             ):
                 self._notice_origin(origin, host)
                 return _cross_origin_refused()
+            # The view's response cannot be the reply, and its cookies are
+            # not the response's to lose: a session the approving view
+            # wrote exists only in its `Set-Cookie`. They ride the 101 (RFC
+            # 6455 section 4.2.2 allows it), line for line as the stream
+            # hold's head carries them, and only once the upgrade is
+            # certain: no refusal above takes one (SPEC I49).
+            ws_resp.cookies = resp.cookies.copy()
             ws_resp.headers["x-worker"] = String(getpid())
             if self.hold_notify_fd >= 0:
                 # A pool thread: the handshake is ours (the client's key is

@@ -1063,6 +1063,25 @@ struct ExecutorPort(Movable, Writable):
                     _queue_completion(pool, st.pending_done, slot)
                     return False
                 var held = st.pending_101[e].take()
+                # What the accept carried, onto the 101: its headers, its
+                # cookies line for line through the jar, and its
+                # subprotocol, which the shim has already made a header
+                # and from which it has struck the handshake's own (SPEC
+                # L34). `ev[2]` is the event's item, read as a response
+                # head's list is. The list is the shim's own, so a raise
+                # here is not the application's doing: the socket is still
+                # accepted, and the line says what it went without.
+                try:
+                    handler.apps[0]._bridge.read_head(
+                        ev[2], True, held.headers, held.cookies
+                    )
+                except err:
+                    print(
+                        "asgi-executor: a websocket.accept's headers could"
+                        + " not be read, and its 101 carries none: "
+                        + String(err),
+                        file=stderr,
+                    )
                 held.stream_gen = st.gens[slot]
                 handler.after_response(st.methods[e], st.paths[e], held)
                 pool.put_response(slot, held^, False)

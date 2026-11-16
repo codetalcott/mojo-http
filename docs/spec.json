@@ -671,7 +671,7 @@
       "category": "C. Connection management and denial of service",
       "capability": "A listener's accept queue holds up to `SOMAXCONN` connections (4096 on Linux, 128 on macOS), or the system's setting if that is lower: `ListenConfig.listen` asks for the platform's `SOMAXCONN`, which the kernel clamps to `net.core.somaxconn` or `kern.ipc.somaxconn`, so a burst of new connections arriving while the loop is busy queues past 128 on Linux rather than overflowing",
       "status": "verified",
-      "evidence": "`test_listen_backlog.mojo:test_the_listener_asks_for_the_systems_backlog` (every PR) \u2014 on the Linux leg the listener's limit as `TCP_INFO` reports it (`tcpi_sacked`, what `ss -lt` shows) must be `min(SOMAXCONN, net.core.somaxconn)`; macOS's limit is 128 either way (`netstat -Lan` shows it as `maxqlen`), so there the test holds the constant. The listener asked for 128 (review record LF19), and Linux, whose default `somaxconn` has been 4096 since 5.4, drops each handshake past a full queue (`TcpExtListenOverflows`), its client retrying a second later. No knob, by the owner's decision. Run in the m0lin Linux container (aarch64, `somaxconn` 4096) it passes, and with `listen(128)` restored it fails, the limit read back as 128 against 4096; the overflow itself was not measured"
+      "evidence": "`test_listen_backlog.mojo:test_the_listener_asks_for_the_systems_backlog` (every PR) \u2014 on the Linux leg the listener's limit as `TCP_INFO` reports it (`tcpi_sacked`, what `ss -lt` shows) must be `min(SOMAXCONN, net.core.somaxconn)`; macOS's limit is 128 either way (`netstat -Lan` shows it as `maxqlen`), so there the test holds the constant. The listener asked for 128 (review record LF19), and Linux, whose default `somaxconn` has been 4096 since 5.4, drops each handshake past a full queue (`TcpExtListenOverflows`), its client retrying a second later. No knob, by the owner's decision. Run in the m0lin Linux container (aarch64, `somaxconn` 4096) it passes, and with `listen(128)` restored it fails, the limit read back as 128 against 4096. The overflow, measured on 2026-11-15 with `scripts/probes/accept_queue_herd.py` against m0serve 1.17.0, a herd opened while a WSGI application spent a second importing and nothing accepted: on Linux 6.8 (aarch64, `somaxconn` 4096) herds of 1000, 4000 and 6000 were all answered and none reset, the 6000's last answer 2.25 s after the herd against 0.9 s for a herd that fits; on macOS 27 (`somaxconn` 128) a herd of 1000 had 127 answered and 873 reset at connect"
     },
     {
       "id": "C13",
@@ -2002,6 +2002,14 @@
       "evidence": "`Smoke test the Django realtime example over WebSockets` (every PR) \u2014 inline, the server's own origin and a handshake with none are upgraded and another origin is refused 403, its notice printed once over two refusals; under the pool, an origin `--ws-origin` names is upgraded and another refused; `test_ws_origin.mojo:test_a_handshake_is_upgraded_from_its_own_origin_and_refused_from_another` the rule, a sibling host, `null` and KELVIN SIGN among the refusals"
     },
     {
+      "id": "I49",
+      "section": "I",
+      "category": "I. WebSocket and Server-Sent Events",
+      "capability": "A WebSocket an application holds with `M0-Hold: websocket` is handed the cookies the approving response set: the response itself is discarded for the `101` (its status, body and other headers), and each `Set-Cookie` line it carried is on the `101` verbatim, one line a cookie, as a stream hold's head carries them (RFC 6455 \u00a74.2.2), whether the hold is taken on the loop or performed by a pool thread. A handshake the server refuses (another origin's, a malformed one) carries none. Through 1.17.0 the lines were dropped with the response, so a session written by the view that approved a socket never reached the browser: lost outright under signed-cookie sessions, an orphaned row under a session store",
+      "status": "verified",
+      "evidence": "`Smoke test the Django realtime example over WebSockets` (every PR) \u2014 the demo's `/ws` view sets two cookies, and `realtime_probe.py` requires both lines on the `101` of every handshake in every phase (inline, two workers, the handler pool, behind two slow views, under a mount), with `expires`, `Max-Age`, `HttpOnly` and each `SameSite` as Django wrote them; a same-origin `101` must carry exactly two lines and a cross-origin `403` for the same view none. Run against a binary without the change the first handshake fails, `the 101 carried 0 Set-Cookie lines`"
+    },
+    {
       "id": "I39",
       "section": "I",
       "category": "I. WebSocket and Server-Sent Events",
@@ -2520,6 +2528,14 @@
       "capability": "A lifespan startup that fails ends the server with exit 1 before its ready banner, whichever thread runs it, and on the executor a stop while it runs ends it",
       "status": "verified",
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `M0_ASGI_STARTUP_FAIL` under the executor, a pool and a mount must exit 1 carrying the application's message with no banner printed, and under the loop inversion too (`Smoke test the ASGI executor under the loop inversion` (every PR)); `M0_ASGI_STARTUP_DELAY_S` stopped by SIGTERM and by SIGINT must exit 0, the health path unanswered meanwhile. Not under the inversion, whose lifespan runs on the loop's own thread: a stop there waits for the startup to finish. The executor runs the lifespan on its own thread, and the server printed its banner without waiting for it: a failed startup left it accepting with nothing to answer, requests hung, the health path said 200, and SIGTERM exited 0"
+    },
+    {
+      "id": "L34",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An ASGI application's `websocket.accept` is on the `101` as it was sent: the message's `headers`, each `set-cookie` among them on its own line verbatim, and its `subprotocol` as `Sec-WebSocket-Protocol`, absent when the application names none. The handshake's own headers are the server's and an accept cannot supply them: `connection`, `upgrade`, `sec-websocket-accept`, `sec-websocket-extensions` (none is negotiated), `content-length`, `transfer-encoding`, and a `sec-websocket-protocol` among the headers, which the `subprotocol` field alone decides. The subprotocol is not checked against the client's offer. Through 1.17.0 the message's fields were not read, so a cookie set while accepting a socket never reached the browser and a client that asked for a subprotocol was answered with none",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `/ws/accept` accepts with two cookies, a header of its own, the last subprotocol offered and three of the handshake's headers, a forged accept value among them; `ws_probe.py` requires both cookie lines and the header as sent, the one subprotocol, exactly one accept value and it the key's own, one `Connection: Upgrade`, and no subprotocol header for a handshake that offered none. Run twice in CI, the second under the loop inversion. Without the carry the phase fails on the cookies; with the handshake's headers let through, on `the 101's accept value is not the server's own: ['forged']`"
     },
     {
       "id": "M1",
