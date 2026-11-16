@@ -23,7 +23,9 @@ from fasthtml.common import (
     H1, Div, EventStream, P, Titled, fast_app, sse_message,
 )
 from starlette.background import BackgroundTask
+from starlette.responses import PlainTextResponse
 import asyncio
+import threading
 
 app, rt = fast_app()
 
@@ -42,6 +44,19 @@ def get():
 @rt("/plain")
 def plain():
     return "plain text from fasthtml"
+
+
+_KEPT = threading.local()
+
+
+@rt("/thread-kept")
+def thread_kept():
+    # A `def` handler, as FastHTML's tutorial writes them: it runs on
+    # Starlette's thread pool. The answer is how many requests THIS thread
+    # has served, so it passes 1 only if the pool's threads outlive a
+    # request (SPEC L37).
+    _KEPT.n = getattr(_KEPT, "n", 0) + 1
+    return PlainTextResponse(str(_KEPT.n))
 
 
 async def _counter():

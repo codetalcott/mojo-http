@@ -76,6 +76,17 @@ default is listed under **Behaviour changes**
 
 ### Fixed
 
+- **A `def` handler of a FastAPI, FastHTML or Starlette application no
+  longer starts a thread per request** (SPEC L37). Starlette runs a `def`
+  handler on anyio's thread pool, and anyio ends each of the pool's threads
+  with the task it calls the root, which it finds by the callback
+  `run_until_complete` leaves. The ASGI executor served from a bare
+  `run_forever`, so the root was each request's own task: its thread was
+  told to stop as the request ended and the next request started another.
+  The executor's serving run is now one `run_until_complete`. State an
+  application keeps per thread (a `threading.local` connection) is kept
+  across requests, as under uvicorn. What it cost and what it costs now
+  is in [the note](docs/notes/a-root-task-for-the-executor.md).
 - **A WebSocket hold carries the approving view's cookies** (SPEC I49).
   A view that answers `M0-Hold: websocket` has its response discarded for
   the `101` the server computes, and its `Set-Cookie` lines went with it:

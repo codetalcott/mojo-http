@@ -426,7 +426,15 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     `_HTTP_DRAIN_GRACE` (3 s), and a task that swallows its cancellation
     is named and left behind (SPEC D11) — then it stops the loop, so the
     executor's final flush and lifespan shutdown run after `run_forever`
-    returns. Two rules: the drain starts ONCE (`_exec_draining`; a second
+    returns. **The serving run is ONE `run_until_complete`, never a bare
+    `_loop.run_forever()`** (`_serve_under_a_root_task`, SPEC L37;
+    docs/notes/a-root-task-for-the-executor.md): anyio ends each thread of
+    its pool with the task it calls the root and finds that task by
+    `run_until_complete`'s done-callback, so without one every `def`
+    handler of a Starlette application started a thread and ended it with
+    its request. It ends through `_stop_serving`, which resolves the root
+    task's future; the loop stops an iteration after the task does, with
+    `_exec_closed` already set. Two rules: the drain starts ONCE (`_exec_draining`; a second
     pill, or the inverted tick, must not start another whose stop lands
     inside lifespan shutdown), and once it has stopped the loop nothing
     reaches the port (`_exec_closed`) — the Mojo side frees its executor
