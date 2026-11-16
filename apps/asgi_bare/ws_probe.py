@@ -69,7 +69,59 @@ def handshake(path, what):
     return ws
 
 
+def accept_carries_what_the_application_sent():
+    """`websocket.accept`'s `headers` and `subprotocol` are on the 101 (SPEC L34).
+
+    /ws/accept accepts with two cookies, a header of its own, the last
+    subprotocol offered, and three headers that are the handshake's. The
+    101 must carry the first four as sent and exactly one of each of the
+    handshake's own, the server's.
+    """
+    ws = WebSocket.connect(HOST, PORT, "/ws/accept", timeout=10,
+                           headers=(("Sec-WebSocket-Protocol", "chat.v1, chat.v2"),))
+    if ws.status_line is None or b" 101 " not in ws.status_line:
+        fail("/ws/accept expected 101, got %r" % (ws.status_line,))
+    lines = [line.decode("latin-1") for line in ws.head.split(b"\r\n")[1:]]
+
+    def values(name):
+        return [line.split(":", 1)[1].strip() for line in lines
+                if line.lower().startswith(name + ":")]
+
+    cookies = values("set-cookie")
+    want = ["sid=abc; Path=/; HttpOnly; SameSite=Lax", "seen=1; Max-Age=60; Path=/ws"]
+    if sorted(cookies) != sorted(want):
+        fail("the 101's Set-Cookie lines are %r, want the application's %r" % (cookies, want))
+    if values("x-accept") != ["from-the-application"]:
+        fail("the 101's X-Accept is %r, want the application's" % (values("x-accept"),))
+    if values("sec-websocket-protocol") != ["chat.v2"]:
+        fail("the 101 names subprotocol %r, want the accepted ['chat.v2']"
+             % (values("sec-websocket-protocol"),))
+    if len(values("sec-websocket-accept")) != 1 or not ws.accept_ok():
+        fail("the 101's accept value is not the server's own: %r"
+             % (values("sec-websocket-accept"),))
+    if [v.lower() for v in values("connection")] != ["upgrade"]:
+        fail("the 101's Connection is %r, want the server's one 'Upgrade'" % (values("connection"),))
+    op, payload = ws.recv_data()
+    if op != TEXT or payload != b"chat.v1,chat.v2":
+        fail("the scope's subprotocols reached the application as %r" % (payload,))
+    ws.close()
+
+    # No offer, no subprotocol: the header is absent, not empty.
+    ws = WebSocket.connect(HOST, PORT, "/ws/accept", timeout=10)
+    if ws.status_line is None or b" 101 " not in ws.status_line:
+        fail("/ws/accept without an offer expected 101, got %r" % (ws.status_line,))
+    if ws.header("Sec-WebSocket-Protocol") is not None:
+        fail("a 101 for a handshake that offered no subprotocol names one: %r"
+             % ws.header("Sec-WebSocket-Protocol"))
+    if ws.header("Set-Cookie") is None:
+        fail("the 101 without a subprotocol lost its cookies")
+    ws.close()
+
+
 def main():
+    phase("what websocket.accept carries")
+    accept_carries_what_the_application_sent()
+
     phase("the echo connection's handshake")
     ws = WebSocket.connect(HOST, PORT, "/ws", timeout=10)
     if ws.status_line is None:

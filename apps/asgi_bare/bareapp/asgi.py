@@ -151,6 +151,29 @@ async def application(scope, receive, send):
             await send({"type": "websocket.send", "text": OVERSIZED_MARKER})
             await send({"type": "websocket.close", "code": 1000})
             return
+        if scope["path"] == "/ws/accept":
+            # What `websocket.accept` itself carries: a subprotocol chosen
+            # from the client's offer, and headers for the 101 -- two
+            # cookies and one of the application's own. The last three are
+            # the handshake's, which is the server's to write: a server
+            # that copied them would send a second, wrong accept value and
+            # contradict its own upgrade.
+            offered = scope["subprotocols"]
+            await send({
+                "type": "websocket.accept",
+                "subprotocol": offered[-1] if offered else None,
+                "headers": [
+                    (b"set-cookie", b"sid=abc; Path=/; HttpOnly; SameSite=Lax"),
+                    (b"set-cookie", b"seen=1; Max-Age=60; Path=/ws"),
+                    (b"x-accept", b"from-the-application"),
+                    (b"sec-websocket-accept", b"forged"),
+                    (b"connection", b"close"),
+                    (b"sec-websocket-protocol", b"not.this.one"),
+                ],
+            })
+            await send({"type": "websocket.send", "text": ",".join(offered)})
+            await send({"type": "websocket.close", "code": 1000})
+            return
         if scope["path"] == "/ws/flood":
             # The backpressure exerciser: FLOOD_FRAMES x FLOOD_SIZE with no
             # pause and no reads. A client that stalls before reading cannot

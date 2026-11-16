@@ -2530,6 +2530,14 @@
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `M0_ASGI_STARTUP_FAIL` under the executor, a pool and a mount must exit 1 carrying the application's message with no banner printed, and under the loop inversion too (`Smoke test the ASGI executor under the loop inversion` (every PR)); `M0_ASGI_STARTUP_DELAY_S` stopped by SIGTERM and by SIGINT must exit 0, the health path unanswered meanwhile. Not under the inversion, whose lifespan runs on the loop's own thread: a stop there waits for the startup to finish. The executor runs the lifespan on its own thread, and the server printed its banner without waiting for it: a failed startup left it accepting with nothing to answer, requests hung, the health path said 200, and SIGTERM exited 0"
     },
     {
+      "id": "L34",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An ASGI application's `websocket.accept` is on the `101` as it was sent: the message's `headers`, each `set-cookie` among them on its own line verbatim, and its `subprotocol` as `Sec-WebSocket-Protocol`, absent when the application names none. The handshake's own headers are the server's and an accept cannot supply them: `connection`, `upgrade`, `sec-websocket-accept`, `sec-websocket-extensions` (none is negotiated), `content-length`, `transfer-encoding`, and a `sec-websocket-protocol` among the headers, which the `subprotocol` field alone decides. The subprotocol is not checked against the client's offer. Through 1.17.0 the message's fields were not read, so a cookie set while accepting a socket never reached the browser and a client that asked for a subprotocol was answered with none",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `/ws/accept` accepts with two cookies, a header of its own, the last subprotocol offered and three of the handshake's headers, a forged accept value among them; `ws_probe.py` requires both cookie lines and the header as sent, the one subprotocol, exactly one accept value and it the key's own, one `Connection: Upgrade`, and no subprotocol header for a handshake that offered none. Run twice in CI, the second under the loop inversion. Without the carry the phase fails on the cookies; with the handshake's headers let through, on `the 101's accept value is not the server's own: ['forged']`"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",

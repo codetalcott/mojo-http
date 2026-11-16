@@ -1845,7 +1845,9 @@ async def _serve_one_ws(slot, scope):
             _exec_credits[slot] = _ASGI_CREDIT_WINDOW
             _exec_credit_evts[slot] = asyncio.Event()
             resolved[0] = True
-            _exec_put(('ws_accept', slot))
+            # Its headers and subprotocol ride the event: the pump puts
+            # them on the 101 it holds (`_ws_accept_headers`).
+            _exec_put(('ws_accept', slot, _ws_accept_headers(message)))
         elif t == 'websocket.send':
             if not accepted[0]:
                 raise RuntimeError('websocket.send before websocket.accept')
@@ -1948,6 +1950,38 @@ def spawn_ws(slot, path, query, protocol, headers, host='', port=0):
     _exec_slot_task[slot] = task
     _exec_disconnects.pop(slot, None)
     task.add_done_callback(_task_done(slot))
+
+
+# The handshake's own headers, which the server computes and an accept
+# cannot supply: a second `Sec-WebSocket-Accept` or `Connection` on the 101
+# contradicts the first, and no extension is negotiated, so one named here
+# would have the client compress frames this server reads as they are.
+# `sec-websocket-protocol` is the message's `subprotocol` field and nothing
+# else, as the ASGI spec has it.
+_WS_HANDSHAKE_HEADERS = frozenset((
+    b'connection', b'upgrade', b'sec-websocket-accept',
+    b'sec-websocket-extensions', b'sec-websocket-protocol',
+    b'content-length', b'transfer-encoding',
+))
+
+
+def _ws_accept_headers(message):
+    '''What a `websocket.accept` asks to be on the 101, as the (bytes,
+    bytes) list the bridge's head reader takes: the message's `headers`
+    less the handshake's own, then its `subprotocol` as the header that
+    names it. A cookie set while accepting a socket exists nowhere else.
+    A header that is not bytes raises here, in the application's `send`,
+    where a response head's raises too.
+    '''
+    out = []
+    for name, value in message.get('headers') or ():
+        name = bytes(name).lower()
+        if name not in _WS_HANDSHAKE_HEADERS:
+            out.append((name, bytes(value)))
+    subprotocol = message.get('subprotocol')
+    if subprotocol:
+        out.append((b'sec-websocket-protocol', subprotocol.encode('latin-1')))
+    return out
 
 
 def _ws_subprotocols(headers):
