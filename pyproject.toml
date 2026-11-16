@@ -5999,6 +5999,16 @@ python3 scripts/emit.py --covers L23 --task smoke-fasthtml
 python3 scripts/emit.py --covers L37 --task smoke-fasthtml
 """
 
+# FastHTML beside its reference server, at the NEWEST release of each (SPEC
+# L36). Weekly, from py-canary.yml: it installs from PyPI and clones
+# FastHTML's example repositories, so it is not a pull request's gate. What
+# fails it, and how a difference is added or retired, is the docstring of
+# scripts/fasthtml_compare/compare.py.
+[tool.poe.tasks.fasthtml-canary]
+help = "FastHTML's examples under m0serve beside uvicorn, newest releases of both (network; weekly in CI)"
+deps = ["build-serve"]
+cmd = "python3 scripts/fasthtml_compare/compare.py run --report fasthtml-canary.log"
+
 # FastAPI, the second Starlette-family row beside smoke-fasthtml (L11).
 # The overlap is deliberate and the difference is the point: both frameworks
 # drive Starlette, but FastAPI drives it through its own routing, response

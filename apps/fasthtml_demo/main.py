@@ -20,7 +20,7 @@ answer "Failed to process request" and log one line.
 """
 
 from fasthtml.common import (
-    H1, Div, EventStream, P, Titled, fast_app, sse_message,
+    H1, Div, EventStream, P, Titled, fast_app, serve, sse_message,
 )
 from starlette.background import BackgroundTask
 from starlette.responses import PlainTextResponse
@@ -103,3 +103,9 @@ def boom():
 @app.ws("/ws")
 async def ws(msg: str, send):
     await send(f"ws-echo:{msg}")
+
+
+# What every FastHTML tutorial ends with. It starts uvicorn only when this
+# file is run as a script; imported by m0serve it must do nothing, which
+# smoke-fasthtml holds by serving this module (docs/FASTHTML.md).
+serve()

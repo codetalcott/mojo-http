@@ -16,6 +16,7 @@ version does not stop the soak going stale.
 | [blobs.m0serve.dev](https://blobs.m0serve.dev) | An application written in Mojo, served from an image with no Python in it: one world stepped on the server and streamed to every tab. [apps/blobs](../apps/blobs/server.mojo) is the app, [deploy/blobs](../deploy/blobs/README.md) the deployment, which every release redeploys. |
 | [Running m0serve](RUNNING.md) | Flags, execution modes, what to put in front of it, shutdown and exit codes. |
 | [Capabilities](SPEC.md) | One row per capability with the test that proves it. Also [spec.json](spec.json). |
+| [FastHTML](FASTHTML.md) | Serving a FastHTML application: the command, what to change in the application, and each response that differs from uvicorn's. The differences table is rendered from the weekly comparison's own list. |
 | [WSGI and ASGI modes](WSGI_VS_ASGI.md) | What each mode is for, what free-threading changes, where each has a cliff. |
 
 ## The Mojo stack
