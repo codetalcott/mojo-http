@@ -37,6 +37,16 @@ default is listed under **Behaviour changes**
 
 ### Added
 
+- **A page for FastHTML, and a weekly comparison behind it** (SPEC L36).
+  [FastHTML on m0serve](docs/FASTHTML.md) is the command, what to change
+  in an application, and each response that differs from uvicorn's. That
+  table is rendered from the list `uv run poe fasthtml-canary` holds the
+  server to: it installs the newest python-fasthtml and uvicorn, serves
+  FastHTML's example applications and four probe applications from both
+  servers, and fails on a difference the page does not list or a listed
+  one that is gone. It runs weekly in CI and files an issue when it fails.
+  `apps/fasthtml_demo` now ends in `serve()`, so the pull-request smoke
+  holds that the call does nothing under m0serve.
 - **A Mojo host application takes `--max-connections` and
   `M0_MAX_CONNECTIONS`** (SPEC E43, #658), as m0serve does: the
   connections each loop holds, 1024 by default, 1 to 65536. A count

@@ -276,6 +276,24 @@ Every other difference is the harness's own:
 FastHTML's own three failures are unchanged, and identical under both
 servers.
 
+**Re-run at the newest releases, 2026-11-16** (python-fasthtml 0.14.23,
+Starlette 1.10.0, uvicorn 0.54.0, CPython 3.14.7; `fasthtml` at `638facb`,
+`fasthtml-example` at `21200ff`; m0serve from `main` at `7686c43a`, macOS 27
+on an M4). The first run of `uv run poe fasthtml-canary`, the comparison
+moved into the tree as `scripts/fasthtml_compare/` (SPEC L36): 31
+applications, of which both servers served 21 and neither served 10, and no
+difference beyond the four [the FastHTML page](FASTHTML.md) lists. Of the
+10, eight import a package the run does not install, `todos2` uses a
+`database` name python-fasthtml no longer exports, and `00_game_of_life`
+schedules a task at import (L26). The pty terminal example is not in the
+run; served by hand the same day, the shell it starts held no server
+socket under either server (G16). On this stack uvicorn closes a
+keep-alive connection after an application's 500, and m0serve keeps it:
+the run repeats such a request and reports the count. Not re-run: two
+workers, and the September scenarios the tree's copy leaves out (Game of
+Life's broadcast, the chat example, the SSE clock under 40 clients, the
+chunked chatbot).
+
 ## In production — 2026-09-12, textshelf's streams on the hold mount (m0serve 1.2.0)
 
 Not a soak: a production record, the first use of the grant-verified hold

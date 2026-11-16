@@ -2538,6 +2538,14 @@
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `/ws/accept` accepts with two cookies, a header of its own, the last subprotocol offered and three of the handshake's headers, a forged accept value among them; `ws_probe.py` requires both cookie lines and the header as sent, the one subprotocol, exactly one accept value and it the key's own, one `Connection: Upgrade`, and no subprotocol header for a handshake that offered none. Run twice in CI, the second under the loop inversion. Without the carry the phase fails on the cookies; with the handshake's headers let through, on `the 101's accept value is not the server's own: ['forged']`"
     },
     {
+      "id": "L36",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "FastHTML answers under m0serve as it does under uvicorn, at the newest release of each: FastHTML's example applications and this repository's probe applications are served by both and compared response by response, and the only differences are the ones docs/FASTHTML.md lists",
+      "status": "verified",
+      "evidence": "`fasthtml-canary` (weekly) \u2014 `scripts/fasthtml_compare/compare.py` installs the newest python-fasthtml and uvicorn rather than the locked ones, and fails on a difference its list does not name, on a listed one that is gone or changed, on a probe application either server does not serve, on an example that starts under one server alone, and on a sweep thinned under its floor; an example that starts under neither is skipped and reported. The page's table is rendered from that list, and the docs gate fails a page that differs"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",
