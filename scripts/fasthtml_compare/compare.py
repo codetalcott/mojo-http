@@ -276,14 +276,26 @@ class Server:
             if self.proc.poll() is not None:
                 self.log.close()
                 raise NeverStarted(self.last_line())
-            try:
-                socket.create_connection(("127.0.0.1", self.port), timeout=0.5).close()
-                time.sleep(0.3)
+            if self.answers():
                 return self
-            except OSError:
-                time.sleep(0.2)
+            time.sleep(0.2)
         self.stop()
-        raise NeverStarted("never listened")
+        raise NeverStarted("never answered")
+
+    def answers(self):
+        """Started means the APPLICATION answered a request, any status.
+
+        A connection proves less: m0serve listens before it imports the
+        application, so on Linux a module that fails at import was reached
+        through the port for a moment and counted as started (#693).
+        """
+        try:
+            with socket.create_connection(("127.0.0.1", self.port), timeout=0.5) as s:
+                s.settimeout(5)
+                s.sendall(b"GET /m0-compare-ready HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                return s.recv(16).startswith(b"HTTP/")
+        except OSError:
+            return False
 
     def stop(self):
         if self.proc.poll() is None:
