@@ -15,6 +15,27 @@ default is listed under **Behaviour changes**
 
 ### Behaviour changes
 
+- **An ASGI response's head is sent when the application sends it** (SPEC
+  L40). m0serve answered a response at its first body. A response whose
+  body follows its head at once, which is every plain response of
+  Starlette, FastAPI, FastHTML and Django, is unchanged. One that waits
+  between the two now has its head on the wire while it waits, as under
+  uvicorn:
+  - a stream nobody has written to yet (FastHTML's `EventStream`, a
+    `StreamingResponse` over a queue) opens in the browser, where
+    `EventSource` used to wait for the first event;
+  - when its client leaves, the application is cancelled, where it used
+    to keep the stream and its subscription until the next event;
+  - it no longer counts against the 256 requests a loop hands its
+    executor at once;
+  - an error raised after such a head truncates the response, where it
+    used to become a 500.
+
+  A response whose head declares a `Content-Length` is held for its body
+  as before, so Starlette's `FileResponse` keeps its length.
+
+  `M0_ASGI_HEAD_AT_START=0` puts the old answer back.
+
 - **What the server says about itself goes to stderr.** m0serve and a
   Mojo host application keep stdout for what was asked of them:
   `--help`, `--version`, the report `--doctor` prints (still its last

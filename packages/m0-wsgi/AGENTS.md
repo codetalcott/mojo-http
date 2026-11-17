@@ -764,6 +764,22 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       (The old behaviour detached the fd, which dropped the response the
       pool thread was about to complete — the offloaded shape of the
       half-close bug.)
+    - **A response's head leaves at the end of the iteration it was sent
+      in, not at its first body** (SPEC L40). `_Cycle.send` lists the
+      response in `_heads_pending` and arms the iteration's flush;
+      `_flush` calls `_head_due` before the port's flush, and a response
+      still without a body takes `send`'s own switch to streaming as
+      though an empty `more_body` chunk had arrived, so the ownership
+      rules and the HEAD, 1xx, 204 and 304 answers are that branch's. A
+      head that declares a `Content-Length` is left for its body
+      (FileResponse reads its file between the two, and streamed lost
+      its length). Do
+      not give it a `call_soon` of its own: one per response cost 2.7% of
+      the bare hello row (98.1k against 100.9k rps), and the flush is
+      armed by the body that usually follows anyway. A shim edit reaches
+      `bin/m0serve` after `render-shim`, `build-wsgi` AND `build-serve`:
+      the shim is in `m0_wsgi.mojoc`, and `build-serve` alone reports the
+      binary up to date.
     - **Past the bound an executor's request WAITS; it is never run on the
       loop** (SPEC L39). `OffloadLoopState.must_wait` is asked before
       `accepting()` in `_process_request`: a request for an executor lane
