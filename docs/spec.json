@@ -2554,6 +2554,14 @@
       "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR) \u2014 twenty requests to a `def` handler that counts the requests its own thread has served must include an answer above 1; every answer was 1 before. `Serve a FastAPI app through the ASGI bridge` asks the same of a `def` endpoint, and `poe test-shim` holds the rule in the shim, sabotage-proven: two tasks in turn get one thread from `anyio.to_thread`"
     },
     {
+      "id": "L38",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "A FastHTML application reaches every worker's WebSockets through L12's publisher, from FastHTML's own hooks: `ws.scope` in an `app.ws` connect hook subscribes the socket, `req.scope` in a route publishes, and a frame published by a request to either of two workers reaches the sockets of both, once",
+      "status": "verified",
+      "evidence": "`Serve a FastHTML app through the ASGI bridge` (every PR) \u2014 `apps/fasthtml_demo/bus_probe.py` opens six sockets, refuses to go on unless a worker holds some and not all, and requires each to receive thirty announcements. The lines are the ones docs/FASTHTML.md shows, held to it by `check-docs`; `poe test-shim` holds the page's three facts about the publisher (a frame over 64 KB raises, a subscriber its queue behind loses the oldest, `async with` ends a subscription)"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",

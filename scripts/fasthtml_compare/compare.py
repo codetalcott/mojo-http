@@ -184,6 +184,25 @@ def page_problem(text, expected=EXPECTED):
     return None
 
 
+DEMO = os.path.join(REPO, "apps", "fasthtml_demo", "main.py")
+_RECIPE_APP = re.compile(r"^# recipe: every-worker[^\n]*\n(?:#[^\n]*\n)*(.*?)^# /recipe$", re.S | re.M)
+_RECIPE_PAGE = re.compile(r"<!-- recipe: every-worker[^\n]*-->\n```python\n(.*?)```", re.S)
+
+
+def recipe_problem(page, app):
+    """Pure: the page's recipe must be the lines `smoke-fasthtml` serves."""
+    served = _RECIPE_APP.search(app)
+    shown = _RECIPE_PAGE.search(page)
+    if not served:
+        return "apps/fasthtml_demo/main.py has no `# recipe: every-worker` block"
+    if not shown:
+        return "docs/FASTHTML.md has no every-worker recipe block"
+    if shown.group(1).strip() != served.group(1).strip():
+        return ("docs/FASTHTML.md's every-worker recipe is not the block in "
+                "apps/fasthtml_demo/main.py: copy the block between its markers")
+    return None
+
+
 def render_page():
     with open(PAGE) as f:
         text = f.read()
@@ -226,9 +245,21 @@ def selftest():
         if (page_problem(text) is not None) != want:
             bad += 1
             print(f"selftest FAIL: page: {label}")
+    app = "x = 1\n# recipe: every-worker -- shown\n# on the page\ndef bus(): pass\n# /recipe\n"
+    shown = "<!-- recipe: every-worker -->\n```python\ndef bus(): pass\n```\n"
+    for label, page_text, app_text, want in [
+        ("the page shows the served block", shown, app, False),
+        ("the page's copy edited", shown.replace("pass", "return 1"), app, True),
+        ("the served block edited", shown, app.replace("pass", "return 1"), True),
+        ("no block on the page", "intro\n", app, True),
+        ("no block in the application", shown, "x = 1\n", True),
+    ]:
+        if (recipe_problem(page_text, app_text) is not None) != want:
+            bad += 1
+            print(f"selftest FAIL: recipe: {label}")
     if bad:
         sys.exit(1)
-    print(f"fasthtml_compare selftest: {len(cases) + 4} cases pass")
+    print(f"fasthtml_compare selftest: {len(cases) + 9} cases pass")
 
 
 # ---------------------------------------------------------------- serving
@@ -559,10 +590,12 @@ def main():
         return render_page()
     if args.check_page:
         with open(PAGE) as f:
-            problem = page_problem(f.read())
+            text = f.read()
+        with open(DEMO) as f:
+            problem = page_problem(text) or recipe_problem(text, f.read())
         if problem:
             sys.exit(problem)
-        print("docs/FASTHTML.md's differences table matches EXPECTED")
+        print("docs/FASTHTML.md's differences table matches EXPECTED, and its recipe the demo")
         return
     if args.command == "run":
         return run(args)

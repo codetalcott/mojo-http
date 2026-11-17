@@ -2194,6 +2194,35 @@ def test_the_serving_run_keeps_a_thread_pools_threads(h):
     )
 
 
+def test_the_publisher_keeps_what_the_fasthtml_page_says(h):
+    """L38's page states three facts about `scope["state"]["m0"]` no served
+    phase reaches: a frame over 64 KB raises, a subscriber more than its
+    queue behind loses the oldest frame, and leaving a subscription through
+    `async with` ends it."""
+    m0 = h.ns["_M0Broadcast"]()
+    subs = h.ns["_m0_subs"]
+    dispatch = h.ns["_m0_dispatch"]
+
+    assert m0.publish("live", "x" * 60000) == -1  # no counter here; sent
+    try:
+        m0.publish("live", "x" * 65536)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a frame over 64 KB was published")
+
+    async def run():
+        async with m0.subscribe("live", max_queue=3) as frames:
+            assert "live" in subs, "a subscription registered nothing"
+            for n in range(5):
+                dispatch(n, "live", b"%d" % n)
+            got = [await frames.__anext__() for _ in range(3)]
+            assert got == [(2, b"2"), (3, b"3"), (4, b"4")], got
+        assert "live" not in subs, "a subscription outlived its `async with`"
+
+    h.loop.run_until_complete(run())
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -2309,6 +2338,7 @@ TESTS = [
     test_an_inverted_disconnect_follows_the_messages_before_it,
     test_a_stop_read_by_a_flush_starts_the_drain,
     test_the_serving_run_keeps_a_thread_pools_threads,
+    test_the_publisher_keeps_what_the_fasthtml_page_says,
     test_background_work_inside_the_grace_finishes,
     test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
     test_a_task_left_behind_never_reaches_the_port,

@@ -5992,7 +5992,20 @@ curl -s --fail $B/ > /dev/null || fail 'server died after the WebSocket probe'
 kill -TERM $pid
 wait $pid 2>/dev/null; rc=$?
 [ "$rc" = "0" ] || fail "SIGTERM: exit $rc, want 0"
+
+# Two workers: an announcement made through a request to either reaches the
+# /live sockets of both, by the lines docs/FASTHTML.md shows (L38). A list of
+# `send` callables in the module, FastHTML's own idiom, reaches one worker's.
+port=$(free_port)
+B=http://localhost:$port
+spawn fasthtml-workers.log "$srv" main:app --app-dir apps/fasthtml_demo --port $port --workers 2
+wait_ready $B/ $pid
+M0_PORT=$port python3 apps/fasthtml_demo/bus_probe.py || fail 'an announcement did not reach the FastHTML sockets of every worker'
+kill -TERM $pid
+wait $pid 2>/dev/null; rc=$?
+[ "$rc" = "0" ] || fail "SIGTERM with two workers: exit $rc, want 0"
 echo "smoke-fasthtml OK"
+python3 scripts/emit.py --covers L38 --task smoke-fasthtml
 python3 scripts/emit.py --covers L11 --task smoke-fasthtml
 python3 scripts/emit.py --covers L22 --task smoke-fasthtml
 python3 scripts/emit.py --covers L23 --task smoke-fasthtml
