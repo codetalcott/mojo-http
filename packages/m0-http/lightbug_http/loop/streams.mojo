@@ -442,7 +442,10 @@ def _drain_slot[T: HTTPService, B: EventLoopBackend](
     # is, never past what was declared, and `whole` once every declared
     # byte has been handed out and the producer has ended. A whole one
     # ends as a chunked stream does at its terminator, its connection
-    # kept; one that ends short is closed, like any unframed stream.
+    # kept; one that ends short is closed, like any unframed stream. The
+    # executor's shim refuses a send past the length (`_spend_declared`),
+    # so the trim below never meets bytes: it would drop them without
+    # returning their credit to the producer.
     var whole = False
     if st.offload.sized_left[s] >= 0:
         if len(out) > st.offload.sized_left[s]:

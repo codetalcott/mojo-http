@@ -773,7 +773,10 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       rules and the HEAD, 1xx, 204 and 304 answers are that branch's. A
       head that declares a `Content-Length` is left for its body
       (FileResponse reads its file between the two, and streamed lost
-      its length). Do
+      its length). `_head_due` runs inside the flush, so whatever it
+      raises is caught there per response (`_head_failed`: logged, the
+      task cancelled, answered 500): raised out of `_flush`, it left
+      `_flush_armed` set for good and the worker never flushed again. Do
       not give it a `call_soon` of its own: one per response cost 2.7% of
       the bare hello row (98.1k against 100.9k rps), and the flush is
       armed by the body that usually follows anyway. A shim edit reaches
@@ -789,6 +792,10 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       records it in `OffloadLoopState.sized_left` and frames nothing, and the outbox
       drain ends a stream whose every declared byte has gone as it ends a
       chunked one at its terminator, connection kept; short, it closes.
+      Long, the SHIM refuses it: `_Cycle._spend_declared` raises at the
+      send that would pass the length, as uvicorn does. The loop's trim
+      past `sized_left` is a guard that never meets bytes, and drops them
+      without acking their credit, so do not move the rule there.
       Do NOT also send a sized response's head early (`_head_due` leaves
       it): streamed from its head, a 1.4 KB `FileResponse` cost 8.6% (7,578
       against 6,932 rps), for a head the client cannot use before its body.

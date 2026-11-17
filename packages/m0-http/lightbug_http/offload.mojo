@@ -248,6 +248,11 @@ def executor_inflight(max_connections: Int) -> Int:
     return min(max_connections, EXECUTOR_MAX_INFLIGHT)
 
 
+comptime WAITING_COMPACT_AT = 32
+"""Taken entries a waiting queue may keep before it compacts
+(`OffloadLoopState.take_waiting`): below it a short queue is never moved."""
+
+
 comptime NO_ENTRY: Int32 = -1
 """`OffloadPool.slot_entry` for a slot with no job parked."""
 
@@ -2779,12 +2784,20 @@ struct OffloadLoopState(Movable):
     def hold_waiting_first(mut self, slot: Int, var request: HTTPRequest):
         """Put `request` back at the FRONT: it had been admitted and its
         submit was refused, so it is older than everything still waiting
-        (`loop/offload.mojo`, `_hold_unsent`). Rebuilt rather than shifted:
-        a refused submit is rare and what waits is short."""
+        (`loop/offload.mojo`, `_hold_unsent`). The queue is rebuilt behind
+        it, which costs what waits, once for each refused request."""
         var slots = List[Int](capacity=self.waiting_count() + 1)
         var requests = List[Optional[HTTPRequest]](capacity=self.waiting_count() + 1)
         slots.append(slot)
         requests.append(Optional[HTTPRequest](request^))
+        self._rebuild_waiting(slots^, requests^)
+
+    def _rebuild_waiting(
+        mut self, var slots: List[Int], var requests: List[Optional[HTTPRequest]]
+    ):
+        """Move what still waits, oldest first, onto the end of `slots` and
+        `requests`, and make them the queue: the entries already taken are
+        dropped, and `waiting_head` is 0 again."""
         for i in range(self.waiting_head, len(self.waiting_slots)):
             slots.append(self.waiting_slots[i])
             requests.append(
@@ -2806,6 +2819,21 @@ struct OffloadLoopState(Movable):
             self.waiting_slots.clear()
             self.waiting_requests.clear()
             self.waiting_head = 0
+        elif (
+            self.waiting_head >= WAITING_COMPACT_AT
+            and 2 * self.waiting_head >= len(self.waiting_slots)
+        ):
+            # A backlog that never empties -- more long polls than the
+            # executor takes, each polling again as it is answered -- was
+            # cleared never, and every request that had waited kept its
+            # entry for as long as it lasted (SPEC L39). Once half the
+            # entries are taken, the rest move to the front: each entry
+            # moves at most once per entry taken, and what is kept is at
+            # most twice what waits.
+            self._rebuild_waiting(
+                List[Int](capacity=self.waiting_count()),
+                List[Optional[HTTPRequest]](capacity=self.waiting_count()),
+            )
         return request^
 
     def slot_channel_stream(self, slot: Int) -> Bool:

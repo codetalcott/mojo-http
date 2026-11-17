@@ -113,7 +113,31 @@ def main():
     if r.status != 200 or b"hello from asgi_bare" not in r.read():
         fail("the request after /late-body on its connection was not answered")
     conn.close()
-    print("asgi stream_head_probe OK: a silent stream has its head, its client is heard leaving, a late body is whole")
+
+    phase("a head the server cannot read fails its own request alone")
+    conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=5)
+    try:
+        conn.request("GET", "/bad-head")
+        r = conn.getresponse()
+        status = r.status
+        r.read()
+    except OSError as exc:
+        fail("a request whose head has a malformed header was not answered in 5 s: %r" % (exc,))
+    conn.close()
+    if status != 500:
+        fail("a head with a malformed header was answered %d, want 500" % status)
+    for n in range(3):
+        conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=2)
+        try:
+            conn.request("GET", "/")
+            r = conn.getresponse()
+            ok = r.status == 200 and b"hello from asgi_bare" in r.read()
+        except OSError as exc:
+            fail("request %d after a malformed head was not answered in 2 s: %r" % (n + 1, exc))
+        conn.close()
+        if not ok:
+            fail("request %d after a malformed head answered %d" % (n + 1, r.status))
+    print("asgi stream_head_probe OK: a silent stream has its head, its client is heard leaving, a late body is whole, a malformed head fails alone")
 
 
 if __name__ == "__main__":
