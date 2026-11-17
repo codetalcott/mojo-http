@@ -81,6 +81,23 @@ def scenario(srv, steps):
     add("GET /q", c.get("/q?x=1&x=2&y=&z=%20%2B+"))
     add("GET /p/unicode", c.get("/p/caf%C3%A9%20%E2%9C%93"))
     add("GET /p/slash", c.get("/p/a%2Fb"))
+    # A stream nobody has written to: its head, then its client leaving.
+    import socket as _socket
+    q = _socket.create_connection(("127.0.0.1", srv.port), timeout=3)
+    q.sendall(b"GET /quiet HTTP/1.1\r\nHost: x\r\n\r\n")
+    q.settimeout(2.0); head = b""
+    try:
+        while b"\r\n\r\n" not in head:
+            chunk = q.recv(4096)
+            if not chunk: break
+            head += chunk
+    except OSError: pass
+    note("quiet EventStream: head within 2 s", {
+        "status": head.split(b"\r\n")[0].decode("latin-1"),
+        "event-stream": b"text/event-stream" in head.lower()})
+    q.close()
+    time.sleep(1.5)
+    add("GET /quiet-count after its client left", c.get("/quiet-count"))
     # websocket
     import websockets.sync.client as wsc
     with wsc.connect(f"ws://127.0.0.1:{srv.port}/ws") as ws:
