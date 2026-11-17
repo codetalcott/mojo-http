@@ -63,7 +63,7 @@ from lightbug_http.loop.streams import (
     _resume_suspended_reads,
 )
 from lightbug_http.loop.offload import (
-    _flush_submits, _retry_owed_acks, _service_completions,
+    _admit_waiting, _flush_submits, _retry_owed_acks, _service_completions,
     service_direct_completions,
 )
 from lightbug_http.loop.shutdown import (
@@ -485,6 +485,10 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
 
     # The outboxes: what the handler queued for its streams goes out.
     _drain_outboxes(handler, backend, st)
+
+    # Requests that waited for room on an executor lane, now that this
+    # pass's completions have made some: buffered here, sent just below.
+    _admit_waiting(handler, backend, st)
 
     # The pass's executor submits, one datagram per lane. After the
     # outbox drain and before this loop can park in `wait`: a slot left

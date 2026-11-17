@@ -200,8 +200,11 @@ charges a UNIX datagram's whole `skb` (several hundred bytes of overhead for
 an 8-byte payload) against the RECEIVER's `SO_RCVBUF`, and caps a
 non-privileged `SO_RCVBUF` at `net.core.rmem_max` (212 KB by default). 256
 jobs fit that with room to spare on every platform this runs on. Past the
-bound the loop runs requests inline, which is exactly today's behaviour — the
-degradation is graceful and never drops a request.
+bound a request for a pool thread's lane runs on the loop, as on a server
+without the flag, and one for an asyncio executor's lane WAITS for a job to
+come back (`OffloadLoopState.waiting_slots`, SPEC L39): run on the loop that
+one was a `run_until_complete` there, and a handler that awaited stopped the
+loop until it returned. Neither drops a request.
 
 It also sizes the pool's job tables (`OffloadPool.requests`): an entry per
 job that can be in flight, not per slot.
@@ -2528,6 +2531,24 @@ struct OffloadLoopState(Movable):
     """`_service_completions`' list of finished slots, reused across
     passes instead of allocated per drain."""
 
+    var waiting_slots: List[Int]
+    """Slots whose request is for an executor lane and found no room
+    (`accepting()` False), oldest first from `waiting_head`.
+
+    Such a request WAITS here and is submitted when a job comes back
+    (`loop/offload.mojo`, `_admit_waiting`). It used to run on the loop's
+    own thread, which for an asyncio executor is a `run_until_complete`
+    there: a handler that awaited stopped every connection on the loop,
+    and the stop signal with them, until it returned (SPEC L39). A waiting
+    slot is `offloaded` -- no sweep or read touches it -- and is NOT in
+    `inflight`, which counts what the pool holds an entry for. Sized by
+    what waits, not by the slot count (SPEC C26)."""
+    var waiting_requests: List[Optional[HTTPRequest]]
+    """The request of each `waiting_slots` entry, taken as it is admitted."""
+    var waiting_head: Int
+    var waiting_notice: String
+    """Printed the first time a request waits, then emptied."""
+
     var waits: Int
     var waits_capped: Int
     var waits_skipped: Int
@@ -2561,6 +2582,14 @@ struct OffloadLoopState(Movable):
             self.wait_over.append(0)
             self.pass_over.append(0)
         self.done_scratch = List[Int](capacity=64)
+        self.waiting_slots = List[Int]()
+        self.waiting_requests = List[Optional[HTTPRequest]]()
+        self.waiting_head = 0
+        self.waiting_notice = String(
+            "event loop: 256 requests are in flight on the asyncio executor,"
+            " which is all a loop hands it at once; each later request waits"
+            " for one of them to be answered"
+        )
         self.ack_owed_count = 0
         self.streaming_hint = 0
         self.pending_submit = List[List[Int]]()
@@ -2653,6 +2682,42 @@ struct OffloadLoopState(Movable):
             for i in range(len(failed)):
                 unsent.append(failed[i])
         return unsent^
+
+    def waiting_count(self) -> Int:
+        """Requests waiting for room on an executor lane."""
+        return len(self.waiting_slots) - self.waiting_head
+
+    def must_wait(self, path: String) -> Bool:
+        """Whether a request for `path` waits instead of being submitted
+        or run on the loop: its lane is an executor's, and either there is
+        no room or an earlier request is already waiting for some."""
+        if not self.enabled():
+            return False
+        if self.waiting_count() == 0 and self.accepting():
+            return False
+        return self.pool()[].lane_is_executor(self.pool()[].lane_for(path))
+
+    def hold_waiting(mut self, slot: Int, var request: HTTPRequest):
+        """Keep `request` until an executor lane has room for it."""
+        if self.waiting_notice.byte_length() > 0:
+            print(self.waiting_notice, file=stderr)
+            self.waiting_notice = String("")
+        self.waiting_slots.append(slot)
+        self.waiting_requests.append(Optional[HTTPRequest](request^))
+
+    def next_waiting(self) -> Int:
+        """The slot that has waited longest. Only with `waiting_count() > 0`."""
+        return self.waiting_slots[self.waiting_head]
+
+    def take_waiting(mut self) -> HTTPRequest:
+        """The request of `next_waiting()`, which stops waiting."""
+        var request = self.waiting_requests[self.waiting_head].take()
+        self.waiting_head += 1
+        if self.waiting_head == len(self.waiting_slots):
+            self.waiting_slots.clear()
+            self.waiting_requests.clear()
+            self.waiting_head = 0
+        return request^
 
     def slot_channel_stream(self, slot: Int) -> Bool:
         """`OffloadPool.slot_channel_stream`, inert when the pool is disabled."""

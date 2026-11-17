@@ -7912,7 +7912,26 @@ echo -n 'ab' | curl -s --max-time 8 --data-binary @- $B/echo | grep -q 'ab' \
 code=$(curl -s -o /dev/null --max-time 8 -w '%{http_code}' $B/validate/canary)
 [ "$code" = "500" ] || fail "the validator canary answered $code, want 500 -- the wrapper is not engaged"
 
+kill -TERM $pid; wait_exit 'the validated pass'
+
+# --- more requests in flight than the executor holds (L39) --------------
+# 300 requests to a handler that sleeps, against a bound of 256. The 257th
+# used to run on the loop's own thread: no connection was served, and no
+# SIGTERM seen, until it returned. Now it waits for one of the 256.
+ulimit -n 4096 2>/dev/null || true
+log=$SMOKE_DIR/asgi-inflight.log
+spawn asgi-inflight.log "$srv" $SPEC --health-path /health
+wait_ready $B/ $pid
+M0_PORT=$port python3 scripts/asgi_inflight_probe.py || fail 'requests past the executor in-flight bound stopped the loop, or were not answered'
+grep -q 'requests are in flight' "$log" || fail 'the loop did not say that requests were waiting for the executor'
+# And a stop while 300 are held by a handler that never returns in time:
+# the drain is 5 s and the executor grace 3, so the server is gone well
+# inside wait_exit's 30 s. It used to be alive ten minutes later.
+M0_PORT=$port M0_PID=$pid python3 scripts/asgi_inflight_probe.py stop || fail 'the stop arm of the in-flight probe failed'
+wait_exit 'SIGTERM with 300 requests held'
+
 echo "smoke-asgi OK"
+python3 scripts/emit.py --covers L39 --task smoke-asgi
 python3 scripts/emit.py --covers L1 --task smoke-asgi
 python3 scripts/emit.py --covers F26 --task smoke-asgi
 python3 scripts/emit.py --covers L2 --task smoke-asgi

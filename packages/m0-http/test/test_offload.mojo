@@ -20,7 +20,7 @@ from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.socket import close, recv
 from lightbug_http.event_loop import _wait_for_events
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.loop.offload import _run_inline
+from lightbug_http.loop.offload import _admit_waiting, _run_inline
 from lightbug_http.loop.state import LoopState
 from lightbug_http.service import HTTPService
 from lightbug_http.offload import (
@@ -352,8 +352,9 @@ def test_loop_state_is_inert_without_a_pool() raises:
 def test_loop_state_stops_accepting_at_the_inflight_bound() raises:
     """The bound is what keeps the channels inside a default `rmem_max`.
 
-    Past it the loop runs requests inline — degraded, never dropped — so
-    `accepting()` going False is a policy, not an error.
+    Past it a request waits for an executor's lane (SPEC L39) and runs on
+    the loop for a pool thread's — never dropped — so `accepting()` going
+    False is a policy, not an error.
     """
     var pool = OffloadPool(4)
     var state = OffloadLoopState(pool.addr(), 16)
@@ -1713,6 +1714,78 @@ struct _InlineApp(HTTPService):
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
         self.calls += 1
         return OK(String("inline"))
+
+
+def test_a_request_waits_for_an_executor_lane_and_for_no_other() raises:
+    """Past the bound a request for an executor's lane waits (SPEC L39):
+    run on the loop it was the executor's `run_until_complete` there. A
+    pool thread's lane still falls back to the loop, as it did. And once
+    one request waits, the next waits behind it though room has appeared."""
+    var pool = OffloadPool(8)
+    var state = OffloadLoopState(pool.addr(), 8)
+    state.inflight = OFFLOAD_MAX_INFLIGHT
+    assert_false(state.must_wait("/x"), "a pool thread's lane was made to wait")
+    pool.enable_base_stream_ack()
+    assert_true(state.must_wait("/x"))
+    state.inflight = 0
+    assert_false(state.must_wait("/x"), "a request waited with room and nobody ahead")
+    state.hold_waiting(3, _request("/first"))
+    assert_true(state.must_wait("/x"), "a request overtook one that was waiting")
+    assert_equal(state.waiting_count(), 1)
+    assert_equal(state.next_waiting(), 3)
+    assert_equal(state.take_waiting().uri.path, "/first")
+    assert_equal(state.waiting_count(), 0)
+    assert_false(OffloadLoopState(0, 8).must_wait("/x"))
+    # `pool` must outlive the state that holds its address.
+    _ = pool.capacity
+
+
+def test_waiting_requests_are_admitted_oldest_first_as_room_appears() raises:
+    """`_admit_waiting` submits what waited, in order, only while there is
+    room, and runs none of it on the loop. A request whose client left
+    while it waited is released and takes no room."""
+    var pool = OffloadPool(8)
+    pool.enable_base_stream_ack()
+    var config = ServerConfig()
+    config.max_connections = 8
+    var st = LoopState(
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+    )
+    var backend = PlatformBackend()
+    var app = _InlineApp()
+    var pair = _stream_pair()
+    var slots = List[Int]()
+    for i in range(4):
+        var slot = st.provision_pool.borrow()
+        slots.append(slot)
+        # The second one's client has left: its slot has no descriptor.
+        if i != 1:
+            st.slot_fds[slot] = pair[0]
+        st.offload.hold_waiting(slot, _request("/w" + String(i)))
+        st.offload.offloaded[slot] = True
+    st.offload.inflight = OFFLOAD_MAX_INFLIGHT
+    _admit_waiting(app, backend, st)
+    assert_equal(st.offload.waiting_count(), 4, "a request was admitted with no room")
+    # Room for two: the first and the third go, the second is released on
+    # the way, the fourth still waits.
+    st.offload.inflight = OFFLOAD_MAX_INFLIGHT - 2
+    _admit_waiting(app, backend, st)
+    assert_equal(st.offload.waiting_count(), 1)
+    assert_equal(st.offload.next_waiting(), slots[3])
+    assert_equal(st.offload.inflight, OFFLOAD_MAX_INFLIGHT)
+    assert_false(st.offload.offloaded[slots[1]], "the departed client's slot stayed held")
+    assert_true(st.offload.offloaded[slots[0]])
+    assert_true(st.offload.offloaded[slots[2]])
+    assert_equal(st.offload.pending_submit_count, 2)
+    assert_equal(st.offload.pending_submit[0][0], slots[0])
+    assert_equal(st.offload.pending_submit[0][1], slots[2])
+    assert_equal(pool.unpark_request(slots[0]).uri.path, "/w0")
+    assert_equal(pool.unpark_request(slots[2]).uri.path, "/w2")
+    assert_equal(app.calls, 0, "a waiting request was run on the loop")
+    close(RawFileDescriptor(c_int(pair[0])))
+    close(RawFileDescriptor(c_int(pair[1])))
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
 
 
 def test_run_inline_counts_only_the_requests_it_ran() raises:
