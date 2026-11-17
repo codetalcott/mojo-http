@@ -66,12 +66,16 @@ With no topology flag or `M0_*` topology variable, the protocol chooses:
 | WSGI (Django, Flask) | one event loop, a pool of `min(cores, 8)` handler threads | a slow view holds its thread, not the connections behind it |
 | ASGI (FastHTML, Starlette, Django ASGI) | one event loop, an asyncio executor | requests overlap wherever the app awaits, uvicorn's shape |
 
-An event loop hands its asyncio executor 256 requests at a time. A request
-that arrives while 256 are unanswered waits for one of them, and the loop
-says so once on stderr; what the loop answers itself, the health path
-among it, is answered meanwhile. A response counts from its request to
-its head: a stream that has sent its head and no body yet is not one of
-the 256. `--workers N` is N loops, each with its own 256.
+An event loop hands its asyncio executor as many requests at once as it
+has connections, up to 1024, so on a default server every request's
+handler may be awaiting at the same time, as under uvicorn. With
+`--max-connections` above 1024, a request that arrives while 1024 are
+unanswered waits for one of them, and the loop says so once on stderr;
+what the loop answers itself, the health path among it, is answered
+meanwhile. A response counts from its request to its head: a stream that
+has sent its head is not one of them. `--workers N` is N loops, each with
+its own count, and a mount set (`--mount`) keeps 256 a loop.
+`M0_EXECUTOR_INFLIGHT=N` sets the number outright.
 
 A response's head is sent when the application sends it, as under uvicorn.
 One whose body does not follow at once and whose head declares no

@@ -193,7 +193,9 @@ from lightbug_http.offload_wire import (
 
 
 comptime OFFLOAD_MAX_INFLIGHT = 256
-"""Jobs that may be outstanding at once, across all pool threads.
+"""Jobs that may be outstanding at once, across all pool threads: the
+default of `OffloadPool.max_inflight`, which a lone asyncio executor's pool
+raises (`executor_inflight`, SPEC L43).
 
 Not a throughput knob — a bound on how much the channels must hold. Linux
 charges a UNIX datagram's whole `skb` (several hundred bytes of overhead for
@@ -209,6 +211,42 @@ loop until it returned. Neither drops a request.
 It also sizes the pool's job tables (`OffloadPool.requests`): an entry per
 job that can be in flight, not per slot.
 """
+
+comptime EXECUTOR_MAX_INFLIGHT = 1024
+"""The most requests a loop hands a lone asyncio executor at once, when it
+has that many connections (`executor_inflight`, SPEC L43): the default
+connection count, so a default server has no bound to meet.
+
+Not higher, because the job tables are sized by it: at 4096 the executor's
+idle share of a connection slot measured 468 B between 1024 and 16384
+connections, against the 360 B `smoke-max-connections` holds it to (SPEC
+C27). At 1024 the tables cost the same at every connection count from
+there up, 672 KB a loop over the 256 they held (idle RSS, macOS M4,
+2026-11-17)."""
+
+
+def executor_inflight(max_connections: Int) -> Int:
+    """How many requests may be in flight on a loop whose one lane is an
+    asyncio executor's: as many as it has connections, since a connection
+    has one request in flight at most, up to `EXECUTOR_MAX_INFLIGHT`.
+
+    256 held an application to 256 handlers awaiting at once -- an upstream
+    call, a long poll -- with the 257th request waiting for one to finish,
+    where uvicorn overlaps them all. The cap keeps a server asked for tens
+    of thousands of connections from reserving a request and a response
+    for each (SPEC C26); past it a request waits, as before (L39).
+    `M0_EXECUTOR_INFLIGHT` sets it outright, at least 1: the A/B knob, and
+    a gate's way to meet the bound with a few hundred sockets."""
+    var asked = getenv("M0_EXECUTOR_INFLIGHT", "")
+    if asked.byte_length() > 0:
+        try:
+            var n = Int(asked)
+            if n >= 1:
+                return n
+        except:
+            pass
+    return min(max_connections, EXECUTOR_MAX_INFLIGHT)
+
 
 comptime NO_ENTRY: Int32 = -1
 """`OffloadPool.slot_entry` for a slot with no job parked."""
@@ -627,6 +665,11 @@ struct OffloadPool(Movable):
 
     var capacity: Int
 
+    var max_inflight: Int
+    """Jobs that may be outstanding at once: `OFFLOAD_MAX_INFLIGHT` unless
+    the pool was built for a lone executor (`executor_inflight`). It sizes
+    the job tables and is what `OffloadLoopState.accepting` holds to."""
+
     var ring_enabled: Bool
     """The in-memory handoff (module docstring). Off under `M0_POOL_RING=0`,
     and always off for a disabled pool."""
@@ -727,7 +770,9 @@ struct OffloadPool(Movable):
     var thread_cap: Int
     """Records in `thread_base`; `register_thread` hands them out."""
 
-    def __init__(out self, capacity: Int) raises:
+    def __init__(
+        out self, capacity: Int, max_inflight: Int = OFFLOAD_MAX_INFLIGHT,
+    ) raises:
         """`capacity == 0` builds a disabled pool: no descriptors, no storage.
 
         The threaded mode's loop and the Mojo host's worker build one where
@@ -758,7 +803,8 @@ struct OffloadPool(Movable):
         self._drain_buf.resize(OFFLOAD_MAX_INFLIGHT * _JOB_BYTES, 0)
         # The job tables hold what can be in flight, not what can connect:
         # one entry per job, at most `OFFLOAD_MAX_INFLIGHT` (`requests`).
-        var entries = min(slots, OFFLOAD_MAX_INFLIGHT)
+        self.max_inflight = max_inflight if max_inflight >= 1 else OFFLOAD_MAX_INFLIGHT
+        var entries = min(slots, self.max_inflight)
         self.requests = List[Optional[HTTPRequest]](capacity=entries)
         self.responses = List[Optional[HTTPResponse]](capacity=entries)
         self.free_entries = List[Int](capacity=entries)
@@ -2605,9 +2651,9 @@ struct OffloadLoopState(Movable):
         self.waiting_requests = List[Optional[HTTPRequest]]()
         self.waiting_head = 0
         self.waiting_notice = String(
-            "event loop: 256 requests are in flight on the asyncio executor,"
-            " which is all a loop hands it at once; each later request waits"
-            " for one of them to be answered"
+            " requests are in flight on the asyncio executor, which is all"
+            " this loop hands it at once; each later request waits for one"
+            " of them to be answered"
         )
         self.ack_owed_count = 0
         self.streaming_hint = 0
@@ -2721,10 +2767,32 @@ struct OffloadLoopState(Movable):
     def hold_waiting(mut self, slot: Int, var request: HTTPRequest):
         """Keep `request` until an executor lane has room for it."""
         if self.waiting_notice.byte_length() > 0:
-            print(self.waiting_notice, file=stderr)
+            print(
+                "event loop: " + String(self.pool()[].max_inflight)
+                + self.waiting_notice,
+                file=stderr,
+            )
             self.waiting_notice = String("")
         self.waiting_slots.append(slot)
         self.waiting_requests.append(Optional[HTTPRequest](request^))
+
+    def hold_waiting_first(mut self, slot: Int, var request: HTTPRequest):
+        """Put `request` back at the FRONT: it had been admitted and its
+        submit was refused, so it is older than everything still waiting
+        (`loop/offload.mojo`, `_hold_unsent`). Rebuilt rather than shifted:
+        a refused submit is rare and what waits is short."""
+        var slots = List[Int](capacity=self.waiting_count() + 1)
+        var requests = List[Optional[HTTPRequest]](capacity=self.waiting_count() + 1)
+        slots.append(slot)
+        requests.append(Optional[HTTPRequest](request^))
+        for i in range(self.waiting_head, len(self.waiting_slots)):
+            slots.append(self.waiting_slots[i])
+            requests.append(
+                Optional[HTTPRequest](self.waiting_requests[i].take())
+            )
+        self.waiting_slots = slots^
+        self.waiting_requests = requests^
+        self.waiting_head = 0
 
     def next_waiting(self) -> Int:
         """The slot that has waited longest. Only with `waiting_count() > 0`."""
@@ -2771,7 +2839,7 @@ struct OffloadLoopState(Movable):
         (`OffloadPool.has_free_entry`)."""
         return (
             self.addr != 0
-            and self.inflight < OFFLOAD_MAX_INFLIGHT
+            and self.inflight < self.pool()[].max_inflight
             and self.pool()[].has_free_entry()
         )
 

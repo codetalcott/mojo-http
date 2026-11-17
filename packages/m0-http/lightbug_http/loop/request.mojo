@@ -45,7 +45,7 @@ from lightbug_http.loop.response import (
     _finish_response, _send_error_to_fd, _send_interim, _take_owed_interim,
 )
 from lightbug_http.loop.streams import _read_websocket
-from lightbug_http.loop.offload import _run_inline
+from lightbug_http.loop.offload import _hold_unsent
 
 
 # How long a connection refused before its request was read keeps reading,
@@ -940,14 +940,10 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                     if handler.direct_job(slot):
                         return
                     if st.offload.queue_submit(slot, lane):
-                        # The lane's batch is full: send it now, and run
-                        # inline whatever it could not carry — the same
-                        # answer a refused `submit` always had. What the
-                        # handler raises there is its 500, answered inside
-                        # `_run_inline`, so nothing comes back up here.
-                        _ = _run_inline(
-                            handler, backend, st, st.offload.flush_lane(lane)
-                        )
+                        # The lane's batch is full: send it now. What the
+                        # channel refuses waits for it (`_hold_unsent`),
+                        # this request perhaps among it.
+                        _hold_unsent(st, st.offload.flush_lane(lane))
                     return
                 if pool.submit(slot, target):
                     # The slot is working, not idle: the sweeps skip it
