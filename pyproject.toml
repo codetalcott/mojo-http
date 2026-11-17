@@ -4250,6 +4250,34 @@ if got != $want:
 replay_frames 7 --realtime --replay-frames 7
 replay_frames 0 --replay-frames 7
 
+# The requests a loop hands its asyncio executor at once (SPEC L43): as
+# many as it has connections, up to 1024, for an ASGI application served
+# alone; M0_EXECUTOR_INFLIGHT sets it, never past the connections; a value
+# that is not a number of requests is named on stderr and the default kept.
+# 0 where no asyncio executor serves the application.
+inflight() {
+  want="$1"; shift
+  env "$@" --doctor > "$json" 2>"$json.err" || fail "doctor $* did not exit 0"
+  python3 -c "
+import json, sys
+got = json.load(open('$json'))['server']['executor_inflight']
+if got != $want:
+    sys.exit('executor_inflight is %r, want $want' % got)
+" || fail "doctor $*: the executor's in-flight bound reported is not the one served"
+}
+ASGI="bareapp.asgi:application --app-dir apps/asgi_bare"
+inflight 1024 "$srv" $ASGI
+inflight 300 "$srv" $ASGI --max-connections 300
+inflight 256 M0_EXECUTOR_INFLIGHT=256 "$srv" $ASGI
+inflight 300 M0_EXECUTOR_INFLIGHT=4096 "$srv" $ASGI --max-connections 300
+inflight 0 "$srv" $SPEC
+inflight 1024 M0_EXECUTOR_INFLIGHT=zero "$srv" $ASGI
+grep -q "ignoring M0_EXECUTOR_INFLIGHT='zero'" "$json.err" \
+  || fail 'an M0_EXECUTOR_INFLIGHT that is not a number was not named on stderr'
+inflight 1024 M0_EXECUTOR_INFLIGHT=0 "$srv" $ASGI
+grep -q "ignoring M0_EXECUTOR_INFLIGHT='0'" "$json.err" \
+  || fail 'an M0_EXECUTOR_INFLIGHT of 0 was not named on stderr'
+
 echo 'smoke-doctor: --doctor agrees with the server on every refusal'
 python3 scripts/emit.py --covers E7 --task smoke-doctor
 python3 scripts/emit.py --covers F8 --task smoke-doctor
@@ -4257,6 +4285,7 @@ python3 scripts/emit.py --covers M5 --task smoke-doctor
 python3 scripts/emit.py --covers M20 --task smoke-doctor
 python3 scripts/emit.py --covers M28 --task smoke-doctor
 python3 scripts/emit.py --covers I43 --task smoke-doctor
+python3 scripts/emit.py --covers L43 --task smoke-doctor
 """
 
 [tool.poe.tasks.smoke-serve]

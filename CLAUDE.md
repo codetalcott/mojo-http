@@ -969,7 +969,12 @@ keeps the loop and its workers on performance cores; accepted and ignored
 elsewhere), `M0_MAX_KEEPALIVE_REQUESTS` (the keep-alive cap; 0 = never close
 for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and
 `M0_GRANT_COOKIE` (the hold mount's key, its previous key during a rotation,
-and the cookie a grant binds to; `sessionid`), `M0_THREAD_HEADER` (`1`
+and the cookie a grant binds to; `sessionid`), `M0_EXECUTOR_INFLIGHT`
+(how many requests a loop hands an ASGI application served alone at
+once: its connections up to 1024 unset, never past them; read by
+m0serve's `from_env` into `ServeOptions.executor_inflight_for`, which
+sizes the pool and is what `--doctor` reports; SPEC L43),
+`M0_THREAD_HEADER` (`1`
 names the handler-pool thread in `x-thread` on every response; off),
 `M0_SPAWN_WORKERS`,
 `M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT`, `M0_REPLAY_FRAMES` and
@@ -985,9 +990,6 @@ allows), and `M0_LIBPQ`, `M0_LIBSQLITE3` and `M0_LIBZSTD` (the library to
 `dlopen`).
 
 A/B knobs, not flags, each a gate's negative arm or a measurement's:
-`M0_EXECUTOR_INFLIGHT` (how many requests a loop hands a lone asyncio
-executor at once; unset, its connection count up to 1024; `256` is the
-bound through 1.17.0; SPEC L43),
 `M0_ASGI_HEAD_AT_START` (`0` holds an ASGI response's head for its first
 body, the answer through 1.17.0; SPEC L40),
 `M0_ACCEPT_SHARE` (`0` off), `M0_ACCEPT_BATCH` (default 16; `0` takes the

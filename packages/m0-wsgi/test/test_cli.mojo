@@ -453,6 +453,7 @@ def _clear_env():
         String("M0_BODY_TIMEOUT"), String("M0_REPLAY_FRAMES"),
         String("M0_MAX_CONNECTIONS"), String("M0_THREAD_HEADER"),
         String("M0_WS_ORIGIN"), String("M0_RECLAIM"),
+        String("M0_EXECUTOR_INFLIGHT"),
     ]:
         _ = setenv(name, "", True)
 
@@ -1663,6 +1664,50 @@ def test_from_env_ignores_an_unreadable_replay_depth_and_says_so() raises:
         seed.env_ignored[0],
         "ignoring M0_REPLAY_FRAMES='lots', not a whole number of frames; using 64",
     )
+    _clear_env()
+
+
+def test_from_env_reads_the_executors_in_flight_bound() raises:
+    """L43: `M0_EXECUTOR_INFLIGHT` is what a lone executor's loop takes,
+    never past its connections; a mount set keeps 256, and with no
+    executor there is no bound to report."""
+    _clear_env()
+    var plain = ServeOptions.from_env()
+    assert_equal(plain.executor_inflight, -1)
+    assert_equal(plain.executor_inflight_for(True, 1024), 1024)
+    assert_equal(plain.executor_inflight_for(True, 300), 300)
+    assert_equal(plain.executor_inflight_for(False, 1024), 0)
+    _ = setenv("M0_EXECUTOR_INFLIGHT", "256", True)
+    var seed = ServeOptions.from_env()
+    assert_equal(seed.executor_inflight, 256)
+    assert_equal(len(seed.env_ignored), 0)
+    assert_equal(seed.executor_inflight_for(True, 1024), 256)
+    _ = setenv("M0_EXECUTOR_INFLIGHT", "4096", True)
+    var high = ServeOptions.from_env()
+    assert_equal(high.executor_inflight_for(True, 300), 300)
+    assert_equal(high.executor_inflight_for(True, 8192), 4096)
+    var mounted = parse_args(
+        [String("--mount"), String("/a=m.asgi")], high
+    )
+    assert_equal(mounted.executor_inflight_for(True, 8192), 256)
+    _clear_env()
+
+
+def test_from_env_names_an_unreadable_executor_bound_and_keeps_the_default() raises:
+    """A value that is not a whole number of requests, 0 included, is said
+    on stderr and the default kept: it used to be passed over silently."""
+    for raw in [String("zero"), String("0"), String("-3")]:
+        _clear_env()
+        _ = setenv("M0_EXECUTOR_INFLIGHT", raw, True)
+        var seed = ServeOptions.from_env()
+        assert_equal(seed.executor_inflight, -1)
+        assert_equal(len(seed.env_ignored), 1)
+        assert_equal(
+            seed.env_ignored[0],
+            "ignoring M0_EXECUTOR_INFLIGHT='" + raw
+            + "', not a whole number of requests, 1 or more; using as many"
+            " as a loop's connections, up to 1024",
+        )
     _clear_env()
 
 
