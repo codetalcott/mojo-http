@@ -2570,6 +2570,14 @@
       "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `scripts/asgi_inflight_probe.py` holds 300 requests to a handler that sleeps 3 s: the health path must answer within 2 s while they are held, all 300 must be answered, the last a second sleep after the first, and the log must carry the notice. Then 300 held for an hour and a SIGTERM: the server must be gone inside 30 s. Before the fix the 257th ran on the loop's thread, the health path timed out, and a server was alive ten minutes after its SIGTERM. Run again under the loop inversion; `test_offload.mojo` holds the queue's order, its bound and a departed client's release"
     },
     {
+      "id": "L40",
+      "section": "L",
+      "category": "L. ASGI 3.0",
+      "capability": "An ASGI response's head is sent when the application sends it, not at its first body: one still without a body at the end of the loop iteration its head was sent in is a stream from then on, so a stream nobody has written to has its head, is no longer a request in flight (L39), and its application is cancelled when its client leaves; a response whose body follows its head at once, or whose head declares a `Content-Length`, is answered whole, as before. The switch that holds a head for its first body is the environment variable RUNNING.md names",
+      "status": "verified",
+      "evidence": "`Conformance test the ASGI bridge` (every PR) \u2014 `scripts/asgi_stream_head_probe.py`: the head of a stream that sends no body must arrive within 1 s, the application must have let go of it within 3 s of its client closing, a response whose one body comes 1.5 s after its head must have its head within 1 s, arrive whole, and leave its connection usable, and the same response with a declared length must arrive with that length and unchunked. Before the change the first of these failed. A second server with the switch off must withhold that head. Run again under the loop inversion; `poe test-shim` holds the rule in the shim, sabotage-proven"
+    },
+    {
       "id": "M1",
       "section": "M",
       "category": "M. Deployment and operations",

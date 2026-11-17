@@ -67,6 +67,7 @@ _WS_CLOSES = []
 # answers both, so a probe can tell when the server told the application
 # its client was gone (SPEC I32).
 _QUIET = {"open": 0, "closed": 0}
+_SILENT = {"open": 0, "closed": 0}
 _WS_TEXTS = []
 
 # /ws/flood's shape. 400 x 4 KB is ~25 send windows' worth, so the
@@ -339,6 +340,30 @@ async def application(scope, receive, send):
         finally:
             _QUIET["open"] -= 1
             _QUIET["closed"] += 1
+    elif path == "/stream-silent":
+        # A stream that has sent NOTHING: its head, then silence until the
+        # server says the client has gone (SPEC L40). The head must reach
+        # the client anyway, and so must the client's leaving reach here.
+        await _send_start(send, 200, [(b"content-type", b"text/event-stream")])
+        _SILENT["open"] += 1
+        try:
+            while (await receive())["type"] != "http.disconnect":
+                pass
+        finally:
+            _SILENT["open"] -= 1
+            _SILENT["closed"] += 1
+    elif path == "/silent-streams":
+        await _text(send, 200, json.dumps(_SILENT).encode())
+    elif path == "/late-body":
+        # A response that waits between its head and its one body, and
+        # never calls receive(): the head goes out while it waits (L40),
+        # unless it declared a length (`?sized`), as FileResponse does.
+        headers = [(b"content-type", b"text/plain")]
+        if scope["query_string"] == b"sized":
+            headers.append((b"content-length", b"4"))
+        await _send_start(send, 200, headers)
+        await asyncio.sleep(1.5)
+        await send({"type": "http.response.body", "body": b"late"})
     elif path == "/quiet-streams":
         await _text(send, 200, json.dumps(_QUIET).encode())
     elif path == "/stream-forever":

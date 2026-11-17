@@ -69,9 +69,17 @@ With no topology flag or `M0_*` topology variable, the protocol chooses:
 An event loop hands its asyncio executor 256 requests at a time. A request
 that arrives while 256 are unanswered waits for one of them, and the loop
 says so once on stderr; what the loop answers itself, the health path
-among it, is answered meanwhile. A streaming response counts until its first
-body, so 256 streams that have sent nothing hold every later request back.
-`--workers N` is N loops, each with its own 256.
+among it, is answered meanwhile. A response counts from its request to
+its head: a stream that has sent its head and no body yet is not one of
+the 256. `--workers N` is N loops, each with its own 256.
+
+A response's head is sent when the application sends it, as under uvicorn.
+One whose body does not follow at once and whose head declares no
+`Content-Length` (a stream nobody has written to) is sent as it is
+produced, chunked, and the application is cancelled when its client
+leaves. One that declares a length is answered whole at its body.
+`M0_ASGI_HEAD_AT_START=0` holds every head for its first body instead, as
+through 1.17.0.
 
 Everything else is opt-in:
 

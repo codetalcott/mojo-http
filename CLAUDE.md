@@ -982,6 +982,8 @@ allows), and `M0_LIBPQ`, `M0_LIBSQLITE3` and `M0_LIBZSTD` (the library to
 `dlopen`).
 
 A/B knobs, not flags, each a gate's negative arm or a measurement's:
+`M0_ASGI_HEAD_AT_START` (`0` holds an ASGI response's head for its first
+body, the answer through 1.17.0; SPEC L40),
 `M0_ACCEPT_SHARE` (`0` off), `M0_ACCEPT_BATCH` (default 16; `0` takes the
 whole backlog), `M0_RECLAIM` (`0` resets a connection that meets a full
 loop rather than taking an idle slot back), `M0_POOL_TURN` (`0` drops the pool's GIL hand-off barrier),

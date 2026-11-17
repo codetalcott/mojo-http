@@ -411,6 +411,30 @@ class Harness:
             msg = await receive()
             self.heard.append((asyncio.current_task(), msg["type"]))
             return
+        if behaviour == "silent":
+            # A stream nobody has written to: its head, then a listener
+            # parked in receive() (SPEC L40).
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await receive()  # the request's own body
+            await receive()  # parked: a disconnect cancels the stream
+            return
+        if behaviour == "lateraise":
+            # A head, a wait, then an error where the body would be.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await asyncio.sleep(0.01)
+            raise ValueError("kaboom after the head")
+        if behaviour in ("latebody", "latesized"):
+            # A head, a wait, then the one body, and no receive() at all.
+            # `latesized` declares the body's length, as FileResponse does.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"Content-Length", b"4")]
+                        if behaviour == "latesized" else []})
+            await asyncio.sleep(0.01)
+            await send({"type": "http.response.body", "body": b"late",
+                        "more_body": False})
+            return
         if behaviour == "bodyfirst":
             # A body before its start, the error caught, then a proper
             # answer: only the proper answer may reach the client.
@@ -2194,6 +2218,52 @@ def test_the_serving_run_keeps_a_thread_pools_threads(h):
     )
 
 
+def test_a_head_leaves_when_it_is_sent_not_at_the_first_body(h):
+    """L40: a response still without a body one loop iteration after its
+    head is a stream from then on, and its head has gone. Answered at the
+    first body, a stream nobody had written to had no head, counted as a
+    request in flight, and its client left unheard. A response whose body
+    follows its head at once is one completion, as it was."""
+    h.job(0, "plain")
+    h.settle()
+    assert h.kinds(0) == ["done"], (
+        "a response whose body follows its head was not one completion: %r"
+        % (h.kinds(0),))
+    h.job(1, "silent")
+    h.settle()
+    assert h.kinds(1) == ["stream_start"], (
+        "the head of a stream with no body yet did not leave: %r"
+        % (h.kinds(1),))
+    owner = h.ns["_exec_slot_task"].get(1)
+    assert getattr(owner, "_m0_streaming", False), (
+        "the stream's owner is not marked streaming")
+    h.disconnect(1)
+    h.settle()
+    assert owner.done(), (
+        "the application went on after its stream's client left")
+    assert 1 not in h.ns["_exec_slot_task"], (
+        "the departed client's request did not release its slot")
+    h.job(2, "latebody")
+    h.settle()
+    assert h.kinds(2) == ["stream_start", "stream_chunk", "stream_end"], (
+        "a body that came after a wait was not sent as produced: %r"
+        % (h.kinds(2),))
+    # A declared length is not an open stream: one completion, whole.
+    h.job(4, "latesized")
+    h.settle()
+    assert h.kinds(4) == ["done"], (
+        "a response that declared its length was streamed: %r"
+        % (h.kinds(4),))
+    # Its head has gone, so an error after it cannot become a 500: the
+    # stream is aborted, and the client reads a truncated response.
+    h.loop.set_exception_handler(lambda loop, ctx: None)
+    h.job(3, "lateraise")
+    h.settle()
+    assert h.kinds(3)[:2] == ["stream_start", "stream_abort"], (
+        "an error after a head that had left was not an abort: %r"
+        % (h.kinds(3),))
+
+
 def test_the_publisher_keeps_what_the_fasthtml_page_says(h):
     """L38's page states three facts about `scope["state"]["m0"]` no served
     phase reaches: a frame over 64 KB raises, a subscriber more than its
@@ -2339,6 +2409,7 @@ TESTS = [
     test_a_stop_read_by_a_flush_starts_the_drain,
     test_the_serving_run_keeps_a_thread_pools_threads,
     test_the_publisher_keeps_what_the_fasthtml_page_says,
+    test_a_head_leaves_when_it_is_sent_not_at_the_first_body,
     test_background_work_inside_the_grace_finishes,
     test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
     test_a_task_left_behind_never_reaches_the_port,
@@ -2371,6 +2442,12 @@ TESTS = [
 # some entry's catcher.
 
 SABOTAGES = [
+    (
+        "a response's head waits for its first body",
+        "                _heads_pending.append(self)\n",
+        "                pass\n",
+        ("test_a_head_leaves_when_it_is_sent_not_at_the_first_body",),
+    ),
     (
         "the streaming mark goes on the current task, not the slot's owner",
         "                task = self.task\n"

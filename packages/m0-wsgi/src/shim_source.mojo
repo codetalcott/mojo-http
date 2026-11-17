@@ -44,6 +44,19 @@ _ASGI_STREAM_GRACE = 10.0
 # it never called receive() -- before it is cancelled (see _Cycle.send).
 _HEAD_GRACE = 1.0
 
+# A response's head leaves when the application sends it, not at its first
+# body (SPEC L40; `_Cycle._head_due`). `M0_ASGI_HEAD_AT_START=0` puts the
+# old answer back: the head of a response waits for its first body.
+
+
+def _head_at_start():
+    import os
+
+    return os.environ.get('M0_ASGI_HEAD_AT_START', '1') != '0'
+
+
+_HEAD_AT_START = _head_at_start()
+
 # --- streamed WSGI bodies ---------------------------------------------------
 # On a pool thread with a chunk channel, an iterable the application did not
 # size is streamed rather than joined: `run` returns the head and keeps the
@@ -1164,7 +1177,18 @@ def _exec_put(ev):
         _loop.create_task(_finish_and_stop())
 
 
+# Responses whose head was sent in this loop iteration (`_Cycle.send`).
+_heads_pending = []
+
+
 def _flush():
+    if _heads_pending:
+        # Before the port's flush, and while the flush is still armed, so
+        # a head that leaves here rides this flush and arms no other.
+        due = _heads_pending[:]
+        del _heads_pending[:]
+        for cycle in due:
+            cycle._head_due()
     _flush_armed[0] = False
     if _exec_closed[0]:
         return
@@ -1396,7 +1420,8 @@ class _Cycle:
     # `poe test-shim` sabotages each of them.
     #
     # Buffered until the application proves it is streaming (its first
-    # more_body=True chunk), then a credit-gated chunk producer. A
+    # more_body=True chunk, or a head with no body by the end of the loop
+    # iteration: `_head_due`), then a credit-gated chunk producer. A
     # buffered request returns a (status, headers, body) triple and the
     # done-callback answers through the completion channel; a streaming
     # one returns None and its bytes travel as events instead --
@@ -1536,6 +1561,15 @@ class _Cycle:
         if t == 'http.response.start':
             self.status = int(message.get('status', 500))
             self.headers = list(message.get('headers', []))
+            if _HEAD_AT_START:
+                # Looked at by the iteration's one flush (`_flush`), which
+                # the body that usually follows would arm anyway: a
+                # callback of its own per response cost 2.7% of the bare
+                # hello row.
+                _heads_pending.append(self)
+                if not _flush_armed[0]:
+                    _flush_armed[0] = True
+                    _loop.call_soon(_flush)
         elif t == 'http.response.body':
             chunk = bytes(message.get('body', b'') or b'')
             more = bool(message.get('more_body', False))
@@ -1663,6 +1697,52 @@ class _Cycle:
             self.completed = True
             body, self.chunks = b''.join(self.chunks), []
             _exec_put(('done', self.slot, self.status, self.headers, body))
+
+    def _head_due(self):
+        # At the end of the loop iteration http.response.start was sent in
+        # (`_flush`). A response whose body follows its head at once (Starlette's Response, Django's)
+        # is answered by now and this does nothing. One still without a
+        # body is waiting on something -- a StreamingResponse's generator,
+        # an EventStream nobody has published to -- and its head goes out
+        # NOW, as uvicorn sends it: answered at the first body, a quiet
+        # stream had no head for as long as it was quiet, an EventSource
+        # did not open, the request counted against the loop's 256 in
+        # flight, and its client could leave unheard, since nothing tells
+        # an application about a request not yet answered (SPEC L40).
+        #
+        # It is the switch to streaming, taken as though the application
+        # had sent an empty body with more to come: `send`'s own branch, so
+        # the ownership rules and the HEAD, 1xx, 204 and 304 answers there
+        # are this path's too. With no chunk and nothing buffered that
+        # branch awaits nothing, so one step runs it whole.
+        if (
+            self.completed
+            or self.streaming
+            or self.chunks
+            or self.status is None
+            or self.task is None
+            or self.task.done()
+            or _task_gone(self.task)
+        ):
+            return
+        for name, _value in self.headers:
+            if name.lower() == b'content-length':
+                # A body of a declared length is not an open stream: it is
+                # answered whole at its body, with that length. Streamed,
+                # the loop frames it chunked and drops the length, which is
+                # what Starlette's FileResponse lost here: it reads its
+                # file between its head and its body (15,406 bytes of
+                # favicon chunked, where uvicorn sent a Content-Length).
+                return
+        step = self.send(
+            {'type': 'http.response.body', 'body': b'', 'more_body': True}
+        )
+        try:
+            step.send(None)
+        except StopIteration:
+            return
+        step.close()
+        raise RuntimeError('the switch to streaming awaited with nothing to send')
 
     def _stop_unheard(self):
         # A HEAD answered early whose application nothing could tell (see
