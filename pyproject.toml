@@ -7937,6 +7937,13 @@ log=$SMOKE_DIR/asgi-head.log
 spawn asgi-head.log "$srv" $SPEC
 wait_ready $B/ $pid
 M0_PORT=$port python3 scripts/asgi_stream_head_probe.py || fail 'the head of a silent stream was withheld, or its client left unheard'
+# A streamed body whose head declared its length keeps it (L41): the loop
+# framed every stream chunked, and FileResponse lost the length of any
+# file larger than one chunk.
+M0_PORT=$port python3 scripts/asgi_sized_stream_probe.py || fail 'a streamed body lost the Content-Length its head declared'
+# The client of a request not yet answered leaves, and an application
+# listening for it hears (L42); one that half-closes is still answered.
+M0_PORT=$port python3 scripts/asgi_gone_probe.py || fail 'a departed client went unheard, or a half-closed one unanswered'
 kill -TERM $pid; wait_exit 'the head phase'
 # The switch puts the old answer back, which is also this phase's proof
 # that the probe above can fail.
@@ -7947,6 +7954,8 @@ kill -TERM $pid; wait_exit 'the head phase with the switch off'
 
 echo "smoke-asgi OK"
 python3 scripts/emit.py --covers L40 --task smoke-asgi
+python3 scripts/emit.py --covers L41 --task smoke-asgi
+python3 scripts/emit.py --covers L42 --task smoke-asgi
 python3 scripts/emit.py --covers L39 --task smoke-asgi
 python3 scripts/emit.py --covers L1 --task smoke-asgi
 python3 scripts/emit.py --covers F26 --task smoke-asgi

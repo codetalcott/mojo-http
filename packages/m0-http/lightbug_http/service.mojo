@@ -4,7 +4,7 @@ from lightbug_http.http import HTTPRequest, HTTPResponse
 trait HTTPService:
     """The handler contract. `func` is the only method you must write.
 
-    The other fourteen carry default bodies — the same empty implementations
+    The other fifteen carry default bodies — the same empty implementations
     every handler used to spell out by hand — so a handler declares only the
     hooks it actually uses. Overriding one is ordinary: define it and yours
     wins.
@@ -190,6 +190,19 @@ trait HTTPService:
         `Feed` keep the list; a handler forwards their `take_ready`.
         """
         return False
+
+    def peer_finished(mut self, slot: Int, lane: Int):
+        """`slot`'s peer shut down its sending side while its request is
+        out on `lane`, an asyncio executor's (SPEC L42).
+
+        The connection stays as it is: the request is still owed its answer
+        and the completion sends it, since a half-close says "that is the
+        whole request", not "I have gone". This only lets a handler tell
+        an application that asked, as an ASGI `receive()` does. Called
+        once a request, on the loop, and not for a peer that had already
+        finished when its request was handed over. The default does
+        nothing."""
+        pass
 
     def direct_job(mut self, slot: Int) -> Bool:
         """Take a parked request for an executor lane on THIS thread, or decline.

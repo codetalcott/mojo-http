@@ -70,6 +70,11 @@ struct HTTPResponse(Encodable, Movable, Writable):
     var protocol: String
     var sse_streaming: Bool
 
+    var stream_length: Int
+    """For a streaming response: the body length its producer declared, or
+    -1 for none. The loop writes such a stream under its `Content-Length`,
+    unframed (SPEC L41). A field, not the header: a response built with
+    invented entity headers carries a `Content-Length: 0` nobody declared."""
     var zstd_stream: Bool
     """Whether the loop compresses this stream with zstd: one context for
     the stream's life and a block flushed per write, the body after the
@@ -170,6 +175,7 @@ struct HTTPResponse(Encodable, Movable, Writable):
         self.body_raw = owned_body^
         self.sse_streaming = False
         self.zstd_stream = False
+        self.stream_length = -1
         self.body_fd = -1
         self.body_fd_offset = 0
         self.body_fd_len = 0

@@ -68,6 +68,8 @@ _WS_CLOSES = []
 # its client was gone (SPEC I32).
 _QUIET = {"open": 0, "closed": 0}
 _SILENT = {"open": 0, "closed": 0}
+_HEARD = {"waiting": 0, "heard": 0}
+SIZED_PIECE = 100_000
 _WS_TEXTS = []
 
 # /ws/flood's shape. 400 x 4 KB is ~25 send windows' worth, so the
@@ -364,6 +366,34 @@ async def application(scope, receive, send):
         await _send_start(send, 200, headers)
         await asyncio.sleep(1.5)
         await send({"type": "http.response.body", "body": b"late"})
+    elif path == "/sized-stream":
+        # A streamed body whose head declares its length, as Starlette's
+        # FileResponse sends a file larger than one chunk (SPEC L41).
+        # `?short` stops a third of the way: the client must see a
+        # truncated body, never a clean end.
+        await _send_start(send, 200, [
+            (b"content-type", b"application/octet-stream"),
+            (b"content-length", b"%d" % (3 * SIZED_PIECE)),
+        ])
+        pieces = 1 if scope["query_string"] == b"short" else 3
+        for i in range(pieces):
+            await send({"type": "http.response.body",
+                        "body": bytes([65 + i]) * SIZED_PIECE,
+                        "more_body": True})
+        await send({"type": "http.response.body", "body": b""})
+    elif path == "/await-disconnect":
+        # A request not yet answered whose handler listens for its client:
+        # a long poll. The client's leaving must reach here (SPEC L42).
+        _HEARD["waiting"] += 1
+        try:
+            while (await receive())["type"] != "http.disconnect":
+                pass
+            _HEARD["heard"] += 1
+        finally:
+            _HEARD["waiting"] -= 1
+        await _text(send, 200, b"nobody is listening")
+    elif path == "/heard":
+        await _text(send, 200, json.dumps(_HEARD).encode())
     elif path == "/quiet-streams":
         await _text(send, 200, json.dumps(_QUIET).encode())
     elif path == "/stream-forever":

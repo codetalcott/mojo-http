@@ -588,6 +588,9 @@ _exec_inflight = {}
 
 # Tags on the submit channel beyond the plain 8-byte job datagram.
 _TAG_DISCONNECT = 1
+# The tag's code for a peer that finished sending while its request is in
+# flight: `PEER_FINISHED` in handler.mojo, below every WebSocket close code.
+_PEER_FINISHED = 1
 _TAG_WS_MESSAGE = 2
 _TAG_BUS_FRAME = 3
 _TAG_JOB_BATCH = 4
@@ -900,6 +903,29 @@ def _exec_on_disconnect(slot, code=0):
     # from receive(), uvicorn's contract, so the application's own
     # `except WebSocketDisconnect:` cleanup runs (see spawn_ws).
     owner = _exec_slot_task.get(slot)
+    if code == _PEER_FINISHED:
+        # Not a disconnect: the client of a request still in flight has
+        # finished SENDING (SPEC L42). Its connection is open and its
+        # answer still owed -- a half-close says "that is the whole
+        # request" -- so nothing is cancelled, the task is not marked gone
+        # and what it sends is still delivered. Only receive() changes: it
+        # answers http.disconnect, as uvicorn's does, which is how a long
+        # poll learns nobody is waiting. A stream or a socket has its own
+        # disconnect, and a slot with no task has nobody to tell.
+        if (
+            owner is None
+            or owner.done()
+            or getattr(owner, '_m0_streaming', False)
+            or getattr(owner, '_m0_ws', False)
+        ):
+            return
+        fut = _exec_disconnects.get(slot)
+        if fut is None:
+            fut = _loop.create_future()
+            _exec_disconnects[slot] = fut
+        if not fut.done():
+            fut.set_result(True)
+        return
     if owner is not None:
         owner._m0_disconnected = True
     # The bytes this slot still had in flight are the OLD connection's:

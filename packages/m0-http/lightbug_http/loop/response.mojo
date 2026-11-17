@@ -251,6 +251,7 @@ def _answers_the_last_request(mut st: LoopState, slot: Int, fd_val: Int) -> Bool
     return n == 0
 
 
+
 def _finish_response[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState, slot: Int, fd_val: Int,
     var response: HTTPResponse,
@@ -434,8 +435,23 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
         st.offload.ack_owed[slot] = 0
         st.offload.ack_owed_count -= 1
     if response.sse_streaming:
-        response.headers.pop("content-length")
         var channel_stream = st.offload.slot_channel_stream(slot)
+        # A channel stream whose head declares its length keeps it, and is
+        # written under it unframed (SPEC L41): chunked instead, Starlette's
+        # FileResponse lost the length of every file larger than one chunk.
+        # A compressed stream's length is no longer the one declared.
+        var declared = -1
+        if (
+            channel_stream
+            and not st.offload.is_head[slot]
+            and not upgraded_ws
+            and not response.zstd_stream
+            and not is_bodiless_status(response.status_code)
+        ):
+            declared = response.stream_length
+        if declared < 0:
+            response.headers.pop("content-length")
+        st.offload.sized_left[slot] = declared
         # The head names its stream's generation; an abort datagram is
         # checked against this, so one for an earlier stream on a recycled
         # slot cannot close this connection.
@@ -454,6 +470,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
             and not st.offload.is_head[slot]
             and not upgraded_ws
             and not bodiless
+            and declared < 0
         )
         # Written unconditionally: a recycled slot must not inherit the
         # previous connection's framing.
@@ -462,6 +479,7 @@ def _finish_response[T: HTTPService, B: EventLoopBackend](
             response.headers[HeaderKey.TRANSFER_ENCODING] = "chunked"
     else:
         st.offload.chunked[slot] = False
+        st.offload.sized_left[slot] = -1
         # Not a stream: whatever channel-stream state the slot carried is
         # over. Defensive — every ending path clears it too.
         st.offload.clear_stream(slot)

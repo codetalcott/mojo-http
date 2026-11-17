@@ -77,7 +77,13 @@ A response's head is sent when the application sends it, as under uvicorn.
 One whose body does not follow at once and whose head declares no
 `Content-Length` (a stream nobody has written to) is sent as it is
 produced, chunked, and the application is cancelled when its client
-leaves. One that declares a length is answered whole at its body.
+leaves. One that declares a length is answered whole at its body, and
+a streamed body that declares one is sent under it, unchunked.
+
+An application waiting in `receive()` on a request it has not answered
+hears `http.disconnect` when its client finishes sending. The connection
+stays open and the answer, if one comes, is sent: a client that
+half-closes and waits is still answered.
 `M0_ASGI_HEAD_AT_START=0` holds every head for its first body instead, as
 through 1.17.0.
 
