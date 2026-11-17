@@ -130,6 +130,19 @@ default is listed under **Behaviour changes**
 
 ### Fixed
 
+- **An ASGI application's requests all overlap, as under uvicorn** (SPEC
+  L43). A loop handed its asyncio executor 256 requests at a time, so the
+  257th handler to await something slow (an upstream call, a long poll)
+  did not start until one of the 256 had answered: 300 requests to a
+  handler that sleeps 3 s took 6.0 s. A loop serving one ASGI application
+  now hands over as many as it has connections, up to 1024, the default
+  `--max-connections`; the same 300 take 3.0 s, and 1,000 took 3.1 s.
+  It costs 672 KB of idle memory a loop. Past 1024 a request waits as
+  before, and so does one whose submit the executor's channel refuses,
+  where that one used to run on the loop's thread.
+  `M0_EXECUTOR_INFLIGHT=256` puts the old bound back. A mount set keeps
+  256.
+
 - **The 257th ASGI request in flight no longer stops the server** (SPEC
   L39). A loop hands its asyncio executor 256 requests at a time, and ran
   the next on its own thread: a handler that awaited there stopped every

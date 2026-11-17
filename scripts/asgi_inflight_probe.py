@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""More ASGI requests in flight than the executor's tables hold (SPEC L39).
+"""Many ASGI requests in flight at once (SPEC L39, L43).
 
-A loop's asyncio executor holds 256 requests in flight
-(`OFFLOAD_MAX_INFLIGHT`). The 257th used to be run on the loop's own
-thread, `run_until_complete` and all: a handler that awaited stopped every
-connection, and the stop signal, until it returned. This holds HELD
-requests to a handler that sleeps, more than the bound, and asks what the
-loop does meanwhile.
+A loop's asyncio executor took 256 requests at a time. The 257th used to
+be run on the loop's own thread, `run_until_complete` and all: a handler
+that awaited stopped every connection, and the stop signal, until it
+returned (L39). It then waited for one of the 256, so 300 requests to a
+3 s handler took 6 s where uvicorn takes 3. The executor now takes as
+many as the loop has connections (L43). This holds HELD requests to a
+handler that sleeps and asks what the loop does meanwhile.
 
     M0_PORT=... python3 scripts/asgi_inflight_probe.py            # answered
+    M0_PORT=... python3 scripts/asgi_inflight_probe.py waits
     M0_PORT=... M0_PID=... python3 scripts/asgi_inflight_probe.py stop
 
-`answered`: the health path answers while every request is held, each held
-request is answered, the later ones after the earlier, and the application
-answers afterwards. `stop`: the same hold on a handler that sleeps an hour,
+`answered`: the health path answers while every request is held, every
+held request is answered within one sleep of the first, and the
+application answers afterwards. `waits` is the same against a server
+started with `M0_EXECUTOR_INFLIGHT=256`: the requests past the bound must
+wait for a second sleep, which is what says the waiting path still runs. `stop`: the same hold on a handler that sleeps an hour,
 then SIGTERM to M0_PID; the probe keeps its sockets until the server has
 gone, and the caller bounds the exit.
 """
@@ -111,11 +115,18 @@ def main():
         s.close()
         if not buf.startswith(b"HTTP/1.1 200") or want not in buf:
             fail("request %d of %d was answered %r" % (i + 1, HELD, buf[:80]))
-    # The bound is 256: what waited for an entry slept after an earlier
-    # request had finished, so the last answer is a second sleep away.
-    if max(took) < 2 * SLEEP_MS / 1000.0 - 0.5:
-        fail("all %d were answered within %.1f s: nothing waited, so this "
-             "run held no more than the executor takes at once" % (HELD, max(took)))
+    if mode == "waits":
+        # The bound is 256: what waited for an entry slept after an earlier
+        # request had finished, so the last answer is a second sleep away.
+        if max(took) < 2 * SLEEP_MS / 1000.0 - 0.5:
+            fail("all %d were answered within %.1f s: nothing waited, so this "
+                 "run held no more than the executor takes at once" % (HELD, max(took)))
+    elif max(took) > 1.5 * SLEEP_MS / 1000.0:
+        # Every request overlaps: the last answer is one sleep after the
+        # first request, as under uvicorn.
+        fail("the last of %d answers came after %.1f s, more than one %d ms "
+             "sleep: some request waited for another to finish" % (
+                 HELD, max(took), SLEEP_MS))
 
     phase("the application answers afterwards")
     status, body = get("/", timeout=5)

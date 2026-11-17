@@ -813,9 +813,21 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       and after the inversion's direct completions. Run on the loop it was
       `run_until_complete` on the loop's thread: 264 sleeping handlers
       stopped the server, SIGTERM included. A pool thread's lane still
-      falls back to the loop. A refused submit BATCH still runs inline
-      (`_run_inline`); 256 jobs fit the channel, so nothing has produced
-      one.
+      falls back to the loop. A submit BATCH the channel refuses waits too
+      (`_hold_unsent`: back to the FRONT of the queue, entry returned, out
+      of `inflight`), and `_wait_for_events` looks again within a
+      millisecond while anything waits with room; `_run_inline` is gone
+      from the loop and lives on as the tests' `_run_parked`
+      (`test/support.mojo`), their stand-in for a completion.
+    - **A lone executor's pool is built for its connections** (SPEC L43).
+      `m0serve.mojo` passes `executor_inflight(max_connections)` to
+      `OffloadPool` for an unmounted ASGI application, and
+      `OffloadLoopState.accepting` holds to `pool.max_inflight`, never to
+      the constant. The cap is `EXECUTOR_MAX_INFLIGHT`, 1024, and it is
+      what `smoke-max-connections` allows: at 4096 the executor's idle
+      share of a slot measured 468 B against C27's 360. Rings, the drain
+      buffer and every mount set keep `OFFLOAD_MAX_INFLIGHT`: handler
+      threads share those tables, and their rings are 256 deep.
     - **A job holds a table entry, not its slot** (SPEC C26).
       `OffloadPool.requests` and `responses` hold `OFFLOAD_MAX_INFLIGHT`
       entries whatever the slot count. `park_request` takes one and names

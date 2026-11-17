@@ -20,12 +20,13 @@ from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.socket import close, recv
 from lightbug_http.event_loop import _wait_for_events
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.loop.offload import _admit_waiting, _run_inline
+from lightbug_http.loop.offload import _admit_waiting, _hold_unsent
 from lightbug_http.loop.state import LoopState
 from lightbug_http.service import HTTPService
 from lightbug_http.offload import (
     JOB_STOP, JOB_REQUEST, JOB_NONE, JOB_WS_MESSAGE,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, NO_ENTRY, STREAM_GEN_NONE,
+    EXECUTOR_MAX_INFLIGHT, executor_inflight,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
     POOL_FREE_WAKE_AGE_NS, POOL_WAKE_WAIT_MS, _WAKE_MAX_LANES,
@@ -1740,6 +1741,73 @@ def test_a_request_waits_for_an_executor_lane_and_for_no_other() raises:
     _ = pool.capacity
 
 
+def test_a_lone_executor_takes_as_many_requests_as_the_loop_has_connections() raises:
+    """L43: a connection has one request in flight at most, so a loop whose
+    one lane is an executor's holds a job for each, up to a cap that keeps
+    a server asked for tens of thousands of connections from reserving a
+    request and a response for every one. A pool built without the rule
+    keeps 256, and the environment sets the bound outright."""
+    _ = setenv("M0_EXECUTOR_INFLIGHT", "")
+    assert_equal(executor_inflight(1024), 1024)
+    assert_equal(executor_inflight(64), 64)
+    assert_equal(executor_inflight(100000), EXECUTOR_MAX_INFLIGHT)
+    var pool = OffloadPool(1024, executor_inflight(1024))
+    assert_equal(pool.job_entries(), 1024)
+    var state = OffloadLoopState(pool.addr(), 1024)
+    state.inflight = OFFLOAD_MAX_INFLIGHT
+    assert_true(state.accepting(), "a lone executor's loop stopped at the pool's bound")
+    state.inflight = 1024
+    assert_false(state.accepting())
+    var plain = OffloadPool(1024)
+    assert_equal(plain.job_entries(), OFFLOAD_MAX_INFLIGHT)
+    _ = setenv("M0_EXECUTOR_INFLIGHT", "256")
+    assert_equal(executor_inflight(1024), 256)
+    _ = setenv("M0_EXECUTOR_INFLIGHT", "zero")
+    assert_equal(executor_inflight(1024), 1024)
+    _ = setenv("M0_EXECUTOR_INFLIGHT", "")
+    # Each pool must outlive the state that holds its address.
+    _ = pool.capacity
+    _ = plain.capacity
+
+
+def test_a_refused_batch_waits_ahead_of_what_already_waits() raises:
+    """A submit batch the channel refused is taken back to wait, never run
+    on the loop: its requests give their entries back, leave `inflight`,
+    and stand in their own order ahead of a request that was already
+    waiting, since they are older (`_hold_unsent`, SPEC L39)."""
+    var pool = OffloadPool(8)
+    pool.enable_base_stream_ack()
+    var config = ServerConfig()
+    config.max_connections = 8
+    var st = LoopState(
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+    )
+    var free_before = len(pool.free_entries)
+    var late = st.provision_pool.borrow()
+    st.offload.hold_waiting(late, _request("/late"))
+    st.offload.offloaded[late] = True
+    var batch = List[Int]()
+    for i in range(2):
+        var slot = st.provision_pool.borrow()
+        pool.park_request(slot, _request("/batch" + String(i)))
+        st.offload.offloaded[slot] = True
+        st.offload.inflight += 1
+        batch.append(slot)
+    _hold_unsent(st, batch)
+    assert_equal(st.offload.inflight, 0)
+    assert_equal(len(pool.free_entries), free_before, "a refused job kept its entry")
+    assert_equal(st.offload.waiting_count(), 3)
+    assert_true(st.offload.offloaded[batch[0]] and st.offload.offloaded[batch[1]])
+    assert_equal(st.offload.next_waiting(), batch[0])
+    assert_equal(st.offload.take_waiting().uri.path, "/batch0")
+    assert_equal(st.offload.next_waiting(), batch[1])
+    assert_equal(st.offload.take_waiting().uri.path, "/batch1")
+    assert_equal(st.offload.next_waiting(), late)
+    assert_equal(st.offload.take_waiting().uri.path, "/late")
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+
+
 def test_waiting_requests_are_admitted_oldest_first_as_room_appears() raises:
     """`_admit_waiting` submits what waited, in order, only while there is
     room, and runs none of it on the loop. A request whose client left
@@ -1782,51 +1850,6 @@ def test_waiting_requests_are_admitted_oldest_first_as_room_appears() raises:
     assert_equal(pool.unpark_request(slots[0]).uri.path, "/w0")
     assert_equal(pool.unpark_request(slots[2]).uri.path, "/w2")
     assert_equal(app.calls, 0, "a waiting request was run on the loop")
-    close(RawFileDescriptor(c_int(pair[0])))
-    close(RawFileDescriptor(c_int(pair[1])))
-    # `pool` must outlive the loop state that holds its address.
-    _ = pool.capacity
-
-
-def test_run_inline_counts_only_the_requests_it_ran() raises:
-    """`_run_inline` answers how many requests the handler ran, not how
-    many slots it was handed. Of three, one is no longer offloaded and is
-    skipped, one's client left while its request sat in the buffer and is
-    released unanswered, and one is answered on its connection: one ran.
-    It answered `len(slots)`, three here (review record LF31). Both callers
-    discard the count today, so this test is what keeps it honest."""
-    var pool = OffloadPool(8)
-    var config = ServerConfig()
-    config.max_connections = 8
-    var st = LoopState(
-        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
-    )
-    var backend = PlatformBackend()
-    var app = _InlineApp()
-    var skipped = st.provision_pool.borrow()
-    var gone = st.provision_pool.borrow()
-    pool.park_request(gone, _request("/gone"))
-    st.offload.offloaded[gone] = True
-    st.offload.inflight += 1
-    var live = st.provision_pool.borrow()
-    var pair = _stream_pair()
-    st.slot_fds[live] = pair[0]
-    st.fd_to_slot[pair[0]] = live
-    st.active_count = 1
-    pool.park_request(live, _request("/live"))
-    st.offload.offloaded[live] = True
-    st.offload.inflight += 1
-    var slots = List[Int]()
-    slots.append(skipped)
-    slots.append(gone)
-    slots.append(live)
-    assert_equal(_run_inline(app, backend, st, slots), 1)
-    assert_equal(app.calls, 1)
-    assert_equal(st.offload.inflight, 0)
-    var buf = _job_buffer()
-    var n = recv(RawFileDescriptor(c_int(pair[1])), Span(buf), MSG_DONTWAIT)
-    var reply = String(unsafe_from_utf8=Span(buf)[: Int(n)])
-    assert_true(reply.startswith("HTTP/1.1 200"), reply)
     close(RawFileDescriptor(c_int(pair[0])))
     close(RawFileDescriptor(c_int(pair[1])))
     # `pool` must outlive the loop state that holds its address.

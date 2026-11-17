@@ -67,7 +67,9 @@ from lightbug_http.http.date import unix_now
 from lightbug_http.broadcast import BroadcastBus
 from m0_postgres import PgLib
 from lightbug_http.event_loop import run_event_loop
-from lightbug_http.offload import OffloadPool
+from lightbug_http.offload import (
+    OffloadPool, OFFLOAD_MAX_INFLIGHT, executor_inflight,
+)
 from lightbug_http.accept_share import AcceptShare, accept_sharing_wanted
 from lightbug_http.connection import ListenConfig, NoTLSListener
 from lightbug_http.address import NetworkType, TCPAddr, is_ipv6_literal, parse_address
@@ -1355,7 +1357,16 @@ def _serve_offloaded(
     first exits 0, since nothing was accepted yet. The inversion prints
     it from `serve_inverted`, after its own build.
     """
-    var pool = OffloadPool(config.max_connections)
+    # A lone executor takes as many requests as the loop has connections
+    # (SPEC L43): every one of them may be awaiting at once. A mount set,
+    # whose lanes share the pool's tables with handler threads, keeps the
+    # pool's own bound.
+    var lone_executor = executor and len(opts.mount_prefixes) == 0
+    var pool = OffloadPool(
+        config.max_connections,
+        executor_inflight(config.max_connections) if lone_executor
+        else OFFLOAD_MAX_INFLIGHT,
+    )
     # Without a GIL a parked thread beside a queued job is an idle core,
     # so the pool wakes eagerly there (`OffloadPool.parallel`). A Python
     # call, startup-only, on the worker's attached main thread — after
