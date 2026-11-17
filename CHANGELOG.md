@@ -157,7 +157,10 @@ default is listed under **Behaviour changes**
   It costs 672 KB of idle memory a loop. Past 1024 a request waits as
   before, and so does one whose submit the executor's channel refuses,
   where that one used to run on the loop's thread.
-  `M0_EXECUTOR_INFLIGHT=256` puts the old bound back. A mount set keeps
+  `M0_EXECUTOR_INFLIGHT=N` sets the bound, never past the loop's
+  connections (`256` puts the old one back); a value that is not a whole
+  number of requests is named on stderr and the default kept, and
+  `--doctor` reports the bound as `executor_inflight`. A mount set keeps
   256.
 
 - **The 257th ASGI request in flight no longer stops the server** (SPEC

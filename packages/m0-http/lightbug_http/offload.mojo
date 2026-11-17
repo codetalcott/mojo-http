@@ -156,10 +156,16 @@ waits inside asyncio rather than in `_wait_for_events`, so every
 completion pokes it — the datagram shape that path always had.
 
 Submit is non-blocking on the loop side: a full ring (or, without rings, a
-full queue) means "the pool is saturated", and the loop's answer is to run
-that one request inline rather than drop it. Completion cannot fill: at
-most `OFFLOAD_MAX_INFLIGHT` jobs exist at once and both the ring and the
-channel are sized for that many.
+full queue) means "the pool is saturated". For a handler thread's lane the
+loop's answer is to run that one request on its own thread rather than
+drop it; for an asyncio executor's, which would run it there with
+`run_until_complete`, the request waits for room instead (SPEC L39,
+`OffloadLoopState.waiting_slots`). Pool threads complete through rings
+sized for `OFFLOAD_MAX_INFLIGHT` jobs, which is all a pool with handler
+threads lets be in flight. An executor alone may have more
+(`executor_inflight`, SPEC L43); its completions are queued in its own
+state, sized by `job_entries()`, and announced in datagrams of at most
+`SUBMIT_BATCH_MAX` slots.
 """
 
 from std.collections import Optional
@@ -225,7 +231,7 @@ there up, 672 KB a loop over the 256 they held (idle RSS, macOS M4,
 2026-11-17)."""
 
 
-def executor_inflight(max_connections: Int) -> Int:
+def executor_inflight(max_connections: Int, asked: Int = -1) -> Int:
     """How many requests may be in flight on a loop whose one lane is an
     asyncio executor's: as many as it has connections, since a connection
     has one request in flight at most, up to `EXECUTOR_MAX_INFLIGHT`.
@@ -235,17 +241,14 @@ def executor_inflight(max_connections: Int) -> Int:
     where uvicorn overlaps them all. The cap keeps a server asked for tens
     of thousands of connections from reserving a request and a response
     for each (SPEC C26); past it a request waits, as before (L39).
-    `M0_EXECUTOR_INFLIGHT` sets it outright, at least 1: the A/B knob, and
-    a gate's way to meet the bound with a few hundred sockets."""
-    var asked = getenv("M0_EXECUTOR_INFLIGHT", "")
-    if asked.byte_length() > 0:
-        try:
-            var n = Int(asked)
-            if n >= 1:
-                return n
-        except:
-            pass
-    return min(max_connections, EXECUTOR_MAX_INFLIGHT)
+
+    `asked` is `M0_EXECUTOR_INFLIGHT` as m0serve read it
+    (`ServeOptions.executor_inflight`), -1 when it is unset. It replaces
+    the cap and never the connections: a loop has no more requests to hand
+    over than it has connections. Read by m0serve, not here, so a value it
+    cannot use is named on stderr and `--doctor` reports the result."""
+    var cap = asked if asked >= 1 else EXECUTOR_MAX_INFLIGHT
+    return min(max_connections, cap)
 
 
 comptime WAITING_COMPACT_AT = 32
@@ -1822,8 +1825,9 @@ struct OffloadPool(Movable):
     def has_free_entry(self) -> Bool:
         """Whether a job could be parked now. The in-flight bound implies it,
         since every entry held is a job counted in flight; the loop asks
-        anyway (`OffloadLoopState.accepting`), so a count gone wrong runs a
-        request inline rather than parking it on another job's entry."""
+        anyway (`OffloadLoopState.accepting`), so a count gone wrong makes a
+        request wait, or run on a handler thread's loop, rather than park on
+        another job's entry."""
         return len(self.free_entries) > 0
 
     def job_entries(self) -> Int:
@@ -1955,8 +1959,9 @@ struct OffloadPool(Movable):
 
         A single slot goes as the legacy 8-byte job. Bounded retry
         (`send_bounded`), and the caller owns what a refusal after it means:
-        the loop runs those requests inline, as a refused `submit` always
-        meant. Executor lanes only — a pool thread takes one job per read.
+        the loop puts those requests back at the front of the waiting queue
+        (`_hold_unsent`, SPEC L39). Executor lanes only — a pool thread takes
+        one job per read.
         """
         if len(slots) == 0:
             return True
@@ -1971,8 +1976,10 @@ struct OffloadPool(Movable):
         """Queue `slot` on the lane serving `path`. False means it is full.
 
         False is not an error and not a dropped request: the caller runs that
-        one request inline instead, which is precisely the behaviour every
-        request had before this module existed.
+        one request on the loop instead, which is precisely the behaviour
+        every request had before this module existed. Handler threads'
+        lanes only: an executor's request is batched (`queue_submit`), and
+        waits when it cannot go (SPEC L39).
 
         With rings: push, THEN read the lane's parked count, and poke only
         if it is non-zero — the producer's half of the protocol in the
@@ -2015,8 +2022,9 @@ struct OffloadPool(Movable):
         return True
 
     def unpark_request(mut self, slot: Int) -> HTTPRequest:
-        """Take a request back after a failed `submit`, to run it inline.
-        Its entry goes back with it."""
+        """Take a request back after a failed `submit`: a handler thread's
+        lane runs it on the loop, an executor's puts it back to wait
+        (`_hold_unsent`). Its entry goes back with it."""
         var e = self._held_entry(slot)
         var request = self.requests[e].take()
         self._release(slot)
@@ -2577,7 +2585,8 @@ struct OffloadLoopState(Movable):
     ping-ponged per request. A slot here is already `offloaded` and counted
     in `inflight`; it is invisible to every sweep exactly as one out on a
     thread is. Never left here across a `wait`: `flush_submits` runs before
-    every park of the loop, and what it cannot send runs inline."""
+    every park of the loop, and what it cannot send goes back to wait, at
+    the front of the queue (`_hold_unsent`, SPEC L39)."""
 
     var pending_submit_count: Int
 
@@ -2617,7 +2626,12 @@ struct OffloadLoopState(Movable):
     """The request of each `waiting_slots` entry, taken as it is admitted."""
     var waiting_head: Int
     var waiting_notice: String
-    """Printed the first time a request waits, then emptied."""
+    """Printed the first time a request waits because the executor has all
+    it takes, then emptied."""
+    var refusal_notice: String
+    """Printed the first time a submit the executor's channel refused is put
+    back to wait (`hold_waiting_first`), then emptied: the executor is not
+    reading, which is a different trouble from a full one."""
 
     var waits: Int
     var waits_capped: Int
@@ -2659,6 +2673,12 @@ struct OffloadLoopState(Movable):
             " requests are in flight on the asyncio executor, which is all"
             " this loop hands it at once; each later request waits for one"
             " of them to be answered"
+        )
+        self.refusal_notice = String(
+            "event loop: the asyncio executor's channel refused a batch of"
+            " requests, so they wait, and each later request waits behind"
+            " them, until it reads again: a handler that blocks its thread"
+            " stops it reading"
         )
         self.ack_owed_count = 0
         self.streaming_hint = 0
@@ -2732,7 +2752,8 @@ struct OffloadLoopState(Movable):
     def flush_lane(mut self, lane: Int) -> List[Int]:
         """Send `lane`'s buffered slots as one datagram (`submit_batch`,
         whose retry is bounded). Returns the slots it could NOT send, buffer
-        cleared either way — the caller runs those inline."""
+        cleared either way — the caller puts those back to wait
+        (`_hold_unsent`)."""
         var at = lane if lane >= 0 else 0
         var unsent = List[Int]()
         if at >= len(self.pending_submit) or len(self.pending_submit[at]) == 0:
@@ -2770,8 +2791,10 @@ struct OffloadLoopState(Movable):
         return self.pool()[].lane_is_executor(self.pool()[].lane_for(path))
 
     def hold_waiting(mut self, slot: Int, var request: HTTPRequest):
-        """Keep `request` until an executor lane has room for it."""
-        if self.waiting_notice.byte_length() > 0:
+        """Keep `request` until an executor lane has room for it. The notice
+        is printed only when the bound is why: a request that waits behind
+        a refused batch, with room, is the refusal's (`refusal_notice`)."""
+        if self.waiting_notice.byte_length() > 0 and not self.accepting():
             print(
                 "event loop: " + String(self.pool()[].max_inflight)
                 + self.waiting_notice,
@@ -2786,6 +2809,9 @@ struct OffloadLoopState(Movable):
         submit was refused, so it is older than everything still waiting
         (`loop/offload.mojo`, `_hold_unsent`). The queue is rebuilt behind
         it, which costs what waits, once for each refused request."""
+        if self.refusal_notice.byte_length() > 0:
+            print(self.refusal_notice, file=stderr)
+            self.refusal_notice = String("")
         var slots = List[Int](capacity=self.waiting_count() + 1)
         var requests = List[Optional[HTTPRequest]](capacity=self.waiting_count() + 1)
         slots.append(slot)
@@ -2862,9 +2888,10 @@ struct OffloadLoopState(Movable):
         return self.addr != 0
 
     def accepting(self) -> Bool:
-        """Whether another job may be submitted, or the loop must run inline.
-        The pool's free entry is implied by the bound and asked anyway
-        (`OffloadPool.has_free_entry`)."""
+        """Whether another job may be submitted. When not, an executor's
+        request waits (`must_wait`, SPEC L39) and a handler thread's runs
+        on the loop. The pool's free entry is implied by the bound and asked
+        anyway (`OffloadPool.has_free_entry`)."""
         return (
             self.addr != 0
             and self.inflight < self.pool()[].max_inflight

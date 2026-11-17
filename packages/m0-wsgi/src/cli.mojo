@@ -26,7 +26,10 @@ from std.os import getenv
 from std.ffi import external_call
 from std.sys.info import CompilationTarget, num_performance_cores
 
-from lightbug_http.offload import match_path_prefix, _WAKE_MAX_LANES
+from lightbug_http.offload import (
+    match_path_prefix, _WAKE_MAX_LANES, EXECUTOR_MAX_INFLIGHT,
+    OFFLOAD_MAX_INFLIGHT, executor_inflight,
+)
 from lightbug_http.c.platform import SC_NPROCESSORS_ONLN
 from lightbug_http.address import join_host_port
 from lightbug_http.server_config import ServerConfig, reclaim_from_env
@@ -228,6 +231,14 @@ struct ServeOptions(Copyable, Movable):
     `ServerConfig`'s default (1024) alone. Streams take all but the
     loop's reserve (`ServerConfig.stream_limit`), and the handler's
     per-slot tables are sized from it (`loop_connections`)."""
+    var executor_inflight: Int
+    """`M0_EXECUTOR_INFLIGHT`: how many requests a loop hands an ASGI
+    application served alone on the asyncio executor at once, never more
+    than its connections (SPEC L43); -1 leaves the default, its
+    connections up to `EXECUTOR_MAX_INFLIGHT`. No flag, as
+    `M0_THREAD_HEADER` has none: an operator's setting for a server past
+    1024 connections, and the gates' way to meet the bound with a few
+    hundred sockets. `executor_inflight_for` is what a loop uses."""
     var ws_origins: List[String]
     """`--ws-origin` (repeatable) / `M0_WS_ORIGIN` (comma-separated): the
     origins a held WebSocket may be opened from beside the request's own,
@@ -355,6 +366,7 @@ struct ServeOptions(Copyable, Movable):
         self.max_body = -1
         self.replay_frames = DEFAULT_REPLAY_FRAMES
         self.max_connections = -1
+        self.executor_inflight = -1
         self.ws_origins = List[String]()
         self.ws_origins_from_flag = False
         self.thread_header = False
@@ -463,6 +475,21 @@ struct ServeOptions(Copyable, Movable):
                         String(DEFAULT_REPLAY_FRAMES),
                     )
                 )
+        raw = getenv("M0_EXECUTOR_INFLIGHT", "")
+        if raw.byte_length() > 0:
+            try:
+                opts.executor_inflight = parse_executor_inflight(raw)
+            except:
+                opts.env_ignored.append(
+                    _ignored(
+                        "M0_EXECUTOR_INFLIGHT", raw,
+                        "a whole number of requests, 1 or more",
+                        String(
+                            "as many as a loop's connections, up to ",
+                            EXECUTOR_MAX_INFLIGHT,
+                        ),
+                    )
+                )
         # What `AppConfig` read leniently, said when it fell back. A number
         # is read by its own parser (`parse_env_int`), and anything but
         # "true" or "1" is off for a switch.
@@ -485,6 +512,19 @@ struct ServeOptions(Copyable, Movable):
         _check_bool_env(opts.env_ignored, "M0_SPAWN_WORKERS")
         _check_bool_env(opts.env_ignored, "M0_THREAD_HEADER")
         return opts^
+
+    def executor_inflight_for(self, executor: Bool, max_connections: Int) -> Int:
+        """The requests a loop of `max_connections` hands its asyncio
+        executor at once: what `_serve_offloaded` builds the pool for and
+        `--doctor` reports. An ASGI application served alone takes
+        `executor_inflight` of them (SPEC L43); a mount set keeps the pool's
+        `OFFLOAD_MAX_INFLIGHT`, since its lanes share the pool's tables with
+        handler threads whose rings are that deep; 0 with no executor."""
+        if not executor:
+            return 0
+        if len(self.mount_prefixes) > 0:
+            return OFFLOAD_MAX_INFLIGHT
+        return executor_inflight(max_connections, self.executor_inflight)
 
     def loop_connections(self) -> Int:
         """Connections one loop holds: `--max-connections` (or
@@ -642,6 +682,21 @@ def parse_max_connections(text: String) raises -> Int:
     if count < 1:
         raise Error(
             "--max-connections must be a whole number of connections, 1 or"
+            " more, got '" + text + "'"
+        )
+    return count
+
+
+def parse_executor_inflight(text: String) raises -> Int:
+    """`M0_EXECUTOR_INFLIGHT`: a whole number of requests, 1 or more."""
+    var count: Int
+    try:
+        count = parse_int(String(text.strip()), "M0_EXECUTOR_INFLIGHT")
+    except:
+        count = 0
+    if count < 1:
+        raise Error(
+            "M0_EXECUTOR_INFLIGHT must be a whole number of requests, 1 or"
             " more, got '" + text + "'"
         )
     return count

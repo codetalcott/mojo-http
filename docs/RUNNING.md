@@ -75,7 +75,14 @@ what the loop answers itself, the health path among it, is answered
 meanwhile. A response counts from its request to its head: a stream that
 has sent its head is not one of them. `--workers N` is N loops, each with
 its own count, and a mount set (`--mount`) keeps 256 a loop.
-`M0_EXECUTOR_INFLIGHT=N` sets the number outright.
+`M0_EXECUTOR_INFLIGHT=N` sets the number for an ASGI application served
+alone, never past the loop's connections: a server above 1024 connections
+whose requests may all be awaiting at once sets it to its connection
+count; the executor's tables grow with the number (1024 against 256 cost
+672 KB of idle memory a loop, macOS M4, 2026-11-17). A value that
+is not a whole number of requests is named on stderr and the default
+kept, and `--doctor` reports the number a loop uses as
+`executor_inflight`.
 
 A response's head is sent when the application sends it, as under uvicorn.
 One whose body does not follow at once and whose head declares no

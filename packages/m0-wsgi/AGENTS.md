@@ -388,10 +388,13 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     never left across a `wait` — `_flush_submits` runs at the bottom of
     every pass, before the shutdown drain parks, and once more before
     `run_event_loop` returns so the pill stays FIFO behind every job.
-    What a batch cannot carry runs INLINE (`_run_inline`, the queue-full
-    tail `submit`'s False always meant); "leave it buffered and retry" is
-    not an option, because a buffered slot is invisible to everything that
-    reads `offloaded` as "a worker owns it". Pool lanes are never batched —
+    What a batch cannot carry goes back to WAIT, at the front of the
+    queue (`_hold_unsent`, SPEC L39), entry returned and out of
+    `inflight`; it used to run inline (`_run_inline`, now the tests'
+    `_run_parked`), which for an executor was `run_until_complete` on the
+    loop's thread. "Leave it buffered and retry" is not an option, because
+    a buffered slot is invisible to everything that reads `offloaded` as
+    "a worker owns it". Pool lanes are never batched —
     one thread takes one job — and `next_job` says so loudly if a batch
     ever reaches one. **Python calls INTO Mojo for every event, and the
     executor thread never leaves `run_forever`.** `ExecutorPort`
@@ -827,8 +830,11 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       from the loop and lives on as the tests' `_run_parked`
       (`test/support.mojo`), their stand-in for a completion.
     - **A lone executor's pool is built for its connections** (SPEC L43).
-      `m0serve.mojo` passes `executor_inflight(max_connections)` to
-      `OffloadPool` for an unmounted ASGI application, and
+      `_serve_offloaded` builds `OffloadPool` for
+      `ServeOptions.executor_inflight_for`, which `--doctor` reports too:
+      `executor_inflight(max_connections, M0_EXECUTOR_INFLIGHT)` for an
+      unmounted ASGI application, read by `from_env` so a bad value is
+      named, never inside the fork (it was, and passed over silently); and
       `OffloadLoopState.accepting` holds to `pool.max_inflight`, never to
       the constant. The cap is `EXECUTOR_MAX_INFLIGHT`, 1024, and it is
       what `smoke-max-connections` allows: at 4096 the executor's idle
@@ -836,8 +842,9 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       buffer and every mount set keep `OFFLOAD_MAX_INFLIGHT`: handler
       threads share those tables, and their rings are 256 deep.
     - **A job holds a table entry, not its slot** (SPEC C26).
-      `OffloadPool.requests` and `responses` hold `OFFLOAD_MAX_INFLIGHT`
-      entries whatever the slot count. `park_request` takes one and names
+      `OffloadPool.requests` and `responses` hold `max_inflight` entries
+      whatever the slot count (`OFFLOAD_MAX_INFLIGHT`, 256, unless a lone
+      executor's pool was built for more, SPEC L43). `park_request` takes one and names
       it in `slot_entry` before the submit publishes the job; only the loop
       gives it back (`unpark_request`, `take_response`, `discard`), and a
       pool thread touches it only between receiving the job and

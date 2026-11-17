@@ -1746,11 +1746,15 @@ def test_a_lone_executor_takes_as_many_requests_as_the_loop_has_connections() ra
     one lane is an executor's holds a job for each, up to a cap that keeps
     a server asked for tens of thousands of connections from reserving a
     request and a response for every one. A pool built without the rule
-    keeps 256, and the environment sets the bound outright."""
-    _ = setenv("M0_EXECUTOR_INFLIGHT", "")
+    keeps 256. What `M0_EXECUTOR_INFLIGHT` asked for replaces the cap,
+    never the connections."""
     assert_equal(executor_inflight(1024), 1024)
     assert_equal(executor_inflight(64), 64)
     assert_equal(executor_inflight(100000), EXECUTOR_MAX_INFLIGHT)
+    assert_equal(executor_inflight(1024, 256), 256)
+    assert_equal(executor_inflight(300, 4096), 300)
+    assert_equal(executor_inflight(100000, 4096), 4096)
+    assert_equal(executor_inflight(1024, -1), 1024)
     var pool = OffloadPool(1024, executor_inflight(1024))
     assert_equal(pool.job_entries(), 1024)
     var state = OffloadLoopState(pool.addr(), 1024)
@@ -1760,11 +1764,6 @@ def test_a_lone_executor_takes_as_many_requests_as_the_loop_has_connections() ra
     assert_false(state.accepting())
     var plain = OffloadPool(1024)
     assert_equal(plain.job_entries(), OFFLOAD_MAX_INFLIGHT)
-    _ = setenv("M0_EXECUTOR_INFLIGHT", "256")
-    assert_equal(executor_inflight(1024), 256)
-    _ = setenv("M0_EXECUTOR_INFLIGHT", "zero")
-    assert_equal(executor_inflight(1024), 1024)
-    _ = setenv("M0_EXECUTOR_INFLIGHT", "")
     # Each pool must outlive the state that holds its address.
     _ = pool.capacity
     _ = plain.capacity
@@ -1774,7 +1773,8 @@ def test_a_refused_batch_waits_ahead_of_what_already_waits() raises:
     """A submit batch the channel refused is taken back to wait, never run
     on the loop: its requests give their entries back, leave `inflight`,
     and stand in their own order ahead of a request that was already
-    waiting, since they are older (`_hold_unsent`, SPEC L39)."""
+    waiting, since they are older (`_hold_unsent`, SPEC L39). The stderr
+    line is the refusal's, never the full executor's."""
     var pool = OffloadPool(8)
     pool.enable_base_stream_ack()
     var config = ServerConfig()
@@ -1794,6 +1794,16 @@ def test_a_refused_batch_waits_ahead_of_what_already_waits() raises:
         st.offload.inflight += 1
         batch.append(slot)
     _hold_unsent(st, batch)
+    # Each notice is its own cause's: the request that waited with room did
+    # not say the executor had all it takes, and the refusal said itself.
+    assert_true(
+        st.offload.waiting_notice.byte_length() > 0,
+        "a request that waited with room said the executor was full",
+    )
+    assert_equal(
+        st.offload.refusal_notice.byte_length(), 0,
+        "a refused batch put back to wait was not announced",
+    )
     assert_equal(st.offload.inflight, 0)
     assert_equal(len(pool.free_entries), free_before, "a refused job kept its entry")
     assert_equal(st.offload.waiting_count(), 3)
