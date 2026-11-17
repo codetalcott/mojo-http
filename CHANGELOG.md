@@ -37,6 +37,12 @@ default is listed under **Behaviour changes**
 
 ### Added
 
+- **A FastHTML broadcast that reaches every worker** (SPEC L38).
+  [FastHTML on m0serve](docs/FASTHTML.md#reach-every-workers-sockets)
+  shows the lines: an `app.ws` connect hook subscribes its socket to
+  `scope["state"]["m0"]`, and a route publishes there. No server change;
+  `smoke-fasthtml` now serves those lines on two workers and counts what
+  each socket receives.
 - **A page for FastHTML, and a weekly comparison behind it** (SPEC L36).
   [FastHTML on m0serve](docs/FASTHTML.md) is the command, what to change
   in an application, and each response that differs from uvicorn's. That

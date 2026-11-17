@@ -32,11 +32,69 @@ m0serve main:app --reload    # development: restarts on a saved file
 - **An upload over 4 MB is answered `413` before the application runs.** Raise
   the cap with `--max-body` (`M0_MAX_BODY`); uvicorn has none.
 - **A list of connections in a module is one process's.** Under `--workers N`
-  each worker holds its own WebSockets and streams, as under uvicorn. To
-  reach every worker's, publish through `scope["state"]["m0"]`.
+  each worker holds its own WebSockets and streams, as under uvicorn.
+  [Reach every worker's sockets](#reach-every-workers-sockets) is the change.
 - **Keep the default mode.** `--blocking-threads` above 0 moves an ASGI
   application off the executor, onto a path that opens no WebSocket
   ([Which mode](RUNNING.md#which-mode)).
+
+## Reach every worker's sockets
+
+FastHTML's examples keep each socket's `send` in a module and loop over
+them. Under `--workers N` that loop reaches the sockets of the worker that
+ran it. `scope["state"]["m0"]` is m0serve's bus between workers: subscribe
+each socket to a channel, and publish to the channel.
+
+<!-- recipe: every-worker -- apps/fasthtml_demo/main.py holds these lines; `compare.py --check-page` compares -->
+```python
+def bus(scope):
+    return (scope.get("state") or {}).get("m0")  # None under uvicorn
+
+
+listeners = {}  # this worker's sockets, each with the task that feeds it
+
+
+async def forward(m0, send):
+    async with m0.subscribe("live") as frames:
+        async for _id, payload in frames:
+            await send(payload.decode())
+
+
+async def live_connect(ws, send):
+    m0 = bus(ws.scope)
+    if m0:
+        listeners[id(ws)] = asyncio.create_task(forward(m0, send))
+
+
+async def live_disconnect(ws):
+    task = listeners.pop(id(ws), None)
+    if task:
+        task.cancel()
+
+
+@app.ws("/live", conn=live_connect, disconn=live_disconnect)
+async def live(msg: str, send):
+    pass
+
+
+@rt("/announce")
+async def announce(req, text: str):
+    m0 = bus(req.scope)
+    if m0:
+        m0.publish("live", text)  # to every worker, this one included
+    return "ok"
+```
+
+- `publish(channel, payload)` takes `str` or `bytes` and returns the frame's
+  id. A frame over 64 KB raises `ValueError`.
+- `subscribe(channel)` yields `(id, payload)`, the payload `bytes`. Leave it
+  through `async with`, which ends the subscription. A socket more than 256
+  frames behind loses the oldest.
+- Frames from two publishers reach a socket in no promised order.
+- Under uvicorn there is no `m0` and `bus()` returns `None`: an application
+  that must also run there keeps its own loop over `send` for that case.
+- Checked with WebSockets on two workers. An `EventStream` that reads a
+  subscription is not checked.
 
 ## Where it answers differently from uvicorn
 
@@ -56,7 +114,7 @@ servers.
 
 | when | what | row |
 |---|---|---|
-| every pull request | `apps/fasthtml_demo` at the versions `uv.lock` pins: a page, an `EventStream`, a `BackgroundTask`, an error's own 500 and its traceback, `app.ws`, a module ending in `serve()` | [L11, L22, L23](SPEC.md) |
+| every pull request | `apps/fasthtml_demo` at the versions `uv.lock` pins: a page, an `EventStream`, a `BackgroundTask`, an error's own 500 and its traceback, `app.ws`, a module ending in `serve()`. Then two workers: thirty announcements, each through a new request, must all reach six `app.ws` sockets held by more than one worker | [L11, L22, L23, L38](SPEC.md) |
 | weekly | the newest python-fasthtml and uvicorn releases: FastHTML's example applications and this repository's probe applications, each served by m0serve and by uvicorn and compared response by response. A difference the table above does not list fails the run, and so does a listed one that is gone | [L36](SPEC.md) |
 
 ```sh

@@ -127,6 +127,14 @@
   },
   {
    "page": "docs/FASTHTML.md",
+   "opens": "FastHTML's examples keep each socket's `send` in a module and loop over",
+   "rows": {
+    "L12": "fcf9a1609acb",
+    "L38": "d82d275c3011"
+   }
+  },
+  {
+   "page": "docs/FASTHTML.md",
    "opens": "**An upload over 4 MB is answered `413` before the application runs.**",
    "rows": {
     "C1": "d5a3c1cd604c"
