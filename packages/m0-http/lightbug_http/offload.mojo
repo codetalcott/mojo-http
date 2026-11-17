@@ -1018,6 +1018,15 @@ struct OffloadPool(Movable):
         )
         return self.lane_is_executor(lane)
 
+    def lane_of(self, slot: Int) -> Int:
+        """The lane `slot`'s job was stamped for (`stamp_lane`), 0 for none."""
+        return self.slot_lane[slot] if slot >= 0 and slot < len(self.slot_lane) else 0
+
+    def has_job(self, slot: Int) -> Bool:
+        """Whether `slot` has a job parked in the pool: False for a slot
+        whose request is still waiting for room (`waiting_slots`)."""
+        return slot >= 0 and slot < len(self.slot_entry) and self.slot_entry[slot] != NO_ENTRY
+
     def lane_is_executor(self, lane: Int) -> Bool:
         """Whether an asyncio executor is what reads `lane`'s submit channel
         — the lane-only body of `slot_is_executor`, for a caller that has
@@ -2468,6 +2477,16 @@ struct OffloadLoopState(Movable):
     the slot is streaming. Written unconditionally for every streaming
     response, so a recycled slot cannot inherit a stale True."""
 
+    var sized_left: List[Int]
+    """Bytes this slot's streaming response still owes of the
+    `Content-Length` its head declared, or -1 for a stream that declared
+    none (SPEC L41).
+
+    A sized stream is written unframed under its own length and its
+    connection is kept once every byte has gone; ended short, it is closed,
+    so the client reads a truncated body and never a clean end. Written for
+    every response head, like `chunked`, so no slot inherits one."""
+
     var ack_payload: List[Int]
     """Payload bytes owed to the producer's credit window once the buffer
     now in flight has landed.
@@ -2598,6 +2617,7 @@ struct OffloadLoopState(Movable):
         self.is_head = List[Bool](capacity=capacity)
         self.http11 = List[Bool](capacity=capacity)
         self.chunked = List[Bool](capacity=capacity)
+        self.sized_left = List[Int](capacity=capacity)
         self.ack_payload = List[Int](capacity=capacity)
         self.ack_owed = List[Int](capacity=capacity)
         self.stream_gen = List[Int](capacity=capacity)
@@ -2606,6 +2626,7 @@ struct OffloadLoopState(Movable):
             self.is_head.append(False)
             self.http11.append(False)
             self.chunked.append(False)
+            self.sized_left.append(-1)
             self.ack_payload.append(0)
             self.ack_owed.append(0)
             self.stream_gen.append(STREAM_GEN_NONE)

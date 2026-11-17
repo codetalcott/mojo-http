@@ -124,6 +124,25 @@ def build_asgi_response(
     )
 
 
+
+def _declared_length(headers: Headers) -> Int:
+    """The `Content-Length` an application's head declares, or -1 when it
+    declares none or one that is not digits alone."""
+    var value = headers.get("content-length")
+    if not value:
+        return -1
+    var digits = value.value().as_bytes()
+    if len(digits) == 0 or len(digits) > 18:
+        return -1
+    var n = 0
+    for i in range(len(digits)):
+        var d = Int(digits[i]) - 48
+        if d < 0 or d > 9:
+            return -1
+        n = n * 10 + d
+    return n
+
+
 def _assemble(
     bridge: PyBridge,
     code: Int,
@@ -148,7 +167,14 @@ def _assemble(
     # FastHTML's 404 page into downloads (SPEC K12).
     out_headers.pop(HeaderKey.TRANSFER_ENCODING)
     if streaming:
-        out_headers.pop(HeaderKey.CONTENT_LENGTH)
+        # An ASGI stream's declared length is kept for the loop, which
+        # writes the body under it (SPEC L41). A WSGI stream's is dropped,
+        # as it was.
+        var declared = -1
+        if bytes_pairs:
+            declared = _declared_length(out_headers)
+        else:
+            out_headers.pop(HeaderKey.CONTENT_LENGTH)
         var head = HTTPResponse(
             owned_body=List[UInt8](),
             headers=out_headers^,
@@ -158,6 +184,7 @@ def _assemble(
             invent_entity_headers=False,
         )
         head.sse_streaming = True
+        head.stream_length = declared
         return head^
 
     var body_bytes = bridge.body_bytes(body)

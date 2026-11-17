@@ -2264,6 +2264,32 @@ def test_a_head_leaves_when_it_is_sent_not_at_the_first_body(h):
         % (h.kinds(3),))
 
 
+def test_a_peer_that_finished_sending_is_heard_and_still_answered(h):
+    """L42: the client of a request in flight has sent its FIN. A handler
+    parked in receive() hears http.disconnect, as under uvicorn; nothing
+    is cancelled and the task is not marked gone, so the answer it then
+    sends is delivered -- a half-close is not a departure."""
+    h.job(0, "longpoll")
+    h.settle()
+    owner = h.ns["_exec_slot_task"].get(0)
+    assert owner is not None and not owner.done()
+    h.disconnect(0, h.ns["_PEER_FINISHED"])
+    h.settle()
+    assert [kind for task, kind in h.heard if task is owner] == [
+        "http.disconnect"], "the parked receive() did not hear the notice"
+    assert not getattr(owner, "_m0_disconnected", False), (
+        "the notice marked a connection gone that is still owed its answer")
+    # A handler that was not listening is not disturbed: it answers.
+    h.job(1, "latesized")
+    h.settle(3)
+    assert h.kinds(1) == [], "the late body had already been sent"
+    h.disconnect(1, h.ns["_PEER_FINISHED"])
+    h.settle()
+    assert h.kinds(1) == ["done"], (
+        "a request whose peer had finished sending was not answered: %r"
+        % (h.kinds(1),))
+
+
 def test_the_publisher_keeps_what_the_fasthtml_page_says(h):
     """L38's page states three facts about `scope["state"]["m0"]` no served
     phase reaches: a frame over 64 KB raises, a subscriber more than its
@@ -2409,6 +2435,7 @@ TESTS = [
     test_a_stop_read_by_a_flush_starts_the_drain,
     test_the_serving_run_keeps_a_thread_pools_threads,
     test_the_publisher_keeps_what_the_fasthtml_page_says,
+    test_a_peer_that_finished_sending_is_heard_and_still_answered,
     test_a_head_leaves_when_it_is_sent_not_at_the_first_body,
     test_background_work_inside_the_grace_finishes,
     test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
@@ -2442,6 +2469,12 @@ TESTS = [
 # some entry's catcher.
 
 SABOTAGES = [
+    (
+        "a peer that finished sending is treated as a client that left",
+        "    if code == _PEER_FINISHED:\n",
+        "    if False:\n",
+        ("test_a_peer_that_finished_sending_is_heard_and_still_answered",),
+    ),
     (
         "a response's head waits for its first body",
         "                _heads_pending.append(self)\n",
@@ -2481,10 +2514,10 @@ SABOTAGES = [
     ),
     (
         "a disconnect is not stamped on the owning task",
-        "    owner = _exec_slot_task.get(slot)\n"
+        "        return\n"
         "    if owner is not None:\n"
         "        owner._m0_disconnected = True",
-        "    owner = _exec_slot_task.get(slot)",
+        "        return",
         ("test_a_lingering_task_does_not_end_its_successors_stream",),
     ),
     (

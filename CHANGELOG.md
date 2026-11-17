@@ -36,6 +36,23 @@ default is listed under **Behaviour changes**
 
   `M0_ASGI_HEAD_AT_START=0` puts the old answer back.
 
+- **A streamed ASGI body keeps the `Content-Length` its head declared**
+  (SPEC L41). Every stream was framed chunked and its length dropped, so
+  Starlette's `FileResponse` lost the length of any file larger than one
+  64 KB chunk. Such a body is now sent under its length, unchunked, as
+  under uvicorn, and its connection is kept once it is whole; one that
+  ends short is closed. A stream that declares no length is chunked as
+  before. No switch: the response is the one the application declared.
+
+- **An ASGI application hears its client leave a request not yet
+  answered** (SPEC L42). `receive()` answers `http.disconnect` once the
+  client has finished sending, as under uvicorn, where it used to wait
+  for the life of the process: a long poll now ends when nobody is
+  listening. The request is not cancelled and its connection is not
+  closed, so a client that half-closes and waits is still answered,
+  unless its handler chooses to stop on the notice. No switch: an
+  application that never calls `receive()` after its body sees nothing.
+
 - **What the server says about itself goes to stderr.** m0serve and a
   Mojo host application keep stdout for what was asked of them:
   `--help`, `--version`, the report `--doctor` prints (still its last

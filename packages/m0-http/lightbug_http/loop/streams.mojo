@@ -438,6 +438,17 @@ def _drain_slot[T: HTTPService, B: EventLoopBackend](
             out.extend(chunked_terminator())
     elif payload_len > 0:
         out = Bytes(Span(pending))
+    # A stream whose head declared its length (SPEC L41): written as it
+    # is, never past what was declared, and `whole` once every declared
+    # byte has been handed out and the producer has ended. A whole one
+    # ends as a chunked stream does at its terminator, its connection
+    # kept; one that ends short is closed, like any unframed stream.
+    var whole = False
+    if st.offload.sized_left[s] >= 0:
+        if len(out) > st.offload.sized_left[s]:
+            out = Bytes(Span(out)[: st.offload.sized_left[s]])
+        st.offload.sized_left[s] -= len(out)
+        whole = ended and st.offload.sized_left[s] == 0
 
     if len(out) > 0:
         # What the write-ready completion owes the producer if
@@ -466,7 +477,7 @@ def _drain_slot[T: HTTPService, B: EventLoopBackend](
                 # generation before the connection is reused
                 # or closed.
                 st.offload.clear_stream(s)
-                if framed:
+                if framed or whole:
                     # The terminator landed: the message is
                     # complete and the connection is reusable,
                     # unless its request asked otherwise.
@@ -499,7 +510,7 @@ def _drain_slot[T: HTTPService, B: EventLoopBackend](
                 # for a pool thread's, is answered by the ack
                 # the eager send already covered.
                 st.offload.clear_stream(s)
-            if ended and not framed:
+            if ended and not (framed or whole):
                 # The rest of the final buffer flushes through
                 # the write-ready path; _after_send's existing
                 # should_close branch closes it there — or lingers
@@ -508,7 +519,7 @@ def _drain_slot[T: HTTPService, B: EventLoopBackend](
                 st.provision_pool.provisions[s].should_close = True
                 if st.slot_ws[s] and st.config.idle_timeout > 0:
                     st.slot_ws_state[s].closing = True
-            elif ended and framed:
+            elif ended and (framed or whole):
                 # Same flush, but the message ends with the
                 # terminator already in this buffer — so the
                 # write-ready completion must finish it as a
@@ -520,7 +531,14 @@ def _drain_slot[T: HTTPService, B: EventLoopBackend](
         # unframed: a framed stream always has a terminator to
         # write, so `out` is never empty when it ends.
         st.offload.clear_stream(s)
-        if st.slot_ws[s] and st.config.idle_timeout > 0:
+        if whole:
+            # A sized stream whose last byte had already landed when its
+            # producer ended: complete, and its connection is kept, as
+            # after a chunked stream's terminator.
+            _chunked_stream_ends(st, s)
+            _after_send(handler, backend, st, s, st.slot_fds[s])
+            _drain_pipelined(handler, backend, st, s, st.slot_fds[s])
+        elif st.slot_ws[s] and st.config.idle_timeout > 0:
             # Same linger as the landed-whole branch above, and for
             # the same reason: the peer's Close reply must not reach
             # a socket that is already closed. This is the branch

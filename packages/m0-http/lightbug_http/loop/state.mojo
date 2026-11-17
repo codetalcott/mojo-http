@@ -839,6 +839,7 @@ def _chunked_stream_ends(mut st: LoopState, slot: Int):
     st.slot_sse[slot] = False
     st.slot_zstd[slot] = None
     st.offload.chunked[slot] = False
+    st.offload.sized_left[slot] = -1
     if st.slot_close_after_stream[slot]:
         st.provision_pool.provisions[slot].should_close = True
 

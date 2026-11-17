@@ -185,6 +185,28 @@ async def form(req):
     return JSONResponse(f.multi_items())
 
 
+QUIET = {"open": 0, "closed": 0}
+
+
+@rt("/quiet")
+async def quiet():
+    # A stream nobody has written to: its head must still reach the client,
+    # and the client's leaving must still reach here.
+    async def gen():
+        QUIET["open"] += 1
+        try:
+            await asyncio.Event().wait()
+            yield ""
+        finally:
+            QUIET["open"] -= 1
+            QUIET["closed"] += 1
+    return EventStream(gen())
+
+
+@rt("/quiet-count")
+def quiet_count(): return JSONResponse(QUIET)
+
+
 @app.ws("/ws")
 async def ws(msg: str, send):
     await send(Div(f"echo {msg}", id="out"))

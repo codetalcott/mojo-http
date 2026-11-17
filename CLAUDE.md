@@ -488,8 +488,8 @@ dependencies: a consumer passes every `-I` in the chain, and apps add
 
 ## The handler contract
 
-`HTTPService` (`lightbug_http/service.mojo`) has fifteen methods, and **only
-`func` is required**: the other fourteen carry default bodies, so a handler
+`HTTPService` (`lightbug_http/service.mojo`) has sixteen methods, and **only
+`func` is required**: the other fifteen carry default bodies, so a handler
 declares just the hooks it uses.
 
 - `func` answers; `before_request` runs on the LOOP before a request is
@@ -520,6 +520,9 @@ declares just the hooks it uses.
   (SPEC I26).
 - `direct_job` lets the inverted executor take a parked request on the
   loop's thread; the default declines.
+- `peer_finished` says a peer shut down its sending side while its
+  request is out on an executor lane (SPEC L42): the connection stays and
+  the answer is still owed; the default does nothing.
 
 Adding a method **with** a default is non-breaking; one **without** breaks
 every implementer (every app under `apps/`, `ViewService`, `WSGIHandler`, the

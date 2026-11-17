@@ -780,6 +780,30 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       `bin/m0serve` after `render-shim`, `build-wsgi` AND `build-serve`:
       the shim is in `m0_wsgi.mojoc`, and `build-serve` alone reports the
       binary up to date.
+    - **A stream that declared its length is written under it** (SPEC
+      L41). `build_asgi_response` keeps an ASGI stream's `Content-Length`
+      and names it in `HTTPResponse.stream_length` (a WSGI stream's is
+      still dropped; the loop reads the FIELD, since a response built with
+      invented entity headers carries a `Content-Length: 0` nobody
+      declared, which two slot-lifecycle tests caught), `_finish_response`
+      records it in `OffloadLoopState.sized_left` and frames nothing, and the outbox
+      drain ends a stream whose every declared byte has gone as it ends a
+      chunked one at its terminator, connection kept; short, it closes.
+      Do NOT also send a sized response's head early (`_head_due` leaves
+      it): streamed from its head, a 1.4 KB `FileResponse` cost 8.6% (7,578
+      against 6,932 rps), for a head the client cannot use before its body.
+    - **The loop listens on a request it handed an executor** (SPEC L42).
+      A request read as its connection was accepted never registered for
+      reads, so its peer's FIN arrived unseen: `_process_request` arms
+      reads as it hands an executor's request over, the read path's
+      offloaded branch calls `HTTPService.peer_finished` for an EOF first
+      seen there, and drops the interest again at that first event, as it
+      always did. `WSGIHandler.peer_finished` sends the disconnect tag
+      with code `PEER_FINISHED` (1, below every WebSocket close code),
+      which the shim reads as a NOTICE: it resolves the slot's disconnect
+      future and nothing else. Never route it through
+      `sse_slot_disconnected`, which marks the task gone and would drop
+      the answer a half-closed client is waiting for.
     - **Past the bound an executor's request WAITS; it is never run on the
       loop** (SPEC L39). `OffloadLoopState.must_wait` is asked before
       `accepting()` in `_process_request`: a request for an executor lane

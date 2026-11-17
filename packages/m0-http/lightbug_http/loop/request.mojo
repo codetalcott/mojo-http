@@ -89,6 +89,18 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
             # pipelined request the drain still owes an answer,
             # and the answer to the last one closes the
             # connection (`_answers_the_last_request`).
+            #
+            # An executor's application may be listening for exactly
+            # this (a long poll parked in `receive()`), so the handler
+            # is told, once: only for an EOF first seen here, never for
+            # a request that arrived with its FIN, and never for one
+            # still waiting for the executor (SPEC L42).
+            if (
+                not st.provision_pool.provisions[slot].peer_eof
+                and st.offload.pool()[].has_job(slot)
+                and st.offload.pool()[].slot_is_executor(slot)
+            ):
+                handler.peer_finished(slot, st.offload.pool()[].lane_of(slot))
             st.provision_pool.provisions[slot].peer_eof = True
         # Nothing reads this slot until its completion: the EOF
         # above, or a pipelined request that arrived mid-flight,
@@ -891,6 +903,7 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                 # loop until it returned (SPEC L39).
                 st.offload.hold_waiting(slot, request^)
                 st.offload.offloaded[slot] = True
+                _ = _arm_reads(backend, st, slot, fd_val)
                 return
             if st.offload.accepting():
                 ref pool = st.offload.pool()[]
@@ -913,6 +926,13 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                     pool.stamp_lane(slot, lane)
                     st.offload.offloaded[slot] = True
                     st.offload.inflight += 1
+                    # A request read as its connection was accepted never
+                    # registered for reads, and its peer's FIN would arrive
+                    # unseen while the executor has it: the loop listens
+                    # now, so an application waiting on its client can be
+                    # told (`peer_finished`, SPEC L42). One event at most:
+                    # the read path drops the interest again at the first.
+                    _ = _arm_reads(backend, st, slot, fd_val)
                     # The inversion's submit seam: a handler running as the
                     # executor's own loop takes the parked request here, on
                     # this thread, and no datagram is sent. Every other handler
