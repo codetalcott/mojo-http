@@ -127,7 +127,9 @@ def build_asgi_response(
 
 def _declared_length(headers: Headers) -> Int:
     """The `Content-Length` an application's head declares, or -1 when it
-    declares none or one that is not digits alone."""
+    declares none or one that is not digits alone. The shim reads a head by
+    the same rule (`_declared_length` in `m0_shim.py`) to refuse a send
+    past the length."""
     var value = headers.get("content-length")
     if not value:
         return -1

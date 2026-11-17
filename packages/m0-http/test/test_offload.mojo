@@ -1808,6 +1808,44 @@ def test_a_refused_batch_waits_ahead_of_what_already_waits() raises:
     _ = pool.capacity
 
 
+def test_a_backlog_that_never_empties_keeps_its_queue_compact() raises:
+    """A waiting queue that is never empty -- more long polls than the
+    executor takes, each polling again as it is answered -- keeps no more
+    entries than it holds, give or take a bound, and stays oldest first.
+    Taking only advanced the head, and the lists were cleared only once
+    they emptied, so every request that had waited left its entry behind
+    for as long as the backlog lasted (SPEC L39)."""
+    var pool = OffloadPool(8)
+    var config = ServerConfig()
+    config.max_connections = 8
+    var st = LoopState(
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+    )
+    comptime DEPTH = 16
+    for i in range(DEPTH):
+        st.offload.hold_waiting(i % 8, _request("/w" + String(i)))
+    var most = 0
+    for i in range(DEPTH, DEPTH + 2000):
+        assert_equal(st.offload.take_waiting().uri.path, "/w" + String(i - DEPTH))
+        st.offload.hold_waiting(i % 8, _request("/w" + String(i)))
+        most = max(most, len(st.offload.waiting_requests))
+    assert_equal(st.offload.waiting_count(), DEPTH)
+    assert_true(
+        most <= 2 * DEPTH + 64,
+        "a backlog of "
+        + String(DEPTH)
+        + " kept "
+        + String(most)
+        + " entries after 2000 requests had waited",
+    )
+    # The front of the queue is still the oldest, after any compaction.
+    var late = st.provision_pool.borrow()
+    st.offload.hold_waiting_first(late, _request("/first"))
+    assert_equal(st.offload.take_waiting().uri.path, "/first")
+    assert_equal(st.offload.take_waiting().uri.path, "/w2000")
+    _ = pool.capacity
+
+
 def test_waiting_requests_are_admitted_oldest_first_as_room_appears() raises:
     """`_admit_waiting` submits what waited, in order, only while there is
     room, and runs none of it on the loop. A request whose client left

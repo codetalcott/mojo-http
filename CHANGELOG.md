@@ -130,6 +130,23 @@ default is listed under **Behaviour changes**
 
 ### Fixed
 
+- **One malformed ASGI response head no longer stops a worker answering**
+  (SPEC L40). A head carrying a header that was not a (name, value) pair,
+  with no body yet, raised inside the executor's per-iteration flush; the
+  flush stayed marked armed and no later request on that worker was
+  answered. That request is now answered 500, the log names the header
+  error, and nothing else waits. Introduced with the head-at-start change
+  in this release.
+- **A streamed ASGI body that passes its declared `Content-Length` is
+  refused at the send** (SPEC L41), with uvicorn's
+  `RuntimeError: Response content longer than Content-Length`, and the
+  stream is aborted. The loop trimmed the excess without returning its
+  credit, so a `FileResponse` over a file that grew after it was measured
+  waited for ever and held its share of every stream's window.
+- **The queue of ASGI requests waiting for the executor stays compact**
+  (SPEC L39). A backlog that never emptied kept an entry for every request
+  that had ever waited in it.
+
 - **An ASGI application's requests all overlap, as under uvicorn** (SPEC
   L43). A loop handed its asyncio executor 256 requests at a time, so the
   257th handler to await something slow (an upstream call, a long poll)

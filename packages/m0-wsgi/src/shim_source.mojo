@@ -1207,6 +1207,19 @@ def _exec_put(ev):
 _heads_pending = []
 
 
+def _declared_length(headers):
+    # The Content-Length an ASGI head declares, or -1 when it declares none
+    # or one that is not digits alone: the bridge's rule
+    # (`_declared_length` in response.mojo), which decides whether the loop
+    # writes a stream under it.
+    for name, value in headers:
+        if name.lower() == b'content-length':
+            if value.isdigit() and len(value) <= 18:
+                return int(value)
+            return -1
+    return -1
+
+
 def _flush():
     if _heads_pending:
         # Before the port's flush, and while the flush is still armed, so
@@ -1214,7 +1227,13 @@ def _flush():
         due = _heads_pending[:]
         del _heads_pending[:]
         for cycle in due:
-            cycle._head_due()
+            try:
+                cycle._head_due()
+            except Exception as exc:
+                # Its own request fails; the flush goes on. Raised out of
+                # here, the flush stayed marked armed and nothing on the
+                # worker was announced to the loop again (SPEC L40).
+                cycle._head_failed(exc)
     _flush_armed[0] = False
     if _exec_closed[0]:
         return
@@ -1482,6 +1501,7 @@ class _Cycle:
         'task',
         'completed',
         'head',
+        'left',
     )
 
     def __init__(self, slot, body):
@@ -1497,6 +1517,9 @@ class _Cycle:
         self.task = None
         self.completed = False
         self.head = False
+        # What a stream whose head declared a Content-Length may still
+        # send; -1 for any other response (SPEC L41).
+        self.left = -1
 
     async def receive(self):
         if not self.delivered:
@@ -1601,6 +1624,7 @@ class _Cycle:
             more = bool(message.get('more_body', False))
             if self.streaming:
                 if chunk:
+                    self._spend_declared(len(chunk))
                     await self._emit(chunk)
                 if not more:
                     # The final body: end the stream on the wire NOW.
@@ -1659,6 +1683,10 @@ class _Cycle:
                     return
                 import asyncio
 
+                # Before anything is marked: refused here, nothing has gone
+                # out, and the request is answered 500.
+                self.left = _declared_length(self.headers)
+                self._spend_declared(self.total + len(chunk))
                 slot = self.slot
                 self.streaming = True
                 # This request's OWN task, the slot's owner: never
@@ -1724,6 +1752,31 @@ class _Cycle:
             body, self.chunks = b''.join(self.chunks), []
             _exec_put(('done', self.slot, self.status, self.headers, body))
 
+    def _spend_declared(self, n):
+        # A stream whose head declared its length sends that many bytes and
+        # no more; the send that would pass it raises, with uvicorn's
+        # words. The loop writes such a stream under its length and used
+        # to trim the excess there, where the producer's credit was never
+        # returned: a FileResponse over a file that grew after it was
+        # measured waited for ever once a window's worth had been trimmed,
+        # and held its share of every stream's window while it did.
+        if self.left < 0:
+            return
+        if n > self.left:
+            raise RuntimeError('Response content longer than Content-Length')
+        self.left -= n
+
+    def _head_failed(self, exc):
+        # `_flush` caught this response's `_head_due` raising: a head the
+        # shim cannot read or send. Only this request fails. Cancelled, it
+        # is answered 500 by its done-callback, or aborted if its stream had
+        # begun, and the log says why.
+        _exec_put(
+            ('log', self.slot, 'a response head could not be sent: ' + _describe(exc))
+        )
+        if self.task is not None and not self.task.done():
+            self.task.cancel()
+
     def _head_due(self):
         # At the end of the loop iteration http.response.start was sent in
         # (`_flush`). A response whose body follows its head at once (Starlette's Response, Django's)
@@ -1751,15 +1804,14 @@ class _Cycle:
             or _task_gone(self.task)
         ):
             return
-        for name, _value in self.headers:
-            if name.lower() == b'content-length':
-                # A body of a declared length is not an open stream: it is
-                # answered whole at its body, with that length. Streamed,
-                # the loop frames it chunked and drops the length, which is
-                # what Starlette's FileResponse lost here: it reads its
-                # file between its head and its body (15,406 bytes of
-                # favicon chunked, where uvicorn sent a Content-Length).
-                return
+        if _declared_length(self.headers) >= 0:
+            # A body of a declared length is not an open stream: it is
+            # answered whole at its body, with that length. Streamed, the
+            # loop frames it chunked and drops the length, which is what
+            # Starlette's FileResponse lost here: it reads its file between
+            # its head and its body (15,406 bytes of favicon chunked, where
+            # uvicorn sent a Content-Length).
+            return
         step = self.send(
             {'type': 'http.response.body', 'body': b'', 'more_body': True}
         )

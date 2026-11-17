@@ -22,6 +22,10 @@ Routes:
     /lifespan       reports whether lifespan startup ran (state flag)
     /task-factory   ``eager`` when lifespan startup installed asyncio's
                     eager task factory, ``default`` otherwise
+    /bad-head       a head with a malformed header, its body a second
+                    later: answered 500, and nothing else held up (L40)
+    /sized-overrun  a stream that declared 4 bytes and sends more; its
+                    send must raise (L41), /overrun-heard says what it said
     /ws-last-close  the code the last /ws/record socket's disconnect
                     carried (SPEC L28, I26); /ws-texts, every text message
                     those sockets received
@@ -69,6 +73,7 @@ _WS_CLOSES = []
 _QUIET = {"open": 0, "closed": 0}
 _SILENT = {"open": 0, "closed": 0}
 _HEARD = {"waiting": 0, "heard": 0}
+_OVERRUN = {"raised": ""}
 SIZED_PIECE = 100_000
 _WS_TEXTS = []
 
@@ -381,6 +386,32 @@ async def application(scope, receive, send):
                         "body": bytes([65 + i]) * SIZED_PIECE,
                         "more_body": True})
         await send({"type": "http.response.body", "body": b""})
+    elif path == "/bad-head":
+        # A head the server cannot read: a header that is not a (name,
+        # value) pair, and no body until later. This request is answered
+        # 500; every other request on the worker must still be answered.
+        await send({"type": "http.response.start", "status": 200,
+                    "headers": [(b"x-broken",)]})
+        await asyncio.sleep(1.0)
+        await send({"type": "http.response.body", "body": b"late"})
+    elif path == "/sized-overrun":
+        # A stream that declared 4 bytes and goes on past them, as a
+        # FileResponse does over a file that grew after it was measured
+        # (SPEC L41). The send that would pass the length must raise.
+        await _send_start(send, 200, [(b"content-length", b"4")])
+        await send({"type": "http.response.body", "body": b"abcd",
+                    "more_body": True})
+        try:
+            for _ in range(16):
+                await send({"type": "http.response.body",
+                            "body": b"x" * 16384, "more_body": True})
+        except RuntimeError as exc:
+            _OVERRUN["raised"] = str(exc)
+            raise
+        _OVERRUN["raised"] = "no"
+        await send({"type": "http.response.body", "body": b""})
+    elif path == "/overrun-heard":
+        await _text(send, 200, json.dumps(_OVERRUN).encode())
     elif path == "/await-disconnect":
         # A request not yet answered whose handler listens for its client:
         # a long poll. The client's leaving must reach here (SPEC L42).

@@ -135,6 +135,8 @@ class Harness:
         self.slowbg_done = False    # a short background task finished
         self.latebg_done = False    # background work begun inside the drain
         self.flush_stops = False    # flush() reports the drain begun (inverted)
+        self.flushes = 0            # flushes the shim has run
+        self.overrun_errors = []    # what an overrunning stream's send raised
         self.drain_steps = 0        # the inverted drain's steps taken
         self.drain_finished = False  # the inverted drain's tail ran
         self.ns["_port"] = self
@@ -189,6 +191,7 @@ class Harness:
 
     def flush(self):
         # True once the drain has begun, which only the inverted port says.
+        self.flushes += 1
         return self.flush_stops
 
     # The inverted port's other three, for `run_forever_inverted`: a pass
@@ -425,6 +428,28 @@ class Harness:
                         "headers": []})
             await asyncio.sleep(0.01)
             raise ValueError("kaboom after the head")
+        if behaviour == "badhead":
+            # A head the shim cannot read (a header that is not a pair),
+            # and its body a moment later.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"x-broken",)]})
+            await asyncio.sleep(0.01)
+            await send({"type": "http.response.body", "body": b"late"})
+            return
+        if behaviour == "overrun":
+            # Declares 4 bytes, streams them, then goes on past them.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"Content-Length", b"4")]})
+            await send({"type": "http.response.body", "body": b"abcd",
+                        "more_body": True})
+            try:
+                await send({"type": "http.response.body", "body": b"efgh",
+                            "more_body": True})
+            except RuntimeError as exc:
+                self.overrun_errors.append(str(exc))
+                raise
+            await send({"type": "http.response.body", "body": b""})
+            return
         if behaviour in ("latebody", "latesized"):
             # A head, a wait, then the one body, and no receive() at all.
             # `latesized` declares the body's length, as FileResponse does.
@@ -2264,6 +2289,52 @@ def test_a_head_leaves_when_it_is_sent_not_at_the_first_body(h):
         % (h.kinds(3),))
 
 
+def test_a_head_that_cannot_be_read_fails_its_own_request_alone(h):
+    """L40: a head still without a body is looked at in the loop
+    iteration's flush. One the shim cannot read -- a header that is not a
+    (name, value) pair -- fails its own request, answered 500, and every
+    later answer still leaves. Raised inside the flush, it left the flush
+    marked armed for good: no completion on the worker was announced to
+    the loop again."""
+    h.loop.set_exception_handler(lambda loop, ctx: None)
+    h.job(0, "badhead")
+    h.settle()
+    assert not h.ns["_flush_armed"][0], (
+        "a head that could not be read left the flush armed")
+    kinds = h.kinds(0)
+    assert kinds and kinds[-1] == "err" and "done" not in kinds and (
+        "stream_start" not in kinds), (
+        "a head that could not be read was not answered as an error: %r"
+        % (kinds,))
+    before = h.flushes
+    h.job(1, "plain")
+    h.settle()
+    assert h.kinds(1) == ["done"], h.kinds(1)
+    assert h.flushes > before, (
+        "no flush ran for the answer after a head that could not be read")
+
+
+def test_a_body_longer_than_its_declared_length_is_refused_at_its_send(h):
+    """L41: a stream whose head declared a Content-Length sends that many
+    bytes and no more. The send that would pass it raises, as uvicorn's
+    does, and the stream is aborted. The loop trimmed the excess instead,
+    without returning its credit, so a FileResponse over a file that grew
+    waited for ever once a window's worth had been trimmed."""
+    h.loop.set_exception_handler(lambda loop, ctx: None)
+    h.job(0, "overrun")
+    h.settle()
+    sent = b"".join(e[2] for e in h.events
+                    if e[0] == "stream_chunk" and e[1] == 0)
+    assert sent == b"abcd", (
+        "a stream sent %r past the 4 bytes it declared" % (sent,))
+    assert h.overrun_errors and "longer than" in h.overrun_errors[0], (
+        "the send that passed the declared length did not raise: %r"
+        % (h.overrun_errors,))
+    kinds = h.kinds(0)
+    assert "stream_abort" in kinds and "stream_end" not in kinds, (
+        "an overrunning stream was not aborted: %r" % (kinds,))
+
+
 def test_a_peer_that_finished_sending_is_heard_and_still_answered(h):
     """L42: the client of a request in flight has sent its FIN. A handler
     parked in receive() hears http.disconnect, as under uvicorn; nothing
@@ -2437,6 +2508,8 @@ TESTS = [
     test_the_publisher_keeps_what_the_fasthtml_page_says,
     test_a_peer_that_finished_sending_is_heard_and_still_answered,
     test_a_head_leaves_when_it_is_sent_not_at_the_first_body,
+    test_a_head_that_cannot_be_read_fails_its_own_request_alone,
+    test_a_body_longer_than_its_declared_length_is_refused_at_its_send,
     test_background_work_inside_the_grace_finishes,
     test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
     test_a_task_left_behind_never_reaches_the_port,
@@ -2480,6 +2553,18 @@ SABOTAGES = [
         "                _heads_pending.append(self)\n",
         "                pass\n",
         ("test_a_head_leaves_when_it_is_sent_not_at_the_first_body",),
+    ),
+    (
+        "a head that cannot be sent is raised into the iteration's flush",
+        "                cycle._head_failed(exc)\n",
+        "                raise\n",
+        ("test_a_head_that_cannot_be_read_fails_its_own_request_alone",),
+    ),
+    (
+        "a stream may send past the length its head declared",
+        "        if n > self.left:\n",
+        "        if False:\n",
+        ("test_a_body_longer_than_its_declared_length_is_refused_at_its_send",),
     ),
     (
         "the streaming mark goes on the current task, not the slot's owner",
