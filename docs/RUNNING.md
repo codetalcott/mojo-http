@@ -66,6 +66,13 @@ With no topology flag or `M0_*` topology variable, the protocol chooses:
 | WSGI (Django, Flask) | one event loop, a pool of `min(cores, 8)` handler threads | a slow view holds its thread, not the connections behind it |
 | ASGI (FastHTML, Starlette, Django ASGI) | one event loop, an asyncio executor | requests overlap wherever the app awaits, uvicorn's shape |
 
+An event loop hands its asyncio executor 256 requests at a time. A request
+that arrives while 256 are unanswered waits for one of them, and the loop
+says so once on stderr; what the loop answers itself, the health path
+among it, is answered meanwhile. A streaming response counts until its first
+body, so 256 streams that have sent nothing hold every later request back.
+`--workers N` is N loops, each with its own 256.
+
 Everything else is opt-in:
 
 | flag | use it when | notes |

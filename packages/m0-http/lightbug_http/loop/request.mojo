@@ -789,7 +789,8 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     handler's `direct_job`), another lane's is sent now, and the slot is
     left `offloaded` for `_finish_response` to resume when the completion
     comes back. A full queue falls back to running `func` here, as a server
-    without the flag would. A `func` that raises is a 500 and a close.
+    without the flag would, for a pool thread's lane; a request for an
+    executor's lane waits for room instead (`_admit_waiting`, SPEC L39). A `func` that raises is a 500 and a close.
     `after_response` runs on every answer made here, and `_finish_response`
     encodes and sends it.
     """
@@ -881,6 +882,16 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             # refuses to touch it, and `_finish_response` resumes here when
             # the completion arrives. This is the whole point of the mode:
             # no other connection on this loop waits for this handler.
+            if st.offload.must_wait(request.uri.path):
+                # An executor lane with no room: the request waits on its
+                # slot, untouchable as one a worker holds, and
+                # `_admit_waiting` submits it when a job comes back. Run
+                # here it was the executor's `run_until_complete` on the
+                # loop's thread, and a handler that awaited stopped the
+                # loop until it returned (SPEC L39).
+                st.offload.hold_waiting(slot, request^)
+                st.offload.offloaded[slot] = True
+                return
             if st.offload.accepting():
                 ref pool = st.offload.pool()[]
                 # The path decides the lane, and the loop never learns what

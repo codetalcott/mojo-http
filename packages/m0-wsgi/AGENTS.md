@@ -764,6 +764,18 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       (The old behaviour detached the fd, which dropped the response the
       pool thread was about to complete — the offloaded shape of the
       half-close bug.)
+    - **Past the bound an executor's request WAITS; it is never run on the
+      loop** (SPEC L39). `OffloadLoopState.must_wait` is asked before
+      `accepting()` in `_process_request`: a request for an executor lane
+      with no room, or behind one already waiting, is kept in
+      `waiting_slots` with its slot `offloaded` and NOT counted in
+      `inflight`, and `_admit_waiting` submits it at the bottom of a pass
+      and after the inversion's direct completions. Run on the loop it was
+      `run_until_complete` on the loop's thread: 264 sleeping handlers
+      stopped the server, SIGTERM included. A pool thread's lane still
+      falls back to the loop. A refused submit BATCH still runs inline
+      (`_run_inline`); 256 jobs fit the channel, so nothing has produced
+      one.
     - **A job holds a table entry, not its slot** (SPEC C26).
       `OffloadPool.requests` and `responses` hold `OFFLOAD_MAX_INFLIGHT`
       entries whatever the slot count. `park_request` takes one and names

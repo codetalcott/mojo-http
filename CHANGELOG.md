@@ -92,6 +92,16 @@ default is listed under **Behaviour changes**
 
 ### Fixed
 
+- **The 257th ASGI request in flight no longer stops the server** (SPEC
+  L39). A loop hands its asyncio executor 256 requests at a time, and ran
+  the next on its own thread: a handler that awaited there stopped every
+  connection on the loop, and SIGTERM, until it returned, and one that
+  never returned stopped them for good. 264 requests to a handler that
+  sleeps did it, and so did 264 `EventStream`s that had sent nothing. Such
+  a request now waits for one of the 256 to be answered, oldest first, and
+  the loop says so once on stderr. The bound itself is unchanged
+  ([Running m0serve](docs/RUNNING.md#which-mode)).
+
 - **A `def` handler of a FastAPI, FastHTML or Starlette application no
   longer starts a thread per request** (SPEC L37). Starlette runs a `def`
   handler on anyio's thread pool, and anyio ends each of the pool's threads

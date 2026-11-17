@@ -4,7 +4,8 @@ A request handed to a pool thread (`--blocking-threads`) or an executor is
 a job, and this is the loop's half of the hand-off; the pool's half is
 `lightbug_http/offload.mojo`. An executor's submits are buffered and
 flushed once per pass (`_flush_submits`), and what a batch could not carry
-runs on the loop (`_run_inline`). A finished job comes back over the
+runs on the loop (`_run_inline`). A request that finds an executor lane
+full waits for room (`_admit_waiting`). A finished job comes back over the
 completion channel, or directly under the loop inversion
 (`service_direct_completions`), and `_complete_one` answers it. Stream
 credit the ack channel refused is retried every pass (`_retry_owed_acks`).
@@ -66,6 +67,38 @@ def _flush_submits[T: HTTPService, B: EventLoopBackend](
     if not st.offload.enabled() or st.offload.pending_submit_count == 0:
         return
     _ = _run_inline(handler, backend, st, st.offload.flush_submits())
+
+
+def _admit_waiting[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+):
+    """Submit the requests that waited for room on an executor lane, oldest
+    first, for as long as there is room (`OffloadLoopState.waiting_slots`).
+
+    Called at the bottom of every pass, after the completions that make the
+    room and before `_flush_submits` sends what this buffers, and after the
+    inversion's direct completions, which no pass follows. A request whose
+    client left while it waited is released unanswered, as one that left
+    while it sat in a submit batch is.
+    """
+    if st.offload.waiting_count() == 0:
+        return
+    ref pool = st.offload.pool()[]
+    while st.offload.waiting_count() > 0 and st.offload.accepting():
+        var slot = st.offload.next_waiting()
+        var request = st.offload.take_waiting()
+        if st.slot_fds[slot] == UNUSED:
+            st.offload.offloaded[slot] = False
+            st.provision_pool.release(slot)
+            continue
+        var lane = pool.lane_for(request.uri.path)
+        pool.park_request(slot, request^)
+        pool.stamp_lane(slot, lane)
+        st.offload.inflight += 1
+        if handler.direct_job(slot):
+            continue
+        if st.offload.queue_submit(slot, lane):
+            _ = _run_inline(handler, backend, st, st.offload.flush_lane(lane))
 
 
 def _run_inline[T: HTTPService, B: EventLoopBackend](
@@ -259,3 +292,4 @@ def service_direct_completions[T: HTTPService, B: EventLoopBackend](
         return
     for i in range(len(slots)):
         _complete_one(handler, backend, st, slots[i])
+    _admit_waiting(handler, backend, st)
