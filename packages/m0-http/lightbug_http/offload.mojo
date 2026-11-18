@@ -255,6 +255,25 @@ comptime WAITING_COMPACT_AT = 32
 """Taken entries a waiting queue may keep before it compacts
 (`OffloadLoopState.take_waiting`): below it a short queue is never moved."""
 
+comptime SUBMIT_RETRY_FIRST_NS = 1_000_000
+"""How long the loop waits after an executor's channel refuses a submit
+before it offers what waits again (`OffloadLoopState.back_off`, SPEC L44):
+the millisecond it always waited, so a channel that was full for an instant
+costs what it did."""
+
+comptime SUBMIT_RETRY_MAX_NS = 64_000_000
+"""The longest the loop waits between offers to a channel that goes on
+refusing, each refusal in a row doubling the wait from
+`SUBMIT_RETRY_FIRST_NS`. A channel refuses because its executor is not
+reading: an application blocking its own asyncio loop. The loop retried
+every millisecond, and on Linux, where the channel holds 555 one-job
+datagrams, a default server with 1000 requests behind a blocked
+application spent 66% of a core retrying, 100% with 4000 (measured
+2026-11-17, docs/notes/a-refused-batch-backs-off.md). A completion ends
+the wait at once: the executor that sent it is reading again. The ceiling
+is how late the first offer can be once an executor reads again without
+completing anything, every request it read being a long poll."""
+
 
 comptime NO_ENTRY: Int32 = -1
 """`OffloadPool.slot_entry` for a slot with no job parked."""
@@ -2625,6 +2644,16 @@ struct OffloadLoopState(Movable):
     var waiting_requests: List[Optional[HTTPRequest]]
     """The request of each `waiting_slots` entry, taken as it is admitted."""
     var waiting_head: Int
+    var waiting_moved: Int
+    """Entries `_rebuild_waiting` has moved, ever: what putting a refused
+    batch back has cost, which a test reads (SPEC L44)."""
+    var retry_at_ns: Int
+    """When what waits may be offered to the executor again after its
+    channel refused a submit (`back_off`); 0 when nothing was refused since
+    the executor last read."""
+    var retry_wait_ns: Int
+    """The wait `back_off` set last, doubled by the next refusal in a row;
+    0 once the executor reads again."""
     var waiting_notice: String
     """Printed the first time a request waits because the executor has all
     it takes, then emptied."""
@@ -2669,6 +2698,9 @@ struct OffloadLoopState(Movable):
         self.waiting_slots = List[Int]()
         self.waiting_requests = List[Optional[HTTPRequest]]()
         self.waiting_head = 0
+        self.waiting_moved = 0
+        self.retry_at_ns = 0
+        self.retry_wait_ns = 0
         self.waiting_notice = String(
             " requests are in flight on the asyncio executor, which is all"
             " this loop hands it at once; each later request waits for one"
@@ -2753,7 +2785,7 @@ struct OffloadLoopState(Movable):
         """Send `lane`'s buffered slots as one datagram (`submit_batch`,
         whose retry is bounded). Returns the slots it could NOT send, buffer
         cleared either way — the caller puts those back to wait
-        (`_hold_unsent`)."""
+        (`_hold_unsent`), which backs off."""
         var at = lane if lane >= 0 else 0
         var unsent = List[Int]()
         if at >= len(self.pending_submit) or len(self.pending_submit[at]) == 0:
@@ -2804,19 +2836,53 @@ struct OffloadLoopState(Movable):
         self.waiting_slots.append(slot)
         self.waiting_requests.append(Optional[HTTPRequest](request^))
 
-    def hold_waiting_first(mut self, slot: Int, var request: HTTPRequest):
-        """Put `request` back at the FRONT: it had been admitted and its
-        submit was refused, so it is older than everything still waiting
-        (`loop/offload.mojo`, `_hold_unsent`). The queue is rebuilt behind
-        it, which costs what waits, once for each refused request."""
+    def hold_waiting_first(
+        mut self, var slots: List[Int], var requests: List[Optional[HTTPRequest]]
+    ):
+        """Put a refused batch back at the FRONT, in its own order: each
+        request had been admitted and its submit was refused, so it is older
+        than everything still waiting (`loop/offload.mojo`, `_hold_unsent`).
+        The queue is rebuilt behind the batch ONCE, which costs what waits.
+        It was rebuilt once for each request, 64 rebuilds of the whole queue
+        a refused batch: with 4000 connections, about 3400 of them waiting,
+        a health request waited 15-18 ms behind a retry (SPEC L44)."""
+        if len(slots) == 0:
+            return
         if self.refusal_notice.byte_length() > 0:
             print(self.refusal_notice, file=stderr)
             self.refusal_notice = String("")
-        var slots = List[Int](capacity=self.waiting_count() + 1)
-        var requests = List[Optional[HTTPRequest]](capacity=self.waiting_count() + 1)
-        slots.append(slot)
-        requests.append(Optional[HTTPRequest](request^))
         self._rebuild_waiting(slots^, requests^)
+
+    def back_off(mut self, now_ns: Int):
+        """The executor's channel refused a submit: offer nothing more until
+        `retry_at_ns`, a wait that doubles with each refusal in a row from
+        `SUBMIT_RETRY_FIRST_NS` to `SUBMIT_RETRY_MAX_NS` (SPEC L44)."""
+        if self.retry_wait_ns == 0:
+            self.retry_wait_ns = SUBMIT_RETRY_FIRST_NS
+        else:
+            self.retry_wait_ns = min(2 * self.retry_wait_ns, SUBMIT_RETRY_MAX_NS)
+        self.retry_at_ns = now_ns + self.retry_wait_ns
+
+    def executor_read(mut self):
+        """The executor is reading its channel: a job came back
+        (`_service_completions`, `service_direct_completions`). What waits
+        is offered at once again, and the next refusal waits
+        `SUBMIT_RETRY_FIRST_NS` again."""
+        self.retry_at_ns = 0
+        self.retry_wait_ns = 0
+
+    def backing_off(self, now_ns: Int) -> Bool:
+        """Whether a refusal's wait (`back_off`) still runs at `now_ns`."""
+        return self.retry_at_ns != 0 and now_ns < self.retry_at_ns
+
+    def wait_for_offer_ms(self, now_ns: Int, longest: Int) -> Int:
+        """How long the loop may wait for events while a request waits with
+        room for it, at most `longest`: until the refusal's wait ends, in
+        whole milliseconds rounded up, or one millisecond with none."""
+        if not self.backing_off(now_ns):
+            return 1
+        var ms = (self.retry_at_ns - now_ns + 999_999) // 1_000_000
+        return max(1, min(ms, longest))
 
     def _rebuild_waiting(
         mut self, var slots: List[Int], var requests: List[Optional[HTTPRequest]]
@@ -2824,6 +2890,7 @@ struct OffloadLoopState(Movable):
         """Move what still waits, oldest first, onto the end of `slots` and
         `requests`, and make them the queue: the entries already taken are
         dropped, and `waiting_head` is 0 again."""
+        self.waiting_moved += len(self.waiting_slots) - self.waiting_head
         for i in range(self.waiting_head, len(self.waiting_slots)):
             slots.append(self.waiting_slots[i])
             requests.append(

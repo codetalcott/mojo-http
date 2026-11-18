@@ -824,9 +824,15 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       `run_until_complete` on the loop's thread: 264 sleeping handlers
       stopped the server, SIGTERM included. A pool thread's lane still
       falls back to the loop. A submit BATCH the channel refuses waits too
-      (`_hold_unsent`: back to the FRONT of the queue, entry returned, out
-      of `inflight`), and `_wait_for_events` looks again within a
-      millisecond while anything waits with room; `_run_inline` is gone
+      (`_hold_unsent`: back to the FRONT of the queue in one rebuild,
+      entry returned, out of `inflight`), and nothing is offered again
+      until a job comes back or `OffloadLoopState.back_off`'s wait ends, 1
+      ms doubling to 64, which `_wait_for_events` waits out (SPEC L44). A
+      channel refuses because its executor is not reading, an application
+      blocking its own asyncio loop, and Linux's holds only 555 one-job
+      datagrams: retried every millisecond with a rebuild per request, a
+      default server spent 66% of a core behind 1000 requests. `poe
+      sabotage-pool` reverts each of the seven rules. `_run_inline` is gone
       from the loop and lives on as the tests' `_run_parked`
       (`test/support.mojo`), their stand-in for a completion.
     - **A lone executor's pool is built for its connections** (SPEC L43).

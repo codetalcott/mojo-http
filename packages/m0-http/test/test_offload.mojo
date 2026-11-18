@@ -8,6 +8,7 @@ What is NOT covered here is the concurrency itself; that is what
 `poe smoke-blocking-threads` measures against a live server.
 """
 
+from std.collections import Optional
 from std.ffi import c_int, external_call
 from std.os import setenv
 from std.sys.info import CompilationTarget
@@ -20,13 +21,13 @@ from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
 from lightbug_http.c.socket import close, recv
 from lightbug_http.event_loop import _wait_for_events
 from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.loop.offload import _admit_waiting, _hold_unsent
+from lightbug_http.loop.offload import _admit_waiting, _hold_unsent, _service_completions
 from lightbug_http.loop.state import LoopState
 from lightbug_http.service import HTTPService
 from lightbug_http.offload import (
     JOB_STOP, JOB_REQUEST, JOB_NONE, JOB_WS_MESSAGE,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, NO_ENTRY, STREAM_GEN_NONE,
-    EXECUTOR_MAX_INFLIGHT, executor_inflight,
+    EXECUTOR_MAX_INFLIGHT, executor_inflight, SUBMIT_RETRY_FIRST_NS, SUBMIT_RETRY_MAX_NS,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed,
     COMPLETE_BATCH_MAX, SUBMIT_BATCH_MAX, TAG_JOB_BATCH, POOL_SPIN_NS,
     POOL_FREE_WAKE_AGE_NS, POOL_WAKE_WAIT_MS, _WAKE_MAX_LANES,
@@ -1850,7 +1851,11 @@ def test_a_backlog_that_never_empties_keeps_its_queue_compact() raises:
     )
     # The front of the queue is still the oldest, after any compaction.
     var late = st.provision_pool.borrow()
-    st.offload.hold_waiting_first(late, _request("/first"))
+    var first_slots = List[Int]()
+    first_slots.append(late)
+    var first_requests = List[Optional[HTTPRequest]]()
+    first_requests.append(Optional[HTTPRequest](_request("/first")))
+    st.offload.hold_waiting_first(first_slots^, first_requests^)
     assert_equal(st.offload.take_waiting().uri.path, "/first")
     assert_equal(st.offload.take_waiting().uri.path, "/w2000")
     _ = pool.capacity
@@ -1897,6 +1902,132 @@ def test_waiting_requests_are_admitted_oldest_first_as_room_appears() raises:
     assert_equal(st.offload.pending_submit[0][1], slots[2])
     assert_equal(pool.unpark_request(slots[0]).uri.path, "/w0")
     assert_equal(pool.unpark_request(slots[2]).uri.path, "/w2")
+    assert_equal(app.calls, 0, "a waiting request was run on the loop")
+    close(RawFileDescriptor(c_int(pair[0])))
+    close(RawFileDescriptor(c_int(pair[1])))
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+
+
+def test_a_refused_batch_moves_what_waits_once() raises:
+    """A refused batch goes back ahead of what waits with ONE rebuild of
+    the queue: the requests already waiting move once, whatever the batch's
+    size, and the batch keeps its order ahead of them. They moved once for
+    each request put back, 64 times what waits for a full batch: with 4000
+    connections, about 3400 of them waiting, a health request waited 15-18
+    ms behind a retry (SPEC L44)."""
+    var pool = OffloadPool(1024)
+    pool.enable_base_stream_ack()
+    var config = ServerConfig()
+    config.max_connections = 1024
+    var st = LoopState(
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+    )
+    comptime WAITING = 500
+    for i in range(WAITING):
+        st.offload.hold_waiting(st.provision_pool.borrow(), _request("/w" + String(i)))
+    var batch = List[Int]()
+    for i in range(SUBMIT_BATCH_MAX):
+        var slot = st.provision_pool.borrow()
+        pool.park_request(slot, _request("/b" + String(i)))
+        st.offload.offloaded[slot] = True
+        st.offload.inflight += 1
+        batch.append(slot)
+    var moved = st.offload.waiting_moved
+    _hold_unsent(st, batch)
+    assert_equal(
+        st.offload.waiting_moved - moved, WAITING,
+        "putting back a batch of " + String(SUBMIT_BATCH_MAX) + " moved "
+        + String(st.offload.waiting_moved - moved) + " waiting entries, not "
+        + String(WAITING),
+    )
+    assert_equal(st.offload.inflight, 0)
+    assert_equal(st.offload.waiting_count(), WAITING + SUBMIT_BATCH_MAX)
+    for i in range(SUBMIT_BATCH_MAX):
+        assert_equal(st.offload.take_waiting().uri.path, "/b" + String(i))
+    assert_equal(st.offload.take_waiting().uri.path, "/w0")
+    # `pool` must outlive the loop state that holds its address.
+    _ = pool.capacity
+
+
+def test_a_refusal_waits_until_a_job_comes_back_or_its_wait_ends() raises:
+    """After the executor's channel refuses a submit, nothing is offered
+    again until a job comes back -- the executor is reading -- or the
+    refusal's wait ends, a wait that doubles with each refusal in a row
+    from a millisecond to `SUBMIT_RETRY_MAX_NS` and starts again once the
+    executor reads (SPEC L44). The loop's wait for events is the refusal's
+    while a request waits with room, a millisecond with no refusal, and
+    the caller's with nothing waiting. It offered again every millisecond:
+    with an application blocking its own asyncio loop, 66% of a core."""
+    var pool = OffloadPool(8)
+    pool.enable_base_stream_ack()
+    var config = ServerConfig()
+    config.max_connections = 8
+    var st = LoopState(
+        RawFileDescriptor(-1), config, String(""), True, offload_addr=pool.addr()
+    )
+    var backend = WaitRecordingBackend()
+    var app = _InlineApp()
+
+    var now = 1_000_000_000
+    assert_false(st.offload.backing_off(now))
+    var wait = SUBMIT_RETRY_FIRST_NS
+    for _ in range(12):
+        st.offload.back_off(now)
+        assert_equal(st.offload.retry_wait_ns, wait)
+        assert_true(st.offload.backing_off(now + wait - 1))
+        assert_false(st.offload.backing_off(now + wait))
+        wait = min(2 * wait, SUBMIT_RETRY_MAX_NS)
+    assert_equal(st.offload.retry_wait_ns, SUBMIT_RETRY_MAX_NS)
+    st.offload.executor_read()
+    assert_false(st.offload.backing_off(now))
+    st.offload.back_off(now)
+    assert_equal(
+        st.offload.retry_wait_ns, SUBMIT_RETRY_FIRST_NS,
+        "a refusal after the executor read again waited as long as the last",
+    )
+    st.offload.executor_read()
+
+    # Nothing waits: the loop's wait is the caller's.
+    _ = _wait_for_events(backend, st, 5000)
+    assert_equal(backend.ms[len(backend.ms) - 1], 5000)
+    var pair = _stream_pair()
+    var slot = st.provision_pool.borrow()
+    st.slot_fds[slot] = pair[0]
+    st.offload.hold_waiting(slot, _request("/w"))
+    st.offload.offloaded[slot] = True
+    # A request waits with room and no refusal: a millisecond.
+    _ = _wait_for_events(backend, st, 5000)
+    assert_equal(backend.ms[len(backend.ms) - 1], 1)
+    # A refusal two seconds from its end: the wait is the refusal's.
+    st.offload.retry_at_ns = Int(perf_counter_ns()) + 2_000_000_000
+    _ = _wait_for_events(backend, st, 5000)
+    var asked = backend.ms[len(backend.ms) - 1]
+    assert_true(
+        asked > 1000 and asked <= 2000,
+        "the loop waited " + String(asked) + " ms for a refusal 2000 ms from its end",
+    )
+    _admit_waiting(app, backend, st)
+    assert_equal(st.offload.waiting_count(), 1, "a request was offered while the refusal's wait ran")
+    assert_equal(st.offload.pending_submit_count, 0)
+
+    # A job comes back: the wait ends, and what waited is offered.
+    var done = st.provision_pool.borrow()
+    pool.park_request(done, _request("/done"))
+    st.offload.offloaded[done] = True
+    st.offload.inflight += 1
+    _ = pool.take_request(done)
+    pool.put_response(done, OK(String("done")))
+    pool.complete(done)
+    _service_completions(app, backend, st)
+    assert_false(
+        st.offload.backing_off(Int(perf_counter_ns())),
+        "a job came back and the loop went on waiting out the refusal",
+    )
+    _admit_waiting(app, backend, st)
+    assert_equal(st.offload.waiting_count(), 0)
+    assert_equal(st.offload.pending_submit_count, 1)
+    assert_equal(pool.unpark_request(slot).uri.path, "/w")
     assert_equal(app.calls, 0, "a waiting request was run on the loop")
     close(RawFileDescriptor(c_int(pair[0])))
     close(RawFileDescriptor(c_int(pair[1])))

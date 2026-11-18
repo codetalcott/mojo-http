@@ -156,7 +156,11 @@ default is listed under **Behaviour changes**
   `--max-connections`; the same 300 take 3.0 s, and 1,000 took 3.1 s.
   It costs 672 KB of idle memory a loop. Past 1024 a request waits as
   before, and so does one whose submit the executor's channel refuses,
-  where that one used to run on the loop's thread.
+  where that one used to run on the loop's thread. On Linux the channel
+  holds 555 requests, so an application that blocks its own asyncio loop
+  with more than that behind it is refused; what was refused is offered
+  again after a wait that doubles to 64 ms, or as soon as a request is
+  answered, and the loop spends about 1% of a core meanwhile (SPEC L44).
   `M0_EXECUTOR_INFLIGHT=N` sets the bound, never past the loop's
   connections (`256` puts the old one back); a value that is not a whole
   number of requests is named on stderr and the default kept, and
