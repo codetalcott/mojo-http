@@ -341,4 +341,6 @@ start of the eight-thread arm reached its quiet floor, and of six runs the
 least read past 128 in three, the median of the slopes in one, and one
 round alone in seven of eighteen. The steps are the server's: compiling the
 shim once a process rather than once a pool thread is the change that
-would remove them, not measured here.
+would remove them, not measured here. Built since, and measured in
+[one-compile-a-process](one-compile-a-process.md): 30 starts under 14
+spinning processes spanned 0.7 MB.

@@ -11,9 +11,8 @@ from std.python import Python, PythonObject
 
 from lightbug_http import HTTPRequest, HTTPResponse
 
-from .bridge import PyBridge
+from .bridge import PyBridge, shim_code
 from .cli import discovery_specs, parse_app_spec
-from .shim_source import SHIM_SOURCE
 from .response import build_response
 
 
@@ -78,15 +77,17 @@ def detect_protocol(
     Startup-only, for callers that must know the protocol before any
     handler exists (`_serve_threaded` picks per-loop defaults on the main
     thread). Execs the shim into a throwaway namespace so the detection
-    logic exists exactly once; the module import is a `sys.modules` hit
-    when the caller already imported it. Raises when the module or
-    attribute is missing, and with a message naming both expected
-    signatures when the attribute is not callable — even under a forced
-    protocol, so a bad spec fails at startup, not at the first request.
+    logic exists exactly once, from the code every bridge loads
+    (`shim_code`), so it parses nothing; the module import is a
+    `sys.modules` hit when the caller already imported it. Raises when the
+    module or attribute is missing, and with a message naming both
+    expected signatures when the attribute is not callable — even under a
+    forced protocol, so a bad spec fails at startup, not at the first
+    request.
     """
     var builtins = Python.import_module("builtins")
     var ns = Python.dict()
-    builtins.exec(PythonObject(SHIM_SOURCE), ns)
+    builtins.exec(shim_code(), ns)
     var result = ns["detect_spec"](
         PythonObject(module_name), PythonObject(attribute)
     )

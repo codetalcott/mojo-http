@@ -29,20 +29,22 @@ figure is its LEAST reading over the rounds, and an arm's is the slope,
 bytes a slot, between its cells at the largest count and the smallest. The
 pool's share is the pooled arm's slope less the pool-less arm's.
 
-The least, not the median, because what moves a start's idle memory only
-ever adds to it, in steps the slot count does not set. Each pool thread
-compiles the executor shim, which frees about 3.6 MB as it finishes, and
-whether the allocator reuses those pages for the next compile is not the
-slot count's doing; load makes it likelier that it does not. In 31 rounds
-on CI's macOS runner two of the eight-thread arm's cells read 3.4 and
-4.2 MB above their medians, and no other cell on either leg moved 0.6 MB;
-the runner fits 16384 to about 9950 slots, so one round read 432 B a slot
-against a bound of 128. Each start is fresh, so a cell is wrong only when
-every start of it jumped. A gate (a bound given) refuses fewer than three
-rounds, and a failed one names any cell whose starts spread more than half
-a step. A loaded machine can leave a step in every start (on an M4 under 14
-spinning processes every one of 30 did), and no count of rounds measures
-there. `--selftest` replays readings CI recorded through the estimator.
+The least, not the median, because what moved a start's idle memory only
+ever added to it, in steps the slot count did not set. Until SPEC E44 each
+pool thread compiled the executor shim, which freed about 3.6 MB as it
+finished, and whether the allocator reused those pages was not the slot
+count's doing; load made it likelier that it did not. In 31 rounds on CI's
+macOS runner two of the eight-thread arm's cells read 3.4 and 4.2 MB above
+their medians, and no other cell on either leg moved 0.6 MB; the runner
+fits 16384 to about 9950 slots, so one round read 432 B a slot against a
+bound of 128. Each start is fresh, so a cell is wrong only when every start
+of it jumped. A gate (a bound given) refuses fewer than three rounds, and a
+failed one names any cell whose starts spread more than half a step. With
+the shim compiled once a process, six runs on an M4 under six spinning
+processes read no round past 128, where the build before it read five of
+eighteen and two runs' least
+(docs/notes/one-compile-a-process.md). `--selftest` replays readings CI
+recorded through the estimator.
 
 `--no-realtime` drops `--realtime`, under which every handler -- the
 loop's and each pool thread's -- sizes its stream registries by the count.
@@ -140,8 +142,9 @@ GATE_ROUNDS = 3
 """The fewest rounds a bound is judged on: one start's jump fails a gate on
 one (#702's first macOS attempt read 432 B a slot, its rerun 18)."""
 COMPILE_MB = 3.6
-"""What one start's pool thread can leave resident: a compile of the shim
-peaks 4.16 MB above what it keeps (0.56, tracemalloc, CPython 3.14.7)."""
+"""The step one start's pool thread could leave resident before SPEC E44,
+when each compiled the shim: a parse allocated 4.17 MB at its peak and
+kept 0.13 (tracemalloc, CPython 3.14.7)."""
 
 
 def least(rounds, name):
@@ -173,7 +176,8 @@ def too_few_rounds(rounds, gating):
     """Why a verdict on this many rounds cannot be believed, or None."""
     if gating and rounds < GATE_ROUNDS:
         return (f"a bound is judged on at least {GATE_ROUNDS} rounds, not {rounds}: "
-                "one start's idle memory can jump by a compile's freed pages")
+                "before SPEC E44 one start's idle memory could jump by a compile's "
+                "freed pages")
     return None
 
 
@@ -367,9 +371,8 @@ def main():
         why = "".join(f"; {name} at {n} slots spread {mb:.1f} MB over its starts"
                       for name, n, mb in unsettled(rounds, names))
         if why:
-            why += (f", more than half the {COMPILE_MB} MB a pool thread's shim compile can "
-                    "leave, so its least may not be its floor: a machine this busy can leave "
-                    "one in every start")
+            why += (f", more than half the {COMPILE_MB} MB step a pool thread's shim compile "
+                    "left in a start before SPEC E44, so its least may not be its floor")
         fail(f"{what} is {share:.0f} B a slot, above "
              f"{args.max_pool_bytes_per_slot:.0f}" + why)
 

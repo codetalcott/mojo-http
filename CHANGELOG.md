@@ -107,6 +107,16 @@ default is listed under **Behaviour changes**
 
 ### Changed
 
+- **m0serve compiles its Python shim once per process, where it compiled
+  it once per serving thread** (SPEC E44). Each pool thread, executor and
+  `--threads` loop, and each protocol detection at startup, executes a
+  copy of the one compile of its own. On an M4 under `--realtime` with
+  eight pool threads and 16384 connections, m0serve idles at 39.3 MB where
+  it idled at 41.0, and starts on 0.03 s of CPU where it took 0.07. Its
+  idle memory no longer moves from one start to the next: 30 starts under
+  14 spinning processes spanned 0.7 MB, where they spanned 14.1 MB, in
+  steps of a parse's freed memory the allocator kept
+  ([the note](docs/notes/one-compile-a-process.md)).
 - **An ASGI application on the asyncio executor reserves 1156 B a
   connection slot idle, where it reserved 1696** (SPEC C27, #682): the
   executor thread's own handler no longer sizes stream tables it never
