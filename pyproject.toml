@@ -7967,6 +7967,33 @@ M0_PORT=$port python3 scripts/asgi_inflight_probe.py waits || fail 'requests pas
 grep -q '256 requests are in flight' "$log" || fail 'the loop did not say that requests were waiting for the executor'
 kill -TERM $pid; wait_exit 'the bounded in-flight phase'
 
+# --- an application that blocks its asyncio loop (L44) -----------------
+# The executor stops reading its submit channel, and the requests behind
+# it fill the channel until a submit is refused: Linux holds 555 one-job
+# datagrams, under a default server's 1024, and macOS 2048, which only a
+# raised bound passes (measured 2026-11-17). A refused batch was offered
+# again every millisecond, its queue rebuilt once per request: the loop
+# spent 66% of a core with 1000 behind a blocked application. Under the
+# inversion a submit goes direct and nothing is refused.
+if [ "${M0_INVERTED:-}" != "1" ]; then
+  if [ "$(uname)" = "Darwin" ]; then
+    bconns=2600; bmax=3000
+  else
+    bconns=1000; bmax=1024
+  fi
+  log=$SMOKE_DIR/asgi-blocked.log
+  spawn asgi-blocked.log env M0_EXECUTOR_INFLIGHT=$bmax "$srv" $SPEC --health-path /health --max-connections $bmax
+  wait_ready $B/ $pid
+  bout=$(M0_PORT=$port M0_PID=$pid M0_BLOCKED_CONNS=$bconns python3 scripts/asgi_inflight_probe.py blocked) \
+    || { echo "$bout"; fail 'requests behind an application that blocked its loop kept the loop busy, or were not answered'; }
+  echo "$bout"
+  bcpu=$(echo "$bout" | sed -n 's/^asgi inflight_probe blocked OK: [0-9]* answered, //p' | sed 's/% of a core$//')
+  [ -z "$bcpu" ] || python3 scripts/emit.py asgi.blocked_application_loop_cpu "$bcpu" --unit % --limit 25 --task smoke-asgi
+  grep -q 'channel refused a batch' "$log" \
+    || fail "the executor's channel refused nothing with $bconns requests behind a blocked application: this phase reached nothing"
+  kill -TERM $pid; wait_exit 'the blocked-application phase'
+fi
+
 # --- a stream's head leaves when it is sent (L40) ------------------------
 # A response used to be answered at its first body, so a stream that had
 # sent nothing had sent no head either, and its client could leave unheard.
@@ -7995,6 +8022,7 @@ python3 scripts/emit.py --covers L41 --task smoke-asgi
 python3 scripts/emit.py --covers L42 --task smoke-asgi
 python3 scripts/emit.py --covers L39 --task smoke-asgi
 python3 scripts/emit.py --covers L43 --task smoke-asgi
+[ "${M0_INVERTED:-}" = "1" ] || python3 scripts/emit.py --covers L44 --task smoke-asgi
 python3 scripts/emit.py --covers L1 --task smoke-asgi
 python3 scripts/emit.py --covers F26 --task smoke-asgi
 python3 scripts/emit.py --covers L2 --task smoke-asgi

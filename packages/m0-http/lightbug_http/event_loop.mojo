@@ -297,10 +297,13 @@ def _wait_for_events[B: EventLoopBackend](
     """
     var timeout = 0 if st.owes_accepts() else timeout_ms
     # A request waiting for the executor with room for it was refused by
-    # the submit channel a moment ago (`_hold_unsent`): no event announces
-    # the channel draining, so the loop looks again within a millisecond.
+    # the submit channel (`_hold_unsent`): no event announces the channel
+    # draining, so the loop looks again when the refusal's wait ends, and
+    # sooner when a job comes back, which is an event (SPEC L44). It looked
+    # every millisecond, which an application blocking its own asyncio
+    # loop turned into most of a core.
     if timeout > 1 and st.offload.waiting_count() > 0 and st.offload.accepting():
-        timeout = 1
+        timeout = st.offload.wait_for_offer_ms(Int(perf_counter_ns()), timeout)
     if not st.offload.ring_active():
         return backend.wait(timeout)
     var capped = False
