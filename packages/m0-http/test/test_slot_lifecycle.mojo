@@ -45,7 +45,6 @@ from lightbug_http.c.socket import (
 from lightbug_http.c.socketpair import socketpair_dgram
 from lightbug_http.connection import ConnectionState
 from lightbug_http.loop.accept import _admit_connection
-from lightbug_http.loop.offload import _run_inline
 from lightbug_http.loop.request import _on_read
 from lightbug_http.loop.response import _on_write
 from lightbug_http.loop.streams import _read_websocket
@@ -88,7 +87,7 @@ from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.io.bytes import Bytes
 from lightbug_http.server_config import ServerConfig
 from lightbug_http.uri import URI
-from test.support import _stream_pair
+from test.support import _run_parked, _stream_pair
 
 
 struct FakeBackend(EventLoopBackend):
@@ -939,8 +938,8 @@ struct Raises(HTTPService):
 def test_a_handler_that_raises_is_answered_500_and_closed() raises:
     """A handler that raises is answered 500 with `Connection: close`, and
     the connection closes behind it, whether the loop ran it as its request
-    arrived (`_process_request`) or inline, for a submit batch that could
-    not carry it (`_run_inline`): what it raised is the application's, and
+    arrived (`_process_request`) or from a request parked for a pool
+    thread (`_run_parked`, the tests' stand-in): what it raised is the application's, and
     the connection's state after it is not to be trusted. A request
     pipelined behind it is not run.
 
@@ -972,7 +971,7 @@ def test_a_handler_that_raises_is_answered_500_and_closed() raises:
     st.offload.inflight += 1
     var slots = List[Int]()
     slots.append(slot)
-    assert_equal(_run_inline(inline, backend, st, slots), 1)
+    assert_equal(_run_parked(inline, backend, st, slots), 1)
     var reply = List[UInt8]()
     _ = _read_available(pair[1], reply)
     var text = String(unsafe_from_utf8=Span(reply)).lower()
@@ -2322,14 +2321,14 @@ def test_a_filled_read_behind_a_pool_thread_is_registered_again() raises:
     _on_read(app, backend, st, fd, False)
     assert_true(st.offload.offloaded[slot], "the first request did not go to the pool")
     var adds = backend.read_adds
-    assert_equal(_run_inline(app, backend, st, slots), 1)
+    assert_equal(_run_parked(app, backend, st, slots), 1)
     assert_true(
         backend.read_adds > adds,
         "nothing registered the socket after the read that filled its buffer",
     )
     _on_read(app, backend, st, fd, False)
     assert_true(st.offload.offloaded[slot], "the second request was not read")
-    assert_equal(_run_inline(app, backend, st, slots), 1)
+    assert_equal(_run_parked(app, backend, st, slots), 1)
     var got = List[UInt8]()
     _ = _read_available(peer, got)
     var reply = String(unsafe_from_utf8=Span(got)).lower()
@@ -2433,7 +2432,7 @@ def _interim_exchange(
     client then reads what was waiting and sends `rest`, a read event a
     part, the server's answers taken as they come; with `expire`, the body
     timer runs out instead. With `pooled` a pool thread answers: the request is
-    run inline from the pool's queue (`_run_inline`), as its completion is.
+    answered from the pool's queue (`_run_parked`), as its completion is.
     Returns what the client read after the filler."""
     var app = BodyLength()
     var backend = FakeBackend()
@@ -2474,7 +2473,7 @@ def _interim_exchange(
             went_to_pool = True
             var slots = List[Int]()
             slots.append(slot)
-            assert_equal(_run_inline(app, backend, st, slots), 1)
+            assert_equal(_run_parked(app, backend, st, slots), 1)
         var rounds = 0
         while (
             st.slot_fds[slot] != UNUSED

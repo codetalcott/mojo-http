@@ -46,6 +46,9 @@ part "check_citations selftest" python3 scripts/check_citations.py --selftest
 part "bench_guard selftest" python3 scripts/bench_guard.py --selftest
 # check_docs' own rules, each reverted against the committed text.
 part "check_docs selftest" python3 scripts/check_docs.py --selftest
+part "fasthtml_compare selftest" python3 scripts/fasthtml_compare/compare.py --selftest
+part "docs/FASTHTML.md's table is what the comparison expects" \
+  python3 scripts/fasthtml_compare/compare.py --check-page
 
 # The ratchet itself: every machine-sourced doc fact against its source, and
 # docs/SPEC.md's rules (scripts/spec_sheet.py) with it.

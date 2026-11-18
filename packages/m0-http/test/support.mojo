@@ -10,6 +10,12 @@ from std.memory.alloc import unsafe_alloc
 
 from lightbug_http.c.fcntl import set_nonblocking
 from lightbug_http.http import HTTPResponse
+from lightbug_http.event_loop_backend import EventLoopBackend
+from lightbug_http.http.common_response import InternalError
+from lightbug_http.loop.request import _drain_pipelined
+from lightbug_http.loop.response import _finish_response
+from lightbug_http.loop.state import LoopState, UNUSED
+from lightbug_http.service import HTTPService
 
 
 def _stream_pair() raises -> Tuple[Int, Int]:
@@ -40,3 +46,46 @@ def _raw(*bytes: Int) -> String:
 
 def _body(resp: HTTPResponse) -> String:
     return String(StringSpan(unsafe_from_utf8=Span(resp.body_raw)))
+
+
+def _run_parked[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState, slots: List[Int],
+) -> Int:
+    """Answer parked requests as a pool thread's completion would, without
+    the thread: take each request back, run the handler, and finish the
+    response on the loop. The tests' stand-in for a job coming back. It
+    was the loop's own fallback for a submit batch the channel refused,
+    until such a batch was made to wait instead (SPEC L39). Returns how
+    many the handler ran: a slot no longer offloaded is skipped, and one
+    whose client left is released unanswered, neither of them counted."""
+    if len(slots) == 0:
+        return 0
+    ref pool = st.offload.pool()[]
+    var ran = 0
+    for i in range(len(slots)):
+        var slot = slots[i]
+        if slot < 0 or slot >= len(st.slot_fds) or not st.offload.offloaded[slot]:
+            continue
+        st.offload.offloaded[slot] = False
+        st.offload.inflight -= 1
+        var request = pool.unpark_request(slot)
+        if st.slot_fds[slot] == UNUSED:
+            # The client left while its request sat in the buffer; nothing
+            # to answer, and the provision is released as an abandoned
+            # completion's would be.
+            pool.discard(slot)
+            st.provision_pool.release(slot)
+            continue
+        var request_method = request.method
+        var request_path = request.uri.path
+        var response: HTTPResponse
+        try:
+            response = handler.func(request)
+        except:
+            response = InternalError()
+            st.provision_pool.provisions[slot].should_close = True
+        ran += 1
+        handler.after_response(request_method, request_path, response)
+        _finish_response(handler, backend, st, slot, st.slot_fds[slot], response^)
+        _drain_pipelined(handler, backend, st, slot, st.slot_fds[slot])
+    return ran

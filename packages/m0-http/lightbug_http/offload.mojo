@@ -156,10 +156,16 @@ waits inside asyncio rather than in `_wait_for_events`, so every
 completion pokes it — the datagram shape that path always had.
 
 Submit is non-blocking on the loop side: a full ring (or, without rings, a
-full queue) means "the pool is saturated", and the loop's answer is to run
-that one request inline rather than drop it. Completion cannot fill: at
-most `OFFLOAD_MAX_INFLIGHT` jobs exist at once and both the ring and the
-channel are sized for that many.
+full queue) means "the pool is saturated". For a handler thread's lane the
+loop's answer is to run that one request on its own thread rather than
+drop it; for an asyncio executor's, which would run it there with
+`run_until_complete`, the request waits for room instead (SPEC L39,
+`OffloadLoopState.waiting_slots`). Pool threads complete through rings
+sized for `OFFLOAD_MAX_INFLIGHT` jobs, which is all a pool with handler
+threads lets be in flight. An executor alone may have more
+(`executor_inflight`, SPEC L43); its completions are queued in its own
+state, sized by `job_entries()`, and announced in datagrams of at most
+`SUBMIT_BATCH_MAX` slots.
 """
 
 from std.collections import Optional
@@ -193,19 +199,81 @@ from lightbug_http.offload_wire import (
 
 
 comptime OFFLOAD_MAX_INFLIGHT = 256
-"""Jobs that may be outstanding at once, across all pool threads.
+"""Jobs that may be outstanding at once, across all pool threads: the
+default of `OffloadPool.max_inflight`, which a lone asyncio executor's pool
+raises (`executor_inflight`, SPEC L43).
 
 Not a throughput knob — a bound on how much the channels must hold. Linux
 charges a UNIX datagram's whole `skb` (several hundred bytes of overhead for
 an 8-byte payload) against the RECEIVER's `SO_RCVBUF`, and caps a
 non-privileged `SO_RCVBUF` at `net.core.rmem_max` (212 KB by default). 256
 jobs fit that with room to spare on every platform this runs on. Past the
-bound the loop runs requests inline, which is exactly today's behaviour — the
-degradation is graceful and never drops a request.
+bound a request for a pool thread's lane runs on the loop, as on a server
+without the flag, and one for an asyncio executor's lane WAITS for a job to
+come back (`OffloadLoopState.waiting_slots`, SPEC L39): run on the loop that
+one was a `run_until_complete` there, and a handler that awaited stopped the
+loop until it returned. Neither drops a request.
 
 It also sizes the pool's job tables (`OffloadPool.requests`): an entry per
 job that can be in flight, not per slot.
 """
+
+comptime EXECUTOR_MAX_INFLIGHT = 1024
+"""The most requests a loop hands a lone asyncio executor at once, when it
+has that many connections (`executor_inflight`, SPEC L43): the default
+connection count, so a default server has no bound to meet.
+
+Not higher, because the job tables are sized by it: at 4096 the executor's
+idle share of a connection slot measured 468 B between 1024 and 16384
+connections, against the 360 B `smoke-max-connections` holds it to (SPEC
+C27). At 1024 the tables cost the same at every connection count from
+there up, 672 KB a loop over the 256 they held (idle RSS, macOS M4,
+2026-11-17)."""
+
+
+def executor_inflight(max_connections: Int, asked: Int = -1) -> Int:
+    """How many requests may be in flight on a loop whose one lane is an
+    asyncio executor's: as many as it has connections, since a connection
+    has one request in flight at most, up to `EXECUTOR_MAX_INFLIGHT`.
+
+    256 held an application to 256 handlers awaiting at once -- an upstream
+    call, a long poll -- with the 257th request waiting for one to finish,
+    where uvicorn overlaps them all. The cap keeps a server asked for tens
+    of thousands of connections from reserving a request and a response
+    for each (SPEC C26); past it a request waits, as before (L39).
+
+    `asked` is `M0_EXECUTOR_INFLIGHT` as m0serve read it
+    (`ServeOptions.executor_inflight`), -1 when it is unset. It replaces
+    the cap and never the connections: a loop has no more requests to hand
+    over than it has connections. Read by m0serve, not here, so a value it
+    cannot use is named on stderr and `--doctor` reports the result."""
+    var cap = asked if asked >= 1 else EXECUTOR_MAX_INFLIGHT
+    return min(max_connections, cap)
+
+
+comptime WAITING_COMPACT_AT = 32
+"""Taken entries a waiting queue may keep before it compacts
+(`OffloadLoopState.take_waiting`): below it a short queue is never moved."""
+
+comptime SUBMIT_RETRY_FIRST_NS = 1_000_000
+"""How long the loop waits after an executor's channel refuses a submit
+before it offers what waits again (`OffloadLoopState.back_off`, SPEC L44):
+the millisecond it always waited, so a channel that was full for an instant
+costs what it did."""
+
+comptime SUBMIT_RETRY_MAX_NS = 64_000_000
+"""The longest the loop waits between offers to a channel that goes on
+refusing, each refusal in a row doubling the wait from
+`SUBMIT_RETRY_FIRST_NS`. A channel refuses because its executor is not
+reading: an application blocking its own asyncio loop. The loop retried
+every millisecond, and on Linux, where the channel holds 555 one-job
+datagrams, a default server with 1000 requests behind a blocked
+application spent 66% of a core retrying, 100% with 4000 (measured
+2026-11-17, docs/notes/a-refused-batch-backs-off.md). A completion ends
+the wait at once: the executor that sent it is reading again. The ceiling
+is how late the first offer can be once an executor reads again without
+completing anything, every request it read being a long poll."""
+
 
 comptime NO_ENTRY: Int32 = -1
 """`OffloadPool.slot_entry` for a slot with no job parked."""
@@ -624,6 +692,11 @@ struct OffloadPool(Movable):
 
     var capacity: Int
 
+    var max_inflight: Int
+    """Jobs that may be outstanding at once: `OFFLOAD_MAX_INFLIGHT` unless
+    the pool was built for a lone executor (`executor_inflight`). It sizes
+    the job tables and is what `OffloadLoopState.accepting` holds to."""
+
     var ring_enabled: Bool
     """The in-memory handoff (module docstring). Off under `M0_POOL_RING=0`,
     and always off for a disabled pool."""
@@ -724,7 +797,9 @@ struct OffloadPool(Movable):
     var thread_cap: Int
     """Records in `thread_base`; `register_thread` hands them out."""
 
-    def __init__(out self, capacity: Int) raises:
+    def __init__(
+        out self, capacity: Int, max_inflight: Int = OFFLOAD_MAX_INFLIGHT,
+    ) raises:
         """`capacity == 0` builds a disabled pool: no descriptors, no storage.
 
         The threaded mode's loop and the Mojo host's worker build one where
@@ -755,7 +830,8 @@ struct OffloadPool(Movable):
         self._drain_buf.resize(OFFLOAD_MAX_INFLIGHT * _JOB_BYTES, 0)
         # The job tables hold what can be in flight, not what can connect:
         # one entry per job, at most `OFFLOAD_MAX_INFLIGHT` (`requests`).
-        var entries = min(slots, OFFLOAD_MAX_INFLIGHT)
+        self.max_inflight = max_inflight if max_inflight >= 1 else OFFLOAD_MAX_INFLIGHT
+        var entries = min(slots, self.max_inflight)
         self.requests = List[Optional[HTTPRequest]](capacity=entries)
         self.responses = List[Optional[HTTPResponse]](capacity=entries)
         self.free_entries = List[Int](capacity=entries)
@@ -1014,6 +1090,15 @@ struct OffloadPool(Movable):
             if slot >= 0 and slot < len(self.slot_lane) else 0
         )
         return self.lane_is_executor(lane)
+
+    def lane_of(self, slot: Int) -> Int:
+        """The lane `slot`'s job was stamped for (`stamp_lane`), 0 for none."""
+        return self.slot_lane[slot] if slot >= 0 and slot < len(self.slot_lane) else 0
+
+    def has_job(self, slot: Int) -> Bool:
+        """Whether `slot` has a job parked in the pool: False for a slot
+        whose request is still waiting for room (`waiting_slots`)."""
+        return slot >= 0 and slot < len(self.slot_entry) and self.slot_entry[slot] != NO_ENTRY
 
     def lane_is_executor(self, lane: Int) -> Bool:
         """Whether an asyncio executor is what reads `lane`'s submit channel
@@ -1759,8 +1844,9 @@ struct OffloadPool(Movable):
     def has_free_entry(self) -> Bool:
         """Whether a job could be parked now. The in-flight bound implies it,
         since every entry held is a job counted in flight; the loop asks
-        anyway (`OffloadLoopState.accepting`), so a count gone wrong runs a
-        request inline rather than parking it on another job's entry."""
+        anyway (`OffloadLoopState.accepting`), so a count gone wrong makes a
+        request wait, or run on a handler thread's loop, rather than park on
+        another job's entry."""
         return len(self.free_entries) > 0
 
     def job_entries(self) -> Int:
@@ -1892,8 +1978,9 @@ struct OffloadPool(Movable):
 
         A single slot goes as the legacy 8-byte job. Bounded retry
         (`send_bounded`), and the caller owns what a refusal after it means:
-        the loop runs those requests inline, as a refused `submit` always
-        meant. Executor lanes only — a pool thread takes one job per read.
+        the loop puts those requests back at the front of the waiting queue
+        (`_hold_unsent`, SPEC L39). Executor lanes only — a pool thread takes
+        one job per read.
         """
         if len(slots) == 0:
             return True
@@ -1908,8 +1995,10 @@ struct OffloadPool(Movable):
         """Queue `slot` on the lane serving `path`. False means it is full.
 
         False is not an error and not a dropped request: the caller runs that
-        one request inline instead, which is precisely the behaviour every
-        request had before this module existed.
+        one request on the loop instead, which is precisely the behaviour
+        every request had before this module existed. Handler threads'
+        lanes only: an executor's request is batched (`queue_submit`), and
+        waits when it cannot go (SPEC L39).
 
         With rings: push, THEN read the lane's parked count, and poke only
         if it is non-zero — the producer's half of the protocol in the
@@ -1952,8 +2041,9 @@ struct OffloadPool(Movable):
         return True
 
     def unpark_request(mut self, slot: Int) -> HTTPRequest:
-        """Take a request back after a failed `submit`, to run it inline.
-        Its entry goes back with it."""
+        """Take a request back after a failed `submit`: a handler thread's
+        lane runs it on the loop, an executor's puts it back to wait
+        (`_hold_unsent`). Its entry goes back with it."""
         var e = self._held_entry(slot)
         var request = self.requests[e].take()
         self._release(slot)
@@ -2465,6 +2555,16 @@ struct OffloadLoopState(Movable):
     the slot is streaming. Written unconditionally for every streaming
     response, so a recycled slot cannot inherit a stale True."""
 
+    var sized_left: List[Int]
+    """Bytes this slot's streaming response still owes of the
+    `Content-Length` its head declared, or -1 for a stream that declared
+    none (SPEC L41).
+
+    A sized stream is written unframed under its own length and its
+    connection is kept once every byte has gone; ended short, it is closed,
+    so the client reads a truncated body and never a clean end. Written for
+    every response head, like `chunked`, so no slot inherits one."""
+
     var ack_payload: List[Int]
     """Payload bytes owed to the producer's credit window once the buffer
     now in flight has landed.
@@ -2504,7 +2604,8 @@ struct OffloadLoopState(Movable):
     ping-ponged per request. A slot here is already `offloaded` and counted
     in `inflight`; it is invisible to every sweep exactly as one out on a
     thread is. Never left here across a `wait`: `flush_submits` runs before
-    every park of the loop, and what it cannot send runs inline."""
+    every park of the loop, and what it cannot send goes back to wait, at
+    the front of the queue (`_hold_unsent`, SPEC L39)."""
 
     var pending_submit_count: Int
 
@@ -2527,6 +2628,39 @@ struct OffloadLoopState(Movable):
     var done_scratch: List[Int]
     """`_service_completions`' list of finished slots, reused across
     passes instead of allocated per drain."""
+
+    var waiting_slots: List[Int]
+    """Slots whose request is for an executor lane and found no room
+    (`accepting()` False), oldest first from `waiting_head`.
+
+    Such a request WAITS here and is submitted when a job comes back
+    (`loop/offload.mojo`, `_admit_waiting`). It used to run on the loop's
+    own thread, which for an asyncio executor is a `run_until_complete`
+    there: a handler that awaited stopped every connection on the loop,
+    and the stop signal with them, until it returned (SPEC L39). A waiting
+    slot is `offloaded` -- no sweep or read touches it -- and is NOT in
+    `inflight`, which counts what the pool holds an entry for. Sized by
+    what waits, not by the slot count (SPEC C26)."""
+    var waiting_requests: List[Optional[HTTPRequest]]
+    """The request of each `waiting_slots` entry, taken as it is admitted."""
+    var waiting_head: Int
+    var waiting_moved: Int
+    """Entries `_rebuild_waiting` has moved, ever: what putting a refused
+    batch back has cost, which a test reads (SPEC L44)."""
+    var retry_at_ns: Int
+    """When what waits may be offered to the executor again after its
+    channel refused a submit (`back_off`); 0 when nothing was refused since
+    the executor last read."""
+    var retry_wait_ns: Int
+    """The wait `back_off` set last, doubled by the next refusal in a row;
+    0 once the executor reads again."""
+    var waiting_notice: String
+    """Printed the first time a request waits because the executor has all
+    it takes, then emptied."""
+    var refusal_notice: String
+    """Printed the first time a submit the executor's channel refused is put
+    back to wait (`hold_waiting_first`), then emptied: the executor is not
+    reading, which is a different trouble from a full one."""
 
     var waits: Int
     var waits_capped: Int
@@ -2561,6 +2695,23 @@ struct OffloadLoopState(Movable):
             self.wait_over.append(0)
             self.pass_over.append(0)
         self.done_scratch = List[Int](capacity=64)
+        self.waiting_slots = List[Int]()
+        self.waiting_requests = List[Optional[HTTPRequest]]()
+        self.waiting_head = 0
+        self.waiting_moved = 0
+        self.retry_at_ns = 0
+        self.retry_wait_ns = 0
+        self.waiting_notice = String(
+            " requests are in flight on the asyncio executor, which is all"
+            " this loop hands it at once; each later request waits for one"
+            " of them to be answered"
+        )
+        self.refusal_notice = String(
+            "event loop: the asyncio executor's channel refused a batch of"
+            " requests, so they wait, and each later request waits behind"
+            " them, until it reads again: a handler that blocks its thread"
+            " stops it reading"
+        )
         self.ack_owed_count = 0
         self.streaming_hint = 0
         self.pending_submit = List[List[Int]]()
@@ -2569,6 +2720,7 @@ struct OffloadLoopState(Movable):
         self.is_head = List[Bool](capacity=capacity)
         self.http11 = List[Bool](capacity=capacity)
         self.chunked = List[Bool](capacity=capacity)
+        self.sized_left = List[Int](capacity=capacity)
         self.ack_payload = List[Int](capacity=capacity)
         self.ack_owed = List[Int](capacity=capacity)
         self.stream_gen = List[Int](capacity=capacity)
@@ -2577,6 +2729,7 @@ struct OffloadLoopState(Movable):
             self.is_head.append(False)
             self.http11.append(False)
             self.chunked.append(False)
+            self.sized_left.append(-1)
             self.ack_payload.append(0)
             self.ack_owed.append(0)
             self.stream_gen.append(STREAM_GEN_NONE)
@@ -2631,7 +2784,8 @@ struct OffloadLoopState(Movable):
     def flush_lane(mut self, lane: Int) -> List[Int]:
         """Send `lane`'s buffered slots as one datagram (`submit_batch`,
         whose retry is bounded). Returns the slots it could NOT send, buffer
-        cleared either way — the caller runs those inline."""
+        cleared either way — the caller puts those back to wait
+        (`_hold_unsent`), which backs off."""
         var at = lane if lane >= 0 else 0
         var unsent = List[Int]()
         if at >= len(self.pending_submit) or len(self.pending_submit[at]) == 0:
@@ -2653,6 +2807,127 @@ struct OffloadLoopState(Movable):
             for i in range(len(failed)):
                 unsent.append(failed[i])
         return unsent^
+
+    def waiting_count(self) -> Int:
+        """Requests waiting for room on an executor lane."""
+        return len(self.waiting_slots) - self.waiting_head
+
+    def must_wait(self, path: String) -> Bool:
+        """Whether a request for `path` waits instead of being submitted
+        or run on the loop: its lane is an executor's, and either there is
+        no room or an earlier request is already waiting for some."""
+        if not self.enabled():
+            return False
+        if self.waiting_count() == 0 and self.accepting():
+            return False
+        return self.pool()[].lane_is_executor(self.pool()[].lane_for(path))
+
+    def hold_waiting(mut self, slot: Int, var request: HTTPRequest):
+        """Keep `request` until an executor lane has room for it. The notice
+        is printed only when the bound is why: a request that waits behind
+        a refused batch, with room, is the refusal's (`refusal_notice`)."""
+        if self.waiting_notice.byte_length() > 0 and not self.accepting():
+            print(
+                "event loop: " + String(self.pool()[].max_inflight)
+                + self.waiting_notice,
+                file=stderr,
+            )
+            self.waiting_notice = String("")
+        self.waiting_slots.append(slot)
+        self.waiting_requests.append(Optional[HTTPRequest](request^))
+
+    def hold_waiting_first(
+        mut self, var slots: List[Int], var requests: List[Optional[HTTPRequest]]
+    ):
+        """Put a refused batch back at the FRONT, in its own order: each
+        request had been admitted and its submit was refused, so it is older
+        than everything still waiting (`loop/offload.mojo`, `_hold_unsent`).
+        The queue is rebuilt behind the batch ONCE, which costs what waits.
+        It was rebuilt once for each request, 64 rebuilds of the whole queue
+        a refused batch: with 4000 connections, about 3400 of them waiting,
+        a health request waited 15-18 ms behind a retry (SPEC L44)."""
+        if len(slots) == 0:
+            return
+        if self.refusal_notice.byte_length() > 0:
+            print(self.refusal_notice, file=stderr)
+            self.refusal_notice = String("")
+        self._rebuild_waiting(slots^, requests^)
+
+    def back_off(mut self, now_ns: Int):
+        """The executor's channel refused a submit: offer nothing more until
+        `retry_at_ns`, a wait that doubles with each refusal in a row from
+        `SUBMIT_RETRY_FIRST_NS` to `SUBMIT_RETRY_MAX_NS` (SPEC L44)."""
+        if self.retry_wait_ns == 0:
+            self.retry_wait_ns = SUBMIT_RETRY_FIRST_NS
+        else:
+            self.retry_wait_ns = min(2 * self.retry_wait_ns, SUBMIT_RETRY_MAX_NS)
+        self.retry_at_ns = now_ns + self.retry_wait_ns
+
+    def executor_read(mut self):
+        """The executor is reading its channel: a job came back
+        (`_service_completions`, `service_direct_completions`). What waits
+        is offered at once again, and the next refusal waits
+        `SUBMIT_RETRY_FIRST_NS` again."""
+        self.retry_at_ns = 0
+        self.retry_wait_ns = 0
+
+    def backing_off(self, now_ns: Int) -> Bool:
+        """Whether a refusal's wait (`back_off`) still runs at `now_ns`."""
+        return self.retry_at_ns != 0 and now_ns < self.retry_at_ns
+
+    def wait_for_offer_ms(self, now_ns: Int, longest: Int) -> Int:
+        """How long the loop may wait for events while a request waits with
+        room for it, at most `longest`: until the refusal's wait ends, in
+        whole milliseconds rounded up, or one millisecond with none."""
+        if not self.backing_off(now_ns):
+            return 1
+        var ms = (self.retry_at_ns - now_ns + 999_999) // 1_000_000
+        return max(1, min(ms, longest))
+
+    def _rebuild_waiting(
+        mut self, var slots: List[Int], var requests: List[Optional[HTTPRequest]]
+    ):
+        """Move what still waits, oldest first, onto the end of `slots` and
+        `requests`, and make them the queue: the entries already taken are
+        dropped, and `waiting_head` is 0 again."""
+        self.waiting_moved += len(self.waiting_slots) - self.waiting_head
+        for i in range(self.waiting_head, len(self.waiting_slots)):
+            slots.append(self.waiting_slots[i])
+            requests.append(
+                Optional[HTTPRequest](self.waiting_requests[i].take())
+            )
+        self.waiting_slots = slots^
+        self.waiting_requests = requests^
+        self.waiting_head = 0
+
+    def next_waiting(self) -> Int:
+        """The slot that has waited longest. Only with `waiting_count() > 0`."""
+        return self.waiting_slots[self.waiting_head]
+
+    def take_waiting(mut self) -> HTTPRequest:
+        """The request of `next_waiting()`, which stops waiting."""
+        var request = self.waiting_requests[self.waiting_head].take()
+        self.waiting_head += 1
+        if self.waiting_head == len(self.waiting_slots):
+            self.waiting_slots.clear()
+            self.waiting_requests.clear()
+            self.waiting_head = 0
+        elif (
+            self.waiting_head >= WAITING_COMPACT_AT
+            and 2 * self.waiting_head >= len(self.waiting_slots)
+        ):
+            # A backlog that never empties -- more long polls than the
+            # executor takes, each polling again as it is answered -- was
+            # cleared never, and every request that had waited kept its
+            # entry for as long as it lasted (SPEC L39). Once half the
+            # entries are taken, the rest move to the front: each entry
+            # moves at most once per entry taken, and what is kept is at
+            # most twice what waits.
+            self._rebuild_waiting(
+                List[Int](capacity=self.waiting_count()),
+                List[Optional[HTTPRequest]](capacity=self.waiting_count()),
+            )
+        return request^
 
     def slot_channel_stream(self, slot: Int) -> Bool:
         """`OffloadPool.slot_channel_stream`, inert when the pool is disabled."""
@@ -2680,12 +2955,13 @@ struct OffloadLoopState(Movable):
         return self.addr != 0
 
     def accepting(self) -> Bool:
-        """Whether another job may be submitted, or the loop must run inline.
-        The pool's free entry is implied by the bound and asked anyway
-        (`OffloadPool.has_free_entry`)."""
+        """Whether another job may be submitted. When not, an executor's
+        request waits (`must_wait`, SPEC L39) and a handler thread's runs
+        on the loop. The pool's free entry is implied by the bound and asked
+        anyway (`OffloadPool.has_free_entry`)."""
         return (
             self.addr != 0
-            and self.inflight < OFFLOAD_MAX_INFLIGHT
+            and self.inflight < self.pool()[].max_inflight
             and self.pool()[].has_free_entry()
         )
 

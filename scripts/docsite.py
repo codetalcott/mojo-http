@@ -138,6 +138,10 @@ PAGES = [
          "What each execution mode is for, what free-threading changes, and "
          "where each has a cliff.",
          "Start here", nav="WSGI and ASGI modes"),
+    Page("docs/FASTHTML.md", "/docs/fasthtml/", "FastHTML",
+         "Serving a FastHTML application: the command, what to change in "
+         "the application, and each response that differs from uvicorn's.",
+         "Start here"),
     Page("docs/README.md", "/docs/", "Documentation",
          "Every page on this site, grouped by what it is for.",
          "Start here"),

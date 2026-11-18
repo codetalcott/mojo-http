@@ -10,7 +10,8 @@
 
 About 1,500 lines of Python, `exec`'d into a fresh namespace per
 `PyBridge` (so per worker, per serving thread, per pool thread and per
-executor). It holds five things:
+executor), each a copy of code compiled once per interpreter
+([one-compile-a-process](one-compile-a-process.md)). It holds five things:
 
 1. **The WSGI protocol** — `start_response`, its `write()` callable, PEP
    3333's `close()`, and the decision of whether an unsized iterable

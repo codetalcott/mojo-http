@@ -28,9 +28,14 @@ the sockets still connected (L20), and a message for a client that has gone
 never reaches the next one on its slot (L20). `/ws-boom` raises after its
 accept, which must close the socket with 1011 (L24). `chat_probe.py` drives
 all four.
+
+`/thread-kept` is the one `def` endpoint, which is how FastAPI's tutorial
+writes most of its endpoints: it runs on Starlette's thread pool and counts
+the requests its thread has served (L37).
 """
 
 import asyncio
+import threading
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -46,6 +51,18 @@ async def index():
 @app.get("/plain", response_class=PlainTextResponse)
 async def plain():
     return "plain text from fastapi"
+
+
+_KEPT = threading.local()
+
+
+@app.get("/thread-kept", response_class=PlainTextResponse)
+def thread_kept():
+    # A `def` endpoint: FastAPI runs it on Starlette's thread pool. The
+    # answer is how many requests THIS thread has served, so it passes 1
+    # only if the pool's threads outlive a request (SPEC L37).
+    _KEPT.n = getattr(_KEPT, "n", 0) + 1
+    return str(_KEPT.n)
 
 
 async def _ticks():

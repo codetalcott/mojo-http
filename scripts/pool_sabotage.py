@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Revert each rule in `mojo_pool.mojo`, each of the pool's job-entry rules
-in `offload.mojo` and the asyncio executor's in `asgi_executor.mojo`, and
-insist a guard fails for every one.
+in `offload.mojo`, each of the loop's rules for a submit the executor's
+channel refused (`offload.mojo`, `loop/offload.mojo`, `event_loop.mojo`;
+SPEC L44) and the asyncio executor's in `asgi_executor.mojo`, and insist a
+guard fails for every one.
 
 Same idea as `shim_ownership.py --sabotage`: a guard nobody has broken on
 purpose is a guard nobody knows works. The table is this file's; everything
@@ -124,6 +126,73 @@ ENTRY_SABOTAGES = [
 
 RULES += [rule(label, OFFLOAD, old, new, gate="offload")
           for label, old, new in ENTRY_SABOTAGES]
+
+LOOP_OFFLOAD = Path("packages/m0-http/lightbug_http/loop/offload.mojo")
+EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
+
+# A batch the executor's channel refused is put back with one rebuild of the
+# waiting queue and offered again only after a wait that doubles, or once a
+# job comes back (SPEC L44). Retried every millisecond with a rebuild per
+# request, the loop spent 66% of a core behind an application that blocked
+# its own asyncio loop. Each rule reverted alone is that cost, or a wait
+# that never ends, which `test_offload.mojo` must see.
+REFUSAL_SABOTAGES = [
+    (
+        "a refused batch put back a request at a time (a rebuild each)",
+        LOOP_OFFLOAD,
+        "    st.offload.hold_waiting_first(back_slots^, back_requests^)\n",
+        "    for back in range(len(back_slots)):\n"
+        "        var at = len(back_slots) - 1 - back\n"
+        "        var one = List[Int]()\n"
+        "        one.append(back_slots[at])\n"
+        "        var req = List[Optional[HTTPRequest]]()\n"
+        "        req.append(Optional[HTTPRequest](back_requests[at].take()))\n"
+        "        st.offload.hold_waiting_first(one^, req^)\n",
+    ),
+    (
+        "what waits is offered while the refusal's wait runs",
+        LOOP_OFFLOAD,
+        "    if st.offload.backing_off(Int(perf_counter_ns())):\n        return\n",
+        "",
+    ),
+    (
+        "a job coming back leaves the refusal's wait running",
+        LOOP_OFFLOAD,
+        "    if len(st.offload.done_scratch) > 0:\n"
+        "        # A job came back, so its executor is reading: what waits behind\n"
+        "        # a refusal is offered at the bottom of this pass (SPEC L44).\n"
+        "        st.offload.executor_read()\n",
+        "",
+    ),
+    (
+        "the loop looks again every millisecond while a refusal's wait runs",
+        EVENT_LOOP,
+        "        timeout = st.offload.wait_for_offer_ms(Int(perf_counter_ns()), timeout)\n",
+        "        timeout = 1\n",
+    ),
+    (
+        "no bound on the wait while a request waits with room",
+        EVENT_LOOP,
+        "    if timeout > 1 and st.offload.waiting_count() > 0 and st.offload.accepting():\n"
+        "        timeout = st.offload.wait_for_offer_ms(Int(perf_counter_ns()), timeout)\n",
+        "",
+    ),
+    (
+        "a refusal in a row waits no longer than the first",
+        OFFLOAD,
+        "            self.retry_wait_ns = min(2 * self.retry_wait_ns, SUBMIT_RETRY_MAX_NS)\n",
+        "            self.retry_wait_ns = SUBMIT_RETRY_FIRST_NS\n",
+    ),
+    (
+        "the wait does not start again once the executor reads",
+        OFFLOAD,
+        "        self.retry_at_ns = 0\n        self.retry_wait_ns = 0\n\n    def backing_off",
+        "        self.retry_at_ns = 0\n\n    def backing_off",
+    ),
+]
+
+RULES += [rule(label, path, old, new, gate="offload")
+          for label, path, old, new in REFUSAL_SABOTAGES]
 
 EXECUTOR = Path("packages/m0-wsgi/src/asgi_executor.mojo")
 EXECUTOR_TEST = Path("packages/m0-wsgi/test/test_executor_state.mojo")

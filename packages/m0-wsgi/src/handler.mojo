@@ -714,6 +714,23 @@ struct WSGIHandler(ThreadHandler):
         self.direct_lane = lane
         self.direct_fn = job_fn
 
+    def peer_finished(mut self, slot: Int, lane: Int):
+        """`HTTPService.peer_finished`: tell the executor that `slot`'s
+        client has finished sending, so an application parked in
+        `receive()` hears `http.disconnect` (SPEC L42). The disconnect
+        tag with the reserved code `PEER_FINISHED`, which the shim reads
+        as a notice: nothing is cancelled and the task is not marked
+        gone, so an answer it still produces is sent."""
+        if self.asgi_notify_fd < 0:
+            return
+        if self.direct_state_addr != 0:
+            try:
+                self.apps[0]._bridge.notify_disconnect(slot, PEER_FINISHED)
+            except e:
+                print("inverted executor: peer-finished notify raised: " + String(e), file=stderr)
+            return
+        _send_disconnect_tag(self._notify_fd_for_lane(lane), slot, PEER_FINISHED)
+
     def direct_job(mut self, slot: Int) -> Bool:
         """`HTTPService.direct_job`: take the parked request on this thread.
 
@@ -2339,6 +2356,13 @@ def _send_ws_message_tag(
     for b in payload:
         msg.append(b)
     return send_bounded(fd, Span(msg))
+
+
+comptime PEER_FINISHED = 1
+"""The disconnect tag's code for "the peer finished sending while its
+request is in flight" (`WSGIHandler.peer_finished`, SPEC L42). Below every
+WebSocket close code (RFC 6455 starts them at 1000); the shim's
+`_PEER_FINISHED` is the same number."""
 
 
 def _send_disconnect_tag(fd: Int, slot: Int, code: Int = 0):

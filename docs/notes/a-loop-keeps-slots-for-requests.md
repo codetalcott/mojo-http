@@ -291,3 +291,56 @@ parts were not.
 connections and fails above 360 B a slot; the handler's sizing, reverted,
 read 431. `poe sabotage-pool` reverts the per-job sizing and the no-job
 guard against `test_executor_state.mojo`.
+
+## Found after it: one start's jump (2026-11-18)
+
+The smoke measured each cell once, and a start can hold memory the slot
+count did not set. On #702's first macOS attempt the pool's share read
+432 B a slot, failing the gate; the rerun of the same commit read 18. Over
+the 31 `Tests` runs from 2026-11-07, every attempt, two macOS rounds had
+one cell of the eight-thread arm 3.4 and 4.2 MB above its median (432,
+and -379, which passed because nothing had regressed), and no other cell
+on either leg moved 0.6 MB. The runner fits 16384 connections to about
+9950 slots, so the bound of 128 B a slot is about 1.1 MB in one cell.
+
+The extra memory is the pool threads' own. On an M4, vmmap puts every
+megabyte of it in the system allocator's small zone, dirty, while the
+tcmalloc region that holds the tables sized by the slots does not move.
+Each pool thread's bridge compiles the 102 KB executor shim, and a compile
+peaks 4.16 MB above the 0.56 it keeps (tracemalloc, CPython 3.14.7): the
+jumps come in steps of about 3.6 MB, compiles' temporaries the allocator
+did not reuse. Load makes that likelier. Unloaded, 30 starts of the
+eight-thread cell at 16384 slots read 54.1-55.2 MB resident; under 14
+spinning processes, 59.0-73.7 in those steps, while the arm with no pool
+read 50.6-51.7 under the same load.
+
+So each cell is now its least reading over three starts, and the probe
+reads the footprint, which a page the system compresses does not leave,
+rather than the resident set: what moves a start only adds, so a cell is
+wrong only when every start of it jumped. A gate on fewer than three rounds
+is refused, and a failed one names any cell whose starts spread more than
+half a step. `pool_idle_rss.py --selftest`, which the smoke runs first,
+replays the recorded readings: #702's jumped start; two jumped starts of
+three, which the median of the rounds' slopes read as 438; and a regression
+of 200 B a slot beside two jumped low cells, which the median read as -185
+and the least catches. Putting back the pool threads' stream tables read
+1616 B a slot through the new probe.
+
+| M4, load about 3, footprint, three starts a cell | the pool's share | the executor's |
+| --- | --- | --- |
+| the share | 21 B a slot | 228 B a slot |
+| each arm's slope | 1121 and 1142 | 928 and 1156 |
+
+Four of that run's six eight-thread starts carried a step; one round alone
+would have read 580. The slopes in the footprint match the resident ones
+above (1117 and 1145; 917 and 1156).
+
+What it does not do: a machine busy enough to leave a step in every start
+defeats any count of starts. Under six spinning processes on the M4, no
+start of the eight-thread arm reached its quiet floor, and of six runs the
+least read past 128 in three, the median of the slopes in one, and one
+round alone in seven of eighteen. The steps are the server's: compiling the
+shim once a process rather than once a pool thread is the change that
+would remove them, not measured here. Built since, and measured in
+[one-compile-a-process](one-compile-a-process.md): 30 starts under 14
+spinning processes spanned 0.7 MB.

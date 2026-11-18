@@ -45,7 +45,7 @@ from lightbug_http.loop.response import (
     _finish_response, _send_error_to_fd, _send_interim, _take_owed_interim,
 )
 from lightbug_http.loop.streams import _read_websocket
-from lightbug_http.loop.offload import _run_inline
+from lightbug_http.loop.offload import _hold_unsent
 
 
 # How long a connection refused before its request was read keeps reading,
@@ -89,6 +89,18 @@ def _on_read[T: HTTPService, B: EventLoopBackend](
             # pipelined request the drain still owes an answer,
             # and the answer to the last one closes the
             # connection (`_answers_the_last_request`).
+            #
+            # An executor's application may be listening for exactly
+            # this (a long poll parked in `receive()`), so the handler
+            # is told, once: only for an EOF first seen here, never for
+            # a request that arrived with its FIN, and never for one
+            # still waiting for the executor (SPEC L42).
+            if (
+                not st.provision_pool.provisions[slot].peer_eof
+                and st.offload.pool()[].has_job(slot)
+                and st.offload.pool()[].slot_is_executor(slot)
+            ):
+                handler.peer_finished(slot, st.offload.pool()[].lane_of(slot))
             st.provision_pool.provisions[slot].peer_eof = True
         # Nothing reads this slot until its completion: the EOF
         # above, or a pipelined request that arrived mid-flight,
@@ -789,7 +801,8 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
     handler's `direct_job`), another lane's is sent now, and the slot is
     left `offloaded` for `_finish_response` to resume when the completion
     comes back. A full queue falls back to running `func` here, as a server
-    without the flag would. A `func` that raises is a 500 and a close.
+    without the flag would, for a pool thread's lane; a request for an
+    executor's lane waits for room instead (`_admit_waiting`, SPEC L39). A `func` that raises is a 500 and a close.
     `after_response` runs on every answer made here, and `_finish_response`
     encodes and sends it.
     """
@@ -881,6 +894,17 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
             # refuses to touch it, and `_finish_response` resumes here when
             # the completion arrives. This is the whole point of the mode:
             # no other connection on this loop waits for this handler.
+            if st.offload.must_wait(request.uri.path):
+                # An executor lane with no room: the request waits on its
+                # slot, untouchable as one a worker holds, and
+                # `_admit_waiting` submits it when a job comes back. Run
+                # here it was the executor's `run_until_complete` on the
+                # loop's thread, and a handler that awaited stopped the
+                # loop until it returned (SPEC L39).
+                st.offload.hold_waiting(slot, request^)
+                st.offload.offloaded[slot] = True
+                _ = _arm_reads(backend, st, slot, fd_val)
+                return
             if st.offload.accepting():
                 ref pool = st.offload.pool()[]
                 # The path decides the lane, and the loop never learns what
@@ -902,6 +926,13 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                     pool.stamp_lane(slot, lane)
                     st.offload.offloaded[slot] = True
                     st.offload.inflight += 1
+                    # A request read as its connection was accepted never
+                    # registered for reads, and its peer's FIN would arrive
+                    # unseen while the executor has it: the loop listens
+                    # now, so an application waiting on its client can be
+                    # told (`peer_finished`, SPEC L42). One event at most:
+                    # the read path drops the interest again at the first.
+                    _ = _arm_reads(backend, st, slot, fd_val)
                     # The inversion's submit seam: a handler running as the
                     # executor's own loop takes the parked request here, on
                     # this thread, and no datagram is sent. Every other handler
@@ -909,14 +940,10 @@ def _process_request[T: HTTPService, B: EventLoopBackend](
                     if handler.direct_job(slot):
                         return
                     if st.offload.queue_submit(slot, lane):
-                        # The lane's batch is full: send it now, and run
-                        # inline whatever it could not carry — the same
-                        # answer a refused `submit` always had. What the
-                        # handler raises there is its 500, answered inside
-                        # `_run_inline`, so nothing comes back up here.
-                        _ = _run_inline(
-                            handler, backend, st, st.offload.flush_lane(lane)
-                        )
+                        # The lane's batch is full: send it now. What the
+                        # channel refuses waits for it (`_hold_unsent`),
+                        # this request perhaps among it.
+                        _hold_unsent(st, st.offload.flush_lane(lane))
                     return
                 if pool.submit(slot, target):
                     # The slot is working, not idle: the sweeps skip it

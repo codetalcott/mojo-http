@@ -15,6 +15,44 @@ default is listed under **Behaviour changes**
 
 ### Behaviour changes
 
+- **An ASGI response's head is sent when the application sends it** (SPEC
+  L40). m0serve answered a response at its first body. A response whose
+  body follows its head at once, which is every plain response of
+  Starlette, FastAPI, FastHTML and Django, is unchanged. One that waits
+  between the two now has its head on the wire while it waits, as under
+  uvicorn:
+  - a stream nobody has written to yet (FastHTML's `EventStream`, a
+    `StreamingResponse` over a queue) opens in the browser, where
+    `EventSource` used to wait for the first event;
+  - when its client leaves, the application is cancelled, where it used
+    to keep the stream and its subscription until the next event;
+  - it no longer counts against the 256 requests a loop hands its
+    executor at once;
+  - an error raised after such a head truncates the response, where it
+    used to become a 500.
+
+  A response whose head declares a `Content-Length` is held for its body
+  as before, so Starlette's `FileResponse` keeps its length.
+
+  `M0_ASGI_HEAD_AT_START=0` puts the old answer back.
+
+- **A streamed ASGI body keeps the `Content-Length` its head declared**
+  (SPEC L41). Every stream was framed chunked and its length dropped, so
+  Starlette's `FileResponse` lost the length of any file larger than one
+  64 KB chunk. Such a body is now sent under its length, unchunked, as
+  under uvicorn, and its connection is kept once it is whole; one that
+  ends short is closed. A stream that declares no length is chunked as
+  before. No switch: the response is the one the application declared.
+
+- **An ASGI application hears its client leave a request not yet
+  answered** (SPEC L42). `receive()` answers `http.disconnect` once the
+  client has finished sending, as under uvicorn, where it used to wait
+  for the life of the process: a long poll now ends when nobody is
+  listening. The request is not cancelled and its connection is not
+  closed, so a client that half-closes and waits is still answered,
+  unless its handler chooses to stop on the notice. No switch: an
+  application that never calls `receive()` after its body sees nothing.
+
 - **What the server says about itself goes to stderr.** m0serve and a
   Mojo host application keep stdout for what was asked of them:
   `--help`, `--version`, the report `--doctor` prints (still its last
@@ -37,6 +75,22 @@ default is listed under **Behaviour changes**
 
 ### Added
 
+- **A FastHTML broadcast that reaches every worker** (SPEC L38).
+  [FastHTML on m0serve](docs/FASTHTML.md#reach-every-workers-sockets)
+  shows the lines: an `app.ws` connect hook subscribes its socket to
+  `scope["state"]["m0"]`, and a route publishes there. No server change;
+  `smoke-fasthtml` now serves those lines on two workers and counts what
+  each socket receives.
+- **A page for FastHTML, and a weekly comparison behind it** (SPEC L36).
+  [FastHTML on m0serve](docs/FASTHTML.md) is the command, what to change
+  in an application, and each response that differs from uvicorn's. That
+  table is rendered from the list `uv run poe fasthtml-canary` holds the
+  server to: it installs the newest python-fasthtml and uvicorn, serves
+  FastHTML's example applications and four probe applications from both
+  servers, and fails on a difference the page does not list or a listed
+  one that is gone. It runs weekly in CI and files an issue when it fails.
+  `apps/fasthtml_demo` now ends in `serve()`, so the pull-request smoke
+  holds that the call does nothing under m0serve.
 - **A Mojo host application takes `--max-connections` and
   `M0_MAX_CONNECTIONS`** (SPEC E43, #658), as m0serve does: the
   connections each loop holds, 1024 by default, 1 to 65536. A count
@@ -61,6 +115,16 @@ default is listed under **Behaviour changes**
 
 ### Changed
 
+- **m0serve compiles its Python shim once per process, where it compiled
+  it once per serving thread** (SPEC E44). Each pool thread, executor and
+  `--threads` loop, and each protocol detection at startup, executes a
+  copy of the one compile of its own. On an M4 under `--realtime` with
+  eight pool threads and 16384 connections, m0serve idles at 39.3 MB where
+  it idled at 41.0, and starts on 0.03 s of CPU where it took 0.07. Its
+  idle memory no longer moves from one start to the next: 30 starts under
+  14 spinning processes spanned 0.7 MB, where they spanned 14.1 MB, in
+  steps of a parse's freed memory the allocator kept
+  ([the note](docs/notes/one-compile-a-process.md)).
 - **An ASGI application on the asyncio executor reserves 1156 B a
   connection slot idle, where it reserved 1696** (SPEC C27, #682): the
   executor thread's own handler no longer sizes stream tables it never
@@ -84,6 +148,64 @@ default is listed under **Behaviour changes**
 
 ### Fixed
 
+- **One malformed ASGI response head no longer stops a worker answering**
+  (SPEC L40). A head carrying a header that was not a (name, value) pair,
+  with no body yet, raised inside the executor's per-iteration flush; the
+  flush stayed marked armed and no later request on that worker was
+  answered. That request is now answered 500, the log names the header
+  error, and nothing else waits. Introduced with the head-at-start change
+  in this release.
+- **A streamed ASGI body that passes its declared `Content-Length` is
+  refused at the send** (SPEC L41), with uvicorn's
+  `RuntimeError: Response content longer than Content-Length`, and the
+  stream is aborted. The loop trimmed the excess without returning its
+  credit, so a `FileResponse` over a file that grew after it was measured
+  waited for ever and held its share of every stream's window.
+- **The queue of ASGI requests waiting for the executor stays compact**
+  (SPEC L39). A backlog that never emptied kept an entry for every request
+  that had ever waited in it.
+
+- **An ASGI application's requests all overlap, as under uvicorn** (SPEC
+  L43). A loop handed its asyncio executor 256 requests at a time, so the
+  257th handler to await something slow (an upstream call, a long poll)
+  did not start until one of the 256 had answered: 300 requests to a
+  handler that sleeps 3 s took 6.0 s. A loop serving one ASGI application
+  now hands over as many as it has connections, up to 1024, the default
+  `--max-connections`; the same 300 take 3.0 s, and 1,000 took 3.1 s.
+  It costs 672 KB of idle memory a loop. Past 1024 a request waits as
+  before, and so does one whose submit the executor's channel refuses,
+  where that one used to run on the loop's thread. On Linux the channel
+  holds 555 requests, so an application that blocks its own asyncio loop
+  with more than that behind it is refused; what was refused is offered
+  again after a wait that doubles to 64 ms, or as soon as a request is
+  answered, and the loop spends about 1% of a core meanwhile (SPEC L44).
+  `M0_EXECUTOR_INFLIGHT=N` sets the bound, never past the loop's
+  connections (`256` puts the old one back); a value that is not a whole
+  number of requests is named on stderr and the default kept, and
+  `--doctor` reports the bound as `executor_inflight`. A mount set keeps
+  256.
+
+- **The 257th ASGI request in flight no longer stops the server** (SPEC
+  L39). A loop hands its asyncio executor 256 requests at a time, and ran
+  the next on its own thread: a handler that awaited there stopped every
+  connection on the loop, and SIGTERM, until it returned, and one that
+  never returned stopped them for good. 264 requests to a handler that
+  sleeps did it, and so did 264 `EventStream`s that had sent nothing. Such
+  a request now waits for one of the 256 to be answered, oldest first, and
+  the loop says so once on stderr. The bound itself is unchanged
+  ([Running m0serve](docs/RUNNING.md#which-mode)).
+
+- **A `def` handler of a FastAPI, FastHTML or Starlette application no
+  longer starts a thread per request** (SPEC L37). Starlette runs a `def`
+  handler on anyio's thread pool, and anyio ends each of the pool's threads
+  with the task it calls the root, which it finds by the callback
+  `run_until_complete` leaves. The ASGI executor served from a bare
+  `run_forever`, so the root was each request's own task: its thread was
+  told to stop as the request ended and the next request started another.
+  The executor's serving run is now one `run_until_complete`. State an
+  application keeps per thread (a `threading.local` connection) is kept
+  across requests, as under uvicorn. What it cost and what it costs now
+  is in [the note](docs/notes/a-root-task-for-the-executor.md).
 - **A WebSocket hold carries the approving view's cookies** (SPEC I49).
   A view that answers `M0-Hold: websocket` has its response discarded for
   the `101` the server computes, and its `Set-Cookie` lines went with it:

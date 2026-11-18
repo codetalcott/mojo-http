@@ -85,3 +85,55 @@ jobs:
           [View failed run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) — py-canary.log is attached as an artifact, and the job output ends with the phase-by-phase report naming which failure class this is (provision, libpython discovery, probe, conformance, Django/Flask, realtime hybrid, or restore).
 
           This likely means a CPython 3.14t patch, a dependency release, or a Mojo change moved under the free-threaded embedding path. docs/WSGI_VS_ASGI.md §5 records what the canary gates and why."
+
+  # FastHTML beside uvicorn at the NEWEST release of each (SPEC L36,
+  # docs/FASTHTML.md). It rides this workflow's weekly cron because it asks
+  # the same kind of question -- did something outside the lockfile move --
+  # and scripts/spec_sheet.py reads a `(weekly)` gate from this file.
+  #
+  # It runs code this repository does not pin: PyPI's newest releases and
+  # the HEAD of FastHTML's two example repositories. So the checkout keeps
+  # no credential, and the token reaches only the step that files the issue.
+  fasthtml-canary:
+    permissions:
+      contents: read
+      issues: write
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup
+        with:
+          apt: libsqlite3-dev patchelf
+
+      - name: Install pinned dependencies
+        run: uv sync
+
+      - name: Compare FastHTML under m0serve and under uvicorn
+        timeout-minutes: 30
+        run: uv run poe fasthtml-canary
+
+      - name: Upload the comparison
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fasthtml-canary
+          path: fasthtml-canary.log
+
+      - name: Create issue on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --repo "${{ github.repository }}" \
+            --title "FastHTML canary failed" \
+            --body "The weekly comparison of FastHTML under m0serve and under uvicorn failed.
+
+          [View failed run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) — the job output ends with one FAIL line per finding and names the versions compared; fasthtml-canary.log is attached as an artifact.
+
+          A new python-fasthtml, Starlette or uvicorn release moved, or this server did. scripts/fasthtml_compare/compare.py's docstring says what each failure means and how a difference is added to or retired from docs/FASTHTML.md."

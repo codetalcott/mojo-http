@@ -63,7 +63,7 @@ from lightbug_http.loop.streams import (
     _resume_suspended_reads,
 )
 from lightbug_http.loop.offload import (
-    _flush_submits, _retry_owed_acks, _service_completions,
+    _admit_waiting, _flush_submits, _retry_owed_acks, _service_completions,
     service_direct_completions,
 )
 from lightbug_http.loop.shutdown import (
@@ -296,6 +296,14 @@ def _wait_for_events[B: EventLoopBackend](
     queued there will not wake it.
     """
     var timeout = 0 if st.owes_accepts() else timeout_ms
+    # A request waiting for the executor with room for it was refused by
+    # the submit channel (`_hold_unsent`): no event announces the channel
+    # draining, so the loop looks again when the refusal's wait ends, and
+    # sooner when a job comes back, which is an event (SPEC L44). It looked
+    # every millisecond, which an application blocking its own asyncio
+    # loop turned into most of a core.
+    if timeout > 1 and st.offload.waiting_count() > 0 and st.offload.accepting():
+        timeout = st.offload.wait_for_offer_ms(Int(perf_counter_ns()), timeout)
     if not st.offload.ring_active():
         return backend.wait(timeout)
     var capped = False
@@ -485,6 +493,10 @@ def _run_pass[T: HTTPService, B: EventLoopBackend](
 
     # The outboxes: what the handler queued for its streams goes out.
     _drain_outboxes(handler, backend, st)
+
+    # Requests that waited for room on an executor lane, now that this
+    # pass's completions have made some: buffered here, sent just below.
+    _admit_waiting(handler, backend, st)
 
     # The pass's executor submits, one datagram per lane. After the
     # outbox drain and before this loop can park in `wait`: a slot left

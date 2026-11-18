@@ -135,6 +135,8 @@ class Harness:
         self.slowbg_done = False    # a short background task finished
         self.latebg_done = False    # background work begun inside the drain
         self.flush_stops = False    # flush() reports the drain begun (inverted)
+        self.flushes = 0            # flushes the shim has run
+        self.overrun_errors = []    # what an overrunning stream's send raised
         self.drain_steps = 0        # the inverted drain's steps taken
         self.drain_finished = False  # the inverted drain's tail ran
         self.ns["_port"] = self
@@ -189,6 +191,7 @@ class Harness:
 
     def flush(self):
         # True once the drain has begun, which only the inverted port says.
+        self.flushes += 1
         return self.flush_stops
 
     # The inverted port's other three, for `run_forever_inverted`: a pass
@@ -410,6 +413,52 @@ class Harness:
             await receive()  # the request's own body
             msg = await receive()
             self.heard.append((asyncio.current_task(), msg["type"]))
+            return
+        if behaviour == "silent":
+            # A stream nobody has written to: its head, then a listener
+            # parked in receive() (SPEC L40).
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await receive()  # the request's own body
+            await receive()  # parked: a disconnect cancels the stream
+            return
+        if behaviour == "lateraise":
+            # A head, a wait, then an error where the body would be.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": []})
+            await asyncio.sleep(0.01)
+            raise ValueError("kaboom after the head")
+        if behaviour == "badhead":
+            # A head the shim cannot read (a header that is not a pair),
+            # and its body a moment later.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"x-broken",)]})
+            await asyncio.sleep(0.01)
+            await send({"type": "http.response.body", "body": b"late"})
+            return
+        if behaviour == "overrun":
+            # Declares 4 bytes, streams them, then goes on past them.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"Content-Length", b"4")]})
+            await send({"type": "http.response.body", "body": b"abcd",
+                        "more_body": True})
+            try:
+                await send({"type": "http.response.body", "body": b"efgh",
+                            "more_body": True})
+            except RuntimeError as exc:
+                self.overrun_errors.append(str(exc))
+                raise
+            await send({"type": "http.response.body", "body": b""})
+            return
+        if behaviour in ("latebody", "latesized"):
+            # A head, a wait, then the one body, and no receive() at all.
+            # `latesized` declares the body's length, as FileResponse does.
+            await send({"type": "http.response.start", "status": 200,
+                        "headers": [(b"Content-Length", b"4")]
+                        if behaviour == "latesized" else []})
+            await asyncio.sleep(0.01)
+            await send({"type": "http.response.body", "body": b"late",
+                        "more_body": False})
             return
         if behaviour == "bodyfirst":
             # A body before its start, the error caught, then a proper
@@ -2145,6 +2194,202 @@ def test_a_stop_read_by_a_flush_starts_the_drain(h):
     assert h.drain_steps >= 1 and h.drain_finished, (h.drain_steps, h.drain_finished)
 
 
+def test_the_serving_run_keeps_a_thread_pools_threads(h):
+    """L37: anyio ends each thread of its pool with the task it calls the
+    root, and finds that task by the done-callback `run_until_complete`
+    leaves. The serving run is one such call, so the root outlives every
+    request. Under a bare `run_forever` the root was the calling task: here,
+    two tasks one after the other, each asking the pool which thread it got.
+    Kept, they get the same thread; rebuilt, the first task's end stopped
+    its thread and the second got another. Starlette runs every `def`
+    handler this way, so the difference was a thread started and ended per
+    request."""
+    import threading
+
+    import anyio.to_thread
+
+    got = []
+    fired = []
+
+    async def one():
+        got.append(await anyio.to_thread.run_sync(threading.current_thread))
+
+    async def both():
+        await h.loop.create_task(one())
+        # The first task's done-callbacks run an iteration after it ends:
+        # that is where a thread bound to it is told to stop.
+        await asyncio.sleep(0.05)
+        await h.loop.create_task(one())
+        h.ns["_stop_serving"]()
+
+    def expire():
+        fired.append(True)
+        h.loop.stop()
+
+    h.loop.call_soon(lambda: got.append(h.loop.create_task(both())) and None)
+    guard = h.loop.call_later(5.0, expire)
+    try:
+        h.ns["run_forever"]()
+    except RuntimeError:
+        # The guard stopped a run its root task had not finished.
+        pass
+    guard.cancel()
+    threads = [t for t in got if isinstance(t, threading.Thread)]
+    assert not fired, "the serving run did not end when it was told to stop"
+    assert len(threads) == 2, threads
+    assert threads[0] is threads[1], (
+        "the second request's pool call ran on a new thread: the first "
+        "request's end stopped its own"
+    )
+
+
+def test_a_head_leaves_when_it_is_sent_not_at_the_first_body(h):
+    """L40: a response still without a body one loop iteration after its
+    head is a stream from then on, and its head has gone. Answered at the
+    first body, a stream nobody had written to had no head, counted as a
+    request in flight, and its client left unheard. A response whose body
+    follows its head at once is one completion, as it was."""
+    h.job(0, "plain")
+    h.settle()
+    assert h.kinds(0) == ["done"], (
+        "a response whose body follows its head was not one completion: %r"
+        % (h.kinds(0),))
+    h.job(1, "silent")
+    h.settle()
+    assert h.kinds(1) == ["stream_start"], (
+        "the head of a stream with no body yet did not leave: %r"
+        % (h.kinds(1),))
+    owner = h.ns["_exec_slot_task"].get(1)
+    assert getattr(owner, "_m0_streaming", False), (
+        "the stream's owner is not marked streaming")
+    h.disconnect(1)
+    h.settle()
+    assert owner.done(), (
+        "the application went on after its stream's client left")
+    assert 1 not in h.ns["_exec_slot_task"], (
+        "the departed client's request did not release its slot")
+    h.job(2, "latebody")
+    h.settle()
+    assert h.kinds(2) == ["stream_start", "stream_chunk", "stream_end"], (
+        "a body that came after a wait was not sent as produced: %r"
+        % (h.kinds(2),))
+    # A declared length is not an open stream: one completion, whole.
+    h.job(4, "latesized")
+    h.settle()
+    assert h.kinds(4) == ["done"], (
+        "a response that declared its length was streamed: %r"
+        % (h.kinds(4),))
+    # Its head has gone, so an error after it cannot become a 500: the
+    # stream is aborted, and the client reads a truncated response.
+    h.loop.set_exception_handler(lambda loop, ctx: None)
+    h.job(3, "lateraise")
+    h.settle()
+    assert h.kinds(3)[:2] == ["stream_start", "stream_abort"], (
+        "an error after a head that had left was not an abort: %r"
+        % (h.kinds(3),))
+
+
+def test_a_head_that_cannot_be_read_fails_its_own_request_alone(h):
+    """L40: a head still without a body is looked at in the loop
+    iteration's flush. One the shim cannot read -- a header that is not a
+    (name, value) pair -- fails its own request, answered 500, and every
+    later answer still leaves. Raised inside the flush, it left the flush
+    marked armed for good: no completion on the worker was announced to
+    the loop again."""
+    h.loop.set_exception_handler(lambda loop, ctx: None)
+    h.job(0, "badhead")
+    h.settle()
+    assert not h.ns["_flush_armed"][0], (
+        "a head that could not be read left the flush armed")
+    kinds = h.kinds(0)
+    assert kinds and kinds[-1] == "err" and "done" not in kinds and (
+        "stream_start" not in kinds), (
+        "a head that could not be read was not answered as an error: %r"
+        % (kinds,))
+    before = h.flushes
+    h.job(1, "plain")
+    h.settle()
+    assert h.kinds(1) == ["done"], h.kinds(1)
+    assert h.flushes > before, (
+        "no flush ran for the answer after a head that could not be read")
+
+
+def test_a_body_longer_than_its_declared_length_is_refused_at_its_send(h):
+    """L41: a stream whose head declared a Content-Length sends that many
+    bytes and no more. The send that would pass it raises, as uvicorn's
+    does, and the stream is aborted. The loop trimmed the excess instead,
+    without returning its credit, so a FileResponse over a file that grew
+    waited for ever once a window's worth had been trimmed."""
+    h.loop.set_exception_handler(lambda loop, ctx: None)
+    h.job(0, "overrun")
+    h.settle()
+    sent = b"".join(e[2] for e in h.events
+                    if e[0] == "stream_chunk" and e[1] == 0)
+    assert sent == b"abcd", (
+        "a stream sent %r past the 4 bytes it declared" % (sent,))
+    assert h.overrun_errors and "longer than" in h.overrun_errors[0], (
+        "the send that passed the declared length did not raise: %r"
+        % (h.overrun_errors,))
+    kinds = h.kinds(0)
+    assert "stream_abort" in kinds and "stream_end" not in kinds, (
+        "an overrunning stream was not aborted: %r" % (kinds,))
+
+
+def test_a_peer_that_finished_sending_is_heard_and_still_answered(h):
+    """L42: the client of a request in flight has sent its FIN. A handler
+    parked in receive() hears http.disconnect, as under uvicorn; nothing
+    is cancelled and the task is not marked gone, so the answer it then
+    sends is delivered -- a half-close is not a departure."""
+    h.job(0, "longpoll")
+    h.settle()
+    owner = h.ns["_exec_slot_task"].get(0)
+    assert owner is not None and not owner.done()
+    h.disconnect(0, h.ns["_PEER_FINISHED"])
+    h.settle()
+    assert [kind for task, kind in h.heard if task is owner] == [
+        "http.disconnect"], "the parked receive() did not hear the notice"
+    assert not getattr(owner, "_m0_disconnected", False), (
+        "the notice marked a connection gone that is still owed its answer")
+    # A handler that was not listening is not disturbed: it answers.
+    h.job(1, "latesized")
+    h.settle(3)
+    assert h.kinds(1) == [], "the late body had already been sent"
+    h.disconnect(1, h.ns["_PEER_FINISHED"])
+    h.settle()
+    assert h.kinds(1) == ["done"], (
+        "a request whose peer had finished sending was not answered: %r"
+        % (h.kinds(1),))
+
+
+def test_the_publisher_keeps_what_the_fasthtml_page_says(h):
+    """L38's page states three facts about `scope["state"]["m0"]` no served
+    phase reaches: a frame over 64 KB raises, a subscriber more than its
+    queue behind loses the oldest frame, and leaving a subscription through
+    `async with` ends it."""
+    m0 = h.ns["_M0Broadcast"]()
+    subs = h.ns["_m0_subs"]
+    dispatch = h.ns["_m0_dispatch"]
+
+    assert m0.publish("live", "x" * 60000) == -1  # no counter here; sent
+    try:
+        m0.publish("live", "x" * 65536)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a frame over 64 KB was published")
+
+    async def run():
+        async with m0.subscribe("live", max_queue=3) as frames:
+            assert "live" in subs, "a subscription registered nothing"
+            for n in range(5):
+                dispatch(n, "live", b"%d" % n)
+            got = [await frames.__anext__() for _ in range(3)]
+            assert got == [(2, b"2"), (3, b"3"), (4, b"4")], got
+        assert "live" not in subs, "a subscription outlived its `async with`"
+
+    h.loop.run_until_complete(run())
+
+
 def test_work_scheduled_at_import_is_refused_by_name(h):
     """L26: a module that calls asyncio.create_task at import cannot load --
     m0serve imports an application outside any running loop, as uvicorn does
@@ -2259,6 +2504,12 @@ TESTS = [
     test_a_socket_hears_its_clients_close_code,
     test_an_inverted_disconnect_follows_the_messages_before_it,
     test_a_stop_read_by_a_flush_starts_the_drain,
+    test_the_serving_run_keeps_a_thread_pools_threads,
+    test_the_publisher_keeps_what_the_fasthtml_page_says,
+    test_a_peer_that_finished_sending_is_heard_and_still_answered,
+    test_a_head_leaves_when_it_is_sent_not_at_the_first_body,
+    test_a_head_that_cannot_be_read_fails_its_own_request_alone,
+    test_a_body_longer_than_its_declared_length_is_refused_at_its_send,
     test_background_work_inside_the_grace_finishes,
     test_a_task_that_swallows_its_cancellation_does_not_hold_the_drain,
     test_a_task_left_behind_never_reaches_the_port,
@@ -2292,6 +2543,30 @@ TESTS = [
 
 SABOTAGES = [
     (
+        "a peer that finished sending is treated as a client that left",
+        "    if code == _PEER_FINISHED:\n",
+        "    if False:\n",
+        ("test_a_peer_that_finished_sending_is_heard_and_still_answered",),
+    ),
+    (
+        "a response's head waits for its first body",
+        "                _heads_pending.append(self)\n",
+        "                pass\n",
+        ("test_a_head_leaves_when_it_is_sent_not_at_the_first_body",),
+    ),
+    (
+        "a head that cannot be sent is raised into the iteration's flush",
+        "                cycle._head_failed(exc)\n",
+        "                raise\n",
+        ("test_a_head_that_cannot_be_read_fails_its_own_request_alone",),
+    ),
+    (
+        "a stream may send past the length its head declared",
+        "        if n > self.left:\n",
+        "        if False:\n",
+        ("test_a_body_longer_than_its_declared_length_is_refused_at_its_send",),
+    ),
+    (
         "the streaming mark goes on the current task, not the slot's owner",
         "                task = self.task\n"
         "                task._m0_streaming = True\n",
@@ -2324,10 +2599,10 @@ SABOTAGES = [
     ),
     (
         "a disconnect is not stamped on the owning task",
-        "    owner = _exec_slot_task.get(slot)\n"
+        "        return\n"
         "    if owner is not None:\n"
         "        owner._m0_disconnected = True",
-        "    owner = _exec_slot_task.get(slot)",
+        "        return",
         ("test_a_lingering_task_does_not_end_its_successors_stream",),
     ),
     (
@@ -2713,6 +2988,13 @@ SABOTAGES = [
         "    _exec_start_drain[0] = _start_drain\n",
         "",
         ("test_a_stop_read_by_a_flush_starts_the_drain",),
+    ),
+    (
+        "the serving run has no root task, so a thread pool's threads end with each request",
+        "    _exec_stop[0] = _loop.create_future()\n"
+        "    _loop.run_until_complete(_until_stopped())\n",
+        "    _loop.run_forever()\n",
+        ("test_the_serving_run_keeps_a_thread_pools_threads",),
     ),
     (
         "work scheduled at import is not named",

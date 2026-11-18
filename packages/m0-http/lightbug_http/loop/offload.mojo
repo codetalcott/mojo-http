@@ -4,7 +4,8 @@ A request handed to a pool thread (`--blocking-threads`) or an executor is
 a job, and this is the loop's half of the hand-off; the pool's half is
 `lightbug_http/offload.mojo`. An executor's submits are buffered and
 flushed once per pass (`_flush_submits`), and what a batch could not carry
-runs on the loop (`_run_inline`). A finished job comes back over the
+waits (`_hold_unsent`), as a request that finds an executor lane full does
+(`_admit_waiting`). A finished job comes back over the
 completion channel, or directly under the loop inversion
 (`service_direct_completions`), and `_complete_one` answers it. Stream
 credit the ack channel refused is retried every pass (`_retry_owed_acks`).
@@ -12,7 +13,7 @@ credit the ack channel refused is retried every pass (`_retry_owed_acks`).
 
 from lightbug_http.event_loop_backend import EventLoopBackend
 from lightbug_http.c.socket import send
-from lightbug_http.http import HTTPResponse
+from lightbug_http.http import HTTPRequest, HTTPResponse
 from lightbug_http.http.common_response import InternalError
 from lightbug_http.http.chunked import encode_chunk
 from lightbug_http.io.bytes import Bytes
@@ -23,7 +24,9 @@ from lightbug_http.loop.state import LoopState, UNUSED, _close_slot
 from lightbug_http.loop.request import _drain_pipelined
 from lightbug_http.loop.response import _finish_response
 from lightbug_http.loop.streams import _deliver_bus_frames
+from std.collections import Optional
 from std.ffi import c_int
+from std.time import perf_counter_ns
 
 
 def _retry_owed_acks(mut st: LoopState):
@@ -50,62 +53,101 @@ def _retry_owed_acks(mut st: LoopState):
 def _flush_submits[T: HTTPService, B: EventLoopBackend](
     mut handler: T, mut backend: B, mut st: LoopState,
 ):
-    """Send every executor lane's buffered submits; run inline what would
-    not go.
+    """Send every executor lane's buffered submits; what would not go
+    waits (`_hold_unsent`).
 
-    "Leave it parked and retry next pass" is not an option: a slot in the
-    loop's buffer is invisible to everything that reads `offloaded` as "a
-    worker owns it" — the shutdown drain would wait on `inflight` for a
-    completion that cannot come, a pill sent meanwhile would outrun it,
-    and `wait(1000)` would stall the retry by a second. So a refused batch
-    is exactly what a refused `submit` always was: those requests run on
-    the loop, which never drops a request. It cannot fill in practice
-    (`accepting()` bounds the channel to 256 jobs, and batching shrinks the
-    datagram count further); this is the backstop.
+    A slot left in the submit BUFFER across a wait is not an option: it is
+    counted in `inflight`, so the shutdown drain would wait for a
+    completion that cannot come, and a pill sent meanwhile would outrun
+    it. A refused batch therefore leaves the buffer for the waiting queue,
+    which the loop owns: it is out of `inflight`, the drain counts it by
+    name, and `_admit_waiting` offers it again at the bottom of the pass
+    after the refusal's wait (`OffloadLoopState.back_off`), which
+    `_wait_for_events` waits out while anything waits with room for it,
+    or after a job comes back.
     """
     if not st.offload.enabled() or st.offload.pending_submit_count == 0:
         return
-    _ = _run_inline(handler, backend, st, st.offload.flush_submits())
+    _hold_unsent(st, st.offload.flush_submits())
 
 
-def _run_inline[T: HTTPService, B: EventLoopBackend](
-    mut handler: T, mut backend: B, mut st: LoopState, slots: List[Int],
-) -> Int:
-    """Run parked requests on the loop: `_process_request`'s queue-full tail,
-    applied to the slots a batch could not carry. Returns how many the
-    handler ran: a slot no longer offloaded is skipped, and one whose
-    client left is released unanswered, neither of them counted."""
-    if len(slots) == 0:
-        return 0
+def _admit_waiting[T: HTTPService, B: EventLoopBackend](
+    mut handler: T, mut backend: B, mut st: LoopState,
+):
+    """Submit the requests that waited for room on an executor lane, oldest
+    first, for as long as there is room (`OffloadLoopState.waiting_slots`).
+
+    Called at the bottom of every pass, after the completions that make the
+    room and before `_flush_submits` sends what this buffers, and after the
+    inversion's direct completions, which no pass follows. A request whose
+    client left while it waited is released unanswered, as one that left
+    while it sat in a submit batch is.
+
+    Nothing is offered while a refusal's wait runs (SPEC L44): the channel
+    that refused is full, and its executor is not reading it.
+    """
+    if st.offload.waiting_count() == 0:
+        return
+    if st.offload.backing_off(Int(perf_counter_ns())):
+        return
     ref pool = st.offload.pool()[]
-    var ran = 0
+    while st.offload.waiting_count() > 0 and st.offload.accepting():
+        var slot = st.offload.next_waiting()
+        var request = st.offload.take_waiting()
+        if st.slot_fds[slot] == UNUSED:
+            st.offload.offloaded[slot] = False
+            st.provision_pool.release(slot)
+            continue
+        var lane = pool.lane_for(request.uri.path)
+        pool.park_request(slot, request^)
+        pool.stamp_lane(slot, lane)
+        st.offload.inflight += 1
+        if handler.direct_job(slot):
+            continue
+        if st.offload.queue_submit(slot, lane):
+            var unsent = st.offload.flush_lane(lane)
+            if len(unsent) > 0:
+                # The channel is full: what it refused waits again, and
+                # nothing more is offered this pass.
+                _hold_unsent(st, unsent)
+                break
+
+
+def _hold_unsent(mut st: LoopState, slots: List[Int]):
+    """Take back the requests a submit batch could not carry, to wait for
+    the channel (`OffloadLoopState.waiting_slots`), ahead of what already
+    waits and in their own order, and back off before offering them again.
+
+    A refused batch used to run on the loop, as a refused `submit` to a
+    pool thread still does. For an executor that is the application's
+    `run_until_complete` on the loop's thread: every connection stopped,
+    and the stop signal with them, until the handler returned (SPEC L39).
+    Each slot stays `offloaded`, gives its job entry back and leaves
+    `inflight`, exactly as a request that never found room.
+
+    The batch goes back with one rebuild of the queue, and nothing is
+    offered again until a job comes back or the refusal's wait ends
+    (`OffloadLoopState.back_off`). Retried every millisecond with a
+    rebuild per request, the loop spent most of a core while an
+    application blocked its own asyncio loop (SPEC L44).
+    """
+    if len(slots) == 0:
+        return
+    ref pool = st.offload.pool()[]
+    var room = len(slots) + st.offload.waiting_count()
+    var back_slots = List[Int](capacity=room)
+    var back_requests = List[Optional[HTTPRequest]](capacity=room)
     for i in range(len(slots)):
         var slot = slots[i]
         if slot < 0 or slot >= len(st.slot_fds) or not st.offload.offloaded[slot]:
             continue
-        st.offload.offloaded[slot] = False
         st.offload.inflight -= 1
-        var request = pool.unpark_request(slot)
-        if st.slot_fds[slot] == UNUSED:
-            # The client left while its request sat in the buffer; nothing
-            # to answer, and the provision is released as an abandoned
-            # completion's would be.
-            pool.discard(slot)
-            st.provision_pool.release(slot)
-            continue
-        var request_method = request.method
-        var request_path = request.uri.path
-        var response: HTTPResponse
-        try:
-            response = handler.func(request)
-        except:
-            response = InternalError()
-            st.provision_pool.provisions[slot].should_close = True
-        ran += 1
-        handler.after_response(request_method, request_path, response)
-        _finish_response(handler, backend, st, slot, st.slot_fds[slot], response^)
-        _drain_pipelined(handler, backend, st, slot, st.slot_fds[slot])
-    return ran
+        back_slots.append(slot)
+        back_requests.append(Optional[HTTPRequest](pool.unpark_request(slot)))
+    if len(back_slots) == 0:
+        return
+    st.offload.hold_waiting_first(back_slots^, back_requests^)
+    st.offload.back_off(Int(perf_counter_ns()))
 
 
 def _service_completions[T: HTTPService, B: EventLoopBackend](
@@ -136,6 +178,10 @@ def _service_completions[T: HTTPService, B: EventLoopBackend](
     # re-entered here could not walk a stale bound.
     st.offload.done_scratch.clear()
     pool.drain_completions_into(st.offload.done_scratch, read_fd)
+    if len(st.offload.done_scratch) > 0:
+        # A job came back, so its executor is reading: what waits behind
+        # a refusal is offered at the bottom of this pass (SPEC L44).
+        st.offload.executor_read()
     var aborts = pool.take_aborts()
     var f = 0
     while f < len(st.offload.done_scratch):
@@ -259,3 +305,6 @@ def service_direct_completions[T: HTTPService, B: EventLoopBackend](
         return
     for i in range(len(slots)):
         _complete_one(handler, backend, st, slots[i])
+    if len(slots) > 0:
+        st.offload.executor_read()
+    _admit_waiting(handler, backend, st)

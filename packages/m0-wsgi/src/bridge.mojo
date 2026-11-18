@@ -58,7 +58,8 @@ is `packages/m0-wsgi/shim/m0_shim.py` — an ordinary Python file that
 editors, pyflakes and `poe test-shim` read as one — and
 `scripts/render_shim.py` renders it into `SHIM_SOURCE` in `shim_source.mojo`
 (committed, generated, checked current by `poe check-docs`), which this
-file imports and `exec`s into a fresh namespace dict at startup. The
+file compiles once per interpreter and `exec`s, as a copy of that code,
+into a fresh namespace dict per bridge at startup (`shim_code`). The
 rendering exists because a `.py` file next to a compiled binary would have
 to be located at run time relative to it — an unforced deployment failure;
 a string is compiled into the binary and cannot go missing. Which parts of
@@ -148,13 +149,82 @@ template. Returns a new reference. Measured at **58 ns** for the ten
 request-invariant entries, against **214 ns** for storing them one
 `PyDict_SetItem` at a time — which is what this replaced."""
 
+comptime _PyInterpreterState_Get = ExternalFunction[
+    "PyInterpreterState_Get",
+    # PyInterpreterState *PyInterpreterState_Get(void)
+    def() thin abi("C") -> OptionalPointer[NoneType, MutAnyOrigin],
+]
+"""The calling thread's interpreter, as an opaque pointer. Never NULL: it
+is a fatal error to call it from a thread with no thread state, and no
+bridge is built on one."""
+
+comptime _PyInterpreterState_GetDict = ExternalFunction[
+    "PyInterpreterState_GetDict",
+    # PyObject *PyInterpreterState_GetDict(PyInterpreterState *interp)
+    def(OptionalPointer[NoneType, MutAnyOrigin]) thin abi("C") -> PyObjectPtr,
+]
+"""The dict CPython keeps per interpreter for extensions to store their
+state in, which Python code cannot reach. A borrowed reference; NULL, with
+no exception set, if the interpreter has none."""
+
+comptime _SHIM_CODE_KEY = "m0_wsgi.shim_code"
+"""The key the compiled shim is kept under in that dict."""
+
+
+def shim_code() raises -> PythonObject:
+    """The shim as a code object of the caller's own, compiled once per
+    interpreter: what every `PyBridge` and `detect_protocol` exec.
+
+    The first call compiles `SHIM_SOURCE` and keeps it marshalled in the
+    interpreter's dict for extensions; every call, the first included,
+    loads a fresh code object from there, as loading a `.pyc` does. That
+    allocates 0.15 MB at its peak and takes 0.12 ms. A parse took 4.2 MB
+    and 4.3 ms, freed all but 0.13 MB of it, and ran once per serving thread
+    and once per detected application; how many of those freed peaks the
+    allocator kept dirty moved an idle eight-thread server's memory in
+    3.6 MB steps from one start to the next
+    (docs/notes/one-compile-a-process.md).
+
+    Loaded per namespace, never shared: one code object run from eight
+    namespaces cost the shim's `run` 4 to 5 %, because the specializing
+    interpreter keys its caches on one globals dict.
+    `test_bridge_build.mojo` holds both.
+
+    `setdefault` keeps the first compile stored, so two threads building
+    their first bridges at once may each compile, and both load the one
+    that was kept. Startup only: the `PythonObject` arguments here are
+    bounded by the bridges a process builds."""
+    ref cpy = Python().cpython()
+    var interp = _PyInterpreterState_Get.load(cpy.lib.borrow())()
+    var held = _PyInterpreterState_GetDict.load(cpy.lib.borrow())(interp)
+    if not held:
+        raise Error(
+            "the interpreter keeps no dict for extensions' state, where"
+            " m0serve keeps the compiled shim"
+        )
+    var store = PythonObject(from_borrowed=held)
+    var marshal = Python.import_module("marshal")
+    var key = PythonObject(_SHIM_CODE_KEY)
+    if key not in store:
+        var builtins = Python.import_module("builtins")
+        # "<string>" is the name exec gave a source string, so a traceback
+        # through the shim reads as it always has.
+        var code = builtins.compile(
+            PythonObject(SHIM_SOURCE), PythonObject("<string>"),
+            PythonObject("exec"),
+        )
+        _ = store.setdefault(key, marshal.dumps(code))
+    return marshal.loads(store[key])
+
 
 struct PyBridge(Movable):
     """Holds the interpreter-side helpers for one serving thread.
 
-    One per process under prefork, one per thread under `M0_THREADS`;
-    nothing here is shared between bridges. Construct once at startup, never
-    per request.
+    One per serving thread: the loop's handler, each handler-pool thread,
+    each asyncio executor, each `M0_THREADS` loop. Nothing here is shared
+    between bridges, the code included: each loads its own copy of the
+    shim, compiled once per interpreter (`shim_code`). Construct once at
+    startup, never per request.
 
     Every request costs exactly one call into Python — the
     `PyObject_CallObject` that runs `run(environ, body)`. Everything else,
@@ -258,7 +328,7 @@ struct PyBridge(Movable):
     def __init__(out self) raises:
         var builtins = Python.import_module("builtins")
         self._ns = Python.dict()
-        builtins.exec(PythonObject(SHIM_SOURCE), self._ns)
+        builtins.exec(shim_code(), self._ns)
         self._run = self._ns["run"]
         self._spawn = self._ns["spawn"]
         self._spawn_ws = self._ns["spawn_ws"]

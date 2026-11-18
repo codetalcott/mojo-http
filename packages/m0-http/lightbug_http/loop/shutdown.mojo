@@ -304,6 +304,7 @@ def _shutdown_drain_step[T: HTTPService, B: EventLoopBackend](
     if not (
         st.active_count > 0
         or st.offload.inflight > 0
+        or st.offload.waiting_count() > 0
         or st.accept_share.awaiting_handoffs()
     ):
         return True

@@ -36,7 +36,12 @@ process**, routed by longest prefix (on segment boundaries, so `/app` never
 swallows `/application`; the root mount is the empty prefix and needs no
 special case). Each mount detects its own protocol and gets its own bridge
 — free, because `PyBridge` already execs the shim into a fresh namespace
-dict per instance. The prefix reaches both protocols through
+dict per instance. **Every namespace execs `shim_code()`, never
+`SHIM_SOURCE`** (SPEC E44): the shim is compiled once per interpreter and
+each namespace loads a copy of its own: a parse per serving thread moved
+an idle server's memory in 3.6 MB steps from one start to the next, and
+one code object shared by eight namespaces cost the shim's `run` 4 to 5 %
+(`test_bridge_build.mojo` holds both). The prefix reaches both protocols through
 `PyBridge.set_base` and **only** there, because they disagree about it:
 WSGI gets `SCRIPT_NAME` with `PATH_INFO` trimmed to the remainder, ASGI
 gets `root_path` with `path` left whole (Django's `ASGIHandler` strips it
@@ -388,10 +393,13 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     never left across a `wait` — `_flush_submits` runs at the bottom of
     every pass, before the shutdown drain parks, and once more before
     `run_event_loop` returns so the pill stays FIFO behind every job.
-    What a batch cannot carry runs INLINE (`_run_inline`, the queue-full
-    tail `submit`'s False always meant); "leave it buffered and retry" is
-    not an option, because a buffered slot is invisible to everything that
-    reads `offloaded` as "a worker owns it". Pool lanes are never batched —
+    What a batch cannot carry goes back to WAIT, at the front of the
+    queue (`_hold_unsent`, SPEC L39), entry returned and out of
+    `inflight`; it used to run inline (`_run_inline`, now the tests'
+    `_run_parked`), which for an executor was `run_until_complete` on the
+    loop's thread. "Leave it buffered and retry" is not an option, because
+    a buffered slot is invisible to everything that reads `offloaded` as
+    "a worker owns it". Pool lanes are never batched —
     one thread takes one job — and `next_job` says so loudly if a batch
     ever reaches one. **Python calls INTO Mojo for every event, and the
     executor thread never leaves `run_forever`.** `ExecutorPort`
@@ -426,7 +434,15 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     `_HTTP_DRAIN_GRACE` (3 s), and a task that swallows its cancellation
     is named and left behind (SPEC D11) — then it stops the loop, so the
     executor's final flush and lifespan shutdown run after `run_forever`
-    returns. Two rules: the drain starts ONCE (`_exec_draining`; a second
+    returns. **The serving run is ONE `run_until_complete`, never a bare
+    `_loop.run_forever()`** (`_serve_under_a_root_task`, SPEC L37;
+    docs/notes/a-root-task-for-the-executor.md): anyio ends each thread of
+    its pool with the task it calls the root and finds that task by
+    `run_until_complete`'s done-callback, so without one every `def`
+    handler of a Starlette application started a thread and ended it with
+    its request. It ends through `_stop_serving`, which resolves the root
+    task's future; the loop stops an iteration after the task does, with
+    `_exec_closed` already set. Two rules: the drain starts ONCE (`_exec_draining`; a second
     pill, or the inverted tick, must not start another whose stop lands
     inside lifespan shutdown), and once it has stopped the loop nothing
     reaches the port (`_exec_closed`) — the Mojo side frees its executor
@@ -756,9 +772,90 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       (The old behaviour detached the fd, which dropped the response the
       pool thread was about to complete — the offloaded shape of the
       half-close bug.)
+    - **A response's head leaves at the end of the iteration it was sent
+      in, not at its first body** (SPEC L40). `_Cycle.send` lists the
+      response in `_heads_pending` and arms the iteration's flush;
+      `_flush` calls `_head_due` before the port's flush, and a response
+      still without a body takes `send`'s own switch to streaming as
+      though an empty `more_body` chunk had arrived, so the ownership
+      rules and the HEAD, 1xx, 204 and 304 answers are that branch's. A
+      head that declares a `Content-Length` is left for its body
+      (FileResponse reads its file between the two, and streamed lost
+      its length). `_head_due` runs inside the flush, so whatever it
+      raises is caught there per response (`_head_failed`: logged, the
+      task cancelled, answered 500): raised out of `_flush`, it left
+      `_flush_armed` set for good and the worker never flushed again. Do
+      not give it a `call_soon` of its own: one per response cost 2.7% of
+      the bare hello row (98.1k against 100.9k rps), and the flush is
+      armed by the body that usually follows anyway. A shim edit reaches
+      `bin/m0serve` after `render-shim`, `build-wsgi` AND `build-serve`:
+      the shim is in `m0_wsgi.mojoc`, and `build-serve` alone reports the
+      binary up to date.
+    - **A stream that declared its length is written under it** (SPEC
+      L41). `build_asgi_response` keeps an ASGI stream's `Content-Length`
+      and names it in `HTTPResponse.stream_length` (a WSGI stream's is
+      still dropped; the loop reads the FIELD, since a response built with
+      invented entity headers carries a `Content-Length: 0` nobody
+      declared, which two slot-lifecycle tests caught), `_finish_response`
+      records it in `OffloadLoopState.sized_left` and frames nothing, and the outbox
+      drain ends a stream whose every declared byte has gone as it ends a
+      chunked one at its terminator, connection kept; short, it closes.
+      Long, the SHIM refuses it: `_Cycle._spend_declared` raises at the
+      send that would pass the length, as uvicorn does. The loop's trim
+      past `sized_left` is a guard that never meets bytes, and drops them
+      without acking their credit, so do not move the rule there.
+      Do NOT also send a sized response's head early (`_head_due` leaves
+      it): streamed from its head, a 1.4 KB `FileResponse` cost 8.6% (7,578
+      against 6,932 rps), for a head the client cannot use before its body.
+    - **The loop listens on a request it handed an executor** (SPEC L42).
+      A request read as its connection was accepted never registered for
+      reads, so its peer's FIN arrived unseen: `_process_request` arms
+      reads as it hands an executor's request over, the read path's
+      offloaded branch calls `HTTPService.peer_finished` for an EOF first
+      seen there, and drops the interest again at that first event, as it
+      always did. `WSGIHandler.peer_finished` sends the disconnect tag
+      with code `PEER_FINISHED` (1, below every WebSocket close code),
+      which the shim reads as a NOTICE: it resolves the slot's disconnect
+      future and nothing else. Never route it through
+      `sse_slot_disconnected`, which marks the task gone and would drop
+      the answer a half-closed client is waiting for.
+    - **Past the bound an executor's request WAITS; it is never run on the
+      loop** (SPEC L39). `OffloadLoopState.must_wait` is asked before
+      `accepting()` in `_process_request`: a request for an executor lane
+      with no room, or behind one already waiting, is kept in
+      `waiting_slots` with its slot `offloaded` and NOT counted in
+      `inflight`, and `_admit_waiting` submits it at the bottom of a pass
+      and after the inversion's direct completions. Run on the loop it was
+      `run_until_complete` on the loop's thread: 264 sleeping handlers
+      stopped the server, SIGTERM included. A pool thread's lane still
+      falls back to the loop. A submit BATCH the channel refuses waits too
+      (`_hold_unsent`: back to the FRONT of the queue in one rebuild,
+      entry returned, out of `inflight`), and nothing is offered again
+      until a job comes back or `OffloadLoopState.back_off`'s wait ends, 1
+      ms doubling to 64, which `_wait_for_events` waits out (SPEC L44). A
+      channel refuses because its executor is not reading, an application
+      blocking its own asyncio loop, and Linux's holds only 555 one-job
+      datagrams: retried every millisecond with a rebuild per request, a
+      default server spent 66% of a core behind 1000 requests. `poe
+      sabotage-pool` reverts each of the seven rules. `_run_inline` is gone
+      from the loop and lives on as the tests' `_run_parked`
+      (`test/support.mojo`), their stand-in for a completion.
+    - **A lone executor's pool is built for its connections** (SPEC L43).
+      `_serve_offloaded` builds `OffloadPool` for
+      `ServeOptions.executor_inflight_for`, which `--doctor` reports too:
+      `executor_inflight(max_connections, M0_EXECUTOR_INFLIGHT)` for an
+      unmounted ASGI application, read by `from_env` so a bad value is
+      named, never inside the fork (it was, and passed over silently); and
+      `OffloadLoopState.accepting` holds to `pool.max_inflight`, never to
+      the constant. The cap is `EXECUTOR_MAX_INFLIGHT`, 1024, and it is
+      what `smoke-max-connections` allows: at 4096 the executor's idle
+      share of a slot measured 468 B against C27's 360. Rings, the drain
+      buffer and every mount set keep `OFFLOAD_MAX_INFLIGHT`: handler
+      threads share those tables, and their rings are 256 deep.
     - **A job holds a table entry, not its slot** (SPEC C26).
-      `OffloadPool.requests` and `responses` hold `OFFLOAD_MAX_INFLIGHT`
-      entries whatever the slot count. `park_request` takes one and names
+      `OffloadPool.requests` and `responses` hold `max_inflight` entries
+      whatever the slot count (`OFFLOAD_MAX_INFLIGHT`, 256, unless a lone
+      executor's pool was built for more, SPEC L43). `park_request` takes one and names
       it in `slot_entry` before the submit publishes the job; only the loop
       gives it back (`unpark_request`, `take_response`, `discard`), and a
       pool thread touches it only between receiving the job and

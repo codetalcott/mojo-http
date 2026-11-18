@@ -488,8 +488,8 @@ dependencies: a consumer passes every `-I` in the chain, and apps add
 
 ## The handler contract
 
-`HTTPService` (`lightbug_http/service.mojo`) has fifteen methods, and **only
-`func` is required**: the other fourteen carry default bodies, so a handler
+`HTTPService` (`lightbug_http/service.mojo`) has sixteen methods, and **only
+`func` is required**: the other fifteen carry default bodies, so a handler
 declares just the hooks it uses.
 
 - `func` answers; `before_request` runs on the LOOP before a request is
@@ -520,6 +520,9 @@ declares just the hooks it uses.
   (SPEC I26).
 - `direct_job` lets the inverted executor take a parked request on the
   loop's thread; the default declines.
+- `peer_finished` says a peer shut down its sending side while its
+  request is out on an executor lane (SPEC L42): the connection stays and
+  the answer is still owed; the default does nothing.
 
 Adding a method **with** a default is non-breaking; one **without** breaks
 every implementer (every app under `apps/`, `ViewService`, `WSGIHandler`, the
@@ -966,7 +969,12 @@ keeps the loop and its workers on performance cores; accepted and ignored
 elsewhere), `M0_MAX_KEEPALIVE_REQUESTS` (the keep-alive cap; 0 = never close
 for count; docs/notes/pool-tail.md), `M0_GRANT_KEY`, `M0_GRANT_KEY_PREV` and
 `M0_GRANT_COOKIE` (the hold mount's key, its previous key during a rotation,
-and the cookie a grant binds to; `sessionid`), `M0_THREAD_HEADER` (`1`
+and the cookie a grant binds to; `sessionid`), `M0_EXECUTOR_INFLIGHT`
+(how many requests a loop hands an ASGI application served alone at
+once: its connections up to 1024 unset, never past them; read by
+m0serve's `from_env` into `ServeOptions.executor_inflight_for`, which
+sizes the pool and is what `--doctor` reports; SPEC L43),
+`M0_THREAD_HEADER` (`1`
 names the handler-pool thread in `x-thread` on every response; off),
 `M0_SPAWN_WORKERS`,
 `M0_PG_LISTEN`, `M0_MAX_BODY`, `M0_BODY_TIMEOUT`, `M0_REPLAY_FRAMES` and
@@ -982,6 +990,8 @@ allows), and `M0_LIBPQ`, `M0_LIBSQLITE3` and `M0_LIBZSTD` (the library to
 `dlopen`).
 
 A/B knobs, not flags, each a gate's negative arm or a measurement's:
+`M0_ASGI_HEAD_AT_START` (`0` holds an ASGI response's head for its first
+body, the answer through 1.17.0; SPEC L40),
 `M0_ACCEPT_SHARE` (`0` off), `M0_ACCEPT_BATCH` (default 16; `0` takes the
 whole backlog), `M0_RECLAIM` (`0` resets a connection that meets a full
 loop rather than taking an idle slot back), `M0_POOL_TURN` (`0` drops the pool's GIL hand-off barrier),

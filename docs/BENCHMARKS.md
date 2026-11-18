@@ -233,8 +233,7 @@ and the tables are in
   dominates and would hide the server difference entirely. That cuts both
   ways: it makes these gaps visible, and it makes them a smaller fraction
   of any real request than they look here. Two framework rows, FastHTML
-  and Django ASGI at `/`, were measured on 2026-08-27 and not re-recorded
-  after the executor's later changes. They are in
+  and Django ASGI at `/`, were re-measured on 2026-11-16. They are in
   [WSGI_PERFORMANCE.md](WSGI_PERFORMANCE.md) ("Framework rows").
 - <!-- observed: notes/asgi-per-core.md; bench/results/linux-2026-11/ -->Every
   artifact on this page is macOS arm64; CI builds and smoke-tests Linux

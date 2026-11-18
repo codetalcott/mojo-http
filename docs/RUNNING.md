@@ -66,6 +66,38 @@ With no topology flag or `M0_*` topology variable, the protocol chooses:
 | WSGI (Django, Flask) | one event loop, a pool of `min(cores, 8)` handler threads | a slow view holds its thread, not the connections behind it |
 | ASGI (FastHTML, Starlette, Django ASGI) | one event loop, an asyncio executor | requests overlap wherever the app awaits, uvicorn's shape |
 
+An event loop hands its asyncio executor as many requests at once as it
+has connections, up to 1024, so on a default server every request's
+handler may be awaiting at the same time, as under uvicorn. With
+`--max-connections` above 1024, a request that arrives while 1024 are
+unanswered waits for one of them, and the loop says so once on stderr;
+what the loop answers itself, the health path among it, is answered
+meanwhile. A response counts from its request to its head: a stream that
+has sent its head is not one of them. `--workers N` is N loops, each with
+its own count, and a mount set (`--mount`) keeps 256 a loop.
+`M0_EXECUTOR_INFLIGHT=N` sets the number for an ASGI application served
+alone, never past the loop's connections: a server above 1024 connections
+whose requests may all be awaiting at once sets it to its connection
+count; the executor's tables grow with the number (1024 against 256 cost
+672 KB of idle memory a loop, macOS M4, 2026-11-17). A value that
+is not a whole number of requests is named on stderr and the default
+kept, and `--doctor` reports the number a loop uses as
+`executor_inflight`.
+
+A response's head is sent when the application sends it, as under uvicorn.
+One whose body does not follow at once and whose head declares no
+`Content-Length` (a stream nobody has written to) is sent as it is
+produced, chunked, and the application is cancelled when its client
+leaves. One that declares a length is answered whole at its body, and
+a streamed body that declares one is sent under it, unchunked.
+
+An application waiting in `receive()` on a request it has not answered
+hears `http.disconnect` when its client finishes sending. The connection
+stays open and the answer, if one comes, is sent: a client that
+half-closes and waits is still answered.
+`M0_ASGI_HEAD_AT_START=0` holds every head for its first body instead, as
+through 1.17.0.
+
 Everything else is opt-in:
 
 | flag | use it when | notes |
